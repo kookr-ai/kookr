@@ -418,4 +418,150 @@ describe('startHttpAndWebSockets', () => {
       expect(unregister).toHaveBeenCalledTimes(1);
     });
   });
+
+  // #810: terminal stream scope gate. A project-scoped viewer attempting to
+  // attach to a terminal whose task is out of scope is rejected with a 403 at
+  // the upgrade — before any bridge is created. Owners and in-scope sessions
+  // pass. The injected predicate owns the whole decision; the handler only acts
+  // on its verdict.
+  describe('terminal scope gate (#810)', () => {
+    const IN_SCOPE = 'kookr-in-scope';
+    const OUT_OF_SCOPE = 'kookr-out-of-scope';
+    const projectsViewer: Actor = { kind: 'viewer', grantId: 'gp', scope: { kind: 'projects', projectIds: ['p1'] } };
+
+    async function startWithScopeGate(actor: Actor): Promise<{ port: number; register: ReturnType<typeof vi.fn> }> {
+      const register = vi.fn();
+      const registrar: SocketRegistrar = { register, unregister: vi.fn() };
+      runtime = await startHttpAndWebSockets({
+        app: new Hono(),
+        port: 0,
+        host: '127.0.0.1',
+        tasksFile: '/tmp/tasks.json',
+        hooksDir: '/tmp/hooks',
+        terminalBackend: new FakeTerminalBackend(),
+        terminalDeps: {
+          monitor: {} as never,
+          abortPendingSuggestion: () => {},
+          broadcastToAll: () => {},
+          serverCwd: '/repo',
+        },
+        useFakeTerminalBridge: true,
+        terminalRegistrar: registrar,
+        resolveTerminalActor: () => actor,
+        // Stand-in scope checker: only IN_SCOPE is reachable by the viewer.
+        isActorAllowedTerminalSession: (a, sessionName) =>
+          a.kind === 'owner' || sessionName === IN_SCOPE,
+        onDashboardConnection: () => {},
+      });
+      return { port: portFor(runtime), register };
+    }
+
+    function upgradeStatus(port: number, path: string): Promise<number> {
+      return new Promise<number>((resolve, reject) => {
+        let settled = false;
+        const ws = new WebSocket(`ws://127.0.0.1:${port}${path}`);
+        ws.on('open', () => {
+          if (settled) return;
+          settled = true;
+          ws.close();
+          resolve(101);
+        });
+        ws.on('unexpected-response', (_req, res) => {
+          if (settled) return;
+          settled = true;
+          resolve(res.statusCode ?? 0);
+          res.resume();
+        });
+        ws.on('error', (err) => {
+          if (settled) return;
+          settled = true;
+          reject(err);
+        });
+      });
+    }
+
+    test('rejects an out-of-scope viewer terminal upgrade with 403 and creates no bridge', async () => {
+      const { port, register } = await startWithScopeGate(projectsViewer);
+      const status = await upgradeStatus(port, `/ws/terminal/${OUT_OF_SCOPE}`);
+      expect(status).toBe(403);
+      // No handshake ⇒ no registration, no bridge.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(register).not.toHaveBeenCalled();
+      expect(runtime?.activeBridges.size).toBe(0);
+    });
+
+    test('admits an in-scope viewer terminal upgrade', async () => {
+      const { port, register } = await startWithScopeGate(projectsViewer);
+      const status = await upgradeStatus(port, `/ws/terminal/${IN_SCOPE}`);
+      expect(status).toBe(101);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(register).toHaveBeenCalledTimes(1);
+    });
+
+    test('owners always pass the scope gate', async () => {
+      const { port, register } = await startWithScopeGate({ kind: 'owner' });
+      const status = await upgradeStatus(port, `/ws/terminal/${OUT_OF_SCOPE}`);
+      expect(status).toBe(101);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(register).toHaveBeenCalledTimes(1);
+    });
+
+    test('the gate and the registration use the same query-stripped session name', async () => {
+      const register = vi.fn();
+      const seenByGate: string[] = [];
+      const registrar: SocketRegistrar = { register, unregister: vi.fn() };
+      runtime = await startHttpAndWebSockets({
+        app: new Hono(),
+        port: 0,
+        host: '127.0.0.1',
+        tasksFile: '/tmp/tasks.json',
+        hooksDir: '/tmp/hooks',
+        terminalBackend: new FakeTerminalBackend(),
+        terminalDeps: { monitor: {} as never, abortPendingSuggestion: () => {}, broadcastToAll: () => {}, serverCwd: '/repo' },
+        useFakeTerminalBridge: true,
+        terminalRegistrar: registrar,
+        resolveTerminalActor: () => projectsViewer,
+        isActorAllowedTerminalSession: (_a, sessionName) => {
+          seenByGate.push(sessionName);
+          return sessionName === IN_SCOPE; // allow only the canonical name
+        },
+        onDashboardConnection: () => {},
+      });
+      const port = portFor(runtime);
+      // A query string must not let the registered session name diverge from the
+      // name the gate vetted (else the bridge attaches to a name never checked).
+      const status = await upgradeStatus(port, `/ws/terminal/${IN_SCOPE}?x=1`);
+      expect(status).toBe(101);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(seenByGate).toEqual([IN_SCOPE]);
+      expect(register).toHaveBeenCalledTimes(1);
+      expect(register.mock.calls[0][3]).toEqual({ sessionName: IN_SCOPE });
+    });
+
+    test('fail-closed: a throwing scope predicate yields a 403, not a crash', async () => {
+      const register = vi.fn();
+      const registrar: SocketRegistrar = { register, unregister: vi.fn() };
+      runtime = await startHttpAndWebSockets({
+        app: new Hono(),
+        port: 0,
+        host: '127.0.0.1',
+        tasksFile: '/tmp/tasks.json',
+        hooksDir: '/tmp/hooks',
+        terminalBackend: new FakeTerminalBackend(),
+        terminalDeps: { monitor: {} as never, abortPendingSuggestion: () => {}, broadcastToAll: () => {}, serverCwd: '/repo' },
+        useFakeTerminalBridge: true,
+        terminalRegistrar: registrar,
+        resolveTerminalActor: () => projectsViewer,
+        isActorAllowedTerminalSession: () => {
+          throw new Error('scope lookup blew up');
+        },
+        onDashboardConnection: () => {},
+      });
+      const port = portFor(runtime);
+      const status = await upgradeStatus(port, `/ws/terminal/${IN_SCOPE}`);
+      expect(status).toBe(403);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(register).not.toHaveBeenCalled();
+    });
+  });
 });

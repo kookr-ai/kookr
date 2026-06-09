@@ -17,6 +17,7 @@ import { WebSocket } from 'ws';
 
 import type { Actor } from './auth.js';
 import type { Scope } from './viewer-data-policy.js';
+import type { IsActorAllowedTerminalSession } from './terminal-scope.js';
 
 /** Which connection pool a socket belongs to. */
 export type SocketKind = 'dashboard' | 'terminal';
@@ -99,8 +100,12 @@ export interface SocketRegistrar {
  */
 export type GrantLiveness = 'active' | 'revoked' | 'expired' | 'not-found';
 
-/** Why the sweep evicted a socket. Surfaced to the audit hook (#808 / R10). */
-export type EvictionReason = Exclude<GrantLiveness, 'active'>;
+/**
+ * Why the sweep evicted a socket. Surfaced to the audit hook (#808 / R10).
+ * `out-of-scope` (#810) is terminal-only: a still-live grant whose attached task
+ * was reassigned out of the grant's project scope (reassignment TOCTOU, RFC F8).
+ */
+export type EvictionReason = Exclude<GrantLiveness, 'active'> | 'out-of-scope';
 
 /** Payload handed to {@link ViewerConnectionRegistryOptions.onEvict}. */
 export interface SweepEviction {
@@ -118,6 +123,15 @@ export interface ViewerConnectionRegistryOptions {
    * as active and the sweep evicts nothing.
    */
   resolveGrantLiveness?: (grantId: string) => GrantLiveness;
+  /**
+   * Terminal scope predicate (#810). On each sweep tick, every still-live
+   * terminal viewer socket is re-checked: if its attached session is no longer
+   * in the grant's scope (the task was reassigned out of scope — reassignment
+   * TOCTOU, RFC F8), the socket is evicted with reason `out-of-scope`. Owners
+   * and dashboard sockets are never scope-checked. Omitted when no terminal
+   * scope filtering is wired (Phase 1 / lightweight tests).
+   */
+  isActorAllowedTerminalSession?: IsActorAllowedTerminalSession;
   /** Revocation-sweep interval in milliseconds. Default 10 000. */
   sweepIntervalMs?: number;
   /** Audit hook fired once per evicted socket (#808 / R10). Never throws into the sweep. */
@@ -129,9 +143,11 @@ export interface ViewerConnectionRegistryOptions {
 }
 
 const DEFAULT_SWEEP_INTERVAL_MS = 10_000;
-/** Close code for a socket dropped because its grant was revoked/expired (policy violation). */
+/** Close code for a socket dropped on a policy violation (revoked/expired/out-of-scope). */
 const REVOKED_CLOSE_CODE = 1008;
 const REVOKED_CLOSE_REASON = 'Access revoked';
+/** Close reason for a terminal socket dropped because its task left the grant's scope (#810). */
+const OUT_OF_SCOPE_CLOSE_REASON = 'Out of scope';
 /** Close code for a socket dropped during server shutdown (going away). */
 const SHUTDOWN_CLOSE_CODE = 1001;
 const SHUTDOWN_CLOSE_REASON = 'Server shutting down';
@@ -139,6 +155,7 @@ const SHUTDOWN_CLOSE_REASON = 'Server shutting down';
 export class ViewerConnectionRegistry implements SocketRegistrar {
   private readonly sockets = new Map<WebSocket, RegisteredSocket>();
   private readonly resolveGrantLiveness: (grantId: string) => GrantLiveness;
+  private readonly isActorAllowedTerminalSession?: IsActorAllowedTerminalSession;
   private readonly onEvict?: (eviction: SweepEviction) => void;
   private readonly now: () => number;
   private readonly sweepIntervalMs: number;
@@ -148,6 +165,7 @@ export class ViewerConnectionRegistry implements SocketRegistrar {
 
   constructor(options: ViewerConnectionRegistryOptions = {}) {
     this.resolveGrantLiveness = options.resolveGrantLiveness ?? (() => 'active');
+    this.isActorAllowedTerminalSession = options.isActorAllowedTerminalSession;
     this.onEvict = options.onEvict;
     this.now = options.now ?? (() => Date.now());
     this.sweepIntervalMs = options.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
@@ -305,8 +323,29 @@ export class ViewerConnectionRegistry implements SocketRegistrar {
       try {
         if (entry.actor.kind !== 'viewer') continue;
         const liveness = this.resolveGrantLiveness(entry.actor.grantId);
-        if (liveness === 'active') continue;
-        this.evict(entry, liveness);
+        if (liveness !== 'active') {
+          this.evict(entry, liveness);
+          continue;
+        }
+        // #810 reassignment TOCTOU (RFC F8): a still-live grant may hold a
+        // terminal socket whose task was reassigned out of scope since it
+        // opened. Re-check terminal viewer sockets each tick and drop any that
+        // are no longer in scope. Dashboard sockets re-derive their scope on the
+        // next snapshot, so only terminal sockets need this gate.
+        if (entry.kind === 'terminal' && this.isActorAllowedTerminalSession) {
+          let inScope: boolean;
+          try {
+            inScope = this.isActorAllowedTerminalSession(entry.actor, entry.sessionName ?? '');
+          } catch (err) {
+            // Fail closed: a scope re-check that throws must not leave a possibly
+            // out-of-scope terminal open. Distinct from the liveness path above,
+            // whose throw is isolated-and-retained (transient liveness blips
+            // should not tear down a still-valid socket).
+            console.warn('[viewer-registry] terminal scope re-check threw; evicting fail-closed', err);
+            inScope = false;
+          }
+          if (!inScope) this.evict(entry, 'out-of-scope');
+        }
       } catch (err) {
         console.warn('[viewer-registry] sweep failed for one socket; continuing', err);
       }
@@ -328,7 +367,8 @@ export class ViewerConnectionRegistry implements SocketRegistrar {
       }
     }
     try {
-      entry.ws.close(REVOKED_CLOSE_CODE, REVOKED_CLOSE_REASON);
+      const closeReason = reason === 'out-of-scope' ? OUT_OF_SCOPE_CLOSE_REASON : REVOKED_CLOSE_REASON;
+      entry.ws.close(REVOKED_CLOSE_CODE, closeReason);
     } catch (err) {
       console.warn('[viewer-registry] failed to close evicted socket', err);
     }

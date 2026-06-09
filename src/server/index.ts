@@ -7,6 +7,7 @@ import { reconcile } from './reconciliation.js';
 import { type AgentPreflightSnapshot, type PreflightLogger } from './agent-preflight.js';
 import type { ServerMessage, SnapshotMessage } from '../shared/contracts/messages.js';
 import type { Scope } from './viewer-data-policy.js';
+import { createTerminalScopeChecker } from './terminal-scope.js';
 import { ContactShareReadModel } from '../core/contact-share.js';
 import { HookFileWatcher } from './hook-watcher.js';
 import { HookIngestion } from './hook-ingestion.js';
@@ -380,6 +381,20 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       userInputDeliveryProvider: userInputDeliveries,
     });
 
+  // Single owner of the terminal-stream scope decision (#810, RFC §"Terminal
+  // stream fan-out"). Owns the session→task→projectId lookup AND the scope
+  // comparison, so both enforcement loci — the terminal WS upgrade gate
+  // (`start-http-and-websockets.ts`, 403) and the revocation sweep's per-tick
+  // re-check (`viewer-connection-registry.ts`, eviction on reassignment, RFC
+  // F8) — call this one predicate. Owners always pass; a `projects` viewer
+  // passes only for sessions whose task is in scope. Wiring the predicate is
+  // safe ahead of live viewer admission: with `resolveTerminalActor` still
+  // deferred every terminal actor is the owner, so it is inert until viewers
+  // land — but it makes the gate real the moment they do.
+  const isActorAllowedTerminalSession = createTerminalScopeChecker(
+    (sessionName) => taskStore.findTaskBySession(sessionName)?.projectId,
+  );
+
   const realtime = await createRealtimeServices({
     kookrDir,
     taskStore,
@@ -400,6 +415,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getDefaultAgentType,
     coordinatorSuppressions,
     resolveGrantLiveness: (grantId) => viewerGrantStore.liveness(grantId),
+    isActorAllowedTerminalSession,
     // #808 / R10: a sweep evicting a live viewer socket is an audit event
     // (fire-and-forget so a slow audit write never stalls the sweep tick).
     onViewerEvicted: (eviction) => {
@@ -1121,6 +1137,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // deferred to the resolveViewer security gate (#808/#809/#810), so every live
     // terminal socket resolves to the owner for now.
     terminalRegistrar: connectionRegistry,
+    // #810 terminal scope gate: an out-of-scope viewer terminal upgrade is a 403
+    // before the handshake. Inert while `resolveTerminalActor` is unset (owners
+    // always pass); enforced the moment viewer terminal resolution is wired.
+    isActorAllowedTerminalSession,
   });
   const collaborationListener = await startConfiguredPrivateNetworkCollaborationListener({
     env: process.env,
