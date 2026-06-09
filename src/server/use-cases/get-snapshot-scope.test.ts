@@ -125,6 +125,76 @@ describe('createSnapshotMessage — scope filtering', () => {
     });
     expect(msg.taskRelations?.map((r) => r.id)).toEqual(['r-in', 'r-cross']);
   });
+
+  it('projects scope excludes out-of-scope children from a parent childRollup count', () => {
+    // child is `source`, parent is `target` for a spawned_by edge.
+    const relations: TaskRelation[] = [
+      { ...rel('r-cin', 'child-in', 'parent'), type: 'spawned_by' },
+      { ...rel('r-cout', 'child-out', 'parent'), type: 'spawned_by' },
+    ];
+    const agents = [
+      agent({ agentId: 'a-parent', taskId: 'parent', projectId: P1 }),
+      agent({ agentId: 'a-cin', taskId: 'child-in', projectId: P1 }),
+      agent({ agentId: 'a-cout', taskId: 'child-out', projectId: P2 }),
+    ];
+    const store = { listRelations: () => relations, getPendingSignal: () => undefined } as any;
+
+    const scoped = createSnapshotMessage({
+      monitor: monitorOf(agents),
+      serverCwd: '/repo',
+      scope: { kind: 'projects', projectIds: [P1] },
+      relationTaskStore: store,
+    });
+    const scopedParent = scoped.agents.find((a) => a.taskId === 'parent');
+    // Only the in-scope child is counted — the out-of-scope child's existence
+    // must not leak via the parent's childCount.
+    expect(scopedParent?.childRollup?.childCount).toBe(1);
+
+    // All scope counts both children.
+    const all = createSnapshotMessage({
+      monitor: monitorOf(agents),
+      serverCwd: '/repo',
+      relationTaskStore: store,
+    });
+    expect(all.agents.find((a) => a.taskId === 'parent')?.childRollup?.childCount).toBe(2);
+  });
+
+  it('projects scope with an empty projectIds list hides every agent', () => {
+    const msg = createSnapshotMessage({
+      monitor: monitorOf(AGENTS),
+      serverCwd: '/repo',
+      scope: { kind: 'projects', projectIds: [] },
+    });
+    expect(msg.agents).toEqual([]);
+  });
+
+  it('projects scope scrubs speech endpoints and owner-config capabilities', () => {
+    const deps = {
+      monitor: monitorOf(AGENTS),
+      serverCwd: '/repo',
+      sttUrl: 'ws://localhost:8003',
+      ttsUrl: 'http://localhost:8004',
+      availableAgentTypes: [{ type: 'claude-code', label: 'Claude Code' }] as any,
+      defaultAgentType: 'claude-code' as any,
+      workspaceEnabled: true,
+      sweepRunning: true,
+      getMaxActiveTasks: () => 5,
+    };
+    const scoped = createSnapshotMessage({ ...deps, scope: { kind: 'projects', projectIds: [P1] } });
+    for (const field of [
+      'sttEnabled', 'sttUrl', 'ttsEnabled', 'ttsUrl', 'speechCapabilities',
+      'availableAgentTypes', 'defaultAgentType', 'workspaceEnabled', 'sweepRunning', 'maxActiveTasks',
+    ]) {
+      expect(scoped).not.toHaveProperty(field);
+    }
+
+    // The same deps under `all` scope keep these fields — proves the scrub is
+    // scope-gated, not an accidental drop.
+    const all = createSnapshotMessage({ ...deps, scope: { kind: 'all' } });
+    expect(all).toHaveProperty('sttUrl', 'ws://localhost:8003');
+    expect(all).toHaveProperty('availableAgentTypes');
+    expect(all).toHaveProperty('maxActiveTasks', 5);
+  });
 });
 
 describe('getSnapshotAgentsForClient — scope filtering', () => {

@@ -284,6 +284,29 @@ function filterAgentsToScope(agents: AgentState[], scope: Scope | undefined): Ag
   return agents.filter((agent) => agent.projectId !== undefined && isProjectInScope(scope, agent.projectId));
 }
 
+/**
+ * A `listRelations`-only view of a relation store whose edges are pre-filtered to
+ * the in-scope task set (both endpoints among `inScopeAgents`' task ids). Used by
+ * {@link createSnapshotMessage} for a `projects` scope so that every projection
+ * derived from the relation graph — the flat `taskRelations` array AND the
+ * per-parent `childRollup` counts — references only in-scope tasks. Default-deny:
+ * an edge whose endpoint has no in-scope agent/synthetic entry is dropped.
+ */
+function scopedRelationStore(
+  store: Pick<TaskStore, 'listRelations'>,
+  inScopeAgents: readonly AgentState[],
+): Pick<TaskStore, 'listRelations'> {
+  const inScopeTaskIds = new Set(
+    inScopeAgents.map((agent) => agent.taskId).filter((id): id is string => id !== undefined),
+  );
+  return {
+    listRelations: (filter) =>
+      store
+        .listRelations(filter)
+        .filter((rel) => inScopeTaskIds.has(rel.sourceTaskId) && inScopeTaskIds.has(rel.targetTaskId)),
+  };
+}
+
 export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessage {
   const speechCapabilities = deps.speechCapabilities ?? buildLocalSpeechCapabilities({
     sttUrl: deps.sttUrl,
@@ -300,31 +323,29 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
       ?? (typeof deps.relationTaskStore?.getPendingSignal === 'function' ? deps.relationTaskStore : undefined),
   });
 
-  // For a `projects` viewer, whole-world aggregates and detector state are
-  // omitted by the default-deny scrub-list (RFC §"Outbound scope filtering").
-  // This is enforced here — not only by omitting the deps at the call site — so
-  // `createSnapshotMessage` itself is the scope authority: a careless caller
-  // that passes `coordinator`/`totalSpendUsd` alongside a `projects` scope still
-  // cannot leak them.
+  // For a `projects` viewer, every whole-world sub-projection is omitted by the
+  // default-deny scrub-list (RFC §"Outbound scope filtering"). This is enforced
+  // HERE — not only by omitting deps at the call site — so `createSnapshotMessage`
+  // itself is the single scope authority: a careless caller that passes
+  // `coordinator`/`totalSpendUsd`/`speechCapabilities`/etc. alongside a
+  // `projects` scope still cannot leak them.
   const projectsScope = deps.scope?.kind === 'projects';
 
   let taskRelations: TaskRelation[] | undefined;
   let agents = baseAgents;
   if (deps.relationTaskStore) {
-    const projection = buildRelationProjection(deps.relationTaskStore, baseAgents);
+    // For a `projects` scope, project the relation graph over a store view whose
+    // edges are pre-filtered to in-scope↔in-scope tasks. This scopes BOTH the
+    // flat `taskRelations` array AND the per-parent `childRollup` counts (which
+    // are derived from `spawned_by` edges) — an out-of-scope child must not leak
+    // via a parent's `childCount`. `baseAgents` is already scope-filtered, so its
+    // task ids are exactly the in-scope task set (default-deny: an edge whose
+    // endpoint has no in-scope agent/synthetic entry is dropped).
+    const relationStore = projectsScope
+      ? scopedRelationStore(deps.relationTaskStore, baseAgents)
+      : deps.relationTaskStore;
+    const projection = buildRelationProjection(relationStore, baseAgents);
     taskRelations = projection.taskRelations;
-    if (projectsScope && taskRelations !== undefined) {
-      // Drop any edge touching an out-of-scope task so the mere existence of a
-      // far task does not leak. `baseAgents` is already scope-filtered, so its
-      // task ids are exactly the in-scope task set (default-deny: an edge whose
-      // endpoint has no in-scope agent/synthetic entry is dropped).
-      const inScopeTaskIds = new Set(
-        baseAgents.map((agent) => agent.taskId).filter((id): id is string => id !== undefined),
-      );
-      taskRelations = taskRelations.filter(
-        (rel) => inScopeTaskIds.has(rel.sourceTaskId) && inScopeTaskIds.has(rel.targetTaskId),
-      );
-    }
     if (projection.rollupsByParentTaskId.size > 0) {
       agents = baseAgents.map((agent) => {
         const rollup = agent.taskId ? projection.rollupsByParentTaskId.get(agent.taskId) : undefined;
@@ -346,19 +367,22 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
     ...(deps.serverRevision !== undefined ? { serverRevision: deps.serverRevision } : {}),
     ...(deps.buildInfo ? { build: deps.buildInfo } : {}),
     ...(deps.serverStartedAt ? { serverStartedAt: deps.serverStartedAt } : {}),
-    ...(deps.sttUrl ? { sttEnabled: true, sttUrl: deps.sttUrl } : {}),
-    ...(deps.ttsUrl ? { ttsEnabled: true, ttsUrl: deps.ttsUrl } : {}),
-    ...(speechCapabilities ? { speechCapabilities } : {}),
-    // Whole-world aggregates: scrubbed for a `projects` viewer (default-deny).
+    // Speech endpoints, owner-config capabilities (agent types, workspace), and
+    // whole-world aggregates/detector-state are all scrubbed for a `projects`
+    // viewer (default-deny). A scoped snapshot carries only the in-scope agents,
+    // their relations/rollups, and non-sensitive build/version metadata.
+    ...(deps.sttUrl && !projectsScope ? { sttEnabled: true, sttUrl: deps.sttUrl } : {}),
+    ...(deps.ttsUrl && !projectsScope ? { ttsEnabled: true, ttsUrl: deps.ttsUrl } : {}),
+    ...(speechCapabilities && !projectsScope ? { speechCapabilities } : {}),
     ...(deps.totalSpendUsd !== undefined && !projectsScope ? { totalSpendUsd: deps.totalSpendUsd } : {}),
     ...(deps.achievements && !projectsScope ? { achievements: deps.achievements } : {}),
     ...(deps.achievementCounters && !projectsScope ? { achievementCounters: deps.achievementCounters } : {}),
     ...(deps.achievementStreak && !projectsScope ? { achievementStreak: deps.achievementStreak } : {}),
-    ...(deps.availableAgentTypes ? { availableAgentTypes: deps.availableAgentTypes } : {}),
-    ...(deps.defaultAgentType ? { defaultAgentType: deps.defaultAgentType } : {}),
-    ...(deps.workspaceEnabled ? { workspaceEnabled: true } : {}),
-    ...(deps.sweepRunning ? { sweepRunning: true } : {}),
-    ...(deps.getMaxActiveTasks ? { maxActiveTasks: deps.getMaxActiveTasks() } : {}),
+    ...(deps.availableAgentTypes && !projectsScope ? { availableAgentTypes: deps.availableAgentTypes } : {}),
+    ...(deps.defaultAgentType && !projectsScope ? { defaultAgentType: deps.defaultAgentType } : {}),
+    ...(deps.workspaceEnabled && !projectsScope ? { workspaceEnabled: true } : {}),
+    ...(deps.sweepRunning && !projectsScope ? { sweepRunning: true } : {}),
+    ...(deps.getMaxActiveTasks && !projectsScope ? { maxActiveTasks: deps.getMaxActiveTasks() } : {}),
     // Coordinator is whole-world detector state — omitted for a `projects` viewer.
     ...(deps.coordinator && !projectsScope ? {
       coordinator: buildCoordinatorSnapshotState(

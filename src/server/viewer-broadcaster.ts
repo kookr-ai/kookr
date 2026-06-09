@@ -77,20 +77,28 @@ export class ViewerAwareBroadcaster {
    * already applied any enrichment (achievements, coordinator, agent types) — we
    * are pure transport.
    *
-   * - Non-snapshot messages are not scope-filtered in Phase 1; they serialize
-   *   once and go to every dashboard socket. (#809 may scope `projectSummaries`
-   *   and friends later.)
-   * - Snapshot messages: the `all` group (owners + any future `all`-viewers)
-   *   receives the caller's enriched message serialized once; each distinct
-   *   viewer project-scope receives a snapshot from the injected factory,
-   *   memoized per canonical scope key.
+   * - Non-snapshot messages (`update`, `projectSummaries`, `githubUpdate`,
+   *   `quotaStatus`, alerts, …) are whole-world per-delta frames with no scope
+   *   filtering, so they are sent to **owners and `all`-scoped viewers only** and
+   *   **default-denied to `projects` viewers** (#809). The RFC has no per-project
+   *   deltas: a `projects` viewer's live mirror is carried entirely by the
+   *   scope-filtered snapshot frames below, so withholding the raw deltas is
+   *   correct rather than lossy. (A future scoped delta channel can opt specific
+   *   types back in for `projects` viewers when the live-viewer UX lands.)
+   * - Snapshot messages: the `all` group (owners + any `all`-viewers) receives
+   *   the caller's enriched message serialized once; each distinct viewer
+   *   project-scope receives a snapshot from the injected factory, memoized per
+   *   canonical scope key.
    */
   broadcast(msg: ServerMessage): void {
     const connections = this.registry.snapshotDashboardConnections();
 
     if (msg.type !== 'snapshot') {
       const data = JSON.stringify(msg);
-      for (const { ws } of connections) {
+      for (const { ws, actor } of connections) {
+        // Default-deny: a `projects` viewer never receives an unscoped delta
+        // frame. Owners and `all`-scoped viewers see the world, so they pass.
+        if (actor.kind === 'viewer' && actorScope(actor).kind !== 'all') continue;
         this.send(ws, data, msg.type);
       }
       return;

@@ -32,6 +32,9 @@ const OWNER: Actor = { kind: 'owner' };
 function projectsViewer(grantId: string, projectIds: string[]): Actor {
   return { kind: 'viewer', grantId, scope: { kind: 'projects', projectIds } };
 }
+function allViewer(grantId: string): Actor {
+  return { kind: 'viewer', grantId, scope: { kind: 'all' } };
+}
 
 function snapshot(overrides: Partial<SnapshotMessage> = {}): SnapshotMessage {
   return { type: 'snapshot', agents: [], serverCwd: '/repo', ...overrides };
@@ -54,6 +57,26 @@ describe('ViewerAwareBroadcaster', () => {
 
     expect(a.map((d) => (JSON.parse(d) as ServerMessage).type)).toEqual(['projectSummaries']);
     expect(b.map((d) => (JSON.parse(d) as ServerMessage).type)).toEqual(['projectSummaries']);
+  });
+
+  test('non-snapshot delta frames are default-denied to a projects viewer but reach owners and all-viewers', () => {
+    const owner: string[] = [];
+    const all: string[] = [];
+    const scoped: string[] = [];
+    const registry = stubRegistry([
+      { ws: fakeSocket((d) => owner.push(d)), actor: OWNER },
+      { ws: fakeSocket((d) => all.push(d)), actor: allViewer('gAll') },
+      { ws: fakeSocket((d) => scoped.push(d)), actor: projectsViewer('gP', ['p1']) },
+    ]);
+    const broadcaster = new ViewerAwareBroadcaster({ registry, buildScopedSnapshot: () => snapshot() });
+
+    // An unscoped whole-world delta (the full project list) must not reach a
+    // `projects` viewer — its live mirror is carried by scoped snapshots only.
+    broadcaster.broadcast({ type: 'projectSummaries', projects: [] });
+
+    expect(owner.map((d) => (JSON.parse(d) as ServerMessage).type)).toEqual(['projectSummaries']);
+    expect(all.map((d) => (JSON.parse(d) as ServerMessage).type)).toEqual(['projectSummaries']);
+    expect(scoped).toEqual([]);
   });
 
   test('snapshot to an owner sends the enriched message plus a coordinator frame', () => {

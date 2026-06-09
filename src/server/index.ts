@@ -366,18 +366,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // The broadcaster (#805) and the viewer initial-connection burst both call
   // this to build the snapshot a `projects` viewer receives; for an `all` scope
   // the broadcaster reuses the already-enriched owner snapshot, so this factory
-  // is only ever invoked for a `projects` scope. It deliberately passes a
-  // scope-safe dep set: whole-world aggregates (coordinator, totalSpendUsd,
-  // achievements) and activity-meta are NOT threaded in — `createSnapshotMessage`
-  // additionally scrubs them when the scope is `projects` (defence in depth).
+  // is only ever invoked for a `projects` scope. Only scope-relevant deps are
+  // threaded in — whole-world aggregates, speech endpoints, and owner-config
+  // capabilities are neither passed here NOR (independently) emitted by
+  // `createSnapshotMessage` for a `projects` scope, which is the real authority.
   const buildScopedSnapshot = (scope: Scope): SnapshotMessage =>
     createSnapshotMessage({
       monitor,
       serverCwd,
       scope,
-      sttUrl,
-      ttsUrl,
-      getMaxActiveTasks,
       relationTaskStore: taskStore,
       terminalInputSnapshots: terminalInputCoordinator,
       userInputDeliveryProvider: userInputDeliveries,
