@@ -1058,7 +1058,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     lifecycleExtras: { hookWatcher, watchdog, shadowRegistry, tokenTracker },
     agentLifecycleDeps: lifecycleDeps, broadcastToAll,
     broadcastProjectSummaries,
-    launchTask: (opts) => launchTask(launchServiceDeps, opts),
+    launchTask: (opts, serverOpts) => launchTask(launchServiceDeps, opts, serverOpts),
     githubStateStore, ledgerAnalytics, projectConfigStore, projectSidebarStore,
     skillDiscoveryState, prLessonsState, getRegistryActiveProjects,
     achievementWatcher,

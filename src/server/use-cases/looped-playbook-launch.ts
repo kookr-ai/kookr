@@ -2,7 +2,7 @@ import { detectStandalonePlugin, type CoexistenceResult } from '../../core/ralph
 import type { Task, TaskStore } from '../../core/tasks.js';
 import type { RalphLoopRequest, RalphLoopService } from '../ralph-loop-service.js';
 import { canonicalizeCwd } from '../cwd.js';
-import type { LaunchOpts, LaunchResult } from '../launch-service.js';
+import type { LaunchOpts, LaunchResult, LaunchTaskServerOptions } from '../launch-service.js';
 import { MAX_ACTIVE_TASKS } from '../config.js';
 import {
   preparePlaybookLaunchWithMetadata,
@@ -27,7 +27,7 @@ export class LoopedPlaybookLaunchError extends Error {
 
 export interface LaunchLoopedPlaybookDeps {
   taskStore: TaskStore;
-  launchTask: (opts: LaunchOpts) => Promise<LaunchResult>;
+  launchTask: (opts: LaunchOpts, serverOpts?: LaunchTaskServerOptions) => Promise<LaunchResult>;
   ralphLoopService: RalphLoopService;
   cleanupFailedTask?: (taskId: string) => Promise<void>;
   getMaxActiveTasks?: () => number;
@@ -140,7 +140,7 @@ export async function launchLoopedPlaybook(
       // misses the verdict channel and the engine treats it as legacy
       // `continued`. Applies to BOTH launch and replace flows in this file.
       ralphVerdictEnv: true,
-    });
+    }, { deliveryPolicy: prepared.deliveryPolicy });
     if (result.queued) {
       await deps.cleanupFailedTask?.(result.task.id);
       throw new LoopedPlaybookLaunchError(
@@ -289,7 +289,7 @@ export async function replaceLoopedPlaybook(
       // misses the verdict channel and the engine treats it as legacy
       // `continued`. Applies to BOTH launch and replace flows in this file.
       ralphVerdictEnv: true,
-    });
+    }, { deliveryPolicy: prepared.deliveryPolicy });
     if (result.queued) {
       await deps.cleanupFailedTask?.(result.task.id);
       throw new LoopedPlaybookLaunchError(

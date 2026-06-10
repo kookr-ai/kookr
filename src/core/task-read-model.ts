@@ -5,7 +5,7 @@ import type { SessionInfo } from './session-read-model.js';
 import type { TaskStatus } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
 import type { RalphLoopState } from '../shared/contracts/ralph.js';
-import type { TaskDependencyEdge, TaskMetadata, TaskPriority } from '../shared/contracts/task.js';
+import type { DeliveryAuthorization, TaskDependencyEdge, TaskMetadata, TaskPriority } from '../shared/contracts/task.js';
 
 export type {
   BurnedOutTarget,
@@ -74,6 +74,8 @@ export interface CreateTaskOptions {
   metadata?: TaskMetadata;
   /** User-declared task priority. Omitted means normal priority. */
   priority?: TaskPriority;
+  /** Audit marker for the delivery policy resolved at launch. */
+  deliveryAuthorization?: DeliveryAuthorization;
 }
 
 export interface TaskLaunchHealthSummary {
@@ -119,6 +121,8 @@ export interface Task {
   metadata?: TaskMetadata;
   /** User-declared task priority. Omitted means normal priority. */
   priority?: TaskPriority;
+  /** Audit marker for the delivery policy resolved at launch. */
+  deliveryAuthorization?: DeliveryAuthorization;
   status: TaskStatus;
   sessions: SessionInfo[];
   tokenUsage?: TokenUsage;

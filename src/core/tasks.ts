@@ -130,6 +130,7 @@ export class TaskStore {
       projectId,
       metadata,
       priority,
+      deliveryAuthorization,
     } = opts;
 
     // Validate parent exists if specified
@@ -163,6 +164,7 @@ export class TaskStore {
     if (launchNote) task.launchNote = launchNote;
     if (metadata) task.metadata = structuredClone(metadata);
     if (priority === 'high') task.priority = priority;
+    if (deliveryAuthorization) task.deliveryAuthorization = deliveryAuthorization;
     this.tasks.set(task.id, task);
 
     // Link child to parent

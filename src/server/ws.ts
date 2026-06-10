@@ -13,7 +13,7 @@ import {
   type LifecycleDeps,
   promotePendingTasks,
 } from './agent-lifecycle.js';
-import type { LaunchOpts, LaunchResult } from './launch-service.js';
+import type { LaunchOpts, LaunchResult, LaunchTaskServerOptions } from './launch-service.js';
 import type { CircuitBreakerRegistry } from '../core/circuit-breaker.js';
 import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
 import type { AgentSelection, AvailableAgentType } from '../core/agent-types.js';
@@ -60,7 +60,7 @@ export interface MessageRouterDeps {
   ttsUrl?: string;
   agentLifecycleDeps?: import('./agent-lifecycle.js').AgentLifecycleDeps;
   broadcastToAll?: (msg: ServerMessage) => void;
-  launchTask?: (opts: LaunchOpts) => Promise<LaunchResult>;
+  launchTask?: (opts: LaunchOpts, serverOpts?: LaunchTaskServerOptions) => Promise<LaunchResult>;
   circuitBreakerRegistry?: CircuitBreakerRegistry;
   /** Live getter for max concurrent tasks. */
   getMaxActiveTasks?: () => number;

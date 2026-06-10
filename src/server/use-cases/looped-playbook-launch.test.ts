@@ -70,10 +70,13 @@ Loop {{target}}.
       });
 
       expect(result.task.playbookId).toBe('workflow.md');
-      expect(launchTask).toHaveBeenCalledWith(expect.objectContaining({
-        disableDedup: true,
-        prompt: expect.stringContaining('This runtime is one loop iteration, not the whole loop.'),
-      }));
+      expect(launchTask).toHaveBeenCalledWith(
+        expect.objectContaining({
+          disableDedup: true,
+          prompt: expect.stringContaining('This runtime is one loop iteration, not the whole loop.'),
+        }),
+        { deliveryPolicy: 'ask-first' },
+      );
       const launchPrompt = launchTask.mock.calls[0][0].prompt;
       expect(launchPrompt).toContain('iteration cap of 7');
       expect(launchPrompt).toContain('complete at most one missing phase or one small unit of work');
@@ -127,6 +130,44 @@ Body.
 
       const startLoopArgs = startLoop.mock.calls[0]?.[1] as { stopPredicate?: string } | undefined;
       expect(startLoopArgs?.stopPredicate).toBe('test -f .batch-stop && grep -qE "^STOP:" .batch-stop');
+    });
+  });
+
+  it('passes pre-authorized delivery policy for loopable playbooks', async () => {
+    await withPlaybook(`---
+name: Loopable
+tags: [workflow, loopable]
+deliveryPreAuthorized: true
+---
+
+Loop.
+`, async (cwd) => {
+      const taskStore = new TaskStore();
+      const startLoop = vi.fn(async () => ({ ok: true, changed: true, value: undefined }));
+      const launchTask = vi.fn(async (opts) => {
+        const task = taskStore.createTask({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          playbookId: opts.playbookId,
+          playbookParameterValues: opts.playbookParameterValues,
+        });
+        return { task, queued: false };
+      });
+
+      await launchLoopedPlaybook({
+        taskStore,
+        launchTask,
+        ralphLoopService: { startLoop } as unknown as RalphLoopService,
+      }, {
+        cwd,
+        playbookPath: 'workflow.md',
+        parameterValues: {},
+      });
+
+      expect(launchTask).toHaveBeenCalledWith(
+        expect.objectContaining({ disableDedup: true }),
+        { deliveryPolicy: 'pre-authorized' },
+      );
     });
   });
 
@@ -449,10 +490,13 @@ Loop in docs/target-note.md.
 
       expect(result.task.cwd).toBe(targetCwd);
       expect(result.task.projectId).toBe(`local/${basename(targetCwd)}`);
-      expect(launchTask).toHaveBeenCalledWith(expect.objectContaining({
-        cwd: targetCwd,
-        projectId: `local/${basename(targetCwd)}`,
-      }));
+      expect(launchTask).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cwd: targetCwd,
+          projectId: `local/${basename(targetCwd)}`,
+        }),
+        { deliveryPolicy: 'ask-first' },
+      );
     } finally {
       await rm(sourceCwd, { recursive: true, force: true });
       await rm(targetCwd, { recursive: true, force: true });
@@ -639,6 +683,36 @@ Loop {{target}}.
         newTaskId: result.task.id,
         oldIteration: 3,
       }));
+    });
+  });
+
+  it('passes pre-authorized delivery policy when replacing a looped playbook', async () => {
+    await withPlaybook(`---
+name: Loopable
+tags: [workflow, loopable]
+deliveryPreAuthorized: true
+parameters:
+  - name: target
+    required: true
+---
+
+Loop {{target}}.
+`, async (cwd) => {
+      const taskStore = new TaskStore();
+      const old = setupActiveLoop(taskStore, cwd);
+      const deps = baseDeps(taskStore);
+
+      await replaceLoopedPlaybook(deps as never, {
+        replacedTaskId: old.id,
+        cwd,
+        playbookPath: 'workflow.md',
+        parameterValues: { target: 'repo' },
+      });
+
+      expect(deps.launchTask).toHaveBeenCalledWith(
+        expect.objectContaining({ disableDedup: true }),
+        { deliveryPolicy: 'pre-authorized' },
+      );
     });
   });
 

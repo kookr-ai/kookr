@@ -2,6 +2,7 @@
 name: OSS Contribution Pipeline
 description: End-to-end workflow for contributing a perfect PR to a trending open-source repository — recon, learn, scout, fix, submit
 repo-tags: [github]
+deliveryPreAuthorized: true
 parameters:
   - name: repoFullName
     description: "Target repository (owner/repo)"
@@ -66,6 +67,8 @@ checklist:
 ## Objective
 
 Make one perfect pull request to {{repoFullName}}. This playbook orchestrates the full journey from first contact to PR submission.
+
+If you face a design choice the issue does not settle, pick the smallest implementation that satisfies the issue, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
 
 ## Ad-hoc instruction
 

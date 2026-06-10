@@ -80,6 +80,8 @@ export interface Playbook {
   tags: string[];
   /** Raw loop defaults declared in frontmatter. */
   loop?: PlaybookLoopConfig;
+  /** Server-consumed policy flag: when true, playbook launches may deliver without asking first. */
+  deliveryPreAuthorized?: boolean;
   /** Server-normalized bounded loop config for loopable playbooks. */
   effectiveLoop?: EffectivePlaybookLoop;
   /** Non-fatal loop metadata error. Standard launch remains available. */

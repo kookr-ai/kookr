@@ -42,6 +42,7 @@ export function parsePlaybook(
     : undefined;
   const repoTags = parseStringArray(meta['repo-tags']);
   const dependencies = parseLaunchDependencies(meta.dependencies);
+  const deliveryPreAuthorized = parseOptionalBoolean(meta.deliveryPreAuthorized);
 
   return {
     id: relativePath,
@@ -52,6 +53,7 @@ export function parsePlaybook(
     checklist: parseStringArray(meta.checklist),
     tags,
     ...(loop.value ? { loop: loop.value } : {}),
+    ...(deliveryPreAuthorized === undefined ? {} : { deliveryPreAuthorized }),
     ...(effectiveLoop ? { effectiveLoop } : {}),
     ...(loop.error ? { loopValidationError: loop.error } : {}),
     body: body.trim(),
@@ -439,6 +441,13 @@ function parseOptions(raw: unknown[]): PlaybookParameterOption[] {
 function parseStringArray(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((item): item is string => typeof item === 'string');
+}
+
+function parseOptionalBoolean(raw: unknown): boolean | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === true || raw === 'true') return true;
+  if (raw === false || raw === 'false') return false;
+  return undefined;
 }
 
 function parseLaunchDependencies(raw: unknown): LaunchDependency[] {

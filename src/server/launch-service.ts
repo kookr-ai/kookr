@@ -1,5 +1,6 @@
 import type { Task, TaskLaunchHealthSummary, TaskStore } from '../core/tasks.js';
 import type { LaunchOpts, LaunchResult as SharedLaunchResult } from '../shared/contracts/launch.js';
+import type { DeliveryAuthorization } from '../shared/contracts/task.js';
 import {
   type AgentType,
   type AgentSelection,
@@ -26,10 +27,15 @@ import { hashPrompt } from './hash-prompt.js';
 import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
 import { canonicalizeCwd } from './cwd.js';
 import { normalizePromptFileReferences } from './prompt-file-paths.js';
-import { applyWorktreeGuardrails } from './worktree-guardrails.js';
+import { applyWorktreeGuardrails, type DeliveryPolicy } from './worktree-guardrails.js';
 
 export type { LaunchOpts } from '../shared/contracts/launch.js';
 export type LaunchResult = SharedLaunchResult<Task>;
+
+export interface LaunchTaskServerOptions {
+  /** Server-internal policy resolved from trusted launch context, never from shared LaunchOpts. */
+  deliveryPolicy?: DeliveryPolicy;
+}
 
 export interface LaunchServiceDeps {
   taskStore: TaskStore;
@@ -202,6 +208,7 @@ async function validateDuplicateCandidate(
 export async function launchTask(
   deps: LaunchServiceDeps,
   opts: LaunchOpts,
+  serverOpts: LaunchTaskServerOptions = {},
 ): Promise<LaunchResult> {
   const { taskStore, adapterRegistry, lifecycleDeps } = deps;
   // Operator drain gate (issue #659): refuse new launches while draining, before
@@ -265,7 +272,8 @@ export async function launchTask(
   const launchNote = formatLaunchNote(dependencyFindings);
 
   const userPrompt = normalizePromptFileReferences(opts.prompt, opts.cwd);
-  const guardedPrompt = await applyWorktreeGuardrails(opts.prompt, opts.cwd);
+  const deliveryAuthorization: DeliveryAuthorization = serverOpts.deliveryPolicy ?? 'ask-first';
+  const guardedPrompt = await applyWorktreeGuardrails(opts.prompt, opts.cwd, deliveryAuthorization);
   const effectivePrompt = normalizePromptFileReferences(guardedPrompt, opts.cwd);
 
   // Dedup: if an active task with the same prompt and canonical cwd exists,
@@ -308,6 +316,7 @@ export async function launchTask(
     metadata: opts.metadataIntent ? { intent: opts.metadataIntent } : undefined,
     launchHealthSummary,
     launchNote,
+    deliveryAuthorization,
   });
 
   if (taskStore.getActiveCount() >= maxActive) {

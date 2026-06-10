@@ -4,6 +4,7 @@ export type TaskDependencyEdge = `task:${string}` | `milestone:${string}`;
 export type TaskMetadataIntent = 'keep_as_duplicate';
 export type TaskPriority = 'high';
 export type TaskPriorityUpdate = TaskPriority | 'normal';
+export type DeliveryAuthorization = 'pre-authorized' | 'ask-first';
 
 export interface TaskMetadata {
   intent?: TaskMetadataIntent;
