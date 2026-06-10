@@ -43,6 +43,20 @@ import {
 export const BRACKETED_PASTE_START = '\x1b[200~';
 export const BRACKETED_PASTE_END = '\x1b[201~';
 
+const DEFAULT_OUTPUT_BATCH_MS = 5;
+const DEFAULT_BACKPRESSURE_RETRY_MS = 25;
+const DEFAULT_BACKPRESSURE_SOFT_BYTES = 1 * 1024 * 1024;
+const DEFAULT_VIEWER_BACKPRESSURE_HARD_BYTES = 16 * 1024 * 1024;
+const DEFAULT_OWNER_BACKPRESSURE_HARD_BYTES = 64 * 1024 * 1024;
+
+function readPositiveIntegerEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (!value) return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
 /** Construction options for {@link SessionBridge}. */
 export interface SessionBridgeOptions {
   /**
@@ -55,11 +69,29 @@ export interface SessionBridgeOptions {
    * read-only viewer keeps receiving PTY output. Default: false (owner).
    */
   readOnly?: boolean;
+
+  /** Live PTY output coalescing window. Defaults to `KOOKR_SESSION_BRIDGE_OUTPUT_BATCH_MS` or 5 ms. */
+  outputBatchMs?: number;
+
+  /** Retry cadence while `ws.bufferedAmount` is over the soft threshold. */
+  backpressureRetryMs?: number;
+
+  /** Above this `ws.bufferedAmount`, live output stays queued instead of sending. */
+  backpressureSoftBytes?: number;
+
+  /** Hard queued+buffered ceiling for owner bridges. */
+  ownerBackpressureHardBytes?: number;
+
+  /** Hard queued+buffered ceiling for read-only viewer bridges. */
+  viewerBackpressureHardBytes?: number;
 }
 
 export class SessionBridge {
   private unsubscribeData: (() => void) | null = null;
   private closed = false;
+  private pendingOutputChunks: Buffer[] = [];
+  private pendingOutputBytes = 0;
+  private outputFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly sessionId: SessionId;
   private readonly ws: WebSocket;
   private readonly backend: TerminalBackend;
@@ -67,6 +99,10 @@ export class SessionBridge {
   private readonly onInput?: (sessionId: SessionId) => void;
   private readonly onAnyKeystroke?: (sessionId: SessionId) => void;
   private readonly readOnly: boolean;
+  private readonly outputBatchMs: number;
+  private readonly backpressureRetryMs: number;
+  private readonly backpressureSoftBytes: number;
+  private readonly backpressureHardBytes: number;
 
   constructor(
     sessionId: SessionId,
@@ -81,6 +117,26 @@ export class SessionBridge {
     this.ws = ws;
     this.backend = backend;
     this.readOnly = options?.readOnly ?? false;
+    this.outputBatchMs = options?.outputBatchMs
+      ?? readPositiveIntegerEnv('KOOKR_SESSION_BRIDGE_OUTPUT_BATCH_MS', DEFAULT_OUTPUT_BATCH_MS);
+    this.backpressureRetryMs = options?.backpressureRetryMs
+      ?? readPositiveIntegerEnv('KOOKR_SESSION_BRIDGE_BACKPRESSURE_RETRY_MS', DEFAULT_BACKPRESSURE_RETRY_MS);
+    this.backpressureSoftBytes = options?.backpressureSoftBytes
+      ?? readPositiveIntegerEnv(
+        'KOOKR_SESSION_BRIDGE_BACKPRESSURE_SOFT_BYTES',
+        DEFAULT_BACKPRESSURE_SOFT_BYTES,
+      );
+    const ownerHardBytes = options?.ownerBackpressureHardBytes
+      ?? readPositiveIntegerEnv(
+        'KOOKR_SESSION_BRIDGE_OWNER_BACKPRESSURE_HARD_BYTES',
+        DEFAULT_OWNER_BACKPRESSURE_HARD_BYTES,
+      );
+    const viewerHardBytes = options?.viewerBackpressureHardBytes
+      ?? readPositiveIntegerEnv(
+        'KOOKR_SESSION_BRIDGE_VIEWER_BACKPRESSURE_HARD_BYTES',
+        DEFAULT_VIEWER_BACKPRESSURE_HARD_BYTES,
+      );
+    this.backpressureHardBytes = this.readOnly ? viewerHardBytes : ownerHardBytes;
     if (inputWriterOrOnInput && typeof inputWriterOrOnInput === 'object' && 'writeInput' in inputWriterOrOnInput) {
       this.inputWriter = inputWriterOrOnInput;
       this.onInput = onInputOrAnyKeystroke;
@@ -128,12 +184,7 @@ export class SessionBridge {
 
     try {
       this.unsubscribeData = this.backend.onData(this.sessionId, (bytes: Uint8Array) => {
-        // The backend fans bytes out under its own try/catch per subscriber,
-        // so a throw here does not crash the backend. We still guard ws.send
-        // because a broken socket throws synchronously on some ws versions
-        // and the listener is otherwise the last thing between us and a
-        // process-fatal exception.
-        this.safeSend(Buffer.from(bytes));
+        this.enqueueOutput(bytes);
       });
     } catch (err) {
       if (this.isBackendSessionFailure(err)) {
@@ -230,6 +281,60 @@ export class SessionBridge {
       console.error(`[session-bridge] ws.send failed for ${this.sessionId}:`, err);
       this.closeBridgeForFailure('ws.send failed');
     }
+  }
+
+  /**
+   * Live PTY output can arrive as a fire-hose of tiny chunks. Queue it briefly
+   * so each bridge sends fewer binary frames, and isolate slow sockets with a
+   * per-bridge backpressure policy instead of pushing on the shared backend
+   * stream.
+   */
+  private enqueueOutput(bytes: Uint8Array): void {
+    if (this.closed || bytes.length === 0) return;
+    this.pendingOutputChunks.push(Buffer.from(bytes));
+    this.pendingOutputBytes += bytes.length;
+    this.scheduleOutputFlush(this.outputBatchMs);
+  }
+
+  private scheduleOutputFlush(delayMs: number): void {
+    if (this.closed || this.outputFlushTimer) return;
+    this.outputFlushTimer = setTimeout(() => {
+      this.outputFlushTimer = null;
+      this.flushOutput();
+    }, delayMs);
+  }
+
+  private flushOutput(): void {
+    if (this.closed || this.pendingOutputBytes === 0) return;
+    if (this.ws.readyState !== this.ws.OPEN) return;
+
+    const bufferedAmount = this.getBufferedAmount();
+    const projectedBufferedBytes = bufferedAmount + this.pendingOutputBytes;
+    if (projectedBufferedBytes > this.backpressureHardBytes) {
+      this.closeBridgeForFailure(
+        `terminal output backpressure exceeded (${projectedBufferedBytes} bytes queued)`,
+      );
+      return;
+    }
+
+    if (bufferedAmount > this.backpressureSoftBytes) {
+      this.scheduleOutputFlush(this.backpressureRetryMs);
+      return;
+    }
+
+    const payload = this.pendingOutputChunks.length === 1
+      ? this.pendingOutputChunks[0]
+      : Buffer.concat(this.pendingOutputChunks, this.pendingOutputBytes);
+    this.pendingOutputChunks = [];
+    this.pendingOutputBytes = 0;
+    this.safeSend(payload);
+  }
+
+  private getBufferedAmount(): number {
+    const bufferedAmount = (this.ws as WebSocket & { bufferedAmount?: number }).bufferedAmount;
+    return typeof bufferedAmount === 'number' && Number.isFinite(bufferedAmount)
+      ? Math.max(0, bufferedAmount)
+      : 0;
   }
 
   /**
@@ -340,6 +445,12 @@ export class SessionBridge {
 
   dispose(): void {
     this.closed = true;
+    if (this.outputFlushTimer) {
+      clearTimeout(this.outputFlushTimer);
+      this.outputFlushTimer = null;
+    }
+    this.pendingOutputChunks = [];
+    this.pendingOutputBytes = 0;
     this.unsubscribeData?.();
     this.unsubscribeData = null;
   }
