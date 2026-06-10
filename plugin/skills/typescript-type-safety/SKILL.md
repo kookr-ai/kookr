@@ -2,7 +2,7 @@
 name: typescript-type-safety
 description: TypeScript type safety patterns - unknown vs any, generics golden rule, null narrowing, inference discipline, import type, discriminated unions, error typing. Use when writing or reviewing TypeScript code for type correctness.
 keywords: type safety, unknown, any, type guard, satisfies, generics, constraint, null handling, strictNullChecks, optional chaining, type inference, annotation, import type, export type, named export, barrel file, discriminated union, exhaustive switch, never, Result type, error typing, instanceof, catch unknown
-related: error-handling-patterns, monorepo-architecture, testing-patterns, api-route-patterns, schema-contract-patterns
+related: error-handling-patterns, monorepo-architecture, testing-patterns
 ---
 
 # TypeScript Type Safety Patterns
@@ -258,5 +258,4 @@ Before submitting code, verify:
 
 - [[error-handling-patterns]] - Error handling, cause chaining, Result types, retry discipline
 - [[monorepo-architecture]] - Module boundaries, barrel files, dependency direction
-- [[api-route-patterns]] - Route-level type safety and Zod schema patterns
 - [[testing-patterns]] - Type-safe mocking and assertion patterns

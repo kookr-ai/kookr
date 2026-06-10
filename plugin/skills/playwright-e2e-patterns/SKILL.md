@@ -2,7 +2,7 @@
 name: playwright-e2e-patterns
 description: Playwright E2E testing patterns. Use when playwright, E2E test, toBeVisible, route mock, modal, flaky test, or selector issues.
 keywords: playwright, e2e, toBeVisible, route-mock, modal, flaky-test, firefox, selector, data-testid, storageState, serial
-related: vitest-bun-mocking, testing-patterns, api-route-patterns, e2e-test-troubleshooting, web-accessibility-spa
+related: testing-patterns
 ---
 
 # Playwright E2E Testing Patterns
@@ -129,4 +129,4 @@ Missing any subsystem causes state leakage between tests — symptoms appear as 
 
 ## See Also
 
-[[vitest-bun-mocking]], [[e2e-test-troubleshooting]], [[api-route-patterns]]
+vitest-bun-mocking, e2e-test-troubleshooting, api-route-patterns

@@ -2,7 +2,6 @@
 name: git-commit-discipline
 description: Git commit hygiene for AI agents - atomic commits, Conventional Commits, secret scanning, branch safety, history protection
 keywords: git commit, commit message, atomic commit, conventional commits, git add, gitignore, secret scan, force push, branch protection, commit hygiene, monolithic commit, commit discipline
-related: merge-handler, git-merge-advanced, git-worktree-cleanup, workflow-reliability, code-documentation-patterns, code-review-discipline
 ---
 
 # Git Commit Discipline
@@ -264,8 +263,8 @@ Before committing, verify:
 
 ## See Also
 
-[[merge-handler]] - Operational merge commands and conflict resolution
-[[git-merge-advanced]] - AI-assisted merge resolution and retry patterns
-[[git-worktree-cleanup]] - Branch and worktree lifecycle management
-[[workflow-reliability]] - Workflow state sync and recovery
-[[code-review-discipline]] - PR scope, self-review checklists, review feedback handling
+merge-handler - Operational merge commands and conflict resolution
+git-merge-advanced - AI-assisted merge resolution and retry patterns
+git-worktree-cleanup - Branch and worktree lifecycle management
+workflow-reliability - Workflow state sync and recovery
+code-review-discipline - PR scope, self-review checklists, review feedback handling

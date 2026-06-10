@@ -2,7 +2,7 @@
 name: dependency-injection-patterns
 description: Dependency injection best practices - constructor injection, composition root, lifetime management, testability, circular dependency prevention, framework independence
 keywords: dependency injection, DI, constructor injection, composition root, service locator, singleton, scoped, transient, lifetime, circular dependency, mock injection, vi.mock, testability, IoC container, tsyringe, NestJS, InversifyJS, framework independence
-related: monorepo-architecture, testing-patterns, service-integration-wiring, error-handling-patterns, safe-refactoring, domain-driven-design
+related: monorepo-architecture, testing-patterns, error-handling-patterns, safe-refactoring, domain-driven-design
 ---
 
 # Dependency Injection Patterns
@@ -255,7 +255,6 @@ Before submitting code, verify:
 
 - [[monorepo-architecture]] - Module boundaries, dependency direction, layered architecture
 - [[testing-patterns]] - Test isolation, mock patterns, `vi.mock()` vs constructor injection
-- [[service-integration-wiring]] - Service registration verification, hook wiring, integration gaps
 - [[error-handling-patterns]] - Error handling across service boundaries
 - [[domain-driven-design]] - Bounded contexts, aggregates (DI aligns with DDD layers)
 - [[safe-refactoring]] - Extracting interfaces, Strangler Fig for migrating to DI

@@ -2,7 +2,7 @@
 name: tdd-workflow
 description: Implement features using TDD workflow with requirements-first approach. Use when implementing new features, adding functionality, or when user asks to build something.
 keywords: tdd, test-driven, red-green-refactor, requirements, feature implementation
-related: testing-patterns, test-quality-discipline, vitest-bun-mocking, safe-refactoring
+related: testing-patterns, safe-refactoring
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, Task
 ---
 
@@ -33,7 +33,7 @@ describe('FR-AUTH-001: User authentication', () => {
   it('shall authenticate valid credentials', () => { ... });
 });
 ```
-Map acceptance criteria to test cases. Update the appropriate spec under `docs/testing/` (start from `docs/testing/INDEX.md`) and the traceability matrix.
+Map acceptance criteria to test cases.
 
 ### 3. Implement
 Write minimal code to pass tests. If deviation needed, STOP and ask:

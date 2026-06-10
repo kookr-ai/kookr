@@ -2,7 +2,7 @@
 name: safe-refactoring
 description: Safe refactoring patterns - code smell detection thresholds, baby-step refactoring, characterization tests, Expand-Migrate-Contract, Strangler Fig, primitive obsession, value objects
 keywords: refactoring, code smell, extract method, extract class, long method, god class, primitive obsession, value object, branded type, parallel change, expand contract, strangler fig, characterization test, feature flag, safe migration
-related: monorepo-architecture, tdd-workflow, error-handling-patterns, typescript-type-safety, test-quality-discipline, domain-driven-design, technical-debt-management, code-review-discipline, feature-flag-patterns
+related: monorepo-architecture, tdd-workflow, error-handling-patterns, typescript-type-safety, domain-driven-design
 ---
 
 # Safe Refactoring Patterns
@@ -247,5 +247,4 @@ Before proposing or executing a refactor:
 - [[tdd-workflow]] - Test-first development that enables safe refactoring
 - [[error-handling-patterns]] - Error handling patterns to preserve during refactoring
 - [[typescript-type-safety]] - Type safety patterns (branded types, satisfies, unknown)
-- [[test-quality-discipline]] - Test quality rules that support refactoring confidence
 - [[domain-driven-design]] - Value Objects, aggregates, bounded contexts

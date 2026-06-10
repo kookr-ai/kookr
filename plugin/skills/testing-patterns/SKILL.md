@@ -2,7 +2,7 @@
 name: testing-patterns
 description: Choose and implement unit/integration/E2E tests that catch real regressions in this monorepo.
 keywords: testing, integration tests, route registration test, sql template assertion, reproduction first, env parity, flaky test, vitest bun
-related: test-quality-discipline, systematic-debugging, tdd-workflow, e2e-test-troubleshooting, vitest-bun-mocking
+related: tdd-workflow
 ---
 # Testing Patterns
 ## When to Use
@@ -46,8 +46,4 @@ related: test-quality-discipline, systematic-debugging, tdd-workflow, e2e-test-t
 | Flaky retries without root cause | Masks nondeterminism | Stabilize clock/network/state dependencies |
 
 ## See Also
-- [[test-quality-discipline]]
-- [[systematic-debugging]]
 - [[tdd-workflow]]
-- [[e2e-test-troubleshooting]]
-- [[vitest-bun-mocking]]

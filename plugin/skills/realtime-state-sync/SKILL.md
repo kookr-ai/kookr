@@ -2,7 +2,7 @@
 name: realtime-state-sync
 description: Keep realtime UI state consistent with snapshot+delta sequencing, source tagging, dedup layers, and safe reconciliation.
 keywords: snapshot delta, sequence number, gap recovery, source tagging, dedup window, idempotency key, reconciliation loop, animated cards, stale event
-related: websocket-dashboard, event-driven-messaging-patterns, data-flow-tracing, fouc-rendering-stability, browser-memory-management
+related: websocket-dashboard, event-driven-messaging-patterns
 ---
 # Real-Time State Synchronization
 ## When to Use
@@ -40,6 +40,3 @@ related: websocket-dashboard, event-driven-messaging-patterns, data-flow-tracing
 ## See Also
 - [[websocket-dashboard]]
 - [[event-driven-messaging-patterns]]
-- [[data-flow-tracing]]
-- [[fouc-rendering-stability]]
-- [[browser-memory-management]]
