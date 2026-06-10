@@ -904,11 +904,13 @@ export function App() {
         });
         setConfirmAction('complete');
       }}
-      collapsed={!isMobileViewport && !selectedAgent}
       detailPaneMode={detailPaneMode}
       wideDetailActive={wideDetailActive}
       terminalFocusMode={terminalFocusActive}
       shortcutBindings={shortcutBindings}
+      // Overview data for the no-selection state (F8) — the rail's own bucket
+      // classification, so "Waiting on you" and the counts match the rail.
+      overview={{ waiting: findings, runningCount: healthy.length, completedCount: completed.length }}
     />
   );
 

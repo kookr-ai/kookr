@@ -121,6 +121,21 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
       // DND silences in-app toasts at the emit site so anomaly detection keeps
       // running and findings still update; only the visual alert is suppressed.
       if (isDndEnabled()) return;
+      // Focus guard (F20): while the user is actively composing (reply input
+      // or terminal focused), suppress toasts that originate from a DIFFERENT
+      // live agent so unrelated agents can't interleave over focused work.
+      // The alert is still recorded above and the finding still surfaces in
+      // the rail. Non-agent alerts (agentId '' / 'workspace' / 'viewer' — not
+      // present in `agents`) always show: they are feedback for the user's
+      // own action.
+      const { focusZone, selectedAgentId, agents } = get();
+      if (
+        focusZone !== 'none'
+        && agentId !== selectedAgentId
+        && agents.some((agent) => agent.agentId === agentId)
+      ) {
+        return;
+      }
       set((prev) => ({
         alerts: [...prev.alerts, { agentId, summary, details, severity: resolved, timestamp: new Date() }],
       }));

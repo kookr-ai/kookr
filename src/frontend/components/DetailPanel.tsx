@@ -22,7 +22,7 @@ import {
   getDefaultShortcutBindings,
   type ShortcutBindingMap,
 } from '../../shared/contracts/shortcut-bindings.js';
-import { ShortcutKeys } from './ShortcutKeys.js';
+import { OverviewEmptyState } from './OverviewEmptyState.js';
 import type { DetailPaneMode } from '../store/store-types.js';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
@@ -74,11 +74,20 @@ interface Props {
   send: (msg: ClientMessage) => boolean;
   onLaunch: () => void;
   onRequestComplete: () => void;
-  collapsed?: boolean;
   detailPaneMode?: DetailPaneMode;
   wideDetailActive?: boolean;
   terminalFocusMode?: boolean;
   shortcutBindings?: ShortcutBindingMap;
+  /**
+   * Rail bucket data for the no-selection overview (F8). Passed down from
+   * App's buildAgentBuckets result so the overview matches the rail exactly
+   * instead of reclassifying agents here.
+   */
+  overview?: {
+    waiting: AgentState[];
+    runningCount: number;
+    completedCount: number;
+  };
 }
 
 function defaultShortcutBindings(): ShortcutBindingMap {
@@ -240,7 +249,7 @@ function DetailMetadataMenu({
   );
 }
 
-export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapsed, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings() }: Props) {
+export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), overview }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
   const [showHookSettings, setShowHookSettings] = useState(false);
@@ -391,29 +400,15 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
   }, [agent?.agentId, suggestion]);
 
   if (!agent) {
-    const allAgents = useKookrStore.getState().agents;
-    const findingsCount = allAgents.filter(a => a.anomaly !== null && !a.snoozedUntil && !a.suppressed).length;
-    const totalCount = allAgents.length;
-
     return (
-      <div className={`detail-panel kookr-tour-target-layout${collapsed ? ' collapsed' : ''}`}>
-        <div className="detail-empty">
-          {findingsCount > 0 ? (
-            <p>{findingsCount} finding{findingsCount > 1 ? 's' : ''} need{findingsCount === 1 ? 's' : ''} attention.</p>
-          ) : totalCount > 0 ? (
-            <p className="findings-all-clear">All clear — agents working autonomously.</p>
-          ) : (
-            <p>No agents running.</p>
-          )}
-          <button className="btn-primary" onClick={onLaunch}>Launch New Task</button>
-          <p className="detail-empty-hint">
-            <ShortcutKeys binding={shortcutBindings.quick_launch} /> quick launch
-            {(findingsCount > 0 || totalCount > 0) && (
-              <> · <ShortcutKeys binding={shortcutBindings.next_task} />/<ShortcutKeys binding={shortcutBindings.previous_task} /> cycle tasks</>
-            )}
-            {findingsCount > 0 && <> · <ShortcutKeys binding={shortcutBindings.next_bottleneck} /> next finding</>}
-          </p>
-        </div>
+      <div className="detail-panel kookr-tour-target-layout">
+        <OverviewEmptyState
+          waiting={overview?.waiting ?? []}
+          runningCount={overview?.runningCount ?? 0}
+          completedCount={overview?.completedCount ?? 0}
+          onLaunch={onLaunch}
+          shortcutBindings={shortcutBindings}
+        />
       </div>
     );
   }
