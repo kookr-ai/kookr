@@ -5,6 +5,8 @@ keywords: dependency injection, DI, constructor injection, composition root, ser
 related: monorepo-architecture, testing-patterns, error-handling-patterns, safe-refactoring, domain-driven-design
 ---
 
+<!-- lint-allow-library: @nestjs/common --> <!-- framework-comparison example -->
+
 # Dependency Injection Patterns
 
 Rules for wiring dependencies that are testable, visible, and proportional to codebase size.

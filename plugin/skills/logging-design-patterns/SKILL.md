@@ -5,6 +5,8 @@ keywords: logging, pino, structured logging, log levels, correlation ID, trace c
 related: error-handling-patterns
 ---
 
+<!-- lint-allow-library: pino, @opentelemetry/api --> <!-- Pino/OTel are labelled implementation options, not project stack -->
+
 # Logging Design Patterns
 
 Rules for structured, secure, and cost-effective logging in production Node.js/TypeScript services.
