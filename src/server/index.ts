@@ -457,6 +457,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   realtime.setProjectSummaryGitHubDeps({
     getRepoHealthSnapshot: () => githubScanner.getRepoHealthSnapshot(),
     getTaskGithubReferences: (taskId) => githubStateStore.getReferences(taskId),
+    getGithubRefOpenState: (ref) => githubStateStore.isRefOpen(ref),
     setTrackedGithubRepos: (repos) => githubScanner.setTrackedGithubRepos(repos),
   });
   broadcastProjectSummariesRef = broadcastProjectSummaries;

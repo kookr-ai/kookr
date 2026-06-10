@@ -90,6 +90,8 @@ export interface RealtimeServices {
 export interface ProjectSummaryGitHubDeps {
   getRepoHealthSnapshot: () => ReadonlyMap<string, ProjectRepoHealth>;
   getTaskGithubReferences: (taskId: string) => GitHubReference[];
+  /** Bound to `GitHubStateStore.isRefOpen` — verified-open gate for tied counts. */
+  getGithubRefOpenState: (ref: GitHubReference) => boolean | undefined;
   setTrackedGithubRepos: (repos: string[]) => void;
 }
 
@@ -207,6 +209,7 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
         ? {
             repoHealthCache: projectSummaryGitHubDeps.getRepoHealthSnapshot(),
             getTaskGithubReferences: projectSummaryGitHubDeps.getTaskGithubReferences,
+            getGithubRefOpenState: projectSummaryGitHubDeps.getGithubRefOpenState,
           }
         : {}),
     });

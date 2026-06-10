@@ -192,3 +192,64 @@ describe('GitHubStateStore', () => {
     expect(store.peekChanges('task-1')).toHaveLength(0);
   });
 });
+
+describe('GitHubStateStore.isRefOpen', () => {
+  test('returns undefined for a reference with no fetched state', () => {
+    const store = new GitHubStateStore();
+    store.addReference(makeIssueRef(42));
+    expect(store.isRefOpen({ type: 'issue', owner: 'kookr-ai', repo: 'kookr', number: 42 })).toBeUndefined();
+  });
+
+  test('returns undefined for an unknown reference', () => {
+    const store = new GitHubStateStore();
+    expect(store.isRefOpen({ type: 'issue', owner: 'kookr-ai', repo: 'kookr', number: 999 })).toBeUndefined();
+  });
+
+  test('returns true for a verified-open issue and false once closed', () => {
+    const store = new GitHubStateStore();
+    const ref = makeIssueRef(42);
+    store.addReference(ref);
+    store.updateIssueState(makeIssueState(ref));
+    expect(store.isRefOpen({ type: 'issue', owner: 'kookr-ai', repo: 'kookr', number: 42 })).toBe(true);
+
+    store.updateIssueState({ ...makeIssueState(ref), status: 'closed' });
+    expect(store.isRefOpen({ type: 'issue', owner: 'kookr-ai', repo: 'kookr', number: 42 })).toBe(false);
+  });
+
+  test('treats open and draft PRs as open, merged/closed as not open', () => {
+    const store = new GitHubStateStore();
+    const ref = makeRef(7);
+    store.addReference(ref);
+
+    store.updatePRState(makePRState(ref));
+    expect(store.isRefOpen({ type: 'pr', owner: 'kookr-ai', repo: 'kookr', number: 7 })).toBe(true);
+
+    store.updatePRState({ ...makePRState(ref), status: 'draft' });
+    expect(store.isRefOpen({ type: 'pr', owner: 'kookr-ai', repo: 'kookr', number: 7 })).toBe(true);
+
+    store.updatePRState({ ...makePRState(ref), status: 'merged' });
+    expect(store.isRefOpen({ type: 'pr', owner: 'kookr-ai', repo: 'kookr', number: 7 })).toBe(false);
+  });
+
+  test('finds state fetched under a different task than the queried ref', () => {
+    const store = new GitHubStateStore();
+    const refTask1 = makeIssueRef(42, 'task-1');
+    const refTask2 = makeIssueRef(42, 'task-2');
+    store.addReference(refTask1);
+    store.addReference(refTask2);
+    // State only fetched for task-2's entry.
+    store.updateIssueState(makeIssueState(refTask2));
+
+    expect(store.isRefOpen({ type: 'issue', owner: 'kookr-ai', repo: 'kookr', number: 42 })).toBe(true);
+  });
+
+  test('does not confuse a PR and an issue with the same number', () => {
+    const store = new GitHubStateStore();
+    const prRef = makeRef(42);
+    store.addReference(prRef);
+    store.updatePRState({ ...makePRState(prRef), status: 'merged' });
+
+    expect(store.isRefOpen({ type: 'issue', owner: 'kookr-ai', repo: 'kookr', number: 42 })).toBeUndefined();
+    expect(store.isRefOpen({ type: 'pr', owner: 'kookr-ai', repo: 'kookr', number: 42 })).toBe(false);
+  });
+});

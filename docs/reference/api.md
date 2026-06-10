@@ -15,12 +15,21 @@ Kookr exposes local HTTP and WebSocket endpoints from the Hono server. In develo
 | Endpoint | Description |
 | --- | --- |
 | `GET /api/tasks` | All tasks with sessions |
+| `GET /api/tasks/:id` | A single task by id (404 with `{"error": "Task not found"}` for unknown ids) |
 | `POST /api/tasks` | Create and launch a new task |
 | `POST /api/tasks/:id/complete` | Mark a finished task `completed` (non-destructive) and tear down its idle session |
 | `DELETE /api/tasks/:id` | Stop and remove a task |
 | `POST /api/agents/:id/message` | Send a message or hint to a running agent |
 | `GET /api/agents/:agentId/edit-events/:toolUseId` | Fetch a recorded Edit/Write tool event for diff display |
 | `GET /api/sessions/:sessionId/effective-hook-settings` | Resolved per-session hook settings |
+
+### Task id field naming
+
+Task objects returned by `GET /api/tasks` and `GET /api/tasks/:id` carry both
+`id` and `taskId` with the same value. `taskId` is an alias added so scripts
+can use one field name across the whole API — `/api/projects`
+`recentTasks[]` and `/api/snapshot` agents key tasks by `taskId`. `id`
+remains for backwards compatibility.
 
 ### `POST /api/tasks` body fields
 
