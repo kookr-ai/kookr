@@ -33,7 +33,7 @@ import { isValidEffortForAgent } from '../shared/contracts/agent-types.js';
 import { buildAgentLaunchContext, DEFAULT_PROMPT_SUBMIT_DELAY_MS } from './agent-launch-context.js';
 import { ensureCodexWorkspaceTrusted } from './codex-config.js';
 import { resolvePluginDir } from '../core/plugin-paths.js';
-import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
+import { translateKeystroke, ENTER_BYTES, CLEAR_LINE_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
 import { buildHookCommand, resolveHookWriterPath } from '../core/hook-writer-paths.js';
 
@@ -391,12 +391,19 @@ export class CodexCliAdapter implements AgentAdapter {
   }
 
   async sendInput(tmuxName: string, text: string): Promise<void> {
+    // Lead with Ctrl-U (clear line): keystrokes typed into the dashboard's
+    // terminal panel but never submitted sit on the Codex composer line, and
+    // without the clear they would be fused onto the front of this message
+    // and submitted with it as one user prompt (kookr F15). Ctrl-U is a
+    // no-op on an empty composer line.
+    //
     // Codex TUI uses bracketed-paste heuristics to distinguish "pasted
     // multi-line text" from "typed + Enter submit." Collapsing text+Enter
     // into one write(bytes + '\r') risks Codex classifying the entire blob
-    // as paste and NOT submitting. The input coordinator keeps the two writes
-    // serialized while delaying Enter so the TUI can commit the text first.
-    await this.inputWriter.writeInputSequence(tmuxName, [textEncoder.encode(text), ENTER_BYTES], {
+    // as paste and NOT submitting. The input coordinator keeps the writes
+    // serialized while delaying each subsequent payload so the TUI can
+    // process the clear and commit the text first.
+    await this.inputWriter.writeInputSequence(tmuxName, [CLEAR_LINE_BYTES, textEncoder.encode(text), ENTER_BYTES], {
       reason: 'adapter-send-input',
       interPayloadDelayMs: DEFAULT_PROMPT_SUBMIT_DELAY_MS,
     });

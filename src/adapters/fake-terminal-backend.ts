@@ -12,6 +12,14 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: false });
 
 /**
+ * Ctrl-U (0x15) — kill-line. Adapters prefix composer sends with it so an
+ * unsubmitted terminal-typed draft cannot be fused into the message (F15).
+ * The fake models the readline-style semantics: everything on the pending
+ * input line before the kill char is discarded.
+ */
+const KILL_LINE_CHAR = '\x15';
+
+/**
  * In-memory TerminalBackend fake for tests.
  *
  * Replaces the older fake terminal manager. Matches the production
@@ -108,16 +116,14 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
   async write(id: SessionId, data: Uint8Array): Promise<void> {
     return this.enqueueWrite(id, async () => {
       await this.writeOne(id, data);
-      const text = decoder.decode(data);
+      const s = this.sessions.get(id);
+      if (!s) return;
+      const text = this.applyKillLine(s, decoder.decode(data));
       if (text.endsWith('\r') || text.endsWith('\n')) {
-        const s = this.sessions.get(id);
-        if (s) {
-          s.keysReceived.push(s.inputDraft + text.replace(/[\r\n]+$/, ''));
-          s.inputDraft = '';
-        }
+        s.keysReceived.push(s.inputDraft + text.replace(/[\r\n]+$/, ''));
+        s.inputDraft = '';
       } else {
-        const s = this.sessions.get(id);
-        if (s) s.inputDraft += text;
+        s.inputDraft += text;
       }
     });
   }
@@ -145,15 +151,31 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
         concat.set(p, off);
         off += p.length;
       }
-      const concatText = decoder.decode(concat);
+      const s = this.sessions.get(id);
+      if (!s) return;
+      // Model the adapters' Ctrl-U clear-line prefix (F15): a kill char
+      // discards any pending terminal-typed draft, so the logical submission
+      // recorded below contains the composer message only. Without a kill
+      // char, a pending draft is fused onto the submission — exactly the
+      // production CLI behaviour the prefix exists to prevent.
+      const concatText = this.applyKillLine(s, decoder.decode(concat));
       if (concatText.endsWith('\r') || concatText.endsWith('\n')) {
-        const s = this.sessions.get(id);
-        if (s) {
-          s.keysReceived.push(concatText.replace(/[\r\n]+$/, ''));
-          s.inputDraft = '';
-        }
+        s.keysReceived.push(s.inputDraft + concatText.replace(/[\r\n]+$/, ''));
+        s.inputDraft = '';
       }
     });
+  }
+
+  /**
+   * Apply readline-style kill-line (Ctrl-U, 0x15) semantics: a kill char
+   * clears the pending input draft and discards everything written before
+   * it in `text`. Returns the residual text after the last kill char.
+   */
+  private applyKillLine(s: FakeSession, text: string): string {
+    const killIdx = text.lastIndexOf(KILL_LINE_CHAR);
+    if (killIdx === -1) return text;
+    s.inputDraft = '';
+    return text.slice(killIdx + 1);
   }
 
   async writeInputSequence(
@@ -291,15 +313,20 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
   private async writeOne(id: SessionId, data: Uint8Array): Promise<void> {
     const s = this.sessions.get(id);
     if (!s || !s.alive) throw new SessionGoneError(id);
-    const text = decoder.decode(data);
+    const rawText = decoder.decode(data);
     s.written.push(new Uint8Array(data));
+    // Kill-line chars are editing controls, not pane text — keep them out of
+    // `paneContent` and `lastKeystroke`. The raw bytes above still record
+    // them for byte-level assertions; draft semantics are applied by the
+    // write/writeSequence wrappers via `applyKillLine`.
+    const text = rawText.replaceAll(KILL_LINE_CHAR, '');
     // Update `paneContent` and `lastKeystroke` per payload. `keysReceived` is
     // emitted by the calling write/writeSequence wrappers so that a single
     // logical submission produces one entry even when adapters split it into
     // multiple payloads. See #57.
     if (text.endsWith('\r') || text.endsWith('\n')) {
       s.paneContent += text.replace(/[\r\n]+$/, '') + '\n';
-    } else {
+    } else if (text.length > 0) {
       s.paneContent += text;
       if (data.length <= 4) {
         this.lastKeystroke = { name: id, key: text };
