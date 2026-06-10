@@ -47,6 +47,14 @@ export function diffPRState(
     }
   }
 
+  if (
+    current.status === 'open'
+    && prev.mergeable === 'MERGEABLE'
+    && current.mergeable === 'CONFLICTING'
+  ) {
+    changes.push({ type: 'pr_conflicting', ref });
+  }
+
   // --- CI check changes ---
   const prevFailedChecks = new Set(
     prev.checks.filter((c) => c.conclusion === 'failure').map((c) => c.name),

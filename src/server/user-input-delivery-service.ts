@@ -55,6 +55,7 @@ export class UserInputDeliveryService {
           type: 'user_input',
           agentId: sessionId,
           content: text,
+          source,
           timestamp: acceptedAt,
         });
       } catch (error) {

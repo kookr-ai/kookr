@@ -1,11 +1,12 @@
 import { appendFile, readFile, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { AnomalyType } from './types.js';
+import type { UserInputDeliverySource } from '../shared/contracts/user-input-delivery.js';
 
 // --- Interaction event types ---
 
 export type InteractionEvent =
-  | { type: 'user_input'; agentId: string; content: string; timestamp: string }
+  | { type: 'user_input'; agentId: string; content: string; timestamp: string; source?: UserInputDeliverySource }
   | { type: 'agent_selected'; agentId: string; source: 'auto' | 'manual'; timestamp: string }
   | { type: 'finding_skipped'; agentId: string; anomalyType: AnomalyType; timestamp: string }
   | { type: 'finding_snoozed'; agentId: string; durationMs: number; anomalyType?: AnomalyType; timestamp: string }

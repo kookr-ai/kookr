@@ -1,6 +1,12 @@
 export type UserInputDeliveryStatus = 'queued' | 'submitted_by_agent' | 'failed';
 
-export type UserInputDeliverySource = 'respond' | 'directReply';
+export type UserInputDeliverySource = 'respond' | 'directReply' | 'github_watcher';
+
+export const DELIVERY_SOURCE_LABEL: Record<UserInputDeliverySource, string> = {
+  respond: 'You',
+  directReply: 'You',
+  github_watcher: 'Kookr watcher',
+};
 
 export interface UserInputDeliverySnapshot {
   deliveryId: string;

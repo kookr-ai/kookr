@@ -95,6 +95,7 @@ describe('createGitHubRuntime', () => {
       ref,
       title: 'refactor: extract github server bootstrap',
       status: 'open',
+      mergeable: 'MERGEABLE',
       author: 'jeanibarz',
       branch: 'refactor/issue-755-server-bootstrap',
       baseBranch: 'main',

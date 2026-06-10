@@ -19,6 +19,7 @@ describe('UserInputDeliveryService', () => {
       type: 'user_input',
       agentId: 's1',
       content: 'continue',
+      source: 'respond',
       timestamp: '2026-06-06T10:00:00.000Z',
     });
     expect(delivery).toMatchObject({

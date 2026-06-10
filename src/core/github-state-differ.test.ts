@@ -24,6 +24,7 @@ function makeBasePR(overrides: Partial<GitHubPRState> = {}): GitHubPRState {
     ref: makeRef(),
     title: 'Test PR',
     status: 'open',
+    mergeable: 'MERGEABLE',
     author: 'jeanibarz',
     branch: 'feat-test',
     baseBranch: 'main',
@@ -85,6 +86,33 @@ describe('diffPRState', () => {
     const current = makeBasePR({ status: 'closed' });
     const changes = diffPRState(prev, current);
     expect(changes.some((c) => c.type === 'pr_closed')).toBe(true);
+  });
+
+  test('detects PR becoming conflicting after being mergeable', () => {
+    const prev = makeBasePR({ mergeable: 'MERGEABLE' });
+    const current = makeBasePR({ mergeable: 'CONFLICTING' });
+    const changes = diffPRState(prev, current);
+    expect(changes.some((c) => c.type === 'pr_conflicting')).toBe(true);
+  });
+
+  test('does not report first-fetch conflicting PRs', () => {
+    const current = makeBasePR({ mergeable: 'CONFLICTING' });
+    const changes = diffPRState(null, current);
+    expect(changes.some((c) => c.type === 'pr_conflicting')).toBe(false);
+  });
+
+  test('does not report conflicting when previous mergeability was unknown', () => {
+    const prev = makeBasePR({ mergeable: 'UNKNOWN' });
+    const current = makeBasePR({ mergeable: 'CONFLICTING' });
+    const changes = diffPRState(prev, current);
+    expect(changes.some((c) => c.type === 'pr_conflicting')).toBe(false);
+  });
+
+  test('does not report conflicting for merged PRs', () => {
+    const prev = makeBasePR({ mergeable: 'MERGEABLE' });
+    const current = makeBasePR({ status: 'merged', mergeable: 'CONFLICTING' });
+    const changes = diffPRState(prev, current);
+    expect(changes.some((c) => c.type === 'pr_conflicting')).toBe(false);
   });
 
   test('detects new CI failure', () => {

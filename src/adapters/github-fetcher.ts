@@ -78,7 +78,7 @@ export async function fetchPRState(ref: GitHubReference): Promise<GitHubPRState 
     const { stdout: json } = await execFile('gh', [
       'pr', 'view', String(ref.number),
       '--repo', `${ref.owner}/${ref.repo}`,
-      '--json', 'title,state,author,headRefName,baseRefName,reviewDecision,isDraft,comments',
+      '--json', 'title,state,author,headRefName,baseRefName,reviewDecision,isDraft,comments,mergeable',
     ], {
       timeout: 15000,
     });
@@ -104,6 +104,7 @@ export async function fetchPRState(ref: GitHubReference): Promise<GitHubPRState 
       ref,
       title: data.title ?? '',
       status: status as GitHubPRState['status'],
+      mergeable: mapMergeable(data.mergeable),
       author: data.author?.login ?? '',
       branch: data.headRefName ?? '',
       baseBranch: data.baseRefName ?? '',
@@ -161,6 +162,7 @@ interface GraphQLStatusContextNode {
 interface GraphQLPRNode {
   title?: unknown;
   state?: unknown;
+  mergeable?: unknown;
   isDraft?: unknown;
   author?: GraphQLAuthor | null;
   headRefName?: unknown;
@@ -257,6 +259,7 @@ function uniqueGitHubObjects(refs: GitHubReference[]): GitHubReference[] {
 
 const PR_STATE_SELECTION = `      title
       state
+      mergeable
       isDraft
       author { login }
       headRefName
@@ -360,6 +363,7 @@ function parsePRNode(ref: GitHubReference, node: GraphQLPRNode): GitHubPRState {
     ref,
     title: stringValue(node.title),
     status,
+    mergeable: mapMergeable(node.mergeable),
     author: stringValue(node.author?.login),
     branch: stringValue(node.headRefName),
     baseBranch: stringValue(node.baseRefName),
@@ -500,6 +504,10 @@ function mapCheckConclusion(conclusion: string): GitHubCheck['conclusion'] {
     case 'SKIPPED': return 'skipped';
     default: return null;
   }
+}
+
+function mapMergeable(value: unknown): GitHubPRState['mergeable'] {
+  return value === 'MERGEABLE' || value === 'CONFLICTING' ? value : 'UNKNOWN';
 }
 
 /** Fetch PR review threads and reviewers via GraphQL. */
