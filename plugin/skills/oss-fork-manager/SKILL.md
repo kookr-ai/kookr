@@ -123,9 +123,8 @@ git push origin "${DEFAULT}"
 # Update state
 SLUG="{{repoSlug}}"
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-cat ~/.claude/${SLUG}-recon/fork-state.json | jq \
-  ".last_upstream_sync = \"${NOW}\"" \
-  > /tmp/fork-state-tmp.json || exit 1   # a failed jq must not truncate state
+jq ".last_upstream_sync = \"${NOW}\"" ~/.claude/${SLUG}-recon/fork-state.json \
+  > /tmp/fork-state-tmp.json || exit 1   # jq fails on a missing/corrupt file; cat|jq would truncate state
 mv /tmp/fork-state-tmp.json ~/.claude/${SLUG}-recon/fork-state.json
 ```
 
@@ -193,7 +192,7 @@ PR_URL="{url}"
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 TODAY=$(date -u +%Y-%m-%d)
 
-cat ~/.claude/${SLUG}-recon/contributions.json | jq \
+jq \
   --arg inum "${ISSUE_NUM}" \
   --arg pnum "${PR_NUM}" \
   --arg now "${NOW}" \
@@ -219,7 +218,8 @@ cat ~/.claude/${SLUG}-recon/contributions.json | jq \
      "url": $url
    } |
    .daily_log[$today].prs_created += [($pnum | tonumber)]' \
-  > /tmp/contrib-tmp.json || exit 1   # a failed jq must not truncate state
+  ~/.claude/${SLUG}-recon/contributions.json \
+  > /tmp/contrib-tmp.json || exit 1   # jq fails on a missing/corrupt file; cat|jq would truncate state
 mv /tmp/contrib-tmp.json ~/.claude/${SLUG}-recon/contributions.json
 ```
 

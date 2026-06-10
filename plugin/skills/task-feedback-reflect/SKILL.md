@@ -2,7 +2,7 @@
 name: task-feedback-reflect
 description: Reflect on a COMPLETED Kookr task that received a thumbs rating (bundle.json from the feedback pipeline). Not for live/unrated tasks (task-snapshot-reflect) or ad-hoc in-session corrections (self-reflect).
 keywords: task feedback, thumbs up, thumbs down, reflect, reinforce, post-task, completion feedback, self-improve, picker, hook over instruction, human gate, confirm direction, open PR, gated PR
-related: self-reflect, self-reflect, hook-driven-workflow-enforcement
+related: self-reflect, hook-driven-workflow-enforcement
 skillSchemaVersion: 1
 ---
 

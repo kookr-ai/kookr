@@ -30,7 +30,7 @@ belong in the plugin because it is the distributed toolkit surface: Kookr
 injects it into spawned agents regardless of cwd, and regular Claude Code
 sessions can also see it when the plugin is installed or synced locally.
 
-**OSS contribution:** `oss-fork-manager`, `oss-pr-{critic,distill,plan,threshold}`, `pr-review-triage`, `pr-contribution-excellence` (bundled with per-repo distilled patterns under `repo/`), `find-best-reviewers`, `rust-lang-rust-{tests,pre-push}`.
+**OSS contribution:** `oss-fork-manager`, `oss-pr-{critic,distill,plan,state,threshold}, oss-repo-recon`, `pr-review-triage`, `pr-contribution-excellence` (bundled with per-repo distilled patterns under `repo/`), `find-best-reviewers`, `rust-lang-rust-{tests,pre-push}`.
 
 **Reviewer specialists (`plugin/reviewer-specialists/`):** narrow prompt templates (`conventions-specialist`, `correctness-specialist`, `deadcode-specialist`, `test-specialist`, `a11y-specialist`) consumed by the bundled `pre-pr-review` skill.
 
@@ -38,7 +38,7 @@ sessions can also see it when the plugin is installed or synced locally.
 
 **Reviewer distillation experiment:** `reviewer-distillation-{judge,mutate,predict,prepare,select,meta}`.
 
-**Codex PR analysis:** `codex-pr-{critic,distill,plan,threshold}`.
+**Codex PR analysis:** `codex-pr-{critic,distill,plan,state,threshold}`.
 
 **Review subagents (15):** `api-surface-auditor`, `architecture-drift-detector`, `architecture-smell-scanner`, `boundary-critic`, `delivery-pragmatist`, `dependency-graph-analyzer`, `design-experimenter`, `design-minimalist`, `failure-mode-analyst`, `module-interface-auditor`, `operability-reviewer`, `socratic-challenger`, `state-machine-verifier`, `test-fixer`, `test-quality-reviewer`.
 

@@ -33,12 +33,9 @@ ALLOWLIST=(
   # "deferred OSS extension distribution" tag no longer applies — what remains
   # are universal runtime paths, not maintainer-specific ones.
   ".claude/skills/kookr-pre-push/SKILL.md # follow-up: NONE — load-bearing personal path"
-  ".claude/skills/kookr-oss-pr-state/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/kookr-oss-issue-scout/SKILL.md # follow-up: NONE — load-bearing personal path"
-  ".claude/skills/kookr-oss-repo-recon/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/kookr-oss-contribution-gate/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/kookr-oss-dashboard-verify/SKILL.md # follow-up: NONE — load-bearing personal path"
-  ".claude/skills/kookr-codex-pr-state/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/playbooks/oss-contribute.md # follow-up: NONE — load-bearing personal path"
   ".claude/agents/kookr-oss-issue-scout.md # follow-up: NONE — load-bearing personal path"
 
@@ -52,7 +49,6 @@ ALLOWLIST=(
   ".claude/skills/kookr-codex-claude-compatibility/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/hook-driven-workflow-enforcement/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/kookr-playbooks/SKILL.md # follow-up: NONE — load-bearing personal path"
-  ".claude/skills/kookr-skill-naming-convention/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/self-reflect/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/kookr-session-reflect/SKILL.md # follow-up: NONE — load-bearing personal path"
   ".claude/skills/kookr-shadow-detection/SKILL.md # follow-up: NONE — load-bearing personal path"

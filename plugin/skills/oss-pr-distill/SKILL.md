@@ -206,5 +206,5 @@ A good pattern must be:
 Consistent three-case shape — never guess past a broken state file:
 
 - **Missing `state.json`** — first run: initialize it from the documented schema, then proceed.
-- **Malformed `state.json`** — validate before use: `jq empty state.json || { echo "state.json is corrupt — stopping (a default-to-fresh run would re-process every PR)"; exit 1; }`. Stop and report; never default to a fresh state.
+- **Malformed `state.json`** — validate before use: `jq empty ~/.claude/{{repoSlug}}-pr-lessons/state.json || { echo "state.json is corrupt — stopping (a default-to-fresh run would re-process every PR)"; exit 1; }`. Stop and report; never default to a fresh state.
 - **Empty batch / repo exhausted** — learnings-raw.md missing or has no entries since the last distillation: report "nothing to distill" and stop; never run the compression on an empty corpus (it would fabricate patterns).

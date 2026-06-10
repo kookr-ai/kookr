@@ -67,17 +67,22 @@ query($owner: String!, $repo: String!, $cursor: String) {
       }
     }
   }
-}' -f owner=OWNER -f repo=REPO -f cursor="$CURSOR" > "/tmp/reviewer_data_p${PAGE}.json"
+}' -f owner=OWNER -f repo=REPO -F cursor="${CURSOR:-null}" > "/tmp/reviewer_data_p${PAGE}.json"
 ```
 
 **Pagination (run the query above inside this loop):** stop when `hasNextPage` is false **or** the oldest PR on the page left the 6-month window.
 
 ```bash
-CUTOFF=$(date -u -d '6 months ago' +%Y-%m-%d)
+rm -f /tmp/reviewer_data_p*.json   # stale pages from a previous (possibly different-repo) run must not merge in
+CUTOFF=$(date -u -d '183 days ago' +%Y-%m-%d)   # BSD/macOS: date -u -v-183d +%Y-%m-%d
 CURSOR="" PAGE=1
 while :; do
-  # ... run the gh api graphql query above (use -F cursor='null' when CURSOR is empty) ...
-  jq 'has("errors")' "/tmp/reviewer_data_p${PAGE}.json" | grep -q true && { echo "GraphQL errors — stopping"; break; }
+  # ... run the gh api graphql query above ...
+  jq 'has("errors")' "/tmp/reviewer_data_p${PAGE}.json" | grep -q true && {
+    echo "GraphQL errors — stopping (see the Failure Handling section; do not rank partial data)"
+    rm -f "/tmp/reviewer_data_p${PAGE}.json"
+    exit 1
+  }
   HAS_NEXT=$(jq -r '.data.repository.pullRequests.pageInfo.hasNextPage' "/tmp/reviewer_data_p${PAGE}.json")
   OLDEST=$(jq -r '.data.repository.pullRequests.nodes | map(.mergedAt) | min' "/tmp/reviewer_data_p${PAGE}.json")
   [ "$HAS_NEXT" != "true" ] && break

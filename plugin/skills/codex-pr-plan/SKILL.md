@@ -70,7 +70,7 @@ Add to `skipped_prs` (never revisit):
 Consistent three-case shape — never guess past a broken state file:
 
 - **Missing `state.json`** — first run: initialize it from the documented schema, then proceed.
-- **Malformed `state.json`** — validate before use: `jq empty state.json || { echo "state.json is corrupt — stopping (a default-to-fresh run would re-process every PR)"; exit 1; }`. Stop and report; never default to a fresh state.
+- **Malformed `state.json`** — validate before use: `jq empty ~/.claude/codex-pr-lessons/state.json || { echo "state.json is corrupt — stopping (a default-to-fresh run would re-process every PR)"; exit 1; }`. Stop and report; never default to a fresh state.
 - **Empty batch / repo exhausted** — no unprocessed PRs remain: report "repo exhausted — nothing to plan" and stop cleanly; do not loop or widen the query.
 
 ## Divergence From the oss-pr-* Twin
