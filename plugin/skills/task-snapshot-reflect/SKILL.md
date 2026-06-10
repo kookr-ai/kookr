@@ -119,3 +119,9 @@ End with:
 - Do not edit before the user validates the diagnosis.
 - Do not produce generic self-reflection boilerplate without bundle evidence.
 - Do not make multiple unrelated improvements from one snapshot.
+
+## Failure Handling
+
+- **Missing `bundle.json`** (path from the spawn prompt does not exist) — report the missing path and stop.
+- **Malformed `bundle.json`** (unparseable, or `schemaVersion` is not `task-snapshot-reflect.v1`) — stop and report; never analyze a bundle whose schema you cannot trust.
+- **Empty `sessions[]`** — report "snapshot contains no sessions — nothing to reflect on" and stop without persisting any rule. If snapshot bundles are repeatedly empty, the auto-reflect kill switch is `KOOKR_AUTO_REFLECT_DISABLE=1`.

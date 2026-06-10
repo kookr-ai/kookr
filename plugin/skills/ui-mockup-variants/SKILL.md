@@ -113,6 +113,16 @@ artifact path / images. Then make the choice a clean multiple-choice with a fina
 **combinations** as options too when they make sense (e.g. *"2 + 3 combined"*) —
 users often want the best of two. Let them pick before you write component code.
 
+### If the user rejects all variants
+
+Rejection is signal, not failure. Ask one follow-up: what is wrong with the
+closest variant (axis, density, color, motion)? Then offer exactly three paths
+via `AskUserQuestion`: **refine** (one new gallery iterating on the named
+objection — one refinement round, not an endless loop), **best-guess** (you
+pick and implement the variant you would defend, stating why), or **defer**
+(stop; leave the gallery file for a later session). Never silently proceed to
+implementation with a rejected design.
+
 ## Step 5 — Implement the chosen variant
 
 Once chosen:

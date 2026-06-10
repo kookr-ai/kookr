@@ -74,6 +74,8 @@ mutation {
 
 **Do not wait to be asked** — resolving threads is part of completing the fix.
 
+**Guard the mutation:** if Step 1 returns no thread whose first comment matches the finding (top-level review comments and issue comments have no resolvable thread), skip the `resolveReviewThread` mutation for that finding and note it in the summary — do not fire the mutation with an empty or guessed `threadId`.
+
 ### 5. Verify CI
 
 After pushing, monitor CI checks until they pass:

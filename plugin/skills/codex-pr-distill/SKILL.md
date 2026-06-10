@@ -180,3 +180,11 @@ A good distilled pattern must be:
 - **Specific**: "Link the issue in the first line" not "write good descriptions"
 - **Non-obvious**: Don't distill "write tests" — distill "snapshot tests with insta crate are preferred over manual assertions in this repo"
 - **Falsifiable**: Could be contradicted by future evidence (allows revision)
+
+## Failure Handling
+
+Consistent three-case shape — never guess past a broken state file:
+
+- **Missing `state.json`** — first run: initialize it from the documented schema, then proceed.
+- **Malformed `state.json`** — validate before use: `jq empty state.json || { echo "state.json is corrupt — stopping (a default-to-fresh run would re-process every PR)"; exit 1; }`. Stop and report; never default to a fresh state.
+- **Empty batch / repo exhausted** — learnings-raw.md missing or has no entries since the last distillation: report "nothing to distill" and stop; never run the compression on an empty corpus (it would fabricate patterns).

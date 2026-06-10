@@ -113,10 +113,15 @@ At the end of the current unit:
 1. Verify the unit is complete enough to hand off:
    - tests/checks run or an explicit blocker recorded;
    - PR/issue/comment/status updated if applicable;
-   - local state file updated atomically if one is used.
+   - local state file updated atomically if one is used: write to a temp file,
+     re-read and verify it parses (`jq empty`), then `mv` over the original —
+     two continuation tasks racing on a plain in-place write corrupt the queue.
 2. Re-read the queue/source of truth and decide whether another eligible unit
    exists.
-3. If none exists, report completion and do not spawn.
+3. If none exists, report completion and do not spawn. The final report must
+   list every unit that was attempted but not completed, each with a reason
+   code (e.g. `#112 blocked:failing-upstream-test`, `#115 skipped:assigned`),
+   so an all-units-exhausted run is distinguishable from an all-units-done run.
 4. If another unit exists, write a complete successor prompt to a temp file
    outside the repo, then launch the next Kookr task using the installation's
    supported task-creation path.

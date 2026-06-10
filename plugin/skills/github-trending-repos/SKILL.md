@@ -249,6 +249,12 @@ If running low, prioritize Step 3b (commit activity) and 3d (PR throughput) — 
 - [ ] Don't skip the filter step — curated lists pollute the ranking
 - [ ] Don't exceed API rate limits — batch calls and check quota
 
+## Failure Handling
+
+- **GraphQL `errors` array** — check `jq 'has("errors")'` on every response; on errors, report and stop rather than scoring repos from partial metrics.
+- **Rate limit** — check remaining quota up front (`gh api rate_limit`); if a batch fails with `RATE_LIMITED`, report the reset time and stop — do not silently score the repos fetched so far as if they were the full set.
+- **Empty candidate set** — report "no repos matched the search window" and widen the window only if the user asks.
+
 ## See Also
 
 - `pr-lifecycle` — once you've picked a repo, follow the PR lifecycle for contributing

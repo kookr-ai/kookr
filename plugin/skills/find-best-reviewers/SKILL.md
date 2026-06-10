@@ -223,3 +223,9 @@ Then run Steps 1-2 on each repo. **Present results per-repo** — never blend sc
 3. **Private repos** require a token with appropriate scopes.
 4. **Review count favors availability** — someone who rubber-stamps 100 trivial PRs outranks someone who deeply reviews 10 critical ones. State-weighting partially mitigates this.
 5. **GraphQL rate limit** — 5000 points/hour. Each paginated query costs ~1 point per 100 nodes. Fine for single-repo; budget carefully for multi-repo scans.
+
+## Failure Handling
+
+- **GraphQL `errors` array** — `gh api graphql` can exit 0 while returning partial data plus an `errors` array. Check `jq 'has("errors")'` on every response; on errors, report them and stop rather than ranking reviewers from partial data.
+- **Rate limit** — on `RATE_LIMITED` errors or a 403, report the reset time (`gh api rate_limit --jq '.rate.reset | todate'`) and stop; do not retry in a loop.
+- **Empty result** (no merged PRs, or none touching the requested paths) — report "no review history found for this scope" and stop; an empty ranking is not a ranking.

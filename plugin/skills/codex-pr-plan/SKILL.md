@@ -64,3 +64,11 @@ Add to `skipped_prs` (never revisit):
 - After processing a page, increment cursor if all PRs on that page were already processed or skipped
 - If the batch was filled from the current page, keep the cursor the same for next iteration
 - If cursor reaches a page with 0 results, reset to 1 (wrap around for newly closed PRs)
+
+## Failure Handling
+
+Consistent three-case shape — never guess past a broken state file:
+
+- **Missing `state.json`** — first run: initialize it from the documented schema, then proceed.
+- **Malformed `state.json`** — validate before use: `jq empty state.json || { echo "state.json is corrupt — stopping (a default-to-fresh run would re-process every PR)"; exit 1; }`. Stop and report; never default to a fresh state.
+- **Empty batch / repo exhausted** — no unprocessed PRs remain: report "repo exhausted — nothing to plan" and stop cleanly; do not loop or widen the query.

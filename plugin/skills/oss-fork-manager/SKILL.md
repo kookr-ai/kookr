@@ -25,7 +25,7 @@ Handle the fork-based contribution workflow that external open-source repos requ
 | 3 | Rebase on upstream before branching | Branching from stale main | `git fetch upstream && git rebase upstream/{default}` |
 | 4 | Push to origin (fork), PR to upstream | `git push upstream` | `git push origin {branch}` then `gh pr create -R {upstream}` |
 | 5 | Track state in fork-state.json | Losing track of branches and PRs | Update `~/.claude/{repoSlug}-recon/fork-state.json` |
-| 6 | Initialize contributions.json for new repos | Re-investigating already-attempted issues | Create from template `~/.claude/oss-contribution-tracking-template.json` if missing |
+| 6 | Initialize contributions.json for new repos | Re-investigating already-attempted issues | Create from template `~/.claude/oss-contribution-tracking-template.json` if missing; if the template itself is missing, stop and report it (do not invent a schema) |
 
 ## Parameters
 
@@ -125,7 +125,8 @@ SLUG="{{repoSlug}}"
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 cat ~/.claude/${SLUG}-recon/fork-state.json | jq \
   ".last_upstream_sync = \"${NOW}\"" \
-  > /tmp/fork-state-tmp.json && mv /tmp/fork-state-tmp.json ~/.claude/${SLUG}-recon/fork-state.json
+  > /tmp/fork-state-tmp.json || exit 1   # a failed jq must not truncate state
+mv /tmp/fork-state-tmp.json ~/.claude/${SLUG}-recon/fork-state.json
 ```
 
 ### Create Feature Branch
@@ -218,7 +219,8 @@ cat ~/.claude/${SLUG}-recon/contributions.json | jq \
      "url": $url
    } |
    .daily_log[$today].prs_created += [($pnum | tonumber)]' \
-  > /tmp/contrib-tmp.json && mv /tmp/contrib-tmp.json ~/.claude/${SLUG}-recon/contributions.json
+  > /tmp/contrib-tmp.json || exit 1   # a failed jq must not truncate state
+mv /tmp/contrib-tmp.json ~/.claude/${SLUG}-recon/contributions.json
 ```
 
 ## Initialization
