@@ -1,6 +1,6 @@
 ---
 name: rust-lang-rust-tests
-description: Test writing conventions for rust-lang/rust contributions — naming, headers, directives, verification, PR descriptions
+description: Test writing conventions for rust-lang/rust contributions — naming, headers, directives, verification, PR descriptions — applies to the rust-lang/rust repository only — not to other Rust projects.
 keywords: rust-lang, rust compiler, regression test, ICE test, E-needs-test, compiletest, build-pass, check-pass, tests/ui, tests/crashes
 related: rust-lang-rust-pre-push, oss-repo-recon, pre-pr-review, pr-contribution-excellence, git-commit-discipline
 ---

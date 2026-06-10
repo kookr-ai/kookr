@@ -53,6 +53,8 @@ When the loop stalls (the reviewer stops improving), the META phase improves the
 | Still flat for 2 more iterations after mutator was meta-mutated | Meta-mutate the **JUDGE** skill |
 | Still flat for 2 more after both were meta-mutated | All paths exhausted → stop |
 
+*Provenance of 0.03: an initial estimate of meaningful-vs-noise F1 movement at the current corpus size (~tens of PRs), not a measured constant — recalibrate when the evaluated corpus grows past ~30 PRs.*
+
 ## Stall Detection Logic (orchestrator implements this)
 
 ```

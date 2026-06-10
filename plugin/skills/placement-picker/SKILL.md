@@ -100,6 +100,22 @@ why, not instructions about how to work.
 - A project-history fact like "this RFC was accepted after the May 2026 probe"
   belongs in memory or repo docs, depending on whether Codex also needs it.
 
+## Dedup Before Persisting
+
+Before persisting a rule to ANY surface, search the existing surfaces for it:
+grep CLAUDE.md (user and project), the skills directories, the hooks, and
+memory (`MEMORY.md` + memory files).
+
+- **Found, same meaning** — do not write a duplicate. Cite the existing entry,
+  and update it in place if the new occurrence sharpens it.
+- **Found, conflicting wording** — STOP and surface both versions to the user.
+  The inconsistency is the root cause to fix; silently adding a third variant
+  makes it worse. This is an explicit stop-and-ask, not a judgment call.
+- **Not found** — persist per the routing matrix above.
+
+Memory writes still respect the `type: feedback` frontmatter gate — dedup does
+not bypass it.
+
 ## Anti-Patterns
 
 - Saving a behavioral rule as memory because it is quick.

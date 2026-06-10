@@ -1,8 +1,8 @@
 ---
-name: kookr-oss-repo-recon
+name: oss-repo-recon
 description: Analyze an open-source repository's contribution requirements — CONTRIBUTING.md, PR template, CI config, CLA, build system, key reviewers — before attempting any contribution
 keywords: recon, contributing, guidelines, CI, CLA, build, open source, oss, reconnaissance, setup, fork, upstream, PR template
-related: [oss-fork-manager, kookr-oss-issue-scout, oss-pr-critic]
+related: [oss-fork-manager, oss-pr-critic]
 ---
 
 # OSS Repository Reconnaissance
@@ -298,7 +298,9 @@ Include this section at the end of the recon report:
 | **Risks** | {any risks identified, or "None identified"} |
 ```
 
-### Write to Registry (write-only-if-absent, case-insensitive dedup)
+### Write to Registry (Kookr integration — optional)
+
+`~/.kookr/oss-repos.json` is the OSS-repo registry the Kookr dashboard reads. Skip this step entirely if you do not run Kookr; nothing downstream in this skill depends on it.
 
 Only write to the registry if this repo does not already have an entry. To update an existing entry, edit `~/.kookr/oss-repos.json` directly.
 
@@ -354,7 +356,7 @@ Extract from the recon report and CONTRIBUTING.md:
 - Test conventions (frameworks, naming, mock patterns, coverage expectations)
 - PR requirements (title format, commit message format, required sections)
 - CI expectations (what must pass before merge)
-- Known patterns from `${KOOKR_PLUGIN_DIR:-$HOME/git/kookr/plugin}/skills/pr-contribution-excellence/repo/${SLUG}.md` (if exists)
+- Known patterns from `${CLAUDE_SKILL_DIR}/../pr-contribution-excellence/repo/${SLUG}.md` (if it exists — the pr-contribution-excellence skill ships in this plugin)
 
 Structure with `##` section headers by language or concern area. Keep under 100 lines — this is injected into the reviewer's context window.
 
@@ -371,5 +373,5 @@ Write to `${CONVENTIONS_FILE}`.
 ## See Also
 
 - [[oss-fork-manager]] — Set up fork after recon
-- [[kookr-oss-issue-scout]] — Find issues to contribute to, using recon context
+- kookr-oss-issue-scout — Find issues to contribute to, using recon context (repo-local: requires a Kookr checkout, not bundled with this plugin)
 - [[oss-pr-critic]] — Analyze PRs using recon findings for repo conventions

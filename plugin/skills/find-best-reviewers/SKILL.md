@@ -2,7 +2,7 @@
 name: find-best-reviewers
 description: Find the best code reviewers in a GitHub repository or for specific file paths — uses GraphQL to analyze PR review history, filters bots, weights review states, surfaces domain specialists
 keywords: reviewer, review, code review, who reviews, CODEOWNERS, PR, pull request, maintainer, contributor, domain expert, github
-related: [oss-repo-recon, github-trending-repos, pr-lifecycle]
+related: [oss-repo-recon, github-trending-repos]
 ---
 
 # Find Best Reviewers
@@ -67,10 +67,30 @@ query($owner: String!, $repo: String!, $cursor: String) {
       }
     }
   }
-}' -f owner=OWNER -f repo=REPO > /tmp/reviewer_data.json
+}' -f owner=OWNER -f repo=REPO -F cursor="${CURSOR:-null}" > "/tmp/reviewer_data_p${PAGE}.json"
 ```
 
-**Pagination:** If `hasNextPage` is true and the oldest PR's `mergedAt` is within 6 months, fetch the next page using `endCursor`. Stop when you exceed the 6-month window.
+**Pagination (run the query above inside this loop):** stop when `hasNextPage` is false **or** the oldest PR on the page left the 6-month window.
+
+```bash
+rm -f /tmp/reviewer_data_p*.json   # stale pages from a previous (possibly different-repo) run must not merge in
+CUTOFF=$(date -u -d '183 days ago' +%Y-%m-%d)   # BSD/macOS: date -u -v-183d +%Y-%m-%d
+CURSOR="" PAGE=1
+while :; do
+  # ... run the gh api graphql query above ...
+  jq 'has("errors")' "/tmp/reviewer_data_p${PAGE}.json" | grep -q true && {
+    echo "GraphQL errors — stopping (see the Failure Handling section; do not rank partial data)"
+    rm -f "/tmp/reviewer_data_p${PAGE}.json"
+    exit 1
+  }
+  HAS_NEXT=$(jq -r '.data.repository.pullRequests.pageInfo.hasNextPage' "/tmp/reviewer_data_p${PAGE}.json")
+  OLDEST=$(jq -r '.data.repository.pullRequests.nodes | map(.mergedAt) | min' "/tmp/reviewer_data_p${PAGE}.json")
+  [ "$HAS_NEXT" != "true" ] && break
+  [ "${OLDEST%%T*}" \< "$CUTOFF" ] && break
+  CURSOR=$(jq -r '.data.repository.pullRequests.pageInfo.endCursor' "/tmp/reviewer_data_p${PAGE}.json")
+  PAGE=$((PAGE + 1))
+done
+```
 
 **Why time-window, not count-window:** "Last 200 PRs" means 10 days for rust-lang/rust but 8 years for a small project. A 6-month window produces comparable results regardless of repo velocity.
 
@@ -84,13 +104,16 @@ Save the JSON from Step 1, then run this analysis:
 import json
 from collections import defaultdict
 
-with open("/tmp/reviewer_data.json") as f:
-    data = json.load(f)
+import glob
+from datetime import datetime, timedelta, timezone
 
-prs = data["data"]["repository"]["pullRequests"]["nodes"]
+prs = []
+for page_file in sorted(glob.glob("/tmp/reviewer_data_p*.json")):
+    with open(page_file) as f:
+        prs.extend(json.load(f)["data"]["repository"]["pullRequests"]["nodes"])
 
-# 6-month cutoff (adjust date to current)
-cutoff = "YYYY-MM-DD"  # 6 months ago from today
+# 6-month cutoff, computed — never a hand-edited literal
+cutoff = (datetime.now(timezone.utc) - timedelta(days=183)).strftime("%Y-%m-%d")
 recent_prs = [pr for pr in prs if pr["mergedAt"] and pr["mergedAt"] >= cutoff]
 
 # --- Path filtering (Tool 1 only) ---
@@ -223,3 +246,9 @@ Then run Steps 1-2 on each repo. **Present results per-repo** — never blend sc
 3. **Private repos** require a token with appropriate scopes.
 4. **Review count favors availability** — someone who rubber-stamps 100 trivial PRs outranks someone who deeply reviews 10 critical ones. State-weighting partially mitigates this.
 5. **GraphQL rate limit** — 5000 points/hour. Each paginated query costs ~1 point per 100 nodes. Fine for single-repo; budget carefully for multi-repo scans.
+
+## Failure Handling
+
+- **GraphQL `errors` array** — `gh api graphql` can exit 0 while returning partial data plus an `errors` array. Check `jq 'has("errors")'` on every response; on errors, report them and stop rather than ranking reviewers from partial data.
+- **Rate limit** — on `RATE_LIMITED` errors or a 403, report the reset time (`gh api rate_limit --jq '.rate.reset | todate'`) and stop; do not retry in a loop.
+- **Empty result** (no merged PRs, or none touching the requested paths) — report "no review history found for this scope" and stop; an empty ranking is not a ranking.

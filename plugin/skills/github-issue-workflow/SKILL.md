@@ -1,8 +1,8 @@
 ---
 name: github-issue-workflow
-description: Standard workflow for creating GitHub issues with assignment and worktree branch creation for immediate implementation. Includes branch strategy and worktree conventions.
+description: Create well-structured GitHub issues with implementation plans, assignment, and lifecycle tracking. For CREATING new issues only — not for editing, reopening, commenting on, or bulk-managing existing issues.
 keywords: issue, github, workflow, worktree, branch, assign, implementation, create issue, new issue, bug report, feature request, staging
-related: git-commit-discipline, pre-push, post-push, pr-lifecycle
+related: git-commit-discipline
 ---
 
 # GitHub Issue Workflow
@@ -11,7 +11,19 @@ End-to-end workflow for creating a GitHub issue and immediately setting up for i
 
 ## Workflow
 
-### 1. Create the issue
+### 1. Search before creating (dedup)
+
+Before filing, search existing open issues for the same problem:
+
+```bash
+gh issue list --search "key phrase from the title" --state open --json number,title,url --limit 10
+```
+
+If a near-duplicate exists, surface it and ask the user whether to comment on
+the existing issue instead of filing a twin. Only proceed to create after the
+search comes back clean or the user explicitly wants a separate issue.
+
+### 1b. Create the issue
 
 Use `gh issue create` with a structured body:
 
@@ -59,8 +71,8 @@ Follow the issue's implementation plan:
 1. Write ADR if `needs adr` label is present
 2. Implement the feature
 3. Write tests
-4. Run [[pre-push]]
-5. Create PR into `staging`, then run [[post-push]]
+4. Run `pre-push`
+5. Create PR into `staging`, then run `post-push`
 
 ### 5. Create PR into staging
 
@@ -102,7 +114,7 @@ gh api repos/{owner}/{repo}/pulls/{number} -X PATCH -f title="new title"
 | Hotfix (production broken) | `main` | Direct to main, then backport to staging |
 | Docs-only | `main` | No staging needed for docs |
 
-After a staging PR is merged and validated, create a "Staging → Main" merge PR (see [[pr-lifecycle]]).
+After a staging PR is merged and validated, create a "Staging → Main" merge PR (see `pr-lifecycle`).
 
 ## Worktree Conventions
 
@@ -125,6 +137,6 @@ After a staging PR is merged and validated, create a "Staging → Main" merge PR
 - [ ] Worktree branch created (following naming conventions)
 - [ ] Implementation follows the plan
 - [ ] Tests written and passing
-- [ ] [[pre-push]] run before push / PR creation
+- [ ] `pre-push` run before push / PR creation
 - [ ] PR created into staging, referencing the issue
-- [ ] [[post-push]] run after PR creation
+- [ ] `post-push` run after PR creation

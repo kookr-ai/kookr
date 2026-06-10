@@ -72,7 +72,23 @@ building anything:
 - Note any real data shapes the UI renders (states, counts, labels) so the
   mockups show realistic content, not lorem ipsum.
 
+### Before generating: check for an existing gallery
+
+`ls *-mockups*.html` in the repo root (and the feature's directory). This repo
+has accumulated stale galleries before — three at once in one working tree. If
+a gallery for this feature already exists, offer to **reuse/extend** it instead
+of generating a fresh one, and fold the old file into whatever cleanup the user
+chooses at the end.
+
 ## Step 3 — Build the variants
+
+### Distinctness rule (applies to every format)
+
+Each variant must occupy a **named, distinct design axis** — e.g. *minimal* vs
+*information-dense* vs *animated* vs *icon-led*. Name the axis in the variant's
+title. If two variants differ only by a token tweak (a color shade, a border
+radius), they are one variant — replace one with a genuinely different axis
+before presenting.
 
 ### HTML gallery (default)
 Write **one** self-contained HTML file at the repo root, e.g.
@@ -112,6 +128,16 @@ artifact path / images. Then make the choice a clean multiple-choice with a fina
 `AskUserQuestion` (header `Variant`, single-select). Offer the obvious
 **combinations** as options too when they make sense (e.g. *"2 + 3 combined"*) —
 users often want the best of two. Let them pick before you write component code.
+
+### If the user rejects all variants
+
+Rejection is signal, not failure. Ask one follow-up: what is wrong with the
+closest variant (axis, density, color, motion)? Then offer exactly three paths
+via `AskUserQuestion`: **refine** (one new gallery iterating on the named
+objection — one refinement round, not an endless loop), **best-guess** (you
+pick and implement the variant you would defend, stating why), or **defer**
+(stop; leave the gallery file for a later session). Never silently proceed to
+implementation with a rejected design.
 
 ## Step 5 — Implement the chosen variant
 

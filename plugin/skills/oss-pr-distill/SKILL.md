@@ -182,6 +182,16 @@ cat ~/.claude/${SLUG}-pr-lessons/state.json | jq \
   > /tmp/state-tmp.json && mv /tmp/state-tmp.json ~/.claude/${SLUG}-pr-lessons/state.json
 ```
 
+## Dedup Before Adding a Pattern
+
+Before adding any pattern, check the existing corpus for an equivalent:
+grep the current skill patterns and `evidence.md` for the pattern's key
+phrase. If an equivalent already exists, **strengthen it** — append the new
+PR numbers to its evidence entry and tighten its wording if the new
+observations justify it — instead of appending a near-duplicate line. The
+check is against pattern *text* (the evidence log is chronological and has no
+index yet); read the matches you find before deciding new-vs-strengthen.
+
 ## Quality Criteria for Distilled Patterns
 
 A good pattern must be:
@@ -190,3 +200,11 @@ A good pattern must be:
 - **Specific**: "Link the issue in the first line" not "write good descriptions"
 - **Non-obvious**: Don't distill "write tests" — distill repo-specific conventions
 - **Falsifiable**: Could be contradicted by future evidence
+
+## Failure Handling
+
+Consistent three-case shape — never guess past a broken state file:
+
+- **Missing `state.json`** — first run: initialize it from the documented schema, then proceed.
+- **Malformed `state.json`** — validate before use: `jq empty ~/.claude/{{repoSlug}}-pr-lessons/state.json || { echo "state.json is corrupt — stopping (a default-to-fresh run would re-process every PR)"; exit 1; }`. Stop and report; never default to a fresh state.
+- **Empty batch / repo exhausted** — learnings-raw.md missing or has no entries since the last distillation: report "nothing to distill" and stop; never run the compression on an empty corpus (it would fabricate patterns).

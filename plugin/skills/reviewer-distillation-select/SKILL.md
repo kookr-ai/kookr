@@ -1,6 +1,6 @@
 ---
 name: reviewer-distillation-select
-description: Select merged PRs with substantive human reviews for reviewer distillation experiment
+description: Select merged PRs with substantive human reviews for the reviewer-distillation experiment (improving the REVIEWER skill via F1 loops). Not for learning repo contribution conventions — that is oss-pr-lessons/oss-pr-plan.
 keywords: [reviewer, distillation, select, pr, graphql]
 related: [reviewer-distillation-prepare, find-best-reviewers]
 ---

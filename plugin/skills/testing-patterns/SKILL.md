@@ -27,7 +27,7 @@ related: tdd-workflow
 | SQL template assertions | Assert generated SQL contains expected casts/placeholders and binds | Catch `::text[]` vs `::uuid[]` class of bugs |
 | Environment parity preflight | Align ports/env flags/service deps with target runtime | “Works locally only” incidents drop |
 | Contract boundary tests | Validate request/response envelopes against shared schemas | Detect docs/impl drift early |
-| Coverage task stopping rule | Stop after 2 iterations with <2% coverage delta or once task target is met | Final output reports coverage % and delta from start |
+| Coverage task stopping rule | Stop after 2 iterations with <2% **statement-coverage** delta (from `vitest run --coverage`; branch/function coverage are secondary signals) or once task target is met | Final output reports coverage % and delta from start |
 
 ## Environment Parity Checklist
 | Item | Expected |
@@ -46,4 +46,6 @@ related: tdd-workflow
 | Flaky retries without root cause | Masks nondeterminism | Stabilize clock/network/state dependencies |
 
 ## See Also
+
+- [[e2e-agent-testing]] — the agent-mock strategy (FakeTerminalBackend + event injection) for E2E and integration tests
 - [[tdd-workflow]]

@@ -2,7 +2,7 @@
 name: oss-fork-manager
 description: Fork lifecycle management for open-source contributions — fork creation, clone, upstream sync, feature branches, PR creation targeting upstream
 keywords: fork, clone, upstream, sync, rebase, feature branch, open source, oss, remote, push, PR, pull request, contribution
-related: [oss-repo-recon, oss-issue-scout, pr-lifecycle]
+related: [oss-repo-recon]
 ---
 
 # OSS Fork Manager
@@ -25,7 +25,7 @@ Handle the fork-based contribution workflow that external open-source repos requ
 | 3 | Rebase on upstream before branching | Branching from stale main | `git fetch upstream && git rebase upstream/{default}` |
 | 4 | Push to origin (fork), PR to upstream | `git push upstream` | `git push origin {branch}` then `gh pr create -R {upstream}` |
 | 5 | Track state in fork-state.json | Losing track of branches and PRs | Update `~/.claude/{repoSlug}-recon/fork-state.json` |
-| 6 | Initialize contributions.json for new repos | Re-investigating already-attempted issues | Create from template `~/.claude/oss-contribution-tracking-template.json` if missing |
+| 6 | Initialize contributions.json for new repos | Re-investigating already-attempted issues | Create from template `~/.claude/oss-contribution-tracking-template.json` if missing; if the template itself is missing, stop and report it (do not invent a schema) |
 
 ## Parameters
 
@@ -123,9 +123,9 @@ git push origin "${DEFAULT}"
 # Update state
 SLUG="{{repoSlug}}"
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-cat ~/.claude/${SLUG}-recon/fork-state.json | jq \
-  ".last_upstream_sync = \"${NOW}\"" \
-  > /tmp/fork-state-tmp.json && mv /tmp/fork-state-tmp.json ~/.claude/${SLUG}-recon/fork-state.json
+jq ".last_upstream_sync = \"${NOW}\"" ~/.claude/${SLUG}-recon/fork-state.json \
+  > /tmp/fork-state-tmp.json || exit 1   # jq fails on a missing/corrupt file; cat|jq would truncate state
+mv /tmp/fork-state-tmp.json ~/.claude/${SLUG}-recon/fork-state.json
 ```
 
 ### Create Feature Branch
@@ -192,7 +192,7 @@ PR_URL="{url}"
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 TODAY=$(date -u +%Y-%m-%d)
 
-cat ~/.claude/${SLUG}-recon/contributions.json | jq \
+jq \
   --arg inum "${ISSUE_NUM}" \
   --arg pnum "${PR_NUM}" \
   --arg now "${NOW}" \
@@ -218,7 +218,9 @@ cat ~/.claude/${SLUG}-recon/contributions.json | jq \
      "url": $url
    } |
    .daily_log[$today].prs_created += [($pnum | tonumber)]' \
-  > /tmp/contrib-tmp.json && mv /tmp/contrib-tmp.json ~/.claude/${SLUG}-recon/contributions.json
+  ~/.claude/${SLUG}-recon/contributions.json \
+  > /tmp/contrib-tmp.json || exit 1   # jq fails on a missing/corrupt file; cat|jq would truncate state
+mv /tmp/contrib-tmp.json ~/.claude/${SLUG}-recon/contributions.json
 ```
 
 ## Initialization
@@ -261,5 +263,5 @@ fi
 ## See Also
 
 - [[oss-repo-recon]] — Run before fork setup to know the default branch and conventions
-- [[oss-issue-scout]] — Find issues before creating feature branches
-- [[pr-lifecycle]] — PR management after creation
+- `oss-issue-scout` — Find issues before creating feature branches
+- `pr-lifecycle` — PR management after creation

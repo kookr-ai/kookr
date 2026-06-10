@@ -1,5 +1,5 @@
 ---
-name: kookr-oss-pr-state
+name: oss-pr-state
 description: State management for oss-pr-lessons playbook — persist learnings and update tracking state for any repository
 keywords: oss, pr, state, learnings, persist, json, open source
 related: [oss-pr-plan, oss-pr-critic, oss-pr-threshold, oss-pr-distill]
@@ -47,7 +47,7 @@ Invoked after the critic phase completes for a batch.
 }
 ```
 
-> **`repo` is required.** Kookr's dashboard reads this field to match PR lessons state to projects. Without it, the project's PR lessons count will not display.
+> **`repo` is required.** If you run the Kookr dashboard, it reads this field to match PR lessons state to projects; without it the project's PR lessons count will not display. Harmless otherwise — keep it either way.
 
 ## Workflow
 

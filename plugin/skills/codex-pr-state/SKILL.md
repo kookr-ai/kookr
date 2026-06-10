@@ -1,5 +1,5 @@
 ---
-name: kookr-codex-pr-state
+name: codex-pr-state
 description: State management for codex-pr-lessons playbook — persist learnings and update tracking state
 keywords: codex, pr, state, learnings, persist, json
 related: [codex-pr-plan, codex-pr-critic, codex-pr-threshold, codex-pr-distill]
@@ -38,7 +38,7 @@ This skill is invoked after the critic phase completes for a batch. It persists 
 }
 ```
 
-> **`repo` is required.** Kookr's dashboard reads this field to match PR lessons state to projects. Without it, the project's PR lessons count will not display.
+> **`repo` is required.** If you run the Kookr dashboard, it reads this field to match PR lessons state to projects; without it the project's PR lessons count will not display. Harmless otherwise — keep it either way.
 
 ### Field Semantics
 
@@ -113,3 +113,12 @@ If state.json becomes corrupted:
 1. The processed_prs list is the most important field — it prevents re-processing
 2. Reconstruct from learnings-raw.md batch headers which contain PR numbers
 3. Reset cursor to 1 (will re-scan pages but skip known PRs)
+
+## Divergence From the oss-pr-* Twin
+
+Intentional differences (R9 — do not "fix" by copying from the oss variant):
+- Fixed target repo (`openai/codex`); no `repoSlug` parameter.
+- State lives at `~/.claude/codex-pr-lessons/` (the oss family uses
+  `~/.claude/{repoSlug}-pr-lessons/`).
+Anything else that differs from the oss twin is drift, not design — prefer the
+oss wording when reconciling.

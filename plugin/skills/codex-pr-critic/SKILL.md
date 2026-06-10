@@ -5,6 +5,13 @@ keywords: codex, pr, critic, review, analysis, signals, quality
 related: [codex-pr-plan, codex-pr-state, codex-pr-threshold, codex-pr-distill]
 ---
 
+## Output Destination
+
+This skill's findings are **appended to `~/.claude/codex-pr-lessons/learnings-raw.md`** by the state step that
+follows it in the pipeline. The critic itself returns structured observations;
+it does not write files. State the destination in your summary so the pipeline
+stays auditable.
+
 ## When to Use
 
 This skill is invoked for each PR in the batch selected by `codex-pr-plan`. It deep-reads the PR and extracts structured quality signals.
@@ -126,3 +133,12 @@ For each PR, produce a structured observation block:
 - **Maintainer PRs** (openai team members): Note different review expectations (often self-merged)
 - **First-time contributors**: Note extra guidance/friction signals
 - **Reverted PRs**: High-value signal — what went wrong post-merge?
+
+## Divergence From the oss-pr-* Twin
+
+Intentional differences (R9 — do not "fix" by copying from the oss variant):
+- Fixed target repo (`openai/codex`); no `repoSlug` parameter.
+- State lives at `~/.claude/codex-pr-lessons/` (the oss family uses
+  `~/.claude/{repoSlug}-pr-lessons/`).
+Anything else that differs from the oss twin is drift, not design — prefer the
+oss wording when reconciling.

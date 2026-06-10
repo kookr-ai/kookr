@@ -208,7 +208,9 @@ If total_processed < 10 after this iteration, report: "Need more iterations — 
 
 ## Phase 3: Scout (use the `oss-issue-scout` subagent or skill)
 
-The subagent (`Agent(subagent_type: "oss-issue-scout", ...)`) is the preferred path — it runs the full flow atomically in an isolated context.
+> **Requires a Kookr checkout.** The `oss-issue-scout` subagent and the `kookr-oss-issue-scout` skill are repo-local Kookr artifacts, not bundled with this plugin. Without them, run the numbered steps below manually with `gh` commands (they cover the scout's core contract; the referenced Step 3.5/5.5 calibration details live in the repo-local agent definition) — or stop here and report that scouting needs a Kookr checkout.
+
+The subagent (`Agent(subagent_type: "oss-issue-scout", ...)`) is the preferred path when available — it runs the full flow atomically in an isolated context.
 
 1. Load recon report for repo context
 2. Load patterns for what maintainers value

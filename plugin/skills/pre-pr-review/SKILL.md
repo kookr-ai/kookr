@@ -2,7 +2,7 @@
 name: pre-pr-review
 description: Self-review checklist before creating a PR — repo checks, diff review, reviewer specialists, and gate state creation before gh pr create.
 keywords: review, self-review, pre-PR, checklist, before PR, quality, validation, before merge, before submit
-related: pre-push, pr-lifecycle, git-commit-discipline, testing-patterns, pr-review-triage
+related: git-commit-discipline, testing-patterns, pr-review-triage
 ---
 
 # Pre-PR Review
@@ -81,8 +81,12 @@ Check for:
 Scan **changed lines only** (not the full repo) for user-specific absolute paths in scripts, docs, skills, agent definitions, and PR-template content. Replace with portable equivalents where practical.
 
 ```bash
-scripts/check-portability.sh        # defaults to base ref origin/main
-scripts/check-portability.sh main   # explicit base ref
+# Kookr ships the helper; foreign repos won't have it — guard, don't fail:
+if [ -x scripts/check-portability.sh ]; then
+  scripts/check-portability.sh        # defaults to base ref origin/main
+else
+  echo "no check-portability.sh — do the manual diff scan below"
+fi
 ```
 
 The helper exits 0 when clean and 1 when added lines contain matches. It looks at added diff lines so existing intentional references elsewhere in the repo do not produce noise.
@@ -271,7 +275,7 @@ For small/obvious changes, the minimum is: run the detected build + test command
 
 ## See Also
 
-- [[pre-push]] — Delivery-cycle entrypoint before push (project-specific)
-- [[pr-lifecycle]] — Full PR lifecycle after this checklist passes
+- `pre-push` — Delivery-cycle entrypoint before push (project-specific)
+- `pr-lifecycle` — Full PR lifecycle after this checklist passes
 - [[git-commit-discipline]] — Commit message and branch safety
 - [[testing-patterns]] — Test configuration and isolation

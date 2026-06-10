@@ -54,3 +54,11 @@ fi
 
 - `DISTILL` — proceed to `oss-pr-distill`
 - `SKIP — {N} lines, {M} PRs processed (need >200 lines and >=10 PRs)` — stop iteration
+
+## Failure Handling
+
+Consistent three-case shape — never guess past a broken state file:
+
+- **Missing `state.json`** — first run: initialize it from the documented schema, then proceed.
+- **Malformed `state.json`** — validate before use: `jq empty ~/.claude/{{repoSlug}}-pr-lessons/state.json || { echo "state.json is corrupt — stopping (a default-to-fresh run would re-process every PR)"; exit 1; }`. Stop and report; never default to a fresh state.
+- **Empty batch / repo exhausted** — zero new observations since the last distillation: report "nothing to evaluate" and stop; do not trigger distillation on an empty delta.

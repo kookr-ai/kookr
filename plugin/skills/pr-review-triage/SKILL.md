@@ -1,8 +1,8 @@
 ---
 name: pr-review-triage
-description: Triage, fix, and resolve PR review comments end-to-end — fetch comments, assess relevance, implement fixes, push, and resolve GitHub threads. Used by post-push when feedback arrives.
+description: Triage, fix, and resolve PR review comments end-to-end — fetch comments, assess relevance, implement fixes, push, and resolve GitHub threads. Only applicable AFTER a PR is open and review comments exist; not for pre-PR self-review (use pre-pr-review).
 keywords: PR review, code review, codex, review comments, resolve thread, github, pull request, triage, review findings, fix review, address feedback
-related: git-commit-discipline, post-push, pr-lifecycle
+related: git-commit-discipline
 ---
 
 # PR Review Triage
@@ -73,6 +73,8 @@ mutation {
 ```
 
 **Do not wait to be asked** — resolving threads is part of completing the fix.
+
+**Guard the mutation:** if Step 1 returns no thread whose first comment matches the finding (top-level review comments and issue comments have no resolvable thread), skip the `resolveReviewThread` mutation for that finding and note it in the summary — do not fire the mutation with an empty or guessed `threadId`.
 
 ### 5. Verify CI
 

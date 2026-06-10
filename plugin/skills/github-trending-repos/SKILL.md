@@ -1,8 +1,8 @@
 ---
 name: github-trending-repos
-description: Find and rank trending GitHub repositories by real activity signals (commit velocity, PR throughput, contributor growth) — filters out non-code repos and scores for contribution opportunity
+description: Survey trending/popular GitHub repos and rank them by contribution opportunity — landscape scans only. Not for analyzing a single known repo (use oss-repo-recon) or finding issues in one repo (issue scouting).
 keywords: github, trending, stars, repos, popular, contribute, open source, ranking, activity, performance optimization, contribution
-related: [pr-lifecycle, pre-pr-review]
+related: [pre-pr-review]
 ---
 
 # GitHub Trending Repos — Contribution Opportunity Finder
@@ -198,6 +198,16 @@ Check for perf labels:
 gh api "repos/{owner}/{repo}/labels" --jq '.[].name' | grep -iE 'perf|optim|speed|benchmark'
 ```
 
+## Step 4b: Diversify the Final Ranking
+
+A pure score sort surfaces the same famous repos every run. Before reporting,
+re-rank with diversity constraints: no more than ~3 repos per language, ~3 per
+domain (web framework / ML / CLI tooling / infra / etc.), and a mix of sizes
+(at least a third of the list under 10k stars). Apply the constraints greedily
+down the score ranking — skip a repo when its language/domain/size bucket is
+full and pull up the next eligible one. Note skipped-for-diversity repos at the
+bottom of the report so the raw ranking stays visible.
+
 ## Step 5: Output Report
 
 Present results as a ranked table:
@@ -249,8 +259,14 @@ If running low, prioritize Step 3b (commit activity) and 3d (PR throughput) — 
 - [ ] Don't skip the filter step — curated lists pollute the ranking
 - [ ] Don't exceed API rate limits — batch calls and check quota
 
+## Failure Handling
+
+- **GraphQL `errors` array** — check `jq 'has("errors")'` on every response; on errors, report and stop rather than scoring repos from partial metrics.
+- **Rate limit** — check remaining quota up front (`gh api rate_limit`); if a batch fails with `RATE_LIMITED`, report the reset time and stop — do not silently score the repos fetched so far as if they were the full set.
+- **Empty candidate set** — report "no repos matched the search window" and widen the window only if the user asks.
+
 ## See Also
 
-- [[pr-lifecycle]] — once you've picked a repo, follow the PR lifecycle for contributing
+- `pr-lifecycle` — once you've picked a repo, follow the PR lifecycle for contributing
 - [[pre-pr-review]] — self-review checklist before submitting to external projects
 - [[git-commit-discipline]] — commit conventions expected by most large OSS projects
