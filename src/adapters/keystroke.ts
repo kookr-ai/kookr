@@ -13,6 +13,14 @@ const ENTER_BYTES = Uint8Array.of(0x0d);
 const CR_LF_BYTES = Uint8Array.of(0x0d, 0x0a);
 const ESC_BYTES = Uint8Array.of(0x1b);
 const TAB_BYTES = Uint8Array.of(0x09);
+/**
+ * Ctrl-U (NAK, 0x15) — "kill line" in readline-style editors. Both the
+ * Claude Code and Codex CLI composers honor it as delete-to-start-of-line,
+ * and it is a no-op on an empty input line. Adapters send it ahead of a
+ * composer message so keystrokes typed into the terminal panel but never
+ * submitted cannot be fused onto the front of the message (kookr F15).
+ */
+const CLEAR_LINE_BYTES = Uint8Array.of(0x15);
 
 const encoder = new TextEncoder();
 
@@ -38,4 +46,4 @@ export function translateKeystroke(key: string): Uint8Array {
 }
 
 /** Byte constants exported for callers that assemble write-sequences. */
-export { ENTER_BYTES };
+export { ENTER_BYTES, CLEAR_LINE_BYTES };

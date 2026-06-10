@@ -807,16 +807,17 @@ describe('ClaudeCodeAdapter', () => {
     expect(session!.transcriptPath).toBe('/path/to/transcript.jsonl');
   });
 
-  test('sendInput writes text + Enter to backend', async () => {
+  test('sendInput writes clear-line + text + Enter to backend', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
     const before = backend.getWrittenText(sessionId).length;
 
     await adapter.sendInput(sessionId, 'yes, continue');
 
-    // V8: sendInput calls backend.writeSequence([text_bytes, ENTER_BYTES]).
-    // FakeTerminalBackend concatenates written payloads; decoded, that's text + '\r'.
-    expect(backend.getWrittenText(sessionId).slice(before)).toBe('yes, continue\r');
+    // sendInput calls backend.writeSequence([CLEAR_LINE, text_bytes, ENTER_BYTES]).
+    // FakeTerminalBackend concatenates written payloads; decoded, that's
+    // Ctrl-U (0x15, clears any pending input line — F15) + text + '\r'.
+    expect(backend.getWrittenText(sessionId).slice(before)).toBe('\x15yes, continue\r');
   });
 
   test('sendInput requests a delayed submitting Enter', async () => {
@@ -830,9 +831,27 @@ describe('ClaudeCodeAdapter', () => {
 
     expect(writer.writeInputSequence).toHaveBeenCalledWith(
       'session-1',
-      [new TextEncoder().encode('yes, continue'), Uint8Array.of(0x0d)],
+      [Uint8Array.of(0x15), new TextEncoder().encode('yes, continue'), Uint8Array.of(0x0d)],
       { reason: 'adapter-send-input', interPayloadDelayMs: DEFAULT_PROMPT_SUBMIT_DELAY_MS },
     );
+  });
+
+  test('sendInput clears unsubmitted terminal-typed input before delivering the message', async () => {
+    // F15 regression: keystrokes typed into the dashboard terminal panel but
+    // never submitted sit on the agent CLI's input line. Without the Ctrl-U
+    // clear-line prefix, the next composer message is appended to that
+    // pending draft and both are submitted together as ONE user_prompt.
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    // Simulate raw terminal keystrokes (no Enter) left on the input line.
+    await backend.write(sessionId, new TextEncoder().encode('stray draft'));
+    const before = backend.sessions.get(sessionId)!.keysReceived.length;
+
+    await adapter.sendInput(sessionId, 'composer message');
+
+    expect(backend.sessions.get(sessionId)!.keysReceived.slice(before)).toEqual([
+      'composer message',
+    ]);
   });
 
   test('sendInput records the submitted text in keysReceived', async () => {

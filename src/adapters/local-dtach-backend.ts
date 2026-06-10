@@ -540,7 +540,12 @@ export class LocalDtachBackend implements TerminalBackend {
     });
 
     pty.onData((data) => {
-      const buf = typeof data === 'string' ? Buffer.from(data, 'binary') : Buffer.from(data);
+      // With `encoding: null` node-pty emits Buffers, so the string branch is
+      // defensive only. If it ever fires, the string was produced by node-pty's
+      // default UTF-8 decode — re-encode with UTF-8 to invert it. (A 'binary'
+      // i.e. Latin-1 re-encode here corrupted multi-byte UTF-8: "—" became
+      // "â" in the activity stream.)
+      const buf = typeof data === 'string' ? Buffer.from(data, 'utf-8') : Buffer.from(data);
       const bytes = new Uint8Array(buf);
       // Fan out to subscribers FIRST, then update the ring. `captureBytes` is
       // lock-free; subscribers see the stream before it is buffered for pull
@@ -620,7 +625,12 @@ export class LocalDtachBackend implements TerminalBackend {
       throw new SessionAttachFailedError(sess.id, sess.reattachCount);
     }
 
-    const payload = Buffer.from(data).toString('binary');
+    // Pass the bytes to node-pty as a Buffer so they reach the PTY verbatim.
+    // The previous `Buffer.from(data).toString('binary')` round trip decoded
+    // the bytes as Latin-1 and node-pty re-encoded the string as UTF-8,
+    // corrupting every multi-byte UTF-8 character (e.g. the em-dash "—",
+    // 0xE2 0x80 0x94, arrived at the agent as the six bytes of "â").
+    const payload = Buffer.from(data);
     const start = Date.now();
 
     const writeTask = new Promise<void>((resolve, reject) => {
