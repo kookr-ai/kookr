@@ -1,12 +1,14 @@
 import { CronExpressionParser } from 'cron-parser';
 
+const MIN_PRACTICAL_CRON_INTERVAL_MS = 5 * 60 * 1000;
+
 /**
  * Compute the next run time after `after` for the given cron expression.
  * Returns null if the expression is invalid.
  */
 export function nextRun(cron: string, after: Date = new Date()): Date | null {
   try {
-    const interval = CronExpressionParser.parse(cron, { currentDate: after });
+    const interval = CronExpressionParser.parse(cron, { currentDate: after, hashSeed: cronHashSeed(cron) });
     return interval.next().toDate();
   } catch {
     return null;
@@ -18,11 +20,51 @@ export function nextRun(cron: string, after: Date = new Date()): Date | null {
  */
 export function isValidCron(cron: string): boolean {
   try {
-    CronExpressionParser.parse(cron);
+    CronExpressionParser.parse(cron, { hashSeed: cronHashSeed(cron) });
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Return the smallest possible interval from the parsed time-of-day fields.
+ * Returns null if the expression is invalid.
+ */
+export function minimumCronIntervalMs(cron: string): number | null {
+  try {
+    const interval = CronExpressionParser.parse(cron, { hashSeed: cronHashSeed(cron) });
+    const times: number[] = [];
+    for (const hour of numericValues(interval.fields.hour.values)) {
+      for (const minute of numericValues(interval.fields.minute.values)) {
+        for (const second of numericValues(interval.fields.second.values)) {
+          times.push(hour * 60 * 60 + minute * 60 + second);
+        }
+      }
+    }
+    if (times.length === 0) return null;
+
+    times.sort((a, b) => a - b);
+    let minimumIntervalSeconds = 24 * 60 * 60;
+    for (let i = 1; i < times.length; i++) {
+      minimumIntervalSeconds = Math.min(minimumIntervalSeconds, times[i] - times[i - 1]);
+    }
+    minimumIntervalSeconds = Math.min(
+      minimumIntervalSeconds,
+      24 * 60 * 60 - times[times.length - 1] + times[0],
+    );
+    return minimumIntervalSeconds * 1000;
+  } catch {
+    return null;
+  }
+}
+
+export function isPracticalCron(
+  cron: string,
+  minIntervalMs: number = MIN_PRACTICAL_CRON_INTERVAL_MS,
+): boolean {
+  const minimumInterval = minimumCronIntervalMs(cron);
+  return minimumInterval !== null && minimumInterval >= minIntervalMs;
 }
 
 /**
@@ -70,4 +112,12 @@ export function describeCron(cron: string): string {
 
 function pad(s: string): string {
   return s.padStart(2, '0');
+}
+
+function cronHashSeed(cron: string): string {
+  return cron.trim();
+}
+
+function numericValues(values: readonly (number | string)[]): number[] {
+  return values.filter((value): value is number => typeof value === 'number');
 }

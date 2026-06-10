@@ -86,6 +86,60 @@ describe('schedule routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // POST /api/schedules
+  // ---------------------------------------------------------------------------
+  describe('POST /api/schedules', () => {
+    test('rejects cron expressions that fire more often than every five minutes', async () => {
+      const res = await mkApp({ scheduleService: service }).request(
+        '/api/schedules',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Too fast',
+            cron: '* * * * *',
+            cwd: tempDir,
+            playbook: { path: 'daily.md', parameters: {} },
+          }),
+        },
+      );
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Invalid schedule definition',
+        fieldErrors: {
+          cron: 'Cron expression must not fire more often than every 5 minutes',
+        },
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // PATCH /api/schedules/:id
+  // ---------------------------------------------------------------------------
+  describe('PATCH /api/schedules/:id', () => {
+    test('rejects cron expressions that fire more often than every five minutes', async () => {
+      const schedule = await seedSchedule(service, tempDir);
+      const res = await mkApp({ scheduleService: service }).request(
+        `/api/schedules/${schedule.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cron: '0,1 * * * *' }),
+        },
+      );
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Invalid schedule definition',
+        fieldErrors: {
+          cron: 'Cron expression must not fire more often than every 5 minutes',
+        },
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // DELETE /api/schedules/:id
   // ---------------------------------------------------------------------------
   describe('DELETE /api/schedules/:id', () => {
@@ -207,6 +261,25 @@ describe('schedule routes', () => {
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.error).toContain('Invalid');
+    });
+
+    test('returns 400 when the cron expression fires too often', async () => {
+      const res = await mkApp({ scheduleService: service }).request(
+        '/api/schedules/preview',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cron: '* * * * *' }),
+        },
+      );
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Invalid cron expression',
+        fieldErrors: {
+          cron: 'Cron expression must not fire more often than every 5 minutes',
+        },
+      });
     });
 
     test('returns 500 when scheduling is not configured', async () => {
