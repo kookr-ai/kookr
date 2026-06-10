@@ -80,6 +80,20 @@ not user configuration knobs.
 | `KOOKR_BACKEND` | unset, treated as `dtach` | unset or `dtach` | Compatibility guard only. Any other value hard-fails startup because the tmux backend was removed. |
 | `KOOKR_DTACH_SOCK_DIR` | `/tmp/kookr-dtach/$(id -u)` | Directory path | Overrides the dtach socket root used by `scripts/rollback-dtach.sh`. |
 
+## Terminal Streaming
+
+These variables tune live PTY-output forwarding from `SessionBridge` to browser
+terminal sockets. The defaults are intended for normal local use; change them
+only when diagnosing slow viewers or unusually high terminal-output volume.
+
+| Variable | Default | Accepted values | Effect |
+| --- | --- | --- | --- |
+| `KOOKR_SESSION_BRIDGE_OUTPUT_BATCH_MS` | `5` | Positive integer milliseconds | Live PTY-output coalescing window. Chunks received within this window are concatenated into one binary WebSocket frame. Replay bytes are unaffected. |
+| `KOOKR_SESSION_BRIDGE_BACKPRESSURE_RETRY_MS` | `25` | Positive integer milliseconds | Retry cadence while a browser socket remains above the soft buffered-output threshold. |
+| `KOOKR_SESSION_BRIDGE_BACKPRESSURE_SOFT_BYTES` | `1048576` | Positive integer bytes | If `ws.bufferedAmount` is above this value, live PTY output stays queued for that socket instead of sending another frame. |
+| `KOOKR_SESSION_BRIDGE_OWNER_BACKPRESSURE_HARD_BYTES` | `67108864` | Positive integer bytes | Hard queued-plus-buffered ceiling for owner terminal sockets. Above this, the bridge closes the socket so the client can reconnect and replay from the backend ring buffer. |
+| `KOOKR_SESSION_BRIDGE_VIEWER_BACKPRESSURE_HARD_BYTES` | `16777216` | Positive integer bytes | Hard queued-plus-buffered ceiling for read-only viewer terminal sockets. Viewers use a lower ceiling so slow remote readers cannot retain unbounded server memory. |
+
 ## Recovery And Scheduling
 
 | Variable | Default | Accepted values | Effect |
