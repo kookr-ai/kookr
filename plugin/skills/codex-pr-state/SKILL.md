@@ -1,5 +1,5 @@
 ---
-name: kookr-codex-pr-state
+name: codex-pr-state
 description: State management for codex-pr-lessons playbook — persist learnings and update tracking state
 keywords: codex, pr, state, learnings, persist, json
 related: [codex-pr-plan, codex-pr-critic, codex-pr-threshold, codex-pr-distill]
@@ -38,7 +38,7 @@ This skill is invoked after the critic phase completes for a batch. It persists 
 }
 ```
 
-> **`repo` is required.** Kookr's dashboard reads this field to match PR lessons state to projects. Without it, the project's PR lessons count will not display.
+> **`repo` is required.** If you run the Kookr dashboard, it reads this field to match PR lessons state to projects; without it the project's PR lessons count will not display. Harmless otherwise — keep it either way.
 
 ### Field Semantics
 

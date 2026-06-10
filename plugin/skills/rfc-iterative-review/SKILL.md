@@ -2,7 +2,7 @@
 name: rfc-iterative-review
 description: Iterative RFC drafting workflow — draft in worktree, run parallel critic subagents, incorporate feedback over N rounds, present to user before any action
 keywords: rfc, design document, proposal, design exploration, architecture decision, write rfc, draft rfc, generate rfc, create rfc, design doc
-related: spawn-child-task, kookr-playbooks, requirements-engineering
+related: requirements-engineering
 ---
 
 # RFC Iterative Review Workflow

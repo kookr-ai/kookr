@@ -2,7 +2,7 @@
 name: oss-fork-manager
 description: Fork lifecycle management for open-source contributions — fork creation, clone, upstream sync, feature branches, PR creation targeting upstream
 keywords: fork, clone, upstream, sync, rebase, feature branch, open source, oss, remote, push, PR, pull request, contribution
-related: [oss-repo-recon, oss-issue-scout, pr-lifecycle]
+related: [oss-repo-recon]
 ---
 
 # OSS Fork Manager
@@ -261,5 +261,5 @@ fi
 ## See Also
 
 - [[oss-repo-recon]] — Run before fork setup to know the default branch and conventions
-- [[oss-issue-scout]] — Find issues before creating feature branches
-- [[pr-lifecycle]] — PR management after creation
+- `oss-issue-scout` — Find issues before creating feature branches
+- `pr-lifecycle` — PR management after creation

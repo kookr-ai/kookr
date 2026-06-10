@@ -2,7 +2,7 @@
 name: task-feedback-reflect
 description: "Per-task self-reflection workflow triggered by user thumbs-up/down on a completed Kookr task. Reads a feedback bundle, walks the project Persistence Mechanism Picker, and proposes ONE remediation (skill update, CLAUDE.md edit, or hook addition) for thumbs-down OR ONE reinforcement edit for thumbs-up. Two human gates: confirm direction before editing, confirm before opening a PR. Memory frontmatter gate blocks type: feedback."
 keywords: task feedback, thumbs up, thumbs down, reflect, reinforce, post-task, completion feedback, self-improve, picker, hook over instruction, human gate, confirm direction, open PR, gated PR
-related: self-reflect, session-reflect, hook-driven-workflow-enforcement
+related: self-reflect, self-reflect, hook-driven-workflow-enforcement
 skillSchemaVersion: 1
 ---
 

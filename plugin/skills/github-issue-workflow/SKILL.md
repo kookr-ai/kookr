@@ -2,7 +2,7 @@
 name: github-issue-workflow
 description: Standard workflow for creating GitHub issues with assignment and worktree branch creation for immediate implementation. Includes branch strategy and worktree conventions.
 keywords: issue, github, workflow, worktree, branch, assign, implementation, create issue, new issue, bug report, feature request, staging
-related: git-commit-discipline, pre-push, post-push, pr-lifecycle
+related: git-commit-discipline
 ---
 
 # GitHub Issue Workflow
@@ -59,8 +59,8 @@ Follow the issue's implementation plan:
 1. Write ADR if `needs adr` label is present
 2. Implement the feature
 3. Write tests
-4. Run [[pre-push]]
-5. Create PR into `staging`, then run [[post-push]]
+4. Run `pre-push`
+5. Create PR into `staging`, then run `post-push`
 
 ### 5. Create PR into staging
 
@@ -102,7 +102,7 @@ gh api repos/{owner}/{repo}/pulls/{number} -X PATCH -f title="new title"
 | Hotfix (production broken) | `main` | Direct to main, then backport to staging |
 | Docs-only | `main` | No staging needed for docs |
 
-After a staging PR is merged and validated, create a "Staging → Main" merge PR (see [[pr-lifecycle]]).
+After a staging PR is merged and validated, create a "Staging → Main" merge PR (see `pr-lifecycle`).
 
 ## Worktree Conventions
 
@@ -125,6 +125,6 @@ After a staging PR is merged and validated, create a "Staging → Main" merge PR
 - [ ] Worktree branch created (following naming conventions)
 - [ ] Implementation follows the plan
 - [ ] Tests written and passing
-- [ ] [[pre-push]] run before push / PR creation
+- [ ] `pre-push` run before push / PR creation
 - [ ] PR created into staging, referencing the issue
-- [ ] [[post-push]] run after PR creation
+- [ ] `post-push` run after PR creation

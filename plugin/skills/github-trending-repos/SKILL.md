@@ -2,7 +2,7 @@
 name: github-trending-repos
 description: Find and rank trending GitHub repositories by real activity signals (commit velocity, PR throughput, contributor growth) — filters out non-code repos and scores for contribution opportunity
 keywords: github, trending, stars, repos, popular, contribute, open source, ranking, activity, performance optimization, contribution
-related: [pr-lifecycle, pre-pr-review]
+related: [pre-pr-review]
 ---
 
 # GitHub Trending Repos — Contribution Opportunity Finder
@@ -251,6 +251,6 @@ If running low, prioritize Step 3b (commit activity) and 3d (PR throughput) — 
 
 ## See Also
 
-- [[pr-lifecycle]] — once you've picked a repo, follow the PR lifecycle for contributing
+- `pr-lifecycle` — once you've picked a repo, follow the PR lifecycle for contributing
 - [[pre-pr-review]] — self-review checklist before submitting to external projects
 - [[git-commit-discipline]] — commit conventions expected by most large OSS projects

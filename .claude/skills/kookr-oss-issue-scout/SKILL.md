@@ -2,12 +2,12 @@
 name: kookr-oss-issue-scout
 description: Find the best contribution opportunity in an external repository — scores issues by clarity, size, acceptance likelihood, competition, match, and local reproducibility
 keywords: issue, triage, scout, contribute, good first issue, help wanted, open source, oss, find issue, contribution opportunity, performance, optimization, reproducibility, verifiability
-related: [kookr-oss-repo-recon, oss-fork-manager, oss-pr-critic]
+related: [oss-repo-recon, oss-fork-manager, oss-pr-critic]
 ---
 
 # OSS Issue Scout
 
-> **Requires:** per-repo recon at `~/.claude/{org}-{repo}-recon/recon-report.md` (created by `[[kookr-oss-repo-recon]]`) and, optionally, distilled patterns at `${KOOKR_PLUGIN_DIR:-$HOME/git/kookr/plugin}/skills/pr-contribution-excellence/repo/{slug}.md` (part of the optional OSS extension — see `docs/hooks-setup.md`). If recon is missing, stop and run `[[kookr-oss-repo-recon]]` first rather than scouting blind. If only the patterns are missing, proceed but do not invent substitutes.
+> **Requires:** per-repo recon at `~/.claude/{org}-{repo}-recon/recon-report.md` (created by `[[oss-repo-recon]]`) and, optionally, distilled patterns at `${KOOKR_PLUGIN_DIR:-$HOME/git/kookr/plugin}/skills/pr-contribution-excellence/repo/{slug}.md` (part of the optional OSS extension — see `docs/hooks-setup.md`). If recon is missing, stop and run `[[oss-repo-recon]]` first rather than scouting blind. If only the patterns are missing, proceed but do not invent substitutes.
 
 Find the best issue to contribute to in an external repository. Not just "good first issue" — intelligent triage of what an external contributor can realistically fix and get merged.
 
@@ -732,6 +732,6 @@ Once an issue is selected:
 
 ## See Also
 
-- [[kookr-oss-repo-recon]] — Must run before scouting
+- [[oss-repo-recon]] — Must run before scouting
 - [[oss-fork-manager]] — Set up fork for the selected issue
 - [[oss-pr-critic]] — Learn what PRs succeed in this repo

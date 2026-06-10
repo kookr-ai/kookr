@@ -2,7 +2,7 @@
 name: pre-pr-review
 description: Self-review checklist before creating a PR — repo checks, diff review, reviewer specialists, and gate state creation before gh pr create.
 keywords: review, self-review, pre-PR, checklist, before PR, quality, validation, before merge, before submit
-related: pre-push, pr-lifecycle, git-commit-discipline, testing-patterns, pr-review-triage
+related: git-commit-discipline, testing-patterns, pr-review-triage
 ---
 
 # Pre-PR Review
@@ -271,7 +271,7 @@ For small/obvious changes, the minimum is: run the detected build + test command
 
 ## See Also
 
-- [[pre-push]] — Delivery-cycle entrypoint before push (project-specific)
-- [[pr-lifecycle]] — Full PR lifecycle after this checklist passes
+- `pre-push` — Delivery-cycle entrypoint before push (project-specific)
+- `pr-lifecycle` — Full PR lifecycle after this checklist passes
 - [[git-commit-discipline]] — Commit message and branch safety
 - [[testing-patterns]] — Test configuration and isolation
