@@ -240,7 +240,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
       const result = await launchLoopedPlaybook({
         taskStore,
         ralphLoopService,
-        launchTask: (opts) => launchTask(deps.launchServiceDeps, opts),
+        launchTask: (opts, serverOpts) => launchTask(deps.launchServiceDeps, opts, serverOpts),
         getMaxActiveTasks: deps.launchServiceDeps.getMaxActiveTasks,
         cleanupFailedTask: (taskId) => cancelTaskLifecycle(taskId, lifecycleOpts(deps)),
       }, {
@@ -289,7 +289,7 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
       const { result, oldIteration } = await replaceLoopedPlaybook({
         taskStore,
         ralphLoopService,
-        launchTask: (opts) => launchTask(deps.launchServiceDeps, opts),
+        launchTask: (opts, serverOpts) => launchTask(deps.launchServiceDeps, opts, serverOpts),
         getMaxActiveTasks: deps.launchServiceDeps.getMaxActiveTasks,
         cleanupFailedTask: (taskId) => cancelTaskLifecycle(taskId, lifecycle),
         cancelReplacedTask: (taskId) => cancelTaskLifecycle(taskId, lifecycle),

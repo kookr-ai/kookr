@@ -3,6 +3,7 @@ name: Implement GitHub Issue
 description: Pick a GitHub issue (or batch), implement it in a worktree, and open a PR
 tags: [workflow, loopable]
 dependencies: [kb]
+deliveryPreAuthorized: true
 parameters:
   - name: issueSelector
     description: "Blank (next eligible open issue), issue numbers (50, 565, 566), or filter (label:bug,enhancement)"
@@ -61,6 +62,8 @@ checklist:
 Implement GitHub issues end-to-end. In standard launch mode, handle the specified issue or one eligible open issue. In Ralph loop mode, ship one PR per iteration across the full batch implied by `{{issueSelector}}` until nothing eligible remains.
 
 `{{mergeAfterImplementation}}` controls whether the workflow stops at an implementation PR (`false`) or continues until each PR is safely merged (`true`).
+
+If you face a design choice the issue does not settle, pick the smallest implementation that satisfies the issue, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
 
 ## Ralph loop contract
 

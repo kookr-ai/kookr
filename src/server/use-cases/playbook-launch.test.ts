@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { basename, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
-import { preparePlaybookLaunch } from './playbook-launch.js';
+import { preparePlaybookLaunch, preparePlaybookLaunchWithMetadata } from './playbook-launch.js';
 
 function cleanGitEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
@@ -109,6 +109,55 @@ Use the KB.
       });
 
       expect(launch.dependencies).toEqual(['kb']);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves deliveryPreAuthorized to a server-internal delivery policy', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
+    try {
+      await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(cwd, '.kookr', 'playbooks', 'ship.md'), `---
+name: Ship
+deliveryPreAuthorized: true
+---
+
+Ship it.
+`);
+
+      const prepared = await preparePlaybookLaunchWithMetadata({
+        cwd,
+        playbookPath: 'ship.md',
+        parameterValues: {},
+      });
+
+      expect(prepared.deliveryPolicy).toBe('pre-authorized');
+      expect(prepared.launchOpts).not.toHaveProperty('deliveryPreAuthorized');
+      expect(prepared.launchOpts).not.toHaveProperty('deliveryPolicy');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('defaults playbook launches to ask-first delivery policy', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
+    try {
+      await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(cwd, '.kookr', 'playbooks', 'ask.md'), `---
+name: Ask
+---
+
+Ask first.
+`);
+
+      const prepared = await preparePlaybookLaunchWithMetadata({
+        cwd,
+        playbookPath: 'ask.md',
+        parameterValues: {},
+      });
+
+      expect(prepared.deliveryPolicy).toBe('ask-first');
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

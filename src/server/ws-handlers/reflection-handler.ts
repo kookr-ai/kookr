@@ -1,5 +1,5 @@
 import type { ServerMessage, ClientMessage } from '../../shared/contracts/messages.js';
-import type { LaunchOpts, LaunchResult } from '../launch-service.js';
+import type { LaunchOpts, LaunchResult, LaunchTaskServerOptions } from '../launch-service.js';
 import type { TaskStore } from '../../core/tasks.js';
 import type { Monitor } from '../../core/monitor.js';
 import type { DeferredInteractionLogWriter } from '../../core/interaction-log.js';
@@ -21,7 +21,7 @@ export interface ReflectionHandlerDeps {
   monitor: Monitor;
   serverCwd: string;
   interactionLog?: DeferredInteractionLogWriter;
-  launchTask?: (opts: LaunchOpts) => Promise<LaunchResult>;
+  launchTask?: (opts: LaunchOpts, serverOpts?: LaunchTaskServerOptions) => Promise<LaunchResult>;
 }
 
 type ReflectMessage = Extract<ClientMessage, { type: 'reflect' }>;

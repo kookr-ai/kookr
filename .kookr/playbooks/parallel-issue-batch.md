@@ -2,6 +2,7 @@
 name: Parallel Issue Batch
 description: Select several non-conflicting GitHub issues, spawn one Kookr task per issue, and supervise them until PRs are merged
 tags: [workflow, loopable]
+deliveryPreAuthorized: true
 parameters:
   - name: repoFullName
     description: "Target repository (owner/repo)"
@@ -90,6 +91,8 @@ Run a parallel implementation batch for `{{repoFullName}}`: select several issue
 - `false`: every selected issue must have an open PR with local verification and green or pending CI, or an explicitly recorded blocker.
 
 This playbook is a parent/orchestrator. The parent selects and supervises. The child tasks implement one issue each.
+
+If you face a design choice the issue does not settle, pick the smallest implementation that satisfies the issue, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
 
 ## Required Skills
 
@@ -344,6 +347,7 @@ Implementation target:
 - Commit with a conventional message if the repo uses one.
 - Push the branch and open a PR that closes #<N>.
 - Monitor CI and fix failures.
+- If you face a design choice the issue does not settle, pick the smallest implementation that satisfies the issue, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
 - If mergeAfterImplementation is true, merge the PR only after it is mergeable and required checks are green. Use the repo's allowed merge method.
 - Report the PR URL and final state.
 

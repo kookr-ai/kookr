@@ -6,7 +6,7 @@ import type { AttentionQueue } from '../../core/attention-queue.js';
 import type { DeferredInteractionLogWriter } from '../../core/interaction-log.js';
 import type { ScheduleService } from '../schedule-service.js';
 import type { RalphLoopService } from '../ralph-loop-service.js';
-import type { LaunchOpts, LaunchResult } from '../launch-service.js';
+import type { LaunchOpts, LaunchResult, LaunchTaskServerOptions } from '../launch-service.js';
 import type { LifecycleDeps } from '../agent-lifecycle.js';
 import {
   cleanupSessionResources as cleanupSessionResourcesImpl,
@@ -35,7 +35,7 @@ export interface LifecycleHandlerDeps {
   interactionLog?: DeferredInteractionLogWriter;
   scheduleService?: ScheduleService;
   ralphLoopService: RalphLoopService;
-  launchTask?: (opts: LaunchOpts) => Promise<LaunchResult>;
+  launchTask?: (opts: LaunchOpts, serverOpts?: LaunchTaskServerOptions) => Promise<LaunchResult>;
   broadcastToAll?: (msg: ServerMessage) => void;
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
   takePredeleteSnapshot?: () => Promise<void>;

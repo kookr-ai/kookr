@@ -62,6 +62,25 @@ describe('parsePlaybook', () => {
     expect(pb.body).toBe('Do the thing.');
   });
 
+  test('parses deliveryPreAuthorized frontmatter', () => {
+    const content = `---
+name: Pre-authorized delivery
+deliveryPreAuthorized: true
+---
+Ship it.
+`;
+
+    const pb = parsePlaybook(content, 'ship.md', '/project');
+
+    expect(pb.deliveryPreAuthorized).toBe(true);
+  });
+
+  test('omits deliveryPreAuthorized when absent', () => {
+    const pb = parsePlaybook(MINIMAL_PLAYBOOK, 'simple.md', '/project');
+
+    expect(pb.deliveryPreAuthorized).toBeUndefined();
+  });
+
   test('records scope when explicitly set to user', () => {
     const pb = parsePlaybook(MINIMAL_PLAYBOOK, 'simple.md', '/home/u/.kookr/playbooks', 'user');
 

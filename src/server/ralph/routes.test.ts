@@ -366,11 +366,15 @@ Loop route.
     const body = await res.json();
     expect(body.cwd).toBe(targetCwd);
     expect(body.projectId).toBe(`local/${basename(targetCwd)}`);
-    expect(launchTask).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      cwd: targetCwd,
-      projectId: `local/${basename(targetCwd)}`,
-      playbookId: 'workflow.md',
-    }));
+    expect(launchTask).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        cwd: targetCwd,
+        projectId: `local/${basename(targetCwd)}`,
+        playbookId: 'workflow.md',
+      }),
+      { deliveryPolicy: 'ask-first' },
+    );
   });
 
   test('returns 503 with code "draining" when launchTask is gated by drain mode (issue #659)', async () => {

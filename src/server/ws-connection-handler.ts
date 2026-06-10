@@ -17,7 +17,7 @@ import type { AchievementWatcher } from './achievement-watcher.js';
 import type { ServerMessage, ClientMessage, QuotaStatus, SystemResourceStatus } from '../shared/protocol.js';
 import { ClientMessageSchema, summarizeZodIssues } from '../shared/contracts/client-message-schema.js';
 import { MessageRouter } from './ws.js';
-import type { LaunchOpts, LaunchResult } from './launch-service.js';
+import type { LaunchOpts, LaunchResult, LaunchTaskServerOptions } from './launch-service.js';
 import type { AgentLifecycleDeps } from './agent-lifecycle.js';
 import type { CircuitBreakerRegistry } from '../core/circuit-breaker.js';
 import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
@@ -92,7 +92,7 @@ export interface WsConnectionDeps {
   agentLifecycleDeps: AgentLifecycleDeps;
   broadcastToAll: (msg: ServerMessage) => void;
   broadcastProjectSummaries: () => void;
-  launchTask: (opts: LaunchOpts) => Promise<LaunchResult>;
+  launchTask: (opts: LaunchOpts, serverOpts?: LaunchTaskServerOptions) => Promise<LaunchResult>;
   githubStateStore: GitHubStateStore;
   ledgerAnalytics: LedgerAnalytics;
   projectConfigStore: ProjectConfigStore;

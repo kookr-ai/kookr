@@ -1,13 +1,16 @@
 import type { ServerMessage, ClientMessage } from '../../shared/contracts/messages.js';
-import type { LaunchOpts, LaunchResult } from '../launch-service.js';
+import type { LaunchOpts, LaunchResult, LaunchTaskServerOptions } from '../launch-service.js';
 import { preparePlaybookList } from '../use-cases/playbook-list.js';
-import { preparePlaybookLaunch } from '../use-cases/playbook-launch.js';
+import {
+  preparePlaybookLaunchWithMetadata,
+  type PreparedPlaybookLaunch,
+} from '../use-cases/playbook-launch.js';
 import { handleLaunchResult } from './launch-result.js';
 
 /** Narrow dependency bag for playbook-family messages. */
 export interface PlaybookHandlerDeps {
   send: (msg: ServerMessage) => void;
-  launchTask?: (opts: LaunchOpts) => Promise<LaunchResult>;
+  launchTask?: (opts: LaunchOpts, serverOpts?: LaunchTaskServerOptions) => Promise<LaunchResult>;
 }
 
 type PlaybookMessage = Extract<ClientMessage, { type: 'listPlaybooks' | 'launchPlaybook' }>;
@@ -30,11 +33,11 @@ export class PlaybookHandler {
       }
 
       case 'launchPlaybook': {
-        let opts: LaunchOpts | undefined;
+        let prepared: PreparedPlaybookLaunch | undefined;
         let result: LaunchResult | undefined;
         let err: unknown;
         try {
-          opts = await preparePlaybookLaunch({
+          prepared = await preparePlaybookLaunchWithMetadata({
             cwd: msg.cwd,
             playbookSourceCwd: msg.playbookSourceCwd,
             taskTargetCwd: msg.taskTargetCwd,
@@ -44,9 +47,9 @@ export class PlaybookHandler {
             agentType: msg.agentType,
             scope: msg.scope,
           });
-          result = await this.deps.launchTask?.(opts);
+          result = await this.deps.launchTask?.(prepared.launchOpts, { deliveryPolicy: prepared.deliveryPolicy });
         } catch (e) { err = e; }
-        const excerpt = (opts?.name ?? opts?.prompt ?? msg.playbookPath).slice(0, 40);
+        const excerpt = (prepared?.launchOpts.name ?? prepared?.launchOpts.prompt ?? msg.playbookPath).slice(0, 40);
         return handleLaunchResult(this.deps.send, excerpt, result, err);
       }
     }

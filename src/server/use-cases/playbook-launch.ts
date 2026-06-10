@@ -8,6 +8,7 @@ import type { AgentSelection } from '../../core/agent-types.js';
 import type { PlaybookParameter, PlaybookScope } from '../../core/playbook.js';
 import { canonicalizeCwd } from '../cwd.js';
 import type { LaunchOpts } from '../launch-service.js';
+import type { DeliveryPolicy } from '../worktree-guardrails.js';
 import { normalizePromptFileReferences } from '../prompt-file-paths.js';
 import { expandConfiguredCwd } from '../cwd-paths.js';
 
@@ -44,6 +45,7 @@ export interface NormalizedPlaybookLaunchInput extends PreparePlaybookLaunchInpu
 export interface PreparedPlaybookLaunch {
   playbook: ReturnType<typeof parsePlaybook>;
   launchOpts: LaunchOpts;
+  deliveryPolicy: DeliveryPolicy;
 }
 
 export async function preparePlaybookLaunch(input: PreparePlaybookLaunchInput): Promise<LaunchOpts> {
@@ -127,6 +129,7 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
 
   return {
     playbook,
+    deliveryPolicy: playbook.deliveryPreAuthorized ? 'pre-authorized' : 'ask-first',
     launchOpts: {
       prompt,
       cwd: effectiveCwd,

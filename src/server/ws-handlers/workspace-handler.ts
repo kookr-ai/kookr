@@ -4,7 +4,7 @@ import type { WorkspaceAttemptRepository } from '../../core/workspace-attempt-re
 import type { RepoPolicyResolver } from '../../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../../core/worktree-lease-service.js';
 import type { ProjectConfigStore } from '../../core/project-config-store.js';
-import type { LaunchOpts, LaunchResult } from '../launch-service.js';
+import type { LaunchOpts, LaunchResult, LaunchTaskServerOptions } from '../launch-service.js';
 import { getWorkspaceView } from '../use-cases/contribution-workspace-query.js';
 import { resolveWorkspaceContext } from '../use-cases/workspace-context.js';
 import { cleanupSafeWorkspaceCandidates, cleanupWorkspaceCandidate } from '../use-cases/workspace-cleanup-service.js';
@@ -28,7 +28,7 @@ export interface WorkspaceHandlerDeps {
   attemptRepository?: WorkspaceAttemptRepository;
   policyResolver?: RepoPolicyResolver;
   leaseService?: WorktreeLeaseService;
-  launchTask?: (opts: LaunchOpts) => Promise<LaunchResult>;
+  launchTask?: (opts: LaunchOpts, serverOpts?: LaunchTaskServerOptions) => Promise<LaunchResult>;
 }
 
 type WorkspaceMessage = Extract<ClientMessage, { type: `workspace:${string}` }>;

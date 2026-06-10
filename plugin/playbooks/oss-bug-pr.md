@@ -2,6 +2,7 @@
 name: OSS Bug PR
 description: Find ready-labeled triage issues and create upstream PRs for any repository
 repo-tags: [github]
+deliveryPreAuthorized: true
 parameters:
   - name: repoFullName
     description: "Upstream repo (owner/repo)"
@@ -33,6 +34,8 @@ Use these derived values wherever they appear below.
 ## Objective
 
 Find triage issues marked `ready` in `<forkName>` and create upstream PRs on `{{repoFullName}}`.
+
+If you face a design choice the issue does not settle, pick the smallest implementation that satisfies the issue, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
 
 ## Context
 
