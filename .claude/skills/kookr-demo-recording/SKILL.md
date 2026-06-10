@@ -158,7 +158,7 @@ The demo uses `FakeTerminalBackend` — no real agents run. This means features 
 - **Onboarding tour**: suppressed via `?onboarding=0` URL param (version-proof) + the `kookr:onboarding:seen-v2` localStorage key. If the tour overlay intercepts clicks, the storage key version bumped — update both.
 - **Project-filter sync**: selecting a task switches the project filter to that task's project. After triaging a webapp finding, api-service agents are filtered out — click the all-projects chip before showcasing them.
 - **Findings auto-scroll**: a new finding scrolls the list to top, which can swallow a click landed mid-scroll. `selectFindingByText` retries once.
-- **Achievement toasts**: pop at uncontrolled times bottom-right. Hidden during thumbnail capture; acceptable in the video itself.
+- **Achievement toasts**: pop at uncontrolled times bottom-right and read as noise to first-time viewers — suppressed via injected CSS for the entire recording.
 
 ## Demo Content Quality
 
@@ -175,10 +175,15 @@ When demonstrating interactive UI (snooze dialog, launch dialog, playbook parame
 - **After an action changes UI state** (snooze moves task to snoozed section, complete moves to completed), wait for the new section to render and hold it visible
 - **Match production behavior** — watch the real app for the flow before scripting the demo. Don't guess at what happens after an action.
 
-### Marketing rules baked into the scenario
-- **First 3 seconds show the pain**, never a logo. The cold-open grid is on screen from frame 1.
-- **The closing card is a real CTA**: repo URL, clone command, star prompt, stat strip. A convinced viewer must never have to go hunting.
-- **Every quantified claim is on screen** (time reclaimed badge, supervision-avoided row, cost in TopBar).
+### Marketing rules baked into the scenario (fresh-eyes review pass)
+These came out of a panel of simulated first-time viewers (skeptic, eng manager, newcomer, power user) reviewing the actual frames + narration:
+- **First 3 seconds show the pain**, never a logo. The cold-open grid is on screen from frame 1; the dashboard is revealed with a live finding already queued ("1 ACTIVE") — viewers must never see an empty findings panel.
+- **The "aha" comes before the tour**: permission-block triage is Act 1; project filtering is Act 2. Front-load the hardest problem, not navigation.
+- **No invented metrics, ever.** A footnoted "demo overlay, not a product feature" estimate destroys trust outright. Every quantified claim must be real and on screen (session cost in the TopBar, per-task cost, the completion digest).
+- **Show the loop closing**: after Allow / a sent reply, inject a `PreToolUse` so the agent visibly resumes. "Send" must not look like it goes into the void.
+- **Answer "how does it attach?" early** (the plumbing narration line: local hooks, replies land in the agent's terminal, nothing leaves your machine). It is the #1 skeptic objection.
+- **The closing card is a real CTA**: repo URL, clone command, star prompt, stat strip. No unverifiable claims ("two minutes") in the narration.
+- **The thumbnail is captured in a post-credits epilogue** after the `video_end` tracker mark; the published video is trimmed there, so the overlay never appears in footage.
 
 ## Post-Recording Checklist
 

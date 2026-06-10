@@ -162,6 +162,9 @@ async function injectInteractionIndicators(page: Page) {
     // --- CSS for click ripple and keystroke badge ---
     const style = document.createElement('style');
     style.textContent = `
+      /* Achievement toasts pop at uncontrolled times and read as noise to
+         first-time viewers — suppress them for the whole recording. */
+      .achievement-toasts { display: none !important; }
       .demo-click-ripple {
         position: fixed; pointer-events: none; z-index: 99998;
         width: 28px; height: 28px; border-radius: 50%;
@@ -277,7 +280,7 @@ async function showColdOpenGrid(page: Page) {
       },
       {
         color: '#f4c341',
-        body: '$ codex exec "fix auth middleware"\nPermission requested\n  Tool: Bash\n  Command: npm test -- --runInBand\nAllow? [1] yes  [2] no\n_',
+        body: '$ claude code\n> Fixing auth middleware\nPermission requested\n  Tool: Bash\n  Command: npm test -- --runInBand\nAllow? [1] yes  [2] no\n_',
       },
       {
         color: '#dfe4f0',
@@ -387,86 +390,6 @@ async function showInferenceStamp(page: Page, text: string, holdMs = 600) {
   });
 }
 
-/** "~14 min reclaimed today" badge that appears after snoozing. */
-async function showTimeReclaimedBadge(page: Page, holdMs = 1400) {
-  await page.evaluate(() => {
-    const badge = document.createElement('div');
-    badge.id = 'demo-time-reclaimed';
-    badge.textContent = '~14 min reclaimed today';
-    // Fixed position bottom-left so it's visible regardless of which row got
-    // snoozed (the snoozed row's DOM position can be unstable mid-animation).
-    badge.style.cssText = `
-      position: fixed; bottom: 96px; left: 96px; z-index: 99997;
-      background: rgba(244, 195, 65, 0.18); color: #f4c341;
-      padding: 10px 20px; border-radius: 8px;
-      font: 600 18px/1.3 -apple-system, sans-serif;
-      border: 1.5px solid rgba(244, 195, 65, 0.55);
-      opacity: 0; transition: opacity 0.25s;
-      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
-    `;
-    document.body.appendChild(badge);
-    requestAnimationFrame(() => { badge.style.opacity = '1'; });
-  });
-  await wait(page, holdMs);
-  await page.evaluate(() => {
-    const el = document.getElementById('demo-time-reclaimed');
-    if (el) {
-      el.style.opacity = '0';
-      setTimeout(() => el.remove(), 250);
-    }
-  });
-}
-
-/** Overlay added to the completion digest panel: "Manual supervision avoided" row + footnote. */
-async function showSupervisionAvoidedOverlay(page: Page, taskDurationLabel: string, checks: number, minutes: number) {
-  await page.evaluate(({ duration, checkCount, mins }) => {
-    // Find the completion digest panel — looks for the bullets list root.
-    const digest = document.querySelector('.detail-digest, .completion-digest, .digest, .task-detail-completion');
-    const anchor = digest ?? document.body;
-    const row = document.createElement('div');
-    row.id = 'demo-supervision-row';
-    row.style.cssText = `
-      margin-top: 10px; padding: 10px 14px;
-      background: rgba(45, 212, 191, 0.08);
-      border: 1px solid rgba(45, 212, 191, 0.35);
-      border-radius: 8px;
-      font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
-      color: #dfe4f0;
-    `;
-    row.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:baseline;">
-        <span style="font-weight:600;color:#2dd4bf;font-size:14px;">Manual supervision avoided</span>
-        <span style="color:#dfe4f0;font-size:14px;">~${mins} min <span style="color:#8b94aa;font-size:12px;">(≈ ${checkCount} checks at 30s cadence)</span></span>
-      </div>
-      <div style="font-size:11px;color:#6b7388;margin-top:6px;">
-        *Estimate: 30s manual-check cadence × ${duration} task duration. Demo overlay; not yet a product feature.
-      </div>
-    `;
-    if (digest) {
-      anchor.appendChild(row);
-    } else {
-      // Fallback: pin to BOTTOM-CENTER of viewport so it sits over the
-      // detail panel cleanly and never overlaps the top-right CI/alert toasts
-      // that share that corner (which made it read like a red error frame
-      // in the v1 capture).
-      row.style.cssText += `
-        position: fixed; bottom: 132px; left: 50%; transform: translateX(-50%);
-        z-index: 99997; min-width: 460px; max-width: 540px;
-        background: rgba(45, 212, 191, 0.14);
-        border: 1.5px solid rgba(45, 212, 191, 0.55);
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
-      `;
-      document.body.appendChild(row);
-    }
-  }, { duration: taskDurationLabel, checkCount: checks, mins: minutes });
-}
-
-async function clearSupervisionAvoidedOverlay(page: Page) {
-  await page.evaluate(() => {
-    document.getElementById('demo-supervision-row')?.remove();
-  });
-}
-
 /**
  * Capture a designed YouTube/social thumbnail: a left-side headline gradient
  * over the LIVE dashboard at its peak state (two alerts competing), so the
@@ -474,15 +397,10 @@ async function clearSupervisionAvoidedOverlay(page: Page) {
  * custom-thumbnail limit, then removes the overlay.
  */
 async function captureThumbnail(page: Page, outPath: string) {
-  // The overlay is visible in the recording, so play it as a deliberate
-  // branded beat — fade in, hold ~1s (screenshot during the hold), fade out.
-  // It doubles as a mid-video title card instead of reading as a glitch.
+  // Called in the post-credits epilogue (after the video_end mark), so the
+  // overlay never appears in the published footage — the master is trimmed
+  // at video_end.
   await page.evaluate(() => {
-    // Achievement toasts pop at uncontrolled times — keep them out of the
-    // thumbnail (restored after the screenshot).
-    document.querySelectorAll('.achievement-toasts').forEach((el) => {
-      (el as HTMLElement).style.display = 'none';
-    });
     const overlay = document.createElement('div');
     overlay.id = 'demo-thumbnail-overlay';
     overlay.style.cssText = `
@@ -492,7 +410,6 @@ async function captureThumbnail(page: Page, outPath: string) {
       padding-left: 72px; gap: 18px;
       font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
       text-shadow: 0 2px 18px rgba(0,0,0,0.85);
-      opacity: 0; transition: opacity 300ms ease-out;
     `;
     overlay.innerHTML = `
       <div style="font-size:92px;font-weight:800;color:#f8fafc;line-height:1.05;">5 AI agents.</div>
@@ -500,22 +417,10 @@ async function captureThumbnail(page: Page, outPath: string) {
       <div style="font-size:30px;color:#b3bccc;margin-top:14px;font-weight:500;">Kookr — open-source supervision for parallel coding agents</div>
     `;
     document.body.appendChild(overlay);
-    requestAnimationFrame(() => { overlay.style.opacity = '1'; });
   });
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(300);
   await page.screenshot({ path: outPath, type: 'jpeg', quality: 88 });
-  await page.waitForTimeout(600);
-  await page.evaluate(() => {
-    const overlay = document.getElementById('demo-thumbnail-overlay');
-    if (overlay) {
-      overlay.style.opacity = '0';
-      setTimeout(() => overlay.remove(), 350);
-    }
-    document.querySelectorAll('.achievement-toasts').forEach((el) => {
-      (el as HTMLElement).style.display = '';
-    });
-  });
-  await page.waitForTimeout(350);
+  await page.evaluate(() => document.getElementById('demo-thumbnail-overlay')?.remove());
 }
 
 /** Full-frame closing card with Kookr wordmark and final call to action. */
@@ -929,22 +834,22 @@ const HOOK_VARIANTS: Record<string, string> = {
 };
 const HOOK_VARIANT = (process.env.DEMO_HOOK ?? 'A').toUpperCase();
 
-/** Narration scripts — v4 (marketing pass). */
+/** Narration scripts — v5 (fresh-eyes review pass). */
 const NARRATIONS: Record<string, string> = {
-  // Act 0: Cold open + hook
+  // Act 0: Cold open + hook (dashboard revealed with a live finding already queued)
   intro_hook: HOOK_VARIANTS[HOOK_VARIANT] ?? HOOK_VARIANTS.A,
   cold_open: 'Some are making progress. Some are blocked. One needs a decision right now.',
   hook: 'Kookr turns that noise into one attention queue. It tells you where your review time matters next.',
 
-  // Act 1: Multi-project, multi-provider
-  projects_webapp: 'First, the webapp project stays isolated, so you can inspect auth and login work without mixing contexts.',
-  projects_api: 'Then switch to API work and you only see the two backend agents: pagination and rate limiting.',
-  projects_all: 'Or return to all projects when you want global supervision across every running agent.',
-  providers_mixed: 'Claude Code and Codex CLI land in the same workflow. Different runtimes, one supervision surface.',
-
-  // Act 2: Anomaly detection
+  // Act 1: Anomaly detection first — the everyday win, then the plumbing
   permission_block: 'This is the everyday win: a permission prompt is no longer buried in a terminal.',
   permission_allow: 'Kookr surfaces the exact command, the exact agent, and the next action to unblock it.',
+  plumbing: 'One click, and the agent is back to work — replies land in the agent\'s own terminal through local hooks. Nothing leaves your machine.',
+
+  // Act 2: Multi-project, multi-provider
+  projects_iso: 'Projects stay isolated, too: switch to the API service and you see only its backend agents.',
+  projects_all: 'Or supervise everything at once, with live cost for every agent and for the whole session.',
+  providers_mixed: 'Claude Code and Codex CLI land in the same workflow. Different runtimes, one supervision surface.',
 
   // Act 3: Cross-project triage
   two_alerts: 'Now two interruptions compete: Codex needs product judgment, while Claude hit a merge conflict.',
@@ -955,13 +860,13 @@ const NARRATIONS: Record<string, string> = {
   pr_opened: 'The handoff does not stop when an agent opens a pull request. Kookr keeps review context attached to the agent that caused it.',
   ci_failed: 'When CI fails, it re-enters the same attention queue, next to terminal prompts and product decisions.',
 
-  // Act 5: Completion + cost + time saved
+  // Act 5: Completion + the real session numbers
   agent_done: 'When an agent finishes, Kookr gives you the digest: what changed, what passed, and what it cost.',
-  time_saved: 'The point is not another dashboard. It is avoiding another manual check-in loop.',
+  session_value: 'This morning\'s real total: five agents in parallel, one dollar forty-seven — and your attention only where it mattered.',
 
   // Act 6: Closing
   closing: 'Kookr is local-first and open source: an attention router for developers running parallel AI coding agents.',
-  repo_url: 'Kookr is on GitHub. Clone it, run it in two minutes, and star it if it saves you a check-in loop.',
+  repo_url: 'Kookr is on GitHub. Clone it, run it locally, and star it if it saves you a check-in loop.',
 };
 
 interface AudioClip {
@@ -1036,12 +941,17 @@ function holdTime(clips: Map<string, AudioClip>, key: string, defaultMs: number,
   return Math.max(defaultMs, clip.durationMs + paddingMs);
 }
 
-/** Merge audio clips into a video at specified timestamps using ffmpeg. */
+/**
+ * Merge audio clips into a video at specified timestamps using ffmpeg.
+ * When `trimMs` is set, the output is cut there (drops the post-credits
+ * thumbnail epilogue from the published video).
+ */
 async function mergeAudioIntoVideo(
   videoPath: string,
   outputPath: string,
   clips: Map<string, AudioClip>,
   timestamps: Array<{ key: string; offsetMs: number }>,
+  trimMs?: number,
 ): Promise<void> {
   // Filter to clips that exist and have timestamps
   const validEntries = timestamps.filter((t) => clips.has(t.key));
@@ -1082,8 +992,11 @@ async function mergeAudioIntoVideo(
     '-c:v', 'copy',
     '-c:a', 'libopus',
     '-shortest',
-    outputPath,
   );
+  if (trimMs !== undefined) {
+    args.push('-t', (trimMs / 1000).toFixed(3));
+  }
+  args.push(outputPath);
 
   console.log(`[ffmpeg] Merging ${validEntries.length} audio clips into video...`);
 
@@ -1106,10 +1019,10 @@ async function runExportMatrix(
 ): Promise<void> {
   const durationMs = await probeDurationMs(finalPath).catch(() => 0);
 
-  // Teaser: pain+hook, the anomaly-detection act, then the CTA card (~30s).
+  // Teaser: pain+hook, the allow-and-resume beat, then the CTA card (~28s).
   const teaserSegments = segmentsFromTracker(entries, durationMs, [
-    ['cold_open', 'projects_webapp'],
-    ['permission_block', 'two_alerts'],
+    ['cold_open', 'permission_block'],
+    ['permission_allow', 'plumbing'],
     ['repo_url', null],
   ]);
 
@@ -1354,17 +1267,26 @@ async function record() {
     // The cold-open grid is already on screen (mounted right after
     // page.goto). Hold until the intro hook narration has finished; all the
     // seeding above happened behind the opaque grid.
+    //
+    // Inject the permission finding BEFORE revealing the dashboard so the
+    // queue is alive ("1 ACTIVE") from the very first product frame — the
+    // viewer never sees an empty findings panel.
+    await injectPermissionEvent(request, tmux1, 'Bash', 'npm test --coverage');
+    await page.locator('.finding-card').filter({ hasText: 'Fix JWT token refresh in auth.ts' }).first().waitFor({ state: 'visible', timeout: 5000 });
+
     const introHoldMs = holdTime(audioClips, 'intro_hook', 5500, 700);
     await wait(page, Math.max(0, introHoldMs - (Date.now() - introStartedAt)));
 
-    // Render caption FIRST, then mark so audio fires when visuals are
-    // already on screen (avoids 200ms of audio over an empty frame).
+    // Reveal the dashboard early — the cold_open line ("some are blocked,
+    // one needs a decision right now") plays over the live queue, which is
+    // the answer to the chaos, not more chaos.
+    await fadeOutColdOpenGrid(page, 500);
+    await wait(page, 700);
     await showCaption(page, NARRATIONS.cold_open);
     tracker.mark('cold_open');
     await wait(page, holdTime(audioClips, 'cold_open', 3500));
     await hideCaption(page);
-    await fadeOutColdOpenGrid(page, 500);
-    await wait(page, 1200);
+    await wait(page, 300);
 
     await showCaption(page, NARRATIONS.hook);
     tracker.mark('hook');
@@ -1373,55 +1295,8 @@ async function record() {
     await wait(page, 500);
 
     // =====================================================================
-    // ACT 1 — Multi-project, multi-provider landscape (0:11–0:38)
+    // ACT 1 — Anomaly detection first: the everyday win (0:15–0:45)
     // =====================================================================
-    const webappChip = page.getByTestId('project-icon-acme/webapp');
-    const apiChip = page.getByTestId('project-icon-acme/api-service');
-    const allProjectsChip = page.getByTestId('project-icon-all');
-
-    await webappChip.waitFor({ state: 'visible', timeout: 5000 });
-    await apiChip.waitFor({ state: 'visible', timeout: 5000 });
-    await allProjectsChip.waitFor({ state: 'visible', timeout: 5000 });
-
-    await showCaption(page, NARRATIONS.projects_webapp);
-    tracker.mark('projects_webapp');
-    await webappChip.hover();
-    await wait(page, 700);
-    await webappChip.click();
-    await wait(page, Math.max(0, holdTime(audioClips, 'projects_webapp', 6500) - 700));
-
-    await showCaption(page, NARRATIONS.projects_api);
-    tracker.mark('projects_api');
-    await apiChip.hover();
-    await wait(page, 500);
-    await apiChip.click();
-    await wait(page, Math.max(0, holdTime(audioClips, 'projects_api', 6000) - 500));
-
-    await showCaption(page, NARRATIONS.projects_all);
-    tracker.mark('projects_all');
-    await allProjectsChip.hover();
-    await wait(page, 500);
-    await allProjectsChip.click();
-    await wait(page, Math.max(0, holdTime(audioClips, 'projects_all', 5200) - 500));
-    await hideCaption(page);
-    await wait(page, 400);
-
-    await showCaption(page, NARRATIONS.providers_mixed);
-    tracker.mark('providers_mixed');
-    await wait(page, holdTime(audioClips, 'providers_mixed', 5600));
-    await hideCaption(page);
-    await wait(page, 500);
-    // Codex CLI fork detail intentionally deferred to the closing card —
-    // it's an implementation detail, not a headline feature.
-
-    // =====================================================================
-    // ACT 2 — Anomaly detection in action (0:38–0:58)
-    // =====================================================================
-    // Inject the permission event + wait for the card to render BEFORE
-    // marking, so the audio "Permission blocked on the webapp agent..."
-    // fires when the permission card is already visible.
-    await injectPermissionEvent(request, tmux1, 'Bash', 'npm test --coverage');
-    await page.locator('.finding-card').filter({ hasText: 'Fix JWT token refresh in auth.ts' }).first().waitFor({ state: 'visible', timeout: 5000 });
     await showInferenceStamp(page, 'rule F2.4 · PermissionRequest → severity=warning', 700);
     await showCaption(page, NARRATIONS.permission_block);
     tracker.mark('permission_block');
@@ -1449,7 +1324,51 @@ async function record() {
     await wait(page, 900);
     await wait(page, Math.max(0, permissionAllowTotal - (Date.now() - permissionAllowStartedAt)));
     await hideCaption(page);
+
+    // Close the loop on screen: the approved agent visibly resumes work
+    // (finding clears, agent returns to the healthy list with a live tool
+    // row) while the plumbing line answers "how does this even attach?".
+    await injectToolUse(request, tmux1, 'Bash');
+    await wait(page, 600);
+    await showCaption(page, NARRATIONS.plumbing);
+    tracker.mark('plumbing');
+    await wait(page, holdTime(audioClips, 'plumbing', 7200));
+    await hideCaption(page);
     await wait(page, 400);
+
+    // =====================================================================
+    // ACT 2 — Multi-project, multi-provider landscape (0:45–1:05)
+    // =====================================================================
+    // Selecting the JWT finding switched the project filter to acme/webapp
+    // (selection sync), so the tour starts from an isolated project view.
+    const apiChip = page.getByTestId('project-icon-acme/api-service');
+    const allProjectsChip = page.getByTestId('project-icon-all');
+    await apiChip.waitFor({ state: 'visible', timeout: 5000 });
+    await allProjectsChip.waitFor({ state: 'visible', timeout: 5000 });
+
+    await showCaption(page, NARRATIONS.projects_iso);
+    tracker.mark('projects_iso');
+    await apiChip.hover();
+    await wait(page, 600);
+    await apiChip.click();
+    await wait(page, Math.max(0, holdTime(audioClips, 'projects_iso', 6000) - 600));
+
+    await showCaption(page, NARRATIONS.projects_all);
+    tracker.mark('projects_all');
+    await allProjectsChip.hover();
+    await wait(page, 500);
+    await allProjectsChip.click();
+    await wait(page, Math.max(0, holdTime(audioClips, 'projects_all', 5600) - 500));
+    await hideCaption(page);
+    await wait(page, 400);
+
+    await showCaption(page, NARRATIONS.providers_mixed);
+    tracker.mark('providers_mixed');
+    await wait(page, holdTime(audioClips, 'providers_mixed', 5600));
+    await hideCaption(page);
+    await wait(page, 500);
+    // Codex CLI fork detail intentionally deferred to the closing card —
+    // it's an implementation detail, not a headline feature.
 
     // =====================================================================
     // ACT 3 — Cross-project triage (0:58–1:30)
@@ -1476,11 +1395,13 @@ async function record() {
     await selectFindingByText(page, 'Add rate limiting to pagination endpoint');
     await wait(page, 800);
 
-    await broadcastSuggestion(request, tmux4, [
+    // Also reused by the post-credits thumbnail epilogue.
+    const rateLimitSuggestions = [
       'Use in-memory TTL for this PR. Add the storage interface now so Redis can replace it when we deploy multiple instances.',
       'Use Redis immediately if this service will run more than one instance in the next sprint.',
       'Ship in-memory TTL behind a config flag and add a follow-up issue for Redis before horizontal scaling.',
-    ], [
+    ];
+    const rateLimitQuickActions = [
       {
         label: 'In-memory TTL + adapter',
         value: 'Use in-memory TTL for this PR. Please keep the storage boundary explicit so Redis can replace it before multi-instance deploys.',
@@ -1491,13 +1412,9 @@ async function record() {
         value: 'Use Redis now if this service will run multiple instances in the next sprint; otherwise keep the PR smaller with in-memory TTL.',
         shortcut: '2',
       },
-    ]);
+    ];
+    await broadcastSuggestion(request, tmux4, rateLimitSuggestions, rateLimitQuickActions);
     await wait(page, 1200);
-
-    // Peak state — a product decision selected, AI-drafted replies and quick
-    // actions on screen, two findings in the queue. Capture the designed
-    // thumbnail here so it always reflects the current UI.
-    await captureThumbnail(page, join(OUTPUT_DIR, 'kookr-demo-thumbnail.jpg'));
 
     await showCaption(page, NARRATIONS.ai_suggest);
     tracker.mark('ai_suggest');
@@ -1508,6 +1425,8 @@ async function record() {
     await aiBtn.click();
     await page.locator('.sent-overlay').waitFor({ state: 'visible', timeout: 3000 });
     await hideCaption(page);
+    // The answered agent visibly resumes — same closed-loop proof as Act 1.
+    await injectToolUse(request, tmux4, 'Edit');
     await wait(page, 300);
 
     // Re-surface the merge conflict for snoozing
@@ -1538,7 +1457,6 @@ async function record() {
       await page.keyboard.press('2');
       await wait(page, 900);
     }
-    await showTimeReclaimedBadge(page, 1800);
     await wait(page, Math.max(0, snoozeTotal - (Date.now() - snoozeStartedAt)));
     await hideCaption(page);
     await wait(page, 400);
@@ -1627,7 +1545,7 @@ async function record() {
     await wait(page, 400);
 
     // =====================================================================
-    // ACT 5 — Completion + cost + supervision avoided (1:53–2:18)
+    // ACT 5 — Completion + the real session numbers (1:53–2:18)
     // =====================================================================
     await completeTaskWithDigest(request, taskId5, {
       bullets: [
@@ -1655,12 +1573,12 @@ async function record() {
     await wait(page, holdTime(audioClips, 'agent_done', 7000));
     await hideCaption(page);
 
-    await showSupervisionAvoidedOverlay(page, '8m 12s', 16, 8);
-    await showCaption(page, NARRATIONS.time_saved);
-    tracker.mark('time_saved');
-    await wait(page, holdTime(audioClips, 'time_saved', 5200));
+    // Every number in this line is real and on screen: the TopBar session
+    // cost and the completed digest. No invented metrics, no footnotes.
+    await showCaption(page, NARRATIONS.session_value);
+    tracker.mark('session_value');
+    await wait(page, holdTime(audioClips, 'session_value', 6500));
     await hideCaption(page);
-    await clearSupervisionAvoidedOverlay(page);
     await wait(page, 400);
 
     // =====================================================================
@@ -1683,6 +1601,25 @@ async function record() {
     await hideCaption(page);
     await hideClosingCard(page);
     await wait(page, 700);
+    // Everything after this mark is trimmed out of the published video.
+    tracker.mark('video_end');
+
+    // =====================================================================
+    // POST-CREDITS (trimmed away) — thumbnail capture from the live UI.
+    // Re-create the AI-suggestion peak so the thumbnail shows the product at
+    // its most alive, without polluting the narrative footage.
+    // =====================================================================
+    await wait(page, 1000);
+    await injectStopEvent(
+      request,
+      tmux4,
+      'Rate-limit storage choice needed before I wire the middleware. Should I ship in-memory TTL now with a Redis storage interface, or add Redis immediately?',
+    );
+    await broadcastSuggestion(request, tmux4, rateLimitSuggestions, rateLimitQuickActions);
+    await wait(page, 800);
+    await selectFindingByText(page, 'Add rate limiting to pagination endpoint');
+    await wait(page, 800);
+    await captureThumbnail(page, join(OUTPUT_DIR, 'kookr-demo-thumbnail.jpg'));
 
     console.log(CHECK_MODE ? 'Scenario complete.' : 'Scenario complete. Saving video...');
     scenarioOk = true;
@@ -1699,12 +1636,16 @@ async function record() {
     await browser.close();
 
     if (!CHECK_MODE) {
+      // Cut the published video at the video_end mark — everything after it
+      // is the post-credits thumbnail epilogue.
+      const videoEndOffset = tracker.getEntries().find((e) => e.key === 'video_end')?.offsetMs;
+      const trimMs = videoEndOffset !== undefined ? videoEndOffset + 600 : undefined;
 
       // Merge audio if we have clips
       const finalPath = join(OUTPUT_DIR, 'kookr-demo.webm');
       if (audioClips.size > 0 && existsSync(silentPath)) {
         try {
-          await mergeAudioIntoVideo(silentPath, finalPath, audioClips, tracker.getEntries());
+          await mergeAudioIntoVideo(silentPath, finalPath, audioClips, tracker.getEntries(), trimMs);
           // Remove the silent intermediate file
           try { rmSync(silentPath); } catch { /* ignore */ }
         } catch (err) {
@@ -1712,6 +1653,15 @@ async function record() {
           console.warn('[ffmpeg] Silent video preserved at:', silentPath);
           // Rename silent to final so there's always an output
           try { renameSync(silentPath, finalPath); } catch { /* ignore */ }
+        }
+      } else if (existsSync(finalPath) && trimMs !== undefined) {
+        // Silent recording: trim the epilogue in place.
+        try {
+          const trimmed = join(OUTPUT_DIR, 'kookr-demo-trim-tmp.webm');
+          await execFileAsync('ffmpeg', ['-y', '-i', finalPath, '-t', (trimMs / 1000).toFixed(3), '-c', 'copy', trimmed], { timeout: 120_000 });
+          renameSync(trimmed, finalPath);
+        } catch (err) {
+          console.warn(`[ffmpeg] Epilogue trim failed (full video kept): ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 
