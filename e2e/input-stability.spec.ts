@@ -93,7 +93,7 @@ test.describe('Input stability — no auto-send on state changes', () => {
     await injectSessionStart(request, tmux);
     await injectStopEvent(request, tmux);
     await page.locator('.finding-card').click();
-    await expect(page.locator('.response-row input')).toHaveAttribute('autocomplete', 'off');
+    await expect(page.locator('.response-row textarea')).toHaveAttribute('autocomplete', 'off');
   });
 
   test('input preserved when suggestions arrive', async ({ page, request }) => {
@@ -104,14 +104,14 @@ test.describe('Input stability — no auto-send on state changes', () => {
     await page.locator('.finding-card').click();
 
     const userText = 'My carefully composed response';
-    await page.locator('.response-row input').fill(userText);
+    await page.locator('.response-row textarea').fill(userText);
 
     await broadcastSuggestion(request, tmux, ['Try the logs'], [
       { label: 'Check logs', value: 'Check logs' },
     ]);
     await expect(page.locator('.btn-quick-action').first()).toBeVisible({ timeout: 3000 });
 
-    await expect(page.locator('.response-row input')).toHaveValue(userText);
+    await expect(page.locator('.response-row textarea')).toHaveValue(userText);
     await expect(page.locator('.sent-overlay')).not.toBeVisible();
     expect(await getKeysReceived(request, tmux)).not.toContain(userText);
   });
@@ -129,12 +129,12 @@ test.describe('Input stability — no auto-send on state changes', () => {
     await expect(page.locator('.btn-quick-action').first()).toBeVisible({ timeout: 3000 });
 
     const userText = 'Half-finished thought';
-    await page.locator('.response-row input').fill(userText);
+    await page.locator('.response-row textarea').fill(userText);
 
     await broadcastSuggestion(request, tmux, [], []);
     await expect(page.locator('.btn-quick-action')).toHaveCount(0, { timeout: 3000 });
 
-    await expect(page.locator('.response-row input')).toHaveValue(userText);
+    await expect(page.locator('.response-row textarea')).toHaveValue(userText);
     await expect(page.locator('.sent-overlay')).not.toBeVisible();
   });
 
@@ -146,12 +146,12 @@ test.describe('Input stability — no auto-send on state changes', () => {
     await page.locator('.finding-card').click();
 
     const userText = 'Check the database';
-    await page.locator('.response-row input').fill(userText);
+    await page.locator('.response-row textarea').fill(userText);
 
     await injectToolUse(request, tmux);
     await expect(page.locator('.finding-card')).toHaveCount(0, { timeout: 10000 });
 
-    await expect(page.locator('.response-row input')).toHaveValue(userText);
+    await expect(page.locator('.response-row textarea')).toHaveValue(userText);
     await expect(page.locator('.sent-overlay')).not.toBeVisible();
     expect(await getKeysReceived(request, tmux)).not.toContain(userText);
   });
@@ -172,14 +172,14 @@ test.describe('Input stability — no auto-send on state changes', () => {
 
     // Type on finding agent
     await page.locator('.finding-card').click();
-    await page.locator('.response-row input').fill('Message for finding');
-    await expect(page.locator('.response-row input')).toHaveValue('Message for finding');
+    await page.locator('.response-row textarea').fill('Message for finding');
+    await expect(page.locator('.response-row textarea')).toHaveValue('Message for finding');
 
     // Switch to healthy agent via its row
     await page.locator('.healthy-row').click();
 
     // Input cleared — stale text not sent to wrong agent
-    await expect(page.locator('.response-row input')).toHaveValue('');
+    await expect(page.locator('.response-row textarea')).toHaveValue('');
     await expect(page.locator('.sent-overlay')).not.toBeVisible();
     expect(await getKeysReceived(request, tmux1)).not.toContain('Message for finding');
     expect(await getKeysReceived(request, tmux2)).not.toContain('Message for finding');
@@ -193,14 +193,14 @@ test.describe('Input stability — no auto-send on state changes', () => {
     await injectStopEvent(request, tmux);
 
     await page.locator('.finding-card').click();
-    await page.locator('.response-row input').fill('Typing here');
-    await expect(page.locator('.response-row input')).toBeFocused();
+    await page.locator('.response-row textarea').fill('Typing here');
+    await expect(page.locator('.response-row textarea')).toBeFocused();
 
     await page.keyboard.press('Tab');
 
     // Text and selection are preserved. Browser focus may move normally, but
     // Kookr must not treat Tab as the global "skip finding" shortcut here.
-    await expect(page.locator('.response-row input')).toHaveValue('Typing here');
+    await expect(page.locator('.response-row textarea')).toHaveValue('Typing here');
     await expect(page.locator('.finding-card.selected')).toBeVisible();
     expect(await getKeysReceived(request, tmux)).not.toContain('Typing here');
   });

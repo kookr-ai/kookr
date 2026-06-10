@@ -2,6 +2,7 @@ import type { AgentState } from './monitor.js';
 import type { LedgerAnalytics } from './ledger-analytics.js';
 import type { ProjectConfig, ProjectConfigStore } from './project-config-store.js';
 import type { PrLessonsStateHolder } from './pr-lessons-discovery.js';
+import { defaultLocalPathChecker, type LocalPathHealthChecker } from './local-path-health.js';
 import { projectDisplayName, projectColorIndex, isSafeGithubProjectId } from './project-identity.js';
 
 export interface TaskSummary {
@@ -72,14 +73,17 @@ export interface ProjectSummary {
    */
   repoHealth?: ProjectRepoHealth;
   /**
-   * Count of distinct open issues in this repo currently referenced by an
-   * `inProgress`, non-snoozed Kookr task. Computed live per snapshot from the
-   * agents + GitHub state stores. Absent when no active task touches the repo.
+   * Count of distinct VERIFIED-open issues in this repo currently referenced
+   * by an `inProgress`, non-snoozed Kookr task. Computed live per snapshot
+   * from the agents + GitHub state stores; a reference only counts once
+   * GitHub has confirmed the issue open (closed/unfetched/nonexistent refs
+   * are excluded), so this can never exceed `repoHealth.openIssues` modulo
+   * cache staleness. Absent when no active task touches the repo.
    */
   openIssuesTiedToActiveTasks?: number;
   /**
-   * Count of distinct open PRs in this repo currently referenced by an
-   * `inProgress`, non-snoozed Kookr task. Same semantics as above.
+   * Count of distinct VERIFIED-open PRs in this repo currently referenced by
+   * an `inProgress`, non-snoozed Kookr task. Same semantics as above.
    */
   openPrsTiedToActiveTasks?: number;
   /**
@@ -117,6 +121,16 @@ export interface ProjectSummaryDeps {
    * dependency on `server/use-cases/`.
    */
   githubTaskOverlay?: ReadonlyMap<string, GithubTaskOverlayEntry>;
+  /**
+   * Existence checker for `local/*` project checkout paths. Defaults to the
+   * process-wide {@link defaultLocalPathChecker}; injectable for tests. A
+   * `local/*` project whose configured `localPath` is confirmed missing and
+   * that has no in-progress task is excluded from the listing — dead test
+   * artifacts (e.g. `local/test_launch_*` pointing at deleted /tmp dirs)
+   * stop occupying first-class sidebar rows. Config rows are NOT deleted, so
+   * recreating the path brings the project back.
+   */
+  localPathChecker?: Pick<LocalPathHealthChecker, 'isMissing'>;
 }
 
 export interface GithubTaskOverlayEntry {
@@ -181,6 +195,7 @@ export function configSeedsMembership(config: ProjectConfig): boolean {
  */
 export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummary[] {
   const { agents, ledgerAnalytics, configStore, skillTrackedProjects, registryActiveProjects, sidebarProjects, prLessonsHolder, repoHealthCache, githubTaskOverlay } = deps;
+  const localPathChecker = deps.localPathChecker ?? defaultLocalPathChecker;
 
   // Group agents by projectId (derived from task data)
   const projectAgents = new Map<string, AgentState[]>();
@@ -242,6 +257,21 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
 
   for (const [projectId, agentList] of projectAgents) {
     const config = configStore.getConfig(projectId);
+
+    // Hide dead local test artifacts: a `local/*` project whose checkout path
+    // is confirmed gone and that has no in-progress task is a stale row, not
+    // a project. The existence check is async-cached (never stats inline) and
+    // optimistic, so a project only disappears after a real stat. The config
+    // row is untouched — this is presentation-level filtering only.
+    if (
+      projectId.startsWith('local/')
+      && config?.localPath
+      && localPathChecker.isMissing(config.localPath)
+      && !agentList.some((a) => a.taskStatus === 'inProgress')
+    ) {
+      continue;
+    }
+
     const todayCount = ledgerAnalytics.getTodayCount(projectId);
     const weekCount = ledgerAnalytics.getWeekCount(projectId);
     const attempts = ledgerAnalytics.getAttemptsByProject(projectId);

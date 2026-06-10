@@ -58,7 +58,7 @@ describe('multi-agent launch', () => {
   });
 
   test('default launch uses claude-code adapter', async () => {
-    const result = await launchTask(deps, { prompt: 'Fix bug', cwd: '/cwd' });
+    const result = await launchTask(deps, { prompt: 'Fix bug', cwd: '/tmp' });
 
     expect(result.task.agentType).toBe('claude-code');
     expect(claudeAdapter.launch).toHaveBeenCalledOnce();
@@ -66,7 +66,7 @@ describe('multi-agent launch', () => {
   });
 
   test('agentType=codex-cli uses codex adapter', async () => {
-    const result = await launchTask(deps, { prompt: 'Fix bug', cwd: '/cwd', agentType: 'codex-cli' });
+    const result = await launchTask(deps, { prompt: 'Fix bug', cwd: '/tmp', agentType: 'codex-cli' });
 
     expect(result.task.agentType).toBe('codex-cli');
     expect(codexAdapter.launch).toHaveBeenCalledOnce();
@@ -74,19 +74,19 @@ describe('multi-agent launch', () => {
   });
 
   test('agentType=claude-code explicitly uses claude adapter', async () => {
-    const result = await launchTask(deps, { prompt: 'Fix bug', cwd: '/cwd', agentType: 'claude-code' });
+    const result = await launchTask(deps, { prompt: 'Fix bug', cwd: '/tmp', agentType: 'claude-code' });
 
     expect(result.task.agentType).toBe('claude-code');
     expect(claudeAdapter.launch).toHaveBeenCalledOnce();
   });
 
   test('task stores agentType from CreateTaskOptions', () => {
-    const task = taskStore.createTask({ prompt: 'Fix bug', cwd: '/cwd', agentType: 'codex-cli' });
+    const task = taskStore.createTask({ prompt: 'Fix bug', cwd: '/tmp', agentType: 'codex-cli' });
     expect(task.agentType).toBe('codex-cli');
   });
 
   test('task defaults to claude-code when agentType not specified', () => {
-    const task = taskStore.createTask({ prompt: 'Fix bug', cwd: '/cwd' });
+    const task = taskStore.createTask({ prompt: 'Fix bug', cwd: '/tmp' });
     expect(task.agentType).toBe('claude-code');
   });
 

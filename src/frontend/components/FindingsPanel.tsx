@@ -14,7 +14,7 @@ import { ConfirmDialog } from './ConfirmDialog.js';
 import { groupFindings, groupLabel } from '../group-findings.js';
 import { ScheduleSection } from './ScheduleSection.js';
 import { useDnd } from '../hooks/useDnd.js';
-import { usePersistedCollapsed } from '../hooks/usePersistedCollapsed.js';
+import { usePersistedCollapsed, useAutoExpandOnItemGain } from '../hooks/usePersistedCollapsed.js';
 import { useSpeakAgent, type SpeakStatus } from '../hooks/useSpeakAgent.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { sendRalphLoopCommand, type RalphLoopCommand } from '../ralph-loop-api.js';
@@ -584,7 +584,7 @@ function FindingCard({ agent, selected, send }: {
           <TaskPriorityButton agent={agent} send={send} />
           <button className="btn-xs" onClick={(e) => { e.stopPropagation(); handleSkip(); }}>Skip</button>
           <button className="btn-xs" onClick={(e) => { e.stopPropagation(); setShowSnooze(true); }}>Snooze</button>
-          <button className="btn-xs btn-fp" onClick={(e) => { e.stopPropagation(); setShowFlagFP(true); }} title="Mark as false positive">Flag FP</button>
+          <button className="btn-xs btn-fp" onClick={(e) => { e.stopPropagation(); setShowFlagFP(true); }} title="Flag this finding as a false positive">Not a real issue</button>
         </div>
         {showSnooze && (
           <SnoozeDialog
@@ -673,7 +673,7 @@ function HealthyRow({ agent, selected, send }: {
     useKookrStore.getState().selectAgent(agent.agentId);
     // Focus the response input after React re-renders
     requestAnimationFrame(() => {
-      const input = document.querySelector('.response-area input') as HTMLInputElement | null;
+      const input = document.querySelector('.response-area textarea') as HTMLTextAreaElement | null;
       input?.focus();
     });
   }
@@ -749,10 +749,10 @@ function HealthyRow({ agent, selected, send }: {
                 <button
                   className="btn-xs btn-fn"
                   onClick={(e) => { e.stopPropagation(); setShowFlagMissed(true); }}
-                  title="Report that Kookr should have flagged this agent"
-                  aria-label={`Report missed finding for ${agent.taskName ?? agent.agentId}`}
+                  title="Report that Kookr missed a real issue on this agent"
+                  aria-label={`Missed a real issue — report for ${agent.taskName ?? agent.agentId}`}
                 >
-                  Flag missed
+                  Missed a real issue
                 </button>
                 <RalphLoopControls agent={agent} />
                 {agent.ralphLoop && agent.ralphLoop.status !== 'running' && agent.ralphLoop.status !== 'paused' && (
@@ -862,7 +862,7 @@ function FindingGroup({ type, agents, selectedAgentId, send }: {
     trackClick('respond_all');
     // Focus the response input after React re-renders
     requestAnimationFrame(() => {
-      const input = document.querySelector('.response-area input') as HTMLInputElement | null;
+      const input = document.querySelector('.response-area textarea') as HTMLTextAreaElement | null;
       input?.focus();
     });
   }
@@ -1207,9 +1207,17 @@ export function FindingsPanel({
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const prevFindingIds = useRef<Set<string>>(new Set());
   const [healthyCollapsed, toggleHealthy] = usePersistedCollapsed(HEALTHY_SECTION_COLLAPSED_KEY, false);
-  const [pendingCollapsed, togglePending] = usePersistedCollapsed(PENDING_SECTION_COLLAPSED_KEY, false);
+  const [pendingCollapsed, togglePending, expandPending] = usePersistedCollapsed(PENDING_SECTION_COLLAPSED_KEY, false);
   const [snoozedCollapsed, toggleSnoozed] = usePersistedCollapsed(SNOOZED_SECTION_COLLAPSED_KEY, true);
   const [completedCollapsed, toggleCompleted] = usePersistedCollapsed(COMPLETED_SECTION_COLLAPSED_KEY, true);
+  // The Pending group is where "waiting on you" tasks live (taskStatus
+  // 'pending' — e.g. an agent that signaled complete and needs the user's
+  // input). When it gains items, auto-expand so the thing blocking the user
+  // is never hidden inside a collapsed group; the user can still re-collapse
+  // afterwards. needs_input findings render in the always-visible findings
+  // list above, which is not collapsible, so this is the only group needing
+  // the treatment. (F19)
+  useAutoExpandOnItemGain(pending.length, expandPending);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const hasBottomSections = healthy.length > 0 || pending.length > 0 || snoozed.length > 0 || completed.length > 0;
 

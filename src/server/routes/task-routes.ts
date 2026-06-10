@@ -12,7 +12,7 @@ import {
   type PendingAgentSignal,
 } from '../../shared/contracts/agent-signal.js';
 import { TaskLifecycleCommands } from '../use-cases/task-lifecycle-commands.js';
-import { launchTask, DrainModeError, isEffortValidationError } from '../launch-service.js';
+import { launchTask, DrainModeError, isCwdValidationError, isEffortValidationError } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import type { LaunchDependency } from '../../core/playbook.js';
 import type { Task } from '../../core/tasks.js';
@@ -78,12 +78,16 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     const tasks = taskStore.listTasks().map(normalizeTaskForApi);
     if (!deps.suppressionTracker) return c.json(tasks);
     const tracker = deps.suppressionTracker;
-    return c.json(tasks.map((t) => {
-      const hasSuppressedSession = t.sessions.some(
-        (s) => s.lastStatus !== 'completed' && s.lastStatus !== 'aborted' && tracker.isSuppressed(s.tmuxSession),
-      );
-      return hasSuppressedSession ? { ...t, suppressed: true } : t;
-    }));
+    return c.json(tasks.map((t) => withSuppressionFlag(t, tracker)));
+  });
+
+  app.get('/api/tasks/:id', (c) => {
+    const id = c.req.param('id');
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    const normalized = normalizeTaskForApi(task);
+    if (!deps.suppressionTracker) return c.json(normalized);
+    return c.json(withSuppressionFlag(normalized, deps.suppressionTracker));
   });
 
   app.patch('/api/tasks/:id/name', async (c) => {
@@ -225,6 +229,11 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       if (isEffortValidationError(err)) {
         return c.json({ error: err.message, code: err.code }, 400);
       }
+      // RFC F12: a missing working directory is a client error, surfaced
+      // before any session spawn with the actual cause leading the message.
+      if (isCwdValidationError(err)) {
+        return c.json({ error: err.message, code: err.code }, 400);
+      }
       if (err instanceof LaunchPreflightError) {
         return c.json({ error: err.message, code: 'launch_preflight_failed', findings: err.findings }, 409);
       }
@@ -347,7 +356,15 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   });
 }
 
-function normalizeTaskForApi(task: Task): Task {
+/**
+ * Task shape returned by the REST surface. Carries `taskId` as an alias of
+ * `id` so scripts can use one field name across `/api/tasks`,
+ * `/api/projects` `recentTasks[]`, and `/api/snapshot` agents (which all key
+ * by `taskId`). `id` stays for backwards compatibility.
+ */
+type ApiTask = Task & { taskId: string };
+
+function normalizeTaskForApi(task: Task): ApiTask {
   let changed = false;
   const sessions = task.sessions.map((session) => {
     const worktreeHealth = normalizeTerminalWorktreeHealth(task.status, session.worktreeHealth);
@@ -356,7 +373,17 @@ function normalizeTaskForApi(task: Task): Task {
     return { ...session, worktreeHealth };
   });
 
-  return changed ? { ...task, sessions } : task;
+  return changed ? { ...task, sessions, taskId: task.id } : { ...task, taskId: task.id };
+}
+
+function withSuppressionFlag(
+  task: ApiTask,
+  tracker: { isSuppressed(tmuxSession: string): boolean },
+): ApiTask | (ApiTask & { suppressed: true }) {
+  const hasSuppressedSession = task.sessions.some(
+    (s) => s.lastStatus !== 'completed' && s.lastStatus !== 'aborted' && tracker.isSuppressed(s.tmuxSession),
+  );
+  return hasSuppressedSession ? { ...task, suppressed: true } : task;
 }
 
 function normalizeTaskEdges(value: unknown, field: 'blocks' | 'blocked_by'): TaskDependencyEdge[] {

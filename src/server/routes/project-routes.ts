@@ -20,6 +20,7 @@ export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
       prLessonsHolder: deps.prLessonsState,
       repoHealthCache: deps.githubScanner.getRepoHealthSnapshot(),
       getTaskGithubReferences: (taskId) => deps.githubStateStore.getReferences(taskId),
+      getGithubRefOpenState: (ref) => deps.githubStateStore.isRefOpen(ref),
     });
     return c.json(summaries);
   });

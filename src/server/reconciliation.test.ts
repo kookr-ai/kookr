@@ -44,7 +44,7 @@ describe('Startup Reconciliation', () => {
     expect(result.markedCompleted).toHaveLength(0);
   });
 
-  test('marks live session worktree missing_unexpectedly when registry no longer contains cwd', async () => {
+  test('marks live session worktree missing_unexpectedly when registry has no entry AND directory is gone from disk', async () => {
     const task = taskStore.createTask('Fix bug', '/repo-missing');
     taskStore.addSession(task.id, {
       tmuxSession: 'kookr-missing',
@@ -56,13 +56,53 @@ describe('Startup Reconciliation', () => {
     });
     await backend.createSession(spec('kookr-missing'));
 
-    const result = await reconcile(taskStore, backend, {
-      byPath: () => null,
-      snapshot: () => ({ entries: [], refreshedAt: new Date().toISOString(), lastError: null }),
-    });
+    const result = await reconcile(
+      taskStore,
+      backend,
+      {
+        byPath: () => null,
+        snapshot: () => ({ entries: [], refreshedAt: new Date().toISOString(), lastError: null }),
+      },
+      async () => false, // directory really gone from disk
+    );
 
     expect(result.worktreesMissing).toContain('kookr-missing');
     expect(taskStore.getTask(task.id)!.sessions[0].worktreeHealth).toBe('missing_unexpectedly');
+  });
+
+  test('registry has no entry but directory exists on disk — NOT marked missing (F14)', async () => {
+    // A registry refresh hiccup, or a cwd outside the refreshed repos, makes
+    // the snapshot miss a healthy worktree. The on-disk check must veto the
+    // alarm and self-heal the health to 'ok'.
+    const task = taskStore.createTask('Fix bug', '/repo-alive');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-alive-dir',
+      agentType: 'claude-code',
+      cwd: '/repo-alive',
+      createdAt: new Date(),
+      lastStatus: 'running',
+      gitIsWorktree: true,
+      worktreeHealth: 'missing_unexpectedly', // persisted false alarm from a prior sweep
+    });
+    await backend.createSession(spec('kookr-alive-dir'));
+
+    const checkedPaths: string[] = [];
+    const result = await reconcile(
+      taskStore,
+      backend,
+      {
+        byPath: () => null,
+        snapshot: () => ({ entries: [], refreshedAt: new Date().toISOString(), lastError: null }),
+      },
+      async (path) => {
+        checkedPaths.push(path);
+        return true; // directory still exists on disk
+      },
+    );
+
+    expect(checkedPaths).toContain('/repo-alive');
+    expect(result.worktreesMissing).not.toContain('kookr-alive-dir');
+    expect(taskStore.getTask(task.id)!.sessions[0].worktreeHealth).toBe('ok');
   });
 
   test('does not mark live non-worktree sessions missing when absent from the Kookr worktree registry', async () => {

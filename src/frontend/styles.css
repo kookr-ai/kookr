@@ -1264,30 +1264,124 @@ kbd {
   flex-direction: column;
   overflow: hidden;
 }
-.detail-panel.collapsed {
-  display: none;
-}
 .detail-panel.terminal-focus {
   flex: 3;
 }
 
-.detail-empty {
+.detail-empty-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+/* --- Overview empty state (detail area, no task selected) --- */
+.overview-empty {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 16px;
+  overflow-y: auto;
+  padding: 24px;
+}
+.overview-empty-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  width: min(520px, 100%);
   color: var(--text-muted);
 }
-.detail-empty .btn-primary {
+.overview-empty-inner .btn-primary {
   font-size: 14px;
   padding: 10px 28px;
 }
-.detail-empty-hint {
+.overview-counts {
+  display: flex;
+  gap: 12px;
+}
+.overview-count {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 96px;
+  padding: 10px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+}
+.overview-count-value {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-bright);
+}
+.overview-count-attention .overview-count-value {
+  color: var(--amber);
+}
+.overview-count-label {
   font-size: 11px;
   color: var(--text-muted);
-  opacity: 0.7;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.overview-waiting {
+  width: 100%;
+}
+.overview-waiting-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+.overview-waiting-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.overview-waiting-row {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.overview-waiting-row:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border);
+}
+.overview-waiting-kind {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--amber);
+}
+.overview-waiting-name {
+  color: var(--text-bright);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.overview-waiting-meta {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.overview-waiting-more {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .detail-header {
@@ -2064,8 +2158,9 @@ kbd {
 .response-area.awaiting-input {
   border-left-color: var(--amber);
 }
-.response-row { display: flex; gap: 8px; align-items: center; }
-.response-area input {
+.response-row { display: flex; gap: 8px; align-items: flex-end; }
+.response-area input,
+.response-area textarea {
   flex: 1;
   background: var(--bg-input);
   border: 1px solid var(--border-dim);
@@ -2076,11 +2171,19 @@ kbd {
   font-size: 13px;
   outline: none;
 }
-.response-area input:focus {
+.response-area textarea {
+  resize: none;
+  overflow-y: auto;
+  line-height: 1.4;
+  max-height: 140px; /* keep in sync with REPLY_MAX_HEIGHT_PX in DetailPanel.tsx */
+}
+.response-area input:focus,
+.response-area textarea:focus {
   border-color: var(--teal);
   box-shadow: 0 0 0 2px rgba(45,212,191,0.12);
 }
-.response-area input::placeholder { color: var(--text-muted); }
+.response-area input::placeholder,
+.response-area textarea::placeholder { color: var(--text-muted); }
 
 .btn-primary {
   background: var(--teal);
@@ -3873,6 +3976,22 @@ label.task-share-row {
 .combo-dropdown li.highlighted {
   background: var(--bg-card-hover);
   color: var(--text-bright);
+}
+
+/* Tracked-project label next to a cwd suggestion path (RFC F13). */
+.combo-dropdown-project {
+  margin-left: 8px;
+  font-size: 10px;
+  font-family: inherit;
+  color: var(--text-muted);
+}
+
+/* Warns that the cwd field resolved to Kookr's own runtime checkout (RFC F13). */
+.cwd-server-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 /* --- Quick Launch Bar --- */
@@ -9120,9 +9239,6 @@ a.project-drawer-stat-row-link:focus-visible {
     border-right: none;
   }
 
-  .main-mobile .detail-panel.collapsed {
-    display: flex;
-  }
 
   .mobile-quick-actions {
     display: grid;
@@ -9213,7 +9329,8 @@ a.project-drawer-stat-row-link:focus-visible {
     padding: 12px 14px 14px;
   }
 
-  .response-row > input {
+  .response-row > input,
+  .response-row > textarea {
     width: 100%;
     min-width: 0;
   }

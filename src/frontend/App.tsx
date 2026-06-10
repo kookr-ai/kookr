@@ -587,7 +587,7 @@ export function App() {
       }
       if (matchesShortcutAction(e, shortcutBindings, 'focus_reply')) {
         e.preventDefault();
-        const replyInput = document.querySelector('.detail-panel .response-row input[type="text"]') as HTMLInputElement | null;
+        const replyInput = document.querySelector('.detail-panel .response-row textarea') as HTMLTextAreaElement | null;
         if (replyInput) {
           track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.focus_reply), action: 'focus_reply', context: 'global' });
           replyInput.focus();
@@ -904,11 +904,13 @@ export function App() {
         });
         setConfirmAction('complete');
       }}
-      collapsed={!isMobileViewport && !selectedAgent}
       detailPaneMode={detailPaneMode}
       wideDetailActive={wideDetailActive}
       terminalFocusMode={terminalFocusActive}
       shortcutBindings={shortcutBindings}
+      // Overview data for the no-selection state (F8) — the rail's own bucket
+      // classification, so "Waiting on you" and the counts match the rail.
+      overview={{ waiting: findings, runningCount: healthy.length, completedCount: completed.length }}
     />
   );
 

@@ -1,24 +1,25 @@
 const STORAGE_KEY = 'kookr:recentPaths';
 const DEFAULT_MAX = 10;
 
+/**
+ * MRU list of launch working directories, backed by localStorage. Storage is
+ * the source of truth on every read (not cached at construction) so all
+ * instances — and tests seeding localStorage — observe the same list.
+ */
 export class RecentPaths {
-  private paths: string[];
-
   constructor(
     private storage: Pick<Storage, 'getItem' | 'setItem'> = localStorage,
     private max: number = DEFAULT_MAX,
-  ) {
-    this.paths = this.load();
-  }
+  ) {}
 
   getAll(): string[] {
-    return [...this.paths];
+    return this.load();
   }
 
   filter(query: string): string[] {
     if (!query) return this.getAll();
     const lower = query.toLowerCase();
-    return this.paths.filter((p) => p.toLowerCase().includes(lower));
+    return this.load().filter((p) => p.toLowerCase().includes(lower));
   }
 
   add(path: string): void {
@@ -26,8 +27,8 @@ export class RecentPaths {
     if (!trimmed) return;
 
     // Remove if already present, then prepend
-    this.paths = [trimmed, ...this.paths.filter((p) => p !== trimmed)].slice(0, this.max);
-    this.save();
+    const paths = [trimmed, ...this.load().filter((p) => p !== trimmed)].slice(0, this.max);
+    this.save(paths);
   }
 
   private load(): string[] {
@@ -42,7 +43,7 @@ export class RecentPaths {
     }
   }
 
-  private save(): void {
-    this.storage.setItem(STORAGE_KEY, JSON.stringify(this.paths));
+  private save(paths: string[]): void {
+    this.storage.setItem(STORAGE_KEY, JSON.stringify(paths));
   }
 }

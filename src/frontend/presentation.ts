@@ -35,11 +35,11 @@ export function worktreeHealthLabel(health: string | undefined, registryStale?: 
   if (registryStale) return 'git stale';
   switch (health) {
     case 'missing_unexpectedly':
-      return 'missing unexpectedly';
+      return 'worktree missing';
     case 'cleaned_up':
       return 'cleaned up';
     case 'missing':
-      return 'missing';
+      return 'worktree missing';
     case 'stale':
       return 'stale';
     case 'ok':
@@ -54,11 +54,11 @@ export function worktreeHealthTitle(health: string | undefined, registryStale?: 
   if (registryStale) return 'Worktree registry refresh failed; showing stale git state';
   switch (health) {
     case 'missing_unexpectedly':
-      return 'Worktree is missing unexpectedly';
+      return "Worktree directory is missing unexpectedly — the agent's working copy may have been deleted. Check the session before sending new work.";
     case 'cleaned_up':
       return 'Worktree was cleaned up after successful completion';
     case 'missing':
-      return 'Worktree is missing';
+      return "Worktree directory is missing — the agent's working copy may have been deleted. Check the session before sending new work.";
     case 'stale':
       return 'Worktree registry entry is stale';
     default:
@@ -133,6 +133,25 @@ export function turnStateLabel(turnState: TurnState | undefined): string {
     case 'unknown':
     case undefined:
       return '';
+  }
+}
+
+/**
+ * Human-readable label for a task status. Accepts a loose string (some
+ * surfaces carry the status as `string | undefined`) and falls back to the
+ * raw value for unknown statuses so new enum members degrade gracefully
+ * instead of disappearing.
+ */
+export function taskStatusLabel(status: string | undefined): string {
+  switch (status) {
+    case 'open': return 'Open';
+    case 'pending': return 'Pending';
+    case 'inProgress': return 'In progress';
+    case 'completed': return 'Completed';
+    case 'terminated': return 'Terminated';
+    case 'cancelled': return 'Cancelled';
+    case undefined: return '';
+    default: return status;
   }
 }
 

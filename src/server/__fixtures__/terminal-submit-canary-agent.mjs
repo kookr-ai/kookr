@@ -39,6 +39,14 @@ process.stdin.on('data', (chunk) => {
       handleSubmit();
       continue;
     }
+    if (byte === 0x15) {
+      // Ctrl-U — kill line, like the claude-code/codex composers. Adapters
+      // prefix composer sends with it so an unsubmitted terminal-typed draft
+      // cannot fuse into the message (F15).
+      draft = '';
+      readyAt = Date.now() + submitDelayMs;
+      continue;
+    }
     const text = new TextDecoder().decode(encoder.encode(String.fromCharCode(byte)));
     draft += text;
     readyAt = Date.now() + submitDelayMs;

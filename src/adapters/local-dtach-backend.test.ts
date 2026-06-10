@@ -492,6 +492,113 @@ describe('LocalDtachBackend', () => {
     }
   });
 
+  it('write passes multi-byte UTF-8 to the pty byte-exact (no Latin-1 round trip)', async () => {
+    // Regression for the mojibake bug: the write path used
+    // `Buffer.from(data).toString('binary')` — a Latin-1 decode — before
+    // pty.write. node-pty re-encodes strings as UTF-8, so every multi-byte
+    // UTF-8 character was corrupted ("—" reached the agent as "â\x80\x94").
+    // The pty is faked here so the test asserts the exact payload handed to
+    // node-pty; the string case emulates node-pty's own UTF-8 string encode.
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH ?? 'dtach',
+    });
+
+    const ptyWrites: Array<string | Buffer> = [];
+    const fakePty = {
+      write: (data: string | Buffer) => {
+        ptyWrites.push(data);
+      },
+    };
+    const id = 'utf8-write';
+    const attached = (
+      backend as unknown as { attached: Map<string, Record<string, unknown>> }
+    ).attached;
+    attached.set(id, {
+      id,
+      sock: '/tmp/not-used.sock',
+      pty: fakePty,
+      ringHead: 0,
+      ringBuffer: Buffer.alloc(1024),
+      lastFlushedHead: -1,
+      dataSubscribers: new Set(),
+      writeMutex: Promise.resolve(),
+      pendingWriters: 0,
+      reattachWindow: [],
+      reattachCount: 0,
+      currentSize: null,
+    });
+
+    try {
+      const text = 'em dash — and accent é\r';
+      const expected = Array.from(new TextEncoder().encode(text));
+
+      await backend.write(id, new TextEncoder().encode(text));
+      await backend.writeSequence(id, [new TextEncoder().encode('café —'), Uint8Array.of(0x0d)]);
+
+      expect(ptyWrites).toHaveLength(3);
+      // Emulate what node-pty does with each payload: strings are encoded
+      // as UTF-8 (CustomWriteStream default), Buffers pass through verbatim.
+      const toPtyBytes = (p: string | Buffer): number[] =>
+        typeof p === 'string' ? Array.from(Buffer.from(p, 'utf-8')) : Array.from(p);
+      expect(toPtyBytes(ptyWrites[0]!)).toEqual(expected);
+      expect(toPtyBytes(ptyWrites[1]!)).toEqual(Array.from(new TextEncoder().encode('café —')));
+      expect(toPtyBytes(ptyWrites[2]!)).toEqual([0x0d]);
+    } finally {
+      backend.close();
+    }
+  });
+
+  skipIfNoDtach('round-trips multi-byte UTF-8 through write → tty echo byte-exact', async () => {
+    // End-to-end mojibake regression through a real dtach + pty: `cat` with
+    // default tty line discipline echoes stdin back, so the em-dash and the
+    // accented character must come back exactly as written. Pre-fix, the
+    // Latin-1 round trip in the write path corrupted the bytes before they
+    // ever reached the child.
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH!,
+    });
+
+    const id = 'utf8-roundtrip';
+    const MARKER = 'UTF8_OK — café é\n';
+
+    await backend.createSession({
+      id,
+      command: '/bin/sh',
+      args: ['-c', 'exec cat'],
+    });
+
+    try {
+      const chunks: Uint8Array[] = [];
+      backend.onData(id, (b) => {
+        chunks.push(b);
+      });
+
+      await backend.write(id, new TextEncoder().encode(MARKER));
+
+      const seen = (): string =>
+        new TextDecoder('utf-8', { fatal: false }).decode(Buffer.concat(chunks.map((c) => Buffer.from(c))));
+      const deadline = Date.now() + 3_000;
+      while (Date.now() < deadline && !seen().includes('UTF8_OK')) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+
+      const echoed = seen();
+      expect(echoed).toContain('UTF8_OK — café é');
+      // Assert byte-exactness, not just decoded similarity: the historical
+      // corruption produced "â" for "—", which a lenient decode
+      // would still surface as *some* string.
+      expect(echoed).not.toContain('â');
+    } finally {
+      await backend.killSession(id);
+    }
+  }, 15_000);
+
   skipIfNoDtach('persists ring buffer across a backend restart', async () => {
     // Regression guard for the "blank terminal after pnpm prod:restart" bug.
     // dtach masters are spawned via setsid and survive a Kookr process exit,

@@ -32,7 +32,7 @@ describe('SupervisorFeedbackDialog', () => {
 
   function findSubmitButton(): HTMLButtonElement {
     const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>('button'));
-    const submit = buttons.find((b) => b.textContent === 'Flag FP' || b.textContent === 'Flag missed');
+    const submit = buttons.find((b) => b.textContent === 'Not a real issue' || b.textContent === 'Missed a real issue');
     if (!submit) throw new Error('submit button not found');
     return submit;
   }

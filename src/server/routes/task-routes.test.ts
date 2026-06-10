@@ -26,7 +26,7 @@ vi.mock('../use-cases/delete-task.js', async (importActual) => {
   };
 });
 
-import { launchTask, DrainModeError, EffortValidationError } from '../launch-service.js';
+import { launchTask, CwdValidationError, DrainModeError, EffortValidationError } from '../launch-service.js';
 import { deleteTask } from '../use-cases/delete-task.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
@@ -106,6 +106,89 @@ describe('GET /api/tasks worktree health', () => {
     const tasks = await res.json();
 
     expect(tasks[0].sessions[0].worktreeHealth).toBe('missing_unexpectedly');
+  });
+});
+
+describe('GET /api/tasks/:id', () => {
+  test('returns the normalized task for a known id', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Ship implementation PR', '/repo');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-cleaned',
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(),
+      worktreeHealth: 'missing',
+    });
+    taskStore.completeTask(task.id);
+
+    const app = mkApp(mkLoopDeps(taskStore));
+    const res = await app.request(`/api/tasks/${task.id}`);
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.id).toBe(task.id);
+    expect(body.prompt).toBe('Ship implementation PR');
+    // Same worktree-health normalization as the list endpoint.
+    expect(body.sessions[0].worktreeHealth).toBe('cleaned_up');
+  });
+
+  test('404s with a JSON error body for an unknown id', async () => {
+    const app = mkApp(mkLoopDeps(new TaskStore()));
+    const res = await app.request('/api/tasks/does-not-exist');
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Task not found' });
+  });
+
+  test('marks the task suppressed when a live session is snooze-suppressed', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Long-running helper', '/repo');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-suppressed',
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(),
+    });
+
+    const app = mkApp({
+      ...mkLoopDeps(taskStore),
+      suppressionTracker: { isSuppressed: (s: string) => s === 'kookr-suppressed' } as never,
+    });
+    const res = await app.request(`/api/tasks/${task.id}`);
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).suppressed).toBe(true);
+  });
+
+  test('does not shadow static sibling routes like /api/tasks list', async () => {
+    const taskStore = new TaskStore();
+    taskStore.createTask('A task', '/repo');
+    const app = mkApp(mkLoopDeps(taskStore));
+    const res = await app.request('/api/tasks');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toHaveLength(1);
+  });
+});
+
+describe('taskId alias (id/taskId consistency)', () => {
+  test('GET /api/tasks list items carry taskId === id', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Aliased', '/repo');
+    const app = mkApp(mkLoopDeps(taskStore));
+
+    const tasks = await (await app.request('/api/tasks')).json();
+    expect(tasks[0].id).toBe(task.id);
+    expect(tasks[0].taskId).toBe(task.id);
+  });
+
+  test('GET /api/tasks/:id carries taskId === id', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Aliased', '/repo');
+    const app = mkApp(mkLoopDeps(taskStore));
+
+    const body = await (await app.request(`/api/tasks/${task.id}`)).json();
+    expect(body.id).toBe(task.id);
+    expect(body.taskId).toBe(task.id);
   });
 });
 
@@ -367,6 +450,23 @@ describe('POST /api/tasks error paths', () => {
       // Shape check rejects before launch is attempted.
       expect(launchTask).not.toHaveBeenCalled();
     }
+  });
+
+  test('maps CwdValidationError to 400 with code invalid_cwd and the cause-first message (RFC F12)', async () => {
+    vi.mocked(launchTask).mockRejectedValueOnce(
+      new CwdValidationError('Working directory does not exist: /no/such/dir'),
+    );
+    const taskStore = new TaskStore();
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/no/such/dir' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      code: 'invalid_cwd',
+      error: 'Working directory does not exist: /no/such/dir',
+    });
   });
 
   test('maps EffortValidationError to 400 with code invalid_effort (#681)', async () => {

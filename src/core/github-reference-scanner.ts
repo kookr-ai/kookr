@@ -21,8 +21,15 @@ const GIT_HOST_URL_RE = /https?:\/\/[^/\s]+\/([^/\s]+)\/([^/\s]+)\/(?:-\/)?(pull
 const EXPLICIT_REF_RE = /\b(?:PR|pull request)\s*#?(\d+)/gi;
 const EXPLICIT_ISSUE_RE = /\b(?:issue)\s*#?(\d+)/gi;
 
-/** Bare #123 — only matched when we have owner/repo context */
-const BARE_REF_RE = /(?:^|\s)#(\d+)\b/g;
+/**
+ * Anchored bare ref: a prompt that *opens* with "#123" (e.g. "#123" alone or
+ * "#123: fix login flow") is an explicit, intentional reference. Mid-prose
+ * bare "#N" (e.g. "see #4, #7 and #12 for background") is deliberately NOT
+ * extracted any more — it over-attributed task↔GitHub edges and inflated the
+ * project drawer's "issues/PRs tied to active tasks" counts far beyond the
+ * repo's real open counts.
+ */
+const LEADING_BARE_REF_RE = /^\s*#(\d+)\b/;
 
 /**
  * Action verbs followed by #N — treated as issue references in prompt context.
@@ -91,7 +98,12 @@ export function extractRefsFromText(text: string): ExtractedRef[] {
  * Extract GitHub references from a task prompt.
  * Unlike extractRefsFromText, this also:
  * - Matches action verb + #N patterns as issue refs (e.g. "fix #18", "resolve #42")
- * - Treats bare #N refs as issue refs (in prompts, bare refs almost always mean issues)
+ * - Treats a *leading* bare #N (prompt is "#123" or starts with "#123: …") as an issue ref
+ *
+ * Bare #N mid-prose (no action verb, no "issue"/"PR" adjacency) does NOT
+ * create a reference: prompts routinely cite many issue numbers as context,
+ * and attributing all of them to the task destroyed trust in the per-project
+ * "tied to active tasks" counts.
  */
 export function extractRefsFromPrompt(text: string): ExtractedRef[] {
   // Start with standard text extraction
@@ -119,11 +131,13 @@ export function extractRefsFromPrompt(text: string): ExtractedRef[] {
     });
   }
 
-  // Bare #N refs → issue refs (in prompt context, bare refs are almost always issues)
-  for (const match of text.matchAll(BARE_REF_RE)) {
+  // Leading bare #N → issue ref. A prompt that opens with the number is an
+  // explicit reference; bare #N elsewhere in prose is intentionally ignored.
+  const leading = text.match(LEADING_BARE_REF_RE);
+  if (leading) {
     addRef({
       type: 'issue',
-      number: parseInt(match[1], 10),
+      number: parseInt(leading[1], 10),
     });
   }
 

@@ -138,7 +138,7 @@ test.describe('Kookr E2E — nominal paths', () => {
     await expect(page.locator('.statusbar')).toContainText('0 tasks');
     await expect(page.locator('.statusbar')).toContainText('0 findings');
     await expect(page.locator('.btn-launch')).toBeVisible();
-    await expect(page.locator('.detail-empty')).toContainText('No agents running');
+    await expect(page.locator('[data-testid="overview-empty-state"]')).toContainText('No agents running');
   });
 
   // --- Launch ---
@@ -220,7 +220,7 @@ test.describe('Kookr E2E — nominal paths', () => {
 
     await expect(page.locator('.detail-header')).toBeVisible();
     await expect(page.locator('.detail-badge')).toContainText('SIGNALED COMPLETE');
-    await expect(page.locator('.response-row input')).toBeVisible();
+    await expect(page.locator('.response-row textarea')).toBeVisible();
   });
 
   test('send response via detail panel', async ({ page, request }) => {
@@ -231,8 +231,8 @@ test.describe('Kookr E2E — nominal paths', () => {
     await injectStopEvent(request, tmuxName);
 
     await page.locator('.finding-card').click();
-    await page.locator('.response-row input').fill('Try running vitest');
-    await page.locator('.btn-primary:has-text("Send & Next")').click();
+    await page.locator('.response-row textarea').fill('Try running vitest');
+    await page.locator('[data-testid="send-next-button"]').click();
 
     // Sent overlay appears briefly
     await expect(page.locator('.sent-overlay')).toBeVisible();
@@ -438,8 +438,8 @@ test.describe('Kookr E2E — nominal paths', () => {
     await expect(page.locator('.detail-badge')).toContainText('PERMISSION');
 
     // Send response
-    await page.locator('.response-row input').fill('Allow the install');
-    await page.locator('.btn-primary:has-text("Send & Next")').click();
+    await page.locator('.response-row textarea').fill('Allow the install');
+    await page.locator('[data-testid="send-next-button"]').click();
 
     // Sent overlay appears
     await expect(page.locator('.sent-overlay')).toBeVisible();
@@ -544,7 +544,7 @@ test.describe('Kookr E2E — nominal paths', () => {
 
     // Detail panel should open with response input
     await expect(page.locator('.detail-header')).toBeVisible();
-    await expect(page.locator('.response-row input')).toBeVisible();
+    await expect(page.locator('.response-row textarea')).toBeVisible();
 
     // Button should say "Send" (not "Send & Next") for healthy agents
     await expect(page.locator('[data-testid="send-button"]')).toContainText('Send');
@@ -555,7 +555,7 @@ test.describe('Kookr E2E — nominal paths', () => {
     await expect(page.locator('.response-row .btn-secondary:has-text("Snooze")')).not.toBeVisible();
 
     // Type and send a message
-    await page.locator('.response-row input').fill('Please also add dark mode support');
+    await page.locator('.response-row textarea').fill('Please also add dark mode support');
     await page.locator('[data-testid="send-button"]').click();
 
     // Sent overlay should appear
@@ -577,8 +577,8 @@ test.describe('Kookr E2E — nominal paths', () => {
     await page.locator('.healthy-row').click();
 
     // Type message and press Enter
-    await page.locator('.response-row input').fill('Use Elasticsearch instead of SQL');
-    await page.locator('.response-row input').press('Enter');
+    await page.locator('.response-row textarea').fill('Use Elasticsearch instead of SQL');
+    await page.locator('.response-row textarea').press('Enter');
 
     // Sent overlay appears
     await expect(page.locator('.sent-overlay')).toBeVisible();

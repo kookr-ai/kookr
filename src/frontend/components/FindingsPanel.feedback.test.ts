@@ -84,7 +84,7 @@ describe('FindingsPanel — supervisor-feedback button wiring', () => {
     document.body.innerHTML = '';
   });
 
-  test('clicking Flag FP opens the modal and submitting emits findingFeedback with userReason', async () => {
+  test('clicking "Not a real issue" opens the modal and submitting emits findingFeedback with userReason', async () => {
     const findingAgent = makeAgent({
       agentId: 'kookr-fp-1',
       anomaly: {
@@ -112,7 +112,7 @@ describe('FindingsPanel — supervisor-feedback button wiring', () => {
     await act(async () => setValue(textarea, 'agent emitted a long review report'));
 
     const submit = Array.from(document.querySelectorAll<HTMLButtonElement>('.supervisor-feedback-dialog button'))
-      .find((b) => b.textContent === 'Flag FP')!;
+      .find((b) => b.textContent === 'Not a real issue')!;
     await act(async () => {
       submit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
@@ -130,7 +130,7 @@ describe('FindingsPanel — supervisor-feedback button wiring', () => {
     });
   });
 
-  test('clicking Flag missed on a healthy agent emits missedFinding with reason + suspectedType', async () => {
+  test('clicking "Missed a real issue" on a healthy agent emits missedFinding with reason + suspectedType', async () => {
     const healthyAgent = makeAgent({ agentId: 'kookr-fn-1', taskName: 'A healthy task' });
     root = renderPanel(container, { healthy: [healthyAgent] }, send);
 
@@ -150,7 +150,7 @@ describe('FindingsPanel — supervisor-feedback button wiring', () => {
     });
 
     const submit = Array.from(document.querySelectorAll<HTMLButtonElement>('.supervisor-feedback-dialog button'))
-      .find((b) => b.textContent === 'Flag missed')!;
+      .find((b) => b.textContent === 'Missed a real issue')!;
     await act(async () => {
       submit.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
@@ -167,7 +167,7 @@ describe('FindingsPanel — supervisor-feedback button wiring', () => {
     });
   });
 
-  test('Flag FP modal can be cancelled without sending anything', async () => {
+  test('false-positive modal can be cancelled without sending anything', async () => {
     const findingAgent = makeAgent({
       agentId: 'kookr-fp-2',
       anomaly: {

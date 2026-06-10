@@ -22,7 +22,7 @@ import {
   getDefaultShortcutBindings,
   type ShortcutBindingMap,
 } from '../../shared/contracts/shortcut-bindings.js';
-import { ShortcutKeys } from './ShortcutKeys.js';
+import { OverviewEmptyState } from './OverviewEmptyState.js';
 import type { DetailPaneMode } from '../store/store-types.js';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
@@ -39,6 +39,8 @@ const ActivityPanel = lazy(() => import('./ActivityPanel.js').then((m) => ({ def
 const DiffPane = lazy(() => import('./DiffPane.js').then((m) => ({ default: pickLazyExport<typeof m.DiffPane>(m, 'DiffPane') })));
 const EffectiveHookSettingsModal = lazy(() => import('./EffectiveHookSettingsModal.js').then((m) => ({ default: pickLazyExport<typeof m.EffectiveHookSettingsModal>(m, 'EffectiveHookSettingsModal') })));
 const NARROW_DETAIL_BREAKPOINT_PX = 1200;
+/** Max auto-grow height of the reply textarea (~6 rows incl. padding). */
+const REPLY_MAX_HEIGHT_PX = 140;
 
 /**
  * Exhaustive terminal-status check tolerant of the optional taskStatus.
@@ -74,11 +76,20 @@ interface Props {
   send: (msg: ClientMessage) => boolean;
   onLaunch: () => void;
   onRequestComplete: () => void;
-  collapsed?: boolean;
   detailPaneMode?: DetailPaneMode;
   wideDetailActive?: boolean;
   terminalFocusMode?: boolean;
   shortcutBindings?: ShortcutBindingMap;
+  /**
+   * Rail bucket data for the no-selection overview (F8). Passed down from
+   * App's buildAgentBuckets result so the overview matches the rail exactly
+   * instead of reclassifying agents here.
+   */
+  overview?: {
+    waiting: AgentState[];
+    runningCount: number;
+    completedCount: number;
+  };
 }
 
 function defaultShortcutBindings(): ShortcutBindingMap {
@@ -240,7 +251,7 @@ function DetailMetadataMenu({
   );
 }
 
-export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapsed, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings() }: Props) {
+export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), overview }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
   const [showHookSettings, setShowHookSettings] = useState(false);
@@ -253,7 +264,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
   const [isNarrowViewport, setIsNarrowViewport] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth <= NARROW_DETAIL_BREAKPOINT_PX : false,
   );
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const { selectAgent, nextBottleneck, advanceEmptyEnter, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, detailPaneMode: storedDetailPaneMode, setDetailPaneMode, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore();
   const serverStartedAt = useKookrStore((s) => s.serverStartedAt);
   const replyDraftScope = { taskId: agent?.taskId, agentId: agent?.agentId };
@@ -384,6 +395,16 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     setInput(agent ? loadDetailReplyDraft(replyDraftScope) : '');
   }, [agent?.taskId, agent?.agentId]);
 
+  // Auto-grow the reply textarea with its content (1 row up to ~6 rows), then
+  // scroll internally. Runs on every input change so drafts, typing, and voice
+  // transcripts all resize consistently.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, REPLY_MAX_HEIGHT_PX)}px`;
+  }, [input]);
+
   // Reset permission button disabled state when agent or suggestions change
   const suggestion = agent ? suggestions[agent.agentId] ?? null : null;
   useEffect(() => {
@@ -391,29 +412,15 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
   }, [agent?.agentId, suggestion]);
 
   if (!agent) {
-    const allAgents = useKookrStore.getState().agents;
-    const findingsCount = allAgents.filter(a => a.anomaly !== null && !a.snoozedUntil && !a.suppressed).length;
-    const totalCount = allAgents.length;
-
     return (
-      <div className={`detail-panel kookr-tour-target-layout${collapsed ? ' collapsed' : ''}`}>
-        <div className="detail-empty">
-          {findingsCount > 0 ? (
-            <p>{findingsCount} finding{findingsCount > 1 ? 's' : ''} need{findingsCount === 1 ? 's' : ''} attention.</p>
-          ) : totalCount > 0 ? (
-            <p className="findings-all-clear">All clear — agents working autonomously.</p>
-          ) : (
-            <p>No agents running.</p>
-          )}
-          <button className="btn-primary" onClick={onLaunch}>Launch New Task</button>
-          <p className="detail-empty-hint">
-            <ShortcutKeys binding={shortcutBindings.quick_launch} /> quick launch
-            {(findingsCount > 0 || totalCount > 0) && (
-              <> · <ShortcutKeys binding={shortcutBindings.next_task} />/<ShortcutKeys binding={shortcutBindings.previous_task} /> cycle tasks</>
-            )}
-            {findingsCount > 0 && <> · <ShortcutKeys binding={shortcutBindings.next_bottleneck} /> next finding</>}
-          </p>
-        </div>
+      <div className="detail-panel kookr-tour-target-layout">
+        <OverviewEmptyState
+          waiting={overview?.waiting ?? []}
+          runningCount={overview?.runningCount ?? 0}
+          completedCount={overview?.completedCount ?? 0}
+          onLaunch={onLaunch}
+          shortcutBindings={shortcutBindings}
+        />
       </div>
     );
   }
@@ -423,7 +430,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     saveDetailReplyDraft(replyDraftScope, nextInput);
   }
 
-  function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+  function handleInputChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     setReplyInput(e.target.value);
   }
 
@@ -496,12 +503,23 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
 
   const isDirectReply = !agent?.anomaly;
 
-  function handleSendAndNext(viaShortcut: boolean = false) {
+  /**
+   * Send the composed reply. By default the user STAYS on the current task
+   * (plain "Send" / Enter); pass `andNext: true` ("Send & Next" /
+   * Ctrl+Cmd+Enter) to jump to the next finding after a non-direct reply.
+   */
+  function handleSend(opts: { viaShortcut?: boolean; andNext?: boolean } = {}) {
+    const { viaShortcut = false, andNext = false } = opts;
     if (!input.trim() || !agent) return;
     const agentName = agent.taskName ?? agent.agentId;
     track({ type: 'response_sent', agentId: agent.agentId, method: viaShortcut ? 'shortcut' : 'input_box', charCount: input.trim().length, anomalyType: agent.anomaly?.type ?? null });
     if (viaShortcut) {
-      track({ type: 'shortcut_used', key: 'Enter', action: isDirectReply ? 'direct_reply' : 'send_and_next', context: 'input_focused' });
+      track({
+        type: 'shortcut_used',
+        key: andNext ? 'Ctrl+Enter' : 'Enter',
+        action: isDirectReply ? 'direct_reply' : andNext ? 'send_and_next' : 'send_stay',
+        context: 'input_focused',
+      });
     }
     // If suggestion text was available but user typed their own, track as ignored
     if (suggestion && suggestion.suggestions.length > 0) {
@@ -524,7 +542,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     clearDetailReplyDraft(replyDraftScope);
     clearSuggestion(agent.agentId);
     showSentOverlay(agentName);
-    if (!isDirectReply) {
+    if (andNext && !isDirectReply) {
       nextBottleneck();
     }
   }
@@ -608,16 +626,25 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
+    // Ctrl/Cmd+Enter: send and jump to the next finding.
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      if (!input.trim()) return;
+      handleSend({ viaShortcut: true, andNext: true });
+      return;
+    }
     // Guard: skip Enter during IME composition (e.g., CJK input) or browser
     // autocomplete acceptance — these fire keydown with key='Enter' but the user
     // intends to confirm the composition, not to send the message.
-    if (e.key === 'Enter' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.nativeEvent.isComposing) {
+    // Shift+Enter falls through to insert a newline in the textarea.
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       if (!input.trim()) {
         handleEmptyEnterAdvance();
         return;
       }
-      handleSendAndNext(true);
+      // Plain Enter sends and STAYS on the current task.
+      handleSend({ viaShortcut: true });
       return;
     }
     // Number keys 1-5 trigger quick actions (only when input is empty AND shortcuts armed)
@@ -1046,9 +1073,9 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
           </div>
         )}
         <div className="response-row">
-          <input
+          <textarea
             ref={inputRef}
-            type="text"
+            rows={1}
             className=""
             autoComplete="off"
             placeholder={
@@ -1080,11 +1107,23 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
           <button
             className="btn-primary"
             data-testid="send-button"
-            onClick={() => handleSendAndNext()}
+            onClick={() => handleSend()}
             disabled={!input.trim()}
+            title={isDirectReply || respondAllAgentIds ? undefined : 'Send and stay on this task (Enter)'}
           >
-            {respondAllAgentIds ? `Send to All (${respondAllAgentIds.length})` : isDirectReply ? 'Send' : 'Send & Next'}
+            {respondAllAgentIds ? `Send to All (${respondAllAgentIds.length})` : 'Send'}
           </button>
+          {!isDirectReply && !respondAllAgentIds && (
+            <button
+              className="btn-secondary"
+              data-testid="send-next-button"
+              onClick={() => handleSend({ andNext: true })}
+              disabled={!input.trim()}
+              title="Send and jump to the next finding (Ctrl+Enter)"
+            >
+              Send & Next
+            </button>
+          )}
           {!isDirectReply && <button className="btn-secondary" onClick={() => handleSkip()}>Skip</button>}
           {!isDirectReply && <button className="btn-secondary" onClick={() => setShowSnooze(true)}>Snooze</button>}
         </div>

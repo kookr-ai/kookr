@@ -67,8 +67,8 @@ test.describe('WebSocket real-time updates', () => {
 
     // Select and respond
     await page.locator('.finding-card').click();
-    await page.locator('.response-row input').fill('Do X');
-    await page.locator('.btn-primary:has-text("Send & Next")').click();
+    await page.locator('.response-row textarea').fill('Do X');
+    await page.locator('[data-testid="send-next-button"]').click();
 
     // After responding, the anomaly should be cleared
     // Inject a tool use to confirm the agent is working again

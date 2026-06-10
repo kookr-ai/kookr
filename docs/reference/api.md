@@ -15,6 +15,7 @@ Kookr exposes local HTTP and WebSocket endpoints from the Hono server. In develo
 | Endpoint | Description |
 | --- | --- |
 | `GET /api/tasks` | All tasks with sessions |
+| `GET /api/tasks/:id` | A single task by id (404 with `{"error": "Task not found"}` for unknown ids) |
 | `POST /api/tasks` | Create and launch a new task |
 | `POST /api/tasks/:id/complete` | Mark a finished task `completed` (non-destructive) and tear down its idle session |
 | `DELETE /api/tasks/:id` | Stop and remove a task |
@@ -22,10 +23,23 @@ Kookr exposes local HTTP and WebSocket endpoints from the Hono server. In develo
 | `GET /api/agents/:agentId/edit-events/:toolUseId` | Fetch a recorded Edit/Write tool event for diff display |
 | `GET /api/sessions/:sessionId/effective-hook-settings` | Resolved per-session hook settings |
 
+### Task id field naming
+
+Task objects returned by `GET /api/tasks` and `GET /api/tasks/:id` carry both
+`id` and `taskId` with the same value. `taskId` is an alias added so scripts
+can use one field name across the whole API — `/api/projects`
+`recentTasks[]` and `/api/snapshot` agents key tasks by `taskId`. `id`
+remains for backwards compatibility.
+
 ### `POST /api/tasks` body fields
 
 `prompt` (required) and `cwd` (required) plus optional `criteria`, `parentTaskId`,
 `agentType`, `effort`, `disableDedup`, `metadata`, and `dependencies`.
+
+`cwd` must name an existing directory on the server's machine — it is
+validated before any task record or session is created, and a missing or
+non-directory path returns `400 {"error", "code": "invalid_cwd"}` with the
+offending path in the message.
 
 `effort` (optional, string) sets the reasoning-effort level for *this one task*,
 overriding the per-agent-type default (see [Reasoning effort](#reasoning-effort)).
