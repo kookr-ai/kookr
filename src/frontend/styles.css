@@ -3522,6 +3522,18 @@ textarea::-webkit-resizer { background: transparent; }
   white-space: nowrap;
 }
 
+/* `.task-share-row` is also used on <label> form fields (Link expires in,
+   Display label). The base row sets align-items: center for label/value pairs,
+   which centers the control instead of laying out label-over-control. Stack
+   them explicitly (don't rely on .dialog label's flex-direction: column) and
+   stretch so the label sits left-aligned above a full-width control — matching
+   the narrow-viewport layout and the other dialog fields. */
+label.task-share-row {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
 .task-share-state {
   margin-top: 10px;
   color: var(--green);
@@ -3581,6 +3593,15 @@ textarea::-webkit-resizer { background: transparent; }
 .task-share-policy-panel p {
   margin: 6px 0 0;
   color: var(--text-secondary);
+}
+
+/* Keep the marker badge a compact pill: don't let it wrap to two lines, and
+   when the panel stacks (narrow viewport, align-items: stretch) don't let the
+   flex child stretch to the full panel width. */
+.task-share-policy-panel .task-share-marker {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  white-space: nowrap;
 }
 
 .task-share-preview-title {
