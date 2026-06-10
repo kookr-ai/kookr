@@ -1300,4 +1300,26 @@ describe('launchTask cwd validation (RFC F12)', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  // The validateLaunchCwd seam exists for the E2E test server, whose specs
+  // launch into the fictional /test/project. These two tests pin the dispatch
+  // contract: the override fully replaces the default existence check (it
+  // does not run in addition), and a rejecting override still fails fast
+  // before any task record or spawn.
+  it('validateLaunchCwd override replaces the default existence check', async () => {
+    const missing = '/nonexistent/kookr-test-cwd';
+    const validateLaunchCwd = vi.fn().mockResolvedValue(undefined);
+    const result = await launchTask({ ...deps, validateLaunchCwd }, { prompt: 'go', cwd: missing });
+    expect(result.task.cwd).toBe(missing);
+    expect(validateLaunchCwd).toHaveBeenCalledExactlyOnceWith(missing);
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('a rejecting validateLaunchCwd override still fails fast before task creation', async () => {
+    const validateLaunchCwd = vi.fn().mockRejectedValue(new CwdValidationError('Working directory does not exist: /custom'));
+    await expect(launchTask({ ...deps, validateLaunchCwd }, { prompt: 'go', cwd: '/custom' }))
+      .rejects.toThrow('Working directory does not exist: /custom');
+    expect(store.listTasks()).toHaveLength(0);
+    expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
 });

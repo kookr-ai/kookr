@@ -107,6 +107,10 @@ async function main() {
     claudeDir,
     // Dummy STT URL so the mic button renders in the UI (no real STT service needed)
     sttUrl: 'ws://localhost:9999',
+    // Specs launch tasks into the fictional /test/project. Nothing is ever
+    // spawned there (FakeTerminalBackend), so skip the RFC F12 cwd existence
+    // check that would otherwise 400 every launch.
+    validateLaunchCwd: async () => {},
   });
 
   if (process.env.E2E_PROMPT_SUBMIT_AUTO_HOOK === '1') {
