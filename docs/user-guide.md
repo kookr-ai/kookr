@@ -100,7 +100,7 @@ Playbooks are reusable task templates. Kookr discovers them from three tiers:
 - User playbooks under `~/.kookr/playbooks/`
 - Project playbooks under `<repo>/.kookr/playbooks/`
 
-Project playbooks can define parameters and completion criteria. See [Playbook Scoping](playbook-scoping.md) for the exact discovery and precedence rules.
+Project playbooks can define parameters and completion criteria. See [Playbook Scoping](playbook-scoping.md) for the exact discovery and precedence rules, and the [Playbooks Reference](reference/playbooks.md) for the authoring schema.
 
 ## Schedules
 

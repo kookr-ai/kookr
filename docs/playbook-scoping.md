@@ -2,6 +2,8 @@
 
 Playbooks are reusable task templates. Kookr discovers them from three independent tiers, so generic workflows can ship once and apply everywhere instead of being copy-pasted into every repo.
 
+For the frontmatter schema, parameter fields, completion criteria, dependency declarations, and loop settings, see the [Playbooks Reference](reference/playbooks.md).
+
 ## The three tiers
 
 | Tier      | Location                                              | Use case                                   |

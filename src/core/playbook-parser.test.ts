@@ -379,6 +379,39 @@ Body.
     );
   });
 
+  test('playbooks reference example parses with the real parser', async () => {
+    const content = await readFile('docs/reference/playbooks.md', 'utf8');
+    const match = content.match(/```playbook frontmatter-reference-example\n([\s\S]*?)\n```/);
+
+    expect(match).not.toBeNull();
+
+    const parsed = parsePlaybook(match?.[1] ?? '', 'docs/reference/playbooks.md example', '/project');
+
+    expect(parsed.name).toBe('Investigate GitHub Issue');
+    expect(parsed.tags).toEqual(['workflow', 'loopable']);
+    expect(parsed.repoTags).toEqual(['github']);
+    expect(parsed.dependencies).toEqual(['kb']);
+    expect(parsed.parameters.map((parameter) => parameter.name)).toEqual([
+      'repoFullName',
+      'issueNumber',
+      'useKnowledgeBase',
+    ]);
+    expect(parsed.parameters[0].defaultFrom).toBe('git-remote');
+    expect(parsed.parameters[0].source).toBe('tracked-projects');
+    expect(parsed.parameters[2].gatedBy).toBe('kb');
+    expect(parsed.checklist).toEqual([
+      'Issue context summarized',
+      'Implementation scope identified',
+      'Risks and verification plan recorded',
+    ]);
+    expect(parsed.effectiveLoop).toMatchObject({
+      iterationCap: 4,
+      zeroDiffConsecutiveIterations: 2,
+      costCapUsd: 10,
+    });
+    expect(parsed.effectiveLoop?.stopPredicate).toContain('.kookr-stop');
+  });
+
   test('validates zero-diff convergence against default iteration cap', () => {
     const content = `---
 name: Bad zero-diff
