@@ -179,6 +179,13 @@ export interface ProjectSummaryQueryDeps extends SnapshotQueryDeps {
    * `ProjectSummary` are omitted.
    */
   getTaskGithubReferences?: (taskId: string) => GitHubReference[];
+  /**
+   * Verified open/closed state per reference, bound to
+   * `GitHubStateStore.isRefOpen`. When supplied, the tied-counts overlay only
+   * counts refs GitHub has confirmed open — see
+   * {@link BuildGithubTaskOverlayInput.getRefOpenState}.
+   */
+  getGithubRefOpenState?: (ref: GitHubReference) => boolean | undefined;
 }
 
 /**
@@ -429,7 +436,11 @@ export function buildCoordinatorDetectorTasks(
 export function getProjectSummaries(deps: ProjectSummaryQueryDeps): ProjectSummary[] {
   const agents = getSnapshotAgentsRaw(deps);
   const githubTaskOverlay = deps.getTaskGithubReferences
-    ? buildGithubTaskOverlay({ agents, getTaskGithubReferences: deps.getTaskGithubReferences })
+    ? buildGithubTaskOverlay({
+        agents,
+        getTaskGithubReferences: deps.getTaskGithubReferences,
+        getRefOpenState: deps.getGithubRefOpenState,
+      })
     : undefined;
   const summaries = computeProjectSummaries({
     agents,

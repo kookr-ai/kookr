@@ -13,6 +13,16 @@ export interface BuildGithubTaskOverlayInput {
    * no refs) — uncaught throws will abort overlay computation for all projects.
    */
   getTaskGithubReferences: (taskId: string) => GitHubReference[];
+  /**
+   * Verified open/closed state accessor, bound to
+   * `GitHubStateStore.isRefOpen(ref)`. When provided, a reference only counts
+   * toward the "open issues/PRs tied to active tasks" sets if GitHub has
+   * CONFIRMED it open (`true`). Closed/merged (`false`) and never-fetched
+   * (`undefined` — including bogus refs to nonexistent items) are excluded,
+   * so the tied counts can no longer exceed the repo's real open counts.
+   * When omitted (legacy callers/tests), every project-matching ref counts.
+   */
+  getRefOpenState?: (ref: GitHubReference) => boolean | undefined;
 }
 
 /**
@@ -54,6 +64,11 @@ export function buildGithubTaskOverlay(input: BuildGithubTaskOverlayInput): Map<
     for (const ref of input.getTaskGithubReferences(agent.taskId)) {
       if (ref.owner.toLowerCase() !== ownerRepo.owner) continue;
       if (ref.repo.toLowerCase() !== ownerRepo.repo) continue;
+      // Honest counting (data-trust fix): when an open-state accessor is
+      // wired, only refs GitHub has verified open contribute. A scanned ref
+      // that is closed, merged, or was never successfully fetched (e.g. a
+      // prose "#123" pointing at nothing) must not inflate the counts.
+      if (input.getRefOpenState && input.getRefOpenState(ref) !== true) continue;
       const dedupeKey = `${ref.type}:${ref.number}`;
       if (seenForTask.has(dedupeKey)) continue;
       seenForTask.add(dedupeKey);
