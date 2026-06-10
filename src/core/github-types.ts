@@ -35,11 +35,13 @@ export interface GitHubCheck {
 }
 
 export type GitHubPRStatus = 'open' | 'closed' | 'merged' | 'draft';
+export type GitHubPRMergeable = 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN';
 
 export interface GitHubPRState {
   ref: GitHubReference;
   title: string;
   status: GitHubPRStatus;
+  mergeable: GitHubPRMergeable;
   author: string;
   branch: string;
   baseBranch: string;
@@ -73,6 +75,7 @@ export type GitHubStateChange =
   | { type: 'review_approved'; ref: GitHubReference; reviewer: string }
   | { type: 'pr_merged'; ref: GitHubReference }
   | { type: 'pr_closed'; ref: GitHubReference }
+  | { type: 'pr_conflicting'; ref: GitHubReference }
   | { type: 'new_unresolved_thread'; ref: GitHubReference; thread: { author: string; body: string; path?: string } };
 
 // --- Fetcher Interface (implemented by adapters) ---

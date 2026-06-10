@@ -26,6 +26,7 @@ describe('github-fetcher batching helpers', () => {
     expect(query).toContain('repository(owner: $owner, name: $repo)');
     expect(query).toContain('pr_42: pullRequest(number: 42)');
     expect(query).toContain('issue_7: issue(number: 7)');
+    expect(query).toContain('mergeable');
     expect(query).toContain('statusCheckRollup');
     expect(query).toContain('reviewThreads(first: 50)');
   });
@@ -43,6 +44,7 @@ describe('github-fetcher batching helpers', () => {
           pr_42: {
             title: 'Shared PR',
             state: 'OPEN',
+            mergeable: null,
             isDraft: false,
             author: { login: 'alice' },
             headRefName: 'branch',
@@ -58,6 +60,7 @@ describe('github-fetcher batching helpers', () => {
     }, [task1, task2]);
 
     expect(result.prs.map((pr) => pr.ref.taskId)).toEqual(['task-1', 'task-2']);
+    expect(result.prs.map((pr) => pr.mergeable)).toEqual(['UNKNOWN', 'UNKNOWN']);
   });
 
   it('parses batched PR and issue state from a single repository response', () => {
@@ -69,6 +72,7 @@ describe('github-fetcher batching helpers', () => {
           pr_42: {
             title: 'Fix polling',
             state: 'OPEN',
+            mergeable: 'CONFLICTING',
             isDraft: false,
             author: { login: 'alice' },
             headRefName: 'fix-polling',
@@ -132,6 +136,7 @@ describe('github-fetcher batching helpers', () => {
       ref: prRef,
       title: 'Fix polling',
       status: 'open',
+      mergeable: 'CONFLICTING',
       author: 'alice',
       branch: 'fix-polling',
       baseBranch: 'main',

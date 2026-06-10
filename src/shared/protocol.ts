@@ -52,6 +52,7 @@ export type {
   UserInputDeliverySource,
   UserInputDeliveryStatus,
 } from './contracts/user-input-delivery.js';
+export { DELIVERY_SOURCE_LABEL } from './contracts/user-input-delivery.js';
 export type { BuildInfo } from './contracts/build-info.js';
 export type { CircuitBreakerSnapshot } from './contracts/circuit-breaker.js';
 export type { CompletionDigest } from './contracts/completion-digest.js';
@@ -60,6 +61,7 @@ export type { CoordinatorSnapshotState } from './contracts/coordinator.js';
 export type {
   GitHubCheck,
   GitHubIssueState,
+  GitHubPRMergeable,
   GitHubPRState,
   GitHubReviewThread,
   GitHubStateChange,

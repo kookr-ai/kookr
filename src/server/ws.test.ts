@@ -2188,6 +2188,7 @@ describe('GitHub initial sync on WebSocket connection', () => {
       ref,
       title: `PR #${ref.number}`,
       status: 'open',
+      mergeable: 'MERGEABLE',
       author: 'test-user',
       branch: 'feature-branch',
       baseBranch: 'main',
