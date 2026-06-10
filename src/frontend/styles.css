@@ -3875,6 +3875,22 @@ label.task-share-row {
   color: var(--text-bright);
 }
 
+/* Tracked-project label next to a cwd suggestion path (RFC F13). */
+.combo-dropdown-project {
+  margin-left: 8px;
+  font-size: 10px;
+  font-family: inherit;
+  color: var(--text-muted);
+}
+
+/* Warns that the cwd field resolved to Kookr's own runtime checkout (RFC F13). */
+.cwd-server-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 /* --- Quick Launch Bar --- */
 .quick-launch-bar {
   position: fixed;

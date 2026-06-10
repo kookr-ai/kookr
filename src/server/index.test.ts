@@ -12,6 +12,16 @@ import { createRelayServer } from '../../relay/server.js';
 
 const RELAY_TRUSTED_ENV = 'KOOKR_RELAY_' + 'TRUSTED';
 
+// RFC F12: launchTask validates that the working directory exists before
+// spawning, so launch cwds used by these integration tests must be real
+// directories. (Direct taskStore.createTask calls are not validated, but the
+// same constants are reused there for consistency.)
+const CWD = mkdtempSync(join(tmpdir(), 'kookr-it-cwd-'));
+const PROJECT_DIR = mkdtempSync(join(tmpdir(), 'kookr-it-project-'));
+const REPO_A = mkdtempSync(join(tmpdir(), 'kookr-it-repo-a-'));
+const REPO_B = mkdtempSync(join(tmpdir(), 'kookr-it-repo-b-'));
+const CLI_CWD = mkdtempSync(join(tmpdir(), 'kookr-it-cli-'));
+
 function getActualPort(server: KookrServerInternal): number {
   const addr = server.httpServer.address();
   if (addr && typeof addr === 'object') return addr.port;
@@ -1197,7 +1207,7 @@ describe('createKookrServer', () => {
       const createRes = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'No GitHub refs yet', cwd: '/cwd' }),
+        body: JSON.stringify({ prompt: 'No GitHub refs yet', cwd: CWD }),
       });
       const task = await createRes.json();
 
@@ -1215,7 +1225,7 @@ describe('createKookrServer', () => {
       const createRes = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'Boom on delete', cwd: '/cwd' }),
+        body: JSON.stringify({ prompt: 'Boom on delete', cwd: CWD }),
       });
       expect(createRes.status).toBe(201);
       const task = await createRes.json();
@@ -1243,7 +1253,7 @@ describe('createKookrServer', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: 'Fix the auth bug',
-          cwd: '/test/project',
+          cwd: PROJECT_DIR,
           criteria: 'Tests pass',
         }),
       });
@@ -1252,7 +1262,7 @@ describe('createKookrServer', () => {
       const task = await res.json();
       expect(task.id).toBeDefined();
       expect(task.prompt).toBe('Fix the auth bug');
-      expect(task.cwd).toBe('/test/project');
+      expect(task.cwd).toBe(PROJECT_DIR);
       expect(task.criteria).toBe('Tests pass');
       expect(task.status).toBe('inProgress');
       expect(task.sessions).toHaveLength(1);
@@ -1271,7 +1281,7 @@ describe('createKookrServer', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt,
-          cwd: '/test/project',
+          cwd: PROJECT_DIR,
         }),
       });
 
@@ -1289,7 +1299,7 @@ describe('createKookrServer', () => {
       const parentRes = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'Parent task', cwd: '/cwd' }),
+        body: JSON.stringify({ prompt: 'Parent task', cwd: CWD }),
       });
       const parent = await parentRes.json();
 
@@ -1299,7 +1309,7 @@ describe('createKookrServer', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: 'Child task',
-          cwd: '/cwd',
+          cwd: CWD,
           parentTaskId: parent.id,
         }),
       });
@@ -1317,7 +1327,7 @@ describe('createKookrServer', () => {
       const res = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cwd: '/cwd' }),
+        body: JSON.stringify({ cwd: CWD }),
       });
 
       expect(res.status).toBe(400);
@@ -1343,7 +1353,7 @@ describe('createKookrServer', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: 'Child task',
-          cwd: '/cwd',
+          cwd: CWD,
           parentTaskId: 'nonexistent-id',
         }),
       });
@@ -1370,7 +1380,7 @@ describe('createKookrServer', () => {
       const res1 = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'Deduplicate me', cwd: '/cwd' }),
+        body: JSON.stringify({ prompt: 'Deduplicate me', cwd: CWD }),
       });
       expect(res1.status).toBe(201);
       const first = await res1.json();
@@ -1379,7 +1389,7 @@ describe('createKookrServer', () => {
       const res2 = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'Deduplicate me', cwd: '/cwd' }),
+        body: JSON.stringify({ prompt: 'Deduplicate me', cwd: CWD }),
       });
       expect(res2.status).toBe(200);
       const second = await res2.json();
@@ -1397,7 +1407,7 @@ describe('createKookrServer', () => {
       const res1 = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'cli' },
-        body: JSON.stringify({ prompt: 'Keep duplicate', cwd: '/cwd' }),
+        body: JSON.stringify({ prompt: 'Keep duplicate', cwd: CWD }),
       });
       expect(res1.status).toBe(201);
       const first = await res1.json();
@@ -1407,7 +1417,7 @@ describe('createKookrServer', () => {
         headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'cli' },
         body: JSON.stringify({
           prompt: 'Keep duplicate',
-          cwd: '/cwd',
+          cwd: CWD,
           disableDedup: true,
           metadata: { intent: 'keep_as_duplicate' },
         }),
@@ -1429,7 +1439,7 @@ describe('createKookrServer', () => {
         headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'cli' },
         body: JSON.stringify({
           prompt: 'Unmarked duplicate bypass',
-          cwd: '/cwd',
+          cwd: CWD,
           disableDedup: true,
         }),
       });
@@ -1470,7 +1480,7 @@ describe('createKookrServer', () => {
         headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'cli' },
         body: JSON.stringify({
           prompt: `Invalid duplicate metadata: ${expectedError}`,
-          cwd: '/cwd',
+          cwd: CWD,
           ...payload,
         }),
       });
@@ -1484,7 +1494,7 @@ describe('createKookrServer', () => {
       const res1 = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'Complete me first', cwd: '/cwd' }),
+        body: JSON.stringify({ prompt: 'Complete me first', cwd: CWD }),
       });
       const first = await res1.json();
       server.taskStore.completeTask(first.id);
@@ -1493,7 +1503,7 @@ describe('createKookrServer', () => {
       const res2 = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'Complete me first', cwd: '/cwd' }),
+        body: JSON.stringify({ prompt: 'Complete me first', cwd: CWD }),
       });
       expect(res2.status).toBe(201);
       const second = await res2.json();
@@ -1504,7 +1514,7 @@ describe('createKookrServer', () => {
       const res1 = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'review the diff', cwd: '/tmp/repo-a' }),
+        body: JSON.stringify({ prompt: 'review the diff', cwd: REPO_A }),
       });
       expect(res1.status).toBe(201);
       const first = await res1.json();
@@ -1512,7 +1522,7 @@ describe('createKookrServer', () => {
       const res2 = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'review the diff', cwd: '/tmp/repo-b' }),
+        body: JSON.stringify({ prompt: 'review the diff', cwd: REPO_B }),
       });
       expect(res2.status).toBe(201);
       const second = await res2.json();
@@ -1527,12 +1537,12 @@ describe('createKookrServer', () => {
           'Content-Type': 'application/json',
           'X-Kookr-Launch-Source': 'cli',
         },
-        body: JSON.stringify({ prompt: 'launched via cli', cwd: '/cwd-from-cli' }),
+        body: JSON.stringify({ prompt: 'launched via cli', cwd: CLI_CWD }),
       });
       expect(res.status).toBe(201);
       const task = await res.json();
       expect(task.id).toBeDefined();
-      expect(task.cwd).toBe('/cwd-from-cli');
+      expect(task.cwd).toBe(CLI_CWD);
     });
 
     test('SPA fallback returns 404 when frontend not built', async () => {
@@ -1543,8 +1553,8 @@ describe('createKookrServer', () => {
     });
 
     test('GET /api/health reflects task count', async () => {
-      server.taskStore.createTask('Task 1', '/cwd');
-      server.taskStore.createTask('Task 2', '/cwd');
+      server.taskStore.createTask('Task 1', CWD);
+      server.taskStore.createTask('Task 2', CWD);
       const res = await fetch(`${baseUrl}/api/health`);
       const data = await res.json();
       expect(data.agents).toBe(2);
@@ -2119,7 +2129,7 @@ Review daily work.
       ws.send(JSON.stringify({
         type: 'launch',
         prompt: 'Fix the bug',
-        cwd: '/test/project',
+        cwd: PROJECT_DIR,
       }));
 
       // Wait for broadcast snapshot after launch (may be preceded by achievement messages)
@@ -2169,7 +2179,7 @@ Review daily work.
       ws1.send(JSON.stringify({
         type: 'launch',
         prompt: 'Test broadcast',
-        cwd: '/cwd',
+        cwd: CWD,
       }));
 
       // Both should receive a snapshot broadcast (may be preceded by achievement messages)
@@ -2373,16 +2383,21 @@ Review daily work.
       mkdirSync(join(newTempDir, 'hooks'), { recursive: true });
       mkdirSync(join(newTempDir, 'settings'), { recursive: true });
       const tasksFile = join(newTempDir, 'tasks.json');
+      // Deliberately nonexistent cwd: crash recovery skips (and reconcile
+      // terminates) a dead-session task whose cwd is gone. With an existing
+      // cwd, startup crash recovery would *relaunch* this task instead and
+      // it would stay inProgress.
+      const goneCwd = '/nonexistent/kookr-persist-cwd';
       writeFileSync(tasksFile, JSON.stringify([
         {
           id: 'persisted-task-1',
           prompt: 'Pre-existing task',
-          cwd: '/cwd',
+          cwd: goneCwd,
           status: 'inProgress',
           sessions: [{
             tmuxSession: 'kookr-dead-session',
             agentType: 'claude-code',
-            cwd: '/cwd',
+            cwd: goneCwd,
             createdAt: '2026-03-25T00:00:00.000Z',
           }],
           createdAt: '2026-03-25T00:00:00.000Z',
@@ -2438,7 +2453,7 @@ Review daily work.
       ws.send(JSON.stringify({
         type: 'launch',
         prompt: 'Test event wiring',
-        cwd: '/cwd',
+        cwd: CWD,
       }));
 
       // Wait for launch snapshot; resourceStatus messages may be interleaved.
@@ -2462,7 +2477,7 @@ Review daily work.
       server.adapter.injectHookEvent(tmuxName, JSON.stringify({
         session_id: 'sess-1',
         transcript_path: '/path/to/transcript.jsonl',
-        cwd: '/cwd',
+        cwd: CWD,
         hook_event_name: 'PreToolUse',
         tool_name: 'Bash',
         permission_mode: 'acceptEdits',

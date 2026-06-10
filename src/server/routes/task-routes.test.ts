@@ -26,7 +26,7 @@ vi.mock('../use-cases/delete-task.js', async (importActual) => {
   };
 });
 
-import { launchTask, DrainModeError, EffortValidationError } from '../launch-service.js';
+import { launchTask, CwdValidationError, DrainModeError, EffortValidationError } from '../launch-service.js';
 import { deleteTask } from '../use-cases/delete-task.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
@@ -367,6 +367,23 @@ describe('POST /api/tasks error paths', () => {
       // Shape check rejects before launch is attempted.
       expect(launchTask).not.toHaveBeenCalled();
     }
+  });
+
+  test('maps CwdValidationError to 400 with code invalid_cwd and the cause-first message (RFC F12)', async () => {
+    vi.mocked(launchTask).mockRejectedValueOnce(
+      new CwdValidationError('Working directory does not exist: /no/such/dir'),
+    );
+    const taskStore = new TaskStore();
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/no/such/dir' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      code: 'invalid_cwd',
+      error: 'Working directory does not exist: /no/such/dir',
+    });
   });
 
   test('maps EffortValidationError to 400 with code invalid_effort (#681)', async () => {

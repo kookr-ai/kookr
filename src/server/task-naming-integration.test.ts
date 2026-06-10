@@ -28,6 +28,12 @@ import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { createKookrServerInternal } from './index.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
 
+// RFC F12: launchTask validates that the working directory exists before
+// spawning, so launch cwds used by these integration tests must be real
+// directories.
+const PROJECT_DIR = mkdtempSync(join(tmpdir(), 'kookr-naming-project-'));
+const BACKEND_DIR = mkdtempSync(join(tmpdir(), 'kookr-naming-backend-'));
+
 function getActualPort(server: KookrServerInternal): number {
   const addr = server.httpServer.address();
   if (addr && typeof addr === 'object') return addr.port;
@@ -99,7 +105,7 @@ describe('AI task naming integration', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         prompt: 'Fix the auth bug in login flow',
-        cwd: '/home/user/project',
+        cwd: PROJECT_DIR,
         criteria: 'Tests pass',
       }),
     });
@@ -116,7 +122,7 @@ describe('AI task naming integration', () => {
     const [client, prompt, cwd, criteria] = mockGenerateTaskName.mock.calls[0];
     expect(client).toBeTruthy(); // the mock client object
     expect(prompt).toBe('Fix the auth bug in login flow');
-    expect(cwd).toBe('/home/user/project');
+    expect(cwd).toBe(PROJECT_DIR);
     expect(criteria).toBe('Tests pass');
   });
 
@@ -132,7 +138,7 @@ describe('AI task naming integration', () => {
     ws.send(JSON.stringify({
       type: 'launch',
       prompt: 'Refactor the database layer',
-      cwd: '/home/user/backend',
+      cwd: BACKEND_DIR,
     }));
 
     // Wait for launch snapshot
@@ -175,7 +181,7 @@ describe('AI task naming integration', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         prompt: 'Fix the auth bug',
-        cwd: '/project',
+        cwd: PROJECT_DIR,
       }),
     });
     const task = await res.json();
@@ -222,7 +228,7 @@ describe('AI task naming integration', () => {
     const res = await fetch(`${baseUrl}/api/tasks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: 'Fix bug', cwd: '/project' }),
+      body: JSON.stringify({ prompt: 'Fix bug', cwd: PROJECT_DIR }),
     });
     const task = await res.json();
 
@@ -239,7 +245,7 @@ describe('AI task naming integration', () => {
     const res = await fetch(`${baseUrl}/api/tasks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: 'Fix bug', cwd: '/project' }),
+      body: JSON.stringify({ prompt: 'Fix bug', cwd: PROJECT_DIR }),
     });
     const task = await res.json();
 
@@ -257,7 +263,7 @@ describe('AI task naming integration', () => {
     const res = await fetch(`${baseUrl}/api/tasks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: 'Fix bug', cwd: '/project' }),
+      body: JSON.stringify({ prompt: 'Fix bug', cwd: PROJECT_DIR }),
     });
     const task = await res.json();
 
@@ -281,7 +287,7 @@ describe('AI task naming integration', () => {
     const res = await fetch(`${baseUrl}/api/tasks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: 'Fix bug', cwd: '/project' }),
+      body: JSON.stringify({ prompt: 'Fix bug', cwd: PROJECT_DIR }),
     });
     const task = await res.json();
 
@@ -323,7 +329,7 @@ describe('AI task naming integration', () => {
     const res = await fetch(`${baseUrl}/api/tasks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: 'Add pagination', cwd: '/project' }),
+      body: JSON.stringify({ prompt: 'Add pagination', cwd: PROJECT_DIR }),
     });
     const task = await res.json();
 
@@ -340,7 +346,7 @@ describe('AI task naming integration', () => {
     const res = await fetch(`${baseUrl}/api/tasks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: 'Fix bug', cwd: '/project' }),
+      body: JSON.stringify({ prompt: 'Fix bug', cwd: PROJECT_DIR }),
       // No criteria field
     });
     await res.json();
@@ -368,12 +374,12 @@ describe('AI task naming integration', () => {
       fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'Fix auth bug', cwd: '/project' }),
+        body: JSON.stringify({ prompt: 'Fix auth bug', cwd: PROJECT_DIR }),
       }),
       fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'Add pagination to users', cwd: '/project' }),
+        body: JSON.stringify({ prompt: 'Add pagination to users', cwd: PROJECT_DIR }),
       }),
     ]);
 
@@ -393,7 +399,9 @@ describe('AI task naming integration', () => {
 
   test('WS relaunch triggers auto-naming for new task', async () => {
     // First create a task
-    const original = server.taskStore.createTask('Original prompt', '/cwd');
+    // Real dir: the WS relaunch below reuses this task's cwd and goes through
+    // launchTask, which now validates the working directory (RFC F12).
+    const original = server.taskStore.createTask('Original prompt', PROJECT_DIR);
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
 

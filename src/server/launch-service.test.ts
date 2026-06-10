@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, DrainModeError, EffortValidationError, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, type LaunchServiceDeps } from './launch-service.js';
 import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
 
 // Minimal stubs for adapter and lifecycle deps
@@ -1239,5 +1239,65 @@ describe('launchTask round-robin', () => {
     const result = await launchTask(soloDeps, { prompt: 'solo', cwd: '/tmp' });
     expect(result.task.agentType).toBe('codex-cli');
     expect(registry.get('codex-cli').launch).toHaveBeenCalledOnce();
+  });
+});
+
+describe('launchTask cwd validation (RFC F12)', () => {
+  let store: TaskStore;
+  let deps: LaunchServiceDeps;
+
+  beforeEach(() => {
+    store = new TaskStore();
+    deps = makeDeps(store);
+  });
+
+  it('rejects a nonexistent working directory before creating any task record', async () => {
+    const missing = '/nonexistent/kookr-test-cwd';
+    await expect(launchTask(deps, { prompt: 'go', cwd: missing }))
+      .rejects.toThrow(`Working directory does not exist: ${missing}`);
+
+    // Fails fast: no task record, no spawn attempt, nothing to clean up.
+    expect(store.listTasks()).toHaveLength(0);
+    expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
+
+  it('throws a CwdValidationError with code invalid_cwd (for the 400 mapping)', async () => {
+    let caught: unknown;
+    try {
+      await launchTask(deps, { prompt: 'go', cwd: '/nonexistent/kookr-test-cwd' });
+    } catch (err) {
+      caught = err;
+    }
+    expect(isCwdValidationError(caught)).toBe(true);
+    expect(caught).toBeInstanceOf(CwdValidationError);
+    expect((caught as CwdValidationError).code).toBe('invalid_cwd');
+    // The message must LEAD with the actual cause — the WS alert summary
+    // embeds it verbatim, and the old "dtach socket did not appear" flow
+    // buried the cwd hint as the third recovery bullet.
+    expect((caught as CwdValidationError).message).toMatch(/^Working directory does not exist:/);
+  });
+
+  it('rejects a cwd that exists but is a file, not a directory', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-cwd-test-'));
+    try {
+      const file = join(dir, 'not-a-dir');
+      await writeFile(file, 'x');
+      await expect(launchTask(deps, { prompt: 'go', cwd: file }))
+        .rejects.toThrow(`Working directory is not a directory: ${file}`);
+      expect(store.listTasks()).toHaveLength(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts an existing directory', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-cwd-test-'));
+    try {
+      const result = await launchTask(deps, { prompt: 'go', cwd: dir });
+      expect(result.task.cwd).toBe(dir);
+      expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

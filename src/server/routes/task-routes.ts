@@ -12,7 +12,7 @@ import {
   type PendingAgentSignal,
 } from '../../shared/contracts/agent-signal.js';
 import { TaskLifecycleCommands } from '../use-cases/task-lifecycle-commands.js';
-import { launchTask, DrainModeError, isEffortValidationError } from '../launch-service.js';
+import { launchTask, DrainModeError, isCwdValidationError, isEffortValidationError } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import type { LaunchDependency } from '../../core/playbook.js';
 import type { Task } from '../../core/tasks.js';
@@ -223,6 +223,11 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         return c.json({ error: err.message }, 400);
       }
       if (isEffortValidationError(err)) {
+        return c.json({ error: err.message, code: err.code }, 400);
+      }
+      // RFC F12: a missing working directory is a client error, surfaced
+      // before any session spawn with the actual cause leading the message.
+      if (isCwdValidationError(err)) {
         return c.json({ error: err.message, code: err.code }, 400);
       }
       if (err instanceof LaunchPreflightError) {
