@@ -20,6 +20,7 @@ Create a Kookr task from your current shell:
 ```bash
 cd ~/git/my-project
 kookr spawn "review the diff since origin/main and write a summary"
+kookr spawn --json "review the diff since origin/main and write a summary"
 ```
 
 The task uses `$PWD` as its working directory and appears in the dashboard immediately. Output starts with `task_id=<uuid>` for scripting.
@@ -43,6 +44,8 @@ kookr spawn --dedupe=skip "fix the auth bug"   # create intentionally and suppre
 ```
 
 In interactive `warn` mode, `show diff` prints the stored active prompt against the requested prompt before asking again.
+
+In `--json` mode, duplicate `warn` prompts are treated as non-interactive and return `DUPLICATE_BLOCKED` instead of asking for confirmation. Use `--dedupe=skip --json` when automation intentionally wants to keep a duplicate.
 
 ## Hook-Safe Prompts
 
@@ -82,6 +85,38 @@ This keeps the shell command short, avoids hook false positives, and leaves the 
 
 If both default ports respond and no explicit target is set, the command exits with an ambiguity error.
 
+## JSON Output
+
+`kookr spawn`, `kookr status`, `kookr ralph`, and their deprecated standalone aliases accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
+
+```json
+{
+  "ok": true,
+  "code": "OK",
+  "message": "Task created",
+  "details": {}
+}
+```
+
+The envelope fields are:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `ok` | boolean | `true` for successful command outcomes, `false` for failures. |
+| `code` | string | Stable symbolic result code, such as `OK`, `USER_ERROR`, `NO_SERVER`, `SERVER_ERROR`, or `DUPLICATE_BLOCKED`. |
+| `message` | string | Short human-readable summary of the outcome. |
+| `details` | object | Command-specific structured data. |
+
+Exit codes remain unchanged. `kookr status` historically exits `1` for invalid ports, unreachable servers, and unexpected responses; in JSON mode its `code` distinguishes `USER_ERROR`, `NO_SERVER`, and `SERVER_ERROR` while preserving that numeric behavior.
+
+Examples:
+
+```bash
+kookr spawn --json --prompt-file /tmp/prompt.md
+kookr status --json
+kookr ralph status <taskId> --json
+```
+
 ## Exit Codes
 
 `kookr spawn`, `kookr ralph`, and their compatible aliases use stable exit codes for scripts:
@@ -102,6 +137,7 @@ Print a read-only snapshot of the running Kookr instance:
 
 ```bash
 kookr status
+kookr status --json
 pnpm status
 ```
 
@@ -112,10 +148,10 @@ The command reads `/api/snapshot` and `/api/health`, then reports server uptime,
 Inspect or control a Ralph loop:
 
 ```bash
-kookr ralph status <taskId>
-kookr ralph pause <taskId>
-kookr ralph resume <taskId>
-kookr ralph cancel <taskId>
+kookr ralph status <taskId> [--json]
+kookr ralph pause <taskId> [--json]
+kookr ralph resume <taskId> [--json]
+kookr ralph cancel <taskId> [--json]
 ```
 
 If a loop appears stopped after a crash, relaunching the same playbook may show a duplicate-loop conflict or a **Replace with new** recovery dialog. See [Ralph Loop Stopped Or Shows "Replace With New"](../troubleshooting.md#ralph-loop-stopped-or-shows-replace-with-new) before editing local state by hand.

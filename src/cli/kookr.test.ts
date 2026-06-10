@@ -78,6 +78,20 @@ describe('kookr dispatcher', () => {
     expect(stderr).toBe('');
     expect(stdout).toContain(helpNeedle);
   });
+
+  it('dispatches subcommand JSON help through the main binary', async () => {
+    const { stdout, stderr } = await execFileAsync(process.execPath, ['bin/kookr.js', 'status', '--json', '--help'], {
+      cwd: process.cwd(),
+    });
+    const envelope = JSON.parse(stdout);
+    expect(stderr).toBe('');
+    expect(envelope).toMatchObject({
+      ok: true,
+      code: 'OK',
+      message: 'Help',
+    });
+    expect(envelope.details.help).toContain('kookr status');
+  });
 });
 
 describe('deprecated standalone aliases', () => {
@@ -91,5 +105,19 @@ describe('deprecated standalone aliases', () => {
     });
     expect(stderr).toContain(warning);
     expect(stdout).toContain(helpNeedle);
+  });
+
+  it.each([
+    ['bin/kookr-spawn.js', 'kookr spawn'],
+    ['bin/kookr-status.js', 'kookr status'],
+    ['bin/kookr-ralph.js', 'kookr ralph'],
+  ])('%s suppresses the deprecation warning in JSON mode', async (script, helpNeedle) => {
+    const { stdout, stderr } = await execFileAsync(process.execPath, [script, '--json', '--help'], {
+      cwd: process.cwd(),
+    });
+    const envelope = JSON.parse(stdout);
+    expect(stderr).toBe('');
+    expect(envelope).toMatchObject({ ok: true, code: 'OK' });
+    expect(envelope.details.help).toContain(helpNeedle);
   });
 });

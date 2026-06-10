@@ -13,6 +13,11 @@ import {
   main,
 } from '../../bin/kookr-status.js';
 
+function parseSingleJsonLog(logs: string[]): any {
+  expect(logs).toHaveLength(1);
+  return JSON.parse(logs[0]);
+}
+
 describe('kookr-status apiAuthHeaders (issue #708)', () => {
   it('returns a Bearer header when KOOKR_API_TOKEN is set', () => {
     expect(apiAuthHeaders({ KOOKR_API_TOKEN: '  lan-secret  ' })).toEqual({
@@ -424,6 +429,20 @@ describe('kookr-status main (integration-style)', () => {
     expect(deps.logs).toEqual([]);
   });
 
+  it('honors --json even when it appears after an unexpected argument', async () => {
+    const deps = makeDeps({});
+    await main({ ...deps, argv: ['extra', '--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([2]);
+    expect(deps.errors).toEqual([]);
+    expect(envelope).toMatchObject({
+      ok: false,
+      code: 'USER_ERROR',
+      message: 'Unexpected argument: extra',
+      details: { subcommand: 'status' },
+    });
+  });
+
   it('errors out with "not running" when auto-detect finds no server', async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED')) as typeof fetch;
     const deps = makeDeps({});
@@ -431,6 +450,20 @@ describe('kookr-status main (integration-style)', () => {
     expect(deps.exits).toEqual([1]);
     expect(deps.errors.join('\n')).toContain('Kookr is not running on ports 4800, 4801');
     expect(deps.logs).toEqual([]);
+  });
+
+  it('prints a JSON envelope when auto-detect finds no server with --json', async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED')) as typeof fetch;
+    const deps = makeDeps({});
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([1]);
+    expect(deps.errors).toEqual([]);
+    expect(envelope).toMatchObject({
+      ok: false,
+      code: 'NO_SERVER',
+      details: { ports: [4800, 4801] },
+    });
   });
 
   it('errors out on explicit port when the server is unreachable', async () => {
@@ -478,6 +511,53 @@ describe('kookr-status main (integration-style)', () => {
     expect(out).toContain('Agents:  1');
     expect(out).toContain('Cost:    $0.50');
     expect(out).toContain('No active findings.');
+  });
+
+  it('prints a JSON envelope with snapshot details on the happy path', async () => {
+    const healthBody = {
+      status: 'ok',
+      serverStartedAt: new Date(Date.now() - 60_000).toISOString(),
+      build: { version: 'dev' },
+    };
+    const snapshotBody = [
+      {
+        agentId: 'a1',
+        taskName: 't1',
+        taskStatus: 'inProgress',
+        tokenUsage: { costUsd: 0.5 },
+        anomaly: null,
+      },
+    ];
+    globalThis.fetch = vi.fn(async (url: string | URL) => {
+      const href = typeof url === 'string' ? url : url.href;
+      if (href.endsWith('/api/health')) {
+        return new Response(JSON.stringify(healthBody), { status: 200 });
+      }
+      if (href.endsWith('/api/snapshot')) {
+        return new Response(JSON.stringify(snapshotBody), { status: 200 });
+      }
+      throw new Error(`unexpected ${href}`);
+    }) as typeof fetch;
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([0]);
+    expect(deps.errors).toEqual([]);
+    expect(envelope).toMatchObject({
+      ok: true,
+      code: 'OK',
+      message: 'Kookr status snapshot',
+      details: {
+        port: 4800,
+        health: healthBody,
+        agents: snapshotBody,
+        summary: {
+          statusCounts: { inProgress: 1 },
+          totalCost: 0.5,
+        },
+      },
+    });
   });
 
   it('rejects a non-array /api/snapshot response', async () => {

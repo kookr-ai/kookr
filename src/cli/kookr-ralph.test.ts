@@ -32,17 +32,28 @@ function makeExitCapture() {
   return { codes, exit };
 }
 
+function parseSingleJsonLog(logs: string[]): any {
+  expect(logs).toHaveLength(1);
+  return JSON.parse(logs[0]);
+}
+
 describe('kookr ralph parseRalphArgs', () => {
   it('parses status/pause/resume/cancel commands', () => {
-    expect(parseRalphArgs(['status', 'task-1'])).toEqual({ help: false, command: 'status', taskId: 'task-1' });
-    expect(parseRalphArgs(['pause', 'task-1'])).toEqual({ help: false, command: 'pause', taskId: 'task-1' });
-    expect(parseRalphArgs(['resume', 'task-1'])).toEqual({ help: false, command: 'resume', taskId: 'task-1' });
-    expect(parseRalphArgs(['cancel', 'task-1'])).toEqual({ help: false, command: 'cancel', taskId: 'task-1' });
+    expect(parseRalphArgs(['status', 'task-1'])).toEqual({ help: false, command: 'status', taskId: 'task-1', json: false });
+    expect(parseRalphArgs(['pause', 'task-1'])).toEqual({ help: false, command: 'pause', taskId: 'task-1', json: false });
+    expect(parseRalphArgs(['resume', 'task-1'])).toEqual({ help: false, command: 'resume', taskId: 'task-1', json: false });
+    expect(parseRalphArgs(['cancel', 'task-1'])).toEqual({ help: false, command: 'cancel', taskId: 'task-1', json: false });
   });
 
   it('parses help', () => {
-    expect(parseRalphArgs([])).toEqual({ help: true });
-    expect(parseRalphArgs(['--help'])).toEqual({ help: true });
+    expect(parseRalphArgs([])).toEqual({ help: true, json: false });
+    expect(parseRalphArgs(['--help'])).toEqual({ help: true, json: false });
+  });
+
+  it('parses --json before or after the command', () => {
+    expect(parseRalphArgs(['--json', 'status', 'task-1'])).toEqual({ help: false, command: 'status', taskId: 'task-1', json: true });
+    expect(parseRalphArgs(['status', 'task-1', '--json'])).toEqual({ help: false, command: 'status', taskId: 'task-1', json: true });
+    expect(parseRalphArgs(['--json', '--help'])).toEqual({ help: true, json: true });
   });
 
   it('rejects invalid shapes', () => {
@@ -221,6 +232,40 @@ describe('kookr ralph main', () => {
     expect(logs.join('\n')).toContain('iteration=1/5');
   });
 
+  it('prints a JSON envelope for Ralph status', async () => {
+    const api = await startFakeApi((req) => {
+      if (req.method === 'GET' && req.url === '/api/tasks') {
+        return {
+          status: 200,
+          body: JSON.stringify([{ id: 'task-1', ralphLoop: { status: 'running', currentIteration: 1, iterationCap: 5, cumulativeIterations: 1 } }]),
+        };
+      }
+      return { status: 404, body: '{}' };
+    });
+    server = api.server;
+    const { io, logs } = makeConsoleCapture();
+    const err = makeConsoleCapture();
+    const { codes, exit } = makeExitCapture();
+
+    await main({ argv: ['status', 'task-1', '--json'], env: { KOOKR_API_BASE_URL: api.baseUrl }, out: io, err: err.io, exit });
+
+    const envelope = parseSingleJsonLog(logs);
+    expect(codes).toEqual([EXIT_OK]);
+    expect(err.errors).toEqual([]);
+    expect(envelope).toMatchObject({
+      ok: true,
+      code: 'OK',
+      message: 'Ralph loop status',
+      details: {
+        result: {
+          kind: 'status',
+          taskId: 'task-1',
+          ralphLoop: { status: 'running' },
+        },
+      },
+    });
+  });
+
   it('exits 4 when the task is not found', async () => {
     const api = await startFakeApi((req) => {
       if (req.method === 'GET' && req.url === '/api/tasks') return { status: 200, body: JSON.stringify([]) };
@@ -251,6 +296,59 @@ describe('kookr ralph main', () => {
 
     expect(codes).toEqual([EXIT_SERVER_ERROR]);
     expect(err.errors.join('\n')).toContain('conversation context is lost');
+  });
+
+  it('prints a JSON envelope when a control request succeeds', async () => {
+    const api = await startFakeApi(() => ({
+      status: 200,
+      body: JSON.stringify({ ok: true, status: 'paused' }),
+    }));
+    server = api.server;
+    const out = makeConsoleCapture();
+    const err = makeConsoleCapture();
+    const { codes, exit } = makeExitCapture();
+
+    await main({ argv: ['pause', 'task-1', '--json'], env: { KOOKR_API_BASE_URL: api.baseUrl }, out: out.io, err: err.io, exit });
+
+    const envelope = parseSingleJsonLog(out.logs);
+    expect(codes).toEqual([EXIT_OK]);
+    expect(err.errors).toEqual([]);
+    expect(envelope).toMatchObject({
+      ok: true,
+      code: 'OK',
+      message: 'Ralph loop pause OK',
+      details: {
+        result: {
+          kind: 'controlled',
+          command: 'pause',
+          taskId: 'task-1',
+          body: { ok: true, status: 'paused' },
+        },
+      },
+    });
+  });
+
+  it('prints a JSON envelope when a control request fails', async () => {
+    const api = await startFakeApi(() => ({
+      status: 409,
+      body: JSON.stringify({ error: 'conversation context is lost' }),
+    }));
+    server = api.server;
+    const out = makeConsoleCapture();
+    const err = makeConsoleCapture();
+    const { codes, exit } = makeExitCapture();
+
+    await main({ argv: ['resume', 'task-1', '--json'], env: { KOOKR_API_BASE_URL: api.baseUrl }, out: out.io, err: err.io, exit });
+
+    const envelope = parseSingleJsonLog(out.logs);
+    expect(codes).toEqual([EXIT_SERVER_ERROR]);
+    expect(err.errors).toEqual([]);
+    expect(envelope).toMatchObject({
+      ok: false,
+      code: 'SERVER_ERROR',
+      message: 'conversation context is lost',
+      details: { status: 409 },
+    });
   });
 });
 
