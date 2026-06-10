@@ -65,6 +65,34 @@ describe('startHttpAndWebSockets', () => {
     });
   }
 
+  function upgradeStatus(
+    port: number,
+    path: string,
+    headers: Record<string, string> = {},
+  ): Promise<number> {
+    return new Promise<number>((resolve, reject) => {
+      let settled = false;
+      const ws = new WebSocket(`ws://127.0.0.1:${port}${path}`, { headers });
+      ws.on('open', () => {
+        if (settled) return;
+        settled = true;
+        ws.close();
+        resolve(101);
+      });
+      ws.on('unexpected-response', (_req, res) => {
+        if (settled) return;
+        settled = true;
+        resolve(res.statusCode ?? 0);
+        res.resume();
+      });
+      ws.on('error', (err) => {
+        if (settled) return;
+        settled = true;
+        reject(err);
+      });
+    });
+  }
+
   test('starts HTTP routes and dispatches dashboard WebSocket connections', async () => {
     const app = new Hono();
     app.get('/ping', (c) => c.text('pong'));
@@ -296,6 +324,124 @@ describe('startHttpAndWebSockets', () => {
     });
   });
 
+  describe('WebSocket loopback origin gate (#846)', () => {
+    async function startLoopbackGated(): Promise<{ port: number; dashboardConnections: WebSocket[] }> {
+      const app = new Hono();
+      const dashboardConnections: WebSocket[] = [];
+      runtime = await startHttpAndWebSockets({
+        app,
+        port: 0,
+        host: '127.0.0.1',
+        tasksFile: '/tmp/tasks.json',
+        hooksDir: '/tmp/hooks',
+        terminalBackend: new FakeTerminalBackend(),
+        terminalDeps: {
+          monitor: {} as never,
+          abortPendingSuggestion: () => {},
+          broadcastToAll: () => {},
+          serverCwd: '/repo',
+        },
+        useFakeTerminalBridge: true,
+        apiAuth: { required: false },
+        onDashboardConnection: (ws) => {
+          dashboardConnections.push(ws);
+          ws.close();
+        },
+      });
+      return { port: portFor(runtime), dashboardConnections };
+    }
+
+    test('rejects a cross-origin dashboard WebSocket on a token-free loopback bind', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { port, dashboardConnections } = await startLoopbackGated();
+      const status = await upgradeStatus(port, '/ws', { origin: 'http://evil.example' });
+      expect(status).toBe(403);
+      expect(dashboardConnections).toHaveLength(0);
+    });
+
+    test('rejects a cross-origin terminal WebSocket on a token-free loopback bind', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { port } = await startLoopbackGated();
+      const status = await upgradeStatus(port, '/ws/terminal/kookr-test-session', {
+        origin: 'http://evil.example',
+      });
+      expect(status).toBe(403);
+      expect(runtime?.activeBridges.size).toBe(0);
+    });
+
+    test('allows headerless and same-origin WebSocket upgrades on loopback', async () => {
+      const { port, dashboardConnections } = await startLoopbackGated();
+      expect(await upgradeStatus(port, '/ws')).toBe(101);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(dashboardConnections).toHaveLength(1);
+
+      expect(await upgradeStatus(port, '/ws/terminal/kookr-test-session', {
+        origin: `http://127.0.0.1:${port}`,
+      })).toBe(101);
+    });
+
+    test('rejects cross-site fetch metadata on loopback WebSocket upgrades', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { port } = await startLoopbackGated();
+      const status = await upgradeStatus(port, '/ws', {
+        origin: `http://127.0.0.1:${port}`,
+        'sec-fetch-site': 'cross-site',
+      });
+      expect(status).toBe(403);
+    });
+
+    test('allows Sec-Fetch-Site:none on loopback WebSocket upgrades', async () => {
+      const { port, dashboardConnections } = await startLoopbackGated();
+      const status = await upgradeStatus(port, '/ws', {
+        'sec-fetch-site': 'none',
+      });
+      expect(status).toBe(101);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(dashboardConnections).toHaveLength(1);
+    });
+
+    test('rejects same-origin browser signals on rebound hostnames', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { port, dashboardConnections } = await startLoopbackGated();
+      const status = await upgradeStatus(port, '/ws', {
+        host: `evil.example:${port}`,
+        origin: `http://evil.example:${port}`,
+        'sec-fetch-site': 'same-origin',
+      });
+      expect(status).toBe(403);
+      expect(dashboardConnections).toHaveLength(0);
+    });
+
+    test('escape hatch allows a mismatched browser Origin on loopback', async () => {
+      const app = new Hono();
+      const dashboardConnections: WebSocket[] = [];
+      runtime = await startHttpAndWebSockets({
+        app,
+        port: 0,
+        host: '127.0.0.1',
+        tasksFile: '/tmp/tasks.json',
+        hooksDir: '/tmp/hooks',
+        terminalBackend: new FakeTerminalBackend(),
+        terminalDeps: {
+          monitor: {} as never,
+          abortPendingSuggestion: () => {},
+          broadcastToAll: () => {},
+          serverCwd: '/repo',
+        },
+        apiAuth: { required: false, originGateDisabled: true },
+        onDashboardConnection: (ws) => {
+          dashboardConnections.push(ws);
+          ws.close();
+        },
+      });
+      const status = await upgradeStatus(portFor(runtime), '/ws', {
+        origin: 'http://evil.example',
+      });
+      expect(status).toBe(101);
+      expect(dashboardConnections).toHaveLength(1);
+    });
+  });
+
   // Terminal socket registry + read-only viewer wiring — kookr #807. Terminal
   // sockets register with the connection registry (#805) so the revocation sweep
   // owns the terminal pool, and a viewer actor produces a read-only bridge whose
@@ -454,30 +600,6 @@ describe('startHttpAndWebSockets', () => {
         onDashboardConnection: () => {},
       });
       return { port: portFor(runtime), register };
-    }
-
-    function upgradeStatus(port: number, path: string): Promise<number> {
-      return new Promise<number>((resolve, reject) => {
-        let settled = false;
-        const ws = new WebSocket(`ws://127.0.0.1:${port}${path}`);
-        ws.on('open', () => {
-          if (settled) return;
-          settled = true;
-          ws.close();
-          resolve(101);
-        });
-        ws.on('unexpected-response', (_req, res) => {
-          if (settled) return;
-          settled = true;
-          resolve(res.statusCode ?? 0);
-          res.resume();
-        });
-        ws.on('error', (err) => {
-          if (settled) return;
-          settled = true;
-          reject(err);
-        });
-      });
     }
 
     test('rejects an out-of-scope viewer terminal upgrade with 403 and creates no bridge', async () => {

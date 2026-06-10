@@ -13,7 +13,12 @@ import { HOOK_EVENTS, LOAD_BEARING_HOOKS } from '../../core/hook-spec.js';
 import { handleTerminalInput, handleTerminalKeystroke, type TerminalInputDeps } from '../agent-lifecycle.js';
 import { FakeTerminalBridge } from '../fake-terminal-bridge.js';
 import { SessionBridge } from '../session-bridge.js';
-import { resolveUpgradeIdentity, type ApiAuthConfig, type Actor } from '../auth.js';
+import {
+  isLoopbackUpgradeOriginAllowed,
+  resolveUpgradeIdentity,
+  type ApiAuthConfig,
+  type Actor,
+} from '../auth.js';
 import type { SocketRegistrar } from '../viewer-connection-registry.js';
 import type { IsActorAllowedTerminalSession } from '../terminal-scope.js';
 
@@ -181,10 +186,21 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
     // query params from the WS upgrade; auth now rides on header or cookie.)
     const path = url.split('?', 1)[0];
 
-    // Issue #708: on a non-loopback bind, reject unauthenticated upgrades before
-    // any handshake. The dashboard WS carries the full live snapshot stream and
-    // terminal I/O, so it must be gated alongside state-changing HTTP routes.
+    // Issues #708/#846: reject unauthenticated non-loopback upgrades and
+    // browser-origin-crossing loopback upgrades before any handshake. The
+    // dashboard WS carries the full live snapshot stream and terminal I/O, so
+    // it must be gated alongside state-changing HTTP routes.
     if (deps.apiAuth) {
+      if (!isLoopbackUpgradeOriginAllowed(deps.apiAuth, req)) {
+        console.warn(JSON.stringify({
+          event: 'auth_rejected',
+          reason: 'cross_origin',
+          remoteAddr: req.socket.remoteAddress ?? null,
+        }));
+        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
       const upgradeActor = resolveUpgradeIdentity(deps.apiAuth, req);
       if (!upgradeActor) {
         socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');

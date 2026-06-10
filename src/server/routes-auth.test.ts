@@ -73,9 +73,29 @@ describe('createRoutes API-token middleware install (issue #708)', () => {
     expect(res.status).toBe(404);
   });
 
-  it('does NOT install the gate when apiAuth.required is false', async () => {
+  it('keeps headerless loopback mutations token-free when apiAuth.required is false', async () => {
     const app = createRoutes(makeDeps({ required: false }));
     const res = await app.request('http://localhost/api/does-not-exist', { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects a browser-origin-crossing loopback mutation when apiAuth.required is false', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const app = createRoutes(makeDeps({ required: false }));
+    const res = await app.request('http://127.0.0.1:4800/api/does-not-exist', {
+      method: 'POST',
+      headers: { origin: 'http://evil.example' },
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'cross-origin' });
+  });
+
+  it('allows a same-origin loopback mutation when apiAuth.required is false', async () => {
+    const app = createRoutes(makeDeps({ required: false }));
+    const res = await app.request('http://127.0.0.1:4800/api/does-not-exist', {
+      method: 'POST',
+      headers: { host: '127.0.0.1:4800', origin: 'http://127.0.0.1:4800' },
+    });
     expect(res.status).toBe(404);
   });
 });
