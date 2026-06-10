@@ -98,10 +98,13 @@ export async function exportTeaserMp4(src: string, out: string, segments: CutSeg
 
 /** Silent 1280px-wide MP4 loop of the best moment — README hero / social cards. */
 export async function exportLoopMp4(src: string, out: string, startMs: number, durationMs: number): Promise<void> {
+  // -ss/-t as OUTPUT options (after -i): decode-accurate cut. As input
+  // options they fast-seek to the nearest prior VP8 keyframe, which can
+  // shift the loop's start by several seconds.
   await ffmpeg([
+    '-i', src,
     '-ss', (startMs / 1000).toFixed(3),
     '-t', (durationMs / 1000).toFixed(3),
-    '-i', src,
     '-vf', 'scale=1280:-2',
     '-an',
     ...H264_ARGS, '-crf', '22',
@@ -113,9 +116,9 @@ export async function exportLoopMp4(src: string, out: string, startMs: number, d
 export async function exportLoopGif(src: string, out: string, startMs: number, durationMs: number): Promise<void> {
   const filter = '[0:v]fps=10,scale=800:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4';
   await ffmpeg([
+    '-i', src,
     '-ss', (startMs / 1000).toFixed(3),
     '-t', (durationMs / 1000).toFixed(3),
-    '-i', src,
     '-filter_complex', filter,
     out,
   ]);

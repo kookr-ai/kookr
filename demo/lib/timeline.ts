@@ -48,7 +48,11 @@ export function buildSrt(
     const text = narrations[entry.key];
     if (!text) continue;
     const duration = clips.get(entry.key)?.durationMs ?? estimateSpeechMs(text);
-    const nextOffset = entries[i + 1]?.offsetMs ?? Number.POSITIVE_INFINITY;
+    // Clamp against the next NARRATED mark only — structural marks like
+    // video_end carry no text and must not truncate the preceding cue.
+    const nextOffset = entries
+      .slice(i + 1)
+      .find((e) => narrations[e.key])?.offsetMs ?? Number.POSITIVE_INFINITY;
     const end = Math.min(entry.offsetMs + duration, nextOffset - 100);
     if (end <= entry.offsetMs) continue;
     cues.push(`${index}\n${srtTimestamp(entry.offsetMs)} --> ${srtTimestamp(end)}\n${text}\n`);

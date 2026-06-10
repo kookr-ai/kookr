@@ -33,8 +33,7 @@ import { chromium, type Page, type APIRequestContext, type BrowserContext } from
 import { resolve, join, dirname } from 'node:path';
 import { mkdtempSync, renameSync, writeFileSync, existsSync, rmSync, mkdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { fork, type ChildProcess } from 'node:child_process';
-import { execFile } from 'node:child_process';
+import { fork, execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import {
