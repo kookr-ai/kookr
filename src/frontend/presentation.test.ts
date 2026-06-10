@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from 'vitest';
-import { agentProviderPresentation, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, turnStateLabel, turnStateClass } from './presentation.js';
+import { agentProviderPresentation, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass } from './presentation.js';
 import type { AgentEvent } from '../shared/protocol.js';
 
 describe('healthyDotClass', () => {
@@ -213,5 +213,21 @@ describe('turnStateClass', () => {
   test('unknown and undefined yield no class', () => {
     expect(turnStateClass('unknown')).toBe('');
     expect(turnStateClass(undefined)).toBe('');
+  });
+});
+
+describe('taskStatusLabel', () => {
+  test('maps raw task-status enums to human labels', () => {
+    expect(taskStatusLabel('open')).toBe('Open');
+    expect(taskStatusLabel('pending')).toBe('Pending');
+    expect(taskStatusLabel('inProgress')).toBe('In progress');
+    expect(taskStatusLabel('completed')).toBe('Completed');
+    expect(taskStatusLabel('terminated')).toBe('Terminated');
+    expect(taskStatusLabel('cancelled')).toBe('Cancelled');
+  });
+
+  test('falls back to the raw value for unknown statuses and empty for undefined', () => {
+    expect(taskStatusLabel('someFutureStatus')).toBe('someFutureStatus');
+    expect(taskStatusLabel(undefined)).toBe('');
   });
 });

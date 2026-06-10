@@ -77,8 +77,11 @@ function soundToggleTitle(soundOn: boolean, lastDecision: LocalAudioAlertDecisio
 function QuotaDisplay({ quota }: { quota: QuotaStatus }) {
   const staleSec = Math.floor((Date.now() - quota.updatedAt) / 1000);
   const stale = staleSec > 300; // >5 min = stale
+  // The raw "5h: 31% (1h 56m) · 7d: 8%" pills are cryptic — spell out that
+  // these are the Claude plan's rolling rate-limit windows.
+  const explainer = 'Claude plan rate-limit usage — 5h: rolling 5-hour window (resets in the time shown) · 7d: rolling 7-day window';
   return (
-    <span className={`quota-display ${stale ? 'quota-stale' : ''}`} title={stale ? `Quota data is ${Math.floor(staleSec / 60)}m old` : 'Plan quota usage'}>
+    <span className={`quota-display ${stale ? 'quota-stale' : ''}`} title={stale ? `${explainer}. Quota data is ${Math.floor(staleSec / 60)}m old` : explainer}>
       {quota.fiveHour && (
         <span className={`quota-pill ${quotaColorClass(quota.fiveHour.utilization)}`}>
           5h: {Math.round(quota.fiveHour.utilization)}%
@@ -136,7 +139,7 @@ function ResourceDisplay({ compact }: { compact: boolean }) {
         <span className={`resource-pill resource-${cpuClass}`}>CPU {cpuLabel}</span>
         <span className={`resource-pill resource-${memoryClass}`}>RAM {memoryLabel}</span>
         {showLoopWarning && (
-          <span className={`resource-pill resource-${loopClass}`}>
+          <span className={`resource-pill resource-${loopClass}`} title="Server event-loop p95 delay">
             Loop {resourceStatus.server.eventLoopDelayP95Ms === null ? '--' : `${Math.round(resourceStatus.server.eventLoopDelayP95Ms)}ms`}
           </span>
         )}

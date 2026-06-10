@@ -121,8 +121,8 @@ test.describe('Send & Next — input delivery', () => {
 
     // Type text and click "Send & Next"
     const inputText = 'Try using the helper function instead';
-    await page.locator('.response-row input').fill(inputText);
-    await page.locator('.btn-primary:has-text("Send & Next")').click();
+    await page.locator('.response-row textarea').fill(inputText);
+    await page.locator('[data-testid="send-next-button"]').click();
 
     // Sent overlay should appear
     await expect(page.locator('.sent-overlay')).toBeVisible();
@@ -139,7 +139,7 @@ test.describe('Send & Next — input delivery', () => {
     }).toPass({ timeout: 3000 });
   });
 
-  test('Send & Next via Enter key delivers input to the agent', async ({ page, request }) => {
+  test('Enter key delivers input to the agent (plain send, stays on task)', async ({ page, request }) => {
     // Launch two agents with anomalies
     await launchViaUI(page, 'Enter Key Alpha', '/test/alpha');
     const tmuxA = await getLatestTmuxName(request);
@@ -156,12 +156,12 @@ test.describe('Send & Next — input delivery', () => {
     // Select first finding and type
     await page.keyboard.press('Alt+n');
     const inputText = 'Check the database connection settings';
-    await page.locator('.response-row input').fill(inputText);
+    await page.locator('.response-row textarea').fill(inputText);
 
-    // Press Enter (keyboard shortcut for Send & Next)
-    await page.locator('.response-row input').press('Enter');
+    // Press Enter (plain send — stays on the current task)
+    await page.locator('.response-row textarea').press('Enter');
 
-    // Verify overlay and advancement
+    // Verify the sent overlay
     await expect(page.locator('.sent-overlay')).toBeVisible();
 
     // CRITICAL: Verify the input was delivered
@@ -190,8 +190,8 @@ test.describe('Send & Next — input delivery', () => {
     const firstAgentName = await page.locator('.finding-card.selected .finding-task').textContent();
 
     // Send response
-    await page.locator('.response-row input').fill('Fix applied');
-    await page.locator('.btn-primary:has-text("Send & Next")').click();
+    await page.locator('.response-row textarea').fill('Fix applied');
+    await page.locator('[data-testid="send-next-button"]').click();
 
     // After the response is processed, the first agent's finding should be gone
     // (only one finding card should remain)
@@ -217,8 +217,8 @@ test.describe('Send & Next — input delivery', () => {
 
     // Type and send
     const inputText = 'Continue with the refactoring';
-    await page.locator('.response-row input').fill(inputText);
-    await page.locator('.btn-primary:has-text("Send & Next")').click();
+    await page.locator('.response-row textarea').fill(inputText);
+    await page.locator('[data-testid="send-next-button"]').click();
 
     // Verify input was delivered
     await expect(async () => {
@@ -243,7 +243,7 @@ test.describe('Send & Next — input delivery', () => {
 
     // Type text into the input
     const inputText = 'This should not be lost';
-    await page.locator('.response-row input').fill(inputText);
+    await page.locator('.response-row textarea').fill(inputText);
 
     // Close the WebSocket to simulate a disconnection
     await page.evaluate(() => {
@@ -276,10 +276,10 @@ test.describe('Send & Next — input delivery', () => {
     });
 
     // Now click "Send & Next" — the send should fail (WS appears closed)
-    await page.locator('.btn-primary:has-text("Send & Next")').click();
+    await page.locator('[data-testid="send-next-button"]').click();
 
     // The input should still contain the text (not cleared)
-    await expect(page.locator('.response-row input')).toHaveValue(inputText);
+    await expect(page.locator('.response-row textarea')).toHaveValue(inputText);
 
     // The sent overlay should NOT appear
     await expect(page.locator('.sent-overlay')).not.toBeVisible();

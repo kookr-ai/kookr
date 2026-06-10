@@ -92,7 +92,7 @@ test.describe('Terminal prompt submission from bottom response input', () => {
       const initiallySelected = (await page.locator('.finding-card.selected .finding-task').textContent())?.trim();
       expect(initiallySelected).toBeTruthy();
 
-      const reply = page.locator('.response-row input');
+      const reply = page.locator('.response-row textarea');
       await reply.fill(inputText);
       await reply.press('Enter');
 
@@ -129,7 +129,7 @@ test.describe('Terminal prompt submission from bottom response input', () => {
       const initiallySelected = (await page.locator('.healthy-row.selected .healthy-row-name').textContent())?.trim();
       expect(initiallySelected).toBeTruthy();
 
-      const reply = page.locator('.response-row input');
+      const reply = page.locator('.response-row textarea');
       await reply.fill(inputText);
       await reply.press('Enter');
 

@@ -137,6 +137,25 @@ export function turnStateLabel(turnState: TurnState | undefined): string {
 }
 
 /**
+ * Human-readable label for a task status. Accepts a loose string (some
+ * surfaces carry the status as `string | undefined`) and falls back to the
+ * raw value for unknown statuses so new enum members degrade gracefully
+ * instead of disappearing.
+ */
+export function taskStatusLabel(status: string | undefined): string {
+  switch (status) {
+    case 'open': return 'Open';
+    case 'pending': return 'Pending';
+    case 'inProgress': return 'In progress';
+    case 'completed': return 'Completed';
+    case 'terminated': return 'Terminated';
+    case 'cancelled': return 'Cancelled';
+    case undefined: return '';
+    default: return status;
+  }
+}
+
+/**
  * CSS class suffix for the turn-state line — applied as
  * `.finding-turn-state.turn-state--{suffix}`. Returns '' when there is
  * nothing to render.

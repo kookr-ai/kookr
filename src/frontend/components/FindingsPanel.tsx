@@ -584,7 +584,7 @@ function FindingCard({ agent, selected, send }: {
           <TaskPriorityButton agent={agent} send={send} />
           <button className="btn-xs" onClick={(e) => { e.stopPropagation(); handleSkip(); }}>Skip</button>
           <button className="btn-xs" onClick={(e) => { e.stopPropagation(); setShowSnooze(true); }}>Snooze</button>
-          <button className="btn-xs btn-fp" onClick={(e) => { e.stopPropagation(); setShowFlagFP(true); }} title="Mark as false positive">Flag FP</button>
+          <button className="btn-xs btn-fp" onClick={(e) => { e.stopPropagation(); setShowFlagFP(true); }} title="Flag this finding as a false positive">Not a real issue</button>
         </div>
         {showSnooze && (
           <SnoozeDialog
@@ -673,7 +673,7 @@ function HealthyRow({ agent, selected, send }: {
     useKookrStore.getState().selectAgent(agent.agentId);
     // Focus the response input after React re-renders
     requestAnimationFrame(() => {
-      const input = document.querySelector('.response-area input') as HTMLInputElement | null;
+      const input = document.querySelector('.response-area textarea') as HTMLTextAreaElement | null;
       input?.focus();
     });
   }
@@ -749,10 +749,10 @@ function HealthyRow({ agent, selected, send }: {
                 <button
                   className="btn-xs btn-fn"
                   onClick={(e) => { e.stopPropagation(); setShowFlagMissed(true); }}
-                  title="Report that Kookr should have flagged this agent"
+                  title="Report that Kookr missed a real issue on this agent"
                   aria-label={`Report missed finding for ${agent.taskName ?? agent.agentId}`}
                 >
-                  Flag missed
+                  Missed a real issue
                 </button>
                 <RalphLoopControls agent={agent} />
                 {agent.ralphLoop && agent.ralphLoop.status !== 'running' && agent.ralphLoop.status !== 'paused' && (
@@ -862,7 +862,7 @@ function FindingGroup({ type, agents, selectedAgentId, send }: {
     trackClick('respond_all');
     // Focus the response input after React re-renders
     requestAnimationFrame(() => {
-      const input = document.querySelector('.response-area input') as HTMLInputElement | null;
+      const input = document.querySelector('.response-area textarea') as HTMLTextAreaElement | null;
       input?.focus();
     });
   }

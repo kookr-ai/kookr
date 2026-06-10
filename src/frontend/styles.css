@@ -2064,8 +2064,9 @@ kbd {
 .response-area.awaiting-input {
   border-left-color: var(--amber);
 }
-.response-row { display: flex; gap: 8px; align-items: center; }
-.response-area input {
+.response-row { display: flex; gap: 8px; align-items: flex-end; }
+.response-area input,
+.response-area textarea {
   flex: 1;
   background: var(--bg-input);
   border: 1px solid var(--border-dim);
@@ -2076,11 +2077,19 @@ kbd {
   font-size: 13px;
   outline: none;
 }
-.response-area input:focus {
+.response-area textarea {
+  resize: none;
+  overflow-y: auto;
+  line-height: 1.4;
+  max-height: 140px; /* keep in sync with REPLY_MAX_HEIGHT_PX in DetailPanel.tsx */
+}
+.response-area input:focus,
+.response-area textarea:focus {
   border-color: var(--teal);
   box-shadow: 0 0 0 2px rgba(45,212,191,0.12);
 }
-.response-area input::placeholder { color: var(--text-muted); }
+.response-area input::placeholder,
+.response-area textarea::placeholder { color: var(--text-muted); }
 
 .btn-primary {
   background: var(--teal);
@@ -9213,7 +9222,8 @@ a.project-drawer-stat-row-link:focus-visible {
     padding: 12px 14px 14px;
   }
 
-  .response-row > input {
+  .response-row > input,
+  .response-row > textarea {
     width: 100%;
     min-width: 0;
   }

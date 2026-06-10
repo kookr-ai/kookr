@@ -151,8 +151,8 @@ test.describe('Supervisor flow — auto-advance', () => {
     await expect(page.locator('.detail-badge')).toContainText('PERMISSION');
 
     // Send response to the permission finding
-    await page.locator('.response-row input').fill('Allow it');
-    await page.locator('.btn-primary:has-text("Send & Next")').click();
+    await page.locator('.response-row textarea').fill('Allow it');
+    await page.locator('[data-testid="send-next-button"]').click();
 
     // Sent overlay appears
     await expect(page.locator('.sent-overlay')).toBeVisible();
