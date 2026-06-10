@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { CreateScheduleInput, Schedule, UpdateScheduleDefinitionInput } from '../core/schedule.js';
 import { ScheduleValidationError, isValidMaxTriggers } from '../core/schedule.js';
-import { isValidCron } from '../core/cron.js';
+import { isPracticalCron, isValidCron } from '../core/cron.js';
 import { parsePlaybook, interpolateParameters, PlaybookParseError } from '../core/playbook-parser.js';
 import { projectIdFromRepoSpecifier } from '../core/project-identity.js';
 import { expandConfiguredCwd } from './cwd-paths.js';
@@ -24,7 +24,8 @@ export class ScheduleValidator {
     if (!input.name?.trim()) fieldErrors.name = 'Required';
     if (!input.cwd?.trim()) fieldErrors.cwd = 'Required';
     if (!input.playbook?.path) fieldErrors.playbook = 'Required';
-    if (!isValidCron(input.cron)) fieldErrors.cron = 'Invalid cron expression';
+    const cronError = validateCron(input.cron);
+    if (cronError) fieldErrors.cron = cronError;
     if (input.maxTriggers !== undefined && !isValidMaxTriggers(input.maxTriggers)) {
       fieldErrors.maxTriggers = 'Must be a positive integer';
     }
@@ -41,8 +42,11 @@ export class ScheduleValidator {
   }
 
   async validateDefinitionUpdate(existing: Schedule, patch: UpdateScheduleDefinitionInput): Promise<void> {
-    if (patch.cron !== undefined && !isValidCron(patch.cron)) {
-      throw new ScheduleValidationError('Invalid schedule definition', { cron: 'Invalid cron expression' });
+    if (patch.cron !== undefined) {
+      const cronError = validateCron(patch.cron);
+      if (cronError) {
+        throw new ScheduleValidationError('Invalid schedule definition', { cron: cronError });
+      }
     }
     if (patch.maxTriggers !== undefined && patch.maxTriggers !== null && !isValidMaxTriggers(patch.maxTriggers)) {
       throw new ScheduleValidationError('Invalid schedule definition', { maxTriggers: 'Must be a positive integer' });
@@ -149,4 +153,10 @@ export class ScheduleValidator {
       throw new ScheduleValidationError('Invalid schedule definition', { parameters: message });
     }
   }
+}
+
+export function validateCron(cron: string): string | undefined {
+  if (!isValidCron(cron)) return 'Invalid cron expression';
+  if (!isPracticalCron(cron)) return 'Cron expression must not fire more often than every 5 minutes';
+  return undefined;
 }

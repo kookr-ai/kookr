@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { nextRun, isValidCron, describeCron } from './cron.js';
+import {
+  nextRun,
+  isValidCron,
+  describeCron,
+  isPracticalCron,
+  minimumCronIntervalMs,
+} from './cron.js';
 
 describe('nextRun', () => {
   it('returns the next minute for * * * * *', () => {
@@ -37,6 +43,56 @@ describe('isValidCron', () => {
   it('rejects invalid expressions', () => {
     expect(isValidCron('not valid')).toBe(false);
     expect(isValidCron('abc def ghi jkl mno')).toBe(false);
+  });
+});
+
+describe('minimumCronIntervalMs', () => {
+  it('finds one-minute intervals for every-minute schedules', () => {
+    expect(minimumCronIntervalMs('* * * * *')).toBe(60_000);
+    expect(minimumCronIntervalMs('*/1 * * * *')).toBe(60_000);
+  });
+
+  it('accepts the five-minute boundary as practical', () => {
+    expect(minimumCronIntervalMs('*/5 * * * *')).toBe(5 * 60_000);
+    expect(isPracticalCron('*/5 * * * *')).toBe(true);
+  });
+
+  it('rejects expressions below the practical interval threshold', () => {
+    expect(isPracticalCron('* * * * *')).toBe(false);
+    expect(isPracticalCron('*/4 * * * *')).toBe(false);
+    expect(isPracticalCron('0,1 * * * *')).toBe(false);
+    expect(isPracticalCron('0-4 * * * *')).toBe(false);
+  });
+
+  it('catches a sub-threshold gap late in a dense minute list', () => {
+    expect(minimumCronIntervalMs('0,5,10,15,20,25,30,35,40,45,50,55,56 * * * *')).toBe(60_000);
+  });
+
+  it('uses a stable hash seed for H expressions', () => {
+    const cron = 'H(0-3),59 * * * *';
+
+    expect(Array.from({ length: 5 }, () => minimumCronIntervalMs(cron))).toEqual([
+      3 * 60_000,
+      3 * 60_000,
+      3 * 60_000,
+      3 * 60_000,
+      3 * 60_000,
+    ]);
+    expect(isPracticalCron(cron)).toBe(false);
+  });
+
+  it('accepts hourly and daily schedules as practical', () => {
+    expect(isPracticalCron('0 * * * *')).toBe(true);
+    expect(isPracticalCron('0 9 * * *')).toBe(true);
+  });
+
+  it('handles sparse schedules without iterating future fire dates', () => {
+    expect(minimumCronIntervalMs('0 0 29 2 *')).toBe(24 * 60 * 60_000);
+    expect(isPracticalCron('0 0 29 2 *')).toBe(true);
+  });
+
+  it('returns null for invalid expressions', () => {
+    expect(minimumCronIntervalMs('not a cron')).toBeNull();
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ScheduleStore } from '../core/schedule.js';
@@ -17,6 +17,72 @@ function withService(testFn: (service: ScheduleService, store: ScheduleStore, di
   }
   rmSync(dir, { recursive: true, force: true });
 }
+
+function writePlaybook(cwd: string): void {
+  mkdirSync(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+  writeFileSync(join(cwd, '.kookr', 'playbooks', 'daily.md'), `---
+name: Daily
+parameters: []
+---
+Do the work.
+`);
+}
+
+describe('ScheduleService validation', () => {
+  it('rejects cron expressions that fire more often than every five minutes on create', async () => {
+    await withService(async (service, store, dir) => {
+      writePlaybook(dir);
+
+      await expect(service.createDefinition({
+        name: 'Too fast',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: dir,
+      })).rejects.toMatchObject({
+        fieldErrors: {
+          cron: 'Cron expression must not fire more often than every 5 minutes',
+        },
+      });
+
+      expect(store.list()).toHaveLength(0);
+    });
+  });
+
+  it('accepts the five-minute cron boundary on create', async () => {
+    await withService(async (service, store, dir) => {
+      writePlaybook(dir);
+
+      await service.createDefinition({
+        name: 'Every five',
+        cron: '*/5 * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: dir,
+      });
+
+      expect(store.list()).toHaveLength(1);
+    });
+  });
+
+  it('rejects impractical cron expressions on definition update', async () => {
+    await withService(async (service, store, dir) => {
+      writePlaybook(dir);
+      const schedule = store.create({
+        name: 'Hourly',
+        cron: '0 * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: dir,
+      });
+
+      await expect(service.updateDefinition(schedule.id, { cron: '*/4 * * * *' })).rejects.toMatchObject({
+        fieldErrors: {
+          cron: 'Cron expression must not fire more often than every 5 minutes',
+        },
+      });
+
+      expect(store.get(schedule.id)!.cron).toBe('0 * * * *');
+    });
+  });
+});
 
 describe('ScheduleService status', () => {
   it('reports healthy after runner start before the first completed tick', () => {
