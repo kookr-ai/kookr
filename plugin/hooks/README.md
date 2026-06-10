@@ -10,6 +10,17 @@ plugin manifest. Claude Code loads these hooks when the toolkit is supplied via
 workflows when the frontmatter marks the entry as behavioral feedback. It is
 registered for `Write`, `Edit`, and `MultiEdit` events.
 
+## Skill Load Counter
+
+`skill-load-counter.sh` is an append-only telemetry hook registered for
+`PreToolUse` with matcher `Skill`. On every skill invocation it appends
+`{"skill": "<name>", "ts": "<utc>"}` to `~/.claude/kookr-skill-load-log.jsonl`
+(override the path with `KOOKR_SKILL_LOAD_LOG`; disable with
+`KOOKR_SKILL_LOAD_COUNTER_SKIP=1`). It never blocks the invocation: every
+failure path (missing jq, malformed payload, unwritable log) exits 0 silently.
+The data informs which skills actually get used when scoping quality passes
+(RFC plugin-skill-improvements, Phases 2-3).
+
 ## Placement Gate
 
 `placement-gate.sh` is an advisory `PreToolUse` hook for new skills and agents.

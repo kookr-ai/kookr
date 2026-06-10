@@ -85,7 +85,7 @@ await injectEvent(request, tmuxName, mockStop({ last_assistant_message: 'Custom 
 `e2e/canary.spec.ts` launches a real Claude Code instance with **Haiku model** (cheapest, fastest), captures the hook events it emits, and validates them against the mock fixture shapes.
 
 ```bash
-# Run canary test (requires tmux + Claude Code CLI + API key)
+# Run canary test (requires Claude Code CLI + API key)
 CANARY=1 npx playwright test e2e/canary.spec.ts
 
 # Cost: ~$0.001 per run (Haiku, trivial task)
@@ -101,7 +101,7 @@ CANARY=1 npx playwright test e2e/canary.spec.ts
 CANARY=1 npx playwright test e2e/canary.spec.ts
 ```
 
-Requires: tmux, `claude` CLI, `ANTHROPIC_API_KEY` in env.
+Requires: `claude` CLI, `ANTHROPIC_API_KEY` in env.
 
 **What it validates:**
 - Every real event has `session_id`, `transcript_path`, `cwd`, `hook_event_name`

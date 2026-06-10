@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative } from 'node:path';
 import { isMap, parseDocument } from 'yaml';
 
-interface SkillError {
+interface SkillIssue {
   file: string;
   message: string;
 }
@@ -13,6 +13,12 @@ const args = process.argv.slice(2);
 // or waived, warnings report without failing the run (RFC plugin-skill-improvements,
 // T1-guard: the gate must never be enabled while known-broken refs remain).
 const strict = args.includes('--strict');
+const unknownFlags = args.filter((arg) => arg.startsWith('--') && arg !== '--strict');
+if (unknownFlags.length > 0) {
+  // A misspelled --strict must not silently degrade the gate to warn mode.
+  console.error(`Unknown flag(s): ${unknownFlags.join(', ')}`);
+  process.exit(2);
+}
 const positional = args.filter((arg) => !arg.startsWith('--'));
 const repoRoot = positional[0] ?? process.cwd();
 const skillRoots = ['.claude/skills', 'plugin/skills'];
@@ -21,8 +27,16 @@ const playbookRoots = ['plugin/playbooks'];
 // plugin/ must work for any marketplace user, not one specific GitHub account.
 const hardcodedUsernames = ['jeanibarz'];
 const lineCountWarningThreshold = 500;
-const errors: SkillError[] = [];
-const warnings: SkillError[] = [];
+const errors: SkillIssue[] = [];
+const warnings: SkillIssue[] = [];
+const seenWarnings = new Set<string>();
+
+function warn(issue: SkillIssue): void {
+  const key = `${issue.file}\u0000${issue.message}`;
+  if (seenWarnings.has(key)) return;
+  seenWarnings.add(key);
+  warnings.push(issue);
+}
 
 // Reference resolution targets, per surface. A reference *from* plugin/ must
 // resolve *within* plugin/ — shipped content referencing the dev-only .claude/
@@ -50,10 +64,9 @@ for (const root of playbookRoots) {
 }
 
 if (warnings.length > 0) {
-  const stream = strict ? console.error : console.warn;
-  stream(`Skill validation warnings (${warnings.length})${strict ? ' — failing due to --strict' : ''}:`);
+  console.error(`Skill validation warnings (${warnings.length})${strict ? ' — failing due to --strict' : ''}:`);
   for (const warning of warnings) {
-    stream(`  ${relative(repoRoot, warning.file)}: ${warning.message}`);
+    console.error(`  ${relative(repoRoot, warning.file)}: ${warning.message}`);
   }
 }
 
@@ -156,7 +169,7 @@ function validateSkill(file: string): void {
 
   const lineCount = content.split('\n').length;
   if (lineCount > lineCountWarningThreshold) {
-    warnings.push({
+    warn({
       file,
       message: `SKILL.md is ${lineCount} lines (> ${lineCountWarningThreshold}); consider splitting per token-economy guidance`,
     });
@@ -180,14 +193,14 @@ function validateReferences(file: string, content: string): void {
     const span = match[1];
     if (!/^(src|docs|scripts|e2e|plugin|relay|hooks)\/[A-Za-z0-9_./-]+\.[A-Za-z0-9]+$/.test(span)) continue;
     if (!existsSync(join(repoRoot, span))) {
-      warnings.push({ file, message: `referenced path does not exist: ${span}` });
+      warn({ file, message: `referenced path does not exist: ${span}` });
     }
   }
 
   if (isShipped(file)) {
     for (const username of hardcodedUsernames) {
       if (content.includes(username)) {
-        warnings.push({
+        warn({
           file,
           message: `hardcoded username "${username}" in shipped content; derive it (e.g. \`gh api user --jq .login\`)`,
         });
@@ -200,20 +213,20 @@ function checkReference(file: string, target: string, kind: string): void {
   if (isShipped(file)) {
     if (pluginTargets.has(target)) return;
     if (localTargets.has(target) || localTargets.has(`kookr-${target}`)) {
-      warnings.push({
+      warn({
         file,
         message: `${kind} "${target}" resolves only to the repo-local .claude/ tree — cross-tier dependency; promote it into plugin/ or remove the reference`,
       });
       return;
     }
-    warnings.push({ file, message: `${kind} "${target}" does not resolve on the shipped surface (plugin/)` });
+    warn({ file, message: `${kind} "${target}" does not resolve on the shipped surface (plugin/)` });
     return;
   }
 
   // Same-directory self-reference (a skill never needs to list itself, but tolerate it).
   if (basename(dirname(file)) === target) return;
   if (pluginTargets.has(target) || localTargets.has(target)) return;
-  warnings.push({ file, message: `${kind} "${target}" does not resolve (checked .claude/ and plugin/)` });
+  warn({ file, message: `${kind} "${target}" does not resolve (checked .claude/ and plugin/)` });
 }
 
 function isShipped(file: string): boolean {
@@ -222,7 +235,10 @@ function isShipped(file: string): boolean {
 
 function relatedEntries(related: unknown): string[] {
   if (Array.isArray(related)) {
-    return related.filter((item): item is string => typeof item === 'string').map((item) => item.trim());
+    return related
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
   }
   if (typeof related === 'string') {
     return related
@@ -234,19 +250,27 @@ function relatedEntries(related: unknown): string[] {
 }
 
 function stripFencedCodeBlocks(content: string): string {
-  return content
-    .split('\n')
-    .reduce<{ inFence: boolean; lines: string[] }>(
-      (state, line) => {
-        if (/^\s*(```|~~~)/.test(line)) {
-          return { inFence: !state.inFence, lines: state.lines };
-        }
-        if (!state.inFence) state.lines.push(line);
-        return state;
-      },
-      { inFence: false, lines: [] },
-    )
-    .lines.join('\n');
+  const lines: string[] = [];
+  // A fence closes only on its own marker kind at >= the opening length,
+  // so a ``` line inside a ~~~ block stays fenced (CommonMark behavior).
+  let fence: { marker: string; length: number } | null = null;
+  for (const line of content.split('\n')) {
+    const match = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (match) {
+      const marker = match[1][0];
+      if (!fence) {
+        fence = { marker, length: match[1].length };
+        continue;
+      }
+      if (fence.marker === marker && match[1].length >= fence.length) {
+        fence = null;
+        continue;
+      }
+      continue;
+    }
+    if (!fence) lines.push(line);
+  }
+  return lines.join('\n');
 }
 
 function extractFrontmatter(content: string): { ok: true; value: string } | { ok: false; reason: string } {

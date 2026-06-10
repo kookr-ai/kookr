@@ -41,7 +41,7 @@ KOOKR_TTS_URL=http://localhost:8004 pnpm demo:record
 ### Pipeline
 
 1. **TTS setup** (if enabled): starts Docker container (`tts/docker-compose.yml`), generates WAV clips for each narration line via `POST /synthesize`
-2. **Server start**: launches E2E test server with `FakeTerminalManager` + `FakeTerminalBridge` (no tmux needed)
+2. **Server start**: launches E2E test server with `FakeTerminalBackend` + `FakeTerminalBridge` (no tmux needed)
 3. **Playwright recording**: drives the UI scenario with `recordVideo`, injects captions via DOM
 4. **Audio sync**: `holdTime()` ensures each caption holds long enough for the speech clip to finish (clip duration + 500ms padding)
 5. **ffmpeg merge**: combines silent video + timed audio clips using `adelay` filters
@@ -99,7 +99,7 @@ Recording requires `fonts-noto-color-emoji` on Linux / Apple Color Emoji on macO
 
 ## Fake Data Requirements
 
-The demo uses `FakeTerminalManager` — no real agents run. This means features that depend on real infrastructure need fake data injected:
+The demo uses `FakeTerminalBackend` — no real agents run. This means features that depend on real infrastructure need fake data injected:
 
 | Feature | Problem | Fix |
 |---------|---------|-----|
