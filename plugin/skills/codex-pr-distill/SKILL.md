@@ -33,6 +33,7 @@ cat ~/.claude/codex-pr-lessons/learnings-raw.md
 cat ~/.claude/skills/pr-contribution-excellence/repo/openai-codex.md
 cat ~/.claude/codex-pr-lessons/learnings-distilled.md
 cat ~/.claude/skills/pr-contribution-excellence/SKILL.md
+cat ~/.claude/skills/pr-contribution-excellence/patterns.md
 cat ~/.claude/skills/pr-contribution-excellence/evidence.md
 ```
 
@@ -86,38 +87,20 @@ Last updated: {date} | Distillation #{count} | Based on {N} PRs analyzed
 
 ### Step 5: Write general patterns to user-scoped skill
 
-Update `~/.claude/skills/pr-contribution-excellence/SKILL.md` with **only universal patterns** (no evidence entries). Evidence and distillation log entries go to `~/.claude/skills/pr-contribution-excellence/evidence.md`.
+Write to the **three-file structure** (split 2026-06-10):
 
-SKILL.md format (universal patterns only):
-
-```markdown
----
-name: pr-contribution-excellence
-description: Patterns for excellent open-source PR contributions, distilled from analyzing real PRs
-keywords: pr, contribution, review, open source, pull request, code review
----
-
-## When to Use
-When preparing a PR for any open-source project.
-
-## Non-Negotiable Rules
-| # | Rule | Violation Example | Correct Pattern |
-|---|------|-------------------|-----------------|
-{Numbered rules distilled from observations}
-
-## Patterns
-{Detailed patterns with evidence references}
-
-## Anti-Patterns
-{Common mistakes observed in rejected PRs}
-```
-
-evidence.md format (append new entries):
-
-```markdown
-## Distillation #{count} ({date})
-- {pattern}: evidence from PR #{a}, #{b}, #{c}
-```
+- **`patterns.md`** — the full pattern/anti-pattern text. A NEW pattern is
+  appended at the end of its section with the next sequential stable ID
+  (`P{n+1}` / `AP{n+1}`). A REINFORCED pattern is updated **in place** (sharpen
+  wording, extend its inline evidence) — never append a near-duplicate.
+- **`SKILL.md`** — lean by contract (rules + Pattern Index). Touch it only to
+  add a one-line index entry for a new pattern (`- P{n} {name}`) or, rarely, a
+  new Non-Negotiable Rule. **Never write pattern bodies into SKILL.md** — that
+  is the unbounded growth this structure exists to stop.
+- **`evidence.md`** — two parts. The Pattern -> Evidence Index gets a new row
+  per new pattern, or — for a reinforced pattern — the new PR refs appended to
+  its row and `citations:` incremented (this count is the dedup signal). The
+  chronological Distillation Log below it gets one entry per run.
 
 ### Step 6: Update distilled learnings summary
 
@@ -174,13 +157,13 @@ cat ~/.claude/codex-pr-lessons/state.json | jq \
 
 ## Dedup Before Adding a Pattern
 
-Before adding any pattern, check the existing corpus for an equivalent:
-grep the current skill patterns and `evidence.md` for the pattern's key
-phrase. If an equivalent already exists, **strengthen it** — append the new
-PR numbers to its evidence entry and tighten its wording if the new
-observations justify it — instead of appending a near-duplicate line. The
-check is against pattern *text* (the evidence log is chronological and has no
-index yet); read the matches you find before deciding new-vs-strengthen.
+Before adding any pattern, check the existing corpus for an equivalent —
+cheapest first: scan the Pattern Index in `SKILL.md` and the Pattern ->
+Evidence Index in `evidence.md` for the pattern's key phrase, then grep
+`patterns.md` for the full text. If an equivalent exists, **reinforce it**:
+update the `patterns.md` entry in place, append the new PR refs to its
+`evidence.md` row, and increment its `citations:` count. Only a genuinely new
+pattern gets a new sequential ID, index line, and evidence row.
 
 ## Quality Criteria for Distilled Patterns
 

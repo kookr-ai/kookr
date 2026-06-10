@@ -47,10 +47,42 @@ The goal is both human alignment (catching what humans catch) AND value-add (fin
 ## Context
 
 - State directory: `~/.claude/<repoSlug>-reviewer-distillation/`
-- Skills: `.claude/skills/reviewer-distillation-{select,prepare,predict,judge,mutate}/SKILL.md`
+- Skills: `plugin/skills/reviewer-distillation-{select,prepare,predict,judge,mutate,meta}/SKILL.md`
 - RFC: `docs/rfc/rfc-reviewer-distillator.md`
 
 ## Workflow Per Iteration
+
+### Phase 0: INITIALIZE (first run only)
+
+If `{stateDir}` (`~/.claude/<repoSlug>-reviewer-distillation/`) does not exist:
+
+1. `mkdir -p {stateDir}/{context,reviews,predictions,scores,aggregates,mutations,logs,judge-validation}`
+2. Write `state.json`:
+
+```json
+{
+  "version": 1,
+  "repo": "{{repo}}",
+  "processed_prs": [], "skipped_prs": [],
+  "total_processed": 0,
+  "current_iteration": 0,
+  "current_prompt_version": "v0",
+  "current_batch": [],
+  "iteration_scores": [],
+  "cursor": null, "last_batch_at": null,
+  "converged": false,
+  "stall_count": 0, "convergence_count": 0,
+  "mutator_meta_mutated": false, "judge_meta_mutated": false
+}
+```
+
+3. Write the baseline reviewer skill to `{stateDir}/mutations/v0.md` (start from
+   `plugin/skills/reviewer-distillation-predict`'s base instructions).
+4. Save the initial mutator instructions to `{stateDir}/mutator-skill.md` and the
+   initial judge prompt to `{stateDir}/judge-skill.md` (Phases 6/4 read these).
+
+If `state.json` exists but fails `jq empty`, STOP and report — never reinitialize
+over a corrupt state file (it holds the processed-PR ledger).
 
 ### Phase 1: SELECT
 Use the `reviewer-distillation-select` skill. Fetch merged PRs from `{{repo}}` with ≥3 human inline review comments. Filter bots. Select `{{batchSize}}` PRs not yet processed.
@@ -111,31 +143,60 @@ Spawn a **fresh Agent subagent** using the `reviewer-distillation-mutate` skill:
 - Output: `mutations/v{K+1}.md`
 - The subagent CANNOT see `reviews/`, `context/`, or `predictions/`
 
-### Phase 7: CONVERGENCE + STALL DETECTION
+### Phase 7: STALL DETECTION, then CONVERGENCE
 
-Check convergence:
-- If `current_iteration >= {{maxIterations}}` → stop, generate report
-- If `stddev_f1 > 0.35` on first batch → futility stop
-- If F1 delta < 0.05 for 2 consecutive iterations → converged, generate report
+**This phase is the single source of truth for both thresholds** — the
+`reviewer-distillation-meta` skill and any orchestrator read the rules from
+here; they never re-derive them.
 
-Check stall (separate from convergence — stall triggers meta-mutation, not stopping):
+Two thresholds, by design (invariant: **stall delta 0.03 < convergence delta
+0.05**). Every stall-qualifying delta also qualifies for convergence, so order
+matters: a flat run must exhaust its improvement paths (meta-mutation) before
+it is allowed to stop. The 0.03–0.05 band is the meta-mutation window — deltas
+there count toward convergence but not toward stall.
+
+**Check stall FIRST** (stall triggers meta-mutation, not stopping):
+
 ```
-if abs(current_f1 - previous_f1) < 0.03:
-  stall_count += 1
-else:
-  stall_count = 0
+delta = abs(current_f1 - previous_f1)
+
+if delta < 0.03: stall_count += 1
+else:            stall_count = 0
 
 if stall_count == 2 and mutator not yet meta-mutated:
   → Phase 7a: META-MUTATE the MUTATOR
-  reset stall_count
+  stall_count = 0; convergence_count = 0   # a fresh mutator deserves fresh evidence
+  → continue to next iteration (skip the convergence check this round)
 
 if stall_count == 2 and mutator already meta-mutated and judge not yet meta-mutated:
   → Phase 7b: META-MUTATE the JUDGE
-  reset stall_count
+  stall_count = 0; convergence_count = 0
+  → continue to next iteration (skip the convergence check this round)
 
 if stall_count == 2 and both already meta-mutated:
   → all improvement paths exhausted, stop and generate report
 ```
+
+**Then check convergence** (stopping):
+
+```
+if delta < 0.05: convergence_count += 1
+else:            convergence_count = 0
+
+if current_iteration >= {{maxIterations}} → stop, generate report
+if stddev_f1 > 0.35 on first batch        → futility stop
+if convergence_count == 2                 → converged, generate report
+```
+
+Both counters persist in `state.json` (`stall_count`, `convergence_count`)
+along with `mutator_meta_mutated` / `judge_meta_mutated`.
+State dirs created before these fields existed: treat a missing counter as
+`0`/`false` and add the fields on the next state write — do not reinitialize.
+
+**Measurement validity:** until the evaluated corpus reaches ~30 PRs, treat
+all F1 numbers as directional, not authoritative — nothing prevents scoring
+on PRs the mutator was tuned against. Once the corpus crosses ~30 PRs,
+introduce a hold-out partition in SELECT and report F1 only on held-out PRs.
 
 ### Phase 7a: META-MUTATE the MUTATOR (on stall)
 Use the `reviewer-distillation-meta` skill. Spawn a fresh agent that:

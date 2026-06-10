@@ -1,4 +1,150 @@
-## Evidence Base
+# Evidence
+
+## Pattern -> Evidence Index
+
+One row per entry in `patterns.md`. `citations` counts distinct inline
+evidence references; when new PRs reinforce an existing pattern,
+distillation appends to its evidence list and bumps the count (the dedup
+signal) instead of adding a duplicate pattern.
+
+- P1 Description Structure by PR Type — citations: 1 — 50 PRs across all types
+- P2 Behavioral Risk Drives Review Effort, Not Line Count — citations: 1 — #15900 34min, #15885 57min, #15903 1hr, #15891 1hr, #15897 2hr, #15909 2hr, #15798 2.5hr, #15789 5hr, #15860 5hr, #15759 8.3hr, #15811 20hr, #15659 28hr, #15693 32hr, #15691 40hr, #15513 2d, #15067 8d
+- P3 Scope Discipline Is the #1 External Contributor Concern — citations: 1 — #15513, #15067, #15791, #15691, plus `anomalyco/opencode` `#6170`
+- P4 Iterative Bot Self-Review Before Human Review — citations: 1 — #15513 — fcoury invoked @codex review 5 times, engaged with every P2 suggestion
+- P5 Transparency About Testing Limitations Builds Trust — citations: 1 — #15897, #15903, #15805, #15789, #15659 — all honestly documented gaps, all merged promptly
+- P6 "Does Not Change Behavior" Is a Reviewer Accelerator — citations: 1 — #15813, #15835, #15811, #15661, #15900
+- P7 Frame Removals as Eliminating Misleading Behavior — citations: 1 — #15900 — 517 lines deleted, merged in 34 minutes with this framing
+- P8 Balanced Review Response: Defend and Concede Appropriately — citations: 1 — #15798, #15691
+- P9 Proactive Debugging Narratives Earn Goodwill — citations: 1 — #15798 — framed as proactive investigation, merged in 2.5 hours
+- P10 Root Cause Over Symptom Fix — citations: 1 — #15835, #15909, plus `anomalyco/opencode` `#20929` contrasted with `#20928`; n8n-io/n8n #26898 — cited 3 prior failed fix attempts by PR number, explained why each was insufficient → reviewer approved without questions in 4h
+- P11 Match Existing Patterns to Reduce Review Burden — citations: 1 — #15860 — 1455-line port merged in 5 hours because it matched the classic `tui` crate pattern
+- P12 Trust Tiers Determine Review Speed — citations: 1 — rust-lang/rust — petrochenkov's 7-line compiler change merged in 1.5 days with zero comments; chenyukang's bug fix in 2 days with zero comments; first-time contributor N1ark's PR took 16 days with 45+ review comments
+- P13 Cut Scope to Unblock Merges — citations: 1 — rust-lang/rust #153380 — stabilization PR dropped `remainder` method mid-review to unblock the rest of the API; #154320 — only implemented `trim_prefix` without `trim_suffix`, accepted as-is
+- P14 Show the Bug Inline in Descriptions — citations: 1 — rust-lang/rust #154185 — showed read/try_read/write/try_write implementations with inline comments highlighting the inconsistency
+- P15 Handle Setbacks and Rejections Gracefully — citations: 1 — rust-lang/rust #154200 — first-time contributor's PR was reverted for perf; their response was "I'm learning a lot about the process!" with an immediate plan for improvement; k8s #137986 — author self-closed cleanly after KEP requirement, left a clear pointer for future contributors
+- P16 Exact Verification Commands Are Table Stakes — citations: 1 — 50 of 50 merged PRs included verification commands
+- P17 Screenshots for CLI/System-Level Changes — citations: 1 — #15693 — 4 terminal screenshots of bwrap behavior on Ubuntu 20.04; #15758 — annotated screenshot of duplicate reasoning
+- P18 Follow-Up Sections De-Risk Large Changes — citations: 1 — #15691 — 5 follow-ups for a +1926 line change
+- P19 The Prep-Work + Execution PR Pair — citations: 1 — #15810 → #15811, #15812 → #15906
+- P20 Cross-Boundary Cleanup Must Be Atomic — citations: 0 — (no inline evidence; see chronological log)
+- P21 In Bot-Gated Repos, Process Compliance Comes Before Code Quality — citations: 1 — anomalyco/opencode `#20714`, `#20866`, `#21091`
+- P22 Do Not Copy Trusted-Insider Shortcut Patterns As An External Contributor — citations: 2 — anomalyco/opencode merged `#20956`, `#21047`, `#21053`, `#21054`, `#21016`, `#21070` versus externally closed `#20714`, `#21042`, `#21089`, `#11626`, `#7772`, `#7425`; #15906 — 30 files across multiple crate boundaries updated for one field removal
+- P23 Process Compliance Before Code Quality — citations: 1 — langchain-ai/langchain — 7/8 rejected PRs auto-closed by bots within 30 seconds for process violations, despite several having high-quality code and tests
+- P24 Description Brevity Scales with Change Size — citations: 1 — langchain-ai/langchain — merged PRs averaged 1-sentence descriptions; the 600+ word rejected PR had parameter tables and marketing language
+- P25 Claim the Issue Before Writing Any Code — citations: 2 — langchain-ai/langchain #36194 — two contributors raced to submit fixes, both auto-closed; PR refused with "Comment on the issue first to let others know you're planning to work on it"
+- P26 Subtool Changes Go to Subtool Repos — citations: 1 — rust-lang/rust #154381 — clippy-only change closed and redirected to rust-lang/rust-clippy
+- P27 Use Project-Specific Formatting Tools — citations: 1 — rust-lang/rust #154400 — `cargo fmt` instead of `./x fmt` reformatted 30+ unrelated files, forcing author to abandon PR
+- P28 Revert PRs Need Empathy and Structure — citations: 1 — rust-lang/rust #154488 — exemplary revert with "Sorry to be the bearer of bad news" + 4 specific problems + path forward
+- P29 Automated/Bulk PRs Are Unwelcome — citations: 1 — rust-lang/rust #154414 — automated security PR closed immediately: "we prefer to not receive automated PRs like this"
+- P30 Follow Up on Maintainer Suggestions — citations: 1 — rust-lang/rust #154512 — followed suggestion from prior PR, approved with "Sure, seems fine" in 17 hours
+- P31 Survive Stale Bots Through Persistence — citations: 1 — grafana/grafana #111735 — went stale twice, auto-closed once, contributor persisted for 6 months until merge; #114047 — auto-closed TWICE, still merged after 4 months
+- P32 Search for Duplicate PRs AND the Target Branch Before Submitting — citations: 1 — grafana/grafana #121041 — perfect PR description with screenshots, closed because fix already merged in #120096; anomalyco/opencode #21178 — high-quality duplicate detected by bot in 60 seconds; #17170 — fix landed independently on dev after 25 days; #19351 — fix landed via direct commit
+- P33 Squash-Merge Repos: PR Title IS the Commit Message — citations: 1 — grafana/grafana — PRs with 8, 18, 50, and 59 commits all merged fine; title format `<Area>: Description` used for changelog
+- P34 Before/After Visual Evidence Accelerates Review — citations: 1 — grafana/grafana #120880 — 1-line CSS change with before/after table merged in 2.5 days; #121382 — CI fix with quantitative metrics merged in 2.5 days; #119572 — feature with video demos merged with "Tremendous work, well done 💯"
+- P35 Expect Both Bot and Human Review — citations: 1 — grafana/grafana #120560 — Copilot found 6 real issues; human reviewer found deeper semantic edge cases; #119572 — Copilot found missing analytics calls and test gaps
+- P36 Feature Toggle / Feature Gate Discipline in Large Projects — citations: 1 — grafana/grafana #119572 — reviewer asked "what happens when toggle disabled after data saved?"; led to explicit serialization/toggle decoupling; k8s #137032 — feature gate if-check inside handler flagged by 3 independent reviewers, forced handler registration to be gated instead
+- P37 Self-Annotate Critical Diff Lines — citations: 1 — grafana/grafana #121275 — author self-annotated two critical lines, reviewer approved within 35 minutes of annotations
+- P38 Split Cross-Layer Changes into Paired PRs — citations: 1 — grafana/grafana #121236 + #121238 — paired backend/client schema PRs merged sequentially; #121521 + #121550 — prerequisite instrumentation merged before dependent feature
+- P39 Link to External Evidence When Correcting Documented Drift — citations: 1 — grafana/grafana #121475 — feature flags set to "experimental" contradicted a public "public preview" announcement; PR linked to the whats-new page, got 4 approvals including CTO in 21 hours
+- P40 Batch-Address All Review Comments in One Session — citations: 1 — grafana/grafana #118631 — 9 inline comments addressed in ~7 hours after 18-day gap; #120994 — reviewer-preferred approach implemented with commit reference
+- P41 Number Stacked PRs with "(1/N)" Convention — citations: 1 — grafana/grafana #120136 — "(1/3
+- P42 Document Design Tradeoffs in "Implementation Notes" — citations: 1 — grafana/grafana #121501 — 3 design tradeoffs documented, two silent approvals within 5h; #121034 — NOTE section flagging known limitation prevented confusion; n8n-io/n8n #27688 — "Key decisions for reviewers" section pre-empted bot objections about custom CodeMirror, library choice, and layout; author had crisp "won't fix" answers ready
+- P43 Show Migration Evidence for Every Supported Platform — citations: 1 — grafana/grafana #121501 — migration screenshots for 3 DBs contributed to zero-comment approval
+- P44 Over-Test to Eliminate Review Comments — citations: 1 — grafana/grafana #121572 — 14:1 ratio, zero comments, 3h to merge; #121498 — 2.4:1 ratio, zero comments, 24min approval
+- P45 Close Superseded PRs with Thread Context — citations: 1 — grafana/grafana #121474 — closed after torkelo's UX feedback without a thread reply; the replacement PR #121636 lost review context
+- P46 Get Design Alignment Before Coding Non-Trivial Changes — citations: 1 — grafana/grafana #121474 — 2 days of work discarded because a maintainer proposed a fundamentally different UX pattern; k8s #132181 — feature PR held day 2 for missing SIG discussion, rotted 10 months without resolution
+- P47 Fix Regression Side-Effects In-PR — citations: 1 — rust-lang/rust #154074 — reviewer flagged diagnostic regression, author fixed in second commit within same PR, approved same day
+- P48 Stabilization/Mechanical PRs Are High-Confidence Entry Points — citations: 1 — rust-lang/rust #152253 — stabilization PR, 1 file, +4/-4, approved in 5 hours; #154459 — destabilization, approved after Zulip consensus link
+- P49 CC Domain Experts Alongside Assigned Reviewers — citations: 1 — rust-lang/rust #154592 — cc'd chenyukang caught a critical correctness bug (Span-as-key fails with macro expansions
+- P50 Stale CI = Abandoned PR in High-Velocity Repos — citations: 1 — langgenius/dify #34227 — CI failures unfixed for 50h, superseded by #34265 which fixed 10 files vs 4 and merged in 6h
+- P51 Bot-Delegated Review Culture — citations: 1 — langgenius/dify #32648 — QuantumGhost endorsed Copilot suggestions 3 times; #33044 — Copilot drove 22 comments across 8 review cycles, both Copilot and Gemini feedback drove real code changes
+- P52 Verify "Unnecessary" Code Before Removing It — citations: 1 — rust-lang/rust #154399 — expert author misread a comment about extern types, proposed removal, got blocked by 5 domain experts on provenance concerns; gracefully self-closed and filed a comment-improvement PR instead
+- P53 Get Policy Buy-In Before Behavioral or Architecture-Level Changes — citations: 1 — rust-lang/rust #153603 — well-implemented argv[0] fallback for current_exe(
+- P54 Build a "Pattern Franchise" for Fast Review — citations: 1 — langgenius/dify #33696 — 3rd EnumText PR merged in 2.2h; #34414 — 19th SQLAlchemy migration PR merged in 1.7h (down from 14h on the 1st
+- P55 Parity Fixes Are Low-Friction Entry Points — citations: 1 — langgenius/dify #34221 — replicated Console API pattern to Service API, zero code concerns; #33637 — replicated creation-time sync to update-time
+- P56 CI Responsiveness > First-Push Perfection — citations: 1 — langgenius/dify #34221 — 2 fixup commits, 6h turnaround, merged in 2.3 days; #33704 — correct code, slow iteration, took 11 days
+- P57 In Template-Gated Repos, Equivalent Content Does Not Count As Compliance — citations: 1 — anomalyco/opencode `#21089`, `#21091`, `#21094`
+- P58 Eligibility Is Not Maintainer Priority In Stale-Bot Repos — citations: 1 — anomalyco/opencode `#11961`, `#11626`, `#10190`, `#10282`, `#12040`, `#12007`
+- P59 Clean Branch History Is A Reviewability Signal — citations: 1 — anomalyco/opencode `#11976`, `#10332`, `#10282`, `#10271`, `#10190`
+- P60 Use Hardware-Normalized Metrics for Performance PRs — citations: 1 — ggml-org/llama.cpp `#21527` — 3x tg speedup with 21%->66% BW util merged in 12h; `#21562` — excellent benchmarks but wrong file location still caused rework
+- P61 Hardware-Owner Reviewers Substitute for Automated CI — citations: 1 — ggml-org/llama.cpp `#21527` — arthw tested on Arc 770 and confirmed; `#21273` — disclosed "not tested on other backends" and deferred GPU to future PRs
+- P62 Before/After Examples Are the Strongest Bug-Fix Description Pattern — citations: 1 — berriai/litellm `#24998` — before/after PII output → silent merge in 2.5 days with zero human comments
+- P63 Include Production Error Frequency to Add Urgency — citations: 1 — berriai/litellm `#20261` — production frequency mentioned, merged after community bump; contrast with `#24961` — perfect PR but no urgency signal, silently closed
+- P64 You Can Argue With Bots Using Design-Intent Reasoning — citations: 1 — berriai/litellm `#24988` — author pushed back on P1, Greptile acknowledged; `#24440` — author added feature flag for bot score, maintainers told him to remove it
+- AP1 Scope Creep from Rebase — citations: 0 — (no inline evidence; see chronological log)
+- AP2 Hiding Testing Gaps — citations: 0 — (no inline evidence; see chronological log)
+- AP3 Expanding Scope During Review — citations: 0 — (no inline evidence; see chronological log)
+- AP4 Minimal Description for High-Risk Changes — citations: 0 — (no inline evidence; see chronological log)
+- AP5 Defensive Responses to Review Feedback — citations: 0 — (no inline evidence; see chronological log)
+- AP6 Ignoring or Dismissing Bot Feedback — citations: 0 — (no inline evidence; see chronological log)
+- AP7 Leaving Duplicate Branches Open — citations: 0 — (no inline evidence; see chronological log)
+- AP8 AI-Generated PR Detection Signals — citations: 1 — rust-lang/rust #154066 — technically correct PR banned as spam due to delivery pattern; #154070 — honest Claude disclosure accepted without issue
+- AP9 Rework After Regression, Don't Abandon — citations: 1 — rust-lang/rust #154014 — reworked #152679 after perf regression, moved computation to error path, same reviewer approved
+- AP10 Split Mechanical Changes from Controversial Decisions — citations: 1 — rust-lang/rust #154004 — module move split from stabilization; bikeshed deferred to sub-issue #154237
+- AP11 AI-Generated Code Without Manual Review — citations: 0 — (no inline evidence; see chronological log)
+- AP12 Rephrasing Reviewer-Provided Wording — citations: 0 — (no inline evidence; see chronological log)
+- AP13 Sloppy Commit Messages as an External Contributor — citations: 0 — (no inline evidence; see chronological log)
+- AP14 Large Features as First Contributions — citations: 0 — (no inline evidence; see chronological log)
+- AP15 Self-Filing Issues to Satisfy Process — citations: 0 — (no inline evidence; see chronological log)
+- AP16 Massive PRs Without Description — citations: 0 — (no inline evidence; see chronological log)
+- AP17 Pinging Maintainers Without Escalation Plan — citations: 0 — (no inline evidence; see chronological log)
+- AP18 Drive-By PRs Without Claiming the Issue First — citations: 2 — langgenius/dify #33653 — correct fix closed 13 seconds after competing PR merged; author hadn't read thread where someone claimed the issue 3h earlier; PR refused with "Comment on the issue first to let others know you're planning to work on it, this avoids duplicate effort and PR conflicts"
+- AP19 Touching Infrastructure Maintainers Want to Own — citations: 1 — langgenius/dify #34399 — QuantumGhost's narrow Python 3.12 bump closed by maintainer WH-2099, replaced by 97-file modernization PR
+- AP20 Broken Diffs from Botched Rebases — citations: 1 — langgenius/dify #33334 — sound concept, died because final diff deleted entire function bodies
+- AP21 Enterprise/License-Sensitive Areas Are Off-Limits — citations: 1 — langgenius/dify #29070 — hardcoded `is_allow_create_workspace = True`, bypassing enterprise config, closed in 3 minutes by maintainer: "Please read our License first"
+- AP22 Design Correctness > CI Status for Core Infrastructure — citations: 1 — langgenius/dify #33884 — CI green, tests passed, but XREADGROUP with per-subscription unique groups is functionally equivalent to XREAD. Gemini, Copilot, and QuantumGhost all identified the same flaw → superseded
+- AP23 Structured Change Tables for Mechanical Refactors — citations: 1 — langgenius/dify #34027 — change table showing 15 queries migrated across 4 files, "zero occurrences remaining in this directory", merged in 14h; #34300 — enumerated columns/write/read sites
+- AP24 Use Non-Closing Issue Links for Series Work — citations: 1 — langgenius/dify #34547, #34548, #34503, #34528, #33633, #34527, #34561, #34562, #34563
+- AP25 Split Mechanical Series by Review Unit, Not by Narrative — citations: 1 — langgenius/dify #34412 blocked at 16 files despite a strong write-up; successors #34561, #34562, #34563 merged in about 80 minutes each. Same pattern reinforced by #34503 and #34528.
+- AP26 Simpler Fix Wins When Competing PRs Exist — citations: 1 — n8n-io/n8n #27796 — 242-addition fix with helper checking headers+null+undefined superseded by #27793's 102-addition one-liner targeting only the actual bug path. Maintainer cited "slightly more elegant fix" when closing.
+- AP27 Quantitative Metrics in Performance PR Descriptions — citations: 1 — n8n-io/n8n #27188 — ~250MB memory reduction (1GB→750MB
+- AP28 Hiding a Feature Branch Under a Bug-Fix Title — citations: 1 — anomalyco/opencode `#21091`, `#21094`, `#20456`
+- AP29 Maintainer Takeover Is a Positive Outcome — citations: 1 — n8n-io/n8n #27814 — new node absorbed into internal branch with authorship preserved; #19758 — maintainer pushed credential restructure directly after 6 months
+- AP30 Scope Is a Queue-Time Multiplier in Bandwidth-Constrained Repos — citations: 1 — n8n-io/n8n #19758 — 3 features bundled → 6 months; similar-scope single-feature PRs merged in 1-3 weeks
+- AP31 Cite Analogous Existing Code for Instant Credibility — citations: 1 — n8n-io/n8n #24517 — 10-line fix citing existing pattern, instant single-round approval; reinforces general pattern 11
+- AP32 Real Tests Over Mocked Tests — citations: 1 — n8n-io/n8n #25810 — reviewer explicitly rejected over-mocked tests; author removed mocks and tested with real functions, approved next day
+- AP33 Production Validation from Community Accelerates Merge — citations: 1 — n8n-io/n8n #22859 — two production confirmations spanning 2+ months (v2.1.2 → v2.6.3
+- AP34 Scope Expansion Through Review Is a Time Trap — citations: 1 — n8n-io/n8n #17297 — started as 2-file Teams-only change, expanded to 23-file all-Microsoft-Graph-nodes change through review, took 192 days instead of potential weeks; #16612 — 2-file credential change was too shallow, successor needed 35 files
+- AP35 AI Submissions Require Human Supervision During Compliance Windows — citations: 1 — anomalyco/opencode `#20704` — technically excellent AI-generated PR with 3 bug fixes, upstream coordination, 4 test artifacts, killed in 2 hours by compliance bot; `#20701` — 707-line feature with screenshots/video, same fate
+- AP36 Study Existing Integration Patterns Before Adding New Ones — citations: 1 — anomalyco/opencode `#13765` — initial 200-line provider PR with dynamic model fetching rejected; final 12-line CUSTOM_LOADERS entry merged after author studied existing patterns
+- AP37 Sign the CLA Before Opening the PR — citations: 1 — n8n-io/n8n #27171 — technically perfect 1-line fix with excellent description, 0 humans looked in 17 days because CLA unsigned; #26988 — unsigned CLA + other failures = 22 days of bot-only interaction; tensorflow/tensorflow #108327 — CLA never signed, 1500-line PR stale-closed after 71 days with zero code review; #88124 — CLA failure on day 1 may have deprioritized a trivially correct 1-line fix for 12 months
+- AP38 Signal Refactor Safety with [no-op] Tags — citations: 1 — grafana/grafana #122041 — 60-file refactor, +624/-581 net +43, merged in 1.5h with single approval after [no-op] tag
+- AP39 Debuggability Over DRY — citations: 1 — grafana/grafana #121814 — reviewer flagged helper hiding call-site context; consistent with grafana's observability-first culture
+- AP40 Approval ≠ Merge: Follow Up After 3-5 Days — citations: 1 — grafana/grafana #119180 — approved day 1, reviewer never clicked merge, sat 31 days, closed because another PR fixed the same typo first
+- AP41 Target Maintainer-Neglected Areas for Fast-Track Merges — citations: 1 — anomalyco/opencode #21134 — maintainer: "I actually love merging things for ACP support because I've been lackluster at maintaining it myself" — merged in 3.5h for an external contributor; #20399 — Cloudflare provider fix attracted domain-expert reviewer from Cloudflare team in 18h
+- AP42 Use the Project's Preferred Communication Channel for Follow-Up — citations: 1 — anomalyco/opencode #20272 — maintainer explicitly: "GH notifications are overwhelming" and pointed to Discord
+- AP43 Cross-Reviewer Coordination with "LGTM with Hold" — citations: 1 — k8s #137032, #138035 — reviewers used LGTM+hold to coordinate across SIG boundaries; held reviewer response time dropped when authors pinged them directly
+- AP44 Self-Imposed Hold with Documented Verification — citations: 1 — k8s #138035 — author self-held, posted test results 48h later, reviewer approved without further questions on the verification aspect
+- AP45 Causal Chain in First Paragraph for Regression Fixes — citations: 1 — k8s #138178 — this structure got first-round approval; PRs without the regressing commit link required a round-trip asking "what introduced this?"
+- AP46 Document CI Retests with Classification — citations: 1 — k8s #138178 — classified retest comments prevented reviewers from blocking on CI noise; unclassified retests in peer PRs led to reviewer holds pending investigation
+- AP47 Performance Awareness and Cache Safety in Subsystem Changes — citations: 1 — k8s #134660 — reviewer caught 3-5 CRI calls/pod/reconcile, forced redesign; DeepCopy violation identified in same PR, caught only in integration test suite
+- AP48 Fork-Master Contamination Kills PRs Instantly — citations: 1 — tensorflow/tensorflow #115135 — 5-line TFLite fix buried in 567-line diff from 3 months of fork-master accumulation; author self-corrected to clean #115190 within minutes
+- AP49 Adopt Reviewer Design Suggestions — They Improve Outcomes — citations: 1 — tensorflow/tensorflow #105000 — reviewer suggested generalizing `ReadStringsFromEnvVar` with custom delimiters instead of point fix; author adopted, approved; #100869 — reviewer requested `@parameterized` convention, author delivered next day, approved in 48h
+- AP50 Second Attempts Win When First Attempts Teach — citations: 1 — tensorflow/tensorflow #100869 — successful second attempt after #99904, itemized 4 improvements from prior feedback, merged in 17 days; #115135 → #115190 self-correction
+- AP51 Naive Mechanical Changes Without Verification Are Reputationally Toxic — citations: 1 — tensorflow/tensorflow #111046 — `except:` → `except Exception:` find-and-replace corrupted `if may_exit_via_except:` into syntax error and turned docstring prose "except:" into "except Exception:"; 5 of 38 replacements wrong
+- AP52 AI Co-Author Trailers Break CLA Gates — citations: 1 — berriai/litellm #25300 — `Co-Authored-By: claude` created permanent CLA block, forced complete refile; #24268 — body-level AI disclosure merged without issue
+- AP53 Self-Correction and Refiling Is a Valid Contributor Pattern — citations: 1 — berriai/litellm #25433 → #25437 — self-closed after 22 minutes when Codecov showed 0% patch coverage; #25300 → #25353 — refiled to fix CLA and cyclic imports
+- AP54 Codecov Patch Coverage 0% Is a Red Flag Even When Tests Pass — citations: 1 — berriai/litellm #25433 — all tests passed but 0% patch coverage on handler lines; author self-closed to refile with proper integration tests
+- AP55 Follow-Up Fix PRs Build Trust Faster Than New Features — citations: 1 — browser-use/browser-use #4590 — reviewed merged #4514, found 3 security/correctness issues, submitted fix PR that merged in 3h; reinforces general pattern 45
+- AP56 Unsolicited Infrastructure PRs Are Dead on Arrival — citations: 1 — browser-use/browser-use #4614 — CI workflow for external skill-publishing tool, +35/-0 across 1 file, closed in 3 days with zero human engagement; no issue, no prior discussion, no maintainer request
+- AP57 Resolve CHANGES_REQUESTED Before Merge — Or Face a Revert — citations: 1 — berriai/litellm #25340 — merged over ishaan-berri's CHANGES_REQUESTED, immediately reverted by krrish-berri-2 because the semantic value assignment was wrong; mock tests only verified the keyword arg was passed, not that the value was correct
+- AP58 Clear the Bot Round Before Humans Engage — citations: 1 — n8n-io/n8n #27688 — 10 bot comments, all replied to within 2h, human reviewer approved same day; #28021 — @claude /review caught a real test inconsistency that the author fixed before merge; grafana/grafana #120560 — Copilot found 6 real issues before human review
+- AP59 Separate Public API Response Shapes from Internal Types — citations: 1 — n8n-io/n8n #27637 — reviewer escalated through 3 rounds to get from raw passthrough to Zod-schema-validated mapper + negative-scope test
+- AP60 Issue Invitation Is Not an Open Call — citations: 1 — pydantic/pydantic-ai #5021 — closed in 88 minutes because a different contributor's invitation was hijacked; maintainer closed without reviewing the code
+- AP61 Match Fix Complexity to Problem Complexity — citations: 1 — pydantic/pydantic-ai #5003 — maintainer closed a shared utility PR in 4 hours, preferring a one-line `ImportError` → `ModuleNotFoundError` change per provider
+- AP62 "Right Fix, Wrong Layer" — Confirm the Fix Belongs Here — citations: 1 — modelcontextprotocol/servers #2812 — 88-day discussion, community pain confirmed, rejected because type coercion belongs in the MCP SDK, not individual servers
+- AP63 Empirical Data in PR Descriptions Collapses Review Time — citations: 1 — modelcontextprotocol/servers #3515 — one-line fix with crash-rate data merged in 5 days with zero review comments; #3545 — threat model + test counts → 2-day merge
+- AP64 Proactively Ping Reviewers After Queue Timeout — citations: 1 — modelcontextprotocol/servers #3230, #3229 — author pinged olaservo by name referencing related merged PR; batch got attention; #2609 — maintainer self-rescued their own PR after 6 months by refreshing and rebasing
+- AP65 Don't Spray-Submit Multiple Similar PRs Simultaneously — citations: 1 — modelcontextprotocol/servers #3643, #3655, #3664 — 3 annotation PRs by same author all bulk-closed within 1 second; competing PR by trusted contributor preferred
+- AP66 Use Review Bots as Interactive Pair Programmers — citations: 1 — berriai/litellm #24135 — author used `@greptileai how would you address…` interactively, implemented suggestions as commits, merged in 10h with zero human review; #23532 — 5 interactive Greptile rounds drove quality from initial to production-ready
+- AP67 Bundle Docs-Only Changes with Code Changes in High-Volume Repos — citations: 1 — berriai/litellm #16302 — technically correct, CLA-signed, 1-file docs fix stale-closed after 5 months with zero maintainer engagement; community recognized it as valid but no one had merge authority
+- AP68 The Two-Ping Rule — Set a PR Budget Before You Start — citations: 1 — browser-use/browser-use #4292 — giulio-leone's technically excellent Windows tunnel fix with issue link, root-cause analysis, and proactive bot-fix commits. Author pinged twice (day 2 and day 5
+- AP69 Bot Approval Is Not Design Approval — citations: 1 — browser-use/browser-use #4442 — cubic reported "No issues found across 1 file" on the Bedrock schema fix. Maintainer @laithrw still rejected the PR because the approach (pass raw schema through
+
+> Log entries below predate the 2026-06-10 renumbering and reference the old
+> (ambiguous, partially duplicated) pattern numbers.
+
+## Distillation Log (chronological)
 
 - **Distillation #1** (2026-03-26): 10 PRs from openai/codex (#15860, #15892, #15813, #15796, #15835, #15897, #15903, #15067, #15811, #15900)
 - **Distillation #2** (2026-03-26): +5 PRs (#15791, #15891, #15885, #15881, #15661). Total: 15 PRs.

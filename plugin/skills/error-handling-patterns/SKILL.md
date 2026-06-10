@@ -5,6 +5,8 @@ keywords: error handling, catch, throw, cause chaining, Zod validation, fire-and
 related: testing-patterns, monorepo-architecture, typescript-type-safety, domain-driven-design, websocket-dashboard, safe-refactoring, logging-design-patterns, dependency-injection-patterns, event-driven-messaging-patterns, async-flow-control, process-lifecycle-patterns, state-machine-workflow-patterns
 ---
 
+<!-- lint-allow-library: p-limit --> <!-- concurrency-limiting example -->
+
 # Error Handling Patterns
 
 Rules for writing code that fails safely, predictably, and visibly.
