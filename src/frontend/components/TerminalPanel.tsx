@@ -7,6 +7,7 @@ import '@xterm/xterm/css/xterm.css';
 import { useKookrStore } from '../store/useStore.js';
 import { registerTerminalSend } from '../terminal-send.js';
 import { isMultilinePaste, buildPasteFrame } from '../terminal-paste.js';
+import { createReconnectingSocket, type ReconnectingSocket } from '../reconnecting-socket.js';
 import { track } from '../telemetry.js';
 
 interface Props {
@@ -167,7 +168,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const controllerRef = useRef<ReconnectingSocket | null>(null);
   const currentTmuxRef = useRef<string | null>(null);
   const terminalInputDraftRef = useRef('');
   const onEmptySubmitRef = useRef(onEmptySubmit);
@@ -195,13 +196,14 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     terminalRef.current?.focus();
   }
 
-  function registerVisibleTerminalSend(ws: WebSocket | null) {
-    if (!visibleRef.current || !ws || ws.readyState !== WebSocket.OPEN) {
+  function registerVisibleTerminalSend() {
+    const controller = controllerRef.current;
+    if (!visibleRef.current || !controller?.isEstablished()) {
       registerTerminalSend(null);
       return;
     }
     registerTerminalSend((data) => {
-      if (visibleRef.current && ws.readyState === WebSocket.OPEN) ws.send(data);
+      if (visibleRef.current) controllerRef.current?.send(data);
     });
   }
 
@@ -227,7 +229,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
 
   useEffect(() => {
     visibleRef.current = visible;
-    registerVisibleTerminalSend(wsRef.current);
+    registerVisibleTerminalSend();
     if (visible) return;
 
     searchOpenRef.current = false;
@@ -480,8 +482,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
 
   /** Send a frame on the live terminal WebSocket, if one is open. */
   function sendOverWs(payload: string | Uint8Array) {
-    const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) ws.send(payload);
+    controllerRef.current?.send(payload);
   }
 
   /**
@@ -547,12 +548,6 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     const terminal = terminalRef.current;
     if (!terminal) return;
 
-    // Clean up previous connection
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-
     const sessionChanged = tmuxName !== currentTmuxRef.current;
 
     if (sessionChanged) {
@@ -584,60 +579,89 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${protocol}//${window.location.host}/ws/terminal/${encodeURIComponent(tmuxName)}`;
-    const ws = new WebSocket(url);
-    // v7 SessionBridge sends binary frames. Legacy TerminalBridge (tmux) sends
-    // string frames. `arraybuffer` is accepted by xterm.js's `.write` for both
-    // Uint8Array and ArrayBuffer, and string frames still arrive as strings
-    // on `event.data` regardless — so this is forward-compatible with both.
-    ws.binaryType = 'arraybuffer';
-    wsRef.current = ws;
 
-    ws.onopen = () => {
-      if (!visibleRef.current) {
-        registerTerminalSend(null);
-        return;
-      }
-      // Send initial size
-      const fitAddon = fitAddonRef.current;
-      if (fitAddon) {
-        fitAddon.fit();
-        const dims = fitAddon.proposeDimensions();
-        const resize = getValidatedResize(dims?.cols, dims?.rows);
-        if (resize) {
-          ws.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
+    // The byte stream auto-reconnects (with backoff) when the server restarts
+    // or the host drops offline, instead of leaving a frozen terminal behind.
+    // Two close codes mean the session itself is finished and must NOT retry:
+    // 1000 (clean close) and 1011 — SessionBridge's closeBridgeForFailure uses
+    // 1011 when the backend session is gone/dead, and the upgrade handshake is
+    // accepted before that liveness check runs, so retrying 1011 would loop
+    // open→close forever on a pane showing an ended session. Server restarts
+    // close with 1001/1006, which do retry.
+    const SESSION_OVER_CLOSE_CODES = [1000, 1011];
+    let hasConnectedOnce = false;
+    let notifiedOutage = false;
+
+    const controller = createReconnectingSocket<WebSocket>({
+      createSocket: () => {
+        const ws = new WebSocket(url);
+        // v7 SessionBridge sends binary frames. Legacy TerminalBridge (tmux) sends
+        // string frames. `arraybuffer` is accepted by xterm.js's `.write` for both
+        // Uint8Array and ArrayBuffer, and string frames still arrive as strings
+        // on `event.data` regardless — so this is forward-compatible with both.
+        ws.binaryType = 'arraybuffer';
+        return ws;
+      },
+      shouldReconnect: (event) => !SESSION_OVER_CLOSE_CODES.includes(event.code ?? -1),
+      backoff: { initialDelayMs: 1_000, maxDelayMs: 10_000 },
+      onOpen: (ws) => {
+        // The server replays the session's ring buffer on every connect, so a
+        // reconnect must reset the terminal first or the replayed scrollback
+        // would be appended twice.
+        if (hasConnectedOnce) {
+          terminal.reset();
         }
-      }
+        hasConnectedOnce = true;
+        notifiedOutage = false;
+        if (!visibleRef.current) {
+          registerTerminalSend(null);
+          return;
+        }
+        // Send initial size
+        const fitAddon = fitAddonRef.current;
+        if (fitAddon) {
+          fitAddon.fit();
+          const dims = fitAddon.proposeDimensions();
+          const resize = getValidatedResize(dims?.cols, dims?.rows);
+          if (resize) {
+            ws.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
+          }
+        }
+      },
       // Register send function so global shortcuts can write only when this
-      // terminal is actually visible.
-      registerVisibleTerminalSend(ws);
-    };
-
-    ws.onmessage = (event) => {
-      // Binary frames arrive as ArrayBuffer (because ws.binaryType = 'arraybuffer'
-      // above). Convert to Uint8Array for byte-exact handoff to xterm.js — its
-      // .write() accepts both Uint8Array and string. String frames (from the
-      // legacy TerminalBridge path) pass through unchanged.
-      if (event.data instanceof ArrayBuffer) {
-        const bytes = new Uint8Array(event.data);
-        terminal.write(bytes);
-      } else {
-        terminal.write(event.data);
-      }
-    };
-
-    ws.onclose = (event) => {
-      // If the PTY exited (e.g. dead terminal session), show feedback
-      if (event.code === 1000 && terminal) {
-        terminal.write('\r\n\x1b[90m  Session ended.\x1b[0m\r\n');
-      }
-    };
-
-    ws.onerror = () => {
-      if (terminal) {
-        terminal.write('\r\n\x1b[90m  Could not connect to terminal.\x1b[0m\r\n');
-      }
-      ws.close();
-    };
+      // terminal is actually visible. Done here rather than in onOpen because
+      // the connection counts as established only after onOpen returns.
+      onEstablished: () => {
+        registerVisibleTerminalSend();
+      },
+      onMessage: (event) => {
+        // Binary frames arrive as ArrayBuffer (because ws.binaryType = 'arraybuffer'
+        // above). Convert to Uint8Array for byte-exact handoff to xterm.js — its
+        // .write() accepts both Uint8Array and string. String frames (from the
+        // legacy TerminalBridge path) pass through unchanged.
+        if (event.data instanceof ArrayBuffer) {
+          const bytes = new Uint8Array(event.data);
+          terminal.write(bytes);
+        } else if (typeof event.data === 'string') {
+          terminal.write(event.data);
+        }
+      },
+      onClose: (event, { wasEstablished }) => {
+        registerTerminalSend(null);
+        if (SESSION_OVER_CLOSE_CODES.includes(event.code ?? -1)) {
+          // The PTY exited or the backend session is gone — show feedback.
+          terminal.write('\r\n\x1b[90m  Session ended.\x1b[0m\r\n');
+        } else if (!notifiedOutage) {
+          // Say it once per outage; retries continue silently in the background.
+          notifiedOutage = true;
+          terminal.write(wasEstablished
+            ? '\r\n\x1b[90m  Terminal connection lost — reconnecting…\x1b[0m\r\n'
+            : '\r\n\x1b[90m  Could not connect to terminal — retrying…\x1b[0m\r\n');
+        }
+      },
+    });
+    controllerRef.current = controller;
+    controller.start();
 
     // Terminal input → WebSocket
     const inputDisposable = terminal.onData((data) => {
@@ -654,17 +678,15 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
         return;
       }
       terminalInputDraftRef.current = updateTerminalInputDraft(terminalInputDraftRef.current, data);
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(data);
-      }
+      controller.send(data);
     });
 
     // Terminal resize → WebSocket
     const resizeDisposable = terminal.onResize(({ cols, rows }) => {
       if (!visibleRef.current) return;
       const resize = getValidatedResize(cols, rows);
-      if (resize && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
+      if (resize) {
+        controller.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
       }
     });
 
@@ -672,8 +694,8 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
       registerTerminalSend(null);
       inputDisposable.dispose();
       resizeDisposable.dispose();
-      ws.close();
-      wsRef.current = null;
+      controller.stop();
+      controllerRef.current = null;
     };
   }, [tmuxName, visible]);
 
@@ -696,9 +718,8 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
       }
       const dims = fitAddon.proposeDimensions();
       const resize = getValidatedResize(dims?.cols, dims?.rows);
-      const ws = wsRef.current;
-      if (resize && ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
+      if (resize) {
+        controllerRef.current?.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
       }
     });
 
