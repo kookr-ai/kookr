@@ -230,6 +230,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     resourceStatusIntervalMs,
     lifecycleSignal,
   } = config;
+  const apiAuth: ApiAuthConfig = config.apiAuth ?? { required: false };
 
   const coreStores = await createCoreStores({ kookrDir, hooksDir, settingsDir, frontendDir });
   const coordinatorSuppressions = new CoordinatorSuppressionStore(kookrDir);
@@ -925,14 +926,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalBackend,
     coordinatorSuppressions,
     drainController,
-    apiAuth: config.apiAuth,
+    apiAuth,
     sessionAuth: config.sessionAuth,
     // #808: owner share control surface + health block. The viewer feature is a
     // non-loopback concern (a viewer must reach the host over the network), so it
     // is exposed only when the API-token gate is active; on a loopback bind the
     // share routes report `share-feature-disabled` and `/api/health` omits the
     // `viewerBroadcaster` block, keeping the default localhost flow untouched (R9).
-    ...(config.apiAuth?.required
+    ...(apiAuth.required
       ? {
           viewerShare: {
             grantStore: viewerGrantStore,
@@ -1129,7 +1130,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalInputWriter: terminalInputCoordinator,
     terminalDeps,
     useFakeTerminalBridge,
-    apiAuth: config.apiAuth,
+    apiAuth,
     onLocalTerminalActivity: (sessionId) => remoteRelayRuntime?.recordLocalTerminalActivity(sessionId),
     onDashboardConnection: (ws) => handleWsConnection(ws, connectionRegistry, wsConnectionDeps),
     // Register terminal sockets with the connection registry so the revocation

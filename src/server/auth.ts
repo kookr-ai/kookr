@@ -113,12 +113,20 @@ export function isLoopbackHost(host: string | undefined | null): boolean {
 
 /**
  * Resolved API-auth posture for the running server. `required: false` means the
- * server is on a loopback bind and every request/upgrade passes through
- * untouched. `required: true` carries the single expected bearer token.
+ * server is on a loopback bind and local clients need no credential; browser
+ * provenance headers are still checked on mutating HTTP routes and WS upgrades.
+ * `required: true` carries the single expected bearer token.
  */
 export interface ApiAuthConfig {
   required: boolean;
   token?: string;
+  /**
+   * Emergency escape hatch for loopback browser-origin enforcement. The default
+   * token-free loopback path still resolves the local owner without credentials,
+   * but browser-initiated mutations/upgrades must be same-origin unless this is
+   * explicitly set.
+   */
+  originGateDisabled?: boolean;
   /**
    * Viewer-grant lookup, injected from the grant store (#803). Given a raw
    * presented token that is *not* the owner token, classify it as a valid /
@@ -158,19 +166,20 @@ function defaultGenerateToken(): string {
 
 export function resolveApiAuth(opts: ResolveApiAuthOptions): ApiAuthResolution {
   const { host, env } = opts;
+  const originGateDisabled = env.KOOKR_DISABLE_ORIGIN_GATE?.trim().toLowerCase() === 'true';
   if (isLoopbackHost(host)) {
-    return { kind: 'loopback', config: { required: false } };
+    return { kind: 'loopback', config: { required: false, originGateDisabled } };
   }
 
   const providedToken = env.KOOKR_API_TOKEN?.trim();
   if (providedToken) {
-    return { kind: 'token-provided', config: { required: true, token: providedToken } };
+    return { kind: 'token-provided', config: { required: true, token: providedToken, originGateDisabled } };
   }
 
   const allowNonLoopback = env.KOOKR_ALLOW_NON_LOOPBACK?.trim().toLowerCase() === 'true';
   if (allowNonLoopback) {
     const token = (opts.generateToken ?? defaultGenerateToken)();
-    return { kind: 'token-generated', config: { required: true, token }, token };
+    return { kind: 'token-generated', config: { required: true, token, originGateDisabled }, token };
   }
 
   return {
@@ -234,6 +243,7 @@ export type AuthRejectReason =
   | 'bad_token'
   | 'revoked'
   | 'expired'
+  | 'cross_origin'
   /** A *valid* viewer credential hit an owner-only route (viewer GET deny-list). */
   | 'viewer_route_denied';
 
@@ -247,6 +257,99 @@ function logAuthRejected(reason: AuthRejectReason, remoteAddr: string | undefine
   console.warn(
     JSON.stringify({ event: 'auth_rejected', reason, remoteAddr: remoteAddr ?? null, ...(grantId ? { grantId } : {}) }),
   );
+}
+
+export interface BrowserOriginHeaders {
+  secFetchSite?: string | null;
+  origin?: string | null;
+  host?: string | null;
+}
+
+/**
+ * Browser-origin guard used by the token-free loopback owner hot path.
+ *
+ * Browsers send either Fetch Metadata (`Sec-Fetch-Site`) or an `Origin` header
+ * on the CSRF/CSWSH shapes this protects. Non-browser clients such as curl,
+ * CLIs, and hooks usually send neither, so absence is allowed here. The stricter
+ * cookie-session exchange wraps this with absence/`none` denied.
+ */
+export function isBrowserSameOriginRequest(
+  headers: BrowserOriginHeaders,
+  opts: { allowMissingHeaders: boolean; allowSecFetchSiteNone: boolean },
+): boolean {
+  const secFetchSite = headers.secFetchSite?.trim().toLowerCase();
+  if (secFetchSite) {
+    return secFetchSite === 'same-origin'
+      || (opts.allowSecFetchSiteNone && secFetchSite === 'none');
+  }
+  if (headers.origin) {
+    try {
+      const originUrl = new URL(headers.origin);
+      return !!headers.host && originUrl.host === headers.host;
+    } catch {
+      return false;
+    }
+  }
+  return opts.allowMissingHeaders;
+}
+
+function hostnameFromHostHeader(host: string | null | undefined): string | undefined {
+  const normalized = host?.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized.startsWith('[')) {
+    const end = normalized.indexOf(']');
+    return end > 0 ? normalized.slice(1, end) : normalized;
+  }
+  const colonCount = normalized.split(':').length - 1;
+  if (colonCount === 1) return normalized.split(':', 1)[0];
+  return normalized;
+}
+
+function isLoopbackHostHeader(host: string | null | undefined): boolean {
+  return isLoopbackHost(hostnameFromHostHeader(host));
+}
+
+export function isLoopbackBrowserOriginAllowed(headers: BrowserOriginHeaders): boolean {
+  const hasBrowserSignal = !!headers.secFetchSite?.trim() || !!headers.origin;
+  if (hasBrowserSignal && !isLoopbackHostHeader(headers.host)) return false;
+  return isBrowserSameOriginRequest(headers, {
+    allowMissingHeaders: true,
+    allowSecFetchSiteNone: true,
+  });
+}
+
+function loopbackOriginGateApplies(config: ApiAuthConfig): boolean {
+  return !config.originGateDisabled && (!config.required || !config.token);
+}
+
+function isApiPath(path: string): boolean {
+  return path === '/api' || path.startsWith('/api/');
+}
+
+function isMutatingMethod(method: string): boolean {
+  const m = method.toUpperCase();
+  return m !== 'GET' && m !== 'HEAD' && m !== 'OPTIONS';
+}
+
+function shouldEnforceLoopbackHttpOriginGate(
+  config: ApiAuthConfig,
+  req: { method: string; path: string },
+): boolean {
+  return loopbackOriginGateApplies(config)
+    && isMutatingMethod(req.method)
+    && isApiPath(req.path);
+}
+
+export function isLoopbackUpgradeOriginAllowed(
+  config: ApiAuthConfig,
+  req: { headers: IncomingHttpHeaders },
+): boolean {
+  if (!loopbackOriginGateApplies(config)) return true;
+  return isLoopbackBrowserOriginAllowed({
+    secFetchSite: firstHeaderValue(req.headers['sec-fetch-site']),
+    origin: firstHeaderValue(req.headers.origin),
+    host: firstHeaderValue(req.headers.host),
+  });
 }
 
 /**
@@ -380,10 +483,23 @@ export function isUnauthenticatedRoute(method: string, path: string): boolean {
  */
 export function createApiAuthMiddleware(config: ApiAuthConfig): MiddlewareHandler {
   return async (c, next) => {
-    if (!config.required || !config.token) return next();
-
     const method = c.req.method;
     const path = c.req.path;
+
+    if (shouldEnforceLoopbackHttpOriginGate(config, { method, path })) {
+      const sameOrigin = isLoopbackBrowserOriginAllowed({
+        secFetchSite: c.req.header('sec-fetch-site'),
+        origin: c.req.header('origin'),
+        host: c.req.header('host'),
+      });
+      if (!sameOrigin) {
+        logAuthRejected('cross_origin', c.req.header('x-forwarded-for') ?? undefined);
+        return c.json({ error: 'cross-origin' }, 403);
+      }
+    }
+
+    if (!config.required || !config.token) return next();
+
     if (isUnauthenticatedRoute(method, path)) return next();
 
     const actor = resolveActor(config, {

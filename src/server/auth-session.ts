@@ -34,6 +34,7 @@ import {
   SESSION_COOKIE_NAME,
   classifyCredential,
   extractBearerToken,
+  isBrowserSameOriginRequest,
   isLoopbackHost,
   parseCookieHeader,
   type Actor,
@@ -145,19 +146,13 @@ export function isSameOriginRequest(headers: {
   origin?: string | null;
   host?: string | null;
 }): boolean {
-  const secFetchSite = headers.secFetchSite?.trim().toLowerCase();
-  if (secFetchSite) {
-    // Only an exact same-origin request is accepted; 'same-site' (sibling
-    // subdomain), 'cross-site', and 'none' (cross-document / direct nav) are not.
-    return secFetchSite === 'same-origin';
-  }
-  if (!headers.origin) return false;
-  try {
-    const originUrl = new URL(headers.origin);
-    return !!headers.host && originUrl.host === headers.host;
-  } catch {
-    return false;
-  }
+  // Only an exact same-origin request is accepted; 'same-site' (sibling
+  // subdomain), 'cross-site', 'none' (cross-document / direct nav), and missing
+  // browser provenance are not.
+  return isBrowserSameOriginRequest(headers, {
+    allowMissingHeaders: false,
+    allowSecFetchSiteNone: false,
+  });
 }
 
 /**

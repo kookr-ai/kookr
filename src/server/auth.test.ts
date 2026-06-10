@@ -6,6 +6,7 @@ import {
   createApiAuthMiddleware,
   extractBearerToken,
   isAuthorizedUpgrade,
+  isLoopbackBrowserOriginAllowed,
   isLoopbackHost,
   isUnauthenticatedRoute,
   parseCookieHeader,
@@ -42,13 +43,14 @@ describe('resolveApiAuth', () => {
     const res = resolveApiAuth({ host: '127.0.0.1', env: {} });
     expect(res.kind).toBe('loopback');
     expect(res.kind === 'loopback' && res.config.required).toBe(false);
+    expect(res.kind === 'loopback' && res.config.originGateDisabled).toBe(false);
   });
 
   test('non-loopback bind with KOOKR_API_TOKEN enforces the provided token', () => {
     const res = resolveApiAuth({ host: '0.0.0.0', env: { KOOKR_API_TOKEN: '  secret-token  ' } });
     expect(res.kind).toBe('token-provided');
     if (res.kind !== 'token-provided') throw new Error('unreachable');
-    expect(res.config).toEqual({ required: true, token: 'secret-token' });
+    expect(res.config).toEqual({ required: true, token: 'secret-token', originGateDisabled: false });
   });
 
   test('non-loopback bind with the opt-out auto-generates and enforces a token', () => {
@@ -60,7 +62,7 @@ describe('resolveApiAuth', () => {
     expect(res.kind).toBe('token-generated');
     if (res.kind !== 'token-generated') throw new Error('unreachable');
     expect(res.token).toBe('generated-xyz');
-    expect(res.config).toEqual({ required: true, token: 'generated-xyz' });
+    expect(res.config).toEqual({ required: true, token: 'generated-xyz', originGateDisabled: false });
   });
 
   // The fail-closed start-up behavior: a non-loopback bind with neither a token
@@ -73,6 +75,61 @@ describe('resolveApiAuth', () => {
 
   test('an empty KOOKR_API_TOKEN does not count as provided', () => {
     expect(resolveApiAuth({ host: '0.0.0.0', env: { KOOKR_API_TOKEN: '   ' } }).kind).toBe('fail-closed');
+  });
+
+  test('KOOKR_DISABLE_ORIGIN_GATE disables only the browser-origin gate flag', () => {
+    const res = resolveApiAuth({
+      host: '127.0.0.1',
+      env: { KOOKR_DISABLE_ORIGIN_GATE: 'true' },
+    });
+    expect(res.kind).toBe('loopback');
+    expect(res.kind === 'loopback' && res.config).toEqual({
+      required: false,
+      originGateDisabled: true,
+    });
+  });
+});
+
+describe('isLoopbackBrowserOriginAllowed', () => {
+  test('allows same-origin fetch metadata and direct/browserless requests', () => {
+    expect(isLoopbackBrowserOriginAllowed({ secFetchSite: 'same-origin', host: '127.0.0.1:4800' })).toBe(true);
+    expect(isLoopbackBrowserOriginAllowed({ secFetchSite: 'none', host: 'localhost:4800' })).toBe(true);
+    expect(isLoopbackBrowserOriginAllowed({})).toBe(true);
+  });
+
+  test('rejects cross-site fetch metadata before consulting Origin fallback', () => {
+    expect(
+      isLoopbackBrowserOriginAllowed({
+        secFetchSite: 'cross-site',
+        origin: 'http://127.0.0.1:4800',
+        host: '127.0.0.1:4800',
+      }),
+    ).toBe(false);
+  });
+
+  test('rejects same-origin browser signals on non-loopback Host values', () => {
+    expect(
+      isLoopbackBrowserOriginAllowed({
+        secFetchSite: 'same-origin',
+        origin: 'http://evil.example:4800',
+        host: 'evil.example:4800',
+      }),
+    ).toBe(false);
+  });
+
+  test('falls back to exact Origin host matching', () => {
+    expect(
+      isLoopbackBrowserOriginAllowed({
+        origin: 'http://127.0.0.1:4800',
+        host: '127.0.0.1:4800',
+      }),
+    ).toBe(true);
+    expect(
+      isLoopbackBrowserOriginAllowed({
+        origin: 'http://evil.example',
+        host: '127.0.0.1:4800',
+      }),
+    ).toBe(false);
   });
 });
 
@@ -272,6 +329,68 @@ describe('createApiAuthMiddleware (actor-aware, R7)', () => {
   test('loopback config (required:false) is a pass-through', async () => {
     const app = mkApp({ required: false });
     const res = await app.request('http://lan.example/api/tasks', { method: 'POST' });
+    expect(res.status).toBe(201);
+  });
+
+  test('loopback config rejects browser-origin-crossing API mutations', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const app = mkApp({ required: false });
+    const res = await app.request('http://127.0.0.1:4800/api/tasks', {
+      method: 'POST',
+      headers: { origin: 'http://evil.example' },
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'cross-origin' });
+  });
+
+  test('loopback origin gate allows same-origin and Sec-Fetch-Site:none mutations', async () => {
+    const app = mkApp({ required: false });
+    const sameOrigin = await app.request('http://127.0.0.1:4800/api/tasks', {
+      method: 'POST',
+      headers: { host: '127.0.0.1:4800', origin: 'http://127.0.0.1:4800' },
+    });
+    expect(sameOrigin.status).toBe(201);
+    const secFetchNone = await app.request('http://127.0.0.1:4800/api/tasks', {
+      method: 'POST',
+      headers: { host: '127.0.0.1:4800', 'sec-fetch-site': 'none' },
+    });
+    expect(secFetchNone.status).toBe(201);
+  });
+
+  test('loopback origin gate rejects cross-site fetch metadata even with matching Origin fallback', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const app = mkApp({ required: false });
+    const res = await app.request('http://127.0.0.1:4800/api/tasks', {
+      method: 'POST',
+      headers: {
+        host: '127.0.0.1:4800',
+        origin: 'http://127.0.0.1:4800',
+        'sec-fetch-site': 'cross-site',
+      },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test('loopback origin gate rejects same-origin browser signals on rebound hostnames', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const app = mkApp({ required: false });
+    const res = await app.request('http://evil.example:4800/api/tasks', {
+      method: 'POST',
+      headers: {
+        host: 'evil.example:4800',
+        origin: 'http://evil.example:4800',
+        'sec-fetch-site': 'same-origin',
+      },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test('loopback origin gate escape hatch allows a mismatched browser Origin', async () => {
+    const app = mkApp({ required: false, originGateDisabled: true });
+    const res = await app.request('http://127.0.0.1:4800/api/tasks', {
+      method: 'POST',
+      headers: { origin: 'http://evil.example' },
+    });
     expect(res.status).toBe(201);
   });
 

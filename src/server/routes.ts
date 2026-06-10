@@ -39,17 +39,16 @@ export type { RouteDeps } from './routes/shared.js';
 export function createRoutes(deps: RouteDeps): Hono {
   const app = new Hono();
 
-  // Issue #708: when the server bound to a non-loopback host, enforce a bearer
-  // token on state-changing requests. Registered before route handlers and
-  // body-reading middleware. On a loopback bind `apiAuth.required` is false and
-  // this is a no-op pass-through, keeping the default localhost flow token-free.
-  if (deps.apiAuth?.required) {
+  // Issue #708 + #846: when the server binds to a non-loopback host, enforce
+  // actor auth. On loopback, keep the credential-free owner flow but reject
+  // browser-origin-crossing mutations before route handlers/body parsing.
+  if (deps.apiAuth) {
     app.use('*', createApiAuthMiddleware(deps.apiAuth));
     // #804: double-submit CSRF guard for owner cookie mutations. Installed right
     // after the actor gate so it only ever sees already-authenticated requests;
     // a no-op when no CSRF secret is configured (e.g. tests construct routes
     // without the session feature).
-    if (deps.sessionAuth) {
+    if (deps.apiAuth.required && deps.sessionAuth) {
       app.use(
         '*',
         createCsrfMiddleware({
