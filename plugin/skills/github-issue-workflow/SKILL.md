@@ -40,7 +40,7 @@ EOF
 Always assign to the project owner immediately:
 
 ```bash
-gh issue edit {number} --add-assignee jeanibarz
+gh issue edit {number} --add-assignee "$(gh api user --jq .login)"
 ```
 
 ### 3. Create a worktree branch
@@ -121,7 +121,7 @@ After a staging PR is merged and validated, create a "Staging → Main" merge PR
 ## Checklist
 
 - [ ] Issue created with structured body and labels
-- [ ] Issue assigned to jeanibarz
+- [ ] Issue assigned to you (the authenticated `gh` user)
 - [ ] Worktree branch created (following naming conventions)
 - [ ] Implementation follows the plan
 - [ ] Tests written and passing

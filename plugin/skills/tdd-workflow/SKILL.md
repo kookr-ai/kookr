@@ -21,7 +21,7 @@ Implement features using Test-Driven Development with requirements-first approac
 
 ### 1. Requirement First
 Before any code:
-1. Add/update the canonical requirement in the appropriate file under `docs/requirements/` (start from `docs/requirements/INDEX.md`; `docs/FUNCTIONAL_SPECIFICATIONS.md` is a redirect/snapshot)
+1. Add/update the canonical requirement in `docs/requirements.md`
 2. Use "shall" for mandatory, active voice, positive statements, quantifiable criteria
 3. Assign unique ID: `{CATEGORY}-{AREA}-{NUMBER}` (FR-*, NFR-*, API-*, DR-*)
 4. Define testable acceptance criteria
@@ -53,9 +53,6 @@ Run tests. Check:
 ### 5. Commit
 Reference requirement: `git commit -m "feat: implement FR-AUTH-001 user authentication"`
 Include code + docs in same commit when possible.
-
-### 6. Update Progress
-Update `PROGRESS.md`.
 
 ## Requirement ID Schema
 

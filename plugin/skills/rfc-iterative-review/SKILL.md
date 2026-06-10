@@ -84,7 +84,7 @@ If `assumption-archaeologist` reports any `unverified` assumptions, invoke `desi
 
 ### Invocation log (manual)
 
-After invoking `ambition-amplifier` or `assumption-archaeologist`, add a one-line entry to the RFC's "Critic feedback incorporated" section: `<agent-name> <date>: <novel finding | no novel finding | out-of-scope>`. The line is the sole record. If invocation entries stop appearing across 90 days, the agent has been retired by disuse — that is the retirement signal. See `docs/rfc/rfc-hamming-subagents.md` for falsifier criteria.
+After invoking `ambition-amplifier` or `assumption-archaeologist`, add a one-line entry to the RFC's "Critic feedback incorporated" section: `<agent-name> <date>: <novel finding | no novel finding | out-of-scope>`. The line is the sole record. If invocation entries stop appearing across 90 days, the agent has been retired by disuse — that is the retirement signal.
 
 ### After round 1 — Empirical validation checkpoint (MANDATORY)
 

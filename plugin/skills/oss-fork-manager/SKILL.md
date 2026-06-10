@@ -31,7 +31,7 @@ Handle the fork-based contribution workflow that external open-source repos requ
 
 - **repoFullName**: `owner/repo` (upstream)
 - **repoSlug**: URL-safe slug for state directory
-- **forkName**: `jeanibarz/repo` (your fork)
+- **forkName**: `<your-login>/repo` (your fork; login via `gh api user --jq .login`)
 - **localPath**: `$HOME/git/repo` (local clone)
 - **defaultBranch**: `main` (or `master`, `develop`)
 
@@ -43,7 +43,7 @@ File: `~/.claude/{repoSlug}-recon/fork-state.json`
 {
   "version": 1,
   "upstream": "owner/repo",
-  "fork": "jeanibarz/repo",
+  "fork": "<your-login>/repo",
   "local_path": "$HOME/git/repo",
   "default_branch": "main",
   "last_upstream_sync": "2026-03-28T00:00:00Z",
@@ -159,7 +159,7 @@ git push origin "${BRANCH_NAME}"
 
 ```bash
 UPSTREAM="{{repoFullName}}"
-FORK_OWNER="jeanibarz"
+FORK_OWNER="$(gh api user --jq .login)"
 BRANCH_NAME="{branch}"
 DEFAULT="{{defaultBranch}}"
 

@@ -7,15 +7,15 @@ related: vitest-bun-mocking, testing-patterns, api-route-patterns, e2e-test-trou
 
 # Playwright E2E Testing Patterns
 
-E2E testing patterns for AegisCore dashboard.
+E2E testing patterns for the Kookr dashboard.
 
 ## Quick Commands
 
 ```bash
-cd packages/e2e && npx playwright test                          # All tests
-cd packages/e2e && npx playwright test tests/dashboard.spec.ts  # Specific file
-cd packages/e2e && npx playwright test --headed                 # See browser
-cd packages/e2e && npx playwright test --debug                  # Inspector
+npx playwright test                          # All tests (config at repo root, testDir ./e2e)
+npx playwright test e2e/canary.spec.ts       # Specific file
+npx playwright test --headed                 # See browser
+npx playwright test --debug                  # Inspector
 ```
 
 ## Quick Reference

@@ -31,7 +31,7 @@ Invoked at the start of each `oss-pr-lessons` iteration.
 
 ## Pre-Plan: Registry Eligibility Check
 
-Before planning PR analysis, check if the repo is eligible:
+Before planning PR analysis, check if the repo is eligible. (`~/.claude/hooks/oss-registry-check` is not yet implemented; the 126/127 branch below already degrades gracefully when it is absent.)
 
 ```bash
 REPO="{{repoFullName}}"

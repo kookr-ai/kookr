@@ -66,11 +66,15 @@ function assertPort(port: number): void {
 ```
 
 ## Static Analysis Guard
-Run `bun run scripts/lint-execsync.ts` to detect violations:
-- **SA-SINJ-001**: `execSync` with template literal
-- **SA-SINJ-002**: `execSync` with string concatenation
+Detect violations by grepping for the two injection-prone shapes
+(`execSync` with a template literal; `execSync` with string concatenation):
 
-Add to CI pipeline or pre-commit hook to prevent regression.
+```bash
+grep -rn 'execSync(`' src/
+grep -rn 'execSync(.*+' src/
+```
+
+Add the checks to CI or a pre-commit hook to prevent regression.
 
 ## Common Pitfalls
 | Pitfall | Why It Fails | Fix |

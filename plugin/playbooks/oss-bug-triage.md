@@ -24,7 +24,7 @@ checklist:
 
 Compute these from `{{repoFullName}}`:
 - **repoSlug**: replace `/` with `-` (e.g., `microsoft/vscode` → `microsoft-vscode`)
-- **forkName**: `jeanibarz/<repo>` where `<repo>` is the part after `/` (e.g., `microsoft/vscode` → `jeanibarz/vscode`)
+- **forkName**: `<your-login>/<repo>` where `<your-login>` is the authenticated `gh` user (`gh api user --jq .login`) and `<repo>` is the part after `/` (e.g., `microsoft/vscode` → `<your-login>/vscode`)
 
 Use these derived values wherever they appear below.
 
@@ -90,7 +90,7 @@ gh issue list -R {{repoFullName}} --label "bug" --state closed --limit 100 --jso
 gh issue create -R <forkName> \
   --title "[P{score}] {title} ({{repoFullName}}#{number})" \
   --label "bug-triage,confidence-{level},repro-{level}" \
-  --assignee jeanibarz \
+  --assignee "$(gh api user --jq .login)" \
   --body "{body from template}"
 ```
 
@@ -100,7 +100,7 @@ Verify:
 - No duplicate triage issues
 - All have correct labels
 - Priority scores match formula
-- All assigned to jeanibarz
+- All assigned to you (the authenticated `gh` user)
 - Report: total count, breakdown by priority tier
 
 ## Idempotency Rules

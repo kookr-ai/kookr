@@ -49,13 +49,13 @@ Read [references/layout.md](references/layout.md) before writing. It defines the
 If the scaffold does not exist yet, initialize it:
 
 ```bash
-python3 .claude/skills/mbse-system-modeling/scripts/init_mbse_docs.py --root $HOME/git/kookr
+python3 "${CLAUDE_SKILL_DIR}/scripts/init_mbse_docs.py" --root $HOME/git/kookr
 ```
 
 To scaffold specific hotspot subsystems:
 
 ```bash
-python3 .claude/skills/mbse-system-modeling/scripts/init_mbse_docs.py \
+python3 "${CLAUDE_SKILL_DIR}/scripts/init_mbse_docs.py" \
   --root $HOME/git/kookr \
   --subsystem supervisor-agent \
   --subsystem agent-adapter \
