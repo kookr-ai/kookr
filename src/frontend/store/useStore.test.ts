@@ -229,6 +229,65 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().alerts[0].summary).toBe('audible');
   });
 
+  describe('handleAlert focus guard (F20)', () => {
+    function seedTwoAgents() {
+      store.getState().handleSnapshot([
+        { agentId: 'agent-focused', events: [], anomaly: null },
+        { agentId: 'agent-other', events: [], anomaly: null },
+      ]);
+      store.getState().selectAgent('agent-focused');
+    }
+
+    test('suppresses toast from a different agent while composing in the reply input', () => {
+      seedTwoAgents();
+      store.getState().setFocusZone('response-input');
+
+      store.getState().handleAlert('agent-other', 'Agent is stuck in a loop');
+
+      expect(store.getState().alerts).toHaveLength(0);
+      // Still recorded for the bug-report history — only the popup is dropped.
+      expect(getBugReportAlerts()).toHaveLength(1);
+    });
+
+    test('suppresses toast from a different agent while composing in the terminal', () => {
+      seedTwoAgents();
+      store.getState().setFocusZone('terminal');
+
+      store.getState().handleAlert('agent-other', 'Error: repeated failure', 'error');
+
+      expect(store.getState().alerts).toHaveLength(0);
+    });
+
+    test('shows toast from the focused agent while composing', () => {
+      seedTwoAgents();
+      store.getState().setFocusZone('response-input');
+
+      store.getState().handleAlert('agent-focused', 'Needs your input');
+
+      expect(store.getState().alerts).toHaveLength(1);
+      expect(store.getState().alerts[0].agentId).toBe('agent-focused');
+    });
+
+    test('shows toast from another agent when not composing', () => {
+      seedTwoAgents();
+      expect(store.getState().focusZone).toBe('none');
+
+      store.getState().handleAlert('agent-other', 'Agent is stuck in a loop');
+
+      expect(store.getState().alerts).toHaveLength(1);
+    });
+
+    test('shows non-agent alerts (empty / workspace ids) even while composing', () => {
+      seedTwoAgents();
+      store.getState().setFocusZone('response-input');
+
+      store.getState().handleAlert('', 'Message not sent — connection lost.', 'error');
+      store.getState().handleAlert('workspace', 'Sweep complete');
+
+      expect(store.getState().alerts).toHaveLength(2);
+    });
+  });
+
   test('selectAgent updates selectedAgentId', () => {
     expect(store.getState().selectedAgentId).toBeNull();
 
