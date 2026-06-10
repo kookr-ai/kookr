@@ -1,6 +1,6 @@
 ---
 name: claude-code-hooks
-description: Claude Code hook system — all 25 event types, payloads, matchers, state machine, and integration patterns for agent monitoring
+description: Claude Code hook system — the hook event catalog (30 event names as of v2.1.170), payloads, matchers, state machine, and integration patterns for agent monitoring
 triggers:
   - hook
   - hooks
@@ -14,11 +14,19 @@ triggers:
   - generateSettings
 ---
 
-# Claude Code Hook System (v2.1.87+)
+# Claude Code Hook System (payloads captured on v2.1.81–v2.1.87; event-name enum re-verified on v2.1.170)
 
 Empirically validated knowledge about Claude Code's hook system, distilled from PoC 001 and PoC 002.
 
-## All 25 Hook Event Types
+## Hook Event Types
+
+The binary validates hook names at startup against an enum of **exactly 30
+event names** (extracted from the v2.1.170 binary's validation array — see
+"Verification method" below). The 25 with known payloads are documented in
+detail here; the other five appear in the enum but have no captured payloads
+yet: `PostToolBatch`, `UserPromptExpansion`, `PermissionDenied`, `Setup`,
+`MessageDisplay`. Capture their payloads with the heuristic in the
+verification note before relying on them.
 
 ### Session Lifecycle
 | Event | Matcher | Blocking | Payload fields |
@@ -191,7 +199,7 @@ const hookEntries = {
 
 ## Empirical Validation
 
-All payloads and event names documented above were captured from live sessions (Claude Code v2.1.81–v2.1.87), not from the docs. Heuristic for any future event: spawn a session with a hook wired to every documented event and `cat` the stdin payload it actually receives — the binary is the source of truth.
+All payloads documented above were captured from live sessions (Claude Code v2.1.81–v2.1.87), not from the docs; the event-name enum was re-extracted from the v2.1.170 binary (30 names). Heuristic for any future event: spawn a session with a hook wired to every documented event and `cat` the stdin payload it actually receives — the binary is the source of truth.
 
 ### Debunked: TaskStop, Heartbeat, ToolError
 
@@ -200,4 +208,6 @@ These strings appear in the binary but are NOT hook events:
 - **Heartbeat** — internal worker lease extension for cloud/remote sessions
 - **ToolError** — custom Error class; tool failures surface via `PostToolUseFailure` hook
 
-The binary validates hook names at startup — invalid names cause a settings error dialog. The definitive enum has exactly 26 valid hook event names.
+The binary validates hook names at startup — invalid names cause a settings error dialog. The definitive enum has exactly 30 valid hook event names as of v2.1.170.
+
+**Verification method:** extract the validation array from the installed binary rather than trusting any doc (including this one): `grep -a -o -E '"PreToolUse"(,"[A-Za-z]+")+' "$(readlink -f "$(which claude)")" | sort -u` — the longest match is the enum.

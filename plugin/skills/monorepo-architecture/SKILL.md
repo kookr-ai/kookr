@@ -1,13 +1,15 @@
 ---
 name: monorepo-architecture
-description: TypeScript monorepo structure - module boundaries, dependency direction, god objects, abstraction discipline, configuration management, interface design. Use when creating packages, refactoring cross-package imports, or reviewing architecture.
+description: TypeScript module-boundary and layering discipline - dependency direction, god objects, abstraction discipline, configuration management, interface design - for single-package codebases and monorepos alike. Use when refactoring module boundaries, reviewing architecture, or creating packages.
 keywords: monorepo, module boundaries, circular dependency, barrel file, god object, feature envy, abstraction, Rule of Three, composition over inheritance, configuration, dependency management, workspace protocol, interface design, options object, Clean Architecture, SOLID
 related: error-handling-patterns, typescript-type-safety, domain-driven-design, safe-refactoring, dependency-injection-patterns
 ---
 
-# Monorepo Architecture Patterns
+# Module Boundary & Monorepo Architecture Patterns
 
-Production-grade rules for TypeScript monorepos with 15+ packages. Covers module boundaries, class design, abstraction discipline, config management, dependency hygiene, and interface design.
+Production-grade rules for TypeScript module boundaries, class design, abstraction discipline, config management, dependency hygiene, and interface design.
+
+**Scope note:** most rules below are layering discipline that applies to any TypeScript codebase — Kookr itself is a **single package** whose layers are directories — `src/adapters` and `src/server` depend on `src/core`, never the reverse — and rules 1, 3–9 apply to it directly with `src/<layer>` standing in for `packages/<name>`. Rules 2 and 10 (package public APIs, `workspace:*`) are **monorepo-only**; apply them when the codebase actually has multiple workspace packages.
 
 Reference: `docs/deepresearch/reports/TypeScript Monorepo Architecture Patterns.md`
 
@@ -16,7 +18,7 @@ Reference: `docs/deepresearch/reports/TypeScript Monorepo Architecture Patterns.
 | # | Rule | Rationale |
 |---|------|-----------|
 | 1 | Dependencies point inward only (infra -> application -> domain) | Prevents circular deps; enables independent deployment |
-| 2 | Public API = package `index.ts` only; no deep imports (`@pkg/foo/internal/bar`) | Encapsulation; safe refactoring |
+| 2 | *(monorepo-only)* Public API = package `index.ts` only; no deep imports (`@pkg/foo/internal/bar`) | Encapsulation; safe refactoring |
 | 3 | No circular dependencies between packages | Use `madge --circular` or `depcruise` to detect |
 | 4 | No barrel files with `export *` (the "barrel of death") | Defeats tree-shaking; hides coupling |
 | 5 | Classes <= 500 LOC, <= 20 public methods | God object = split by SRP |
@@ -24,7 +26,7 @@ Reference: `docs/deepresearch/reports/TypeScript Monorepo Architecture Patterns.
 | 7 | One validated config object per app; parse at startup, never at import time | Fail fast; typed; single source of truth |
 | 8 | `process.env` in <= 1 file per package (config module) | Scattered env reads = untraceable config |
 | 9 | Functions with >4 params -> options object | Readable callsites; easy extension |
-| 10 | Internal packages use `workspace:*`; external deps only if >200 LOC to implement | Controls dependency surface |
+| 10 | *(monorepo-only)* Internal packages use `workspace:*`; external deps only if >200 LOC to implement | Controls dependency surface |
 
 ## Pattern 1: Module Boundaries
 
