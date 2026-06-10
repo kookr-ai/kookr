@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import { z } from 'zod';
 import { ClientMessageSchema, summarizeZodIssues } from './client-message-schema.js';
+import { CLIENT_MESSAGE_TYPES, type ClientMessage } from './messages.js';
 import { TELEMETRY_EVENT_TYPES } from './telemetry.js';
 
 describe('summarizeZodIssues', () => {
@@ -69,7 +70,7 @@ describe('summarizeZodIssues', () => {
     if (!result.success) {
       const summary = summarizeZodIssues(result.error, payload);
       expect(summary).toContain('events.0.type');
-      expect(summary).toContain('"tab"');
+      expect(summary).toMatch(/received ['"`]tab['"`]/);
     }
   });
 });
@@ -338,5 +339,144 @@ describe('ClientMessageSchema — happy path sanity', () => {
       suspectedType: 'not_a_real_anomaly',
     });
     expect(result.success).toBe(false);
+  });
+});
+
+function clientMessageCase<T extends ClientMessage>(message: T): T {
+  return message;
+}
+
+const permissionRequest = {
+  requestId: 'request-1',
+  toolName: 'Bash',
+  toolInputHash: 'hash-1',
+  detectedAt: '2026-05-15T19:00:00.000Z',
+  ttlMs: 300000,
+};
+
+const clientMessageRoundTripCases = [
+  clientMessageCase({ type: 'respond', agentId: 'agent-1', input: 'continue' }),
+  clientMessageCase({ type: 'respondAll', agentIds: ['agent-1', 'agent-2'], input: 'continue' }),
+  clientMessageCase({ type: 'directReply', agentId: 'agent-1', input: 'direct' }),
+  clientMessageCase({ type: 'navigate', agentId: 'agent-1' }),
+  clientMessageCase({ type: 'getNext' }),
+  clientMessageCase({ type: 'selectionChanged', selectedTaskId: 'task-1', selectedSessionId: 'session-1' }),
+  clientMessageCase({
+    type: 'emptyEnterIntent',
+    intentId: 'intent-1',
+    taskId: 'task-1',
+    sessionId: 'session-1',
+    selectionVersion: 1,
+    inputStateEpoch: 'epoch-1',
+    observedReadinessVersion: 2,
+  }),
+  clientMessageCase({ type: 'skip', agentId: 'agent-1' }),
+  clientMessageCase({ type: 'skipAll', agentIds: ['agent-1', 'agent-2'] }),
+  clientMessageCase({ type: 'snooze', agentId: 'agent-1', taskId: 'task-1', durationMs: 60000, reason: 'later', resumeMonitoring: true }),
+  clientMessageCase({ type: 'cancelSnooze', agentId: 'agent-1', taskId: 'task-1' }),
+  clientMessageCase({ type: 'launch', prompt: 'build it', cwd: '/tmp/project', criteria: 'tests pass', agentType: 'round-robin', dependencies: ['kb'] }),
+  clientMessageCase({
+    type: 'completeTask',
+    taskId: 'task-1',
+    feedback: { rating: 'down', note: 'missed tests', downReason: 'agent_behavior' },
+    requestReflect: true,
+  }),
+  clientMessageCase({ type: 'setTaskFeedback', taskId: 'task-1', feedback: { rating: 'up', note: 'done' } }),
+  clientMessageCase({ type: 'requestTaskReflect', taskId: 'task-1', direction: 'up' }),
+  clientMessageCase({ type: 'requestTaskSnapshotReflect', taskId: 'task-1' }),
+  clientMessageCase({ type: 'relaunch', taskId: 'task-1', prompt: 'try again', agentType: 'codex-cli', dependencies: ['kb'] }),
+  clientMessageCase({ type: 'cancelTask', taskId: 'task-1' }),
+  clientMessageCase({ type: 'reopenTask', taskId: 'task-1' }),
+  clientMessageCase({ type: 'dismissAgentSignal', taskId: 'task-1' }),
+  clientMessageCase({ type: 'deleteTask', taskId: 'task-1' }),
+  clientMessageCase({ type: 'renameTask', taskId: 'task-1', name: 'New task name' }),
+  clientMessageCase({ type: 'setTaskPriority', taskId: 'task-1', priority: 'high' }),
+  clientMessageCase({ type: 'stop', agentId: 'agent-1' }),
+  clientMessageCase({ type: 'reflect' }),
+  clientMessageCase({ type: 'listPlaybooks', cwd: '/tmp/project' }),
+  clientMessageCase({
+    type: 'launchPlaybook',
+    playbookPath: 'repair.md',
+    cwd: '/tmp/project',
+    parameterValues: { issue: '837' },
+    agentType: 'claude-code',
+    scope: 'project',
+  }),
+  clientMessageCase({
+    type: 'launchPlaybook',
+    playbookPath: 'repair.md',
+    playbookSourceCwd: '/tmp/catalog',
+    taskTargetCwd: '/tmp/project',
+    projectId: 'github.com/acme/project',
+    parameterValues: { issue: '837' },
+  }),
+  clientMessageCase({
+    type: 'telemetry',
+    events: [{
+      type: TELEMETRY_EVENT_TYPES[0],
+      timestamp: '2026-05-25T00:00:00.000Z',
+      sessionId: 'session-1',
+      platform: 'linux',
+    }],
+  }),
+  clientMessageCase({ type: 'setProjectConfig', project: 'github.com/acme/project', config: { tracked: true, dailyPrLimit: 3 } }),
+  clientMessageCase({ type: 'clearCompleted', includeTerminated: true, projectId: 'github.com/acme/project' }),
+  clientMessageCase({ type: 'ackTerminatedTask', taskId: 'task-1' }),
+  clientMessageCase({ type: 'achievement:reset' }),
+  clientMessageCase({ type: 'achievement:setEnabled', enabled: true }),
+  clientMessageCase({ type: 'permissionChoice', agentId: 'agent-1', keystroke: '1', permissionRequest }),
+  clientMessageCase({ type: 'rearmCircuitBreaker', name: 'github-refresh' }),
+  clientMessageCase({
+    type: 'findingFeedback',
+    agentId: 'agent-1',
+    anomalyType: 'needs_input',
+    explanation: 'agent is waiting',
+    verdict: 'false_positive',
+    userReason: 'expected pause',
+  }),
+  clientMessageCase({ type: 'missedFinding', agentId: 'agent-1', userReason: 'looped', suspectedType: 'repeated_error' }),
+  clientMessageCase({ type: 'workspace:getView', projectId: 'github.com/acme/project' }),
+  clientMessageCase({ type: 'workspace:getCleanupDetail', projectId: 'github.com/acme/project', worktreePath: '/tmp/worktree' }),
+  clientMessageCase({
+    type: 'workspace:cleanupCandidate',
+    projectId: 'github.com/acme/project',
+    worktreePath: '/tmp/worktree',
+    branch: 'fix/example',
+    repoPath: '/tmp/project',
+    deleteBranch: true,
+    riskAccepted: true,
+    discardDirtyState: false,
+    reviewFingerprint: 'fingerprint-1',
+  }),
+  clientMessageCase({ type: 'workspace:bulkSafeCleanup', projectId: 'github.com/acme/project' }),
+  clientMessageCase({
+    type: 'workspace:runCleanupDiagnostic',
+    projectId: 'github.com/acme/project',
+    worktreePath: '/tmp/worktree',
+    reviewFingerprint: 'fingerprint-1',
+  }),
+  clientMessageCase({ type: 'workspace:sweep' }),
+] as const;
+
+const coveredClientMessageTypes = clientMessageRoundTripCases.map((message) => message.type);
+
+describe('ClientMessageSchema — JSON round trips', () => {
+  test('covers every known client message type', () => {
+    expect(new Set(coveredClientMessageTypes)).toEqual(new Set(CLIENT_MESSAGE_TYPES));
+    const duplicateTypes = coveredClientMessageTypes.filter((type, index) => coveredClientMessageTypes.indexOf(type) !== index);
+    expect(duplicateTypes).toEqual(['launchPlaybook']);
+  });
+
+  test.each(clientMessageRoundTripCases)('round-trips $type through the schema', (message) => {
+    const parsed = ClientMessageSchema.safeParse(message);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+
+    const roundTripped = JSON.parse(JSON.stringify(parsed.data));
+    const reparsed = ClientMessageSchema.safeParse(roundTripped);
+    expect(reparsed.success).toBe(true);
+    if (reparsed.success) {
+      expect(reparsed.data).toEqual(parsed.data);
+    }
   });
 });

@@ -330,3 +330,90 @@ export type ClientMessage =
   | { type: 'workspace:bulkSafeCleanup'; projectId: string }
   | { type: 'workspace:runCleanupDiagnostic'; projectId: string; worktreePath: string; reviewFingerprint: string }
   | { type: 'workspace:sweep' };
+
+export const SERVER_MESSAGE_TYPES = [
+  'snapshot',
+  'update',
+  'alert',
+  'githubUpdate',
+  'playbooks',
+  'suggestion',
+  'projectSummaries',
+  'coordinator.snapshot',
+  'dashboardSelection',
+  'emptyEnterDecision',
+  'contributionWarning',
+  'achievement:unlocked',
+  'achievement:reset:ack',
+  'quotaStatus',
+  'resourceStatus',
+  'circuitBreakerStatus',
+  'schedules',
+  'scheduleFired',
+  'workspaceView',
+  'workspaceCleanupDetail',
+  'workspaceSweepComplete',
+  'workspaceSweepBusy',
+  'diagnosticReport',
+  'ossAttempts',
+] as const satisfies readonly ServerMessage['type'][];
+
+export const CLIENT_MESSAGE_TYPES = [
+  'respond',
+  'respondAll',
+  'directReply',
+  'navigate',
+  'getNext',
+  'selectionChanged',
+  'emptyEnterIntent',
+  'skip',
+  'skipAll',
+  'snooze',
+  'cancelSnooze',
+  'launch',
+  'completeTask',
+  'setTaskFeedback',
+  'requestTaskReflect',
+  'requestTaskSnapshotReflect',
+  'relaunch',
+  'cancelTask',
+  'reopenTask',
+  'dismissAgentSignal',
+  'deleteTask',
+  'renameTask',
+  'setTaskPriority',
+  'stop',
+  'reflect',
+  'listPlaybooks',
+  'launchPlaybook',
+  'telemetry',
+  'setProjectConfig',
+  'clearCompleted',
+  'ackTerminatedTask',
+  'achievement:reset',
+  'achievement:setEnabled',
+  'permissionChoice',
+  'rearmCircuitBreaker',
+  'findingFeedback',
+  'missedFinding',
+  'workspace:getView',
+  'workspace:getCleanupDetail',
+  'workspace:cleanupCandidate',
+  'workspace:bulkSafeCleanup',
+  'workspace:runCleanupDiagnostic',
+  'workspace:sweep',
+] as const satisfies readonly ClientMessage['type'][];
+
+type _MissingServerMessageType = Exclude<ServerMessage['type'], (typeof SERVER_MESSAGE_TYPES)[number]>;
+type _ExtraServerMessageType = Exclude<(typeof SERVER_MESSAGE_TYPES)[number], ServerMessage['type']>;
+type _MissingClientMessageType = Exclude<ClientMessage['type'], (typeof CLIENT_MESSAGE_TYPES)[number]>;
+type _ExtraClientMessageType = Exclude<(typeof CLIENT_MESSAGE_TYPES)[number], ClientMessage['type']>;
+
+const _serverMessageTypesExhaustive: _MissingServerMessageType extends never ? true : never = true;
+const _serverMessageTypesOnlyKnown: _ExtraServerMessageType extends never ? true : never = true;
+const _clientMessageTypesExhaustive: _MissingClientMessageType extends never ? true : never = true;
+const _clientMessageTypesOnlyKnown: _ExtraClientMessageType extends never ? true : never = true;
+void _serverMessageTypesExhaustive;
+void _serverMessageTypesOnlyKnown;
+void _clientMessageTypesExhaustive;
+void _clientMessageTypesOnlyKnown;
