@@ -1,6 +1,6 @@
 ---
 name: logging-design-patterns
-description: Structured logging best practices - Pino JSON output, log levels, correlation IDs, PII redaction, sampling, async context, canonical log lines
+description: Logger-agnostic structured logging best practices - JSON output, log levels, correlation IDs, PII redaction, sampling, async context, canonical log lines (Pino shown as one implementation)
 keywords: logging, pino, structured logging, log levels, correlation ID, trace context, redaction, PII, sampling, canonical log lines, AsyncLocalStorage, metrics, observability
 related: error-handling-patterns
 ---
@@ -8,6 +8,8 @@ related: error-handling-patterns
 # Logging Design Patterns
 
 Rules for structured, secure, and cost-effective logging in production Node.js/TypeScript services.
+
+**These patterns are logger-agnostic.** Kookr itself logs through `console.*` — structured lines (`console.log(JSON.stringify({ msg, ... }))`, see `src/server/bootstrap/start-http-and-websockets.ts`) where machine-parseability matters, free-text elsewhere; it does not run Pino. The code examples below use Pino because it implements the patterns (levels, redaction, serializers) out of the box — treat it as one implementation option, not project stack.
 
 **Research:** `docs/deepresearch/reports/Logging Design Best Practices.md`
 
@@ -19,8 +21,8 @@ Rules for structured, secure, and cost-effective logging in production Node.js/T
 | 2 | **snake_case log fields** | `{ userId, requestId }` | `{ user_id, request_id }` (OTel/Datadog convention) |
 | 3 | **Strict log level semantics** | `logger.info('DB pool exhausted')` | `logger.warn({ pool_usage: 95 }, 'High DB pool usage')` |
 | 4 | **Correlation ID on every log** | Log lines with no trace context | Include `trace_id` and `span_id` from OTel span |
-| 5 | **Never log PII or secrets** | `logger.info({ body: req.body })` | Use `pino-redact` with explicit allowlist paths |
-| 6 | **No console.log in production** | `console.log(data)` | `logger.info({ ... }, 'message')` |
+| 5 | **Never log PII or secrets** | `logger.info({ body: req.body })` | Redact with explicit allowlist paths (e.g. Pino `redact`) |
+| 6 | **No unstructured console output in production** | `` console.log(`failed: ${err}`) `` | A structured logger, or `console.log(JSON.stringify({ event, ... }))` where no logger is adopted (Kookr's approach) |
 | 7 | **Logs for events, metrics for aggregates** | `` logger.info(`took ${ms}ms`) `` | Emit histogram metric + log the discrete event |
 | 8 | **AsyncLocalStorage for context** | Manually passing request_id through call chain | `als.run({ request_id }, () => next())` |
 | 9 | **Never log 100% at high QPS** | Logging every request at INFO in hot paths | Tail-based sampling (errors + slow requests always) |
@@ -51,7 +53,7 @@ logger.info({ user_id, order_id }, 'Order created');      // INFO = business eve
 
 **Dynamic level adjustment:** Set level from env (`NODE_ENV === 'production' ? 'info' : 'debug'`). Consider feature flags or a LogLevel header for per-request debug in production.
 
-## Structured Logging with Pino
+## Structured Logging (Pino as the worked example)
 
 ```typescript
 // WRONG: Free-text, unparseable

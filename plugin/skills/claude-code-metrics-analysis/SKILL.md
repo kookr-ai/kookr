@@ -24,6 +24,8 @@ All data lives under `~/.claude/`:
 | Telemetry | `telemetry/*.json` | JSON lines | Granular events: tool use, errors, stalls, rate limits, session lifecycle, performance |
 | History | `history.jsonl` | JSONL | User prompts with timestamps, paste events, session IDs, project paths |
 
+**Verified against Claude Code v2.1.170:** `stats-cache.json` and `history.jsonl` exist with the shapes described; the `tengu_*` event names used below are present in the binary. `~/.claude/telemetry/` exists but **may be empty** — event files are not persisted on every install/version. Check `ls ~/.claude/telemetry/` first; if empty, skip the telemetry-based steps and work from `stats-cache.json` + `history.jsonl` alone rather than fabricating event analysis.
+
 ## Analysis Procedure
 
 ### Step 1: Load aggregate stats
