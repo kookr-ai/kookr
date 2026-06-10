@@ -11,7 +11,19 @@ End-to-end workflow for creating a GitHub issue and immediately setting up for i
 
 ## Workflow
 
-### 1. Create the issue
+### 1. Search before creating (dedup)
+
+Before filing, search existing open issues for the same problem:
+
+```bash
+gh issue list --search "key phrase from the title" --state open --json number,title,url --limit 10
+```
+
+If a near-duplicate exists, surface it and ask the user whether to comment on
+the existing issue instead of filing a twin. Only proceed to create after the
+search comes back clean or the user explicitly wants a separate issue.
+
+### 1b. Create the issue
 
 Use `gh issue create` with a structured body:
 

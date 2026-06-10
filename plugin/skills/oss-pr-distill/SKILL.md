@@ -182,6 +182,16 @@ cat ~/.claude/${SLUG}-pr-lessons/state.json | jq \
   > /tmp/state-tmp.json && mv /tmp/state-tmp.json ~/.claude/${SLUG}-pr-lessons/state.json
 ```
 
+## Dedup Before Adding a Pattern
+
+Before adding any pattern, check the existing corpus for an equivalent:
+grep the current skill patterns and `evidence.md` for the pattern's key
+phrase. If an equivalent already exists, **strengthen it** — append the new
+PR numbers to its evidence entry and tighten its wording if the new
+observations justify it — instead of appending a near-duplicate line. The
+check is against pattern *text* (the evidence log is chronological and has no
+index yet); read the matches you find before deciding new-vs-strengthen.
+
 ## Quality Criteria for Distilled Patterns
 
 A good pattern must be:

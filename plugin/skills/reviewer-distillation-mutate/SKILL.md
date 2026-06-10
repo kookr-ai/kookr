@@ -54,7 +54,12 @@ DO:
 - Add or refine reasoning steps (e.g., "trace what this change breaks")
 - Add or refine self-check steps (e.g., "would a maintainer flag this?")
 - Reduce noise by tightening the "what to skip" guidance
-- If a prior version's change made things worse, explicitly revert it
+- If F1 dropped for two consecutive iterations, revert to the best-known
+  version before mutating further
+- If two consecutive mutations edited the same section/axis with no F1 gain,
+  the next mutation must target a different axis (reasoning steps vs
+  self-checks vs skip-guidance vs output format) — do not keep polishing the
+  same paragraph
 
 Write the improved skill to: {stateDir}/mutations/v{K+1}.md
 

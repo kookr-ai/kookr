@@ -198,6 +198,16 @@ Check for perf labels:
 gh api "repos/{owner}/{repo}/labels" --jq '.[].name' | grep -iE 'perf|optim|speed|benchmark'
 ```
 
+## Step 4b: Diversify the Final Ranking
+
+A pure score sort surfaces the same famous repos every run. Before reporting,
+re-rank with diversity constraints: no more than ~3 repos per language, ~3 per
+domain (web framework / ML / CLI tooling / infra / etc.), and a mix of sizes
+(at least a third of the list under 10k stars). Apply the constraints greedily
+down the score ranking — skip a repo when its language/domain/size bucket is
+full and pull up the next eligible one. Note skipped-for-diversity repos at the
+bottom of the report so the raw ranking stays visible.
+
 ## Step 5: Output Report
 
 Present results as a ranked table:

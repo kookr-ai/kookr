@@ -72,7 +72,23 @@ building anything:
 - Note any real data shapes the UI renders (states, counts, labels) so the
   mockups show realistic content, not lorem ipsum.
 
+### Before generating: check for an existing gallery
+
+`ls *-mockups*.html` in the repo root (and the feature's directory). This repo
+has accumulated stale galleries before — three at once in one working tree. If
+a gallery for this feature already exists, offer to **reuse/extend** it instead
+of generating a fresh one, and fold the old file into whatever cleanup the user
+chooses at the end.
+
 ## Step 3 — Build the variants
+
+### Distinctness rule (applies to every format)
+
+Each variant must occupy a **named, distinct design axis** — e.g. *minimal* vs
+*information-dense* vs *animated* vs *icon-led*. Name the axis in the variant's
+title. If two variants differ only by a token tweak (a color shade, a border
+radius), they are one variant — replace one with a genuinely different axis
+before presenting.
 
 ### HTML gallery (default)
 Write **one** self-contained HTML file at the repo root, e.g.

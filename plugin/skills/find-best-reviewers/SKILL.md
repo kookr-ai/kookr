@@ -67,10 +67,25 @@ query($owner: String!, $repo: String!, $cursor: String) {
       }
     }
   }
-}' -f owner=OWNER -f repo=REPO > /tmp/reviewer_data.json
+}' -f owner=OWNER -f repo=REPO -f cursor="$CURSOR" > "/tmp/reviewer_data_p${PAGE}.json"
 ```
 
-**Pagination:** If `hasNextPage` is true and the oldest PR's `mergedAt` is within 6 months, fetch the next page using `endCursor`. Stop when you exceed the 6-month window.
+**Pagination (run the query above inside this loop):** stop when `hasNextPage` is false **or** the oldest PR on the page left the 6-month window.
+
+```bash
+CUTOFF=$(date -u -d '6 months ago' +%Y-%m-%d)
+CURSOR="" PAGE=1
+while :; do
+  # ... run the gh api graphql query above (use -F cursor='null' when CURSOR is empty) ...
+  jq 'has("errors")' "/tmp/reviewer_data_p${PAGE}.json" | grep -q true && { echo "GraphQL errors — stopping"; break; }
+  HAS_NEXT=$(jq -r '.data.repository.pullRequests.pageInfo.hasNextPage' "/tmp/reviewer_data_p${PAGE}.json")
+  OLDEST=$(jq -r '.data.repository.pullRequests.nodes | map(.mergedAt) | min' "/tmp/reviewer_data_p${PAGE}.json")
+  [ "$HAS_NEXT" != "true" ] && break
+  [ "${OLDEST%%T*}" \< "$CUTOFF" ] && break
+  CURSOR=$(jq -r '.data.repository.pullRequests.pageInfo.endCursor' "/tmp/reviewer_data_p${PAGE}.json")
+  PAGE=$((PAGE + 1))
+done
+```
 
 **Why time-window, not count-window:** "Last 200 PRs" means 10 days for rust-lang/rust but 8 years for a small project. A 6-month window produces comparable results regardless of repo velocity.
 
@@ -84,13 +99,16 @@ Save the JSON from Step 1, then run this analysis:
 import json
 from collections import defaultdict
 
-with open("/tmp/reviewer_data.json") as f:
-    data = json.load(f)
+import glob
+from datetime import datetime, timedelta, timezone
 
-prs = data["data"]["repository"]["pullRequests"]["nodes"]
+prs = []
+for page_file in sorted(glob.glob("/tmp/reviewer_data_p*.json")):
+    with open(page_file) as f:
+        prs.extend(json.load(f)["data"]["repository"]["pullRequests"]["nodes"])
 
-# 6-month cutoff (adjust date to current)
-cutoff = "YYYY-MM-DD"  # 6 months ago from today
+# 6-month cutoff, computed — never a hand-edited literal
+cutoff = (datetime.now(timezone.utc) - timedelta(days=183)).strftime("%Y-%m-%d")
 recent_prs = [pr for pr in prs if pr["mergedAt"] and pr["mergedAt"] >= cutoff]
 
 # --- Path filtering (Tool 1 only) ---
