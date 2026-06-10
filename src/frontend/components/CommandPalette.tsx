@@ -8,6 +8,7 @@ import {
   type CommandAction,
   type CommandTaskItem,
 } from './command-palette-model.js';
+import { taskStatusLabel } from '../presentation.js';
 
 interface CommandPaletteProps {
   actions: CommandAction[];
@@ -209,7 +210,7 @@ function CommandRow({ item, selected, onHover, onRun }: CommandRowProps): React.
         {task.label}
         {task.projectLabel && <span className="cmd-row-sub">{task.projectLabel}</span>}
       </span>
-      {task.status && <span className="cmd-row-meta cmd-row-status">{task.status}</span>}
+      {task.status && <span className="cmd-row-meta cmd-row-status">{taskStatusLabel(task.status)}</span>}
     </button>
   );
 }

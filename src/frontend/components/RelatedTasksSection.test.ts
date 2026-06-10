@@ -262,6 +262,8 @@ describe('ChildRollupPill (#601)', () => {
     expect(pill).not.toBeNull();
     expect(pill?.textContent).toContain('10c');
     expect(pill?.textContent).toContain('2/5/3');
+    // Tooltip always spells out what the numbers mean, even with a finding.
+    expect(pill?.getAttribute('title')).toContain('10 child tasks: 2 running / 5 completed / 3 blocked');
     expect(pill?.classList.contains('child-rollup-pill--critical')).toBe(true);
   });
 

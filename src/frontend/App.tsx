@@ -587,7 +587,7 @@ export function App() {
       }
       if (matchesShortcutAction(e, shortcutBindings, 'focus_reply')) {
         e.preventDefault();
-        const replyInput = document.querySelector('.detail-panel .response-row input[type="text"]') as HTMLInputElement | null;
+        const replyInput = document.querySelector('.detail-panel .response-row textarea') as HTMLTextAreaElement | null;
         if (replyInput) {
           track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.focus_reply), action: 'focus_reply', context: 'global' });
           replyInput.focus();

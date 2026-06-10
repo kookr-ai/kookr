@@ -257,8 +257,8 @@ test.describe('Full integration scenarios', () => {
     await expect(page.locator('.detail-badge')).toContainText('PERMISSION');
 
     // Respond to permission agent
-    await page.locator('.response-row input').fill('Approve the permission');
-    await page.locator('.btn-primary:has-text("Send & Next")').click();
+    await page.locator('.response-row textarea').fill('Approve the permission');
+    await page.locator('[data-testid="send-next-button"]').click();
     await expect(page.locator('.sent-overlay')).toBeVisible();
 
     // After advance, should be on needs_input agent
@@ -266,9 +266,9 @@ test.describe('Full integration scenarios', () => {
 
     // Respond to needs_input agent
     await page.keyboard.press('Alt+n');
-    if (await page.locator('.response-row input').isVisible()) {
-      await page.locator('.response-row input').fill('Run the tests again');
-      await page.locator('.btn-primary:has-text("Send & Next")').click();
+    if (await page.locator('.response-row textarea').isVisible()) {
+      await page.locator('.response-row textarea').fill('Run the tests again');
+      await page.locator('[data-testid="send-next-button"]').click();
     }
   });
 
@@ -288,8 +288,8 @@ test.describe('Full integration scenarios', () => {
 
     // Respond
     await page.locator('.finding-card').click();
-    await page.locator('.response-row input').fill('Try approach X');
-    await page.locator('.btn-primary:has-text("Send & Next")').click();
+    await page.locator('.response-row textarea').fill('Try approach X');
+    await page.locator('[data-testid="send-next-button"]').click();
 
     // Agent resumes
     await injectToolUse(request, tmuxName);
@@ -325,10 +325,10 @@ test.describe('Full integration scenarios', () => {
     // Triage all via Ctrl+N → respond
     for (let i = 0; i < 4; i++) {
       await page.keyboard.press('Alt+n');
-      const input = page.locator('.response-row input');
+      const input = page.locator('.response-row textarea');
       if (await input.isVisible()) {
         await input.fill(`Fix ${i}`);
-        await page.locator('.btn-primary:has-text("Send & Next")').click();
+        await page.locator('[data-testid="send-next-button"]').click();
         // Wait for overlay to clear
         await page.waitForTimeout(300);
       }

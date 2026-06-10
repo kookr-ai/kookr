@@ -59,14 +59,14 @@ function renderDetailPanel(root: Root, agent: AgentState, send: (msg: ClientMess
   });
 }
 
-function responseInput(container: HTMLElement): HTMLInputElement {
-  const input = container.querySelector<HTMLInputElement>('.response-row input');
-  expect(input).toBeInstanceOf(HTMLInputElement);
+function responseInput(container: HTMLElement): HTMLTextAreaElement {
+  const input = container.querySelector<HTMLTextAreaElement>('.response-row textarea');
+  expect(input).toBeInstanceOf(HTMLTextAreaElement);
   return input!;
 }
 
-function setInputValue(input: HTMLInputElement, value: string): void {
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+function setInputValue(input: HTMLTextAreaElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
   setter?.call(input, value);
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }

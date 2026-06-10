@@ -493,8 +493,8 @@ describe('Watchdog', () => {
       const verdict = watchdog.tick(agentId, 'frozen', [], t0 + 101_000);
       expect(verdict.status).toBe('stale_agent');
       if (verdict.status === 'stale_agent') {
-        // Should indicate a long-running tool execution
-        expect(verdict.anomaly.explanation).toMatch(/\d+s/);
+        // Should indicate a long-running tool execution (humanized: 101s → "2 min")
+        expect(verdict.anomaly.explanation).toMatch(/\d+ min/);
       }
     });
 
@@ -835,9 +835,9 @@ describe('Watchdog', () => {
       const v2 = restartWatchdog.tick(agentId, 'frozen pane', [], restartTime + 11_000);
       expect(v2.status).toBe('stale_agent');
       if (v2.status === 'stale_agent') {
-        // Should show a large staleness duration (from 10 min ago), not from restart
-        // The exact number is (700000 + 11000 - 100000) / 1000 = 611s
-        expect(v2.anomaly.explanation).toMatch(/\d{3,}s/);
+        // Should show a large staleness duration (from 10 min ago), not from
+        // restart. (700000 + 11000 - 100000) / 1000 = 611s → humanized "10 min"
+        expect(v2.anomaly.explanation).toMatch(/10 min/);
       }
     });
 

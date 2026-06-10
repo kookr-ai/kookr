@@ -146,7 +146,7 @@ Other anomaly patterns: `detect-budget-burn` (V2), `detect-trajectory-drift` (V2
 **What it does:**
 - Displays supervisor findings as rich cards with severity, explanation, and inline quick-reply — findings are the primary UI element, not the agent list
 - Shows the selected agent's interactive terminal (xterm.js bridged to the agent's dtach session via `SessionBridge`) as the main content area
-- Provides "Send & Next" as the primary action — responds and auto-advances to the next finding
+- Provides "Send" (respond and stay, Enter) as the primary action, with "Send & Next" (respond and auto-advance to the next finding, Ctrl/Cmd+Enter) alongside
 - Tracks triage progress with queue dots in the top bar
 - Collapses healthy agents into a compact section below findings
 - Shows "all clear" when no agents need attention

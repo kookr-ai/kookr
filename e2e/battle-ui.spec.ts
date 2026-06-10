@@ -171,7 +171,7 @@ test.describe('UI layout', () => {
 
     await expect(page.getByTestId('mobile-tab-task')).toHaveClass(/active/);
     await expect(page.locator('.detail-header')).toBeVisible();
-    await expect(page.locator('.response-row input')).toBeVisible();
+    await expect(page.locator('.response-row textarea')).toBeVisible();
 
     await page.getByTestId('mobile-tab-findings').click();
     await expect(page.getByTestId('mobile-tab-findings')).toHaveClass(/active/);
@@ -338,7 +338,7 @@ test.describe('Keyboard shortcuts', () => {
     await page.locator('.finding-card').click();
 
     // Focus on the response input
-    const input = page.locator('.response-row input');
+    const input = page.locator('.response-row textarea');
     await input.focus();
 
     // Tab should not skip (normal tab behavior in input)
@@ -469,7 +469,7 @@ test.describe('Focus management', () => {
 
     await page.locator('.finding-card').click();
     // Response input should be focused
-    await expect(page.locator('.response-row input')).toBeFocused();
+    await expect(page.locator('.response-row textarea')).toBeFocused();
   });
 
   test('anomaly does not steal focus from response input of different agent', async ({ page, request }) => {
@@ -486,7 +486,7 @@ test.describe('Focus management', () => {
 
     // Select Agent A and focus response input
     await page.locator('.finding-card').click();
-    const responseInput = page.locator('.response-row input');
+    const responseInput = page.locator('.response-row textarea');
     await responseInput.focus();
     await responseInput.fill('I am typing');
 

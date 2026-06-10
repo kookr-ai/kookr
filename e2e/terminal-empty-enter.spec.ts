@@ -190,7 +190,7 @@ test.describe('Terminal empty Enter navigation', () => {
     await page.locator('.healthy-row', { hasText: 'Bottom Input Alpha' }).click();
     await expect(page.locator('.healthy-row.selected .healthy-row-name')).toContainText('Bottom Input Alpha');
 
-    const input = page.locator('.response-row input');
+    const input = page.locator('.response-row textarea');
     await input.click();
     await input.press('Enter');
     await expect(page.locator('.healthy-row.selected .healthy-row-name')).toContainText('Bottom Input Beta');

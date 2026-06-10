@@ -76,7 +76,7 @@ function formatDateTime(isoString: string): string {
 }
 
 export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onCommandPalette, onOperations, operationsOpen = false, onCoordinatorFindings, coordinatorFindingsOpen = false, terminalFocusMode = false, terminalFocusAvailable = true, terminalFocusTriggerRef, onTerminalFocusToggle, readOnly = false }: Props) {
-  const { connected, buildInfo, serverStartedAt, totalSpendUsd, agents, circuitBreakers, diagnosticReport, coordinator } = useKookrStore();
+  const { connected, buildInfo, serverStartedAt, totalSpendUsd, circuitBreakers, diagnosticReport, coordinator } = useKookrStore();
   const [showPopover, setShowPopover] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
   const [deployLoading, setDeployLoading] = useState(false);
@@ -468,7 +468,7 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
         <div className="metric-group topbar-spend-group">
           <span
             className={`topbar-spend${totalSpendUsd > 0 ? '' : ' topbar-spend-placeholder'}`}
-            title={totalSpendUsd > 0 ? `Lifetime total across ${agents.length} task${agents.length !== 1 ? 's' : ''}` : undefined}
+            title={totalSpendUsd > 0 ? 'All-time agent spend recorded by this Kookr server — includes cleared and deleted tasks' : undefined}
             aria-hidden={totalSpendUsd > 0 ? undefined : true}
           >
             {spendLabel}
