@@ -2,7 +2,7 @@
 name: logging-design-patterns
 description: Structured logging best practices - Pino JSON output, log levels, correlation IDs, PII redaction, sampling, async context, canonical log lines
 keywords: logging, pino, structured logging, log levels, correlation ID, trace context, redaction, PII, sampling, canonical log lines, AsyncLocalStorage, metrics, observability
-related: error-handling-patterns, observability-platform, systematic-debugging, resilience-patterns, api-route-patterns
+related: error-handling-patterns
 ---
 
 # Logging Design Patterns
@@ -251,7 +251,7 @@ Before submitting code, verify:
 ## See Also
 
 [[error-handling-patterns]] - Structured error logging rules (Rule #6), PII avoidance
-[[observability-platform]] - Internal ObservabilityHub, CorrelationEngine, health scoring
-[[systematic-debugging]] - Using logs and traces for debugging distributed systems
-[[resilience-patterns]] - Circuit breakers, retry patterns that generate log events
-[[api-route-patterns]] - Request/response logging middleware patterns
+observability-platform - Internal ObservabilityHub, CorrelationEngine, health scoring
+systematic-debugging - Using logs and traces for debugging distributed systems
+resilience-patterns - Circuit breakers, retry patterns that generate log events
+api-route-patterns - Request/response logging middleware patterns

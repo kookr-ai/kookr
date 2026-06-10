@@ -2,7 +2,7 @@
 name: claude-code-permissions
 description: Claude Code permission system — modes, allow/deny/ask rules, pattern syntax, settings precedence, and optimal configuration for minimal prompts with safety guardrails
 keywords: permissions, settings, allow, deny, ask, defaultMode, acceptEdits, bypassPermissions, dontAsk, allowedTools, settings.json, permission prompt, auto-approve
-related: claude-api, shell-subprocess-safety, token-efficiency
+related: shell-subprocess-safety, token-efficiency
 ---
 
 # Claude Code Permissions

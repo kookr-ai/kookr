@@ -2,7 +2,7 @@
 name: async-flow-control
 description: Async flow control patterns - AbortController cancellation, async iterators for large datasets, worker thread selection, Promise combinator choice, stream backpressure in async pipelines
 keywords: AbortController, AbortSignal, cancellation, async iterator, async generator, cursor pagination, stream processing, worker_threads, child_process, cluster, Promise.allSettled, Promise.all, concurrency, backpressure, p-limit, p-queue, drain, pipeline
-related: error-handling-patterns, nodejs-memory-management, resilience-patterns, race-conditions-atomicity, process-lifecycle-patterns, state-machine-workflow-patterns
+related: error-handling-patterns, process-lifecycle-patterns, state-machine-workflow-patterns
 ---
 
 # Async Flow Control Patterns
@@ -295,6 +295,6 @@ Before submitting async code, verify:
 ## See Also
 
 [[error-handling-patterns]] - Error classification, retry discipline, fire-and-forget safety
-[[nodejs-memory-management]] - Closure retention, buffer pooling, WeakRef caches, V8 heap tuning
-[[resilience-patterns]] - Circuit breakers, auto-healing, TaskReaper recovery
-[[race-conditions-atomicity]] - Distributed locking, SKIP LOCKED, atomic state transitions
+nodejs-memory-management - Closure retention, buffer pooling, WeakRef caches, V8 heap tuning
+resilience-patterns - Circuit breakers, auto-healing, TaskReaper recovery
+race-conditions-atomicity - Distributed locking, SKIP LOCKED, atomic state transitions

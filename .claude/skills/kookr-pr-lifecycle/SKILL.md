@@ -2,7 +2,7 @@
 name: kookr-pr-lifecycle
 description: Full PR lifecycle — creation, checklist tracking, CI monitoring, review resolution, body updates, and post-merge cleanup. Use together with post-push to finish PR follow-through.
 keywords: PR, pull request, create PR, checklist, CI, review, merge, resolve thread, pr body, pr description, test plan, github
-related: github-issue-workflow, post-push, pr-review-triage, git-commit-discipline
+related: github-issue-workflow, kookr-post-push, pr-review-triage, git-commit-discipline
 ---
 
 # PR Lifecycle
@@ -11,7 +11,7 @@ End-to-end workflow for managing a pull request from creation through merge. Con
 
 ## 1. Pre-Creation Checks
 
-Before creating a PR, run these checks (see also [[pre-pr-review]] and [[pre-push]]):
+Before creating a PR, run these checks (see also [[pre-pr-review]] and [[kookr-pre-push]]):
 
 ```bash
 pnpm build:server # must be clean
@@ -145,7 +145,7 @@ EOF
 ## See Also
 
 - [[github-issue-workflow]] — Issue creation and branch setup (upstream of this skill)
-- [[post-push]] — Repo follow-through after push / PR creation
+- [[kookr-post-push]] — Repo follow-through after push / PR creation
 - [[pr-review-triage]] — Detailed review comment triage workflow
 - [[pre-pr-review]] — Self-review checklist before PR creation
 - [[git-commit-discipline]] — Commit message and hygiene patterns

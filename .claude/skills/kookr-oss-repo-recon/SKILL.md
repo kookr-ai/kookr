@@ -2,7 +2,7 @@
 name: kookr-oss-repo-recon
 description: Analyze an open-source repository's contribution requirements — CONTRIBUTING.md, PR template, CI config, CLA, build system, key reviewers — before attempting any contribution
 keywords: recon, contributing, guidelines, CI, CLA, build, open source, oss, reconnaissance, setup, fork, upstream, PR template
-related: [oss-fork-manager, oss-issue-scout, oss-pr-critic]
+related: [oss-fork-manager, kookr-oss-issue-scout, oss-pr-critic]
 ---
 
 # OSS Repository Reconnaissance
@@ -371,5 +371,5 @@ Write to `${CONVENTIONS_FILE}`.
 ## See Also
 
 - [[oss-fork-manager]] — Set up fork after recon
-- [[oss-issue-scout]] — Find issues to contribute to, using recon context
+- [[kookr-oss-issue-scout]] — Find issues to contribute to, using recon context
 - [[oss-pr-critic]] — Analyze PRs using recon findings for repo conventions

@@ -2,7 +2,7 @@
 name: shell-subprocess-safety
 description: Shell subprocess safety patterns - execFileSync over execSync, array arguments, shell feature replacements, static analysis guards. Use when spawning child processes, running git/docker/system commands, or reviewing code that calls execSync.
 keywords: execSync, execFileSync, spawnSync, shell injection, command injection, child_process, CWE-78, shellQuote, escapeShellArg, template literal, subprocess, git command, docker command
-related: error-handling-patterns, process-lifecycle-patterns, cross-language-contract-propagation, testing-patterns
+related: error-handling-patterns, process-lifecycle-patterns, testing-patterns
 ---
 # Shell Subprocess Safety
 ## When to Use
@@ -66,11 +66,15 @@ function assertPort(port: number): void {
 ```
 
 ## Static Analysis Guard
-Run `bun run scripts/lint-execsync.ts` to detect violations:
-- **SA-SINJ-001**: `execSync` with template literal
-- **SA-SINJ-002**: `execSync` with string concatenation
+Detect violations by grepping for the two injection-prone shapes
+(`execSync` with a template literal; `execSync` with string concatenation):
 
-Add to CI pipeline or pre-commit hook to prevent regression.
+```bash
+grep -rn 'execSync(`' src/
+grep -rn 'execSync(.*+' src/
+```
+
+Add the checks to CI or a pre-commit hook to prevent regression.
 
 ## Common Pitfalls
 | Pitfall | Why It Fails | Fix |
@@ -84,5 +88,4 @@ Add to CI pipeline or pre-commit hook to prevent regression.
 ## See Also
 - [[error-handling-patterns]] — try/catch discipline for failed commands
 - [[process-lifecycle-patterns]] — signal handling and cleanup
-- [[cross-language-contract-propagation]] — when shell scripts also call same binaries
 - [[testing-patterns]] — testing subprocess calls with mocked execFileSync

@@ -95,7 +95,7 @@ Derive the repo slug from the full name (replace `/` with `-`, `.` with `-`):
 REPO="{{repoFullName}}"
 SLUG=$(echo "$REPO" | tr '/' '-' | tr '.' '-')
 REPO_NAME=$(echo "$REPO" | cut -d/ -f2)
-FORK="jeanibarz/${REPO_NAME}"
+FORK="$(gh api user --jq .login)/${REPO_NAME}"
 LOCAL="$HOME/git/${REPO_NAME}"
 echo "REPO=$REPO SLUG=$SLUG FORK=$FORK LOCAL=$LOCAL"
 ```
@@ -107,7 +107,7 @@ If `{{phase}}` is `auto`, determine the next phase:
 ```bash
 SLUG=$(echo "{{repoFullName}}" | tr '/' '-' | tr '.' '-')
 REPO_NAME=$(echo "{{repoFullName}}" | cut -d/ -f2)
-FORK="jeanibarz/${REPO_NAME}"
+FORK="$(gh api user --jq .login)/${REPO_NAME}"
 LOCAL="$HOME/git/${REPO_NAME}"
 
 # Sanity check: warn if prior work exists at a non-standard path (e.g. legacy slash-separated).
@@ -150,7 +150,7 @@ fi
 ```bash
 REPO="{{repoFullName}}"
 REPO_NAME=$(echo "$REPO" | cut -d/ -f2)
-FORK="jeanibarz/${REPO_NAME}"
+FORK="$(gh api user --jq .login)/${REPO_NAME}"
 LOCAL="$HOME/git/${REPO_NAME}"
 
 # Create fork if needed
@@ -254,7 +254,7 @@ The subagent (`Agent(subagent_type: "oss-issue-scout", ...)`) is the preferred p
 4. Create PR targeting upstream:
    ```bash
    gh pr create -R {{repoFullName}} \
-     --head "jeanibarz:${BRANCH}" \
+     --head "$(gh api user --jq .login):${BRANCH}" \
      --base ${DEFAULT} \
      --title "{type}: {description}" \
      --body "{body following repo's PR template}"

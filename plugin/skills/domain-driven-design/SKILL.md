@@ -2,7 +2,7 @@
 name: domain-driven-design
 description: DDD strategic and tactical patterns - bounded contexts, aggregates, value objects, domain events, ubiquitous language, context mapping, subdomain classification. Use when modeling domain logic, designing aggregates, or deciding where to invest in rich models vs simple CRUD.
 keywords: DDD, domain-driven design, bounded context, aggregate, value object, domain event, ubiquitous language, context mapping, anti-corruption layer, subdomain, core domain, entity, consistency boundary, aggregate root, event storming
-related: monorepo-architecture, database-schema-patterns, error-handling-patterns, typescript-type-safety, service-integration-wiring, dependency-injection-patterns, state-machine-workflow-patterns
+related: monorepo-architecture, error-handling-patterns, typescript-type-safety, dependency-injection-patterns, state-machine-workflow-patterns
 ---
 
 # Domain-Driven Design Patterns
@@ -237,7 +237,5 @@ Before submitting domain modeling code, verify:
 ## See Also
 
 - [[monorepo-architecture]] - Module boundaries, dependency direction, god objects, abstraction discipline
-- [[database-schema-patterns]] - Schema design, migrations, aggregate persistence
 - [[error-handling-patterns]] - Domain error handling with discriminated unions
 - [[typescript-type-safety]] - Type safety for domain models (branded types, satisfies)
-- [[service-integration-wiring]] - Cross-service integration patterns (related to context mapping)

@@ -1,7 +1,7 @@
 ---
 name: e2e-agent-testing
 description: Strategy for mocking Claude Code agents in E2E tests with canary validation against real behavior.
-keywords: e2e, mock, agent, claude code, haiku, canary test, FakeTerminalManager, hook event, end-to-end, integration, cost
+keywords: e2e, mock, agent, claude code, haiku, canary test, FakeTerminalBackend, hook event, end-to-end, integration, cost
 related: testing-patterns, playwright-e2e-patterns
 ---
 
@@ -16,7 +16,7 @@ related: testing-patterns, playwright-e2e-patterns
 
 ## Core Principle: Mock by Default, Verify with Canary
 
-**Most E2E tests should mock Claude Code** using `FakeTerminalManager` and event injection. One opt-in **canary test** validates that mocks match real Claude Code behavior. If Claude Code changes its hook event format, the canary test breaks first, the mock fixtures get updated, and all other tests stay accurate.
+**Most E2E tests should mock Claude Code** using `FakeTerminalBackend` and event injection. One opt-in **canary test** validates that mocks match real Claude Code behavior. If Claude Code changes its hook event format, the canary test breaks first, the mock fixtures get updated, and all other tests stay accurate.
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -33,7 +33,7 @@ related: testing-patterns, playwright-e2e-patterns
                        │ imported by ↓
 ┌──────────────────────▼──────────────────────────────┐
 │  e2e/kookr.spec.ts (fast, no real Claude)           │
-│  Uses: FakeTerminalManager + inject-event endpoint   │
+│  Uses: FakeTerminalBackend + inject-event endpoint   │
 │  Runs: every PR, every push                          │
 └─────────────────────────────────────────────────────┘
 ```
@@ -42,7 +42,7 @@ related: testing-patterns, playwright-e2e-patterns
 
 | Scenario | Approach | Why |
 |---|---|---|
-| UI behavior (triage, launch, rename, keyboard) | Mock (FakeTerminalManager + event injection) | No real agent needed; fast, deterministic |
+| UI behavior (triage, launch, rename, keyboard) | Mock (FakeTerminalBackend + event injection) | No real agent needed; fast, deterministic |
 | Anomaly detection (needs_input, permission_blocked) | Mock (inject specific hook events) | Tests detection logic, not Claude Code |
 | Hook event parsing correctness | Unit test (hook-parser.test.ts) | Pure function, no I/O |
 | Hook event **shape** still matches real Claude Code | Canary test (real Claude + Haiku) | Catches contract drift |
@@ -50,11 +50,11 @@ related: testing-patterns, playwright-e2e-patterns
 
 ## How It Works
 
-### 1. FakeTerminalManager (existing)
+### 1. FakeTerminalBackend (existing)
 
-All E2E and most integration tests use `FakeTerminalManager` instead of real tmux. It's an in-memory implementation of the `TerminalManager` interface that records calls without launching real processes.
+All E2E and most integration tests use `FakeTerminalBackend` instead of a real dtach-backed terminal. It's an in-memory implementation of the `TerminalBackend` interface that records calls without launching real processes.
 
-- Location: `src/adapters/fake-terminal-manager.ts`
+- Location: `src/adapters/fake-terminal-backend.ts`
 - Used by: `e2e/test-server.ts`, most `src/**/*.test.ts` files
 
 ### 2. Event Injection (existing)
@@ -85,7 +85,7 @@ await injectEvent(request, tmuxName, mockStop({ last_assistant_message: 'Custom 
 `e2e/canary.spec.ts` launches a real Claude Code instance with **Haiku model** (cheapest, fastest), captures the hook events it emits, and validates them against the mock fixture shapes.
 
 ```bash
-# Run canary test (requires tmux + Claude Code CLI + API key)
+# Run canary test (requires Claude Code CLI + API key)
 CANARY=1 npx playwright test e2e/canary.spec.ts
 
 # Cost: ~$0.001 per run (Haiku, trivial task)
@@ -101,7 +101,7 @@ CANARY=1 npx playwright test e2e/canary.spec.ts
 CANARY=1 npx playwright test e2e/canary.spec.ts
 ```
 
-Requires: tmux, `claude` CLI, `ANTHROPIC_API_KEY` in env.
+Requires: `claude` CLI, `ANTHROPIC_API_KEY` in env.
 
 **What it validates:**
 - Every real event has `session_id`, `transcript_path`, `cwd`, `hook_event_name`
@@ -114,7 +114,7 @@ Requires: tmux, `claude` CLI, `ANTHROPIC_API_KEY` in env.
 
 When adding a new E2E test:
 
-1. **Use `FakeTerminalManager`** — the test server already does this
+1. **Use `FakeTerminalBackend`** — the test server already does this
 2. **Use mock event builders** from `e2e/fixtures/mock-events.ts`
 3. **Inject events** via `/api/test/inject-event` to simulate agent behavior
 4. **Never launch real Claude Code** in standard E2E tests
@@ -153,8 +153,8 @@ When the canary test fails:
 
 - `e2e/fixtures/mock-events.ts` — Mock event builders
 - `e2e/canary.spec.ts` — Canary validation test
-- `e2e/test-server.ts` — E2E server with FakeTerminalManager
-- `src/adapters/fake-terminal-manager.ts` — In-memory terminal mock
+- `e2e/test-server.ts` — E2E server with FakeTerminalBackend
+- `src/adapters/fake-terminal-backend.ts` — In-memory terminal mock
 - `src/core/hook-parser.ts` — Hook event parsing contract
 - [[testing-patterns]] — General testing strategy
 - [[playwright-e2e-patterns]] — Playwright-specific patterns

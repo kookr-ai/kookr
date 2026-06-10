@@ -153,7 +153,7 @@ CORRECT (glossary entry):
 
 **Process:**
 1. Extract every domain noun/verb from input
-2. Check the project glossary in the canonical requirements docs (`docs/requirements/INDEX.md` plus the relevant domain file) or the RFC glossary
+2. Check the project glossary in the canonical requirements doc (`docs/requirements.md`) or the RFC glossary
 3. If term is undefined, create definition and confirm with user
 4. Enforce exact term in all requirements, code, and tests
 5. Revisit glossary after every major feature

@@ -25,7 +25,7 @@ checklist:
 
 Compute these from `{{repoFullName}}`:
 - **repoSlug**: replace `/` with `-` (e.g., `microsoft/vscode` → `microsoft-vscode`)
-- **forkName**: `jeanibarz/<repo>` where `<repo>` is the part after `/`
+- **forkName**: `<your-login>/<repo>` where `<your-login>` is the authenticated `gh` user (`gh api user --jq .login`) and `<repo>` is the part after `/`
 - **defaultBranch**: look up from recon report at `~/.claude/<repoSlug>-recon/recon-report.md`, or default to `main`
 - **testCommand**: look up from recon report (build/test section), or infer from repo language
 
@@ -51,7 +51,7 @@ gh issue list -R <forkName> --label "bug-triage,ready" --state open --json numbe
 
 Check no PR already exists:
 ```bash
-gh pr list -R {{repoFullName}} --author jeanibarz --state open --json number,title,headRefName
+gh pr list -R {{repoFullName}} --author "@me" --state open --json number,title,headRefName
 ```
 
 ## Phase 2: Prepare each fix
@@ -79,7 +79,7 @@ cat ~/.claude/<repoSlug>-pr-lessons/patterns.md 2>/dev/null
 Create PR:
 ```bash
 gh pr create -R {{repoFullName}} \
-  --head "jeanibarz:fix/{upstream_number}-{slug}" \
+  --head "$(gh api user --jq .login):fix/{upstream_number}-{slug}" \
   --base <defaultBranch> \
   --title "fix: {description}" \
   --body "$(cat <<'EOF'

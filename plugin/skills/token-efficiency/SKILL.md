@@ -31,7 +31,7 @@ Don't run a single test file then the full suite. The full suite covers everythi
 
 ### 4. Don't duplicate glob patterns
 
-`*test*` already covers `.spec.` files. One glob with a broad pattern is better than multiple narrow globs that overlap.
+Use one brace pattern like `*.{test,spec}.ts` instead of separate overlapping globs (`*.test.ts` does not match `.spec.ts` files).
 
 ### 5. Use Grep over Read for type lookups
 

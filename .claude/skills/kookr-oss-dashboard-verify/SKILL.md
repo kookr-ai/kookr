@@ -2,7 +2,7 @@
 name: kookr-oss-dashboard-verify
 description: Verify the OSS contribution dashboard is accurate by comparing the store (GET /api/oss-attempts) against GitHub reality via gh CLI. Reports missing, phantom, and state-drifted PRs.
 keywords: oss, dashboard, verify, audit, drift, reconciliation, gh, pr, tracking, accuracy
-related: [oss-contribution-gate, oss-repo-recon]
+related: [kookr-oss-contribution-gate, kookr-oss-repo-recon]
 ---
 
 # OSS Dashboard Verification

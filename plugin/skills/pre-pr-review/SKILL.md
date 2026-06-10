@@ -97,7 +97,7 @@ Patterns flagged:
 Replace with one of:
 
 - `$HOME` or `~`
-- Repo-root-relative paths (e.g. `scripts/foo.sh`, `.claude/skills/bar/SKILL.md`)
+- Repo-root-relative paths (e.g. `scripts/<name>.sh`, `.claude/skills/<skill>/SKILL.md`)
 - Documented env vars (e.g. `CODEX_SRC`, `CODEX_INSTALL_DIR`, ...)
 - Placeholders (`/path/to/repo`, `<USER>`) in examples
 

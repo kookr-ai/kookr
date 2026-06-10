@@ -2,7 +2,7 @@
 name: event-driven-messaging-patterns
 description: Build reliable event pipelines with reconnect-safe subscriptions, idempotency, and contract fidelity.
 keywords: event driven, outbox, idempotency, redis reconnect, resubscribe, field fidelity, source attribution, dead letter queue, migration cleanup
-related: realtime-state-sync, websocket-dashboard, schema-contract-patterns, resilience-patterns
+related: realtime-state-sync, websocket-dashboard
 ---
 # Event-Driven Messaging Patterns
 ## When to Use
@@ -55,5 +55,3 @@ related: realtime-state-sync, websocket-dashboard, schema-contract-patterns, res
 ## See Also
 - [[realtime-state-sync]]
 - [[websocket-dashboard]]
-- [[schema-contract-patterns]]
-- [[resilience-patterns]]

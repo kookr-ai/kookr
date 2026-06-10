@@ -2,7 +2,7 @@
 name: error-handling-patterns
 description: Error handling best practices - cause chaining, boundary validation, structured errors, fire-and-forget safety, retry discipline
 keywords: error handling, catch, throw, cause chaining, Zod validation, fire-and-forget, Promise.all, circuit breaker, retry, backoff, jitter, structured logging, silent failure, empty catch, SQL injection, parameterized query, discriminated union, Result type
-related: resilience-patterns, api-route-patterns, database-schema-patterns, testing-patterns, race-conditions-atomicity, rest-api-design, monorepo-architecture, systematic-debugging, typescript-type-safety, domain-driven-design, websocket-dashboard, safe-refactoring, logging-design-patterns, caching-strategies, dependency-injection-patterns, event-driven-messaging-patterns, nodejs-memory-management, schema-contract-patterns, async-flow-control, process-lifecycle-patterns, state-machine-workflow-patterns
+related: testing-patterns, monorepo-architecture, typescript-type-safety, domain-driven-design, websocket-dashboard, safe-refactoring, logging-design-patterns, dependency-injection-patterns, event-driven-messaging-patterns, async-flow-control, process-lifecycle-patterns, state-machine-workflow-patterns
 ---
 
 # Error Handling Patterns
@@ -295,7 +295,7 @@ Before submitting code, verify:
 
 ## See Also
 
-[[resilience-patterns]], [[api-route-patterns]], [[database-schema-patterns]], [[race-conditions-atomicity]]
-[[rest-api-design]] - REST API contract layer (RFC 7807 error format, pagination, versioning, rate limiting)
+resilience-patterns, api-route-patterns, database-schema-patterns, race-conditions-atomicity
+rest-api-design - REST API contract layer (RFC 7807 error format, pagination, versioning, rate limiting)
 [[typescript-type-safety]] - Type safety fundamentals (unknown vs any, catch typing, Result types)
-[[frontend-error-boundaries]] - Client-side error boundaries, global handlers, error reporting pipeline, graceful degradation
+frontend-error-boundaries - Client-side error boundaries, global handlers, error reporting pipeline, graceful degradation
