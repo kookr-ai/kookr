@@ -750,7 +750,7 @@ function HealthyRow({ agent, selected, send }: {
                   className="btn-xs btn-fn"
                   onClick={(e) => { e.stopPropagation(); setShowFlagMissed(true); }}
                   title="Report that Kookr missed a real issue on this agent"
-                  aria-label={`Report missed finding for ${agent.taskName ?? agent.agentId}`}
+                  aria-label={`Missed a real issue — report for ${agent.taskName ?? agent.agentId}`}
                 >
                   Missed a real issue
                 </button>

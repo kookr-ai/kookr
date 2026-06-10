@@ -264,17 +264,25 @@ describe('useAutoExpandOnItemGain (F19)', () => {
     expect(localStorage.getItem('kookr:test.gain')).toBe('0');
   });
 
-  test('collapsed group with items already present at mount is expanded (never hidden by default)', () => {
+  test('persisted collapsed preference survives a mount that already has items (no false "arrival")', () => {
     localStorage.setItem('kookr:test.gain-mount', '1');
-    const { root, container, captured } = mountAutoExpand('kookr:test.gain-mount', false, 3);
+    const { root, container, captured, setCount } = mountAutoExpand('kookr:test.gain-mount', false, 3);
     trackTeardown(root, container);
 
+    // Items present at mount are the baseline, not new arrivals — the user's
+    // stored preference wins (and is not overwritten in storage)…
+    expect(captured.collapsed).toBe(true);
+    expect(localStorage.getItem('kookr:test.gain-mount')).toBe('1');
+
+    // …but a post-mount gain still pops the section open.
+    setCount(4);
     expect(captured.collapsed).toBe(false);
   });
 
   test('manual re-collapse sticks across re-renders with a stable or shrinking count', () => {
-    const { root, container, captured, setCount } = mountAutoExpand('kookr:test.stick', false, 2);
+    const { root, container, captured, setCount } = mountAutoExpand('kookr:test.stick', false, 1);
     trackTeardown(root, container);
+    setCount(2); // post-mount arrival triggers the auto-expand
     expect(captured.collapsed).toBe(false);
 
     act(() => captured.toggle()); // user re-collapses after the auto-expand

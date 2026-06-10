@@ -138,7 +138,7 @@ test.describe('Kookr E2E — nominal paths', () => {
     await expect(page.locator('.statusbar')).toContainText('0 tasks');
     await expect(page.locator('.statusbar')).toContainText('0 findings');
     await expect(page.locator('.btn-launch')).toBeVisible();
-    await expect(page.locator('.detail-empty')).toContainText('No agents running');
+    await expect(page.locator('[data-testid="overview-empty-state"]')).toContainText('No agents running');
   });
 
   // --- Launch ---

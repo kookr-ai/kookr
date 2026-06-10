@@ -80,8 +80,10 @@ test.describe('UI layout', () => {
   });
 
   test('detail panel shows empty state initially', async ({ page }) => {
-    await expect(page.locator('.detail-empty')).toContainText('No agents running');
-    await expect(page.locator('.detail-empty kbd')).toHaveText(['Alt', 'L']);
+    const overview = page.locator('[data-testid="overview-empty-state"]');
+    await expect(overview).toContainText('No agents running');
+    // Hint kbd set varies with config (STT, tasks); assert the stable prefix.
+    await expect(overview.locator('.detail-empty-hint')).toContainText('quick launch');
   });
 
   // Keyboard-hint affordances were moved out of the statusbar at some point

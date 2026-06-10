@@ -56,7 +56,7 @@ export function OverviewEmptyState({
   return (
     <div className="overview-empty" data-testid="overview-empty-state">
       <div className="overview-empty-inner">
-        <div className="overview-counts" role="status">
+        <div className="overview-counts">
           <div className="overview-count">
             <span className="overview-count-value">{runningCount}</span>
             <span className="overview-count-label">running</span>

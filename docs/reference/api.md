@@ -36,6 +36,11 @@ remains for backwards compatibility.
 `prompt` (required) and `cwd` (required) plus optional `criteria`, `parentTaskId`,
 `agentType`, `effort`, `disableDedup`, `metadata`, and `dependencies`.
 
+`cwd` must name an existing directory on the server's machine — it is
+validated before any task record or session is created, and a missing or
+non-directory path returns `400 {"error", "code": "invalid_cwd"}` with the
+offending path in the message.
+
 `effort` (optional, string) sets the reasoning-effort level for *this one task*,
 overriding the per-agent-type default (see [Reasoning effort](#reasoning-effort)).
 It is validated against the **resolved** agent's allowed set — `round-robin`

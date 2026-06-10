@@ -57,19 +57,16 @@ export function usePersistedCollapsed(
  * Auto-expand a collapsible section whenever it GAINS items, so something
  * newly waiting on the user is never hidden inside a collapsed group (F19).
  *
- * Fires `expand` only when `count` increases versus the previous render
- * (including the initial hydration 0→N and a mount that already has items).
- * It does NOT fire on re-renders with a stable or shrinking count, so the
- * user can manually re-collapse the section and it stays collapsed until the
- * next new arrival.
+ * Fires `expand` only when `count` increases versus the previous render.
+ * The first render establishes the baseline WITHOUT expanding: a persisted
+ * collapsed preference survives reloads (items already present at mount are
+ * not "new arrivals"), and only post-mount gains pop the section open. A
+ * manual re-collapse likewise sticks until the next new arrival.
  */
 export function useAutoExpandOnItemGain(count: number, expand: () => void): void {
-  // Start at 0 (not the first-render count) so a section that already holds
-  // items when the component mounts is surfaced too — "waiting on you" must
-  // never be hidden by default.
-  const prevCount = useRef(0);
+  const prevCount = useRef<number | null>(null);
   useEffect(() => {
-    if (count > prevCount.current) {
+    if (prevCount.current !== null && count > prevCount.current) {
       expand();
     }
     prevCount.current = count;

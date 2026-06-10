@@ -15,7 +15,7 @@ const GENERIC_LAUNCH_RECOVERY_DETAILS = [
 const CWD_LAUNCH_RECOVERY_DETAILS = [
   'The working directory was not found on this machine — nothing was launched.',
   '- Create the directory, or reopen the Launch dialog and pick an existing checkout.',
-  '- Your typed prompt is preserved as a draft and will be restored when the dialog reopens.',
+  '- If you typed the prompt in the Launch dialog, it is preserved as a draft and restored when the dialog reopens.',
 ].join('\n');
 
 /**

@@ -493,7 +493,7 @@ describe('Watchdog', () => {
       const verdict = watchdog.tick(agentId, 'frozen', [], t0 + 101_000);
       expect(verdict.status).toBe('stale_agent');
       if (verdict.status === 'stale_agent') {
-        // Should indicate a long-running tool execution (humanized: 101s → "2 min")
+        // Should indicate a long-running tool execution (humanized: 101s → "1 min")
         expect(verdict.anomaly.explanation).toMatch(/\d+ min/);
       }
     });

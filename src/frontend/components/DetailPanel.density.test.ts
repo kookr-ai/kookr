@@ -132,7 +132,7 @@ describe('DetailPanel dense metadata', () => {
 
     const header = container.querySelector('.detail-header')!;
     expect(header.querySelector('h2')?.textContent).toBe('Implement GitHub Issue');
-    expect(header.querySelector('.detail-header-warning')?.textContent).toBe('missing');
+    expect(header.querySelector('.detail-header-warning')?.textContent).toBe('worktree missing');
     expect(header.querySelector('.detail-badge.input')?.textContent).toBe('NEEDS INPUT');
 
     expect(header.querySelector('.detail-header-right > .project-badge')).toBeNull();

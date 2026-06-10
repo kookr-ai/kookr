@@ -414,7 +414,7 @@ export class Watchdog {
 function formatActivityGap(ms: number): string {
   const totalSeconds = Math.round(ms / 1000);
   if (totalSeconds < 90) return `${totalSeconds}s`;
-  const mins = Math.round(totalSeconds / 60);
+  const mins = Math.floor(totalSeconds / 60);
   if (mins < 60) return `${mins} min`;
   const h = Math.floor(mins / 60);
   const m = mins % 60;
