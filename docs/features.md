@@ -169,10 +169,11 @@ When supervised agents create PRs or reference GitHub issues, Kookr detects thos
 | ID | Feature | Description |
 |----|---------|-------------|
 | F7.1 | **Extract GitHub references** | Scan agent `tool_result` hook events for GitHub PR/issue references using regex patterns (full URLs, `PR #N`, `issue #N`). References are stored per task. |
-| F7.2 | **Periodic GitHub polling** | For each known reference, periodically fetch current state via `gh` CLI: PR status, review threads, CI checks, comment count. Default interval: 1 minute. |
-| F7.3 | **Detect actionable changes** | Diff fetched state against previous snapshot. Detect: new unresolved review threads, CI check failures, "changes requested" reviews, PR merged/closed, new comments. |
-| F7.4 | **Route GitHub alerts** | Actionable changes trigger attention alerts routed through the existing attention queue. Severity: `changes_requested`/`ci_failed` → warning, `new_comments`/`pr_merged` → info. |
-| F7.5 | **GitHub tab in dashboard** | "GitHub" tab in the detail panel (alongside Terminal) showing PR cards with status badges, unresolved review threads, CI summary. Shown only when GitHub references are detected for the selected agent's task. |
+| F7.2 | **Periodic GitHub polling** | For each known reference, periodically fetch current state via `gh` CLI: PR status, mergeability, review threads, CI checks, comment count. Default interval: 1 minute. |
+| F7.3 | **Detect actionable changes** | Diff fetched state against previous snapshot. Detect: new unresolved review threads, CI check failures, "changes requested" reviews, PR merged/closed, PR merge-conflict transitions, new comments. |
+| F7.4 | **Route GitHub alerts** | Actionable changes trigger attention alerts routed through the existing attention queue. Severity: `changes_requested`/`ci_failed`/`pr_conflicting` → warning, `new_comments`/`pr_merged` → info. |
+| F7.5 | **GitHub tab in dashboard** | "GitHub" tab in the detail panel (alongside Terminal) showing PR cards with status badges, mergeability, unresolved review threads, CI summary. Shown only when GitHub references are detected for the selected agent's task. |
+| F7.6 | **GitHub watcher relay** | In `githubAgentRelay.mode: "shadow"` (default), Kookr resolves the owning task and logs would-deliver events for PR merged/conflicting changes. In `"active"`, those templated watcher messages are delivered to the owning idle agent through the existing user-input delivery pipeline. |
 
 **V1 scope:** Regex-based reference extraction. Periodic `gh` CLI polling. Graceful degradation when `gh` is unavailable.
 

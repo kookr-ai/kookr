@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { CircuitBreaker } from '../../core/circuit-breaker.js';
 import type { GitHubFetcher, GitHubPRState, GitHubReference } from '../../core/github-types.js';
@@ -162,5 +162,84 @@ describe('createGitHubRuntime', () => {
         severity: 'info',
       },
     ]);
+  });
+
+  test('wires changed GitHub state into the agent relay', async () => {
+    const fetchedAt = new Date('2026-06-05T20:15:00.000Z');
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'work', cwd: '/repo' });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-relay',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: fetchedAt,
+      lastStatus: 'running',
+      gitBranch: 'feat/relay',
+    });
+    const ref: GitHubReference = {
+      type: 'pr',
+      owner: 'kookr-ai',
+      repo: 'kookr',
+      number: 764,
+      url: 'https://github.com/kookr-ai/kookr/pull/764',
+      detectedAt: fetchedAt,
+      detectedFrom: 'prompt',
+      taskId: task.id,
+    };
+    const openState: GitHubPRState = {
+      ref,
+      title: 'relay',
+      status: 'open',
+      mergeable: 'MERGEABLE',
+      author: 'jeanibarz',
+      branch: 'feat/relay',
+      baseBranch: 'main',
+      reviewDecision: null,
+      reviewers: [],
+      unresolvedThreads: [],
+      totalComments: 0,
+      checks: [],
+      lastFetchedAt: fetchedAt,
+    };
+    const mergedState: GitHubPRState = {
+      ...openState,
+      status: 'merged',
+      lastFetchedAt: new Date('2026-06-05T20:16:00.000Z'),
+    };
+    const fetcher: GitHubFetcher = {
+      isAvailable: async () => true,
+      inferOwnerRepo: async () => ({ owner: 'kookr-ai', repo: 'kookr' }),
+      fetchPRState: async () => null,
+      fetchIssueState: async () => null,
+      fetchStates: async () => ({ prs: [mergedState], issues: [] }),
+    };
+    const submitMessage = vi.fn(async () => ({ deliveryId: 'd1' }) as never);
+
+    const { githubStateStore, githubScanner, githubAgentRelay } = createGitHubRuntime({
+      taskStore,
+      githubBreaker: new CircuitBreaker({ name: 'github-test' }),
+      githubPollingIntervalSec: 30,
+      broadcastToAll: () => {},
+      onRepoHealthChanged: () => {},
+      fetcher,
+      repoHealthFetcher: async () => new Map(),
+      ghUserLoginResolver: async () => 'jeanibarz',
+      userInputDelivery: { submitMessage },
+      isIdleForInput: () => true,
+      getGitHubAgentRelayMode: () => 'active',
+    });
+    scanners.push(githubScanner);
+    githubStateStore.addReference(ref);
+    githubStateStore.updatePRState(openState);
+
+    await githubScanner.start();
+    await githubScanner.refreshTaskState(task.id);
+    await githubAgentRelay!.tick();
+
+    expect(submitMessage).toHaveBeenCalledWith(
+      'kookr-relay',
+      'Kookr GitHub watcher: PR #764 (head feat/relay) was merged. If your task is complete, signal completion-ready; otherwise continue with any remaining post-merge steps.',
+      'github_watcher',
+    );
   });
 });

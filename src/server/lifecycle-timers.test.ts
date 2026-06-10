@@ -1,9 +1,11 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
   findFirstActiveSession,
+  clearAllTimers,
   restoreExpiredSnoozes,
   runBudgetCheck,
   runProgressBudgetBurnDiagnosticSample,
+  startLifecycleTimers,
 } from './lifecycle-timers.js';
 import { BudgetChecker } from '../core/budget-checker.js';
 import type { Task } from '../core/tasks.js';
@@ -11,6 +13,7 @@ import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import type { Anomaly } from '../core/types.js';
 import type { ProgressBudgetBurnDiagnostics } from '../core/progress-budget-burn-diagnostics.js';
+import { Watchdog } from '../core/watchdog.js';
 
 function makeAnomaly(agentId: string): Anomaly {
   return {
@@ -272,5 +275,40 @@ describe('restoreExpiredSnoozes', () => {
 
     expect(queue.next()).toBeNull();
     expect(queue.getSnoozed()).toHaveLength(0);
+  });
+});
+
+describe('startLifecycleTimers', () => {
+  test('ticks the GitHub agent relay on the liveness interval', async () => {
+    vi.useFakeTimers();
+    const relay = { tick: vi.fn(async () => {}) };
+    const taskStore = new TaskStore();
+    const handles = startLifecycleTimers({
+      monitor: {} as never,
+      taskStore,
+      queue: new AttentionQueue({ taskIdFor: () => null }),
+      adapter: {} as never,
+      adapterRegistry: {} as never,
+      tokenTracker: {} as never,
+      watchdog: new Watchdog(),
+      hookWatcher: {} as never,
+      terminalBackend: { listSessions: vi.fn(async () => []) } as never,
+      hooksDir: '/tmp/hooks',
+      tasksFile: '/tmp/tasks.json',
+      serverCwd: '/tmp/repo',
+      saveIntervalMs: 1_000_000,
+      livenessIntervalMs: 10,
+      broadcastToAll: vi.fn(),
+      githubAgentRelay: relay,
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(relay.tick).toHaveBeenCalledTimes(1);
+    } finally {
+      clearAllTimers(handles);
+      vi.useRealTimers();
+    }
   });
 });

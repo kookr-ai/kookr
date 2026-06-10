@@ -9,7 +9,7 @@ import type {
   ToolGroupEntry,
   UserInputDeliverySnapshot,
 } from '../../shared/protocol.js';
-import { buildActivityDisclosure, buildActivityItems, categorizeTool, compactToolSummary, pasteBurstLabel, toolLabel } from '../../shared/protocol.js';
+import { buildActivityDisclosure, buildActivityItems, categorizeTool, compactToolSummary, DELIVERY_SOURCE_LABEL, pasteBurstLabel, toolLabel } from '../../shared/protocol.js';
 import { renderMarkdown } from '../markdown.js';
 import { activityDisplayItemsToEvents, buildActivityDisplayItems } from '../store/activity-display.js';
 
@@ -185,10 +185,11 @@ function ActivityItemView({
           ? 'Failed'
           : 'Submitted';
       const statusClass = delivery.status === 'submitted_by_agent' ? 'submitted' : delivery.status;
+      const sourceLabel = DELIVERY_SOURCE_LABEL[delivery.source];
       return (
         <div className={`act-msg act-msg-user act-msg-delivery act-msg-delivery-${statusClass}${isLong ? ' act-msg-collapsed' : ''}`}>
           <div className="act-msg-header">
-            <span className="act-msg-label act-label-user">You</span>
+            <span className="act-msg-label act-label-user">{sourceLabel}</span>
             <span className="act-delivery-status">{statusLabel}</span>
           </div>
           <div className="act-msg-text">{renderMarkdown(preview)}</div>

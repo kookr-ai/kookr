@@ -119,6 +119,29 @@ describe('Monitor', () => {
     expect(next!.anomaly.type).toBe('permission_blocked');
   });
 
+  test('isIdleForInput is true for completed turns and AskUserQuestion waits', () => {
+    monitor.processEvents('agent-complete', [makeStop('s1', 'done')]);
+    monitor.processEvents('agent-question', [makeToolUse('s1', 'AskUserQuestion')]);
+    monitor.processEvents('agent-running', [makeToolUse('s1', 'Bash')]);
+
+    expect(monitor.isIdleForInput('agent-complete')).toBe(true);
+    expect(monitor.isIdleForInput('agent-question')).toBe(true);
+    expect(monitor.isIdleForInput('agent-running')).toBe(false);
+  });
+
+  test('isIdleForInput falls back to persisted session turn state when event window is absent', () => {
+    const task = taskStore.createTask({ prompt: 'work', cwd: '/repo' });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-persisted',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-06-10T10:00:00.000Z'),
+      lastTurnState: 'completed_turn',
+    });
+
+    expect(monitor.isIdleForInput('agent-persisted')).toBe(true);
+  });
+
   test('multiple agents - only blocked agent queued', () => {
     // Agent 1: permission blocked
     monitor.processEvents('agent-1', [

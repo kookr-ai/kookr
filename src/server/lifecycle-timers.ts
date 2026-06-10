@@ -21,6 +21,7 @@ import { saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../cor
 import { cleanupSessionResources, promotePendingTasks, type LifecycleDeps, type AgentLifecycleDeps } from './agent-lifecycle.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import { getDetectionStats, type DetectionStats } from '../core/detection-stats.js';
+import type { GitHubChangeAgentRelay } from './use-cases/github-agent-relay.js';
 
 export interface TimerDeps {
   monitor: Monitor;
@@ -66,6 +67,7 @@ export interface TimerDeps {
   /** Live dashboard client count; registry polling is skipped when zero. */
   getDashboardClientCount?: () => number;
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
+  githubAgentRelay?: Pick<GitHubChangeAgentRelay, 'tick'>;
 }
 
 export interface TimerHandles {
@@ -338,6 +340,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       ) {
         await deps.worktreeRegistry.refresh(deps.worktreeRegistryRepoPath);
       }
+      await deps.githubAgentRelay?.tick();
       const result = await reconcile(taskStore, terminalBackend, deps.worktreeRegistry);
 
       // Clean up resources for dead sessions via centralized lifecycle

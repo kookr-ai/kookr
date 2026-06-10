@@ -445,7 +445,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Forward-declared so onRepoHealthChanged can call back into the broadcast
   // function which references githubScanner.getRepoHealthSnapshot().
   let broadcastProjectSummariesRef: (() => void) | null = null;
-  const { githubStateStore, githubScanner } = createGitHubRuntime({
+  const { githubStateStore, githubScanner, githubAgentRelay } = createGitHubRuntime({
     taskStore,
     githubBreaker,
     githubPollingIntervalSec: currentSettings.githubPollingIntervalSec,
@@ -453,6 +453,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     onRepoHealthChanged: () => {
       broadcastProjectSummariesRef?.();
     },
+    userInputDelivery: userInputDeliveries,
+    isIdleForInput: (sessionId) => monitor.isIdleForInput(sessionId),
+    getGitHubAgentRelayMode: () => currentSettings.githubAgentRelay.mode,
   });
   realtime.setProjectSummaryGitHubDeps({
     getRepoHealthSnapshot: () => githubScanner.getRepoHealthSnapshot(),
@@ -1115,6 +1118,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       worktreeRegistry,
       worktreeRegistryRepoPath: serverCwd,
       getDashboardClientCount: () => connectionRegistry.dashboardCount(),
+      githubAgentRelay: githubAgentRelay ?? undefined,
     },
   });
 

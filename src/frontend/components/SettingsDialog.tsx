@@ -38,6 +38,7 @@ import type {
 interface ServerSettings {
   githubPollingEnabled: boolean;
   githubPollingIntervalSec: number;
+  githubAgentRelay: { mode: 'off' | 'shadow' | 'active' };
   autoWatchOssSources: boolean;
   watchdogStaleThresholdSec: number;
   repeatedErrorThreshold: number;
@@ -671,6 +672,13 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
     void saveSettings(updated);
   }
 
+  function handleGitHubAgentRelayModeChange(mode: ServerSettings['githubAgentRelay']['mode']) {
+    if (!settings) return;
+    const updated = { ...settings, githubAgentRelay: { mode } };
+    setSettings(updated);
+    void saveSettings(updated);
+  }
+
   // #681: set or clear a per-agent-type reasoning-effort default. An empty
   // value removes the entry, restoring the agent CLI's own default (no flag
   // passed at launch). Invalid (agent, level) pairs are dropped server-side.
@@ -1228,6 +1236,26 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                           disabled={!settings.githubPollingEnabled}
                         />
                         <span className="settings-unit">sec</span>
+                      </div>
+                    </div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-label">GitHub agent relay</span>
+                        <span className="settings-desc">
+                          Controls whether tracked PR merge/conflict events are only logged or also sent to the owning agent.
+                        </span>
+                      </div>
+                      <div className="settings-agent-select">
+                        <select
+                          aria-label="GitHub agent relay mode"
+                          className="settings-select"
+                          value={settings.githubAgentRelay.mode}
+                          onChange={(e) => handleGitHubAgentRelayModeChange(e.target.value as ServerSettings['githubAgentRelay']['mode'])}
+                        >
+                          <option value="off">Off</option>
+                          <option value="shadow">Shadow</option>
+                          <option value="active">Active</option>
+                        </select>
                       </div>
                     </div>
                   </div>

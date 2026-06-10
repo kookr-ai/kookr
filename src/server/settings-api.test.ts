@@ -55,6 +55,7 @@ describe('Settings API', () => {
     expect(data).toEqual({
       githubPollingEnabled: true,
       githubPollingIntervalSec: 60,
+      githubAgentRelay: { mode: 'shadow' },
       autoWatchOssSources: true,
       watchdogStaleThresholdSec: 30,
       repeatedErrorThreshold: 3,
@@ -77,6 +78,7 @@ describe('Settings API', () => {
       body: JSON.stringify({
         githubPollingEnabled: false,
         githubPollingIntervalSec: 120,
+        githubAgentRelay: { mode: 'active' },
         defaultAgentType: 'codex-cli',
         shortcutBindings: {
           mac: { next_bottleneck: 'Cmd+Ctrl+Space' },
@@ -87,6 +89,7 @@ describe('Settings API', () => {
     const data = await res.json();
     expect(data.githubPollingEnabled).toBe(false);
     expect(data.githubPollingIntervalSec).toBe(120);
+    expect(data.githubAgentRelay).toEqual({ mode: 'active' });
     expect(data.defaultAgentType).toBe('codex-cli');
     expect(data.shortcutBindings).toEqual({
       mac: { next_bottleneck: 'Cmd+Ctrl+Space' },
@@ -97,6 +100,7 @@ describe('Settings API', () => {
     const fileContent = JSON.parse(readFileSync(join(tempDir, 'settings.json'), 'utf-8'));
     expect(fileContent.githubPollingEnabled).toBe(false);
     expect(fileContent.githubPollingIntervalSec).toBe(120);
+    expect(fileContent.githubAgentRelay).toEqual({ mode: 'active' });
     expect(fileContent.defaultAgentType).toBe('codex-cli');
     expect(fileContent.shortcutBindings).toEqual({
       mac: { next_bottleneck: 'Cmd+Ctrl+Space' },
