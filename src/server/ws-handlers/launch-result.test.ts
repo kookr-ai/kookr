@@ -26,7 +26,7 @@ describe('handleLaunchResult', () => {
     // Cwd-specific recovery details lead with the actual cause instead of the
     // generic checklist that buried "verify the working directory" third.
     expect(alert.details).toMatch(/^The working directory was not found/);
-    expect(alert.details).toContain('prompt is preserved');
+    expect(alert.details).toContain('preserved as a draft');
   });
 
   it('keeps the generic recovery details for non-cwd launch failures', () => {
