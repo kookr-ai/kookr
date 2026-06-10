@@ -166,6 +166,33 @@ mkdir -p "$TMP/playbook/plugin/playbooks"
 printf '%s\n' '# Playbook' 'Run [[ghost-skill]] first.' > "$TMP/playbook/plugin/playbooks/demo.md"
 assert_warns "plugin playbooks are scanned" 'wiki-link "ghost-skill"' "$TMP/playbook"
 
+# --- library-claim staleness check ---
+
+mkdir -p "$TMP/lib-claim/plugin/skills/lib"
+{
+  printf '%s\n' '---' 'name: lib' 'description: Library claims.' '---' '# Lib'
+  printf '%s\n' '```typescript' "import thing from 'not-a-real-dependency';" '```'
+} > "$TMP/lib-claim/plugin/skills/lib/SKILL.md"
+cp "$REPO_ROOT/package.json" "$TMP/lib-claim/package.json"
+assert_warns "undeclared import in shipped code block warns" 'stale library claim' "$TMP/lib-claim"
+
+mkdir -p "$TMP/lib-waived/plugin/skills/lib"
+{
+  printf '%s\n' '---' 'name: lib' 'description: Library claims.' '---' '# Lib'
+  printf '%s\n' '<!-- lint-allow-library: not-a-real-dependency -->'
+  printf '%s\n' '```typescript' "import thing from 'not-a-real-dependency';" '```'
+} > "$TMP/lib-waived/plugin/skills/lib/SKILL.md"
+cp "$REPO_ROOT/package.json" "$TMP/lib-waived/package.json"
+assert_pass "waiver marker suppresses the library warning" "$TMP/lib-waived" --strict
+
+mkdir -p "$TMP/lib-builtin/plugin/skills/lib"
+{
+  printf '%s\n' '---' 'name: lib' 'description: Library claims.' '---' '# Lib'
+  printf '%s\n' '```typescript' "import { readFileSync } from 'node:fs';" "import path from 'path';" "import x from './local.js';" '```'
+} > "$TMP/lib-builtin/plugin/skills/lib/SKILL.md"
+cp "$REPO_ROOT/package.json" "$TMP/lib-builtin/package.json"
+assert_pass "builtins and relative imports are not library claims" "$TMP/lib-builtin" --strict
+
 # --- flag handling ---
 
 set +e

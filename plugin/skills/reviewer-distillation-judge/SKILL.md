@@ -73,6 +73,12 @@ machine-readable JSON block (fill in real numbers):
 }
 ```
 
+**Missing ground truth:** if the reviews file contains zero addressable
+human comments (all bot/contextual/resolved-elsewhere), do not fabricate
+matches — output exactly `{"error": "missing_reviews"}` as the JSON block.
+The orchestrator excludes such PRs from aggregates (they appear in
+`scorable_count`, not in the F1 mean).
+
 Write your evaluation to: {stateDir}/scores/pr-{N}-judge.md
 
 Do NOT access GitHub or any external resources. Work only with provided files.

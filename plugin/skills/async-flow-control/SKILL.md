@@ -5,6 +5,8 @@ keywords: AbortController, AbortSignal, cancellation, async iterator, async gene
 related: error-handling-patterns, process-lifecycle-patterns, state-machine-workflow-patterns
 ---
 
+<!-- lint-allow-library: pg-query-stream --> <!-- illustrative streaming example -->
+
 # Async Flow Control Patterns
 
 Rules for writing async code that cancels cleanly, streams large datasets without OOM, and selects the right concurrency primitive.

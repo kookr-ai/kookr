@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { builtinModules } from 'node:module';
 import { basename, dirname, join, relative } from 'node:path';
 import { isMap, parseDocument } from 'yaml';
 
@@ -50,6 +51,14 @@ const localTargets = collectTargets([
   join(repoRoot, '.claude/skills'),
   join(repoRoot, '.claude/agents'),
 ]);
+
+// Library-claim staleness check (RFC plugin-skill-improvements, Phase 4): a
+// shipped skill whose code blocks import a package the project doesn't depend
+// on is teaching a stack the project doesn't run (how the Pino drift slipped
+// in). Deliberate examples are waived with <!-- lint-allow-library: name -->.
+const packageDependencies = loadPackageDependencies();
+// Placeholder scopes used by illustrative snippets, never real claims.
+const placeholderImportPattern = /^(@myapp\/|@pkg\/|@your|my-|example|your-)/;
 
 for (const root of skillRoots) {
   for (const file of collectSkillFiles(join(repoRoot, root))) {
@@ -198,6 +207,7 @@ function validateReferences(file: string, content: string): void {
   }
 
   if (isShipped(file)) {
+    checkLibraryClaims(file, content);
     for (const username of hardcodedUsernames) {
       if (content.includes(username)) {
         warn({
@@ -206,6 +216,46 @@ function validateReferences(file: string, content: string): void {
         });
       }
     }
+  }
+}
+
+function loadPackageDependencies(): Set<string> {
+  try {
+    const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
+    return new Set([...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.devDependencies ?? {})]);
+  } catch {
+    return new Set();
+  }
+}
+
+function packageNameOf(specifier: string): string | null {
+  if (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('node:')) return null;
+  const parts = specifier.split('/');
+  const name = specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+  if (builtinModules.includes(name)) return null;
+  if (placeholderImportPattern.test(name)) return null;
+  return name;
+}
+
+function checkLibraryClaims(file: string, content: string): void {
+  const waived = new Set(
+    [...content.matchAll(/<!--\s*lint-allow-library:\s*([a-z0-9@\/, .-]+?)\s*-->/gi)]
+      .flatMap((m) => m[1].split(',').map((name) => name.trim())),
+  );
+  const fenced = extractFencedCodeBlocks(content);
+  const imports = [
+    ...fenced.matchAll(/^\s*import\s[^;]*?from\s+['"]([^'"\n]+)['"]/gm),
+    ...fenced.matchAll(/require\(\s*['"]([^'"\n]+)['"]\s*\)/g),
+  ];
+  const flagged = new Set<string>();
+  for (const match of imports) {
+    const name = packageNameOf(match[1]);
+    if (!name || waived.has(name) || packageDependencies.has(name) || flagged.has(name)) continue;
+    flagged.add(name);
+    warn({
+      file,
+      message: `code block imports "${name}" but it is not a package.json dependency — stale library claim? (waive a deliberate example with <!-- lint-allow-library: ${name} -->)`,
+    });
   }
 }
 
@@ -247,6 +297,28 @@ function relatedEntries(related: unknown): string[] {
       .filter((item) => item.length > 0);
   }
   return [];
+}
+
+function extractFencedCodeBlocks(content: string): string {
+  const lines: string[] = [];
+  let fence: { marker: string; length: number } | null = null;
+  for (const line of content.split('\n')) {
+    const match = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (match) {
+      const marker = match[1][0];
+      if (!fence) {
+        fence = { marker, length: match[1].length };
+        continue;
+      }
+      if (fence.marker === marker && match[1].length >= fence.length) {
+        fence = null;
+        continue;
+      }
+      continue;
+    }
+    if (fence) lines.push(line);
+  }
+  return lines.join('\n');
 }
 
 function stripFencedCodeBlocks(content: string): string {

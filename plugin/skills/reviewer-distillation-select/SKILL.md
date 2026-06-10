@@ -88,3 +88,13 @@ Add skipped PR numbers to `state.json.skipped_prs` with reason.
 ## Pagination
 
 Start from `state.json.cursor`. If fewer than `batchSize` PRs qualify in a page, advance cursor and fetch more. If no qualifying PRs remain, report "insufficient data" and stop.
+
+## Measurement Validity / Hold-Out
+
+Until the evaluated corpus reaches ~30 PRs, every F1 the loop produces is
+directional, not authoritative — nothing prevents scoring on PRs the mutator
+was tuned against, and a formal split would leave both partitions too small.
+Once `total_processed` crosses ~30: reserve ~1 in 4 newly selected PRs into a
+`holdout_prs` list in `state.json`; they are PREPAREd and PREDICTed but their
+scores are reported separately, and only held-out F1 counts toward the
+stall/convergence thresholds in the playbook's Phase 7.
