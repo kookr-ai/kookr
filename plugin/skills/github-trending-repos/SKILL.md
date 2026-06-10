@@ -1,6 +1,6 @@
 ---
 name: github-trending-repos
-description: Find and rank trending GitHub repositories by real activity signals (commit velocity, PR throughput, contributor growth) — filters out non-code repos and scores for contribution opportunity
+description: Survey trending/popular GitHub repos and rank them by contribution opportunity — landscape scans only. Not for analyzing a single known repo (use oss-repo-recon) or finding issues in one repo (issue scouting).
 keywords: github, trending, stars, repos, popular, contribute, open source, ranking, activity, performance optimization, contribution
 related: [pre-pr-review]
 ---

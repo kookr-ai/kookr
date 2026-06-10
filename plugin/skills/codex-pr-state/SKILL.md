@@ -113,3 +113,12 @@ If state.json becomes corrupted:
 1. The processed_prs list is the most important field — it prevents re-processing
 2. Reconstruct from learnings-raw.md batch headers which contain PR numbers
 3. Reset cursor to 1 (will re-scan pages but skip known PRs)
+
+## Divergence From the oss-pr-* Twin
+
+Intentional differences (R9 — do not "fix" by copying from the oss variant):
+- Fixed target repo (`openai/codex`); no `repoSlug` parameter.
+- State lives at `~/.claude/codex-pr-lessons/` (the oss family uses
+  `~/.claude/{repoSlug}-pr-lessons/`).
+Anything else that differs from the oss twin is drift, not design — prefer the
+oss wording when reconciling.

@@ -11,6 +11,8 @@ How AI-generated codebases degrade — and how to measure it. Architecture drift
 
 This skill gives you the **quantitative signals**, **thresholds**, and **detection commands** to measure drift before it becomes unrecoverable.
 
+**Calibration disclaimer:** the threshold bands below were tuned on mid-size TypeScript services; treat them as starting points and calibrate for your codebase (a generated-code-heavy or monorepo codebase will sit in different bands legitimately). The detection commands are TypeScript-specific (`.ts` globs, `madge`/`depcruise`); adapt the globs and tools for other stacks.
+
 ## The Mechanism (why AI codebases drift)
 
 Three reinforcing root causes:

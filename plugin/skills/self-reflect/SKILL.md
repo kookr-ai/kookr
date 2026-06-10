@@ -1,6 +1,6 @@
 ---
 name: self-reflect
-description: Reflect on a mistake or unnecessary user correction — root-cause why it happened, then propose and implement structural fixes (skills, hooks, CLAUDE.md, memory, scripts). Use after the user corrects behavior, repeats guidance, or points out an avoidable error.
+description: Reflect on a correction or self-caught mistake in ANY session and persist the lesson to the right surface. Not for Kookr task bundles — completed rated tasks go to task-feedback-reflect; live task snapshots go to task-snapshot-reflect.
 keywords: reflect, mistake, feedback, correction, self-improve, root-cause, meta, why, should have, remember, told you, wrong approach, improve
 related: placement-picker, token-efficiency, testing-patterns, pre-pr-review
 ---

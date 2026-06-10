@@ -9,6 +9,13 @@ related: [oss-pr-plan, oss-pr-state, oss-pr-threshold, oss-pr-distill]
 
 Deep-read a PR from any repository and extract structured quality signals. Generalized version of `codex-pr-critic`.
 
+## Output Destination
+
+This skill's findings are **appended to `~/.claude/{repoSlug}-pr-lessons/learnings-raw.md`** by the state step that
+follows it in the pipeline. The critic itself returns structured observations;
+it does not write files. State the destination in your summary so the pipeline
+stays auditable.
+
 ## When to Use
 
 Invoked for each PR in the batch selected by `oss-pr-plan`.

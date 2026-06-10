@@ -1,6 +1,6 @@
 ---
 name: task-snapshot-reflect
-description: "Anytime task reflection workflow triggered from a live or terminal Kookr task. Reads an immutable snapshot bundle, analyzes what went well and what went wrong, then asks the user to validate the diagnosis and choose positive reinforcement, negative reinforcement, both, or observation only before making any changes."
+description: Reflect on a LIVE or terminal Kookr task snapshot (bundle.json with sessions[]). Not for completed rated tasks (task-feedback-reflect) or ad-hoc in-session corrections (self-reflect).
 keywords: task snapshot, reflect, self-reflect, positive reinforcement, negative reinforcement, anytime reflection, session analysis, diagnosis, user validation
 related: task-feedback-reflect, self-reflect, placement-picker
 skillSchemaVersion: 1
@@ -119,6 +119,8 @@ End with:
 - Do not edit before the user validates the diagnosis.
 - Do not produce generic self-reflection boilerplate without bundle evidence.
 - Do not make multiple unrelated improvements from one snapshot.
+
+For WHERE to persist any rule this reflection produces, load [[placement-picker]] — it owns the routing matrix and the dedup-before-persisting rule.
 
 ## Failure Handling
 

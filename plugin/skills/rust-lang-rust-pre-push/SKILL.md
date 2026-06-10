@@ -1,6 +1,6 @@
 ---
 name: rust-lang-rust-pre-push
-description: Pre-push checklist for rust-lang/rust PRs — catches naming, verification, description, and convention issues before they reach reviewers
+description: Pre-push checklist for rust-lang/rust PRs — catches naming, verification, description, and convention issues before they reach reviewers Applies to the rust-lang/rust repository only — not to other Rust projects.
 keywords: rust-lang, rust compiler, pre-push, push, before push, submit PR, rust PR, regression test
 related: rust-lang-rust-tests, pre-pr-review, oss-repo-recon
 ---

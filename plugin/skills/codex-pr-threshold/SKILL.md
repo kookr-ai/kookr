@@ -58,3 +58,12 @@ Consistent three-case shape — never guess past a broken state file:
 - **Missing `state.json`** — first run: initialize it from the documented schema, then proceed.
 - **Malformed `state.json`** — validate before use: `jq empty state.json || { echo "state.json is corrupt — stopping (a default-to-fresh run would re-process every PR)"; exit 1; }`. Stop and report; never default to a fresh state.
 - **Empty batch / repo exhausted** — zero new observations since the last distillation: report "nothing to evaluate" and stop; do not trigger distillation on an empty delta.
+
+## Divergence From the oss-pr-* Twin
+
+Intentional differences (R9 — do not "fix" by copying from the oss variant):
+- Fixed target repo (`openai/codex`); no `repoSlug` parameter.
+- State lives at `~/.claude/codex-pr-lessons/` (the oss family uses
+  `~/.claude/{repoSlug}-pr-lessons/`).
+Anything else that differs from the oss twin is drift, not design — prefer the
+oss wording when reconciling.

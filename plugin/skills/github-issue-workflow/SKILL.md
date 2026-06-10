@@ -1,6 +1,6 @@
 ---
 name: github-issue-workflow
-description: Standard workflow for creating GitHub issues with assignment and worktree branch creation for immediate implementation. Includes branch strategy and worktree conventions.
+description: Create well-structured GitHub issues with implementation plans, assignment, and lifecycle tracking. For CREATING new issues only — not for editing, reopening, commenting on, or bulk-managing existing issues.
 keywords: issue, github, workflow, worktree, branch, assign, implementation, create issue, new issue, bug report, feature request, staging
 related: git-commit-discipline
 ---
