@@ -58,6 +58,7 @@
     "validate:docs-commands": "node --import tsx scripts/verify-documented-commands.ts",
     "validate:docs-env-vars": "node --import tsx scripts/verify-documented-env-vars.ts",
     "demo:record": "pnpm build && node --import tsx demo/record.ts",
+    "demo:check": "pnpm build && DEMO_CHECK=1 node --import tsx demo/record.ts",
     "codex:rebuild": "bash scripts/rebuild-codex.sh",
     "merge": "bash scripts/kookr-merge.sh",
     "prepare": "git config core.hooksPath .hooks && pnpm build:dtach"
