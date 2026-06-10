@@ -30,7 +30,7 @@ Some UI regressions are covered below the Playwright layer because they are data
 
 | Workflow | Triggers | Jobs |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | Push to `main`, PRs targeting `main`. | `test` (typecheck, skill validation, Vitest + coverage, hook tests), `build` (Playwright). |
+| `.github/workflows/ci.yml` | Push to `main`, PRs targeting `main`. | `test` (typecheck, skill validation, Vitest + coverage, smoke gates, hook tests), `build` (Playwright). On PRs, both jobs path-filter: code-heavy steps are skipped when the PR touches no code paths (docs/skills-only PRs run just the validators). Push to `main` always runs everything. |
 | `.github/workflows/e2e.yml` | Manual `/run-e2e` PR comment. | Full Playwright run, uploads HTML report on every run, comments result on the PR. |
 | `.github/workflows/staging.yml` | Staging-branch flow. | Plain `pnpm test` (no coverage). The testing-surfacing RFC defers staging coverage to a later phase. |
 
@@ -38,7 +38,7 @@ Some UI regressions are covered below the Playwright layer because they are data
 
 | Artifact | Job | When uploaded | Retention |
 | --- | --- | --- | --- |
-| `coverage` (`coverage-summary.json` + `lcov.info`) | `test` | Every PR run, pass or fail (Vitest is invoked with `--coverage.reportOnFailure`). | 14 days |
+| `coverage` (`coverage-summary.json` + `lcov.info`) | `test` | Every code-touching PR run, pass or fail (Vitest is invoked with `--coverage.reportOnFailure`); skipped on docs/skills-only PRs. | 14 days |
 | `playwright-report` | `build` | Failed runs only on `ci.yml`; every run on `e2e.yml`. | 7 days |
 
 ## Finding the Live Coverage Numbers on a PR
