@@ -6,6 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRelayServer, type RelayServerHandle } from '../server.js';
 import { makeNodeHello } from '../../src/remote/handshake.js';
 import { asNodeEpoch, asServerRevision } from '../../src/remote/ids.js';
+import { createPushFanout } from '../src/push/fanout.js';
+import { createPushSubscriptionStore } from '../src/push/subscriptions.js';
+import { createVapidKeyStore } from '../src/push/vapid.js';
+import { createPushEndpointLookup, isValidPushEndpoint, MAX_PUSH_ENDPOINT_LENGTH } from '../src/push/validate-endpoint.js';
 import type { RemoteControlEvent } from '../../src/remote/control-events.js';
 import type { RedactedPushPayload } from '../../src/remote/push.js';
 
@@ -16,6 +20,11 @@ const SUBSCRIPTION = {
     auth: 'auth',
   },
 };
+
+function endpointWithLength(length: number): string {
+  const prefix = 'https://push.example.com/';
+  return `${prefix}${'a'.repeat(length - prefix.length)}`;
+}
 
 async function listen(relay: RelayServerHandle): Promise<void> {
   await new Promise<void>((resolve) => relay.httpServer.listen(0, '127.0.0.1', () => resolve()));
@@ -100,6 +109,78 @@ describe('relay Web Push', () => {
     expect(res.status).toBe(409);
     await expect(res.json()).resolves.toMatchObject({ currentVersion: 1 });
     expect(relay.pushSubscriptions()).toHaveLength(0);
+  });
+
+  it('rejects unsafe push subscription endpoints at registration', async () => {
+    relay = createRelayServer({ allowInsecureAdmin: true, allowInsecureClients: true });
+    await listen(relay);
+    const node = relay.registerNode();
+
+    for (const endpoint of [
+      'https://127.0.0.1/push/device-a',
+      'https://user:pass@push.example.com/push/device-a',
+    ]) {
+      const res = await fetch(new URL('/relay/push/subscriptions', relay.url()), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          deviceId: `device-${endpoint}`,
+          nodeId: node.nodeId,
+          subscription: { ...SUBSCRIPTION, endpoint },
+        }),
+      });
+
+      expect(res.status, endpoint).toBe(400);
+      await expect(res.json()).resolves.toEqual({ error: 'valid push subscription is required' });
+    }
+
+    expect(relay.pushSubscriptions()).toHaveLength(0);
+  });
+
+  it('validates unsafe push endpoint URL shapes directly', () => {
+    for (const endpoint of [
+      '',
+      'not a url',
+      'http://updates.push.services.mozilla.com/wpush/v2/device-a',
+      'https://user:pass@push.example.com/push/device-a',
+      'https://127.0.0.1/push/device-a',
+      'https://2130706433/push/device-a',
+      'https://0x7f000001/push/device-a',
+      'https://10.0.0.2/push/device-a',
+      'https://172.16.0.2/push/device-a',
+      'https://192.168.0.2/push/device-a',
+      'https://169.254.169.254/latest/meta-data/',
+      'https://[::1]/push/device-a',
+      'https://[::ffff:127.0.0.1]/push/device-a',
+      'https://[fc00::1]/push/device-a',
+      'https://printer.local/push/device-a',
+      'https://printer.local./push/device-a',
+      'https://localhost./push/device-a',
+      'https://metadata.google.internal./computeMetadata/v1/',
+      endpointWithLength(MAX_PUSH_ENDPOINT_LENGTH + 1),
+    ]) {
+      expect(isValidPushEndpoint(endpoint), endpoint).toBe(false);
+    }
+  });
+
+  it('accepts known public push service endpoint shapes', () => {
+    expect(isValidPushEndpoint('https://fcm.googleapis.com/fcm/send/device-a')).toBe(true);
+    expect(isValidPushEndpoint('https://updates.push.services.mozilla.com/wpush/v2/device-a')).toBe(true);
+    expect(isValidPushEndpoint('https://wns2-by3p.notify.windows.com/w/?token=device-a')).toBe(true);
+    expect(isValidPushEndpoint(endpointWithLength(MAX_PUSH_ENDPOINT_LENGTH))).toBe(true);
+  });
+
+  it('rejects DNS results that resolve a public-looking push host to a private address', async () => {
+    const guardedLookup = createPushEndpointLookup((_hostname, _options, callback) => {
+      callback(null, '127.0.0.1', 4);
+    });
+
+    await expect(new Promise<void>((resolve, reject) => {
+      guardedLookup('127.0.0.1.nip.io', {}, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    })).rejects.toMatchObject({ code: 'ERR_PUSH_ENDPOINT_BLOCKED' });
   });
 
   it('fans out only the redacted push payload from node state deltas', async () => {
@@ -225,6 +306,78 @@ describe('relay Web Push', () => {
       body: JSON.stringify({ deviceId: 'device-a' }),
     })).resolves.toMatchObject({ result: 'skipped-disabled' });
     expect(sender).not.toHaveBeenCalled();
+  });
+
+  it('revalidates stored push endpoints before fanout sends', async () => {
+    const subscriptions = createPushSubscriptionStore();
+    const vapidKeys = createVapidKeyStore();
+    const sender = vi.fn();
+    subscriptions.upsert({
+      deviceId: 'device-a',
+      nodeId: 'node-a' as ReturnType<typeof makeNodeHello>['nodeId'],
+      subscription: {
+        endpoint: 'https://127.0.0.1/push/device-a',
+        keys: { p256dh: 'p256dh', auth: 'auth' },
+      },
+      vapidKeyVersion: vapidKeys.current().version,
+    });
+    const fanout = createPushFanout({ subscriptions, vapidKeys, sender });
+
+    await expect(fanout.sendToDevice('device-a', {
+      redactor: 'redactor.v1',
+      nodeDisplayName: 'Kookr',
+      taskShortLabel: 'Task abcdef01',
+      alertKind: 'permission-requested',
+      alertId: 'alert-a',
+    })).resolves.toMatchObject({
+      deviceId: 'device-a',
+      result: 'failed',
+      statusCode: 400,
+      error: 'endpoint address is not allowed',
+    });
+    expect(sender).not.toHaveBeenCalled();
+    expect(subscriptions.byDevice('device-a')).toBeUndefined();
+  });
+
+  it('passes a guarded DNS agent to fanout delivery', async () => {
+    const subscriptions = createPushSubscriptionStore();
+    const vapidKeys = createVapidKeyStore();
+    const sender = vi.fn(async (_subscription, _payload, options) => {
+      const lookup = options.agent?.options.lookup;
+      expect(typeof lookup).toBe('function');
+      await expect(new Promise<void>((resolve, reject) => {
+        lookup?.('127.0.0.1.nip.io', {
+          all: false,
+          family: 0,
+          hints: 0,
+          verbatim: false,
+        }, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      })).rejects.toMatchObject({ code: 'ERR_PUSH_ENDPOINT_BLOCKED' });
+    });
+    subscriptions.upsert({
+      deviceId: 'device-a',
+      nodeId: 'node-a' as ReturnType<typeof makeNodeHello>['nodeId'],
+      subscription: SUBSCRIPTION,
+      vapidKeyVersion: vapidKeys.current().version,
+    });
+    const fanout = createPushFanout({
+      subscriptions,
+      vapidKeys,
+      sender,
+      endpointResolver: (_hostname, _options, callback) => callback(null, '127.0.0.1', 4),
+    });
+
+    await expect(fanout.sendToDevice('device-a', {
+      redactor: 'redactor.v1',
+      nodeDisplayName: 'Kookr',
+      taskShortLabel: 'Task abcdef01',
+      alertKind: 'permission-requested',
+      alertId: 'alert-a',
+    })).resolves.toMatchObject({ deviceId: 'device-a', result: 'sent' });
+    expect(sender).toHaveBeenCalledOnce();
   });
 
   it('replays cached task projections to reconnecting relay clients', async () => {
