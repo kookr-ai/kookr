@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from 'vitest';
-import { agentProviderPresentation, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, turnStateLabel, turnStateClass } from './presentation.js';
+import { agentProviderPresentation, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
 import type { AgentEvent } from '../shared/protocol.js';
 
 describe('healthyDotClass', () => {
@@ -213,5 +213,50 @@ describe('turnStateClass', () => {
   test('unknown and undefined yield no class', () => {
     expect(turnStateClass('unknown')).toBe('');
     expect(turnStateClass(undefined)).toBe('');
+  });
+});
+
+describe('worktreeHealthLabel (F14)', () => {
+  test('missing states say "worktree" so the badge is unambiguous', () => {
+    expect(worktreeHealthLabel('missing_unexpectedly')).toBe('worktree missing');
+    expect(worktreeHealthLabel('missing')).toBe('worktree missing');
+  });
+
+  test('registry-stale flag wins over health', () => {
+    expect(worktreeHealthLabel('missing_unexpectedly', true)).toBe('git stale');
+  });
+
+  test('ok and undefined render no badge', () => {
+    expect(worktreeHealthLabel('ok')).toBe('');
+    expect(worktreeHealthLabel(undefined)).toBe('');
+  });
+
+  test('other states keep their short labels', () => {
+    expect(worktreeHealthLabel('stale')).toBe('stale');
+    expect(worktreeHealthLabel('cleaned_up')).toBe('cleaned up');
+  });
+});
+
+describe('worktreeHealthTitle (F14)', () => {
+  test('missing_unexpectedly explains the working copy may be gone and to check before sending work', () => {
+    const title = worktreeHealthTitle('missing_unexpectedly');
+    expect(title).toBe(
+      "Worktree directory is missing unexpectedly — the agent's working copy may have been deleted. Check the session before sending new work.",
+    );
+  });
+
+  test('legacy missing carries the same working-copy warning', () => {
+    expect(worktreeHealthTitle('missing')).toContain("the agent's working copy may have been deleted");
+    expect(worktreeHealthTitle('missing')).toContain('Check the session before sending new work.');
+  });
+
+  test('registry-stale flag wins over health', () => {
+    expect(worktreeHealthTitle('missing_unexpectedly', true)).toBe(
+      'Worktree registry refresh failed; showing stale git state',
+    );
+  });
+
+  test('ok and undefined render no tooltip', () => {
+    expect(worktreeHealthTitle(undefined)).toBe('');
   });
 });

@@ -14,7 +14,7 @@ import { ConfirmDialog } from './ConfirmDialog.js';
 import { groupFindings, groupLabel } from '../group-findings.js';
 import { ScheduleSection } from './ScheduleSection.js';
 import { useDnd } from '../hooks/useDnd.js';
-import { usePersistedCollapsed } from '../hooks/usePersistedCollapsed.js';
+import { usePersistedCollapsed, useAutoExpandOnItemGain } from '../hooks/usePersistedCollapsed.js';
 import { useSpeakAgent, type SpeakStatus } from '../hooks/useSpeakAgent.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { sendRalphLoopCommand, type RalphLoopCommand } from '../ralph-loop-api.js';
@@ -1207,9 +1207,17 @@ export function FindingsPanel({
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const prevFindingIds = useRef<Set<string>>(new Set());
   const [healthyCollapsed, toggleHealthy] = usePersistedCollapsed(HEALTHY_SECTION_COLLAPSED_KEY, false);
-  const [pendingCollapsed, togglePending] = usePersistedCollapsed(PENDING_SECTION_COLLAPSED_KEY, false);
+  const [pendingCollapsed, togglePending, expandPending] = usePersistedCollapsed(PENDING_SECTION_COLLAPSED_KEY, false);
   const [snoozedCollapsed, toggleSnoozed] = usePersistedCollapsed(SNOOZED_SECTION_COLLAPSED_KEY, true);
   const [completedCollapsed, toggleCompleted] = usePersistedCollapsed(COMPLETED_SECTION_COLLAPSED_KEY, true);
+  // The Pending group is where "waiting on you" tasks live (taskStatus
+  // 'pending' — e.g. an agent that signaled complete and needs the user's
+  // input). When it gains items, auto-expand so the thing blocking the user
+  // is never hidden inside a collapsed group; the user can still re-collapse
+  // afterwards. needs_input findings render in the always-visible findings
+  // list above, which is not collapsible, so this is the only group needing
+  // the treatment. (F19)
+  useAutoExpandOnItemGain(pending.length, expandPending);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const hasBottomSections = healthy.length > 0 || pending.length > 0 || snoozed.length > 0 || completed.length > 0;
 
