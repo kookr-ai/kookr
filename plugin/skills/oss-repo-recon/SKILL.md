@@ -356,7 +356,7 @@ Extract from the recon report and CONTRIBUTING.md:
 - Test conventions (frameworks, naming, mock patterns, coverage expectations)
 - PR requirements (title format, commit message format, required sections)
 - CI expectations (what must pass before merge)
-- Known patterns from `${CLAUDE_SKILL_DIR}/../pr-contribution-excellence/repo/${SLUG}.md` (if it exists — the pr-contribution-excellence skill ships in this plugin)
+- Known patterns: check `~/.claude/skills/pr-contribution-excellence/repo/${SLUG}.md` first (the distill write target; on Kookr dev machines `install-hooks.sh` symlinks it to the checkout), then fall back to `${CLAUDE_SKILL_DIR}/../pr-contribution-excellence/repo/${SLUG}.md` (the bundled baseline)
 
 Structure with `##` section headers by language or concern area. Keep under 100 lines — this is injected into the reviewer's context window.
 

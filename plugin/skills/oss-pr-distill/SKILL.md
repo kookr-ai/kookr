@@ -21,7 +21,7 @@ Invoked when `oss-pr-threshold` returns `DISTILL`.
 |---|------|-------------------|-----------------|
 | 1 | Read ALL raw learnings before distilling | Only reading the latest batch | Read entire learnings-raw.md |
 | 2 | Preserve prior distilled content | Overwriting previous distillation | Read existing distilled files, merge new patterns |
-| 3 | Separate repo-specific from general patterns | Putting repo-specific convention in general skill | Repo-specific -> patterns.md; General -> pr-contribution-excellence |
+| 3 | Separate repo-specific from general patterns | Putting repo-specific convention in the shared corpus | Repo-specific -> `repo/{repoSlug}.md`; universal -> `pr-contribution-excellence/patterns.md` (+ index line in SKILL.md) |
 | 4 | Reset learnings-raw.md after distillation | Leaving raw file to grow unboundedly | Reset to header template (6 lines) |
 | 5 | Update distillation_count in state.json | Forgetting to track | Increment count, set last_distillation_at |
 | 6 | Patterns must be evidence-based | "I think PRs should..." | "PRs that {pattern} were {outcome} — seen in #{n1}, #{n2}" |
@@ -43,6 +43,7 @@ cat ~/.claude/${SLUG}-pr-lessons/learnings-raw.md
 cat ~/.claude/skills/pr-contribution-excellence/repo/${SLUG}.md 2>/dev/null || echo "(new file)"
 cat ~/.claude/${SLUG}-pr-lessons/learnings-distilled.md 2>/dev/null || echo "(new file)"
 cat ~/.claude/skills/pr-contribution-excellence/SKILL.md 2>/dev/null || echo "(new file)"
+cat ~/.claude/skills/pr-contribution-excellence/patterns.md 2>/dev/null || echo "(new file)"
 cat ~/.claude/skills/pr-contribution-excellence/evidence.md 2>/dev/null || echo "(new file)"
 ```
 
@@ -62,9 +63,9 @@ Look for:
 | Repo conventions | `pr-contribution-excellence/repo/{repoSlug}.md` | "PRs must pass `cargo clippy --tests`" |
 | Repo reviewer preferences | `pr-contribution-excellence/repo/{repoSlug}.md` | "Maintainer X prefers exhaustive match" |
 | Repo process rules | `pr-contribution-excellence/repo/{repoSlug}.md` | "Feature PRs need pre-approved issues" |
-| General PR patterns | `pr-contribution-excellence/SKILL.md` | "Link issue in first line of body" |
-| General review navigation | `pr-contribution-excellence/SKILL.md` | "Address blocking feedback before nits" |
-| General scope management | `pr-contribution-excellence/SKILL.md` | "Keep PRs under 300 lines" |
+| General PR patterns | `pr-contribution-excellence/patterns.md` (+ index line in SKILL.md) | "Link issue in first line of body" |
+| General review navigation | `pr-contribution-excellence/patterns.md` (+ index line in SKILL.md) | "Address blocking feedback before nits" |
+| General scope management | `pr-contribution-excellence/patterns.md` (+ index line in SKILL.md) | "Keep PRs under 300 lines" |
 
 ### Step 4: Write repo-specific patterns
 
@@ -95,38 +96,20 @@ Last updated: {date} | Distillation #{count} | Based on {N} PRs analyzed
 
 ### Step 5: Write general patterns to shared skill
 
-Update `~/.claude/skills/pr-contribution-excellence/SKILL.md` with **universal patterns only** (no evidence base, no repo-specific references). Append evidence and distillation log entries to `~/.claude/skills/pr-contribution-excellence/evidence.md`.
+Write to the **three-file structure** (split 2026-06-10):
 
-**SKILL.md** should contain only universal rules and patterns:
-
-```markdown
----
-name: pr-contribution-excellence
-description: Patterns for excellent open-source PR contributions, distilled from analyzing real PRs across repositories
-keywords: pr, contribution, review, open source, pull request, code review
-related: [[oss-pr-distill]], [[pr-lifecycle]], [[pre-pr-review]]
----
-
-# PR Contribution Excellence
-
-Patterns distilled from analyzing real PRs across multiple repositories.
-
-## Non-Negotiable Rules
-| # | Rule | Violation Example | Correct Pattern |
-|---|------|-------------------|-----------------|
-{Numbered rules distilled from cross-repo observations}
-
-## Patterns
-{Detailed universal patterns — no repo-specific refs}
-
-## Anti-Patterns
-{Common mistakes observed in rejected PRs}
-```
-
-**evidence.md** receives the distillation log and evidence references:
-
-```markdown
-## Distillation from {repoFullName} ({date})
+- **`patterns.md`** — the full pattern/anti-pattern text. A NEW pattern is
+  appended at the end of its section with the next sequential stable ID
+  (`P{n+1}` / `AP{n+1}`). A REINFORCED pattern is updated **in place** (sharpen
+  wording, extend its inline evidence) — never append a near-duplicate.
+- **`SKILL.md`** — lean by contract (rules + Pattern Index). Touch it only to
+  add a one-line index entry for a new pattern (`- P{n} {name}`) or, rarely, a
+  new Non-Negotiable Rule. **Never write pattern bodies into SKILL.md** — that
+  is the unbounded growth this structure exists to stop.
+- **`evidence.md`** — two parts. The Pattern -> Evidence Index gets a new row
+  per new pattern, or — for a reinforced pattern — the new PR refs appended to
+  its row and `citations:` incremented (this count is the dedup signal). The
+  chronological Distillation Log below it gets one entry per run.
 
 ### Patterns added/updated
 - {pattern} (evidence: PR #{a}, #{b}, #{c})
@@ -184,13 +167,13 @@ cat ~/.claude/${SLUG}-pr-lessons/state.json | jq \
 
 ## Dedup Before Adding a Pattern
 
-Before adding any pattern, check the existing corpus for an equivalent:
-grep the current skill patterns and `evidence.md` for the pattern's key
-phrase. If an equivalent already exists, **strengthen it** — append the new
-PR numbers to its evidence entry and tighten its wording if the new
-observations justify it — instead of appending a near-duplicate line. The
-check is against pattern *text* (the evidence log is chronological and has no
-index yet); read the matches you find before deciding new-vs-strengthen.
+Before adding any pattern, check the existing corpus for an equivalent —
+cheapest first: scan the Pattern Index in `SKILL.md` and the Pattern ->
+Evidence Index in `evidence.md` for the pattern's key phrase, then grep
+`patterns.md` for the full text. If an equivalent exists, **reinforce it**:
+update the `patterns.md` entry in place, append the new PR refs to its
+`evidence.md` row, and increment its `citations:` count. Only a genuinely new
+pattern gets a new sequential ID, index line, and evidence row.
 
 ## Quality Criteria for Distilled Patterns
 
