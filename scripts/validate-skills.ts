@@ -8,9 +8,16 @@ interface SkillError {
   message: string;
 }
 
-const repoRoot = process.argv[2] ?? process.cwd();
+const args = process.argv.slice(2);
+// --strict escalates warnings to errors. Until the reference backlog is fixed
+// or waived, warnings report without failing the run (RFC plugin-skill-improvements,
+// T1-guard: the gate must never be enabled while known-broken refs remain).
+const strict = args.includes('--strict');
+const positional = args.filter((arg) => !arg.startsWith('--'));
+const repoRoot = positional[0] ?? process.cwd();
 const skillRoots = ['.claude/skills', 'plugin/skills'];
 const errors: SkillError[] = [];
+const warnings: SkillError[] = [];
 
 for (const root of skillRoots) {
   for (const file of collectSkillFiles(join(repoRoot, root))) {
@@ -18,10 +25,20 @@ for (const root of skillRoots) {
   }
 }
 
-if (errors.length > 0) {
-  console.error('Skill validation failed:');
-  for (const error of errors) {
-    console.error(`  ${relative(repoRoot, error.file)}: ${error.message}`);
+if (warnings.length > 0) {
+  const stream = strict ? console.error : console.warn;
+  stream(`Skill validation warnings (${warnings.length})${strict ? ' — failing due to --strict' : ''}:`);
+  for (const warning of warnings) {
+    stream(`  ${relative(repoRoot, warning.file)}: ${warning.message}`);
+  }
+}
+
+if (errors.length > 0 || (strict && warnings.length > 0)) {
+  if (errors.length > 0) {
+    console.error('Skill validation failed:');
+    for (const error of errors) {
+      console.error(`  ${relative(repoRoot, error.file)}: ${error.message}`);
+    }
   }
   process.exit(1);
 }
