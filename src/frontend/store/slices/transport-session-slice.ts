@@ -1,7 +1,8 @@
-import type { AgentState, TransportSessionSlice, StoreSet } from '../store-types.js';
+import type { AgentState, TransportSessionSlice, StoreGet, StoreSet } from '../store-types.js';
 import { SEVERITY_ORDER } from '../store-types.js';
 import { mergeActivityAgent } from '../activity-history.js';
 import { firstReadyKookrSTTEndpoint } from '../../../shared/contracts/speech.js';
+import { clearSelectedTask, loadSelectedTask } from '../selected-task-storage.js';
 
 function isTerminalTaskStatus(status: AgentState['taskStatus']): boolean {
   return status === 'completed' || status === 'cancelled' || status === 'terminated';
@@ -62,7 +63,62 @@ function selectedAgentUpdateAfterServerState(
   return {};
 }
 
-export function createTransportSessionSlice(set: StoreSet): TransportSessionSlice {
+function selectedAgentRestoreAfterFirstSnapshot(
+  agentsHydrated: boolean,
+  selectedAgentId: string | null,
+  nextAgents: AgentState[],
+): {
+  update: {
+    selectedAgentId?: string | null;
+    selectedAgentSource?: 'manual';
+    respondAllAgentIds?: null;
+    leftPane?: 'activity';
+    narrowTab?: 'activity';
+    shortcutsArmed?: false;
+  };
+  missed: boolean;
+} {
+  if (agentsHydrated || selectedAgentId) return { update: {}, missed: false };
+
+  const stored = loadSelectedTask();
+  if (!stored) return { update: {}, missed: false };
+
+  const restored = (
+    stored.taskId
+      ? nextAgents.find((agent) => agent.taskId === stored.taskId)
+      : undefined
+  ) ?? (
+    stored.agentId
+      ? nextAgents.find((agent) => agent.agentId === stored.agentId)
+      : undefined
+  );
+
+  if (!restored) {
+    clearSelectedTask();
+    return {
+      update: {
+        selectedAgentId: null,
+        selectedAgentSource: 'manual',
+        respondAllAgentIds: null,
+      },
+      missed: true,
+    };
+  }
+
+  return {
+    update: {
+      selectedAgentId: restored.agentId,
+      selectedAgentSource: 'manual',
+      respondAllAgentIds: null,
+      leftPane: 'activity',
+      narrowTab: 'activity',
+      shortcutsArmed: false,
+    },
+    missed: false,
+  };
+}
+
+export function createTransportSessionSlice(set: StoreSet, get: StoreGet): TransportSessionSlice {
   return {
     agents: [],
     agentsHydrated: false,
@@ -91,14 +147,18 @@ export function createTransportSessionSlice(set: StoreSet): TransportSessionSlic
     setRelationFilter: (filter) => set(() => ({ relationFilter: filter })),
 
     handleSnapshot: (agents, serverCwd, build, serverStartedAt, sttEnabled, sttUrl, totalSpendUsd, achievements, availableAgentTypes, defaultAgentType, workspaceEnabled, sweepRunning, maxActiveTasks, speechCapabilities, coordinator, ttsUrl) => {
+      let restoreMissed = false;
       set((prev) => {
         const previousById = new Map(prev.agents.map((agent) => [agent.agentId, agent]));
         const mergedAgents = agents.map((agent) => mergeActivityAgent(previousById.get(agent.agentId), agent));
         const descriptorSttUrl = firstReadyKookrSTTEndpoint(speechCapabilities);
         const nextSttUrl = sttEnabled && sttUrl ? sttUrl : descriptorSttUrl;
+        const restoredSelection = selectedAgentRestoreAfterFirstSnapshot(prev.agentsHydrated, prev.selectedAgentId, mergedAgents);
+        restoreMissed = restoredSelection.missed;
         return {
           agents: mergedAgents,
           ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.agents, mergedAgents),
+          ...restoredSelection.update,
           agentsHydrated: true,
           ...(serverCwd !== undefined ? { serverCwd } : {}),
           ...(availableAgentTypes !== undefined ? { availableAgentTypes } : {}),
@@ -116,6 +176,9 @@ export function createTransportSessionSlice(set: StoreSet): TransportSessionSlic
           ...(coordinator !== undefined ? { coordinator } : {}),
         };
       });
+      if (restoreMissed) {
+        get().handleAlert('workspace', 'Previously watched task finished or was removed.', 'info');
+      }
     },
 
     handleUpdate: (agentId, state) => {

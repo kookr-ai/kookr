@@ -309,6 +309,28 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().narrowTab).toBe('activity');
   });
 
+  test('selectAgent persists the selected task for reload restore', () => {
+    store.getState().handleSnapshot([
+      {
+        agentId: 'agent-1',
+        taskId: 'task-1',
+        events: [],
+        anomaly: null,
+      },
+    ]);
+
+    store.getState().selectAgent('agent-1');
+
+    expect(JSON.parse(localStore.get('kookr-selected-task') ?? 'null')).toMatchObject({
+      taskId: 'task-1',
+      agentId: 'agent-1',
+    });
+
+    store.getState().selectAgent(null);
+
+    expect(localStore.has('kookr-selected-task')).toBe(false);
+  });
+
   test('setLeftPane and setNarrowTab update panel state', () => {
     expect(store.getState().leftPane).toBe('activity');
     expect(store.getState().narrowTab).toBe('activity');
@@ -668,6 +690,71 @@ describe('Kookr Zustand Store', () => {
     store.getState().handleSnapshot([{ ...completedAgent, taskName: 'Already done' }]);
 
     expect(store.getState().selectedAgentId).toBe('agent-completed');
+  });
+
+  test('handleSnapshot restores the persisted selected task on first hydration', () => {
+    localStore.set('kookr-selected-task', JSON.stringify({
+      taskId: 'task-2',
+      agentId: 'old-session-for-task-2',
+      selectedAt: 123,
+    }));
+    const freshStore = createKookrStore();
+
+    freshStore.getState().handleSnapshot([
+      { agentId: 'agent-1', taskId: 'task-1', events: [], anomaly: null },
+      { agentId: 'agent-2', taskId: 'task-2', events: [], anomaly: null },
+    ]);
+
+    expect(freshStore.getState().selectedAgentId).toBe('agent-2');
+    expect(freshStore.getState().selectedAgentSource).toBe('manual');
+    expect(freshStore.getState().alerts).toHaveLength(0);
+    expect(JSON.parse(localStore.get('kookr-selected-task') ?? 'null')).toMatchObject({
+      taskId: 'task-2',
+      agentId: 'agent-2',
+    });
+  });
+
+  test('handleSnapshot restores persisted agent-only selection on first hydration', () => {
+    localStore.set('kookr-selected-task', JSON.stringify({
+      taskId: null,
+      agentId: 'agent-1',
+      selectedAt: 123,
+    }));
+    const freshStore = createKookrStore();
+
+    freshStore.getState().handleSnapshot([
+      { agentId: 'agent-1', events: [], anomaly: null },
+    ]);
+
+    expect(freshStore.getState().selectedAgentId).toBe('agent-1');
+    expect(freshStore.getState().selectedAgentSource).toBe('manual');
+    expect(freshStore.getState().alerts).toHaveLength(0);
+    expect(JSON.parse(localStore.get('kookr-selected-task') ?? 'null')).toMatchObject({
+      taskId: null,
+      agentId: 'agent-1',
+    });
+  });
+
+  test('handleSnapshot clears stale persisted selection with a visible fallback alert', () => {
+    localStore.set('kookr-selected-task', JSON.stringify({
+      taskId: 'task-missing',
+      agentId: 'agent-missing',
+      selectedAt: 123,
+    }));
+    const freshStore = createKookrStore();
+
+    freshStore.getState().handleSnapshot([
+      { agentId: 'agent-live', taskId: 'task-live', events: [], anomaly: null },
+    ]);
+
+    expect(freshStore.getState().selectedAgentId).toBeNull();
+    expect(localStore.has('kookr-selected-task')).toBe(false);
+    expect(freshStore.getState().alerts).toHaveLength(1);
+    expect(freshStore.getState().alerts[0]).toMatchObject({
+      agentId: 'workspace',
+      summary: 'Previously watched task finished or was removed.',
+      severity: 'info',
+    });
   });
 
   test('sentOverlay defaults to null', () => {
