@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import {
   planAndPruneMaintenance,
@@ -115,10 +115,14 @@ function formatHuman(result: MaintenancePruneResult): string {
   if (result.planned.length === 0) {
     lines.push('  Nothing to prune — already clean.');
   } else {
-    lines.push(`  ${verb} ${result.planned.length} hook log(s), ${formatBytes(result.reclaimedBytes)}:`);
+    lines.push(`  ${verb} ${result.planned.length} artifact(s), ${formatBytes(result.reclaimedBytes)}:`);
     for (const r of result.planned) {
-      const owner = r.taskId ? `task ${r.taskId}` : 'orphan';
-      lines.push(`    - ${r.tmuxSession}.jsonl  (${owner}, ${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`);
+      if (r.kind === 'hook-log') {
+        const owner = r.taskId ? `task ${r.taskId}` : 'orphan';
+        lines.push(`    - ${r.tmuxSession}.jsonl  (${owner}, ${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`);
+        continue;
+      }
+      lines.push(`    - ${basename(r.path)}  (${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`);
     }
   }
   lines.push(`  Preserved ${result.preserved.length} store(s) by design (crash-recovery / audit / ambiguous mapping).`);

@@ -56,6 +56,16 @@ describe('planAndPruneMaintenance', () => {
     return path;
   }
 
+  async function writeDataFile(fileName: string, contents: string, mtimeDaysAgo?: number): Promise<string> {
+    const path = join(dataDir, fileName);
+    await writeFile(path, contents, 'utf8');
+    if (mtimeDaysAgo !== undefined) {
+      const when = new Date(NOW - mtimeDaysAgo * MS_PER_DAY);
+      await utimes(path, when, when);
+    }
+    return path;
+  }
+
   const exists = async (path: string): Promise<boolean> =>
     stat(path).then(() => true).catch(() => false);
 
@@ -221,6 +231,54 @@ describe('planAndPruneMaintenance', () => {
     expect(await exists(join(dataDir, 'tasks.json'))).toBe(true);
     expect(result.preserved).toEqual([...PRESERVED_STORES]);
     expect(result.preserved.length).toBeGreaterThan(0);
+  });
+
+  test('prunes aged server.log generations without deleting the current log', async () => {
+    await writeTasks([]);
+    const current = await writeDataFile('server.log', 'current\n', 90);
+    const agedGeneration = await writeDataFile('server.log.1', 'old\n', 60);
+    const recentGeneration = await writeDataFile('server.log.2', 'recent\n', 2);
+    const nonGeneration = await writeDataFile('server.log.previous', 'manual copy\n', 90);
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    expect(result.planned).toHaveLength(1);
+    expect(result.planned[0]).toMatchObject({
+      kind: 'server-log-generation',
+      reason: 'server-log-generation-aged',
+      generation: 1,
+    });
+    expect(await exists(agedGeneration)).toBe(false);
+    expect(await exists(current)).toBe(true);
+    expect(await exists(recentGeneration)).toBe(true);
+    expect(await exists(nonGeneration)).toBe(true);
+  });
+
+  test('dry-run reports aged server.log generations without deleting them', async () => {
+    await writeTasks([]);
+    const agedGeneration = await writeDataFile('server.log.3', 'old\n', 60);
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, dryRun: true, now });
+
+    expect(result.planned).toHaveLength(1);
+    expect(result.planned[0]).toMatchObject({ kind: 'server-log-generation', generation: 3 });
+    expect(result.removed).toHaveLength(0);
+    expect(result.reclaimedBytes).toBeGreaterThan(0);
+    expect(await exists(agedGeneration)).toBe(true);
+  });
+
+  test('malformed tasks.json still allows server.log generation pruning', async () => {
+    await writeFile(join(dataDir, 'tasks.json'), '{ this is not json', 'utf8');
+    const orphan = await writeHook('kookr-orphan-old', 90);
+    const agedGeneration = await writeDataFile('server.log.1', 'old\n', 60);
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    expect(result.warnings.join('\n')).toMatch(/tasks\.json is unreadable/);
+    expect(result.planned).toHaveLength(1);
+    expect(result.planned[0]).toMatchObject({ kind: 'server-log-generation' });
+    expect(await exists(orphan)).toBe(true);
+    expect(await exists(agedGeneration)).toBe(false);
   });
 
   test('absent tasks.json still prunes aged orphans (ENOENT != malformed)', async () => {

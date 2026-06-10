@@ -4,22 +4,27 @@ import { join } from 'node:path';
 import { isTerminalStatus, type TaskStatus } from './task-status.js';
 
 /**
- * Data-directory retention/compaction maintenance sweep (issue #706).
+ * Data-directory retention/compaction maintenance sweep.
  *
  * Kookr accumulates per-task append-only stores under its data directory
  * (`~/.kookr` or `~/.kookr-<port>`) with no global retention policy. This
  * module provides a *conservative, idempotent* prune surface: it removes hook
  * event logs that belong to terminal (completed/terminated/cancelled) tasks
- * whose last activity is older than a configurable age threshold, plus
- * long-dead orphan hook logs no task references any more.
+ * whose last activity is older than a configurable age threshold, long-dead
+ * orphan hook logs no task references any more, and aged rotated
+ * `server.log.N` generations.
  *
- * ## Why hook logs, and (deliberately) nothing else
+ * ## Why hook logs and server.log generations, and (deliberately) nothing else
  *
  * Hook event logs live at `<dataDir>/hooks/<tmuxSession>.jsonl` and are keyed
  * directly by a value that is present on every {@link Task} session
  * (`session.tmuxSession`), so they can be mapped to an owning task with no
  * ambiguity. Once a task is terminal *and* aged, the live `HookFileWatcher`
  * no longer watches that session, so the file is inert append-only history.
+ *
+ * Rotated `server.log.N` generations are process-level diagnostics created by
+ * `scripts/prod-restart.sh`; only numbered generations are pruned, never the
+ * live `server.log`.
  *
  * Every other on-disk store is left intact on purpose — see
  * {@link PRESERVED_STORES} for the per-store rationale. The guiding rule from
@@ -32,6 +37,7 @@ import { isTerminalStatus, type TaskStatus } from './task-status.js';
  */
 
 const HOOKS_DIRNAME = 'hooks';
+const SERVER_LOG_GENERATION_RE = /^server\.log\.(\d+)$/;
 const DEFAULT_MAX_AGE_DAYS = 30;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -50,28 +56,34 @@ export interface MaintenancePruneOptions {
   now?: () => number;
 }
 
-/** Why a particular hook log was selected for removal. */
-export type RemovalReason =
-  /** The file belongs to a terminal task whose last activity is older than the threshold. */
-  | 'completed-task-aged'
-  /** No task references this file and it has not been touched within the threshold. */
-  | 'orphan-aged';
-
-export interface PlannedRemoval {
+interface PlannedRemovalBase {
   /** Absolute path of the file slated for removal. */
   path: string;
-  /** Artifact category. Currently only hook event logs are pruned. */
-  kind: 'hook-log';
-  reason: RemovalReason;
-  /** Owning task id when the file maps to a known terminal task; undefined for orphans. */
-  taskId?: string;
-  /** The tmux session name the hook file is keyed by. */
-  tmuxSession: string;
   /** File size in bytes captured at planning time. */
   bytes: number;
   /** Whole-day age of the artifact at planning time. */
   ageDays: number;
 }
+
+export interface HookLogPlannedRemoval extends PlannedRemovalBase {
+  /** Artifact category. */
+  kind: 'hook-log';
+  reason: 'completed-task-aged' | 'orphan-aged';
+  /** Owning task id when the file maps to a known terminal task; undefined for orphans. */
+  taskId?: string;
+  /** The tmux session name the hook file is keyed by. */
+  tmuxSession: string;
+}
+
+export interface ServerLogGenerationPlannedRemoval extends PlannedRemovalBase {
+  /** Artifact category. */
+  kind: 'server-log-generation';
+  reason: 'server-log-generation-aged';
+  /** Number suffix from `server.log.N` when pruning a rotated server log. */
+  generation: number;
+}
+
+export type PlannedRemoval = HookLogPlannedRemoval | ServerLogGenerationPlannedRemoval;
 
 export interface PreservedStore {
   /** Human-readable label of the store left intact. */
@@ -205,41 +217,25 @@ async function readTasks(dataDir: string): Promise<TaskLike[] | undefined> {
   return tasks as TaskLike[];
 }
 
-/**
- * Plan (and, unless `dryRun`, execute) a conservative data-directory prune.
- *
- * Idempotent: on a clean data dir, or once aged artifacts have already been
- * removed, it is a silent no-op with an empty plan.
- */
-export async function planAndPruneMaintenance(
-  options: MaintenancePruneOptions,
-): Promise<MaintenancePruneResult> {
-  const { dataDir, dryRun = false } = options;
-  const now = options.now ?? Date.now;
-  const maxAgeDays = options.maxAgeDays ?? DEFAULT_MAX_AGE_DAYS;
-  if (!Number.isFinite(maxAgeDays) || maxAgeDays <= 0) {
-    throw new Error(`maxAgeDays must be a positive number (got ${String(options.maxAgeDays)})`);
-  }
-
-  const warnings: string[] = [];
-  const result: MaintenancePruneResult = {
-    dataDir,
-    dryRun,
-    maxAgeDays,
-    planned: [],
-    removed: [],
-    reclaimedBytes: 0,
-    preserved: [...PRESERVED_STORES],
-    warnings,
-  };
-
+async function planHookLogRemovals({
+  dataDir,
+  maxAgeDays,
+  now,
+  warnings,
+}: {
+  dataDir: string;
+  maxAgeDays: number;
+  now: () => number;
+  warnings: string[];
+}): Promise<PlannedRemoval[]> {
+  const planned: PlannedRemoval[] = [];
   const tasks = await readTasks(dataDir);
   if (tasks === undefined) {
-    // We cannot tell active sessions from dead ones — refuse to delete anything.
+    // We cannot tell active sessions from dead ones — refuse to delete hook logs.
     warnings.push(
       'tasks.json is unreadable or malformed; skipping all hook-log pruning to avoid deleting live state.',
     );
-    return result;
+    return planned;
   }
 
   const thresholdMs = now() - maxAgeDays * MS_PER_DAY;
@@ -281,9 +277,9 @@ export async function planAndPruneMaintenance(
   try {
     hookFiles = await readdir(hooksDir);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return result; // clean-state no-op
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return planned; // clean-state no-op
     warnings.push(`Could not read hooks directory ${hooksDir}: ${(err as Error).message}`);
-    return result;
+    return planned;
   }
 
   for (const fileName of hookFiles) {
@@ -306,7 +302,7 @@ export async function planAndPruneMaintenance(
     }
 
     const terminal = terminalSessions.get(tmuxSession);
-    let reason: RemovalReason;
+    let reason: HookLogPlannedRemoval['reason'];
     let ageRefMs: number;
     let taskId: string | undefined;
 
@@ -326,8 +322,97 @@ export async function planAndPruneMaintenance(
     if (ageRefMs > thresholdMs) continue; // too recent — preserve
 
     const ageDays = Math.floor((now() - ageRefMs) / MS_PER_DAY);
-    result.planned.push({ path: filePath, kind: 'hook-log', reason, taskId, tmuxSession, bytes, ageDays });
+    planned.push({ path: filePath, kind: 'hook-log', reason, taskId, tmuxSession, bytes, ageDays });
   }
+
+  return planned;
+}
+
+async function planServerLogGenerationRemovals({
+  dataDir,
+  maxAgeDays,
+  now,
+  warnings,
+}: {
+  dataDir: string;
+  maxAgeDays: number;
+  now: () => number;
+  warnings: string[];
+}): Promise<PlannedRemoval[]> {
+  const planned: PlannedRemoval[] = [];
+  const thresholdMs = now() - maxAgeDays * MS_PER_DAY;
+  let entries: string[];
+  try {
+    entries = await readdir(dataDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return planned;
+    warnings.push(`Could not read data directory ${dataDir}: ${(err as Error).message}`);
+    return planned;
+  }
+
+  for (const fileName of entries) {
+    const match = SERVER_LOG_GENERATION_RE.exec(fileName);
+    if (!match) continue;
+
+    const filePath = join(dataDir, fileName);
+    let bytes = 0;
+    let mtimeMs = now();
+    try {
+      const st = await stat(filePath);
+      if (!st.isFile()) continue;
+      bytes = st.size;
+      mtimeMs = st.mtimeMs;
+    } catch {
+      continue; // vanished between readdir and stat — nothing to do
+    }
+
+    if (mtimeMs > thresholdMs) continue;
+
+    planned.push({
+      path: filePath,
+      kind: 'server-log-generation',
+      reason: 'server-log-generation-aged',
+      generation: Number(match[1]),
+      bytes,
+      ageDays: Math.floor((now() - mtimeMs) / MS_PER_DAY),
+    });
+  }
+
+  return planned;
+}
+
+/**
+ * Plan (and, unless `dryRun`, execute) a conservative data-directory prune.
+ *
+ * Idempotent: on a clean data dir, or once aged artifacts have already been
+ * removed, it is a silent no-op with an empty plan.
+ */
+export async function planAndPruneMaintenance(
+  options: MaintenancePruneOptions,
+): Promise<MaintenancePruneResult> {
+  const { dataDir, dryRun = false } = options;
+  const now = options.now ?? Date.now;
+  const maxAgeDays = options.maxAgeDays ?? DEFAULT_MAX_AGE_DAYS;
+  if (!Number.isFinite(maxAgeDays) || maxAgeDays <= 0) {
+    throw new Error(`maxAgeDays must be a positive number (got ${String(options.maxAgeDays)})`);
+  }
+
+  const warnings: string[] = [];
+  const result: MaintenancePruneResult = {
+    dataDir,
+    dryRun,
+    maxAgeDays,
+    planned: [],
+    removed: [],
+    reclaimedBytes: 0,
+    preserved: [...PRESERVED_STORES],
+    warnings,
+  };
+
+  result.planned.push(
+    ...(await planHookLogRemovals({ dataDir, maxAgeDays, now, warnings })),
+    ...(await planServerLogGenerationRemovals({ dataDir, maxAgeDays, now, warnings })),
+  );
 
   // Stable, deterministic ordering for output and tests.
   result.planned.sort((a, b) => a.path.localeCompare(b.path));

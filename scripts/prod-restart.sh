@@ -15,6 +15,27 @@ else
   KOOKR_DIR="${HOME}/.kookr-${PORT}"
 fi
 LOG_FILE="${KOOKR_DIR}/server.log"
+LOG_GENERATIONS="${KOOKR_LOG_GENERATIONS:-3}"
+MAX_LOG_GENERATIONS=100
+
+validate_log_generations() {
+  if [[ ! "$LOG_GENERATIONS" =~ ^[0-9]+$ ]]; then
+    echo "KOOKR_LOG_GENERATIONS must be a non-negative integer (got ${LOG_GENERATIONS})" >&2
+    exit 2
+  fi
+  while [[ "$LOG_GENERATIONS" == 0* && "${#LOG_GENERATIONS}" -gt 1 ]]; do
+    LOG_GENERATIONS="${LOG_GENERATIONS#0}"
+  done
+  if (( ${#LOG_GENERATIONS} > 3 )); then
+    echo "KOOKR_LOG_GENERATIONS must be <= ${MAX_LOG_GENERATIONS} (got ${LOG_GENERATIONS})" >&2
+    exit 2
+  fi
+  LOG_GENERATIONS="$((10#$LOG_GENERATIONS))"
+  if (( LOG_GENERATIONS > MAX_LOG_GENERATIONS )); then
+    echo "KOOKR_LOG_GENERATIONS must be <= ${MAX_LOG_GENERATIONS} (got ${LOG_GENERATIONS})" >&2
+    exit 2
+  fi
+}
 
 get_process_cwd() {
   local pid="$1"
@@ -154,14 +175,37 @@ stop_existing_server() {
   fi
 }
 
+rotate_server_log() {
+  local generations="$LOG_GENERATIONS"
+  local i
+
+  for (( i = generations; i <= MAX_LOG_GENERATIONS; i++ )); do
+    rm -f -- "${LOG_FILE}.${i}"
+  done
+
+  if (( generations == 0 )) || [[ ! -e "$LOG_FILE" ]]; then
+    return 0
+  fi
+
+  for (( i = generations - 1; i >= 1; i-- )); do
+    if [[ -e "${LOG_FILE}.${i}" ]]; then
+      mv -f -- "${LOG_FILE}.${i}" "${LOG_FILE}.$((i + 1))"
+    fi
+  done
+  mv -f -- "$LOG_FILE" "${LOG_FILE}.1"
+  echo "Rotated previous server log to ${LOG_FILE}.1 (retaining ${generations} generation(s))"
+}
+
 start_server() {
   rm -f "$PID_FILE"
   mkdir -p "$KOOKR_DIR"
+  validate_log_generations
   if [[ -s "$LOG_FILE" ]]; then
     echo "--- last 20 lines of previous ${LOG_FILE} ---"
     tail -n 20 "$LOG_FILE" || true
     echo "--- end of previous log ---"
   fi
+  rotate_server_log
   echo "Starting Kookr prod server from ${APP_DIR}"
   echo "Server stdout/stderr → ${LOG_FILE}"
   setsid -f sh -c "echo \$\$ > \"$PID_FILE\"; exec node dist/server/start.js > \"$LOG_FILE\" 2>&1 < /dev/null"
@@ -203,6 +247,10 @@ wait_for_health() {
   echo "Health check failed after ${STARTUP_TIMEOUT_SECONDS}s"
   exit 1
 }
+
+if [[ "${KOOKR_PROD_RESTART_TEST_ONLY:-}" == "1" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 stop_existing_server
 start_server
