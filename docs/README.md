@@ -59,6 +59,7 @@ We publish drafts intentionally — the design history is part of the engineerin
 - [API Reference](reference/api.md)
 - [CLI Reference](reference/cli.md)
 - [Environment Variables](reference/environment-variables.md)
+- [Playbooks Reference](reference/playbooks.md)
 - [Read-Only Shared View Setup](reference/shared-view-setup.md)
 
 ## A note on transparency
