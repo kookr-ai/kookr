@@ -1,8 +1,10 @@
 import webpush from 'web-push';
+import type { LookupFunction } from 'node:net';
 
 import type { NodeId } from '../../../src/remote/ids.js';
 import type { RedactedPushPayload } from '../../../src/remote/push.js';
 import type { PushSubscriptionStore } from './subscriptions.js';
+import { createPushEndpointValidationAgent, validatePushEndpoint } from './validate-endpoint.js';
 import type { VapidKeyStore } from './vapid.js';
 
 export type PushDeliveryResult = 'sent' | 'skipped-disabled' | 'gone' | 'failed';
@@ -31,8 +33,10 @@ export function createPushFanout(opts: {
   subject?: string;
   disabled?: boolean;
   sender?: PushSender;
+  endpointResolver?: LookupFunction;
 }): PushFanout {
   const sender = opts.sender ?? ((subscription, payload, options) => webpush.sendNotification(subscription, payload, options));
+  const endpointValidationAgent = createPushEndpointValidationAgent(opts.endpointResolver);
   const subject = opts.subject ?? 'mailto:ops@kookr.local';
 
   async function deliver(deviceId: string, payload: RedactedPushPayload): Promise<PushDeliveryOutcome> {
@@ -44,6 +48,16 @@ export function createPushFanout(opts: {
       opts.subscriptions.remove(deviceId);
       return { deviceId, result: 'gone', statusCode: 410 };
     }
+    const endpointValidation = validatePushEndpoint(stored.subscription.endpoint);
+    if (!endpointValidation.ok) {
+      opts.subscriptions.remove(deviceId);
+      return {
+        deviceId,
+        result: 'failed',
+        statusCode: 400,
+        error: endpointValidation.reason,
+      };
+    }
 
     try {
       await sender(stored.subscription, JSON.stringify(payload), {
@@ -53,6 +67,7 @@ export function createPushFanout(opts: {
           privateKey: vapid.privateKey,
         },
         TTL: 300,
+        agent: endpointValidationAgent,
       });
       return { deviceId, result: 'sent' };
     } catch (err) {

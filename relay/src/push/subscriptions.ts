@@ -1,5 +1,6 @@
 import type webpush from 'web-push';
 import type { NodeId } from '../../../src/remote/ids.js';
+import { isValidPushEndpoint } from './validate-endpoint.js';
 
 export interface StoredPushSubscription {
   deviceId: string;
@@ -73,6 +74,7 @@ export function isPushSubscription(value: unknown): value is webpush.PushSubscri
   return typeof value === 'object'
     && value !== null
     && typeof sub.endpoint === 'string'
+    && isValidPushEndpoint(sub.endpoint)
     && typeof keys?.p256dh === 'string'
     && typeof keys.auth === 'string';
 }
