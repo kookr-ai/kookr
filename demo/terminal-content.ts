@@ -70,11 +70,38 @@ export function jwtFixContent(): string {
     `${line(11)}   }`,
     `${line(12)} }`,
     ``,
-    `${B}${W}> ${R}${BL}Bash${R} ${D}rm -rf node_modules && npm install${R}`,
+    `${B}${W}> ${R}${BL}Bash${R} ${D}npm test --coverage${R}`,
     ``,
     `  ${Y}⚠ Permission required${R}`,
     `  Tool: ${W}Bash${R}`,
-    `  Command: ${D}rm -rf node_modules && npm install${R}`,
+    `  Command: ${D}npm test --coverage${R}`,
+    ``,
+  ].join('\n');
+}
+
+/** Agent 1 after the permission is granted from Kookr — the approved command
+ *  runs and the agent keeps working. Streamed so the resumption is visible. */
+export function jwtResumeContent(): string {
+  return [
+    `  ${G}✓ Permission granted${R} ${D}(via Kookr)${R}`,
+    ``,
+    `${B}${W}> ${R}${BL}Bash${R} ${D}npm test --coverage${R}`,
+    ``,
+    `  ${W}PASS${R} ${D}src/auth/__tests__/${R}token.test.ts`,
+    `    ${G}✓${R} refreshToken returns a new token ${GR}(3ms)${R}`,
+    `    ${G}✓${R} refreshToken rejects expired tokens ${GR}(1ms)${R}`,
+    `    ${G}✓${R} refreshToken preserves user claims ${GR}(2ms)${R}`,
+    `    ${G}✓${R} refreshToken extends expiration ${GR}(1ms)${R}`,
+    `  ${W}PASS${R} ${D}src/auth/__tests__/${R}middleware.test.ts`,
+    `    ${G}✓${R} rejects requests without a token ${GR}(2ms)${R}`,
+    `    ${G}✓${R} refreshes tokens close to expiry ${GR}(4ms)${R}`,
+    ``,
+    `  ${B}${G}Tests:${R}    6 passed, 6 total`,
+    `  ${B}${W}Coverage:${R} 94.2% statements ${D}(threshold 90%)${R}`,
+    `  ${B}${W}Time:${R}     1.21s`,
+    ``,
+    `${B}${W}> ${R}${G}Edit${R} ${D}src/auth/token.ts${R}`,
+    `  ${D}Adding clock-skew tolerance to the refresh window...${R}`,
     ``,
   ].join('\n');
 }

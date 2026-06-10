@@ -159,6 +159,12 @@ The demo uses `FakeTerminalBackend` — no real agents run. This means features 
 - **Project-filter sync**: selecting a task switches the project filter to that task's project. After triaging a webapp finding, api-service agents are filtered out — click the all-projects chip before showcasing them.
 - **Findings auto-scroll**: a new finding scrolls the list to top, which can swallow a click landed mid-scroll. `selectFindingByText` retries once.
 - **Achievement toasts**: pop at uncontrolled times bottom-right and read as noise to first-time viewers — suppressed via injected CSS for the entire recording.
+- **Launch cwd validation (RFC F12)**: the production task-creation API rejects nonexistent working directories with `invalid_cwd`. The e2e test server no-ops the check (#871), but seeded agents use real temp dirs (`$TMPDIR/kookr-demo-cwd/...`, created in `record()`) so the demo never depends on that no-op staying in place.
+- **Provider badge is in the collapsed "Details" popover**: `.detail-agent-provider` resolves but is hidden until the `.detail-meta-menu > summary` is clicked. Open the popover on screen before zooming on the Codex badge.
+- **Terminal content binds at WebSocket connect**: calling `set-terminal-content` on an already-open terminal does nothing visible. To show an agent "resuming", set the new streaming content first, then (re)select the task so a fresh terminal connection picks it up.
+- **The worktree `.env` carries real Telegram credentials**: the demo server is forked with `KOOKR_REMOTE_CHAT_DISABLED=1`, otherwise injected demo alerts send actual Telegram notifications mid-recording.
+- **The startup curtain must be in the served HTML, not script-mounted**: Vite's module scripts paint the dashboard ~60ms after navigation — before DOMContentLoaded and unreliably ordered against init scripts. Both script-based curtain variants lost the race in real recordings (dashboard flash at t=0). The curtain div is injected by route-intercepting the document request and rewriting the HTML.
+- **`route.fulfill()` on the document breaks the page's WebSocket**: Chromium's Local Network Access checks block `ws://127.0.0.1` from a fulfilled (provenance-less) document with `ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`. The recorder launches Chromium with `--disable-features=LocalNetworkAccessChecks`. Symptom if it regresses: the dashboard renders but stays empty (no tasks, no findings) while API seeding succeeds.
 
 ## Demo Content Quality
 
@@ -184,6 +190,15 @@ These came out of a panel of simulated first-time viewers (skeptic, eng manager,
 - **Answer "how does it attach?" early** (the plumbing narration line: local hooks, replies land in the agent's terminal, nothing leaves your machine). It is the #1 skeptic objection.
 - **The closing card is a real CTA**: repo URL, clone command, star prompt, stat strip. No unverifiable claims ("two minutes") in the narration.
 - **The thumbnail is captured in a post-credits epilogue** after the `video_end` tracker mark; the published video is trimmed there, so the overlay never appears in footage.
+
+Round 2 (second fresh-eyes panel: skeptic, retention editor, OSS-maintainer ICP, non-native/muted viewer):
+- **Every spoken claim needs on-screen proof at the moment it is spoken.** "One click unblocks" → the reopened agent's terminal streams the granted command running. "This agent is Codex" → the provider badge is opened and zoomed. "CI fails" → the check flips to red live in the zoomed PR card. Claims without visible evidence read as vaporware to skeptics.
+- **Zoom punches (`zoomTo`/`zoomReset`) for anything that must be readable on a phone**: permission card + actions, AI reply drafts, PR card, completion digest, the TopBar cost. A 1080p dashboard wide-shot is ~8px text on mobile. `zoomTo` waits for its selector, so check mode catches zoom-target drift.
+- **The session cost must visibly tick upward** (`setSpend` at act transitions, final tick lands exactly on the number the narration quotes). A static counter reads as mocked data — the skeptic persona called a never-changing "$1.47" the single biggest credibility hit.
+- **The cold-open grid must MOVE**: pane lines type in progressively, the permission pane pulses. Three identical frames at t=0 loses autoplay viewers before the first caption ends.
+- **Pulse-highlight (`pulseHighlight`) interactive elements before clicking them** (project chips, GitHub tab) — muted viewers need to see WHERE the interaction happens, narration can't carry it.
+- **Write narration for B1–B2 English**: no idioms ("leverage", "terminal archaeology", "check-in loop"), one verb in the final CTA. ~30% of social-feed viewers watch muted with subtitles.
+- **Keep the toast on the task that caused it**: hold focus ~1.2s after a send before switching selection, or the confirmation toast flashes over an unrelated scene.
 
 ## Post-Recording Checklist
 
