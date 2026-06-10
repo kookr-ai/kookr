@@ -16,6 +16,17 @@ function PRStatusBadge({ status }: { status: GitHubPRState['status'] }) {
   return <span className={classes[status] ?? 'gh-badge'}>{status.toUpperCase()}</span>;
 }
 
+function PRMergeableLabel({ pr }: { pr: GitHubPRState }) {
+  const label = pr.status === 'merged'
+    ? 'N/A'
+    : pr.mergeable === 'UNKNOWN'
+      ? 'pending'
+      : pr.mergeable === 'CONFLICTING'
+        ? 'conflicting'
+        : 'mergeable';
+  return <span>mergeable: {label}</span>;
+}
+
 function CheckIcon({ check }: { check: GitHubCheck }) {
   if (check.status !== 'completed') return <span className="gh-check gh-check-pending">-</span>;
   if (check.conclusion === 'success') return <span className="gh-check gh-check-pass">+</span>;
@@ -52,6 +63,7 @@ function PRCard({ pr }: { pr: GitHubPRState }) {
       <div className="gh-pr-meta">
         <span>{pr.branch} → {pr.baseBranch}</span>
         <span>by @{pr.author}</span>
+        <PRMergeableLabel pr={pr} />
       </div>
 
       {/* Review decision */}

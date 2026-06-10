@@ -8,6 +8,8 @@ import { GitHubScannerService, type GhUserLoginResolver, type RepoHealthFetcher 
 import { GitHubStateStore } from '../../core/github-state-store.js';
 import type { TaskStore } from '../../core/tasks.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
+import { GitHubChangeAgentRelay, type GitHubAgentRelayMode } from '../use-cases/github-agent-relay.js';
+import type { UserInputDeliveryService } from '../user-input-delivery-service.js';
 
 export interface GitHubRuntimeDeps {
   taskStore: TaskStore;
@@ -18,11 +20,15 @@ export interface GitHubRuntimeDeps {
   fetcher?: GitHubFetcher;
   repoHealthFetcher?: RepoHealthFetcher;
   ghUserLoginResolver?: GhUserLoginResolver;
+  userInputDelivery?: Pick<UserInputDeliveryService, 'submitMessage'>;
+  isIdleForInput?: (sessionId: string) => boolean;
+  getGitHubAgentRelayMode?: () => GitHubAgentRelayMode;
 }
 
 export interface GitHubRuntime {
   githubStateStore: GitHubStateStore;
   githubScanner: GitHubScannerService;
+  githubAgentRelay: GitHubChangeAgentRelay | null;
 }
 
 export function createGitHubRuntime(deps: GitHubRuntimeDeps): GitHubRuntime {
@@ -33,6 +39,21 @@ export function createGitHubRuntime(deps: GitHubRuntimeDeps): GitHubRuntime {
     referenceExtractionIntervalMs: deps.githubPollingIntervalSec * 1000,
   };
   const fetcher = new CircuitBreakerGitHubFetcher(deps.fetcher ?? ghCliFetcher, deps.githubBreaker);
+  const relayMode = deps.getGitHubAgentRelayMode?.() ?? 'off';
+  const githubAgentRelay = deps.userInputDelivery && deps.isIdleForInput && deps.getGitHubAgentRelayMode
+    ? new GitHubChangeAgentRelay({
+        taskStore: deps.taskStore,
+        githubStateStore,
+        userInputDelivery: deps.userInputDelivery,
+        isIdleForInput: deps.isIdleForInput,
+        getMode: deps.getGitHubAgentRelayMode,
+        logger: console,
+      })
+    : null;
+
+  if (relayMode !== 'off') {
+    console.log(`[github-agent-relay] mode=${relayMode} armed=pr_merged,pr_conflicting cap=4/task/hour`);
+  }
 
   const githubScanner = new GitHubScannerService({
     taskStore: deps.taskStore,
@@ -63,10 +84,11 @@ export function createGitHubRuntime(deps: GitHubRuntimeDeps): GitHubRuntime {
       });
 
       broadcastGitHubAlerts(deps.broadcastToAll, changes);
+      githubAgentRelay?.onChanges(taskId, changes);
     },
   });
 
-  return { githubStateStore, githubScanner };
+  return { githubStateStore, githubScanner, githubAgentRelay };
 }
 
 function broadcastGitHubAlerts(

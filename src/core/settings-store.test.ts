@@ -88,12 +88,19 @@ describe('validateSettings', () => {
   it('fills missing new fields with defaults', () => {
     const result = validateSettings({ githubPollingEnabled: false, githubPollingIntervalSec: 120 });
     expect(result.autoWatchOssSources).toBe(true);
+    expect(result.githubAgentRelay).toEqual({ mode: 'shadow' });
     expect(result.watchdogStaleThresholdSec).toBe(30);
     expect(result.repeatedErrorThreshold).toBe(3);
     expect(result.maxActiveTasks).toBe(10);
     expect(result.defaultAgentType).toBe('claude-code');
     expect(result.shortcutBindings).toEqual({});
     expect(result.speakVerbosity).toBe('medium');
+  });
+
+  it('accepts valid GitHub agent relay modes and defaults invalid modes to shadow', () => {
+    expect(validateSettings({ githubAgentRelay: { mode: 'off' } }).githubAgentRelay).toEqual({ mode: 'off' });
+    expect(validateSettings({ githubAgentRelay: { mode: 'active' } }).githubAgentRelay).toEqual({ mode: 'active' });
+    expect(validateSettings({ githubAgentRelay: { mode: 'bogus' } }).githubAgentRelay).toEqual({ mode: 'shadow' });
   });
 
   it('accepts valid speakVerbosity values', () => {
@@ -237,6 +244,7 @@ describe('loadSettings / saveSettings', () => {
     const settings = {
       githubPollingEnabled: false,
       githubPollingIntervalSec: 120,
+      githubAgentRelay: { mode: 'active' as const },
       autoWatchOssSources: false,
       watchdogStaleThresholdSec: 45,
       repeatedErrorThreshold: 5,

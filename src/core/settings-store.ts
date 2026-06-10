@@ -25,6 +25,7 @@ const DEFAULT_VERBOSITY: VerbosityScale = 'medium';
 export interface KookrSettings {
   githubPollingEnabled: boolean;
   githubPollingIntervalSec: number;
+  githubAgentRelay: { mode: 'off' | 'shadow' | 'active' };
   autoWatchOssSources: boolean;
   watchdogStaleThresholdSec: number;
   repeatedErrorThreshold: number;
@@ -73,6 +74,7 @@ export interface KookrSettings {
 export const DEFAULT_SETTINGS: KookrSettings = {
   githubPollingEnabled: true,
   githubPollingIntervalSec: 60,
+  githubAgentRelay: { mode: 'shadow' },
   autoWatchOssSources: true,
   watchdogStaleThresholdSec: 30,
   repeatedErrorThreshold: 3,
@@ -112,6 +114,8 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
   const autoWatchOssSources = typeof raw.autoWatchOssSources === 'boolean'
     ? raw.autoWatchOssSources
     : DEFAULT_SETTINGS.autoWatchOssSources;
+
+  const githubAgentRelay = validateGitHubAgentRelay(raw.githubAgentRelay);
 
   let staleThreshold = DEFAULT_SETTINGS.watchdogStaleThresholdSec;
   if (typeof raw.watchdogStaleThresholdSec === 'number' && Number.isFinite(raw.watchdogStaleThresholdSec)) {
@@ -168,6 +172,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     settings: {
       githubPollingEnabled: enabled,
       githubPollingIntervalSec: interval,
+      githubAgentRelay,
       autoWatchOssSources,
       watchdogStaleThresholdSec: staleThreshold,
       repeatedErrorThreshold: errorThreshold,
@@ -180,6 +185,17 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       quietHours: quietHoursValidation.windows,
     },
   };
+}
+
+function validateGitHubAgentRelay(raw: unknown): KookrSettings['githubAgentRelay'] {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return { ...DEFAULT_SETTINGS.githubAgentRelay };
+  }
+
+  const mode = (raw as { mode?: unknown }).mode;
+  return mode === 'off' || mode === 'shadow' || mode === 'active'
+    ? { mode }
+    : { ...DEFAULT_SETTINGS.githubAgentRelay };
 }
 
 /** Known concrete agent types — the only valid keys in an `agentEffort` map. */

@@ -448,6 +448,18 @@ export class Monitor {
     return events[events.length - 1].type === 'permission_request';
   }
 
+  isIdleForInput(agentId: string): boolean {
+    const events = this.agentEvents.get(agentId);
+    if (events && !this.stoppedAgents.has(agentId)) {
+      const turnState = this.deriveTurnStateForSnapshot(agentId, events);
+      return turnState === 'completed_turn' || turnState === 'waiting_for_input';
+    }
+
+    const task = this.taskStore.findTaskBySession(agentId);
+    const session = task?.sessions.find((candidate) => candidate.tmuxSession === agentId);
+    return session?.lastTurnState === 'completed_turn' || session?.lastTurnState === 'waiting_for_input';
+  }
+
   /**
    * Get all agent IDs that currently have a permission_blocked finding.
    */

@@ -10,6 +10,7 @@ import type { AgentSelection } from '../../shared/protocol.js';
 interface MockSettings {
   githubPollingEnabled: boolean;
   githubPollingIntervalSec: number;
+  githubAgentRelay: { mode: 'off' | 'shadow' | 'active' };
   autoWatchOssSources: boolean;
   watchdogStaleThresholdSec: number;
   repeatedErrorThreshold: number;
@@ -81,6 +82,7 @@ function relayStatusWithAction(
 const DEFAULT_SETTINGS: MockSettings = {
   githubPollingEnabled: true,
   githubPollingIntervalSec: 60,
+  githubAgentRelay: { mode: 'shadow' },
   autoWatchOssSources: true,
   watchdogStaleThresholdSec: 30,
   repeatedErrorThreshold: 3,
@@ -272,6 +274,29 @@ describe('SettingsDialog tabs', () => {
     expect(putCall).toBeDefined();
     expect(JSON.parse(String(putCall![1]!.body))).toMatchObject({
       defaultAgentType: 'round-robin',
+    });
+  });
+
+  test('persists the GitHub agent relay mode', async () => {
+    await flush();
+
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="GitHub agent relay mode"]');
+    expect(select).not.toBeNull();
+    expect(select!.value).toBe('shadow');
+
+    await act(async () => {
+      select!.value = 'active';
+      select!.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    const fetchMock = vi.mocked(fetch);
+    const putCall = fetchMock.mock.calls.find(([url, init]) =>
+      url === '/api/settings' && init && init.method === 'PUT'
+    );
+    expect(putCall).toBeDefined();
+    expect(JSON.parse(String(putCall![1]!.body))).toMatchObject({
+      githubAgentRelay: { mode: 'active' },
     });
   });
 
