@@ -55,30 +55,19 @@ When the loop stalls (the reviewer stops improving), the META phase improves the
 
 *Provenance of 0.03: an initial estimate of meaningful-vs-noise F1 movement at the current corpus size (~tens of PRs), not a measured constant — recalibrate when the evaluated corpus grows past ~30 PRs.*
 
-## Stall Detection Logic (orchestrator implements this)
+## Stall and Convergence Logic (owned by the playbook, not this skill)
 
-```
-stall_count = 0
+The dual-threshold design — stall at 0.03 (triggers meta-mutation), convergence
+at 0.05 (triggers stopping), stall checked FIRST, meta-mutation resetting BOTH
+counters — is specified once, in `.kookr/playbooks/reviewer-distillation.md`
+Phase 7. **Read it from there; do not re-derive or copy the pseudocode here.**
+The invariant `stall (0.03) < convergence (0.05)` makes the 0.03–0.05 band the
+meta-mutation window: a run must exhaust its improvement paths before it is
+allowed to stop.
 
-after each iteration:
-  if abs(current_f1 - previous_f1) < 0.03:
-    stall_count += 1
-  else:
-    stall_count = 0
-
-  if stall_count == 2 and not mutator_already_meta_mutated:
-    → META-MUTATE the MUTATOR
-    mutator_already_meta_mutated = true
-    stall_count = 0
-
-  if stall_count == 2 and mutator_already_meta_mutated and not judge_already_meta_mutated:
-    → META-MUTATE the JUDGE
-    judge_already_meta_mutated = true
-    stall_count = 0
-
-  if stall_count == 2 and both already meta-mutated:
-    → all paths exhausted, STOP
-```
+**Measurement validity:** until the evaluated corpus reaches ~30 PRs, treat F1
+as directional, not authoritative — scores may be contaminated by PRs the
+mutator was tuned against (the hold-out partition arrives in SELECT at ~30 PRs).
 
 ## Meta-Mutating the MUTATOR
 
