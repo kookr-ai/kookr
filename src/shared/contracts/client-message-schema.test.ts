@@ -1,7 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, test, expect } from 'vitest';
 import { z } from 'zod';
 import { ClientMessageSchema, summarizeZodIssues } from './client-message-schema.js';
-import { CLIENT_MESSAGE_TYPES, type ClientMessage } from './messages.js';
+import { CLIENT_MESSAGE_TYPES, SERVER_MESSAGE_TYPES, type ClientMessage } from './messages.js';
 import { TELEMETRY_EVENT_TYPES } from './telemetry.js';
 
 describe('summarizeZodIssues', () => {
@@ -480,3 +482,22 @@ describe('ClientMessageSchema — JSON round trips', () => {
     }
   });
 });
+
+describe('API reference WebSocket protocol docs', () => {
+  test('documents every server and client /ws message type', () => {
+    const apiReference = readFileSync(join(process.cwd(), 'docs/reference/api.md'), 'utf8');
+
+    expect(extractDocumentedWsTypes(apiReference, 'Server-to-client messages')).toEqual([...SERVER_MESSAGE_TYPES]);
+    expect(extractDocumentedWsTypes(apiReference, 'Client-to-server messages')).toEqual([...CLIENT_MESSAGE_TYPES]);
+  });
+});
+
+function extractDocumentedWsTypes(markdown: string, heading: string): string[] {
+  const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = markdown.match(new RegExp(`(?:^|\\n)### ${escapedHeading}\\n([\\s\\S]*?)(?=\\n### |\\n## |$)`));
+  expect(match, `missing ${heading} table`).not.toBeNull();
+  const section = match?.[1] ?? '';
+  return [...section.matchAll(/^\| `([^`]+)` \|/gm)]
+    .map((row) => row[1])
+    .filter((type) => type !== 'type');
+}
