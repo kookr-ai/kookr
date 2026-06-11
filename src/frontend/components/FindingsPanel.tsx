@@ -27,6 +27,7 @@ export const SNOOZED_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.snoozed';
 export const COMPLETED_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.completed';
 
 const SPEAK_FINDING_STOP_OTHERS_EVENT = 'kookr:speak-finding-stop-others';
+const FINDING_GROUP_RENDER_LIMIT = 25;
 
 interface Props {
   findings: AgentState[];
@@ -361,6 +362,49 @@ type FindingDisplayItem =
   | { kind: 'rootCauseGroup'; root: AgentState; related: AgentState[] }
   | { kind: 'duplicateGroup'; type: string; agents: AgentState[] };
 
+function visibleFindingAgents(
+  agents: AgentState[],
+  selectedAgentId: string | null,
+  showAll: boolean,
+): AgentState[] {
+  if (showAll || agents.length <= FINDING_GROUP_RENDER_LIMIT) return agents;
+
+  const visible = agents.slice(0, FINDING_GROUP_RENDER_LIMIT);
+  if (selectedAgentId && !visible.some((agent) => agent.agentId === selectedAgentId)) {
+    const selected = agents.find((agent) => agent.agentId === selectedAgentId);
+    // Keep keyboard/current selection visible even when it falls outside the default flood cap.
+    if (selected) return [...visible, selected];
+  }
+  return visible;
+}
+
+function FindingGroupRenderCap({
+  visibleCount,
+  totalCount,
+  label,
+  onShowAll,
+}: {
+  visibleCount: number;
+  totalCount: number;
+  label: string;
+  onShowAll: () => void;
+}): React.ReactElement | null {
+  if (visibleCount >= totalCount) return null;
+  return (
+    <button
+      type="button"
+      className="btn-xs finding-group-show-all"
+      aria-label={`Show all ${totalCount} ${label}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onShowAll();
+      }}
+    >
+      Showing {visibleCount} of {totalCount} - show all
+    </button>
+  );
+}
+
 function buildFindingDisplayItems(findings: AgentState[]): FindingDisplayItem[] {
   const byAgentId = new Map(findings.map((agent) => [agent.agentId, agent]));
   const causalityIds = new Set<string>();
@@ -415,14 +459,15 @@ function buildFindingDisplayItems(findings: AgentState[]): FindingDisplayItem[] 
   return items;
 }
 
-function FindingCard({ agent, selected, send }: {
+const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
   agent: AgentState;
   selected: boolean;
   send: (msg: ClientMessage) => void;
-}) {
+}): React.ReactElement {
   const [showSnooze, setShowSnooze] = useState(false);
   const [showFlagFP, setShowFlagFP] = useState(false);
-  const { selectAgent, nextBottleneck } = useKookrStore();
+  const selectAgent = useKookrStore((s) => s.selectAgent);
+  const nextBottleneck = useKookrStore((s) => s.nextBottleneck);
   const selectedProject = useKookrStore((s) => s.selectedProject);
   const dnd = useDnd();
   const cls = severityClass(agent);
@@ -467,7 +512,11 @@ function FindingCard({ agent, selected, send }: {
 
   const tooltipText = [agent.description, agent.anomaly?.explanation].filter(Boolean).join('\n\n');
   const showProjectBadge = !selectedProject || agent.projectId !== selectedProject;
-  const coordinatorChip = coordinatorChipForTask(useKookrStore((s) => s.coordinator), agent.taskId);
+  const coordinator = useKookrStore((s) => s.coordinator);
+  const coordinatorChip = useMemo(
+    () => coordinatorChipForTask(coordinator, agent.taskId),
+    [coordinator, agent.taskId],
+  );
 
   return (
     <Tooltip text={tooltipText}>
@@ -606,15 +655,17 @@ function FindingCard({ agent, selected, send }: {
       </div>
     </Tooltip>
   );
-}
+});
 
-function RootCauseFindingGroup({ root, related, selectedAgentId, send }: {
+const RootCauseFindingGroup = React.memo(function RootCauseFindingGroup({ root, related, selectedAgentId, send }: {
   root: AgentState;
   related: AgentState[];
   selectedAgentId: string | null;
   send: (msg: ClientMessage) => void;
-}) {
+}): React.ReactElement {
   const [expanded, setExpanded] = useState(true);
+  const [showAllRelated, setShowAllRelated] = useState(false);
+  const visibleRelated = visibleFindingAgents(related, selectedAgentId, showAllRelated);
 
   return (
     <div className="root-cause-group">
@@ -640,7 +691,7 @@ function RootCauseFindingGroup({ root, related, selectedAgentId, send }: {
       </div>
       {expanded && (
         <div className="root-cause-related">
-          {related.map((agent) => (
+          {visibleRelated.map((agent) => (
             <FindingCard
               key={agent.agentId}
               agent={agent}
@@ -648,11 +699,17 @@ function RootCauseFindingGroup({ root, related, selectedAgentId, send }: {
               send={send}
             />
           ))}
+          <FindingGroupRenderCap
+            visibleCount={visibleRelated.length}
+            totalCount={related.length}
+            label="related findings"
+            onShowAll={() => setShowAllRelated(true)}
+          />
         </div>
       )}
     </div>
   );
-}
+});
 
 function HealthyRow({ agent, selected, send }: {
   agent: AgentState;
@@ -831,14 +888,16 @@ function PlaybookGroup({ playbookId, agents, selectedAgentId, send }: {
   );
 }
 
-function FindingGroup({ type, agents, selectedAgentId, send }: {
+const FindingGroup = React.memo(function FindingGroup({ type, agents, selectedAgentId, send }: {
   type: string;
   agents: AgentState[];
   selectedAgentId: string | null;
   send: (msg: ClientMessage) => void;
-}) {
+}): React.ReactElement {
   const [expanded, setExpanded] = useState(false);
-  const { setRespondAllAgentIds, selectAgent } = useKookrStore();
+  const [showAllAgents, setShowAllAgents] = useState(false);
+  const setRespondAllAgentIds = useKookrStore((s) => s.setRespondAllAgentIds);
+  const selectAgent = useKookrStore((s) => s.selectAgent);
   const selectedInGroup = Boolean(selectedAgentId && agents.some((agent) => agent.agentId === selectedAgentId));
   // A `needs_input` group can mix completed turns and explicit AskUserQuestion
   // waits. The header should only read as a completed turn when every member
@@ -846,6 +905,7 @@ function FindingGroup({ type, agents, selectedAgentId, send }: {
   // See issue #358.
   const headerAgent = agents.find((a) => a.turnState !== 'completed_turn') ?? agents[0];
   const cls = headerAgent ? severityClass(headerAgent) : '';
+  const visibleAgents = visibleFindingAgents(agents, selectedAgentId, showAllAgents);
 
   useEffect(() => {
     if (selectedInGroup) setExpanded(true);
@@ -889,17 +949,27 @@ function FindingGroup({ type, agents, selectedAgentId, send }: {
           <button className="btn-xs btn-primary-xs" onClick={handleRespondAll}>Respond to All</button>
         </span>
       </div>
-      {expanded && agents.map((agent) => (
-        <FindingCard
-          key={agent.agentId}
-          agent={agent}
-          selected={agent.agentId === selectedAgentId}
-          send={send}
-        />
-      ))}
+      {expanded && (
+        <>
+          {visibleAgents.map((agent) => (
+            <FindingCard
+              key={agent.agentId}
+              agent={agent}
+              selected={agent.agentId === selectedAgentId}
+              send={send}
+            />
+          ))}
+          <FindingGroupRenderCap
+            visibleCount={visibleAgents.length}
+            totalCount={agents.length}
+            label="findings in this group"
+            onShowAll={() => setShowAllAgents(true)}
+          />
+        </>
+      )}
     </div>
   );
-}
+});
 
 function formatCountdown(snoozedUntil: number): string {
   const remaining = Math.max(0, snoozedUntil - Date.now());
