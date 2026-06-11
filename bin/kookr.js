@@ -11,11 +11,13 @@ Usage:
   kookr                         Start the built Kookr server.
   kookr spawn [OPTIONS] [PROMPT...]    Create a task from the current shell.
   kookr signal <kind> [OPTIONS]  Raise an agent → user signal for the current task.
-  kookr status                  Print a read-only server snapshot.
-  kookr ralph <command> <taskId> Inspect or control a Ralph loop.
+  kookr status [--json]         Print a read-only server snapshot.
+  kookr ralph <command> <taskId> [--json] Inspect or control a Ralph loop.
   kookr drain|resume [OPTIONS]  Control operator drain mode.
   kookr maintenance prune [OPTIONS]   Prune aged completed-task data-dir artifacts.
   kookr push test <deviceId>    Send a relay push test.
+
+Use --json with spawn, status, or ralph for one machine-readable output envelope.
 
 Compatibility aliases:
   kookr-spawn, kookr-status, and kookr-ralph still work for now, but are deprecated.
