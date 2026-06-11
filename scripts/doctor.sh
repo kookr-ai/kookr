@@ -157,6 +157,61 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Required when explicitly configured: startup env + agent binary preflight
+#
+# Uses the same src/server/config-preflight.ts module as server startup so bad
+# KOOKR_AGENT_BIN / KOOKR_CODEX_BIN values and documented env-var constraint
+# violations are visible before first launch.
+# Missing default agent commands are WARN only: a minimal install may use one
+# agent type without installing the other.
+# ---------------------------------------------------------------------------
+if [ -d "$REPO_ROOT/node_modules" ]; then
+  CONFIG_PREFLIGHT_OUTPUT="$(
+    cd "$REPO_ROOT" && node --import tsx --eval '
+      import("./src/server/config-preflight.ts").then(async (mod) => {
+        try { process.loadEnvFile(); } catch {}
+        const result = await mod.runConfigPreflight(process.env);
+        console.log(mod.formatConfigPreflightCliOutput(result));
+        process.exit(mod.hasFatalConfigPreflightIssues(result) ? 2 : result.issues.length > 0 ? 1 : 0);
+      }).catch((err) => {
+        console.error(err instanceof Error ? err.message : String(err));
+        process.exit(2);
+      });
+    ' 2>&1
+  )"
+  CONFIG_PREFLIGHT_STATUS=$?
+  CONFIG_PREFLIGHT_FIRST_LINE="$(printf '%s\n' "$CONFIG_PREFLIGHT_OUTPUT" | head -n1 | tr '\t' ' ')"
+  case "$CONFIG_PREFLIGHT_STATUS" in
+    0)
+      print_row "startup config" "env + agents" "OK" "${CONFIG_PREFLIGHT_FIRST_LINE#OK }"
+      ;;
+    1)
+      if printf '%s\n' "$CONFIG_PREFLIGHT_OUTPUT" | grep -q '^WARN	'; then
+        print_row "startup config" "env + agents" "WARN" "${CONFIG_PREFLIGHT_FIRST_LINE#WARN }"
+        add_fix "Startup config warning(s): $(printf '%s' "$CONFIG_PREFLIGHT_OUTPUT" | tr '\n' ' ')"
+        WARNS=$((WARNS + 1))
+      else
+        print_row "startup config" "env + agents" "WARN" "preflight probe failed"
+        add_fix "Could not run startup config preflight. Run from a fully installed checkout: pnpm install && pnpm doctor. Output: $CONFIG_PREFLIGHT_OUTPUT"
+        WARNS=$((WARNS + 1))
+      fi
+      ;;
+    2)
+      print_row "startup config" "env + agents" "FAIL" "${CONFIG_PREFLIGHT_FIRST_LINE#FAIL }"
+      add_fix "Fix startup configuration: $(printf '%s' "$CONFIG_PREFLIGHT_OUTPUT" | tr '\n' ' ')"
+      FAILS=$((FAILS + 1))
+      ;;
+    *)
+      print_row "startup config" "env + agents" "WARN" "preflight probe failed"
+      add_fix "Could not run startup config preflight. Run from a fully installed checkout: pnpm install && pnpm doctor. Output: $CONFIG_PREFLIGHT_OUTPUT"
+      WARNS=$((WARNS + 1))
+      ;;
+  esac
+else
+  print_row "startup config" "env + agents" "INFO" "skip until pnpm install"
+fi
+
+# ---------------------------------------------------------------------------
 # Optional: Docker (only required for KOOKR_STT / KOOKR_TTS voice features)
 # ---------------------------------------------------------------------------
 DOCKER_OK=0
