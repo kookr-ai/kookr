@@ -170,6 +170,13 @@ export interface KookrConfig {
    * to enable `POST /api/auth/session` and the owner-mutation CSRF guard.
    */
   sessionAuth?: SessionAuthConfig;
+  /**
+   * Test seam for the launch cwd existence check (RFC F12). The E2E test
+   * server passes a no-op because its specs launch into the fictional
+   * `/test/project` against FakeTerminalBackend. Production omits this and
+   * gets the real check. See `LaunchServiceDeps.validateLaunchCwd`.
+   */
+  validateLaunchCwd?: (cwd: string) => Promise<void>;
 }
 
 function getOrCreatePrivateNetworkNodeId(kookrDir: string): NodeId {
@@ -660,6 +667,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     interactionLog,
     terminalBackend,
     isAccepting: () => drainController.isAccepting(),
+    validateLaunchCwd: config.validateLaunchCwd,
   };
 
   let remoteLaunchBroker: import('../remote/launch-broker.js').RemoteLaunchBroker | undefined;

@@ -70,6 +70,14 @@ export interface LaunchServiceDeps {
    * launches normally — in-flight agents are never affected either way.
    */
   isAccepting?: () => boolean;
+  /**
+   * Test seam for the launch cwd existence check (RFC F12). E2E specs launch
+   * tasks into the fictional `/test/project` against FakeTerminalBackend,
+   * where nothing is ever spawned in that directory; a no-op override keeps
+   * those launches accepted. Omitted in production: launches into a missing
+   * cwd are rejected with {@link CwdValidationError}.
+   */
+  validateLaunchCwd?: (cwd: string) => Promise<void>;
 }
 
 /**
@@ -256,7 +264,7 @@ export async function launchTask(
   // creation, or any spawn attempt, so the caller gets the actual cause
   // instead of a delayed "dtach socket did not appear" session failure and no
   // cleanup is needed.
-  await assertLaunchCwdExists(opts.cwd);
+  await (deps.validateLaunchCwd ?? assertLaunchCwdExists)(opts.cwd);
   const maxActive = deps.getMaxActiveTasks?.() ?? MAX_ACTIVE_TASKS;
   // Resolve the agent for this launch. An explicit per-launch request wins
   // over the configured default; either may be the `round-robin` sentinel,
