@@ -11,7 +11,7 @@
  * This module is dynamically imported only when STT is enabled (KOOKR_STT_URL set).
  */
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect, useSyncExternalStore } from 'react';
 
 export type STTState = 'idle' | 'recording' | 'processing' | 'error';
 
@@ -21,16 +21,54 @@ export interface UseSTTResult {
   transcript: string;
   /** Error message if state === 'error' */
   error: string | null;
+  /** True when the last failure came from the STT service itself. */
+  degraded: boolean;
+  /** True while an on-demand STT health retry is in flight. */
+  retrying: boolean;
   /** Elapsed recording time in seconds */
   elapsed: number;
   /** Start recording and streaming to STT service */
   start: () => Promise<void>;
   /** Stop recording and receive final transcription */
   stop: () => void;
+  /** Re-probe STT health and clear degraded state when healthy. */
+  retryHealth: () => Promise<void>;
 }
 
 const TARGET_SAMPLE_RATE = 16000;
 const PROCESSING_TIMEOUT_MS = 15_000;
+
+interface STTHealthSnapshot {
+  degraded: boolean;
+  retrying: boolean;
+  error: string | null;
+}
+
+let sttHealthSnapshot: STTHealthSnapshot = { degraded: false, retrying: false, error: null };
+let sttHealthUrl = '';
+const sttHealthSubscribers = new Set<() => void>();
+
+function getSTTHealthSnapshot(): STTHealthSnapshot {
+  return sttHealthSnapshot;
+}
+
+function subscribeSTTHealth(listener: () => void): () => void {
+  sttHealthSubscribers.add(listener);
+  return () => sttHealthSubscribers.delete(listener);
+}
+
+function setSTTHealth(next: Partial<STTHealthSnapshot>): void {
+  const snapshot = { ...sttHealthSnapshot, ...next };
+  if (
+    snapshot.degraded === sttHealthSnapshot.degraded
+    && snapshot.retrying === sttHealthSnapshot.retrying
+    && snapshot.error === sttHealthSnapshot.error
+  ) {
+    return;
+  }
+  sttHealthSnapshot = snapshot;
+  for (const listener of sttHealthSubscribers) listener();
+}
 
 /**
  * Resample Float32Array audio from sourceSampleRate to TARGET_SAMPLE_RATE
@@ -111,8 +149,10 @@ export function useSTT(sttUrl: string, onTranscript: (text: string) => void): Us
   const [transcript, setTranscript] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const sttHealth = useSyncExternalStore(subscribeSTTHealth, getSTTHealthSnapshot, getSTTHealthSnapshot);
 
   const stateRef = useRef<STTState>('idle');
+  const serviceErrorRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
@@ -123,10 +163,31 @@ export function useSTT(sttUrl: string, onTranscript: (text: string) => void): Us
   const onTranscriptRef = useRef(onTranscript);
   onTranscriptRef.current = onTranscript;
 
+  useEffect(() => {
+    if (sttUrl === sttHealthUrl) return;
+    sttHealthUrl = sttUrl;
+    serviceErrorRef.current = false;
+    setSTTHealth({ degraded: false, retrying: false, error: null });
+  }, [sttUrl]);
+
+  useEffect(() => {
+    if (sttHealth.degraded || !serviceErrorRef.current || stateRef.current !== 'error') return;
+    serviceErrorRef.current = false;
+    setError(null);
+    setStateAndRef('idle');
+  }, [sttHealth.degraded]);
+
   // Keep stateRef in sync
   function setStateAndRef(s: STTState) {
     stateRef.current = s;
     setState(s);
+  }
+
+  function markSTTDegraded(message: string) {
+    serviceErrorRef.current = true;
+    setError(message);
+    setSTTHealth({ degraded: true, error: message });
+    setStateAndRef('error');
   }
 
   const cleanup = useCallback(() => {
@@ -159,6 +220,8 @@ export function useSTT(sttUrl: string, onTranscript: (text: string) => void): Us
     if (stateRef.current === 'recording' || stateRef.current === 'processing') return;
 
     setError(null);
+    serviceErrorRef.current = false;
+    setSTTHealth({ degraded: false, error: null });
     setTranscript('');
     setElapsed(0);
 
@@ -206,16 +269,14 @@ export function useSTT(sttUrl: string, onTranscript: (text: string) => void): Us
     };
 
     ws.onerror = () => {
-      setError('STT service connection failed');
-      setStateAndRef('error');
+      markSTTDegraded('STT service connection failed');
       cleanup();
     };
 
     ws.onclose = () => {
       // Use ref to check current state — closure would capture stale value
       if (stateRef.current === 'recording') {
-        setError('STT service disconnected');
-        setStateAndRef('error');
+        markSTTDegraded('STT service disconnected');
         cleanup();
       }
     };
@@ -230,7 +291,7 @@ export function useSTT(sttUrl: string, onTranscript: (text: string) => void): Us
     const handleChunk = (inputData: Float32Array) => {
       if (ws.readyState !== WebSocket.OPEN) return;
       const pcm16 = resampleToInt16(inputData, audioContext.sampleRate);
-      ws.send(pcm16.buffer);
+      ws.send(pcm16.buffer as ArrayBuffer);
     };
 
     // Prefer AudioWorkletNode (audio thread, never drops frames)
@@ -277,8 +338,7 @@ export function useSTT(sttUrl: string, onTranscript: (text: string) => void): Us
       // Processing timeout — if server never sends final transcription, recover
       processingTimerRef.current = setTimeout(() => {
         if (stateRef.current === 'processing') {
-          setError('Transcription timed out');
-          setStateAndRef('error');
+          markSTTDegraded('Transcription timed out');
           if (wsRef.current) {
             wsRef.current.close();
             wsRef.current = null;
@@ -291,5 +351,36 @@ export function useSTT(sttUrl: string, onTranscript: (text: string) => void): Us
     }
   }, [cleanup]);
 
-  return { state, transcript, error, elapsed, start, stop };
+  const retryHealth = useCallback(async () => {
+    if (sttHealthSnapshot.retrying) return;
+    setSTTHealth({ retrying: true });
+    try {
+      const res = await fetch('/api/health/stt', { cache: 'no-store' });
+      const body = await res.json().catch(() => ({})) as { status?: unknown };
+      if (res.ok && body.status === 'ok') {
+        setError(null);
+        serviceErrorRef.current = false;
+        setSTTHealth({ degraded: false, error: null });
+        setStateAndRef('idle');
+        return;
+      }
+      markSTTDegraded('STT service unavailable');
+    } catch {
+      markSTTDegraded('STT service unavailable');
+    } finally {
+      setSTTHealth({ retrying: false });
+    }
+  }, []);
+
+  return {
+    state,
+    transcript,
+    error: sttHealth.degraded ? sttHealth.error : error,
+    degraded: sttHealth.degraded,
+    retrying: sttHealth.retrying,
+    elapsed,
+    start,
+    stop,
+    retryHealth,
+  };
 }
