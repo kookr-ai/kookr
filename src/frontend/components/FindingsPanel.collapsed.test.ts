@@ -108,6 +108,36 @@ describe('FindingsPanel collapsed-state persistence', () => {
     expect(container.querySelectorAll('.pending-row').length).toBe(1);
   });
 
+  test('collapsible section headers use native focusable button controls', () => {
+    root = renderPanel(container, {
+      healthy: [makeAgent({ agentId: 'h1' })],
+      pending: [makeAgent({ agentId: 'p1' })],
+      snoozed: [makeAgent({ agentId: 's1', snoozedUntil: Date.now() + 60_000 })],
+      completed: [makeAgent({ agentId: 'c1', taskStatus: 'completed' })],
+      clearCompletedFinishedCount: 1,
+    });
+
+    const selectors = [
+      '.healthy-section .section-header',
+      '.pending-section .section-header',
+      '.snoozed-section .section-header',
+      '.completed-section .section-header',
+    ];
+
+    for (const selector of selectors) {
+      const header = container.querySelector(selector);
+      expect(header, `header missing for ${selector}`).toBeInstanceOf(HTMLButtonElement);
+      expect(header?.getAttribute('type')).toBe('button');
+      expect(header?.getAttribute('aria-expanded')).toMatch(/^(true|false)$/);
+      (header as HTMLButtonElement).focus();
+      expect(document.activeElement).toBe(header);
+    }
+
+    const completedHeader = container.querySelector('.completed-section .section-header') as HTMLButtonElement;
+    expect(completedHeader.querySelector('button')).toBeNull();
+    expect(container.querySelector('.completed-section .btn-clear-completed')).toBeInstanceOf(HTMLButtonElement);
+  });
+
   test('stored localStorage value overrides the default for each section', () => {
     localStorage.setItem(HEALTHY_SECTION_COLLAPSED_KEY, '1');
     localStorage.setItem(SNOOZED_SECTION_COLLAPSED_KEY, '0');

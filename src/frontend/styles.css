@@ -906,6 +906,17 @@ kbd {
 .section-header:hover {
   background: rgba(255, 255, 255, 0.03);
 }
+.findings-section-toggle {
+  width: 100%;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.findings-section-toggle:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
 .section-chevron {
   font-size: 11px;
   width: 14px;
@@ -6254,11 +6265,25 @@ label.task-share-row {
   border-color: rgba(255,255,255,0.3);
 }
 
-/* Allow the Completed section header to wrap so the inline confirm dialog
-   can flow onto a second row in the narrow 270px panel without truncating. */
-.completed-section .section-header {
+/* Keep the Completed action beside the toggle without nesting buttons. */
+.completed-section-header-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-panel);
   flex-wrap: wrap;
   row-gap: 4px;
+}
+.completed-section-header-row .section-header {
+  position: static;
+  z-index: auto;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  background: transparent;
 }
 .completed-section .clear-completed-confirm {
   flex-basis: 100%;
