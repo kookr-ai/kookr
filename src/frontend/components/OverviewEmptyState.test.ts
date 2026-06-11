@@ -16,7 +16,7 @@ function syncGlobalStore() {
   useKookrStore.setState(nextData);
 }
 
-function makeWaitingAgent(agentId: string, taskName: string): AgentState {
+function makeWaitingAgent(agentId: string, taskName: string, overrides: Partial<AgentState> = {}): AgentState {
   return {
     agentId,
     taskId: `task-${agentId}`,
@@ -31,6 +31,7 @@ function makeWaitingAgent(agentId: string, taskName: string): AgentState {
     },
     cwd: '/home/user/projects/demo',
     taskStatus: 'inProgress',
+    ...overrides,
   };
 }
 
@@ -49,6 +50,7 @@ describe('OverviewEmptyState', () => {
 
   afterEach(() => {
     act(() => root.unmount());
+    vi.useRealTimers();
     document.body.innerHTML = '';
   });
 
@@ -100,6 +102,31 @@ describe('OverviewEmptyState', () => {
       rows[1].click();
     });
     expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
+  });
+
+  test('shows signal wait age from pendingSignal when anomaly was re-stamped', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-11T18:57:00Z'));
+    const waiting = [
+      makeWaitingAgent('agent-1', 'Review the completed task', {
+        anomaly: {
+          agentId: 'agent-1',
+          type: 'needs_input',
+          severity: 'warning',
+          explanation: 'waiting on you',
+          detectedAt: new Date('2026-06-11T18:49:00Z'),
+        },
+        pendingSignal: {
+          kind: 'completion_ready',
+          raisedAt: '2026-06-07T22:47:00Z',
+        },
+        turnState: 'completed_turn',
+      }),
+    ];
+
+    render({ waiting, runningCount: 0, completedCount: 0 });
+
+    expect(container.querySelector('.overview-waiting-row')?.textContent).toContain('waiting 3d');
   });
 
   test('shows the no-agents message when there is nothing at all', () => {

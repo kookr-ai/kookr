@@ -6,7 +6,7 @@ import {
   type ShortcutBindingMap,
 } from '../../shared/contracts/shortcut-bindings.js';
 import { useKookrStore } from '../store/useStore.js';
-import { formatAge, projectLabel } from '../presentation.js';
+import { findingWaitStartedAt, formatAge, projectLabel } from '../presentation.js';
 import { ShortcutKeys } from './ShortcutKeys.js';
 
 /** Rows shown in the "Waiting on you" list; the rest stay in the findings rail. */
@@ -76,7 +76,7 @@ export function OverviewEmptyState({
             <h3 className="overview-waiting-title">Waiting on you</h3>
             <ul className="overview-waiting-list">
               {waiting.slice(0, MAX_WAITING_ROWS).map((agent) => {
-                const age = formatAge(agent.anomaly?.detectedAt);
+                const age = formatAge(findingWaitStartedAt(agent));
                 return (
                   <li key={agent.agentId}>
                     <button

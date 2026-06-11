@@ -1,4 +1,4 @@
-import type { AgentEvent, TokenUsage, AgentType, TurnState } from '../shared/protocol.js';
+import type { AgentEvent, AgentState, TokenUsage, AgentType, TurnState } from '../shared/protocol.js';
 
 /**
  * A small palette of muted background/text color pairs for project badges.
@@ -238,9 +238,19 @@ export function formatAge(detectedAt: Date | string | undefined): string {
   const ms = Date.now() - new Date(detectedAt).getTime();
   if (ms < 120_000) return '';
   if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
+  if (ms >= 86_400_000) return `${Math.floor(ms / 86_400_000)}d`;
   const h = Math.floor(ms / 3_600_000);
   const m = Math.floor((ms % 3_600_000) / 60_000);
   return `${h}h ${m}m`;
+}
+
+export function findingWaitStartedAt(agent: AgentState): Date | string | undefined {
+  const isSignaledCompleteFinding = agent.anomaly?.type === 'needs_input'
+    && agent.turnState === 'completed_turn'
+    && agent.pendingSignal?.kind === 'completion_ready';
+  // Completion signals survive anomaly re-stamps across server restarts; other
+  // finding types must keep their own detection time for DND and urgency.
+  return isSignaledCompleteFinding ? agent.pendingSignal?.raisedAt : agent.anomaly?.detectedAt;
 }
 
 /**

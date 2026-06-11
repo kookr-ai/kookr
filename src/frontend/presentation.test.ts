@@ -1,6 +1,6 @@
 import { describe, test, expect, vi } from 'vitest';
-import { agentProviderPresentation, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
-import type { AgentEvent } from '../shared/protocol.js';
+import { agentProviderPresentation, findingWaitStartedAt, formatAge, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
+import type { AgentEvent, AgentState } from '../shared/protocol.js';
 
 describe('healthyDotClass', () => {
   test('returns "running" for agent with no events', () => {
@@ -22,6 +22,38 @@ describe('healthyDotClass', () => {
       { type: 'stop', sessionId: 's1', lastMessage: 'All done!' },
     ];
     expect(healthyDotClass(events)).toBe('done');
+  });
+});
+
+describe('finding wait age', () => {
+  test('formats day-old waits compactly', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-11T18:57:00Z'));
+
+    expect(formatAge('2026-06-07T22:47:00Z')).toBe('3d');
+
+    vi.useRealTimers();
+  });
+
+  test('uses pendingSignal.raisedAt instead of re-stamped anomaly.detectedAt', () => {
+    const agent = {
+      agentId: 'agent-1',
+      events: [],
+      turnState: 'completed_turn',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: '2026-06-07T22:47:00Z',
+      },
+      anomaly: {
+        agentId: 'agent-1',
+        type: 'needs_input',
+        severity: 'warning',
+        explanation: 'Agent is waiting for review.',
+        detectedAt: new Date('2026-06-11T18:49:00Z'),
+      },
+    } satisfies AgentState;
+
+    expect(findingWaitStartedAt(agent)).toBe('2026-06-07T22:47:00Z');
   });
 });
 

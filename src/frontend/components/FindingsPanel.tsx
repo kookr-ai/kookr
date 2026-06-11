@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 import { track, trackClick } from '../telemetry.js';
-import { agentProviderPresentation, formatDuration, formatAge, ageColor, healthyDotClass, healthyStatusLabel, formatTokenUsage, projectLabel, projectColor, formatBranch, worktreeHealthLabel, worktreeHealthTitle, turnStateLabel, turnStateClass } from '../presentation.js';
+import { agentProviderPresentation, formatDuration, formatAge, ageColor, findingWaitStartedAt, healthyDotClass, healthyStatusLabel, formatTokenUsage, projectLabel, projectColor, formatBranch, worktreeHealthLabel, worktreeHealthTitle, turnStateLabel, turnStateClass } from '../presentation.js';
 import {
   formatSpeakFindingTimingLine,
   formatSpeakFindingTimingTitle,
@@ -485,11 +485,13 @@ const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
   const dnd = useDnd();
   const cls = severityClass(agent);
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const waitStartedAt = findingWaitStartedAt(agent);
+  const waitAge = formatAge(waitStartedAt);
   const arrivedDuringDnd =
     dnd.enabled &&
     dnd.startedAt !== null &&
-    agent.anomaly?.detectedAt !== undefined &&
-    new Date(agent.anomaly.detectedAt).getTime() >= dnd.startedAt;
+    waitStartedAt !== undefined &&
+    new Date(waitStartedAt).getTime() >= dnd.startedAt;
 
   // Clean up pending click timer on unmount
   useEffect(() => {
@@ -559,7 +561,7 @@ const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
         <div className="finding-header">
           <span className="finding-header-left">
             <AgentProviderMark agent={agent} state="finding" />
-            <span className={`finding-severity ${cls}`} aria-label={`${severityLabel(agent)}${agent.anomaly?.detectedAt && formatAge(agent.anomaly.detectedAt) ? `, waiting ${formatAge(agent.anomaly.detectedAt)}` : ''}`}>{severityLabel(agent)}</span>
+            <span className={`finding-severity ${cls}`} aria-label={`${severityLabel(agent)}${waitAge ? `, waiting ${waitAge}` : ''}`}>{severityLabel(agent)}</span>
             {arrivedDuringDnd && (
               <span
                 className="dnd-arrived-badge"
@@ -573,9 +575,9 @@ const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
           </span>
           <span className="finding-meta">
             <SpeakTaskSummaryControl agent={agent} selected={selected} />
-            {agent.anomaly?.detectedAt && formatAge(agent.anomaly.detectedAt) && (
-              <span className={`age-badge ${ageColor(agent.anomaly.detectedAt)}`}>
-                waiting {formatAge(agent.anomaly.detectedAt)}
+            {waitStartedAt && waitAge && (
+              <span className={`age-badge ${ageColor(waitStartedAt)}`}>
+                waiting {waitAge}
               </span>
             )}
           </span>

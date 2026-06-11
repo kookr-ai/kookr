@@ -82,6 +82,7 @@ describe('FindingsPanel flood rendering bounds', () => {
   afterEach(() => {
     act(() => root?.unmount());
     container.remove();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     document.body.innerHTML = '';
   });
@@ -177,5 +178,34 @@ describe('FindingsPanel flood rendering bounds', () => {
     expect(container.querySelectorAll('.finding-group .finding-card')).toHaveLength(26);
     expect(container.querySelector('.finding-card.selected')?.textContent).toContain('Grouped task 55');
     expect(container.querySelector('.finding-group-show-all')?.textContent).toContain('Showing 26 of 60');
+  });
+
+  test('renders re-stamped signaled findings with the original pending-signal wait age', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-11T18:57:00Z'));
+    const findings = [
+      makeAgent({
+        agentId: 'agent-1',
+        taskId: 'task-1',
+        taskName: 'Old completion signal',
+        turnState: 'completed_turn',
+        pendingSignal: {
+          kind: 'completion_ready',
+          raisedAt: '2026-06-07T22:47:00Z',
+        },
+        anomaly: {
+          agentId: 'agent-1',
+          type: 'needs_input',
+          severity: 'warning',
+          explanation: 'Waiting for review',
+          detectedAt: new Date('2026-06-11T18:49:00Z'),
+        },
+      }),
+    ];
+
+    root = renderPanel(container, findings);
+
+    expect(container.querySelector('.age-badge')?.textContent).toBe('waiting 3d');
+    expect(container.querySelector('.finding-severity')?.getAttribute('aria-label')).toBe('Signaled Complete, waiting 3d');
   });
 });

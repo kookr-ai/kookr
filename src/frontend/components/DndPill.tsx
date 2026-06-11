@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import { useDnd, DND_DURATIONS } from '../hooks/useDnd.js';
+import { findingWaitStartedAt } from '../presentation.js';
 
 function formatRemaining(ms: number): string {
   if (ms <= 0) return '';
@@ -21,7 +22,8 @@ function pendingDuringDnd(agents: ReturnType<typeof useKookrStore.getState>['age
   if (startedAt === null) return 0;
   let count = 0;
   for (const agent of agents) {
-    const detected = agent.anomaly?.detectedAt;
+    if (!agent.anomaly) continue;
+    const detected = findingWaitStartedAt(agent);
     if (!detected) continue;
     if (new Date(detected).getTime() >= startedAt) count += 1;
   }
