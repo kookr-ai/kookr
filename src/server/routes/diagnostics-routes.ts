@@ -22,10 +22,13 @@ import { buildDetectorProposalReportResponseV1 } from '../detector-proposal-repo
 import { REQUEST_LATENCIES_ROUTE } from '../request-duration-metrics.js';
 import type { BackendStats } from '../../adapters/terminal-backend.js';
 import type { RouteDeps } from './shared.js';
+import type { HookIngestionDiagnosticsSnapshot } from '../hook-ingestion.js';
+import type { HookWatcherHealthSnapshot } from '../hook-watcher.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const REVIEW_ADMIN_TOKEN_HEADER = 'x-kookr-admin-token';
 const REVIEW_CSRF_HEADER = 'x-kookr-finding-review-token';
+const DEFAULT_HOOK_INGESTION_LAG_WARNING_THRESHOLD_MS = 2_000;
 
 export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   const { taskStore, queue, adapter, interactionLog, githubScanner, githubStateStore, buildInfo, serverStartedAt } = deps;
@@ -132,6 +135,12 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     }
     return c.json(deps.requestDurationMetrics.snapshot());
   });
+
+  app.get('/api/diagnostics/hook-ingestion', (c) => c.json({
+    schemaVersion: 'hook-ingestion-diagnostics-route.v1',
+    ingestion: deps.hookIngestion?.getDiagnosticsSnapshot() ?? emptyHookIngestionDiagnosticsSnapshot(),
+    watcher: deps.hookWatcher?.getHealthSnapshot() ?? emptyHookWatcherHealthSnapshot(),
+  }));
 
   app.get('/api/live-friction-calibration', async (c) => {
     try {
@@ -511,6 +520,28 @@ function checkPersistenceWritable(kookrDir: string | undefined): ReadinessCheck 
     const code = (err as NodeJS.ErrnoException | undefined)?.code;
     return { critical: true, ready: false, status: 'error', reason: typeof code === 'string' ? code : 'unwritable' };
   }
+}
+
+function emptyHookIngestionDiagnosticsSnapshot(): HookIngestionDiagnosticsSnapshot {
+  return {
+    schemaVersion: 'hook-ingestion-diagnostics.v1',
+    generatedAt: new Date().toISOString(),
+    lagWarningThresholdMs: DEFAULT_HOOK_INGESTION_LAG_WARNING_THRESHOLD_MS,
+    sessionCount: 0,
+    totalArrivals: 0,
+    missingWriteTimestampCount: 0,
+    notableLagCount: 0,
+    sessions: [],
+  };
+}
+
+function emptyHookWatcherHealthSnapshot(): HookWatcherHealthSnapshot {
+  return {
+    schemaVersion: 'hook-watcher-health.v1',
+    generatedAt: new Date().toISOString(),
+    sessionCount: 0,
+    sessions: [],
+  };
 }
 
 function isAuthorizedFindingReviewRequest(remoteAddress: string | undefined, adminTokenHeader: string | undefined): boolean {

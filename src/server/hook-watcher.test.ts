@@ -375,6 +375,100 @@ describe('HookFileWatcher', () => {
     expect(events.length).toBe(1);
   });
 
+  test('health snapshot reports watcher mode, replay records, and drain latency', async () => {
+    const hookFile = join(tempDir, 'kookr-health.jsonl');
+    const sessionStart = JSON.stringify({
+      session_id: 'health-sess',
+      transcript_path: '/health.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+    });
+    writeFileSync(hookFile, `${sessionStart}\n`);
+
+    const task = taskStore.createTask('Health', '/cwd');
+    adapter['tmuxToTaskId'].set('kookr-health', task.id);
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-health',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+
+    watcher.watch('kookr-health', { replayExisting: true });
+    await new Promise((r) => setTimeout(r, 200));
+    await watcher.drainNow('kookr-health');
+
+    const snapshot = watcher.getHealthSnapshot();
+    expect(snapshot).toEqual(expect.objectContaining({
+      schemaVersion: 'hook-watcher-health.v1',
+      sessionCount: 1,
+    }));
+    expect(snapshot.sessions[0]).toEqual(expect.objectContaining({
+      tmuxName: 'kookr-health',
+      mode: 'fs_watch',
+      pollBackupActive: true,
+      replayExisting: true,
+      readCount: expect.any(Number),
+      recordCount: 1,
+      replayRecordCount: 1,
+      drainNowCount: 1,
+      lastDrainLatencyMs: expect.any(Number),
+      maxDrainLatencyMs: expect.any(Number),
+      p95DrainLatencyMs: expect.any(Number),
+      lastReadAt: expect.any(String),
+      lastError: null,
+    }));
+  });
+
+  test('health snapshot reports poll-until-exists mode before a missing hook file appears', () => {
+    watcher.watch('kookr-missing-health');
+
+    const snapshot = watcher.getHealthSnapshot();
+    expect(snapshot.sessions[0]).toEqual(expect.objectContaining({
+      tmuxName: 'kookr-missing-health',
+      mode: 'poll_until_exists',
+      pollBackupActive: false,
+      lastTransitionReason: 'watch_file_missing',
+    }));
+  });
+
+  test('forwards file mtime metadata to the ingestion adapter', async () => {
+    const hookFile = join(tempDir, 'kookr-mtime.jsonl');
+    const raw = JSON.stringify({
+      session_id: 'mtime-sess',
+      transcript_path: '/mtime.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+    });
+    writeFileSync(hookFile, `${raw}\n`);
+
+    const calls: Array<Parameters<HookEventInjector['injectHookEvent']>> = [];
+    const captureAdapter: HookEventInjector = {
+      injectHookEvent(...args) {
+        calls.push(args);
+        return {
+          parseStatus: 'ok',
+          agentType: 'claude-code',
+          parentage: 'parent',
+          sequence: args[2] ?? 0,
+        };
+      },
+    };
+    const mtimeWatcher = new HookFileWatcher(tempDir, captureAdapter);
+
+    try {
+      mtimeWatcher.watch('kookr-mtime', { replayExisting: true });
+      await new Promise((r) => setTimeout(r, 200));
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0][3]).toEqual(expect.objectContaining({
+        fileMtimeMs: expect.any(Number),
+      }));
+    } finally {
+      mtimeWatcher.stopAll();
+    }
+  });
+
   test('replayExisting=true is preserved when file appears after watch (pollUntilExists path)', async () => {
     // Regression for the Ralph iteration stall:
     //

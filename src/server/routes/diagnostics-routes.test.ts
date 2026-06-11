@@ -99,6 +99,102 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/diagnostics/hook-ingestion
+  // ---------------------------------------------------------------------------
+  describe('GET /api/diagnostics/hook-ingestion', () => {
+    test('returns empty v1 snapshots when hook services are not wired', async () => {
+      const res = await mkApp({}).request('/api/diagnostics/hook-ingestion');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        schemaVersion: 'hook-ingestion-diagnostics-route.v1',
+        ingestion: expect.objectContaining({
+          schemaVersion: 'hook-ingestion-diagnostics.v1',
+          sessionCount: 0,
+          totalArrivals: 0,
+          missingWriteTimestampCount: 0,
+          notableLagCount: 0,
+          sessions: [],
+        }),
+        watcher: expect.objectContaining({
+          schemaVersion: 'hook-watcher-health.v1',
+          sessionCount: 0,
+          sessions: [],
+        }),
+      });
+    });
+
+    test('returns ingestion lag and watcher health snapshots when wired', async () => {
+      const ingestionSnapshot = {
+        schemaVersion: 'hook-ingestion-diagnostics.v1',
+        generatedAt: '2026-06-11T12:00:00.000Z',
+        lagWarningThresholdMs: 2000,
+        sessionCount: 1,
+        totalArrivals: 2,
+        missingWriteTimestampCount: 0,
+        notableLagCount: 1,
+        sessions: [{
+          kookrSessionId: 'kookr-1',
+          totalArrivals: 2,
+          dispatchedArrivals: 1,
+          duplicateArrivals: 1,
+          missingWriteTimestampCount: 0,
+          invalidWriteTimestampCount: 0,
+          futureWriteTimestampCount: 0,
+          notableLagCount: 1,
+          lastProcessedAt: '2026-06-11T12:00:02.000Z',
+          lastWriteTimestampAt: '2026-06-11T12:00:00.000Z',
+          lastWriteTimestampSource: 'payload',
+          lag: { count: 2, lastMs: 2000, meanMs: 1500, maxMs: 2000, p95Ms: 2000 },
+          sourceCounts: { file: 1, http: 1 },
+          writeTimestampSourceCounts: { payload: 2, file_mtime: 0, missing: 0, invalid: 0 },
+        }],
+      };
+      const watcherSnapshot = {
+        schemaVersion: 'hook-watcher-health.v1',
+        generatedAt: '2026-06-11T12:00:00.000Z',
+        sessionCount: 1,
+        sessions: [{
+          tmuxName: 'kookr-1',
+          mode: 'fs_watch',
+          offset: 123,
+          pollBackupActive: true,
+          replayExisting: true,
+          transitionCount: 1,
+          lastTransitionAt: '2026-06-11T12:00:00.000Z',
+          lastTransitionReason: 'watch_started',
+          readCount: 1,
+          recordCount: 2,
+          replayRecordCount: 2,
+          pollTickCount: 1,
+          pollChangeDetectedCount: 0,
+          drainNowCount: 1,
+          drainNowSkippedCount: 0,
+          lastPollDriftMs: 0,
+          maxPollDriftMs: 0,
+          p95PollDriftMs: 0,
+          lastDrainLatencyMs: 1,
+          maxDrainLatencyMs: 1,
+          p95DrainLatencyMs: 1,
+          lastReadAt: '2026-06-11T12:00:01.000Z',
+          lastError: null,
+        }],
+      };
+      const res = await mkApp({
+        hookIngestion: { getDiagnosticsSnapshot: () => ingestionSnapshot } as never,
+        hookWatcher: { getHealthSnapshot: () => watcherSnapshot } as never,
+      }).request('/api/diagnostics/hook-ingestion');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        schemaVersion: 'hook-ingestion-diagnostics-route.v1',
+        ingestion: ingestionSnapshot,
+        watcher: watcherSnapshot,
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — viewerBroadcaster block (#808 / R10)
   // ---------------------------------------------------------------------------
   describe('GET /api/health viewerBroadcaster block', () => {
