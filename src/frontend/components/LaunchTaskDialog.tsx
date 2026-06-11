@@ -250,7 +250,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
       // task is visible, restored otherwise).
       markLaunchTaskDialogDraftSubmitted();
       saveLastAgentType(agentType);
-      useKookrStore.getState().handleAlert('', `Starting task: ${excerpt}`, 'info');
+      useKookrStore.getState().handleAlert('', `Launching task: ${excerpt}`, 'info');
     } else {
       useKookrStore.getState().handleAlert(
         '',
@@ -418,12 +418,12 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                     onClick={useServerCwd}
                     title={
                       serverCwdProtected
-                        ? `Server cwd is a protected worktree (${serverCwd}). Click to use parent repo: ${serverCwdTarget}`
+                        ? `Server cwd is a protected worktree (${serverCwd}). Click to use main checkout: ${serverCwdTarget}`
                         : `Use server cwd: ${serverCwdTarget}`
                     }
                   >
                     {serverCwdProtected
-                      ? `↩ Use parent of server cwd (${serverCwdTarget})`
+                      ? `↩ Use main checkout (${serverCwdTarget})`
                       : `↩ Use server cwd (${serverCwdTarget})`}
                   </button>
                 )}
