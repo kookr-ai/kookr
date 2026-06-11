@@ -45,7 +45,7 @@ export function VoiceInputButton({ inputId, onTranscript, disabled, shortcutBind
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const activeSTTInputId = useKookrStore((s) => s.activeSTTInputId);
   const setActiveSTTInput = useKookrStore((s) => s.setActiveSTTInput);
-  const { state, error, elapsed, start, stop } = useSTT(sttUrl, onTranscript);
+  const { state, error, degraded, retrying, elapsed, start, stop, retryHealth } = useSTT(sttUrl, onTranscript);
 
   const otherRecording = activeSTTInputId !== null && activeSTTInputId !== inputId;
 
@@ -69,7 +69,13 @@ export function VoiceInputButton({ inputId, onTranscript, disabled, shortcutBind
   }, [inputId, stop]);
 
   function handleClick() {
-    if (disabled || otherRecording) return;
+    if (disabled || otherRecording || retrying) return;
+
+    if (degraded) {
+      track({ type: 'shortcut_used', key: 'mic_button', action: 'stt_retry', context: inputId });
+      void retryHealth();
+      return;
+    }
 
     if (state === 'recording') {
       track({ type: 'shortcut_used', key: 'mic_button', action: 'stt_stop', context: inputId });
@@ -85,18 +91,25 @@ export function VoiceInputButton({ inputId, onTranscript, disabled, shortcutBind
     e.preventDefault();
   }
 
-  const title = state === 'error' && error ? error : stateTitle(state, shortcutBinding);
+  const title = degraded
+    ? retrying
+      ? 'Checking speech-to-text health...'
+      : `Speech-to-text unavailable${error ? `: ${error}` : ''}. Click to retry.`
+    : state === 'error' && error ? error : stateTitle(state, shortcutBinding);
+  const classState = degraded ? 'error' : state;
 
   return (
     <button
-      className={`btn-voice ${state}`}
+      className={`btn-voice ${classState}`}
       onClick={handleClick}
       onMouseDown={handleMouseDown}
-      disabled={disabled || otherRecording || state === 'processing'}
+      disabled={disabled || otherRecording || state === 'processing' || retrying}
       title={title}
       aria-label={title}
     >
-      {state === 'recording' ? (
+      {degraded ? (
+        <span className="voice-icon error" aria-hidden="true">&#9888;</span>
+      ) : state === 'recording' ? (
         <>
           <span className="voice-icon recording" aria-hidden="true">&#9632;</span>
           <span className="voice-elapsed">{formatElapsed(elapsed)}</span>
