@@ -402,6 +402,7 @@ function makeLifecycleDeps(overrides: Partial<LifecycleDeps> = {}): LifecycleDep
       terminateTask: vi.fn(),
       updateSession: vi.fn(),
       updateSessionWorktreeHealth: vi.fn(),
+      setCriteriaVerdict: vi.fn(),
       findTaskBySession: vi.fn(),
     } as any,
     interactionLog: { append: vi.fn().mockResolvedValue(undefined) } as any,
@@ -470,6 +471,35 @@ describe('completeTask', () => {
     expect(deps.taskStore.completeTask).toHaveBeenCalledWith('task-42');
 
     resolveStop();
+  });
+
+  test('records unknown criteria verdict when no completion event window exists', async () => {
+    const task = makeTask({
+      id: 'task-42',
+      criteria: 'Open a PR',
+      sessions: [
+        { tmuxSession: 'kookr-s1', lastStatus: 'inProgress' },
+      ] as any,
+    });
+    const deps = makeLifecycleDeps({
+      monitor: {
+        unregisterAgent: vi.fn(),
+        getAgentEvents: vi.fn().mockReturnValue([]),
+      },
+    });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await completeTask('task-42', deps);
+
+    await vi.waitFor(() => {
+      expect(deps.taskStore.setCriteriaVerdict).toHaveBeenCalledWith(
+        'task-42',
+        expect.objectContaining({
+          source: 'no-event-window',
+          summary: { pass: 0, fail: 0, unknown: 1 },
+        }),
+      );
+    });
   });
 
   test('skips cleanup for sessions already in terminal state (completed/aborted)', async () => {

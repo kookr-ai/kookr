@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import type { AgentEvent } from '../core/types.js';
 import type { Task } from '../core/tasks.js';
 import { buildTaskCompletionMetadata } from './completion-metadata.js';
@@ -121,6 +121,69 @@ describe('buildTaskCompletionMetadata', () => {
       cacheReadTokens: 100,
       cacheWriteTokens: 0,
       costUsd: expect.any(Number),
+    });
+  });
+
+  test('attaches advisory criteria verdicts from the completion event window', async () => {
+    const client = {
+      provider: 'fake',
+      model: 'judge',
+      complete: vi.fn(async () => JSON.stringify({
+        items: [
+          { criterion: 'Run tests', verdict: 'pass', reason: 'Bash output showed 5 passed.' },
+          { criterion: 'Open PR', verdict: 'unknown', reason: 'No PR URL was present.' },
+        ],
+      })),
+    };
+
+    const metadata = await buildTaskCompletionMetadata(
+      task({
+        agentType: 'claude-code',
+        criteria: '- Run tests\n- Open PR',
+      }),
+      [toolUse('pnpm test'), toolResult('Tests  5 passed (3)')],
+      { runCommand: async () => '', criteriaVerdictLlmClient: client },
+    );
+
+    expect(client.complete).toHaveBeenCalledWith(expect.objectContaining({
+      maxTokens: 900,
+      userMessage: expect.stringContaining('Run tests'),
+    }));
+    expect(metadata.digest.criteriaVerdict).toMatchObject({
+      source: 'llm',
+      provider: 'fake',
+      model: 'judge',
+      summary: { pass: 1, fail: 0, unknown: 1 },
+      items: [
+        { criterion: 'Run tests', verdict: 'pass', reason: 'Bash output showed 5 passed.' },
+        { criterion: 'Open PR', verdict: 'unknown', reason: 'No PR URL was present.' },
+      ],
+    });
+  });
+
+  test('attaches unknown advisory criteria verdicts when the helper LLM fails', async () => {
+    const metadata = await buildTaskCompletionMetadata(
+      task({
+        agentType: 'claude-code',
+        criteria: 'Run tests',
+      }),
+      [toolUse('pnpm test')],
+      {
+        runCommand: async () => '',
+        criteriaVerdictLlmClient: {
+          provider: 'fake',
+          model: 'judge',
+          complete: vi.fn(async () => { throw new Error('provider unavailable'); }),
+        },
+      },
+    );
+
+    expect(metadata.digest.criteriaVerdict).toMatchObject({
+      source: 'llm-error',
+      summary: { pass: 0, fail: 0, unknown: 1 },
+      items: [
+        { criterion: 'Run tests', verdict: 'unknown', reason: 'provider unavailable' },
+      ],
     });
   });
 

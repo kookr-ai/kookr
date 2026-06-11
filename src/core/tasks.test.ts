@@ -215,6 +215,55 @@ describe('TaskStore', () => {
       expect(store.getTask(task.id)!.prompt).toBe('Task');
     });
 
+    test('stores criteria verdicts inside completion digest without losing digest metadata', () => {
+      const task = store.createTask('Task', '/cwd');
+
+      store.setCompletionDigest(task.id, {
+        bullets: ['Changed files'],
+        filesChanged: ['src/app.ts'],
+      });
+      store.setCriteriaVerdict(task.id, {
+        items: [{ criterion: 'Run tests', verdict: 'pass', reason: 'Tests passed.' }],
+        summary: { pass: 1, fail: 0, unknown: 0 },
+        source: 'llm',
+        evaluatedAt: '2026-06-11T12:00:00.000Z',
+      });
+
+      expect(store.getTask(task.id)?.completionDigest).toEqual({
+        bullets: ['Changed files'],
+        filesChanged: ['src/app.ts'],
+        criteriaVerdict: expect.objectContaining({
+          summary: { pass: 1, fail: 0, unknown: 0 },
+        }),
+      });
+    });
+
+    test('preserves an async criteria verdict when completion digest is finalized later', () => {
+      const task = store.createTask('Task', '/cwd');
+
+      store.setCriteriaVerdict(task.id, {
+        items: [{ criterion: 'Open PR', verdict: 'unknown', reason: 'No event window.' }],
+        summary: { pass: 0, fail: 0, unknown: 1 },
+        source: 'no-event-window',
+        evaluatedAt: '2026-06-11T12:00:00.000Z',
+      });
+      store.setCompletionDigest(task.id, {
+        bullets: ['Created PR'],
+        filesChanged: [],
+        prUrls: ['https://github.com/kookr-ai/kookr/pull/1'],
+      });
+
+      expect(store.getTask(task.id)?.completionDigest).toEqual({
+        bullets: ['Created PR'],
+        filesChanged: [],
+        prUrls: ['https://github.com/kookr-ai/kookr/pull/1'],
+        criteriaVerdict: expect.objectContaining({
+          source: 'no-event-window',
+          summary: { pass: 0, fail: 0, unknown: 1 },
+        }),
+      });
+    });
+
     test('listTasks filters by status', () => {
       const t1 = store.createTask('Task 1', '/cwd');
       store.createTask('Task 2', '/cwd');

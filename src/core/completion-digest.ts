@@ -1,4 +1,5 @@
 import type { AgentEvent } from './types.js';
+import type { CriteriaCompletionVerdict } from '../shared/contracts/completion-digest.js';
 
 /**
  * Structured summary of what an agent accomplished during a task.
@@ -21,6 +22,8 @@ export interface CompletionDigest {
   verificationCommands?: string[];
   /** Token/cost closeout, including explicit unavailable states. */
   tokenUsage?: CompletionTokenUsage;
+  /** Advisory LLM-assisted check of user-provided completion criteria. */
+  criteriaVerdict?: CriteriaCompletionVerdict;
 }
 
 export type CompletionTokenUsageQuality =

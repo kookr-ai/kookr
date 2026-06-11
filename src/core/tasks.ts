@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_AGENT_TYPE, type AgentType } from './agent-types.js';
 import type { CompletionDigest } from './completion-digest.js';
+import type { CriteriaCompletionVerdict } from '../shared/contracts/completion-digest.js';
 import type { PendingAgentSignal } from '../shared/contracts/agent-signal.js';
 import type {
   TaskDependencyEdge,
@@ -488,7 +489,18 @@ export class TaskStore {
   setCompletionDigest(taskId: string, digest: CompletionDigest): void {
     const task = this.tasks.get(taskId);
     if (!task) return;
-    task.completionDigest = digest;
+    const criteriaVerdict = digest.criteriaVerdict ?? task.completionDigest?.criteriaVerdict;
+    task.completionDigest = criteriaVerdict ? { ...digest, criteriaVerdict } : digest;
+    task.updatedAt = new Date();
+  }
+
+  setCriteriaVerdict(taskId: string, verdict: CriteriaCompletionVerdict): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    task.completionDigest = {
+      ...(task.completionDigest ?? { bullets: ['Task completed'], filesChanged: [] }),
+      criteriaVerdict: structuredClone(verdict) as CriteriaCompletionVerdict,
+    };
     task.updatedAt = new Date();
   }
 
