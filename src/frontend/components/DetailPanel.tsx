@@ -71,6 +71,53 @@ function truncate(text: string, max: number): string {
   return text.slice(0, max - 1) + '\u2026';
 }
 
+function criterionCountLabel(count: number, suffix: string): string {
+  return `${count} ${count === 1 ? 'criterion' : 'criteria'} ${suffix}`;
+}
+
+function criterionVerdictLabel(verdict: 'pass' | 'fail' | 'unknown'): string {
+  switch (verdict) {
+    case 'pass': return 'Passed';
+    case 'fail': return 'Failed';
+    case 'unknown': return 'Unknown';
+  }
+}
+
+function CriteriaVerdictBlock({ digest }: { digest: NonNullable<AgentState['completionDigest']> }) {
+  const verdict = digest.criteriaVerdict;
+  if (!verdict || verdict.items.length === 0) return null;
+  const failed = verdict.summary.fail > 0;
+  const allPassed = verdict.summary.pass === verdict.items.length;
+  const label = failed
+    ? criterionCountLabel(verdict.summary.fail, 'failed')
+    : allPassed
+      ? 'Criteria passed'
+      : criterionCountLabel(verdict.summary.unknown, 'unknown');
+
+  return (
+    <div className={`criteria-verdict criteria-verdict--${failed ? 'fail' : allPassed ? 'pass' : 'unknown'}`} data-testid="criteria-verdict">
+      <div className="criteria-verdict-header">
+        <span className="criteria-verdict-title">Criteria</span>
+        <span className="criteria-verdict-badge">{label}</span>
+      </div>
+      <ul className="criteria-verdict-list">
+        {verdict.items.map((item, i) => (
+          <li key={`${item.criterion}-${i}`} className={`criteria-verdict-item criteria-verdict-item--${item.verdict}`}>
+            <span className="criteria-verdict-mark" aria-hidden="true">
+              {item.verdict === 'pass' ? '✓' : item.verdict === 'fail' ? '!' : '?'}
+            </span>
+            <span className="criteria-verdict-text">
+              <span className="sr-only">{criterionVerdictLabel(item.verdict)}: </span>
+              <span className="criteria-verdict-criterion">{item.criterion}</span>
+              <span className="criteria-verdict-reason">{item.reason}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 interface Props {
   agent: AgentState | null;
   send: (msg: ClientMessage) => boolean;
@@ -887,6 +934,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
                     <strong>Files changed:</strong> {agent.completionDigest.filesChanged.join(', ')}
                   </div>
                 )}
+                <CriteriaVerdictBlock digest={agent.completionDigest} />
               </div>
             </div>
           );

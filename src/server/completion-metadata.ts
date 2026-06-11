@@ -1,7 +1,12 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { CodexRolloutScanner, type DiscoveryOutcome } from '../adapters/codex-rollout-scanner.js';
+import { createOpenRouterLlmClientFromEnv } from '../adapters/openrouter-client.js';
+import { createRequestyLlmClientFromEnv } from '../adapters/requesty-client.js';
 import { generateCompletionDigest, type CompletionDigest, type CompletionTokenUsage } from '../core/completion-digest.js';
+import { evaluateCriteriaVerdict } from '../core/criteria-verdict.js';
+import { createLlmClient } from '../core/llm-factory.js';
+import type { LlmClient } from '../core/llm-types.js';
 import { estimateCost, lookupPricing } from '../core/pricing-tables.js';
 import type { Task } from '../core/tasks.js';
 import type { AgentEvent, TokenUsage } from '../core/types.js';
@@ -26,12 +31,15 @@ export interface CompletionMetadataDeps {
   runCommand?: CompletionCommandRunner;
   scanner?: CompletionScanner;
   now?: () => number;
+  criteriaVerdictLlmClient?: LlmClient | null;
 }
 
 export interface TaskCompletionMetadata {
   digest: CompletionDigest;
   taskTokenUsage?: TokenUsage;
 }
+
+let criteriaVerdictLlmClientPromise: Promise<LlmClient | null> | null = null;
 
 export async function buildTaskCompletionMetadata(
   task: Task,
@@ -51,11 +59,28 @@ export async function buildTaskCompletionMetadata(
     filesChanged: git.filesChanged,
     tokenUsage: codexUsage?.digestUsage,
   });
+  if (task.criteria?.trim()) {
+    const criteriaVerdict = await evaluateCriteriaVerdict({
+      criteria: task.criteria,
+      events,
+      llmClient: await resolveCriteriaVerdictLlmClient(deps),
+    });
+    if (criteriaVerdict) digest.criteriaVerdict = criteriaVerdict;
+  }
 
   return {
     digest,
     taskTokenUsage: codexUsage?.taskTokenUsage,
   };
+}
+
+async function resolveCriteriaVerdictLlmClient(deps: CompletionMetadataDeps): Promise<LlmClient | null> {
+  if ('criteriaVerdictLlmClient' in deps) return deps.criteriaVerdictLlmClient ?? null;
+  criteriaVerdictLlmClientPromise ??= createLlmClient({
+    buildOpenRouter: createOpenRouterLlmClientFromEnv,
+    buildRequesty: createRequestyLlmClientFromEnv,
+  });
+  return criteriaVerdictLlmClientPromise;
 }
 
 async function defaultRunCommand(command: string, args: string[], opts: { cwd: string }): Promise<string> {
