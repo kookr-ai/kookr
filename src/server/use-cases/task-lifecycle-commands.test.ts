@@ -1,4 +1,7 @@
 import { describe, expect, test, vi, beforeEach } from 'vitest';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { TaskStore } from '../../core/tasks.js';
 import { Monitor } from '../../core/monitor.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
@@ -46,6 +49,11 @@ function addSession(taskStore: TaskStore, taskId: string, tmuxSession = 'kookr-s
     cwd: '/repo-wt',
     createdAt: new Date(),
   });
+}
+
+async function readJsonl(path: string): Promise<unknown[]> {
+  const text = await readFile(path, 'utf-8');
+  return text.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line) as unknown);
 }
 
 describe('TaskLifecycleCommands.completeTask', () => {
@@ -142,6 +150,37 @@ describe('TaskLifecycleCommands.cancelTask', () => {
   });
 });
 
+describe('TaskLifecycleCommands.deleteTask', () => {
+  test('writes a structured audit row with actor, scope, count, and id', async () => {
+    const auditDir = await mkdtemp(join(tmpdir(), 'kookr-delete-audit-'));
+    const auditLogPath = join(auditDir, 'audit.jsonl');
+    try {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask({ prompt: 'Delete me', cwd: '/repo', projectId: 'github.com/org/repo' });
+      const { deps } = makeDeps(taskStore, { auditLogPath });
+
+      const result = await new TaskLifecycleCommands(deps).deleteTask(task.id, {
+        actor: { source: 'api' },
+      });
+
+      expect(result.outcome).toBe('deleted');
+      expect(await readJsonl(auditLogPath)).toEqual([
+        expect.objectContaining({
+          type: 'task.deleteTask',
+          actor: { source: 'api' },
+          scope: { kind: 'project', projectId: 'github.com/org/repo' },
+          count: 1,
+          deletedTaskIds: [task.id],
+          taskId: task.id,
+          outcome: 'deleted',
+        }),
+      ]);
+    } finally {
+      await rm(auditDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('TaskLifecycleCommands.clearFinishedTasks', () => {
   test('takes one predelete snapshot and deletes finished tasks only', async () => {
     const taskStore = new TaskStore();
@@ -201,6 +240,60 @@ describe('TaskLifecycleCommands.clearFinishedTasks', () => {
     expect(taskStore.getTask(projectBDone.id)?.status).toBe('completed');
     expect(taskStore.getTask(unscopedDone.id)?.status).toBe('completed');
     expect(taskStore.getTask(projectAActive.id)?.status).toBe('inProgress');
+  });
+
+  test('writes structured audit and broadcasts clear count for project-scoped bulk deletion', async () => {
+    const auditDir = await mkdtemp(join(tmpdir(), 'kookr-clear-audit-'));
+    const auditLogPath = join(auditDir, 'audit.jsonl');
+    try {
+      const taskStore = new TaskStore();
+      const completed = taskStore.createTask({ prompt: 'A done', cwd: '/repo-a', projectId: 'github.com/org/a' });
+      const cancelled = taskStore.createTask({ prompt: 'A cancelled', cwd: '/repo-a', projectId: 'github.com/org/a' });
+      const active = taskStore.createTask({ prompt: 'A active', cwd: '/repo-a', projectId: 'github.com/org/a' });
+      const other = taskStore.createTask({ prompt: 'B done', cwd: '/repo-b', projectId: 'github.com/org/b' });
+      taskStore.startTask(completed.id);
+      taskStore.completeTask(completed.id);
+      taskStore.startTask(cancelled.id);
+      taskStore.cancelTask(cancelled.id);
+      taskStore.startTask(active.id);
+      taskStore.startTask(other.id);
+      taskStore.completeTask(other.id);
+      const { deps } = makeDeps(taskStore, {
+        auditLogPath,
+        takePredeleteSnapshot: vi.fn(async () => undefined),
+      });
+
+      const result = await new TaskLifecycleCommands(deps).clearFinishedTasks({
+        projectId: 'github.com/org/a',
+        actor: { source: 'websocket', actorId: 'connection-1' },
+      });
+
+      expect(result).toMatchObject({
+        outcome: 'cleared',
+        deletedTaskIds: expect.arrayContaining([completed.id, cancelled.id]),
+      });
+      expect((result as { deletedTaskIds: string[] }).deletedTaskIds).toHaveLength(2);
+      const rows = await readJsonl(auditLogPath) as Array<{ deletedTaskIds: string[] }>;
+      expect(rows).toEqual([
+        expect.objectContaining({
+          type: 'task.clearCompleted',
+          actor: { source: 'websocket', actorId: 'connection-1' },
+          scope: { kind: 'project', projectId: 'github.com/org/a' },
+          count: 2,
+          deletedTaskIds: expect.any(Array),
+          includeTerminated: false,
+          outcome: 'cleared',
+        }),
+      ]);
+      expect(rows[0].deletedTaskIds.sort()).toEqual([cancelled.id, completed.id].sort());
+      expect(deps.broadcastToAll).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'alert',
+        summary: 'Cleared 2 tasks',
+        severity: 'info',
+      }));
+    } finally {
+      await rm(auditDir, { recursive: true, force: true });
+    }
   });
 
   test('treats blank project scope as a no-op instead of a global clear', async () => {

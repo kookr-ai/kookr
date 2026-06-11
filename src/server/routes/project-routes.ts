@@ -1,16 +1,17 @@
 import type { Hono } from 'hono';
+import { access } from 'node:fs/promises';
 import type { ProjectConfig } from '../../core/project-config-store.js';
-import { configSeedsMembership } from '../../core/project-summary.js';
+import { configSeedsMembership, type ProjectSummary } from '../../core/project-summary.js';
 import { getProjectSummaries } from '../use-cases/get-snapshot.js';
 import { parseOwnerRepoSlug } from '../../shared/repo-slug.js';
 import type { RouteDeps } from './shared.js';
 
 export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
-  app.get('/api/projects', (c) => {
+  app.get('/api/projects', async (c) => {
     if (!deps.ledgerAnalytics || !deps.projectConfigStore) {
       return c.json([]);
     }
-    const summaries = getProjectSummaries({
+    const summaries = await filterDeadLocalProjects(getProjectSummaries({
       monitor: deps.monitor,
       ledgerAnalytics: deps.ledgerAnalytics,
       projectConfigStore: deps.projectConfigStore,
@@ -21,7 +22,10 @@ export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
       repoHealthCache: deps.githubScanner.getRepoHealthSnapshot(),
       getTaskGithubReferences: (taskId) => deps.githubStateStore.getReferences(taskId),
       getGithubRefOpenState: (ref) => deps.githubStateStore.isRefOpen(ref),
-    });
+    }));
+    if (c.req.query('tracked') === 'true') {
+      return c.json(summaries.filter(isTrackedOrLocalProject));
+    }
     return c.json(summaries);
   });
 
@@ -173,4 +177,27 @@ export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
     }
     return c.json(deps.skillDiscoveryState.getSnapshot());
   });
+}
+
+function isTrackedOrLocalProject(summary: ProjectSummary): boolean {
+  return summary.tracked === true || summary.project.startsWith('local/');
+}
+
+async function filterDeadLocalProjects(summaries: ProjectSummary[]): Promise<ProjectSummary[]> {
+  const checks = await Promise.all(summaries.map(async (summary) => {
+    if (!summary.project.startsWith('local/') || !summary.localPath || hasActiveTask(summary)) {
+      return { summary, keep: true };
+    }
+    try {
+      await access(summary.localPath);
+      return { summary, keep: true };
+    } catch {
+      return { summary, keep: false };
+    }
+  }));
+  return checks.filter((check) => check.keep).map((check) => check.summary);
+}
+
+function hasActiveTask(summary: ProjectSummary): boolean {
+  return summary.recentTasks.some((task) => task.status === 'inProgress');
 }

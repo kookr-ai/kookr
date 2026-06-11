@@ -87,6 +87,8 @@ export interface MessageRouterDeps {
    * `await` this without handling errors.
    */
   takePredeleteSnapshot?: () => Promise<void>;
+  /** Append-only audit.jsonl path for destructive task lifecycle actions. */
+  auditLogPath?: string;
   /** Project config persistence for `setProjectConfig` messages. */
   projectConfigStore?: ProjectConfigStore;
   /** Rebroadcasts `projectSummaries` to all clients after config changes. */
@@ -176,6 +178,8 @@ export class MessageRouter {
       broadcastToAll: this.deps.broadcastToAll,
       activityMetaProvider: this.deps.activityMetaProvider,
       takePredeleteSnapshot: this.deps.takePredeleteSnapshot,
+      auditLogPath: this.deps.auditLogPath,
+      deletionAuditActor: () => this.deletionAuditActor(),
       feedbackDir: this.deps.feedbackDir,
       taskSnapshotDir: this.deps.taskSnapshotDir,
       reflectWorktreesDir: this.deps.reflectWorktreesDir,
@@ -210,6 +214,14 @@ export class MessageRouter {
       policyResolver: this.deps.policyResolver,
       leaseService: this.deps.leaseService,
     });
+  }
+
+  /** Actor metadata for destructive task-lifecycle audit rows. */
+  private deletionAuditActor(): { source: 'websocket'; actorId?: string } {
+    return {
+      source: 'websocket',
+      ...(this.deps.connectionId ? { actorId: this.deps.connectionId } : {}),
+    };
   }
 
   /** Resolved server cwd with the `process.cwd()` fallback applied. */

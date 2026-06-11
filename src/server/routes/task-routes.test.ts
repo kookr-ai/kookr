@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../../core/tasks.js';
@@ -529,6 +529,42 @@ describe('DELETE /api/tasks/:id error paths', () => {
     }).request('/api/tasks/does-not-exist', { method: 'DELETE' });
     expect(res.status).toBe(404);
     expect(vi.mocked(deleteTask)).not.toHaveBeenCalled();
+  });
+
+  test('writes an API actor audit row to kookrDir/audit.jsonl', async () => {
+    vi.mocked(deleteTask).mockResolvedValueOnce(true);
+    const kookrDir = mkdtempSync(join(tmpdir(), 'kookr-api-delete-audit-'));
+    try {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask({ prompt: 'Doomed', cwd: '/cwd', projectId: 'github.com/org/repo' });
+      const monitor = new Monitor(taskStore, new AttentionQueue());
+
+      const res = await mkApp({
+        taskStore,
+        monitor,
+        broadcastToAll: broadcastNoop,
+        serverCwd: '/cwd',
+        kookrDir,
+      }).request(`/api/tasks/${task.id}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(200);
+      const row = JSON.parse(readFileSync(join(kookrDir, 'audit.jsonl'), 'utf-8').trim()) as {
+        type: string;
+        actor: { source: string };
+        scope: { kind: string; projectId?: string };
+        count: number;
+        deletedTaskIds: string[];
+      };
+      expect(row).toEqual(expect.objectContaining({
+        type: 'task.deleteTask',
+        actor: { source: 'api' },
+        scope: { kind: 'project', projectId: 'github.com/org/repo' },
+        count: 1,
+        deletedTaskIds: [task.id],
+      }));
+    } finally {
+      rmSync(kookrDir, { recursive: true, force: true });
+    }
   });
 });
 
