@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { createLlmClient, FallbackLlmClient, readLlmProvider } from './llm-factory.js';
+import {
+  classifyLlmProviderFailure,
+  completeLlmWithFailureAudit,
+  createLlmClient,
+  FallbackLlmClient,
+  readLlmProvider,
+} from './llm-factory.js';
 import type { LlmClient } from './llm-types.js';
 
 const created = vi.hoisted(() => ({
@@ -355,6 +361,113 @@ describe('FallbackLlmClient.complete abort propagation', () => {
     const fb = new FallbackLlmClient([a, b]);
     await expect(fb.complete({ maxTokens: 10, userMessage: 'hi' })).resolves.toBe('fallback after timeout');
     expect(b.complete).toHaveBeenCalledOnce();
+  });
+
+  test('records categorized provider failures while falling back', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const authErr = Object.assign(new Error('invalid api key'), { providerFailureCategory: 'auth' });
+    const a = client('a', async () => { throw authErr; });
+    const b = client('b', async () => 'fallback after auth failure');
+    const fb = new FallbackLlmClient([a, b]);
+
+    const result = await fb.completeWithFailureAudit({ maxTokens: 10, userMessage: 'hi' });
+
+    expect(result).toEqual({
+      text: 'fallback after auth failure',
+      failureCategory: null,
+      failures: [{
+        provider: 'a',
+        model: 'a-model',
+        category: 'auth',
+        message: 'invalid api key',
+      }],
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('category=auth'));
+    warn.mockRestore();
+  });
+
+  test('returns final failure category when every provider fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const a = client('a', async () => { throw Object.assign(new Error('fetch failed'), { code: 'ENOTFOUND' }); });
+    const b = client('b', async () => null);
+    const fb = new FallbackLlmClient([a, b]);
+
+    const result = await fb.completeWithFailureAudit({ maxTokens: 10, userMessage: 'hi' });
+
+    expect(result.text).toBeNull();
+    expect(result.failureCategory).toBe('malformed_response');
+    expect(result.failures).toEqual([
+      {
+        provider: 'a',
+        model: 'a-model',
+        category: 'network_timeout',
+        message: 'fetch failed',
+      },
+      {
+        provider: 'b',
+        model: 'b-model',
+        category: 'malformed_response',
+        message: 'provider returned empty response',
+      },
+    ]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('category=network_timeout'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('category=malformed_response'));
+    warn.mockRestore();
+  });
+});
+
+describe('completeLlmWithFailureAudit', () => {
+  test('classifies a single raw provider failure without fallback wrapper', async () => {
+    const raw: LlmClient = {
+      provider: 'raw',
+      model: 'raw-model',
+      complete: vi.fn().mockRejectedValue(Object.assign(new Error('invalid api key'), { providerFailureCategory: 'auth' })),
+    };
+
+    await expect(completeLlmWithFailureAudit(raw, { maxTokens: 10, userMessage: 'hi' })).resolves.toEqual({
+      text: null,
+      failureCategory: 'auth',
+      failures: [{
+        provider: 'raw',
+        model: 'raw-model',
+        category: 'auth',
+        message: 'invalid api key',
+      }],
+    });
+  });
+
+  test('delegates to clients with native failure audit support', async () => {
+    const audited: LlmClient = {
+      provider: 'audited',
+      model: 'audited-model',
+      complete: vi.fn(),
+      completeWithFailureAudit: vi.fn().mockResolvedValue({
+        text: null,
+        failures: [{ provider: 'audited', model: 'audited-model', category: 'server_5xx', message: 'bad gateway' }],
+        failureCategory: 'server_5xx',
+      }),
+    };
+
+    const result = await completeLlmWithFailureAudit(audited, { maxTokens: 10, userMessage: 'hi' });
+
+    expect(result.failureCategory).toBe('server_5xx');
+    expect(audited.complete).not.toHaveBeenCalled();
+    expect(audited.completeWithFailureAudit).toHaveBeenCalledOnce();
+  });
+});
+
+describe('classifyLlmProviderFailure', () => {
+  test('honors explicit provider failure category', () => {
+    expect(classifyLlmProviderFailure({ providerFailureCategory: 'server_5xx' })).toBe('server_5xx');
+  });
+
+  test('classifies common SDK error shapes', () => {
+    expect(classifyLlmProviderFailure({ status: 401, message: 'bad key' })).toBe('auth');
+    expect(classifyLlmProviderFailure({ statusCode: 502, message: 'bad gateway' })).toBe('server_5xx');
+    expect(classifyLlmProviderFailure(new Error('504 Gateway Timeout'))).toBe('server_5xx');
+    expect(classifyLlmProviderFailure(Object.assign(new Error('request timed out'), { code: 'ETIMEDOUT' }))).toBe('network_timeout');
+    expect(classifyLlmProviderFailure(new SyntaxError('Unexpected end of JSON input'))).toBe('malformed_response');
+    expect(classifyLlmProviderFailure(new Error('unclassified provider error'))).toBe('other');
   });
 });
 

@@ -5,7 +5,12 @@
  * This transport owns only protocol mechanics and sanitized diagnostics.
  */
 
-import type { LlmClient, LlmCompletionRequest } from './llm-types.js';
+import {
+  classifyLlmProviderHttpStatus,
+  type LlmClient,
+  type LlmCompletionRequest,
+  type LlmProviderFailureCategory,
+} from './llm-types.js';
 
 export type OpenAiCompatibleProvider = 'openrouter' | 'requesty';
 
@@ -21,6 +26,16 @@ export interface OpenAiCompatibleClientOptions {
 
 interface ChatCompletionResponse {
   choices?: Array<{ message?: { content?: string | null } }>;
+}
+
+export class LlmProviderFailureError extends Error {
+  readonly providerFailureCategory: LlmProviderFailureCategory;
+
+  constructor(category: LlmProviderFailureCategory, message: string) {
+    super(message);
+    this.name = 'LlmProviderFailureError';
+    this.providerFailureCategory = category;
+  }
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -57,6 +72,10 @@ function abortError(): Error {
 
 function isAbortLike(err: unknown): boolean {
   return (err as { name?: string } | null)?.name === 'AbortError';
+}
+
+function providerFailure(category: LlmProviderFailureCategory, message: string): LlmProviderFailureError {
+  return new LlmProviderFailureError(category, message);
 }
 
 function redactString(value: string): string {
@@ -189,9 +208,12 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
         throw abortError();
       }
       if (timedOut && isAbortLike(err)) {
-        throw new Error(`${providerLabel(this.provider)} request timed out after ${timeoutMs}ms`);
+        throw providerFailure('network_timeout', `${providerLabel(this.provider)} request timed out after ${timeoutMs}ms`);
       }
-      throw err;
+      throw providerFailure(
+        'network_timeout',
+        `${providerLabel(this.provider)} request failed before a response was received: ${err instanceof Error ? err.message : String(err)}`,
+      );
     } finally {
       clearTimeout(timer);
       req.signal?.removeEventListener('abort', onAbort);
@@ -199,12 +221,23 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
 
     if (!response.ok) {
       const detail = sanitizeProviderErrorDetail(await response.text().catch(() => ''));
-      throw new Error(
+      throw providerFailure(
+        classifyLlmProviderHttpStatus(response.status),
         `${providerLabel(this.provider)} request failed: ${response.status} ${response.statusText}${detail ? ` - ${detail}` : ''}`,
       );
     }
 
-    const data = (await response.json()) as ChatCompletionResponse;
-    return data.choices?.[0]?.message?.content?.trim() || null;
+    let data: ChatCompletionResponse;
+    try {
+      data = (await response.json()) as ChatCompletionResponse;
+    } catch (err) {
+      throw providerFailure(
+        'malformed_response',
+        `${providerLabel(this.provider)} response was not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    const content = data.choices?.[0]?.message?.content;
+    return typeof content === 'string' ? content.trim() || null : null;
   }
 }

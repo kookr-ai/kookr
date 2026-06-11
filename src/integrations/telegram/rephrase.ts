@@ -12,7 +12,7 @@
 
 import { z } from 'zod';
 import { DEFAULT_AGENT_TYPE, type AgentType } from '../../core/agent-types.js';
-import type { LlmClient } from '../../core/llm-client.js';
+import { completeLlmWithFailureAudit, type LlmClient } from '../../core/llm-client.js';
 import type { ProjectInfo, ValidatedTaskSpec } from './types.js';
 import { TaskSpecSchema } from './types.js';
 
@@ -87,14 +87,18 @@ export async function rephrase(text: string, ctx: RephraseDeps): Promise<Rephras
   // remains mandatory either way.
   const jsonSchema = taskSpecJsonSchema();
 
-  const raw = await ctx.llm.complete({
+  const completion = await completeLlmWithFailureAudit(ctx.llm, {
     maxTokens: 600,
     system,
     userMessage: text,
     ...(jsonSchema ? { responseFormat: { type: 'json_schema' as const, jsonSchema: { name: 'TaskSpec', schema: jsonSchema } } } : {}),
     timeoutMs: 15_000,
   });
-  if (!raw) return { kind: 'failed', reason: 'rephrase timeout or all providers exhausted' };
+  const raw = completion.text;
+  if (!raw) {
+    const category = completion.failureCategory ?? 'other';
+    return { kind: 'failed', reason: `rephrase failed (${category})` };
+  }
 
   let parsedJson: unknown;
   try {

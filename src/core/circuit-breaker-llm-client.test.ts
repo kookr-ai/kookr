@@ -30,6 +30,11 @@ describe('CircuitBreakerLlmClient.complete', () => {
     const inner = mkInner(async () => 'never');
     const wrapper = new CircuitBreakerLlmClient(inner, breaker);
     await expect(wrapper.complete({ maxTokens: 10, userMessage: 'hi' })).resolves.toBeNull();
+    await expect(wrapper.completeWithFailureAudit({ maxTokens: 10, userMessage: 'hi' })).resolves.toMatchObject({
+      text: null,
+      failureCategory: 'other',
+      failures: [{ provider: 'inner', model: 'm', category: 'other', message: 'circuit breaker open' }],
+    });
     breakerSpy.mockRestore();
   });
 
@@ -37,5 +42,28 @@ describe('CircuitBreakerLlmClient.complete', () => {
     const inner = mkInner(async () => { throw new Error('upstream 500'); });
     const wrapper = new CircuitBreakerLlmClient(inner, mkBreaker());
     await expect(wrapper.complete({ maxTokens: 10, userMessage: 'hi' })).resolves.toBeNull();
+  });
+
+  test('preserves categorized inner failures in the audit result', async () => {
+    const inner = mkInner(async () => { throw new Error('504 Gateway Timeout'); });
+    const wrapper = new CircuitBreakerLlmClient(inner, mkBreaker());
+
+    await expect(wrapper.completeWithFailureAudit({ maxTokens: 10, userMessage: 'hi' })).resolves.toMatchObject({
+      text: null,
+      failureCategory: 'server_5xx',
+      failures: [{ provider: 'inner', model: 'm', category: 'server_5xx', message: '504 Gateway Timeout' }],
+    });
+  });
+
+  test('raw provider failures still count against the circuit breaker', async () => {
+    const breaker = new CircuitBreaker({ name: 'test', failureThreshold: 1 });
+    const inner = mkInner(async () => { throw new Error('504 Gateway Timeout'); });
+    const wrapper = new CircuitBreakerLlmClient(inner, breaker);
+
+    await expect(wrapper.completeWithFailureAudit({ maxTokens: 10, userMessage: 'hi' })).resolves.toMatchObject({
+      failureCategory: 'server_5xx',
+    });
+
+    expect(breaker.getState()).toBe('open');
   });
 });

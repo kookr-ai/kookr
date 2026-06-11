@@ -23,6 +23,12 @@ function stubFetch(response: Response | Promise<Response>): ReturnType<typeof vi
   return fetchMock;
 }
 
+function stubFetchError(error: unknown): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn().mockRejectedValue(error);
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
 function stubAbortAwareFetch(): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
     const signal = init.signal as AbortSignal;
@@ -122,7 +128,8 @@ describe('OpenAiCompatibleLlmClient', () => {
 
       const pending = client.complete(baseReq);
       const rejects = expect(pending).rejects.toMatchObject({
-        name: 'Error',
+        name: 'LlmProviderFailureError',
+        providerFailureCategory: 'network_timeout',
         message: expect.stringContaining('Requesty request timed out after 1000ms'),
       });
       await vi.advanceTimersByTimeAsync(1000);
@@ -173,10 +180,96 @@ describe('OpenAiCompatibleLlmClient', () => {
     }
 
     expect(caught).toBeInstanceOf(Error);
+    expect(caught).toMatchObject({ providerFailureCategory: 'other' });
     expect((caught as Error).message).toContain('Requesty request failed: 400 Bad Request');
     expect((caught as Error).message).toContain('bad request');
     expect((caught as Error).message).not.toContain(API_KEY);
     expect((caught as Error).message).not.toContain('secret prompt text');
+  });
+
+  test('classifies auth HTTP failures', async () => {
+    stubFetch(jsonResponse(
+      { error: { message: 'invalid api key', api_key: API_KEY } },
+      { ok: false, status: 401, statusText: 'Unauthorized' },
+    ));
+    const client = new OpenAiCompatibleLlmClient({
+      provider: 'openrouter',
+      apiKey: API_KEY,
+      model: 'deepseek/deepseek-v4-flash',
+      baseUrl: 'https://openrouter.ai/api/v1',
+    });
+
+    await expect(client.complete(baseReq)).rejects.toMatchObject({
+      providerFailureCategory: 'auth',
+      message: expect.stringContaining('401 Unauthorized'),
+    });
+  });
+
+  test('classifies 5xx HTTP failures', async () => {
+    stubFetch(jsonResponse(
+      { error: { message: 'upstream unavailable' } },
+      { ok: false, status: 503, statusText: 'Service Unavailable' },
+    ));
+    const client = new OpenAiCompatibleLlmClient({
+      provider: 'requesty',
+      apiKey: API_KEY,
+      model: 'openai/gpt-4o-mini',
+      baseUrl: 'https://router.requesty.ai/v1',
+    });
+
+    await expect(client.complete(baseReq)).rejects.toMatchObject({
+      providerFailureCategory: 'server_5xx',
+      message: expect.stringContaining('503 Service Unavailable'),
+    });
+  });
+
+  test('classifies network failures before a response is received', async () => {
+    stubFetchError(new TypeError('fetch failed'));
+    const client = new OpenAiCompatibleLlmClient({
+      provider: 'requesty',
+      apiKey: API_KEY,
+      model: 'openai/gpt-4o-mini',
+      baseUrl: 'https://router.requesty.ai/v1',
+    });
+
+    await expect(client.complete(baseReq)).rejects.toMatchObject({
+      providerFailureCategory: 'network_timeout',
+      message: expect.stringContaining('fetch failed'),
+    });
+  });
+
+  test('classifies invalid JSON as a malformed provider response', async () => {
+    stubFetch({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => { throw new SyntaxError('Unexpected end of JSON input'); },
+      text: async () => 'truncated',
+    } as unknown as Response);
+    const client = new OpenAiCompatibleLlmClient({
+      provider: 'requesty',
+      apiKey: API_KEY,
+      model: 'openai/gpt-4o-mini',
+      baseUrl: 'https://router.requesty.ai/v1',
+    });
+
+    await expect(client.complete(baseReq)).rejects.toMatchObject({
+      name: 'LlmProviderFailureError',
+      providerFailureCategory: 'malformed_response',
+      message: expect.stringContaining('not valid JSON'),
+    });
+  });
+
+  test('returns null when a valid JSON response has no message content', async () => {
+    stubFetch(jsonResponse({ choices: [{ message: {} }] }));
+    const client = new OpenAiCompatibleLlmClient({
+      provider: 'openrouter',
+      apiKey: API_KEY,
+      model: 'deepseek/deepseek-v4-flash',
+      baseUrl: 'https://openrouter.ai/api/v1',
+    });
+
+    await expect(client.complete(baseReq)).resolves.toBeNull();
   });
 });
 
