@@ -384,6 +384,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       monitor,
       serverCwd,
       scope,
+      bypassAllPermissions,
       relationTaskStore: taskStore,
       terminalInputSnapshots: terminalInputCoordinator,
       userInputDeliveryProvider: userInputDeliveries,
@@ -421,6 +422,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getRegistryActiveRepos,
     ossAttemptStore,
     getDefaultAgentType,
+    bypassAllPermissions,
     coordinatorSuppressions,
     resolveGrantLiveness: (grantId) => viewerGrantStore.liveness(grantId),
     isActorAllowedTerminalSession,
@@ -682,6 +684,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalBackend,
     isAccepting: () => drainController.isAccepting(),
     validateLaunchCwd: config.validateLaunchCwd,
+    bypassAllPermissions,
   };
 
   let remoteLaunchBroker: import('../remote/launch-broker.js').RemoteLaunchBroker | undefined;
@@ -1092,6 +1095,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     availableAgentTypes: AVAILABLE_AGENT_TYPES.filter((item) => adapterRegistry.getTypes().includes(item.type)),
     defaultAgentType: getDefaultAgentType(),
     getDefaultAgentType,
+    bypassAllPermissions,
     activityMetaProvider: hookIngestion,
     coordinatorAuditTailProvider: hookIngestion,
     coordinatorSuppressions,
@@ -1141,6 +1145,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       worktreeRegistry,
       worktreeRegistryRepoPath: serverCwd,
       getDashboardClientCount: () => connectionRegistry.dashboardCount(),
+      bypassAllPermissions,
     },
   });
 

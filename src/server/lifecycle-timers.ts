@@ -66,6 +66,8 @@ export interface TimerDeps {
   /** Live dashboard client count; registry polling is skipped when zero. */
   getDashboardClientCount?: () => number;
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
+  /** True when promoted launches should be audited as running without permission prompts. */
+  bypassAllPermissions?: boolean;
 }
 
 export interface TimerHandles {
@@ -362,6 +364,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
             lifecycleDeps: deps.agentLifecycleDeps,
             broadcastToAll, serverCwd,
             getMaxActiveTasks: deps.getMaxActiveTasks,
+            bypassAllPermissions: deps.bypassAllPermissions,
           });
         }
         broadcastToAll(createSnapshotMessage({

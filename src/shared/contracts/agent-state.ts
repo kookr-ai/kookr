@@ -5,7 +5,14 @@ import type { Anomaly, AnomalySeverity, FindingEvidenceAuditRecord } from './ano
 import type { PendingAgentSignal } from './agent-signal.js';
 import type { CompletionDigest } from './completion-digest.js';
 import type { LatestCompletionSignal } from './completion-signal.js';
-import type { RalphLoopState, TaskCompletionFeedback, TaskDependencyEdge, TaskLaunchHealthSummary, TaskPriority } from './task.js';
+import type {
+  RalphLoopState,
+  TaskCompletionFeedback,
+  TaskDependencyEdge,
+  TaskLaunchHealthSummary,
+  TaskLaunchPermissionPosture,
+  TaskPriority,
+} from './task.js';
 import type { TaskStatus, TurnState } from './task-status.js';
 import type { TaskRelationRollup } from './task-relations.js';
 import type { TokenUsage } from './usage.js';
@@ -41,6 +48,7 @@ export interface AgentState {
   playbookId?: string;
   playbookParameterValues?: Record<string, string>;
   launchHealthSummary?: TaskLaunchHealthSummary;
+  launchPermissionPosture?: TaskLaunchPermissionPosture;
   tokenUsage?: TokenUsage;
   gitBranch?: string;
   gitCommit?: string;

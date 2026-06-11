@@ -56,6 +56,7 @@ export interface RealtimeServicesDeps {
   getRegistryActiveRepos: () => string[];
   ossAttemptStore: OssAttemptStore;
   getDefaultAgentType: () => AgentSelection;
+  bypassAllPermissions?: boolean;
   coordinatorAuditTailProvider?: CoordinatorAuditTailProvider;
   coordinatorSuppressions?: CoordinatorSuppressionReader;
   /**
@@ -179,6 +180,7 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
             deps.coordinatorSuppressions ? { suppressions: deps.coordinatorSuppressions } : {},
         ),
         totalSpendUsd: deps.taskStore.getLifetimeSpendUsd(),
+        ...(deps.bypassAllPermissions ? { bypassAllPermissions: true } : {}),
         achievements: achievementWatcher?.getUnlocked(),
         ...(achievementWatcher
           ? {

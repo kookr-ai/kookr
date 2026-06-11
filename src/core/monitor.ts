@@ -1,6 +1,6 @@
 import type { AgentActivityMeta, AgentEvent, Anomaly, AnomalyType, TokenUsage, TurnState, WorktreeHealth } from './types.js';
 import type { CompletionDigest } from './completion-digest.js';
-import type { TaskDependencyEdge } from '../shared/contracts/task.js';
+import type { TaskDependencyEdge, TaskLaunchPermissionPosture } from '../shared/contracts/task.js';
 import type { Task, TaskLaunchHealthSummary, TaskStore } from './tasks.js';
 import type { UserInputDeliverySnapshot } from '../shared/contracts/user-input-delivery.js';
 import type { AttentionQueue } from './attention-queue.js';
@@ -53,6 +53,7 @@ export interface AgentState {
   playbookId?: string;
   playbookParameterValues?: Record<string, string>;
   launchHealthSummary?: TaskLaunchHealthSummary;
+  launchPermissionPosture?: TaskLaunchPermissionPosture;
   tokenUsage?: TokenUsage;
   gitBranch?: string;
   gitCommit?: string;

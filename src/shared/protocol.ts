@@ -80,7 +80,7 @@ export type {
   STTCapability,
   TTSCapability,
 } from './contracts/speech.js';
-export type { TaskCompletionFeedback } from './contracts/task.js';
+export type { TaskCompletionFeedback, TaskLaunchPermissionPosture } from './contracts/task.js';
 export type {
   TaskRelation,
   TaskRelationEvidence,

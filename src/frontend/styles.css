@@ -1437,6 +1437,7 @@ kbd {
 .detail-badge.error { background: rgba(248,113,113,0.1); color: var(--red); }
 .detail-badge.input { background: rgba(96,165,250,0.1); color: var(--blue); }
 .detail-badge.turn-complete { background: rgba(52,211,153,0.12); color: var(--green); }
+.detail-badge.permission-bypassed { background: rgba(248,113,113,0.14); color: var(--red); }
 
 .detail-header-right {
   display: flex;
@@ -3100,6 +3101,34 @@ kbd {
 }
 
 .read-only-banner__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.permission-bypass-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  background: rgba(127, 29, 29, 0.36);
+  border-bottom: 1px solid rgba(248, 113, 113, 0.55);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.permission-bypass-banner__badge {
+  flex: 0 0 auto;
+  text-transform: uppercase;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(248, 113, 113, 0.2);
+  color: var(--red);
+}
+
+.permission-bypass-banner__text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

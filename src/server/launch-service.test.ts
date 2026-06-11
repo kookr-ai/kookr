@@ -689,6 +689,57 @@ describe('launchTask', () => {
     expect(store.getTask(result.task.id)?.deliveryAuthorization).toBe('pre-authorized');
   });
 
+  it('records launch permission posture when bypass-all-permissions mode is active', async () => {
+    const interactionLog = { append: vi.fn().mockResolvedValue(undefined) } as any;
+    const result = await launchTask({
+      ...deps,
+      interactionLog,
+      bypassAllPermissions: true,
+    }, { prompt: 'hello unguarded', cwd: '/tmp' });
+
+    expect(result.task.metadata?.launchPermissionPosture).toMatchObject({
+      bypassAllPermissions: true,
+      mode: 'bypass-all',
+    });
+    expect(store.getTask(result.task.id)?.metadata?.launchPermissionPosture).toMatchObject({
+      bypassAllPermissions: true,
+      mode: 'bypass-all',
+    });
+    expect(interactionLog.append).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'task_launch_permission_posture',
+      taskId: result.task.id,
+      agentType: 'claude-code',
+      bypassAllPermissions: true,
+      mode: 'bypass-all',
+    }));
+  });
+
+  it('does not stamp launch permission posture until a bypass-mode task actually launches', async () => {
+    const result = await launchTask({
+      ...deps,
+      getMaxActiveTasks: () => 0,
+      bypassAllPermissions: true,
+    }, { prompt: 'queued unguarded later', cwd: '/tmp' });
+
+    expect(result.queued).toBe(true);
+    expect(result.task.metadata?.launchPermissionPosture).toBeUndefined();
+    expect(store.getTask(result.task.id)?.metadata?.launchPermissionPosture).toBeUndefined();
+    expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
+
+  it('does not record launch permission posture by default', async () => {
+    const interactionLog = { append: vi.fn().mockResolvedValue(undefined) } as any;
+    const result = await launchTask({ ...deps, interactionLog, bypassAllPermissions: false }, {
+      prompt: 'hello guarded',
+      cwd: '/tmp',
+    });
+
+    expect(result.task.metadata?.launchPermissionPosture).toBeUndefined();
+    expect(interactionLog.append).not.toHaveBeenCalledWith(expect.objectContaining({
+      type: 'task_launch_permission_posture',
+    }));
+  });
+
   it('does not set playbookParameterValues when not provided', async () => {
     const result = await launchTask(deps, { prompt: 'hello', cwd: '/tmp' });
     expect(result.task.playbookParameterValues).toBeUndefined();
