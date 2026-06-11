@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../../core/tasks.js';
@@ -516,6 +516,44 @@ describe('DELETE /api/tasks/:id error paths', () => {
     expect(res.status).toBe(500);
     const body = await res.json();
     expect(body.error).toBe('session kill failed');
+  });
+
+  test('writes an api-sourced audit row when a task is deleted', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'task-delete-audit-route-'));
+    try {
+      vi.mocked(deleteTask).mockResolvedValueOnce(true);
+
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask({
+        prompt: 'Delete through REST',
+        cwd: '/cwd',
+        projectId: 'github.com/acme/audit',
+      });
+      const res = await mkApp({
+        ...mkLoopDeps(taskStore),
+        kookrDir: tempDir,
+      }).request(`/api/tasks/${task.id}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(200);
+      const row = JSON.parse(readFileSync(join(tempDir, 'audit.jsonl'), 'utf-8').trim()) as {
+        type: string;
+        actor: { source: string };
+        scope: { kind: string; projectId?: string };
+        count: number;
+        deletedTaskIds: string[];
+        taskId: string;
+      };
+      expect(row).toEqual(expect.objectContaining({
+        type: 'task.deleteTask',
+        actor: { source: 'api' },
+        scope: { kind: 'project', projectId: 'github.com/acme/audit' },
+        count: 1,
+        deletedTaskIds: [task.id],
+        taskId: task.id,
+      }));
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   test('still 404s when the task is unknown even with mocks wired', async () => {

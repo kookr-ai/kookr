@@ -14,7 +14,11 @@ import {
 import { nowISO } from '../../core/interaction-log.js';
 import { getSnapshotAgentsForClient } from '../use-cases/get-snapshot.js';
 import { handleLaunchResult } from './launch-result.js';
-import { TaskLifecycleCommands, type TaskLifecycleCommandResult } from '../use-cases/task-lifecycle-commands.js';
+import {
+  TaskLifecycleCommands,
+  type TaskDeletionAuditActor,
+  type TaskLifecycleCommandResult,
+} from '../use-cases/task-lifecycle-commands.js';
 import { isSharedTaskId } from '../../shared/contracts/contact-share.js';
 
 /**
@@ -39,6 +43,8 @@ export interface LifecycleHandlerDeps {
   broadcastToAll?: (msg: ServerMessage) => void;
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
   takePredeleteSnapshot?: () => Promise<void>;
+  auditLogPath?: string;
+  deletionAuditActor?: () => TaskDeletionAuditActor;
   /**
    * Thunk that rebuilds the LifecycleDeps used by agent-lifecycle / delete-task.
    * Thunk instead of a direct field because several of its members
@@ -101,6 +107,7 @@ export class LifecycleHandler {
       broadcastToAll: deps.broadcastToAll,
       activityMetaProvider: deps.activityMetaProvider,
       takePredeleteSnapshot: deps.takePredeleteSnapshot,
+      auditLogPath: deps.auditLogPath,
       feedbackDir: deps.feedbackDir,
       taskSnapshotDir: deps.taskSnapshotDir,
       reflectWorktreesDir: deps.reflectWorktreesDir,
@@ -239,7 +246,9 @@ export class LifecycleHandler {
       }
 
       case 'deleteTask':
-        assertCommandSucceeded(await this.commands.deleteTask(msg.taskId));
+        assertCommandSucceeded(await this.commands.deleteTask(msg.taskId, {
+          actor: this.deps.deletionAuditActor?.(),
+        }));
         return { duplicate: false };
 
       case 'renameTask':
@@ -251,13 +260,29 @@ export class LifecycleHandler {
         return { duplicate: false };
 
       case 'clearCompleted': {
-        const rawProjectId = msg.projectId;
-        const projectId = rawProjectId?.trim();
-        if (rawProjectId !== undefined && !projectId) return { duplicate: false };
-        await this.commands.clearFinishedTasks({
+        const scopedProjectId = msg.projectId?.trim();
+        const result = await this.commands.clearFinishedTasks({
           includeTerminated: msg.includeTerminated === true,
-          projectId,
+          projectId: msg.projectId,
+          actor: this.deps.deletionAuditActor?.(),
         });
+        if (result.outcome === 'cleared' && result.deletedTaskIds.length > 0) {
+          this.deps.send({
+            type: 'alert',
+            agentId: '',
+            summary: `Cleared ${result.deletedTaskIds.length} task${result.deletedTaskIds.length === 1 ? '' : 's'}`,
+            details: scopedProjectId ? `Project: ${scopedProjectId}` : '',
+            severity: 'info',
+          });
+        } else if (result.outcome === 'snapshot_failed') {
+          this.deps.send({
+            type: 'alert',
+            agentId: '',
+            summary: 'Clear completed aborted',
+            details: result.error,
+            severity: 'warning',
+          });
+        }
         return { duplicate: false };
       }
 

@@ -20,6 +20,7 @@ import type { AgentSelection, AvailableAgentType } from '../core/agent-types.js'
 import type { ScheduleService } from './schedule-service.js';
 import type { RalphLoopService } from './ralph-loop-service.js';
 import { createSnapshotMessage, getSnapshotAgentsForClient } from './use-cases/get-snapshot.js';
+import type { TaskDeletionAuditActor } from './use-cases/task-lifecycle-commands.js';
 import { PlaybookHandler } from './ws-handlers/playbook-handler.js';
 import { ConfigHandler } from './ws-handlers/config-handler.js';
 import { ReflectionHandler } from './ws-handlers/reflection-handler.js';
@@ -87,6 +88,8 @@ export interface MessageRouterDeps {
    * `await` this without handling errors.
    */
   takePredeleteSnapshot?: () => Promise<void>;
+  /** Append-only audit.jsonl path for destructive task lifecycle actions. */
+  auditLogPath?: string;
   /** Project config persistence for `setProjectConfig` messages. */
   projectConfigStore?: ProjectConfigStore;
   /** Rebroadcasts `projectSummaries` to all clients after config changes. */
@@ -176,6 +179,8 @@ export class MessageRouter {
       broadcastToAll: this.deps.broadcastToAll,
       activityMetaProvider: this.deps.activityMetaProvider,
       takePredeleteSnapshot: this.deps.takePredeleteSnapshot,
+      auditLogPath: this.deps.auditLogPath,
+      deletionAuditActor: () => this.deletionAuditActor(),
       feedbackDir: this.deps.feedbackDir,
       taskSnapshotDir: this.deps.taskSnapshotDir,
       reflectWorktreesDir: this.deps.reflectWorktreesDir,
@@ -210,6 +215,13 @@ export class MessageRouter {
       policyResolver: this.deps.policyResolver,
       leaseService: this.deps.leaseService,
     });
+  }
+
+  private deletionAuditActor(): TaskDeletionAuditActor {
+    return {
+      source: 'websocket',
+      ...(this.deps.connectionId ? { actorId: this.deps.connectionId } : {}),
+    };
   }
 
   /** Resolved server cwd with the `process.cwd()` fallback applied. */

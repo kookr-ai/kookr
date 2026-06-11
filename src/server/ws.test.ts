@@ -1579,6 +1579,94 @@ describe('WebSocket MessageRouter', () => {
     ].sort());
   });
 
+  test('clearCompleted writes a structured audit row with actor, scope, count, and ids', async () => {
+    const auditDir = await mkdtemp(join(tmpdir(), 'kookr-clear-audit-'));
+    const auditLogPath = join(auditDir, 'audit.jsonl');
+    try {
+      const projectDone = taskStore.createTask({ prompt: 'A done', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+      const projectCancelled = taskStore.createTask({ prompt: 'A cancelled', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+      const projectActive = taskStore.createTask({ prompt: 'A active', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+      taskStore.startTask(projectDone.id);
+      taskStore.completeTask(projectDone.id);
+      taskStore.startTask(projectCancelled.id);
+      taskStore.cancelTask(projectCancelled.id);
+      taskStore.startTask(projectActive.id);
+
+      const auditedRouter = new MessageRouter({
+        taskStore, queue, monitor, adapter,
+        send: (msg) => { sentMessages.push(msg); },
+        serverCwd: '/test/cwd',
+        auditLogPath,
+        connectionId: 'connection-audit-1',
+      });
+
+      await auditedRouter.handleMessage({ type: 'clearCompleted', projectId: 'github.com/org/a' });
+
+      expect(sentMessages).toContainEqual(expect.objectContaining({
+        type: 'alert',
+        summary: 'Cleared 2 tasks',
+        details: 'Project: github.com/org/a',
+        severity: 'info',
+      }));
+
+      const rows = (await readFile(auditLogPath, 'utf-8')).trim().split('\n').map((line) => JSON.parse(line) as {
+        type: string;
+        actor: { source: string; actorId?: string };
+        scope: { kind: string; projectId?: string };
+        count: number;
+        deletedTaskIds: string[];
+      });
+      expect(rows).toEqual([
+        expect.objectContaining({
+          type: 'task.clearCompleted',
+          actor: { source: 'websocket', actorId: 'connection-audit-1' },
+          scope: { kind: 'project', projectId: 'github.com/org/a' },
+          count: 2,
+          deletedTaskIds: expect.arrayContaining([projectDone.id, projectCancelled.id]),
+        }),
+      ]);
+      expect(rows[0].deletedTaskIds).toHaveLength(2);
+    } finally {
+      await rm(auditDir, { recursive: true, force: true });
+    }
+  });
+
+  test('deleteTask writes a structured audit row with actor, scope, count, and id', async () => {
+    const auditDir = await mkdtemp(join(tmpdir(), 'kookr-delete-audit-'));
+    const auditLogPath = join(auditDir, 'audit.jsonl');
+    try {
+      const task = taskStore.createTask({ prompt: 'Delete me', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+      const auditedRouter = new MessageRouter({
+        taskStore, queue, monitor, adapter,
+        send: (msg) => { sentMessages.push(msg); },
+        serverCwd: '/test/cwd',
+        auditLogPath,
+        connectionId: 'connection-audit-2',
+      });
+
+      await auditedRouter.handleMessage({ type: 'deleteTask', taskId: task.id });
+
+      const row = JSON.parse((await readFile(auditLogPath, 'utf-8')).trim()) as {
+        type: string;
+        actor: { source: string; actorId?: string };
+        scope: { kind: string; projectId?: string };
+        count: number;
+        deletedTaskIds: string[];
+        taskId: string;
+      };
+      expect(row).toEqual(expect.objectContaining({
+        type: 'task.deleteTask',
+        actor: { source: 'websocket', actorId: 'connection-audit-2' },
+        scope: { kind: 'project', projectId: 'github.com/org/a' },
+        count: 1,
+        deletedTaskIds: [task.id],
+        taskId: task.id,
+      }));
+    } finally {
+      await rm(auditDir, { recursive: true, force: true });
+    }
+  });
+
   test('clearCompleted with blank projectId is a no-op instead of global sweep', async () => {
     const projectDone = taskStore.createTask({ prompt: 'Project done', cwd: '/cwd/a', projectId: 'github.com/org/a' });
     const unscopedDone = taskStore.createTask('Unscoped done', '/cwd/unscoped');

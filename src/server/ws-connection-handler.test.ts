@@ -10,11 +10,13 @@ import type { SnapshotPayloadSizeObservation } from './snapshot-payload-size-pol
 // the initial-connection burst doesn't touch real state.
 const handleMessageSafe = vi.fn(async () => {});
 const handleConnect = vi.fn(() => {});
+const constructedRouterDeps: MessageRouterDeps[] = [];
 vi.mock('./ws.js', () => ({
   MessageRouter: class {
     lastLaunchDuplicate = false;
     private readonly send: MessageRouterDeps['send'];
     constructor(deps: MessageRouterDeps) {
+      constructedRouterDeps.push(deps);
       this.send = deps.send;
     }
     handleConnect = () => {
@@ -153,6 +155,7 @@ function dispatch(ws: FakeWs, msg: object): Promise<void> {
 describe('handleWsConnection read-only gate (integration)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    constructedRouterDeps.length = 0;
   });
 
   afterEach(() => {
@@ -221,6 +224,21 @@ describe('handleWsConnection read-only gate (integration)', () => {
     await dispatch(ws, { type: 'deleteTask', taskId: 't1' });
 
     expect(handleMessageSafe).toHaveBeenCalledTimes(1);
+  });
+
+  it('threads audit path and connection id into owner MessageRouter', () => {
+    const ws = makeFakeWs();
+    handleWsConnection(
+      ws as unknown as WebSocket,
+      registrar,
+      { ...makeDeps(), auditLogPath: '/tmp/kookr-audit.jsonl' } as unknown as WsConnectionDeps,
+      OWNER,
+    );
+
+    expect(constructedRouterDeps.at(-1)).toEqual(expect.objectContaining({
+      auditLogPath: '/tmp/kookr-audit.jsonl',
+      connectionId: expect.any(String),
+    }));
   });
 
   it('defaults to owner when no actor is supplied (back-compat)', async () => {

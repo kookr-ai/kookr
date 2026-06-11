@@ -2085,6 +2085,60 @@ Review daily work.
       await new Promise<void>((r) => ws.on('close', () => r()));
     });
 
+    test('clearCompleted writes audit.jsonl through production WebSocket wiring', async () => {
+      const task = server.taskStore.createTask({
+        prompt: 'Done for audit',
+        cwd: CWD,
+        projectId: 'github.com/acme/audit',
+      });
+      server.taskStore.startTask(task.id);
+      server.taskStore.completeTask(task.id);
+      const auditLogPath = join(tempDir, 'audit.jsonl');
+
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('WS timeout')), 3000);
+        ws.on('message', (data) => {
+          const parsed = JSON.parse(data.toString()) as { type?: string };
+          if (parsed.type === 'snapshot') {
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+        ws.on('error', reject);
+      });
+
+      ws.send(JSON.stringify({
+        type: 'clearCompleted',
+        projectId: 'github.com/acme/audit',
+      }));
+
+      await waitForCondition(() => {
+        try {
+          return readFileSync(auditLogPath, 'utf-8').includes(task.id);
+        } catch {
+          return false;
+        }
+      });
+      const row = JSON.parse(readFileSync(auditLogPath, 'utf-8').trim()) as {
+        type: string;
+        actor: { source: string; actorId?: string };
+        scope: { kind: string; projectId?: string };
+        count: number;
+        deletedTaskIds: string[];
+      };
+      expect(row).toEqual(expect.objectContaining({
+        type: 'task.clearCompleted',
+        actor: { source: 'websocket', actorId: expect.any(String) },
+        scope: { kind: 'project', projectId: 'github.com/acme/audit' },
+        count: 1,
+        deletedTaskIds: [task.id],
+      }));
+
+      ws.close();
+      await new Promise<void>((r) => ws.on('close', () => r()));
+    });
+
     test('recovers corrupt tasks.json at startup and replays a dashboard alert', async () => {
       await server.close();
       serverClosed = true;

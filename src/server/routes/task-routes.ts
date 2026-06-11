@@ -1,4 +1,5 @@
 import type { Hono } from 'hono';
+import { join } from 'node:path';
 import { discoverPlaybooks } from '../../core/playbook-discovery.js';
 import { saveTasks, serializeSnoozed } from '../../core/task-persistence.js';
 import { normalizeAgentSelection } from '../../core/agent-types.js';
@@ -36,6 +37,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     scheduleService: deps.scheduleService,
     broadcastToAll,
     activityMetaProvider: hookIngestion,
+    auditLogPath: deps.kookrDir ? join(deps.kookrDir, 'audit.jsonl') : undefined,
     getLifecycleDeps: () => ({
       adapter,
       monitor,
@@ -252,7 +254,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     if (!task) return c.json({ error: 'Task not found' }, 404);
 
     try {
-      await lifecycleCommands.deleteTask(id);
+      await lifecycleCommands.deleteTask(id, { actor: { source: 'api' } });
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
       return c.json({ ok: true });
     } catch (err) {
