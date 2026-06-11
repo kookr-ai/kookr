@@ -185,6 +185,105 @@ launch. Resolution order: per-task override → per-agent-type setting → unset
 | `ws://host:port/ws` | Real-time updates, snapshots, alerts, and suggestions |
 | `ws://host:port/ws/terminal/:sessionId` | Interactive terminal bridge using binary frames over the dtach session |
 
+### WebSocket message protocol
+
+The `/ws` channel carries UTF-8 JSON objects. Every application message has a
+string `type` discriminator. Unknown or malformed client messages are rejected
+with an `alert` frame instead of being routed to a handler. The
+`/ws/terminal/:sessionId` channel is separate and uses binary terminal frames;
+the message tables below apply only to `/ws`.
+
+On connect, the server sends a full `snapshot` first. Owner sessions may then
+receive startup alerts and the latest optional side-channel state
+(`resourceStatus`, `githubUpdate`, `projectSummaries`, `quotaStatus`,
+`circuitBreakerStatus`, `diagnosticReport`) when those stores have data.
+Read-only viewer sessions receive only a scope-filtered `snapshot` plus
+scope-filtered `projectSummaries`.
+
+There is no client-supplied resume cursor. Reconnect by opening a new `/ws`
+connection and treating the first `snapshot` as the baseline. Later
+`snapshot` frames replace the dashboard baseline, while `update` frames refresh
+one agent state and other frames update their named subsystem. `serverRevision`
+is an optional remote-control-plane revision on `snapshot`, not a general
+delta sequence number.
+
+### Server-to-client messages
+
+| `type` | Purpose | Key fields |
+| --- | --- | --- |
+| `snapshot` | Full dashboard baseline on connect and after broad state changes. | `agents`, `serverCwd`, optional build/speech/achievement/task relation fields |
+| `update` | Refresh one agent's current state. | `agentId`, `state` |
+| `alert` | Surface an anomaly, validation error, or handler error. | `agentId`, `summary`, `details`, `severity` |
+| `githubUpdate` | Push GitHub PR/issue state for one task. | `taskId`, `prs`, `issues`, `changes` |
+| `playbooks` | Return playbook discovery results for a cwd. | `cwd`, `playbooks`, optional `capabilities` |
+| `suggestion` | Suggest operator replies or quick actions for an agent. | `agentId`, `suggestionId`, `suggestions`, `quickActions` |
+| `projectSummaries` | Update the project sidebar summary list. | `projects` |
+| `coordinator.snapshot` | Update coordinator findings, chips, outputs, and chains. | `coordinator` |
+| `dashboardSelection` | Acknowledge or broadcast the active dashboard selection for this connection. | `selectedTaskId`, `selectedSessionId`, `selectionVersion` |
+| `emptyEnterDecision` | Return the server decision for an empty terminal Enter intent. | `decision` |
+| `contributionWarning` | Warn that a project's contribution attempt budget is near or past a limit. | `project`, `message`, `severity` |
+| `achievement:unlocked` | Notify the UI that an achievement was unlocked. | `id`, `name`, `emoji`, `description`, `unlockedAt` |
+| `achievement:reset:ack` | Acknowledge an achievement reset request. | `success`, optional `error` |
+| `quotaStatus` | Push current Claude API quota window utilization. | `quota` |
+| `resourceStatus` | Push sampled server-host CPU, memory, and event-loop status. | `status` |
+| `circuitBreakerStatus` | Push wrapped-dependency circuit breaker snapshots. | `breakers` |
+| `schedules` | Push scheduled-task list state. | `schedules`, `revision`, `status` |
+| `scheduleFired` | Notify that a schedule launched a task. | `scheduleId`, `taskId` |
+| `workspaceView` | Return contribution-workspace candidates and cleanup results. | `view`, optional `error`, `cleanupResult`, `cleanupResults`, `diagnosticLaunch` |
+| `workspaceCleanupDetail` | Return detail for a cleanup candidate worktree. | `worktreePath`, optional `detail`, `error` |
+| `workspaceSweepComplete` | Report completion of a cross-project cleanup sweep. | `runId`, `startedAt`, `finishedAt`, `projects` |
+| `workspaceSweepBusy` | Report that another cleanup sweep already holds the lock. | `holderPid`, `heldSince` |
+| `diagnosticReport` | Push the latest self-diagnostic report when findings exist. | `report` |
+| `ossAttempts` | Push OSS contribution-attempt store state and refresh status. | `store`, optional `refreshStatus` |
+
+### Client-to-server messages
+
+| `type` | Purpose | Key fields |
+| --- | --- | --- |
+| `respond` | Send input to an agent that needs a response. | `agentId`, `input` |
+| `respondAll` | Send the same input to multiple agents. | `agentIds`, `input` |
+| `directReply` | Inject a direct reply into a running agent. | `agentId`, `input` |
+| `navigate` | Record navigation to an agent. | `agentId` |
+| `getNext` | Request the next task from the attention queue. | none |
+| `selectionChanged` | Tell the server which task/session this connection selected. | `selectedTaskId`, `selectedSessionId` |
+| `emptyEnterIntent` | Ask the server whether an empty terminal Enter should advance or send Enter. | `intentId`, `taskId`, `sessionId`, `selectionVersion`, `inputStateEpoch`, `observedReadinessVersion` |
+| `skip` | Skip the current finding for one agent. | `agentId` |
+| `skipAll` | Skip findings for multiple agents. | `agentIds` |
+| `snooze` | Snooze monitoring or attention for an agent. | `agentId`, `durationMs`, optional `taskId`, `reason`, `resumeMonitoring` |
+| `cancelSnooze` | Wake a snoozed agent. | `agentId`, optional `taskId` |
+| `launch` | Launch a new task. | `prompt`, `cwd`, optional `criteria`, `agentType`, `dependencies` |
+| `completeTask` | Mark a task complete, optionally with feedback or reflection request. | `taskId`, optional `feedback`, `requestReflect` |
+| `setTaskFeedback` | Save feedback for an existing task. | `taskId`, `feedback` |
+| `requestTaskReflect` | Start task reflection from thumbs-up/down feedback. | `taskId`, `direction` |
+| `requestTaskSnapshotReflect` | Start an anytime task snapshot reflection. | `taskId` |
+| `relaunch` | Relaunch an existing task with a new prompt. | `taskId`, `prompt`, optional `agentType`, `dependencies` |
+| `cancelTask` | Cancel a task and terminate its session. | `taskId` |
+| `reopenTask` | Reopen a terminal task. | `taskId` |
+| `dismissAgentSignal` | Dismiss a surfaced agent signal. | `taskId` |
+| `deleteTask` | Delete a task. | `taskId` |
+| `renameTask` | Rename a task. | `taskId`, `name` |
+| `setTaskPriority` | Change a task's priority. | `taskId`, `priority` |
+| `stop` | Stop an agent session. | `agentId` |
+| `reflect` | Launch session-friction reflection. | none |
+| `listPlaybooks` | Discover playbooks for a cwd. | `cwd` |
+| `launchPlaybook` | Launch a playbook. | `playbookPath`, `parameterValues`, legacy `cwd` or `playbookSourceCwd` plus `taskTargetCwd`, optional `agentType`, `scope`, `projectId` |
+| `telemetry` | Send frontend telemetry events. | `events` |
+| `setProjectConfig` | Update a tracked project's configuration. | `project`, `config` |
+| `clearCompleted` | Clear completed tasks, optionally including terminated tasks or scoping to a project. | optional `includeTerminated`, `projectId` |
+| `ackTerminatedTask` | Acknowledge a terminated task as complete. | `taskId` |
+| `achievement:reset` | Reset achievement state. | none |
+| `achievement:setEnabled` | Enable or disable achievement tracking. | `enabled` |
+| `permissionChoice` | Send a keystroke decision for a pending permission request. | `agentId`, `keystroke`, `permissionRequest` |
+| `rearmCircuitBreaker` | Rearm a named circuit breaker. | `name` |
+| `findingFeedback` | Mark a surfaced finding as a false positive. | `agentId`, `anomalyType`, `explanation`, `verdict`, optional `userReason` |
+| `missedFinding` | Report a finding the supervisor missed. | `agentId`, `userReason`, optional `suspectedType` |
+| `workspace:getView` | Request contribution-workspace state for a project. | `projectId` |
+| `workspace:getCleanupDetail` | Request cleanup detail for one worktree. | `projectId`, `worktreePath` |
+| `workspace:cleanupCandidate` | Clean up one workspace candidate. | `projectId`, `worktreePath`, optional `branch`, `repoPath`, `deleteBranch`, `riskAccepted`, `discardDirtyState`, `reviewFingerprint` |
+| `workspace:bulkSafeCleanup` | Clean up all safe workspace candidates for a project. | `projectId` |
+| `workspace:runCleanupDiagnostic` | Launch a cleanup diagnostic for one worktree. | `projectId`, `worktreePath`, `reviewFingerprint` |
+| `workspace:sweep` | Run a cross-project workspace cleanup sweep. | none |
+
 ## Data Directory
 
 Kookr stores local state by port:
