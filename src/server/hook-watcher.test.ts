@@ -5,8 +5,12 @@ import { tmpdir } from 'node:os';
 import { HookFileWatcher, splitHookRecords } from './hook-watcher.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
+import { AttentionQueue } from '../core/attention-queue.js';
 import { TaskStore } from '../core/tasks.js';
 import type { AgentEvent } from '../core/types.js';
+import { HookIngestion, type HookEventInjector } from './hook-ingestion.js';
+import { createHookParseDegradationEvaluator } from './hook-parse-degradation-rules.js';
+import type { ServerMessage } from '../shared/contracts/messages.js';
 
 describe('HookFileWatcher', () => {
   let tempDir: string;
@@ -140,6 +144,70 @@ describe('HookFileWatcher', () => {
     expect(events.length).toBe(2);
     expect(events[0].type).toBe('session_start');
     expect(events[1].type).toBe('tool_use');
+  });
+
+  test('startup replay malformed records stay quiet but later live malformed records alert once', async () => {
+    const hookFile = join(tempDir, 'kookr-startup-replay.jsonl');
+    writeFileSync(hookFile, '{"old":true}\n');
+    const alerts: Array<Extract<ServerMessage, { type: 'alert' }>> = [];
+    const queue = new AttentionQueue();
+    const evaluator = createHookParseDegradationEvaluator();
+    const malformedAdapter: HookEventInjector = {
+      injectHookEvent(_tmux, _raw, sequence, options) {
+        return {
+          parseStatus: 'malformed',
+          agentType: 'claude-code',
+          error: 'bad hook record',
+          sequence: sequence ?? 0,
+          origin: options?.origin,
+        };
+      },
+    };
+    const ingestion = new HookIngestion({
+      adapter: malformedAdapter,
+      now: () => Date.parse('2026-06-11T10:00:00.000Z'),
+      onParseDegradation: (event) => {
+        const evaluation = evaluator.evaluate(event);
+        if (!evaluation) return;
+        queue.enqueue(event.kookrSessionId, evaluation.anomaly);
+        alerts.push(evaluation.alert);
+      },
+    });
+    const optionWatcher = new HookFileWatcher(tempDir, ingestion);
+
+    try {
+      optionWatcher.watch('kookr-startup-replay', {
+        replayExisting: true,
+        suppressParseAlertsForExisting: true,
+      });
+      await new Promise((r) => setTimeout(r, 200));
+
+      expect(alerts).toEqual([]);
+      expect(queue.peek('kookr-startup-replay')).toBeNull();
+      expect(ingestion.getActivityMeta('kookr-startup-replay')?.malformedRecordCount).toBe(1);
+
+      appendFileSync(hookFile, '{"live":true}\n');
+      await optionWatcher.drainNow('kookr-startup-replay');
+
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0].details).toContain('{"live":true}');
+      expect(alerts[0].details).toContain('Event: evt_');
+      const alertEventId = alerts[0].details.match(/Event: (evt_[^ ]+)/)?.[1];
+      expect(alertEventId).toBeDefined();
+      expect(queue.peek('kookr-startup-replay')).toMatchObject({
+        type: 'hook_parse_degraded',
+        eventId: alertEventId,
+      });
+
+      appendFileSync(hookFile, '{"live":2}\n');
+      await optionWatcher.drainNow('kookr-startup-replay');
+
+      expect(alerts).toHaveLength(1);
+      expect(queue.peek('kookr-startup-replay')?.type).toBe('hook_parse_degraded');
+      expect(ingestion.getActivityMeta('kookr-startup-replay')?.malformedRecordCount).toBe(3);
+    } finally {
+      optionWatcher.stopAll();
+    }
   });
 
   test('splitHookRecords separates concatenated hook JSON objects', () => {

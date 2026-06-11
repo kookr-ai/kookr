@@ -39,8 +39,18 @@ export interface HookEventInjector {
     tmuxName: string,
     rawJson: string,
     sequence?: number,
-    options?: { origin?: EventOrigin },
+    options?: { origin?: EventOrigin; startupReplay?: boolean },
   ): InjectHookEventResult;
+}
+
+export interface HookParseDegradationEvent {
+  kookrSessionId: string;
+  source: IngestInput['source'];
+  eventId: string;
+  sequence: number;
+  error: string;
+  excerpt: string;
+  observedAt: string;
 }
 
 export interface HookIngestionDeps {
@@ -60,12 +70,18 @@ export interface HookIngestionDeps {
   dedupTtlMs?: number;
   /** Test seam: overridable clock for deterministic dedup-window assertions. */
   now?: () => number;
+  /**
+   * Called for live malformed hook records only. Startup replay and synthetic
+   * replay sessions remain diagnostics-only so old bad records do not alert.
+   */
+  onParseDegradation?: (event: HookParseDegradationEvent) => void;
 }
 
 export interface IngestInput {
   kookrSessionId: string;
   raw: string;
   source: 'file' | 'http';
+  startupReplay?: boolean;
 }
 
 export interface IngestResult {
@@ -151,6 +167,7 @@ export class HookIngestion implements HookEventInjector {
   private taskStore?: Pick<TaskStore, 'findTaskBySession'>;
   private dedupTtlMs: number;
   private now: () => number;
+  private onParseDegradation?: (event: HookParseDegradationEvent) => void;
 
   constructor(deps: HookIngestionDeps) {
     this.adapter = deps.adapter;
@@ -159,11 +176,22 @@ export class HookIngestion implements HookEventInjector {
     this.taskStore = deps.taskStore;
     this.dedupTtlMs = deps.dedupTtlMs ?? 5000;
     this.now = deps.now ?? Date.now;
+    this.onParseDegradation = deps.onParseDegradation;
   }
 
   /** HookFileWatcher-compatible alias. Treats the call as file-source. */
-  injectHookEvent(tmuxName: string, rawJson: string): InjectHookEventResult {
-    const result = this.ingest({ kookrSessionId: tmuxName, raw: rawJson, source: 'file' });
+  injectHookEvent(
+    tmuxName: string,
+    rawJson: string,
+    _sequence?: number,
+    options?: { origin?: EventOrigin; startupReplay?: boolean },
+  ): InjectHookEventResult {
+    const result = this.ingest({
+      kookrSessionId: tmuxName,
+      raw: rawJson,
+      source: 'file',
+      startupReplay: options?.startupReplay,
+    });
     return result.injectResult;
   }
 
@@ -172,7 +200,7 @@ export class HookIngestion implements HookEventInjector {
     return this.ingest({ kookrSessionId: sessionId, raw: body, source: 'http' });
   }
 
-  private ingest({ kookrSessionId, raw, source }: IngestInput): IngestResult {
+  private ingest({ kookrSessionId, raw, source, startupReplay = false }: IngestInput): IngestResult {
     const normalized = raw.trim();
     const contentHash = createHash('sha256').update(normalized).digest('hex');
     const origin = deriveEventOrigin(kookrSessionId);
@@ -265,6 +293,16 @@ export class HookIngestion implements HookEventInjector {
         origin,
       };
       this.bumpMeta(kookrSessionId, { duplicate: false, result: malformed });
+      this.emitParseDegradation({
+        kookrSessionId,
+        source,
+        eventId,
+        sequence,
+        result: malformed,
+        raw: normalized,
+        origin,
+        startupReplay,
+      });
       this.writeLedger({
         kookrSessionId,
         contentHash,
@@ -288,6 +326,18 @@ export class HookIngestion implements HookEventInjector {
       this.cache.set(key, { ts: now, result, firstSource: source });
     }
     this.bumpMeta(kookrSessionId, { duplicate: false, result });
+    if (result.parseStatus === 'malformed') {
+      this.emitParseDegradation({
+        kookrSessionId,
+        source,
+        eventId,
+        sequence,
+        result,
+        raw: normalized,
+        origin,
+        startupReplay,
+      });
+    }
     this.writeLedger({
       kookrSessionId,
       contentHash,
@@ -525,6 +575,29 @@ export class HookIngestion implements HookEventInjector {
     void this.activityLedger.append(row).catch(() => { /* diagnostics-only path */ });
   }
 
+  private emitParseDegradation(args: {
+    kookrSessionId: string;
+    source: IngestInput['source'];
+    eventId: string;
+    sequence: number;
+    result: InjectHookEventResult;
+    raw: string;
+    origin: EventOrigin;
+    startupReplay: boolean;
+  }): void {
+    if (!this.onParseDegradation) return;
+    if (args.origin !== 'live' || args.startupReplay) return;
+    this.onParseDegradation({
+      kookrSessionId: args.kookrSessionId,
+      source: args.source,
+      eventId: args.eventId,
+      sequence: args.sequence,
+      error: args.result.error ?? 'malformed hook payload',
+      excerpt: malformedExcerpt(args.raw),
+      observedAt: new Date(this.now()).toISOString(),
+    });
+  }
+
   private gcExpired(now: number): void {
     const threshold = now - this.dedupTtlMs;
     for (const [key, entry] of this.cache) {
@@ -594,4 +667,8 @@ function emptyMeta(): AgentActivityMeta {
     droppedRecordCount: 0,
     duplicateRecordCount: 0,
   };
+}
+
+function malformedExcerpt(raw: string): string {
+  return raw.replace(/\s+/g, ' ').trim().slice(0, 160);
 }
