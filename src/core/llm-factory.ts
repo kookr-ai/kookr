@@ -2,11 +2,104 @@
  * Provider construction and fallback composition for LLM clients.
  */
 
-import type { LlmClient, LlmCompletionRequest } from './llm-types.js';
+import {
+  classifyLlmProviderHttpStatus,
+  isLlmProviderFailureCategory,
+  type LlmClient,
+  type LlmCompletionAuditResult,
+  type LlmCompletionRequest,
+  type LlmProviderFailureCategory,
+  type LlmProviderFailureRecord,
+} from './llm-types.js';
 
 export interface LlmProviderBuilders {
   buildOpenRouter?: () => LlmClient | null | Promise<LlmClient | null>;
   buildRequesty?: () => LlmClient | null | Promise<LlmClient | null>;
+}
+
+function hasProviderFailureCategory(err: unknown): err is { providerFailureCategory: LlmProviderFailureCategory } {
+  const category = (err as { providerFailureCategory?: unknown } | null)?.providerFailureCategory;
+  return isLlmProviderFailureCategory(category);
+}
+
+function numberFromUnknown(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function classifyStatus(status: number | null): LlmProviderFailureCategory | null {
+  if (status === null) return null;
+  const category = classifyLlmProviderHttpStatus(status);
+  return category === 'other' ? null : category;
+}
+
+export function classifyLlmProviderFailure(err: unknown): LlmProviderFailureCategory {
+  if (hasProviderFailureCategory(err)) return err.providerFailureCategory;
+
+  const shaped = err as {
+    status?: unknown;
+    statusCode?: unknown;
+    code?: unknown;
+    name?: unknown;
+    message?: unknown;
+  } | null;
+  const status = classifyStatus(
+    numberFromUnknown(shaped?.status) ?? numberFromUnknown(shaped?.statusCode),
+  );
+  if (status) return status;
+
+  const code = typeof shaped?.code === 'string' ? shaped.code.toUpperCase() : '';
+  if (['ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'].includes(code)) {
+    return 'network_timeout';
+  }
+
+  const text = `${typeof shaped?.name === 'string' ? shaped.name : ''} ${
+    typeof shaped?.message === 'string' ? shaped.message : String(err)
+  }`.toLowerCase();
+  if (/unauthori[sz]ed|forbidden|invalid api key|api key|authentication|authorization|permission denied/.test(text)) {
+    return 'auth';
+  }
+  if (/\b5\d\d\b|server error|bad gateway|service unavailable|gateway timeout/.test(text)) return 'server_5xx';
+  if (/json|parse|malformed|invalid response|unexpected end|message content|choices/.test(text)) return 'malformed_response';
+  if (/timed?\s*out|timeout|network|fetch failed|socket|dns|connection/.test(text)) return 'network_timeout';
+  return 'other';
+}
+
+function emptyResponseFailure(client: LlmClient): LlmProviderFailureRecord {
+  return {
+    provider: client.provider,
+    model: client.model,
+    category: 'malformed_response',
+    message: 'provider returned empty response',
+  };
+}
+
+function caughtFailure(client: LlmClient, err: unknown): LlmProviderFailureRecord {
+  return {
+    provider: client.provider,
+    model: client.model,
+    category: classifyLlmProviderFailure(err),
+    message: err instanceof Error ? err.message : String(err),
+  };
+}
+
+export async function completeLlmWithFailureAudit(
+  client: LlmClient,
+  request: LlmCompletionRequest,
+): Promise<LlmCompletionAuditResult> {
+  if (client.completeWithFailureAudit) {
+    return client.completeWithFailureAudit(request);
+  }
+
+  try {
+    const text = await client.complete(request);
+    if (text !== null) return { text, failures: [], failureCategory: null };
+    const failure = emptyResponseFailure(client);
+    return { text: null, failures: [failure], failureCategory: failure.category };
+  } catch (err) {
+    if ((err as { name?: string } | null)?.name === 'AbortError') throw err;
+    const failure = caughtFailure(client, err);
+    return { text: null, failures: [failure], failureCategory: failure.category };
+  }
 }
 
 /**
@@ -31,7 +124,8 @@ export class FallbackLlmClient implements LlmClient {
     return this.clients[0].model;
   }
 
-  async complete(request: LlmCompletionRequest): Promise<string | null> {
+  async completeWithFailureAudit(request: LlmCompletionRequest): Promise<LlmCompletionAuditResult> {
+    const failures: LlmProviderFailureRecord[] = [];
     for (const client of this.clients) {
       // Re-check between providers so an abort that fired during the previous
       // attempt does not silently retry on the next provider. See R8 in
@@ -44,17 +138,30 @@ export class FallbackLlmClient implements LlmClient {
       }
       try {
         const result = await client.complete(request);
-        if (result !== null) return result;
+        if (result !== null) {
+          return { text: result, failures, failureCategory: null };
+        }
         // null means the provider returned empty — try next
-        console.warn(`[llm] ${client.provider} (${client.model}) returned empty response, trying next provider`);
+        const failure = emptyResponseFailure(client);
+        failures.push(failure);
+        console.warn(
+          `[llm] ${client.provider} (${client.model}) failed category=${failure.category}: ${failure.message}, trying next provider`,
+        );
       } catch (err) {
         if ((err as { name?: string } | null)?.name === 'AbortError') throw err;
+        const failure = caughtFailure(client, err);
+        failures.push(failure);
         console.warn(
-          `[llm] ${client.provider} (${client.model}) failed: ${err instanceof Error ? err.message : err}, trying next provider`,
+          `[llm] ${client.provider} (${client.model}) failed category=${failure.category}: ${failure.message}, trying next provider`,
         );
       }
     }
-    return null;
+    const lastFailure = failures[failures.length - 1] ?? null;
+    return { text: null, failures, failureCategory: lastFailure?.category ?? null };
+  }
+
+  async complete(request: LlmCompletionRequest): Promise<string | null> {
+    return (await this.completeWithFailureAudit(request)).text;
   }
 }
 
