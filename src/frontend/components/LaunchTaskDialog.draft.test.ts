@@ -141,6 +141,10 @@ describe('LaunchTaskDialog draft persistence', () => {
 
     expect(sent).toHaveLength(1);
     expect(sent[0].type).toBe('launch');
+    const { alerts } = useKookrStore.getState();
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].severity).toBe('info');
+    expect(alerts[0].summary).toBe('Launching task: do the thing');
     // The dialog closes before the server confirms the launch, so the draft
     // survives submit — only stamped with a submittedAt marker.
     const stored = JSON.parse(localStorage.getItem(DRAFT_KEY)!);

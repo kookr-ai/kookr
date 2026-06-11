@@ -114,7 +114,7 @@ describe('LaunchTaskDialog server-cwd button', () => {
     // because cwd ('/workspace/kookr-prod') !== target ('/workspace/kookr').
     const button = getServerCwdButton(container);
     expect(button).not.toBeNull();
-    expect(button!.textContent).toContain('Use parent of server cwd');
+    expect(button!.textContent).toContain('Use main checkout');
     expect(button!.textContent).toContain('/workspace/kookr');
 
     await act(async () => {

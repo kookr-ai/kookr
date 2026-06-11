@@ -61,7 +61,7 @@ describe('QuickLaunch optimistic toast', () => {
     vi.unstubAllGlobals();
   });
 
-  test('submitting a prompt sends first, then pushes a "Starting task" info toast on success', async () => {
+  test('submitting a prompt sends first, then pushes a "Launching task" info toast on success', async () => {
     const sent: ClientMessage[] = [];
     let alertWhenSent: number | null = null;
     const send = (msg: ClientMessage): boolean => {
@@ -83,7 +83,7 @@ describe('QuickLaunch optimistic toast', () => {
 
     // Send happens BEFORE the toast is pushed — reviewer flagged the prior
     // ordering because useWebSocket.send returns false when the socket is
-    // closed; pushing the "Starting task" toast first would lie to the user.
+    // closed; pushing the optimistic toast first would lie to the user.
     expect(sent).toHaveLength(1);
     expect(sent[0].type).toBe('launch');
     expect(alertWhenSent).toBe(0);
@@ -91,7 +91,7 @@ describe('QuickLaunch optimistic toast', () => {
     const { alerts } = useKookrStore.getState();
     expect(alerts).toHaveLength(1);
     expect(alerts[0].severity).toBe('info');
-    expect(alerts[0].summary).toBe('Starting task: Add pagination to the /users route');
+    expect(alerts[0].summary).toBe('Launching task: Add pagination to the /users route');
   });
 
   test('long prompts are truncated to 40 chars with ellipsis in the toast', async () => {
@@ -110,7 +110,7 @@ describe('QuickLaunch optimistic toast', () => {
 
     const { alerts } = useKookrStore.getState();
     expect(alerts).toHaveLength(1);
-    expect(alerts[0].summary).toBe(`Starting task: ${'y'.repeat(40)}…`);
+    expect(alerts[0].summary).toBe(`Launching task: ${'y'.repeat(40)}…`);
   });
 
   test('empty or whitespace-only prompts do not push a toast', async () => {
