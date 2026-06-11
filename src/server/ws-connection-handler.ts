@@ -118,6 +118,8 @@ export interface WsConnectionDeps {
   getDiagnosticStatus?: () => { report: import('../core/self-diagnostic.js').DiagnosticReport | null; lastError: string | null };
   /** Get latest server-host resource status for the initial connection burst. */
   getLatestResourceStatus?: () => SystemResourceStatus | null;
+  /** Startup alerts replayed to every dashboard connection until restart. */
+  startupAlerts?: ServerMessage[];
   /** Workspace services (Phase 1a). */
   workspaceEnabled?: boolean;
   attemptRepository?: WorkspaceAttemptRepository;
@@ -236,6 +238,12 @@ export function handleWsConnection(
   }
 
   router.handleConnect();
+
+  for (const alert of deps.startupAlerts ?? []) {
+    if (ws.readyState === 1) {
+      ws.send(JSON.stringify(alert));
+    }
+  }
 
   const latestResourceStatus = deps.getLatestResourceStatus?.();
   if (latestResourceStatus && ws.readyState === 1) {

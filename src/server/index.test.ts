@@ -2085,6 +2085,80 @@ Review daily work.
       await new Promise<void>((r) => ws.on('close', () => r()));
     });
 
+    test('recovers corrupt tasks.json at startup and replays a dashboard alert', async () => {
+      await server.close();
+      serverClosed = true;
+
+      const recoveryDir = join(tempDir, 'recovery');
+      mkdirSync(recoveryDir, { recursive: true });
+      const recoveredTasksFile = join(recoveryDir, 'tasks.json');
+      const restoredTask = {
+        id: 'restored-task',
+        prompt: 'Recovered task',
+        cwd: '/restored',
+        agentType: 'claude-code',
+        status: 'open',
+        sessions: [],
+        createdAt: '2026-06-10T00:00:00.000Z',
+        updatedAt: '2026-06-10T00:00:00.000Z',
+      };
+      writeFileSync(recoveredTasksFile, '{"tasks": [');
+      writeFileSync(`${recoveredTasksFile}.daily.20260611`, JSON.stringify({
+        version: 2,
+        lifetimeSpendUsd: 4.25,
+        tasks: [restoredTask],
+      }));
+
+      const recoveredServer = await createKookrServerInternal({
+        port: 0,
+        host: '127.0.0.1',
+        kookrDir: recoveryDir,
+        tasksFile: recoveredTasksFile,
+        hooksDir: join(recoveryDir, 'hooks'),
+        settingsDir: join(recoveryDir, 'settings'),
+        serverCwd: '/test/cwd',
+        frontendDir: join(recoveryDir, 'frontend'),
+        saveIntervalMs: 600_000,
+        livenessIntervalMs: 600_000,
+        terminalBackend: new FakeTerminalBackend(),
+        claudeDir: join(recoveryDir, 'claude'),
+      });
+
+      try {
+        expect(recoveredServer.taskStore.listTasks()).toHaveLength(1);
+        expect(recoveredServer.taskStore.getTask('restored-task')?.prompt).toBe('Recovered task');
+        expect(JSON.parse(readFileSync(recoveredTasksFile, 'utf-8')).tasks[0].id).toBe('restored-task');
+
+        const recoveredPort = getActualPort(recoveredServer);
+        const ws = new WebSocket(`ws://127.0.0.1:${recoveredPort}/ws`);
+        const messages = await new Promise<Array<{ type: string; summary?: string; details?: string; severity?: string }>>((resolve, reject) => {
+          const seen: Array<{ type: string; summary?: string; details?: string; severity?: string }> = [];
+          const timer = setTimeout(() => reject(new Error('WS timeout')), 3000);
+          ws.on('message', (data) => {
+            const parsed = JSON.parse(data.toString());
+            seen.push(parsed);
+            if (seen.some((msg) => msg.type === 'snapshot') && seen.some((msg) => msg.summary === 'Recovered from corrupt tasks.json')) {
+              clearTimeout(timer);
+              resolve(seen);
+            }
+          });
+          ws.on('error', reject);
+        });
+        const recoveryAlert = messages.find((msg) => msg.summary === 'Recovered from corrupt tasks.json');
+        expect(recoveryAlert).toMatchObject({
+          type: 'alert',
+          severity: 'critical',
+        });
+        expect(recoveryAlert?.details).toContain('Quarantined corrupt file');
+        expect(recoveryAlert?.details).toContain(`${recoveredTasksFile}.daily.20260611`);
+
+        ws.close();
+        await new Promise<void>((r) => ws.on('close', () => r()));
+      } finally {
+        await recoveredServer.close();
+      }
+    });
+
     test('sends cached resource status after the initial snapshot', async () => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
 

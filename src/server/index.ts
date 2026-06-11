@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
-import { loadTasks, saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
+import { loadTasksWithRecovery, saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
 import { reconcile } from './reconciliation.js';
 import { type AgentPreflightSnapshot, type PreflightLogger } from './agent-preflight.js';
 import type { ServerMessage, SnapshotMessage } from '../shared/contracts/messages.js';
@@ -471,7 +471,21 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   broadcastProjectSummariesRef = broadcastProjectSummaries;
 
   // Load persisted tasks
-  const persisted = await loadTasks(tasksFile);
+  const persisted = await loadTasksWithRecovery(tasksFile);
+  const startupAlerts: ServerMessage[] = [];
+  if (persisted.recovery) {
+    const details = persisted.recovery.restoredFrom
+      ? `Quarantined corrupt file at ${persisted.recovery.quarantinedPath}; restored tasks from ${persisted.recovery.restoredFrom}.`
+      : `Quarantined corrupt file at ${persisted.recovery.quarantinedPath}; no valid daily snapshot was available, so Kookr started with an empty task store.`;
+    console.warn(`[tasks-recovery] ${details}`);
+    startupAlerts.push({
+      type: 'alert',
+      agentId: '',
+      summary: 'Recovered from corrupt tasks.json',
+      details,
+      severity: 'critical',
+    });
+  }
   if (persisted.tasks.length > 0) {
     taskStore.loadTasks(persisted.tasks, persisted.lifetimeSpendUsd);
     console.log(`Loaded ${persisted.tasks.length} task(s) from ${tasksFile} (lifetime spend: $${taskStore.getLifetimeSpendUsd().toFixed(2)})`);
@@ -1085,6 +1099,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ralphLoopService,
     getDiagnosticStatus: () => diagnosticRunner.getStatus(),
     getLatestResourceStatus: () => resourceStatusService.getLatest(),
+    startupAlerts,
     workspaceEnabled: true,
     attemptRepository,
     policyResolver,
