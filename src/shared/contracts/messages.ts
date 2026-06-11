@@ -45,6 +45,12 @@ export type { TaskCompletionFeedback };
  */
 export type HostCapability = 'available' | 'absent';
 
+/**
+ * Sentinel duration for "snooze until next change". Kept finite so it survives
+ * JSON, schema validation, and existing duration-only command paths.
+ */
+export const SNOOZE_UNTIL_NEXT_CHANGE_DURATION_MS = 100 * 365 * 24 * 60 * 60 * 1000;
+
 /** Per-project outcome of a cross-project worktree sweep. */
 export type CrossProjectSweepProjectResult =
   | { kind: 'ok'; projectId: string; summaries: CleanupResultSummary[]; elapsedMs: number }

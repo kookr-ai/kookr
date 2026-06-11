@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Anomaly } from './types.js';
 import { AttentionQueue } from './attention-queue.js';
+import { SNOOZE_UNTIL_NEXT_CHANGE_DURATION_MS } from '../shared/contracts/messages.js';
 
 const FIXED_TIME = new Date('2026-01-01T00:00:00Z');
 
@@ -182,12 +183,12 @@ describe('AttentionQueue', () => {
       expect(queue.next()!.agentId).toBe('a1');
     });
 
-    test('enqueue while snoozed updates anomaly but stays snoozed', () => {
-      queue.enqueue('a1', makeAnomaly('a1', 'needs_input', 'info'));
+    test('enqueue while snoozed updates non-escalating anomaly but stays snoozed', () => {
+      queue.enqueue('a1', makeAnomaly('a1', 'repeated_error', 'critical'));
       queue.snooze('a1', 60000);
 
-      // Enqueue with different anomaly while snoozed
-      queue.enqueue('a1', makeAnomaly('a1', 'repeated_error', 'critical'));
+      // Enqueue with lower-severity anomaly while snoozed
+      queue.enqueue('a1', makeAnomaly('a1', 'needs_input', 'warning'));
 
       // Should still be snoozed (not in active queue)
       expect(queue.next()).toBeNull();
@@ -198,7 +199,63 @@ describe('AttentionQueue', () => {
 
       const next = queue.next();
       expect(next).not.toBeNull();
-      expect(next!.anomaly.type).toBe('repeated_error');
+      expect(next!.anomaly.type).toBe('needs_input');
+    });
+
+    test('same fingerprint severity escalation wakes a timed snooze immediately', () => {
+      const first = withDetectedAt(makeAnomaly('a1', 'api_error', 'warning'), '2026-05-25T09:28:08.000Z');
+      const second = withDetectedAt(makeAnomaly('a1', 'api_error', 'critical'), '2026-05-25T10:00:00.000Z');
+
+      queue.enqueue('a1', first);
+      queue.snooze('a1', 60000);
+      queue.enqueue('a1', second);
+
+      expect(queue.getSnoozedUntil('a1')).toBeNull();
+      const next = queue.next();
+      expect(next).not.toBeNull();
+      expect(next!.anomaly.severity).toBe('critical');
+      expect(next!.anomaly.detectedAt.toISOString()).toBe('2026-05-25T10:00:00.000Z');
+    });
+
+    test('different critical fingerprint wakes a timed snooze immediately', () => {
+      const first = { ...makeAnomaly('a1', 'api_error', 'critical'), explanation: 'API Error: 529 Overloaded' };
+      const second = { ...makeAnomaly('a1', 'api_error', 'critical'), explanation: 'Billing quota exhausted' };
+
+      queue.enqueue('a1', first);
+      queue.snooze('a1', 60000);
+      queue.enqueue('a1', second);
+
+      expect(queue.getSnoozedUntil('a1')).toBeNull();
+      const next = queue.next();
+      expect(next).not.toBeNull();
+      expect(next!.anomaly.explanation).toBe('Billing quota exhausted');
+    });
+
+    test('until-next-change snooze wakes on a changed finding', () => {
+      queue.enqueue('a1', makeAnomaly('a1', 'needs_input', 'warning'));
+      queue.snooze('a1', SNOOZE_UNTIL_NEXT_CHANGE_DURATION_MS);
+
+      queue.enqueue('a1', makeAnomaly('a1', 'needs_input', 'warning'));
+      expect(queue.next()).toBeNull();
+
+      queue.enqueue('a1', makeAnomaly('a1', 'permission_blocked', 'warning'));
+
+      expect(queue.getSnoozedUntil('a1')).toBeNull();
+      const next = queue.next();
+      expect(next).not.toBeNull();
+      expect(next!.anomaly.type).toBe('permission_blocked');
+    });
+
+    test('until-next-change task snooze wakes on first new finding', () => {
+      const taskQueue = new AttentionQueue({
+        taskIdFor: (agentId) => (agentId === 'sess-A' || agentId === 'sess-B' ? 'task-1' : null),
+      });
+
+      taskQueue.snooze('sess-A', SNOOZE_UNTIL_NEXT_CHANGE_DURATION_MS);
+      taskQueue.enqueue('sess-B', makeAnomaly('sess-B', 'needs_input', 'info'));
+
+      expect(taskQueue.getSnoozedUntil('sess-B')).toBeNull();
+      expect(taskQueue.next()!.anomaly.type).toBe('needs_input');
     });
 
     test('snoozed same type with different fingerprint gets a fresh detectedAt', () => {
@@ -339,16 +396,16 @@ describe('AttentionQueue', () => {
       expect(queue.next()!.agentId).toBe('a1');
     });
 
-    test('anomaly updated while snoozed is preserved after cancel', () => {
-      queue.enqueue('a1', makeAnomaly('a1', 'needs_input', 'info'));
+    test('non-escalating anomaly updated while snoozed is preserved after cancel', () => {
+      queue.enqueue('a1', makeAnomaly('a1', 'stuck_loop', 'critical'));
       queue.snooze('a1', 60000);
 
       // Enqueue updates the snoozed anomaly in-place
-      queue.enqueue('a1', makeAnomaly('a1', 'stuck_loop', 'critical'));
+      queue.enqueue('a1', makeAnomaly('a1', 'needs_input', 'warning'));
 
       queue.cancelSnooze('a1');
       const next = queue.next();
-      expect(next!.anomaly.type).toBe('stuck_loop');
+      expect(next!.anomaly.type).toBe('needs_input');
     });
   });
 
@@ -585,6 +642,27 @@ describe('AttentionQueue', () => {
       expect(queue.getSnoozedUntil('a1')).not.toBeNull();
     });
 
+    test('importSnoozed() infers until-next-change snoozes from sentinel duration', () => {
+      vi.useFakeTimers({ now: FIXED_TIME });
+      const createdAt = Date.now();
+
+      queue.importSnoozed([
+        {
+          agentId: 'a1',
+          key: 'a1',
+          anomaly: makeAnomaly('a1', 'needs_input', 'warning'),
+          createdAt,
+          expiresAt: createdAt + SNOOZE_UNTIL_NEXT_CHANGE_DURATION_MS,
+        },
+      ]);
+
+      queue.enqueue('a1', makeAnomaly('a1', 'permission_blocked', 'warning'));
+
+      expect(queue.getSnoozedUntil('a1')).toBeNull();
+      expect(queue.next()!.anomaly.type).toBe('permission_blocked');
+      vi.useRealTimers();
+    });
+
     test('importSnoozed() is idempotent', () => {
       const anomaly = makeAnomaly('a1', 'repeated_error', 'critical');
       const entry = { agentId: 'a1', key: 'a1', anomaly, expiresAt: Date.now() + 60000, reason: 'r' };
@@ -609,11 +687,17 @@ describe('AttentionQueue', () => {
         taskIdFor: (agentId) => sessionToTask[agentId] ?? null,
       });
 
-      taskQueue.enqueue('sess-A', makeAnomaly('sess-A', 'repeated_error', 'critical'));
+      taskQueue.enqueue('sess-A', {
+        ...makeAnomaly('sess-A', 'repeated_error', 'critical'),
+        explanation: 'Same error repeated 3 times: "ECONNRESET"',
+      });
       taskQueue.snooze('sess-A', 60000, 'investigating');
 
       // Iteration N ends. New iteration starts on sess-B (same task).
-      taskQueue.enqueue('sess-B', makeAnomaly('sess-B', 'repeated_error', 'critical'));
+      taskQueue.enqueue('sess-B', {
+        ...makeAnomaly('sess-B', 'repeated_error', 'critical'),
+        explanation: 'Same error repeated 3 times: "ECONNRESET"',
+      });
 
       // The snooze should swallow the new finding — sess-B doesn't show up.
       expect(taskQueue.getAll()).toEqual([]);
@@ -637,7 +721,10 @@ describe('AttentionQueue', () => {
         taskIdFor: (agentId) => (agentId.startsWith('sess-') ? 'task-1' : null),
       });
 
-      taskQueue.enqueue('sess-A', makeAnomaly('sess-A', 'repeated_error', 'critical'));
+      taskQueue.enqueue('sess-A', {
+        ...makeAnomaly('sess-A', 'repeated_error', 'critical'),
+        explanation: 'Same error repeated 3 times: "ECONNRESET"',
+      });
       taskQueue.snooze('sess-A', 60000);
 
       // sess-A ends; cleanup purges it from the queue. Snooze must persist.
@@ -645,7 +732,10 @@ describe('AttentionQueue', () => {
       expect(taskQueue.getSnoozedUntil('sess-A')).not.toBeNull();
 
       // Next session inherits the snooze via the resolver.
-      taskQueue.enqueue('sess-B', makeAnomaly('sess-B', 'repeated_error', 'critical'));
+      taskQueue.enqueue('sess-B', {
+        ...makeAnomaly('sess-B', 'repeated_error', 'critical'),
+        explanation: 'Same error repeated 3 times: "ECONNRESET"',
+      });
       expect(taskQueue.getAll()).toEqual([]);
 
       // purgeTask() is the way to actually clear the snooze (full task delete).

@@ -1,5 +1,6 @@
 import type { Anomaly, AnomalySeverity } from './types.js';
 import { anomalyFingerprint } from './anomaly-fingerprint.js';
+import { SNOOZE_UNTIL_NEXT_CHANGE_DURATION_MS } from '../shared/contracts/messages.js';
 
 const SEVERITY_ORDER: Record<AnomalySeverity, number> = {
   critical: 0,
@@ -31,6 +32,7 @@ export interface SnoozeEntry {
   createdAt: number;
   expiredPendingRestore?: boolean;
   reason?: string;
+  wakeOnChange?: boolean;
 }
 
 export interface AttentionQueueOpts {
@@ -78,8 +80,13 @@ export class AttentionQueue {
     // for the server expiry timer.
     const snoozed = this.snoozed.get(key);
     if (snoozed && Date.now() < snoozed.expiresAt) {
-      // Preserve original detectedAt only while the same finding remains active.
-      if (snoozed.anomaly && anomalyFingerprint(snoozed.anomaly) === anomalyFingerprint(anomaly)) {
+      if (this.shouldWakeSnooze(snoozed, anomaly)) {
+        this.snoozed.delete(key);
+        this.entries.set(agentId, { agentId, anomaly, skipped: false });
+        return;
+      }
+      // Preserve original detectedAt only while the same finding remains hidden.
+      if (hasSameFingerprint(snoozed.anomaly, anomaly)) {
         anomaly = { ...anomaly, detectedAt: snoozed.anomaly.detectedAt };
       }
       snoozed.anomaly = anomaly;
@@ -117,13 +124,15 @@ export class AttentionQueue {
     const isTaskKeyed = key !== agentId;
     if (!anomaly && !isTaskKeyed) return null; // No anomaly and no durable task identity — nothing to snooze
 
+    const now = Date.now();
     const snooze: SnoozeEntry = {
       agentId,
       key,
       kind: anomaly ? 'finding' : 'task',
-      expiresAt: Date.now() + durationMs,
-      createdAt: Date.now(),
+      expiresAt: now + durationMs,
+      createdAt: now,
       reason,
+      wakeOnChange: durationMs >= SNOOZE_UNTIL_NEXT_CHANGE_DURATION_MS,
     };
     if (anomaly) {
       snooze.anomaly = anomaly;
@@ -208,18 +217,21 @@ export class AttentionQueue {
       createdAt?: number;
       expiredPendingRestore?: boolean;
       reason?: string;
+      wakeOnChange?: boolean;
     }>,
   ): void {
     for (const entry of entries) {
+      const createdAt = entry.createdAt ?? Date.now();
       this.snoozed.set(entry.key, {
         agentId: entry.agentId,
         key: entry.key,
         kind: entry.kind ?? (entry.anomaly ? 'finding' : 'task'),
         anomaly: entry.anomaly,
         expiresAt: entry.expiresAt,
-        createdAt: entry.createdAt ?? Date.now(),
+        createdAt,
         expiredPendingRestore: entry.expiredPendingRestore,
         reason: entry.reason,
+        wakeOnChange: entry.wakeOnChange ?? entry.expiresAt - createdAt >= SNOOZE_UNTIL_NEXT_CHANGE_DURATION_MS,
       });
       // Remove from active entries to avoid duplicates (race: events arrived before import)
       this.entries.delete(entry.agentId);
@@ -352,6 +364,19 @@ export class AttentionQueue {
     }
   }
 
+  private shouldWakeSnooze(snoozed: SnoozeEntry, anomaly: Anomaly): boolean {
+    if (!snoozed.anomaly) return snoozed.wakeOnChange === true;
+
+    const sameFingerprint = hasSameFingerprint(snoozed.anomaly, anomaly);
+    const severityEscalated = SEVERITY_ORDER[anomaly.severity] < SEVERITY_ORDER[snoozed.anomaly.severity];
+
+    if (snoozed.wakeOnChange) {
+      return !sameFingerprint || severityEscalated;
+    }
+
+    return severityEscalated || (anomaly.severity === 'critical' && !sameFingerprint);
+  }
+
   private getSorted(): QueueEntry[] {
     const all = Array.from(this.entries.values());
     return all.sort((a, b) => {
@@ -361,4 +386,8 @@ export class AttentionQueue {
       return SEVERITY_ORDER[a.anomaly.severity] - SEVERITY_ORDER[b.anomaly.severity];
     });
   }
+}
+
+function hasSameFingerprint(previous: Anomaly | undefined, next: Anomaly): previous is Anomaly {
+  return previous !== undefined && anomalyFingerprint(previous) === anomalyFingerprint(next);
 }
