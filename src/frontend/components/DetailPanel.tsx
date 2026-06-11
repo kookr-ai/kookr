@@ -504,19 +504,19 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
   const isDirectReply = !agent?.anomaly;
 
   /**
-   * Send the composed reply. By default the user STAYS on the current task
-   * (plain "Send" / Enter); pass `andNext: true` ("Send & Next" /
-   * Ctrl+Cmd+Enter) to jump to the next finding after a non-direct reply.
+   * Send the composed reply. The Send button stays on the current task; Enter
+   * and Send & Next advance after a finding reply. Direct replies to healthy
+   * tasks always stay on the current task.
    */
-  function handleSend(opts: { viaShortcut?: boolean; andNext?: boolean } = {}) {
-    const { viaShortcut = false, andNext = false } = opts;
+  function handleSend(opts: { viaShortcut?: boolean; andNext?: boolean; shortcutKey?: string } = {}) {
+    const { viaShortcut = false, andNext = false, shortcutKey } = opts;
     if (!input.trim() || !agent) return;
     const agentName = agent.taskName ?? agent.agentId;
     track({ type: 'response_sent', agentId: agent.agentId, method: viaShortcut ? 'shortcut' : 'input_box', charCount: input.trim().length, anomalyType: agent.anomaly?.type ?? null });
     if (viaShortcut) {
       track({
         type: 'shortcut_used',
-        key: andNext ? 'Ctrl+Enter' : 'Enter',
+        key: shortcutKey ?? (andNext ? 'Ctrl+Enter' : 'Enter'),
         action: isDirectReply ? 'direct_reply' : andNext ? 'send_and_next' : 'send_stay',
         context: 'input_focused',
       });
@@ -643,8 +643,9 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
         handleEmptyEnterAdvance();
         return;
       }
-      // Plain Enter sends and STAYS on the current task.
-      handleSend({ viaShortcut: true });
+      // Plain Enter advances after a finding reply, but healthy direct replies
+      // stay on the current task.
+      handleSend({ viaShortcut: true, andNext: !isDirectReply && !respondAllAgentIds, shortcutKey: 'Enter' });
       return;
     }
     // Number keys 1-5 trigger quick actions (only when input is empty AND shortcuts armed)
@@ -1127,7 +1128,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
             data-testid="send-button"
             onClick={() => handleSend()}
             disabled={!input.trim()}
-            title={isDirectReply || respondAllAgentIds ? undefined : 'Send and stay on this task (Enter)'}
+            title={!isDirectReply && !respondAllAgentIds ? 'Send and stay on this task' : undefined}
           >
             {respondAllAgentIds ? `Send to All (${respondAllAgentIds.length})` : 'Send'}
           </button>
