@@ -43,6 +43,7 @@ import {
   type ResourceStatusSampler,
 } from './resource-status-service.js';
 import { createOperationalAlertEvaluator } from './operational-alert-rules.js';
+import { createHookParseDegradationEvaluator } from './hook-parse-degradation-rules.js';
 import {
   getOperationalAlertConfig,
   resetOperationalAlertConfig,
@@ -543,7 +544,32 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // <kookrDir>/activity/ for /api/tasks/:taskId/activity-diagnostics.
   // See rfc-activity-log-reliability §5, §7.
   const activityLedger = new ActivityLedger(join(kookrDir, 'activity'));
-  const hookIngestion = new HookIngestion({ adapter, httpPushTracker, activityLedger, taskStore });
+  const hookParseDegradationEvaluator = createHookParseDegradationEvaluator();
+  let hookIngestion: HookIngestion;
+  hookIngestion = new HookIngestion({
+    adapter,
+    httpPushTracker,
+    activityLedger,
+    taskStore,
+    onParseDegradation: (event) => {
+      const evaluation = hookParseDegradationEvaluator.evaluate(event);
+      if (!evaluation) return;
+      queue.enqueue(event.kookrSessionId, evaluation.anomaly);
+      broadcastToAll(evaluation.alert);
+      broadcastToAll(createSnapshotMessage({
+        monitor,
+        serverCwd,
+        sttUrl,
+        ttsUrl,
+        activityMetaProvider: hookIngestion,
+        coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
+        getMaxActiveTasks,
+        relationTaskStore: taskStore,
+        terminalInputSnapshots: terminalInputCoordinator,
+        userInputDeliveryProvider: userInputDeliveries,
+      }));
+    },
+  });
   realtime.setCoordinatorAuditTailProvider(hookIngestion);
   const hookWatcher = new HookFileWatcher(hooksDir, hookIngestion);
 

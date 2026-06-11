@@ -30,6 +30,7 @@ positive regardless of its type — see [Cross-cutting controls](#cross-cutting-
 | [`stale_agent`](#stale_agent) | info / warning | Agent appears stuck, exited, or hung with no progress. |
 | [`hook_disconnected`](#hook_disconnected) | warning | Agent is visibly active but the hook pipeline stopped delivering events. |
 | [`hook_missing`](#hook_missing) | warning | Hooks were never wired up for the session. |
+| [`hook_parse_degraded`](#hook_parse_degraded) | warning | Hook records are arriving but failing to parse. |
 | [`tmux_unresponsive`](#tmux_unresponsive) | warning | The terminal backend is unreachable. |
 | [`api_error`](#api_error) | warning / critical | The model/provider API failed and killed the turn. |
 | [`budget_exceeded`](#budget_exceeded) | warning / critical | Task cost crossed the configured USD threshold. |
@@ -188,6 +189,27 @@ findings for that session are unavailable.
 
 **Suppression / tuning.** No threshold knob. Resolve by configuring hooks; this
 is a setup gap, not a tunable signal.
+
+## `hook_parse_degraded`
+
+**Meaning.** Hook records are arriving for the session but at least one live
+record could not be parsed, so Kookr may be missing the agent events that drive
+attention routing.
+
+**Severity.** `warning`.
+
+**Trigger.** Raised by hook ingestion when a live malformed hook record is
+observed. Startup replay of old malformed records and synthetic replay sessions
+remain diagnostics-only. The finding includes a short malformed excerpt and the
+correlation id for the ingested record.
+
+**Recommended response.** Check the hook writer / adapter payload shape for the
+session. A recent agent CLI or hook schema change may be producing records that
+the adapter no longer understands.
+
+**Suppression / tuning.** The signal is edge-triggered per session and re-arms
+after a successful parse, so repeated malformed records do not spam alerts.
+Snooze or mark a false positive if you are intentionally replaying bad payloads.
 
 ## `tmux_unresponsive`
 

@@ -8,6 +8,7 @@ export type AnomalyType =
   | 'stale_agent'
   | 'hook_disconnected'
   | 'hook_missing'
+  | 'hook_parse_degraded'
   | 'tmux_unresponsive'
   | 'api_error'
   | 'budget_exceeded';

@@ -6,6 +6,11 @@ import type { HookEventInjector } from './hook-ingestion.js';
 /** Default poll interval for the backup polling mechanism (ms). */
 const DEFAULT_POLL_INTERVAL_MS = 3_000;
 
+interface WatchOptions {
+  replayExisting?: boolean;
+  suppressParseAlertsForExisting?: boolean;
+}
+
 export function splitHookRecords(content: string): { records: string[]; consumedChars: number } {
   const records: string[] = [];
   let consumedChars = 0;
@@ -97,7 +102,7 @@ export class HookFileWatcher {
   /** Start watching a hook file for a tmux session.
    *  When replayExisting is true (e.g. after restart), reads from offset 0
    *  to rebuild anomaly state from all prior events. */
-  watch(tmuxName: string, options?: { replayExisting?: boolean }): void {
+  watch(tmuxName: string, options?: WatchOptions): void {
     if (this.watchers.has(tmuxName)) return;
 
     const filePath = join(this.hooksDir, `${tmuxName}.jsonl`);
@@ -127,7 +132,9 @@ export class HookFileWatcher {
 
       // If replaying, immediately read existing content
       if (replay) {
-        this.readNewLines(tmuxName, filePath);
+        this.readNewLines(tmuxName, filePath, {
+          startupReplay: options?.suppressParseAlertsForExisting === true,
+        });
       }
     } catch {
       // File might not exist yet — poll until it appears. Preserve the
@@ -209,7 +216,11 @@ export class HookFileWatcher {
    * future refactorer should not "fix" it to queue-and-wait without
    * re-evaluating watchdog-tick latency.
    */
-  private async readNewLines(tmuxName: string, filePath: string): Promise<void> {
+  private async readNewLines(
+    tmuxName: string,
+    filePath: string,
+    options?: { startupReplay?: boolean },
+  ): Promise<void> {
     if (this.reading.has(tmuxName)) return;
     this.reading.add(tmuxName);
 
@@ -242,7 +253,9 @@ export class HookFileWatcher {
       for (const line of records) {
         if (!line.trim()) continue;
         try {
-          this.adapter.injectHookEvent(tmuxName, line);
+          this.adapter.injectHookEvent(tmuxName, line, undefined, {
+            startupReplay: options?.startupReplay === true,
+          });
         } catch (err) {
           console.error(`Error parsing hook event for ${tmuxName}:`, err);
         }
@@ -299,7 +312,7 @@ export class HookFileWatcher {
   private pollUntilExists(
     tmuxName: string,
     filePath: string,
-    options?: { replayExisting?: boolean },
+    options?: WatchOptions,
   ): void {
     if (this.watchers.has(tmuxName)) return;
 

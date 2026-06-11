@@ -7,6 +7,7 @@ import {
   REPLAY_SESSION_PREFIX,
   deriveEventOrigin,
   mintEventId,
+  type HookParseDegradationEvent,
   type HookEventInjector,
 } from './hook-ingestion.js';
 import type { EventOrigin } from '../core/types.js';
@@ -816,4 +817,71 @@ describe('HookIngestion — replay-vs-live origin tagging (issue #701)', () => {
     expect(result.injectResult.origin).toBe('replay');
     expect(adapter.origins).toHaveLength(0);
   });
+});
+
+describe('HookIngestion — hook parse degradation alerting (issue #841)', () => {
+  function makeMalformedAdapter(error = 'Unexpected token b in JSON at position 1'): HookEventInjector {
+    return {
+      injectHookEvent(_tmux, _raw, sequence, options) {
+        return {
+          parseStatus: 'malformed',
+          agentType: 'claude-code',
+          error,
+          sequence: sequence ?? 0,
+          origin: options?.origin,
+        };
+      },
+    };
+  }
+
+  it('reports live malformed hook records with a bounded excerpt', () => {
+    const observed: HookParseDegradationEvent[] = [];
+    const ingestion = new HookIngestion({
+      adapter: makeMalformedAdapter('bad hook JSON'),
+      now: () => Date.parse('2026-06-11T10:00:00.000Z'),
+      onParseDegradation: (event) => observed.push(event),
+    });
+
+    const raw = '{"hook_event_name":"SessionStart","payload":"broken schema","long":"' + 'x'.repeat(300) + '"}';
+    const result = ingestion.ingestFromHttp('kookr-live-1', raw);
+
+    expect(result.dispatched).toBe(false);
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({
+      kookrSessionId: 'kookr-live-1',
+      source: 'http',
+      error: 'bad hook JSON',
+      eventId: result.eventId,
+      sequence: 1,
+      observedAt: '2026-06-11T10:00:00.000Z',
+    });
+    expect(observed[0].excerpt).toContain('SessionStart');
+    expect(observed[0].excerpt.length).toBeLessThanOrEqual(160);
+  });
+
+  it('does not report startup replay of old malformed records', () => {
+    const onParseDegradation = vi.fn();
+    const ingestion = new HookIngestion({
+      adapter: makeMalformedAdapter(),
+      onParseDegradation,
+    });
+
+    ingestion.injectHookEvent('kookr-live-1', '{"bad":', undefined, { startupReplay: true });
+
+    expect(onParseDegradation).not.toHaveBeenCalled();
+    expect(ingestion.getActivityMeta('kookr-live-1')?.malformedRecordCount).toBe(1);
+  });
+
+  it('does not report synthetic replay sessions as live parse degradation', () => {
+    const onParseDegradation = vi.fn();
+    const ingestion = new HookIngestion({
+      adapter: makeMalformedAdapter(),
+      onParseDegradation,
+    });
+
+    ingestion.ingestFromHttp(`${REPLAY_SESSION_PREFIX}demo`, '{"bad":');
+
+    expect(onParseDegradation).not.toHaveBeenCalled();
+  });
+
 });

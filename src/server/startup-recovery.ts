@@ -142,7 +142,7 @@ export async function runStartupRecoveryPhase({
         console.warn(`[hook-ingestion] hydrate failed for ${tmuxName}:`, err);
       }
     }
-    hookWatcher.watch(tmuxName, { replayExisting: true });
+    hookWatcher.watch(tmuxName, { replayExisting: true, suppressParseAlertsForExisting: true });
   }
 
   // Ralph startup reconcile. Runs AFTER recoverCrashedSessions so dead-but-relaunched
