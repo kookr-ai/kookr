@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildSrt, segmentsFromTracker, estimateSpeechMs } from './timeline.js';
+import { buildSrt, segmentsFromTracker, estimateSpeechMs, screencastDesyncVerdict } from './timeline.js';
 
 describe('estimateSpeechMs', () => {
   it('clamps very short text to the 1800ms floor', () => {
@@ -72,6 +72,30 @@ describe('buildSrt', () => {
     );
     expect(srt).not.toContain('First line.');
     expect(srt).toContain('Second line.');
+  });
+});
+
+describe('screencastDesyncVerdict', () => {
+  it('passes a recording within the tolerance', () => {
+    expect(screencastDesyncVerdict(155_000, 158_000)).toBe('ok');
+    expect(screencastDesyncVerdict(158_000, 158_000)).toBe('ok');
+  });
+
+  it('flags a recording that lost more time than the tolerance', () => {
+    // Real incident: 130.6s screencast for a 158s scenario under load.
+    expect(screencastDesyncVerdict(130_600, 158_000)).toBe('desynced');
+    expect(screencastDesyncVerdict(150_000, 158_000)).toBe('desynced');
+  });
+
+  it('returns unknown (never a pass) when the probe yields NaN or zero', () => {
+    expect(screencastDesyncVerdict(Number.NaN, 158_000)).toBe('unknown');
+    expect(screencastDesyncVerdict(0, 158_000)).toBe('unknown');
+    expect(screencastDesyncVerdict(-1, 158_000)).toBe('unknown');
+  });
+
+  it('respects a custom tolerance', () => {
+    expect(screencastDesyncVerdict(150_000, 158_000, 0.10)).toBe('ok');
+    expect(screencastDesyncVerdict(140_000, 158_000, 0.10)).toBe('desynced');
   });
 });
 

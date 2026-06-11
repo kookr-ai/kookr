@@ -61,6 +61,24 @@ export function buildSrt(
   return cues.join('\n');
 }
 
+/**
+ * Decide whether a recorded screencast lost time against the scenario's
+ * wall-clock. Audio offsets, SRT cues, and cut segments are all wall-clock,
+ * so a compressed video desyncs every one of them.
+ *
+ * Returns 'unknown' when the probed duration is unusable (ffprobe prints
+ * N/A for some screencast WebMs, which parses to NaN) — callers must treat
+ * that as "verify manually", never as a pass.
+ */
+export function screencastDesyncVerdict(
+  recordedMs: number,
+  expectedMs: number,
+  tolerance = 0.03,
+): 'ok' | 'desynced' | 'unknown' {
+  if (!Number.isFinite(recordedMs) || recordedMs <= 0) return 'unknown';
+  return recordedMs < expectedMs * (1 - tolerance) ? 'desynced' : 'ok';
+}
+
 export interface CutSegment {
   startMs: number;
   endMs: number;
