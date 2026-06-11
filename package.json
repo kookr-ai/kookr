@@ -43,6 +43,7 @@
     "dev": "pnpm build:dtach && (KOOKR_PORT=4801 node --import tsx --watch-path=src/server --watch-path=src/core --watch-path=src/adapters --watch-path=src/shared --watch-path=src/remote --watch-path=src/integrations src/server/start.ts & vite & wait)",
     "dev:server": "pnpm build:dtach && KOOKR_PORT=4801 node --import tsx --watch-path=src/server --watch-path=src/core --watch-path=src/adapters --watch-path=src/shared --watch-path=src/remote --watch-path=src/integrations src/server/start.ts",
     "dev:frontend": "vite",
+    "dev:demo": "KOOKR_PORT=4801 node --import tsx --watch-path=scripts --watch-path=src/server --watch-path=src/core --watch-path=src/adapters --watch-path=src/shared --watch-path=demo scripts/dev-demo.ts & vite & wait",
     "prod:setup": "git worktree add --detach ../kookr-prod HEAD && if [ -f .env ]; then ln -sfn \"$(pwd)/.env\" ../kookr-prod/.env; fi && cd ../kookr-prod && pnpm install && pnpm build",
     "prod:update": "bash scripts/prod-update.sh",
     "prod:restart": "ROOT_DIR=$(pwd) && cd ../kookr-prod && bash \"$ROOT_DIR/scripts/prod-restart.sh\"",

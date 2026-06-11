@@ -16,6 +16,7 @@ pnpm install
 
 ```bash
 pnpm dev                 # backend on 4801 plus Vite frontend on 5173
+pnpm dev:demo            # synthetic agents on 4801 plus Vite frontend on 5173
 pnpm dev:server          # backend only
 pnpm dev:frontend        # frontend only
 pnpm test                # Vitest unit/integration tests
@@ -27,6 +28,18 @@ pnpm run doctor          # local setup diagnostics
 ```
 
 Dev mode uses port `4801` so it can run beside a stable production-style instance on port `4800`. Treat `pnpm dev` as a live development target, not the Kookr instance supervising important work: it restarts on source changes and may be broken while edits are in progress.
+
+## Demo Mode
+
+Use demo mode when you want a populated dashboard without installing Claude Code, Codex, or launching real agents:
+
+```bash
+pnpm dev:demo
+```
+
+The command starts a fake backend on `4801` and Vite on `5173`, then seeds synthetic tasks across three projects. The scenario includes a permission-blocked agent, a needs-input agent, healthy running agents, a completed task, a pending task, token spend, project IDs, and scripted terminal output from `demo/terminal-content.ts`.
+
+Open `http://127.0.0.1:5173`. Demo data is temporary and resets each time the command starts. Keep the backend on `4801` when using Vite; the dev proxy is configured for that port.
 
 ## Production-Style Worktree
 
