@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
 /**
- * F17 (UX-dogfooding RFC): the completion composer offers a plain "Send"
- * primary action that STAYS on the current task, plus a secondary
- * "Send & Next". Keyboard: Enter = send & stay, Ctrl/Cmd+Enter = send & next.
+ * The completion composer offers a plain "Send" primary action that stays on
+ * the current task, plus a secondary "Send & Next". Keyboard: Enter advances
+ * after finding replies and stays on healthy direct replies; Ctrl/Cmd+Enter is
+ * the explicit send-and-next shortcut.
  */
 
 import React from 'react';
@@ -106,7 +107,7 @@ describe('DetailPanel send actions (F17)', () => {
     document.body.innerHTML = '';
   });
 
-  test('plain Enter sends the response and STAYS on the current task', () => {
+  test('plain Enter sends a finding response and advances to the next finding', () => {
     root = renderDetailPanel(container, first, (msg) => { sent.push(msg); return true; });
 
     const input = composer(container);
@@ -116,7 +117,7 @@ describe('DetailPanel send actions (F17)', () => {
     });
 
     expect(sent).toEqual([{ type: 'respond', agentId: 'agent-1', input: 'Try the helper' }]);
-    expect(useKookrStore.getState().selectedAgentId).toBe('agent-1');
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
     expect(input.value).toBe('');
   });
 

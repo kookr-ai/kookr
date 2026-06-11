@@ -1054,60 +1054,62 @@ export function App() {
             {!terminalFocusActive && <CoordinatorFindingsPane open={showCoordinatorFindings} onClose={() => setShowCoordinatorFindings(false)} />}
             {mobileTab === 'findings' ? findingsPanel : detailPanel}
           </div>
-          <div className="mobile-quick-actions" data-testid="mobile-quick-actions">
-            <button
-              type="button"
-              className="mobile-action-btn"
-              data-testid="mobile-action-next-finding"
-              disabled={findings.length === 0}
-              onClick={() => {
-                track({ type: 'shortcut_used', key: 'Mobile Next Finding', action: 'next_bottleneck', context: 'touch' });
-                nextBottleneck();
-                setMobileTab('task');
-              }}
-            >
-              Next finding
-            </button>
-            <button
-              type="button"
-              className="mobile-action-btn"
-              data-testid="mobile-action-prev-task"
-              disabled={filteredAgents.length === 0}
-              onClick={() => {
-                track({ type: 'shortcut_used', key: 'Mobile Prev Task', action: 'previous_task', context: 'touch' });
-                previousTask();
-                setMobileTab('task');
-              }}
-            >
-              Prev task
-            </button>
-            <button
-              type="button"
-              className="mobile-action-btn"
-              data-testid="mobile-action-next-task"
-              disabled={filteredAgents.length === 0}
-              onClick={() => {
-                track({ type: 'shortcut_used', key: 'Mobile Next Task', action: 'next_task', context: 'touch' });
-                nextTask();
-                setMobileTab('task');
-              }}
-            >
-              Next task
-            </button>
-            {!isViewer && (
+          {mobileTab === 'findings' && (
+            <div className="mobile-quick-actions" data-testid="mobile-quick-actions">
               <button
                 type="button"
-                className="mobile-action-btn mobile-action-btn-primary"
-                data-testid="mobile-action-launch"
+                className="mobile-action-btn"
+                data-testid="mobile-action-next-finding"
+                disabled={findings.length === 0}
                 onClick={() => {
-                  track({ type: 'launch_dialog_opened', method: 'mobile_action' });
-                  setShowLaunch(true);
+                  track({ type: 'shortcut_used', key: 'Mobile Next Finding', action: 'next_bottleneck', context: 'touch' });
+                  nextBottleneck();
+                  setMobileTab('task');
                 }}
               >
-                Launch
+                Next finding
               </button>
-            )}
-          </div>
+              <button
+                type="button"
+                className="mobile-action-btn"
+                data-testid="mobile-action-prev-task"
+                disabled={filteredAgents.length === 0}
+                onClick={() => {
+                  track({ type: 'shortcut_used', key: 'Mobile Prev Task', action: 'previous_task', context: 'touch' });
+                  previousTask();
+                  setMobileTab('task');
+                }}
+              >
+                Prev task
+              </button>
+              <button
+                type="button"
+                className="mobile-action-btn"
+                data-testid="mobile-action-next-task"
+                disabled={filteredAgents.length === 0}
+                onClick={() => {
+                  track({ type: 'shortcut_used', key: 'Mobile Next Task', action: 'next_task', context: 'touch' });
+                  nextTask();
+                  setMobileTab('task');
+                }}
+              >
+                Next task
+              </button>
+              {!isViewer && (
+                <button
+                  type="button"
+                  className="mobile-action-btn mobile-action-btn-primary"
+                  data-testid="mobile-action-launch"
+                  onClick={() => {
+                    track({ type: 'launch_dialog_opened', method: 'mobile_action' });
+                    setShowLaunch(true);
+                  }}
+                >
+                  Launch
+                </button>
+              )}
+            </div>
+          )}
         </>
       ) : (
         <div

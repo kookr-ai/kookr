@@ -143,6 +143,7 @@ test.describe('Terminal viewport budgets', () => {
     await expect(page.getByTestId('mobile-dashboard-tabs')).toBeVisible();
     await page.locator('.finding-card').first().click();
     await expect(page.getByTestId('mobile-tab-task')).toHaveClass(/active/);
+    await expect(page.getByTestId('mobile-quick-actions')).toHaveCount(0);
     await page.getByTestId('detail-panel').getByRole('button', { name: 'Terminal' }).click();
     await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
 

@@ -4233,7 +4233,6 @@ label.task-share-row {
   min-width: 240px;
   max-width: 360px;
   animation: achievement-in 0.2s ease-out;
-  pointer-events: auto;
 }
 @media (prefers-reduced-motion: reduce) {
   .achievement-toast { animation: none; }
@@ -4271,6 +4270,7 @@ label.task-share-row {
   background: rgba(0, 0, 0, 0.5);
   z-index: 200;
   animation: overlay-in 0.2s ease-out;
+  pointer-events: none;
 }
 .sent-overlay-content {
   background: var(--bg-card);
