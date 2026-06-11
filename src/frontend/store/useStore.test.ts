@@ -990,7 +990,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 2,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -1098,8 +1098,8 @@ describe('Kookr Zustand Store', () => {
 
   test('nextBottleneck selects and persists the target project', () => {
     store.getState().handleProjectSummaries([
-      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
-      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
+      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
     ]);
     store.getState().handleSnapshot([
       {
@@ -1130,8 +1130,8 @@ describe('Kookr Zustand Store', () => {
 
   test('nextBottleneck selects the target project when localStorage persistence fails', () => {
     store.getState().handleProjectSummaries([
-      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
-      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
+      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
     ]);
     store.getState().handleSnapshot([
       {
@@ -1160,8 +1160,8 @@ describe('Kookr Zustand Store', () => {
 
   test('nextBottleneck falls back to All Projects when the target project is hidden', () => {
     store.getState().handleProjectSummaries([
-      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
-      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
+      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
     ]);
     store.getState().hideSidebarProject('proj-b');
     store.getState().handleSnapshot([
@@ -1242,7 +1242,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 1,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
       {
@@ -1253,7 +1253,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 1,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -1303,8 +1303,8 @@ describe('Kookr Zustand Store', () => {
 
   test('nextTask selects and persists the target project', () => {
     store.getState().handleProjectSummaries([
-      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
-      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 0, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
+      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 0, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
     ]);
     store.getState().handleSnapshot([
       {
@@ -1368,8 +1368,8 @@ describe('Kookr Zustand Store', () => {
 
   test('previousTask selects and persists the target project', () => {
     store.getState().handleProjectSummaries([
-      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
-      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 0, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
+      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 0, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
     ]);
     store.getState().handleSnapshot([
       {
@@ -1595,7 +1595,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
       {
@@ -1606,7 +1606,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -1630,7 +1630,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -1653,7 +1653,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -1678,7 +1678,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
       {
@@ -1689,7 +1689,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
       {
@@ -1700,7 +1700,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -1727,7 +1727,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
       {
@@ -1738,7 +1738,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -1763,7 +1763,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
       {
@@ -1774,7 +1774,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
       {
@@ -1785,7 +1785,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -1811,7 +1811,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
       {
@@ -1822,7 +1822,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -1848,7 +1848,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);

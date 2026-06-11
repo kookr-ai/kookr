@@ -4,6 +4,7 @@ import {
   resolveTaskId,
   main,
 } from '../../bin/kookr-signal.js';
+import { MAX_AGENT_SIGNAL_NOTE_LENGTH } from '../shared/contracts/agent-signal.js';
 
 const EXIT_OK = 0;
 const EXIT_USER_ERROR = 2;
@@ -112,6 +113,29 @@ describe('kookr signal main', () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toBe('http://127.0.0.1:4800/api/tasks/t-1/signal');
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({ kind: 'completion_ready', note: 'tests green' });
+  });
+
+  it('does not truncate notes before POSTing and reports server truncation', async () => {
+    const { out, logs } = mkConsole();
+    const exit = vi.fn();
+    const note = `${'progress '.repeat(Math.ceil(MAX_AGENT_SIGNAL_NOTE_LENGTH / 'progress '.length))}final ask preserved`;
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, truncated: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await main({
+        argv: ['completion-ready', '--note', note],
+        env: { KOOKR_TASK_ID: 't-1', KOOKR_API_BASE_URL: 'http://127.0.0.1:4800' },
+        out,
+        err: { error: () => {} },
+        exit,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(exit).toHaveBeenCalledWith(EXIT_OK);
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ kind: 'completion_ready', note });
+    expect(logs.join('\n')).toContain('Note was truncated by the server');
   });
 
   it('exits 4 (advisory-distinct) when the server rejects the signal', async () => {

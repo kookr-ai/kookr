@@ -1675,8 +1675,24 @@ describe('createKookrServer', () => {
       const summaries = await (await fetch(`${baseUrl}/api/projects`)).json();
       expect(summaries).toHaveLength(1);
       expect(summaries[0].project).toBe('github.com/grafana/grafana');
-      expect(summaries[0].tracked).toBeUndefined();
+      expect(summaries[0].tracked).toBe(false);
       expect(summaries[0].notes).toBe('keep changes small');
+    });
+
+    test('GET /api/projects exposes contribution-attempt count without legacy openPrs', async () => {
+      server.ossAttemptStore.upsertPr({
+        repo: 'grafana/grafana',
+        prNumber: 42,
+        prUrl: 'https://github.com/grafana/grafana/pull/42',
+        prTitle: 'Fix issue 907',
+        source: 'posttool_hook',
+      });
+
+      const summaries = await (await fetch(`${baseUrl}/api/projects`)).json();
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0].project).toBe('github.com/grafana/grafana');
+      expect(summaries[0].openContributionAttempts).toBe(1);
+      expect(summaries[0]).not.toHaveProperty('openPrs');
     });
 
     test('POST /api/projects/untrack preserves config row when PR limits remain', async () => {
@@ -1706,7 +1722,7 @@ describe('createKookrServer', () => {
       // but no longer flagged as manually tracked.
       const summaries = await (await fetch(`${baseUrl}/api/projects`)).json();
       expect(summaries).toHaveLength(1);
-      expect(summaries[0].tracked).toBeUndefined();
+      expect(summaries[0].tracked).toBe(false);
       expect(summaries[0].dailyLimit).toBe(2);
     });
 
@@ -1754,7 +1770,7 @@ describe('createKookrServer', () => {
       const summaries = await (await fetch(`${baseUrl}/api/projects`)).json();
       expect(summaries).toHaveLength(1);
       expect(summaries[0].project).toBe('github.com/grafana/grafana');
-      expect(summaries[0].tracked).toBeUndefined();
+      expect(summaries[0].tracked).toBe(false);
 
       const configs = await (await fetch(`${baseUrl}/api/projects/configs`)).json();
       expect(configs).toHaveLength(0);

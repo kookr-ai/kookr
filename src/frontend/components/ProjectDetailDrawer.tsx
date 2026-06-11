@@ -149,7 +149,7 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
           <div className="project-drawer-compact-stats" aria-label="Project summary">
             <span>{project.activeAgents} agent{project.activeAgents === 1 ? '' : 's'}</span>
             <span>{project.findingCount} finding{project.findingCount === 1 ? '' : 's'}</span>
-            <span>{project.openPrs} agent PR{project.openPrs === 1 ? '' : 's'}</span>
+            <span>{project.openContributionAttempts} contribution attempt{project.openContributionAttempts === 1 ? '' : 's'}</span>
             {tiedIssues > 0 && repoHealth && Number.isFinite(repoHealth.openIssues) && (
               <span data-testid="compact-tied-issues" title={linksTooltip(issueLinks)}>
                 {tiedIssues}/{repoHealth.openIssues} issue{tiedIssues === 1 ? '' : 's'}
@@ -189,7 +189,7 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
             </span>
           </div>
           <StatRow label="This week" value={project.weekPrCount} />
-          <StatRow label="Agent PRs" value={project.openPrs} />
+          <StatRow label="Open contribution attempts" value={project.openContributionAttempts} />
           <StatRow label="Active agents" value={project.activeAgents} />
           {repoHealth && Number.isFinite(repoHealth.openIssues) && (
             <a

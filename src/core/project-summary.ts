@@ -46,16 +46,16 @@ export interface ProjectSummary {
   weekPrCount: number;
   dailyLimit?: number;
   /**
-   * Open PRs *authored by Kookr agents* for this project — from the contribution ledger.
-   * Distinct from `repoHealth.openPullRequests` (repo-wide).
-   * Rendered in the drawer with the label "Agent PRs".
+   * Contribution attempts currently in the `pr_open` state in Kookr's OSS
+   * attempt ledger. This is scoped to agent attempts, not repo-wide GitHub PRs;
+   * use `repoHealth.openPullRequests` for the repository denominator.
    */
-  openPrs: number;
+  openContributionAttempts: number;
   lastContribution?: string; // ISO date of most recent PR
   recentTasks: TaskSummary[];
   notes?: string;
-  /** True when the user explicitly opted in via the "Track OSS repository" form. */
-  tracked?: boolean;
+  /** Whether the user explicitly opted in via the "Track OSS repository" form. */
+  tracked: boolean;
   prLessonsProcessed?: number;
   prLessonsDistillations?: number;
   prLessonsRawLines?: number;
@@ -275,7 +275,7 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
     const todayCount = ledgerAnalytics.getTodayCount(projectId);
     const weekCount = ledgerAnalytics.getWeekCount(projectId);
     const attempts = ledgerAnalytics.getAttemptsByProject(projectId);
-    const openPrs = attempts.filter((a) => a.state === 'pr_open').length;
+    const openContributionAttempts = attempts.filter((a) => a.state === 'pr_open').length;
     const lastContrib = attempts.length > 0
       ? attempts.reduce((a, b) => a.createdAt > b.createdAt ? a : b).createdAt
       : undefined;
@@ -319,11 +319,11 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
       todayPrCount: todayCount,
       weekPrCount: weekCount,
       dailyLimit: effectiveLimit ?? config?.dailyPrLimit,
-      openPrs,
+      openContributionAttempts,
       lastContribution: lastContrib,
       recentTasks,
       notes: config?.notes,
-      tracked: config?.tracked === true ? true : undefined,
+      tracked: config?.tracked === true,
       prLessonsProcessed: prLessons?.totalProcessed,
       prLessonsDistillations: prLessons?.distillationCount,
       prLessonsRawLines: prLessons?.rawLearningsLines,

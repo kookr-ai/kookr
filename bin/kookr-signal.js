@@ -34,7 +34,6 @@ import {
 } from './kookr-spawn.js';
 
 const POST_TIMEOUT_MS = 10_000;
-const MAX_NOTE_LENGTH = 280;
 
 // Accept the hook-safe hyphenated form on the CLI and normalize to the wire
 // enum. Bare arguments (no shell metacharacters) sidestep PreToolUse command
@@ -53,8 +52,8 @@ Kinds:
   completion-ready   Tell the user you believe this task is ready to complete.
 
 Options:
-      --note <text>      Optional short note (best-effort secret-scrubbed,
-                         capped to ${MAX_NOTE_LENGTH} chars).
+      --note <text>      Optional note. The server best-effort secret-scrubs it
+                         and visibly truncates over-limit notes.
       --task-id <uuid>   Target task (default: KOOKR_TASK_ID).
   -h, --help             Show this help.
 
@@ -132,7 +131,7 @@ async function postSignal({ baseUrl, taskId, kind, note }) {
   if (!res.ok) {
     return { kind: 'rejected', status: res.status, message: json?.error ?? (text || `HTTP ${res.status}`) };
   }
-  return { kind: 'ok' };
+  return { kind: 'ok', truncated: json?.truncated === true };
 }
 
 async function main({
@@ -177,7 +176,7 @@ async function main({
 
   let note = null;
   if (args.note !== null) {
-    const trimmed = args.note.trim().slice(0, MAX_NOTE_LENGTH);
+    const trimmed = args.note.trim();
     if (trimmed) note = trimmed;
   }
 
@@ -215,6 +214,9 @@ async function main({
   }
 
   out.log(`✓ Signal raised: ${kind}${note ? ` (note attached)` : ''} for task ${taskId}`);
+  if (result.truncated) {
+    out.log('Note was truncated by the server; shorten and re-signal if important detail was omitted.');
+  }
   return exit(EXIT_OK);
 }
 

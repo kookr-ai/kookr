@@ -761,7 +761,7 @@ describe('POST /api/tasks/:id/signal', () => {
     expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
   });
 
-  test('redacts secrets and caps the note', async () => {
+  test('redacts secrets without truncating short notes', async () => {
     const taskStore = new TaskStore();
     const app = mkApp(mkLoopDeps(taskStore));
     const task = taskStore.createTask('Ship it', '/repo');
@@ -775,6 +775,45 @@ describe('POST /api/tasks/:id/signal', () => {
     const body = await res.json();
     expect(body.signal.note).toContain('[REDACTED]');
     expect(body.signal.note).not.toContain('ghp_0123456789abcdefghij');
+    expect(body.truncated).toBe(false);
+  });
+
+  test('preserves notes longer than the old 280-char cap', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+    const note = `${'status '.repeat(50)}final detail kept`;
+
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', note }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.signal.note).toBe(note.trim());
+    expect(body.signal.note.length).toBeGreaterThan(280);
+    expect(body.truncated).toBe(false);
+  });
+
+  test('visibly truncates over-limit notes at a word boundary and reports it', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+    const note = `${'word '.repeat(399)}supercalifragilisticexpialidocious important-tail`;
+
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', note }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.truncated).toBe(true);
+    expect(body.signal.note).toMatch(/…$/);
+    expect(body.signal.note).not.toContain('supercalifragilisticexpialidocious');
+    expect(body.signal.note).not.toContain('important-tail');
+    expect(body.signal.note.length).toBeLessThanOrEqual(2_000);
   });
 
   test('rejects an unknown kind with 400', async () => {
