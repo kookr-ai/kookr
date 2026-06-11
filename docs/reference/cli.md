@@ -156,6 +156,80 @@ kookr ralph cancel <taskId> [--json]
 
 If a loop appears stopped after a crash, relaunching the same playbook may show a duplicate-loop conflict or a **Replace with new** recovery dialog. See [Ralph Loop Stopped Or Shows "Replace With New"](../troubleshooting.md#ralph-loop-stopped-or-shows-replace-with-new) before editing local state by hand.
 
+## `kookr drain` / `kookr resume`
+
+Control operator drain mode on a running local Kookr instance:
+
+```bash
+kookr drain
+kookr drain status
+kookr resume
+```
+
+Drain mode refuses new task launches while already-running agents continue. Use it before maintenance restarts or deploys when you want the current work to settle without accepting more launches. `kookr resume` re-opens launches after the maintenance window.
+
+`kookr drain status` is read-only. `kookr drain` and `kookr resume` POST to the server admin endpoints and print the resulting state, including the number of running tasks when the server reports it.
+
+Target selection:
+
+- `KOOKR_PORT=<port>` targets a specific local instance on `127.0.0.1`.
+- When `KOOKR_PORT` is unset, Kookr probes ports `4800` then `4801`.
+- If `KOOKR_ADMIN_TOKEN` is set, the CLI forwards it in the admin-token header.
+
+Exit behavior:
+
+- `0` when the request succeeds, including an already-draining or already-accepting state.
+- `1` when the target server cannot be reached, rejects admin auth, or returns another non-2xx response.
+- `2` for usage errors such as an unknown drain verb.
+
+## `kookr maintenance prune`
+
+Prune aged completed-task hook logs from a Kookr data directory:
+
+```bash
+kookr maintenance prune --dry-run
+kookr maintenance prune --max-age-days 14 --dir ~/.kookr-4801
+kookr maintenance prune --json
+```
+
+The command operates directly on disk and does not require the Kookr server to be running. By default it targets `~/.kookr`, or `~/.kookr-<port>` when `KOOKR_PORT` is set to a non-default numeric port. Pass `--dir` to target a specific data directory, especially for instances launched with `KOOKR_PORT=auto`.
+
+Options:
+
+- `--dry-run` - print the prune plan without deleting files.
+- `--max-age-days <n>` - prune eligible artifacts older than `n` days; the default is 30.
+- `--dir <path>` - use an explicit Kookr data directory.
+- `--json` - print the prune result as JSON.
+
+The prune is intentionally conservative. It removes only hook-event logs under `<dataDir>/hooks/*.jsonl` that belong to terminal tasks older than the age threshold, plus aged orphan hook logs. It preserves task history, crash-recovery data, activity ledgers, interaction logs, contribution history, and other stores whose mapping or audit value is ambiguous.
+
+Exit behavior:
+
+- `0` when planning or pruning succeeds.
+- `1` when the prune fails, for example because the target data directory cannot be read.
+- `2` for usage errors such as an unknown flag, missing `prune` verb, or invalid `--max-age-days`.
+
+## `kookr push test`
+
+Send a synthetic relay push notification to a registered device:
+
+```bash
+KOOKR_RELAY_URL=http://127.0.0.1:8080 kookr push test device-local-dev
+```
+
+Use this when validating relay push configuration for a device that already has a push subscription. The command POSTs to the relay's admin push-test endpoint with the supplied `deviceId`.
+
+Environment:
+
+- `KOOKR_RELAY_URL` - required relay base URL.
+- `KOOKR_RELAY_ADMIN_TOKEN` - optional bearer token for relays that require admin auth.
+
+Exit behavior:
+
+- `0` when the relay accepts the test request; the CLI prints the relay result and any returned status code or error string.
+- `1` when the relay returns a non-2xx response or the request fails.
+- `2` for usage errors, including missing `KOOKR_RELAY_URL` or a missing/extra argument.
+
 ## `kookr`
 
 The `kookr` binary is the package entry point. Most local development still uses `pnpm dev`, `pnpm start`, or the focused helper commands above.
