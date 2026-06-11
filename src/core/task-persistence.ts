@@ -1,4 +1,4 @@
-import { readFile, access, copyFile, readdir, unlink } from 'node:fs/promises';
+import { readFile, access, copyFile, readdir, unlink, rename } from 'node:fs/promises';
 import { join, dirname, basename } from 'node:path';
 import { isActiveStatus, type Task } from './tasks.js';
 import type { Anomaly, LegacyPersistedSnooze, PersistedSnooze } from './types.js';
@@ -244,6 +244,12 @@ export interface LoadTasksResult {
   suppressionState?: PersistedSuppressionEntry[];
   /** Validated relations. Empty array when the file pre-dates #599 or has no relations. */
   relations?: TaskRelation[];
+  recovery?: TaskFileRecovery;
+}
+
+export interface TaskFileRecovery {
+  quarantinedPath: string;
+  restoredFrom?: string;
 }
 
 /**
@@ -297,6 +303,79 @@ export async function loadTasks(filePath: string): Promise<LoadTasksResult> {
   } catch (err) {
     throw new CorruptTaskFileError(filePath, err);
   }
+}
+
+/**
+ * Boot-time task loader. A corrupt live `tasks.json` should not brick Kookr:
+ * preserve the bad file before any autosave can overwrite it, then restore
+ * from the newest valid daily snapshot or continue with an empty store.
+ */
+export async function loadTasksWithRecovery(filePath: string): Promise<LoadTasksResult> {
+  try {
+    return await loadTasks(filePath);
+  } catch (err) {
+    if (!(err instanceof CorruptTaskFileError)) throw err;
+  }
+
+  const quarantinedPath = await quarantineCorruptTaskFile(filePath);
+  const restored = await loadNewestDailySnapshot(filePath);
+  if (restored) {
+    await restoreSnapshotToLiveFile(restored.path, filePath);
+  }
+  const recovery: TaskFileRecovery = restored
+    ? { quarantinedPath, restoredFrom: restored.path }
+    : { quarantinedPath };
+  return { ...(restored?.result ?? { tasks: [] }), recovery };
+}
+
+async function restoreSnapshotToLiveFile(snapshotPath: string, filePath: string): Promise<void> {
+  await atomicWriteFile(filePath, await readFile(snapshotPath, 'utf-8'));
+}
+
+async function quarantineCorruptTaskFile(filePath: string): Promise<string> {
+  const stamp = new Date().toISOString();
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const suffix = attempt === 0 ? '' : `-${attempt}`;
+    const target = `${filePath}.corrupt-${stamp}${suffix}`;
+    try {
+      await rename(filePath, target);
+      return target;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue;
+      throw err;
+    }
+  }
+  throw new Error(`Unable to choose a quarantine path for corrupt task file: ${filePath}`);
+}
+
+async function loadNewestDailySnapshot(filePath: string): Promise<{ path: string; result: LoadTasksResult } | null> {
+  let entries: string[];
+  try {
+    entries = await readdir(dirname(filePath));
+  } catch {
+    return null;
+  }
+
+  const base = basename(filePath);
+  const prefix = `${base}.daily.`;
+  const snapshots = entries
+    .filter((entry) => entry.startsWith(prefix) && parseYmd(entry.slice(prefix.length)))
+    .sort()
+    .reverse();
+
+  for (const snapshot of snapshots) {
+    const snapshotPath = join(dirname(filePath), snapshot);
+    try {
+      return { path: snapshotPath, result: await loadTasks(snapshotPath) };
+    } catch (err) {
+      if (err instanceof CorruptTaskFileError) {
+        console.warn(`[tasks-recovery] skipping corrupt daily snapshot ${snapshotPath}`);
+        continue;
+      }
+      console.warn(`[tasks-recovery] skipping unreadable daily snapshot ${snapshotPath}:`, err);
+    }
+  }
+  return null;
 }
 
 /**
