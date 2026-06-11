@@ -16,7 +16,7 @@ function baseProject(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
     findingCount: 0,
     todayPrCount: 0,
     weekPrCount: 0,
-    openPrs: 0,
+    openContributionAttempts: 0,
     recentTasks: [],
     repoHealth: {
       openIssues: 4127,
@@ -57,6 +57,19 @@ function renderDrawer(project: ProjectSummary, compact = false) {
 }
 
 describe('ProjectDetailDrawer — active-task overlay', () => {
+  test('renders contribution-attempt count with the renamed label', () => {
+    renderDrawer(baseProject({ openContributionAttempts: 2 }));
+
+    expect(container.textContent).toContain('Open contribution attempts');
+    expect(container.textContent).toContain('2');
+  });
+
+  test('renders contribution-attempt count in compact mode', () => {
+    renderDrawer(baseProject({ openContributionAttempts: 1 }), true);
+
+    expect(container.textContent).toContain('1 contribution attempt');
+  });
+
   test('renders plain denominator when no active tasks are tied', () => {
     renderDrawer(baseProject({ openIssuesTiedToActiveTasks: 0, openPrsTiedToActiveTasks: 0 }));
 

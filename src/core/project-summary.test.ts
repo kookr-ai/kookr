@@ -256,7 +256,7 @@ describe('computeProjectSummaries', () => {
     expect(summaries[0].tracked).toBe(true);
   });
 
-  test('summary omits tracked when row has no explicit opt-in (skill-discovered)', () => {
+  test('summary exposes tracked:false when row has no explicit opt-in (skill-discovered)', () => {
     const summaries = computeProjectSummaries({
       agents: [],
       ledgerAnalytics,
@@ -264,13 +264,28 @@ describe('computeProjectSummaries', () => {
       skillTrackedProjects: ['github.com/org/skill'],
     });
     expect(summaries).toHaveLength(1);
-    expect(summaries[0].tracked).toBeUndefined();
+    expect(summaries[0].tracked).toBe(false);
   });
 
-  test('summary omits tracked when config has limits/notes but tracked is not set', () => {
+  test('summary exposes tracked:false when config has limits/notes but tracked is not set', () => {
     configStore.setConfig('github.com/org/limits', { dailyPrLimit: 2, notes: 'plan' });
     const summaries = computeProjectSummaries({ agents: [], ledgerAnalytics, configStore });
-    expect(summaries[0].tracked).toBeUndefined();
+    expect(summaries[0].tracked).toBe(false);
+  });
+
+  test('summary exposes tracked:false when config explicitly opted out but activity keeps membership', () => {
+    configStore.setConfig('github.com/org/untracked-active', { tracked: false });
+    const summaries = computeProjectSummaries({
+      agents: [makeAgent({
+        agentId: 'a1',
+        projectId: 'github.com/org/untracked-active',
+        taskStatus: 'inProgress',
+        taskId: 't1',
+      })],
+      ledgerAnalytics,
+      configStore,
+    });
+    expect(summaries[0].tracked).toBe(false);
   });
 
   test('config entry with tracked:false and nothing else does not seed membership', () => {
@@ -291,7 +306,7 @@ describe('computeProjectSummaries', () => {
     expect(summaries).toHaveLength(0);
   });
 
-  test('ingested ledger PRs seed membership and produce open-PR count', async () => {
+  test('ingested ledger PRs seed membership and produce open contribution attempt count', async () => {
     const now = new Date().toISOString();
     appendLedgerEntry(tempDir, {
       timestamp: now,
@@ -302,10 +317,10 @@ describe('computeProjectSummaries', () => {
     const summaries = computeProjectSummaries({ agents: [], ledgerAnalytics, configStore });
     const grafana = summaries.find((s) => s.project === 'github.com/grafana/grafana');
     expect(grafana).toBeTruthy();
-    expect(grafana?.openPrs).toBe(1);
+    expect(grafana?.openContributionAttempts).toBe(1);
   });
 
-  test('counts currently open PRs even when they were created before the recent window', async () => {
+  test('counts currently open contribution attempts even when they were created before the recent window', async () => {
     const oldTimestamp = new Date(Date.now() - 30 * 86_400_000).toISOString();
     appendLedgerEntry(tempDir, {
       timestamp: oldTimestamp,
@@ -318,7 +333,7 @@ describe('computeProjectSummaries', () => {
     const grafana = summaries.find((s) => s.project === 'github.com/grafana/grafana');
 
     expect(grafana).toBeTruthy();
-    expect(grafana?.openPrs).toBe(1);
+    expect(grafana?.openContributionAttempts).toBe(1);
   });
 
   describe('dead local/* project filtering', () => {

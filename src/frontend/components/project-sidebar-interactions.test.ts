@@ -25,7 +25,7 @@ function seedProjects() {
       findingCount: 0,
       todayPrCount: 0,
       weekPrCount: 0,
-      openPrs: 0,
+      openContributionAttempts: 0,
       recentTasks: [],
     },
     {
@@ -36,7 +36,7 @@ function seedProjects() {
       findingCount: 2,
       todayPrCount: 1,
       weekPrCount: 1,
-      openPrs: 0,
+      openContributionAttempts: 0,
       recentTasks: [],
     },
   ]);
@@ -127,7 +127,7 @@ describe('ProjectSidebar interactions', () => {
         todayPrCount: 2,
         weekPrCount: 2,
         dailyLimit: 2,
-        openPrs: 2,
+        openContributionAttempts: 2,
         recentTasks: [],
       },
       {
@@ -140,7 +140,7 @@ describe('ProjectSidebar interactions', () => {
         todayPrCount: 2,
         weekPrCount: 2,
         dailyLimit: 2,
-        openPrs: 2,
+        openContributionAttempts: 2,
         recentTasks: [],
       },
     ]);

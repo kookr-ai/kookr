@@ -23,7 +23,7 @@ export function isAgentSignalKind(value: unknown): value is AgentSignalKind {
 }
 
 /** Max length of the optional, best-effort-redacted note carried with a signal. */
-export const MAX_AGENT_SIGNAL_NOTE_LENGTH = 280;
+export const MAX_AGENT_SIGNAL_NOTE_LENGTH = 2_000;
 
 /**
  * The pending signal currently raised for a task. Stored on the task record
@@ -37,8 +37,9 @@ export interface PendingAgentSignal {
   /**
    * Optional short note from the agent. Best-effort secret-scrubbed before
    * storage/broadcast — the scrubber matches a fixed set of token patterns and
-   * does NOT catch bare passwords or unknown credential formats. Length-capped
-   * to {@link MAX_AGENT_SIGNAL_NOTE_LENGTH}.
+   * does NOT catch bare passwords or unknown credential formats. Notes longer
+   * than {@link MAX_AGENT_SIGNAL_NOTE_LENGTH} are visibly truncated at a word
+   * boundary with an ellipsis.
    */
   note?: string;
   /** ISO timestamp the signal was raised, stamped server-side. */

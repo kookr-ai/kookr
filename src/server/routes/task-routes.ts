@@ -326,13 +326,14 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       return c.json({ error: `kind must be one of: ${AGENT_SIGNAL_KINDS.join(', ')}` }, 400);
     }
     let note: string | undefined;
+    let truncated = false;
     if (body.note !== undefined) {
       if (typeof body.note !== 'string') {
         return c.json({ error: 'note must be a string when supplied' }, 400);
       }
-      const trimmed = body.note.slice(0, MAX_AGENT_SIGNAL_NOTE_LENGTH);
-      const redacted = redactSecrets(trimmed).trim();
-      if (redacted) note = redacted;
+      const normalized = normalizeSignalNote(body.note);
+      truncated = normalized.truncated;
+      if (normalized.note) note = normalized.note;
     }
 
     const signal: PendingAgentSignal = {
@@ -342,7 +343,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     };
     taskStore.setPendingSignal(id, signal);
     broadcastSnapshotWithCoordinator();
-    return c.json({ ok: true, signal });
+    return c.json({ ok: true, signal, truncated });
   });
 
   app.get('/api/playbooks', async (c) => {
@@ -354,6 +355,31 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });
+}
+
+function normalizeSignalNote(raw: string): { note?: string; truncated: boolean } {
+  const redacted = redactSecrets(raw).trim();
+  if (!redacted) return { truncated: false };
+  if (redacted.length <= MAX_AGENT_SIGNAL_NOTE_LENGTH) {
+    return { note: redacted, truncated: false };
+  }
+  return {
+    note: truncateAtWordBoundary(redacted, MAX_AGENT_SIGNAL_NOTE_LENGTH),
+    truncated: true,
+  };
+}
+
+function truncateAtWordBoundary(text: string, maxLength: number): string {
+  const ellipsis = '…';
+  const sliceLimit = Math.max(0, maxLength - ellipsis.length);
+  const prefix = text.slice(0, sliceLimit).trimEnd();
+  const boundaryMatch = prefix.match(/[\s,.;:!?]+[^\s,.;:!?]*$/);
+  // Prefer a clean word boundary, but avoid discarding too much context for a
+  // single long token near the limit.
+  const wordBoundaryPrefix = boundaryMatch && boundaryMatch.index && boundaryMatch.index >= Math.floor(sliceLimit * 0.6)
+    ? prefix.slice(0, boundaryMatch.index).trimEnd()
+    : prefix;
+  return `${wordBoundaryPrefix}${ellipsis}`;
 }
 
 /**
