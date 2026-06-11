@@ -4,6 +4,7 @@ import { deriveLaunchProjectCwd } from './derive-project-cwd.js';
 import { useKookrStore } from './store/useStore.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { useNotifications } from './hooks/useNotifications.js';
+import { useTabAttentionBadge } from './hooks/useTabAttentionBadge.js';
 import { useAudibleAlert } from './hooks/useAudibleAlert.js';
 import { useTaskCompletionChime } from './hooks/useTaskCompletionChime.js';
 import { sendToTerminal } from './terminal-send.js';
@@ -266,6 +267,7 @@ export function App() {
     installReadOnlyNoticeListener();
   }, []);
   useNotifications();
+  useTabAttentionBadge();
   // Audible alerts. Findings are unfocused (anomaly chimes regardless of
   // which task is focused — that's when the user most needs to switch).
   // Completion-signal audio is also unfocused: it means an agent has said a
