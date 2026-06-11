@@ -66,7 +66,7 @@ import { createAgentRuntime } from './bootstrap/create-agent-runtime.js';
 import { createCoreStores } from './bootstrap/create-core-stores.js';
 import { createGitHubRuntime } from './bootstrap/create-github-runtime.js';
 import { createOssServices, createOssSourceWatchers } from './bootstrap/create-oss-services.js';
-import { createRealtimeServices } from './bootstrap/create-realtime-services.js';
+import { createRealtimeServices, DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS } from './bootstrap/create-realtime-services.js';
 import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
@@ -1115,6 +1115,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalInputCoordinator,
     userInputDeliveries,
     buildScopedSnapshot,
+    snapshotPayloadSizePolicy: DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS,
   };
 
   const backgroundServices = startBackgroundServices({
