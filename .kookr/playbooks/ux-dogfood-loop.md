@@ -88,6 +88,18 @@ Screenshot/automation notes that save an hour:
 - Scope selectors: the onboarding overlay's "Skip" collides with finding-card
   "Skip" buttons (`getByTestId('onboarding-overlay').getByText('Skip')`).
 - The harness blocks bare `sleep`; poll states via the API instead.
+- `waitUntil: 'networkidle'` is flaky — the dashboard's WebSocket keeps the
+  network busy. Use `'domcontentloaded'` + a fixed `waitForTimeout`.
+- **Re-verify "bugs" in a single browser context before recording them.**
+  localStorage-backed behavior (e.g. launch-draft restore) looks broken if
+  your probe spawns a fresh context without re-saving `storageState` — two of
+  this session's three suspected regressions were probe artifacts.
+- The composer placeholder changes with task state ("Message X…" vs
+  "Signaled complete — review or send a follow-up…") — match on
+  `placeholder*="follow-up"` or use stable testids (`action-complete`).
+- When a monitor waits for a task to re-signal, don't gate on
+  `raisedAt >= monitor start` — the re-signal often lands before the monitor
+  arms. Compare against the *previous* signal's `raisedAt` instead.
 
 For every medium/high finding, attempt a code root-cause (grep server +
 frontend, cite `file:line` in the RFC). A finding with a root cause is an
