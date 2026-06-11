@@ -742,6 +742,7 @@ function makePromotionDeps(overrides: Partial<PromotionDeps> = {}): PromotionDep
       getNextPending: vi.fn().mockReturnValue(undefined),
       cancelTask: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
+      setLaunchPermissionPosture: vi.fn(),
     } as any,
     adapterRegistry: createAdapterRegistry(adapter),
     lifecycleDeps: makeDeps(),
@@ -799,6 +800,7 @@ describe('promotePendingTasks', () => {
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
+      setLaunchPermissionPosture: vi.fn(),
     };
     const lifecycleDeps = makeDeps();
     (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);
@@ -811,6 +813,7 @@ describe('promotePendingTasks', () => {
 
     expect(result).toBe(1);
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledWith('pending-1', 'Fix the bug in auth', '/workspace/project');
+    expect(mockTaskStore.setLaunchPermissionPosture).toHaveBeenCalledWith('pending-1', undefined);
     expect(deps.broadcastToAll).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'snapshot' }),
     );
@@ -832,6 +835,7 @@ describe('promotePendingTasks', () => {
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
+      setLaunchPermissionPosture: vi.fn(),
     };
     const lifecycleDeps = makeDeps();
     (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);
@@ -870,6 +874,7 @@ describe('promotePendingTasks', () => {
       getTask: vi.fn().mockReturnValue(stuckTask),
       cancelTask: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
+      setLaunchPermissionPosture: vi.fn(),
     };
     const lifecycleDeps = makeDeps();
     (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);
@@ -1030,6 +1035,55 @@ describe('promotePendingTasks (integration)', () => {
     expect(deps.lifecycleDeps.monitor.registerAgent).toHaveBeenCalledWith('kookr-test-1');
     expect(deps.lifecycleDeps.watchdog.registerAgent).toHaveBeenCalledWith('kookr-test-1');
     expect(deps.lifecycleDeps.hookWatcher.watch).toHaveBeenCalledWith('kookr-test-1', { replayExisting: true });
+  });
+
+  test('records permission posture for a pending task at promotion time', async () => {
+    const interactionLog = { append: vi.fn().mockResolvedValue(undefined) } as any;
+    deps = {
+      ...deps,
+      bypassAllPermissions: true,
+      lifecycleDeps: {
+        ...deps.lifecycleDeps,
+        interactionLog,
+      },
+    };
+    const task = taskStore.createTask('Task 1', '/cwd');
+    taskStore.pendTask(task.id);
+
+    const promoted = await promotePendingTasks(deps);
+
+    expect(promoted).toBe(1);
+    expect(taskStore.getTask(task.id)?.metadata?.launchPermissionPosture).toMatchObject({
+      bypassAllPermissions: true,
+      mode: 'bypass-all',
+    });
+    expect(interactionLog.append).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'task_launch_permission_posture',
+      taskId: task.id,
+      agentType: 'claude-code',
+      bypassAllPermissions: true,
+      mode: 'bypass-all',
+    }));
+  });
+
+  test('clears stale permission posture when a pending task promotes in guarded mode', async () => {
+    const task = taskStore.createTask({
+      prompt: 'Task 1',
+      cwd: '/cwd',
+      metadata: {
+        launchPermissionPosture: {
+          bypassAllPermissions: true,
+          mode: 'bypass-all',
+          capturedAt: '2026-06-11T08:00:00.000Z',
+        },
+      },
+    });
+    taskStore.pendTask(task.id);
+
+    const promoted = await promotePendingTasks({ ...deps, bypassAllPermissions: false });
+
+    expect(promoted).toBe(1);
+    expect(taskStore.getTask(task.id)?.metadata?.launchPermissionPosture).toBeUndefined();
   });
 
   test('cancels task when adapter.launch fails', async () => {

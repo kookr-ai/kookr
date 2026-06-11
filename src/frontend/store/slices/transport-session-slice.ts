@@ -140,13 +140,14 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
     activeSTTInputId: null,
     totalSpendUsd: 0,
     maxActiveTasks: 0,
+    bypassAllPermissions: false,
     coordinator: null,
     dashboardSelection: { selectedTaskId: null, selectedSessionId: null, selectionVersion: 0 },
     taskRelations: [],
     relationFilter: { mode: 'off', rootTaskId: null },
     setRelationFilter: (filter) => set(() => ({ relationFilter: filter })),
 
-    handleSnapshot: (agents, serverCwd, build, serverStartedAt, sttEnabled, sttUrl, totalSpendUsd, achievements, availableAgentTypes, defaultAgentType, workspaceEnabled, sweepRunning, maxActiveTasks, speechCapabilities, coordinator, ttsUrl) => {
+    handleSnapshot: (agents, serverCwd, build, serverStartedAt, sttEnabled, sttUrl, totalSpendUsd, achievements, availableAgentTypes, defaultAgentType, workspaceEnabled, sweepRunning, maxActiveTasks, speechCapabilities, coordinator, ttsUrl, bypassAllPermissions) => {
       let restoreMissed = false;
       set((prev) => {
         const previousById = new Map(prev.agents.map((agent) => [agent.agentId, agent]));
@@ -173,6 +174,7 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
           ...(workspaceEnabled !== undefined ? { workspaceEnabled } : {}),
           ...(sweepRunning !== undefined ? { sweepRunning } : {}),
           ...(maxActiveTasks !== undefined ? { maxActiveTasks } : {}),
+          bypassAllPermissions: bypassAllPermissions === true,
           ...(coordinator !== undefined ? { coordinator } : {}),
         };
       });

@@ -114,6 +114,7 @@ export interface WsConnectionDeps {
   availableAgentTypes?: AvailableAgentType[];
   defaultAgentType?: AgentSelection;
   getDefaultAgentType?: () => AgentSelection;
+  bypassAllPermissions?: boolean;
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
   coordinatorAuditTailProvider?: CoordinatorAuditTailProvider;
   coordinatorSuppressions?: CoordinatorSuppressionReader;
@@ -213,6 +214,7 @@ export function handleWsConnection(
     availableAgentTypes: deps.availableAgentTypes,
     defaultAgentType: deps.defaultAgentType,
     getDefaultAgentType: deps.getDefaultAgentType,
+    bypassAllPermissions: deps.bypassAllPermissions,
     activityMetaProvider: deps.activityMetaProvider,
     coordinatorAuditTailProvider: deps.coordinatorAuditTailProvider,
     coordinatorSuppressions: deps.coordinatorSuppressions,

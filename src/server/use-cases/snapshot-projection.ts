@@ -21,6 +21,7 @@ interface SessionSnapshotMeta {
   playbookId?: string;
   playbookParameterValues?: Record<string, string>;
   launchHealthSummary?: TaskLaunchHealthSummary;
+  launchPermissionPosture?: NonNullable<Task['metadata']>['launchPermissionPosture'];
   projectId?: string;
   projectDisplayLabel: string;
   priority?: TaskPriority;
@@ -66,6 +67,7 @@ export function buildSnapshotProjection(deps: {
         playbookId: task.playbookId,
         playbookParameterValues: task.playbookParameterValues,
         launchHealthSummary: task.launchHealthSummary,
+        launchPermissionPosture: task.metadata?.launchPermissionPosture,
         projectId: task.projectId,
         projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: session.cwd }),
         priority: task.priority,
@@ -126,6 +128,7 @@ function enrichLiveState(state: AgentState, meta: SessionSnapshotMeta): void {
   state.playbookId = meta.playbookId;
   state.playbookParameterValues = meta.playbookParameterValues;
   state.launchHealthSummary = meta.launchHealthSummary;
+  state.launchPermissionPosture = meta.launchPermissionPosture;
   state.gitBranch = meta.gitBranch;
   state.gitCommit = meta.gitCommit;
   state.gitIsWorktree = meta.gitIsWorktree;
@@ -176,6 +179,7 @@ function buildPendingTaskEntry(task: Task): AgentState {
     playbookId: task.playbookId,
     playbookParameterValues: task.playbookParameterValues,
     launchHealthSummary: task.launchHealthSummary,
+    launchPermissionPosture: task.metadata?.launchPermissionPosture,
     projectId: task.projectId,
     projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: task.cwd }),
     priority: task.priority,
@@ -205,6 +209,7 @@ function buildTerminalTaskEntry(task: Task): AgentState {
     playbookId: task.playbookId,
     playbookParameterValues: task.playbookParameterValues,
     launchHealthSummary: task.launchHealthSummary,
+    launchPermissionPosture: task.metadata?.launchPermissionPosture,
     projectId: task.projectId,
     projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: lastSession?.cwd ?? task.cwd }),
     priority: task.priority,

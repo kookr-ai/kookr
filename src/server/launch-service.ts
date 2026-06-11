@@ -78,6 +78,8 @@ export interface LaunchServiceDeps {
    * cwd are rejected with {@link CwdValidationError}.
    */
   validateLaunchCwd?: (cwd: string) => Promise<void>;
+  /** True when launches should be audited as running without permission prompts. */
+  bypassAllPermissions?: boolean;
 }
 
 /**
@@ -324,6 +326,7 @@ export async function launchTask(
   const deliveryAuthorization: DeliveryAuthorization = serverOpts.deliveryPolicy ?? 'ask-first';
   const guardedPrompt = await applyWorktreeGuardrails(opts.prompt, opts.cwd, deliveryAuthorization);
   const effectivePrompt = normalizePromptFileReferences(guardedPrompt, opts.cwd);
+  const bypassAllPermissions = deps.bypassAllPermissions === true;
 
   // Dedup: if an active task with the same prompt and canonical cwd exists,
   // return it idempotently
@@ -401,6 +404,24 @@ export async function launchTask(
 
   try {
     await adapterRegistry.get(agentType).launch(task.id, promptWithLaunchNote(task), opts.cwd, undefined, adapterOpts);
+    if (bypassAllPermissions) {
+      const launchPermissionPosture = {
+        bypassAllPermissions: true as const,
+        mode: 'bypass-all' as const,
+        capturedAt: nowISO(),
+      };
+      taskStore.setLaunchPermissionPosture(task.id, launchPermissionPosture);
+      await deps.interactionLog?.append({
+        type: 'task_launch_permission_posture',
+        taskId: task.id,
+        agentType,
+        bypassAllPermissions: true,
+        mode: 'bypass-all',
+        timestamp: launchPermissionPosture.capturedAt,
+      });
+    } else {
+      taskStore.setLaunchPermissionPosture(task.id, undefined);
+    }
   } catch (err) {
     // Clean up the task record so dedup doesn't block future retries. The
     // round-robin cursor was not advanced yet, so a failed launch leaves the

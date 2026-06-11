@@ -126,6 +126,8 @@ export interface TransportSessionSlice {
    * getter through.
    */
   maxActiveTasks: number;
+  /** Current server process is launching agents with permission prompts bypassed. */
+  bypassAllPermissions: boolean;
   coordinator: CoordinatorSnapshotState | null;
   dashboardSelection: {
     selectedTaskId: string | null;
@@ -168,6 +170,7 @@ export interface TransportSessionSlice {
     speechCapabilities?: CollaborationCapabilities,
     coordinator?: CoordinatorSnapshotState,
     ttsUrl?: string,
+    bypassAllPermissions?: boolean,
   ) => void;
   handleUpdate: (agentId: string, state: AgentState) => void;
   handlePlaybooks: (

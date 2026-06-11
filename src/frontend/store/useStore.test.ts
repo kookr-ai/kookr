@@ -1885,6 +1885,18 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().maxActiveTasks).toBe(0);
   });
 
+  test('bypassAllPermissions defaults to false', () => {
+    expect(store.getState().bypassAllPermissions).toBe(false);
+  });
+
+  test('handleSnapshot sets and clears bypassAllPermissions from current snapshot', () => {
+    store.getState().handleSnapshot([], '/cwd', undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, true);
+    expect(store.getState().bypassAllPermissions).toBe(true);
+
+    store.getState().handleSnapshot([], '/cwd');
+    expect(store.getState().bypassAllPermissions).toBe(false);
+  });
+
   test('handleSnapshot sets maxActiveTasks', () => {
     store.getState().handleSnapshot([], '/cwd', undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, 7);
     expect(store.getState().maxActiveTasks).toBe(7);

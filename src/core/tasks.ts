@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { DEFAULT_AGENT_TYPE, type AgentType } from './agent-types.js';
 import type { CompletionDigest } from './completion-digest.js';
 import type { PendingAgentSignal } from '../shared/contracts/agent-signal.js';
-import type { TaskDependencyEdge, TaskPriorityUpdate } from '../shared/contracts/task.js';
+import type {
+  TaskDependencyEdge,
+  TaskLaunchPermissionPosture,
+  TaskPriorityUpdate,
+} from '../shared/contracts/task.js';
 import type { ChildSessionInfo, GitInfo, SessionInfo, WorktreeHealth } from './session-read-model.js';
 import type { TaskStatus } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
@@ -513,6 +517,25 @@ export class TaskStore {
     if (!task) return;
     task.reflectMeta = meta;
     task.updatedAt = new Date();
+  }
+
+  setLaunchPermissionPosture(taskId: string, posture: TaskLaunchPermissionPosture | undefined): Task {
+    const task = this.tasks.get(taskId);
+    if (!task) {
+      throw new Error(`Task not found: ${taskId}`);
+    }
+    if (posture) {
+      task.metadata = {
+        ...(task.metadata ?? {}),
+        launchPermissionPosture: structuredClone(posture),
+      };
+    } else if (task.metadata?.launchPermissionPosture) {
+      const metadata = structuredClone(task.metadata);
+      delete metadata.launchPermissionPosture;
+      task.metadata = Object.keys(metadata).length > 0 ? metadata : undefined;
+    }
+    task.updatedAt = new Date();
+    return cloneTask(task);
   }
 
   updateTokenUsage(taskId: string, usage: TokenUsage): Task {

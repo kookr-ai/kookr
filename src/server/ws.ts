@@ -68,6 +68,7 @@ export interface MessageRouterDeps {
   availableAgentTypes?: AvailableAgentType[];
   defaultAgentType?: AgentSelection;
   getDefaultAgentType?: () => AgentSelection;
+  bypassAllPermissions?: boolean;
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
   coordinatorAuditTailProvider?: CoordinatorAuditTailProvider;
   coordinatorSuppressions?: CoordinatorSuppressionReader;
@@ -246,6 +247,7 @@ export class MessageRouter {
       totalSpendUsd: this.deps.taskStore.getLifetimeSpendUsd(),
       availableAgentTypes: this.deps.availableAgentTypes,
       defaultAgentType: this.deps.getDefaultAgentType?.() ?? this.deps.defaultAgentType,
+      bypassAllPermissions: this.deps.bypassAllPermissions,
       sttUrl: this.deps.sttUrl,
       ttsUrl: this.deps.ttsUrl,
       workspaceEnabled: this.deps.workspaceEnabled,

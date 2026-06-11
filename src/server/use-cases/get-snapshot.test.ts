@@ -253,6 +253,72 @@ describe('snapshot use cases', () => {
     });
   });
 
+  it('projects launch permission posture from task metadata', () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({
+      prompt: 'Ship unguarded',
+      cwd: '/repo',
+      metadata: {
+        launchPermissionPosture: {
+          bypassAllPermissions: true,
+          mode: 'bypass-all',
+          capturedAt: '2026-06-11T08:00:00.000Z',
+        },
+      },
+    });
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-06-11T08:00:00.000Z'),
+    });
+
+    const [agent] = getSnapshotAgentsRaw({
+      monitor: {
+        getSnapshot: () => [{ agentId: 'agent-1', events: [], anomaly: null, lastEventSeq: 0 }] as any,
+        getTaskSnapshot: () => taskStore.getAllTasks(),
+      },
+    });
+
+    expect(agent.launchPermissionPosture).toEqual({
+      bypassAllPermissions: true,
+      mode: 'bypass-all',
+      capturedAt: '2026-06-11T08:00:00.000Z',
+    });
+  });
+
+  it('projects launch permission posture for pending and terminal task entries', () => {
+    const taskStore = new TaskStore();
+    const posture = {
+      bypassAllPermissions: true as const,
+      mode: 'bypass-all' as const,
+      capturedAt: '2026-06-11T08:00:00.000Z',
+    };
+    const pendingTask = taskStore.createTask({
+      prompt: 'Queued unguarded',
+      cwd: '/repo',
+      metadata: { launchPermissionPosture: posture },
+    });
+    taskStore.pendTask(pendingTask.id);
+    const completedTask = taskStore.createTask({
+      prompt: 'Finished unguarded',
+      cwd: '/repo',
+      metadata: { launchPermissionPosture: posture },
+    });
+    taskStore.startTask(completedTask.id);
+    taskStore.completeTask(completedTask.id);
+
+    const agents = getSnapshotAgentsRaw({
+      monitor: {
+        getSnapshot: () => [] as any,
+        getTaskSnapshot: () => taskStore.getAllTasks(),
+      },
+    });
+
+    expect(agents.find((agent) => agent.taskId === pendingTask.id)?.launchPermissionPosture).toEqual(posture);
+    expect(agents.find((agent) => agent.taskId === completedTask.id)?.launchPermissionPosture).toEqual(posture);
+  });
+
   it('projects events for client transport (strips toolResponse, keeps raw via Raw)', () => {
     const rawEvents: AgentEvent[] = [
       {
@@ -354,6 +420,43 @@ describe('snapshot use cases', () => {
     });
 
     expect(msg.workspaceEnabled).toBe(true);
+  });
+
+  it('includes bypassAllPermissions: true in owner snapshots when set', () => {
+    const msg = createSnapshotMessage({
+      monitor: {
+        getSnapshot: () => [] as any,
+      },
+      serverCwd: '/repo',
+      bypassAllPermissions: true,
+    });
+
+    expect(msg.bypassAllPermissions).toBe(true);
+  });
+
+  it('omits bypassAllPermissions from project-scoped snapshots', () => {
+    const msg = createSnapshotMessage({
+      monitor: {
+        getSnapshot: () => [] as any,
+      },
+      serverCwd: '/repo',
+      bypassAllPermissions: true,
+      scope: { kind: 'projects', projectIds: ['github.com/kookr-ai/kookr'] },
+    });
+
+    expect(msg).not.toHaveProperty('bypassAllPermissions');
+  });
+
+  it('omits bypassAllPermissions when not active', () => {
+    const msg = createSnapshotMessage({
+      monitor: {
+        getSnapshot: () => [] as any,
+      },
+      serverCwd: '/repo',
+      bypassAllPermissions: false,
+    });
+
+    expect(msg).not.toHaveProperty('bypassAllPermissions');
   });
 
   it('omits workspaceEnabled when not set', () => {

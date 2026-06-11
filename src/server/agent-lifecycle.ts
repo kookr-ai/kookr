@@ -398,6 +398,8 @@ export interface PromotionDeps {
   serverCwd: string;
   /** Live getter for max concurrent tasks. Falls back to static default if not provided. */
   getMaxActiveTasks?: () => number;
+  /** True when promoted launches should be audited as running without permission prompts. */
+  bypassAllPermissions?: boolean;
 }
 
 /**
@@ -427,6 +429,24 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       const adapter = adapterRegistry.get(pending.agentType);
       const launchPrompt = pending.launchNote ? `${pending.launchNote}\n\n${pending.prompt}` : pending.prompt;
       await adapter.launch(pending.id, launchPrompt, pending.cwd);
+      if (deps.bypassAllPermissions === true) {
+        const launchPermissionPosture = {
+          bypassAllPermissions: true as const,
+          mode: 'bypass-all' as const,
+          capturedAt: nowISO(),
+        };
+        taskStore.setLaunchPermissionPosture(pending.id, launchPermissionPosture);
+        await lifecycleDeps.interactionLog?.append({
+          type: 'task_launch_permission_posture',
+          taskId: pending.id,
+          agentType: pending.agentType,
+          bypassAllPermissions: true,
+          mode: 'bypass-all',
+          timestamp: launchPermissionPosture.capturedAt,
+        });
+      } else {
+        taskStore.setLaunchPermissionPosture(pending.id, undefined);
+      }
       const launched = taskStore.getTask(pending.id);
       if (!launched) throw new Error(`Task disappeared after launch: ${pending.id}`);
       await registerNewAgent(launched, lifecycleDeps);

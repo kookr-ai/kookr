@@ -31,6 +31,14 @@ export type InteractionEvent =
   | { type: 'worktree_cleanup_failed'; taskId: string; worktreePath: string; error: string; timestamp: string }
   | { type: 'crash_recovery'; relaunched: number; skipped: number; failed: number; details: unknown; timestamp: string }
   | { type: 'submission_rejected_dedup'; existingTaskId: string; promptHash: string; canonicalCwd: string; timestamp: string }
+  | {
+      type: 'task_launch_permission_posture';
+      taskId: string;
+      agentType: string;
+      bypassAllPermissions: true;
+      mode: 'bypass-all';
+      timestamp: string;
+    }
   | { type: 'auto_suppressed'; agentId: string; anomalyType: AnomalyType; suppressionCount: number; timestamp: string }
   | { type: 'monitoring_resumed'; agentId: string; reason: 'respond' | 'cleanup'; timestamp: string }
   | {

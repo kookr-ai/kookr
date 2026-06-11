@@ -46,6 +46,7 @@ export function dispatchSnapshotMessageForClient(
     msg.speechCapabilities,
     msg.coordinator,
     msg.ttsUrl,
+    msg.bypassAllPermissions,
   );
   // Sticky: only overwrite the cached graph when the server actually shipped
   // one. High-frequency event-pipeline broadcasts omit it on purpose, and we

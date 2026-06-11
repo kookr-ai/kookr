@@ -86,6 +86,37 @@ describe('parseServerMessageForClient snapshot tolerance', () => {
     });
   });
 
+  it('updates bypass permission state through the mounted snapshot runtime path', async () => {
+    RuntimeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', RuntimeWebSocket);
+    const container = document.createElement('div');
+    const root: Root = createRoot(container);
+    useKookrStore.setState({ bypassAllPermissions: false });
+
+    await act(async () => {
+      root.render(React.createElement(WebSocketProbe, { onReady: () => {} }));
+    });
+
+    const socket = RuntimeWebSocket.instances[0];
+    expect(socket).toBeDefined();
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'snapshot',
+          agents: [],
+          serverCwd: '/repo',
+          bypassAllPermissions: true,
+        }),
+      });
+    });
+
+    expect(useKookrStore.getState().bypassAllPermissions).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it('records malformed inbound messages before returning null', () => {
     resetBugReportRecorderForTests();
 
@@ -143,6 +174,7 @@ describe('parseServerMessageForClient snapshot tolerance', () => {
           'local-node': [],
         },
       },
+      bypassAllPermissions: true,
     }, (...args) => {
       calls.push(args);
     });
@@ -151,6 +183,7 @@ describe('parseServerMessageForClient snapshot tolerance', () => {
     expect(calls[0][12]).toBe(7);
     expect(calls[0][13]).toEqual({ capabilitiesByDevice: { 'local-node': [] } });
     expect(calls[0][14]).toEqual({ outputs: [{ detectorId: 'stale', taskId: 'task-1', evidence: {} }], chips: [], findings: [], chains: {} });
+    expect(calls[0][16]).toBe(true);
   });
 
   it('dispatches standalone coordinator snapshots through the coordinator runtime path', () => {

@@ -145,6 +145,12 @@ export type SnapshotMessage = {
   defaultAgentType?: AgentSelection;
   /** Server capability: contribution workspace is available. */
   workspaceEnabled?: boolean;
+  /**
+   * True when this server is launching agents with permission prompts disabled
+   * via KOOKR_BYPASS_ALL_PERMISSIONS. Omitted when false for additive
+   * compatibility with older clients.
+   */
+  bypassAllPermissions?: boolean;
   /** True if a cross-project sweep is currently in progress on this server. */
   sweepRunning?: boolean;
   /**

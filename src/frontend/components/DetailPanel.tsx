@@ -725,6 +725,15 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
           <EditableHeading agent={agent} send={send} />
           {agent.playbookId && <span className="detail-badge playbook">Playbook</span>}
           {agent.taskStatus === 'pending' && <span className="detail-badge pending">Pending</span>}
+          {agent.launchPermissionPosture?.bypassAllPermissions && (
+            <span
+              className="detail-badge permission-bypassed"
+              title="This task was launched while KOOKR_BYPASS_ALL_PERMISSIONS was active"
+              data-testid="task-permission-bypass-badge"
+            >
+              Permissions bypassed
+            </span>
+          )}
           {agent.anomaly && <span className={`detail-badge ${badgeClass}`}>{badgeLabel}</span>}
         </div>
         <div className="detail-header-right">

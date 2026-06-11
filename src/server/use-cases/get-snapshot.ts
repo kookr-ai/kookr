@@ -90,6 +90,7 @@ export interface SnapshotMessageDeps extends SnapshotQueryDeps {
   availableAgentTypes?: AvailableAgentType[];
   defaultAgentType?: AgentSelection;
   workspaceEnabled?: boolean;
+  bypassAllPermissions?: boolean;
   sweepRunning?: boolean;
   /** Live getter for the configured concurrency cap (settings.maxActiveTasks). */
   getMaxActiveTasks?: () => number;
@@ -388,6 +389,7 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
     ...(deps.availableAgentTypes && !projectsScope ? { availableAgentTypes: deps.availableAgentTypes } : {}),
     ...(deps.defaultAgentType && !projectsScope ? { defaultAgentType: deps.defaultAgentType } : {}),
     ...(deps.workspaceEnabled && !projectsScope ? { workspaceEnabled: true } : {}),
+    ...(deps.bypassAllPermissions && !projectsScope ? { bypassAllPermissions: true } : {}),
     ...(deps.sweepRunning && !projectsScope ? { sweepRunning: true } : {}),
     ...(deps.getMaxActiveTasks && !projectsScope ? { maxActiveTasks: deps.getMaxActiveTasks() } : {}),
     // Coordinator is whole-world detector state — omitted for a `projects` viewer.
