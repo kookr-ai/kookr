@@ -1,7 +1,8 @@
 import { describe, test, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseTranscriptLine, parseTranscriptLines } from './transcript-parser.js';
+import { lastAssistantMessage, parseTranscriptLine, parseTranscriptLines } from './transcript-parser.js';
 
 const fixturesDir = join(import.meta.dirname, '..', '__fixtures__');
 
@@ -190,5 +191,93 @@ describe('Transcript JSONL Parser', () => {
     // From the fixture: tool_use (Read), tool_result, result (stop)
     // text-only assistant and user messages are skipped
     expect(events.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('lastAssistantMessage', () => {
+  function withTempTranscript(content: string, fn: (path: string) => void) {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-transcript-'));
+    const path = join(dir, 'transcript.jsonl');
+    writeFileSync(path, content, 'utf-8');
+    try {
+      fn(path);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test('returns null for a missing transcript', () => {
+    expect(lastAssistantMessage('/tmp/kookr-missing-transcript.jsonl')).toBeNull();
+  });
+
+  test('reads the last assistant text message from the transcript tail', () => {
+    const first = JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Earlier message' }] },
+    });
+    const last = JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Should I merge this PR?' }] },
+    });
+
+    withTempTranscript(`${first}\n${JSON.stringify({ type: 'user', message: 'ok' })}\n${last}\n`, (path) => {
+      expect(lastAssistantMessage(path)).toEqual({
+        excerpt: 'Should I merge this PR?',
+        truncated: false,
+        readAtOffset: Buffer.byteLength(`${first}\n${JSON.stringify({ type: 'user', message: 'ok' })}\n`, 'utf-8'),
+      });
+    });
+  });
+
+  test('treats a trailing result entry as the final assistant message', () => {
+    const assistant = JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Earlier plan' }] },
+    });
+    const result = JSON.stringify({
+      type: 'result',
+      result: 'Final answer from the agent',
+    });
+
+    withTempTranscript(`${assistant}\n${result}\n`, (path) => {
+      expect(lastAssistantMessage(path)?.excerpt).toBe('Final answer from the agent');
+    });
+  });
+
+  test('uses the final result message from the real fixture', () => {
+    const path = join(fixturesDir, 'transcript-sample.jsonl');
+    expect(lastAssistantMessage(path)?.excerpt).toContain("I've fixed the auth bug");
+  });
+
+  test('truncates long assistant messages by character budget', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'abcdef' }] },
+    });
+
+    withTempTranscript(`${line}\n`, (path) => {
+      expect(lastAssistantMessage(path, { maxChars: 3 })).toEqual({
+        excerpt: 'abc',
+        truncated: true,
+        readAtOffset: 0,
+      });
+    });
+  });
+
+  test('drops a partial first tail line so multibyte cuts do not poison parsing', () => {
+    const partial = JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Earlier café message' }] },
+    });
+    const target = JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Latest intact message' }] },
+    });
+
+    withTempTranscript(`${partial}\n${target}\n`, (path) => {
+      const result = lastAssistantMessage(path, { maxBytes: Buffer.byteLength(target, 'utf-8') + 8 });
+      expect(result?.excerpt).toBe('Latest intact message');
+      expect(result?.readAtOffset).toBe(Buffer.byteLength(`${partial}\n`, 'utf-8'));
+    });
   });
 });

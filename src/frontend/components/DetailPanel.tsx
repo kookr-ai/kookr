@@ -834,6 +834,15 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
           )}
         </div>
       )}
+      {agent.anomaly?.transcriptContext?.lastAssistantMessage && (
+        <div className="detail-transcript-context" data-testid="detail-transcript-context">
+          <div className="detail-transcript-context-label">Last agent message</div>
+          <div className="detail-transcript-context-text">
+            {agent.anomaly.transcriptContext.lastAssistantMessage.excerpt}
+            {agent.anomaly.transcriptContext.lastAssistantMessage.truncated ? '...' : ''}
+          </div>
+        </div>
+      )}
       {agent.taskId && (
         <TaskShareModal
           taskId={agent.taskId}

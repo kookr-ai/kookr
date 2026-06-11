@@ -50,6 +50,12 @@ export type AnomalySeverity = 'info' | 'warning' | 'critical';
  */
 export type AnomalyConfidence = 'high' | 'medium' | 'low';
 
+export interface FindingTranscriptExcerpt {
+  excerpt: string;
+  truncated: boolean;
+  readAtOffset: number;
+}
+
 export interface Anomaly {
   agentId: string;
   type: AnomalyType;
@@ -79,6 +85,10 @@ export interface Anomaly {
   likelyRootCause?: boolean;
   /** Human-readable basis for why the active findings were linked. */
   causalityReason?: string;
+  /** Optional transcript-derived context attached to active findings behind a feature flag. */
+  transcriptContext?: {
+    lastAssistantMessage: FindingTranscriptExcerpt;
+  };
 }
 
 /** Serialized anomaly for persistence - detectedAt is ISO string, not Date. */

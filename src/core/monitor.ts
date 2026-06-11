@@ -23,6 +23,7 @@ import {
   FindingEvidenceAuditor,
   type FindingEvidenceAuditRecord,
 } from './finding-evidence-audit.js';
+import { lastAssistantMessage } from './transcript-parser.js';
 
 export interface AgentState {
   agentId: string;
@@ -110,6 +111,11 @@ function isWatchdogOwnedType(type: string | undefined): boolean {
   return type !== undefined && WATCHDOG_OWNED_TYPES.has(type);
 }
 
+function findingTranscriptContextEnabled(): boolean {
+  const raw = process.env.KOOKR_FINDING_TRANSCRIPT_CONTEXT;
+  return raw === 'true' || raw === '1';
+}
+
 /**
  * Minimum number of agents simultaneously carrying a `hook_disconnected`
  * finding for the monitor to treat the silence as a systemic hook-pipeline
@@ -133,6 +139,7 @@ export class Monitor {
   private lastRecordedAnomalyFingerprint = new Map<string, string>();
   private lastEventAnomaly = new Map<string, Anomaly>();
   private findingEvidenceAuditor = new FindingEvidenceAuditor();
+  private agentTranscriptPaths = new Map<string, string>();
   /**
    * Outstanding background subagents per parent agent. Each subagent tracked with
    * its Date.now() at SubagentStart so a lazy TTL eviction caps suppression
@@ -190,6 +197,7 @@ export class Monitor {
       ? combined.slice(combined.length - this.windowSize)
       : combined;
     this.agentEvents.set(agentId, capped);
+    this.rememberTranscriptPath(agentId, sequencedEvents);
 
     // Update subagent tracking before detection so suppression sees current state
     for (const event of sequencedEvents) {
@@ -204,7 +212,10 @@ export class Monitor {
     const rawAnomaly = evaluation.anomaly;
     const anomaly = this.stabilizeEventAnomaly(
       agentId,
-      this.suppressIfSubagentsRunning(rawAnomaly, agentId, { markSnapshotTtlEviction: false }),
+      this.withTranscriptContext(
+        this.suppressIfSubagentsRunning(rawAnomaly, agentId, { markSnapshotTtlEviction: false }),
+        agentId,
+      ),
       opts?.eventId,
     );
     this.recordDetectionTelemetry(agentId, evaluation.checkedTypes, anomaly);
@@ -241,7 +252,7 @@ export class Monitor {
   getEventAnomaly(agentId: string): Anomaly | null {
     const events = this.agentEvents.get(agentId) ?? [];
     const raw = detectAnomalies(events, agentId, this.anomalyConfig);
-    const anomaly = this.suppressIfSubagentsRunning(raw, agentId);
+    const anomaly = this.withTranscriptContext(this.suppressIfSubagentsRunning(raw, agentId), agentId);
     return anomaly ? this.withStableEventDetectedAt(agentId, anomaly) : null;
   }
 
@@ -289,7 +300,7 @@ export class Monitor {
       || verdict.status === 'hook_disconnected';
 
     if (actionable) {
-      const rawAnomaly = verdict.anomaly;
+      const rawAnomaly = this.withTranscriptContext(verdict.anomaly, agentId) ?? verdict.anomaly;
       const anomaly = this.suppressIfSubagentsRunning(rawAnomaly, agentId);
       if (anomaly === null) {
         // Subagent suppressor swallowed the verdict. Clear any prior queued
@@ -506,6 +517,7 @@ export class Monitor {
     this.lastRecordedAnomalyFingerprint.delete(agentId);
     this.lastEventAnomaly.delete(agentId);
     this.findingEvidenceAuditor.deleteAgent(agentId);
+    this.agentTranscriptPaths.delete(agentId);
     this.attentionQueue.purge(agentId);
     this.flushAndDeleteSubagents(agentId);
     this.stoppedAgents.add(agentId);
@@ -528,6 +540,37 @@ export class Monitor {
     const stable = this.withStableEventDetectedAt(agentId, stamped);
     this.lastEventAnomaly.set(agentId, stable);
     return stable;
+  }
+
+  private rememberTranscriptPath(agentId: string, events: AgentEvent[]): void {
+    for (const event of events) {
+      if (
+        (event.type === 'session_start' || event.type === 'stop' || event.type === 'stop_failure')
+        && event.transcriptPath
+      ) {
+        this.agentTranscriptPaths.set(agentId, event.transcriptPath);
+      }
+    }
+  }
+
+  private withTranscriptContext(anomaly: Anomaly | null, agentId: string): Anomaly | null {
+    if (!anomaly) return null;
+    if (!findingTranscriptContextEnabled()) return anomaly;
+    if (anomaly.type !== 'needs_input' && anomaly.type !== 'stale_agent') return anomaly;
+    if (anomaly.transcriptContext?.lastAssistantMessage) return anomaly;
+
+    const transcriptPath = this.agentTranscriptPaths.get(agentId);
+    if (!transcriptPath) return anomaly;
+
+    const message = lastAssistantMessage(transcriptPath);
+    if (!message) return anomaly;
+
+    return {
+      ...anomaly,
+      transcriptContext: {
+        lastAssistantMessage: message,
+      },
+    };
   }
 
   private withStableEventDetectedAt(agentId: string, anomaly: Anomaly): Anomaly {

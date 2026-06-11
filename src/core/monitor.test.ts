@@ -1,4 +1,7 @@
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AgentEvent } from './types.js';
 import { Monitor } from './monitor.js';
 import { TaskStore } from './tasks.js';
@@ -44,13 +47,35 @@ describe('Monitor', () => {
   let taskStore: TaskStore;
   let queue: AttentionQueue;
   let monitor: Monitor;
+  let originalFindingTranscriptContext: string | undefined;
 
   beforeEach(() => {
+    originalFindingTranscriptContext = process.env.KOOKR_FINDING_TRANSCRIPT_CONTEXT;
+    delete process.env.KOOKR_FINDING_TRANSCRIPT_CONTEXT;
     resetDetectionStats();
     taskStore = new TaskStore();
     queue = new AttentionQueue();
     monitor = new Monitor(taskStore, queue);
   });
+
+  afterEach(() => {
+    if (originalFindingTranscriptContext === undefined) {
+      delete process.env.KOOKR_FINDING_TRANSCRIPT_CONTEXT;
+    } else {
+      process.env.KOOKR_FINDING_TRANSCRIPT_CONTEXT = originalFindingTranscriptContext;
+    }
+  });
+
+  function withTempTranscript(content: string, fn: (path: string) => void) {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-monitor-transcript-'));
+    const path = join(dir, 'transcript.jsonl');
+    writeFileSync(path, content, 'utf-8');
+    try {
+      fn(path);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
 
   test('Stop event for agent enters attention queue as needs_input', () => {
     const events: AgentEvent[] = [
@@ -65,6 +90,81 @@ describe('Monitor', () => {
     expect(next).not.toBeNull();
     expect(next!.agentId).toBe('agent-1');
     expect(next!.anomaly.type).toBe('needs_input');
+  });
+
+  test('flag-off needs_input finding does not include transcript context', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Please choose an option.' }] },
+    });
+
+    withTempTranscript(`${line}\n`, (transcriptPath) => {
+      monitor.processEvents('agent-1', [
+        { type: 'session_start', sessionId: 's1', transcriptPath },
+        makeStop('s1', 'Waiting'),
+      ]);
+
+      expect(queue.peek('agent-1')?.transcriptContext).toBeUndefined();
+    });
+  });
+
+  test('flag-on needs_input finding includes last assistant transcript message', () => {
+    process.env.KOOKR_FINDING_TRANSCRIPT_CONTEXT = 'true';
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Should I push this branch now?' }] },
+    });
+
+    withTempTranscript(`${line}\n`, (transcriptPath) => {
+      monitor.processEvents('agent-1', [
+        { type: 'session_start', sessionId: 's1', transcriptPath },
+        makeStop('s1', 'Waiting'),
+      ]);
+
+      const anomaly = queue.peek('agent-1');
+      expect(anomaly?.type).toBe('needs_input');
+      expect(anomaly?.transcriptContext?.lastAssistantMessage).toEqual({
+        excerpt: 'Should I push this branch now?',
+        truncated: false,
+        readAtOffset: 0,
+      });
+      expect(monitor.getSnapshot()[0].anomaly?.transcriptContext?.lastAssistantMessage.excerpt)
+        .toBe('Should I push this branch now?');
+    });
+  });
+
+  test('flag-on stale_agent watchdog finding includes last assistant transcript message', () => {
+    process.env.KOOKR_FINDING_TRANSCRIPT_CONTEXT = '1';
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'I am stuck waiting for the test command.' }] },
+    });
+
+    withTempTranscript(`${line}\n`, (transcriptPath) => {
+      monitor.processEvents('agent-1', [
+        { type: 'session_start', sessionId: 's1', transcriptPath },
+      ]);
+
+      monitor.applyWatchdogVerdict(
+        'agent-1',
+        {
+          status: 'stale_agent',
+          anomaly: {
+            agentId: 'agent-1',
+            type: 'stale_agent',
+            severity: 'warning',
+            explanation: 'No activity for 2 min',
+            detectedAt: new Date('2026-06-11T10:00:00.000Z'),
+          },
+        },
+        { paneCaptureSucceeded: true },
+      );
+
+      const anomaly = queue.peek('agent-1');
+      expect(anomaly?.type).toBe('stale_agent');
+      expect(anomaly?.transcriptContext?.lastAssistantMessage.excerpt)
+        .toBe('I am stuck waiting for the test command.');
+    });
   });
 
   test('agent produces activity after Stop - removed from queue', () => {
