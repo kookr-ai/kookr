@@ -43,6 +43,7 @@ vi.mock('@xterm/xterm', () => {
     dataHandler: ((data: string) => void) | null = null;
     keyHandler: ((event: KeyboardEvent) => boolean) | null = null;
     clear = vi.fn();
+    reset = vi.fn();
     write = vi.fn();
     open = vi.fn();
     loadAddon = vi.fn();
@@ -1674,6 +1675,77 @@ describe('TerminalPanel', () => {
     act(() => { terminal.dataHandler?.('\r'); });
     expect(onEmptySubmit).toHaveBeenCalledOnce();
     expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  test('reconnects after an abnormal close and resets the terminal before the ring-buffer replay', () => {
+    // Server restart / host offline: the byte stream must come back on its
+    // own, and because the server replays the session ring buffer on every
+    // connect, the terminal must reset exactly once per reconnect or the
+    // scrollback would be duplicated.
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+      });
+      const terminal = mocks.terminalInstances[0];
+      const first = mocks.webSocketInstances[0];
+      act(() => {
+        first.onopen?.();
+      });
+      expect(terminal.reset).not.toHaveBeenCalled();
+
+      act(() => {
+        first.onclose?.({ code: 1006 });
+      });
+      const written = terminal.write.mock.calls.map(([data]: [unknown]) => String(data)).join('');
+      expect(written).toContain('reconnecting');
+      expect(written).not.toContain('Session ended.');
+      expect(mocks.webSocketInstances).toHaveLength(1);
+
+      act(() => {
+        vi.advanceTimersByTime(2_000); // past the 1s ± 20% first retry
+      });
+      expect(mocks.webSocketInstances).toHaveLength(2);
+
+      const second = mocks.webSocketInstances[1];
+      act(() => {
+        second.onopen?.();
+      });
+      expect(terminal.reset).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test.each([
+    ['clean PTY exit', 1000],
+    ['backend session gone', 1011],
+  ])('a session-over close (%s, code %i) shows "Session ended." and never reconnects', (_label, code) => {
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+      });
+      const terminal = mocks.terminalInstances[0];
+      const ws = mocks.webSocketInstances[0];
+      act(() => {
+        ws.onopen?.();
+      });
+      act(() => {
+        ws.onclose?.({ code });
+      });
+      const written = terminal.write.mock.calls.map(([data]: [unknown]) => String(data)).join('');
+      expect(written).toContain('Session ended.');
+      expect(written).not.toContain('reconnecting');
+
+      act(() => {
+        vi.advanceTimersByTime(120_000);
+      });
+      expect(mocks.webSocketInstances).toHaveLength(1);
+      expect(terminal.reset).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('empty-Enter fires repeatedly within the same task as the user mashes Enter', () => {
