@@ -1136,6 +1136,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     leaseService,
     serverProjectId,
     takePredeleteSnapshot,
+    auditLogPath: join(kookrDir, 'audit.jsonl'),
     supervisorFeedbackCaseStore,
     feedbackDir: join(kookrDir, 'feedback'),
     taskSnapshotDir: join(kookrDir, 'task-snapshots'),
