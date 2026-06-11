@@ -53,7 +53,8 @@ export function createResponseAssistProcessor({
     if (!shouldOfferAssist('needs_input', events)) return;
 
     // Extract last message for quick actions.
-    const lastMessage = (event.type === 'stop' || event.type === 'stop_failure') ? event.lastMessage : '';
+    const lastMessage = agentState.anomaly?.transcriptContext?.lastAssistantMessage.excerpt
+      ?? ((event.type === 'stop' || event.type === 'stop_failure') ? event.lastMessage : '');
     const quickActions = extractQuickActions(lastMessage);
 
     // Fire-and-forget: generate AI suggestions.

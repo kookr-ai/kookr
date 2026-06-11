@@ -238,6 +238,7 @@ Bundled STT and TTS run via Docker Compose. The default STT config targets an NV
 | `KOOKR_ALERT_SUSTAIN_SAMPLES` | `3` | Integer `>= 1` | Consecutive breaching resource samples required before any operational alert fires (edge-triggered; clears on the first sample back below threshold). Samples are taken roughly every 2 seconds. Invalid or blank values use the default. |
 | `KOOKR_AUTO_REFLECT_DISABLE` | unset | `1` to disable | Kill switch for task-feedback reflection spawning. |
 | `KOOKR_FINDING_REVIEW_ENABLED` | unset | `true` to enable | Enables local/admin finding-evidence review diagnostics. Required before manual model review or the background sampler can call the LLM. |
+| `KOOKR_FINDING_TRANSCRIPT_CONTEXT` | unset | `true` or `1` to enable | Attaches the last assistant text message from the registered transcript JSONL to `needs_input` and `stale_agent` findings. Reads only a bounded transcript tail and leaves findings unchanged when unset. |
 | `KOOKR_FINDING_REVIEW_DAILY_COST_CENTS` | `0` | Non-negative integer cents | Daily cost budget for finding-evidence model reviews. `0` keeps model calls disabled. |
 | `KOOKR_FINDING_REVIEW_MAX_CANDIDATES` | `5` | Positive integer | Maximum candidates reviewed by one manual finding-evidence review request. |
 | `KOOKR_FINDING_REVIEW_TIMEOUT_MS` | `15000` | Positive integer milliseconds | Timeout for each finding-evidence review model call. |

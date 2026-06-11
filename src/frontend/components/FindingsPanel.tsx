@@ -357,6 +357,19 @@ function LikelyRootCauseBadge({ agent }: { agent: AgentState }): React.ReactElem
   );
 }
 
+function FindingTranscriptContext({ agent }: { agent: AgentState }): React.ReactElement | null {
+  const message = agent.anomaly?.transcriptContext?.lastAssistantMessage;
+  if (!message) return null;
+  return (
+    <div className="finding-transcript-context" data-testid="finding-transcript-context">
+      <div className="finding-transcript-context-label">Last agent message</div>
+      <div className="finding-transcript-context-text">
+        {message.excerpt}{message.truncated ? '...' : ''}
+      </div>
+    </div>
+  );
+}
+
 type FindingDisplayItem =
   | { kind: 'single'; agent: AgentState }
   | { kind: 'rootCauseGroup'; root: AgentState; related: AgentState[] }
@@ -621,6 +634,7 @@ const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
         {agent.anomaly && (
           <div className="finding-explanation">{agent.anomaly.explanation}</div>
         )}
+        <FindingTranscriptContext agent={agent} />
         <CoordinatorTaskChipView chip={coordinatorChip} agent={agent} send={send} />
         {(agent.tokenUsage || agent.startedAt) && (
           <div className="finding-cost">

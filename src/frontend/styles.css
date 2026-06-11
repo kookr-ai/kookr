@@ -783,6 +783,31 @@ kbd {
   border-radius: 2px;
   color: var(--blue);
 }
+.finding-transcript-context {
+  margin: 0 0 8px;
+  padding: 7px 8px;
+  border-left: 2px solid rgba(96,165,250,0.55);
+  background: rgba(96,165,250,0.08);
+  border-radius: 4px;
+}
+.finding-transcript-context-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--blue);
+  margin-bottom: 3px;
+}
+.finding-transcript-context-text {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-bright);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 
 /* Age badge on finding cards */
 .age-badge {
@@ -1598,6 +1623,31 @@ kbd {
 .detail-signal-banner--ready { background: rgba(74,222,128,0.12); }
 .detail-signal-banner__text { color: var(--text, #ddd); overflow: hidden; text-overflow: ellipsis; }
 .detail-signal-banner__text strong { color: var(--green); }
+.detail-transcript-context {
+  margin: 8px 16px 0;
+  padding: 8px 10px;
+  border-left: 2px solid rgba(96,165,250,0.55);
+  background: rgba(96,165,250,0.08);
+  border-radius: 4px;
+}
+.detail-transcript-context-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--blue);
+  margin-bottom: 4px;
+}
+.detail-transcript-context-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-bright);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 
 .task-dependencies {
   flex-shrink: 0;
