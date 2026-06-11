@@ -421,6 +421,156 @@ describe('HookIngestion — dual-delivery dedup (rfc-activity-log-reliability §
     const retry = ingestion.ingestFromHttp('kookr-1', raw);
     expect(retry.dispatched).toBe(true);
   });
+
+  it('aggregates write-to-processed lag per session and logs threshold crossings', () => {
+    const adapter = makeStubAdapter();
+    let now = Date.parse('2026-06-11T12:00:10.000Z');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const ingestion = new HookIngestion({
+      adapter,
+      now: () => now,
+      lagWarningThresholdMs: 2000,
+    });
+
+    ingestion.ingestFromHttp('kookr-1', JSON.stringify({
+      session_id: 'x',
+      hook_event_name: 'SessionStart',
+      kookr_hook_written_at: '2026-06-11T12:00:09.000Z',
+    }));
+    now = Date.parse('2026-06-11T12:00:14.000Z');
+    ingestion.ingestFromHttp('kookr-1', JSON.stringify({
+      session_id: 'x',
+      hook_event_name: 'PreToolUse',
+      kookr_hook_written_at_ms: Date.parse('2026-06-11T12:00:10.000Z'),
+    }));
+
+    const snapshot = ingestion.getDiagnosticsSnapshot();
+    expect(snapshot).toEqual(expect.objectContaining({
+      schemaVersion: 'hook-ingestion-diagnostics.v1',
+      lagWarningThresholdMs: 2000,
+      sessionCount: 1,
+      totalArrivals: 2,
+      notableLagCount: 1,
+    }));
+    expect(snapshot.sessions[0]).toEqual(expect.objectContaining({
+      kookrSessionId: 'kookr-1',
+      totalArrivals: 2,
+      dispatchedArrivals: 2,
+      missingWriteTimestampCount: 0,
+      notableLagCount: 1,
+      sourceCounts: { file: 0, http: 2 },
+      writeTimestampSourceCounts: { payload: 2, file_mtime: 0, missing: 0, invalid: 0 },
+      lag: {
+        count: 2,
+        lastMs: 4000,
+        meanMs: 2500,
+        maxMs: 4000,
+        p95Ms: 4000,
+      },
+    }));
+    expect(warn).toHaveBeenCalledWith('[hook-ingestion] lag threshold crossed', {
+      kookrSessionId: 'kookr-1',
+      source: 'http',
+      lagMs: 4000,
+      thresholdMs: 2000,
+      writeTimestampSource: 'payload',
+    });
+    warn.mockRestore();
+  });
+
+  it('records file-mtime fallback lag even when the file arrival is a duplicate', () => {
+    const adapter = makeStubAdapter();
+    let now = Date.parse('2026-06-11T12:00:10.000Z');
+    const ingestion = new HookIngestion({ adapter, now: () => now });
+    const raw = JSON.stringify({ session_id: 'x', hook_event_name: 'SessionStart' });
+
+    ingestion.ingestFromHttp('kookr-1', raw);
+    now = Date.parse('2026-06-11T12:00:14.000Z');
+    ingestion.injectHookEvent('kookr-1', raw, undefined, {
+      fileMtimeMs: Date.parse('2026-06-11T12:00:12.000Z'),
+    });
+
+    const session = ingestion.getDiagnosticsSnapshot().sessions[0];
+    expect(adapter.calls).toHaveLength(1);
+    expect(session).toEqual(expect.objectContaining({
+      totalArrivals: 2,
+      dispatchedArrivals: 1,
+      duplicateArrivals: 1,
+      missingWriteTimestampCount: 1,
+      sourceCounts: { file: 1, http: 1 },
+      writeTimestampSourceCounts: { payload: 0, file_mtime: 1, missing: 1, invalid: 0 },
+      lag: expect.objectContaining({
+        count: 1,
+        lastMs: 2000,
+        maxMs: 2000,
+      }),
+    }));
+  });
+
+  it('counts invalid and future hook write timestamps in diagnostics', () => {
+    const adapter = makeStubAdapter();
+    const now = Date.parse('2026-06-11T12:00:10.000Z');
+    const ingestion = new HookIngestion({ adapter, now: () => now });
+
+    ingestion.ingestFromHttp('kookr-1', JSON.stringify({
+      session_id: 'x',
+      hook_event_name: 'SessionStart',
+      timestamp: 'not-a-date',
+    }));
+    ingestion.ingestFromHttp('kookr-1', JSON.stringify({
+      session_id: 'x',
+      hook_event_name: 'PreToolUse',
+      timestamp: '2026-06-11T12:00:12.000Z',
+    }));
+
+    const session = ingestion.getDiagnosticsSnapshot().sessions[0];
+    expect(session).toEqual(expect.objectContaining({
+      totalArrivals: 2,
+      invalidWriteTimestampCount: 1,
+      futureWriteTimestampCount: 1,
+      writeTimestampSourceCounts: { payload: 1, file_mtime: 0, missing: 0, invalid: 1 },
+      lag: expect.objectContaining({
+        count: 1,
+        lastMs: 0,
+        maxMs: 0,
+      }),
+    }));
+  });
+
+  it('counts startup replay arrivals without treating historical file mtimes as live lag', () => {
+    const adapter = makeStubAdapter();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const ingestion = new HookIngestion({
+      adapter,
+      now: () => Date.parse('2026-06-11T12:00:00.000Z'),
+      lagWarningThresholdMs: 2000,
+    });
+
+    ingestion.injectHookEvent('kookr-1', JSON.stringify({
+      session_id: 'x',
+      hook_event_name: 'SessionStart',
+    }), undefined, {
+      startupReplay: true,
+      fileMtimeMs: Date.parse('2026-06-11T11:00:00.000Z'),
+    });
+
+    const session = ingestion.getDiagnosticsSnapshot().sessions[0];
+    expect(session).toEqual(expect.objectContaining({
+      totalArrivals: 1,
+      dispatchedArrivals: 1,
+      startupReplayArrivalCount: 1,
+      notableLagCount: 0,
+      lag: {
+        count: 0,
+        lastMs: null,
+        meanMs: null,
+        maxMs: null,
+        p95Ms: null,
+      },
+    }));
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
 });
 
 describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {

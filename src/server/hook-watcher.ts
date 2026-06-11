@@ -11,6 +11,69 @@ interface WatchOptions {
   suppressParseAlertsForExisting?: boolean;
 }
 
+export type HookWatcherMode = 'fs_watch' | 'poll_until_exists' | 'poll_fallback';
+
+export interface HookWatcherSessionHealth {
+  tmuxName: string;
+  mode: HookWatcherMode;
+  offset: number;
+  pollBackupActive: boolean;
+  replayExisting: boolean;
+  transitionCount: number;
+  lastTransitionAt: string | null;
+  lastTransitionReason: string | null;
+  readCount: number;
+  recordCount: number;
+  replayRecordCount: number;
+  pollTickCount: number;
+  pollChangeDetectedCount: number;
+  drainNowCount: number;
+  drainNowSkippedCount: number;
+  lastPollDriftMs: number | null;
+  maxPollDriftMs: number | null;
+  p95PollDriftMs: number | null;
+  lastDrainLatencyMs: number | null;
+  maxDrainLatencyMs: number | null;
+  p95DrainLatencyMs: number | null;
+  lastReadAt: string | null;
+  lastError: string | null;
+}
+
+export interface HookWatcherHealthSnapshot {
+  schemaVersion: 'hook-watcher-health.v1';
+  generatedAt: string;
+  sessionCount: number;
+  sessions: HookWatcherSessionHealth[];
+}
+
+interface MutableHookWatcherSessionHealth {
+  tmuxName: string;
+  mode: HookWatcherMode;
+  pollBackupActive: boolean;
+  replayExisting: boolean;
+  transitionCount: number;
+  lastTransitionAtMs: number | null;
+  lastTransitionReason: string | null;
+  readCount: number;
+  recordCount: number;
+  replayRecordCount: number;
+  pollTickCount: number;
+  pollChangeDetectedCount: number;
+  drainNowCount: number;
+  drainNowSkippedCount: number;
+  lastPollTickAtMs: number | null;
+  lastPollDriftMs: number | null;
+  maxPollDriftMs: number | null;
+  pollDriftSamples: number[];
+  lastDrainLatencyMs: number | null;
+  maxDrainLatencyMs: number | null;
+  drainLatencySamples: number[];
+  lastReadAtMs: number | null;
+  lastError: string | null;
+}
+
+const HEALTH_SAMPLE_LIMIT = 128;
+
 export function splitHookRecords(content: string): { records: string[]; consumedChars: number } {
   const records: string[] = [];
   let consumedChars = 0;
@@ -87,6 +150,7 @@ export class HookFileWatcher {
   private pollIntervals = new Map<string, ReturnType<typeof setInterval>>();
   private offsets = new Map<string, number>();
   private reading = new Set<string>(); // Mutex: prevent concurrent reads for same agent
+  private healthBySession = new Map<string, MutableHookWatcherSessionHealth>();
   private pollIntervalMs: number;
   private adapter: HookEventInjector;
 
@@ -107,6 +171,7 @@ export class HookFileWatcher {
 
     const filePath = join(this.hooksDir, `${tmuxName}.jsonl`);
     const replay = options?.replayExisting ?? false;
+    this.getOrCreateHealth(tmuxName).replayExisting = replay;
 
     // Initialize offset: 0 to replay existing events, or file size to skip them
     if (replay) {
@@ -124,8 +189,15 @@ export class HookFileWatcher {
       const watcher = watch(filePath, { persistent: false }, () => {
         this.readNewLines(tmuxName, filePath);
       });
+      watcher.on('error', (err) => {
+        this.recordHealthError(tmuxName, err);
+        this.transitionMode(tmuxName, 'poll_fallback', 'fs_watch_error');
+        watcher.close();
+        this.watchers.delete(tmuxName);
+      });
 
       this.watchers.set(tmuxName, watcher);
+      this.transitionMode(tmuxName, 'fs_watch', 'watch_started');
 
       // Start backup poll alongside fs.watch
       this.startBackupPoll(tmuxName, filePath);
@@ -134,9 +206,11 @@ export class HookFileWatcher {
       if (replay) {
         this.readNewLines(tmuxName, filePath, {
           startupReplay: options?.suppressParseAlertsForExisting === true,
+          replay: true,
         });
       }
-    } catch {
+    } catch (err) {
+      this.recordHealthError(tmuxName, err);
       // File might not exist yet — poll until it appears. Preserve the
       // caller's replay intent: when the file finally appears it almost
       // certainly already contains a SessionStart line that the agent
@@ -166,9 +240,22 @@ export class HookFileWatcher {
    * double-process a line regardless of which path observed it first.
    */
   async drainNow(tmuxName: string): Promise<void> {
-    if (!this.offsets.has(tmuxName)) return;
+    const health = this.healthBySession.get(tmuxName);
+    if (!this.offsets.has(tmuxName)) {
+      if (health) health.drainNowSkippedCount += 1;
+      return;
+    }
     const filePath = join(this.hooksDir, `${tmuxName}.jsonl`);
+    const startedAt = Date.now();
     await this.readNewLines(tmuxName, filePath);
+    const latencyMs = Math.max(0, Date.now() - startedAt);
+    const sessionHealth = this.getOrCreateHealth(tmuxName);
+    sessionHealth.drainNowCount += 1;
+    sessionHealth.lastDrainLatencyMs = latencyMs;
+    sessionHealth.maxDrainLatencyMs = sessionHealth.maxDrainLatencyMs === null
+      ? latencyMs
+      : Math.max(sessionHealth.maxDrainLatencyMs, latencyMs);
+    pushBounded(sessionHealth.drainLatencySamples, latencyMs, HEALTH_SAMPLE_LIMIT);
   }
 
   /** Check if a session is being watched. */
@@ -190,6 +277,7 @@ export class HookFileWatcher {
     }
     this.offsets.delete(tmuxName);
     this.reading.delete(tmuxName);
+    this.healthBySession.delete(tmuxName);
   }
 
   /** Stop all watchers. */
@@ -204,6 +292,19 @@ export class HookFileWatcher {
     }
     this.pollIntervals.clear();
     this.reading.clear();
+    this.healthBySession.clear();
+  }
+
+  getHealthSnapshot(): HookWatcherHealthSnapshot {
+    const sessions = [...this.healthBySession.values()]
+      .map((health) => projectWatcherHealth(health, this.offsets.get(health.tmuxName) ?? 0))
+      .sort((a, b) => a.tmuxName.localeCompare(b.tmuxName));
+    return {
+      schemaVersion: 'hook-watcher-health.v1',
+      generatedAt: new Date().toISOString(),
+      sessionCount: sessions.length,
+      sessions,
+    };
   }
 
   /**
@@ -219,12 +320,13 @@ export class HookFileWatcher {
   private async readNewLines(
     tmuxName: string,
     filePath: string,
-    options?: { startupReplay?: boolean },
+    options?: { startupReplay?: boolean; replay?: boolean },
   ): Promise<void> {
     if (this.reading.has(tmuxName)) return;
     this.reading.add(tmuxName);
 
     try {
+      const fileStat = await stat(filePath).catch(() => undefined);
       const content = await readFile(filePath, 'utf-8');
       let offset = this.offsets.get(tmuxName) ?? 0;
 
@@ -247,6 +349,13 @@ export class HookFileWatcher {
       const newContent = content.slice(offset);
       const { records, consumedChars } = splitHookRecords(newContent);
       this.offsets.set(tmuxName, offset + consumedChars);
+      const health = this.getOrCreateHealth(tmuxName);
+      health.readCount += 1;
+      health.lastReadAtMs = Date.now();
+      health.recordCount += records.filter((line) => line.trim()).length;
+      if (options?.replay === true) {
+        health.replayRecordCount += records.filter((line) => line.trim()).length;
+      }
 
       if (records.length === 0) return;
 
@@ -255,12 +364,15 @@ export class HookFileWatcher {
         try {
           this.adapter.injectHookEvent(tmuxName, line, undefined, {
             startupReplay: options?.startupReplay === true,
+            fileMtimeMs: fileStat?.mtimeMs,
           });
         } catch (err) {
+          this.recordHealthError(tmuxName, err);
           console.error(`Error parsing hook event for ${tmuxName}:`, err);
         }
       }
     } catch (err) {
+      this.recordHealthError(tmuxName, err);
       console.error(`Error reading hook file for ${tmuxName}:`, err);
     } finally {
       this.reading.delete(tmuxName);
@@ -277,6 +389,7 @@ export class HookFileWatcher {
 
     const interval = setInterval(async () => {
       try {
+        this.recordPollTick(tmuxName);
         const fileStat = await stat(filePath);
         const knownOffset = this.offsets.get(tmuxName) ?? 0;
         if (fileStat.size !== knownOffset) {
@@ -289,6 +402,7 @@ export class HookFileWatcher {
           // one read keeps this size-vs-offset check a coarse change trigger,
           // not a correctness gate, so the byte/char unit mismatch here can
           // never drop a record on its own.
+          this.getOrCreateHealth(tmuxName).pollChangeDetectedCount += 1;
           await this.readNewLines(tmuxName, filePath);
         }
       } catch {
@@ -297,6 +411,7 @@ export class HookFileWatcher {
     }, this.pollIntervalMs);
 
     this.pollIntervals.set(tmuxName, interval);
+    this.getOrCreateHealth(tmuxName).pollBackupActive = true;
   }
 
   /**
@@ -315,6 +430,7 @@ export class HookFileWatcher {
     options?: WatchOptions,
   ): void {
     if (this.watchers.has(tmuxName)) return;
+    this.transitionMode(tmuxName, 'poll_until_exists', 'watch_file_missing');
 
     const interval = setInterval(async () => {
       try {
@@ -334,4 +450,111 @@ export class HookFileWatcher {
     } as FSWatcher;
     this.watchers.set(tmuxName, sentinel);
   }
+
+  private getOrCreateHealth(tmuxName: string): MutableHookWatcherSessionHealth {
+    const existing = this.healthBySession.get(tmuxName);
+    if (existing) return existing;
+    const created: MutableHookWatcherSessionHealth = {
+      tmuxName,
+      mode: 'poll_until_exists',
+      pollBackupActive: false,
+      replayExisting: false,
+      transitionCount: 0,
+      lastTransitionAtMs: null,
+      lastTransitionReason: null,
+      readCount: 0,
+      recordCount: 0,
+      replayRecordCount: 0,
+      pollTickCount: 0,
+      pollChangeDetectedCount: 0,
+      drainNowCount: 0,
+      drainNowSkippedCount: 0,
+      lastPollTickAtMs: null,
+      lastPollDriftMs: null,
+      maxPollDriftMs: null,
+      pollDriftSamples: [],
+      lastDrainLatencyMs: null,
+      maxDrainLatencyMs: null,
+      drainLatencySamples: [],
+      lastReadAtMs: null,
+      lastError: null,
+    };
+    this.healthBySession.set(tmuxName, created);
+    return created;
+  }
+
+  private transitionMode(tmuxName: string, mode: HookWatcherMode, reason: string): void {
+    const health = this.getOrCreateHealth(tmuxName);
+    if (health.mode === mode && health.lastTransitionReason === reason) return;
+    health.mode = mode;
+    health.transitionCount += 1;
+    health.lastTransitionAtMs = Date.now();
+    health.lastTransitionReason = reason;
+    console.info('[hook-watcher] mode transition', { tmuxName, mode, reason });
+  }
+
+  private recordPollTick(tmuxName: string): void {
+    const health = this.getOrCreateHealth(tmuxName);
+    const now = Date.now();
+    if (health.lastPollTickAtMs !== null) {
+      const elapsedMs = now - health.lastPollTickAtMs;
+      const driftMs = Math.max(0, elapsedMs - this.pollIntervalMs);
+      health.lastPollDriftMs = driftMs;
+      health.maxPollDriftMs = health.maxPollDriftMs === null ? driftMs : Math.max(health.maxPollDriftMs, driftMs);
+      pushBounded(health.pollDriftSamples, driftMs, HEALTH_SAMPLE_LIMIT);
+    }
+    health.lastPollTickAtMs = now;
+    health.pollTickCount += 1;
+  }
+
+  private recordHealthError(tmuxName: string, err: unknown): void {
+    this.getOrCreateHealth(tmuxName).lastError = err instanceof Error ? err.message : String(err);
+  }
+}
+
+function pushBounded(samples: number[], value: number, limit: number): void {
+  samples.push(value);
+  if (samples.length > limit) samples.splice(0, samples.length - limit);
+}
+
+function projectWatcherHealth(
+  health: MutableHookWatcherSessionHealth,
+  offset: number,
+): HookWatcherSessionHealth {
+  return {
+    tmuxName: health.tmuxName,
+    mode: health.mode,
+    offset,
+    pollBackupActive: health.pollBackupActive,
+    replayExisting: health.replayExisting,
+    transitionCount: health.transitionCount,
+    lastTransitionAt: isoOrNull(health.lastTransitionAtMs),
+    lastTransitionReason: health.lastTransitionReason,
+    readCount: health.readCount,
+    recordCount: health.recordCount,
+    replayRecordCount: health.replayRecordCount,
+    pollTickCount: health.pollTickCount,
+    pollChangeDetectedCount: health.pollChangeDetectedCount,
+    drainNowCount: health.drainNowCount,
+    drainNowSkippedCount: health.drainNowSkippedCount,
+    lastPollDriftMs: health.lastPollDriftMs,
+    maxPollDriftMs: health.maxPollDriftMs,
+    p95PollDriftMs: percentile(health.pollDriftSamples, 0.95),
+    lastDrainLatencyMs: health.lastDrainLatencyMs,
+    maxDrainLatencyMs: health.maxDrainLatencyMs,
+    p95DrainLatencyMs: percentile(health.drainLatencySamples, 0.95),
+    lastReadAt: isoOrNull(health.lastReadAtMs),
+    lastError: health.lastError,
+  };
+}
+
+function percentile(samples: number[], pct: number): number | null {
+  if (samples.length === 0) return null;
+  const sorted = [...samples].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.ceil(sorted.length * pct) - 1);
+  return sorted[index];
+}
+
+function isoOrNull(ms: number | null): string | null {
+  return ms === null ? null : new Date(ms).toISOString();
 }
