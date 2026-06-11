@@ -19,6 +19,12 @@ import { WebSocket } from 'ws';
 import type { Actor } from './auth.js';
 import { canonicalizeScope, type Scope } from './viewer-data-policy.js';
 import type { ServerMessage, SnapshotMessage } from '../shared/contracts/messages.js';
+import {
+  normalizeSnapshotPayloadSizePolicy,
+  shouldSendSerializedSnapshotFrame,
+  snapshotScopeKey,
+  type SnapshotPayloadSizePolicy,
+} from './snapshot-payload-size-policy.js';
 
 /** The slice of the registry the broadcaster depends on. */
 export interface BroadcasterRegistry {
@@ -36,6 +42,7 @@ export interface ViewerAwareBroadcasterDeps {
    * error, never the unfiltered `all` snapshot).
    */
   buildScopedSnapshot: (scope: Scope) => SnapshotMessage;
+  snapshotPayloadSizePolicy?: SnapshotPayloadSizePolicy;
 }
 
 /** The scope a connection's actor sees: owners see `all`; viewers see their grant scope. */
@@ -43,22 +50,34 @@ function actorScope(actor: Actor): Scope {
   return actor.kind === 'owner' ? { kind: 'all' } : canonicalizeScope(actor.scope);
 }
 
-/** Stable key for memoizing one serialized snapshot per distinct canonical scope. */
-function scopeKey(scope: Scope): string {
-  return scope.kind === 'all' ? 'all' : `projects:${scope.projectIds.join(',')}`;
-}
-
-/** A snapshot serialized for one scope, plus its optional secondary coordinator frame. */
+/**
+ * A snapshot serialized for one scope, plus its optional secondary coordinator
+ * frame. `data` is null only when the primary snapshot exceeded the payload cap.
+ */
 interface SerializedSnapshot {
-  data: string;
+  data: string | null;
   coordinatorData: string | null;
 }
 
-function serializeSnapshot(msg: SnapshotMessage): SerializedSnapshot {
+function serializeSnapshot(
+  msg: SnapshotMessage,
+  scopeKey: string,
+  policy: SnapshotPayloadSizePolicy | undefined,
+): SerializedSnapshot {
+  const data = JSON.stringify(msg);
+  const coordinatorData = msg.coordinator
+    ? JSON.stringify({ type: 'coordinator.snapshot', coordinator: msg.coordinator } satisfies ServerMessage)
+    : null;
+  const sendData = shouldSendSerializedSnapshotFrame(data, 'snapshot', scopeKey, policy);
   return {
-    data: JSON.stringify(msg),
-    coordinatorData: msg.coordinator
-      ? JSON.stringify({ type: 'coordinator.snapshot', coordinator: msg.coordinator } satisfies ServerMessage)
+    data: sendData ? data : null,
+    coordinatorData: sendData && coordinatorData && shouldSendSerializedSnapshotFrame(
+      coordinatorData,
+      'coordinator.snapshot',
+      scopeKey,
+      policy,
+    )
+      ? coordinatorData
       : null,
   };
 }
@@ -66,10 +85,12 @@ function serializeSnapshot(msg: SnapshotMessage): SerializedSnapshot {
 export class ViewerAwareBroadcaster {
   private readonly registry: BroadcasterRegistry;
   private readonly buildScopedSnapshot: (scope: Scope) => SnapshotMessage;
+  private readonly snapshotPayloadSizePolicy: SnapshotPayloadSizePolicy | undefined;
 
   constructor(deps: ViewerAwareBroadcasterDeps) {
     this.registry = deps.registry;
     this.buildScopedSnapshot = deps.buildScopedSnapshot;
+    this.snapshotPayloadSizePolicy = normalizeSnapshotPayloadSizePolicy(deps.snapshotPayloadSizePolicy);
   }
 
   /**
@@ -104,7 +125,7 @@ export class ViewerAwareBroadcaster {
       return;
     }
 
-    const allSnapshot = serializeSnapshot(msg);
+    const allSnapshot = serializeSnapshot(msg, 'all', this.snapshotPayloadSizePolicy);
     const scopedCache = new Map<string, SerializedSnapshot>();
 
     for (const { ws, actor } of connections) {
@@ -117,14 +138,15 @@ export class ViewerAwareBroadcaster {
         if (scope.kind === 'all') {
           serialized = allSnapshot;
         } else {
-          const key = scopeKey(scope);
+          const key = snapshotScopeKey(scope);
           let cached = scopedCache.get(key);
           if (!cached) {
-            cached = serializeSnapshot(this.buildScopedSnapshot(scope));
+            cached = serializeSnapshot(this.buildScopedSnapshot(scope), key, this.snapshotPayloadSizePolicy);
             scopedCache.set(key, cached);
           }
           serialized = cached;
         }
+        if (!serialized.data) continue;
         const sentPrimary = this.send(ws, serialized.data, 'snapshot');
         if (sentPrimary && serialized.coordinatorData) {
           this.send(ws, serialized.coordinatorData, 'coordinator.snapshot');

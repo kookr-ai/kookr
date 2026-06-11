@@ -38,6 +38,11 @@ import type { SocketRegistrar } from './viewer-connection-registry.js';
 import type { DashboardSelectionController } from './dashboard-selection-controller.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from './user-input-delivery-service.js';
+import {
+  serializeServerMessageWithSnapshotPayloadPolicy,
+  snapshotScopeKey,
+  type SnapshotPayloadSizePolicy,
+} from './snapshot-payload-size-policy.js';
 
 /**
  * Application-level inbound WS message types a viewer (read-only actor) is
@@ -151,6 +156,18 @@ export interface WsConnectionDeps {
    * fails closed (no snapshot served).
    */
   buildScopedSnapshot?: (scope: Scope) => SnapshotMessage;
+  snapshotPayloadSizePolicy?: SnapshotPayloadSizePolicy;
+}
+
+function sendServerMessage(
+  ws: WebSocket,
+  msg: ServerMessage,
+  scopeKey: string,
+  policy: SnapshotPayloadSizePolicy | undefined,
+): void {
+  if (ws.readyState !== 1 /* WebSocket.OPEN */) return;
+  const data = serializeServerMessageWithSnapshotPayloadPolicy(msg, scopeKey, policy);
+  if (data) ws.send(data);
 }
 
 /**
@@ -184,9 +201,7 @@ export function handleWsConnection(
     taskStore, queue, monitor, adapter,
     adapterRegistry: deps.adapterRegistry,
     send: (msg) => {
-      if (ws.readyState === 1 /* WebSocket.OPEN */) {
-        ws.send(JSON.stringify(msg));
-      }
+      sendServerMessage(ws, msg, 'all', deps.snapshotPayloadSizePolicy);
     },
     serverCwd, interactionLog, buildInfo, serverStartedAt,
     onRespond: abortPendingSuggestion, telemetryLog,
@@ -326,9 +341,12 @@ function sendViewerInitialBurst(
     console.warn('[ws] viewer connected without a buildScopedSnapshot factory; serving no snapshot (fail-closed)');
     return;
   }
-  if (ws.readyState === 1) {
-    ws.send(JSON.stringify(deps.buildScopedSnapshot(scope)));
-  }
+  sendServerMessage(
+    ws,
+    deps.buildScopedSnapshot(scope),
+    snapshotScopeKey(scope),
+    deps.snapshotPayloadSizePolicy,
+  );
   const projects = getProjectSummaries({
     monitor: ctx.monitor,
     ledgerAnalytics: ctx.ledgerAnalytics,

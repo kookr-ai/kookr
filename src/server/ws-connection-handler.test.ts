@@ -1,7 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import type { WebSocket } from 'ws';
 import type { Actor } from './auth.js';
 import type { ClientMessage } from '../shared/protocol.js';
+import type { MessageRouterDeps } from './ws.js';
+import type { SnapshotPayloadSizeObservation } from './snapshot-payload-size-policy.js';
 
 // Mock the MessageRouter so we can assert the read-only gate never reaches the
 // mutation path (handleMessageSafe) for a viewer. handleConnect is a no-op so
@@ -11,7 +13,14 @@ const handleConnect = vi.fn(() => {});
 vi.mock('./ws.js', () => ({
   MessageRouter: class {
     lastLaunchDuplicate = false;
-    handleConnect = handleConnect;
+    private readonly send: MessageRouterDeps['send'];
+    constructor(deps: MessageRouterDeps) {
+      this.send = deps.send;
+    }
+    handleConnect = () => {
+      handleConnect();
+      this.send({ type: 'snapshot', agents: [], serverCwd: '/repo' });
+    };
     handleMessageSafe = handleMessageSafe;
   },
 }));
@@ -146,6 +155,10 @@ describe('handleWsConnection read-only gate (integration)', () => {
     vi.clearAllMocks();
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('viewer achievement:reset is rejected with no state change and no router call', async () => {
     const ws = makeFakeWs();
     const deps = makeDeps();
@@ -225,6 +238,10 @@ describe('handleWsConnection initial burst (#809 actor-aware)', () => {
     vi.clearAllMocks();
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('owner burst goes through router.handleConnect (unchanged)', () => {
     const ws = makeFakeWs();
     handleWsConnection(ws as unknown as WebSocket, registrar, makeDeps(), OWNER);
@@ -274,5 +291,75 @@ describe('handleWsConnection initial burst (#809 actor-aware)', () => {
     expect(getProjectSummaries).not.toHaveBeenCalled();
     const sent = ws.send.mock.calls.map((c) => JSON.parse(c[0] as string));
     expect(sent.some((m) => m.type === 'snapshot' || m.type === 'projectSummaries')).toBe(false);
+  });
+
+  it('owner initial snapshot is observed and warned below the hard payload cap', () => {
+    const ws = makeFakeWs();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const observations: SnapshotPayloadSizeObservation[] = [];
+    const deps = {
+      ...makeDeps(),
+      snapshotPayloadSizePolicy: {
+        warnBytes: 1,
+        maxBytes: 1_000_000,
+        observe: (observation: SnapshotPayloadSizeObservation) => observations.push(observation),
+      },
+    } as unknown as WsConnectionDeps;
+
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, OWNER);
+
+    const sent = ws.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+    expect(sent.some((m) => m.type === 'snapshot')).toBe(true);
+    expect(observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        payloadType: 'snapshot',
+        scopeKey: 'all',
+        action: 'warned',
+      }),
+    ]));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('outbound snapshot payload exceeds warning threshold'),
+      expect.objectContaining({
+        payloadType: 'snapshot',
+        scopeKey: 'all',
+      }),
+    );
+  });
+
+  it('viewer initial snapshot above the hard payload cap is observed and not sent', () => {
+    const ws = makeFakeWs();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const observations: SnapshotPayloadSizeObservation[] = [];
+    const scoped = { type: 'snapshot', agents: [], serverCwd: '/repo' };
+    const deps = {
+      ...makeDeps(),
+      buildScopedSnapshot: vi.fn(() => scoped),
+      snapshotPayloadSizePolicy: {
+        warnBytes: 1,
+        maxBytes: 1,
+        observe: (observation: SnapshotPayloadSizeObservation) => observations.push(observation),
+      },
+    } as unknown as WsConnectionDeps;
+
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, VIEWER_PROJECTS);
+
+    const sent = ws.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+    expect(sent.some((m) => m.type === 'snapshot')).toBe(false);
+    expect(observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        payloadType: 'snapshot',
+        scopeKey: 'projects:github.com/acme/alpha',
+        action: 'dropped',
+        maxBytes: 1,
+      }),
+    ]));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('outbound snapshot payload exceeds hard cap; dropping frame'),
+      expect.objectContaining({
+        payloadType: 'snapshot',
+        scopeKey: 'projects:github.com/acme/alpha',
+        maxBytes: 1,
+      }),
+    );
   });
 });

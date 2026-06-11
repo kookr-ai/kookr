@@ -27,8 +27,17 @@ import {
   type SweepEviction,
 } from '../viewer-connection-registry.js';
 import { ViewerAwareBroadcaster } from '../viewer-broadcaster.js';
+import type { SnapshotPayloadSizeObservation } from '../snapshot-payload-size-policy.js';
 import type { Scope } from '../viewer-data-policy.js';
 import type { IsActorAllowedTerminalSession } from '../terminal-scope.js';
+
+const SNAPSHOT_PAYLOAD_WARN_BYTES = 2 * 1024 * 1024;
+const SNAPSHOT_PAYLOAD_MAX_BYTES = 8 * 1024 * 1024;
+
+export const DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS = {
+  warnBytes: SNAPSHOT_PAYLOAD_WARN_BYTES,
+  maxBytes: SNAPSHOT_PAYLOAD_MAX_BYTES,
+} as const;
 
 export interface RealtimeServicesDeps {
   kookrDir: string;
@@ -71,6 +80,13 @@ export interface RealtimeServicesDeps {
    * rather than leaking the unfiltered `all` snapshot.
    */
   buildScopedSnapshot?: (scope: Scope) => SnapshotMessage;
+  /**
+   * Outbound snapshot payload guard (#832). Production uses conservative MiB
+   * defaults; tests can lower the thresholds to exercise warn/drop behavior.
+   */
+  snapshotPayloadWarnBytes?: number;
+  snapshotPayloadMaxBytes?: number;
+  observeSnapshotPayloadSize?: (observation: SnapshotPayloadSizeObservation) => void;
 }
 
 export interface RealtimeServices {
@@ -115,6 +131,11 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
           `[viewer-broadcaster] scoped snapshot for ${scope.kind} scope requested but no buildScopedSnapshot was wired`,
         );
       }),
+    snapshotPayloadSizePolicy: {
+      warnBytes: deps.snapshotPayloadWarnBytes ?? DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS.warnBytes,
+      maxBytes: deps.snapshotPayloadMaxBytes ?? DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS.maxBytes,
+      ...(deps.observeSnapshotPayloadSize ? { observe: deps.observeSnapshotPayloadSize } : {}),
+    },
   });
   let achievementWatcher: AchievementWatcher;
   let wsBroadcastCount = 0;

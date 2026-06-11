@@ -1,10 +1,11 @@
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { WebSocket } from 'ws';
 
 import type { Actor } from './auth.js';
 import type { Scope } from './viewer-data-policy.js';
 import type { ServerMessage, SnapshotMessage } from '../shared/contracts/messages.js';
 import { ViewerAwareBroadcaster, type BroadcasterRegistry } from './viewer-broadcaster.js';
+import type { SnapshotPayloadSizeObservation } from './snapshot-payload-size-policy.js';
 
 function fakeSocket(send: (data: string) => void): WebSocket & { close: ReturnType<typeof vi.fn> } {
   return {
@@ -41,6 +42,10 @@ function snapshot(overrides: Partial<SnapshotMessage> = {}): SnapshotMessage {
 }
 
 describe('ViewerAwareBroadcaster', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   test('non-snapshot messages serialize once and fan out to every dashboard socket', () => {
     const a: string[] = [];
     const b: string[] = [];
@@ -118,7 +123,7 @@ describe('ViewerAwareBroadcaster', () => {
       { ws: fakeSocket((d) => v2.push(d)), actor: projectsViewer('g2', ['a', 'b']) },
     ]);
     const buildScopedSnapshot = vi.fn<(scope: Scope) => SnapshotMessage>(
-      () => snapshot({ serverCwd: '/scoped' }),
+      () => snapshot({ serverCwd: '/scoped', achievements: { oversized: 'x'.repeat(200) } }),
     );
     const broadcaster = new ViewerAwareBroadcaster({ registry, buildScopedSnapshot });
 
@@ -128,6 +133,42 @@ describe('ViewerAwareBroadcaster', () => {
     expect(buildScopedSnapshot).toHaveBeenCalledWith({ kind: 'projects', projectIds: ['a', 'b'] });
     expect((JSON.parse(v1[0]) as SnapshotMessage).serverCwd).toBe('/scoped');
     expect((JSON.parse(v2[0]) as SnapshotMessage).serverCwd).toBe('/scoped');
+  });
+
+  test('scoped viewer snapshots are observed and dropped above the payload cap without affecting owners', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const owner: string[] = [];
+    const scoped: string[] = [];
+    const observations: SnapshotPayloadSizeObservation[] = [];
+    const registry = stubRegistry([
+      { ws: fakeSocket((d) => owner.push(d)), actor: OWNER },
+      { ws: fakeSocket((d) => scoped.push(d)), actor: projectsViewer('g1', ['b', 'a']) },
+    ]);
+    const buildScopedSnapshot = vi.fn<(scope: Scope) => SnapshotMessage>(
+      () => snapshot({ serverCwd: '/scoped', achievements: { oversized: 'x'.repeat(200) } }),
+    );
+    const broadcaster = new ViewerAwareBroadcaster({
+      registry,
+      buildScopedSnapshot,
+      snapshotPayloadSizePolicy: {
+        warnBytes: 1,
+        maxBytes: JSON.stringify(snapshot()).length + 50,
+        observe: (observation) => observations.push(observation),
+      },
+    });
+
+    broadcaster.broadcast(snapshot());
+
+    expect(owner.map((d) => (JSON.parse(d) as ServerMessage).type)).toEqual(['snapshot']);
+    expect(scoped).toEqual([]);
+    expect(buildScopedSnapshot).toHaveBeenCalledWith({ kind: 'projects', projectIds: ['a', 'b'] });
+    expect(observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        payloadType: 'snapshot',
+        scopeKey: 'projects:a,b',
+        action: 'dropped',
+      }),
+    ]));
   });
 
   test('a throwing buildScopedSnapshot is isolated to that connection — owners after it still receive their snapshot', () => {
