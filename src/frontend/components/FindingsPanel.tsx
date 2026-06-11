@@ -1190,6 +1190,32 @@ function groupHealthyAgents(agents: AgentState[]): { standalone: AgentState[]; g
   return { standalone, groups: realGroups };
 }
 
+function SectionToggleButton({
+  collapsed,
+  label,
+  count,
+  labelClassName,
+  onToggle,
+}: {
+  collapsed: boolean;
+  label: string;
+  count: number;
+  labelClassName: string;
+  onToggle: () => void;
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      className="section-header findings-section-toggle"
+      onClick={onToggle}
+      aria-expanded={!collapsed}
+    >
+      <span className="section-chevron" aria-hidden="true">{collapsed ? '▸' : '▾'}</span>
+      <span className={labelClassName}>{label} ({count})</span>
+    </button>
+  );
+}
+
 export function FindingsPanel({
   findings,
   healthy,
@@ -1312,10 +1338,13 @@ export function FindingsPanel({
           <>
           {healthy.length > 0 && (
             <div className="healthy-section">
-              <div className="section-header" onClick={toggleHealthy} aria-expanded={!healthyCollapsed}>
-                <span className="section-chevron">{healthyCollapsed ? '▸' : '▾'}</span>
-                <span className="healthy-label">Healthy ({healthy.length})</span>
-              </div>
+              <SectionToggleButton
+                collapsed={healthyCollapsed}
+                label="Healthy"
+                count={healthy.length}
+                labelClassName="healthy-label"
+                onToggle={toggleHealthy}
+              />
               {!healthyCollapsed && (
                 <>
                   {Array.from(groups.entries()).map(([playbookId, agents]) => (
@@ -1341,10 +1370,13 @@ export function FindingsPanel({
           )}
           {pending.length > 0 && (
             <div className="pending-section">
-              <div className="section-header" onClick={togglePending} aria-expanded={!pendingCollapsed}>
-                <span className="section-chevron">{pendingCollapsed ? '▸' : '▾'}</span>
-                <span className="pending-label">Pending ({pending.length})</span>
-              </div>
+              <SectionToggleButton
+                collapsed={pendingCollapsed}
+                label="Pending"
+                count={pending.length}
+                labelClassName="pending-label"
+                onToggle={togglePending}
+              />
               {!pendingCollapsed && pending.map((agent) => (
                 <PendingRow
                   key={agent.agentId}
@@ -1357,10 +1389,13 @@ export function FindingsPanel({
           )}
           {snoozed.length > 0 && (
             <div className="snoozed-section">
-              <div className="section-header" onClick={toggleSnoozed} aria-expanded={!snoozedCollapsed}>
-                <span className="section-chevron">{snoozedCollapsed ? '▸' : '▾'}</span>
-                <span className="snoozed-label">Snoozed ({snoozed.length})</span>
-              </div>
+              <SectionToggleButton
+                collapsed={snoozedCollapsed}
+                label="Snoozed"
+                count={snoozed.length}
+                labelClassName="snoozed-label"
+                onToggle={toggleSnoozed}
+              />
               {!snoozedCollapsed && snoozed.map((agent) => (
                 <SnoozedRow
                   key={agent.agentId}
@@ -1373,9 +1408,14 @@ export function FindingsPanel({
           )}
           {completed.length > 0 && (
             <div className="completed-section">
-              <div className="section-header" onClick={toggleCompleted} aria-expanded={!completedCollapsed}>
-                <span className="section-chevron">{completedCollapsed ? '▸' : '▾'}</span>
-                <span className="completed-label">Completed ({completed.length})</span>
+              <div className="completed-section-header-row">
+                <SectionToggleButton
+                  collapsed={completedCollapsed}
+                  label="Completed"
+                  count={completed.length}
+                  labelClassName="completed-label"
+                  onToggle={toggleCompleted}
+                />
                 <ClearCompletedButton
                   finishedCount={clearCompletedFinishedCount}
                   terminatedCount={clearCompletedTerminatedCount}
