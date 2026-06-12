@@ -1,3 +1,5 @@
+import type { PersistenceHealthSnapshot } from './persistence-health.js';
+
 export type DiagnosticSeverity = 'warning' | 'critical';
 
 export interface DiagnosticFinding {
@@ -67,4 +69,5 @@ export interface DiagnosticReport {
   timestamp: number;
   findings: DiagnosticFinding[];
   helperLlm?: HelperLlmDiagnosticsSnapshot;
+  persistenceHealth?: PersistenceHealthSnapshot;
 }

@@ -6,6 +6,7 @@ import {
 } from './operational-alert-rules.js';
 import type { OperationalAlertConfig } from './config.js';
 import type { ServerMessage, SystemResourceStatus } from '../shared/contracts/messages.js';
+import { PersistenceHealthTracker } from '../core/persistence-health.js';
 
 const DISABLED: OperationalAlertConfig = {
   cpuPercent: 0,
@@ -55,6 +56,8 @@ describe('OperationalAlertEvaluator', () => {
     expect(
       createOperationalAlertEvaluator({ ...DISABLED, cpuPercent: 90 }).hasEnabledRules(),
     ).toBe(true);
+    const persistenceHealth = new PersistenceHealthTracker();
+    expect(createOperationalAlertEvaluator(DISABLED, () => persistenceHealth.snapshot()).hasEnabledRules()).toBe(true);
   });
 
   test('a sustained crossing fires exactly once after the sustain count', () => {
@@ -240,5 +243,45 @@ describe('OperationalAlertEvaluator', () => {
     expect(alertsFor(evaluator, status({ cpuUsagePercent: 95 }))).toEqual([]);
     expect(alertsFor(evaluator, status({ cpuUsagePercent: 95 }))).toEqual([]);
     expect(alertsFor(evaluator, status({ cpuUsagePercent: 95 }))).toHaveLength(1);
+  });
+
+  test('persistence failures fire after sustained failed attempts and clear on recovery', () => {
+    const tracker = new PersistenceHealthTracker();
+    const evaluator = createOperationalAlertEvaluator(DISABLED, () => tracker.snapshot());
+    const failure = new Error('temporary write failure');
+
+    tracker.recordFailure('task_state', failure);
+    expect(alertsFor(evaluator, status())).toEqual([]);
+    tracker.recordFailure('task_state', failure);
+    expect(alertsFor(evaluator, status())).toEqual([]);
+    tracker.recordFailure('task_state', failure);
+
+    const fired = alertsFor(evaluator, status());
+    expect(fired).toHaveLength(1);
+    expect(fired[0]).toMatchObject({
+      agentId: OPERATIONAL_ALERT_AGENT_ID,
+      severity: 'warning',
+    });
+    expect(fired[0].summary).toContain('Persistence failure: task-state');
+
+    expect(alertsFor(evaluator, status())).toEqual([]);
+
+    tracker.recordSuccess('task_state');
+    const cleared = alertsFor(evaluator, status());
+    expect(cleared).toHaveLength(1);
+    expect(cleared[0]).toMatchObject({ severity: 'info' });
+    expect(cleared[0].summary).toContain('Recovered task-state persistence');
+  });
+
+  test('hard persistence failures fire on first failed attempt', () => {
+    const tracker = new PersistenceHealthTracker();
+    const evaluator = createOperationalAlertEvaluator(DISABLED, () => tracker.snapshot());
+    tracker.recordFailure('detection_stats', Object.assign(new Error('no space left'), { code: 'ENOSPC' }));
+
+    const fired = alertsFor(evaluator, status());
+
+    expect(fired).toHaveLength(1);
+    expect(fired[0].summary).toContain('detection-stats');
+    expect(fired[0].details).toContain('ENOSPC');
   });
 });

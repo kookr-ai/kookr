@@ -1,6 +1,11 @@
 import type { ServerMessage, SystemResourceStatus } from '../shared/contracts/messages.js';
 import type { AnomalySeverity } from '../shared/contracts/anomalies.js';
 import type { OperationalAlertConfig } from './config.js';
+import type {
+  PersistenceHealthSnapshot,
+  PersistenceHealthTarget,
+  PersistenceTargetHealth,
+} from '../core/persistence-health.js';
 
 /**
  * Synthetic agent id used for host-level operational alerts that are not tied
@@ -10,6 +15,11 @@ import type { OperationalAlertConfig } from './config.js';
 export const OPERATIONAL_ALERT_AGENT_ID = 'system';
 
 export type OperationalAlertMetric = 'cpu' | 'memory' | 'event_loop_delay';
+
+const PERSISTENCE_TARGET_LABELS: Record<PersistenceHealthTarget, string> = {
+  task_state: 'task-state',
+  detection_stats: 'detection-stats',
+};
 
 /**
  * Static description of one operational alert rule: how to read its value out
@@ -41,6 +51,14 @@ interface RuleState {
   configKey: string | null;
 }
 
+/** Mutable edge-trigger state for persistence health, whose failure count is owned by PersistenceHealthTracker. */
+interface PersistenceRuleState {
+  /** Whether an alert is currently firing (awaiting recovery). */
+  firing: boolean;
+  /** Sustain tuple that owns the current firing state. */
+  configKey: string | null;
+}
+
 /**
  * Edge-triggered evaluator for operational alerts on already-sampled host
  * signals (CPU, memory, event-loop delay).
@@ -62,9 +80,15 @@ export class OperationalAlertEvaluator {
   private readonly rules: RuleDefinition[];
   private readonly getConfig: () => OperationalAlertConfig;
   private readonly states = new Map<OperationalAlertMetric, RuleState>();
+  private readonly getPersistenceHealth: (() => PersistenceHealthSnapshot) | null;
+  private readonly persistenceStates = new Map<PersistenceHealthTarget, PersistenceRuleState>();
 
-  constructor(config: OperationalAlertConfig | (() => OperationalAlertConfig)) {
+  constructor(
+    config: OperationalAlertConfig | (() => OperationalAlertConfig),
+    getPersistenceHealth?: () => PersistenceHealthSnapshot,
+  ) {
     this.getConfig = typeof config === 'function' ? config : () => config;
+    this.getPersistenceHealth = getPersistenceHealth ?? null;
     this.rules = [
       {
         metric: 'cpu',
@@ -91,12 +115,14 @@ export class OperationalAlertEvaluator {
     for (const rule of this.rules) {
       this.states.set(rule.metric, { consecutive: 0, firing: false, configKey: null });
     }
+    this.persistenceStates.set('task_state', { firing: false, configKey: null });
+    this.persistenceStates.set('detection_stats', { firing: false, configKey: null });
   }
 
-  /** Whether any rule is enabled (threshold `> 0`). */
+  /** Whether any host-resource or persistence-health rule is enabled. */
   hasEnabledRules(): boolean {
     const config = this.getConfig();
-    return this.rules.some((rule) => rule.threshold(config) > 0);
+    return this.getPersistenceHealth !== null || this.rules.some((rule) => rule.threshold(config) > 0);
   }
 
   /**
@@ -143,12 +169,51 @@ export class OperationalAlertEvaluator {
         }
       }
     }
+    messages.push(...this.evaluatePersistenceHealth(sustainSamples));
+    return messages;
+  }
+
+  private evaluatePersistenceHealth(sustainSamples: number): ServerMessage[] {
+    if (!this.getPersistenceHealth) return [];
+    const messages: ServerMessage[] = [];
+    const snapshot = this.getPersistenceHealth();
+
+    for (const target of Object.values(snapshot.targets)) {
+      const state = this.persistenceStates.get(target.target);
+      if (!state) continue;
+      const configKey = `persistence:${sustainSamples}`;
+      if (state.configKey !== null && state.configKey !== configKey) {
+        resetPersistenceState(state);
+      }
+      state.configKey = configKey;
+
+      const activeFailure = target.consecutiveFailures > 0;
+      const shouldFire = activeFailure && (
+        target.consecutiveFailures >= sustainSamples || target.lastError?.hard === true
+      );
+      if (shouldFire && !state.firing) {
+        state.firing = true;
+        messages.push(buildPersistenceBreachAlert(target, sustainSamples));
+        continue;
+      }
+      if (!activeFailure) {
+        if (state.firing) {
+          state.firing = false;
+          messages.push(buildPersistenceRecoveryAlert(target));
+        }
+      }
+    }
     return messages;
   }
 }
 
 function resetState(state: RuleState): void {
   state.consecutive = 0;
+  state.firing = false;
+  state.configKey = null;
+}
+
+function resetPersistenceState(state: PersistenceRuleState): void {
   state.firing = false;
   state.configKey = null;
 }
@@ -189,8 +254,49 @@ function buildRecoveryAlert(
   };
 }
 
+function buildPersistenceBreachAlert(
+  target: PersistenceTargetHealth,
+  sustainSamples: number,
+): Extract<ServerMessage, { type: 'alert' }> {
+  const severity: AnomalySeverity = 'warning';
+  const label = PERSISTENCE_TARGET_LABELS[target.target];
+  const code = target.lastError?.code ? ` (${target.lastError.code})` : '';
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `Persistence failure: ${label} save failed ${formatCount(target.consecutiveFailures, 'consecutive time')}`,
+    details:
+      `${label} persistence has failed ${formatCount(target.consecutiveFailures, 'consecutive save attempt')}, ` +
+      `${formatCount(target.totalFailures, 'total failure')}. Alert threshold is ` +
+      `${formatCount(sustainSamples, 'consecutive failure')}, with ENOSPC/EACCES/EROFS/EDQUOT firing immediately. ` +
+      `Last error${code}: ${target.lastError?.message ?? 'unknown'}`,
+    severity,
+  };
+}
+
+function formatCount(count: number, singular: string): string {
+  return `${count} ${singular}${count === 1 ? '' : 's'}`;
+}
+
+function buildPersistenceRecoveryAlert(
+  target: PersistenceTargetHealth,
+): Extract<ServerMessage, { type: 'alert' }> {
+  const severity: AnomalySeverity = 'info';
+  const label = PERSISTENCE_TARGET_LABELS[target.target];
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `Recovered ${label} persistence`,
+    details:
+      `${label} persistence recovered after ${formatCount(target.totalFailures, 'total failure')}. ` +
+      `Last successful save: ${target.lastSuccessAt ?? 'unknown'}.`,
+    severity,
+  };
+}
+
 export function createOperationalAlertEvaluator(
   config: OperationalAlertConfig | (() => OperationalAlertConfig),
+  getPersistenceHealth?: () => PersistenceHealthSnapshot,
 ): OperationalAlertEvaluator {
-  return new OperationalAlertEvaluator(config);
+  return new OperationalAlertEvaluator(config, getPersistenceHealth);
 }

@@ -61,6 +61,41 @@ describe('DiagnosticRunner', () => {
     expect(report.helperLlm.schemaVersion).toBe('helper-llm-diagnostics.v1');
   });
 
+  test('includes persistence health when provided', () => {
+    const runner = new DiagnosticRunner(createMockDeps({
+      getPersistenceHealthSnapshot: () => ({
+        schemaVersion: 'persistence-health.v1',
+        targets: {
+          task_state: {
+            target: 'task_state',
+            totalAttempts: 1,
+            totalFailures: 1,
+            consecutiveFailures: 1,
+            lastAttemptAt: '2026-06-12T10:00:00.000Z',
+            lastSuccessAt: null,
+            lastFailureAt: '2026-06-12T10:00:00.000Z',
+            lastError: { message: 'permission denied', code: 'EACCES', hard: true },
+          },
+          detection_stats: {
+            target: 'detection_stats',
+            totalAttempts: 0,
+            totalFailures: 0,
+            consecutiveFailures: 0,
+            lastAttemptAt: null,
+            lastSuccessAt: null,
+            lastFailureAt: null,
+            lastError: null,
+          },
+        },
+      }),
+    }));
+
+    const report = runner.runNow();
+
+    expect(report.persistenceHealth?.targets.task_state.lastError?.code).toBe('EACCES');
+    expect(report.findings.map((finding) => finding.checkId)).toContain('persistence-health');
+  });
+
   test('getStatus returns null report before first run', () => {
     const runner = new DiagnosticRunner(createMockDeps());
     const status = runner.getStatus();

@@ -71,6 +71,45 @@ describe('Self-Diagnostic', () => {
     expect(report.timestamp).toBeGreaterThan(0);
   });
 
+  test('exposes active persistence failures with last error details', () => {
+    const input = makeInput({
+      persistenceHealth: {
+        schemaVersion: 'persistence-health.v1',
+        targets: {
+          task_state: {
+            target: 'task_state',
+            totalAttempts: 3,
+            totalFailures: 3,
+            consecutiveFailures: 3,
+            lastAttemptAt: '2026-06-12T10:00:00.000Z',
+            lastSuccessAt: null,
+            lastFailureAt: '2026-06-12T10:00:00.000Z',
+            lastError: { message: 'no space left', code: 'ENOSPC', hard: true },
+          },
+          detection_stats: {
+            target: 'detection_stats',
+            totalAttempts: 0,
+            totalFailures: 0,
+            consecutiveFailures: 0,
+            lastAttemptAt: null,
+            lastSuccessAt: null,
+            lastFailureAt: null,
+            lastError: null,
+          },
+        },
+      },
+    });
+
+    const report = runDiagnostic(input);
+
+    expect(report.persistenceHealth?.targets.task_state.lastError?.code).toBe('ENOSPC');
+    expect(expectSingleFinding(report, 'persistence-health')).toMatchObject({
+      scope: 'task_state',
+      severity: 'critical',
+      observed: 3,
+    });
+  });
+
   // --- Minimum uptime gate ---
 
   test('skips rate checks when uptime < 5 minutes', () => {

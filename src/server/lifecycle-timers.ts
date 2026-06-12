@@ -21,6 +21,7 @@ import { saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../cor
 import { cleanupSessionResources, promotePendingTasks, type LifecycleDeps, type AgentLifecycleDeps } from './agent-lifecycle.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import { getDetectionStats, type DetectionStats } from '../core/detection-stats.js';
+import type { PersistenceHealthRecorder } from '../core/persistence-health.js';
 
 export interface TimerDeps {
   monitor: Monitor;
@@ -50,6 +51,12 @@ export interface TimerDeps {
   suppressionTracker?: SnoozeSuppressionTracker;
   /** Optional durable store for cumulative detector telemetry (persisted on the save tick). */
   detectionStatsStore?: { save(stats: DetectionStats): Promise<void> };
+  /** In-memory tracker for runtime persistence failures. */
+  persistenceHealth?: PersistenceHealthRecorder;
+  /** Test seam for task-state persistence. */
+  taskStateSaver?: typeof saveTasksWithSnapshotPolicy;
+  /** Test seam for detection-stats snapshot gathering. */
+  getDetectionStatsSnapshot?: () => DetectionStats;
   /**
    * Optional budget threshold checker (issue #98). When provided and configured with a
    * positive threshold, the token scan tick fires a `budget_exceeded` anomaly the first
@@ -68,6 +75,17 @@ export interface TimerDeps {
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
   /** True when promoted launches should be audited as running without permission prompts. */
   bypassAllPermissions?: boolean;
+}
+
+export interface PersistenceSaveTickDeps {
+  taskStore: TaskStore;
+  queue: AttentionQueue;
+  tasksFile: string;
+  suppressionTracker?: SnoozeSuppressionTracker;
+  detectionStatsStore?: { save(stats: DetectionStats): Promise<void> };
+  persistenceHealth?: PersistenceHealthRecorder;
+  taskStateSaver?: typeof saveTasksWithSnapshotPolicy;
+  getDetectionStatsSnapshot?: () => DetectionStats;
 }
 
 export interface TimerHandles {
@@ -399,29 +417,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   // save of each local day copies tasks.json to tasks.json.daily.YYYYMMDD.
   // Snapshot failures are logged inside the helper and never block the save.
   const saveInterval = setInterval(async () => {
-    try {
-      const snoozes = serializeSnoozed(queue, taskStore);
-      const suppressionState = deps.suppressionTracker?.export();
-      await saveTasksWithSnapshotPolicy(
-        taskStore.getAllTasks(),
-        tasksFile,
-        'daily',
-        taskStore.getLifetimeSpendUsd(),
-        snoozes,
-        suppressionState,
-        taskStore.listRelations(),
-      );
-    } catch (err) {
-      console.error('Error saving tasks:', err);
-    }
-    // Persist cumulative detector telemetry on the same cadence so FP/FN/
-    // suppression rates survive restarts. Isolated from the task save so a
-    // stats-write failure neither blocks nor is mislabelled as a task error.
-    try {
-      await deps.detectionStatsStore?.save(getDetectionStats());
-    } catch (err) {
-      console.error('Error saving detection stats:', err);
-    }
+    await runPersistenceSaveTick(deps);
   }, saveIntervalMs);
 
   // --- Periodic quota usage polling (optional) ---
@@ -457,6 +453,38 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     saveInterval,
     quotaPollTimeout,
   };
+}
+
+export async function runPersistenceSaveTick(deps: PersistenceSaveTickDeps): Promise<void> {
+  try {
+    const snoozes = serializeSnoozed(deps.queue, deps.taskStore);
+    const suppressionState = deps.suppressionTracker?.export();
+    const taskStateSaver = deps.taskStateSaver ?? saveTasksWithSnapshotPolicy;
+    await taskStateSaver(
+      deps.taskStore.getAllTasks(),
+      deps.tasksFile,
+      'daily',
+      deps.taskStore.getLifetimeSpendUsd(),
+      snoozes,
+      suppressionState,
+      deps.taskStore.listRelations(),
+    );
+    deps.persistenceHealth?.recordSuccess('task_state');
+  } catch (err) {
+    deps.persistenceHealth?.recordFailure('task_state', err);
+    console.error('Error saving tasks:', err);
+  }
+  // Persist cumulative detector telemetry on the same cadence so FP/FN/
+  // suppression rates survive restarts. Isolated from the task save so a
+  // stats-write failure neither blocks nor is mislabelled as a task error.
+  if (!deps.detectionStatsStore) return;
+  try {
+    await deps.detectionStatsStore.save((deps.getDetectionStatsSnapshot ?? getDetectionStats)());
+    deps.persistenceHealth?.recordSuccess('detection_stats');
+  } catch (err) {
+    deps.persistenceHealth?.recordFailure('detection_stats', err);
+    console.error('Error saving detection stats:', err);
+  }
 }
 
 export function clearAllTimers(handles: TimerHandles): void {

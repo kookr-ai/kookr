@@ -41,6 +41,7 @@ const diagnosticReport = z.object({
   timestamp: z.number(),
   findings: z.array(diagnosticFinding),
   helperLlm: jsonObject.optional(),
+  persistenceHealth: jsonObject.optional(),
 });
 
 const achievementCounters = z.object({
