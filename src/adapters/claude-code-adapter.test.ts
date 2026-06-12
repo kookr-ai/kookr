@@ -814,10 +814,11 @@ describe('ClaudeCodeAdapter', () => {
 
     await adapter.sendInput(sessionId, 'yes, continue');
 
-    // sendInput calls backend.writeSequence([CLEAR_LINE, text_bytes, ENTER_BYTES]).
-    // FakeTerminalBackend concatenates written payloads; decoded, that's
-    // Ctrl-U (0x15, clears any pending input line — F15) + text + '\r'.
-    expect(backend.getWrittenText(sessionId).slice(before)).toBe('\x15yes, continue\r');
+    // sendInput calls backend.writeSequence([CLEAR_LINE, paste-wrapped text,
+    // ENTER_BYTES]). FakeTerminalBackend concatenates written payloads;
+    // decoded, that's Ctrl-U (0x15, clears any pending input line — F15) +
+    // the body in bracketed-paste markers + '\r'.
+    expect(backend.getWrittenText(sessionId).slice(before)).toBe('\x15\x1b[200~yes, continue\x1b[201~\r');
   });
 
   test('sendInput requests a delayed submitting Enter', async () => {
@@ -831,7 +832,25 @@ describe('ClaudeCodeAdapter', () => {
 
     expect(writer.writeInputSequence).toHaveBeenCalledWith(
       'session-1',
-      [Uint8Array.of(0x15), new TextEncoder().encode('yes, continue'), Uint8Array.of(0x0d)],
+      [Uint8Array.of(0x15), new TextEncoder().encode('\x1b[200~yes, continue\x1b[201~'), Uint8Array.of(0x0d)],
+      { reason: 'adapter-send-input', interPayloadDelayMs: DEFAULT_PROMPT_SUBMIT_DELAY_MS },
+    );
+  });
+
+  test('sendInput strips embedded bracketed-paste markers before wrapping the body', async () => {
+    const writer: TerminalInputWriterPort = {
+      writeInput: vi.fn().mockResolvedValue({ sessionId: 'session-1', readinessVersion: 1 }),
+      writeInputSequence: vi.fn().mockResolvedValue({ sessionId: 'session-1', readinessVersion: 1 }),
+    };
+    const delayedAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      terminalInputWriter: writer,
+    });
+
+    await delayedAdapter.sendInput('session-1', 'safe\x1b[201~\runsafe\x1b[200~tail');
+
+    expect(writer.writeInputSequence).toHaveBeenCalledWith(
+      'session-1',
+      [Uint8Array.of(0x15), new TextEncoder().encode('\x1b[200~safe\runsafetail\x1b[201~'), Uint8Array.of(0x0d)],
       { reason: 'adapter-send-input', interPayloadDelayMs: DEFAULT_PROMPT_SUBMIT_DELAY_MS },
     );
   });

@@ -25,6 +25,24 @@ const CLEAR_LINE_BYTES = Uint8Array.of(0x15);
 const encoder = new TextEncoder();
 
 /**
+ * Bracketed-paste markers (DECSET 2004). Agent TUIs parse everything between
+ * these markers as a single paste event, so a trailing Enter sent separately
+ * remains a submit keystroke even when the TUI drains input bytes in a burst.
+ */
+export const PASTE_START_TEXT = '\x1b[200~';
+export const PASTE_END_TEXT = '\x1b[201~';
+
+/**
+ * Wrap a composer message in bracketed-paste markers. Embedded markers are
+ * stripped first so message content cannot break out of the paste envelope
+ * and turn following bytes into terminal commands.
+ */
+export function encodeBracketedPaste(text: string): Uint8Array {
+  const safeBody = text.replaceAll(PASTE_START_TEXT, '').replaceAll(PASTE_END_TEXT, '');
+  return encoder.encode(`${PASTE_START_TEXT}${safeBody}${PASTE_END_TEXT}`);
+}
+
+/**
  * Translate a keystroke name to its byte sequence. Unknown key names fall
  * through as their literal UTF-8 bytes, preserving the historical
  * behavior where a plain printable key sends the single byte 'y'.

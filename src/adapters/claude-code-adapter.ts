@@ -39,13 +39,12 @@ import {
   type InitialPromptDeliveryResult,
   resolveBracketedPasteSubmit,
 } from './agent-launch-context.js';
-import { translateKeystroke, ENTER_BYTES, CLEAR_LINE_BYTES } from './keystroke.js';
+import { translateKeystroke, encodeBracketedPaste, ENTER_BYTES, CLEAR_LINE_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
 import { loadFileBasedAgents, type InlineAgentDef } from './file-based-agents.js';
 import { buildHookCommand, buildStopNudgeCommand, resolveHookWriterPath, resolveStopNudgePath } from '../core/hook-writer-paths.js';
 import { withTimeout } from '../core/with-timeout.js';
 
-const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
 
 export interface HookSettings {
@@ -424,9 +423,15 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // The clear is its own payload (with the inter-payload cushion) so the
     // TUI processes it as a keystroke instead of coalescing it into a fast
     // burst with the message text.
+    //
+    // Wrap the body in bracketed-paste markers, matching the launch-path
+    // defence in deliverInitialPromptToSession. Claude Code's paste
+    // heuristic is timing-based; when the TUI is busy it can drain text and
+    // Enter together and absorb Enter as paste content. Explicit paste
+    // markers keep the delayed trailing Enter an unambiguous submit key.
     await this.inputWriter.writeInputSequence(tmuxName, [
       CLEAR_LINE_BYTES,
-      textEncoder.encode(text),
+      encodeBracketedPaste(text),
       ENTER_BYTES,
     ], { reason: 'adapter-send-input', interPayloadDelayMs: DEFAULT_PROMPT_SUBMIT_DELAY_MS });
   }

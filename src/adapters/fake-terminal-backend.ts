@@ -20,6 +20,15 @@ const decoder = new TextDecoder('utf-8', { fatal: false });
 const KILL_LINE_CHAR = '\x15';
 
 /**
+ * A real TUI consumes bracketed-paste markers while placing the body in the
+ * composer. The fake keeps raw bytes for byte-level assertions, but strips
+ * markers from pane/draft observables so logical tests model the real UI.
+ */
+function stripPasteMarkers(text: string): string {
+  return text.replaceAll('\x1b[200~', '').replaceAll('\x1b[201~', '');
+}
+
+/**
  * In-memory TerminalBackend fake for tests.
  *
  * Replaces the older fake terminal manager. Matches the production
@@ -118,7 +127,7 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
       await this.writeOne(id, data);
       const s = this.sessions.get(id);
       if (!s) return;
-      const text = this.applyKillLine(s, decoder.decode(data));
+      const text = stripPasteMarkers(this.applyKillLine(s, decoder.decode(data)));
       if (text.endsWith('\r') || text.endsWith('\n')) {
         s.keysReceived.push(s.inputDraft + text.replace(/[\r\n]+$/, ''));
         s.inputDraft = '';
@@ -158,7 +167,7 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
       // recorded below contains the composer message only. Without a kill
       // char, a pending draft is fused onto the submission — exactly the
       // production CLI behaviour the prefix exists to prevent.
-      const concatText = this.applyKillLine(s, decoder.decode(concat));
+      const concatText = stripPasteMarkers(this.applyKillLine(s, decoder.decode(concat)));
       if (concatText.endsWith('\r') || concatText.endsWith('\n')) {
         s.keysReceived.push(s.inputDraft + concatText.replace(/[\r\n]+$/, ''));
         s.inputDraft = '';
@@ -315,11 +324,10 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
     if (!s || !s.alive) throw new SessionGoneError(id);
     const rawText = decoder.decode(data);
     s.written.push(new Uint8Array(data));
-    // Kill-line chars are editing controls, not pane text — keep them out of
-    // `paneContent` and `lastKeystroke`. The raw bytes above still record
-    // them for byte-level assertions; draft semantics are applied by the
-    // write/writeSequence wrappers via `applyKillLine`.
-    const text = rawText.replaceAll(KILL_LINE_CHAR, '');
+    // Kill-line chars and bracketed-paste markers are input controls, not pane
+    // text. The raw bytes above still record them for byte-level assertions;
+    // draft semantics are applied by write/writeSequence wrappers.
+    const text = stripPasteMarkers(rawText.replaceAll(KILL_LINE_CHAR, ''));
     // Update `paneContent` and `lastKeystroke` per payload. `keysReceived` is
     // emitted by the calling write/writeSequence wrappers so that a single
     // logical submission produces one entry even when adapters split it into

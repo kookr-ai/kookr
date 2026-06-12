@@ -50,7 +50,9 @@ async function logicalSubmissions(request: APIRequestContext, tmuxName: string):
 }
 
 function expectSubmittedAsMessageThenEnter(chunks: WrittenChunk[], inputText: string) {
-  const index = chunks.findIndex((chunk, i) => chunk.text === inputText && chunks[i + 1]?.hex === '0d');
+  const index = chunks.findIndex((chunk, i) => (
+    chunk.text.includes(`\x1b[200~${inputText}\x1b[201~`) && chunks[i + 1]?.hex === '0d'
+  ));
   expect(index, `expected "${inputText}" followed by Enter chunk`).toBeGreaterThanOrEqual(0);
 }
 
