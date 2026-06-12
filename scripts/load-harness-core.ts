@@ -11,7 +11,6 @@ export interface LoadHarnessOptions {
 export interface SyntheticHookRecord {
   sessionId: string;
   event: Record<string, unknown>;
-  json: string;
 }
 
 export interface BroadcastMetrics {
@@ -199,7 +198,6 @@ function toRecord(
   return {
     sessionId,
     event,
-    json: JSON.stringify(event),
   };
 }
 

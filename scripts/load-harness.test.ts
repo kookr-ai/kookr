@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -32,7 +32,9 @@ describe('load-harness synthetic event generator', () => {
       nowMs: 1_000,
     });
 
-    expect(first.map((record) => record.json)).toEqual(second.map((record) => record.json));
+    expect(first.map((record) => JSON.stringify(record.event))).toEqual(
+      second.map((record) => JSON.stringify(record.event)),
+    );
     expect(first).toHaveLength(6);
     expect(first.map((record) => record.sessionId)).toEqual([
       'kookr-replay-load-926-0000',
@@ -62,7 +64,7 @@ describe('load-harness synthetic event generator', () => {
     });
 
     for (const record of records) {
-      const parsed = JSON.parse(record.json) as Record<string, unknown>;
+      const parsed = JSON.parse(JSON.stringify(record.event)) as Record<string, unknown>;
       expect(parsed.session_id).toBe('claude-load-7-0');
       expect(parsed.cwd).toBe('/repo');
       expect(parsed.kookr_hook_written_at_ms).toBe(123_456);
@@ -202,6 +204,8 @@ describe('load-harness runtime orchestration', () => {
     const fixture = await startFakeHarnessTarget({ failPostNumbers: new Set([2]) });
     const tempDir = await mkdtemp(join(tmpdir(), 'kookr-load-harness-test-'));
     const output = join(tempDir, 'report.json');
+    const nowValues = [1_000, 2_000, 3_000, 4_000];
+    const dateNow = vi.spyOn(Date, 'now').mockImplementation(() => nowValues.shift() ?? 4_000);
     try {
       const code = await main([
         '--base-url', fixture.baseUrl,
@@ -217,7 +221,19 @@ describe('load-harness runtime orchestration', () => {
         dispatchedEvents: 2,
         failedEvents: 1,
       });
+      expect(fixture.posts.map((body) => {
+        const parsed = JSON.parse(body) as Record<string, unknown>;
+        return {
+          hookEventName: parsed.hook_event_name,
+          writtenAtMs: parsed.kookr_hook_written_at_ms,
+        };
+      })).toEqual([
+        { hookEventName: 'SessionStart', writtenAtMs: 2_000 },
+        { hookEventName: 'PreToolUse', writtenAtMs: 3_000 },
+        { hookEventName: 'PostToolUse', writtenAtMs: 4_000 },
+      ]);
     } finally {
+      dateNow.mockRestore();
       await fixture.close();
       await rm(tempDir, { recursive: true, force: true });
     }
