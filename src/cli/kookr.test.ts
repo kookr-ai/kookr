@@ -71,7 +71,8 @@ describe('kookr dispatcher', () => {
     [['spawn', '--help'], 'kookr spawn'],
     [['status', '--help'], 'kookr status'],
     [['ralph', '--help'], 'kookr ralph'],
-  ])('prints help through bin/kookr.js %s', async (argv, helpNeedle) => {
+    [['completion', 'bash'], 'complete -F _kookr kookr'],
+  ])('prints command output through bin/kookr.js %s', async (argv, helpNeedle) => {
     const { stdout, stderr } = await execFileAsync(process.execPath, ['bin/kookr.js', ...argv], {
       cwd: process.cwd(),
     });
