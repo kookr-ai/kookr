@@ -27,6 +27,84 @@ describe('AttentionQueue', () => {
   });
 
   describe('Core queue behavior', () => {
+    test('notifies observers only when a finding enters the active queue', () => {
+      const observer = {
+        admitted: vi.fn(),
+        resolved: vi.fn(),
+      };
+      queue.addObserver(observer);
+      const first = makeAnomaly('a1', 'needs_input', 'info');
+      const repeat = withDetectedAt(makeAnomaly('a1', 'needs_input', 'info'), '2026-01-01T00:01:00Z');
+      const changed = makeAnomaly('a1', 'permission_blocked', 'warning');
+
+      queue.enqueue('a1', first);
+      queue.enqueue('a1', repeat);
+      queue.enqueue('a1', changed);
+
+      expect(observer.admitted).toHaveBeenCalledTimes(2);
+      expect(observer.admitted.mock.calls[0][0]).toMatchObject({
+        agentId: 'a1',
+        fingerprint: 'needs_input::needs_input for a1',
+      });
+      expect(observer.admitted.mock.calls[1][0]).toMatchObject({
+        agentId: 'a1',
+        fingerprint: 'permission_blocked::permission_blocked for a1',
+      });
+      expect(observer.resolved).not.toHaveBeenCalled();
+    });
+
+    test('notifies observers on active finding resolution so dedupe can clear', () => {
+      const observer = {
+        admitted: vi.fn(),
+        resolved: vi.fn(),
+      };
+      queue.addObserver(observer);
+
+      queue.enqueue('a1', makeAnomaly('a1', 'needs_input', 'info'));
+      queue.remove('a1');
+      queue.remove('a1');
+
+      expect(observer.resolved).toHaveBeenCalledTimes(1);
+      expect(observer.resolved.mock.calls[0][0]).toMatchObject({
+        agentId: 'a1',
+        fingerprint: 'needs_input::needs_input for a1',
+      });
+    });
+
+    test('respondAndAdvance notifies observers on active finding resolution', () => {
+      const observer = {
+        admitted: vi.fn(),
+        resolved: vi.fn(),
+      };
+      queue.addObserver(observer);
+
+      queue.enqueue('a1', makeAnomaly('a1', 'needs_input', 'info'));
+      queue.enqueue('a2', makeAnomaly('a2', 'permission_blocked', 'warning'));
+      const next = queue.respondAndAdvance('a1');
+
+      expect(observer.resolved).toHaveBeenCalledTimes(1);
+      expect(observer.resolved.mock.calls[0][0]).toMatchObject({
+        agentId: 'a1',
+        fingerprint: 'needs_input::needs_input for a1',
+      });
+      expect(next?.agentId).toBe('a2');
+    });
+
+    test('does not notify observers while a non-waking finding remains snoozed', () => {
+      const observer = {
+        admitted: vi.fn(),
+        resolved: vi.fn(),
+      };
+      queue.addObserver(observer);
+
+      queue.enqueue('a1', makeAnomaly('a1', 'needs_input', 'info'));
+      queue.snooze('a1', 60000);
+      queue.enqueue('a1', makeAnomaly('a1', 'needs_input', 'info'));
+
+      expect(observer.admitted).toHaveBeenCalledTimes(1);
+      expect(observer.resolved).not.toHaveBeenCalled();
+    });
+
     test('enqueue adds agent sorted by severity', () => {
       queue.enqueue('a1', makeAnomaly('a1', 'needs_input', 'info'));
       queue.enqueue('a2', makeAnomaly('a2', 'repeated_error', 'critical'));

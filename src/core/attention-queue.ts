@@ -46,6 +46,23 @@ export interface AttentionQueueOpts {
   taskIdFor?: (agentId: string) => string | null;
 }
 
+export interface AttentionQueueAdmission {
+  agentId: string;
+  anomaly: Anomaly;
+  fingerprint: string;
+}
+
+export interface AttentionQueueResolution {
+  agentId: string;
+  anomaly: Anomaly;
+  fingerprint: string;
+}
+
+export interface AttentionQueueObserver {
+  admitted?(event: AttentionQueueAdmission): void;
+  resolved?(event: AttentionQueueResolution): void;
+}
+
 export class AttentionQueue {
   private entries = new Map<string, QueueEntry>();
   /**
@@ -58,9 +75,17 @@ export class AttentionQueue {
   /** Anomaly preserved from the last remove() call — fallback for snooze race. */
   private lastRemoved = new Map<string, Anomaly>();
   private taskIdFor: (agentId: string) => string | null;
+  private observers = new Set<AttentionQueueObserver>();
 
   constructor(opts: AttentionQueueOpts = {}) {
     this.taskIdFor = opts.taskIdFor ?? (() => null);
+  }
+
+  addObserver(observer: AttentionQueueObserver): () => void {
+    this.observers.add(observer);
+    return () => {
+      this.observers.delete(observer);
+    };
   }
 
   /** Resolve the snooze map key for a given agent: taskId if available, else the agentId. */
@@ -83,6 +108,7 @@ export class AttentionQueue {
       if (this.shouldWakeSnooze(snoozed, anomaly)) {
         this.snoozed.delete(key);
         this.entries.set(agentId, { agentId, anomaly, skipped: false });
+        this.notifyAdmitted(agentId, anomaly);
         return;
       }
       // Preserve original detectedAt only while the same finding remains hidden.
@@ -101,6 +127,7 @@ export class AttentionQueue {
     }
 
     this.entries.set(agentId, { agentId, anomaly, skipped: false });
+    this.notifyAdmitted(agentId, anomaly);
   }
 
   next(): { agentId: string; anomaly: Anomaly } | null {
@@ -165,6 +192,7 @@ export class AttentionQueue {
     const entry = this.entries.get(agentId);
     if (entry) {
       this.lastRemoved.set(agentId, entry.anomaly);
+      this.notifyResolved(agentId, entry.anomaly);
     }
     this.entries.delete(agentId);
   }
@@ -288,6 +316,10 @@ export class AttentionQueue {
   }
 
   respondAndAdvance(agentId: string): { agentId: string; anomaly: Anomaly } | null {
+    const entry = this.entries.get(agentId);
+    if (entry) {
+      this.notifyResolved(agentId, entry.anomaly);
+    }
     this.entries.delete(agentId);
     return this.next();
   }
@@ -385,6 +417,22 @@ export class AttentionQueue {
       // Then by severity
       return SEVERITY_ORDER[a.anomaly.severity] - SEVERITY_ORDER[b.anomaly.severity];
     });
+  }
+
+  private notifyAdmitted(agentId: string, anomaly: Anomaly): void {
+    if (this.observers.size === 0) return;
+    const event = { agentId, anomaly, fingerprint: anomalyFingerprint(anomaly) };
+    for (const observer of this.observers) {
+      observer.admitted?.(event);
+    }
+  }
+
+  private notifyResolved(agentId: string, anomaly: Anomaly): void {
+    if (this.observers.size === 0) return;
+    const event = { agentId, anomaly, fingerprint: anomalyFingerprint(anomaly) };
+    for (const observer of this.observers) {
+      observer.resolved?.(event);
+    }
   }
 }
 

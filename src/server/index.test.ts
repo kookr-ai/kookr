@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -89,6 +89,21 @@ function waitForOperationalAlert(ws: WebSocket, summaryText: string): Promise<Ma
     }, 2000);
 
     ws.on('message', onMsg);
+  });
+}
+
+function withEnv<T>(updates: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(updates)) {
+    previous.set(key, process.env[key]);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  return fn().finally(() => {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   });
 }
 
@@ -217,6 +232,76 @@ describe('createKookrServer', () => {
   });
 
   describe('HTTP API', () => {
+    test('env-configured webhook observer posts findings and clears dedupe on resolution', async () => {
+      await server.close();
+      serverClosed = true;
+
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));
+      let webhookServer: KookrServerInternal | null = null;
+      try {
+        await withEnv({
+          KOOKR_WEBHOOK_URL: 'https://receiver.example/kookr',
+          KOOKR_WEBHOOK_MIN_SEVERITY: 'warning',
+        }, async () => {
+          webhookServer = await createKookrServerInternal({
+            port: 0,
+            host: '127.0.0.1',
+            kookrDir: join(tempDir, 'webhook-kookr'),
+            tasksFile: join(tempDir, 'webhook-tasks.json'),
+            hooksDir: join(tempDir, 'webhook-hooks'),
+            settingsDir: join(tempDir, 'webhook-settings'),
+            serverCwd: '/test/cwd',
+            frontendDir: join(tempDir, 'frontend'),
+            saveIntervalMs: 600_000,
+            livenessIntervalMs: 600_000,
+            terminalBackend: new FakeTerminalBackend(),
+            claudeDir: join(tempDir, 'claude'),
+          });
+        });
+
+        const task = webhookServer!.taskStore.createTask('Webhook task', '/repo');
+        webhookServer!.taskStore.addSession(task.id, {
+          tmuxSession: 'webhook-session',
+          agentType: 'claude-code',
+          cwd: '/repo',
+          createdAt: new Date('2026-06-12T10:00:00.000Z'),
+          lastStatus: 'running',
+        });
+
+        const anomaly = {
+          agentId: 'webhook-session',
+          type: 'permission_blocked' as const,
+          severity: 'warning' as const,
+          explanation: 'Agent is waiting for permission',
+          detectedAt: new Date('2026-06-12T10:00:00.000Z'),
+        };
+        webhookServer!.queue.enqueue('webhook-session', anomaly);
+        webhookServer!.queue.enqueue('webhook-session', anomaly);
+
+        await waitForCondition(() => fetchSpy.mock.calls.some(([url]) => url === 'https://receiver.example/kookr'));
+        expect(fetchSpy.mock.calls.filter(([url]) => url === 'https://receiver.example/kookr')).toHaveLength(1);
+
+        webhookServer!.queue.respondAndAdvance('webhook-session');
+        webhookServer!.queue.enqueue('webhook-session', anomaly);
+
+        await waitForCondition(() => fetchSpy.mock.calls.filter(([url]) => url === 'https://receiver.example/kookr').length === 2);
+        const [, init] = fetchSpy.mock.calls.find(([url]) => url === 'https://receiver.example/kookr')!;
+        const body = JSON.parse(String(init?.body));
+        expect(body.finding).toMatchObject({
+          agentId: 'webhook-session',
+          type: 'permission_blocked',
+          severity: 'warning',
+        });
+        expect(body.task).toMatchObject({
+          id: task.id,
+          prompt: 'Webhook task',
+        });
+      } finally {
+        fetchSpy.mockRestore();
+        await webhookServer?.close();
+      }
+    });
+
     test('admin alert-config update changes the live operational alert evaluator', async () => {
       await server.close();
       serverClosed = true;

@@ -170,6 +170,19 @@ Use the panic switch to disable the integration even if other variables are set:
 KOOKR_REMOTE_CHAT_DISABLED=1
 ```
 
+## Outbound Finding Webhooks
+
+Set a generic HTTP receiver URL to POST each new attention finding as JSON:
+
+```bash
+KOOKR_WEBHOOK_URL=https://example.com/kookr-findings
+KOOKR_WEBHOOK_MIN_SEVERITY=warning
+```
+
+`KOOKR_WEBHOOK_MIN_SEVERITY` is optional and accepts `info`, `warning`, or `critical`.
+Repeated re-enqueues of the same finding fingerprint are deduplicated until the
+finding resolves.
+
 ## Production-Style Instance
 
 `pnpm prod:setup` creates a sibling `../kookr-prod` worktree. The dev checkout's `.env` is symlinked into that worktree, so runtime configuration stays in one place.
