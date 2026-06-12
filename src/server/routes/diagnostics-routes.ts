@@ -24,6 +24,7 @@ import type { BackendStats } from '../../adapters/terminal-backend.js';
 import type { RouteDeps } from './shared.js';
 import type { HookIngestionDiagnosticsSnapshot } from '../hook-ingestion.js';
 import type { HookWatcherHealthSnapshot } from '../hook-watcher.js';
+import { getAuthThrottleSnapshot } from '../auth.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const REVIEW_ADMIN_TOKEN_HEADER = 'x-kookr-admin-token';
@@ -135,6 +136,8 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     }
     return c.json(deps.requestDurationMetrics.snapshot());
   });
+
+  app.get('/api/diagnostics/auth-throttle', (c) => c.json(getAuthThrottleSnapshot(deps.apiAuth)));
 
   app.get('/api/diagnostics/hook-ingestion', (c) => c.json({
     schemaVersion: 'hook-ingestion-diagnostics-route.v1',

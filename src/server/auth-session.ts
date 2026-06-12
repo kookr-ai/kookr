@@ -34,9 +34,11 @@ import {
   SESSION_COOKIE_NAME,
   classifyCredential,
   extractBearerToken,
+  getOrCreateAuthThrottle,
   isBrowserSameOriginRequest,
   isLoopbackHost,
   parseCookieHeader,
+  remoteAddrFromContext,
   type Actor,
   type ApiAuthConfig,
 } from './auth.js';
@@ -285,11 +287,17 @@ export function registerAuthSessionRoutes(
       : '';
     if (!token) return c.json({ error: 'missing-token' }, 400);
 
+    const remoteAddr = remoteAddrFromContext(c);
+    const throttle = getOrCreateAuthThrottle(apiAuth);
+    const lockedOut = throttle?.isLockedOut(remoteAddr) ?? false;
     const actor = classifyPresentedToken(apiAuth, token);
-    if (!actor) {
-      console.warn(JSON.stringify({ event: 'auth_session_rejected', reason: 'invalid_token' }));
+    if (!actor || lockedOut) {
+      if (lockedOut) throttle?.recordThrottledAttempt(remoteAddr);
+      else throttle?.recordFailure(remoteAddr, 'bad_token');
+      console.warn(JSON.stringify({ event: 'auth_session_rejected', reason: lockedOut ? 'throttled' : 'invalid_token' }));
       return c.json({ error: 'invalid-token' }, 401);
     }
+    if (actor.kind === 'owner') throttle?.reset(remoteAddr);
 
     // Secure iff the request actually arrived over HTTPS (posture above already
     // gated plain-HTTP without a tunnel assertion).
