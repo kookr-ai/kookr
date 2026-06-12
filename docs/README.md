@@ -60,6 +60,7 @@ We publish drafts intentionally — the design history is part of the engineerin
 - [CLI Reference](reference/cli.md)
 - [Environment Variables](reference/environment-variables.md)
 - [Playbooks Reference](reference/playbooks.md)
+- [Production Server Service](reference/production-server-service.md)
 - [Read-Only Shared View Setup](reference/shared-view-setup.md)
 
 ## A note on transparency
