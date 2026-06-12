@@ -92,6 +92,11 @@ import { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { DashboardSelectionController } from './dashboard-selection-controller.js';
 import type { ApiAuthConfig } from './auth.js';
 import type { SessionAuthConfig } from './auth-session.js';
+import {
+  WebhookNotifier,
+  buildDashboardBaseUrl,
+  readWebhookConfigFromEnv,
+} from '../integrations/webhook/index.js';
 
 // --- Exported types ---
 
@@ -276,6 +281,24 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // next launch without a restart (the PUT path reassigns `currentSettings`).
   const getAgentEffort = () => currentSettings.agentEffort;
   const terminalInputCoordinator = new TerminalInputCoordinator(terminalBackend);
+
+  const webhookConfig = readWebhookConfigFromEnv(process.env, {
+    dashboardBaseUrl: buildDashboardBaseUrl({ host, port, env: process.env }),
+    logger: console,
+  });
+  let stopWebhookObserver: (() => void) | undefined;
+  if (webhookConfig) {
+    const notifier = new WebhookNotifier({ config: webhookConfig, taskStore, logger: console });
+    console.log(`[webhook] Outbound finding webhook enabled (minSeverity=${webhookConfig.minSeverity})`);
+    stopWebhookObserver = queue.addObserver({
+      admitted: (event) => {
+        void notifier.notifyFinding(event);
+      },
+      resolved: (event) => {
+        notifier.clearFingerprint(event);
+      },
+    });
+  }
 
   const { adapterRegistry, adapter, agentPreflight } = await createAgentRuntime({
     terminalBackend,
@@ -1259,6 +1282,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     isClosed = true;
 
     await backgroundServices.stop();
+    stopWebhookObserver?.();
 
     // Final save
     try {

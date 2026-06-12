@@ -169,6 +169,17 @@ set.
 | `KOOKR_TELEGRAM_API_URL` | Telegram API default | HTTP URL | Overrides the Telegram API base URL. Used by tests and local fakes. |
 | `KOOKR_STT_WHISPER_URL` | unset | HTTP URL of the local faster-whisper-server (e.g. `http://127.0.0.1:8010`) | Enables Telegram audio transcription for voice, uploaded audio, video notes, and audio documents. When unset, audio messages are dropped with the `dropped_audio_disabled` audit kind and the user is told audio is unsupported. The server must expose the OpenAI-compatible `POST /v1/audio/transcriptions` endpoint and is reached over plain HTTP — bind it to localhost only. |
 
+## Outbound Finding Webhook
+
+Outbound webhooks are off by default. Set `KOOKR_WEBHOOK_URL` to POST each new
+attention finding to a generic JSON receiver. The webhook URL is operator-supplied
+local configuration; do not store shared secrets in checked-in `.env` files.
+
+| Variable | Default | Accepted values | Effect |
+| --- | --- | --- | --- |
+| `KOOKR_WEBHOOK_URL` | unset | HTTP or HTTPS URL | Enables generic outbound JSON POST notifications when findings enter the active attention queue. |
+| `KOOKR_WEBHOOK_MIN_SEVERITY` | `info` | `info`, `warning`, `critical` | Sends only findings at or above the configured severity. Invalid values fall back to `info` with a warning. |
+
 ## Relay
 
 Hosted relay is inert until the operational gate is explicitly enabled; see
