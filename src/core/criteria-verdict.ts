@@ -70,6 +70,7 @@ export async function evaluateCriteriaVerdict(input: CriteriaVerdictEvaluationIn
   try {
     const raw = await input.llmClient.complete({
       ...request,
+      useCase: 'criteria_verdict',
       maxTokens: 900,
       timeoutMs: 20_000,
       responseFormat: {

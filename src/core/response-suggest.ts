@@ -57,6 +57,7 @@ export async function generateSuggestedResponses(
 
   try {
     const text = await client.complete({
+      useCase: 'response_suggestion',
       maxTokens: MAX_TOKENS,
       system: SYSTEM_PROMPT,
       userMessage: `What responses might the developer give?\n\n${contextParts.join('\n')}`,

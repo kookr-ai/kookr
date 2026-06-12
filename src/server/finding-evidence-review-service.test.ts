@@ -130,6 +130,7 @@ describe('FindingEvidenceReviewService', () => {
       },
     ]);
     expect(model.complete).toHaveBeenCalledWith(expect.objectContaining({
+      useCase: 'finding_evidence_review',
       timeoutMs: 15000,
       responseFormat: expect.objectContaining({ type: 'json_schema' }),
     }));

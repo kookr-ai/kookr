@@ -255,6 +255,7 @@ export async function summarizeTaskForSpeech(
 
   try {
     const raw = await client.complete({
+      useCase: 'task_speech_summary',
       maxTokens: 120,
       system: SYSTEM_PROMPT,
       userMessage: promptPayload(input),

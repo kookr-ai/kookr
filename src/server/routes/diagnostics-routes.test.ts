@@ -17,6 +17,7 @@ import { ViewerConnectionRegistry } from '../viewer-connection-registry.js';
 import { CollaborationAuditLog } from '../collaboration-audit-log.js';
 import type { RouteDeps } from './shared.js';
 import type { LlmClient } from '../../core/llm-client.js';
+import type { HelperLlmDiagnosticsCounters, HelperLlmDiagnosticsSnapshot } from '../../shared/contracts/diagnostic.js';
 
 function mkApp(deps: Partial<RouteDeps>): Hono {
   const app = new Hono();
@@ -30,6 +31,34 @@ function fakeLlm(output: string | null): LlmClient {
     model: 'fake-model',
     complete: vi.fn(async () => output),
   };
+}
+
+function helperLlmCounters(overrides: Partial<HelperLlmDiagnosticsCounters> = {}): HelperLlmDiagnosticsCounters {
+  return {
+    requestCount: 0,
+    successCount: 0,
+    failureCount: 0,
+    nullResponseCount: 0,
+    errorCount: 0,
+    abortedCount: 0,
+    totalLatencyMs: 0,
+    averageLatencyMs: 0,
+    maxLatencyMs: 0,
+    failureCategories: {},
+    ...overrides,
+  };
+}
+
+function helperLlmSnapshot(overrides: Partial<HelperLlmDiagnosticsSnapshot> = {}): HelperLlmDiagnosticsSnapshot {
+  return {
+    schemaVersion: 'helper-llm-diagnostics.v1',
+    generatedAt: 123,
+    totals: helperLlmCounters(),
+    byUseCase: [],
+    byProvider: [],
+    byUseCaseProvider: [],
+    ...overrides,
+  } satisfies HelperLlmDiagnosticsSnapshot;
 }
 
 describe('diagnostics routes', () => {
@@ -1270,14 +1299,19 @@ describe('diagnostics routes', () => {
     });
 
     test('returns the runner status when wired', async () => {
+      const helperLlm = helperLlmSnapshot({
+        generatedAt: 123,
+        totals: helperLlmCounters({ requestCount: 1, successCount: 1 }),
+        byUseCase: [{ useCase: 'task_naming', ...helperLlmCounters({ requestCount: 1, successCount: 1 }) }],
+      });
       const diagnosticRunner = {
-        getStatus: () => ({ report: { findings: [] }, lastError: null }),
+        getStatus: () => ({ report: { findings: [], helperLlm }, lastError: null }),
       };
       const res = await mkApp({ diagnosticRunner: diagnosticRunner as never })
         .request('/api/diagnostic');
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.report).toEqual({ findings: [] });
+      expect(body.report).toEqual({ findings: [], helperLlm });
       expect(body.lastError).toBeNull();
     });
   });
@@ -1291,11 +1325,16 @@ describe('diagnostics routes', () => {
 
     test('invokes runNow and returns the report', async () => {
       let called = 0;
+      const helperLlm = helperLlmSnapshot({
+        generatedAt: 456,
+        totals: helperLlmCounters({ requestCount: 2, successCount: 2 }),
+        byProvider: [{ provider: 'groq', model: 'groq-model', ...helperLlmCounters({ requestCount: 2, successCount: 2 }) }],
+      });
       const diagnosticRunner = {
         getStatus: () => ({ report: null, lastError: null }),
         runNow: () => {
           called++;
-          return { findings: [{ type: 'slow-route', severity: 'warn' }] };
+          return { findings: [{ type: 'slow-route', severity: 'warn' }], helperLlm };
         },
       };
       const res = await mkApp({ diagnosticRunner: diagnosticRunner as never })
@@ -1304,6 +1343,7 @@ describe('diagnostics routes', () => {
       expect(called).toBe(1);
       const body = await res.json();
       expect(body.report.findings).toHaveLength(1);
+      expect(body.report.helperLlm).toEqual(helperLlm);
     });
   });
 

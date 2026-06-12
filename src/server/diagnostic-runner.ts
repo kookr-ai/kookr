@@ -12,6 +12,8 @@
 
 import { runDiagnostic, type DiagnosticInput, type DiagnosticReport, type PreviousSnapshot } from '../core/self-diagnostic.js';
 import type { DetectionStats } from '../core/detection-stats.js';
+import { getHelperLlmDiagnosticsSnapshot } from '../core/llm-factory.js';
+import type { HelperLlmDiagnosticsSnapshot } from '../core/llm-types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,6 +28,8 @@ export interface DiagnosticRunnerDeps {
   /** Measures snapshot size by serializing the current snapshot message.
    *  Called once per diagnostic run — not a free accessor. */
   measureSnapshotSizeBytes: () => number;
+  /** Diagnostics-only aggregate for Kookr's own helper-LLM calls. */
+  getHelperLlmDiagnosticsSnapshot?: () => HelperLlmDiagnosticsSnapshot;
 }
 
 export interface DiagnosticStatus {
@@ -79,6 +83,7 @@ export class DiagnosticRunner {
       wsBroadcastCount: this.deps.getWsBroadcastCount(),
       eventCounts: this.deps.getEventCounts(),
       lastSnapshotSizeBytes: this.deps.measureSnapshotSizeBytes(),
+      helperLlm: (this.deps.getHelperLlmDiagnosticsSnapshot ?? getHelperLlmDiagnosticsSnapshot)(),
     };
   }
 

@@ -216,6 +216,7 @@ export async function summarizeAgent(
   let raw: string | null;
   try {
     raw = await client.complete({
+      useCase: 'agent_speech_summary',
       maxTokens: cfg.maxTokens,
       system: buildSystemPrompt(mode, verbosity),
       userMessage: renderUserMessage(context),
@@ -268,4 +269,3 @@ export async function summarizeAgent(
     fallbackReason: null,
   };
 }
-

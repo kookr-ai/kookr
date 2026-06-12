@@ -9,6 +9,7 @@
  */
 
 import type { DetectionStats } from './detection-stats.js';
+import type { HelperLlmDiagnosticsSnapshot } from './llm-types.js';
 import type { AnomalyType } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,8 @@ export interface DiagnosticInput {
   eventCounts: Record<string, number>;
   /** Last snapshot payload size in bytes. */
   lastSnapshotSizeBytes: number;
+  /** Aggregate diagnostics for Kookr's own helper-LLM calls. */
+  helperLlm: HelperLlmDiagnosticsSnapshot;
 }
 
 /** Output of the diagnostic function. */
@@ -57,6 +60,8 @@ export interface DiagnosticReport {
   timestamp: number;
   /** List of findings (empty = healthy). */
   findings: DiagnosticFinding[];
+  /** Diagnostics-only accounting for Kookr's own helper-LLM calls. */
+  helperLlm: HelperLlmDiagnosticsSnapshot;
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +138,7 @@ export function runDiagnostic(
     }
   }
 
-  return { timestamp: now, findings };
+  return { timestamp: now, findings, helperLlm: input.helperLlm };
 }
 
 // ---------------------------------------------------------------------------

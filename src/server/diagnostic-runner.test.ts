@@ -24,6 +24,25 @@ function createMockDeps(overrides?: Partial<DiagnosticRunnerDeps>): DiagnosticRu
     getWsBroadcastCount: () => 0,
     getEventCounts: () => ({}),
     measureSnapshotSizeBytes: () => 10_000,
+    getHelperLlmDiagnosticsSnapshot: () => ({
+      schemaVersion: 'helper-llm-diagnostics.v1',
+      generatedAt: 123,
+      totals: {
+        requestCount: 0,
+        successCount: 0,
+        failureCount: 0,
+        nullResponseCount: 0,
+        errorCount: 0,
+        abortedCount: 0,
+        totalLatencyMs: 0,
+        averageLatencyMs: 0,
+        maxLatencyMs: 0,
+        failureCategories: {},
+      },
+      byUseCase: [],
+      byProvider: [],
+      byUseCaseProvider: [],
+    }),
     ...overrides,
   };
 }
@@ -39,6 +58,7 @@ describe('DiagnosticRunner', () => {
     expect(report).toBeDefined();
     expect(report.timestamp).toBeGreaterThan(0);
     expect(report.findings).toEqual([]);
+    expect(report.helperLlm.schemaVersion).toBe('helper-llm-diagnostics.v1');
   });
 
   test('getStatus returns null report before first run', () => {
@@ -54,6 +74,7 @@ describe('DiagnosticRunner', () => {
     const status = runner.getStatus();
     expect(status.report).not.toBeNull();
     expect(status.report!.findings).toEqual([]);
+    expect(status.report!.helperLlm.generatedAt).toBe(123);
   });
 
   test('runNow records lastError when a dependency throws', () => {

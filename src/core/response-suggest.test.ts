@@ -160,6 +160,7 @@ describe('generateSuggestedResponses', () => {
     expect(call.maxTokens).toBeLessThanOrEqual(1000);
     expect(call.timeoutMs).toBeGreaterThan(0);
     expect(call.timeoutMs).toBeLessThanOrEqual(30000);
+    expect(call.useCase).toBe('response_suggestion');
   });
 
   test('includes system prompt and responseFormat for structured output', async () => {

@@ -4,12 +4,16 @@
 
 import {
   classifyLlmProviderHttpStatus,
+  LLM_PROVIDER_FAILURE_CATEGORIES,
   isLlmProviderFailureCategory,
+  type HelperLlmDiagnosticsCounters,
+  type HelperLlmDiagnosticsSnapshot,
   type LlmClient,
   type LlmCompletionAuditResult,
   type LlmCompletionRequest,
   type LlmProviderFailureCategory,
   type LlmProviderFailureRecord,
+  type LlmUseCase,
 } from './llm-types.js';
 
 export interface LlmProviderBuilders {
@@ -82,6 +86,165 @@ function caughtFailure(client: LlmClient, err: unknown): LlmProviderFailureRecor
   };
 }
 
+type HelperLlmOutcome =
+  | { kind: 'success' }
+  | { kind: 'null_response'; category: LlmProviderFailureCategory }
+  | { kind: 'error'; category: LlmProviderFailureCategory }
+  | { kind: 'aborted' };
+
+type MutableHelperLlmCounters = Omit<HelperLlmDiagnosticsCounters, 'averageLatencyMs'>;
+
+interface HelperLlmBucket extends MutableHelperLlmCounters {
+  useCase: LlmUseCase;
+  provider: string;
+  model: string;
+}
+
+const helperLlmBuckets = new Map<string, HelperLlmBucket>();
+const ACCOUNTING_WRAPPED = Symbol('kookr.helperLlmAccountingWrapped');
+
+function emptyCounters(): MutableHelperLlmCounters {
+  return {
+    requestCount: 0,
+    successCount: 0,
+    failureCount: 0,
+    nullResponseCount: 0,
+    errorCount: 0,
+    abortedCount: 0,
+    totalLatencyMs: 0,
+    maxLatencyMs: 0,
+    failureCategories: {},
+  };
+}
+
+function bucketKey(useCase: LlmUseCase, provider: string, model: string): string {
+  return `${useCase}\0${provider}\0${model}`;
+}
+
+function getBucket(useCase: LlmUseCase, provider: string, model: string): HelperLlmBucket {
+  const key = bucketKey(useCase, provider, model);
+  let bucket = helperLlmBuckets.get(key);
+  if (!bucket) {
+    bucket = { useCase, provider, model, ...emptyCounters() };
+    helperLlmBuckets.set(key, bucket);
+  }
+  return bucket;
+}
+
+function recordHelperLlmOutcome(
+  client: LlmClient,
+  request: LlmCompletionRequest,
+  startedAt: number,
+  outcome: HelperLlmOutcome,
+): void {
+  const useCase = request.useCase ?? 'unspecified';
+  const bucket = getBucket(useCase, client.provider, client.model);
+  const latencyMs = Math.max(0, Date.now() - startedAt);
+  bucket.requestCount += 1;
+  bucket.totalLatencyMs += latencyMs;
+  bucket.maxLatencyMs = Math.max(bucket.maxLatencyMs, latencyMs);
+
+  switch (outcome.kind) {
+    case 'success':
+      bucket.successCount += 1;
+      return;
+    case 'null_response':
+      bucket.failureCount += 1;
+      bucket.nullResponseCount += 1;
+      bucket.failureCategories[outcome.category] = (bucket.failureCategories[outcome.category] ?? 0) + 1;
+      return;
+    case 'error':
+      bucket.failureCount += 1;
+      bucket.errorCount += 1;
+      bucket.failureCategories[outcome.category] = (bucket.failureCategories[outcome.category] ?? 0) + 1;
+      return;
+    case 'aborted':
+      bucket.failureCount += 1;
+      bucket.abortedCount += 1;
+      bucket.failureCategories.other = (bucket.failureCategories.other ?? 0) + 1;
+      return;
+  }
+}
+
+function freezeCounters(counters: MutableHelperLlmCounters): HelperLlmDiagnosticsCounters {
+  const requestCount = counters.requestCount;
+  const failureCategories: Partial<Record<LlmProviderFailureCategory, number>> = {};
+  for (const category of LLM_PROVIDER_FAILURE_CATEGORIES) {
+    const count = counters.failureCategories[category];
+    if (count) failureCategories[category] = count;
+  }
+  return {
+    requestCount,
+    successCount: counters.successCount,
+    failureCount: counters.failureCount,
+    nullResponseCount: counters.nullResponseCount,
+    errorCount: counters.errorCount,
+    abortedCount: counters.abortedCount,
+    totalLatencyMs: Math.round(counters.totalLatencyMs),
+    averageLatencyMs: requestCount > 0 ? Math.round(counters.totalLatencyMs / requestCount) : 0,
+    maxLatencyMs: Math.round(counters.maxLatencyMs),
+    failureCategories,
+  };
+}
+
+function addCounters(target: MutableHelperLlmCounters, source: HelperLlmBucket): void {
+  target.requestCount += source.requestCount;
+  target.successCount += source.successCount;
+  target.failureCount += source.failureCount;
+  target.nullResponseCount += source.nullResponseCount;
+  target.errorCount += source.errorCount;
+  target.abortedCount += source.abortedCount;
+  target.totalLatencyMs += source.totalLatencyMs;
+  target.maxLatencyMs = Math.max(target.maxLatencyMs, source.maxLatencyMs);
+  for (const [category, count] of Object.entries(source.failureCategories)) {
+    if (!isLlmProviderFailureCategory(category)) continue;
+    target.failureCategories[category] = (target.failureCategories[category] ?? 0) + (count ?? 0);
+  }
+}
+
+export function getHelperLlmDiagnosticsSnapshot(): HelperLlmDiagnosticsSnapshot {
+  const buckets = [...helperLlmBuckets.values()];
+  const totals = emptyCounters();
+  const useCases = new Map<LlmUseCase, MutableHelperLlmCounters>();
+  const providers = new Map<string, MutableHelperLlmCounters & { provider: string; model: string }>();
+
+  for (const bucket of buckets) {
+    addCounters(totals, bucket);
+    const useCaseCounters = useCases.get(bucket.useCase) ?? emptyCounters();
+    addCounters(useCaseCounters, bucket);
+    useCases.set(bucket.useCase, useCaseCounters);
+
+    const providerKey = `${bucket.provider}\0${bucket.model}`;
+    const providerCounters = providers.get(providerKey) ?? { provider: bucket.provider, model: bucket.model, ...emptyCounters() };
+    addCounters(providerCounters, bucket);
+    providers.set(providerKey, providerCounters);
+  }
+
+  return {
+    schemaVersion: 'helper-llm-diagnostics.v1',
+    generatedAt: Date.now(),
+    totals: freezeCounters(totals),
+    byUseCase: [...useCases.entries()]
+      .map(([useCase, counters]) => ({ useCase, ...freezeCounters(counters) }))
+      .sort((a, b) => a.useCase.localeCompare(b.useCase)),
+    byProvider: [...providers.values()]
+      .map(({ provider, model, ...counters }) => ({ provider, model, ...freezeCounters(counters) }))
+      .sort((a, b) => `${a.provider}\0${a.model}`.localeCompare(`${b.provider}\0${b.model}`)),
+    byUseCaseProvider: buckets
+      .map((bucket) => ({
+        useCase: bucket.useCase,
+        provider: bucket.provider,
+        model: bucket.model,
+        ...freezeCounters(bucket),
+      }))
+      .sort((a, b) => `${a.useCase}\0${a.provider}\0${a.model}`.localeCompare(`${b.useCase}\0${b.provider}\0${b.model}`)),
+  };
+}
+
+export function resetHelperLlmDiagnosticsForTest(): void {
+  helperLlmBuckets.clear();
+}
+
 export async function completeLlmWithFailureAudit(
   client: LlmClient,
   request: LlmCompletionRequest,
@@ -99,6 +262,69 @@ export async function completeLlmWithFailureAudit(
     if ((err as { name?: string } | null)?.name === 'AbortError') throw err;
     const failure = caughtFailure(client, err);
     return { text: null, failures: [failure], failureCategory: failure.category };
+  }
+}
+
+export function withHelperLlmAccounting(client: LlmClient): LlmClient {
+  if ((client as LlmClient & { [ACCOUNTING_WRAPPED]?: true })[ACCOUNTING_WRAPPED]) return client;
+  return new HelperLlmAccountingClient(client);
+}
+
+class HelperLlmAccountingClient implements LlmClient {
+  readonly [ACCOUNTING_WRAPPED] = true;
+
+  constructor(private readonly inner: LlmClient) {}
+
+  get provider(): string {
+    return this.inner.provider;
+  }
+
+  get model(): string {
+    return this.inner.model;
+  }
+
+  async complete(request: LlmCompletionRequest): Promise<string | null> {
+    const startedAt = Date.now();
+    try {
+      const text = await this.inner.complete(request);
+      recordHelperLlmOutcome(this.inner, request, startedAt, text === null
+        ? { kind: 'null_response', category: 'malformed_response' }
+        : { kind: 'success' });
+      return text;
+    } catch (err) {
+      if ((err as { name?: string } | null)?.name === 'AbortError') {
+        recordHelperLlmOutcome(this.inner, request, startedAt, { kind: 'aborted' });
+        throw err;
+      }
+      recordHelperLlmOutcome(this.inner, request, startedAt, {
+        kind: 'error',
+        category: classifyLlmProviderFailure(err),
+      });
+      throw err;
+    }
+  }
+
+  async completeWithFailureAudit(request: LlmCompletionRequest): Promise<LlmCompletionAuditResult> {
+    const startedAt = Date.now();
+    try {
+      const result = this.inner.completeWithFailureAudit
+        ? await this.inner.completeWithFailureAudit(request)
+        : await completeLlmWithFailureAudit(this.inner, request);
+      recordHelperLlmOutcome(this.inner, request, startedAt, result.text === null
+        ? { kind: 'null_response', category: result.failureCategory ?? 'malformed_response' }
+        : { kind: 'success' });
+      return result;
+    } catch (err) {
+      if ((err as { name?: string } | null)?.name === 'AbortError') {
+        recordHelperLlmOutcome(this.inner, request, startedAt, { kind: 'aborted' });
+        throw err;
+      }
+      recordHelperLlmOutcome(this.inner, request, startedAt, {
+        kind: 'error',
+        category: classifyLlmProviderFailure(err),
+      });
+      throw err;
+    }
   }
 }
 
@@ -261,7 +487,7 @@ export async function createLlmClient(builders: LlmProviderBuilders = {}): Promi
     if (!client) {
       console.warn(`[llm] KOOKR_LLM_PROVIDER=${provider} but no API key is configured for that provider`);
     }
-    return client;
+    return client ? withHelperLlmAccounting(client) : null;
   }
 
   // auto: chain configured providers in the existing order. Requesty is
@@ -269,7 +495,7 @@ export async function createLlmClient(builders: LlmProviderBuilders = {}): Promi
   const clients: LlmClient[] = [];
   for (const build of [buildGroq, buildGemini, buildAnthropic, () => buildOpenRouter(builders)]) {
     const client = await build();
-    if (client) clients.push(client);
+    if (client) clients.push(withHelperLlmAccounting(client));
   }
 
   if (clients.length === 0) return null;

@@ -75,6 +75,7 @@ describe('summarizeTaskForSpeech', () => {
       },
     });
     const call = (client.complete as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.useCase).toBe('task_speech_summary');
     expect(call.userMessage).toContain('<<<TASK_CONTEXT>>>');
     expect(call.userMessage).toContain('<<<END>>>');
     expect(call.userMessage.length).toBeLessThan(700);
