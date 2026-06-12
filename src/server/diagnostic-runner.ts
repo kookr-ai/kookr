@@ -14,6 +14,7 @@ import { runDiagnostic, type DiagnosticInput, type DiagnosticReport, type Previo
 import type { DetectionStats } from '../core/detection-stats.js';
 import { getHelperLlmDiagnosticsSnapshot } from '../core/llm-factory.js';
 import type { HelperLlmDiagnosticsSnapshot } from '../core/llm-types.js';
+import type { PersistenceHealthSnapshot } from '../core/persistence-health.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,6 +31,8 @@ export interface DiagnosticRunnerDeps {
   measureSnapshotSizeBytes: () => number;
   /** Diagnostics-only aggregate for Kookr's own helper-LLM calls. */
   getHelperLlmDiagnosticsSnapshot?: () => HelperLlmDiagnosticsSnapshot;
+  /** In-memory health for runtime persistence attempts. */
+  getPersistenceHealthSnapshot?: () => PersistenceHealthSnapshot;
 }
 
 export interface DiagnosticStatus {
@@ -84,6 +87,7 @@ export class DiagnosticRunner {
       eventCounts: this.deps.getEventCounts(),
       lastSnapshotSizeBytes: this.deps.measureSnapshotSizeBytes(),
       helperLlm: (this.deps.getHelperLlmDiagnosticsSnapshot ?? getHelperLlmDiagnosticsSnapshot)(),
+      persistenceHealth: this.deps.getPersistenceHealthSnapshot?.(),
     };
   }
 

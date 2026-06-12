@@ -43,6 +43,7 @@ import {
   type ResourceStatusSampler,
 } from './resource-status-service.js';
 import { createOperationalAlertEvaluator } from './operational-alert-rules.js';
+import { PersistenceHealthTracker } from '../core/persistence-health.js';
 import { createHookParseDegradationEvaluator } from './hook-parse-degradation-rules.js';
 import {
   getOperationalAlertConfig,
@@ -857,6 +858,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
   realtime.setScheduleStore(scheduleStore);
   realtime.setSnapshotAchievementsReady(true);
+  const persistenceHealth = new PersistenceHealthTracker();
 
   // --- Self-diagnostic runner ---
   const serverStartMs = Date.now();
@@ -878,6 +880,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       });
       return JSON.stringify(msg).length;
     },
+    getPersistenceHealthSnapshot: () => persistenceHealth.snapshot(),
   });
   // Diagnostics are on-demand by default; /api/diagnostic/run triggers runNow().
 
@@ -1093,25 +1096,35 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // silent-data-loss pipeline this RFC set out to prevent.
     const snoozes = serializeSnoozed(queue, taskStore);
     const suppressionState = suppressionTracker?.export();
-    await saveTasksWithSnapshotPolicy(
-      taskStore.getAllTasks(),
-      tasksFile,
-      'predelete',
-      taskStore.getLifetimeSpendUsd(),
-      snoozes,
-      suppressionState,
-      taskStore.listRelations(),
-    );
+    try {
+      await saveTasksWithSnapshotPolicy(
+        taskStore.getAllTasks(),
+        tasksFile,
+        'predelete',
+        taskStore.getLifetimeSpendUsd(),
+        snoozes,
+        suppressionState,
+        taskStore.listRelations(),
+      );
+      persistenceHealth.recordSuccess('task_state');
+    } catch (err) {
+      persistenceHealth.recordFailure('task_state', err);
+      throw err;
+    }
   };
 
   const operationalAlertConfig = resetOperationalAlertConfig();
-  const operationalAlertEvaluator = createOperationalAlertEvaluator(getOperationalAlertConfig);
+  const operationalAlertEvaluator = createOperationalAlertEvaluator(
+    getOperationalAlertConfig,
+    () => persistenceHealth.snapshot(),
+  );
   if (operationalAlertEvaluator.hasEnabledRules()) {
     const sustainSeconds = (operationalAlertConfig.sustainSamples * RESOURCE_STATUS_INTERVAL_MS) / 1000;
     console.log(
       `[ops-alerts] thresholds: cpu=${operationalAlertConfig.cpuPercent || 'off'}% ` +
         `mem=${operationalAlertConfig.memoryPercent || 'off'}% ` +
         `eventLoopDelay=${operationalAlertConfig.eventLoopDelayMs || 'off'}ms ` +
+        `persistence=on ` +
         `(fires after ${operationalAlertConfig.sustainSamples} samples ≈ ${sustainSeconds}s sustained)`,
     );
   } else {
@@ -1192,6 +1205,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       quotaAdapter, getMaxActiveTasks, suppressionTracker,
       budgetChecker, progressBudgetBurnDiagnostics,
       detectionStatsStore,
+      persistenceHealth,
       worktreeRegistry,
       worktreeRegistryRepoPath: serverCwd,
       getDashboardClientCount: () => connectionRegistry.dashboardCount(),
@@ -1284,7 +1298,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     await backgroundServices.stop();
     stopWebhookObserver?.();
 
-    // Final save
+    // Final task-state save
     try {
       const snoozedFindings = serializeSnoozed(queue, taskStore);
       await saveTasks(
@@ -1295,6 +1309,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         undefined,
         taskStore.listRelations(),
       );
+      persistenceHealth.recordSuccess('task_state');
+    } catch (err) {
+      persistenceHealth.recordFailure('task_state', err);
+      console.error('Error saving tasks on shutdown:', err);
+    }
+
+    try {
       await ossAttemptStore.save();
       await projectConfigStore.save();
       await scheduleStore.persist();

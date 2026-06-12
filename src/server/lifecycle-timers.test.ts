@@ -3,6 +3,7 @@ import {
   findFirstActiveSession,
   restoreExpiredSnoozes,
   runBudgetCheck,
+  runPersistenceSaveTick,
   runProgressBudgetBurnDiagnosticSample,
 } from './lifecycle-timers.js';
 import { BudgetChecker } from '../core/budget-checker.js';
@@ -11,6 +12,7 @@ import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import type { Anomaly } from '../core/types.js';
 import type { ProgressBudgetBurnDiagnostics } from '../core/progress-budget-burn-diagnostics.js';
+import { PersistenceHealthTracker } from '../core/persistence-health.js';
 
 function makeAnomaly(agentId: string): Anomaly {
   return {
@@ -272,5 +274,74 @@ describe('restoreExpiredSnoozes', () => {
 
     expect(queue.next()).toBeNull();
     expect(queue.getSnoozed()).toHaveLength(0);
+  });
+});
+
+describe('runPersistenceSaveTick', () => {
+  test('records task-state and detection-stats save failures without blocking either path', async () => {
+    const taskStore = new TaskStore();
+    const queue = new AttentionQueue();
+    const tracker = new PersistenceHealthTracker();
+    const taskError = Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    const statsError = new Error('stats busy');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await runPersistenceSaveTick({
+      taskStore,
+      queue,
+      tasksFile: '/tmp/tasks.json',
+      persistenceHealth: tracker,
+      taskStateSaver: vi.fn(async () => {
+        throw taskError;
+      }),
+      detectionStatsStore: {
+        save: vi.fn(async () => {
+          throw statsError;
+        }),
+      },
+      getDetectionStatsSnapshot: () => ({ checks: {}, fires: {}, falsePositives: {} } as never),
+    });
+
+    expect(tracker.snapshot().targets.task_state).toMatchObject({
+      totalFailures: 1,
+      consecutiveFailures: 1,
+      lastError: { code: 'ENOSPC', hard: true },
+    });
+    expect(tracker.snapshot().targets.detection_stats).toMatchObject({
+      totalFailures: 1,
+      consecutiveFailures: 1,
+      lastError: { message: 'stats busy', hard: false },
+    });
+    expect(consoleError).toHaveBeenCalledWith('Error saving tasks:', taskError);
+    expect(consoleError).toHaveBeenCalledWith('Error saving detection stats:', statsError);
+
+    consoleError.mockRestore();
+  });
+
+  test('records recovery after successful saves', async () => {
+    const taskStore = new TaskStore();
+    const queue = new AttentionQueue();
+    const tracker = new PersistenceHealthTracker();
+    tracker.recordFailure('task_state', new Error('previous failure'));
+    tracker.recordFailure('detection_stats', new Error('previous failure'));
+
+    await runPersistenceSaveTick({
+      taskStore,
+      queue,
+      tasksFile: '/tmp/tasks.json',
+      persistenceHealth: tracker,
+      taskStateSaver: vi.fn(async () => undefined),
+      detectionStatsStore: { save: vi.fn(async () => undefined) },
+      getDetectionStatsSnapshot: () => ({ checks: {}, fires: {}, falsePositives: {} } as never),
+    });
+
+    expect(tracker.snapshot().targets.task_state).toMatchObject({
+      consecutiveFailures: 0,
+      lastError: null,
+    });
+    expect(tracker.snapshot().targets.detection_stats).toMatchObject({
+      consecutiveFailures: 0,
+      lastError: null,
+    });
   });
 });
