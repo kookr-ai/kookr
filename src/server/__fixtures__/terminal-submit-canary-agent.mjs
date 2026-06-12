@@ -69,6 +69,11 @@ function maybeHandleControlChar(char) {
   if (controlBuffer === PASTE_END) {
     pasteMode = false;
     controlBuffer = '';
+    // An explicit paste exempts the next Enter from typed-burst
+    // suppression, like the real composers: paste content arrives as a
+    // paste *event*, not typed keystrokes, so a following Enter submits
+    // even when the TUI drained everything in one late batch (#935).
+    readyAt = 0;
     return true;
   }
   if (PASTE_START.startsWith(controlBuffer) || PASTE_END.startsWith(controlBuffer)) {

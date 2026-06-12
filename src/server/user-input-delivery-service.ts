@@ -202,22 +202,31 @@ export class UserInputDeliveryService {
       if (isPaneBusyOrAwaitingDialog(pane)) continue;
 
       for (const delivery of candidates) {
-        if (!paneShowsUnsubmittedDelivery(pane, delivery.text)) continue;
+        // Re-read before acting: the UserPromptSubmit hook may have
+        // confirmed this delivery while we awaited the pane capture.
+        const beforeEnter = deliveries.find((d) => d.deliveryId === delivery.deliveryId);
+        if (!beforeEnter || beforeEnter.status !== 'queued' || beforeEnter.submittedHookLineId !== undefined) continue;
+        if (!paneShowsUnsubmittedDelivery(pane, beforeEnter.text)) continue;
         try {
           await retry.sendEnter(sessionId);
         } catch {
           break;
         }
+        nudges += 1;
 
+        // Re-read again: a confirmation that raced the Enter write must not
+        // be clobbered back to 'queued' by the stale pre-await snapshot —
+        // the hook line is dedup-consumed and could never re-confirm.
+        const afterEnter = deliveries.find((d) => d.deliveryId === delivery.deliveryId);
+        if (!afterEnter || afterEnter.status !== 'queued') break;
         const retriedAt = this.nowIso();
-        const attempt = (delivery.enterRetries ?? 0) + 1;
-        this.replaceDelivery(sessionId, delivery.deliveryId, {
-          ...delivery,
+        const attempt = (afterEnter.enterRetries ?? 0) + 1;
+        this.replaceDelivery(sessionId, afterEnter.deliveryId, {
+          ...afterEnter,
           enterRetries: attempt,
           lastRetryAt: retriedAt,
           updatedAt: retriedAt,
         });
-        nudges += 1;
         console.log(JSON.stringify({
           event: 'user_input_delivery.retry_enter',
           sessionId,

@@ -38,7 +38,15 @@ export const PASTE_END_TEXT = '\x1b[201~';
  * and turn following bytes into terminal commands.
  */
 export function encodeBracketedPaste(text: string): Uint8Array {
-  const safeBody = text.replaceAll(PASTE_START_TEXT, '').replaceAll(PASTE_END_TEXT, '');
+  // Strip to a fixed point: a single replaceAll pass can reassemble a live
+  // marker from fragments (e.g. '\x1b[201' + a marker the pass removes +
+  // '~'), letting content close the paste envelope early.
+  let safeBody = text;
+  for (;;) {
+    const next = safeBody.replaceAll(PASTE_START_TEXT, '').replaceAll(PASTE_END_TEXT, '');
+    if (next === safeBody) break;
+    safeBody = next;
+  }
   return encoder.encode(`${PASTE_START_TEXT}${safeBody}${PASTE_END_TEXT}`);
 }
 

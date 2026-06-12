@@ -21,6 +21,7 @@ import { saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../cor
 import { cleanupSessionResources, promotePendingTasks, type LifecycleDeps, type AgentLifecycleDeps } from './agent-lifecycle.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import { getDetectionStats, type DetectionStats } from '../core/detection-stats.js';
+import type { UserInputDeliverySnapshot } from '../shared/contracts/user-input-delivery.js';
 import type { PersistenceHealthRecorder } from '../core/persistence-health.js';
 
 export interface TimerDeps {
@@ -76,7 +77,15 @@ export interface TimerDeps {
   /** True when promoted launches should be audited as running without permission prompts. */
   bypassAllPermissions?: boolean;
   /** Optional closed-loop retry service for unconfirmed mid-session input deliveries. */
-  userInputDeliveries?: { sweepUnsubmittedDeliveries(): Promise<number> };
+  userInputDeliveries?: {
+    sweepUnsubmittedDeliveries(): Promise<number>;
+    /**
+     * Forwarded to tick-driven snapshot broadcasts so they carry the
+     * pending-delivery state — without it the frontend's snapshot merge
+     * clears `userInputDeliveries` on every tick broadcast (#935).
+     */
+    getSnapshot(sessionId: string): UserInputDeliverySnapshot[];
+  };
 }
 
 export interface PersistenceSaveTickDeps {
@@ -259,6 +268,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           serverCwd,
           activityMetaProvider: deps.activityMetaProvider,
           relationTaskStore: taskStore,
+          userInputDeliveryProvider: deps.userInputDeliveries,
         }));
       }
     } catch (err) {
@@ -348,6 +358,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         serverCwd,
         activityMetaProvider: deps.activityMetaProvider,
         relationTaskStore: taskStore,
+        userInputDeliveryProvider: deps.userInputDeliveries,
       }));
     }
   }, 5_000);
@@ -400,6 +411,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           serverCwd,
           activityMetaProvider: deps.activityMetaProvider,
           relationTaskStore: taskStore,
+          userInputDeliveryProvider: deps.userInputDeliveries,
         }));
       }
     } catch (err) {
@@ -415,6 +427,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           serverCwd,
           activityMetaProvider: deps.activityMetaProvider,
           relationTaskStore: taskStore,
+          userInputDeliveryProvider: deps.userInputDeliveries,
         }));
       }
     } catch (err) {
