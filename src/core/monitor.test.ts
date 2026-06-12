@@ -145,20 +145,19 @@ describe('Monitor', () => {
         { type: 'session_start', sessionId: 's1', transcriptPath },
       ]);
 
-      monitor.applyWatchdogVerdict(
-        'agent-1',
-        {
-          status: 'stale_agent',
-          anomaly: {
-            agentId: 'agent-1',
-            type: 'stale_agent',
-            severity: 'warning',
-            explanation: 'No activity for 2 min',
-            detectedAt: new Date('2026-06-11T10:00:00.000Z'),
-          },
+      const verdict = {
+        status: 'stale_agent' as const,
+        anomaly: {
+          agentId: 'agent-1',
+          type: 'stale_agent' as const,
+          severity: 'warning' as const,
+          explanation: 'No activity for 2 min',
+          detectedAt: new Date('2026-06-11T10:00:00.000Z'),
         },
-        { paneCaptureSucceeded: true },
-      );
+      };
+      // Two consecutive verdicts to clear the silence-finding flicker debounce.
+      monitor.applyWatchdogVerdict('agent-1', verdict, { paneCaptureSucceeded: true });
+      monitor.applyWatchdogVerdict('agent-1', verdict, { paneCaptureSucceeded: true });
 
       const anomaly = queue.peek('agent-1');
       expect(anomaly?.type).toBe('stale_agent');
@@ -1219,14 +1218,44 @@ describe('Monitor', () => {
       detectedAt: new Date('2026-04-23T00:00:00Z'),
     };
 
-    test('actionable verdict enqueues the anomaly and reports change', () => {
-      const changed = monitor.applyWatchdogVerdict(
+    test('a stale_agent verdict enqueues after two consecutive ticks (flicker debounce)', () => {
+      // First tick: recorded but not surfaced — a single-tick verdict is
+      // routinely a hook-lag artifact that flips back to healthy next tick.
+      const first = monitor.applyWatchdogVerdict(
         agentId,
         { status: 'stale_agent', anomaly: staleAnomaly },
         { paneCaptureSucceeded: true },
       );
-      expect(changed).toBe(true);
+      expect(first).toBe(false);
+      expect(queue.peek(agentId)).toBeNull();
+
+      const second = monitor.applyWatchdogVerdict(
+        agentId,
+        { status: 'stale_agent', anomaly: staleAnomaly },
+        { paneCaptureSucceeded: true },
+      );
+      expect(second).toBe(true);
       expect(queue.peek(agentId)?.type).toBe('stale_agent');
+    });
+
+    test('a non-actionable verdict between two stale_agent verdicts resets the debounce', () => {
+      monitor.applyWatchdogVerdict(
+        agentId,
+        { status: 'stale_agent', anomaly: staleAnomaly },
+        { paneCaptureSucceeded: true },
+      );
+      monitor.applyWatchdogVerdict(
+        agentId,
+        { status: 'healthy' },
+        { paneCaptureSucceeded: true },
+      );
+      const afterReset = monitor.applyWatchdogVerdict(
+        agentId,
+        { status: 'stale_agent', anomaly: staleAnomaly },
+        { paneCaptureSucceeded: true },
+      );
+      expect(afterReset).toBe(false);
+      expect(queue.peek(agentId)).toBeNull();
     });
 
     test('non-actionable verdict clears a leftover watchdog-owned stale_agent entry', () => {
@@ -1444,7 +1473,7 @@ describe('Monitor', () => {
         expect(queue.peek(agentId)).toBeNull();
       });
 
-      test('after subagent_stop, the next stale_agent verdict enqueues normally', () => {
+      test('after subagent_stop, the next persisting stale_agent verdict enqueues normally', () => {
         monitor.processEvents(agentId, [makeSubagentStart('s1', 'sub-1')]);
         monitor.applyWatchdogVerdict(
           agentId,
@@ -1455,6 +1484,12 @@ describe('Monitor', () => {
 
         monitor.processEvents(agentId, [makeSubagentStop('s1', 'sub-1')]);
 
+        // Two consecutive verdicts to clear the flicker debounce.
+        monitor.applyWatchdogVerdict(
+          agentId,
+          { status: 'stale_agent', anomaly: staleAnomaly },
+          { paneCaptureSucceeded: true },
+        );
         const changed = monitor.applyWatchdogVerdict(
           agentId,
           { status: 'stale_agent', anomaly: staleAnomaly },
@@ -1473,6 +1508,12 @@ describe('Monitor', () => {
           // Advance just past SUBAGENT_TTL_MS (30 min) — eviction is lazy on next read.
           vi.setSystemTime(new Date('2026-04-23T00:30:01Z'));
 
+          // Two consecutive verdicts to clear the flicker debounce.
+          monitor.applyWatchdogVerdict(
+            agentId,
+            { status: 'stale_agent', anomaly: staleAnomaly },
+            { paneCaptureSucceeded: true },
+          );
           const changed = monitor.applyWatchdogVerdict(
             agentId,
             { status: 'stale_agent', anomaly: staleAnomaly },
@@ -1495,30 +1536,36 @@ describe('Monitor', () => {
         detectedAt: new Date('2026-04-23T00:00:00Z'),
       });
 
-      test('a lone hook_disconnected verdict still enqueues (one agent is not systemic)', () => {
-        const changed = monitor.applyWatchdogVerdict(
-          'agent-a',
-          { status: 'hook_disconnected', anomaly: hookAnomalyFor('agent-a') },
+      /** Apply the same hook_disconnected verdict twice to clear the flicker debounce. */
+      const applyHookVerdict = (id: string) => {
+        monitor.applyWatchdogVerdict(
+          id,
+          { status: 'hook_disconnected', anomaly: hookAnomalyFor(id) },
           { paneCaptureSucceeded: true },
         );
+        return monitor.applyWatchdogVerdict(
+          id,
+          { status: 'hook_disconnected', anomaly: hookAnomalyFor(id) },
+          { paneCaptureSucceeded: true },
+        );
+      };
+
+      test('a lone hook_disconnected verdict still enqueues (one agent is not systemic)', () => {
+        const changed = applyHookVerdict('agent-a');
         expect(changed).toBe(true);
         expect(queue.peek('agent-a')?.type).toBe('hook_disconnected');
         expect(getDetectionStats().suppressed.hook_disconnected).toBe(0);
+        // The watchdog path now records detection telemetry: 2 verdicts
+        // checked, 1 finding admitted.
+        expect(getDetectionStats().checks.hook_disconnected).toBe(2);
+        expect(getDetectionStats().fires.hook_disconnected).toBe(1);
       });
 
-      test('a second concurrent hook_disconnected is read as a systemic stall: suppressed and siblings purged', () => {
-        monitor.applyWatchdogVerdict(
-          'agent-a',
-          { status: 'hook_disconnected', anomaly: hookAnomalyFor('agent-a') },
-          { paneCaptureSucceeded: true },
-        );
+      test('a second agent producing hook_disconnected is read as a systemic stall: suppressed and siblings purged', () => {
+        applyHookVerdict('agent-a');
         expect(queue.peek('agent-a')?.type).toBe('hook_disconnected');
 
-        const changed = monitor.applyWatchdogVerdict(
-          'agent-b',
-          { status: 'hook_disconnected', anomaly: hookAnomalyFor('agent-b') },
-          { paneCaptureSucceeded: true },
-        );
+        const changed = applyHookVerdict('agent-b');
 
         expect(changed).toBe(true);
         // The second finding is suppressed (never enqueued)...
@@ -1536,54 +1583,64 @@ describe('Monitor', () => {
         expect(suppressed?.notes.some((n) => n.includes('systemic_hook_stall'))).toBe(true);
       });
 
-      test('a third concurrent hook_disconnected purges all siblings, each with its own resolution record', () => {
-        // Two agents already queued from prior ticks, a third verdict arrives.
-        monitor.applyWatchdogVerdict(
-          'agent-a',
-          { status: 'hook_disconnected', anomaly: hookAnomalyFor('agent-a') },
-          { paneCaptureSucceeded: true },
-        );
-        monitor.applyWatchdogVerdict(
-          'agent-b',
-          { status: 'hook_disconnected', anomaly: hookAnomalyFor('agent-b') },
-          { paneCaptureSucceeded: true },
-        );
-        // agent-a was enqueued; agent-b tripped the guard and purged both. Re-arm
-        // agent-a so two findings sit on the queue when agent-c's verdict lands.
-        monitor.applyWatchdogVerdict(
-          'agent-a',
-          { status: 'hook_disconnected', anomaly: hookAnomalyFor('agent-a') },
-          { paneCaptureSucceeded: true },
-        );
+      test('the systemic state does not oscillate: continued verdicts keep the queue empty', () => {
+        // Regression for the admit→purge limit cycle: the old guard counted
+        // *queued* entries, so its own purge reset the signal and the next
+        // agent's finding was re-admitted ~1 tick later — a one-second finding
+        // (and dashboard chime) rotating across every hook-silent agent.
+        applyHookVerdict('agent-a');
+        applyHookVerdict('agent-b'); // trips the guard, purges agent-a
 
-        const changed = monitor.applyWatchdogVerdict(
-          'agent-c',
-          { status: 'hook_disconnected', anomaly: hookAnomalyFor('agent-c') },
-          { paneCaptureSucceeded: true },
-        );
+        // Several more rounds of verdicts from a rotating set of agents: the
+        // verdict-window signal stays ≥2, so nothing is ever re-admitted.
+        for (let round = 0; round < 3; round++) {
+          for (const id of ['agent-a', 'agent-b', 'agent-c']) {
+            monitor.applyWatchdogVerdict(
+              id,
+              { status: 'hook_disconnected', anomaly: hookAnomalyFor(id) },
+              { paneCaptureSucceeded: true },
+            );
+            expect(queue.peek('agent-a'), `round ${round}`).toBeNull();
+            expect(queue.peek('agent-b'), `round ${round}`).toBeNull();
+            expect(queue.peek('agent-c'), `round ${round}`).toBeNull();
+          }
+        }
+        expect(getDetectionStats().suppressed.hook_disconnected).toBeGreaterThanOrEqual(8);
+      });
 
-        expect(changed).toBe(true);
-        // Every sibling finding is purged — none survive the systemic event.
-        expect(queue.peek('agent-a')).toBeNull();
-        expect(queue.peek('agent-b')).toBeNull();
-        expect(queue.peek('agent-c')).toBeNull();
+      test('systemic suppression holds within the window, then ends after it drains', () => {
+        vi.useFakeTimers();
+        try {
+          vi.setSystemTime(new Date('2026-04-23T00:00:00Z'));
+          applyHookVerdict('agent-a');
+          applyHookVerdict('agent-b'); // systemic — queue purged
+          expect(queue.peek('agent-a')).toBeNull();
 
-        // Each purged agent gets its own systemic_hook_stall resolution record,
-        // so no finding vanishes silently from the review pipeline.
-        const records = monitor.getFindingEvidenceAuditRecords();
-        for (const id of ['agent-a', 'agent-c']) {
-          const resolved = records.find(
-            (r) => r.agentId === id && r.anomalyType === 'hook_disconnected' && r.status === 'resolved'
-              && r.notes.some((n) => n.includes('systemic_hook_stall')),
-          );
-          expect(resolved, `${id} should have a systemic_hook_stall resolution`).toBeDefined();
+          // Still inside the 60s window: agent-b's recent verdict keeps the
+          // count at ≥2, so even a lone agent-a verdict stays suppressed. This
+          // is the assertion that distinguishes the verdict-window signal from
+          // the old queue-counting guard — the old guard saw an empty queue
+          // here (the purge emptied it) and re-admitted agent-a.
+          vi.setSystemTime(new Date('2026-04-23T00:00:30Z'));
+          applyHookVerdict('agent-a');
+          expect(queue.peek('agent-a')).toBeNull();
+
+          // Past the window: agent-b's contribution has drained, only agent-a
+          // remains under the threshold, so the finding is admitted.
+          vi.setSystemTime(new Date('2026-04-23T00:01:31Z'));
+          const changed = applyHookVerdict('agent-a');
+          expect(changed).toBe(true);
+          expect(queue.peek('agent-a')?.type).toBe('hook_disconnected');
+        } finally {
+          vi.useRealTimers();
         }
       });
 
       test('a concurrent stale_agent verdict is unaffected by the hook-stall guard', () => {
+        applyHookVerdict('agent-a');
         monitor.applyWatchdogVerdict(
-          'agent-a',
-          { status: 'hook_disconnected', anomaly: hookAnomalyFor('agent-a') },
+          'agent-b',
+          { status: 'stale_agent', anomaly: { ...staleAnomaly, agentId: 'agent-b' } },
           { paneCaptureSucceeded: true },
         );
         const changed = monitor.applyWatchdogVerdict(

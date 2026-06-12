@@ -13,6 +13,7 @@ export type AudioAlertOutcome =
   | 'suppressed_muted'
   | 'suppressed_dnd'
   | 'suppressed_debounced'
+  | 'suppressed_rate_limited'
   | 'audio_context_unavailable'
   | 'audio_context_error'
   | 'audio_context_suspended';
@@ -149,7 +150,10 @@ export function getClientAudioIdentity(): { clientSessionId: string; clientTabId
 }
 
 function isSuppressedOutcome(outcome: AudioAlertOutcome): boolean {
-  return outcome === 'suppressed_muted' || outcome === 'suppressed_dnd' || outcome === 'suppressed_debounced';
+  return outcome === 'suppressed_muted'
+    || outcome === 'suppressed_dnd'
+    || outcome === 'suppressed_debounced'
+    || outcome === 'suppressed_rate_limited';
 }
 
 function coalesceKey(decision: LocalAudioAlertDecision): string {

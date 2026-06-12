@@ -160,6 +160,19 @@ function scheduleChime(): AudioScheduleResult {
 }
 
 /**
+ * Record a chime that was suppressed by caller-side rate limiting (e.g. the
+ * cross-agent minimum chime interval in useAudibleAlert) without producing
+ * sound. Keeps "a finding arrived but made no noise" diagnosable in the same
+ * decision log the chime path uses.
+ */
+export function recordChimeSuppression(
+  context: AudioAlertContext,
+  reason: string,
+): LocalAudioAlertDecision {
+  return emitDecision(makeDecision(context, 'suppressed_rate_limited', reason));
+}
+
+/**
  * Single public production entry point for the chime. It records a local
  * decision for every attempted alert so operators can diagnose why Kookr made
  * noise, or why an alert was suppressed, without opening devtools.
