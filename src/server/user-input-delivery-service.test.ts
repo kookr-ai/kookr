@@ -409,3 +409,61 @@ describe('UserInputDeliveryService submit-retry sweep', () => {
     expect(sendEnter).not.toHaveBeenCalled();
   });
 });
+
+describe('UserInputDeliveryService submit-retry races (#935)', () => {
+  const T0 = '2026-06-06T10:00:00.000Z';
+
+  it('does not Enter when the hook confirms during the pane capture', async () => {
+    let nowMs = Date.parse(T0);
+    const sendEnter = vi.fn(async () => undefined);
+    // eslint-disable-next-line prefer-const
+    let service!: UserInputDeliveryService;
+    const capturePane = vi.fn(async () => {
+      // Hook line lands while the sweep awaits the capture.
+      service.observeProviderUserPrompt('s1', 'supervisor note', 'hook-1', nowMs);
+      return '\u276f supervisor note';
+    });
+    service = new UserInputDeliveryService({
+      adapter: { sendInput: vi.fn(async () => undefined) },
+      retry: { sendEnter, capturePane, confirmTimeoutMs: 15_000 },
+      now: () => new Date(nowMs),
+    });
+    await service.submitMessage('s1', 'supervisor note', 'respond');
+
+    nowMs += 15_000;
+    expect(await service.sweepUnsubmittedDeliveries()).toBe(0);
+
+    expect(sendEnter).not.toHaveBeenCalled();
+    expect(service.getSnapshot('s1')[0]).toMatchObject({ status: 'submitted_by_agent' });
+  });
+
+  it('never clobbers a confirmation that raced the Enter write back to queued', async () => {
+    let nowMs = Date.parse(T0);
+    // eslint-disable-next-line prefer-const
+    let service!: UserInputDeliveryService;
+    const sendEnter = vi.fn(async () => {
+      // The original submit goes through just as the nudge is written; the
+      // hook confirms before the sweep records its retry bookkeeping.
+      service.observeProviderUserPrompt('s1', 'supervisor note', 'hook-1', nowMs);
+    });
+    service = new UserInputDeliveryService({
+      adapter: { sendInput: vi.fn(async () => undefined) },
+      retry: {
+        sendEnter,
+        capturePane: vi.fn(async () => '\u276f supervisor note'),
+        confirmTimeoutMs: 15_000,
+      },
+      now: () => new Date(nowMs),
+    });
+    await service.submitMessage('s1', 'supervisor note', 'respond');
+
+    nowMs += 15_000;
+    expect(await service.sweepUnsubmittedDeliveries()).toBe(1);
+
+    // The hook line is dedup-consumed (observedHookIds) — reverting to
+    // 'queued' here would strand the delivery forever.
+    const delivery = service.getSnapshot('s1')[0];
+    expect(delivery).toMatchObject({ status: 'submitted_by_agent', submittedHookLineId: 'hook-1' });
+    expect(delivery).not.toHaveProperty('enterRetries');
+  });
+});

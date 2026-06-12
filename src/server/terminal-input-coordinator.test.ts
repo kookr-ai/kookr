@@ -241,7 +241,7 @@ describe('TerminalInputCoordinator with real dtach-backed terminal', () => {
     await disposeBackend();
   });
 
-  async function createCanary(sessionId: string) {
+  async function createCanary(sessionId: string, submitReadyMs = 250) {
     await disposeBackend();
     tmpDir = mkdtempSync(join(tmpdir(), 'terminal-submit-canary-'));
     backend = new LocalDtachBackend({
@@ -254,7 +254,7 @@ describe('TerminalInputCoordinator with real dtach-backed terminal', () => {
       id: sessionId,
       command: process.execPath,
       args: [CANARY_AGENT],
-      env: { KOOKR_CANARY_SUBMIT_READY_MS: '250' },
+      env: { KOOKR_CANARY_SUBMIT_READY_MS: String(submitReadyMs) },
     });
     await new Promise((resolve) => setTimeout(resolve, 100));
     const coordinator = new TerminalInputCoordinator(backend);
@@ -304,4 +304,30 @@ describe('TerminalInputCoordinator with real dtach-backed terminal', () => {
       expect(submitted).not.toContain(`IGNORED_EARLY_ENTER:reply-via-${agentType}`);
     }, 10_000);
   }
+
+  skipIfNoDtach('bracketed-paste sendInput submits when the Enter-suppress window outlasts the inter-payload delay (#935)', async () => {
+    // Models a backed-up TUI event loop: the typed-burst Enter-suppress
+    // window (2s) outlasts DEFAULT_PROMPT_SUBMIT_DELAY_MS (500ms), so a
+    // plain text+Enter write is swallowed (IGNORED_EARLY_ENTER — exactly
+    // the pre-#940 payload's failure, asserted as the control below). The
+    // bracketed-paste wrapping exempts the trailing Enter from the
+    // suppression, so the message submits regardless of timing.
+    let coordinator = await createCanary('busy-control', 2_000);
+    await coordinator.writeInputSequence(
+      'busy-control',
+      [encoder.encode('supervisor note'), ENTER_BYTES],
+      { reason: 'regression-control-busy', interPayloadDelayMs: 500 },
+    );
+    const swallowed = await waitForOutput(backend!, 'busy-control', 'IGNORED_EARLY_ENTER:supervisor note', 5_000);
+    expect(swallowed).not.toContain('SUBMITTED:supervisor note');
+
+    await backend!.killSession('busy-control');
+    coordinator.cleanupSession('busy-control');
+
+    coordinator = await createCanary('busy-fixed', 2_000);
+    const adapter = new ClaudeCodeAdapter(backend!, new TaskStore(), { terminalInputWriter: coordinator });
+    await adapter.sendInput('busy-fixed', 'supervisor note');
+    const submitted = await waitForOutput(backend!, 'busy-fixed', 'SUBMITTED:supervisor note', 5_000);
+    expect(submitted).not.toContain('IGNORED_EARLY_ENTER:supervisor note');
+  }, 20_000);
 });
