@@ -88,6 +88,7 @@ export async function generateTaskName(
 
   try {
     const rawName = await client.complete({
+      useCase: 'task_naming',
       maxTokens: 30,
       system: SYSTEM_PROMPT,
       userMessage: `Generate a task name for this coding task.\n\n${contextParts.join('\n')}`,

@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest';
 import { runDiagnostic, type DiagnosticInput, type PreviousSnapshot } from './self-diagnostic.js';
 import type { AnomalyType } from './types.js';
 import type { DetectionStats } from './detection-stats.js';
+import { getHelperLlmDiagnosticsSnapshot } from './llm-factory.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -29,6 +30,7 @@ function makeInput(overrides: Partial<DiagnosticInput> = {}): DiagnosticInput {
     wsBroadcastCount: 0,
     eventCounts: {},
     lastSnapshotSizeBytes: 10_000,
+    helperLlm: getHelperLlmDiagnosticsSnapshot(),
     ...overrides,
   };
 }
@@ -64,6 +66,8 @@ describe('Self-Diagnostic', () => {
     });
     const report = runDiagnostic(input);
     expect(report.findings).toEqual([]);
+    expect(report.helperLlm.schemaVersion).toBe('helper-llm-diagnostics.v1');
+    expect(report.helperLlm.totals.requestCount).toBe(0);
     expect(report.timestamp).toBeGreaterThan(0);
   });
 

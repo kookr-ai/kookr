@@ -2,10 +2,32 @@
  * Provider-neutral LLM client types.
  */
 
+import type {
+  HelperLlmDiagnosticsCounters,
+  HelperLlmDiagnosticsSnapshot,
+  HelperLlmFailureCategory,
+  HelperLlmProviderDiagnostics,
+  HelperLlmUseCaseDiagnostics,
+  HelperLlmUseCaseProviderDiagnostics,
+  LlmUseCase,
+} from '../shared/contracts/diagnostic.js';
+
+export type {
+  HelperLlmDiagnosticsCounters,
+  HelperLlmDiagnosticsSnapshot,
+  HelperLlmFailureCategory,
+  HelperLlmProviderDiagnostics,
+  HelperLlmUseCaseDiagnostics,
+  HelperLlmUseCaseProviderDiagnostics,
+  LlmUseCase,
+};
+
 export interface LlmCompletionRequest {
   maxTokens: number;
   system?: string;
   userMessage: string;
+  /** Diagnostics tag for Kookr's own helper-LLM call sites. */
+  useCase?: LlmUseCase;
   /** Optional structured output hint. Providers that don't support it silently ignore it. */
   responseFormat?: {
     type: 'json_schema';
@@ -18,12 +40,7 @@ export interface LlmCompletionRequest {
   signal?: AbortSignal;
 }
 
-export type LlmProviderFailureCategory =
-  | 'network_timeout'
-  | 'auth'
-  | 'server_5xx'
-  | 'malformed_response'
-  | 'other';
+export type LlmProviderFailureCategory = HelperLlmFailureCategory;
 
 export const LLM_PROVIDER_FAILURE_CATEGORIES: readonly LlmProviderFailureCategory[] = [
   'network_timeout',

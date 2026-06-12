@@ -4,7 +4,10 @@ import {
   completeLlmWithFailureAudit,
   createLlmClient,
   FallbackLlmClient,
+  getHelperLlmDiagnosticsSnapshot,
   readLlmProvider,
+  resetHelperLlmDiagnosticsForTest,
+  withHelperLlmAccounting,
 } from './llm-factory.js';
 import type { LlmClient } from './llm-types.js';
 
@@ -121,6 +124,7 @@ describe('createLlmClient', () => {
   });
 
   afterEach(() => {
+    resetHelperLlmDiagnosticsForTest();
     clearEnv();
     for (const [key, value] of Object.entries(originalEnv)) {
       if (value !== undefined) {
@@ -309,6 +313,125 @@ describe('createLlmClient', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('Unknown KOOKR_LLM_PROVIDER'));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('requesty'));
     warn.mockRestore();
+  });
+});
+
+describe('helper LLM accounting', () => {
+  beforeEach(() => {
+    clearEnv();
+    created.groq = [];
+    created.google = [];
+    created.anthropic = [];
+    created.openrouter = [];
+    created.requesty = [];
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    clearEnv();
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value !== undefined) {
+        process.env[key] = value;
+      }
+    }
+    resetHelperLlmDiagnosticsForTest();
+  });
+
+  function accountedClient(provider: string, impl: () => Promise<string | null>): LlmClient {
+    return withHelperLlmAccounting({
+      provider,
+      model: `${provider}-model`,
+      complete: vi.fn().mockImplementation(impl),
+    });
+  }
+
+  test('records success latency by use case and provider', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    const client = accountedClient('groq', async () => {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.042Z'));
+      return 'ok';
+    });
+
+    await expect(client.complete({ useCase: 'task_naming', maxTokens: 10, userMessage: 'hi' })).resolves.toBe('ok');
+
+    const snapshot = getHelperLlmDiagnosticsSnapshot();
+    expect(snapshot.totals).toMatchObject({
+      requestCount: 1,
+      successCount: 1,
+      failureCount: 0,
+      totalLatencyMs: 42,
+      averageLatencyMs: 42,
+      maxLatencyMs: 42,
+    });
+    expect(snapshot.byUseCase).toEqual([expect.objectContaining({ useCase: 'task_naming', requestCount: 1 })]);
+    expect(snapshot.byProvider).toEqual([expect.objectContaining({ provider: 'groq', model: 'groq-model', requestCount: 1 })]);
+    expect(snapshot.byUseCaseProvider).toEqual([
+      expect.objectContaining({ useCase: 'task_naming', provider: 'groq', model: 'groq-model', successCount: 1 }),
+    ]);
+  });
+
+  test('records null, thrown, and aborted helper calls as failures', async () => {
+    const nullClient = accountedClient('nullish', async () => null);
+    const errorClient = accountedClient('broken', async () => { throw Object.assign(new Error('bad gateway'), { status: 502 }); });
+    const abortErr = Object.assign(new Error('aborted'), { name: 'AbortError' });
+    const abortClient = accountedClient('aborted', async () => { throw abortErr; });
+
+    await expect(nullClient.complete({ useCase: 'response_suggestion', maxTokens: 10, userMessage: 'hi' })).resolves.toBeNull();
+    await expect(errorClient.complete({ useCase: 'response_suggestion', maxTokens: 10, userMessage: 'hi' })).rejects.toThrow('bad gateway');
+    await expect(abortClient.complete({ useCase: 'response_suggestion', maxTokens: 10, userMessage: 'hi' })).rejects.toMatchObject({ name: 'AbortError' });
+
+    const snapshot = getHelperLlmDiagnosticsSnapshot();
+    expect(snapshot.totals).toMatchObject({
+      requestCount: 3,
+      successCount: 0,
+      failureCount: 3,
+      nullResponseCount: 1,
+      errorCount: 1,
+      abortedCount: 1,
+    });
+    expect(snapshot.totals.failureCategories).toEqual({
+      malformed_response: 1,
+      server_5xx: 1,
+      other: 1,
+    });
+    expect(snapshot.byUseCase).toEqual([
+      expect.objectContaining({
+        useCase: 'response_suggestion',
+        requestCount: 3,
+        failureCount: 3,
+      }),
+    ]);
+  });
+
+  test('createLlmClient wraps each fallback provider so provider-level attempts are counted', async () => {
+    process.env.GROQ_API_KEY = 'groq-key';
+    process.env.OPENROUTER_API_KEY = 'openrouter-key';
+    const client = await createLlmClient({
+      buildOpenRouter: () => ({
+        provider: 'openrouter',
+        model: 'openrouter-model',
+        complete: vi.fn().mockResolvedValue('fallback answer'),
+      }),
+    });
+
+    await expect(client!.complete({ useCase: 'criteria_verdict', maxTokens: 10, userMessage: 'hi' })).resolves.toBe('fallback answer');
+
+    const attempts = getHelperLlmDiagnosticsSnapshot().byUseCaseProvider;
+    expect(attempts).toEqual([
+      expect.objectContaining({
+        useCase: 'criteria_verdict',
+        provider: 'groq',
+        model: 'groq-model',
+        nullResponseCount: 1,
+      }),
+      expect.objectContaining({
+        useCase: 'criteria_verdict',
+        provider: 'openrouter',
+        model: 'openrouter-model',
+        successCount: 1,
+      }),
+    ]);
   });
 });
 

@@ -116,5 +116,7 @@ describe('criteria verdict', () => {
     expect(verdict?.source).toBe('llm-error');
     expect(verdict?.summary).toEqual({ pass: 0, fail: 0, unknown: 1 });
     expect(verdict?.error).toContain('provider down');
+    const call = vi.mocked(client.complete).mock.calls[0][0];
+    expect(call.useCase).toBe('criteria_verdict');
   });
 });
