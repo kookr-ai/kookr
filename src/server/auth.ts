@@ -1,6 +1,8 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
-import type { MiddlewareHandler } from 'hono';
+import { getConnInfo } from '@hono/node-server/conninfo';
+import type { Context, MiddlewareHandler } from 'hono';
+import { AuthThrottle, type AuthThrottleRejectReason, type AuthThrottleSnapshot } from './auth-throttle.js';
 import { isViewerAllowedRoute, type Scope } from './viewer-data-policy.js';
 
 export type { Scope } from './viewer-data-policy.js';
@@ -135,6 +137,12 @@ export interface ApiAuthConfig {
    * `bad_token`. Keeping this a seam lets #802 ship and be tested standalone.
    */
   resolveViewer?: (token: string) => ViewerTokenResolution;
+  /**
+   * Shared per-source throttle for failed credential attempts. The same
+   * `ApiAuthConfig` instance is threaded into HTTP middleware and the raw WS
+   * upgrade gate, so this state covers both paths.
+   */
+  authThrottle?: AuthThrottle;
 }
 
 /**
@@ -244,6 +252,7 @@ export type AuthRejectReason =
   | 'revoked'
   | 'expired'
   | 'cross_origin'
+  | 'throttled'
   /** A *valid* viewer credential hit an owner-only route (viewer GET deny-list). */
   | 'viewer_route_denied';
 
@@ -257,6 +266,24 @@ function logAuthRejected(reason: AuthRejectReason, remoteAddr: string | undefine
   console.warn(
     JSON.stringify({ event: 'auth_rejected', reason, remoteAddr: remoteAddr ?? null, ...(grantId ? { grantId } : {}) }),
   );
+}
+
+export function getOrCreateAuthThrottle(config: ApiAuthConfig): AuthThrottle | undefined {
+  if (!config.required || !config.token) return undefined;
+  config.authThrottle ??= new AuthThrottle();
+  return config.authThrottle;
+}
+
+export function getAuthThrottleSnapshot(config: ApiAuthConfig | undefined): AuthThrottleSnapshot {
+  return (config?.authThrottle ?? new AuthThrottle()).snapshot();
+}
+
+export function remoteAddrFromContext(c: Context): string | undefined {
+  try {
+    return getConnInfo(c).remote.address ?? c.req.header('x-forwarded-for') ?? undefined;
+  } catch {
+    return c.req.header('x-forwarded-for') ?? undefined;
+  }
 }
 
 export interface BrowserOriginHeaders {
@@ -417,6 +444,9 @@ export function resolveActor(config: ApiAuthConfig, ctx: ActorResolutionContext)
   // R9: loopback / auth-not-required ⇒ owner, hot path untouched.
   if (!config.required || !config.token) return { kind: 'owner' };
   if (isLoopbackHost(ctx.host)) return { kind: 'owner' };
+  const throttle = getOrCreateAuthThrottle(config);
+  const source = ctx.remoteAddr;
+  const lockedOut = throttle?.isLockedOut(source) ?? false;
 
   const presented =
     extractBearerToken(ctx.authorization)
@@ -429,15 +459,31 @@ export function resolveActor(config: ApiAuthConfig, ctx: ActorResolutionContext)
     // all" only coarsely: a browser request carrying some cookie but no
     // credential is the common #804 failure mode worth its own reason.
     const hadCookie = !!ctx.cookies && Object.keys(ctx.cookies).length > 0;
-    logAuthRejected(hadCookie ? 'cookie_missing' : 'no_credential', ctx.remoteAddr);
+    const reason = hadCookie ? 'cookie_missing' : 'no_credential';
+    if (lockedOut) throttle?.recordThrottledAttempt(source);
+    else throttle?.recordFailure(source, reason);
+    logAuthRejected(lockedOut ? 'throttled' : reason, ctx.remoteAddr);
     return null;
   }
 
   const classified = classifyCredential(config, presented);
-  if (classified.actor) return classified.actor;
-  if (classified.reason === 'bad_token') {
+  if (classified.actor) {
+    if (lockedOut) {
+      throttle?.recordThrottledAttempt(source);
+      logAuthRejected('throttled', ctx.remoteAddr);
+      return null;
+    }
+    if (classified.actor.kind === 'owner') throttle?.reset(source);
+    return classified.actor;
+  }
+  if (lockedOut) {
+    throttle?.recordThrottledAttempt(source, classified.reason as AuthThrottleRejectReason);
+    logAuthRejected('throttled', ctx.remoteAddr);
+  } else if (classified.reason === 'bad_token') {
+    throttle?.recordFailure(source, 'bad_token');
     logAuthRejected('bad_token', ctx.remoteAddr);
   } else {
+    throttle?.recordFailure(source, classified.reason);
     logAuthRejected(classified.reason, ctx.remoteAddr, classified.grantId);
   }
   return null;
@@ -502,13 +548,15 @@ export function createApiAuthMiddleware(config: ApiAuthConfig): MiddlewareHandle
 
     if (isUnauthenticatedRoute(method, path)) return next();
 
+    const remoteAddr = remoteAddrFromContext(c);
+
     const actor = resolveActor(config, {
       // The bind is non-loopback here (config.required); no trusted per-request
       // host to elevate from, so rely on config + presented credential.
       authorization: c.req.header('authorization'),
       apiTokenHeader: c.req.header(API_TOKEN_HEADER),
       cookies: parseCookieHeader(c.req.header('cookie')),
-      remoteAddr: c.req.header('x-forwarded-for') ?? undefined,
+      remoteAddr,
     });
 
     // Lowercase-hyphenated machine codes match the existing auth-rejection

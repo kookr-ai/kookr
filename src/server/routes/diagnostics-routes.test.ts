@@ -11,6 +11,7 @@ import { GitHubStateStore } from '../../core/github-state-store.js';
 import { recordSuppression, resetDetectionStats } from '../../core/detection-stats.js';
 import { registerDiagnosticsRoutes } from './diagnostics-routes.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
+import { AuthThrottle } from '../auth-throttle.js';
 import { ViewerGrantStore } from '../../core/viewer-grants.js';
 import { ViewerConnectionRegistry } from '../viewer-connection-registry.js';
 import { CollaborationAuditLog } from '../collaboration-audit-log.js';
@@ -95,6 +96,27 @@ describe('diagnostics routes', () => {
           p99Ms: 20,
         }],
       });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/diagnostics/auth-throttle
+  // ---------------------------------------------------------------------------
+  describe('GET /api/diagnostics/auth-throttle', () => {
+    test('returns the shared auth throttle snapshot when wired', async () => {
+      const authThrottle = new AuthThrottle({ freeFailures: 0, audit: () => {} });
+      authThrottle.recordFailure('10.0.0.11', 'bad_token');
+
+      const res = await mkApp({
+        apiAuth: { required: true, token: 'secret', authThrottle },
+      }).request('/api/diagnostics/auth-throttle');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(expect.objectContaining({
+        schemaVersion: 'auth-throttle.v1',
+        totalFailedAttempts: 1,
+        lockedOutSources: [expect.objectContaining({ source: '10.0.0.11', failures: 1 })],
+      }));
     });
   });
 
