@@ -44,7 +44,17 @@ interface Props {
    */
   clearCompletedFinishedCount: number;
   clearCompletedTerminatedCount: number;
+  clearCompletedFinishedTaskIds?: string[];
+  clearCompletedTerminatedTaskIds?: string[];
   clearCompletedProjectId?: string;
+  pendingDeletionTaskIds?: ReadonlySet<string>;
+  onQueueDeleteTask?: (args: { taskId: string; label: string }) => void;
+  onQueueClearCompleted?: (args: {
+    includeTerminated: boolean;
+    projectId?: string;
+    taskIds: string[];
+    count: number;
+  }) => void;
 }
 
 function agentProjectLabel(agent: AgentState): string {
@@ -1116,11 +1126,20 @@ function SnoozedRow({ agent, selected, send }: {
 // cancelled); terminated is opt-in via the checkbox inside the dialog. See
 // rfc-task-loss-prevention.md D2.
 //
-function ClearCompletedButton({ finishedCount, terminatedCount, projectId, send }: {
+function ClearCompletedButton({
+  finishedCount,
+  terminatedCount,
+  finishedTaskIds,
+  terminatedTaskIds,
+  projectId,
+  onQueueClearCompleted,
+}: {
   finishedCount: number;
   terminatedCount: number;
+  finishedTaskIds: string[];
+  terminatedTaskIds: string[];
   projectId?: string;
-  send: (msg: ClientMessage) => void;
+  onQueueClearCompleted?: Props['onQueueClearCompleted'];
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [includeTerminated, setIncludeTerminated] = useState(false);
@@ -1138,7 +1157,15 @@ function ClearCompletedButton({ finishedCount, terminatedCount, projectId, send 
   };
   const cancelConfirm = () => setConfirmOpen(false);
   const confirmClear = () => {
-    send({ type: 'clearCompleted', includeTerminated, ...(projectId ? { projectId } : {}) });
+    const taskIds = includeTerminated
+      ? [...finishedTaskIds, ...terminatedTaskIds]
+      : finishedTaskIds;
+    onQueueClearCompleted?.({
+      includeTerminated,
+      ...(projectId ? { projectId } : {}),
+      taskIds,
+      count: taskIds.length,
+    });
     setConfirmOpen(false);
   };
 
@@ -1177,10 +1204,12 @@ function ClearCompletedButton({ finishedCount, terminatedCount, projectId, send 
   );
 }
 
-function CompletedRow({ agent, selected, send }: {
+function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDeleteTask }: {
   agent: AgentState;
   selected: boolean;
   send: (msg: ClientMessage) => void;
+  pendingDeletion: boolean;
+  onQueueDeleteTask?: Props['onQueueDeleteTask'];
 }) {
   const projectLabelText = agentProjectLabel(agent);
   const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
@@ -1195,9 +1224,10 @@ function CompletedRow({ agent, selected, send }: {
   return (
     <Tooltip text={agent.description}>
       <div
-        className={`completed-row${selected ? ' selected' : ''} ${rowVariant}`}
+        className={`completed-row${selected ? ' selected' : ''} ${rowVariant}${pendingDeletion ? ' pending-deletion' : ''}`}
         aria-current={selected ? 'true' : undefined}
         onClick={() => {
+          if (pendingDeletion) return;
           track({ type: 'agent_clicked', agentId: agent.agentId, source: 'completed_row', anomalyType: null });
           useKookrStore.getState().selectAgent(agent.agentId);
         }}
@@ -1224,10 +1254,29 @@ function CompletedRow({ agent, selected, send }: {
             {formatDuration(agent.startedAt)}
           </span>
           {agent.taskId && (
-            <button className="btn-xs" onClick={(e) => {
+            <button className="btn-xs" disabled={pendingDeletion} onClick={(e) => {
               e.stopPropagation();
               send({ type: 'reopenTask', taskId: agent.taskId! });
             }}>Reopen</button>
+          )}
+          {agent.taskId && (
+            <button
+              className="btn-xs btn-danger-xs"
+              disabled={pendingDeletion}
+              aria-label={`Delete ${agent.taskName ?? agent.agentId}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onQueueDeleteTask?.({
+                  taskId: agent.taskId!,
+                  label: agent.taskName ?? agent.agentId,
+                });
+              }}
+            >
+              Delete
+            </button>
+          )}
+          {pendingDeletion && (
+            <span className="completed-row-pending-delete">deleting soon</span>
           )}
         </div>
         {agent.ralphLoop && (
@@ -1312,7 +1361,12 @@ export function FindingsPanel({
   send,
   clearCompletedFinishedCount,
   clearCompletedTerminatedCount,
+  clearCompletedFinishedTaskIds = [],
+  clearCompletedTerminatedTaskIds = [],
   clearCompletedProjectId,
+  pendingDeletionTaskIds = new Set<string>(),
+  onQueueDeleteTask,
+  onQueueClearCompleted,
 }: Props) {
   const { standalone, groups } = useMemo(() => groupHealthyAgents(healthy), [healthy]);
   const totalAgents = findings.length + healthy.length + pending.length + completed.length + snoozed.length;
@@ -1505,8 +1559,10 @@ export function FindingsPanel({
                 <ClearCompletedButton
                   finishedCount={clearCompletedFinishedCount}
                   terminatedCount={clearCompletedTerminatedCount}
+                  finishedTaskIds={clearCompletedFinishedTaskIds}
+                  terminatedTaskIds={clearCompletedTerminatedTaskIds}
                   projectId={clearCompletedProjectId}
-                  send={send}
+                  onQueueClearCompleted={onQueueClearCompleted}
                 />
               </div>
               {!completedCollapsed && completed.map((agent) => (
@@ -1515,6 +1571,8 @@ export function FindingsPanel({
                   agent={agent}
                   selected={agent.agentId === selectedAgentId}
                   send={send}
+                  pendingDeletion={Boolean(agent.taskId && pendingDeletionTaskIds.has(agent.taskId))}
+                  onQueueDeleteTask={onQueueDeleteTask}
                 />
               ))}
             </div>

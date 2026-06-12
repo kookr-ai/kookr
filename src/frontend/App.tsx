@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import type { ProjectSummary } from '../shared/protocol.js';
+import type { ClientMessage, ProjectSummary } from '../shared/protocol.js';
 import { deriveLaunchProjectCwd } from './derive-project-cwd.js';
 import { useKookrStore } from './store/useStore.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
@@ -31,6 +31,7 @@ import { SentOverlay } from './components/SentOverlay.js';
 import { SnoozeDialog } from './components/SnoozeDialog.js';
 import { ConfirmDialog } from './components/ConfirmDialog.js';
 import { CompleteDialogFooter } from './components/CompleteDialogFooter.js';
+import { DestructiveUndoToasts } from './components/DestructiveUndoToasts.js';
 import type { TaskCompletionFeedback } from '../shared/contracts/messages.js';
 import { ProjectSidebar } from './components/ProjectSidebar.js';
 import { ProjectDetailDrawer } from './components/ProjectDetailDrawer.js';
@@ -92,6 +93,31 @@ interface ReflectionSuggestion {
   totalFindings: number;
 }
 
+export const DEFAULT_DESTRUCTIVE_ACTION_UNDO_MS = 10_000;
+
+type DestructiveClientMessage = Extract<ClientMessage, { type: 'deleteTask' }>;
+
+interface PendingDestructiveAction {
+  id: string;
+  kind: 'deleteTask' | 'clearCompleted';
+  summary: string;
+  taskIds: string[];
+  messages: DestructiveClientMessage[];
+  expiresAt: number;
+}
+
+interface QueueDeleteTaskArgs {
+  taskId: string;
+  label: string;
+}
+
+interface QueueClearCompletedArgs {
+  includeTerminated: boolean;
+  projectId?: string;
+  taskIds: string[];
+  count: number;
+}
+
 type MobileDashboardTab = 'findings' | 'task';
 type LaunchInitialTab = 'manual' | 'playbooks';
 
@@ -108,6 +134,11 @@ const WIDE_DETAIL_BREAKPOINT_PX = 1200;
 // reserved when the findings panel is resized, so the terminal can never be
 // squeezed to an unusable width on narrow desktops.
 const MIN_TERMINAL_RESERVE_PX = 480;
+
+function quotedTaskLabel(label: string): string {
+  const trimmed = label.trim();
+  return trimmed.length > 0 ? `"${trimmed}"` : 'task';
+}
 
 function reflectionDismissKey(sessionId: string): string {
   return `kookr-reflection-dismissed-${sessionId}`;
@@ -320,8 +351,12 @@ export function App() {
   const [launchProjectCwd, setLaunchProjectCwd] = useState<string | null>(null);
   const [launchInitialTab, setLaunchInitialTab] = useState<LaunchInitialTab | null>(null);
   const [reflectionSuggestion, setReflectionSuggestion] = useState<ReflectionSuggestion | null>(null);
+  const [pendingDestructiveActions, setPendingDestructiveActions] = useState<PendingDestructiveAction[]>([]);
   const operationsPopoverRef = useRef<HTMLDivElement>(null);
   const terminalFocusTriggerRef = useRef<HTMLButtonElement>(null);
+  const destructiveTimersRef = useRef<Map<string, number>>(new Map());
+  const destructiveActionSeqRef = useRef(0);
+  const sendRef = useRef(send);
   const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
   const shortcutBindings = useMemo(
     () => resolveShortcutBindings(shortcutPlatform, shortcutOverrides),
@@ -362,6 +397,73 @@ export function App() {
     setNarrowTab,
     toggleTerminalFocusMode,
   } = useKookrStore();
+
+  useEffect(() => {
+    sendRef.current = send;
+  }, [send]);
+
+  const removePendingDestructiveAction = useCallback((id: string) => {
+    const timer = destructiveTimersRef.current.get(id);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      destructiveTimersRef.current.delete(id);
+    }
+    setPendingDestructiveActions((actions) => actions.filter((action) => action.id !== id));
+  }, []);
+
+  const queueDestructiveAction = useCallback((action: Omit<PendingDestructiveAction, 'id' | 'expiresAt'>) => {
+    const delay = DEFAULT_DESTRUCTIVE_ACTION_UNDO_MS;
+    const id = `${action.kind}-${Date.now()}-${destructiveActionSeqRef.current++}`;
+    const expiresAt = Date.now() + delay;
+    const pendingAction: PendingDestructiveAction = { ...action, id, expiresAt };
+
+    const timer = window.setTimeout(() => {
+      destructiveTimersRef.current.delete(id);
+      setPendingDestructiveActions((actions) => actions.filter((candidate) => candidate.id !== id));
+      for (const message of pendingAction.messages) {
+        const sent = sendRef.current(message);
+        if (!sent) {
+          useKookrStore.getState().handleAlert(
+            '',
+            `${pendingAction.summary} was not sent because the connection is down.`,
+            'error',
+          );
+          break;
+        }
+      }
+    }, delay);
+
+    destructiveTimersRef.current.set(id, timer);
+    setPendingDestructiveActions((actions) => [...actions, pendingAction]);
+  }, []);
+
+  const queueDeleteTask = useCallback(({ taskId, label }: QueueDeleteTaskArgs) => {
+    queueDestructiveAction({
+      kind: 'deleteTask',
+      summary: `Deleting ${quotedTaskLabel(label)}`,
+      taskIds: [taskId],
+      messages: [{ type: 'deleteTask', taskId }],
+    });
+  }, [queueDestructiveAction]);
+
+  const queueClearCompleted = useCallback((args: QueueClearCompletedArgs) => {
+    if (args.count === 0 || args.taskIds.length === 0) return;
+    queueDestructiveAction({
+      kind: 'clearCompleted',
+      summary: `Deleting ${args.count} finished task${args.count === 1 ? '' : 's'}`,
+      taskIds: args.taskIds,
+      messages: args.taskIds.map((taskId) => ({ type: 'deleteTask', taskId })),
+    });
+  }, [queueDestructiveAction]);
+
+  useEffect(() => {
+    return () => {
+      for (const timer of destructiveTimersRef.current.values()) {
+        window.clearTimeout(timer);
+      }
+      destructiveTimersRef.current.clear();
+    };
+  }, []);
 
   useEffect(() => {
     void import('./styles.css');
@@ -868,14 +970,38 @@ export function App() {
     setReflectionSuggestion(null);
   }
 
+  const pendingDestructiveTaskIdSet = useMemo(() => {
+    const ids = new Set<string>();
+    for (const action of pendingDestructiveActions) {
+      for (const taskId of action.taskIds) ids.add(taskId);
+    }
+    return ids;
+  }, [pendingDestructiveActions]);
+
+  useEffect(() => {
+    if (selectedAgent?.taskId && pendingDestructiveTaskIdSet.has(selectedAgent.taskId)) {
+      selectAgent(null);
+    }
+  }, [pendingDestructiveTaskIdSet, selectAgent, selectedAgent?.taskId]);
+
   // Clear-completed counts must match the server-side sweep scope. The
   // all-projects panel omits projectId and sweeps globally; project panels pass
   // projectId and sweep only tasks in that project.
   const clearCompletedScopeAgents = selectedProject
     ? agents.filter((a) => a.projectId === selectedProject)
     : agents;
-  const clearCompletedFinishedCount = clearCompletedScopeAgents.filter((a) => a.taskStatus === 'completed' || a.taskStatus === 'cancelled').length;
-  const clearCompletedTerminatedCount = clearCompletedScopeAgents.filter((a) => a.taskStatus === 'terminated').length;
+  const clearCompletedFinishedAgents = clearCompletedScopeAgents.filter((a) =>
+    a.taskId
+    && !pendingDestructiveTaskIdSet.has(a.taskId)
+    && (a.taskStatus === 'completed' || a.taskStatus === 'cancelled')
+  );
+  const clearCompletedTerminatedAgents = clearCompletedScopeAgents.filter((a) =>
+    a.taskId
+    && !pendingDestructiveTaskIdSet.has(a.taskId)
+    && a.taskStatus === 'terminated'
+  );
+  const clearCompletedFinishedCount = clearCompletedFinishedAgents.length;
+  const clearCompletedTerminatedCount = clearCompletedTerminatedAgents.length;
 
   const findingsPanel = (
     <FindingsPanel
@@ -888,7 +1014,12 @@ export function App() {
       send={send}
       clearCompletedFinishedCount={clearCompletedFinishedCount}
       clearCompletedTerminatedCount={clearCompletedTerminatedCount}
+      clearCompletedFinishedTaskIds={clearCompletedFinishedAgents.map((agent) => agent.taskId!)}
+      clearCompletedTerminatedTaskIds={clearCompletedTerminatedAgents.map((agent) => agent.taskId!)}
       clearCompletedProjectId={selectedProject ?? undefined}
+      pendingDeletionTaskIds={pendingDestructiveTaskIdSet}
+      onQueueDeleteTask={queueDeleteTask}
+      onQueueClearCompleted={queueClearCompleted}
     />
   );
 
@@ -1145,6 +1276,10 @@ export function App() {
         shortcutBindings={shortcutBindings}
       />
       <Toasts />
+      <DestructiveUndoToasts
+        actions={pendingDestructiveActions}
+        onUndo={removePendingDestructiveAction}
+      />
       {debugTimelineEnabled && (
         <Suspense fallback={null}>
           <DebugTimelinePanel onExport={exportDebugTrace} />
