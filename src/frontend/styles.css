@@ -4188,6 +4188,28 @@ label.task-share-row {
   line-height: 1;
 }
 .toast-dismiss:hover { color: var(--text); }
+.destructive-undo-toasts {
+  top: auto;
+  bottom: 24px;
+}
+.toast-undo {
+  align-items: center;
+}
+.toast-action {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.24);
+  color: var(--text-bright);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 9px;
+  white-space: nowrap;
+}
+.toast-action:hover {
+  background: rgba(255,255,255,0.14);
+  border-color: rgba(255,255,255,0.38);
+}
 
 /* Persistent (one-time-dismissible) install nudge — top-center so it reads as a
    page-level prompt, distinct from the transient top-right toast stack. */
@@ -5374,6 +5396,14 @@ label.task-share-row {
 .completed-row.cancelled { border-left-color: var(--red); }
 .completed-row.terminated { border-left-color: var(--amber); }
 .completed-row:hover { background: var(--bg-card-hover); color: var(--text-secondary); }
+.completed-row.pending-deletion {
+  opacity: 0.62;
+  border-left-color: var(--amber);
+  background: color-mix(in srgb, var(--bg-card) 84%, var(--amber) 16%);
+}
+.completed-row.pending-deletion:hover {
+  background: color-mix(in srgb, var(--bg-card-hover) 82%, var(--amber) 18%);
+}
 .completed-row.selected {
   border-color: var(--teal);
   background: var(--bg-card-selected);
@@ -5403,6 +5433,13 @@ label.task-share-row {
 .completed-cancelled-label {
   color: var(--red);
   font-weight: 600;
+}
+.completed-row-pending-delete {
+  flex-shrink: 0;
+  color: var(--amber);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
 }
 .completed-digest {
   margin: 4px 0 0 18px;

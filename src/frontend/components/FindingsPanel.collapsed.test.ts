@@ -44,7 +44,15 @@ function renderPanel(container: HTMLElement, lists: {
   send?: (msg: ClientMessage) => void;
   clearCompletedFinishedCount?: number;
   clearCompletedTerminatedCount?: number;
+  clearCompletedFinishedTaskIds?: string[];
+  clearCompletedTerminatedTaskIds?: string[];
   clearCompletedProjectId?: string;
+  onQueueClearCompleted?: (args: {
+    includeTerminated: boolean;
+    projectId?: string;
+    taskIds: string[];
+    count: number;
+  }) => void;
 }): Root {
   const root = createRoot(container);
   act(() => {
@@ -58,7 +66,10 @@ function renderPanel(container: HTMLElement, lists: {
       send: lists.send ?? vi.fn(),
       clearCompletedFinishedCount: lists.clearCompletedFinishedCount ?? 0,
       clearCompletedTerminatedCount: lists.clearCompletedTerminatedCount ?? 0,
+      clearCompletedFinishedTaskIds: lists.clearCompletedFinishedTaskIds,
+      clearCompletedTerminatedTaskIds: lists.clearCompletedTerminatedTaskIds,
       clearCompletedProjectId: lists.clearCompletedProjectId,
+      onQueueClearCompleted: lists.onQueueClearCompleted,
     }));
   });
   return root;
@@ -202,13 +213,14 @@ describe('FindingsPanel collapsed-state persistence', () => {
     }
   });
 
-  test('clear completed sends the selected project scope when provided', async () => {
-    const send = vi.fn();
+  test('clear completed queues the selected project scope when provided', async () => {
+    const onQueueClearCompleted = vi.fn();
     root = renderPanel(container, {
       completed: [makeAgent({ agentId: 'c1', taskStatus: 'completed' })],
-      send,
       clearCompletedFinishedCount: 1,
+      clearCompletedFinishedTaskIds: ['task-1'],
       clearCompletedProjectId: 'github.com/acme/project',
+      onQueueClearCompleted,
     });
 
     const clearButton = container.querySelector<HTMLButtonElement>('button.btn-clear-completed')!;
@@ -222,19 +234,21 @@ describe('FindingsPanel collapsed-state persistence', () => {
       deleteButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(send).toHaveBeenCalledWith({
-      type: 'clearCompleted',
+    expect(onQueueClearCompleted).toHaveBeenCalledWith({
       includeTerminated: false,
       projectId: 'github.com/acme/project',
+      taskIds: ['task-1'],
+      count: 1,
     });
   });
 
-  test('clear completed omits project scope for the all-projects panel', async () => {
-    const send = vi.fn();
+  test('clear completed queues without project scope for the all-projects panel', async () => {
+    const onQueueClearCompleted = vi.fn();
     root = renderPanel(container, {
       completed: [makeAgent({ agentId: 'c1', taskStatus: 'completed' })],
-      send,
       clearCompletedFinishedCount: 1,
+      clearCompletedFinishedTaskIds: ['task-1'],
+      onQueueClearCompleted,
     });
 
     const clearButton = container.querySelector<HTMLButtonElement>('button.btn-clear-completed')!;
@@ -248,9 +262,10 @@ describe('FindingsPanel collapsed-state persistence', () => {
       deleteButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(send).toHaveBeenCalledWith({
-      type: 'clearCompleted',
+    expect(onQueueClearCompleted).toHaveBeenCalledWith({
       includeTerminated: false,
+      taskIds: ['task-1'],
+      count: 1,
     });
   });
 });
