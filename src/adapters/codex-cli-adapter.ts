@@ -33,11 +33,10 @@ import { isValidEffortForAgent } from '../shared/contracts/agent-types.js';
 import { buildAgentLaunchContext, DEFAULT_PROMPT_SUBMIT_DELAY_MS } from './agent-launch-context.js';
 import { ensureCodexWorkspaceTrusted } from './codex-config.js';
 import { resolvePluginDir } from '../core/plugin-paths.js';
-import { translateKeystroke, ENTER_BYTES, CLEAR_LINE_BYTES } from './keystroke.js';
+import { translateKeystroke, encodeBracketedPaste, ENTER_BYTES, CLEAR_LINE_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
 import { buildHookCommand, resolveHookWriterPath } from '../core/hook-writer-paths.js';
 
-const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
 
 interface CodexHookSettings {
@@ -397,13 +396,12 @@ export class CodexCliAdapter implements AgentAdapter {
     // and submitted with it as one user prompt (kookr F15). Ctrl-U is a
     // no-op on an empty composer line.
     //
-    // Codex TUI uses bracketed-paste heuristics to distinguish "pasted
-    // multi-line text" from "typed + Enter submit." Collapsing text+Enter
-    // into one write(bytes + '\r') risks Codex classifying the entire blob
-    // as paste and NOT submitting. The input coordinator keeps the writes
-    // serialized while delaying each subsequent payload so the TUI can
-    // process the clear and commit the text first.
-    await this.inputWriter.writeInputSequence(tmuxName, [CLEAR_LINE_BYTES, textEncoder.encode(text), ENTER_BYTES], {
+    // Wrap the message body in bracketed-paste markers so Codex parses it
+    // as one explicit paste event instead of relying on its timing-based
+    // paste-burst heuristic. The trailing Enter is still delayed and sent as
+    // its own payload, making it an unambiguous submit keystroke even when a
+    // busy TUI drains the preceding bytes in one batch (#935).
+    await this.inputWriter.writeInputSequence(tmuxName, [CLEAR_LINE_BYTES, encodeBracketedPaste(text), ENTER_BYTES], {
       reason: 'adapter-send-input',
       interPayloadDelayMs: DEFAULT_PROMPT_SUBMIT_DELAY_MS,
     });

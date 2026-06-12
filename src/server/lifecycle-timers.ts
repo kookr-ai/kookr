@@ -75,6 +75,8 @@ export interface TimerDeps {
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
   /** True when promoted launches should be audited as running without permission prompts. */
   bypassAllPermissions?: boolean;
+  /** Optional closed-loop retry service for unconfirmed mid-session input deliveries. */
+  userInputDeliveries?: { sweepUnsubmittedDeliveries(): Promise<number> };
 }
 
 export interface PersistenceSaveTickDeps {
@@ -330,6 +332,14 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       } catch (err) {
         console.error(`Watchdog error for ${agentId}:`, err);
       }
+    }
+
+    try {
+      if (await deps.userInputDeliveries?.sweepUnsubmittedDeliveries()) {
+        changed = true;
+      }
+    } catch (err) {
+      console.error('Error sweeping unsubmitted user-input deliveries:', err);
     }
 
     if (changed) {

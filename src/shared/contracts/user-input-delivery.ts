@@ -21,6 +21,10 @@ export interface UserInputDeliverySnapshot {
   submittedHookLineId?: string;
   terminalReason?: 'session_ended_before_submit_hook';
   error?: string;
+  /** Bare-Enter retries sent because the submit hook did not confirm. */
+  enterRetries?: number;
+  /** Timestamp of the most recent bare-Enter retry. */
+  lastRetryAt?: string;
 }
 
 export const USER_INPUT_DELIVERY_TEXT_MAX_CHARS = 2_000;

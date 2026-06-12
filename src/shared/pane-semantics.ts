@@ -23,14 +23,14 @@ const ANSI_OSC_RE = /\x1b\][^\x07]*(?:\x07|\x1b\\)/g;
 const ANSI_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const ANSI_SINGLE_CHAR_RE = /\x1b[@-_]/g;
 
-function stripTerminalControls(text: string): string {
+export function stripTerminalControls(text: string): string {
   return text
     .replace(ANSI_OSC_RE, '')
     .replace(ANSI_CSI_RE, '')
     .replace(ANSI_SINGLE_CHAR_RE, '');
 }
 
-function visibleLinesFromTerminalText(text: string): string[] {
+export function visibleLinesFromTerminalText(text: string): string[] {
   const lines = [''];
 
   for (let i = 0; i < text.length; i++) {

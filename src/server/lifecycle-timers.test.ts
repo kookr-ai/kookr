@@ -1,10 +1,12 @@
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
+  clearAllTimers,
   findFirstActiveSession,
   restoreExpiredSnoozes,
   runBudgetCheck,
   runPersistenceSaveTick,
   runProgressBudgetBurnDiagnosticSample,
+  startLifecycleTimers,
 } from './lifecycle-timers.js';
 import { BudgetChecker } from '../core/budget-checker.js';
 import type { Task } from '../core/tasks.js';
@@ -13,6 +15,11 @@ import { AttentionQueue } from '../core/attention-queue.js';
 import type { Anomaly } from '../core/types.js';
 import type { ProgressBudgetBurnDiagnostics } from '../core/progress-budget-burn-diagnostics.js';
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 function makeAnomaly(agentId: string): Anomaly {
   return {
@@ -343,5 +350,122 @@ describe('runPersistenceSaveTick', () => {
       consecutiveFailures: 0,
       lastError: null,
     });
+  });
+});
+
+describe('startLifecycleTimers user input delivery retry sweep', () => {
+  test('runs the sweep on watchdog cadence and broadcasts when it nudges input', async () => {
+    vi.useFakeTimers();
+    const taskStore = new TaskStore();
+    const broadcastToAll = vi.fn();
+    const sweepUnsubmittedDeliveries = vi.fn(async () => 1);
+    const handles = startLifecycleTimers({
+      monitor: {
+        getSnapshot: () => [],
+        getAgentEvents: () => [],
+        applyWatchdogVerdict: vi.fn(),
+        sampleFindingEvidence: vi.fn(),
+        getCurrentAnomaly: vi.fn(),
+      } as any,
+      taskStore,
+      queue: new AttentionQueue(),
+      adapter: {
+        captureDisplay: vi.fn(async () => ''),
+      } as any,
+      adapterRegistry: {} as any,
+      tokenTracker: {
+        scanGrowth: vi.fn(async () => []),
+        scanAll: vi.fn(async () => undefined),
+        getTrackedTaskIds: vi.fn(() => []),
+      } as any,
+      watchdog: {
+        getTrackedAgents: vi.fn(() => []),
+        recordTokenActivity: vi.fn(),
+        tick: vi.fn(),
+      } as any,
+      hookWatcher: {
+        drainNow: vi.fn(async () => undefined),
+      } as any,
+      terminalBackend: {
+        listSessions: vi.fn(async () => []),
+      } as any,
+      hooksDir: '/tmp/hooks',
+      tasksFile: '/tmp/tasks.json',
+      serverCwd: '/tmp/repo',
+      saveIntervalMs: 60_000,
+      livenessIntervalMs: 60_000,
+      broadcastToAll,
+      userInputDeliveries: { sweepUnsubmittedDeliveries },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(sweepUnsubmittedDeliveries).toHaveBeenCalledTimes(1);
+      expect(broadcastToAll).toHaveBeenCalledWith(expect.objectContaining({ type: 'snapshot' }));
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
+  test('logs sweep failures without broadcasting a retry snapshot', async () => {
+    vi.useFakeTimers();
+    const taskStore = new TaskStore();
+    const broadcastToAll = vi.fn();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const sweepUnsubmittedDeliveries = vi.fn(async () => {
+      throw new Error('capture failed');
+    });
+    const handles = startLifecycleTimers({
+      monitor: {
+        getSnapshot: () => [],
+        getAgentEvents: () => [],
+        applyWatchdogVerdict: vi.fn(),
+        sampleFindingEvidence: vi.fn(),
+        getCurrentAnomaly: vi.fn(),
+      } as any,
+      taskStore,
+      queue: new AttentionQueue(),
+      adapter: {
+        captureDisplay: vi.fn(async () => ''),
+      } as any,
+      adapterRegistry: {} as any,
+      tokenTracker: {
+        scanGrowth: vi.fn(async () => []),
+        scanAll: vi.fn(async () => undefined),
+        getTrackedTaskIds: vi.fn(() => []),
+      } as any,
+      watchdog: {
+        getTrackedAgents: vi.fn(() => []),
+        recordTokenActivity: vi.fn(),
+        tick: vi.fn(),
+      } as any,
+      hookWatcher: {
+        drainNow: vi.fn(async () => undefined),
+      } as any,
+      terminalBackend: {
+        listSessions: vi.fn(async () => []),
+      } as any,
+      hooksDir: '/tmp/hooks',
+      tasksFile: '/tmp/tasks.json',
+      serverCwd: '/tmp/repo',
+      saveIntervalMs: 60_000,
+      livenessIntervalMs: 60_000,
+      broadcastToAll,
+      userInputDeliveries: { sweepUnsubmittedDeliveries },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(sweepUnsubmittedDeliveries).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        'Error sweeping unsubmitted user-input deliveries:',
+        expect.any(Error),
+      );
+      expect(broadcastToAll).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'snapshot' }));
+    } finally {
+      clearAllTimers(handles);
+    }
   });
 });

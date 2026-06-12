@@ -315,7 +315,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     preflightLogger,
     getAgentEffort,
   });
-  const userInputDeliveries = new UserInputDeliveryService({ adapter, interactionLog });
+  const userInputDeliveries = new UserInputDeliveryService({
+    adapter,
+    interactionLog,
+    retry: {
+      sendEnter: (sessionId) => adapter.sendKeystroke(sessionId, 'Enter'),
+      capturePane: (sessionId) => adapter.captureDisplay(sessionId),
+    },
+  });
 
   const ossServices = await createOssServices({ kookrDir, claudeDir });
   const {
@@ -1210,6 +1217,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       worktreeRegistryRepoPath: serverCwd,
       getDashboardClientCount: () => connectionRegistry.dashboardCount(),
       bypassAllPermissions,
+      userInputDeliveries,
     },
   });
 

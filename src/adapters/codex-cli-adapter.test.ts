@@ -619,15 +619,16 @@ describe('CodexCliAdapter', () => {
 
     await adapter.sendInput(sessionId, 'yes, continue');
 
-    // Codex's TUI distinguishes paste-bursts from typed-then-submit by the
-    // syscall boundary. writeSequence([CLEAR_LINE, text, ENTER]) must preserve
-    // that split inside a single mutex acquisition — the fake captures each
-    // payload separately in submission order. The leading Ctrl-U clears any
-    // unsubmitted terminal-typed draft so it cannot fuse into the message (F15).
+    // writeSequence([CLEAR_LINE, paste-wrapped text, ENTER]) must preserve
+    // the syscall split inside a single mutex acquisition — the fake captures
+    // each payload separately in submission order. The leading Ctrl-U clears
+    // any unsubmitted terminal-typed draft so it cannot fuse into the message
+    // (F15). The body is wrapped in bracketed-paste markers so Codex parses
+    // it as one explicit paste and the trailing Enter is a submit keystroke.
     const written = backend.getWrittenBytes(sessionId).slice(before);
     expect(written).toHaveLength(3);
     expect(written[0]).toEqual(Uint8Array.of(0x15));
-    expect(new TextDecoder().decode(written[1])).toBe('yes, continue');
+    expect(new TextDecoder().decode(written[1])).toBe('\x1b[200~yes, continue\x1b[201~');
     expect(written[2]).toEqual(Uint8Array.of(0x0d));
   });
 
@@ -645,7 +646,7 @@ describe('CodexCliAdapter', () => {
 
     expect(writer.writeInputSequence).toHaveBeenCalledWith(
       'session-1',
-      [Uint8Array.of(0x15), new TextEncoder().encode('yes, continue'), Uint8Array.of(0x0d)],
+      [Uint8Array.of(0x15), new TextEncoder().encode('\x1b[200~yes, continue\x1b[201~'), Uint8Array.of(0x0d)],
       { reason: 'adapter-send-input', interPayloadDelayMs: DEFAULT_PROMPT_SUBMIT_DELAY_MS },
     );
   });
