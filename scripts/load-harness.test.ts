@@ -197,6 +197,31 @@ describe('load-harness runtime orchestration', () => {
       await rm(tempDir, { recursive: true, force: true });
     }
   }, 20_000);
+
+  it('returns a failing exit code and report when a hook post fails', async () => {
+    const fixture = await startFakeHarnessTarget({ failPostNumbers: new Set([2]) });
+    const tempDir = await mkdtemp(join(tmpdir(), 'kookr-load-harness-test-'));
+    const output = join(tempDir, 'report.json');
+    try {
+      const code = await main([
+        '--base-url', fixture.baseUrl,
+        '--sessions', '1',
+        '--events-per-session', '3',
+        '--format', 'json',
+        '--output', output,
+      ]);
+      expect(code).toBe(1);
+      const report = JSON.parse(await readFile(output, 'utf8')) as LoadHarnessReport;
+      expect(report.result).toMatchObject({
+        attemptedEvents: 3,
+        dispatchedEvents: 2,
+        failedEvents: 1,
+      });
+    } finally {
+      await fixture.close();
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
 
 function sampleReport(): LoadHarnessReport {
@@ -243,15 +268,16 @@ function sampleReport(): LoadHarnessReport {
   };
 }
 
-async function startFakeHarnessTarget(): Promise<{
+async function startFakeHarnessTarget(options: { failPostNumbers?: Set<number> } = {}): Promise<{
   baseUrl: string;
   posts: string[];
   close(): Promise<void>;
 }> {
   const posts: string[] = [];
   const sessions = new Map<string, number>();
+  const failPostNumbers = options.failPostNumbers ?? new Set<number>();
   const server = createServer(async (req, res) => {
-    await handleFakeHarnessRequest(req, res, { posts, sessions, wss });
+    await handleFakeHarnessRequest(req, res, { posts, sessions, wss, failPostNumbers });
   });
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req, socket, head) => {
@@ -284,6 +310,7 @@ async function handleFakeHarnessRequest(
     posts: string[];
     sessions: Map<string, number>;
     wss: WebSocketServer;
+    failPostNumbers: Set<number>;
   },
 ): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -295,6 +322,10 @@ async function handleFakeHarnessRequest(
     const sessionId = decodeURIComponent(url.pathname.replace('/api/hook-event/', ''));
     const body = await readRequestBody(req);
     state.posts.push(body);
+    if (state.failPostNumbers.has(state.posts.length)) {
+      writeJson(res, { error: 'synthetic-failure' }, 500);
+      return;
+    }
     state.sessions.set(sessionId, (state.sessions.get(sessionId) ?? 0) + 1);
     const snapshot = { type: 'snapshot', agents: [...state.sessions.keys()].map((agentId) => ({ agentId })), serverCwd: '/repo' };
     for (const client of state.wss.clients) client.send(JSON.stringify(snapshot));

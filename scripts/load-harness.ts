@@ -301,7 +301,7 @@ async function dispatchStorm(opts: CliOptions, target: RuntimeTarget): Promise<{
       const response = await fetch(`${target.baseUrl}/api/hook-event/${record.sessionId}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: record.json,
+        body: JSON.stringify({ ...record.event, kookr_hook_written_at_ms: Date.now() }),
       });
       if (!response.ok) {
         failedEvents += 1;
