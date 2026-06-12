@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -144,6 +144,25 @@ describe('verifyDocumentedCommands', () => {
     expect(result.stderr).toContain('Documented command verification failed:');
     expect(result.stderr).toContain('docs/development.md:1 `pnpm test:e2e`');
     expect(result.stderr).toContain('package.json has no script named "test:e2e"');
+  });
+
+  it('keeps data-directory reference commands and snapshot tokens checkable', () => {
+    const file = 'docs/reference/data-directory.md';
+    const content = readFileSync(join(process.cwd(), file), 'utf8');
+
+    expect(content).toContain('tasks.json.daily.YYYYMMDD');
+    expect(content).toContain('tasks.json.predelete.YYYYMMDDTHHMMSS');
+    expect(content).toContain('KOOKR_DATA_DIR');
+
+    const commands = extractDocumentedCommands(file, content);
+    expect(commands.map((command) => command.text)).toEqual(expect.arrayContaining([
+      'kookr maintenance prune --dry-run --dir "$KOOKR_DATA_DIR"',
+      'kookr maintenance prune --max-age-days 30 --dir "$KOOKR_DATA_DIR"',
+      'pnpm prod:restart',
+    ]));
+
+    const result = verifyDocumentedCommands(process.cwd());
+    expect(result.issues.filter((issue) => issue.file === file)).toEqual([]);
   });
 });
 
