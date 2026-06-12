@@ -13,6 +13,20 @@ If you linked Kookr before these commands existed, run `pnpm link --global` agai
 
 The standalone aliases `kookr-spawn`, `kookr-status`, and `kookr-ralph` still work for compatibility, but they are deprecated. Prefer the `kookr <subcommand>` forms below.
 
+## Shell Completion
+
+Print a static shell completion script:
+
+```bash
+source <(kookr completion bash)
+```
+
+```zsh
+kookr completion zsh > "${fpath[1]}/_kookr"
+```
+
+The completion scripts cover the public `kookr` dispatcher commands, Ralph and maintenance subcommands, and command flags. They do not call the running Kookr server or complete dynamic task IDs.
+
 ## `kookr spawn`
 
 Create a Kookr task from your current shell:

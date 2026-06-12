@@ -16,6 +16,7 @@ Usage:
   kookr drain|resume [OPTIONS]  Control operator drain mode.
   kookr maintenance prune [OPTIONS]   Prune aged completed-task data-dir artifacts.
   kookr push test <deviceId>    Send a relay push test.
+  kookr completion bash|zsh     Print a shell completion script.
 
 Use --json with spawn, status, or ralph for one machine-readable output envelope.
 
@@ -60,6 +61,11 @@ async function main({
   if (command === 'push') {
     await runPushCommand(rest);
     return exit(0);
+  }
+
+  if (command === 'completion') {
+    const { runCompletionCli } = await loadCompletionModule();
+    return runCompletionCli({ argv: rest, out, err, exit });
   }
 
   if (command === 'command' && rest[0] === 'outcome') {
@@ -125,6 +131,19 @@ async function runCommandOutcomeCommand(argv) {
   }
   const mod = await import(entry);
   process.exitCode = await mod.runCommandOutcomeCli(argv);
+}
+
+async function loadCompletionModule() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-completion.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-completion.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    console.error('[kookr] Completion module not found at ' + entry);
+    console.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exit(1);
+  }
+  return import(pathToFileURL(entry).href);
 }
 
 async function runPushCommand(argv) {
