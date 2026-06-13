@@ -102,6 +102,13 @@ export interface SystemResourceStatus {
   unavailable: ResourceUnavailableReason[];
 }
 
+export interface DrainStatusSnapshot {
+  accepting: boolean;
+  draining: boolean;
+  /** ISO timestamp the current drain began; absent while accepting. */
+  since?: string;
+}
+
 export type SnapshotMessage = {
   type: 'snapshot';
   agents: AgentState[];
@@ -153,6 +160,8 @@ export type SnapshotMessage = {
   bypassAllPermissions?: boolean;
   /** True if a cross-project sweep is currently in progress on this server. */
   sweepRunning?: boolean;
+  /** Operator drain mode: while draining, new launches and schedule fires are paused. */
+  drainStatus?: DrainStatusSnapshot;
   /**
    * Configured concurrency cap (settings.maxActiveTasks). When the count of
    * inProgress tasks reaches this number, new launches are queued as pending.

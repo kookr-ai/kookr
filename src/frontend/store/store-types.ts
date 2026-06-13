@@ -23,6 +23,7 @@ import type {
   SystemResourceStatus,
   CollaborationCapabilities,
   CoordinatorSnapshotState,
+  DrainStatusSnapshot,
   LaunchDependency,
   TaskRelation,
 } from '../../shared/protocol.js';
@@ -128,6 +129,8 @@ export interface TransportSessionSlice {
   maxActiveTasks: number;
   /** Current server process is launching agents with permission prompts bypassed. */
   bypassAllPermissions: boolean;
+  /** Current operator drain mode. While draining, new launches and schedule fires are paused. */
+  drainStatus: DrainStatusSnapshot;
   coordinator: CoordinatorSnapshotState | null;
   dashboardSelection: {
     selectedTaskId: string | null;
@@ -171,6 +174,7 @@ export interface TransportSessionSlice {
     coordinator?: CoordinatorSnapshotState,
     ttsUrl?: string,
     bypassAllPermissions?: boolean,
+    drainStatus?: DrainStatusSnapshot,
   ) => void;
   handleUpdate: (agentId: string, state: AgentState) => void;
   handlePlaybooks: (

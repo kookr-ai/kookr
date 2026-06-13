@@ -14,7 +14,7 @@ import type { ProjectSidebarStore } from '../core/project-sidebar-store.js';
 import type { SkillDiscoveryStateHolder } from '../core/skill-tracked-repo-discovery.js';
 import type { PrLessonsStateHolder } from '../core/pr-lessons-discovery.js';
 import type { AchievementWatcher } from './achievement-watcher.js';
-import type { ServerMessage, ClientMessage, QuotaStatus, SystemResourceStatus } from '../shared/protocol.js';
+import type { DrainStatusSnapshot, ServerMessage, ClientMessage, QuotaStatus, SystemResourceStatus } from '../shared/protocol.js';
 import { ClientMessageSchema, summarizeZodIssues } from '../shared/contracts/client-message-schema.js';
 import { MessageRouter } from './ws.js';
 import type { LaunchOpts, LaunchResult, LaunchTaskServerOptions } from './launch-service.js';
@@ -149,6 +149,7 @@ export interface WsConnectionDeps {
   /** Where hook JSONLs live. */
   hooksDir?: string;
   userInputDeliveries?: UserInputDeliveryService;
+  getDrainStatus?: () => DrainStatusSnapshot;
   /**
    * Single owner of WS scope filtering (#809). When a **viewer** connects, the
    * initial-connection burst is served entirely from this factory
@@ -240,6 +241,7 @@ export function handleWsConnection(
     selectionController: deps.selectionController,
     terminalInputCoordinator: deps.terminalInputCoordinator,
     userInputDeliveries: deps.userInputDeliveries,
+    getDrainStatus: deps.getDrainStatus,
   });
 
   // Initial-connection burst (RFC §"Initial-connection burst (consolidated)").

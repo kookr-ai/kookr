@@ -27,6 +27,7 @@ describe('snapshot use cases', () => {
       achievements: { first: '2026-04-04T10:00:00.000Z' },
       availableAgentTypes: [{ type: 'claude-code', label: 'Claude Code' }] as any,
       defaultAgentType: 'claude-code',
+      drainStatus: { accepting: false, draining: true, since: '2026-05-29T12:00:00.000Z' },
     });
 
     expect(msg).toEqual(expect.objectContaining({
@@ -38,6 +39,7 @@ describe('snapshot use cases', () => {
       ttsUrl: 'http://localhost:8004',
       totalSpendUsd: 12.5,
       defaultAgentType: 'claude-code',
+      drainStatus: { accepting: false, draining: true, since: '2026-05-29T12:00:00.000Z' },
     }));
     expect(msg.speechCapabilities?.capabilitiesByDevice['local-node']).toEqual(expect.arrayContaining([
       expect.objectContaining({

@@ -182,6 +182,74 @@ describe('admin drain routes', () => {
     expect(drainController.isAccepting()).toBe(true);
   });
 
+  test('broadcasts a drain-status snapshot when drain state changes', async () => {
+    process.env.KOOKR_ADMIN_TOKEN = 'secret';
+    const headers = { 'x-kookr-admin-token': 'secret' };
+    const broadcastToAll = vi.fn();
+    const monitor = {
+      getSnapshot: () => [{ agentId: 'session-1', taskId: 'task-1', events: [], anomaly: null }],
+    };
+    const terminalInputCoordinator = {
+      getSnapshot: vi.fn(() => ({
+        sessionId: 'session-1',
+        inputStateEpoch: 'epoch-1',
+        readinessVersion: 1,
+        prompt: { kind: 'ready' },
+      })),
+    };
+    const userInputDeliveries = {
+      getSnapshot: vi.fn(() => [{
+        deliveryId: 'delivery-1',
+        sessionId: 'session-1',
+        deliverySeq: 1,
+        source: 'respond',
+        text: 'continue',
+        status: 'queued',
+        createdAt: '2026-06-13T10:00:00.000Z',
+        updatedAt: '2026-06-13T10:00:00.000Z',
+      }]),
+    };
+    const app = mkApp({
+      ...deps,
+      monitor,
+      serverCwd: '/repo',
+      broadcastToAll,
+      terminalInputCoordinator,
+      userInputDeliveries,
+    } as Partial<RouteDeps>);
+
+    await app.request('http://example.com/api/admin/drain', { method: 'POST', headers });
+    await app.request('http://example.com/api/admin/drain', { method: 'POST', headers });
+    await app.request('http://example.com/api/admin/resume', { method: 'POST', headers });
+
+    expect(broadcastToAll).toHaveBeenCalledTimes(2);
+    expect(broadcastToAll.mock.calls[0][0]).toMatchObject({
+      type: 'snapshot',
+      serverCwd: '/repo',
+      drainStatus: { accepting: false, draining: true },
+      agents: [{
+        agentId: 'session-1',
+        terminalInputSnapshot: {
+          sessionId: 'session-1',
+          taskId: 'task-1',
+          inputStateEpoch: 'epoch-1',
+          readinessVersion: 1,
+          promptReady: true,
+        },
+        userInputDeliveries: [{
+          deliveryId: 'delivery-1',
+          status: 'queued',
+          text: 'continue',
+        }],
+      }],
+    });
+    expect(broadcastToAll.mock.calls[1][0]).toMatchObject({
+      type: 'snapshot',
+      serverCwd: '/repo',
+      drainStatus: { accepting: true, draining: false },
+    });
+  });
+
   test('repeated drain reports changed:false (idempotent)', async () => {
     process.env.KOOKR_ADMIN_TOKEN = 'secret';
     const headers = { 'x-kookr-admin-token': 'secret' };

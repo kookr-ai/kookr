@@ -1,6 +1,7 @@
 import type { Context, Hono } from 'hono';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import type { RouteDeps } from './shared.js';
+import { createSnapshotMessage } from '../use-cases/get-snapshot.js';
 import { LOG_LEVELS, getLogLevelState, setLogLevel } from '../runtime-log-level.js';
 import {
   OPERATIONAL_ALERT_CONFIG_FIELDS,
@@ -55,6 +56,19 @@ function logLevelBody() {
 
 function operationalAlertConfigBody() {
   return getOperationalAlertConfigState();
+}
+
+function broadcastDrainSnapshot(deps: RouteDeps): void {
+  if (!deps.drainController || !deps.broadcastToAll || !deps.monitor || !deps.serverCwd) return;
+  deps.broadcastToAll(createSnapshotMessage({
+    monitor: deps.monitor,
+    serverCwd: deps.serverCwd,
+    drainStatus: deps.drainController.status(),
+    activityMetaProvider: deps.hookIngestion,
+    relationTaskStore: deps.taskStore,
+    terminalInputSnapshots: deps.terminalInputCoordinator,
+    userInputDeliveryProvider: deps.userInputDeliveries,
+  }));
 }
 
 /**
@@ -179,6 +193,7 @@ export function registerAdminRoutes(app: Hono, deps: RouteDeps): void {
     const changed = drainController.drain();
     if (changed) {
       console.warn('[admin] drain mode ON — refusing new task launches (running agents continue)');
+      broadcastDrainSnapshot(deps);
     }
     return c.json({ ...statusBody(), changed });
   });
@@ -188,6 +203,7 @@ export function registerAdminRoutes(app: Hono, deps: RouteDeps): void {
     const changed = drainController.resume();
     if (changed) {
       console.warn('[admin] drain mode OFF — accepting new task launches');
+      broadcastDrainSnapshot(deps);
     }
     return c.json({ ...statusBody(), changed });
   });

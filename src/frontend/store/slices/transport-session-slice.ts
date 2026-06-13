@@ -141,13 +141,14 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
     totalSpendUsd: 0,
     maxActiveTasks: 0,
     bypassAllPermissions: false,
+    drainStatus: { accepting: true, draining: false },
     coordinator: null,
     dashboardSelection: { selectedTaskId: null, selectedSessionId: null, selectionVersion: 0 },
     taskRelations: [],
     relationFilter: { mode: 'off', rootTaskId: null },
     setRelationFilter: (filter) => set(() => ({ relationFilter: filter })),
 
-    handleSnapshot: (agents, serverCwd, build, serverStartedAt, sttEnabled, sttUrl, totalSpendUsd, achievements, availableAgentTypes, defaultAgentType, workspaceEnabled, sweepRunning, maxActiveTasks, speechCapabilities, coordinator, ttsUrl, bypassAllPermissions) => {
+    handleSnapshot: (agents, serverCwd, build, serverStartedAt, sttEnabled, sttUrl, totalSpendUsd, achievements, availableAgentTypes, defaultAgentType, workspaceEnabled, sweepRunning, maxActiveTasks, speechCapabilities, coordinator, ttsUrl, bypassAllPermissions, drainStatus) => {
       let restoreMissed = false;
       set((prev) => {
         const previousById = new Map(prev.agents.map((agent) => [agent.agentId, agent]));
@@ -175,6 +176,7 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
           ...(sweepRunning !== undefined ? { sweepRunning } : {}),
           ...(maxActiveTasks !== undefined ? { maxActiveTasks } : {}),
           bypassAllPermissions: bypassAllPermissions === true,
+          ...(drainStatus !== undefined ? { drainStatus } : {}),
           ...(coordinator !== undefined ? { coordinator } : {}),
         };
       });
