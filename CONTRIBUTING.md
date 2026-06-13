@@ -78,8 +78,11 @@ A useful rule of thumb: if the diff exceeds a few hundred lines outside generate
 3. **Reviewer-specialist gate** for non-trivial diffs. The gate inspects the merge-base diff against `origin/main` and skips an allowlist (top-level `*.md`, `docs/`, `.github/`, test files, tsconfig, `.gitignore`). Non-trivial pushes need a SHA-bound marker at `.review-state/<branch>.json` written by running the `pre-push` skill in Claude Code (it spawns reviewer specialists in parallel and writes `{sha, status: "approved" | "bypass", reason}`). The marker SHA must match `HEAD`.
 4. **Server type-check** — `pnpm build:server` (`tsc`).
 5. **E2E type-check** — `pnpm check:e2e` (`tsc -p tsconfig.e2e.json`).
-6. **Tests** — `pnpm test`.
-7. **Plugin classification + version bump** for changes under `plugin/`. Rejects Kookr-internal references (the toolkit ships to all consumers, so `pnpm prod:*`, `KOOKR_*`, `~/.kookr/`, etc. must not appear), name collisions between `.claude/<kind>/` and `plugin/<kind>/`, and `plugin/{skills,agents}/**` edits without a corresponding bump in `plugin/.claude-plugin/plugin.json#version`. Guarded or fallback-only `KOOKR_*` usage is still Kookr-specific: place that workflow in `.claude/` for project scope or `~/.kookr/playbooks/` for personal cross-project use instead of `plugin/`.
+6. **Validators** — skill frontmatter, documented commands, and requirements status checks always run.
+7. **Tests** — `pnpm test`.
+8. **Plugin classification + version bump** for changes under `plugin/`. Rejects Kookr-internal references (the toolkit ships to all consumers, so `pnpm prod:*`, `KOOKR_*`, `~/.kookr/`, etc. must not appear), name collisions between `.claude/<kind>/` and `plugin/<kind>/`, and `plugin/{skills,agents}/**` edits without a corresponding bump in `plugin/.claude-plugin/plugin.json#version`. Guarded or fallback-only `KOOKR_*` usage is still Kookr-specific: place that workflow in `.claude/` for project scope or `~/.kookr/playbooks/` for personal cross-project use instead of `plugin/`.
+
+For docs-only prose pushes, the hook skips only the TypeScript and Vitest lanes (`pnpm build:server`, `pnpm check:e2e`, and `pnpm test`). That shortcut is deliberately strict: every changed file must be Markdown under `docs/` or one of the repository's top-level prose docs. Empty diffs, missing/ambiguous `origin/main` comparisons, and any mixed change run the full gate. Validators still run because they check docs and skills directly.
 
 If any step fails, fix the underlying issue and re-run `git push`. Don't bypass with `--no-verify` — the gates exist because they've caught real regressions.
 
