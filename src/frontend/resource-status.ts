@@ -29,6 +29,13 @@ export function isSystemResourceStatus(value: unknown): value is SystemResourceS
     'memoryFreeBytes',
     'memoryTotalBytes',
   ])) return false;
+  if (!isObject(value.host.dataDirectory)) return false;
+  if (typeof value.host.dataDirectory.path !== 'string' && value.host.dataDirectory.path !== null) return false;
+  if (!hasNullableNumberFields(value.host.dataDirectory, [
+    'diskFreeBytes',
+    'diskTotalBytes',
+    'diskFreePercent',
+  ])) return false;
   if (!hasNullableNumberFields(value.server, [
     'eventLoopDelayP95Ms',
     'processRssBytes',
@@ -101,6 +108,7 @@ export function formatResourceDetails(status: SystemResourceStatus, nowMs: numbe
     `Server loop p95 ${status.server.eventLoopDelayP95Ms === null ? '--' : `${Math.round(status.server.eventLoopDelayP95Ms)} ms`}`,
     `Kookr RSS ${formatBytes(status.server.processRssBytes)}`,
     `RAM ${formatBytes(status.host.memoryFreeBytes)} free / ${formatBytes(status.host.memoryTotalBytes)} total`,
+    `Data dir disk ${formatBytes(status.host.dataDirectory.diskFreeBytes)} free / ${formatBytes(status.host.dataDirectory.diskTotalBytes)} total`,
     `Sampled ${formatResourceAge(status.sampledAt, nowMs)}`,
     'Approximate physical memory reported by Node; not OS memory pressure.',
   ];

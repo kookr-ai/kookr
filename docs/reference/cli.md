@@ -217,6 +217,14 @@ Options:
 
 The prune is intentionally conservative. It removes only hook-event logs under `<dataDir>/hooks/*.jsonl` that belong to terminal tasks older than the age threshold, plus aged orphan hook logs. It preserves task history, crash-recovery data, activity ledgers, interaction logs, contribution history, and other stores whose mapping or audit value is ambiguous.
 
+Kookr's operational disk-pressure alert points operators here when the
+filesystem containing the data directory stays below the configured free-space
+floors. Run `kookr maintenance prune --dry-run --dir <dataDir>` first to inspect
+what Kookr can safely remove. The alert does not auto-prune, throttle writes, or
+create a separate persistence store; if filesystem statistics are unavailable
+or unreadable, the sampled disk fields are reported as absent and the alert rule
+waits for readable samples.
+
 Exit behavior:
 
 - `0` when planning or pruning succeeds.

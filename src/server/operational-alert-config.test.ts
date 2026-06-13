@@ -5,7 +5,11 @@ import {
   resetOperationalAlertConfig,
   setOperationalAlertConfig,
 } from './operational-alert-config.js';
-import { DEFAULT_OPERATIONAL_ALERT_SUSTAIN_SAMPLES } from './config.js';
+import {
+  DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
+  DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+  DEFAULT_OPERATIONAL_ALERT_SUSTAIN_SAMPLES,
+} from './config.js';
 
 describe('operational-alert-config runtime holder', () => {
   afterEach(() => {
@@ -17,12 +21,28 @@ describe('operational-alert-config runtime holder', () => {
       KOOKR_ALERT_CPU_PERCENT: '91',
       KOOKR_ALERT_MEMORY_PERCENT: '82',
       KOOKR_ALERT_EVENT_LOOP_DELAY_MS: '150',
+      KOOKR_ALERT_DATA_DIR_FREE_PERCENT: '4',
+      KOOKR_ALERT_DATA_DIR_FREE_BYTES: '1000',
       KOOKR_ALERT_SUSTAIN_SAMPLES: '4',
     });
 
     expect(getOperationalAlertConfigState()).toEqual({
-      config: { cpuPercent: 91, memoryPercent: 82, eventLoopDelayMs: 150, sustainSamples: 4 },
-      default: { cpuPercent: 91, memoryPercent: 82, eventLoopDelayMs: 150, sustainSamples: 4 },
+      config: {
+        cpuPercent: 91,
+        memoryPercent: 82,
+        eventLoopDelayMs: 150,
+        dataDirectoryFreePercent: 4,
+        dataDirectoryFreeBytes: 1000,
+        sustainSamples: 4,
+      },
+      default: {
+        cpuPercent: 91,
+        memoryPercent: 82,
+        eventLoopDelayMs: 150,
+        dataDirectoryFreePercent: 4,
+        dataDirectoryFreeBytes: 1000,
+        sustainSamples: 4,
+      },
     });
   });
 
@@ -36,12 +56,16 @@ describe('operational-alert-config runtime holder', () => {
         cpuPercent: 70,
         memoryPercent: 88,
         eventLoopDelayMs: 0,
+        dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+        dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
         sustainSamples: 2,
       },
       default: {
         cpuPercent: 70,
         memoryPercent: 0,
         eventLoopDelayMs: 0,
+        dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+        dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
         sustainSamples: DEFAULT_OPERATIONAL_ALERT_SUSTAIN_SAMPLES,
       },
     });
@@ -69,6 +93,8 @@ describe('operational-alert-config runtime holder', () => {
       cpuPercent: 70,
       memoryPercent: 0,
       eventLoopDelayMs: 0,
+      dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+      dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
       sustainSamples: DEFAULT_OPERATIONAL_ALERT_SUSTAIN_SAMPLES,
     });
   });

@@ -24,7 +24,13 @@ export interface OperationalAlertConfigState {
   default: OperationalAlertConfig;
 }
 
-const THRESHOLD_FIELDS = ['cpuPercent', 'memoryPercent', 'eventLoopDelayMs'] as const;
+const THRESHOLD_FIELDS = [
+  'cpuPercent',
+  'memoryPercent',
+  'eventLoopDelayMs',
+  'dataDirectoryFreePercent',
+  'dataDirectoryFreeBytes',
+] as const;
 const UPDATE_FIELDS = [...THRESHOLD_FIELDS, 'sustainSamples'] as const;
 
 let defaultConfig: OperationalAlertConfig = readOperationalAlertConfigFromEnv({});

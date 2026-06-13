@@ -16,6 +16,12 @@ const resourceStatus = {
     memoryUsedPercent: 50,
     memoryFreeBytes: 1024,
     memoryTotalBytes: 2048,
+    dataDirectory: {
+      path: '/tmp/kookr-data',
+      diskFreeBytes: 1024,
+      diskTotalBytes: 2048,
+      diskFreePercent: 50,
+    },
   },
   server: {
     eventLoopDelayP95Ms: 4,

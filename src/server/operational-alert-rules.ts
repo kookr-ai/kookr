@@ -14,7 +14,11 @@ import type {
  */
 export const OPERATIONAL_ALERT_AGENT_ID = 'system';
 
-export type OperationalAlertMetric = 'cpu' | 'memory' | 'event_loop_delay';
+export type OperationalAlertMetric =
+  | 'cpu'
+  | 'memory'
+  | 'event_loop_delay'
+  | 'data_directory_disk_free';
 
 const PERSISTENCE_TARGET_LABELS: Record<PersistenceHealthTarget, string> = {
   task_state: 'task-state',
@@ -61,13 +65,15 @@ interface PersistenceRuleState {
 
 /**
  * Edge-triggered evaluator for operational alerts on already-sampled host
- * signals (CPU, memory, event-loop delay).
+ * signals (CPU, memory, event-loop delay, data-directory disk pressure).
  *
- * For each rule it fires a single `warning` alert once the metric stays at or
- * above its threshold for `sustainSamples` consecutive samples, and a single
- * `info` "recovered" alert when the metric next drops back below the
- * threshold. This avoids per-tick alert spam while still surfacing sustained
- * saturation through Kookr's existing alert broadcast channel.
+ * For scalar high-watermark rules it fires a single `warning` alert once the
+ * metric stays at or above its threshold for `sustainSamples` consecutive
+ * samples, and a single `info` "recovered" alert when the metric next drops
+ * back below the threshold. Disk pressure uses the same edge-trigger state but
+ * breaches when free space falls at or below either enabled floor. This avoids
+ * per-tick alert spam while still surfacing sustained saturation through
+ * Kookr's existing alert broadcast channel.
  *
  * Fail-open behaviour:
  * - A rule whose threshold is `<= 0` is disabled and never evaluated.
@@ -115,6 +121,7 @@ export class OperationalAlertEvaluator {
     for (const rule of this.rules) {
       this.states.set(rule.metric, { consecutive: 0, firing: false, configKey: null });
     }
+    this.states.set('data_directory_disk_free', { consecutive: 0, firing: false, configKey: null });
     this.persistenceStates.set('task_state', { firing: false, configKey: null });
     this.persistenceStates.set('detection_stats', { firing: false, configKey: null });
   }
@@ -122,7 +129,10 @@ export class OperationalAlertEvaluator {
   /** Whether any host-resource or persistence-health rule is enabled. */
   hasEnabledRules(): boolean {
     const config = this.getConfig();
-    return this.getPersistenceHealth !== null || this.rules.some((rule) => rule.threshold(config) > 0);
+    return this.getPersistenceHealth !== null
+      || this.rules.some((rule) => rule.threshold(config) > 0)
+      || config.dataDirectoryFreePercent > 0
+      || config.dataDirectoryFreeBytes > 0;
   }
 
   /**
@@ -169,8 +179,80 @@ export class OperationalAlertEvaluator {
         }
       }
     }
+    messages.push(...this.evaluateDataDirectoryDiskPressure(status, config, sustainSamples));
     messages.push(...this.evaluatePersistenceHealth(sustainSamples));
     return messages;
+  }
+
+  private evaluateDataDirectoryDiskPressure(
+    status: SystemResourceStatus,
+    config: OperationalAlertConfig,
+    sustainSamples: number,
+  ): ServerMessage[] {
+    const state = this.states.get('data_directory_disk_free');
+    if (!state) return [];
+    const percentThreshold = config.dataDirectoryFreePercent;
+    const bytesThreshold = config.dataDirectoryFreeBytes;
+    if (percentThreshold <= 0 && bytesThreshold <= 0) {
+      resetState(state);
+      return [];
+    }
+
+    const configKey = `data-directory:${percentThreshold}:${bytesThreshold}:${sustainSamples}`;
+    if (state.configKey !== null && state.configKey !== configKey) {
+      resetState(state);
+    }
+    state.configKey = configKey;
+
+    const disk = status.host.dataDirectory;
+    const freePercent = disk.diskFreePercent;
+    const freeBytes = disk.diskFreeBytes;
+    const percentEnabled = percentThreshold > 0;
+    const bytesEnabled = bytesThreshold > 0;
+    const percentKnown = freePercent !== null && Number.isFinite(freePercent);
+    const bytesKnown = freeBytes !== null && Number.isFinite(freeBytes);
+    const percentBreached = percentEnabled && percentKnown && freePercent <= percentThreshold;
+    const bytesBreached = bytesEnabled && bytesKnown && freeBytes <= bytesThreshold;
+    const hasAnyEnabledReading = (percentEnabled && percentKnown) || (bytesEnabled && bytesKnown);
+
+    if (!hasAnyEnabledReading) {
+      // No data: preserve current state, matching the scalar fail-open rules.
+      return [];
+    }
+
+    if (percentBreached || bytesBreached) {
+      state.consecutive += 1;
+      if (!state.firing && state.consecutive >= sustainSamples) {
+        state.firing = true;
+        return [buildDataDirectoryDiskBreachAlert({
+          path: disk.path,
+          freePercent,
+          freeBytes,
+          percentThreshold,
+          bytesThreshold,
+          sustainSamples,
+        })];
+      }
+      return [];
+    }
+
+    const allEnabledReadingsKnown = (!percentEnabled || percentKnown) && (!bytesEnabled || bytesKnown);
+    if (!allEnabledReadingsKnown) {
+      return [];
+    }
+
+    state.consecutive = 0;
+    if (state.firing) {
+      state.firing = false;
+      return [buildDataDirectoryDiskRecoveryAlert({
+        path: disk.path,
+        freePercent,
+        freeBytes,
+        percentThreshold,
+        bytesThreshold,
+      })];
+    }
+    return [];
   }
 
   private evaluatePersistenceHealth(sustainSamples: number): ServerMessage[] {
@@ -252,6 +334,69 @@ function buildRecoveryAlert(
     details: `Operational alert cleared: ${rule.metric} back below threshold (${rule.threshold}${rule.unit}).`,
     severity,
   };
+}
+
+function buildDataDirectoryDiskBreachAlert(args: {
+  path: string | null;
+  freePercent: number | null;
+  freeBytes: number | null;
+  percentThreshold: number;
+  bytesThreshold: number;
+  sustainSamples: number;
+}): Extract<ServerMessage, { type: 'alert' }> {
+  const severity: AnomalySeverity = 'warning';
+  const location = args.path ?? 'unknown data directory';
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `Low Kookr data-directory disk space: ${formatDiskFree(args.freePercent, args.freeBytes)}`,
+    details:
+      `Sustained operational alert: filesystem containing ${location} has ` +
+      `${formatDiskFree(args.freePercent, args.freeBytes)} free for ` +
+      `${args.sustainSamples} consecutive samples (threshold ${formatDiskThresholds(args.percentThreshold, args.bytesThreshold)}). ` +
+      'Run `kookr maintenance prune --dry-run --dir <dataDir>` to inspect conservative cleanup candidates.',
+    severity,
+  };
+}
+
+function buildDataDirectoryDiskRecoveryAlert(args: {
+  path: string | null;
+  freePercent: number | null;
+  freeBytes: number | null;
+  percentThreshold: number;
+  bytesThreshold: number;
+}): Extract<ServerMessage, { type: 'alert' }> {
+  const severity: AnomalySeverity = 'info';
+  const location = args.path ?? 'unknown data directory';
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `Recovered Kookr data-directory disk space: ${formatDiskFree(args.freePercent, args.freeBytes)}`,
+    details:
+      `Operational alert cleared: filesystem containing ${location} is back above ` +
+      `the enabled low-space threshold(s) (${formatDiskThresholds(args.percentThreshold, args.bytesThreshold)}).`,
+    severity,
+  };
+}
+
+function formatDiskFree(freePercent: number | null, freeBytes: number | null): string {
+  const percent = freePercent === null ? '--' : `${Math.round(freePercent * 10) / 10}%`;
+  return `${percent} / ${formatBytes(freeBytes)}`;
+}
+
+function formatDiskThresholds(percentThreshold: number, bytesThreshold: number): string {
+  const parts: string[] = [];
+  if (percentThreshold > 0) parts.push(`<= ${percentThreshold}% free`);
+  if (bytesThreshold > 0) parts.push(`<= ${formatBytes(bytesThreshold)} free`);
+  return parts.join(' or ');
+}
+
+function formatBytes(bytes: number | null): string {
+  if (bytes === null) return '--';
+  const gib = bytes / 1_073_741_824;
+  if (gib >= 1) return `${Math.round(gib * 10) / 10} GiB`;
+  const mib = bytes / 1_048_576;
+  return `${Math.round(mib)} MiB`;
 }
 
 function buildPersistenceBreachAlert(

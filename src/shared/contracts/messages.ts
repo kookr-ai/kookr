@@ -79,6 +79,7 @@ export type ResourceUnavailableReason =
   | 'cpu_unavailable'
   | 'cpu_delta_invalid'
   | 'memory_unavailable'
+  | 'data_directory_disk_unavailable'
   | 'event_loop_unavailable'
   | 'sampler_error';
 
@@ -92,6 +93,12 @@ export interface SystemResourceStatus {
     memoryUsedPercent: number | null;
     memoryFreeBytes: number | null;
     memoryTotalBytes: number | null;
+    dataDirectory: {
+      path: string | null;
+      diskFreeBytes: number | null;
+      diskTotalBytes: number | null;
+      diskFreePercent: number | null;
+    };
   };
   server: {
     eventLoopDelayP95Ms: number | null;

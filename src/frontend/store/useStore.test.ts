@@ -106,6 +106,12 @@ describe('Kookr Zustand Store', () => {
         memoryUsedPercent: 68,
         memoryFreeBytes: 4_000_000_000,
         memoryTotalBytes: 12_000_000_000,
+        dataDirectory: {
+          path: '/tmp/kookr-data',
+          diskFreeBytes: 8_000_000_000,
+          diskTotalBytes: 100_000_000_000,
+          diskFreePercent: 8,
+        },
       },
       server: {
         eventLoopDelayP95Ms: 21,

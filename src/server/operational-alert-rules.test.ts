@@ -12,6 +12,8 @@ const DISABLED: OperationalAlertConfig = {
   cpuPercent: 0,
   memoryPercent: 0,
   eventLoopDelayMs: 0,
+  dataDirectoryFreePercent: 0,
+  dataDirectoryFreeBytes: 0,
   sustainSamples: 3,
 };
 
@@ -19,6 +21,9 @@ interface SampleOverrides {
   cpuUsagePercent?: number | null;
   memoryUsedPercent?: number | null;
   eventLoopDelayP95Ms?: number | null;
+  dataDirectoryDiskFreeBytes?: number | null;
+  dataDirectoryDiskTotalBytes?: number | null;
+  dataDirectoryDiskFreePercent?: number | null;
   unavailable?: SystemResourceStatus['unavailable'];
 }
 
@@ -33,6 +38,12 @@ function status(overrides: SampleOverrides = {}): SystemResourceStatus {
       memoryUsedPercent: overrides.memoryUsedPercent ?? null,
       memoryFreeBytes: null,
       memoryTotalBytes: null,
+      dataDirectory: {
+        path: '/tmp/kookr-data',
+        diskFreeBytes: overrides.dataDirectoryDiskFreeBytes ?? null,
+        diskTotalBytes: overrides.dataDirectoryDiskTotalBytes ?? null,
+        diskFreePercent: overrides.dataDirectoryDiskFreePercent ?? null,
+      },
     },
     server: {
       eventLoopDelayP95Ms: overrides.eventLoopDelayP95Ms ?? null,
@@ -55,6 +66,9 @@ describe('OperationalAlertEvaluator', () => {
     expect(createOperationalAlertEvaluator(DISABLED).hasEnabledRules()).toBe(false);
     expect(
       createOperationalAlertEvaluator({ ...DISABLED, cpuPercent: 90 }).hasEnabledRules(),
+    ).toBe(true);
+    expect(
+      createOperationalAlertEvaluator({ ...DISABLED, dataDirectoryFreePercent: 5 }).hasEnabledRules(),
     ).toBe(true);
     const persistenceHealth = new PersistenceHealthTracker();
     expect(createOperationalAlertEvaluator(DISABLED, () => persistenceHealth.snapshot()).hasEnabledRules()).toBe(true);
@@ -165,6 +179,96 @@ describe('OperationalAlertEvaluator', () => {
 
     // Real below-threshold reading still clears once.
     expect(alertsFor(evaluator, status({ cpuUsagePercent: 30 }))).toHaveLength(1);
+  });
+
+  test('data-directory disk pressure fires once after sustained low free space', () => {
+    const evaluator = createOperationalAlertEvaluator({
+      ...DISABLED,
+      dataDirectoryFreePercent: 5,
+      dataDirectoryFreeBytes: 2_147_483_648,
+      sustainSamples: 3,
+    });
+
+    const lowSpace = status({
+      dataDirectoryDiskFreePercent: 4.9,
+      dataDirectoryDiskFreeBytes: 3_000_000_000,
+      dataDirectoryDiskTotalBytes: 100_000_000_000,
+    });
+
+    expect(alertsFor(evaluator, lowSpace)).toEqual([]);
+    expect(alertsFor(evaluator, lowSpace)).toEqual([]);
+    const fired = alertsFor(evaluator, lowSpace);
+
+    expect(fired).toHaveLength(1);
+    expect(fired[0]).toMatchObject({
+      type: 'alert',
+      agentId: OPERATIONAL_ALERT_AGENT_ID,
+      severity: 'warning',
+    });
+    expect(fired[0].summary).toContain('data-directory disk space');
+    expect(fired[0].details).toContain('kookr maintenance prune --dry-run --dir <dataDir>');
+
+    expect(alertsFor(evaluator, lowSpace)).toEqual([]);
+  });
+
+  test('data-directory disk pressure can breach on byte floor and clears after full recovery', () => {
+    const evaluator = createOperationalAlertEvaluator({
+      ...DISABLED,
+      dataDirectoryFreePercent: 5,
+      dataDirectoryFreeBytes: 2_147_483_648,
+      sustainSamples: 1,
+    });
+
+    const fired = alertsFor(evaluator, status({
+      dataDirectoryDiskFreePercent: 10,
+      dataDirectoryDiskFreeBytes: 1_000_000_000,
+      dataDirectoryDiskTotalBytes: 100_000_000_000,
+    }));
+    expect(fired).toHaveLength(1);
+    expect(fired[0].severity).toBe('warning');
+
+    const missingByteReading = alertsFor(evaluator, status({
+      dataDirectoryDiskFreePercent: 10,
+      dataDirectoryDiskFreeBytes: null,
+      dataDirectoryDiskTotalBytes: 100_000_000_000,
+    }));
+    expect(missingByteReading).toEqual([]);
+
+    const cleared = alertsFor(evaluator, status({
+      dataDirectoryDiskFreePercent: 10,
+      dataDirectoryDiskFreeBytes: 3_000_000_000,
+      dataDirectoryDiskTotalBytes: 100_000_000_000,
+    }));
+    expect(cleared).toHaveLength(1);
+    expect(cleared[0]).toMatchObject({ severity: 'info', agentId: OPERATIONAL_ALERT_AGENT_ID });
+    expect(cleared[0].summary).toContain('Recovered');
+  });
+
+  test('data-directory disk pressure ignores missing data and disabled thresholds', () => {
+    const missingEvaluator = createOperationalAlertEvaluator({
+      ...DISABLED,
+      dataDirectoryFreePercent: 5,
+      sustainSamples: 1,
+    });
+
+    expect(alertsFor(missingEvaluator, status({
+      dataDirectoryDiskFreePercent: null,
+      dataDirectoryDiskFreeBytes: null,
+      unavailable: ['data_directory_disk_unavailable'],
+    }))).toEqual([]);
+
+    const disabledEvaluator = createOperationalAlertEvaluator({
+      ...DISABLED,
+      dataDirectoryFreePercent: 0,
+      dataDirectoryFreeBytes: 0,
+      sustainSamples: 1,
+    });
+
+    expect(alertsFor(disabledEvaluator, status({
+      dataDirectoryDiskFreePercent: 1,
+      dataDirectoryDiskFreeBytes: 1,
+      dataDirectoryDiskTotalBytes: 100_000_000_000,
+    }))).toEqual([]);
   });
 
   test('a transient gap does not reset accumulated breaches', () => {

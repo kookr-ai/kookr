@@ -8,6 +8,10 @@ import {
   getOperationalAlertConfig,
   resetOperationalAlertConfig,
 } from '../operational-alert-config.js';
+import {
+  DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
+  DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+} from '../config.js';
 import type { RouteDeps } from './shared.js';
 
 function mkApp(deps: Partial<RouteDeps>): Hono {
@@ -80,8 +84,22 @@ describe('admin operational-alert-config routes (issue #737)', () => {
     const res = await get(mkApp({}));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
-      config: { cpuPercent: 70, memoryPercent: 0, eventLoopDelayMs: 0, sustainSamples: 3 },
-      default: { cpuPercent: 70, memoryPercent: 0, eventLoopDelayMs: 0, sustainSamples: 3 },
+      config: {
+        cpuPercent: 70,
+        memoryPercent: 0,
+        eventLoopDelayMs: 0,
+        dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+        dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
+        sustainSamples: 3,
+      },
+      default: {
+        cpuPercent: 70,
+        memoryPercent: 0,
+        eventLoopDelayMs: 0,
+        dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+        dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
+        sustainSamples: 3,
+      },
     });
   });
 
@@ -92,16 +110,32 @@ describe('admin operational-alert-config routes (issue #737)', () => {
   });
 
   test('POST applies a valid partial update process-wide', async () => {
-    const res = await post(mkApp({}), { memoryPercent: 88, sustainSamples: 2 });
+    const res = await post(mkApp({}), { memoryPercent: 88, dataDirectoryFreeBytes: 1_000, sustainSamples: 2 });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
-      config: { cpuPercent: 70, memoryPercent: 88, eventLoopDelayMs: 0, sustainSamples: 2 },
-      default: { cpuPercent: 70, memoryPercent: 0, eventLoopDelayMs: 0, sustainSamples: 3 },
+      config: {
+        cpuPercent: 70,
+        memoryPercent: 88,
+        eventLoopDelayMs: 0,
+        dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+        dataDirectoryFreeBytes: 1_000,
+        sustainSamples: 2,
+      },
+      default: {
+        cpuPercent: 70,
+        memoryPercent: 0,
+        eventLoopDelayMs: 0,
+        dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+        dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
+        sustainSamples: 3,
+      },
     });
     expect(getOperationalAlertConfig()).toEqual({
       cpuPercent: 70,
       memoryPercent: 88,
       eventLoopDelayMs: 0,
+      dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+      dataDirectoryFreeBytes: 1_000,
       sustainSamples: 2,
     });
   });
@@ -118,12 +152,21 @@ describe('admin operational-alert-config routes (issue #737)', () => {
     expect(await res.json()).toEqual({
       error: 'invalid-sustain-samples',
       field: 'sustainSamples',
-      validFields: ['cpuPercent', 'memoryPercent', 'eventLoopDelayMs', 'sustainSamples'],
+      validFields: [
+        'cpuPercent',
+        'memoryPercent',
+        'eventLoopDelayMs',
+        'dataDirectoryFreePercent',
+        'dataDirectoryFreeBytes',
+        'sustainSamples',
+      ],
     });
     expect(getOperationalAlertConfig()).toEqual({
       cpuPercent: 70,
       memoryPercent: 0,
       eventLoopDelayMs: 0,
+      dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+      dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
       sustainSamples: 3,
     });
   });
