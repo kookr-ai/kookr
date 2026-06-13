@@ -44,6 +44,7 @@ import {
 } from './resource-status-service.js';
 import { createOperationalAlertEvaluator } from './operational-alert-rules.js';
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
+import { TaskStateSaveScheduler } from './task-state-save-scheduler.js';
 import { createHookParseDegradationEvaluator } from './hook-parse-degradation-rules.js';
 import {
   getOperationalAlertConfig,
@@ -866,6 +867,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   realtime.setScheduleStore(scheduleStore);
   realtime.setSnapshotAchievementsReady(true);
   const persistenceHealth = new PersistenceHealthTracker();
+  const taskStateSaveScheduler = new TaskStateSaveScheduler({
+    taskStore,
+    tasksFile,
+    queue,
+    suppressionTracker,
+    persistenceHealth,
+  });
 
   // --- Self-diagnostic runner ---
   const serverStartMs = Date.now();
@@ -1006,6 +1014,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ossAttemptStore, ledgerAnalytics, ossRefresher, broadcastOssAttempts, getRegistryActiveRepos,
     skillDiscoveryState, prLessonsState, getRegistryActiveProjects, broadcastProjectSummaries,
     suppressionTracker, scheduleService, scheduleRunner,
+    taskStateSaveScheduler,
     diagnosticRunner,
     terminalBackend,
     coordinatorSuppressions,
@@ -1218,6 +1227,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       getDashboardClientCount: () => connectionRegistry.dashboardCount(),
       bypassAllPermissions,
       userInputDeliveries,
+      taskStateSaveScheduler,
     },
   });
 
@@ -1304,6 +1314,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     isClosed = true;
 
     await backgroundServices.stop();
+    try {
+      await taskStateSaveScheduler.close();
+    } catch (err) {
+      console.error('Error flushing pending task-state save on shutdown:', err);
+    }
     stopWebhookObserver?.();
 
     // Final task-state save

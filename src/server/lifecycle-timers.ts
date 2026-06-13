@@ -23,6 +23,7 @@ import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import { getDetectionStats, type DetectionStats } from '../core/detection-stats.js';
 import type { UserInputDeliverySnapshot } from '../shared/contracts/user-input-delivery.js';
 import type { PersistenceHealthRecorder } from '../core/persistence-health.js';
+import type { TaskStateSaveSchedulerLike } from './task-state-save-scheduler.js';
 
 export interface TimerDeps {
   monitor: Monitor;
@@ -54,6 +55,8 @@ export interface TimerDeps {
   detectionStatsStore?: { save(stats: DetectionStats): Promise<void> };
   /** In-memory tracker for runtime persistence failures. */
   persistenceHealth?: PersistenceHealthRecorder;
+  /** Coalesced task-state saver used by mutation paths; periodic ticks force-flush it as a backstop. */
+  taskStateSaveScheduler?: TaskStateSaveSchedulerLike;
   /** Test seam for task-state persistence. */
   taskStateSaver?: typeof saveTasksWithSnapshotPolicy;
   /** Test seam for detection-stats snapshot gathering. */
@@ -95,6 +98,7 @@ export interface PersistenceSaveTickDeps {
   suppressionTracker?: SnoozeSuppressionTracker;
   detectionStatsStore?: { save(stats: DetectionStats): Promise<void> };
   persistenceHealth?: PersistenceHealthRecorder;
+  taskStateSaveScheduler?: TaskStateSaveSchedulerLike;
   taskStateSaver?: typeof saveTasksWithSnapshotPolicy;
   getDetectionStatsSnapshot?: () => DetectionStats;
 }
@@ -480,21 +484,25 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
 
 export async function runPersistenceSaveTick(deps: PersistenceSaveTickDeps): Promise<void> {
   try {
-    const snoozes = serializeSnoozed(deps.queue, deps.taskStore);
-    const suppressionState = deps.suppressionTracker?.export();
-    const taskStateSaver = deps.taskStateSaver ?? saveTasksWithSnapshotPolicy;
-    await taskStateSaver(
-      deps.taskStore.getAllTasks(),
-      deps.tasksFile,
-      'daily',
-      deps.taskStore.getLifetimeSpendUsd(),
-      snoozes,
-      suppressionState,
-      deps.taskStore.listRelations(),
-    );
-    deps.persistenceHealth?.recordSuccess('task_state');
+    if (deps.taskStateSaveScheduler) {
+      await deps.taskStateSaveScheduler.flush('periodic', { force: true, policy: 'daily' });
+    } else {
+      const snoozes = serializeSnoozed(deps.queue, deps.taskStore);
+      const suppressionState = deps.suppressionTracker?.export();
+      const taskStateSaver = deps.taskStateSaver ?? saveTasksWithSnapshotPolicy;
+      await taskStateSaver(
+        deps.taskStore.getAllTasks(),
+        deps.tasksFile,
+        'daily',
+        deps.taskStore.getLifetimeSpendUsd(),
+        snoozes,
+        suppressionState,
+        deps.taskStore.listRelations(),
+      );
+      deps.persistenceHealth?.recordSuccess('task_state');
+    }
   } catch (err) {
-    deps.persistenceHealth?.recordFailure('task_state', err);
+    if (!deps.taskStateSaveScheduler) deps.persistenceHealth?.recordFailure('task_state', err);
     console.error('Error saving tasks:', err);
   }
   // Persist cumulative detector telemetry on the same cadence so FP/FN/

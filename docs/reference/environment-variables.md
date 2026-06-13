@@ -20,6 +20,7 @@ uncomment only the values you need.
 | `KOOKR_STARTUP_TIMEOUT_SECONDS` | `720` | Positive integer seconds | Maximum wait for production restart health checks. |
 | `KOOKR_STARTUP_CHECK_INTERVAL_SECONDS` | `2` | Positive integer seconds | Poll interval for production restart health checks. |
 | `KOOKR_LOG_FORMAT` | unset, human-readable lines | unset or `json` | Selects server logger output format for logger-backed call sites. The default preserves human-readable `[subsystem] message` lines. Set `json` to emit one JSON object per line with `ts`, `level`, `subsystem`, `msg`, and `fields`. |
+| `KOOKR_LOG_TASK_SAVE_METRICS` | unset | `1` to enable | Logs each `tasks.json` save with serialized byte count, task/relation counts, and serialize/write/total duration. Intended for short dogfooding measurements of task-state write amplification; leave unset for normal operation. |
 | `KOOKR_PROD_DIR` | Auto-resolved `../kookr-prod` | Absolute or relative path | Overrides the production worktree used by `scripts/prod-update.sh` and deployment routes. |
 | `KOOKR_ENV_ROOT_DIR` | Auto-resolved Kookr main checkout when `prod-update.sh` runs from `kookr-prod`; otherwise current checkout | Absolute or relative path | Overrides the checkout whose `.env` is symlinked into the production worktree by `scripts/prod-update.sh`. |
 
