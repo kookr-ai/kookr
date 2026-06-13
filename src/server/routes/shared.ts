@@ -52,6 +52,7 @@ import type { RequestDurationMetrics } from '../request-duration-metrics.js';
 import type { TaskStateSaveSchedulerLike } from '../task-state-save-scheduler.js';
 import type { TerminalInputCoordinator } from '../terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from '../user-input-delivery-service.js';
+import type { DeliveryTraceReader } from '../../core/delivery-trace.js';
 export type { RemoteShareDeps } from '../remote-share-deps.js';
 
 /**
@@ -305,6 +306,8 @@ export interface RouteDeps {
   requestBodyLimitBytes?: number;
   /** In-memory per-route request duration aggregation exposed through diagnostics. */
   requestDurationMetrics?: RequestDurationMetrics;
+  /** Bounded in-memory notification delivery trace exposed through diagnostics. */
+  deliveryTrace?: DeliveryTraceReader;
   /**
    * Owner share control surface (#808): viewer-grant store + connection registry
    * + audit log backing `POST/GET /api/share/viewers`, the revoke route, and the

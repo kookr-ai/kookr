@@ -92,6 +92,7 @@ import { RuntimeAttentionMissSampler } from './attention-miss-runtime-sampler.js
 import { CoordinatorSuppressionStore } from './coordinator/suppression-store.js';
 import { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { DashboardSelectionController } from './dashboard-selection-controller.js';
+import { DeliveryTraceBuffer } from '../core/delivery-trace.js';
 import type { ApiAuthConfig } from './auth.js';
 import type { SessionAuthConfig } from './auth-session.js';
 import {
@@ -284,6 +285,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // next launch without a restart (the PUT path reassigns `currentSettings`).
   const getAgentEffort = () => currentSettings.agentEffort;
   const terminalInputCoordinator = new TerminalInputCoordinator(terminalBackend);
+  const deliveryTrace = new DeliveryTraceBuffer();
+  const stopDeliveryTraceObserver = queue.addObserver({
+    admitted: (event) => deliveryTrace.recordAdmitted(event),
+    suppressed: (event) => deliveryTrace.recordSuppressed(event, event.reason),
+  });
 
   const webhookConfig = readWebhookConfigFromEnv(process.env, {
     dashboardBaseUrl: buildDashboardBaseUrl({ host, port, env: process.env }),
@@ -291,7 +297,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
   let stopWebhookObserver: (() => void) | undefined;
   if (webhookConfig) {
-    const notifier = new WebhookNotifier({ config: webhookConfig, taskStore, logger: console });
+    const notifier = new WebhookNotifier({ config: webhookConfig, taskStore, deliveryTrace, logger: console });
     console.log(`[webhook] Outbound finding webhook enabled (minSeverity=${webhookConfig.minSeverity})`);
     stopWebhookObserver = queue.addObserver({
       admitted: (event) => {
@@ -1027,6 +1033,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     taskStateSaveScheduler,
     diagnosticRunner,
     terminalBackend,
+    deliveryTrace,
     coordinatorSuppressions,
     drainController,
     apiAuth,
@@ -1333,6 +1340,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       console.error('Error flushing pending task-state save on shutdown:', err);
     }
     stopWebhookObserver?.();
+    stopDeliveryTraceObserver();
 
     // Final task-state save
     try {

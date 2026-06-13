@@ -25,6 +25,7 @@ import type { RouteDeps } from './shared.js';
 import type { HookIngestionDiagnosticsSnapshot } from '../hook-ingestion.js';
 import type { HookWatcherHealthSnapshot } from '../hook-watcher.js';
 import { getAuthThrottleSnapshot } from '../auth.js';
+import { DELIVERY_TRACE_SCHEMA_VERSION, type DeliveryTraceFilter } from '../../shared/contracts/delivery-trace.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const REVIEW_ADMIN_TOKEN_HEADER = 'x-kookr-admin-token';
@@ -138,6 +139,20 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   });
 
   app.get('/api/diagnostics/auth-throttle', (c) => c.json(getAuthThrottleSnapshot(deps.apiAuth)));
+
+  app.get('/api/diagnostics/delivery-trace', (c) => {
+    const snapshot = deps.deliveryTrace?.snapshot(parseDeliveryTraceFilter(c)) ?? {
+      schemaVersion: DELIVERY_TRACE_SCHEMA_VERSION,
+      maxRecords: 0,
+      totalRecorded: 0,
+      records: [],
+    };
+    const limit = parsePositiveInt(c.req.query('limit'));
+    return c.json(limit === undefined ? snapshot : {
+      ...snapshot,
+      records: snapshot.records.slice(-limit),
+    });
+  });
 
   app.get('/api/diagnostics/hook-ingestion', (c) => c.json({
     schemaVersion: 'hook-ingestion-diagnostics-route.v1',
@@ -523,6 +538,25 @@ function checkPersistenceWritable(kookrDir: string | undefined): ReadinessCheck 
     const code = (err as NodeJS.ErrnoException | undefined)?.code;
     return { critical: true, ready: false, status: 'error', reason: typeof code === 'string' ? code : 'unwritable' };
   }
+}
+
+function parseDeliveryTraceFilter(c: Context): DeliveryTraceFilter {
+  const filter: DeliveryTraceFilter = {};
+  const findingId = c.req.query('findingId')?.trim();
+  const correlationId = c.req.query('correlationId')?.trim();
+  const agentId = c.req.query('agentId')?.trim();
+  const fingerprintHash = c.req.query('fingerprintHash')?.trim();
+  if (findingId) filter.findingId = findingId;
+  if (correlationId) filter.correlationId = correlationId;
+  if (agentId) filter.agentId = agentId;
+  if (fingerprintHash) filter.fingerprintHash = fingerprintHash;
+  return filter;
+}
+
+function parsePositiveInt(raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function emptyHookIngestionDiagnosticsSnapshot(): HookIngestionDiagnosticsSnapshot {

@@ -290,6 +290,23 @@ These apply to any finding regardless of type:
 - **Do Not Disturb** (F5.8) silences toasts, notifications, and the chime while
   detection keeps running.
 
+## Delivery Diagnostics
+
+Operators can inspect a bounded server-side tail of finding delivery decisions
+at `GET /api/diagnostics/delivery-trace`. Records include the finding key,
+correlation id, timestamp, stage (`admitted`, `suppressed`, `webhook_attempt`,
+`webhook_result`), suppression reason, webhook attempt, HTTP status, and
+delivery error where relevant. Raw finding fingerprints are exposed only as
+SHA-256 hashes so explanations and transcript excerpts do not leak through this
+diagnostics surface.
+
+Optional exact-match query filters are `findingId`, `correlationId`, `agentId`,
+and `fingerprintHash`; `limit` returns only the newest matching records. This
+trace only covers decisions the server can observe: attention-queue
+admission/suppression and outbound generic webhook delivery. Browser desktop
+notifications, hosted relay/web-push outcomes, and Telegram inbound audit are
+out of scope until those channels report server-visible outcomes.
+
 ## Coordinator detector concepts
 
 Coordinator detector concepts are not `AnomalyType` values and do not participate

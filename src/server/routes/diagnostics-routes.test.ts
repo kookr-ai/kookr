@@ -15,7 +15,9 @@ import { AuthThrottle } from '../auth-throttle.js';
 import { ViewerGrantStore } from '../../core/viewer-grants.js';
 import { ViewerConnectionRegistry } from '../viewer-connection-registry.js';
 import { CollaborationAuditLog } from '../collaboration-audit-log.js';
+import { DeliveryTraceBuffer } from '../../core/delivery-trace.js';
 import type { RouteDeps } from './shared.js';
+import type { Anomaly } from '../../core/types.js';
 import type { LlmClient } from '../../core/llm-client.js';
 import type { HelperLlmDiagnosticsCounters, HelperLlmDiagnosticsSnapshot } from '../../shared/contracts/diagnostic.js';
 
@@ -59,6 +61,18 @@ function helperLlmSnapshot(overrides: Partial<HelperLlmDiagnosticsSnapshot> = {}
     byUseCaseProvider: [],
     ...overrides,
   } satisfies HelperLlmDiagnosticsSnapshot;
+}
+
+function anomaly(overrides: Partial<Anomaly> = {}): Anomaly {
+  return {
+    agentId: 'session-1',
+    type: 'permission_blocked',
+    severity: 'warning',
+    explanation: 'Raw finding explanation should not be in delivery diagnostics',
+    detectedAt: new Date('2026-06-13T10:00:00.000Z'),
+    eventId: 'hook-event-1',
+    ...overrides,
+  };
 }
 
 describe('diagnostics routes', () => {
@@ -146,6 +160,90 @@ describe('diagnostics routes', () => {
         totalFailedAttempts: 1,
         lockedOutSources: [expect.objectContaining({ source: '10.0.0.11', failures: 1 })],
       }));
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/diagnostics/delivery-trace
+  // ---------------------------------------------------------------------------
+  describe('GET /api/diagnostics/delivery-trace', () => {
+    test('returns an empty v1 snapshot when the delivery trace is not wired', async () => {
+      const res = await mkApp({}).request('/api/diagnostics/delivery-trace');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        schemaVersion: 'delivery-trace.v1',
+        maxRecords: 0,
+        totalRecorded: 0,
+        records: [],
+      });
+    });
+
+    test('exposes a bounded privacy-safe delivery trace with filters and limit', async () => {
+      const nowValues = [
+        new Date('2026-06-13T10:00:01.000Z'),
+        new Date('2026-06-13T10:00:02.000Z'),
+        new Date('2026-06-13T10:00:03.000Z'),
+      ];
+      const deliveryTrace = new DeliveryTraceBuffer({
+        maxRecords: 2,
+        now: () => nowValues.shift() ?? new Date('2026-06-13T10:00:09.000Z'),
+      });
+      deliveryTrace.recordAdmitted({
+        agentId: 'session-1',
+        anomaly: anomaly({ eventId: 'evicted-event' }),
+        fingerprint: 'permission_blocked::evicted',
+      });
+      deliveryTrace.recordSuppressed({
+        agentId: 'session-2',
+        anomaly: anomaly({ agentId: 'session-2', eventId: 'correlation-2' }),
+        fingerprint: 'needs_input::Raw finding explanation should not be in delivery diagnostics',
+      }, 'queue_snoozed');
+      deliveryTrace.recordWebhookResult({
+        agentId: 'session-3',
+        anomaly: anomaly({ agentId: 'session-3', type: 'budget_exceeded', severity: 'critical', eventId: 'correlation-3' }),
+        fingerprint: 'budget_exceeded::expensive',
+      }, {
+        attempt: 2,
+        outcome: 'failure',
+        httpStatus: 502,
+      });
+
+      const all = await mkApp({ deliveryTrace }).request('/api/diagnostics/delivery-trace');
+      const allBody = await all.json();
+      expect(allBody).toEqual({
+        schemaVersion: 'delivery-trace.v1',
+        maxRecords: 2,
+        totalRecorded: 3,
+        records: [
+          expect.objectContaining({
+            stage: 'suppressed',
+            reason: 'queue_snoozed',
+            agentId: 'session-2',
+            correlationId: 'correlation-2',
+          }),
+          expect.objectContaining({
+            stage: 'webhook_result',
+            outcome: 'failure',
+            attempt: 2,
+            httpStatus: 502,
+            anomalyType: 'budget_exceeded',
+            severity: 'critical',
+            correlationId: 'correlation-3',
+          }),
+        ],
+      });
+      expect(JSON.stringify(allBody)).not.toContain('Raw finding explanation');
+
+      const filtered = await mkApp({ deliveryTrace }).request('/api/diagnostics/delivery-trace?correlationId=correlation-3');
+      expect((await filtered.json()).records).toEqual([
+        expect.objectContaining({ agentId: 'session-3', fingerprintHash: expect.stringMatching(/^[0-9a-f]{64}$/) }),
+      ]);
+
+      const limited = await mkApp({ deliveryTrace }).request('/api/diagnostics/delivery-trace?limit=1');
+      expect((await limited.json()).records).toEqual([
+        expect.objectContaining({ agentId: 'session-3' }),
+      ]);
     });
   });
 

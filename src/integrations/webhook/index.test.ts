@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { describe, expect, test, vi } from 'vitest';
 import { TaskStore } from '../../core/tasks.js';
+import { DeliveryTraceBuffer } from '../../core/delivery-trace.js';
 import type { Anomaly } from '../../core/types.js';
 import {
   type WebhookConfig,
@@ -40,6 +41,7 @@ function setup(
     lastStatus: 'running',
   });
   const logger = { warn: vi.fn(), log: vi.fn() };
+  const deliveryTrace = new DeliveryTraceBuffer({ now: () => sentAt });
   const notifier = new WebhookNotifier({
     config: {
       url: 'https://receiver.example/webhook',
@@ -50,11 +52,12 @@ function setup(
       ...configOverrides,
     },
     taskStore,
+    deliveryTrace,
     fetchImpl: fetchImpl as typeof fetch,
     now,
     logger,
   });
-  return { notifier, fetchImpl, logger, task };
+  return { notifier, fetchImpl, logger, task, deliveryTrace };
 }
 
 function signature(secret: string, timestamp: number, body: string): string {
@@ -177,7 +180,7 @@ describe('webhook notifier', () => {
   });
 
   test('filters findings below the configured minimum severity', async () => {
-    const { notifier, fetchImpl } = setup(undefined, { minSeverity: 'critical' });
+    const { notifier, fetchImpl, deliveryTrace } = setup(undefined, { minSeverity: 'critical' });
 
     await expect(notifier.notifyFinding({
       agentId: 'session-1',
@@ -186,6 +189,13 @@ describe('webhook notifier', () => {
     })).resolves.toBe(false);
 
     expect(fetchImpl).not.toHaveBeenCalled();
+    expect(deliveryTrace.snapshot().records).toEqual([
+      expect.objectContaining({
+        stage: 'suppressed',
+        reason: 'below_min_severity',
+        agentId: 'session-1',
+      }),
+    ]);
   });
 
   test('uses per-project routing to override the global minimum severity', async () => {
@@ -204,7 +214,7 @@ describe('webhook notifier', () => {
   });
 
   test('does not dedupe a finding suppressed by per-project disabled routing', async () => {
-    const { notifier, fetchImpl } = setup();
+    const { notifier, fetchImpl, deliveryTrace } = setup();
     const event = {
       agentId: 'session-1',
       anomaly: anomaly({ severity: 'critical' }),
@@ -221,10 +231,25 @@ describe('webhook notifier', () => {
     })).resolves.toBe(true);
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(deliveryTrace.snapshot().records).toEqual([
+      expect.objectContaining({
+        stage: 'suppressed',
+        reason: 'webhook_disabled',
+      }),
+      expect.objectContaining({
+        stage: 'webhook_attempt',
+        attempt: 1,
+      }),
+      expect.objectContaining({
+        stage: 'webhook_result',
+        outcome: 'success',
+        httpStatus: 200,
+      }),
+    ]);
   });
 
   test('deduplicates by agent and finding fingerprint until recovery clears it', async () => {
-    const { notifier, fetchImpl } = setup();
+    const { notifier, fetchImpl, deliveryTrace } = setup();
     const event = {
       agentId: 'session-1',
       anomaly: anomaly(),
@@ -242,6 +267,11 @@ describe('webhook notifier', () => {
     await notifier.notifyFinding(event);
 
     expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(deliveryTrace.snapshot().records).toContainEqual(expect.objectContaining({
+      stage: 'suppressed',
+      reason: 'webhook_dedupe',
+      agentId: 'session-1',
+    }));
   });
 
   test('retries transient network and server errors without retrying 4xx responses', async () => {
@@ -269,6 +299,65 @@ describe('webhook notifier', () => {
 
     expect(clientFetch).toHaveBeenCalledTimes(1);
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('webhook returned 400'));
+  });
+
+  test('records webhook network errors in delivery trace outcomes', async () => {
+    const networkFetch = vi.fn()
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+    const { notifier, deliveryTrace } = setup(networkFetch);
+
+    await expect(notifier.notifyFinding({
+      agentId: 'session-1',
+      anomaly: anomaly({ eventId: 'evt-network' }),
+      fingerprint: 'permission_blocked::network retry',
+    })).resolves.toBe(true);
+
+    expect(deliveryTrace.snapshot({ correlationId: 'evt-network' }).records).toEqual([
+      expect.objectContaining({ stage: 'webhook_attempt', attempt: 1 }),
+      expect.objectContaining({ stage: 'webhook_result', attempt: 1, outcome: 'failure', error: 'network down' }),
+      expect.objectContaining({ stage: 'webhook_attempt', attempt: 2 }),
+      expect.objectContaining({ stage: 'webhook_result', attempt: 2, outcome: 'success', httpStatus: 200 }),
+    ]);
+  });
+
+  test('records webhook retry attempts and success/failure outcomes', async () => {
+    const transientFetch = vi.fn()
+      .mockResolvedValueOnce(new Response('bad gateway', { status: 502 }))
+      .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+    const { notifier, deliveryTrace } = setup(transientFetch, {
+      maxAttempts: 2,
+      initialRetryDelayMs: 0,
+    });
+
+    await expect(notifier.notifyFinding({
+      agentId: 'session-1',
+      anomaly: anomaly({ eventId: 'evt-retry' }),
+      fingerprint: 'permission_blocked::retry outcome',
+    })).resolves.toBe(true);
+
+    expect(deliveryTrace.snapshot({ correlationId: 'evt-retry' }).records).toEqual([
+      expect.objectContaining({ stage: 'webhook_attempt', attempt: 1 }),
+      expect.objectContaining({ stage: 'webhook_result', attempt: 1, outcome: 'failure', httpStatus: 502 }),
+      expect.objectContaining({ stage: 'webhook_attempt', attempt: 2 }),
+      expect.objectContaining({ stage: 'webhook_result', attempt: 2, outcome: 'success', httpStatus: 200 }),
+    ]);
+  });
+
+  test('records webhook terminal failure outcomes', async () => {
+    const failingFetch = vi.fn(async () => new Response('bad request', { status: 400 }));
+    const { notifier, deliveryTrace } = setup(failingFetch);
+
+    await expect(notifier.notifyFinding({
+      agentId: 'session-1',
+      anomaly: anomaly({ eventId: 'evt-400' }),
+      fingerprint: 'permission_blocked::bad request outcome',
+    })).resolves.toBe(false);
+
+    expect(deliveryTrace.snapshot({ correlationId: 'evt-400' }).records).toEqual([
+      expect.objectContaining({ stage: 'webhook_attempt', attempt: 1 }),
+      expect.objectContaining({ stage: 'webhook_result', attempt: 1, outcome: 'failure', httpStatus: 400 }),
+    ]);
   });
 
   test('reads env config and dashboard base URLs', () => {

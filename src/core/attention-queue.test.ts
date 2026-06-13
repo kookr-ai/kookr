@@ -105,6 +105,32 @@ describe('AttentionQueue', () => {
       expect(observer.resolved).not.toHaveBeenCalled();
     });
 
+    test('notifies observers when enqueue suppresses duplicate or snoozed findings', () => {
+      const observer = {
+        admitted: vi.fn(),
+        suppressed: vi.fn(),
+      };
+      queue.addObserver(observer);
+
+      queue.enqueue('a1', makeAnomaly('a1', 'needs_input', 'info'));
+      queue.enqueue('a1', withDetectedAt(makeAnomaly('a1', 'needs_input', 'info'), '2026-01-01T00:01:00Z'));
+      queue.snooze('a1', 60000);
+      queue.enqueue('a1', withDetectedAt(makeAnomaly('a1', 'needs_input', 'info'), '2026-01-01T00:02:00Z'));
+
+      expect(observer.admitted).toHaveBeenCalledTimes(1);
+      expect(observer.suppressed).toHaveBeenCalledTimes(2);
+      expect(observer.suppressed.mock.calls[0][0]).toMatchObject({
+        agentId: 'a1',
+        fingerprint: 'needs_input::needs_input for a1',
+        reason: 'queue_dedupe',
+      });
+      expect(observer.suppressed.mock.calls[1][0]).toMatchObject({
+        agentId: 'a1',
+        fingerprint: 'needs_input::needs_input for a1',
+        reason: 'queue_snoozed',
+      });
+    });
+
     test('enqueue adds agent sorted by severity', () => {
       queue.enqueue('a1', makeAnomaly('a1', 'needs_input', 'info'));
       queue.enqueue('a2', makeAnomaly('a2', 'repeated_error', 'critical'));
