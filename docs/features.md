@@ -294,6 +294,19 @@ Kookr remains local-first, but can expose a task or terminal stream through expl
 | F16.3 | **Remote terminal viewing and input grants** | Stream selected terminal sessions through the relay. Remote input is permissioned separately and fails closed when grants or relay connectivity are absent. |
 | F16.4 | **Contact-aware sharing** | Remember share contacts and grant metadata so repeated sharing does not require manual link reconstruction. |
 
+### F17: Meta Task Coordinator
+
+The task coordinator adds relationship-aware supervision on top of the main findings queue. It is deterministic and local: it reads live task state, hook activity, task edges, and dedupe metadata, then renders recommendations without asking an LLM to infer intent.
+
+| ID | Feature | Description |
+|----|---------|-------------|
+| F17.1 | **Coordinator chips** | Per-task chips summarize one coordinator recommendation: declared-edge status, stale coordinator activity, duplicate active prompt clusters, or completed tasks that can be cleared. Chip actions can nudge, compare, acknowledge, or snooze depending on the detector. |
+| F17.2 | **Chain strips** | The task detail surface shows compact parent, child, blocks, and blocked-by strips for related tasks. Prior-task batch completion is guarded by a refreshed chain token, merged-PR verification, post-merge check status, and worktree-health checks. |
+| F17.3 | **Declared task edges** | Users can declare and remove `blocks` and `blocked_by` relationships from the task detail panel. The editor supports typeahead over non-terminal tasks and free-text milestones. |
+| F17.4 | **Duplicate launch interrupt** | `kookr spawn` detects active duplicate prompts before launch. `--dedupe=warn` prompts interactively and blocks non-interactive launches, `--dedupe=block` always blocks, and `--dedupe=skip` creates an intentional duplicate excluded from duplicate coordinator clusters. |
+| F17.5 | **Coordinator suppressions** | Users can dismiss coordinator recommendations by detector class and agent type. Suppressions persist locally, last 7 days for the first two dismissals, and widen to 30 days after repeated dismissals. Task-level acknowledgements hide one recommendation for 30 days. |
+| F17.6 | **Coordinator findings pane** | Fleet-level coordinator cards group duplicate task clusters and orphan dependency edges. These cards are separate from supervisor anomaly finding cards and open the affected task rather than joining the severity queue. |
+
 ---
 
 ## What Kookr Does NOT Do (explicit non-goals)
@@ -373,6 +386,7 @@ This approach supersedes the headless mode design from [ADR-004](adr/004-agent-c
 - F-Settings Settings UI (was previously marked deferred)
 - Codex CLI adapter (was previously marked deferred) — with caveats tracked in [PoC 003](poc/003-codex-compatibility-gaps.md)
 - Optional session sharing and hosted relay flows (F16)
+- Meta Task Coordinator (F17)
 
 **Explicitly deferred:**
 - F1.1: Agent discovery via session files (managed agents are launched by Kookr, so discovery adds no value without "take over" support for externally-started agents)
