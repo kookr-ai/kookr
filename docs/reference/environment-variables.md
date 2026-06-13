@@ -180,6 +180,7 @@ local configuration; do not store shared secrets in checked-in `.env` files.
 | --- | --- | --- | --- |
 | `KOOKR_WEBHOOK_URL` | unset | HTTP or HTTPS URL | Enables generic outbound JSON POST notifications when findings enter the active attention queue. |
 | `KOOKR_WEBHOOK_MIN_SEVERITY` | `info` | `info`, `warning`, `critical` | Sends only findings at or above the configured severity. Invalid values fall back to `info` with a warning. |
+| `KOOKR_WEBHOOK_SECRET` | unset | Secret string, or comma-separated secrets for rotation | Adds `X-Kookr-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret, t + "." + body)>` to outbound finding webhook POSTs. Kookr signs with the first configured secret; receivers should verify against any accepted secret during rotation. |
 
 ## Relay
 

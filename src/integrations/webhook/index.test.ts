@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { describe, expect, test, vi } from 'vitest';
 import { TaskStore } from '../../core/tasks.js';
 import type { Anomaly } from '../../core/types.js';
@@ -26,6 +27,7 @@ function anomaly(overrides: Partial<Anomaly> = {}): Anomaly {
 function setup(
   fetchImpl = vi.fn(async () => new Response('ok', { status: 200 })),
   configOverrides: Partial<WebhookConfig> = {},
+  now = () => sentAt,
 ) {
   const taskStore = new TaskStore();
   const task = taskStore.createTask({ prompt: 'Fix the webhook tests', cwd: '/repo', name: 'Webhook tests' });
@@ -48,10 +50,17 @@ function setup(
     },
     taskStore,
     fetchImpl: fetchImpl as typeof fetch,
-    now: () => sentAt,
+    now,
     logger,
   });
   return { notifier, fetchImpl, logger, task };
+}
+
+function signature(secret: string, timestamp: number, body: string): string {
+  const digest = createHmac('sha256', secret)
+    .update(`${timestamp}.${body}`)
+    .digest('hex');
+  return `t=${timestamp},v1=${digest}`;
 }
 
 describe('webhook notifier', () => {
@@ -96,6 +105,73 @@ describe('webhook notifier', () => {
         cwd: '/repo',
         status: 'inProgress',
       },
+    });
+  });
+
+  test('omits the signature header when no webhook secret is configured', async () => {
+    const { notifier, fetchImpl } = setup();
+
+    await expect(notifier.notifyFinding({
+      agentId: 'session-1',
+      anomaly: anomaly(),
+      fingerprint: 'permission_blocked::unsigned',
+    })).resolves.toBe(true);
+
+    const init = fetchImpl.mock.calls[0][1];
+    expect(init?.headers).not.toHaveProperty('X-Kookr-Signature');
+  });
+
+  test('signs the byte-stable body with the first configured webhook secret', async () => {
+    const { notifier, fetchImpl } = setup(undefined, {
+      signingSecrets: ['primary-secret', 'old-secret'],
+    });
+
+    await expect(notifier.notifyFinding({
+      agentId: 'session-1',
+      anomaly: anomaly(),
+      fingerprint: 'permission_blocked::signed',
+    })).resolves.toBe(true);
+
+    const init = fetchImpl.mock.calls[0][1];
+    const body = String(init?.body);
+    const timestamp = Math.floor(sentAt.getTime() / 1_000);
+    expect(init?.headers).toMatchObject({
+      'X-Kookr-Signature': signature('primary-secret', timestamp, body),
+    });
+    expect(init?.headers).not.toMatchObject({
+      'X-Kookr-Signature': signature('old-secret', timestamp, body),
+    });
+  });
+
+  test('uses a fresh signature timestamp for each retry over the same body', async () => {
+    const transientFetch = vi.fn()
+      .mockResolvedValueOnce(new Response('try again', { status: 502 }))
+      .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+    const nowValues = [
+      new Date('2026-06-12T10:00:05.000Z'),
+      new Date('2026-06-12T10:00:10.000Z'),
+      new Date('2026-06-12T10:00:20.000Z'),
+    ];
+    const now = vi.fn(() => nowValues.shift() ?? new Date('2026-06-12T10:00:20.000Z'));
+    const { notifier } = setup(transientFetch, {
+      signingSecrets: ['retry-secret'],
+    }, now);
+
+    await expect(notifier.notifyFinding({
+      agentId: 'session-1',
+      anomaly: anomaly(),
+      fingerprint: 'permission_blocked::retry signed',
+    })).resolves.toBe(true);
+
+    expect(transientFetch).toHaveBeenCalledTimes(2);
+    const firstInit = transientFetch.mock.calls[0][1];
+    const secondInit = transientFetch.mock.calls[1][1];
+    expect(String(firstInit?.body)).toBe(String(secondInit?.body));
+    expect(firstInit?.headers).toMatchObject({
+      'X-Kookr-Signature': signature('retry-secret', 1_781_258_410, String(firstInit?.body)),
+    });
+    expect(secondInit?.headers).toMatchObject({
+      'X-Kookr-Signature': signature('retry-secret', 1_781_258_420, String(secondInit?.body)),
     });
   });
 
@@ -164,9 +240,11 @@ describe('webhook notifier', () => {
     expect(readWebhookConfigFromEnv({
       KOOKR_WEBHOOK_URL: ' https://receiver.example ',
       KOOKR_WEBHOOK_MIN_SEVERITY: 'critical',
+      KOOKR_WEBHOOK_SECRET: ' primary-secret, old-secret , ',
     }, { dashboardBaseUrl: 'http://dash' })).toMatchObject({
       url: 'https://receiver.example',
       minSeverity: 'critical',
+      signingSecrets: ['primary-secret', 'old-secret'],
       dashboardBaseUrl: 'http://dash',
     });
     expect(buildDashboardBaseUrl({

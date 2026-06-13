@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import type { Anomaly, AnomalySeverity } from '../../core/types.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
 
@@ -21,6 +22,7 @@ export interface WebhookConfig {
   maxAttempts: number;
   initialRetryDelayMs: number;
   dashboardBaseUrl?: string;
+  signingSecrets?: readonly string[];
 }
 
 export interface WebhookFindingPayload {
@@ -85,6 +87,7 @@ export function readWebhookConfigFromEnv(
     minSeverity,
     maxAttempts: DEFAULT_MAX_ATTEMPTS,
     initialRetryDelayMs: DEFAULT_INITIAL_RETRY_DELAY_MS,
+    ...parseSigningSecrets(env.KOOKR_WEBHOOK_SECRET),
     ...(opts.dashboardBaseUrl ? { dashboardBaseUrl: opts.dashboardBaseUrl } : {}),
   };
 }
@@ -180,16 +183,14 @@ export class WebhookNotifier {
 
   private async postWithRetry(payload: WebhookFindingPayload): Promise<void> {
     let lastError: Error | null = null;
+    const body = JSON.stringify(payload);
     for (let attempt = 1; attempt <= this.config.maxAttempts; attempt += 1) {
       try {
         const response = await this.fetchImpl(this.config.url, {
           method: 'POST',
           redirect: 'manual',
-          headers: {
-            'content-type': 'application/json',
-            'user-agent': 'kookr-webhook',
-          },
-          body: JSON.stringify(payload),
+          headers: this.buildHeaders(body),
+          body,
         });
         if (response.ok) return;
         if (response.status >= 400 && response.status < 500) {
@@ -211,10 +212,41 @@ export class WebhookNotifier {
   private retryDelayMs(attempt: number): number {
     return this.config.initialRetryDelayMs * 2 ** (attempt - 1);
   }
+
+  private buildHeaders(body: string): Record<string, string> {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      'user-agent': 'kookr-webhook',
+    };
+    const signature = this.buildSignatureHeader(body);
+    if (signature) {
+      headers['X-Kookr-Signature'] = signature;
+    }
+    return headers;
+  }
+
+  private buildSignatureHeader(body: string): string | undefined {
+    const secret = this.config.signingSecrets?.[0];
+    if (!secret) return undefined;
+
+    const timestamp = Math.floor(this.now().getTime() / 1_000);
+    const digest = createHmac('sha256', secret)
+      .update(`${timestamp}.${body}`)
+      .digest('hex');
+    return `t=${timestamp},v1=${digest}`;
+  }
 }
 
 function isSeverity(value: string): value is AnomalySeverity {
   return value === 'info' || value === 'warning' || value === 'critical';
+}
+
+function parseSigningSecrets(raw: string | undefined): Pick<WebhookConfig, 'signingSecrets'> {
+  const signingSecrets = raw
+    ?.split(',')
+    .map((secret) => secret.trim())
+    .filter((secret) => secret.length > 0);
+  return signingSecrets?.length ? { signingSecrets } : {};
 }
 
 function delay(ms: number): Promise<void> {
