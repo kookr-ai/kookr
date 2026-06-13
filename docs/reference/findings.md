@@ -290,9 +290,31 @@ These apply to any finding regardless of type:
 - **Do Not Disturb** (F5.8) silences toasts, notifications, and the chime while
   detection keeps running.
 
+## Coordinator detector concepts
+
+Coordinator detector concepts are not `AnomalyType` values and do not participate
+in severity ordering. They power task coordinator chips, chain strips, and the
+coordinator findings pane. Use this section to interpret those surfaces; use the
+catalog above for supervisor anomaly finding cards.
+
+| Coordinator detector | User surface | Trigger | Recommended response |
+| --- | --- | --- | --- |
+| `declared_edge` | Chain chip, chain strip, orphan-edge coordinator card | A task has declared `blocks` or `blocked_by` edges, or a declared `task:<id>` edge points at a task that no longer exists. | Open the relationships control. Keep valid dependencies, remove orphan task edges, or snooze a blocked task while upstream work finishes. |
+| `stale` | `Nudge` coordinator chip with a clock | An in-progress task has no recent `PostToolUse` activity, falling back to the latest active session start when no hook activity exists, for about 30 minutes. | Nudge the agent for a concise status update and next step, then decide whether to let it continue, reply with guidance, or stop/relaunch. |
+| `duplicate` | `Compare` coordinator chip and duplicate-cluster coordinator card | Two or more active tasks share the same normalized prompt, canonical working directory, and agent type. Tasks launched with intentional duplicate metadata are excluded. | Compare the peer task, close or complete the redundant one, or keep both when the duplication was intentional. Use `kookr spawn --dedupe=skip` for intentional duplicate launches. |
+| `done_not_cleared` | `Acknowledge` coordinator chip | A completed task has a completion digest and no follow-up signal, next action, or active anomaly. | Acknowledge it to hide that task-level recommendation for 30 days, or reopen the task detail if follow-up work still exists. |
+
+Coordinator suppressions are persisted locally in `coordinator-suppressions.json`
+under the active Kookr data directory. A class-level dismissal hides a detector
+for an agent type for 7 days; after the third dismissal it widens to 30 days.
+Task acknowledgements, such as acknowledging `done_not_cleared`, apply to one
+task for 30 days.
+
 ## See also
 
 - [Features — F2: Smart Anomaly Detection](../features.md#f2-smart-anomaly-detection-supervisor-agent)
+- [Features — F17: Meta Task Coordinator](../features.md#f17-meta-task-coordinator)
 - [User Guide — Finding Types](../user-guide.md#finding-types)
+- [User Guide — Task Coordinator](../user-guide.md#task-coordinator)
 - [Environment Variables](environment-variables.md)
 - [Architecture — anomaly catalogue](../architecture.md)
