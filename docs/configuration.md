@@ -177,11 +177,41 @@ Set a generic HTTP receiver URL to POST each new attention finding as JSON:
 ```bash
 KOOKR_WEBHOOK_URL=https://example.com/kookr-findings
 KOOKR_WEBHOOK_MIN_SEVERITY=warning
+KOOKR_WEBHOOK_SECRET=change-me
 ```
 
 `KOOKR_WEBHOOK_MIN_SEVERITY` is optional and accepts `info`, `warning`, or `critical`.
 Repeated re-enqueues of the same finding fingerprint are deduplicated until the
 finding resolves.
+
+`KOOKR_WEBHOOK_SECRET` is optional. When set, Kookr signs each POST with:
+
+```text
+X-Kookr-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret, t + "." + body)>
+```
+
+For rotation, set a comma-separated list such as `new-secret,old-secret`. Kookr
+signs with the first configured secret; receivers should verify the signature
+against any currently accepted secret and reject timestamps outside a short
+replay window, for example five minutes.
+
+```ts
+import { createHmac, timingSafeEqual } from 'node:crypto';
+
+export function verifyKookrWebhook(body: string, header: string, secrets: string[]): boolean {
+  const parts = Object.fromEntries(header.split(',').map((part) => part.split('=', 2)));
+  const timestamp = Number(parts.t);
+  if (!Number.isFinite(timestamp) || Math.abs(Date.now() / 1000 - timestamp) > 300) return false;
+  if (!/^[0-9a-f]{64}$/i.test(parts.v1 ?? '')) return false;
+
+  return secrets.some((secret) => {
+    const expected = createHmac('sha256', secret)
+      .update(`${parts.t}.${body}`)
+      .digest('hex');
+    return timingSafeEqual(Buffer.from(parts.v1 ?? '', 'hex'), Buffer.from(expected, 'hex'));
+  });
+}
+```
 
 ## Production-Style Instance
 
