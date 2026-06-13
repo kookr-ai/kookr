@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import type { Anomaly, AnomalySeverity } from '../../core/types.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
+import type { DeliveryTraceRecorder } from '../../core/delivery-trace.js';
 import type { ProjectWebhookRoutingSettings } from '../../shared/contracts/project-config.js';
 
 export const WEBHOOK_PAYLOAD_SCHEMA_VERSION = 'kookr.finding.webhook.v1';
@@ -55,6 +56,7 @@ export interface WebhookFindingPayload {
 export interface WebhookNotifierDeps {
   config: WebhookConfig;
   taskStore: Pick<TaskStore, 'findTaskBySession' | 'getTask'>;
+  deliveryTrace?: DeliveryTraceRecorder;
   fetchImpl?: typeof fetch;
   now?: () => Date;
   logger?: Pick<Console, 'warn'>;
@@ -124,6 +126,7 @@ export function buildDashboardBaseUrl(input: {
 export class WebhookNotifier {
   private readonly config: WebhookConfig;
   private readonly taskStore: Pick<TaskStore, 'findTaskBySession' | 'getTask'>;
+  private readonly deliveryTrace: DeliveryTraceRecorder | undefined;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => Date;
   private readonly logger: Pick<Console, 'warn'>;
@@ -132,6 +135,7 @@ export class WebhookNotifier {
   constructor(deps: WebhookNotifierDeps) {
     this.config = deps.config;
     this.taskStore = deps.taskStore;
+    this.deliveryTrace = deps.deliveryTrace;
     this.fetchImpl = deps.fetchImpl ?? fetch;
     this.now = deps.now ?? (() => new Date());
     this.logger = deps.logger ?? console;
@@ -141,9 +145,19 @@ export class WebhookNotifier {
     const effectiveRouting = routing ?? resolveWebhookRouting({
       globalMinSeverity: this.config.minSeverity,
     });
-    if (!effectiveRouting.enabled || !this.shouldSend(event.anomaly.severity, effectiveRouting.minSeverity)) return false;
+    if (!effectiveRouting.enabled) {
+      this.deliveryTrace?.recordSuppressed(event, 'webhook_disabled');
+      return false;
+    }
+    if (!this.shouldSend(event.anomaly.severity, effectiveRouting.minSeverity)) {
+      this.deliveryTrace?.recordSuppressed(event, 'below_min_severity');
+      return false;
+    }
     const dedupeKey = this.dedupeKey(event);
-    if (this.notified.has(dedupeKey)) return false;
+    if (this.notified.has(dedupeKey)) {
+      this.deliveryTrace?.recordSuppressed(event, 'webhook_dedupe');
+      return false;
+    }
 
     this.notified.add(dedupeKey);
     const payload = this.buildPayload(event);
@@ -203,7 +217,9 @@ export class WebhookNotifier {
   private async postWithRetry(payload: WebhookFindingPayload): Promise<void> {
     let lastError: Error | null = null;
     const body = JSON.stringify(payload);
+    const traceEvent = webhookPayloadToTraceEvent(payload);
     for (let attempt = 1; attempt <= this.config.maxAttempts; attempt += 1) {
+      this.deliveryTrace?.recordWebhookAttempt(traceEvent, attempt);
       try {
         const response = await this.fetchImpl(this.config.url, {
           method: 'POST',
@@ -211,7 +227,19 @@ export class WebhookNotifier {
           headers: this.buildHeaders(body),
           body,
         });
-        if (response.ok) return;
+        if (response.ok) {
+          this.deliveryTrace?.recordWebhookResult(traceEvent, {
+            attempt,
+            outcome: 'success',
+            httpStatus: response.status,
+          });
+          return;
+        }
+        this.deliveryTrace?.recordWebhookResult(traceEvent, {
+          attempt,
+          outcome: 'failure',
+          httpStatus: response.status,
+        });
         if (response.status >= 400 && response.status < 500) {
           throw new PermanentWebhookError(`webhook returned ${response.status}`);
         }
@@ -219,6 +247,11 @@ export class WebhookNotifier {
       } catch (err) {
         if (err instanceof PermanentWebhookError) throw err;
         lastError = err instanceof Error ? err : new Error(String(err));
+        this.deliveryTrace?.recordWebhookResult(traceEvent, {
+          attempt,
+          outcome: 'failure',
+          error: lastError.message,
+        });
       }
 
       if (attempt < this.config.maxAttempts) {
@@ -266,6 +299,24 @@ function parseSigningSecrets(raw: string | undefined): Pick<WebhookConfig, 'sign
     .map((secret) => secret.trim())
     .filter((secret) => secret.length > 0);
   return signingSecrets?.length ? { signingSecrets } : {};
+}
+
+function webhookPayloadToTraceEvent(payload: WebhookFindingPayload): WebhookFindingEvent {
+  return {
+    agentId: payload.finding.agentId,
+    fingerprint: payload.fingerprint,
+    anomaly: {
+      agentId: payload.finding.agentId,
+      type: payload.finding.type,
+      severity: payload.finding.severity,
+      explanation: '',
+      detectedAt: new Date(payload.finding.detectedAt),
+      ...(payload.finding.count !== undefined ? { count: payload.finding.count } : {}),
+      ...(payload.finding.subType ? { subType: payload.finding.subType } : {}),
+      ...(payload.finding.confidence ? { confidence: payload.finding.confidence } : {}),
+      ...(payload.finding.eventId ? { eventId: payload.finding.eventId } : {}),
+    },
+  };
 }
 
 function delay(ms: number): Promise<void> {

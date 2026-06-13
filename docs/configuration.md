@@ -202,6 +202,21 @@ If `webhook.enabled` is `false`, findings for that project are not posted. The
 webhook receiver URL and signing secret remain env-only; project settings store
 only `enabled` and `minSeverity`.
 
+Delivery decisions are visible through the owner diagnostics endpoint:
+
+```bash
+curl http://127.0.0.1:4801/api/diagnostics/delivery-trace
+curl 'http://127.0.0.1:4801/api/diagnostics/delivery-trace?correlationId=<event-id>'
+```
+
+The trace is a bounded in-memory tail. It records server-observable finding
+queue admission/suppression decisions and outbound webhook attempts/results,
+including webhook routing suppressions such as disabled project routing,
+minimum severity, and duplicate delivery fingerprint hashes. Browser desktop
+notification display, hosted relay/web-push outcomes, and Telegram inbound
+audit are not included until those channels report server-visible delivery
+outcomes.
+
 `KOOKR_WEBHOOK_SECRET` is optional. When set, Kookr signs each POST with:
 
 ```text

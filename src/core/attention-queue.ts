@@ -58,9 +58,17 @@ export interface AttentionQueueResolution {
   fingerprint: string;
 }
 
+export interface AttentionQueueSuppression {
+  agentId: string;
+  anomaly: Anomaly;
+  fingerprint: string;
+  reason: 'queue_dedupe' | 'queue_snoozed';
+}
+
 export interface AttentionQueueObserver {
   admitted?(event: AttentionQueueAdmission): void;
   resolved?(event: AttentionQueueResolution): void;
+  suppressed?(event: AttentionQueueSuppression): void;
 }
 
 export class AttentionQueue {
@@ -116,6 +124,7 @@ export class AttentionQueue {
         anomaly = { ...anomaly, detectedAt: snoozed.anomaly.detectedAt };
       }
       snoozed.anomaly = anomaly;
+      this.notifySuppressed(agentId, anomaly, 'queue_snoozed');
       return;
     }
 
@@ -123,6 +132,7 @@ export class AttentionQueue {
     const existing = this.entries.get(agentId);
     if (existing && anomalyFingerprint(existing.anomaly) === anomalyFingerprint(anomaly)) {
       existing.anomaly = { ...anomaly, detectedAt: existing.anomaly.detectedAt };
+      this.notifySuppressed(agentId, existing.anomaly, 'queue_dedupe');
       return;
     }
 
@@ -432,6 +442,14 @@ export class AttentionQueue {
     const event = { agentId, anomaly, fingerprint: anomalyFingerprint(anomaly) };
     for (const observer of this.observers) {
       observer.resolved?.(event);
+    }
+  }
+
+  private notifySuppressed(agentId: string, anomaly: Anomaly, reason: AttentionQueueSuppression['reason']): void {
+    if (this.observers.size === 0) return;
+    const event = { agentId, anomaly, fingerprint: anomalyFingerprint(anomaly), reason };
+    for (const observer of this.observers) {
+      observer.suppressed?.(event);
     }
   }
 }
