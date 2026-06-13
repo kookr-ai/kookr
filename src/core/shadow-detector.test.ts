@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, vi, afterEach } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -57,6 +57,7 @@ describe('ShadowDetectorRegistry', () => {
   });
 
   afterEach(async () => {
+    await registry.flush();
     await rm(tmpDir, { recursive: true, force: true });
   });
 
@@ -361,6 +362,76 @@ describe('ShadowDetectorRegistry', () => {
           expect(entry.agentId).toBe('agent-1');
         }
       }, { timeout: 2000 });
+    });
+
+    test('rotates the log before an append would exceed the size cap', async () => {
+      registry = new ShadowDetectorRegistry(logPath, { maxLogBytes: 700, rotatedGenerations: 2 });
+      const strategy = new TestStrategy('pane_semantics');
+      registry.register(strategy);
+
+      for (let i = 0; i < 5; i++) {
+        registry.evaluate('agent-1', { paneText: '', realAnomaly: null }, new Date(1_774_700_000_000 + i * 1000));
+      }
+      await registry.flush();
+
+      const current = await readFile(logPath, 'utf-8');
+      const rotated = await readFile(`${logPath}.1`, 'utf-8');
+
+      expect(rotated).toContain('2026-03-28T');
+      expect(current).toContain('2026-03-28T');
+      expect(rotated).not.toBe(current);
+    });
+
+    test('retains bounded rotated generations and shifts older files upward', async () => {
+      registry = new ShadowDetectorRegistry(logPath, { maxLogBytes: 700, rotatedGenerations: 2 });
+      const strategy = new TestStrategy('pane_semantics');
+      registry.register(strategy);
+
+      for (let i = 0; i < 12; i++) {
+        registry.evaluate('agent-1', { paneText: '', realAnomaly: null }, new Date(1_774_700_000_000 + i * 1000));
+      }
+      await registry.flush();
+
+      const files = (await readdir(tmpDir)).sort();
+      expect(files).toContain('shadow-detection.jsonl');
+      expect(files).toContain('shadow-detection.jsonl.1');
+      expect(files).toContain('shadow-detection.jsonl.2');
+      expect(files).not.toContain('shadow-detection.jsonl.3');
+
+      const generations = [
+        await readFile(`${logPath}.2`, 'utf-8'),
+        await readFile(`${logPath}.1`, 'utf-8'),
+        await readFile(logPath, 'utf-8'),
+      ];
+      const firstTimestamps = generations.map((content) => {
+        const [line] = content.trim().split('\n');
+        return Date.parse((JSON.parse(line) as ShadowLogEntry).timestamp);
+      });
+      expect(firstTimestamps[0]).toBeLessThan(firstTimestamps[1]);
+      expect(firstTimestamps[1]).toBeLessThan(firstTimestamps[2]);
+    });
+
+    test('serializes rapid fire-and-forget appends through rotation', async () => {
+      registry = new ShadowDetectorRegistry(logPath, { maxLogBytes: 100_000, rotatedGenerations: 2 });
+      const strategy = new TestStrategy('pane_semantics');
+      registry.register(strategy);
+
+      for (let i = 0; i < 20; i++) {
+        registry.evaluate('agent-1', { paneText: '', realAnomaly: null }, new Date(1_774_700_000_000 + i * 1000));
+      }
+      await registry.flush();
+
+      const retainedLines = (await readFile(logPath, 'utf-8')).trim().split('\n');
+
+      expect(retainedLines).toHaveLength(20);
+      const timestamps: string[] = [];
+      for (const line of retainedLines) {
+        const entry = JSON.parse(line) as ShadowLogEntry;
+        expect(entry.kind).toBe('heartbeat');
+        expect(entry.agentId).toBe('agent-1');
+        timestamps.push(entry.timestamp);
+      }
+      expect(timestamps).toEqual(Array.from({ length: 20 }, (_, i) => new Date(1_774_700_000_000 + i * 1000).toISOString()));
     });
   });
 });

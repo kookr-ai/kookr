@@ -6,6 +6,8 @@
  */
 
 import { createReadStream } from 'node:fs';
+import { readdir } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import type { ShadowLogEntry, ShadowTransition, ShadowHeartbeat, ShadowSource } from './shadow-detector.js';
 import type { AnomalyType } from './types.js';
@@ -299,6 +301,45 @@ export function generateReport(entries: ShadowLogEntry[]): ShadowReport {
  * the string-length cap; in-memory entry size is still bounded by JS heap.
  */
 export async function parseShadowLogFromFile(
+  filePath: string,
+): Promise<{ entries: ShadowLogEntry[]; errors: number }> {
+  const entries: ShadowLogEntry[] = [];
+  let errors = 0;
+
+  for (const path of await listShadowLogPaths(filePath)) {
+    const parsed = await parseShadowLogFileOnly(path);
+    entries.push(...parsed.entries);
+    errors += parsed.errors;
+  }
+
+  return { entries, errors };
+}
+
+async function listShadowLogPaths(filePath: string): Promise<string[]> {
+  let names: string[];
+  try {
+    names = await readdir(dirname(filePath));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    return [filePath];
+  }
+
+  const base = basename(filePath);
+  const generations = names
+    .map((name) => {
+      if (!name.startsWith(`${base}.`)) return null;
+      const suffix = name.slice(base.length + 1);
+      if (!/^[1-9][0-9]*$/.test(suffix)) return null;
+      return { generation: Number(suffix), path: join(dirname(filePath), name) };
+    })
+    .filter((item): item is { generation: number; path: string } => item !== null)
+    .sort((a, b) => b.generation - a.generation)
+    .map((item) => item.path);
+
+  return [...generations, filePath];
+}
+
+async function parseShadowLogFileOnly(
   filePath: string,
 ): Promise<{ entries: ShadowLogEntry[]; errors: number }> {
   const entries: ShadowLogEntry[] = [];
