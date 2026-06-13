@@ -8,6 +8,7 @@ const OUTCOME_LABEL: Record<AudioAlertOutcome, string> = {
   suppressed_muted: 'Muted',
   suppressed_dnd: 'DND',
   suppressed_debounced: 'Debounced',
+  suppressed_rate_limited: 'Rate Limited',
   audio_context_unavailable: 'No AudioContext',
   audio_context_error: 'AudioContext Error',
   audio_context_suspended: 'Suspended',
