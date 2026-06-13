@@ -348,7 +348,7 @@ Implementation target:
 - Push the branch and open a PR that closes #<N>.
 - Monitor CI and fix failures.
 - If you face a design choice the issue does not settle, pick the smallest implementation that satisfies the issue, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
-- If mergeAfterImplementation is true, merge the PR only after it is mergeable and required checks are green. Use the repo's allowed merge method.
+- If mergeAfterImplementation is true, merge the PR only after it is mergeable and required checks are green. Use the repo's allowed merge method. Exception: a required check that could not execute because of an external GitHub Actions budget/quota/billing block (e.g. the run failed within seconds with a spending-limit/quota message, not a code error) is a non-code blocker, not a failing check — capture the exact `gh run view` evidence and, if the repo permits admin merge, merge with `--admin` instead of stalling for a human override. Never apply this exception to a check that actually ran and failed on the code; when in doubt, treat the failure as real and report the blocker.
 - Report the PR URL and final state.
 
 Concurrent-task note:
