@@ -20,6 +20,12 @@ function resourceStatus(): SystemResourceStatus {
       memoryUsedPercent: 10,
       memoryFreeBytes: null,
       memoryTotalBytes: null,
+      dataDirectory: {
+        path: '/tmp/kookr-data',
+        diskFreeBytes: null,
+        diskTotalBytes: null,
+        diskFreePercent: null,
+      },
     },
     server: {
       eventLoopDelayP95Ms: 1,
@@ -78,7 +84,14 @@ describe('persistence health runtime wiring', () => {
     }
 
     const evaluator = createOperationalAlertEvaluator(
-      { cpuPercent: 0, memoryPercent: 0, eventLoopDelayMs: 0, sustainSamples: 3 },
+      {
+        cpuPercent: 0,
+        memoryPercent: 0,
+        eventLoopDelayMs: 0,
+        dataDirectoryFreePercent: 0,
+        dataDirectoryFreeBytes: 0,
+        sustainSamples: 3,
+      },
       () => persistenceHealth.snapshot(),
     );
     const alerts = evaluator.evaluate(resourceStatus());

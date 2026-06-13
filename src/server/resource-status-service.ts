@@ -139,6 +139,12 @@ export function createUnavailableResourceStatus(sampledAt: string): SystemResour
       memoryUsedPercent: null,
       memoryFreeBytes: null,
       memoryTotalBytes: null,
+      dataDirectory: {
+        path: null,
+        diskFreeBytes: null,
+        diskTotalBytes: null,
+        diskFreePercent: null,
+      },
     },
     server: {
       eventLoopDelayP95Ms: null,

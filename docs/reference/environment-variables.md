@@ -248,6 +248,8 @@ Bundled STT and TTS run via Docker Compose. The default STT config targets an NV
 | `KOOKR_ALERT_CPU_PERCENT` | `0` (disabled) | Non-negative number (percent), `0` disables | Host CPU usage threshold for operational alerts on the already-sampled resource feed. Fires one `warning` alert when CPU stays at or above this for `KOOKR_ALERT_SUSTAIN_SAMPLES` consecutive samples, and one `info` alert on recovery. Negative or invalid values are treated as `0`. |
 | `KOOKR_ALERT_MEMORY_PERCENT` | `0` (disabled) | Non-negative number (percent), `0` disables | Host memory-used threshold for operational alerts, evaluated like `KOOKR_ALERT_CPU_PERCENT`. |
 | `KOOKR_ALERT_EVENT_LOOP_DELAY_MS` | `0` (disabled) | Non-negative number (milliseconds), `0` disables | Server event-loop delay (p95) threshold for operational alerts, evaluated like `KOOKR_ALERT_CPU_PERCENT`. |
+| `KOOKR_ALERT_DATA_DIR_FREE_PERCENT` | `5` | Non-negative number (percent), `0` disables | Free-space floor for the filesystem containing the Kookr data directory (`~/.kookr` or `~/.kookr-<port>`). Fires one `warning` alert when free space stays at or below this percent for `KOOKR_ALERT_SUSTAIN_SAMPLES` consecutive samples, and one `info` alert after all enabled free-space floors recover. |
+| `KOOKR_ALERT_DATA_DIR_FREE_BYTES` | `2147483648` | Non-negative number (bytes), `0` disables | Absolute free-space floor for the Kookr data-directory filesystem, evaluated together with `KOOKR_ALERT_DATA_DIR_FREE_PERCENT`; breaching either enabled floor triggers the same low-disk-space rule. |
 | `KOOKR_ALERT_SUSTAIN_SAMPLES` | `3` | Integer `>= 1` | Consecutive breaching resource samples required before any operational alert fires (edge-triggered; clears on the first sample back below threshold). Samples are taken roughly every 2 seconds. Invalid or blank values use the default. |
 | `KOOKR_AUTO_REFLECT_DISABLE` | unset | `1` to disable | Kill switch for task-feedback reflection spawning. |
 | `KOOKR_FINDING_REVIEW_ENABLED` | unset | `true` to enable | Enables local/admin finding-evidence review diagnostics. Required before manual model review or the background sampler can call the LLM. |
@@ -269,6 +271,15 @@ Bundled STT and TTS run via Docker Compose. The default STT config targets an NV
 | `KOOKR_FINDING_REVIEW_SAMPLER_MAX_ATTEMPTS` | `3` | Positive integer | Maximum review attempts before a queue entry becomes terminal. |
 | `KOOKR_FINDING_REVIEW_SAMPLER_RETRY_BASE_MS` | `60000` | Positive integer milliseconds | Base delay for exponential retry backoff. |
 | `KOOKR_FINDING_REVIEW_SAMPLER_CANDIDATE_READ_LIMIT` | `50` | Positive integer | Number of audit candidates read from the monitor per sampler pass. |
+
+Disk-pressure sampling uses Node's filesystem statistics for the directory that
+contains Kookr state. If the runtime does not support that API, or the data
+directory cannot be read, Kookr reports the disk fields as `null` and marks the
+sample unavailable. Operational alert rules fail open for missing samples: a
+low-disk alert will not fire on absent data, and an already-firing alert will
+not clear until a later readable sample shows recovery. Kookr does not
+auto-prune or throttle writes; use `kookr maintenance prune --dry-run --dir <dataDir>`
+to inspect conservative cleanup candidates.
 
 ## Hooks And Contribution Tracking
 

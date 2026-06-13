@@ -13,6 +13,12 @@ function status(sampledAt = '2026-05-13T00:00:00.000Z'): SystemResourceStatus {
       memoryUsedPercent: 50,
       memoryFreeBytes: 500,
       memoryTotalBytes: 1_000,
+      dataDirectory: {
+        path: '/tmp/kookr-data',
+        diskFreeBytes: 900,
+        diskTotalBytes: 1_000,
+        diskFreePercent: 90,
+      },
     },
     server: {
       eventLoopDelayP95Ms: null,

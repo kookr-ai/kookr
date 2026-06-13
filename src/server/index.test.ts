@@ -136,6 +136,12 @@ class FixedResourceSampler implements ResourceStatusSampler {
         memoryUsedPercent: 95,
         memoryFreeBytes: 5,
         memoryTotalBytes: 100,
+        dataDirectory: {
+          path: '/tmp/kookr-data',
+          diskFreeBytes: 3_000_000_000,
+          diskTotalBytes: 100_000_000_000,
+          diskFreePercent: 3,
+        },
       },
       server: {
         eventLoopDelayP95Ms: 1,

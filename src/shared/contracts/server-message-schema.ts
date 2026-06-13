@@ -197,6 +197,12 @@ const resourceStatusMessage = z.object({
       memoryUsedPercent: z.number().nullable(),
       memoryFreeBytes: z.number().nullable(),
       memoryTotalBytes: z.number().nullable(),
+      dataDirectory: z.object({
+        path: z.string().nullable(),
+        diskFreeBytes: z.number().nullable(),
+        diskTotalBytes: z.number().nullable(),
+        diskFreePercent: z.number().nullable(),
+      }),
     }),
     server: z.object({
       eventLoopDelayP95Ms: z.number().nullable(),
@@ -209,6 +215,7 @@ const resourceStatusMessage = z.object({
       'cpu_unavailable',
       'cpu_delta_invalid',
       'memory_unavailable',
+      'data_directory_disk_unavailable',
       'event_loop_unavailable',
       'sampler_error',
     ])),

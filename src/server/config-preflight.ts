@@ -121,6 +121,16 @@ const ENV_CONSTRAINTS: EnvConstraint[] = [
     description: 'non-negative number',
   },
   {
+    variable: 'KOOKR_ALERT_DATA_DIR_FREE_PERCENT',
+    validate: isNonNegativeNumber,
+    description: 'non-negative number',
+  },
+  {
+    variable: 'KOOKR_ALERT_DATA_DIR_FREE_BYTES',
+    validate: isNonNegativeNumber,
+    description: 'non-negative number of bytes',
+  },
+  {
     variable: 'KOOKR_ALERT_SUSTAIN_SAMPLES',
     validate: isPositiveInteger,
     description: 'integer >= 1',

@@ -1142,6 +1142,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       `[ops-alerts] thresholds: cpu=${operationalAlertConfig.cpuPercent || 'off'}% ` +
         `mem=${operationalAlertConfig.memoryPercent || 'off'}% ` +
         `eventLoopDelay=${operationalAlertConfig.eventLoopDelayMs || 'off'}ms ` +
+        `dataDirFree=${operationalAlertConfig.dataDirectoryFreePercent || 'off'}%/` +
+        `${operationalAlertConfig.dataDirectoryFreeBytes || 'off'}B ` +
         `persistence=on ` +
         `(fires after ${operationalAlertConfig.sustainSamples} samples ≈ ${sustainSeconds}s sustained)`,
     );
@@ -1149,7 +1151,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     console.log('[ops-alerts] Operational alerts disabled (set KOOKR_ALERT_* thresholds to enable)');
   }
   const resourceStatusService = createResourceStatusService({
-    sampler: resourceStatusSampler ?? createSystemResourceSampler(),
+    sampler: resourceStatusSampler ?? createSystemResourceSampler({ dataDirectoryPath: kookrDir }),
     broadcastToAll,
     alertEvaluator: operationalAlertEvaluator,
     intervalMs: resourceStatusIntervalMs,
