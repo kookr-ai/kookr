@@ -1,3 +1,5 @@
+import type { DrainStatusSnapshot } from '../shared/contracts/messages.js';
+
 /**
  * In-memory operator drain state (issue #659).
  *
@@ -9,12 +11,7 @@
  * Intentionally NOT persisted: a restarted node always comes back accepting, so
  * an operator never has to remember to undo a drain after a crash or redeploy.
  */
-export interface DrainStatus {
-  accepting: boolean;
-  draining: boolean;
-  /** ISO timestamp the current drain began; absent while accepting. */
-  since?: string;
-}
+export type DrainStatus = DrainStatusSnapshot;
 
 export class DrainController {
   private draining = false;

@@ -8,7 +8,7 @@ import { readInteractionLog, type DeferredInteractionLogWriter } from '../core/i
 import type { DeferredTelemetryLogWriter } from '../core/telemetry.js';
 import type { BuildInfo } from '../core/build-info.js';
 import type { ProjectConfigStore } from '../core/project-config-store.js';
-import type { ServerMessage, ClientMessage } from '../shared/contracts/messages.js';
+import type { DrainStatusSnapshot, ServerMessage, ClientMessage } from '../shared/contracts/messages.js';
 import {
   type LifecycleDeps,
   promotePendingTasks,
@@ -69,6 +69,7 @@ export interface MessageRouterDeps {
   defaultAgentType?: AgentSelection;
   getDefaultAgentType?: () => AgentSelection;
   bypassAllPermissions?: boolean;
+  getDrainStatus?: () => DrainStatusSnapshot;
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
   coordinatorAuditTailProvider?: CoordinatorAuditTailProvider;
   coordinatorSuppressions?: CoordinatorSuppressionReader;
@@ -260,6 +261,7 @@ export class MessageRouter {
       availableAgentTypes: this.deps.availableAgentTypes,
       defaultAgentType: this.deps.getDefaultAgentType?.() ?? this.deps.defaultAgentType,
       bypassAllPermissions: this.deps.bypassAllPermissions,
+      drainStatus: this.deps.getDrainStatus?.(),
       sttUrl: this.deps.sttUrl,
       ttsUrl: this.deps.ttsUrl,
       workspaceEnabled: this.deps.workspaceEnabled,

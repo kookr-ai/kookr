@@ -13,7 +13,7 @@ import type { ProjectSidebarStore } from '../../core/project-sidebar-store.js';
 import { MAX_TRACKED_REPOS, type ProjectRepoHealth } from '../../core/project-summary.js';
 import type { SkillDiscoveryStateHolder } from '../../core/skill-tracked-repo-discovery.js';
 import type { TaskStore } from '../../core/tasks.js';
-import type { ServerMessage, SnapshotMessage } from '../../shared/contracts/messages.js';
+import type { DrainStatusSnapshot, ServerMessage, SnapshotMessage } from '../../shared/contracts/messages.js';
 import { buildCoordinatorSnapshotState, type CoordinatorAuditTailProvider } from '../coordinator/detectors.js';
 import type { CoordinatorSuppressionReader } from '../coordinator/suppression-store.js';
 import { AchievementWatcher, loadAchievements } from '../achievement-watcher.js';
@@ -57,6 +57,7 @@ export interface RealtimeServicesDeps {
   ossAttemptStore: OssAttemptStore;
   getDefaultAgentType: () => AgentSelection;
   bypassAllPermissions?: boolean;
+  getDrainStatus?: () => DrainStatusSnapshot;
   coordinatorAuditTailProvider?: CoordinatorAuditTailProvider;
   coordinatorSuppressions?: CoordinatorSuppressionReader;
   /**
@@ -181,6 +182,7 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
         ),
         totalSpendUsd: deps.taskStore.getLifetimeSpendUsd(),
         ...(deps.bypassAllPermissions ? { bypassAllPermissions: true } : {}),
+        ...(deps.getDrainStatus ? { drainStatus: deps.getDrainStatus() } : {}),
         achievements: achievementWatcher?.getUnlocked(),
         ...(achievementWatcher
           ? {

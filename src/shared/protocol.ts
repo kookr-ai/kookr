@@ -110,6 +110,7 @@ export type {
 } from './contracts/workspace.js';
 export type {
   ClientMessage,
+  DrainStatusSnapshot,
   ResourceUnavailableReason,
   ServerMessage,
   SnapshotMessage,

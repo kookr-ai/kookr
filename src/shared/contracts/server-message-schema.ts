@@ -81,6 +81,11 @@ const snapshotMessage = z.object({
   defaultAgentType: agentSelection.optional(),
   workspaceEnabled: z.boolean().optional(),
   sweepRunning: z.boolean().optional(),
+  drainStatus: z.object({
+    accepting: z.boolean(),
+    draining: z.boolean(),
+    since: z.string().optional(),
+  }).optional(),
   maxActiveTasks: z.number().optional(),
   coordinator: jsonObject.optional(),
   taskRelations: z.array(jsonObject).optional(),

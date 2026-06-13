@@ -404,6 +404,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
   });
 
+  // Operator drain / resume state (issue #659). In-memory only: a restarted
+  // node always comes back accepting. Shared by snapshots, launch gates,
+  // schedule skips, and admin drain routes.
+  const drainController = new DrainController();
+
   // Single owner of WS scope filtering (#809, RFC §"Outbound scope filtering").
   // The broadcaster (#805) and the viewer initial-connection burst both call
   // this to build the snapshot a `projects` viewer receives; for an `all` scope
@@ -419,6 +424,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       scope,
       bypassAllPermissions,
       relationTaskStore: taskStore,
+      drainStatus: drainController.status(),
       terminalInputSnapshots: terminalInputCoordinator,
       userInputDeliveryProvider: userInputDeliveries,
     });
@@ -456,6 +462,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ossAttemptStore,
     getDefaultAgentType,
     bypassAllPermissions,
+    getDrainStatus: () => drainController.status(),
     coordinatorSuppressions,
     resolveGrantLiveness: (grantId) => viewerGrantStore.liveness(grantId),
     isActorAllowedTerminalSession,
@@ -723,11 +730,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     projectConfigStore,
     terminalInputCoordinator,
   };
-
-  // Operator drain / resume state (issue #659). In-memory only: a restarted
-  // node always comes back accepting. Shared by the launch path, the scheduler,
-  // and the admin drain routes so a cordon holds across every launch entry.
-  const drainController = new DrainController();
 
   // Launch service deps — shared by WS handler, REST routes, and the Ralph
   // cycler's fresh-runtime launcher inside wireEventPipeline.
@@ -1174,6 +1176,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     defaultAgentType: getDefaultAgentType(),
     getDefaultAgentType,
     bypassAllPermissions,
+    getDrainStatus: () => drainController.status(),
     activityMetaProvider: hookIngestion,
     coordinatorAuditTailProvider: hookIngestion,
     coordinatorSuppressions,

@@ -22,6 +22,7 @@ import { StatusBar } from './components/StatusBar.js';
 import { Toasts } from './components/Toasts.js';
 import { PluginInstallBanner } from './components/PluginInstallBanner.js';
 import { PermissionBypassBanner } from './components/PermissionBypassBanner.js';
+import { DrainModeBanner } from './components/DrainModeBanner.js';
 import { BugReportDialog } from './components/BugReportDialog.js';
 import { ShareViewerDialog } from './components/ShareViewerDialog.js';
 import { ReadOnlyBanner } from './components/ReadOnlyBanner.js';
@@ -1127,6 +1128,7 @@ export function App() {
   return (
     <div className={`app${isMobileViewport ? ' app-mobile' : ''}${isViewer ? ' app-read-only' : ''}`}>
       <ReadOnlyBanner />
+      <DrainModeBanner />
       <PermissionBypassBanner />
       <TopBar
         findings={findings.length}

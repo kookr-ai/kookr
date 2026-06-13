@@ -37,7 +37,12 @@ const workspaceView = {
 };
 
 const serverMessageCases = [
-  serverMessageCase({ type: 'snapshot', agents: [], serverCwd: '/tmp/project' }),
+  serverMessageCase({
+    type: 'snapshot',
+    agents: [],
+    serverCwd: '/tmp/project',
+    drainStatus: { accepting: false, draining: true, since: '2026-05-29T12:00:00.000Z' },
+  }),
   serverMessageCase({ type: 'update', agentId: 'agent-1', state: { agentId: 'agent-1', events: [], anomaly: null } }),
   serverMessageCase({ type: 'alert', agentId: 'agent-1', summary: 'Needs input', details: 'Prompt is waiting', severity: 'warning' }),
   serverMessageCase({ type: 'githubUpdate', taskId: 'task-1', prs: [], issues: [], changes: [] }),

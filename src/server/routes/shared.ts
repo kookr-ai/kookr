@@ -50,6 +50,8 @@ import { bodyLimit } from 'hono/body-limit';
 import type { MiddlewareHandler } from 'hono';
 import type { RequestDurationMetrics } from '../request-duration-metrics.js';
 import type { TaskStateSaveSchedulerLike } from '../task-state-save-scheduler.js';
+import type { TerminalInputCoordinator } from '../terminal-input-coordinator.js';
+import type { UserInputDeliveryService } from '../user-input-delivery-service.js';
 export type { RemoteShareDeps } from '../remote-share-deps.js';
 
 /**
@@ -282,6 +284,9 @@ export interface RouteDeps {
   coordinatorSuppressions?: CoordinatorSuppressionRegistry;
   /** Operator drain / resume state (issue #659). Absent disables the admin drain routes. */
   drainController?: DrainController;
+  /** Optional snapshot enrichers used by admin-triggered drain/resume broadcasts. */
+  terminalInputCoordinator?: TerminalInputCoordinator;
+  userInputDeliveries?: UserInputDeliveryService;
   /**
    * Resolved API-token auth posture (issue #708). When `required` is true (the
    * server bound to a non-loopback host), a global middleware enforces a bearer
