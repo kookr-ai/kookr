@@ -2,18 +2,22 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 
 import {
+  createMaintenanceBackup,
+  defaultMaintenanceBackupOutDir,
+  type MaintenanceBackupResult,
+} from '../core/maintenance-backup.js';
+import {
   planAndPruneMaintenance,
   type MaintenancePruneResult,
 } from '../core/maintenance-prune.js';
 
 /**
- * `kookr maintenance prune` (issue #706) — a thin CLI wrapper around the pure
- * {@link planAndPruneMaintenance} core. Operates directly on the data directory
- * (it does not talk to the running server), so it is safe to run during a
- * maintenance window whether or not Kookr is up; the core's terminal+aged
- * gating means even a concurrent live server keeps its active state.
+ * `kookr maintenance` wraps pure disk-maintenance cores. It operates directly
+ * on the data directory (it does not talk to the running server), so it can run
+ * during a maintenance window whether or not Kookr is up.
  *
  *   kookr maintenance prune [--dry-run] [--max-age-days N] [--dir PATH] [--json]
+ *   kookr maintenance backup [--dir PATH] [--out PATH] [--json]
  */
 
 const DEFAULT_PORT = 4800;
@@ -49,31 +53,49 @@ export function autoPortAmbiguous(env: NodeJS.ProcessEnv = process.env): boolean
   return env.KOOKR_PORT?.trim().toLowerCase() === 'auto';
 }
 
+type MaintenanceVerb = 'prune' | 'backup';
+
 interface ParsedArgs {
   error?: string;
+  verb?: MaintenanceVerb;
   dryRun: boolean;
   json: boolean;
   maxAgeDays?: number;
   dir?: string;
+  outDir?: string;
 }
+
+const USAGE = [
+  'Usage:',
+  '  kookr maintenance prune [--dry-run] [--max-age-days N] [--dir PATH] [--json]',
+  '  kookr maintenance backup [--dir PATH] [--out PATH] [--json]',
+].join('\n');
 
 function parseArgs(argv: string[]): ParsedArgs {
   const parsed: ParsedArgs = { dryRun: false, json: false };
-  // First positional must be the `prune` verb.
-  if (argv[0] !== 'prune') {
-    parsed.error = 'Usage: kookr maintenance prune [--dry-run] [--max-age-days N] [--dir PATH] [--json]';
+  if (argv[0] !== 'prune' && argv[0] !== 'backup') {
+    parsed.error = USAGE;
     return parsed;
   }
+  parsed.verb = argv[0];
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i];
     switch (arg) {
       case '--dry-run':
+        if (parsed.verb !== 'prune') {
+          parsed.error = '--dry-run is only supported for `kookr maintenance prune`.';
+          return parsed;
+        }
         parsed.dryRun = true;
         break;
       case '--json':
         parsed.json = true;
         break;
       case '--max-age-days': {
+        if (parsed.verb !== 'prune') {
+          parsed.error = '--max-age-days is only supported for `kookr maintenance prune`.';
+          return parsed;
+        }
         const raw = argv[++i];
         const value = Number(raw);
         if (raw === undefined || raw.startsWith('--') || !Number.isFinite(value) || value <= 0) {
@@ -90,6 +112,19 @@ function parseArgs(argv: string[]): ParsedArgs {
           return parsed;
         }
         parsed.dir = dir;
+        break;
+      }
+      case '--out': {
+        if (parsed.verb !== 'backup') {
+          parsed.error = '--out is only supported for `kookr maintenance backup`.';
+          return parsed;
+        }
+        const outDir = argv[++i];
+        if (!outDir || outDir.startsWith('--')) {
+          parsed.error = '--out requires a path argument.';
+          return parsed;
+        }
+        parsed.outDir = outDir;
         break;
       }
       default:
@@ -130,6 +165,28 @@ function formatHuman(result: MaintenancePruneResult): string {
   return lines.join('\n');
 }
 
+function formatBackupHuman(result: MaintenanceBackupResult): string {
+  const fileCount = result.manifest.entries.filter((entry) => entry.type === 'file').length;
+  const dirCount = result.manifest.entries.filter((entry) => entry.type === 'directory').length;
+  const symlinkCount = result.manifest.entries.filter((entry) => entry.type === 'symlink').length;
+  const lines: string[] = [];
+  lines.push(`Kookr maintenance backup — ${result.dataDir}`);
+  lines.push(`  wrote: ${result.backupPath} (${formatBytes(result.archiveBytes)})`);
+  lines.push(
+    `  manifest: ${result.manifest.totalEntries} entr${result.manifest.totalEntries === 1 ? 'y' : 'ies'} ` +
+      `(${fileCount} file(s), ${dirCount} dir(s), ${symlinkCount} symlink(s), ${formatBytes(result.manifest.totalFileBytes)} source bytes)`,
+  );
+  if (result.manifest.excluded.length > 0) {
+    lines.push(`  excluded: ${result.manifest.excluded.length} path(s)`);
+    for (const exclusion of result.manifest.excluded) {
+      lines.push(`    - ${exclusion.path} (${exclusion.reason})`);
+    }
+  }
+  lines.push(`  consistency: ${result.manifest.crashConsistency}`);
+  lines.push('  restore: stop Kookr, extract the tarball, then copy data/. into the target data directory.');
+  return lines.join('\n');
+}
+
 export async function runMaintenanceCli(
   argv: string[] = process.argv.slice(2),
   { out = console, env = process.env }: { out?: Pick<Console, 'log' | 'error'>; env?: NodeJS.ProcessEnv } = {},
@@ -147,18 +204,25 @@ export async function runMaintenanceCli(
         `Defaulting to ${dataDir}; pass --dir to target a specific instance.`,
     );
   }
-  let result: MaintenancePruneResult;
   try {
-    result = await planAndPruneMaintenance({
+    if (parsed.verb === 'backup') {
+      const result = await createMaintenanceBackup({
+        dataDir,
+        outDir: parsed.outDir ?? defaultMaintenanceBackupOutDir(env.HOME ?? homedir()),
+      });
+      out.log(parsed.json ? JSON.stringify(result, null, 2) : formatBackupHuman(result));
+      return 0;
+    }
+
+    const result: MaintenancePruneResult = await planAndPruneMaintenance({
       dataDir,
       dryRun: parsed.dryRun,
       maxAgeDays: parsed.maxAgeDays,
     });
+    out.log(parsed.json ? JSON.stringify(result, null, 2) : formatHuman(result));
+    return 0;
   } catch (err) {
     out.error(`kookr maintenance: ${err instanceof Error ? err.message : String(err)}`);
     return 1;
   }
-
-  out.log(parsed.json ? JSON.stringify(result, null, 2) : formatHuman(result));
-  return 0;
 }
