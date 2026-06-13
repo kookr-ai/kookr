@@ -49,6 +49,7 @@ import type { SessionAuthConfig } from '../auth-session.js';
 import { bodyLimit } from 'hono/body-limit';
 import type { MiddlewareHandler } from 'hono';
 import type { RequestDurationMetrics } from '../request-duration-metrics.js';
+import type { TaskStateSaveSchedulerLike } from '../task-state-save-scheduler.js';
 export type { RemoteShareDeps } from '../remote-share-deps.js';
 
 /**
@@ -72,6 +73,8 @@ export interface TaskRouteDeps {
   launchServiceDeps: LaunchServiceDeps;
   suppressionTracker?: SnoozeSuppressionTracker;
   tasksFile?: string;
+  /** Coalesced task-state saver for bursty mutation paths. */
+  taskStateSaveScheduler?: TaskStateSaveSchedulerLike;
   kookrDir?: string;
   coordinatorSuppressions?: CoordinatorSuppressionRegistry;
   /**
@@ -136,6 +139,8 @@ export interface TaskRelationsRouteDeps {
   queue?: AttentionQueue;
   suppressionTracker?: SnoozeSuppressionTracker;
   tasksFile?: string;
+  /** Coalesced task-state saver for bursty mutation paths. */
+  taskStateSaveScheduler?: TaskStateSaveSchedulerLike;
 }
 
 /**
@@ -222,6 +227,8 @@ export interface RouteDeps {
   suppressionTracker?: SnoozeSuppressionTracker;
   scheduleService?: ScheduleService;
   scheduleRunner?: ScheduleRunner;
+  /** Coalesced task-state saver for bursty mutation paths. */
+  taskStateSaveScheduler?: TaskStateSaveSchedulerLike;
   diagnosticRunner?: DiagnosticRunner;
   /**
    * V8 terminal backend — exposed to routes so `/api/health` can report its

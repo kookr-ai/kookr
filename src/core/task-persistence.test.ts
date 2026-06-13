@@ -59,11 +59,21 @@ describe('Task Persistence', () => {
     createTaskForMutation(store, 'Fix auth', '/cwd');
     createTaskForMutation(store, 'Add tests', '/cwd');
 
-    await saveTasks(store.getAllTasks(), filePath);
+    const metrics = await saveTasks(store.getAllTasks(), filePath);
 
     // File should exist and be valid JSON
     const { tasks } = await loadTasks(filePath);
     expect(tasks).toHaveLength(2);
+    expect(metrics).toMatchObject({
+      filePath,
+      bytes: expect.any(Number),
+      taskCount: 2,
+      relationCount: 0,
+      serializeMs: expect.any(Number),
+      writeMs: expect.any(Number),
+      totalMs: expect.any(Number),
+    });
+    expect(metrics.bytes).toBeGreaterThan(0);
   });
 
   test('load reads existing tasks.json (round-trip)', async () => {

@@ -138,7 +138,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     }
 
     const updated = taskStore.setTaskEdges(id, patch);
-    if (deps.tasksFile) {
+    if (deps.taskStateSaveScheduler) {
+      deps.taskStateSaveScheduler.requestSave('task_edges_mutation');
+    } else if (deps.tasksFile) {
       const snoozes = deps.queue ? serializeSnoozed(deps.queue, taskStore) : undefined;
       const suppressionState = deps.suppressionTracker?.export();
       await saveTasks(

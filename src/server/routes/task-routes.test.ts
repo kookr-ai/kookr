@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
-import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../../core/tasks.js';
@@ -333,6 +333,32 @@ describe('PATCH /api/tasks/:id/edges', () => {
       blocks: ['task:downstream', 'milestone:docs published'],
       blocked_by: ['task:upstream'],
     });
+  });
+
+  test('uses the coalesced task-state saver when it is provided', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'Current task', cwd: '/repo' });
+    const requestSave = vi.fn();
+    const tasksFile = join(tempDir, 'tasks.json');
+    const app = mkApp({
+      ...mkLoopDeps(taskStore),
+      tasksFile,
+      taskStateSaveScheduler: {
+        requestSave,
+        flush: vi.fn(async () => undefined),
+        close: vi.fn(async () => undefined),
+      },
+    });
+
+    const res = await app.request(`/api/tasks/${task.id}/edges`, {
+      method: 'PATCH',
+      body: JSON.stringify({ blocks: ['task:downstream'] }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(requestSave).toHaveBeenCalledWith('task_edges_mutation');
+    expect(existsSync(tasksFile)).toBe(false);
   });
 
   test('patches only the supplied edge side', async () => {

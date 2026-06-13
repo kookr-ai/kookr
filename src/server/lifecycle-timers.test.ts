@@ -351,6 +351,27 @@ describe('runPersistenceSaveTick', () => {
       lastError: null,
     });
   });
+
+  test('force-flushes coalesced task-state saves on the periodic tick', async () => {
+    const taskStore = new TaskStore();
+    const queue = new AttentionQueue();
+    const flush = vi.fn(async () => undefined);
+
+    await runPersistenceSaveTick({
+      taskStore,
+      queue,
+      tasksFile: '/tmp/tasks.json',
+      taskStateSaveScheduler: {
+        requestSave: vi.fn(),
+        close: vi.fn(async () => undefined),
+        flush,
+      },
+      detectionStatsStore: { save: vi.fn(async () => undefined) },
+      getDetectionStatsSnapshot: () => ({ checks: {}, fires: {}, falsePositives: {} } as never),
+    });
+
+    expect(flush).toHaveBeenCalledWith('periodic', { force: true, policy: 'daily' });
+  });
 });
 
 describe('startLifecycleTimers user input delivery retry sweep', () => {
