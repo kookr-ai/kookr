@@ -184,6 +184,24 @@ KOOKR_WEBHOOK_SECRET=change-me
 Repeated re-enqueues of the same finding fingerprint are deduplicated until the
 finding resolves.
 
+Per-project routing can override whether the outbound finding webhook fires and
+the minimum severity for that project:
+
+```json
+{
+  "project": "github.com/kookr-ai/kookr",
+  "webhook": {
+    "enabled": true,
+    "minSeverity": "critical"
+  }
+}
+```
+
+If a project omits `webhook`, Kookr falls back to `KOOKR_WEBHOOK_MIN_SEVERITY`.
+If `webhook.enabled` is `false`, findings for that project are not posted. The
+webhook receiver URL and signing secret remain env-only; project settings store
+only `enabled` and `minSeverity`.
+
 `KOOKR_WEBHOOK_SECRET` is optional. When set, Kookr signs each POST with:
 
 ```text

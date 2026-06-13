@@ -241,7 +241,7 @@ describe('createKookrServer', () => {
       try {
         await withEnv({
           KOOKR_WEBHOOK_URL: 'https://receiver.example/kookr',
-          KOOKR_WEBHOOK_MIN_SEVERITY: 'warning',
+          KOOKR_WEBHOOK_MIN_SEVERITY: 'critical',
         }, async () => {
           webhookServer = await createKookrServerInternal({
             port: 0,
@@ -260,6 +260,10 @@ describe('createKookrServer', () => {
         });
 
         const task = webhookServer!.taskStore.createTask('Webhook task', '/repo');
+        webhookServer!.taskStore.setProjectId(task.id, 'github.com/kookr-ai/kookr');
+        webhookServer!.projectConfigStore.setConfig('github.com/kookr-ai/kookr', {
+          webhook: { minSeverity: 'warning' },
+        });
         webhookServer!.taskStore.addSession(task.id, {
           tmuxSession: 'webhook-session',
           agentType: 'claude-code',

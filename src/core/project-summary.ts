@@ -186,6 +186,7 @@ export function configSeedsMembership(config: ProjectConfig): boolean {
   if (config.dailyPrLimit !== undefined) return true;
   if (config.weeklyPrLimit !== undefined) return true;
   if (config.notes !== undefined && config.notes.trim() !== '') return true;
+  if (config.webhook?.enabled !== undefined || config.webhook?.minSeverity !== undefined) return true;
   return false;
 }
 

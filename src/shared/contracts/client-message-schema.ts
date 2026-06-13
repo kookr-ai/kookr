@@ -38,6 +38,7 @@ const anomalyType = z.enum([
   'api_error',
   'budget_exceeded',
 ]);
+const anomalySeverity = z.enum(['info', 'warning', 'critical']);
 
 const telemetryEventType = z.enum(TELEMETRY_EVENT_TYPES);
 
@@ -54,6 +55,10 @@ const projectConfigPartial = z.object({
   dailyPrLimit: z.number().optional(),
   weeklyPrLimit: z.number().optional(),
   notes: z.string().optional(),
+  webhook: z.object({
+    enabled: z.boolean().optional(),
+    minSeverity: anomalySeverity.optional(),
+  }).optional(),
 });
 
 const launchPlaybookMessage = z.object({

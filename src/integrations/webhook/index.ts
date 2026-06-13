@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import type { Anomaly, AnomalySeverity } from '../../core/types.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
+import type { ProjectWebhookRoutingSettings } from '../../shared/contracts/project-config.js';
 
 export const WEBHOOK_PAYLOAD_SCHEMA_VERSION = 'kookr.finding.webhook.v1';
 
@@ -65,6 +66,21 @@ export interface WebhookFindingEvent {
   fingerprint: string;
 }
 
+export interface WebhookRouting {
+  enabled: boolean;
+  minSeverity: AnomalySeverity;
+}
+
+export function resolveWebhookRouting(input: {
+  globalMinSeverity: AnomalySeverity;
+  projectWebhook?: ProjectWebhookRoutingSettings;
+}): WebhookRouting {
+  return {
+    enabled: input.projectWebhook?.enabled ?? true,
+    minSeverity: input.projectWebhook?.minSeverity ?? input.globalMinSeverity,
+  };
+}
+
 export function readWebhookConfigFromEnv(
   env: NodeJS.ProcessEnv,
   opts: { dashboardBaseUrl?: string; logger?: Pick<Console, 'warn'> } = {},
@@ -121,8 +137,11 @@ export class WebhookNotifier {
     this.logger = deps.logger ?? console;
   }
 
-  async notifyFinding(event: WebhookFindingEvent): Promise<boolean> {
-    if (!this.shouldSend(event.anomaly.severity)) return false;
+  async notifyFinding(event: WebhookFindingEvent, routing?: WebhookRouting): Promise<boolean> {
+    const effectiveRouting = routing ?? resolveWebhookRouting({
+      globalMinSeverity: this.config.minSeverity,
+    });
+    if (!effectiveRouting.enabled || !this.shouldSend(event.anomaly.severity, effectiveRouting.minSeverity)) return false;
     const dedupeKey = this.dedupeKey(event);
     if (this.notified.has(dedupeKey)) return false;
 
@@ -173,8 +192,8 @@ export class WebhookNotifier {
     };
   }
 
-  private shouldSend(severity: AnomalySeverity): boolean {
-    return SEVERITY_RANK[severity] >= SEVERITY_RANK[this.config.minSeverity];
+  private shouldSend(severity: AnomalySeverity, minSeverity: AnomalySeverity): boolean {
+    return SEVERITY_RANK[severity] >= SEVERITY_RANK[minSeverity];
   }
 
   private dedupeKey(event: Pick<WebhookFindingEvent, 'agentId' | 'fingerprint'>): string {

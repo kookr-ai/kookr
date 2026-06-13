@@ -102,6 +102,63 @@ describe('GET /api/projects/contributions', () => {
   });
 });
 
+describe('POST /api/projects/configs webhook routing', () => {
+  let tempDir: string;
+  let projectConfigStore: ProjectConfigStore;
+
+  beforeEach(async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'proj-config-route-test-'));
+    projectConfigStore = new ProjectConfigStore(tempDir);
+    await projectConfigStore.load();
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test('persists per-project webhook routing without URL or secret fields', async () => {
+    const res = await mkApp({
+      projectConfigStore,
+      broadcastProjectSummaries: () => {},
+    }).request('/api/projects/configs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project: 'github.com/kookr-ai/kookr',
+        webhook: {
+          enabled: false,
+          minSeverity: 'critical',
+          url: 'https://receiver.example/secret',
+          secret: 'do-not-leak',
+        },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      project: 'github.com/kookr-ai/kookr',
+      webhook: {
+        enabled: false,
+        minSeverity: 'critical',
+      },
+    });
+    expect(body.webhook).not.toHaveProperty('url');
+    expect(body.webhook).not.toHaveProperty('secret');
+    expect(projectConfigStore.getConfig('github.com/kookr-ai/kookr')?.webhook).toEqual({
+      enabled: false,
+      minSeverity: 'critical',
+    });
+
+    const reloaded = new ProjectConfigStore(tempDir);
+    await reloaded.load();
+    expect(reloaded.getConfig('github.com/kookr-ai/kookr')?.webhook).toEqual({
+      enabled: false,
+      minSeverity: 'critical',
+    });
+  });
+});
+
 describe('GET /api/projects', () => {
   let tempDir: string;
   let ossAttemptStore: OssAttemptStore;
