@@ -15,6 +15,7 @@ Usage:
   kookr ralph <command> <taskId> [--json] Inspect or control a Ralph loop.
   kookr drain|resume [OPTIONS]  Control operator drain mode.
   kookr maintenance prune [OPTIONS]   Prune aged completed-task data-dir artifacts.
+  kookr maintenance backup [OPTIONS]  Create a crash-consistent data-dir backup tarball.
   kookr push test <deviceId>    Send a relay push test.
   kookr completion bash|zsh     Print a shell completion script.
 

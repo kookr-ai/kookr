@@ -223,6 +223,63 @@ Exit behavior:
 - `1` when the prune fails, for example because the target data directory cannot be read.
 - `2` for usage errors such as an unknown flag, missing `prune` verb, or invalid `--max-age-days`.
 
+## `kookr maintenance backup`
+
+Create a timestamped gzip-compressed tarball of a Kookr data directory:
+
+```bash
+kookr maintenance backup
+kookr maintenance backup --dir ~/.kookr-4801 --out ~/kookr-backups
+kookr maintenance backup --json
+```
+
+The command operates directly on disk and does not require the Kookr server to
+be running. By default it targets `~/.kookr`, or `~/.kookr-<port>` when
+`KOOKR_PORT` is set to a non-default numeric port. Pass `--dir` for an explicit
+data directory, especially for instances launched with `KOOKR_PORT=auto`.
+
+By default backups are written under `~/kookr-backups`. Pass `--out <path>` to
+choose another output directory. The file name is
+`kookr-backup-<UTC_TIMESTAMP>.tar.gz`, for example
+`kookr-backup-20260613T140506Z.tar.gz`.
+
+Archive layout:
+
+- `kookr-backup-manifest.json` - schema version, creation time, source data
+  directory, crash-consistency contract, entry list, total source bytes, and
+  exclusions.
+- `data/` - the backed-up data directory contents, preserving regular files,
+  directories, and symlinks.
+
+If the output directory is inside the data directory, it is excluded from the
+archive so older backup tarballs are not recursively backed up. Unsupported
+special files, such as sockets or device nodes, are skipped and listed in the
+manifest exclusions.
+
+Crash-consistency contract: a backup taken while Kookr is running is
+crash-consistent, not a cross-store transaction. Restoring it is equivalent to
+recovering after `kill -9` while the server was writing: Kookr's per-store
+atomic-write and boot-repair logic must recover each store, but files are not
+guaranteed to share one exact timestamp boundary. For a byte-stable copy of a
+quiet data directory, drain or stop Kookr before running the backup.
+
+Restore remains manual: stop Kookr, extract the tarball, and copy `data/.` into
+the target data directory before restarting. Do not restore over a running
+server.
+
+Options:
+
+- `--dir <path>` - use an explicit Kookr data directory.
+- `--out <path>` - write the timestamped tarball to this output directory.
+- `--json` - print the backup result and manifest as JSON.
+
+Exit behavior:
+
+- `0` when the backup succeeds.
+- `1` when the backup fails, for example because the target data directory
+  cannot be read or the output archive already exists.
+- `2` for usage errors such as an unknown flag or missing `--out` path.
+
 ## `kookr push test`
 
 Send a synthetic relay push notification to a registered device:

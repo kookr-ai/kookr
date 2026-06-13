@@ -73,7 +73,7 @@ describe('runMaintenanceCli', () => {
     const c = captureConsole();
     const code = await runMaintenanceCli([], { out: c.out });
     expect(code).toBe(2);
-    expect(c.errors.join('\n')).toMatch(/Usage: kookr maintenance prune/);
+    expect(c.errors.join('\n')).toMatch(/kookr maintenance prune/);
   });
 
   test('rejects an unknown flag', async () => {
@@ -88,6 +88,25 @@ describe('runMaintenanceCli', () => {
     const code = await runMaintenanceCli(['prune', '--max-age-days', '0', '--dir', dataDir], { out: c.out });
     expect(code).toBe(2);
     expect(c.errors.join('\n')).toMatch(/positive/);
+  });
+
+  test('rejects backup-only and prune-only flags on the wrong verb', async () => {
+    const c = captureConsole();
+    const pruneCode = await runMaintenanceCli(['prune', '--out', dataDir], { out: c.out });
+    expect(pruneCode).toBe(2);
+    expect(c.errors.join('\n')).toMatch(/--out is only supported/);
+
+    const c2 = captureConsole();
+    const backupCode = await runMaintenanceCli(['backup', '--dry-run'], { out: c2.out });
+    expect(backupCode).toBe(2);
+    expect(c2.errors.join('\n')).toMatch(/--dry-run is only supported/);
+  });
+
+  test('rejects backup --out without a path', async () => {
+    const c = captureConsole();
+    const code = await runMaintenanceCli(['backup', '--out'], { out: c.out });
+    expect(code).toBe(2);
+    expect(c.errors.join('\n')).toMatch(/--out requires a path/);
   });
 
   test('--dry-run reports the plan and does not delete', async () => {
@@ -140,6 +159,40 @@ describe('runMaintenanceCli', () => {
     expect(c.logs.join('\n')).toMatch(/server-log-generation-aged/);
     expect(c.logs.join('\n')).not.toMatch(/kookr-old\.jsonl/);
     expect(await exists(logGeneration)).toBe(false);
+  });
+
+  test('backup writes a tarball and --json emits manifest details', async () => {
+    const backupDir = join(dataDir, 'backup-output');
+    const c = captureConsole();
+    const code = await runMaintenanceCli(['backup', '--dir', dataDir, '--out', backupDir, '--json'], { out: c.out });
+
+    expect(code).toBe(0);
+    const parsed = JSON.parse(c.logs.join('\n'));
+    expect(parsed.backupPath).toMatch(/kookr-backup-\d{8}T\d{6}Z\.tar\.gz$/);
+    expect(parsed.archiveBytes).toBeGreaterThan(0);
+    expect(await exists(parsed.backupPath)).toBe(true);
+    expect(parsed.manifest.schemaVersion).toBe('maintenance-backup.v1');
+    expect(parsed.manifest.crashConsistency).toMatch(/kill -9/);
+    expect(parsed.manifest.entries.map((entry: { path: string }) => entry.path)).toEqual([
+      'hooks',
+      'hooks/kookr-old.jsonl',
+      'tasks.json',
+    ]);
+    expect(parsed.manifest.excluded).toEqual([{ path: 'backup-output', reason: 'backup-output-directory' }]);
+  });
+
+  test('backup human output reports archive, manifest, and consistency contract', async () => {
+    const backupDir = join(dataDir, 'backup-output');
+    const c = captureConsole();
+    const code = await runMaintenanceCli(['backup', '--dir', dataDir, '--out', backupDir], { out: c.out });
+
+    expect(code).toBe(0);
+    const output = c.logs.join('\n');
+    expect(output).toMatch(/Kookr maintenance backup/);
+    expect(output).toMatch(/wrote: .*kookr-backup-\d{8}T\d{6}Z\.tar\.gz/);
+    expect(output).toMatch(/manifest: 3 entries/);
+    expect(output).toMatch(/consistency: .*kill -9/);
+    expect(output).toMatch(/restore: stop Kookr/);
   });
 
   test('prod restart script rotates and enforces retained generations', async () => {

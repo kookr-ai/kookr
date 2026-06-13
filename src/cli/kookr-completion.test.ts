@@ -168,7 +168,21 @@ describe('bash completion behavior', () => {
   });
 
   it('completes maintenance subcommands', async () => {
-    await expect(completeBash(['kookr', 'maintenance', ''])).resolves.toEqual(['prune']);
+    await expect(completeBash(['kookr', 'maintenance', ''])).resolves.toEqual(['prune', 'backup']);
+  });
+
+  it('completes maintenance flags for the selected verb', async () => {
+    await expect(completeBash(['kookr', 'maintenance', 'prune', ''])).resolves.toEqual([
+      '--dry-run',
+      '--max-age-days',
+      '--dir',
+      '--json',
+    ]);
+    await expect(completeBash(['kookr', 'maintenance', 'backup', ''])).resolves.toEqual([
+      '--dir',
+      '--out',
+      '--json',
+    ]);
   });
 
   it('completes push subcommands', async () => {
@@ -189,6 +203,21 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
 
   it('completes completion shells', async () => {
     await expect(completeZsh(['kookr', 'completion', ''], 3)).resolves.toEqual(['bash', 'zsh']);
+  });
+
+  it('completes maintenance subcommands and verb-specific flags', async () => {
+    await expect(completeZsh(['kookr', 'maintenance', ''], 3)).resolves.toEqual(['prune', 'backup']);
+    await expect(completeZsh(['kookr', 'maintenance', 'prune', ''], 4)).resolves.toEqual([
+      '--dry-run',
+      '--max-age-days',
+      '--dir',
+      '--json',
+    ]);
+    await expect(completeZsh(['kookr', 'maintenance', 'backup', ''], 4)).resolves.toEqual([
+      '--dir',
+      '--out',
+      '--json',
+    ]);
   });
 
   it('completes flag values after a space-form flag', async () => {

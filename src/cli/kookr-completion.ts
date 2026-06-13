@@ -1,4 +1,6 @@
 export const COMPLETION_SHELLS = ['bash', 'zsh'] as const;
+const MAINTENANCE_PRUNE_FLAGS = ['--dry-run', '--max-age-days', '--dir', '--json'] as const;
+const MAINTENANCE_BACKUP_FLAGS = ['--dir', '--out', '--json'] as const;
 
 export type CompletionShell = (typeof COMPLETION_SHELLS)[number];
 
@@ -58,8 +60,8 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
   },
   {
     name: 'maintenance',
-    subcommands: ['prune'],
-    flags: ['--dry-run', '--max-age-days', '--dir', '--json'],
+    subcommands: ['prune', 'backup'],
+    flags: [...MAINTENANCE_PRUNE_FLAGS, ...MAINTENANCE_BACKUP_FLAGS],
   },
   {
     name: 'push',
@@ -138,7 +140,8 @@ function renderBashCompletion(): string {
   const drainSubcommands = subcommandsFor('drain');
   const drainFlags = flagsFor('drain');
   const maintenanceSubcommands = subcommandsFor('maintenance');
-  const maintenanceFlags = flagsFor('maintenance');
+  const maintenancePruneFlags = shellWords(MAINTENANCE_PRUNE_FLAGS);
+  const maintenanceBackupFlags = shellWords(MAINTENANCE_BACKUP_FLAGS);
   const pushSubcommands = subcommandsFor('push');
   const completionFlags = flagsFor('completion');
 
@@ -217,7 +220,17 @@ _kookr()
       if [[ "\${COMP_CWORD}" == 2 ]]; then
         COMPREPLY=( $(compgen -W "${maintenanceSubcommands}" -- "\${cur}") )
       else
-        COMPREPLY=( $(compgen -W "${maintenanceFlags}" -- "\${cur}") )
+        case "\${COMP_WORDS[2]}" in
+          prune)
+            COMPREPLY=( $(compgen -W "${maintenancePruneFlags}" -- "\${cur}") )
+            ;;
+          backup)
+            COMPREPLY=( $(compgen -W "${maintenanceBackupFlags}" -- "\${cur}") )
+            ;;
+          *)
+            COMPREPLY=()
+            ;;
+        esac
       fi
       ;;
     push)
@@ -254,7 +267,8 @@ function renderZshCompletion(): string {
   const drainSubcommands = subcommandsFor('drain');
   const drainFlags = flagsFor('drain');
   const maintenanceSubcommands = subcommandsFor('maintenance');
-  const maintenanceFlags = flagsFor('maintenance');
+  const maintenancePruneFlags = shellWords(MAINTENANCE_PRUNE_FLAGS);
+  const maintenanceBackupFlags = shellWords(MAINTENANCE_BACKUP_FLAGS);
   const pushSubcommands = subcommandsFor('push');
   const completionFlags = flagsFor('completion');
 
@@ -310,7 +324,10 @@ _kookr()
       if (( CURRENT == 3 )); then
         compadd ${maintenanceSubcommands}
       else
-        compadd -- ${maintenanceFlags}
+        case "$words[3]" in
+          prune) compadd -- ${maintenancePruneFlags} ;;
+          backup) compadd -- ${maintenanceBackupFlags} ;;
+        esac
       fi
       ;;
     push)
