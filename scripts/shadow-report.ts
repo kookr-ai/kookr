@@ -8,6 +8,8 @@
  *   pnpm shadow:report
  *   pnpm shadow:report --file /path/to/shadow-detection.jsonl
  *   pnpm shadow:report --json
+ *
+ * Rotated siblings such as shadow-detection.jsonl.1 are read automatically.
  */
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -31,7 +33,7 @@ async function main(): Promise<void> {
   }
 
   if (report.totalEntries === 0) {
-    console.log(`No shadow-detection data found at ${filePath}.`);
+    console.log(`No shadow-detection data found at ${filePath} or rotated siblings.`);
     console.log('Run Kookr with shadow strategies enabled to collect data first.');
     return;
   }
