@@ -7,6 +7,7 @@ import {
   WebhookNotifier,
   buildDashboardBaseUrl,
   readWebhookConfigFromEnv,
+  resolveWebhookRouting,
 } from './index.js';
 
 const detectedAt = new Date('2026-06-12T10:00:00.000Z');
@@ -187,6 +188,41 @@ describe('webhook notifier', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  test('uses per-project routing to override the global minimum severity', async () => {
+    const { notifier, fetchImpl } = setup(undefined, { minSeverity: 'critical' });
+
+    await expect(notifier.notifyFinding({
+      agentId: 'session-1',
+      anomaly: anomaly({ severity: 'warning' }),
+      fingerprint: 'permission_blocked::project warning',
+    }, {
+      enabled: true,
+      minSeverity: 'warning',
+    })).resolves.toBe(true);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not dedupe a finding suppressed by per-project disabled routing', async () => {
+    const { notifier, fetchImpl } = setup();
+    const event = {
+      agentId: 'session-1',
+      anomaly: anomaly({ severity: 'critical' }),
+      fingerprint: 'permission_blocked::disabled project',
+    };
+
+    await expect(notifier.notifyFinding(event, {
+      enabled: false,
+      minSeverity: 'info',
+    })).resolves.toBe(false);
+    await expect(notifier.notifyFinding(event, {
+      enabled: true,
+      minSeverity: 'info',
+    })).resolves.toBe(true);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   test('deduplicates by agent and finding fingerprint until recovery clears it', async () => {
     const { notifier, fetchImpl } = setup();
     const event = {
@@ -262,5 +298,26 @@ describe('webhook notifier', () => {
       port: 4801,
       env: { KOOKR_PUBLIC_BASE_URL: 'https://public.example/kookr/' },
     })).toBe('https://public.example/kookr');
+  });
+
+  test('resolves effective routing from per-project webhook settings with env fallback', () => {
+    expect(resolveWebhookRouting({ globalMinSeverity: 'warning' })).toEqual({
+      enabled: true,
+      minSeverity: 'warning',
+    });
+    expect(resolveWebhookRouting({
+      globalMinSeverity: 'warning',
+      projectWebhook: { minSeverity: 'critical' },
+    })).toEqual({
+      enabled: true,
+      minSeverity: 'critical',
+    });
+    expect(resolveWebhookRouting({
+      globalMinSeverity: 'critical',
+      projectWebhook: { enabled: false },
+    })).toEqual({
+      enabled: false,
+      minSeverity: 'critical',
+    });
   });
 });

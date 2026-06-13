@@ -432,6 +432,12 @@ describe('configSeedsMembership', () => {
   test('notes all-whitespace returns false', () => {
     expect(configSeedsMembership({ project: 'p', notes: '  \n ' })).toBe(false);
   });
+  test('webhook routing returns true', () => {
+    expect(configSeedsMembership({ project: 'p', webhook: { enabled: false } })).toBe(true);
+  });
+  test('empty webhook routing returns false', () => {
+    expect(configSeedsMembership({ project: 'p', webhook: {} })).toBe(false);
+  });
 });
 
 describe('checkContributionLimit', () => {

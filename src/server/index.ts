@@ -98,6 +98,7 @@ import {
   WebhookNotifier,
   buildDashboardBaseUrl,
   readWebhookConfigFromEnv,
+  resolveWebhookRouting,
 } from '../integrations/webhook/index.js';
 
 // --- Exported types ---
@@ -294,7 +295,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     console.log(`[webhook] Outbound finding webhook enabled (minSeverity=${webhookConfig.minSeverity})`);
     stopWebhookObserver = queue.addObserver({
       admitted: (event) => {
-        void notifier.notifyFinding(event);
+        const task = taskStore.findTaskBySession(event.agentId);
+        const projectWebhook = task?.projectId
+          ? projectConfigStore.getConfig(task.projectId)?.webhook
+          : undefined;
+        void notifier.notifyFinding(event, resolveWebhookRouting({
+          globalMinSeverity: webhookConfig.minSeverity,
+          projectWebhook,
+        }));
       },
       resolved: (event) => {
         notifier.clearFingerprint(event);

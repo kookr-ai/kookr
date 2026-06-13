@@ -56,6 +56,44 @@ describe('ProjectConfigStore', () => {
     expect(config.notes).toBe('Test');
   });
 
+  test('loads only browser-safe webhook routing fields', async () => {
+    writeFileSync(join(tempDir, 'project-configs.json'), JSON.stringify([
+      {
+        project: 'github.com/org/repo',
+        webhook: {
+          enabled: false,
+          minSeverity: 'critical',
+          url: 'https://receiver.example/secret',
+          secret: 'do-not-leak',
+        },
+      },
+    ]));
+
+    await store.load();
+
+    expect(store.getConfig('github.com/org/repo')?.webhook).toEqual({
+      enabled: false,
+      minSeverity: 'critical',
+    });
+  });
+
+  test('setConfig strips unsupported webhook fields', async () => {
+    await store.load();
+    const config = store.setConfig('github.com/org/repo', {
+      webhook: {
+        enabled: true,
+        minSeverity: 'warning',
+        url: 'https://receiver.example/secret',
+        secret: 'do-not-leak',
+      },
+    } as never);
+
+    expect(config.webhook).toEqual({
+      enabled: true,
+      minSeverity: 'warning',
+    });
+  });
+
   test('getAllConfigs returns all entries', async () => {
     await store.load();
     store.setConfig('a', { dailyPrLimit: 1 });

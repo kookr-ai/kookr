@@ -4,6 +4,7 @@ import type { ProjectConfig } from '../../core/project-config-store.js';
 import { configSeedsMembership, type ProjectSummary } from '../../core/project-summary.js';
 import { getProjectSummaries } from '../use-cases/get-snapshot.js';
 import { parseOwnerRepoSlug } from '../../shared/repo-slug.js';
+import { normalizeProjectWebhookRoutingSettings } from '../../shared/contracts/project-config.js';
 import type { RouteDeps } from './shared.js';
 
 export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
@@ -73,6 +74,7 @@ export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
       dailyPrLimit?: number;
       weeklyPrLimit?: number;
       notes?: string;
+      webhook?: unknown;
     };
     if (!body.project) return c.json({ error: 'project is required' }, 400);
 
@@ -83,11 +85,16 @@ export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
       dailyPrLimit?: number;
       weeklyPrLimit?: number;
       notes?: string;
+      webhook?: ProjectConfig['webhook'];
     } = {};
     if (body.tracked !== undefined) patch.tracked = body.tracked;
     if (body.dailyPrLimit !== undefined) patch.dailyPrLimit = body.dailyPrLimit;
     if (body.weeklyPrLimit !== undefined) patch.weeklyPrLimit = body.weeklyPrLimit;
     if (body.notes !== undefined) patch.notes = body.notes;
+    if (body.webhook !== undefined) {
+      const webhook = normalizeProjectWebhookRoutingSettings(body.webhook);
+      if (webhook !== undefined) patch.webhook = webhook;
+    }
 
     const config = deps.projectConfigStore.setConfig(body.project, patch);
     await deps.projectConfigStore.save();
