@@ -90,6 +90,7 @@ describe('persistence health runtime wiring', () => {
         eventLoopDelayMs: 0,
         dataDirectoryFreePercent: 0,
         dataDirectoryFreeBytes: 0,
+        circuitBreakerOpenMs: 0,
         sustainSamples: 3,
       },
       () => persistenceHealth.snapshot(),

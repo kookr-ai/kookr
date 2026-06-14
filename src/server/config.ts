@@ -5,6 +5,7 @@ export const MAX_ACTIVE_TASKS = 10;
 export const DEFAULT_OPERATIONAL_ALERT_SUSTAIN_SAMPLES = 3;
 export const DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT = 5;
 export const DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES = 2 * 1024 * 1024 * 1024;
+export const DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS = 30 * 1000;
 
 /** Default maximum JSON request body size accepted by the dashboard server. */
 export const DEFAULT_REQUEST_BODY_LIMIT_BYTES = 1_000_000;
@@ -25,6 +26,8 @@ export interface OperationalAlertConfig {
   dataDirectoryFreePercent: number;
   /** Data-directory filesystem free-space byte threshold (`0` disables). */
   dataDirectoryFreeBytes: number;
+  /** Circuit-breaker OPEN duration threshold in milliseconds (`0` disables). */
+  circuitBreakerOpenMs: number;
   /** Consecutive breaching samples required before firing (>= 1). */
   sustainSamples: number;
 }
@@ -63,6 +66,10 @@ export function readOperationalAlertConfigFromEnv(
     dataDirectoryFreeBytes: readNonNegativeNumber(
       env.KOOKR_ALERT_DATA_DIR_FREE_BYTES,
       DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
+    ),
+    circuitBreakerOpenMs: readNonNegativeNumber(
+      env.KOOKR_ALERT_CIRCUIT_BREAKER_OPEN_MS,
+      DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
     ),
     sustainSamples: readPositiveInt(
       env.KOOKR_ALERT_SUSTAIN_SAMPLES,
