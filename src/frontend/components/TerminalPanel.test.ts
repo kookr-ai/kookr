@@ -41,6 +41,7 @@ vi.mock('@xterm/xterm', () => {
     rows = 24;
     resizeHandler: ((size: { cols: unknown; rows: unknown }) => void) | null = null;
     dataHandler: ((data: string) => void) | null = null;
+    scrollHandler: (() => void) | null = null;
     keyHandler: ((event: KeyboardEvent) => boolean) | null = null;
     clear = vi.fn();
     reset = vi.fn();
@@ -58,7 +59,12 @@ vi.mock('@xterm/xterm', () => {
       this.resizeHandler = cb;
       return { dispose: vi.fn() };
     });
+    onScroll = vi.fn((cb) => {
+      this.scrollHandler = cb;
+      return { dispose: vi.fn() };
+    });
     scrollLines = vi.fn();
+    scrollToBottom = vi.fn();
     refresh = vi.fn();
     dispose = vi.fn();
     hasSelection = vi.fn(() => false);
@@ -67,6 +73,8 @@ vi.mock('@xterm/xterm', () => {
     focus = vi.fn();
     buffer = {
       active: {
+        baseY: 0,
+        viewportY: 0,
         length: 0,
         getLine: vi.fn(() => undefined),
       },
@@ -190,6 +198,18 @@ function setTerminalBufferLines(terminal: {
   });
 }
 
+function setTerminalScroll(terminal: {
+  rows: number;
+  scrollHandler: (() => void) | null;
+  buffer: { active: { baseY: number; viewportY: number; length: number } };
+}, scroll: { viewportY: number; baseY?: number; length?: number; rows?: number }) {
+  terminal.rows = scroll.rows ?? 24;
+  terminal.buffer.active.baseY = scroll.baseY ?? 0;
+  terminal.buffer.active.viewportY = scroll.viewportY;
+  terminal.buffer.active.length = scroll.length ?? 100;
+  terminal.scrollHandler?.();
+}
+
 describe('TerminalPanel', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -220,6 +240,7 @@ describe('TerminalPanel', () => {
       act(() => root.unmount());
     }
     container?.remove();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -273,6 +294,89 @@ describe('TerminalPanel', () => {
     expect(typeof visibleSender).toBe('function');
     (visibleSender as (data: string) => void)('1');
     expect(ws.send).toHaveBeenCalledWith('1');
+  });
+
+  test('shows counted jump-to-latest pill for new output while scrolled up', () => {
+    vi.useFakeTimers();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      setTerminalScroll(terminal, { baseY: 76, viewportY: 40, length: 100, rows: 24 });
+      ws.onmessage?.({ data: 'one\r\ntwo\r\nthree\r\n' });
+    });
+
+    expect(container.querySelector('button[aria-label="3 new lines, jump to latest"]')).toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(80);
+    });
+
+    expect(container.querySelector('button[aria-label="3 new lines, jump to latest"]')).not.toBeNull();
+  });
+
+  test('counts binary terminal frames in the jump-to-latest pill', () => {
+    vi.useFakeTimers();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    const encoded = new TextEncoder().encode('one\r\ntwo\r\n');
+    act(() => {
+      setTerminalScroll(terminal, { baseY: 76, viewportY: 40, length: 100, rows: 24 });
+      ws.onmessage?.({ data: arrayBufferFrom(encoded) });
+      vi.advanceTimersByTime(80);
+    });
+
+    expect(container.querySelector('button[aria-label="2 new lines, jump to latest"]')).not.toBeNull();
+  });
+
+  test('jump-to-latest pill scrolls to bottom and hides', () => {
+    vi.useFakeTimers();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      setTerminalScroll(terminal, { baseY: 76, viewportY: 40, length: 100, rows: 24 });
+      ws.onmessage?.({ data: 'new line\r\n' });
+      vi.advanceTimersByTime(80);
+    });
+
+    const button = container.querySelector('button[aria-label="1 new line, jump to latest"]') as HTMLButtonElement | null;
+    expect(button).not.toBeNull();
+
+    act(() => {
+      button!.click();
+    });
+
+    expect(terminal.scrollToBottom).toHaveBeenCalledOnce();
+    expect(terminal.focus).toHaveBeenCalled();
+    expect(container.querySelector('button[aria-label="1 new line, jump to latest"]')).toBeNull();
+  });
+
+  test('writing while already at the bottom shows no jump-to-latest pill', () => {
+    vi.useFakeTimers();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      setTerminalScroll(terminal, { baseY: 76, viewportY: 76, length: 100, rows: 24 });
+      ws.onmessage?.({ data: 'new line\r\n' });
+      vi.advanceTimersByTime(120);
+    });
+
+    expect(container.querySelector('button[aria-label$="jump to latest"]')).toBeNull();
   });
 
   test('hidden terminals do not forward input or resize frames', () => {

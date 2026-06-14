@@ -22,6 +22,11 @@ interface MenuState {
   hasSelection: boolean;
 }
 
+interface JumpLatestState {
+  visible: boolean;
+  lines: number;
+}
+
 const SEARCH_OPTIONS: ISearchOptions = {
   decorations: {
     matchBackground: '#164e63',
@@ -42,6 +47,22 @@ function getValidatedResize(cols: unknown, rows: unknown): { cols: number; rows:
   if (!Number.isInteger(cols) || !Number.isInteger(rows)) return null;
   if (cols <= 0 || rows <= 0) return null;
   return { cols, rows };
+}
+
+function isTerminalAtBottom(terminal: Terminal): boolean {
+  try {
+    const buffer = terminal.buffer.active;
+    return buffer.viewportY >= buffer.baseY || buffer.viewportY + terminal.rows >= buffer.length;
+  } catch {
+    return true;
+  }
+}
+
+function countTerminalNewLines(data: string | ArrayBuffer | Uint8Array): number {
+  const text = typeof data === 'string'
+    ? data
+    : new TextDecoder().decode(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
+  return Math.max(1, text.match(/\r\n|\r|\n/g)?.length ?? 0);
 }
 
 // xterm.onData forwards more than user keystrokes — it also emits replies
@@ -175,11 +196,67 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
   const searchOpenRef = useRef(false);
   const visibleRef = useRef(visible);
   const lastSafePasteAtRef = useRef(0);
+  const atBottomRef = useRef(true);
+  const pendingJumpLinesRef = useRef(0);
+  const jumpLatestTimerRef = useRef<number | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [jumpLatest, setJumpLatest] = useState<JumpLatestState>({ visible: false, lines: 0 });
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [searchFound, setSearchFound] = useState<boolean | null>(null);
   const [searchResult, setSearchResult] = useState<ISearchResultChangeEvent | null>(null);
+
+  function clearJumpLatestTimer() {
+    if (jumpLatestTimerRef.current === null) return;
+    window.clearTimeout(jumpLatestTimerRef.current);
+    jumpLatestTimerRef.current = null;
+  }
+
+  function resetJumpLatest() {
+    clearJumpLatestTimer();
+    pendingJumpLinesRef.current = 0;
+    atBottomRef.current = true;
+    setJumpLatest((prev) => (
+      prev.visible || prev.lines !== 0 ? { visible: false, lines: 0 } : prev
+    ));
+  }
+
+  function hideJumpLatestAtBottom() {
+    clearJumpLatestTimer();
+    pendingJumpLinesRef.current = 0;
+    setJumpLatest((prev) => (
+      prev.visible || prev.lines !== 0 ? { visible: false, lines: 0 } : prev
+    ));
+  }
+
+  function scheduleJumpLatest(lines: number) {
+    if (lines <= 0 || atBottomRef.current) return;
+    pendingJumpLinesRef.current += lines;
+    if (jumpLatestTimerRef.current !== null) return;
+
+    jumpLatestTimerRef.current = window.setTimeout(() => {
+      jumpLatestTimerRef.current = null;
+      const pending = pendingJumpLinesRef.current;
+      pendingJumpLinesRef.current = 0;
+      if (pending <= 0 || atBottomRef.current) return;
+      setJumpLatest((prev) => ({ visible: true, lines: prev.lines + pending }));
+    }, 80);
+  }
+
+  function syncAtBottom(terminal: Terminal): boolean {
+    const atBottom = isTerminalAtBottom(terminal);
+    atBottomRef.current = atBottom;
+    if (atBottom) hideJumpLatestAtBottom();
+    return atBottom;
+  }
+
+  function handleJumpToLatest() {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    terminal.scrollToBottom();
+    resetJumpLatest();
+    terminal.focus();
+  }
 
   function openSearch() {
     searchOpenRef.current = true;
@@ -238,6 +315,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     setSearchResult(null);
     searchAddonRef.current?.clearDecorations();
     setMenu(null);
+    hideJumpLatestAtBottom();
     if (useKookrStore.getState().focusZone === 'terminal') {
       useKookrStore.getState().setFocusZone('none');
     }
@@ -328,6 +406,9 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
       if (event.resultCount === 0) {
         setSearchFound(false);
       }
+    });
+    const scrollDisposable = terminal.onScroll(() => {
+      syncAtBottom(terminal);
     });
 
     // Track focus zone via DOM events (xterm v6 removed onFocus/onBlur)
@@ -451,6 +532,8 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
       container.removeEventListener('keydown', handleKeyDownCapture, { capture: true });
       resizeObserver.disconnect();
       searchResultDisposable.dispose();
+      scrollDisposable.dispose();
+      clearJumpLatestTimer();
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
@@ -553,6 +636,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     if (sessionChanged) {
       searchOpenRef.current = false;
       terminalInputDraftRef.current = '';
+      resetJumpLatest();
       setSearchOpen(false);
       setSearchTerm('');
       setSearchFound(null);
@@ -635,6 +719,8 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
         registerVisibleTerminalSend();
       },
       onMessage: (event) => {
+        const atBottomBeforeWrite = syncAtBottom(terminal);
+        const newLineCount = atBottomBeforeWrite ? 0 : countTerminalNewLines(event.data);
         // Binary frames arrive as ArrayBuffer (because ws.binaryType = 'arraybuffer'
         // above). Convert to Uint8Array for byte-exact handoff to xterm.js — its
         // .write() accepts both Uint8Array and string. String frames (from the
@@ -645,6 +731,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
         } else if (typeof event.data === 'string') {
           terminal.write(event.data);
         }
+        scheduleJumpLatest(newLineCount);
       },
       onClose: (event, { wasEstablished }) => {
         registerTerminalSend(null);
@@ -801,6 +888,33 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
         </form>
       )}
       <div className="terminal-xterm" ref={containerRef} />
+      {jumpLatest.visible && (
+        <button
+          type="button"
+          className="terminal-search-btn"
+          onClick={handleJumpToLatest}
+          aria-label={`${jumpLatest.lines} new ${jumpLatest.lines === 1 ? 'line' : 'lines'}, jump to latest`}
+          style={{
+            position: 'absolute',
+            right: 12,
+            bottom: 12,
+            zIndex: 45,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            height: 28,
+            padding: '0 10px',
+            background: 'rgba(15, 17, 23, 0.96)',
+            border: '1px solid var(--border)',
+            borderRadius: 999,
+            color: 'var(--text-bright)',
+            boxShadow: '0 8px 18px rgba(0, 0, 0, 0.35)',
+          }}
+        >
+          <span aria-hidden="true">⌄</span>
+          {jumpLatest.lines} new {jumpLatest.lines === 1 ? 'line' : 'lines'}, jump to latest
+        </button>
+      )}
       {menu && (
         // Plain popover, not role="menu". The full ARIA menu pattern requires
         // focus trapping, arrow-key navigation, and keyboard-open support
