@@ -1,8 +1,21 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtemp, mkdir, writeFile, rm, utimes } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { discoverPlaybooks, userPlaybooksDir, pluginPlaybooksDir } from './playbook-discovery.js';
+
+const fsReadTracker = vi.hoisted(() => ({ readFileCalls: 0 }));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    readFile: vi.fn(async (...args: Parameters<typeof actual.readFile>) => {
+      fsReadTracker.readFileCalls += 1;
+      return actual.readFile(...args);
+    }),
+  };
+});
 
 async function createTempProject(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'kookr-test-'));
@@ -17,6 +30,12 @@ Do the thing.
 `;
 
 const INVALID_PLAYBOOK = `No frontmatter here`;
+
+async function writePlaybookWithFutureMtime(path: string, content: string): Promise<void> {
+  await writeFile(path, content);
+  const future = new Date(Date.now() + 10_000);
+  await utimes(path, future, future);
+}
 
 /**
  * Set up an empty fake plugin tree at `<root>/plugin/` with a valid manifest
@@ -142,6 +161,76 @@ describe('discoverPlaybooks', () => {
     try {
       const result = await discoverPlaybooks(dir);
       expect(result.map((p) => p.id)).toEqual(['a-user.md', 'm-project.md', 'z-plugin.md']);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  test('does not read unchanged playbook files on a repeated discovery call', async () => {
+    const dir = await createTempProject();
+    const pbDir = join(dir, '.kookr', 'playbooks');
+    await mkdir(pbDir, { recursive: true });
+    await writeFile(join(pbDir, 'project.md'), '---\nname: Project\n---\nProject');
+    await writeFile(join(isolatedUserDir, 'user.md'), '---\nname: User\n---\nUser');
+    await writeFile(join(isolatedPluginPlaybooksDir, 'plugin.md'), '---\nname: Plugin\n---\nPlugin');
+
+    try {
+      await expect(discoverPlaybooks(dir)).resolves.toHaveLength(3);
+
+      fsReadTracker.readFileCalls = 0;
+      await expect(discoverPlaybooks(dir)).resolves.toHaveLength(3);
+
+      expect(fsReadTracker.readFileCalls).toBe(0);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  test('invalidates the cache when a playbook file is edited', async () => {
+    const dir = await createTempProject();
+    const pbDir = join(dir, '.kookr', 'playbooks');
+    const playbookPath = join(pbDir, 'project.md');
+    await mkdir(pbDir, { recursive: true });
+    await writeFile(playbookPath, '---\nname: Project\n---\nProject');
+
+    try {
+      const initial = await discoverPlaybooks(dir);
+      expect(initial[0].name).toBe('Project');
+
+      fsReadTracker.readFileCalls = 0;
+      await writePlaybookWithFutureMtime(playbookPath, '---\nname: Project Edited\n---\nProject');
+      const updated = await discoverPlaybooks(dir);
+
+      expect(updated[0].name).toBe('Project Edited');
+      expect(fsReadTracker.readFileCalls).toBeGreaterThan(0);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  test('invalidates the cache when a playbook file is added or removed', async () => {
+    const dir = await createTempProject();
+    const pbDir = join(dir, '.kookr', 'playbooks');
+    const addedPath = join(pbDir, 'bravo.md');
+    await mkdir(pbDir, { recursive: true });
+    await writeFile(join(pbDir, 'alpha.md'), '---\nname: Alpha\n---\nAlpha');
+
+    try {
+      await expect(discoverPlaybooks(dir)).resolves.toHaveLength(1);
+
+      fsReadTracker.readFileCalls = 0;
+      await writeFile(addedPath, '---\nname: Bravo\n---\nBravo');
+      const afterAdd = await discoverPlaybooks(dir);
+
+      expect(afterAdd.map((p) => p.id)).toEqual(['alpha.md', 'bravo.md']);
+      expect(fsReadTracker.readFileCalls).toBeGreaterThan(0);
+
+      fsReadTracker.readFileCalls = 0;
+      await rm(addedPath);
+      const afterRemove = await discoverPlaybooks(dir);
+
+      expect(afterRemove.map((p) => p.id)).toEqual(['alpha.md']);
+      expect(fsReadTracker.readFileCalls).toBeGreaterThan(0);
     } finally {
       await rm(dir, { recursive: true });
     }
