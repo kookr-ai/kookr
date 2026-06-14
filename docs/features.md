@@ -207,14 +207,14 @@ F10-F15.
 
 ### F10: Resilience — Circuit Breakers
 
-External dependencies (LLM providers, `gh` CLI) can fail. Kookr wraps them in generic circuit breakers so individual failures don't cascade into a global outage.
+External dependencies (LLM providers, `gh` CLI, remote alert callbacks) can fail. Kookr wraps them in generic circuit breakers so individual failures don't cascade into a global outage. See the [circuit breaker operator reference](reference/circuit-breakers.md) for thresholds, dashboard behavior, API shape, and manual rearm guidance.
 
 | ID | Feature | Description |
 |----|---------|-------------|
 | F10.1 | **Core breaker** | `circuit-breaker.ts` implements a CLOSED → OPEN → HALF_OPEN state machine with configurable thresholds and cooldown. |
 | F10.2 | **Wrapped dependencies** | `circuit-breaker-llm-client.ts` and `circuit-breaker-github-fetcher.ts` wrap each outbound integration. |
-| F10.3 | **Status broadcast** | The server periodically publishes `circuitBreakerStatus` with all current snapshots; `CircuitBreakerPanel.tsx` renders them. |
-| F10.4 | **Manual rearm** | Developers can force a breaker back to HALF_OPEN via the `rearmCircuitBreaker` WS message. |
+| F10.3 | **Status broadcast** | The server publishes `circuitBreakerStatus` with all current snapshots on WebSocket connect and breaker state changes; `CircuitBreakerPanel.tsx` renders them. |
+| F10.4 | **Manual rearm** | Developers can close a non-closed breaker via the dashboard or the `rearmCircuitBreaker` WS message. |
 
 ### F11: Scheduled Tasks
 

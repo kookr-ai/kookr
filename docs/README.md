@@ -57,6 +57,7 @@ We publish drafts intentionally — the design history is part of the engineerin
 [`reference/`](reference/) — canonical reference material:
 
 - [API Reference](reference/api.md)
+- [Circuit Breakers](reference/circuit-breakers.md)
 - [CLI Reference](reference/cli.md)
 - [Environment Variables](reference/environment-variables.md)
 - [Playbooks Reference](reference/playbooks.md)
