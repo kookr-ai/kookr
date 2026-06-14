@@ -1,0 +1,54 @@
+import { describe, expect, test } from 'vitest';
+import type { CircuitBreakerSnapshot } from '../core/circuit-breaker.js';
+import type { RequestDurationMetricsSnapshot } from './request-duration-metrics.js';
+import { renderPrometheusExposition } from './prometheus-exposition.js';
+
+describe('renderPrometheusExposition', () => {
+  test('renders request durations and circuit breakers in Prometheus text format', () => {
+    const requestDurations: RequestDurationMetricsSnapshot = {
+      schemaVersion: 'request-duration-metrics.v1',
+      maxRoutes: 128,
+      maxSamplesPerRoute: 256,
+      routeCount: 1,
+      droppedRouteCount: 2,
+      routes: [{
+        method: 'GET',
+        route: '/api/tasks/:taskId/"events"\\tail',
+        count: 7,
+        sampleCount: 4,
+        p50Ms: 12.5,
+        p95Ms: 25,
+        p99Ms: 30,
+      }],
+    };
+    const circuitBreakers: CircuitBreakerSnapshot[] = [{
+      name: 'llm',
+      state: 'open',
+      failureCount: 3,
+      successCount: 0,
+      lastFailureTime: 123,
+      lastStateChange: 456,
+      resetTimeoutMs: 30_000,
+    }];
+
+    const output = renderPrometheusExposition({ requestDurations, circuitBreakers });
+
+    expect(output).toContain('# HELP kookr_http_request_duration_observations_total Total recorded HTTP request-duration observations by route template.');
+    expect(output).toContain('# TYPE kookr_http_request_duration_observations_total counter');
+    expect(output).toContain('kookr_http_request_duration_observations_total{method="GET",route="/api/tasks/:taskId/\\"events\\"\\\\tail"} 7');
+    expect(output).toContain('# TYPE kookr_http_request_duration_sample_count gauge');
+    expect(output).toContain('kookr_http_request_duration_sample_count{method="GET",route="/api/tasks/:taskId/\\"events\\"\\\\tail"} 4');
+    expect(output).toContain('# TYPE kookr_http_request_duration_seconds gauge');
+    expect(output).toContain('kookr_http_request_duration_seconds{method="GET",route="/api/tasks/:taskId/\\"events\\"\\\\tail",quantile="0.5"} 0.0125');
+    expect(output).toContain('kookr_http_request_duration_seconds{method="GET",route="/api/tasks/:taskId/\\"events\\"\\\\tail",quantile="0.95"} 0.025');
+    expect(output).toContain('kookr_http_request_duration_seconds{method="GET",route="/api/tasks/:taskId/\\"events\\"\\\\tail",quantile="0.99"} 0.03');
+    expect(output).toContain('kookr_http_request_duration_dropped_routes_total 2');
+    expect(output).toContain('# HELP kookr_circuit_breaker_state Current circuit-breaker state. The active state is 1 and inactive states are 0.');
+    expect(output).toContain('# TYPE kookr_circuit_breaker_state gauge');
+    expect(output).toContain('kookr_circuit_breaker_state{name="llm",state="closed"} 0');
+    expect(output).toContain('kookr_circuit_breaker_state{name="llm",state="open"} 1');
+    expect(output).toContain('kookr_circuit_breaker_state{name="llm",state="half-open"} 0');
+    expect(output).toContain('kookr_circuit_breaker_failures{name="llm"} 3');
+    expect(output.endsWith('\n')).toBe(true);
+  });
+});
