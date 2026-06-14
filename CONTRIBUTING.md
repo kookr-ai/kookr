@@ -23,6 +23,7 @@ Before opening a PR, run the same commands the pre-push hook will run:
 | Command | What it checks |
 |---|---|
 | `pnpm test` | Unit + integration tests (Vitest) |
+| `pnpm test:changed` | Fast inner-loop Vitest run for tests affected by local changes |
 | `pnpm test:hooks` | Bash hook tests under `.claude/hooks-tests/` |
 | `pnpm check:e2e` | TypeScript check for E2E tests (`tsc -p tsconfig.e2e.json`) |
 | `pnpm exec playwright test` | Playwright E2E suite |
