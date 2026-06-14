@@ -9,6 +9,7 @@ import {
   resetOperationalAlertConfig,
 } from '../operational-alert-config.js';
 import {
+  DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
   DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
   DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
 } from '../config.js';
@@ -90,6 +91,7 @@ describe('admin operational-alert-config routes (issue #737)', () => {
         eventLoopDelayMs: 0,
         dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
         dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
+        circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
         sustainSamples: 3,
       },
       default: {
@@ -98,6 +100,7 @@ describe('admin operational-alert-config routes (issue #737)', () => {
         eventLoopDelayMs: 0,
         dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
         dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
+        circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
         sustainSamples: 3,
       },
     });
@@ -119,6 +122,7 @@ describe('admin operational-alert-config routes (issue #737)', () => {
         eventLoopDelayMs: 0,
         dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
         dataDirectoryFreeBytes: 1_000,
+        circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
         sustainSamples: 2,
       },
       default: {
@@ -127,6 +131,7 @@ describe('admin operational-alert-config routes (issue #737)', () => {
         eventLoopDelayMs: 0,
         dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
         dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
+        circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
         sustainSamples: 3,
       },
     });
@@ -136,6 +141,7 @@ describe('admin operational-alert-config routes (issue #737)', () => {
       eventLoopDelayMs: 0,
       dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
       dataDirectoryFreeBytes: 1_000,
+      circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
       sustainSamples: 2,
     });
   });
@@ -158,6 +164,7 @@ describe('admin operational-alert-config routes (issue #737)', () => {
         'eventLoopDelayMs',
         'dataDirectoryFreePercent',
         'dataDirectoryFreeBytes',
+        'circuitBreakerOpenMs',
         'sustainSamples',
       ],
     });
@@ -167,6 +174,7 @@ describe('admin operational-alert-config routes (issue #737)', () => {
       eventLoopDelayMs: 0,
       dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
       dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
+      circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
       sustainSamples: 3,
     });
   });

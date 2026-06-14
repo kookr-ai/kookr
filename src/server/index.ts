@@ -1160,7 +1160,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         `dataDirFree=${operationalAlertConfig.dataDirectoryFreePercent || 'off'}%/` +
         `${operationalAlertConfig.dataDirectoryFreeBytes || 'off'}B ` +
         `persistence=on ` +
-        `(fires after ${operationalAlertConfig.sustainSamples} samples ≈ ${sustainSeconds}s sustained)`,
+        `(sampled-resource alerts fire after ${operationalAlertConfig.sustainSamples} samples ≈ ${sustainSeconds}s sustained); ` +
+        `circuitBreakerOpen=${operationalAlertConfig.circuitBreakerOpenMs || 'off'}ms`,
     );
   } else {
     console.log('[ops-alerts] Operational alerts disabled (set KOOKR_ALERT_* thresholds to enable)');
@@ -1169,6 +1170,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     sampler: resourceStatusSampler ?? createSystemResourceSampler({ dataDirectoryPath: kookrDir }),
     broadcastToAll,
     alertEvaluator: operationalAlertEvaluator,
+    getCircuitBreakerSnapshots: () => circuitBreakerRegistry.getAllSnapshots(),
     intervalMs: resourceStatusIntervalMs,
   });
 

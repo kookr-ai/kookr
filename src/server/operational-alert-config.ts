@@ -30,6 +30,7 @@ const THRESHOLD_FIELDS = [
   'eventLoopDelayMs',
   'dataDirectoryFreePercent',
   'dataDirectoryFreeBytes',
+  'circuitBreakerOpenMs',
 ] as const;
 const UPDATE_FIELDS = [...THRESHOLD_FIELDS, 'sustainSamples'] as const;
 

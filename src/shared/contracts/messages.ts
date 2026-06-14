@@ -88,6 +88,8 @@ export interface SystemResourceStatus {
   sampledAt: string;
   sampleGapMs: number | null;
   timerDriftMs: number | null;
+  /** Optional server-side dependency breaker snapshots sampled on the same tick. */
+  circuitBreakers?: CircuitBreakerSnapshot[];
   host: {
     cpuUsagePercent: number | null;
     memoryUsedPercent: number | null;

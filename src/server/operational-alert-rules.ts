@@ -1,5 +1,6 @@
 import type { ServerMessage, SystemResourceStatus } from '../shared/contracts/messages.js';
 import type { AnomalySeverity } from '../shared/contracts/anomalies.js';
+import type { CircuitBreakerSnapshot } from '../shared/contracts/circuit-breaker.js';
 import type { OperationalAlertConfig } from './config.js';
 import type {
   PersistenceHealthSnapshot,
@@ -63,6 +64,14 @@ interface PersistenceRuleState {
   configKey: string | null;
 }
 
+/** Mutable edge-trigger state for one named circuit breaker. */
+interface CircuitBreakerRuleState {
+  /** Whether an alert is currently firing (awaiting recovery). */
+  firing: boolean;
+  /** Duration threshold that owns the current firing state. */
+  configKey: string | null;
+}
+
 /**
  * Edge-triggered evaluator for operational alerts on already-sampled host
  * signals (CPU, memory, event-loop delay, data-directory disk pressure).
@@ -88,6 +97,7 @@ export class OperationalAlertEvaluator {
   private readonly states = new Map<OperationalAlertMetric, RuleState>();
   private readonly getPersistenceHealth: (() => PersistenceHealthSnapshot) | null;
   private readonly persistenceStates = new Map<PersistenceHealthTarget, PersistenceRuleState>();
+  private readonly circuitBreakerStates = new Map<string, CircuitBreakerRuleState>();
 
   constructor(
     config: OperationalAlertConfig | (() => OperationalAlertConfig),
@@ -132,7 +142,8 @@ export class OperationalAlertEvaluator {
     return this.getPersistenceHealth !== null
       || this.rules.some((rule) => rule.threshold(config) > 0)
       || config.dataDirectoryFreePercent > 0
-      || config.dataDirectoryFreeBytes > 0;
+      || config.dataDirectoryFreeBytes > 0
+      || config.circuitBreakerOpenMs > 0;
   }
 
   /**
@@ -181,6 +192,7 @@ export class OperationalAlertEvaluator {
     }
     messages.push(...this.evaluateDataDirectoryDiskPressure(status, config, sustainSamples));
     messages.push(...this.evaluatePersistenceHealth(sustainSamples));
+    messages.push(...this.evaluateCircuitBreakers(status, config));
     return messages;
   }
 
@@ -287,6 +299,67 @@ export class OperationalAlertEvaluator {
     }
     return messages;
   }
+
+  private evaluateCircuitBreakers(
+    status: SystemResourceStatus,
+    config: OperationalAlertConfig,
+  ): ServerMessage[] {
+    const thresholdMs = config.circuitBreakerOpenMs;
+    if (thresholdMs <= 0) {
+      this.circuitBreakerStates.clear();
+      return [];
+    }
+
+    const snapshots = status.circuitBreakers ?? [];
+    const presentNames = new Set<string>();
+    const messages: ServerMessage[] = [];
+    const sampledAtMs = Date.parse(status.sampledAt);
+    const nowMs = Number.isFinite(sampledAtMs) ? sampledAtMs : Date.now();
+    const configKey = `circuit-breaker-open:${thresholdMs}`;
+
+    for (const snapshot of snapshots) {
+      presentNames.add(snapshot.name);
+      const state = this.getCircuitBreakerState(snapshot.name);
+      if (state.configKey !== null && state.configKey !== configKey) {
+        resetCircuitBreakerState(state);
+      }
+      state.configKey = configKey;
+
+      if (snapshot.state === 'open') {
+        const openForMs = Math.max(0, nowMs - snapshot.lastStateChange);
+        if (!state.firing && openForMs >= thresholdMs) {
+          state.firing = true;
+          messages.push(buildCircuitBreakerOpenAlert(snapshot, openForMs, thresholdMs));
+        }
+        continue;
+      }
+
+      if (state.firing) {
+        state.firing = false;
+        messages.push(buildCircuitBreakerRecoveryAlert(snapshot, thresholdMs));
+      }
+      if (!state.firing) {
+        this.circuitBreakerStates.delete(snapshot.name);
+      }
+    }
+
+    for (const name of this.circuitBreakerStates.keys()) {
+      if (!presentNames.has(name)) {
+        this.circuitBreakerStates.delete(name);
+      }
+    }
+
+    return messages;
+  }
+
+  private getCircuitBreakerState(name: string): CircuitBreakerRuleState {
+    let state = this.circuitBreakerStates.get(name);
+    if (!state) {
+      state = { firing: false, configKey: null };
+      this.circuitBreakerStates.set(name, state);
+    }
+    return state;
+  }
 }
 
 function resetState(state: RuleState): void {
@@ -296,6 +369,11 @@ function resetState(state: RuleState): void {
 }
 
 function resetPersistenceState(state: PersistenceRuleState): void {
+  state.firing = false;
+  state.configKey = null;
+}
+
+function resetCircuitBreakerState(state: CircuitBreakerRuleState): void {
   state.firing = false;
   state.configKey = null;
 }
@@ -437,6 +515,50 @@ function buildPersistenceRecoveryAlert(
       `Last successful save: ${target.lastSuccessAt ?? 'unknown'}.`,
     severity,
   };
+}
+
+function buildCircuitBreakerOpenAlert(
+  snapshot: CircuitBreakerSnapshot,
+  openForMs: number,
+  thresholdMs: number,
+): Extract<ServerMessage, { type: 'alert' }> {
+  const severity: AnomalySeverity = 'warning';
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `Circuit breaker open: ${snapshot.name} has been OPEN for ${formatDuration(openForMs)}`,
+    details:
+      `Advisory operational alert: circuit breaker "${snapshot.name}" has remained OPEN for ` +
+      `${formatDuration(openForMs)} (threshold ${formatDuration(thresholdMs)}). ` +
+      `Calls protected by this breaker are degraded until it recovers or is manually rearmed.`,
+    severity,
+  };
+}
+
+function buildCircuitBreakerRecoveryAlert(
+  snapshot: CircuitBreakerSnapshot,
+  thresholdMs: number,
+): Extract<ServerMessage, { type: 'alert' }> {
+  const severity: AnomalySeverity = 'info';
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `Recovered circuit breaker: ${snapshot.name} is ${snapshot.state}`,
+    details:
+      `Operational alert cleared: circuit breaker "${snapshot.name}" is no longer OPEN ` +
+      `(open-duration threshold ${formatDuration(thresholdMs)}).`,
+    severity,
+  };
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${Math.round(seconds * 10) / 10}s`;
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${Math.round(minutes * 10) / 10}m`;
+  const hours = minutes / 60;
+  return `${Math.round(hours * 10) / 10}h`;
 }
 
 export function createOperationalAlertEvaluator(
