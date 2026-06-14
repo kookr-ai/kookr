@@ -34,6 +34,7 @@ import { isShareGuardedRoute } from './routes/share-routes.js';
 import { readRequestBodyLimitBytesFromEnv } from './config.js';
 import { createJsonRequestBodyLimitMiddleware, type RouteDeps } from './routes/shared.js';
 import { createRequestDurationMiddleware, RequestDurationMetrics } from './request-duration-metrics.js';
+import { createDashboardSecurityHeadersMiddleware } from './security-headers-middleware.js';
 
 export type { RouteDeps } from './routes/shared.js';
 
@@ -142,9 +143,11 @@ export function createRoutes(deps: RouteDeps): Hono {
     ttsVoice: deps.ttsVoice ?? DEFAULT_TTS_VOICE,
   });
 
-  // Cache headers for frontend assets:
+  // Dashboard response headers:
+  // - security headers apply to HTML and static assets
   // - /assets/* have content hashes in filenames → cache forever
   // - everything else (index.html) → always revalidate so deploys take effect
+  app.use('/*', createDashboardSecurityHeadersMiddleware());
   app.use('/*', async (c, next) => {
     await next();
     if (c.req.path.startsWith('/assets/')) {
