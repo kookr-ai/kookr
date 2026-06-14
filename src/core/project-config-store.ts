@@ -49,7 +49,10 @@ export class ProjectConfigStore {
   }
 
   async load(): Promise<void> {
-    const arr = await readJsonFile<unknown[]>(this.filePath, []);
+    const arr = await readJsonFile<unknown[]>(this.filePath, [], {
+      quarantineCorrupt: true,
+      warningPrefix: 'project-config-store',
+    });
     this.configs.clear();
     for (const rawConfig of arr) {
       const config = sanitizeProjectConfig(rawConfig);
@@ -62,7 +65,10 @@ export class ProjectConfigStore {
    * Merges with any manually-set project configs (manual configs take precedence).
    */
   async loadRateLimits(): Promise<void> {
-    this.rateLimits = await readJsonFile<RateLimitConfig | null>(this.rateLimitsPath, null);
+    this.rateLimits = await readJsonFile<RateLimitConfig | null>(this.rateLimitsPath, null, {
+      quarantineCorrupt: true,
+      warningPrefix: 'project-config-store',
+    });
     if (!this.rateLimits) return;
 
     // Track blocked repos

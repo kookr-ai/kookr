@@ -188,7 +188,10 @@ export class ViewerGrantStore {
   /** Load grants from disk into memory. Missing/corrupt file ⇒ empty store. */
   async load(): Promise<void> {
     const fallback: ShareGrantsFile = { schemaVersion: SCHEMA_VERSION, grants: [] };
-    const loaded = await readJsonFile<ShareGrantsFile>(this.filePath, fallback);
+    const loaded = await readJsonFile<ShareGrantsFile>(this.filePath, fallback, {
+      quarantineCorrupt: true,
+      warningPrefix: 'viewer-grants',
+    });
     // `readJsonFile` only falls back on a missing/unparseable file; valid JSON
     // that is `null` or a non-object (e.g. a truncated write) still reaches
     // here, so guard before touching `.schemaVersion` (corrupt ⇒ empty store).
