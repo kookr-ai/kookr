@@ -15,6 +15,7 @@ import type { ListTaskSharesApiResponse, TaskShareSummary } from '../../shared/c
 import { deriveTaskShareHeaderStatus } from './task-share-header-status.js';
 import { TaskDependencyEditor } from './TaskDependencyEditor.js';
 import { TaskDependencyRail } from './TaskDependencyRail.js';
+import type { ReplySnippet } from '../../shared/contracts/reply-snippets.js';
 import { CoordinatorChainStripView } from './CoordinatorSurfaces.js';
 import { clearDetailReplyDraft, loadDetailReplyDraft, saveDetailReplyDraft } from '../store/detail-reply-draft.js';
 import {
@@ -304,6 +305,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
   const [showHookSettings, setShowHookSettings] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
   const [shareHeaderShares, setShareHeaderShares] = useState<TaskShareSummary[]>([]);
+  const [replySnippets, setReplySnippets] = useState<ReplySnippet[]>([]);
   const hookSettingsTriggerRef = useRef<HTMLButtonElement>(null);
   const showRightPaneButtonRef = useRef<HTMLButtonElement>(null);
   const hideRightPaneButtonRef = useRef<HTMLButtonElement>(null);
@@ -332,6 +334,51 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
     updateViewportMode();
     window.addEventListener('resize', updateViewportMode);
     return () => window.removeEventListener('resize', updateViewportMode);
+  }, []);
+
+  useEffect(() => {
+    function normalizeReplySnippets(raw: unknown): ReplySnippet[] {
+      if (!Array.isArray(raw)) return [];
+      return raw.filter((entry): entry is ReplySnippet => (
+        typeof entry === 'object' &&
+        entry !== null &&
+        !Array.isArray(entry) &&
+        typeof (entry as { label?: unknown }).label === 'string' &&
+        typeof (entry as { text?: unknown }).text === 'string' &&
+        (entry as { label: string }).label.trim().length > 0 &&
+        (entry as { text: string }).text.trim().length > 0
+      ));
+    }
+
+    let cancelled = false;
+    async function loadReplySnippets() {
+      try {
+        const res = await fetch('/api/settings');
+        if (!res.ok) return;
+        const data = await res.json() as { replySnippets?: unknown };
+        if (!cancelled) setReplySnippets(normalizeReplySnippets(data.replySnippets));
+      } catch {
+        if (!cancelled) setReplySnippets([]);
+      }
+    }
+
+    function handleSettingsUpdated(event: Event) {
+      const detail = event instanceof CustomEvent ? detailFromCustomEvent(event) : undefined;
+      setReplySnippets(normalizeReplySnippets(detail?.replySnippets));
+    }
+
+    function detailFromCustomEvent(event: CustomEvent): { replySnippets?: unknown } | undefined {
+      return typeof event.detail === 'object' && event.detail !== null
+        ? event.detail as { replySnippets?: unknown }
+        : undefined;
+    }
+
+    void loadReplySnippets();
+    window.addEventListener('kookr:settings-updated', handleSettingsUpdated);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('kookr:settings-updated', handleSettingsUpdated);
+    };
   }, []);
 
   useEffect(() => {
@@ -479,6 +526,19 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
 
   function handleInputChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     setReplyInput(e.target.value);
+  }
+
+  function insertReplySnippet(snippetText: string) {
+    const textarea = inputRef.current;
+    const start = textarea?.selectionStart ?? input.length;
+    const end = textarea?.selectionEnd ?? start;
+    const nextInput = `${input.slice(0, start)}${snippetText}${input.slice(end)}`;
+    const nextCursor = start + snippetText.length;
+    setReplyInput(nextInput);
+    window.requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(nextCursor, nextCursor);
+    });
   }
 
   // Combine pattern-matched quick actions and AI suggestions into a unified button list
@@ -1137,6 +1197,27 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
                 </button>
               ))
             }
+          </div>
+        )}
+        {replySnippets.length > 0 && (
+          <div className="reply-snippet-picker">
+            <label className="reply-snippet-picker-label" htmlFor="reply-snippet-picker">
+              Saved replies
+            </label>
+            <select
+              id="reply-snippet-picker"
+              className="reply-snippet-picker-select"
+              value=""
+              onChange={(e) => {
+                const snippet = replySnippets[Number(e.target.value)];
+                if (snippet) insertReplySnippet(snippet.text);
+              }}
+            >
+              <option value="" disabled>Insert snippet...</option>
+              {replySnippets.map((snippet, index) => (
+                <option key={`${snippet.label}-${index}`} value={index}>{snippet.label}</option>
+              ))}
+            </select>
           </div>
         )}
         <div className="response-row">

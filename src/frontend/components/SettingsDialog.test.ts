@@ -135,6 +135,7 @@ describe('SettingsDialog tabs', () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     await act(async () => {
       root.unmount();
     });
@@ -381,6 +382,48 @@ describe('SettingsDialog tabs', () => {
         },
       },
     }));
+  });
+
+  test('debounced numeric saves use the latest settings including reply snippets', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (url, init) => {
+      if (url === '/api/settings' && !init) {
+        return { ok: true, json: async () => DEFAULT_SETTINGS } as Response;
+      }
+      if (url === '/api/settings' && init?.method === 'PUT') {
+        return { ok: true, json: async () => JSON.parse(String(init.body)) } as Response;
+      }
+      throw new Error(`unexpected fetch ${String(url)}`);
+    });
+
+    await flush();
+    const staleTimeout = container.querySelector<HTMLInputElement>('input[aria-label="Stale agent timeout"]');
+    expect(staleTimeout).not.toBeNull();
+
+    await act(async () => {
+      changeInput(staleTimeout!, '45');
+    });
+
+    const addSnippet = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.trim() === 'Add snippet');
+    expect(addSnippet).toBeDefined();
+    await act(async () => {
+      addSnippet!.click();
+    });
+    await flush();
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+    });
+    await flush();
+
+    const putCalls = fetchMock.mock.calls.filter(([url, init]) => url === '/api/settings' && init?.method === 'PUT');
+    expect(putCalls.length).toBeGreaterThanOrEqual(2);
+    const lastBody = JSON.parse(String(putCalls.at(-1)![1]!.body));
+    expect(lastBody.watchdogStaleThresholdSec).toBe(45);
+    expect(lastBody.replySnippets).toEqual([{ label: 'New reply', text: 'continue' }]);
   });
 
   test('connects relay credentials from the Sharing tab with the share CSRF token', async () => {

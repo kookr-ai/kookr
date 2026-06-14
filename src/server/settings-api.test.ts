@@ -65,6 +65,7 @@ describe('Settings API', () => {
       speakVerbosity: 'medium',
       agentEffort: {},
       quietHours: [],
+      replySnippets: [],
       loadedFromDefaults: true,
       warnings: [],
     });
