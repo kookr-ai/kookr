@@ -1,5 +1,5 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -163,6 +163,25 @@ describe('ViewerGrantStore', () => {
     writeFileSync(join(tempDir, 'share-grants.json'), '42');
     await store.load();
     expect(store.list()).toEqual([]);
+  });
+
+  test('corrupt file is quarantined and fails closed to empty grants', async () => {
+    const filePath = join(tempDir, 'share-grants.json');
+    const corruptContents = '{"schemaVersion":1,"grants":';
+    writeFileSync(filePath, corruptContents);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(store.load()).resolves.toBeUndefined();
+
+    expect(store.list()).toEqual([]);
+    expect(existsSync(filePath)).toBe(false);
+    const quarantined = readdirSync(tempDir).filter((entry) => entry.startsWith('share-grants.json.corrupt-'));
+    expect(quarantined).toHaveLength(1);
+    expect(readFileSync(join(tempDir, quarantined[0]), 'utf-8')).toBe(corruptContents);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('[viewer-grants] Corrupt JSON file'),
+      expect.any(SyntaxError),
+    );
   });
 
   test('a non-array grants field degrades to empty', async () => {

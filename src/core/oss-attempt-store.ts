@@ -158,7 +158,10 @@ export class OssAttemptStore {
       attempts: [],
       lastRefreshAt: null,
     };
-    const loaded = await readJsonFile<OssAttemptStoreFile>(this.filePath, fallback);
+    const loaded = await readJsonFile<OssAttemptStoreFile>(this.filePath, fallback, {
+      quarantineCorrupt: true,
+      warningPrefix: 'oss-attempt-store',
+    });
     if (loaded.schemaVersion !== OSS_ATTEMPTS_SCHEMA_VERSION) {
       console.warn(
         `[oss-attempt-store] Unknown schemaVersion ${loaded.schemaVersion}, falling back to empty store`,
