@@ -1,6 +1,7 @@
 import type { Hono } from 'hono';
 import type { RouteDeps } from './shared.js';
 import { createSnapshotMessage } from '../use-cases/get-snapshot.js';
+import { validateSettingsWithWarnings } from '../../core/settings-store.js';
 
 export function registerSettingsRoutes(app: Hono, deps: RouteDeps): void {
   app.get('/api/settings', (c) => {
@@ -20,7 +21,6 @@ export function registerSettingsRoutes(app: Hono, deps: RouteDeps): void {
         return c.json({ error: 'Body must be a JSON object' }, 400);
       }
 
-      const { validateSettingsWithWarnings } = await import('../../core/settings-store.js');
       const { settings: validated, warnings: validationWarnings } = validateSettingsWithWarnings(body);
       const warnings = [
         ...validationWarnings,

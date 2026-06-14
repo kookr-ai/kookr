@@ -2291,6 +2291,31 @@ kbd {
   max-height: 160px;
   overflow-y: auto;
 }
+.reply-snippet-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.reply-snippet-picker-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.reply-snippet-picker-select {
+  min-height: 30px;
+  max-width: 260px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  color: var(--text-bright);
+  font-size: 12px;
+  padding: 5px 8px;
+}
+.reply-snippet-picker-select:focus {
+  outline: none;
+  border-color: var(--teal);
+}
 .btn-quick-action {
   display: flex;
   align-items: center;
@@ -8370,6 +8395,71 @@ button.project-drawer-link:focus-visible {
 .settings-shortcut-input:focus {
   outline: none;
   border-color: var(--teal);
+}
+
+.settings-empty-note {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 4px 0 8px;
+}
+
+.settings-snippet-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.6fr) minmax(180px, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+  padding: 8px 0;
+  border-top: 1px solid var(--border-dim);
+}
+
+.settings-snippet-label,
+.settings-snippet-text {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.settings-snippet-label input,
+.settings-snippet-text textarea {
+  background: var(--bg-input);
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  color: var(--text-bright);
+  font-size: 12px;
+  padding: 6px 8px;
+  font-family: inherit;
+}
+
+.settings-snippet-text textarea {
+  resize: vertical;
+  min-height: 54px;
+}
+
+.settings-snippet-label input:focus,
+.settings-snippet-text textarea:focus {
+  outline: none;
+  border-color: var(--teal);
+}
+
+@media (max-width: 640px) {
+  .reply-snippet-picker {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .reply-snippet-picker-select {
+    max-width: none;
+    width: 100%;
+  }
+
+  .settings-snippet-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .settings-snippet-row .settings-button {
+    justify-self: start;
+  }
 }
 
 .settings-button {

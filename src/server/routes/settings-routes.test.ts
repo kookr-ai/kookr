@@ -62,6 +62,7 @@ describe('settings routes', () => {
         githubPollingEnabled: false,
         maxActiveTasks: 12,
         defaultAgentType: 'codex-cli',
+        replySnippets: [{ label: 'Continue', text: 'continue' }],
       }),
       loadedFromDefaults: true,
       loadWarnings: ['Shortcut "quick_launch" in mac bindings has invalid binding "N"; ignored'],
@@ -74,6 +75,7 @@ describe('settings routes', () => {
       githubPollingEnabled: false,
       maxActiveTasks: 12,
       defaultAgentType: 'codex-cli',
+      replySnippets: [{ label: 'Continue', text: 'continue' }],
       loadedFromDefaults: true,
       warnings: ['Shortcut "quick_launch" in mac bindings has invalid binding "N"; ignored'],
     });
@@ -120,6 +122,10 @@ describe('settings routes', () => {
             quick_launch: 'Cmd+Ctrl+Space',
           },
         },
+        replySnippets: [
+          { label: ' Continue ', text: ' continue ' },
+          { label: 'Bad', text: '' },
+        ],
         unknownSetting: 'ignored',
       }),
     });
@@ -136,6 +142,9 @@ describe('settings routes', () => {
             next_bottleneck: 'Cmd+Ctrl+Space',
           },
         },
+        replySnippets: [
+          { label: 'Continue', text: 'continue' },
+        ],
       }),
     ]);
 
@@ -149,11 +158,63 @@ describe('settings routes', () => {
           next_bottleneck: 'Cmd+Ctrl+Space',
         },
       },
+      replySnippets: [
+        { label: 'Continue', text: 'continue' },
+      ],
       warnings: [
         'Shortcut "quick_launch" in mac bindings conflicts with "next_bottleneck" on Cmd+Ctrl+Space; ignored',
+        'Invalid replySnippets[1] (label and text must be non-empty strings); ignored',
         'persisted with test warning',
       ],
     });
+  });
+
+  test('PUT /api/settings supports reply snippet create, update, and delete through settings CRUD', async () => {
+    const deps = mkRouteDeps();
+    const app = mkApp(deps);
+
+    const createRes = await app.request('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        replySnippets: [
+          { label: ' Continue ', text: ' continue ' },
+          { label: 'Tests', text: 'run pnpm test' },
+        ],
+      }),
+    });
+    expect(createRes.status).toBe(200);
+    await expect(createRes.json()).resolves.toMatchObject({
+      replySnippets: [
+        { label: 'Continue', text: 'continue' },
+        { label: 'Tests', text: 'run pnpm test' },
+      ],
+      warnings: [],
+    });
+
+    const updateRes = await app.request('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...deps.settings.get(),
+        replySnippets: [{ label: 'Proceed', text: 'yes proceed' }],
+      }),
+    });
+    expect(updateRes.status).toBe(200);
+    await expect(updateRes.json()).resolves.toMatchObject({
+      replySnippets: [{ label: 'Proceed', text: 'yes proceed' }],
+    });
+
+    const deleteRes = await app.request('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...deps.settings.get(),
+        replySnippets: [],
+      }),
+    });
+    expect(deleteRes.status).toBe(200);
+    await expect(deleteRes.json()).resolves.toMatchObject({ replySnippets: [] });
   });
 
   test('PUT /api/settings broadcasts one snapshot carrying committed settings dependencies', async () => {

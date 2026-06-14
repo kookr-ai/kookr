@@ -14,10 +14,16 @@ import {
   type PlatformShortcutBindingOverrides,
 } from '../shared/contracts/shortcut-bindings.js';
 import { validateQuietHours, type QuietHoursWindow } from '../shared/contracts/quiet-hours.js';
+import {
+  validateReplySnippets,
+  type ReplySnippet,
+} from '../shared/contracts/reply-snippets.js';
 import type { VerbosityScale } from '../shared/contracts/speech.js';
 
 export type { QuietHoursWindow } from '../shared/contracts/quiet-hours.js';
 export { isWithinQuietHours } from '../shared/contracts/quiet-hours.js';
+export type { ReplySnippet } from '../shared/contracts/reply-snippets.js';
+export { MAX_REPLY_SNIPPETS } from '../shared/contracts/reply-snippets.js';
 
 const VERBOSITY_VALUES: readonly VerbosityScale[] = ['terse', 'brief', 'medium', 'detailed'];
 const DEFAULT_VERBOSITY: VerbosityScale = 'medium';
@@ -68,6 +74,11 @@ export interface KookrSettings {
    * path) and resumes automatically afterward. Empty = no scheduled silencing.
    */
   quietHours: QuietHoursWindow[];
+  /**
+   * User-managed canned replies for the response composer. The frontend only
+   * inserts these into the draft; it never sends them automatically.
+   */
+  replySnippets: ReplySnippet[];
 }
 
 export const DEFAULT_SETTINGS: KookrSettings = {
@@ -83,6 +94,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   speakVerbosity: DEFAULT_VERBOSITY,
   agentEffort: {},
   quietHours: [],
+  replySnippets: [],
 };
 
 const MIN_POLLING_INTERVAL = 15;
@@ -162,9 +174,16 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
   }
 
   const { agentEffort, warnings: agentEffortWarnings } = validateAgentEffort(raw.agentEffort);
+  const replySnippetValidation = validateReplySnippets(raw.replySnippets);
 
   return {
-    warnings: [...shortcutValidation.warnings, ...verbosityWarnings, ...agentEffortWarnings, ...quietHoursValidation.warnings],
+    warnings: [
+      ...shortcutValidation.warnings,
+      ...verbosityWarnings,
+      ...agentEffortWarnings,
+      ...quietHoursValidation.warnings,
+      ...replySnippetValidation.warnings,
+    ],
     settings: {
       githubPollingEnabled: enabled,
       githubPollingIntervalSec: interval,
@@ -178,6 +197,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       speakVerbosity,
       agentEffort,
       quietHours: quietHoursValidation.windows,
+      replySnippets: replySnippetValidation.snippets,
     },
   };
 }
