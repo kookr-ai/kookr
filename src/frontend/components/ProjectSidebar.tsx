@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useKookrStore } from '../store/useStore.js';
+import { useProjectNotificationMute } from '../hooks/useProjectNotificationMute.js';
 import type { ProjectSummary } from '../../shared/protocol.js';
 import { Tooltip } from './Tooltip.js';
 
@@ -18,11 +19,14 @@ interface ProjectContextMenuProps {
   pinned: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;
+  muted: boolean;
   onPinToggle: () => void;
+  onMuteToggle: () => void;
   onHide: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
   onOpenOrganizer: () => void;
+  onClose: (restoreFocus: boolean) => void;
 }
 
 function ProjectContextMenu({
@@ -31,16 +35,81 @@ function ProjectContextMenu({
   pinned,
   canMoveUp,
   canMoveDown,
+  muted,
   onPinToggle,
+  onMuteToggle,
   onHide,
   onMoveUp,
   onMoveDown,
   onOpenOrganizer,
+  onClose,
 }: ProjectContextMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    menuRef.current
+      ?.querySelector<HTMLButtonElement>('.project-sidebar-menu-item:not(:disabled)')
+      ?.focus();
+  }, []);
+
+  function focusMenuItem(direction: 1 | -1): void {
+    const items = Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>('.project-sidebar-menu-item:not(:disabled)') ?? [],
+    );
+    if (items.length === 0) return;
+    const currentIndex = items.findIndex((item) => item === document.activeElement);
+    const nextIndex = currentIndex < 0
+      ? 0
+      : (currentIndex + direction + items.length) % items.length;
+    items[nextIndex]?.focus();
+  }
+
+  function focusMenuBoundary(position: 'first' | 'last'): void {
+    const items = Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>('.project-sidebar-menu-item:not(:disabled)') ?? [],
+    );
+    const item = position === 'first' ? items[0] : items[items.length - 1];
+    item?.focus();
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>): void {
+    switch (event.key) {
+      case 'ArrowDown':
+        event.preventDefault();
+        focusMenuItem(1);
+        break;
+      case 'ArrowUp':
+        event.preventDefault();
+        focusMenuItem(-1);
+        break;
+      case 'Home':
+        event.preventDefault();
+        focusMenuBoundary('first');
+        break;
+      case 'End':
+        event.preventDefault();
+        focusMenuBoundary('last');
+        break;
+      case 'Escape':
+        event.preventDefault();
+        onClose(true);
+        break;
+    }
+  }
+
   return createPortal(
-    <div className="project-sidebar-menu" style={{ top: y, left: x }} role="menu">
+    <div
+      ref={menuRef}
+      className="project-sidebar-menu"
+      style={{ top: y, left: x }}
+      role="menu"
+      onKeyDown={handleKeyDown}
+    >
       <button className="project-sidebar-menu-item" onClick={onPinToggle} role="menuitem" type="button">
         {pinned ? 'Unpin' : 'Pin to sidebar'}
+      </button>
+      <button className="project-sidebar-menu-item" onClick={onMuteToggle} role="menuitem" type="button">
+        {muted ? 'Unmute notifications' : 'Mute notifications'}
       </button>
       <button className="project-sidebar-menu-item" onClick={onHide} role="menuitem" type="button">
         Hide from sidebar
@@ -76,6 +145,7 @@ function ProjectIcon({
   summary,
   selected,
   pinned,
+  muted,
   onClick,
   onContextMenu,
   onKeyDown,
@@ -88,6 +158,7 @@ function ProjectIcon({
   summary: ProjectSummary;
   selected: boolean;
   pinned: boolean;
+  muted: boolean;
   onClick: () => void;
   onContextMenu: (event: React.MouseEvent<HTMLButtonElement>) => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => void;
@@ -108,6 +179,7 @@ function ProjectIcon({
   const tooltipText = [
     summary.displayName,
     pinned ? 'Pinned' : 'In sidebar',
+    muted ? 'Notifications muted' : null,
     `${summary.activeAgents} active agent${summary.activeAgents !== 1 ? 's' : ''}`,
     isActive
       ? `${taskLoad.runningAgents} running · ${taskLoad.stalledAgents} stalled`
@@ -116,12 +188,12 @@ function ProjectIcon({
     summary.dailyLimit !== undefined
       ? `PRs today: ${summary.todayPrCount}/${summary.dailyLimit}`
       : `PRs today: ${summary.todayPrCount}`,
-  ].join(' · ');
+  ].filter((part): part is string => Boolean(part)).join(' · ');
 
   return (
     <Tooltip text={tooltipText}>
       <button
-        aria-label={summary.displayName}
+        aria-label={muted ? `${summary.displayName}, notifications muted` : summary.displayName}
         className={`project-icon color-${summary.color}${selected ? ' selected' : ''}${!isActive && !hasFindings ? ' inactive' : ''}${dragActive ? ' drag-active' : ''}`}
         data-testid={`project-icon-${summary.project}`}
         draggable
@@ -226,6 +298,7 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
     agents,
     maxActiveTasks,
   } = useKookrStore();
+  const projectMute = useProjectNotificationMute();
   const pendingCount = useMemo(
     () => agents.filter((a) => a.taskStatus === 'pending').length,
     [agents],
@@ -244,6 +317,7 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const [draggingProjectId, setDraggingProjectId] = useState<string | null>(null);
   const [dragTarget, setDragTarget] = useState<DragTarget | null>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const visibleRowMap = useMemo(() => {
     const rowMap = new Map<string, (typeof projectSidebarRows)[number]>();
     for (const row of projectSidebarRows) {
@@ -327,11 +401,11 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
     function handlePointerDown(event: MouseEvent) {
       const target = event.target as HTMLElement | null;
       if (target?.closest('.project-sidebar-menu')) return;
-      setMenuProjectId(null);
+      closeMenu(false);
     }
 
     function handleEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape') setMenuProjectId(null);
+      if (event.key === 'Escape') closeMenu(true);
     }
 
     window.addEventListener('mousedown', handlePointerDown, true);
@@ -344,21 +418,31 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
 
   if (!projectSidebarVisible || projectSidebarRows.length === 0) return null;
 
-  function openMenu(projectId: string, x: number, y: number) {
+  function closeMenu(restoreFocus: boolean): void {
+    const trigger = menuTriggerRef.current;
+    setMenuProjectId(null);
+    menuTriggerRef.current = null;
+    if (restoreFocus) {
+      trigger?.focus();
+    }
+  }
+
+  function openMenu(projectId: string, x: number, y: number, trigger: HTMLButtonElement) {
+    menuTriggerRef.current = trigger;
     setMenuProjectId(projectId);
     setMenuPosition({ x, y });
   }
 
   function handleProjectContextMenu(projectId: string, event: React.MouseEvent<HTMLButtonElement>) {
     event.preventDefault();
-    openMenu(projectId, event.clientX, event.clientY);
+    openMenu(projectId, event.clientX, event.clientY, event.currentTarget);
   }
 
   function handleProjectMenuKey(projectId: string, event: React.KeyboardEvent<HTMLButtonElement>) {
     if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
       event.preventDefault();
       const rect = event.currentTarget.getBoundingClientRect();
-      openMenu(projectId, rect.right + 8, rect.top);
+      openMenu(projectId, rect.right + 8, rect.top, event.currentTarget);
     }
   }
 
@@ -405,6 +489,7 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
         <ProjectIcon
           summary={summary}
           pinned={pinned}
+          muted={projectMute.isMuted(summary.project)}
           selected={selectedProject === summary.project}
           dragActive={draggingProjectId === summary.project}
           onClick={() => selectProject(summary.project)}
@@ -481,24 +566,29 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
         <ProjectContextMenu
           canMoveDown={menuIndex >= 0 && menuIndex < menuSection.length - 1}
           canMoveUp={menuIndex > 0}
+          muted={projectMute.isMuted(menuProjectId)}
           pinned={menuRow.pinned}
           x={menuPosition.x}
           y={menuPosition.y}
           onHide={() => {
             hideSidebarProject(menuProjectId);
-            setMenuProjectId(null);
+            closeMenu(true);
           }}
           onMoveDown={() => {
             moveSidebarProject(menuProjectId, 'down');
-            setMenuProjectId(null);
+            closeMenu(true);
           }}
           onMoveUp={() => {
             moveSidebarProject(menuProjectId, 'up');
-            setMenuProjectId(null);
+            closeMenu(true);
+          }}
+          onMuteToggle={() => {
+            projectMute.toggle(menuProjectId);
+            closeMenu(true);
           }}
           onOpenOrganizer={() => {
             onManage();
-            setMenuProjectId(null);
+            closeMenu(true);
           }}
           onPinToggle={() => {
             if (menuRow.pinned) {
@@ -506,8 +596,9 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
             } else {
               pinProjectToTop(menuProjectId);
             }
-            setMenuProjectId(null);
+            closeMenu(true);
           }}
+          onClose={closeMenu}
         />
       )}
     </div>

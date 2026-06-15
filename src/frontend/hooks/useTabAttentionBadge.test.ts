@@ -7,6 +7,11 @@ import type { AgentState, AnomalySeverity, AnomalyType } from '../../shared/prot
 import type { Anomaly } from '../../shared/contracts/anomalies.js';
 import { useKookrStore } from '../store/useStore.js';
 import { __resetDndForTests, disableDnd, enableDnd } from './useDnd.js';
+import {
+  __resetProjectNotificationMuteForTests,
+  muteProjectNotifications,
+  unmuteProjectNotifications,
+} from './useProjectNotificationMute.js';
 import { getTabAttentionBadgeState, useTabAttentionBadge } from './useTabAttentionBadge.js';
 
 const DETECTED_AT = new Date('2026-06-11T06:00:00.000Z');
@@ -19,6 +24,7 @@ function mkAgent(opts: {
   suppressed?: boolean;
   taskStatus?: AgentState['taskStatus'];
   effectiveAttentionSeverity?: AnomalySeverity;
+  projectId?: string;
 }): AgentState {
   const anomaly: Anomaly = {
     agentId: opts.agentId,
@@ -35,6 +41,7 @@ function mkAgent(opts: {
     suppressed: opts.suppressed,
     taskStatus: opts.taskStatus ?? 'inProgress',
     effectiveAttentionSeverity: opts.effectiveAttentionSeverity,
+    projectId: opts.projectId ?? 'github.com/kookr-ai/kookr',
   };
 }
 
@@ -66,6 +73,15 @@ describe('getTabAttentionBadgeState', () => {
 
   test('returns null while DND is active', () => {
     expect(getTabAttentionBadgeState([mkAgent({ agentId: 'finding' })], true)).toBeNull();
+  });
+
+  test('ignores muted-project findings', () => {
+    const muted = (projectId: string | undefined) => projectId === 'github.com/kookr-ai/kookr';
+
+    expect(getTabAttentionBadgeState([
+      mkAgent({ agentId: 'muted', severity: 'critical', projectId: 'github.com/kookr-ai/kookr' }),
+      mkAgent({ agentId: 'open', severity: 'warning', projectId: 'github.com/kookr-ai/other' }),
+    ], false, muted)).toEqual({ count: 1, severity: 'warning' });
   });
 });
 
@@ -117,6 +133,7 @@ describe('useTabAttentionBadge', () => {
     toDataURLSpy = vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,badged');
 
     __resetDndForTests();
+    __resetProjectNotificationMuteForTests();
     disableDnd();
     useKookrStore.setState({ agents: [], selectedAgentId: null });
   });
@@ -126,6 +143,7 @@ describe('useTabAttentionBadge', () => {
     container?.remove();
     useKookrStore.setState({ agents: [], selectedAgentId: null });
     __resetDndForTests();
+    __resetProjectNotificationMuteForTests();
     getContextSpy.mockRestore();
     toDataURLSpy.mockRestore();
     vi.unstubAllGlobals();
@@ -197,6 +215,51 @@ describe('useTabAttentionBadge', () => {
 
     expect(document.title).toBe('(1) kookr');
     expect(document.querySelector<HTMLLinkElement>('link[rel~="icon"]')?.getAttribute('href')).toBe('data:image/png;base64,badged');
+  });
+
+  test('suppresses muted-project findings in the rendered badge', () => {
+    muteProjectNotifications('github.com/kookr-ai/kookr');
+    useKookrStore.setState({
+      agents: [
+        mkAgent({ agentId: 'muted', severity: 'critical', projectId: 'github.com/kookr-ai/kookr' }),
+        mkAgent({ agentId: 'open', severity: 'warning', projectId: 'github.com/kookr-ai/other' }),
+      ],
+    });
+
+    mount();
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+
+    expect(document.title).toBe('(1) kookr');
+  });
+
+  test('reacts when a project is muted and unmuted after mount', () => {
+    useKookrStore.setState({
+      agents: [
+        mkAgent({ agentId: 'muted-later', severity: 'warning', projectId: 'github.com/kookr-ai/kookr' }),
+      ],
+    });
+
+    mount();
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(document.title).toBe('(1) kookr');
+
+    act(() => {
+      muteProjectNotifications('github.com/kookr-ai/kookr');
+    });
+    expect(document.title).toBe('kookr');
+    expect(document.querySelector<HTMLLinkElement>('link[rel~="icon"]')?.getAttribute('href')).toBe('/favicon.ico');
+
+    act(() => {
+      unmuteProjectNotifications('github.com/kookr-ai/kookr');
+    });
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(document.title).toBe('(1) kookr');
   });
 
   test('does not restart the debounce when unchanged findings get a new array identity', () => {
