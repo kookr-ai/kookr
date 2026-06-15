@@ -35,6 +35,7 @@ import { readRequestBodyLimitBytesFromEnv } from './config.js';
 import { createJsonRequestBodyLimitMiddleware, type RouteDeps } from './routes/shared.js';
 import { createRequestDurationMiddleware, RequestDurationMetrics } from './request-duration-metrics.js';
 import { createDashboardSecurityHeadersMiddleware } from './security-headers-middleware.js';
+import { createInFlightRequestMiddleware, inFlightRequestRegistry } from './in-flight-request-registry.js';
 
 export type { RouteDeps } from './routes/shared.js';
 
@@ -67,14 +68,14 @@ export function createRoutes(deps: RouteDeps): Hono {
     }
   }
 
+  const requestDurationMetrics = deps.requestDurationMetrics ?? new RequestDurationMetrics();
+  app.use('*', createInFlightRequestMiddleware(inFlightRequestRegistry));
   app.use(
     '/api/*',
     createJsonRequestBodyLimitMiddleware(
       deps.requestBodyLimitBytes ?? readRequestBodyLimitBytesFromEnv(),
     ),
   );
-
-  const requestDurationMetrics = deps.requestDurationMetrics ?? new RequestDurationMetrics();
   app.use('*', createRequestDurationMiddleware(requestDurationMetrics));
 
   // Hoist the coordinator-suppression-store fallback so task-routes (PATCH /edges
