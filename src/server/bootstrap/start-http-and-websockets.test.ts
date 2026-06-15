@@ -20,9 +20,14 @@ describe('startHttpAndWebSockets', () => {
   let runtime: HttpAndWebSockets | undefined;
 
   afterEach(async () => {
-    if (!runtime) return;
-    await runtime.close({ gracefulShutdownMs: 10 });
-    runtime = undefined;
+    try {
+      if (runtime) {
+        await runtime.close({ gracefulShutdownMs: 10 });
+      }
+    } finally {
+      runtime = undefined;
+      vi.restoreAllMocks();
+    }
   });
 
   function portFor(rt: HttpAndWebSockets): number {
@@ -160,6 +165,72 @@ describe('startHttpAndWebSockets', () => {
       concurrencyLimit: 10,
       threshold: 1024,
     });
+  });
+
+  test('logs dashboard WebSocket connect and disconnect lifecycle events', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const dashboardConnections: WebSocket[] = [];
+    runtime = await startHttpAndWebSockets({
+      app: new Hono(),
+      port: 0,
+      host: '127.0.0.1',
+      tasksFile: '/tmp/tasks.json',
+      hooksDir: '/tmp/hooks',
+      terminalBackend: new FakeTerminalBackend(),
+      terminalDeps: {
+        monitor: {} as never,
+        abortPendingSuggestion: () => {},
+        broadcastToAll: () => {},
+        serverCwd: '/repo',
+      },
+      onDashboardConnection: (ws) => {
+        dashboardConnections.push(ws);
+      },
+    });
+
+    const port = portFor(runtime);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    await new Promise<void>((resolve, reject) => {
+      ws.on('open', () => resolve());
+      ws.on('error', reject);
+    });
+
+    const closeCode = 4001;
+    const closeReason = 'client requested close';
+    const clientClosed = new Promise<void>((resolve, reject) => {
+      ws.on('close', () => resolve());
+      ws.on('error', reject);
+    });
+    ws.close(closeCode, closeReason);
+    await clientClosed;
+
+    let structuredLogs: Record<string, unknown>[] = [];
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      structuredLogs = logSpy.mock.calls.flatMap(([line]) => {
+        if (typeof line !== 'string') return [];
+        try {
+          return [JSON.parse(line) as Record<string, unknown>];
+        } catch {
+          return [];
+        }
+      });
+      if (structuredLogs.some((entry) => entry.msg === 'dashboard_ws_disconnected')) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    const connected = structuredLogs.find((entry) => entry.msg === 'dashboard_ws_connected');
+    const disconnected = structuredLogs.find((entry) => entry.msg === 'dashboard_ws_disconnected');
+
+    expect(dashboardConnections).toHaveLength(1);
+    expect(connected).toBeDefined();
+    expect(disconnected).toBeDefined();
+    expect(connected?.clientId).toMatch(/^dashboard-ws-\d+$/);
+    expect(disconnected?.clientId).toBe(connected?.clientId);
+    expect(disconnected?.code).toBe(closeCode);
+    expect(disconnected?.reason).toBe(closeReason);
+    expect(typeof disconnected?.durationMs).toBe('number');
+    expect(disconnected?.durationMs as number).toBeGreaterThanOrEqual(0);
+    expect(disconnected?.durationMs as number).toBeLessThan(5_000);
   });
 
   test.each([
