@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import { maybePlayChime } from '../audio/sound.js';
+import { isProjectNotificationMuted } from './useProjectNotificationMute.js';
 import type { AgentState } from '../../shared/protocol.js';
 import type { AudioAlertContext } from '../audio/audio-alert-log.js';
 
@@ -17,6 +18,8 @@ export interface CompletionSignalChimeDecision {
   audibleContext?: AudioAlertContext;
 }
 
+type ProjectMutePredicate = (projectId: string | undefined) => boolean;
+
 function rememberSignalId(id: string): void {
   if (seenSignalIdSet.has(id)) return;
   seenSignalIdSet.add(id);
@@ -30,6 +33,7 @@ function rememberSignalId(id: string): void {
 export function evaluateCompletionSignalChime(
   agents: AgentState[],
   now = Date.now(),
+  isProjectMuted: ProjectMutePredicate = () => false,
 ): CompletionSignalChimeDecision {
   const unseen = agents
     .map((agent) => ({ agent, signal: agent.latestCompletionSignal }))
@@ -43,16 +47,17 @@ export function evaluateCompletionSignalChime(
     hydrated = true;
     return { contexts: [] };
   }
-  if (unseen.length === 0) return { contexts: [] };
+  const alertable = unseen.filter(({ agent }) => !isProjectMuted(agent.projectId));
+  if (alertable.length === 0) return { contexts: [] };
 
-  const contexts = unseen.map(({ agent, signal }, index): AudioAlertContext => ({
+  const contexts = alertable.map(({ agent, signal }, index): AudioAlertContext => ({
       source: 'completion_signal',
       reason: 'agent signaled task complete',
       agentId: agent.agentId,
       taskId: agent.taskId,
       taskName: agent.taskName,
       completionSignalId: signal.id,
-      candidateCount: index === 0 ? unseen.length : 1,
+      candidateCount: index === 0 ? alertable.length : 1,
       primaryCause: 'completion_signal',
   }));
 
@@ -74,7 +79,7 @@ export function useTaskCompletionChime(): void {
 
   useEffect(() => {
     if (!agentsHydrated) return;
-    const result = evaluateCompletionSignalChime(agents);
+    const result = evaluateCompletionSignalChime(agents, Date.now(), isProjectNotificationMuted);
     for (const context of result.contexts) {
       maybePlayChime(context, { audible: context === result.audibleContext });
     }

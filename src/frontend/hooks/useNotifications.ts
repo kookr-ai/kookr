@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import { useSoundPreference } from '../audio/sound.js';
 import { isDndEnabled } from './useDnd.js';
+import { isProjectNotificationMuted } from './useProjectNotificationMute.js';
 import type { AgentState } from '../../shared/protocol.js';
 
 /**
@@ -50,7 +51,7 @@ export function useNotifications() {
     for (const agent of agents) {
       if (agent.anomaly && !agent.snoozedUntil && !agent.suppressed) {
         currentFindings.add(agent.agentId);
-        if (!prevFindingIds.current.has(agent.agentId)) {
+        if (!prevFindingIds.current.has(agent.agentId) && !isProjectNotificationMuted(agent.projectId)) {
           newFindings.push(agent);
         }
       }

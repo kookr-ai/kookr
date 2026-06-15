@@ -4,6 +4,7 @@ import { SEVERITY_ORDER } from '../store/store-types.js';
 import { isActiveFinding } from '../store/finding-helpers.js';
 import { useKookrStore } from '../store/useStore.js';
 import { useDnd } from './useDnd.js';
+import { useProjectNotificationMute } from './useProjectNotificationMute.js';
 
 const BADGE_APPLY_DELAY_MS = 1_000;
 const DEFAULT_TITLE = 'kookr';
@@ -19,6 +20,8 @@ interface TabAttentionBadgeState {
   severity: AnomalySeverity;
 }
 
+type ProjectMutePredicate = (projectId: string | undefined) => boolean;
+
 interface IconSnapshot {
   element: HTMLLinkElement;
   href: string | null;
@@ -33,6 +36,7 @@ interface TabChromeSnapshot {
 export function getTabAttentionBadgeState(
   agents: AgentState[],
   dndEnabled: boolean,
+  isProjectMuted: ProjectMutePredicate = () => false,
 ): TabAttentionBadgeState | null {
   if (dndEnabled) return null;
 
@@ -40,6 +44,7 @@ export function getTabAttentionBadgeState(
   let severity: AnomalySeverity | null = null;
   for (const agent of agents) {
     if (!isActiveFinding(agent) || !agent.anomaly) continue;
+    if (isProjectMuted(agent.projectId)) continue;
     count += 1;
     const candidate = agent.effectiveAttentionSeverity ?? agent.anomaly.severity;
     if (severity === null || SEVERITY_ORDER[candidate] < SEVERITY_ORDER[severity]) {
@@ -133,9 +138,10 @@ function applyTabBadge(snapshot: TabChromeSnapshot, badge: TabAttentionBadgeStat
 export function useTabAttentionBadge(): void {
   const agents = useKookrStore((state) => state.agents);
   const dnd = useDnd();
+  const projectMute = useProjectNotificationMute();
   const badge = useMemo(
-    () => getTabAttentionBadgeState(agents, dnd.enabled),
-    [agents, dnd.enabled],
+    () => getTabAttentionBadgeState(agents, dnd.enabled, projectMute.isMuted),
+    [agents, dnd.enabled, projectMute],
   );
   const badgeCount = badge?.count ?? 0;
   const badgeSeverity = badge?.severity ?? null;

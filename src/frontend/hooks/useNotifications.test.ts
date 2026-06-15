@@ -6,6 +6,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound.js';
 import { __resetDndForTests, disableDnd } from './useDnd.js';
+import {
+  __resetProjectNotificationMuteForTests,
+  muteProjectNotifications,
+  unmuteProjectNotifications,
+} from './useProjectNotificationMute.js';
 import { useNotifications } from './useNotifications.js';
 import { useKookrStore } from '../store/useStore.js';
 import type { AgentState } from '../../shared/protocol.js';
@@ -13,7 +18,7 @@ import type { Anomaly } from '../../shared/contracts/anomalies.js';
 
 const DETECTED_AT = new Date('2026-05-14T12:00:00.000Z');
 
-function mkAgent(agentId: string): AgentState {
+function mkAgent(agentId: string, projectId = 'github.com/kookr-ai/kookr'): AgentState {
   const anomaly: Anomaly = {
     agentId,
     type: 'permission_blocked',
@@ -25,6 +30,7 @@ function mkAgent(agentId: string): AgentState {
     agentId,
     events: [],
     anomaly,
+    projectId,
     taskStatus: 'inProgress',
   };
 }
@@ -90,6 +96,7 @@ describe('useNotifications', () => {
 
     __resetSoundPreferenceForTests();
     __resetDndForTests();
+    __resetProjectNotificationMuteForTests();
     disableDnd();
     useKookrStore.setState({ agents: [], selectedAgentId: null });
   });
@@ -99,6 +106,7 @@ describe('useNotifications', () => {
     container?.remove();
     __resetSoundPreferenceForTests();
     __resetDndForTests();
+    __resetProjectNotificationMuteForTests();
     vi.unstubAllGlobals();
     useKookrStore.setState({ agents: [], selectedAgentId: null });
   });
@@ -143,6 +151,40 @@ describe('useNotifications', () => {
     });
 
     expect(notificationCtor).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not notify for muted projects while sound alerts are muted', () => {
+    setSoundEnabled(false);
+    muteProjectNotifications('github.com/kookr-ai/kookr');
+    useKookrStore.setState({
+      agents: [
+        mkAgent('agent-muted', 'github.com/kookr-ai/kookr'),
+        mkAgent('agent-open', 'github.com/kookr-ai/other'),
+      ],
+    });
+
+    mount();
+
+    expect(notificationCtor).toHaveBeenCalledTimes(1);
+    expect(notificationCtor).toHaveBeenCalledWith(
+      'Agent: permission blocked',
+      expect.objectContaining({ tag: 'kookr-agent-open' }),
+    );
+  });
+
+  test('does not replay a muted-project finding after unmute', () => {
+    setSoundEnabled(false);
+    muteProjectNotifications('github.com/kookr-ai/kookr');
+    useKookrStore.setState({ agents: [mkAgent('agent-muted')] });
+    mount();
+    expect(notificationCtor).not.toHaveBeenCalled();
+
+    act(() => {
+      unmuteProjectNotifications('github.com/kookr-ai/kookr');
+      useKookrStore.setState({ agents: [mkAgent('agent-muted')] });
+    });
+
+    expect(notificationCtor).not.toHaveBeenCalled();
   });
 
   test('StrictMode does not immediately close muted-sound fallback notifications', () => {

@@ -17,6 +17,11 @@ import {
 import { __resetAudioAlertLogForTests, getAudioAlertSnapshot } from '../audio/audio-alert-log.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound.js';
 import { __resetDndForTests, disableDnd } from './useDnd.js';
+import {
+  __resetProjectNotificationMuteForTests,
+  muteProjectNotifications,
+  unmuteProjectNotifications,
+} from './useProjectNotificationMute.js';
 import { useKookrStore } from '../store/useStore.js';
 import type { AgentState, AnomalySeverity, AnomalyType } from '../../shared/protocol.js';
 import type { Anomaly } from '../../shared/contracts/anomalies.js';
@@ -31,6 +36,7 @@ function mkAgent(opts: {
   snoozedUntil?: number;
   suppressed?: boolean;
   taskStatus?: AgentState['taskStatus'];
+  projectId?: string;
 }): AgentState {
   const anomaly: Anomaly | null = opts.anomaly
     ? {
@@ -47,6 +53,7 @@ function mkAgent(opts: {
     snoozedUntil: opts.snoozedUntil,
     suppressed: opts.suppressed,
     taskStatus: opts.taskStatus,
+    projectId: opts.projectId ?? 'github.com/kookr-ai/kookr',
   };
 }
 
@@ -487,6 +494,20 @@ describe('evaluateFindingChime — cross-agent global rate limit', () => {
     expect(evaluateChime([findingFor('a')], state, T0)).toBe(true);
     expect(evaluateChime([findingFor('a'), findingFor('b', 1_000)], state, T0 + 1_000)).toBe(true);
   });
+
+  test('muted-project candidates are remembered without chiming', () => {
+    const state = new Map<string, ChimeRecord>();
+    const muted = (projectId: string | undefined) => projectId === 'github.com/kookr-ai/kookr';
+
+    const suppressed = evaluateFindingChime([findingFor('a')], state, T0, undefined, muted);
+
+    expect(suppressed.shouldChime).toBe(false);
+    expect(suppressed.candidateCount).toBe(0);
+    expect(state.has('a')).toBe(true);
+
+    const afterUnmute = evaluateFindingChime([findingFor('a')], state, T0 + 1_000);
+    expect(afterUnmute.shouldChime).toBe(false);
+  });
 });
 
 describe('useAudibleAlert — runtime hook behavior', () => {
@@ -525,6 +546,7 @@ describe('useAudibleAlert — runtime hook behavior', () => {
     __resetAudibleAlertForTests();
     __resetSoundPreferenceForTests();
     __resetDndForTests();
+    __resetProjectNotificationMuteForTests();
     disableDnd();
 
     audioContextCtor = vi.fn().mockImplementation(function () {
@@ -561,6 +583,7 @@ describe('useAudibleAlert — runtime hook behavior', () => {
     __resetAudibleAlertForTests();
     __resetSoundPreferenceForTests();
     __resetDndForTests();
+    __resetProjectNotificationMuteForTests();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     useKookrStore.setState({ agents: [], selectedAgentId: null });
@@ -597,6 +620,31 @@ describe('useAudibleAlert — runtime hook behavior', () => {
 
     expect(audioContextCtor).toHaveBeenCalledTimes(1);
     expect(getAudioAlertSnapshot().entries).toHaveLength(1);
+  });
+
+  test('muted project finding does not chime and does not replay after unmute', () => {
+    const finding = mkAgent({
+      agentId: 'agent-muted',
+      taskStatus: 'inProgress',
+      anomaly: {
+        type: 'permission_blocked',
+        severity: 'warning',
+        detectedAt: new Date('2026-05-08T12:00:00Z'),
+      },
+    });
+    muteProjectNotifications('github.com/kookr-ai/kookr');
+    useKookrStore.setState({ agents: [finding] });
+
+    mount();
+
+    expect(audioContextCtor).not.toHaveBeenCalled();
+
+    act(() => {
+      unmuteProjectNotifications('github.com/kookr-ai/kookr');
+      useKookrStore.setState({ agents: [{ ...finding }] });
+    });
+
+    expect(audioContextCtor).not.toHaveBeenCalled();
   });
 
   test('reacts when a warning finding appears after mount', () => {

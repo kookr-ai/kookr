@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import { maybePlayChime, recordChimeSuppression } from '../audio/sound.js';
 import { isActiveFinding } from '../store/finding-helpers.js';
+import { isProjectNotificationMuted } from './useProjectNotificationMute.js';
 import type { AgentState } from '../../shared/protocol.js';
 import type { AudioAlertContext } from '../audio/audio-alert-log.js';
 
@@ -80,6 +81,8 @@ interface FindingCandidate {
   detectedAt: string;
 }
 
+type ProjectMutePredicate = (projectId: string | undefined) => boolean;
+
 function severityRank(severity: string | undefined): number {
   if (severity === 'critical') return 2;
   if (severity === 'warning') return 1;
@@ -124,6 +127,7 @@ export function evaluateFindingChime(
   state: Map<string, ChimeRecord>,
   now: number,
   globalState?: GlobalChimeState,
+  isProjectMuted: ProjectMutePredicate = () => false,
 ): FindingChimeEvaluation {
   const activeAgentIds = new Set<string>();
   const candidates: FindingCandidate[] = [];
@@ -161,6 +165,11 @@ export function evaluateFindingChime(
         state.set(agent.agentId, carryForward);
         continue;
       }
+    }
+
+    if (isProjectMuted(agent.projectId)) {
+      state.set(agent.agentId, { key, cooldownUntil: null, lastChimeCandidateAt: now });
+      continue;
     }
 
     candidates.push({
@@ -262,7 +271,13 @@ export function useAudibleAlert(): void {
   const agents = useKookrStore((s) => s.agents);
 
   useEffect(() => {
-    const evaluation = evaluateFindingChime(agents, chimedState, Date.now(), globalChimeState);
+    const evaluation = evaluateFindingChime(
+      agents,
+      chimedState,
+      Date.now(),
+      globalChimeState,
+      isProjectNotificationMuted,
+    );
     if (evaluation.shouldChime && evaluation.context) {
       maybePlayChime(evaluation.context);
     } else if (evaluation.suppressed === 'global_rate_limit' && evaluation.context) {

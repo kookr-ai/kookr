@@ -6,6 +6,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { ProjectSidebar } from './ProjectSidebar.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
+import { __resetProjectNotificationMuteForTests } from '../hooks/useProjectNotificationMute.js';
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -64,6 +65,7 @@ describe('ProjectSidebar interactions', () => {
       removeItem: (key: string) => localStore.delete(key),
       clear: () => localStore.clear(),
     });
+    __resetProjectNotificationMuteForTests();
     syncGlobalStore();
     seedProjects();
     container = document.createElement('div');
@@ -75,6 +77,7 @@ describe('ProjectSidebar interactions', () => {
     await act(async () => {
       root.unmount();
     });
+    __resetProjectNotificationMuteForTests();
     document.body.innerHTML = '';
   });
 
@@ -221,6 +224,46 @@ describe('ProjectSidebar interactions', () => {
     await flush();
 
     expect(useKookrStore.getState().projectSidebarRows.find((row) => row.project === 'github.com/a')?.pinned).toBe(false);
+  });
+
+  test('keyboard context menu focuses items, supports menu navigation, and restores focus on close', async () => {
+    await act(async () => {
+      root.render(React.createElement(ProjectSidebar, { onManage: vi.fn() }));
+    });
+    await flush();
+
+    const iconA = container.querySelector<HTMLButtonElement>('[data-testid="project-icon-github.com/a"]');
+    expect(iconA).not.toBeNull();
+    iconA!.focus();
+
+    await act(async () => {
+      iconA!.dispatchEvent(new KeyboardEvent('keydown', {
+        bubbles: true,
+        key: 'ContextMenu',
+      }));
+    });
+    await flush();
+
+    const buttons = Array.from(document.body.querySelectorAll<HTMLButtonElement>('.project-sidebar-menu-item'));
+    expect(document.activeElement).toBe(buttons[0]);
+
+    await act(async () => {
+      buttons[0]!.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' }));
+    });
+    expect(document.activeElement).toBe(buttons[1]);
+
+    await act(async () => {
+      buttons[1]!.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'End' }));
+    });
+    expect(document.activeElement).toBe(buttons[buttons.length - 1]);
+
+    await act(async () => {
+      (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }));
+    });
+    await flush();
+
+    expect(document.body.querySelector('.project-sidebar-menu')).toBeNull();
+    expect(document.activeElement).toBe(iconA);
   });
 
   test('move actions in context menu reorder within the current section', async () => {
