@@ -59,6 +59,25 @@ function waitForTaskName(server: KookrServerInternal, taskId: string, timeoutMs 
   });
 }
 
+/** Poll the task store until the expected number of tasks exists. */
+function waitForTaskCount(server: KookrServerInternal, expectedCount: number, timeoutMs = 3000) {
+  return new Promise<ReturnType<typeof server.taskStore.listTasks>>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      clearInterval(poll);
+      reject(new Error(`Timed out waiting for ${expectedCount} task(s) (${timeoutMs}ms)`));
+    }, timeoutMs);
+
+    const poll = setInterval(() => {
+      const tasks = server.taskStore.listTasks();
+      if (tasks.length === expectedCount) {
+        clearTimeout(timer);
+        clearInterval(poll);
+        resolve(tasks);
+      }
+    }, 20);
+  });
+}
+
 describe('AI task naming integration', () => {
   let tempDir: string;
   let server: KookrServerInternal;
@@ -146,8 +165,9 @@ describe('AI task naming integration', () => {
       ws.once('message', () => resolve());
     });
 
-    // Get the created task
-    const tasks = server.taskStore.listTasks();
+    // Get the created task. WebSocket snapshots can arrive before async launch
+    // persistence is observable on slower runners, so wait on the store too.
+    const tasks = await waitForTaskCount(server, 1);
     expect(tasks).toHaveLength(1);
 
     // Wait for the async naming to complete
