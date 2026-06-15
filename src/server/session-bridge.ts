@@ -48,6 +48,7 @@ const DEFAULT_BACKPRESSURE_RETRY_MS = 25;
 const DEFAULT_BACKPRESSURE_SOFT_BYTES = 1 * 1024 * 1024;
 const DEFAULT_VIEWER_BACKPRESSURE_HARD_BYTES = 16 * 1024 * 1024;
 const DEFAULT_OWNER_BACKPRESSURE_HARD_BYTES = 64 * 1024 * 1024;
+const ON_DATA_SUBSCRIBE_RETRY_DELAYS_MS = [16, 32, 64] as const;
 
 function readPositiveIntegerEnv(name: string, fallback: number): number {
   const value = process.env[name];
@@ -157,8 +158,31 @@ export class SessionBridge {
       console.error(`[session-bridge] ws error for ${this.sessionId}:`, err);
       this.closeBridgeForFailure('ws error');
     });
+    this.ws.on('close', () => {
+      try {
+        this.dispose();
+      } catch (err) {
+        console.error(`[session-bridge] dispose failed for ${this.sessionId}:`, err);
+      }
+    });
 
-    // Replay any buffered bytes to the client first, then wire live updates.
+    // Subscribe before replay capture so bytes emitted while we are opening the
+    // bridge are either in the replay snapshot or in the local pre-replay
+    // buffer. `onData` itself has no history, so capture-after-subscribe closes
+    // the retry/backoff gap without adding a second backend subscription.
+    const preReplayChunks: Buffer[] = [];
+    let replaySent = false;
+    const subscribed = await this.subscribeToDataWithRetry((bytes: Uint8Array) => {
+      if (!replaySent) {
+        preReplayChunks.push(Buffer.from(bytes));
+        return;
+      }
+      this.enqueueOutput(bytes);
+    });
+    if (!subscribed) {
+      return;
+    }
+
     // The backend owns the single ring buffer; this bridge is a stateless
     // view. `captureBytes` is lock-free and does not force a re-attach.
     let replay: Uint8Array;
@@ -178,22 +202,16 @@ export class SessionBridge {
       return;
     }
 
+    // The WS may close while captureBytes awaits; in that case dispose() has
+    // already removed the subscriber and there is no client left to replay to.
+    if (this.closed) return;
     if (replay.length > 0) {
       this.safeSend(Buffer.from(replay));
     }
-
-    try {
-      this.unsubscribeData = this.backend.onData(this.sessionId, (bytes: Uint8Array) => {
-        this.enqueueOutput(bytes);
-      });
-    } catch (err) {
-      if (this.isBackendSessionFailure(err)) {
-        this.closeBridgeForFailure(`session ${this.sessionId} is gone`);
-        return;
-      }
-      console.error(`[session-bridge] onData subscribe failed for ${this.sessionId}:`, err);
-      this.closeBridgeForFailure('onData subscribe failed');
-      return;
+    replaySent = true;
+    const bufferedLive = this.removeReplayOverlap(replay, preReplayChunks);
+    if (bufferedLive.length > 0) {
+      this.enqueueOutput(bufferedLive);
     }
 
     // Read-only (viewer) bridges never wire the inbound handler, so no write,
@@ -204,13 +222,6 @@ export class SessionBridge {
       this.wireInboundHandler();
     }
 
-    this.ws.on('close', () => {
-      try {
-        this.dispose();
-      } catch (err) {
-        console.error(`[session-bridge] dispose failed for ${this.sessionId}:`, err);
-      }
-    });
   }
 
   /**
@@ -281,6 +292,71 @@ export class SessionBridge {
       console.error(`[session-bridge] ws.send failed for ${this.sessionId}:`, err);
       this.closeBridgeForFailure('ws.send failed');
     }
+  }
+
+  private async subscribeToDataWithRetry(onBytes: (bytes: Uint8Array) => void): Promise<boolean> {
+    for (let attempt = 0; attempt <= ON_DATA_SUBSCRIBE_RETRY_DELAYS_MS.length; attempt++) {
+      // A client can disconnect while a retry backoff is sleeping; stop
+      // before registering a backend subscriber with no live WS owner.
+      if (this.closed) return false;
+      try {
+        this.unsubscribeData = this.backend.onData(this.sessionId, (bytes: Uint8Array) => {
+          onBytes(bytes);
+        });
+        return true;
+      } catch (err) {
+        this.unsubscribeData = null;
+        if (this.isBackendSessionFailure(err)) {
+          this.closeBridgeForFailure(`session ${this.sessionId} is gone`);
+          return false;
+        }
+        const delayMs = ON_DATA_SUBSCRIBE_RETRY_DELAYS_MS[attempt];
+        if (delayMs === undefined) {
+          console.error(`[session-bridge] onData subscribe failed for ${this.sessionId}:`, err);
+          this.closeBridgeForFailure('onData subscribe failed');
+          return false;
+        }
+        console.warn(
+          `[session-bridge] onData subscribe failed for ${this.sessionId}; retrying in ${delayMs}ms:`,
+          err,
+        );
+        await this.sleep(delayMs);
+      }
+    }
+    return false;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private removeReplayOverlap(replay: Uint8Array, chunks: Buffer[]): Buffer {
+    if (chunks.length === 0) return Buffer.alloc(0);
+    const live = chunks.length === 1
+      ? chunks[0]
+      : Buffer.concat(chunks);
+    // Bytes emitted after subscribe but before capture returns can be present
+    // in both places: at the replay snapshot's suffix and the live buffer's
+    // prefix. Trim that shared prefix so startup neither drops nor duplicates
+    // terminal output.
+    const overlap = this.findSuffixPrefixOverlap(replay, live);
+    return overlap >= live.length ? Buffer.alloc(0) : live.subarray(overlap);
+  }
+
+  private findSuffixPrefixOverlap(suffixSource: Uint8Array, prefixSource: Uint8Array): number {
+    const maxOverlap = Math.min(suffixSource.length, prefixSource.length);
+    for (let length = maxOverlap; length > 0; length--) {
+      let matched = true;
+      const suffixStart = suffixSource.length - length;
+      for (let i = 0; i < length; i++) {
+        if (suffixSource[suffixStart + i] !== prefixSource[i]) {
+          matched = false;
+          break;
+        }
+      }
+      if (matched) return length;
+    }
+    return 0;
   }
 
   /**
