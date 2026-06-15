@@ -149,6 +149,30 @@ describe('FindingsPanel collapsed-state persistence', () => {
     expect(container.querySelector('.completed-section .btn-clear-completed')).toBeInstanceOf(HTMLButtonElement);
   });
 
+  test('bulk toggle label reflects the rendered sections instead of hidden empty sections', () => {
+    root = renderPanel(container, {
+      completed: [makeAgent({ agentId: 'c1', taskStatus: 'completed' })],
+    });
+
+    expect(container.querySelector('button[aria-label="Expand all findings sections"]')).toBeInstanceOf(HTMLButtonElement);
+  });
+
+  test('bulk toggle is disabled when no collapsible sections are rendered', () => {
+    root = renderPanel(container, {});
+
+    const collapseAll = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Collapse all findings sections"]',
+    );
+    expect(collapseAll).toBeInstanceOf(HTMLButtonElement);
+    expect(collapseAll?.disabled).toBe(true);
+
+    act(() => collapseAll!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(localStorage.getItem(HEALTHY_SECTION_COLLAPSED_KEY)).toBeNull();
+    expect(localStorage.getItem(PENDING_SECTION_COLLAPSED_KEY)).toBeNull();
+    expect(localStorage.getItem(SNOOZED_SECTION_COLLAPSED_KEY)).toBeNull();
+    expect(localStorage.getItem(COMPLETED_SECTION_COLLAPSED_KEY)).toBeNull();
+  });
+
   test('stored localStorage value overrides the default for each section', () => {
     localStorage.setItem(HEALTHY_SECTION_COLLAPSED_KEY, '1');
     localStorage.setItem(SNOOZED_SECTION_COLLAPSED_KEY, '0');
@@ -187,6 +211,91 @@ describe('FindingsPanel collapsed-state persistence', () => {
     act(() => header.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     expect(localStorage.getItem(SNOOZED_SECTION_COLLAPSED_KEY)).toBe('1');
     expect(header.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  test('collapse all button collapses every section and persists the collapsed state across remount', () => {
+    localStorage.setItem(HEALTHY_SECTION_COLLAPSED_KEY, '0');
+    localStorage.setItem(PENDING_SECTION_COLLAPSED_KEY, '0');
+    localStorage.setItem(SNOOZED_SECTION_COLLAPSED_KEY, '0');
+    localStorage.setItem(COMPLETED_SECTION_COLLAPSED_KEY, '0');
+
+    root = renderPanel(container, {
+      healthy: [makeAgent({ agentId: 'h1' })],
+      pending: [makeAgent({ agentId: 'p1' })],
+      snoozed: [makeAgent({ agentId: 's1', snoozedUntil: Date.now() + 60_000 })],
+      completed: [makeAgent({ agentId: 'c1', taskStatus: 'completed' })],
+    });
+
+    expect(container.querySelector('.healthy-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('.pending-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('.snoozed-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+
+    const collapseAll = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Collapse all findings sections"]',
+    );
+    expect(collapseAll).toBeInstanceOf(HTMLButtonElement);
+
+    act(() => collapseAll!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    expect(container.querySelector('.healthy-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.pending-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.snoozed-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+
+    expect(localStorage.getItem(HEALTHY_SECTION_COLLAPSED_KEY)).toBe('1');
+    expect(localStorage.getItem(PENDING_SECTION_COLLAPSED_KEY)).toBe('1');
+    expect(localStorage.getItem(SNOOZED_SECTION_COLLAPSED_KEY)).toBe('1');
+    expect(localStorage.getItem(COMPLETED_SECTION_COLLAPSED_KEY)).toBe('1');
+
+    act(() => root?.unmount());
+    root = null;
+    root = renderPanel(container, {
+      healthy: [makeAgent({ agentId: 'h1' })],
+      pending: [makeAgent({ agentId: 'p1' })],
+      snoozed: [makeAgent({ agentId: 's1', snoozedUntil: Date.now() + 60_000 })],
+      completed: [makeAgent({ agentId: 'c1', taskStatus: 'completed' })],
+    });
+
+    expect(container.querySelector('.healthy-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.pending-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.snoozed-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('button[aria-label="Expand all findings sections"]')).toBeInstanceOf(HTMLButtonElement);
+  });
+
+  test('expand all button expands every persisted section from the all-collapsed state', () => {
+    localStorage.setItem(HEALTHY_SECTION_COLLAPSED_KEY, '1');
+    localStorage.setItem(PENDING_SECTION_COLLAPSED_KEY, '1');
+    localStorage.setItem(SNOOZED_SECTION_COLLAPSED_KEY, '1');
+    localStorage.setItem(COMPLETED_SECTION_COLLAPSED_KEY, '1');
+
+    root = renderPanel(container, {
+      healthy: [makeAgent({ agentId: 'h1' })],
+      pending: [makeAgent({ agentId: 'p1' })],
+      snoozed: [makeAgent({ agentId: 's1', snoozedUntil: Date.now() + 60_000 })],
+      completed: [makeAgent({ agentId: 'c1', taskStatus: 'completed' })],
+    });
+
+    const expandAll = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Expand all findings sections"]',
+    );
+    expect(expandAll).toBeInstanceOf(HTMLButtonElement);
+
+    act(() => expandAll!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    expect(container.querySelector('.healthy-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('.pending-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('.snoozed-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+
+    expect(localStorage.getItem(HEALTHY_SECTION_COLLAPSED_KEY)).toBe('0');
+    expect(localStorage.getItem(PENDING_SECTION_COLLAPSED_KEY)).toBe('0');
+    expect(localStorage.getItem(SNOOZED_SECTION_COLLAPSED_KEY)).toBe('0');
+    expect(localStorage.getItem(COMPLETED_SECTION_COLLAPSED_KEY)).toBe('0');
+    expect(container.querySelectorAll('.snoozed-row').length).toBe(1);
+    expect(container.querySelectorAll('.completed-row').length).toBe(1);
+    expect(container.querySelectorAll('.pending-row').length).toBe(1);
   });
 
   test('each section uses its own localStorage key (Healthy / Pending / Completed wiring)', () => {
