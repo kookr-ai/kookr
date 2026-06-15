@@ -10,7 +10,11 @@ import { FakeTerminalBackend } from '../../adapters/fake-terminal-backend.js';
 import type { Actor } from '../auth.js';
 import type { SocketRegistrar } from '../viewer-connection-registry.js';
 import type { TerminalInputWriterPort } from '../../core/ports/terminal-input-writer-port.js';
-import { startHttpAndWebSockets, type HttpAndWebSockets } from './start-http-and-websockets.js';
+import {
+  startHttpAndWebSockets,
+  WEBSOCKET_PER_MESSAGE_DEFLATE,
+  type HttpAndWebSockets,
+} from './start-http-and-websockets.js';
 
 describe('startHttpAndWebSockets', () => {
   let runtime: HttpAndWebSockets | undefined;
@@ -129,6 +133,33 @@ describe('startHttpAndWebSockets', () => {
       ws.on('error', reject);
     });
     expect(dashboardConnections).toHaveLength(1);
+  });
+
+  test('configures dashboard and terminal WebSocket compression explicitly', async () => {
+    runtime = await startHttpAndWebSockets({
+      app: new Hono(),
+      port: 0,
+      host: '127.0.0.1',
+      tasksFile: '/tmp/tasks.json',
+      hooksDir: '/tmp/hooks',
+      terminalBackend: new FakeTerminalBackend(),
+      terminalDeps: {
+        monitor: {} as never,
+        abortPendingSuggestion: () => {},
+        broadcastToAll: () => {},
+        serverCwd: '/repo',
+      },
+      onDashboardConnection: (ws) => ws.close(),
+    });
+
+    expect(runtime.wss.options.perMessageDeflate).toEqual(WEBSOCKET_PER_MESSAGE_DEFLATE);
+    expect(runtime.terminalWss.options.perMessageDeflate).toEqual(WEBSOCKET_PER_MESSAGE_DEFLATE);
+    expect(runtime.wss.options.perMessageDeflate).toMatchObject({
+      clientNoContextTakeover: true,
+      serverNoContextTakeover: true,
+      concurrencyLimit: 10,
+      threshold: 1024,
+    });
   });
 
   test.each([
