@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server } from 'node:http';
+import { performance } from 'node:perf_hooks';
 
 import { getRequestListener } from '@hono/node-server';
 import type { Hono } from 'hono';
@@ -101,6 +102,13 @@ export interface HttpAndWebSockets {
 const DEFAULT_GRACEFUL_WEBSOCKET_SHUTDOWN_MS = 1_000;
 const SHUTDOWN_CLOSE_CODE = 1001;
 const SHUTDOWN_CLOSE_REASON = 'Server shutting down';
+const DASHBOARD_WS_CLIENT_ID_SPACE = 1_000_000;
+let nextDashboardWsClientOrdinal = 0;
+
+function allocateDashboardWsClientId(): string {
+  nextDashboardWsClientOrdinal = (nextDashboardWsClientOrdinal % DASHBOARD_WS_CLIENT_ID_SPACE) + 1;
+  return `dashboard-ws-${nextDashboardWsClientOrdinal}`;
+}
 
 function terminateOpenWebSockets(wss: WebSocketServer): void {
   for (const ws of wss.clients) {
@@ -359,6 +367,24 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
   });
 
   wss.on('connection', (ws: WebSocket) => {
+    const clientId = allocateDashboardWsClientId();
+    const connectedAt = performance.now();
+
+    console.log(JSON.stringify({
+      msg: 'dashboard_ws_connected',
+      clientId,
+    }));
+
+    ws.on('close', (code, reason) => {
+      console.log(JSON.stringify({
+        msg: 'dashboard_ws_disconnected',
+        clientId,
+        code,
+        reason: reason.toString('utf8'),
+        durationMs: Math.max(0, Math.round(performance.now() - connectedAt)),
+      }));
+    });
+
     deps.onDashboardConnection(ws);
   });
 
