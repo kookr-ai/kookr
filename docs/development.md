@@ -41,6 +41,18 @@ The command starts a fake backend on `4801` and Vite on `5173`, then seeds synth
 
 Open `http://127.0.0.1:5173`. Demo data is temporary and resets each time the command starts. Keep the backend on `4801` when using Vite; the dev proxy is configured for that port.
 
+## Debugging
+
+The repo ships VS Code debug presets in `.vscode/launch.json` for the dev server and Vitest. Use **Kookr: Launch + debug dev server** to start the backend on port `4801` with breakpoints enabled. If the vendored dtach binary has not been built in this checkout yet, run `pnpm build:dtach` first; the normal `pnpm dev:server` script performs the same preflight before starting the server.
+
+To attach to a server you started manually, run:
+
+```bash
+pnpm build:dtach && KOOKR_PORT=4801 node --inspect=9229 --import tsx --watch-path=src/server --watch-path=src/core --watch-path=src/adapters src/server/start.ts
+```
+
+Then pick **Kookr: Attach to dev server** in VS Code. Use **Kookr: Debug current Vitest file** from a test file to run that file under the debugger. JetBrains IDEs can use the same `node --import tsx ... src/server/start.ts` and `node node_modules/vitest/vitest.mjs run <test file>` entrypoints.
+
 ## Production-Style Worktree
 
 For daily use while hacking on Kookr, keep a stable instance in `../kookr-prod`:
