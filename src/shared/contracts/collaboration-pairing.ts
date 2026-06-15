@@ -67,6 +67,12 @@ export interface PendingPairingVerification {
   expiresAt: string;
 }
 
+export interface VerifyPairingRequest {
+  pairingId: string;
+  verifiedFingerprint: string;
+  verificationCode: string;
+}
+
 export interface VerifyPairingResult {
   pairingId: string;
   contact: ContactIdentity;
@@ -79,4 +85,24 @@ export interface VerifyPairingResult {
 export interface VerifiedDevicePrincipal {
   contactId: string;
   deviceId: string;
+}
+
+function normalizedRequiredString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const allowedSet = new Set(allowed);
+  return Object.keys(value).every((key) => allowedSet.has(key));
+}
+
+export function parseVerifyPairingRequest(value: unknown): VerifyPairingRequest | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (!hasOnlyKeys(row, ['pairingId', 'verifiedFingerprint', 'verificationCode'])) return null;
+  const pairingId = normalizedRequiredString(row.pairingId);
+  const verifiedFingerprint = normalizedRequiredString(row.verifiedFingerprint);
+  const verificationCode = normalizedRequiredString(row.verificationCode);
+  if (!pairingId || !verifiedFingerprint || !verificationCode) return null;
+  return { pairingId, verifiedFingerprint, verificationCode };
 }
