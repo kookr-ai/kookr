@@ -23,6 +23,10 @@ import { runStartupConfigPreflightOrExit } from './config-preflight.js';
 import { resolveListenPort } from './resolve-listen-port.js';
 import { parseSTTDevice, startSTT, type STTManager } from './stt-manager.js';
 import { DEFAULT_TTS_VOICE, parseTTSDeviceFromEnv, startTTS, type TTSManager } from './tts-manager.js';
+import {
+  inFlightRequestRegistry,
+  startInFlightRequestShutdownLogger,
+} from './in-flight-request-registry.js';
 
 const HOST = process.env.KOOKR_HOST ?? '127.0.0.1';
 const STT_ENABLED = process.env.KOOKR_STT === 'true';
@@ -231,7 +235,12 @@ async function main(): Promise<void> {
     if (ttsManager) {
       await ttsManager.stop();
     }
-    await server.close();
+    const stopInFlightRequestLogging = startInFlightRequestShutdownLogger(inFlightRequestRegistry);
+    try {
+      await server.close();
+    } finally {
+      stopInFlightRequestLogging();
+    }
     console.log('Server closed.');
     process.exit(0);
   }
