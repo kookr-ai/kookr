@@ -100,6 +100,60 @@ dashboard's WebSocket complete action does both inline.
 | `GET /api/capture/:sessionId` | Snapshot of the dtach session ring buffer |
 | `POST /api/hook-event/:sessionId` | HTTP push surface for hook events, used by Codex CLI hooks |
 
+### `POST /api/hook-event/:sessionId`
+
+Push one raw agent hook event into Kookr's ingestion pipeline for the Kookr
+session named by `sessionId`. This is the HTTP delivery path used by hook
+writers and by `scripts/replay-hooks.ts`; the file watcher and this endpoint
+feed the same ingestion service, which deduplicates dual delivery by content
+hash.
+
+`sessionId` is the Kookr terminal/session id, not necessarily the provider's
+raw hook `session_id`. It must match `/^[A-Za-z0-9_-]{1,128}$/`; invalid values
+return `400 {"error": "Invalid session id"}` before ingestion runs. Session ids
+starting with `kookr-replay-` are treated as replay sessions and the resulting
+events are tagged `origin: "replay"` internally.
+
+Request body:
+
+- Send exactly one hook record per request: a single JSON object in the raw
+  request body. When the source is a JSONL hook file, split it first and POST
+  each record separately.
+- `Content-Type: application/json` is recommended, but the route reads the raw
+  text body and does not currently content-negotiate.
+- Common hook fields are `session_id`, `transcript_path`, `cwd`, and
+  `hook_event_name`; event-specific fields such as `tool_name`, `tool_input`,
+  `tool_response`, `last_assistant_message`, or `prompt` depend on the hook
+  type. The supported hook names are `SessionStart`, `PreToolUse`,
+  `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`,
+  `PermissionRequest`, `Notification`, `UserPromptSubmit`, `SubagentStart`,
+  `SubagentStop`, and `SessionEnd`.
+- There is no endpoint-specific body-size limit in the route. Normal Node/Hono
+  runtime limits still apply, and clients should keep payloads to one hook
+  record.
+
+Example:
+
+```bash
+curl -sS -X POST "http://127.0.0.1:4801/api/hook-event/kookr-demo" \
+  -H "content-type: application/json" \
+  --data '{"session_id":"provider-session-1","transcript_path":"/tmp/transcript.jsonl","cwd":"/repo","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"pnpm test"}}'
+```
+
+Responses:
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| `200` | `{"status":"received","dispatched":true}` | The active ingestion service accepted the record and dispatched a parsed event to the adapter/monitor. |
+| `200` | `{"status":"received","dispatched":false}` | The body was non-empty but did not dispatch a parsed event. This includes duplicate deliveries, unknown/dropped hook names, and malformed JSON recorded by ingestion. |
+| `200` | `{"status":"received"}` | Timing-only fallback used only when the route is registered without the active ingestion service. Normal server startup wires active ingestion. |
+| `400` | `{"status":"empty"}` | The body was blank or whitespace-only. |
+| `400` | `{"error":"Invalid session id"}` | The path parameter failed the session-id guard. |
+
+`dispatched` is a delivery outcome, not a durable-write acknowledgement. For
+activity diagnostics and malformed/deduplicated counts, use
+`GET /api/tasks/:taskId/activity-diagnostics`.
+
 ## Projects
 
 | Endpoint | Description |
