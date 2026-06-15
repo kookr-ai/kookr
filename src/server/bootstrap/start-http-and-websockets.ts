@@ -22,6 +22,18 @@ import {
 import type { SocketRegistrar } from '../viewer-connection-registry.js';
 import type { IsActorAllowedTerminalSession } from '../terminal-scope.js';
 
+type WebSocketServerOptions = ConstructorParameters<typeof WebSocketServer>[0];
+type PerMessageDeflatePolicy = Exclude<NonNullable<WebSocketServerOptions>['perMessageDeflate'], boolean>;
+
+// Compress only frames large enough to benefit, and avoid per-client deflate
+// history so dashboard fan-out cannot retain unbounded compression contexts.
+export const WEBSOCKET_PER_MESSAGE_DEFLATE: PerMessageDeflatePolicy = {
+  clientNoContextTakeover: true,
+  serverNoContextTakeover: true,
+  concurrencyLimit: 10,
+  threshold: 1024,
+};
+
 export interface HttpAndWebSocketsDeps {
   app: Hono;
   port: number;
@@ -167,8 +179,14 @@ async function closeHttpAndWebSockets(
 export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promise<HttpAndWebSockets> {
   const requestListener = getRequestListener(deps.app.fetch);
   const httpServer = createServer(requestListener);
-  const wss = new WebSocketServer({ noServer: true });
-  const terminalWss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({
+    noServer: true,
+    perMessageDeflate: WEBSOCKET_PER_MESSAGE_DEFLATE,
+  });
+  const terminalWss = new WebSocketServer({
+    noServer: true,
+    perMessageDeflate: WEBSOCKET_PER_MESSAGE_DEFLATE,
+  });
   const terminalInputWriter = deps.terminalInputWriter ?? asTerminalInputWriterPort(deps.terminalBackend);
 
   // Terminal context resolved ONCE at the HTTP upgrade (actor + canonical session
