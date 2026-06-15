@@ -1,5 +1,6 @@
 import type { Hono } from 'hono';
 
+import { parseVerifyPairingRequest } from '../../shared/contracts/collaboration-pairing.js';
 import { CollaborationPairingError, ContactIdentityStore } from '../contact-identity-store.js';
 import { evaluateShareMutationGuard, SHARE_CSRF_HEADER } from './share-routes.js';
 import type { RouteDeps } from './shared.js';
@@ -21,10 +22,19 @@ export function registerCollaborationPairingRoutes(app: Hono, deps: RouteDeps): 
     });
     if (!guard.ok) return c.json({ error: guard.error }, guard.status);
 
+    let rawBody: unknown;
+    try {
+      rawBody = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid-json-body' }, 400);
+    }
+    const body = parseVerifyPairingRequest(rawBody);
+    if (!body) return c.json({ error: 'invalid-pairing-verification' }, 400);
+
     try {
       const store = new ContactIdentityStore({ kookrDir: deps.kookrDir });
       await store.load();
-      return c.json(await store.verifyAcceptedPairing(await c.req.json()), 201);
+      return c.json(await store.verifyAcceptedPairing(body), 201);
     } catch (err) {
       if (err instanceof CollaborationPairingError) return c.json({ error: err.code }, err.status as never);
       return c.json({ error: 'invalid-pairing-verification' }, 400);
