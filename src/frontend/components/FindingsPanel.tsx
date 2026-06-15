@@ -28,6 +28,12 @@ export const COMPLETED_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.completed';
 
 const SPEAK_FINDING_STOP_OTHERS_EVENT = 'kookr:speak-finding-stop-others';
 const FINDING_GROUP_RENDER_LIMIT = 25;
+const FINDINGS_SECTION_COLLAPSED_KEYS = [
+  HEALTHY_SECTION_COLLAPSED_KEY,
+  PENDING_SECTION_COLLAPSED_KEY,
+  SNOOZED_SECTION_COLLAPSED_KEY,
+  COMPLETED_SECTION_COLLAPSED_KEY,
+] as const;
 
 interface Props {
   findings: AgentState[];
@@ -63,6 +69,16 @@ function agentProjectLabel(agent: AgentState): string {
 
 function agentProjectColor(agent: AgentState): number {
   return projectColor(agent.projectId ?? agent.cwd);
+}
+
+function persistAllSectionsCollapsed(collapsed: boolean): void {
+  try {
+    for (const key of FINDINGS_SECTION_COLLAPSED_KEYS) {
+      localStorage.setItem(key, collapsed ? '1' : '0');
+    }
+  } catch {
+    // localStorage may be unavailable (private mode, quota); preference is best-effort.
+  }
 }
 
 // ─── Ralph loop helpers ──────────────────────────────────────────────────────
@@ -1386,6 +1402,14 @@ export function FindingsPanel({
   useAutoExpandOnItemGain(pending.length, expandPending);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const hasBottomSections = healthy.length > 0 || pending.length > 0 || snoozed.length > 0 || completed.length > 0;
+  const renderedSectionCollapsedStates = [
+    ...(healthy.length > 0 ? [healthyCollapsed] : []),
+    ...(pending.length > 0 ? [pendingCollapsed] : []),
+    ...(snoozed.length > 0 ? [snoozedCollapsed] : []),
+    ...(completed.length > 0 ? [completedCollapsed] : []),
+  ];
+  const allRenderedSectionsCollapsed = renderedSectionCollapsedStates.length > 0
+    && renderedSectionCollapsedStates.every(Boolean);
 
   // Single tick counter to refresh age badges across all cards (every 60s)
   const [, setAgeTick] = useState(0);
@@ -1423,12 +1447,32 @@ export function FindingsPanel({
     }
   }
 
+  function toggleAllSections() {
+    const nextCollapsed = !allRenderedSectionsCollapsed;
+    persistAllSectionsCollapsed(nextCollapsed);
+    if (healthyCollapsed !== nextCollapsed) toggleHealthy();
+    if (pendingCollapsed !== nextCollapsed) togglePending();
+    if (snoozedCollapsed !== nextCollapsed) toggleSnoozed();
+    if (completedCollapsed !== nextCollapsed) toggleCompleted();
+  }
+
   return (
     <div className="findings-panel kookr-tour-target-findings kookr-tour-target-layout" onClick={handlePanelClick}>
       <div className="findings-header">
-        <span>Supervisor Findings</span>
-        <span className={`findings-count${findings.length === 0 ? ' findings-count-empty' : ''}`}>
-          {findings.length} active
+        <span className="findings-header-title">Supervisor Findings</span>
+        <span className="findings-header-actions">
+          <button
+            type="button"
+            className="findings-collapse-all-button"
+            onClick={toggleAllSections}
+            disabled={!hasBottomSections}
+            aria-label={allRenderedSectionsCollapsed ? 'Expand all findings sections' : 'Collapse all findings sections'}
+          >
+            {allRenderedSectionsCollapsed ? 'Expand all' : 'Collapse all'}
+          </button>
+          <span className={`findings-count${findings.length === 0 ? ' findings-count-empty' : ''}`}>
+            {findings.length} active
+          </span>
         </span>
       </div>
       <div className="findings-scroll-area" ref={scrollAreaRef}>

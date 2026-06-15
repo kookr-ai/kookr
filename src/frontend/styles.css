@@ -460,6 +460,44 @@ kbd {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
+}
+.findings-header-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.findings-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-shrink: 0;
+}
+.findings-collapse-all-button {
+  border: 1px solid var(--border-dim);
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font: inherit;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+.findings-collapse-all-button:hover {
+  color: var(--text-secondary);
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.03);
+}
+.findings-collapse-all-button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.findings-collapse-all-button:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
 }
 .findings-count { color: var(--amber); }
 .findings-count-empty { color: var(--text-muted); }
