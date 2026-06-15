@@ -762,6 +762,169 @@ describe('SessionBridge', () => {
       expect(ws.readyState).toBe(3);
     });
 
+    it('closes the WS without retrying when onData reports the session is gone', async () => {
+      const backend = makeFaultyBackend({
+        onDataError: new SessionGoneError('s1'),
+      });
+      const onDataSpy = vi.spyOn(backend, 'onData');
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+
+      try {
+        await bridge.start();
+
+        expect(onDataSpy).toHaveBeenCalledTimes(1);
+        expect(warn).not.toHaveBeenCalled();
+        expect(err).not.toHaveBeenCalled();
+        expect(ws.readyState).toBe(3);
+      } finally {
+        warn.mockRestore();
+        err.mockRestore();
+      }
+    });
+
+    it('retries transient onData subscription failures before wiring live bytes', async () => {
+      const backend = await makeReadySession('s1');
+      const originalOnData = backend.onData.bind(backend);
+      let attempts = 0;
+      backend.onData = (id: string, cb: (bytes: Uint8Array) => void): (() => void) => {
+        attempts += 1;
+        if (attempts < 3) {
+          throw new Error(`temporary subscribe failure ${attempts}`);
+        }
+        return originalOnData(id, cb);
+      };
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+
+      try {
+        await bridge.start();
+        backend.emit('s1', new Uint8Array([0x48, 0x69])); // "Hi"
+        await waitForOutputFlush();
+
+        const subscribers = (backend.sessions.get('s1') as unknown as { dataSubscribers: Set<unknown> }).dataSubscribers;
+        const merged = ws.sent
+          .filter((s): s is Buffer => Buffer.isBuffer(s))
+          .map((b) => b.toString('utf-8'))
+          .join('');
+        expect(attempts).toBe(3);
+        expect(subscribers.size).toBe(1);
+        expect(ws.readyState).toBe(1);
+        expect(merged).toContain('Hi');
+        expect(warn).toHaveBeenCalledTimes(2);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('replays bytes emitted during transient onData retry backoff', async () => {
+      const backend = await makeReadySession('s1');
+      const originalOnData = backend.onData.bind(backend);
+      let attempts = 0;
+      backend.onData = (id: string, cb: (bytes: Uint8Array) => void): (() => void) => {
+        attempts += 1;
+        if (attempts === 1) {
+          setTimeout(() => backend.emit('s1', 'during-retry'), 0);
+          throw new Error('temporary subscribe failure');
+        }
+        return originalOnData(id, cb);
+      };
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+
+      try {
+        await bridge.start();
+        await waitForOutputFlush();
+
+        const merged = ws.sent
+          .filter((s): s is Buffer => Buffer.isBuffer(s))
+          .map((b) => b.toString('utf-8'))
+          .join('');
+        expect(attempts).toBe(2);
+        expect(merged).toContain('during-retry');
+        expect(ws.readyState).toBe(1);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('does not duplicate bytes emitted after subscribe but before replay capture returns', async () => {
+      const backend = await makeReadySession('s1');
+      const originalCapture = backend.captureBytes.bind(backend);
+      backend.captureBytes = async (id: string): Promise<Uint8Array> => {
+        const subscribers = (backend.sessions.get('s1') as unknown as { dataSubscribers: Set<unknown> }).dataSubscribers;
+        expect(subscribers.size).toBe(1);
+        backend.emit('s1', 'during-capture');
+        return originalCapture(id);
+      };
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+
+      await bridge.start();
+      await waitForOutputFlush();
+
+      const merged = ws.sent
+        .filter((s): s is Buffer => Buffer.isBuffer(s))
+        .map((b) => b.toString('utf-8'))
+        .join('');
+      expect(merged.match(/during-capture/g)).toHaveLength(1);
+    });
+
+    it('closes the WS after exhausting transient onData subscription retries', async () => {
+      const backend = await makeReadySession('s1');
+      let attempts = 0;
+      backend.onData = (): (() => void) => {
+        attempts += 1;
+        throw new Error(`temporary subscribe failure ${attempts}`);
+      };
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+
+      try {
+        await bridge.start();
+
+        const subscribers = (backend.sessions.get('s1') as unknown as { dataSubscribers: Set<unknown> }).dataSubscribers;
+        expect(attempts).toBe(4);
+        expect(subscribers.size).toBe(0);
+        expect(warn).toHaveBeenCalledTimes(3);
+        expect(err).toHaveBeenCalledTimes(1);
+        expect(ws.readyState).toBe(3);
+      } finally {
+        warn.mockRestore();
+        err.mockRestore();
+      }
+    });
+
+    it('stops retrying onData subscription when the WS closes during backoff', async () => {
+      const backend = await makeReadySession('s1');
+      let attempts = 0;
+      backend.onData = (): (() => void) => {
+        attempts += 1;
+        setTimeout(() => ws.close(), 0);
+        throw new Error(`temporary subscribe failure ${attempts}`);
+      };
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+
+      try {
+        await bridge.start();
+
+        const subscribers = (backend.sessions.get('s1') as unknown as { dataSubscribers: Set<unknown> }).dataSubscribers;
+        expect(attempts).toBe(1);
+        expect(subscribers.size).toBe(0);
+        expect(ws.readyState).toBe(3);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it('ws error during the initial replay window does not escape', async () => {
       // The 'error' listener must be installed BEFORE any awaits/safeSend
       // calls — otherwise EventEmitter re-raises during the replay.
