@@ -88,10 +88,28 @@ export interface GitHubFetcher {
   fetchStates?(refs: GitHubReference[]): Promise<GitHubFetchBatchResult>;
 }
 
+export interface GitHubRateLimit {
+  kind: 'rate-limited';
+  retryAfterMs: number;
+  message: string;
+}
+
 export interface GitHubFetchBatchResult {
   prs: GitHubPRState[];
   issues: GitHubIssueState[];
+  rateLimit?: GitHubRateLimit;
 }
+
+export interface GitHubRepoHealthFetchSuccess<TRepoHealth> {
+  repoHealth: Map<string, TRepoHealth>;
+  rateLimit?: GitHubRateLimit;
+}
+
+export type GitHubRepoHealthFetchResult<TRepoHealth> =
+  | Map<string, TRepoHealth>
+  | GitHubRepoHealthFetchSuccess<TRepoHealth>
+  | null
+  | GitHubRateLimit;
 
 // --- Scanner Config ---
 

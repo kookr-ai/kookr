@@ -419,6 +419,48 @@ describe('GitHubScannerService', () => {
       expect(stateStore.getTaskState('task-1').issues).toHaveLength(1);
     });
 
+    it('backs off batched state fetches when GitHub returns a rate-limit diagnostic', async () => {
+      const fetcher = createMockFetcher(true);
+      const ref = makePRRef('task-1', 1);
+      stateStore.addReference(ref);
+      fetcher.fetchStates = vi.fn()
+        .mockResolvedValueOnce({
+          prs: [],
+          issues: [],
+          rateLimit: {
+            kind: 'rate-limited',
+            retryAfterMs: 5_000,
+            message: 'RATE_LIMITED: API rate limit exceeded',
+          },
+        })
+        .mockResolvedValueOnce({
+          prs: [makePRState(ref)],
+          issues: [],
+        });
+
+      scanner = new GitHubScannerService({
+        taskStore, stateStore,
+        fetcher,
+        config: { ...DEFAULT_GITHUB_SCANNER_CONFIG, stateFetchIntervalMs: 1000 },
+        onChanges,
+      });
+      await scanner.start();
+
+      const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetcher.fetchStates).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(fetcher.fetchStates).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetcher.fetchStates).toHaveBeenCalledTimes(2);
+      expect(stateStore.getTaskState('task-1').prs).toHaveLength(1);
+
+      consoleWarn.mockRestore();
+    });
+
     it('fetches only newly detected refs immediately instead of refetching all known refs', async () => {
       const fetcher = createMockFetcher(true);
       fetcher.fetchStates = vi.fn().mockResolvedValue({ prs: [], issues: [] });
@@ -682,6 +724,63 @@ describe('GitHubScannerService', () => {
       await Promise.resolve();
 
       expect(scanner.getRepoHealthSnapshot().get('github.com/cli/cli')?.openIssues).toBe(3);
+    });
+
+    it('preserves cache and suppresses repo-health polling during rate-limit backoff', async () => {
+      const ok = new Map([
+        ['github.com/cli/cli', {
+          openIssues: 3, openPullRequests: 1,
+          pendingReviewPrs: [],
+          repoUrl: 'https://github.com/cli/cli',
+          lastFetchedAt: '2025-01-01T00:00:00Z',
+        }],
+      ]);
+      const updated = new Map([
+        ['github.com/cli/cli', {
+          openIssues: 4, openPullRequests: 1,
+          pendingReviewPrs: [],
+          repoUrl: 'https://github.com/cli/cli',
+          lastFetchedAt: '2025-01-01T00:10:00Z',
+        }],
+      ]);
+      const repoHealthFetcher = vi.fn()
+        .mockResolvedValueOnce(ok)
+        .mockResolvedValueOnce({
+          kind: 'rate-limited',
+          retryAfterMs: 1_200_000,
+          message: 'RATE_LIMITED: API rate limit exceeded',
+        })
+        .mockResolvedValueOnce(updated);
+      scanner = new GitHubScannerService({
+        taskStore, stateStore,
+        fetcher: createMockFetcher(true),
+        config: DEFAULT_GITHUB_SCANNER_CONFIG,
+        onChanges,
+        repoHealthFetcher,
+      });
+      await scanner.start();
+      scanner.setTrackedGithubRepos(['github.com/cli/cli']);
+
+      const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await vi.advanceTimersByTimeAsync(600_000);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(scanner.getRepoHealthSnapshot().get('github.com/cli/cli')?.openIssues).toBe(3);
+
+      await vi.advanceTimersByTimeAsync(600_000);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(repoHealthFetcher).toHaveBeenCalledTimes(2);
+      expect(scanner.getRepoHealthSnapshot().get('github.com/cli/cli')?.openIssues).toBe(3);
+
+      await vi.advanceTimersByTimeAsync(600_000);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(repoHealthFetcher).toHaveBeenCalledTimes(3);
+      expect(scanner.getRepoHealthSnapshot().get('github.com/cli/cli')?.openIssues).toBe(4);
+
+      consoleWarn.mockRestore();
     });
   });
 

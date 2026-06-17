@@ -9,11 +9,14 @@ import type {
   GitHubCheck,
   GitHubReviewer,
   GitHubReviewThread,
+  GitHubRateLimit,
+  GitHubRepoHealthFetchResult,
 } from '../core/github-types.js';
 import type { ProjectRepoHealth } from '../core/project-summary.js';
 import { isSafePullRequestUrl, projectRepoUrl } from '../core/project-identity.js';
 
 const execFile = promisify(execFileCb);
+const DEFAULT_RATE_LIMIT_RETRY_AFTER_MS = 60_000;
 
 /**
  * Fetches GitHub PR and issue state using the `gh` CLI.
@@ -196,8 +199,8 @@ export async function fetchStates(refs: GitHubReference[]): Promise<GitHubFetchB
   for (const group of groupRefsByRepo(refs)) {
     try {
       const query = buildRepoStateBatchQuery(group.refs);
-      const { stdout: json } = await execFile('gh', [
-        'api', 'graphql',
+      const { stdout } = await execFile('gh', [
+        'api', 'graphql', '--include',
         '-f', `query=${query}`,
         '-F', `owner=${group.owner}`,
         '-F', `repo=${group.repo}`,
@@ -205,15 +208,39 @@ export async function fetchStates(refs: GitHubReference[]): Promise<GitHubFetchB
         timeout: 15000,
       });
 
-      const parsed: unknown = JSON.parse(json);
+      const response = splitGhApiOutput(stdout);
+      const parsed: unknown = JSON.parse(response.body);
+      const rateLimit = classifyGitHubRateLimit(parsed);
+      if (rateLimit) {
+        result.rateLimit = mergeRateLimits(result.rateLimit, rateLimit);
+        console.warn(`[github] rate limited while fetching state for ${group.owner}/${group.repo}: ${rateLimit.message}`);
+        return result;
+      }
       const batch = parseRepoStateBatchResponse(parsed, group.refs);
       result.prs.push(...batch.prs);
       result.issues.push(...batch.issues);
+      const headerRateLimit = classifyGitHubRateLimit(response.headers);
+      if (headerRateLimit) {
+        result.rateLimit = mergeRateLimits(result.rateLimit, headerRateLimit);
+        console.warn(`[github] rate limited after fetching state for ${group.owner}/${group.repo}: ${headerRateLimit.message}`);
+        return result;
+      }
     } catch (err) {
+      const rateLimit = classifyGitHubRateLimit(err) ?? classifyGitHubRateLimit(ghErrorStdout(err));
+      if (rateLimit) {
+        result.rateLimit = mergeRateLimits(result.rateLimit, rateLimit);
+        console.warn(`[github] rate limited while fetching state for ${group.owner}/${group.repo}: ${rateLimit.message}`);
+        return result;
+      }
       console.error(`Failed to fetch GitHub state batch for ${group.owner}/${group.repo}:`, err);
     }
   }
   return result;
+}
+
+function mergeRateLimits(existing: GitHubRateLimit | undefined, next: GitHubRateLimit): GitHubRateLimit {
+  if (!existing || next.retryAfterMs > existing.retryAfterMs) return next;
+  return existing;
 }
 
 function groupRefsByRepo(refs: GitHubReference[]): RepoRefGroup[] {
@@ -642,13 +669,14 @@ export const ghCliFetcher: GitHubFetcher = {
  * `github.com/owner/repo` project id.
  *
  * Whole-batch failures (transport, timeout, top-level GraphQL error) return
- * `null` so the caller can preserve its previous cache. Per-repo NOT_FOUND
- * surfaces as the repo being omitted from the map.
+ * `null` so the caller can preserve its previous cache. Rate-limit failures
+ * return a typed diagnostic with the backoff window. Per-repo NOT_FOUND
+ * still surfaces as the repo being omitted from the map.
  */
 export async function fetchBatchRepoHealth(
   repos: ReadonlyArray<{ projectId: string; owner: string; repo: string }>,
   login: string | null,
-): Promise<Map<string, ProjectRepoHealth> | null> {
+): Promise<GitHubRepoHealthFetchResult<ProjectRepoHealth>> {
   if (repos.length === 0) return new Map();
   const tickAt = new Date().toISOString();
 
@@ -688,8 +716,13 @@ ${aliasParts.join('\n')}
   let json: string;
   try {
     const body = JSON.stringify({ query });
-    json = await spawnGhWithStdin(['api', 'graphql', '--input', '-'], body, 30000);
+    json = await spawnGhWithStdin(['api', 'graphql', '--include', '--input', '-'], body, 30000);
   } catch (err) {
+    const rateLimit = classifyGitHubRateLimit(err) ?? classifyGitHubRateLimit(ghErrorStdout(err));
+    if (rateLimit) {
+      console.warn(`[github] fetchBatchRepoHealth: rate limited: ${rateLimit.message}`);
+      return rateLimit;
+    }
     console.warn('[github] fetchBatchRepoHealth: gh api graphql failed:', err instanceof Error ? err.message : String(err));
     return null;
   }
@@ -698,15 +731,33 @@ ${aliasParts.join('\n')}
     data?: Record<string, GhRepoHealthNode | GhSearchNode | null> | null;
     errors?: Array<{ type?: string; message?: string; path?: unknown[] }>;
   };
+  let headerRateLimit: GitHubRateLimit | null = null;
   try {
-    parsed = JSON.parse(json);
+    const response = splitGhApiOutput(json);
+    parsed = JSON.parse(response.body);
+    headerRateLimit = classifyGitHubRateLimit(response.headers);
   } catch (err) {
+    const rateLimit = classifyGitHubRateLimit(json);
+    if (rateLimit) {
+      console.warn(`[github] fetchBatchRepoHealth: rate limited: ${rateLimit.message}`);
+      return rateLimit;
+    }
     console.warn('[github] fetchBatchRepoHealth: bad JSON response:', err instanceof Error ? err.message : String(err));
     return null;
   }
 
+  const rateLimit = classifyGitHubRateLimit(parsed);
+  if (rateLimit) {
+    console.warn(`[github] fetchBatchRepoHealth: rate limited: ${rateLimit.message}`);
+    return rateLimit;
+  }
+
   // Top-level failure: data missing or all-null with only errors.
   if (!parsed.data) {
+    if (headerRateLimit) {
+      console.warn(`[github] fetchBatchRepoHealth: rate limited: ${headerRateLimit.message}`);
+      return headerRateLimit;
+    }
     const errMsg = parsed.errors?.[0]?.message ?? 'unknown';
     console.warn(`[github] fetchBatchRepoHealth: top-level GraphQL error: ${errMsg}`);
     return null;
@@ -747,7 +798,31 @@ ${aliasParts.join('\n')}
       lastFetchedAt: tickAt,
     });
   });
+  if (headerRateLimit) {
+    console.warn(`[github] fetchBatchRepoHealth: rate limited after successful fetch: ${headerRateLimit.message}`);
+    return { repoHealth: result, rateLimit: headerRateLimit };
+  }
   return result;
+}
+
+function splitGhApiOutput(stdout: string): { headers: string; body: string } {
+  const crlfIndex = stdout.lastIndexOf('\r\n\r\n');
+  if (crlfIndex >= 0) {
+    return {
+      headers: stdout.slice(0, crlfIndex),
+      body: stdout.slice(crlfIndex + 4),
+    };
+  }
+
+  const lfIndex = stdout.lastIndexOf('\n\n');
+  if (lfIndex >= 0) {
+    return {
+      headers: stdout.slice(0, lfIndex),
+      body: stdout.slice(lfIndex + 2),
+    };
+  }
+
+  return { headers: '', body: stdout };
 }
 
 /**
@@ -778,7 +853,7 @@ function spawnGhWithStdin(args: string[], stdinData: string, timeoutMs: number):
     child.on('error', (err) => finish(err, ''));
     child.on('close', (code) => {
       if (code === 0) finish(null, stdout);
-      else finish(new Error(`gh exited ${code}: ${stderr.trim() || '(no stderr)'}`), '');
+      else finish(Object.assign(new Error(`gh exited ${code}: ${stderr.trim() || '(no stderr)'}`), { stdout, stderr }), '');
     });
     child.stdin.write(stdinData);
     child.stdin.end();
@@ -798,4 +873,98 @@ interface GhSearchNode {
     title?: string;
     url?: string;
   } | null>;
+}
+
+export function classifyGitHubRateLimit(value: unknown): GitHubRateLimit | null {
+  const messages = collectRateLimitMessages(value);
+  const explicit = messages.find((message) => isRateLimitMessage(message));
+  const zeroRemaining = messages.find((message) => /x-ratelimit-remaining\s*:\s*0/i.test(message));
+  const message = explicit ?? zeroRemaining;
+  if (!message) return null;
+
+  return {
+    kind: 'rate-limited',
+    retryAfterMs: parseRetryAfterMs(messages) ?? DEFAULT_RATE_LIMIT_RETRY_AFTER_MS,
+    message: message.trim(),
+  };
+}
+
+function collectRateLimitMessages(value: unknown): string[] {
+  const messages: string[] = [];
+  const visit = (current: unknown): void => {
+    if (typeof current === 'string') {
+      const lines = current.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      messages.push(...(lines.length > 1 ? lines : [current]));
+      return;
+    }
+    if (current instanceof Error) {
+      messages.push(current.message);
+      if ('stderr' in current && typeof current.stderr === 'string') {
+        messages.push(current.stderr);
+      }
+      if ('stdout' in current && typeof current.stdout === 'string') {
+        visit(current.stdout);
+      }
+      return;
+    }
+    if (!isRecord(current)) return;
+
+    const type = current.type;
+    const message = current.message;
+    if (typeof type === 'string' && type.toUpperCase() === 'RATE_LIMITED') {
+      messages.push(typeof message === 'string' ? `RATE_LIMITED: ${message}` : 'RATE_LIMITED');
+    } else if (typeof message === 'string') {
+      messages.push(message);
+    }
+
+    const errors = current.errors;
+    if (Array.isArray(errors)) {
+      for (const err of errors) visit(err);
+    }
+
+    const headers = current.headers;
+    if (isRecord(headers)) {
+      for (const [key, headerValue] of Object.entries(headers)) {
+        if (typeof headerValue === 'string' || typeof headerValue === 'number') {
+          messages.push(`${key}: ${headerValue}`);
+        }
+      }
+    }
+  };
+
+  visit(value);
+  return messages;
+}
+
+function ghErrorStdout(err: unknown): string | null {
+  return isRecord(err) && typeof err.stdout === 'string' ? err.stdout : null;
+}
+
+function isRateLimitMessage(message: string): boolean {
+  return /\bRATE_LIMITED\b/i.test(message)
+    || /rate limit/i.test(message)
+    || /rate-limit/i.test(message)
+    || /rate limited/i.test(message)
+    || /secondary limit/i.test(message);
+}
+
+function parseRetryAfterMs(messages: string[]): number | null {
+  for (const message of messages) {
+    const retryAfter = message.match(/retry-after\s*:\s*(\d+)/i)
+      ?? message.match(/retry_after["'\s:=]+(\d+)/i)
+      ?? message.match(/retry after\s+(\d+)\s*(?:seconds?|s)?/i);
+    if (!retryAfter) continue;
+    const seconds = Number(retryAfter[1]);
+    if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
+  }
+
+  for (const message of messages) {
+    const reset = message.match(/x-ratelimit-reset\s*:\s*(\d+)/i);
+    if (!reset) continue;
+    const epochSeconds = Number(reset[1]);
+    if (Number.isFinite(epochSeconds) && epochSeconds > 0) {
+      return Math.max(0, (epochSeconds * 1000) - Date.now());
+    }
+  }
+  return null;
 }
