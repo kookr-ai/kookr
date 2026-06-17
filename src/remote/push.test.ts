@@ -10,6 +10,8 @@ import {
 import type { RemoteNodeClient } from './node-client.js';
 import { asNodeEpoch, asNodeId } from './ids.js';
 
+const secretFixture = (...parts: string[]): string => parts.join('');
+
 describe('push payload redactor', () => {
   it('keeps only the allowlisted payload fields', () => {
     const payload = makeRedactedPushPayload({
@@ -60,12 +62,32 @@ describe('push payload redactor', () => {
   });
 
   it.each([
-    ['JWT', 'deploy eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'],
-    ['AWS access key', 'use AKIAIOSFODNN7EXAMPLE for staging'],
-    ['GitHub fine-grained PAT', 'github_pat_11AABBCC0_secretSecretSecretSecretSecret'],
-    ['GitHub classic PAT', 'ghp_1234567890abcdefABCDEF1234567890abcdef'],
-    ['base64 credential', 'Basic dXNlcjpwYXNzd29yZHNob3VsZG5vdGxlYWs='],
-    ['hex token', '0123456789abcdef0123456789abcdef01234567'],
+    ['ordinary text', 'Fix stuck CI for web push notifications'],
+    ['long task id', 'Investigate task 123e4567-e89b-12d3-a456-426614174000'],
+    ['commit SHA', 'Review commit bcf04361abc1234567890abcdef1234567890abc'],
+    ['hex-like diagnostic id', 'Trace 0123456789abcdef0123456789abcdef'],
+    ['base64-like note', 'Decode dGhpcyBpcyBub3Qgc2VjcmV0 safely'],
+  ])('preserves safe %s labels', (_kind, label) => {
+    expect(redactTaskShortLabel(label, 'abcdef0123456789')).toBe(label);
+  });
+
+  it.each([
+    ['JWT', secretFixture('deploy eyJ', 'hbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ', 'zdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c')],
+    ['OpenAI-style key', secretFixture('sk', '-abcdefghijklmnop1234')],
+    ['AWS access key', secretFixture('use AKIA', 'IOSFODNN7EXAMPLE for staging')],
+    ['GitHub fine-grained PAT', secretFixture('github', '_pat_11AABBCC0_secretSecretSecretSecretSecret')],
+    ['GitHub classic PAT', secretFixture('ghp', '_1234567890abcdefABCDEF1234567890abcdef')],
+    ['Slack bot token', secretFixture('xoxb', '-0123456789-abcdefghijklmnop')],
+    ['GitLab PAT', secretFixture('glpat', '-0123456789abcdefghij')],
+    ['HuggingFace token', secretFixture('hf', '_0123456789abcdefghij')],
+    ['npm token', secretFixture('npm', '_0123456789abcdefghij')],
+    ['PyPI token', secretFixture('pypi', '-0123456789abcdefghij')],
+    ['Docker PAT', secretFixture('dckr', '_pat_0123456789abcdefghij')],
+    ['Google OAuth token', secretFixture('ya29', '.abcdEFGH_ijklMNOP')],
+    ['base64 credential', secretFixture('Basic ', 'dXNlcjpwYXNzd29yZHNob3VsZG5vdGxlYWs=')],
+    ['spaced API key context', 'api key: 0123456789abcdef0123456789abcdef'],
+    ['contextual hex token', 'token: 0123456789abcdef0123456789abcdef01234567'],
+    ['contextual base64 secret', 'secret=dGhpcy1pcy1hLXNlY3JldC12YWx1ZQ=='],
   ])('does not leak secret-shaped %s labels', (_kind, secretLike) => {
     const taskId = '1234567890abcdef';
     const redacted = redactTaskShortLabel(secretLike, taskId);
