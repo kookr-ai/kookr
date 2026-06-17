@@ -315,7 +315,7 @@ Body.
   });
 
   test('shipped GitHub issue playbook uses grep status for duplicate branch detection', async () => {
-    const playbook = await readFile('.kookr/playbooks/implement-github-issue.md', 'utf8');
+    const playbook = await readFile('plugin/playbooks/implement-github-issue.md', 'utf8');
 
     expect(playbook).toContain('grep -qE "(^|[-_./])issue[-_.]${N}([-_.]|$)"');
     expect(playbook).not.toContain('| grep -E "(^|[-_./])issue[-_.]${N}([-_.]|$)" | head -1');
@@ -342,7 +342,7 @@ Body.
   });
 
   test('shipped parallel issue batch playbook keeps orchestration guardrails', async () => {
-    const playbook = await readFile('.kookr/playbooks/parallel-issue-batch.md', 'utf8');
+    const playbook = await readFile('plugin/playbooks/parallel-issue-batch.md', 'utf8');
     const parsed = parsePlaybook(playbook, 'parallel-issue-batch.md', '/project');
 
     expect(parsed.name).toBe('Parallel Issue Batch');
@@ -355,7 +355,7 @@ Body.
   });
 
   test('shipped Repository Idea Scout playbook grounds ideas in the knowledge base', async () => {
-    const content = await readFile('.kookr/playbooks/repository-idea-scout.md', 'utf8');
+    const content = await readFile('plugin/playbooks/repository-idea-scout.md', 'utf8');
     const parsed = parsePlaybook(content, 'repository-idea-scout.md', '/project');
 
     expect(parsed.name).toBe('Repository Idea Scout');

@@ -1,6 +1,7 @@
 ---
 name: Implement GitHub Issue
 description: Pick a GitHub issue (or batch), implement it in a worktree, and open a PR
+repo-tags: [github]
 tags: [workflow, loopable]
 dependencies: [kb]
 deliveryPreAuthorized: true
@@ -37,6 +38,36 @@ parameters:
         value: "false"
       - label: "Any author (I trust this repo)"
         value: "true"
+  - name: selfContinuation
+    description: "After each PR merges, spawn a follow-up Kookr task that re-runs this playbook for the next batch (self-continuation chain). For standard launches; the Ralph loop already chains on its own."
+    required: true
+    default: "false"
+    type: select
+    options:
+      - label: "Single run (default)"
+        value: "false"
+      - label: "Chain another batch after each merge"
+        value: "true"
+  - name: ignoreBudgetCiFailures
+    description: "Treat CI checks that fail only because CI budget/quota is unavailable as non-blocking. Genuine test/lint/type/build failures still block."
+    required: true
+    default: "false"
+    type: select
+    options:
+      - label: "CI failures block (default)"
+        value: "false"
+      - label: "Ignore budget-caused CI failures"
+        value: "true"
+  - name: closeUnworthyIssues
+    description: "Allow closing an issue (with a short explanation) when it isn't worth implementing, instead of opening a PR."
+    required: true
+    default: "false"
+    type: select
+    options:
+      - label: "Never close issues (default)"
+        value: "false"
+      - label: "May close low-value issues"
+        value: "true"
 loop:
   iterationCap: 20
   costCapUsd: 25
@@ -64,6 +95,14 @@ Implement GitHub issues end-to-end. In standard launch mode, handle the specifie
 `{{mergeAfterImplementation}}` controls whether the workflow stops at an implementation PR (`false`) or continues until each PR is safely merged (`true`).
 
 If you face a design choice the issue does not settle, pick the smallest implementation that satisfies the issue, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
+
+## Optional run modes
+
+Three independent toggles, all default off, add extra autonomy. The launch form remembers your last choice per playbook+project, so set them once and they persist across runs.
+
+- **Self-continuation** — `{{selfContinuation}}`. When `true` and you are NOT in Ralph loop mode, after a PR is merged in Phase 8 use the `self-continuation-task` skill to spawn a fresh Kookr task that re-runs this playbook for the next batch, forwarding the same parameters (including these toggles). This produces a Ralph-like chain without the built-in loop. When `false`, finish the single target and stop. In Ralph loop mode this toggle is a no-op — the loop already chains.
+- **Ignore budget CI failures** — `{{ignoreBudgetCiFailures}}`. When `true`, treat CI checks that fail solely because CI budget/quota is unavailable (the run never executed — not a real test result) as non-blocking: do not stall the iteration or hold the PR on them, and in merge mode proceed as if those specific checks were not required. Genuine test, lint, type, or build failures still block — never merge over a real red check. When `false`, any failing required check blocks as usual.
+- **Close low-value issues** — `{{closeUnworthyIssues}}`. When `true`, if after reading the issue (Phase 1) you judge it not worth implementing — obsolete, out of scope, duplicate, or net-negative — you may `gh issue close <N>` with a one-line comment explaining why, then move to the next target instead of opening a PR. When `false`, never close issues; skip and report instead.
 
 ## Ralph loop contract
 
@@ -224,6 +263,8 @@ gh issue view "$TARGET" --repo "$REPO" --json number,title,body,labels,assignees
 ```
 
 Read the issue title, body, labels, and any linked discussions to fully understand the requirements and acceptance criteria.
+
+If `{{closeUnworthyIssues}}` is `true` and the issue is clearly not worth implementing (obsolete, out of scope, duplicate, or net-negative), close it with `gh issue close <TARGET> --comment "<one-line reason>"`, release any claim, and move on to the next target instead of implementing. When `false`, never close — skip and report instead.
 
 ## Phase 2: Acquire or Resume Claim
 
@@ -440,7 +481,7 @@ If `{{mergeAfterImplementation}}` is `true`:
    gh pr checks <PR_NUMBER> --repo "$REPO"
    ```
 
-2. Do not bypass branch protection, required reviews, failing checks, or maintainer policy.
+2. Do not bypass branch protection, required reviews, failing checks, or maintainer policy. Exception: if `{{ignoreBudgetCiFailures}}` is `true`, a check that failed solely because CI budget/quota was unavailable (it never ran) does not count as a failing check — treat it as non-blocking. Genuine test/lint/type/build failures still block regardless of this toggle.
 3. If the PR is mergeable now, merge using the repository's expected method:
 
    ```bash
@@ -466,6 +507,8 @@ fi
 ```
 
 If no further action is possible because external review/checks are pending, leave a concise status note in the PR only if there is new evidence, heartbeat the claim if appropriate, and stop. The next Ralph iteration will re-check the external state.
+
+If `{{selfContinuation}}` is `true` and you are NOT running in Ralph loop mode, after the PR for this target is merged use the `self-continuation-task` skill to spawn a fresh Kookr task that re-runs this playbook for the next batch, forwarding the same parameter values (repo, selector, merge policy, and these toggles). This chains batches without the built-in loop. In Ralph loop mode, do nothing extra — the loop already advances to the next target.
 
 ## Phase 8.5: Post-task KB lesson decision
 

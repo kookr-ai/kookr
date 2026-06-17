@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Regression test for issue #195: guarded Kookr runtime references still make
-# plugin-tier content Kookr-specific and must be rejected.
+# Regression test: the kookr-toolkit plugin ships with Kookr, so plugin-tier
+# playbooks MAY couple to the Kookr runtime (KOOKR_* env, issue-claim API,
+# Ralph verdicts). The pre-push hook must NOT reject them for that coupling.
+# (This reverses the original issue #195 rule, which treated any Kookr runtime
+# reference in plugin/playbooks as a portability violation.)
 #
 # Run: bash .claude/hooks-tests/pre-push-plugin-classification.test.sh
 # Or:  pnpm test:hooks
@@ -61,16 +64,16 @@ OUT=$(cd "$TMPDIR" && PATH="$TMPDIR/bin:$PATH" bash "$HOOK" 2>&1)
 STATUS=$?
 set -e
 
-if [ "$STATUS" -eq 0 ]; then
-  printf 'FAIL: expected pre-push to reject guarded Kookr reference in plugin/\n' >&2
+if [ "$STATUS" -ne 0 ]; then
+  printf 'FAIL: pre-push rejected a Kookr-coupled plugin playbook (coupling is allowed now)\n' >&2
   printf '%s\n' "$OUT" >&2
   exit 1
 fi
 
-if ! printf '%s' "$OUT" | grep -q 'Guarded or fallback-only Kookr integrations still make the file Kookr-specific'; then
-  printf 'FAIL: rejection did not explain guarded Kookr references\n' >&2
+if printf '%s' "$OUT" | grep -q 'Kookr-specific runtime references'; then
+  printf 'FAIL: hook still emits the removed Kookr-coupling rejection\n' >&2
   printf '%s\n' "$OUT" >&2
   exit 1
 fi
 
-printf 'PASS: guarded Kookr reference in plugin/ is rejected\n'
+printf 'PASS: Kookr-coupled plugin playbook is allowed\n'

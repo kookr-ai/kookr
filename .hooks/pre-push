@@ -226,11 +226,13 @@ else
   fi
 fi
 
-# --- kookr-toolkit plugin portability + version bump enforcement ---
-# Plugin playbooks ship as reusable defaults for any consumer repo. They must
-# not depend on Kookr runtime context, local Kookr state, Kookr development
-# commands, or repo-local Kookr hooks, even when that dependency is guarded by
-# a fallback path. Also enforce the plugin.json#version bump on plugin/skills/**,
+# --- kookr-toolkit plugin hygiene + version bump enforcement ---
+# The kookr-toolkit plugin ships together with Kookr, so plugin playbooks MAY
+# couple to the Kookr runtime (KOOKR_* env vars, the issue-claim API, Ralph
+# verdict files) when that integration is the whole point of the workflow —
+# a Kookr-aware playbook is a legitimate thing to bundle with Kookr. We still
+# reject hardcoded absolute home paths (they break every checkout but the
+# author's) and enforce the plugin.json#version bump on plugin/skills/**,
 # plugin/agents/**, and plugin/hooks/** changes.
 if [ -d plugin ]; then
   # Three-dot symmetric form so unrelated origin/main movement doesn't pollute
@@ -238,21 +240,7 @@ if [ -d plugin ]; then
   RANGE="origin/main...HEAD"
   git rev-parse --verify --quiet origin/main >/dev/null 2>&1 || RANGE="HEAD"
 
-  # 1. Plugin playbooks must stay portable across consumer repos. Guarded
-  # fallbacks still couple the playbook to Kookr's local runtime.
-  BAD=$(grep -RInE 'KOOKR_[A-Z0-9_]+|~/\.kookr|pnpm (prod:[A-Za-z0-9:_-]+|build:server)|\.hooks/|/home/[^/]+/git/kookr' plugin/playbooks 2>/dev/null || true)
-  if [ -n "$BAD" ]; then
-    echo ""
-    echo "Push rejected: plugin/playbooks contains Kookr-specific runtime references."
-    echo "Guarded or fallback-only Kookr integrations still make the file Kookr-specific."
-    echo "Move Kookr-aware workflows to project/user playbooks, or make the plugin"
-    echo "playbook fully portable."
-    echo ""
-    echo "$BAD" | head -20
-    exit 1
-  fi
-
-  # 2. Hardcoded absolute home path — breaks any checkout but the author's.
+  # 1. Hardcoded absolute home path — breaks any checkout but the author's.
   BAD=$(grep -rIE '/home/[^/]+/git/kookr' plugin/ 2>/dev/null || true)
   if [ -n "$BAD" ]; then
     echo ""
@@ -265,7 +253,7 @@ if [ -d plugin ]; then
     exit 1
   fi
 
-  # 3. Skill/agent placement gate — covers naming, empty-agents, collisions,
+  # 2. Skill/agent placement gate — covers naming, empty-agents, collisions,
   #    and unqualified subagent_type references. See hooks/skill-placement-gate.sh.
   if [ -x hooks/skill-placement-gate.sh ] || [ -f hooks/skill-placement-gate.sh ]; then
     if ! bash hooks/skill-placement-gate.sh "$REPO_ROOT"; then
@@ -275,7 +263,7 @@ if [ -d plugin ]; then
     fi
   fi
 
-  # 3b. Legacy collision check for non-skill/agent kinds (commands, etc.) that
+  # 2b. Legacy collision check for non-skill/agent kinds (commands, etc.) that
   #     the placement gate doesn't cover.
   for kind in commands; do
     if [ -d ".claude/$kind" ] && [ -d "plugin/$kind" ]; then
@@ -292,7 +280,7 @@ if [ -d plugin ]; then
     fi
   done
 
-  # 4. Version bump — plugin/skills/**, plugin/agents/**, or plugin/hooks/** changes require version bump.
+  # 3. Version bump — plugin/skills/**, plugin/agents/**, or plugin/hooks/** changes require version bump.
   if git diff --name-only "$RANGE" 2>/dev/null | grep -qE '^plugin/(skills|agents|hooks)/'; then
     if ! git diff --name-only "$RANGE" 2>/dev/null | grep -q '^plugin/.claude-plugin/plugin.json$'; then
       echo ""

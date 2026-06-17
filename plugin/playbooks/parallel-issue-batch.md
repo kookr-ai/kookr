@@ -1,6 +1,7 @@
 ---
 name: Parallel Issue Batch
 description: Select several non-conflicting GitHub issues, spawn one Kookr task per issue, and supervise them until PRs are merged
+repo-tags: [github]
 tags: [workflow, loopable]
 deliveryPreAuthorized: true
 parameters:
