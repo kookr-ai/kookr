@@ -1,6 +1,7 @@
 ---
 name: Repository Idea Scout
 description: Analyze a GitHub project, its backlog, and its codebase to propose multiple diverse non-duplicate improvement ideas
+repo-tags: [github]
 tags: [workflow]
 dependencies: [kb]
 parameters:

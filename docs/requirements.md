@@ -559,7 +559,7 @@ The system SHALL expose the full Ralph verdict environment to every loop iterati
 - GitHub issue implementation playbooks rename the running task from the generic playbook name to `#<issue> <title>` after target resolution.
 - Ralph issue iteration verdicts preserve the resolved issue title and the Ralph panel exposes that target metadata in iteration history.
 
-**Evidence:** `src/server/launch-service.ts`, `src/server/ralph-loop-service.ts`, `src/server/routes/task-routes.ts`, `.kookr/playbooks/implement-github-issue.md`, `src/frontend/components/RalphLoopPanel.tsx`, `src/server/launch-service.test.ts`, `src/server/ralph-loop-service.test.ts`, `src/server/routes/task-routes.test.ts`, `src/core/implement-github-issue-playbook.test.ts`, `src/frontend/components/RalphLoopPanel.test.ts`.
+**Evidence:** `src/server/launch-service.ts`, `src/server/ralph-loop-service.ts`, `src/server/routes/task-routes.ts`, `plugin/playbooks/implement-github-issue.md`, `src/frontend/components/RalphLoopPanel.tsx`, `src/server/launch-service.test.ts`, `src/server/ralph-loop-service.test.ts`, `src/server/routes/task-routes.test.ts`, `src/core/implement-github-issue-playbook.test.ts`, `src/frontend/components/RalphLoopPanel.test.ts`.
 
 ### R4b.8: Project-Targeted Catalog Playbooks [F6.2, F6.6] — SHALL — `done`
 
