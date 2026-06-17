@@ -24,12 +24,19 @@ const MAX_TASK_LABEL_LENGTH = 64;
 
 const SECRET_PATTERNS: RegExp[] = [
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+  /\bsk-[A-Za-z0-9_-]{16,}\b/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
   /\bgithub_pat_[A-Za-z0-9_]{22,}\b/g,
   /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g,
+  /\bxoxb-[A-Za-z0-9-]{16,}\b/g,
+  /\bglpat-[A-Za-z0-9_-]{16,}\b/g,
+  /\bhf_[A-Za-z0-9]{16,}\b/g,
+  /\bnpm_[A-Za-z0-9]{16,}\b/g,
+  /\bpypi-[A-Za-z0-9_-]{16,}\b/g,
+  /\bdckr_pat_[A-Za-z0-9_-]{16,}\b/g,
+  /\bya29\.[A-Za-z0-9_-]+\b/g,
   /\b(?:Basic|Bearer)\s+[A-Za-z0-9+/=_-]{16,}\b/gi,
-  /\b[A-Fa-f0-9]{32,}\b/g,
-  /\b[A-Za-z0-9+/]{24,}={0,2}\b/g,
+  /\b(?:api[\s_-]?key|token|secret|password|credential|authorization|auth)\b\s*(?:[:=]|\s+)\s*["']?[A-Za-z0-9+/=_-]{16,}\b/gi,
 ];
 
 export function isPushDisabled(env: Partial<Pick<NodeJS.ProcessEnv, 'KOOKR_PUSH_DISABLED'>> = process.env): boolean {
