@@ -11,8 +11,14 @@ import { DEFAULT_AGENT_TYPE, type AgentType } from '../../core/agent-types.js';
 import type { LlmClient } from '../../core/llm-client.js';
 import type { LaunchOpts, LaunchResult } from '../../shared/contracts/launch.js';
 import type { TelegramHandle } from '../../shared/contracts/telegram.js';
-import { TelegramApiClient, TelegramApiError, type TelegramUpdate, type TelegramMessage } from './api-client.js';
-import { audioDropDecision, extractAudioAttachment, filenameFromFilePath } from './audio.js';
+import {
+  TelegramApiClient,
+  TelegramApiError,
+  TelegramDownloadTooLargeError,
+  type TelegramUpdate,
+  type TelegramMessage,
+} from './api-client.js';
+import { audioDropDecision, extractAudioAttachment, filenameFromFilePath, MAX_AUDIO_BYTES } from './audio.js';
 import { parseTaskCommand } from './parse-task.js';
 import { rephrase } from './rephrase.js';
 import { classifyVoiceError, redactCredentials, transcribeVoice as defaultTranscribeVoice } from './transcribe.js';
@@ -371,7 +377,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
           await sendMessageSafe(m.chat.id, fileSizeDrop.reply);
           return;
         }
-        const audioBytes = await api.downloadFile(file.file_path, remaining());
+        const audioBytes = await api.downloadFile(file.file_path, remaining(), MAX_AUDIO_BYTES);
         const downloadedDrop = audioDropDecision(audio, audioBytes.length);
         if (downloadedDrop) {
           audit(downloadedDrop.event);
@@ -400,6 +406,14 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
           len: text?.length ?? 0,
         });
       } catch (err) {
+        if (err instanceof TelegramDownloadTooLargeError) {
+          const drop = audioDropDecision(audio, err.bytesRead);
+          if (drop) {
+            audit(drop.event);
+            await sendMessageSafe(m.chat.id, drop.reply);
+            return;
+          }
+        }
         audit({ kind: 'transcription_failed', err: String(err) });
         await sendMessageSafe(m.chat.id, classifyVoiceError(err));
         return;

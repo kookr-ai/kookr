@@ -16,7 +16,7 @@ const MAX_AUDIO_SECONDS = 300;
  * download whenever Telegram exposes file_size. The Buffer is held in memory
  * only — never persisted — and freed once the multipart POST returns.
  */
-const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
+export const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 
 /**
  * Telegram documents do not include a duration field. For audio documents, use
