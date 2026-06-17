@@ -255,6 +255,7 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
     : undefined;
   const queueDotCount = Math.max(totalFindings, 1);
   const spendLabel = totalSpendUsd > 0 ? formatCost(totalSpendUsd) : '$0.00';
+  const connectionLabel = connected ? 'Dashboard WebSocket connected' : 'Dashboard WebSocket disconnected';
 
   return (
     <div className={`topbar kookr-tour-target-layout${compact ? ' compact' : ''}`}>
@@ -271,7 +272,12 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
           aria-expanded={showPopover}
           aria-controls="version-popover"
         >
-          <span className={`health-dot ${connected ? 'health-dot-connected' : 'health-dot-disconnected'}`} />
+          <span
+            className={`health-dot ${connected ? 'health-dot-connected' : 'health-dot-disconnected'}`}
+            role="img"
+            aria-label={connectionLabel}
+            title={connectionLabel}
+          />
           {deploying && <span className="deploy-spinner" />}
           {versionLabel}
           {!compact && !isDev && builtAgo && <span className="version-built"> · {builtAgo}</span>}

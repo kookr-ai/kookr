@@ -3279,6 +3279,34 @@ kbd {
   color: var(--text-primary);
 }
 
+.connection-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  background: rgba(127, 29, 29, 0.28);
+  border-bottom: 1px solid rgba(248, 113, 113, 0.52);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.connection-banner__badge {
+  flex: 0 0 auto;
+  text-transform: uppercase;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(248, 113, 113, 0.18);
+  color: var(--red);
+}
+
+.connection-banner__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .bug-report-header {
   display: flex;
   justify-content: space-between;
