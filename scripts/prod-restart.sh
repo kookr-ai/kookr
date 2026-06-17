@@ -371,6 +371,98 @@ run_post_restart_checks() {
       echo "      be serving from a partial outage; inspect ${LOG_FILE}."
     } >&2
   fi
+
+  # Post-restart relay drift nag (issue #1014) — prod:update rebuilds the relay
+  # bundle, but the relay is an independently managed process. Warn when the
+  # tracked relay predates the freshly built relay artifacts. Operators can opt
+  # into restarting it as part of the deploy by setting KOOKR_RESTART_RELAY=1.
+  check_relay_drift_after_restart
+}
+
+check_relay_drift_after_restart() {
+  local relay_state_path="${KOOKR_DIR}/relay.state.json"
+  local relay_drift_output=""
+  local relay_drift_status=0
+
+  [[ -f "$relay_state_path" ]] || return 0
+
+  set +e
+  relay_drift_output="$(
+    APP_DIR="$APP_DIR" KOOKR_DIR="$KOOKR_DIR" node <<'NODE'
+const { existsSync, readFileSync, statSync } = require('node:fs');
+const { join, resolve } = require('node:path');
+
+const appDir = resolve(process.env.APP_DIR ?? process.cwd());
+const kookrDir = process.env.KOOKR_DIR;
+const statePath = join(kookrDir, 'relay.state.json');
+
+function readJson(path) {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function timestampMs(value) {
+  const parsed = Date.parse(String(value ?? ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+const state = readJson(statePath);
+if (!state || state.schemaVersion !== 'relay-lifecycle-state.v1') process.exit(0);
+if (resolve(String(state.cwd ?? '')) !== appDir) process.exit(0);
+
+const startedAtMs = timestampMs(state.startedAt);
+if (!startedAtMs) process.exit(0);
+
+const artifactPaths = [
+  join(appDir, 'dist', 'relay', 'server.js'),
+  join(appDir, 'dist', 'build-info.json'),
+];
+const artifactTimes = artifactPaths
+  .filter((path) => existsSync(path))
+  .map((path) => statSync(path).mtimeMs);
+
+if (artifactTimes.length === 0) process.exit(0);
+
+const newestArtifactMs = Math.max(...artifactTimes);
+if (newestArtifactMs <= startedAtMs) process.exit(0);
+
+console.log(JSON.stringify({
+  pid: state.pid,
+  startedAt: state.startedAt,
+  artifactBuiltAt: new Date(newestArtifactMs).toISOString(),
+  relayUrl: state.relayUrl,
+}));
+process.exit(3);
+NODE
+  )"
+  relay_drift_status=$?
+  set -e
+
+  if [[ "$relay_drift_status" != "3" ]]; then
+    return 0
+  fi
+
+  if [[ "${KOOKR_RESTART_RELAY:-}" == "1" ]]; then
+    echo "Relay predates the current build; KOOKR_RESTART_RELAY=1 so restarting relay..."
+    if KOOKR_DIR="$KOOKR_DIR" pnpm relay:restart; then
+      return 0
+    fi
+    {
+      echo "WARN: relay restart failed after deploy. The main server is live, but"
+      echo "      the relay may still be serving stale code; run \`pnpm relay:restart\`."
+    } >&2
+    return 0
+  fi
+
+  {
+    echo "WARN: relay process predates the current build and may be serving stale code."
+    echo "      ${relay_drift_output}"
+    echo "      Run \`pnpm relay:restart\` after deploy, or set KOOKR_RESTART_RELAY=1"
+    echo "      to restart the relay automatically during \`pnpm prod:restart\`."
+  } >&2
 }
 
 if [[ "${KOOKR_PROD_RESTART_TEST_ONLY:-}" == "1" ]]; then
