@@ -127,4 +127,23 @@ describe('TopBar plugin update UX', () => {
     expect(container.textContent).toContain('Toolkit plugin updated. Restart Claude Code sessions to load it.');
     expect(container.textContent).toContain('claude plugin update kookr-toolkit@kookr');
   });
+
+  test('labels the health dot with the current dashboard connection state', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(fetchResponse({ configured: false }))));
+
+    renderTopBar();
+    await flush();
+
+    const connectedDot = container.querySelector<HTMLElement>('.health-dot-connected');
+    expect(connectedDot?.getAttribute('role')).toBe('img');
+    expect(connectedDot?.getAttribute('aria-label')).toBe('Dashboard WebSocket connected');
+    expect(connectedDot?.getAttribute('title')).toBe('Dashboard WebSocket connected');
+
+    useKookrStore.setState({ connected: false });
+    renderTopBar();
+
+    const disconnectedDot = container.querySelector<HTMLElement>('.health-dot-disconnected');
+    expect(disconnectedDot?.getAttribute('aria-label')).toBe('Dashboard WebSocket disconnected');
+    expect(disconnectedDot?.getAttribute('title')).toBe('Dashboard WebSocket disconnected');
+  });
 });
