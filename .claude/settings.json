@@ -10,6 +10,17 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc 'root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0; \"$root/hooks/plugin-version-bump-nudge.sh\"'"
+          }
+        ]
+      }
     ]
   }
 }
