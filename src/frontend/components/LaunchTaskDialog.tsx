@@ -179,7 +179,13 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   // When opening directly to playbooks, ensure the list is fetched.
   useEffect(() => {
     if (relaunchPlaybookId || (projectContext && initialTab === 'playbooks')) {
-      const targetCwd = projectContext ? serverCwd : (cwd.trim() || serverCwd);
+      // The playbook catalog follows the focused project: `cwd` is seeded from
+      // the project (defaultCwd ?? projectCwd ?? …), so scanning it lists the
+      // project's own `.kookr/playbooks/`. Falls back to serverCwd when the
+      // project cwd is empty/unresolved so we never scan `<empty>/.kookr/...`.
+      // This only changes which playbooks are LISTED — getTaskTargetCwd() keeps
+      // the execution cwd unchanged (catalog/target split from #209). See #1019.
+      const targetCwd = cwd.trim() || serverCwd;
       // A cached `absent` capability is treated as stale so a user who just
       // installed the dependency is not stuck with a collapsed control until
       // the cache TTL expires. See rfc-capability-gated-playbook-params.md.
@@ -317,7 +323,9 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   }
 
   function getPlaybookSourceCwd(): string {
-    return projectContext ? serverCwd : (cwd.trim() || serverCwd);
+    // Catalog source follows the focused project's seeded cwd (see the
+    // mount-time fetch above and #1019); falls back to serverCwd when empty.
+    return cwd.trim() || serverCwd;
   }
 
   function getTaskTargetCwd(): string {

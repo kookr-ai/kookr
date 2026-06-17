@@ -78,11 +78,14 @@ describe('App project drawer launch cwd', () => {
         checklist: [],
         tags: [],
         body: 'Run this.',
-        sourceCwd: '/server/cwd',
+        sourceCwd: '/work/idle',
         scope: 'project',
       }],
       playbooksLastFetchedAt: Date.now(),
-      playbooksLastFetchedCwd: '/server/cwd',
+      // Seed the per-cwd cache at the focused project's cwd: post-#1019 the
+      // catalog follows the project, so a fresh cache at '/work/idle' avoids a
+      // (mocked) refetch leaving the list stuck in the loading state.
+      playbooksLastFetchedCwd: '/work/idle',
       playbooksLoading: false,
     });
     useKookrStore.getState().handleProjectSummaries([
@@ -110,7 +113,7 @@ describe('App project drawer launch cwd', () => {
     localStorage.clear();
   });
 
-  test('pre-fills Playbook task cwd from project localPath when the project has no agents', async () => {
+  test('lists the focused project playbook catalog and runs in the project cwd (no agents)', async () => {
     await act(async () => {
       root.render(React.createElement(App));
     });
@@ -121,9 +124,14 @@ describe('App project drawer launch cwd', () => {
     });
     await waitForElement(container, '.playbook-resolved-cwd-path');
 
+    // The catalog now follows the focused project (#1019). Catalog source and
+    // execution cwd coincide on the project, so PlaybookBrowser collapses to a
+    // single "Running in:" line at '/work/idle' — the execution cwd, unchanged.
+    expect(container.textContent).toContain('Running in:');
+    expect(container.textContent).not.toContain('Playbooks from:');
     const cwdPaths = Array.from(container.querySelectorAll('.playbook-resolved-cwd-path'))
       .map((el) => el.textContent);
-    expect(cwdPaths).toEqual(['/server/cwd', '/work/idle']);
+    expect(cwdPaths).toEqual(['/work/idle']);
   });
 
   test('opens a project manual task with the project cwd selected', async () => {
