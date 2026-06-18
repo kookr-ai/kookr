@@ -1,0 +1,22 @@
+# pnpm settings. As of pnpm 11 the `pnpm` field in package.json is no longer
+# read (pnpm 10 warns; 11 ignores it), so the native-build allow-list and
+# package extensions live here instead. See https://pnpm.io/settings.
+#
+# This repo is a single package; no `packages:` globs are declared, so pnpm
+# treats it as a single-package workspace and resolution is unchanged.
+
+# Allow these dependencies to run their install/build scripts. Everything else
+# is blocked by default (pnpm's secure-by-default postinstall policy).
+onlyBuiltDependencies:
+  - '@google/genai'
+  - better-sqlite3
+  - esbuild
+  - node-pty
+  - protobufjs
+
+# node-pty 1.1.0 compiles native code via node-gyp but does not declare it as a
+# dependency; inject it so the build resolves node-gyp from the lockfile.
+packageExtensions:
+  node-pty@1.1.0:
+    dependencies:
+      node-gyp: ^12.3.0

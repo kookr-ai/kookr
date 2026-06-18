@@ -136,6 +136,32 @@ export interface LocalDtachBackendOptions {
   ringFlushIntervalMs?: number;
 }
 
+/**
+ * Build the argv for spawning a dtach master that must outlive Kookr.
+ *
+ * Linux/BSD: wrap in `setsid -f` so the master gets a brand-new session and
+ * forks into the background, fully detached from Kookr's process group.
+ *
+ * macOS: `setsid` is util-linux-only and is not shipped on macOS (and the
+ * hand-ported builds users compile frequently lack the `-f` flag), so a
+ * literal `setsid -f` either ENOENTs or rejects the flag — the dtach master
+ * never starts and the socket never appears. We therefore spawn dtach
+ * directly there: `dtach -n` already daemonizes, and the caller passes
+ * `detached: true`, which runs the child through `setsid(2)` for the same
+ * new-session detachment. See docs/adr/014-local-dtach-backend.md and the
+ * "dtach socket did not appear" entry in docs/troubleshooting.md.
+ */
+export function buildDtachSpawn(
+  platform: NodeJS.Platform,
+  dtachBinary: string,
+  dtachArgs: string[],
+): { command: string; args: string[] } {
+  if (platform === 'darwin') {
+    return { command: dtachBinary, args: dtachArgs };
+  }
+  return { command: 'setsid', args: ['-f', dtachBinary, ...dtachArgs] };
+}
+
 export class LocalDtachBackend implements TerminalBackend {
   private readonly instanceDir: string;
   private readonly manifestStore: DtachManifestStore;
@@ -230,9 +256,10 @@ export class LocalDtachBackend implements TerminalBackend {
       });
     });
 
-    // Step 2: spawn dtach master via setsid so it outlives this Kookr process.
+    // Step 2: spawn the dtach master so it outlives this Kookr process.
     const dtachArgs = ['-n', sock, '-r', 'winch', '-E', spec.command, ...spec.args];
-    const child = spawnChild('setsid', ['-f', this.dtachBinary, ...dtachArgs], {
+    const { command, args } = buildDtachSpawn(process.platform, this.dtachBinary, dtachArgs);
+    const child = spawnChild(command, args, {
       env: { ...process.env, ...spec.env },
       cwd: spec.cwd ?? process.cwd(),
       stdio: 'ignore',

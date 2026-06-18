@@ -11,9 +11,41 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { LocalDtachBackend } from './local-dtach-backend.js';
+import { LocalDtachBackend, buildDtachSpawn } from './local-dtach-backend.js';
 import { killProcessTree } from './process-tree.js';
 import { SessionGoneError } from './terminal-backend.js';
+
+describe('buildDtachSpawn', () => {
+  const dtach = '/vendor/dtach/dtach';
+  const dtachArgs = ['-n', '/tmp/s.sock', '-r', 'winch', '-E', 'claude'];
+
+  it('wraps the dtach master in `setsid -f` on Linux so it detaches from Kookr', () => {
+    const { command, args } = buildDtachSpawn('linux', dtach, dtachArgs);
+    expect(command).toBe('setsid');
+    expect(args).toEqual(['-f', dtach, ...dtachArgs]);
+  });
+
+  it('spawns dtach directly on macOS, where setsid is absent', () => {
+    // dtach -n already daemonizes and the caller (createSession) passes
+    // detached:true (setsid(2) semantics), so no external `setsid` binary is
+    // needed. NOTE: the createSession wiring that forwards this argv into
+    // spawnChild(..., { detached: true }) is exercised end-to-end only by the
+    // integration tests below, which run on Linux CI — the macOS spawn branch
+    // itself is verified here at the argv level.
+    const { command, args } = buildDtachSpawn('darwin', dtach, dtachArgs);
+    expect(command).toBe(dtach);
+    expect(args).toEqual(dtachArgs);
+    expect(args).not.toContain('-f');
+  });
+
+  it('uses setsid on non-darwin platforms (darwin is the only exception)', () => {
+    // The backend's contract: every platform except darwin gets `setsid -f`.
+    // Lock that in so a future `=== 'linux'` narrowing doesn't silently drop
+    // the wrapper on other setsid-bearing platforms.
+    const { command } = buildDtachSpawn('freebsd', dtach, dtachArgs);
+    expect(command).toBe('setsid');
+  });
+});
 
 /**
  * Reap any dtach masters (and the agent/shell children they host) whose

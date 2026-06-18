@@ -109,21 +109,5 @@
     "ws": "^8.21.0",
     "zod": "^4.4.3",
     "zustand": "^5.0.14"
-  },
-  "pnpm": {
-    "packageExtensions": {
-      "node-pty@1.1.0": {
-        "dependencies": {
-          "node-gyp": "^12.3.0"
-        }
-      }
-    },
-    "onlyBuiltDependencies": [
-      "@google/genai",
-      "better-sqlite3",
-      "esbuild",
-      "node-pty",
-      "protobufjs"
-    ]
   }
 }

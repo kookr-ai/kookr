@@ -30,7 +30,7 @@ browser xterm.js ⇄ binary WebSocket ⇄ Kookr SessionBridge ⇄ node-pty ⇄ d
 
 - dtach's wire contract is byte-transparent: it does not parse, does not rewrite modes, does not render a status bar. It just pipes bytes between an attach client and a persistent master.
 - The attach client is `spawn('dtach', ['-a', sock, '-E'])` via node-pty — the same exec-based pattern the existing `tmux attach` path uses, with identical lifecycle semantics.
-- Sessions survive Kookr restart (dtach master is detached from Kookr via `setsid`); sockets live under `/tmp/kookr-dtach/<uid>/<instanceId>/`.
+- Sessions survive Kookr restart (the dtach master is detached from Kookr via `setsid -f` on Linux; on macOS, which has no `setsid`, dtach is spawned directly and `dtach -n`'s own `setsid(2)` plus Node's `detached: true` provide the same detachment — see `buildDtachSpawn` in `local-dtach-backend.ts`); sockets live under `/tmp/kookr-dtach/<uid>/<instanceId>/`.
 
 ## Alternatives considered
 

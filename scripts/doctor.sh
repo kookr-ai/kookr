@@ -105,12 +105,12 @@ if command -v pnpm >/dev/null 2>&1; then
     print_row "pnpm" "$PNPM_VERSION" "OK" "(>= 10)"
   else
     print_row "pnpm" "$PNPM_VERSION" "FAIL" "need >= 10"
-    add_fix "pnpm >= 10 required. Run: sudo npm install -g pnpm@latest"
+    add_fix "pnpm >= 10 required. Run: corepack enable (runs the version pinned in package.json), or: sudo npm install -g pnpm@10"
     FAILS=$((FAILS + 1))
   fi
 else
   print_row "pnpm" "missing" "FAIL" "command not found"
-  add_fix "Install pnpm: sudo npm install -g pnpm@latest (or via corepack: corepack enable && corepack prepare pnpm@latest --activate)"
+  add_fix "Install pnpm. Recommended: corepack enable (runs the version pinned in package.json). Or: sudo npm install -g pnpm@10"
   FAILS=$((FAILS + 1))
 fi
 
@@ -141,6 +141,34 @@ if [ "${#MISSING_BUILD[@]}" -eq 0 ]; then
 else
   print_row "build tools" "missing: ${MISSING_BUILD[*]}" "FAIL"
   add_fix "Install build tools. Linux: sudo apt-get install -y build-essential. macOS: xcode-select --install"
+  FAILS=$((FAILS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Required: python3 (node-gyp builds node-pty from source; node-gyp needs python3)
+# ---------------------------------------------------------------------------
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON_VERSION="$(python3 --version 2>&1 | awk '{print $2}')"
+  print_row "python3" "$PYTHON_VERSION" "OK" "(node-gyp / node-pty)"
+else
+  print_row "python3" "missing" "FAIL" "node-gyp needs it"
+  add_fix "Install python3 — node-pty compiles via node-gyp, which requires it. Linux: sudo apt-get install -y python3. macOS: ships with Xcode CLT (xcode-select --install)."
+  FAILS=$((FAILS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Required: setsid (Linux only). Kookr spawns dtach masters via `setsid -f`
+# so they outlive the server. macOS has no setsid; the backend detects that
+# and spawns dtach directly (see local-dtach-backend.ts buildDtachSpawn), so
+# its absence is expected and fine there.
+# ---------------------------------------------------------------------------
+if [ "$(uname -s)" = "Darwin" ]; then
+  print_row "setsid" "n/a (macOS)" "INFO" "not needed; dtach spawned directly"
+elif command -v setsid >/dev/null 2>&1; then
+  print_row "setsid" "available" "OK" "(dtach session detach)"
+else
+  print_row "setsid" "missing" "FAIL" "needed to launch agents"
+  add_fix "Install setsid (util-linux). Debian/Ubuntu: sudo apt-get install -y util-linux. Without it, agent task launch fails with 'dtach socket did not appear'."
   FAILS=$((FAILS + 1))
 fi
 
