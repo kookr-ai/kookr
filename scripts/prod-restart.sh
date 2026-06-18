@@ -270,7 +270,16 @@ start_server() {
   rotate_server_log
   echo "Starting Kookr prod server from ${APP_DIR}"
   echo "Server stdout/stderr → ${LOG_FILE}"
-  setsid -f sh -c "echo \$\$ > \"$PID_FILE\"; exec node dist/server/start.js > \"$LOG_FILE\" 2>&1 < /dev/null"
+  local launch="echo \$\$ > \"$PID_FILE\"; exec node dist/server/start.js > \"$LOG_FILE\" 2>&1 < /dev/null"
+  if command -v setsid >/dev/null 2>&1; then
+    # Linux: setsid -f gives the server a brand-new session, fully detached.
+    setsid -f sh -c "$launch"
+  else
+    # macOS has no setsid. nohup + background + disown detaches the server
+    # from this shell so it survives `pnpm prod:restart` returning.
+    nohup sh -c "$launch" >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+  fi
 }
 
 wait_for_health() {

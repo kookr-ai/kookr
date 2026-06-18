@@ -33,6 +33,10 @@ This runs `scripts/rebuild-codex.sh`, which clones `jeanibarz/codex` into `$HOME
 
 ### Option B — manual build
 
+Requires a Rust toolchain via [`rustup`](https://rustup.rs). The fork pins its
+exact toolchain in `codex-rs/rust-toolchain.toml`; `rustup` reads that file and
+auto-installs the right version on first build, so you do not hardcode a version.
+
 ```bash
 # 1. Clone the fork
 git clone https://github.com/jeanibarz/codex.git "$HOME/git/codex"
@@ -42,12 +46,15 @@ cd "$HOME/git/codex"
 git checkout feat/claude-compat
 git pull
 
-# 3. Build with Rust 1.93.0 (required toolchain)
-cargo +1.93.0 build \
+# 3. Build. Run from the repo so rustup honors rust-toolchain.toml.
+cargo build \
   --manifest-path "$HOME/git/codex/codex-rs/Cargo.toml" \
   -p codex-cli \
   --release
 ```
+
+The Kookr helper (`pnpm codex:rebuild`, Option A) detects and uses the pinned
+toolchain automatically — prefer it unless you need a manual build.
 
 ### Install the binary
 

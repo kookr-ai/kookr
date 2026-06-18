@@ -26,15 +26,44 @@ macOS:
 xcode-select --install
 ```
 
+### Missing python3
+
+`node-pty` compiles from source through `node-gyp`, which requires `python3`. `build-essential` does **not** include it. If `pnpm install` fails inside `node-gyp` with `Could not find any Python installation`, install it:
+
+```bash
+sudo apt-get install -y python3   # Debian/Ubuntu
+xcode-select --install            # macOS (ships python3)
+```
+
 ### pnpm warns about ignored build scripts
 
-Current `package.json` allow-lists required build dependencies. If you see a warning such as `Ignored build scripts: protobufjs@7.5.x` or `@google/genai@2.x`, run:
+Current `pnpm-workspace.yaml` allow-lists required build dependencies (`onlyBuiltDependencies`). If you see a warning such as `Ignored build scripts: protobufjs@7.5.x` or `@google/genai@2.x`, run:
 
 ```bash
 pnpm install
 ```
 
 If the warning persists, check that your checkout is current.
+
+### `The "pnpm" field in package.json is no longer read by pnpm`
+
+This warning comes from **pnpm 11+**, which moved settings out of `package.json` into `pnpm-workspace.yaml` (where this repo now keeps them). On a current checkout it is harmless. It usually means your global pnpm is newer than the version this repo pins (`packageManager: pnpm@10.x`). The reliable fix is to let the pinned version run via Corepack:
+
+```bash
+corepack enable          # uses the pnpm version pinned in package.json
+```
+
+Alternatively, install a matching pnpm: `npm install -g pnpm@10`.
+
+### Duplicate lines in `pnpm-lock.yaml` (e.g. `semver@7.8.4: {}` twice)
+
+A mismatched pnpm version rewriting the committed lockfile can produce duplicate keys that block install/update. Don't hand-edit the lockfile. Use the pinned pnpm (`corepack enable`) and restore the committed lockfile:
+
+```bash
+git checkout -- pnpm-lock.yaml
+corepack enable
+pnpm install --frozen-lockfile
+```
 
 ## App Starts But Browser Is Blank
 
@@ -96,6 +125,15 @@ pnpm build:dtach --force
 ```
 
 If `KOOKR_BACKEND=tmux` exists in your environment or `.env`, remove it. Any value except `dtach` now fails startup.
+
+### `dtach socket did not appear for session kookr-xxxxxxxx`
+
+Launching a task fails with this error when the dtach master could not start.
+
+- **Linux:** Kookr spawns the master with `setsid -f`. If `setsid` is missing (it lives in `util-linux`), install it: `sudo apt-get install -y util-linux`. `pnpm doctor` now checks for it.
+- **macOS:** Kookr no longer uses `setsid` on macOS (it is Linux-only and was the historical cause of this error) — it spawns `dtach` directly and relies on the OS to detach the session. If you are on an older Kookr build, update; you do **not** need to hand-compile a `setsid` port. You also do **not** need to `brew install dtach` — the vendored binary is built automatically by `pnpm install`.
+
+If it still fails, run `vendor/dtach/dtach --help` to confirm the binary works, then check that `/tmp/kookr-dtach/` is writable.
 
 ## Claude Code Or Codex Does Not Launch
 
