@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { buildRepoStateBatchQuery, parseRepoStateBatchResponse } from './github-fetcher.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { buildRepoStateBatchQuery, classifyGitHubRateLimit, parseRepoStateBatchResponse } from './github-fetcher.js';
 import type { GitHubReference } from '../core/github-types.js';
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function ref(type: GitHubReference['type'], number: number): GitHubReference {
   return {
@@ -164,6 +168,48 @@ describe('github-fetcher batching helpers', () => {
       author: 'bob',
       labels: ['bug'],
       commentCount: 5,
+    });
+  });
+
+  it('classifies GraphQL RATE_LIMITED errors with a retry window', () => {
+    const rateLimit = classifyGitHubRateLimit({
+      errors: [
+        { type: 'RATE_LIMITED', message: 'API rate limit exceeded. Retry-After: 120' },
+      ],
+    });
+
+    expect(rateLimit).toEqual({
+      kind: 'rate-limited',
+      retryAfterMs: 120_000,
+      message: 'RATE_LIMITED: API rate limit exceeded. Retry-After: 120',
+    });
+  });
+
+  it('classifies secondary-rate-limit stderr from gh', () => {
+    const rateLimit = classifyGitHubRateLimit(new Error('You have exceeded a secondary rate limit. Retry after 30 seconds.'));
+
+    expect(rateLimit).toEqual({
+      kind: 'rate-limited',
+      retryAfterMs: 30_000,
+      message: 'You have exceeded a secondary rate limit. Retry after 30 seconds.',
+    });
+  });
+
+  it('uses x-ratelimit-reset for exhausted primary limits', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-18T00:00:00.000Z'));
+
+    const rateLimit = classifyGitHubRateLimit({
+      headers: {
+        'x-ratelimit-remaining': '0',
+        'x-ratelimit-reset': String(Date.parse('2026-06-18T00:02:00.000Z') / 1000),
+      },
+    });
+
+    expect(rateLimit).toEqual({
+      kind: 'rate-limited',
+      retryAfterMs: 120_000,
+      message: 'x-ratelimit-remaining: 0',
     });
   });
 });
