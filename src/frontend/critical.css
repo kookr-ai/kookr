@@ -142,6 +142,77 @@ code, kbd { font-family: var(--font-mono); }
   white-space: nowrap;
 }
 
+.app-error-shell {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.app-error-panel {
+  width: min(640px, 100%);
+  padding: 24px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.34);
+}
+
+.app-error-kicker {
+  margin-bottom: 8px;
+  color: var(--amber);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.app-error-panel h1 {
+  margin-bottom: 8px;
+  color: var(--text-bright);
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.app-error-copy {
+  margin-bottom: 18px;
+  color: var(--text-secondary);
+}
+
+.app-error-details {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.app-error-details div {
+  min-width: 0;
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-dim);
+  border-radius: 8px;
+}
+
+.app-error-details dt {
+  margin-bottom: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.app-error-details dd {
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.app-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .project-sidebar {
   display: flex;
   flex-direction: column;
