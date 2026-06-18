@@ -197,7 +197,10 @@ print_global_assets() {
     IFS=$'\t' read -r name event matcher if_cond <<<"$row"
     printf '%s\t%s\t%s\n' "$name" "hooks/$name" ".claude/hooks/$name"
   done
-  for skill in "${SKILLS[@]}"; do
+  # SKILLS is intentionally empty; `${arr[@]+"${arr[@]}"}` keeps the loop safe
+  # under `set -u` on macOS bash 3.2, where a bare `"${SKILLS[@]}"` over an empty
+  # array raises "SKILLS[@]: unbound variable" and breaks the toolkit status.
+  for skill in ${SKILLS[@]+"${SKILLS[@]}"}; do
     printf '%s\t%s\t%s\n' "$skill" ".claude/skills/$skill" ".claude/skills/$skill"
   done
   for row in "${PLUGIN_ASSETS[@]}"; do
@@ -282,7 +285,7 @@ case "$cmd" in
       install_symlink "$name"
       register_hook "$name" "$event" "$matcher" "$if_cond"
     done
-    for skill in "${SKILLS[@]}"; do
+    for skill in ${SKILLS[@]+"${SKILLS[@]}"}; do
       install_skill_symlink "$skill"
     done
     for row in "${PLUGIN_ASSETS[@]}"; do
@@ -310,7 +313,7 @@ case "$cmd" in
       IFS=$'\t' read -r src_rel dest_rel <<<"$row"
       uninstall_plugin_asset_symlink "$dest_rel"
     done
-    for skill in "${SKILLS[@]}"; do
+    for skill in ${SKILLS[@]+"${SKILLS[@]}"}; do
       uninstall_skill_symlink "$skill"
     done
     printf '\nDone.\n'
