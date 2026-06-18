@@ -94,6 +94,38 @@ describe('verifyDocumentedCommands', () => {
     ]);
   });
 
+  it('accepts documented built node entrypoints when the source exists', () => {
+    const repoRoot = createRepo({
+      scripts: {},
+      docs: '`node dist/server/start.js`',
+      files: ['src/server/start.ts'],
+    });
+
+    const result = verifyDocumentedCommands(repoRoot);
+
+    expect(result.issues).toEqual([]);
+    expect(result.checked.map((command) => command.normalized)).toEqual([
+      'node entrypoint dist/server/start.js (built from src/server/start.ts)',
+    ]);
+  });
+
+  it('does not apply the built-entrypoint fallback to shell scripts', () => {
+    const repoRoot = createRepo({
+      scripts: {},
+      docs: '`bash dist/server/start.js`',
+      files: ['src/server/start.ts'],
+    });
+
+    const result = verifyDocumentedCommands(repoRoot);
+
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        text: 'bash dist/server/start.js',
+        message: 'shell script does not exist: dist/server/start.js',
+      }),
+    ]);
+  });
+
   it('skips manual, placeholder, and compound shell commands instead of failing them', () => {
     const repoRoot = createRepo({
       scripts: {},

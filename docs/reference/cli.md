@@ -89,9 +89,55 @@ kookr spawn --prompt-file /tmp/prompt.md
 
 This keeps the shell command short, avoids hook false positives, and leaves the dashboard as the main supervision surface. After spawning several tasks, use `kookr status` for a quick terminal snapshot and use the dashboard's dense-supervision controls for routing: `Alt+N` for the next finding, `Alt+T` for desktop terminal focus mode, `Alt+P` for the project sidebar, and `?` for the full shortcut list.
 
+## `kookr signal`
+
+Raise a non-blocking agent -> user signal for the current Kookr task:
+
+```bash
+kookr signal completion-ready
+kookr signal completion-ready --note "tests green, PR opened"
+kookr signal completion-ready --task-id <taskId>
+```
+
+The `completion-ready` signal tells Kookr that the agent believes the task is
+ready for the user to complete. It does not complete or stop the task by itself;
+the user still decides what to do in the dashboard.
+
+Kinds:
+
+- `completion-ready` - tell the user this task appears ready to complete.
+
+Options:
+
+- `--note <text>` - attach optional context. The server best-effort redacts
+  secrets and visibly truncates over-limit notes.
+- `--task-id <uuid>` - target a specific task. Defaults to `KOOKR_TASK_ID`,
+  which Kookr injects into managed agent sessions.
+
+Hook scripts can use the command after their own readiness checks:
+
+```bash
+if pnpm test; then
+  kookr signal completion-ready --note "tests passed"
+fi
+```
+
+Target selection uses the same local-server discovery as `kookr spawn`: first
+`KOOKR_API_BASE_URL`, then `KOOKR_PORT`, then local ports `4800` and `4801`.
+
+Exit behavior:
+
+- `0` when the signal is raised.
+- `2` for usage errors, including an unknown signal kind, a missing task id,
+  bad flags, or an invalid `KOOKR_PORT`.
+- `3` when no Kookr server is reachable. This is advisory so agents can keep
+  finishing their work when the dashboard is unavailable.
+- `4` when the server rejects the signal, for example because the task id is
+  unknown or terminal.
+
 ## Server Discovery
 
-`kookr spawn` discovers the active Kookr instance with this precedence:
+`kookr spawn` and `kookr signal` discover the active Kookr instance with this precedence:
 
 1. `KOOKR_API_BASE_URL`
 2. `KOOKR_PORT`
