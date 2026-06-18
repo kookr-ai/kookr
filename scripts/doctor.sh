@@ -185,6 +185,34 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Required on macOS: node-pty's `spawn-helper` must be executable. pnpm strips
+# the executable bit off the prebuilt binary; `pnpm install` re-applies it via
+# `fix:native-perms`. Without it, every agent terminal launch fails with
+# "posix_spawnp failed." (Linux does not use spawn-helper, so this is skipped.)
+# ---------------------------------------------------------------------------
+if [ "$(uname -s)" = "Darwin" ]; then
+  case "$(uname -m)" in
+    arm64) PTY_ARCH_DIR="darwin-arm64" ;;
+    x86_64) PTY_ARCH_DIR="darwin-x64" ;;
+    *) PTY_ARCH_DIR="" ;;
+  esac
+  PTY_HELPER=""
+  if [ -n "$PTY_ARCH_DIR" ]; then
+    PTY_HELPER="$(find "$REPO_ROOT/node_modules" -path "*node-pty*${PTY_ARCH_DIR}*" -name spawn-helper 2>/dev/null | head -n1)"
+  fi
+  if [ -z "$PTY_HELPER" ]; then
+    print_row "node-pty helper" "not found" "WARN" "spawn-helper missing (run pnpm install)"
+    WARNS=$((WARNS + 1))
+  elif [ -x "$PTY_HELPER" ]; then
+    print_row "node-pty helper" "executable" "OK" "(agent PTY spawn)"
+  else
+    print_row "node-pty helper" "not executable" "FAIL" "agent launch fails (posix_spawnp)"
+    add_fix "node-pty spawn-helper lacks the executable bit (pnpm strips it). Fix: pnpm fix:native-perms (or rerun pnpm install). File: $PTY_HELPER"
+    FAILS=$((FAILS + 1))
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Required when explicitly configured: startup env + agent binary preflight
 #
 # Uses the same src/server/config-preflight.ts module as server startup so bad
