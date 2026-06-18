@@ -119,6 +119,26 @@ get_process_cwd() {
   printf '%s\n' "$cwd"
 }
 
+# macOS ships bash 3.2, which has no `mapfile`/`readarray`. `_collect_lines`
+# reads stdin into the global array `_COLLECTED_LINES`; callers copy it with the
+# set -u-safe `${arr[@]:+...}` form. Feed it via process substitution
+# (`_collect_lines < <(producer)`), not a pipe: a pipe would run the loop in a
+# subshell and the populated array would not survive into the caller.
+_collect_lines() {
+  _COLLECTED_LINES=()
+  local _line=""
+  while IFS= read -r _line; do
+    _COLLECTED_LINES+=("$_line")
+  done
+  # A final line with no trailing newline leaves `read` returning non-zero with
+  # `$_line` still populated, so the loop skips it; append it here so this is a
+  # faithful `mapfile -t` replacement regardless of the producer. The `if`
+  # (not `&& `) keeps the function's exit status 0 under `set -e`.
+  if [ -n "$_line" ]; then
+    _COLLECTED_LINES+=("$_line")
+  fi
+}
+
 find_start_pids() {
   local pid cwd cmd
   while IFS= read -r pid; do
@@ -189,7 +209,8 @@ wait_for_start_pids_to_exit() {
   local timeout_seconds="$1"
   local -a pids=()
 
-  mapfile -t pids < <(find_start_pids)
+  _collect_lines < <(find_start_pids)
+  pids=("${_COLLECTED_LINES[@]:+${_COLLECTED_LINES[@]}}")
   if (( ${#pids[@]} == 0 )); then
     return 0
   fi
@@ -198,7 +219,8 @@ wait_for_start_pids_to_exit() {
     return 0
   fi
 
-  mapfile -t pids < <(find_start_pids)
+  _collect_lines < <(find_start_pids)
+  pids=("${_COLLECTED_LINES[@]:+${_COLLECTED_LINES[@]}}")
   if (( ${#pids[@]} > 0 )); then
     echo "Force-killing lingering Kookr startup processes: ${pids[*]}"
     terminate_pids KILL "${pids[@]}"
@@ -210,21 +232,24 @@ stop_existing_server() {
   local -a port_pids=()
   local -a start_pids=()
 
-  mapfile -t port_pids < <(find_port_pids)
+  _collect_lines < <(find_port_pids)
+  port_pids=("${_COLLECTED_LINES[@]:+${_COLLECTED_LINES[@]}}")
   if (( ${#port_pids[@]} > 0 )); then
     echo "Stopping process(es) on port ${PORT}: ${port_pids[*]}"
     terminate_pids TERM "${port_pids[@]}"
     wait_for_port_to_clear 30 || true
   fi
 
-  mapfile -t start_pids < <(find_start_pids)
+  _collect_lines < <(find_start_pids)
+  start_pids=("${_COLLECTED_LINES[@]:+${_COLLECTED_LINES[@]}}")
   if (( ${#start_pids[@]} > 0 )); then
     echo "Stopping existing Kookr startup process(es): ${start_pids[*]}"
     terminate_pids TERM "${start_pids[@]}"
     wait_for_start_pids_to_exit 30
   fi
 
-  mapfile -t port_pids < <(find_port_pids)
+  _collect_lines < <(find_port_pids)
+  port_pids=("${_COLLECTED_LINES[@]:+${_COLLECTED_LINES[@]}}")
   if (( ${#port_pids[@]} > 0 )); then
     echo "Force-killing lingering process(es) on port ${PORT}: ${port_pids[*]}"
     terminate_pids KILL "${port_pids[@]}"
