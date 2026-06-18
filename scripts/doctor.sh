@@ -196,7 +196,13 @@ fi
 if [ -d "$REPO_ROOT/node_modules" ]; then
   CONFIG_PREFLIGHT_OUTPUT="$(
     cd "$REPO_ROOT" && node --import tsx --eval '
-      import("./src/server/config-preflight.ts").then(async (mod) => {
+      import("./src/server/config-preflight.ts").then(async (ns) => {
+        // tsx on Node 22 (the documented `brew install node@22` on macOS) can
+        // expose this module'\''s named exports only under `.default`, while
+        // Node 24 exposes them at the top level. Accept either shape so the
+        // preflight does not spuriously report "runConfigPreflight is not a
+        // function" on a supported Node version.
+        const mod = typeof ns.runConfigPreflight === "function" ? ns : (ns.default ?? ns);
         try { process.loadEnvFile(); } catch {}
         const result = await mod.runConfigPreflight(process.env);
         console.log(mod.formatConfigPreflightCliOutput(result));

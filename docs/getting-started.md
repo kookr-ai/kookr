@@ -33,6 +33,11 @@ corepack enable
 # Xcode command line tools provide git, build tools, and python3.
 xcode-select --install
 
+# Homebrew, if you don't already have it. When it finishes, run the two
+# `eval "$(... shellenv)"` lines it prints so `brew` is on your PATH (and add
+# that line to ~/.zprofile for future shells).
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
 # Node.js via Homebrew. Corepack runs the pinned pnpm version.
 brew install node@22
 corepack enable
