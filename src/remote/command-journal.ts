@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { appendFile, mkdir, open, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import type {
@@ -83,8 +83,20 @@ interface IdempotencyEntry {
   result?: CommandResult;
 }
 
+interface CommandJournalSnapshot {
+  version: 1;
+  auditSizeBytes: number;
+  createdAt: string;
+  intents: Array<CommandAuditRow & { type: 'command.intent' }>;
+  results: Array<{ commandId: CommandId; result: CommandResult; lastSeenAt: number }>;
+  idempotency: IdempotencyEntry[];
+  tombstones: GrantId[];
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_IDEMPOTENCY_ENTRIES = 100_000;
+const DEFAULT_COMPACT_AFTER_BYTES = 8 * 1024 * 1024;
+const MAX_COMMAND_STATE_ENTRIES = MAX_IDEMPOTENCY_ENTRIES;
 
 function tupleKey(tuple: IdempotencyTuple): string {
   return [
@@ -105,21 +117,51 @@ function isAuditRow(value: unknown): value is CommandAuditRow {
     && typeof row.timestamp === 'string';
 }
 
+function isSnapshot(value: unknown): value is CommandJournalSnapshot {
+  const snapshot = value as Partial<CommandJournalSnapshot>;
+  return typeof value === 'object'
+    && value !== null
+    && snapshot.version === 1
+    && typeof snapshot.auditSizeBytes === 'number'
+    && typeof snapshot.createdAt === 'string'
+    && Array.isArray(snapshot.intents)
+    && snapshot.intents.every((row) => isAuditRow(row) && row.type === 'command.intent')
+    && Array.isArray(snapshot.results)
+    && snapshot.results.every((entry) => typeof entry === 'object'
+      && entry !== null
+      && typeof entry.commandId === 'string'
+      && typeof entry.lastSeenAt === 'number'
+      && typeof entry.result === 'object'
+      && entry.result !== null)
+    && Array.isArray(snapshot.idempotency)
+    && Array.isArray(snapshot.tombstones)
+    && snapshot.tombstones.every((grantId) => typeof grantId === 'string');
+}
+
 export class CommandJournal {
   private readonly intents = new Map<CommandId, CommandAuditRow & { type: 'command.intent' }>();
   private readonly results = new Map<CommandId, CommandResult>();
   private readonly idempotency = new Map<string, IdempotencyEntry>();
   private readonly tombstones = new Set<GrantId>();
+  private readonly commandLastSeenAt = new Map<CommandId, number>();
+  private lastCompactedAuditSize = 0;
+  private archiveCounter = 0;
 
   private constructor(
     private readonly auditPath: string,
+    private readonly snapshotPath: string,
     private readonly nodeId: NodeId,
     private readonly nodeEpoch: NodeEpoch,
     private readonly now: () => Date,
+    private readonly compactAfterBytes: number,
   ) {}
 
   static auditPathFor(kookrDir: string): string {
     return join(kookrDir, 'audit.jsonl');
+  }
+
+  static snapshotPathFor(kookrDir: string): string {
+    return join(kookrDir, 'audit.snapshot.json');
   }
 
   static async open(opts: {
@@ -127,12 +169,15 @@ export class CommandJournal {
     nodeId: NodeId;
     nodeEpoch: NodeEpoch;
     now?: () => Date;
+    compactAfterBytes?: number;
   }): Promise<CommandJournal> {
     const journal = new CommandJournal(
       CommandJournal.auditPathFor(opts.kookrDir),
+      CommandJournal.snapshotPathFor(opts.kookrDir),
       opts.nodeId,
       opts.nodeEpoch,
       opts.now ?? (() => new Date()),
+      opts.compactAfterBytes ?? DEFAULT_COMPACT_AFTER_BYTES,
     );
     await journal.load();
     return journal;
@@ -140,6 +185,10 @@ export class CommandJournal {
 
   getAuditPath(): string {
     return this.auditPath;
+  }
+
+  getSnapshotPath(): string {
+    return this.snapshotPath;
   }
 
   hasTombstone(grantId: GrantId): boolean {
@@ -178,23 +227,28 @@ export class CommandJournal {
   }
 
   async appendIntent(command: CommandEnvelope): Promise<void> {
-    const row = { ...command, type: 'command.intent' as const, timestamp: this.now().toISOString() };
+    const now = this.now();
+    const row = { ...command, type: 'command.intent' as const, timestamp: now.toISOString() };
     this.intents.set(command.commandId, row);
+    this.commandLastSeenAt.set(command.commandId, now.getTime());
     this.idempotency.set(tupleKey(command), {
       tupleKey: tupleKey(command),
       commandId: command.commandId,
-      createdAt: this.now().getTime(),
-      lastUsedAt: this.now().getTime(),
+      createdAt: now.getTime(),
+      lastUsedAt: now.getTime(),
     });
     await this.append(row);
   }
 
   async appendResult(command: CommandEnvelope, result: CommandResult): Promise<void> {
+    const now = this.now();
+    this.intents.delete(command.commandId);
     this.results.set(command.commandId, result);
+    this.commandLastSeenAt.set(command.commandId, now.getTime());
     const entry = this.idempotency.get(tupleKey(command));
     if (entry) {
       entry.result = result;
-      entry.lastUsedAt = this.now().getTime();
+      entry.lastUsedAt = now.getTime();
     }
     await this.append({
       ...command,
@@ -202,11 +256,12 @@ export class CommandJournal {
       outcome: result.outcome,
       reason: result.reason,
       result: result.result,
-      timestamp: this.now().toISOString(),
+      timestamp: now.toISOString(),
     });
   }
 
   async appendPreAuditReject(command: Partial<CommandEnvelope> & Pick<CommandEnvelope, 'commandId' | 'action'>, reason: string): Promise<CommandResult> {
+    const now = this.now();
     const result: CommandResult = {
       commandId: command.commandId,
       action: command.action,
@@ -214,12 +269,13 @@ export class CommandJournal {
       reason,
     };
     this.results.set(command.commandId, result);
+    this.commandLastSeenAt.set(command.commandId, now.getTime());
     await this.append({
       ...command,
       type: 'command.pre-audit-reject',
       outcome: 'rejected-pre-audit',
       reason,
-      timestamp: this.now().toISOString(),
+      timestamp: now.toISOString(),
     });
     return result;
   }
@@ -244,64 +300,220 @@ export class CommandJournal {
     for (const entry of lru.slice(0, this.idempotency.size - MAX_IDEMPOTENCY_ENTRIES)) {
       this.idempotency.delete(entry.tupleKey);
     }
+    this.pruneCommandState();
   }
 
   private async load(): Promise<void> {
-    let raw = '';
-    try {
-      raw = await readFile(this.auditPath, 'utf8');
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
-      throw err;
+    let auditOffset = 0;
+    const snapshot = await this.readSnapshot();
+    const auditSize = await this.auditSize();
+    // A snapshot is only a projection cache. If the active audit was truncated
+    // or replaced after the snapshot was written, replay the audit from zero
+    // rather than resurrecting state the current log no longer contains.
+    if (snapshot && snapshot.auditSizeBytes <= auditSize) {
+      this.applySnapshot(snapshot);
+      auditOffset = snapshot.auditSizeBytes;
+      this.lastCompactedAuditSize = snapshot.auditSizeBytes;
     }
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) continue;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(line) as unknown;
-      } catch {
-        continue;
-      }
-      if (!isAuditRow(parsed)) continue;
-      if (parsed.type === 'grant.revoke') {
-        this.tombstones.add(parsed.grantId);
-        continue;
-      }
-      if (parsed.type === 'command.intent') {
-        this.intents.set(parsed.commandId, parsed);
-        if (parsed.nodeEpoch === this.nodeEpoch) {
-          this.idempotency.set(tupleKey(parsed), {
-            tupleKey: tupleKey(parsed),
-            commandId: parsed.commandId,
-            createdAt: Date.parse(parsed.timestamp),
-            lastUsedAt: Date.parse(parsed.timestamp),
-          });
+    const raw = await this.readAuditTail(auditOffset);
+    this.applyAuditLines(raw);
+    this.pruneCommandState();
+  }
+
+  private applySnapshot(snapshot: CommandJournalSnapshot): void {
+    this.intents.clear();
+    this.results.clear();
+    this.idempotency.clear();
+    this.tombstones.clear();
+    this.commandLastSeenAt.clear();
+
+    for (const intent of snapshot.intents) {
+      this.intents.set(intent.commandId, intent);
+      this.commandLastSeenAt.set(intent.commandId, Date.parse(intent.timestamp));
+    }
+    for (const entry of snapshot.results) {
+      this.results.set(entry.commandId, entry.result);
+      this.commandLastSeenAt.set(entry.commandId, entry.lastSeenAt);
+    }
+    for (const entry of snapshot.idempotency) {
+      this.idempotency.set(entry.tupleKey, entry);
+      this.commandLastSeenAt.set(entry.commandId, Math.max(
+        this.commandLastSeenAt.get(entry.commandId) ?? 0,
+        entry.lastUsedAt,
+      ));
+    }
+    for (const grantId of snapshot.tombstones) this.tombstones.add(grantId);
+  }
+
+  private applyAuditLines(raw: string): void {
+    try {
+      for (const line of raw.split('\n')) {
+        if (!line.trim()) continue;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(line) as unknown;
+        } catch {
+          continue;
         }
-        continue;
+        if (isAuditRow(parsed)) this.applyAuditRow(parsed);
       }
-      const result: CommandResult = {
-        commandId: parsed.commandId,
-        action: parsed.action,
-        outcome: parsed.outcome,
-        reason: parsed.reason,
-        result: parsed.result,
-      };
-      this.results.set(parsed.commandId, result);
-      if (parsed.type === 'command.result' && parsed.nodeEpoch === this.nodeEpoch) {
-        const key = tupleKey(parsed as CommandEnvelope);
-        this.idempotency.set(key, {
-          tupleKey: key,
-          commandId: parsed.commandId,
-          result,
-          createdAt: Date.parse(parsed.timestamp),
-          lastUsedAt: Date.parse(parsed.timestamp),
+    } finally {
+      this.pruneCommandState();
+    }
+  }
+
+  private applyAuditRow(row: CommandAuditRow): void {
+    if (row.type === 'grant.revoke') {
+      this.tombstones.add(row.grantId);
+      return;
+    }
+    const timestamp = Date.parse(row.timestamp);
+    this.commandLastSeenAt.set(row.commandId, timestamp);
+    if (row.type === 'command.intent') {
+      this.intents.set(row.commandId, row);
+      if (row.nodeEpoch === this.nodeEpoch) {
+        this.idempotency.set(tupleKey(row), {
+          tupleKey: tupleKey(row),
+          commandId: row.commandId,
+          createdAt: timestamp,
+          lastUsedAt: timestamp,
         });
       }
+      return;
+    }
+    const result: CommandResult = {
+      commandId: row.commandId,
+      action: row.action,
+      outcome: row.outcome,
+      reason: row.reason,
+      result: row.result,
+    };
+    this.intents.delete(row.commandId);
+    this.results.set(row.commandId, result);
+    if (row.type === 'command.result' && row.nodeEpoch === this.nodeEpoch) {
+      const key = tupleKey(row as CommandEnvelope);
+      this.idempotency.set(key, {
+        tupleKey: key,
+        commandId: row.commandId,
+        result,
+        createdAt: timestamp,
+        lastUsedAt: timestamp,
+      });
     }
   }
 
   private async append(row: CommandAuditRow): Promise<void> {
     await mkdir(dirname(this.auditPath), { recursive: true });
     await appendFile(this.auditPath, `${JSON.stringify(row)}\n`, 'utf8');
+    await this.compactIfNeeded();
+  }
+
+  private async readSnapshot(): Promise<CommandJournalSnapshot | null> {
+    let raw: string;
+    try {
+      raw = await readFile(this.snapshotPath, 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw err;
+    }
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return isSnapshot(parsed) ? parsed : null;
+    } catch {
+      // Snapshots are rebuildable; malformed projection state should not block
+      // recovery from the authoritative audit log.
+      return null;
+    }
+  }
+
+  private async readAuditTail(offset: number): Promise<string> {
+    const size = await this.auditSize();
+    if (size === 0) return '';
+    if (offset <= 0 || offset > size) return readFile(this.auditPath, 'utf8');
+    if (offset === size) return '';
+    const handle = await open(this.auditPath, 'r');
+    try {
+      const buffer = Buffer.alloc(size - offset);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+      return buffer.subarray(0, bytesRead).toString('utf8');
+    } finally {
+      await handle.close();
+    }
+  }
+
+  private async auditSize(): Promise<number> {
+    try {
+      return (await stat(this.auditPath)).size;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+      throw err;
+    }
+  }
+
+  private pruneCommandState(): void {
+    const commandStateSize = new Set([...this.intents.keys(), ...this.results.keys()]).size;
+    if (commandStateSize <= MAX_COMMAND_STATE_ENTRIES) return;
+
+    const keep = new Set<CommandId>();
+    for (const entry of this.idempotency.values()) keep.add(entry.commandId);
+    for (const [commandId] of [...this.commandLastSeenAt.entries()].sort((a, b) => b[1] - a[1])) {
+      if (keep.size >= MAX_COMMAND_STATE_ENTRIES) break;
+      keep.add(commandId);
+    }
+
+    for (const commandId of this.intents.keys()) {
+      if (!keep.has(commandId)) this.intents.delete(commandId);
+    }
+    for (const commandId of this.results.keys()) {
+      if (!keep.has(commandId)) this.results.delete(commandId);
+    }
+    for (const commandId of this.commandLastSeenAt.keys()) {
+      if (!keep.has(commandId)) this.commandLastSeenAt.delete(commandId);
+    }
+  }
+
+  private async compactIfNeeded(): Promise<void> {
+    if (this.compactAfterBytes <= 0) return;
+    const size = (await stat(this.auditPath)).size;
+    if (size - this.lastCompactedAuditSize < this.compactAfterBytes) return;
+    await this.rotateActiveAudit();
+  }
+
+  private async rotateActiveAudit(): Promise<void> {
+    // Snapshot the current live projection, then archive the covered active
+    // audit and start a new empty tail. The snapshot offset is zero because it
+    // applies to the newly-created active audit, not the archived segment.
+    await this.writeSnapshot(0);
+    await rename(this.auditPath, this.nextArchivePath());
+    await writeFile(this.auditPath, '', 'utf8');
+    this.lastCompactedAuditSize = 0;
+  }
+
+  private nextArchivePath(): string {
+    const stamp = this.now().toISOString().replace(/[^0-9A-Za-z.-]/g, '-');
+    this.archiveCounter += 1;
+    return join(dirname(this.auditPath), `audit.${stamp}.${process.pid}.${this.archiveCounter}.jsonl`);
+  }
+
+  private async writeSnapshot(activeAuditSizeBytes: number): Promise<void> {
+    this.pruneCommandState();
+    const snapshot: CommandJournalSnapshot = {
+      version: 1,
+      auditSizeBytes: activeAuditSizeBytes,
+      createdAt: this.now().toISOString(),
+      intents: [...this.intents.values()].filter((intent) => !this.results.has(intent.commandId)),
+      results: [...this.results.entries()].map(([commandId, result]) => ({
+        commandId,
+        result,
+        lastSeenAt: this.commandLastSeenAt.get(commandId) ?? this.now().getTime(),
+      })),
+      idempotency: [...this.idempotency.values()],
+      tombstones: [...this.tombstones],
+    };
+    await mkdir(dirname(this.snapshotPath), { recursive: true });
+    const tmp = `${this.snapshotPath}.${process.pid}.tmp`;
+    await writeFile(tmp, `${JSON.stringify(snapshot)}\n`, 'utf8');
+    await rename(tmp, this.snapshotPath);
+    this.lastCompactedAuditSize = activeAuditSizeBytes;
   }
 }
