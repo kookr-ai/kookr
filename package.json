@@ -26,6 +26,7 @@
     "test:watch": "vitest",
     "build": "pnpm generate-build-info && pnpm build:dtach && pnpm build:server && pnpm build:relay && pnpm build:frontend",
     "build:dtach": "bash scripts/build-dtach.sh",
+    "fix:native-perms": "bash scripts/fix-native-perms.sh",
     "doctor": "bash scripts/doctor.sh",
     "relay:start": "node --import tsx scripts/relay-lifecycle.ts start",
     "relay:status": "node --import tsx scripts/relay-lifecycle.ts status",
@@ -63,7 +64,7 @@
     "demo:check": "pnpm build && DEMO_CHECK=1 node --import tsx demo/record.ts",
     "codex:rebuild": "bash scripts/rebuild-codex.sh",
     "merge": "bash scripts/kookr-merge.sh",
-    "prepare": "git config core.hooksPath .hooks && pnpm build:dtach"
+    "prepare": "git config core.hooksPath .hooks && pnpm build:dtach && pnpm fix:native-perms"
   },
   "keywords": [],
   "author": "Jean Ibarz",
