@@ -11,6 +11,7 @@ This guide is for a first local Kookr install. It keeps optional features out of
 - On Linux, `setsid` (from `util-linux`, present on virtually every distro) — Kookr uses it to detach agent sessions. macOS does not need it.
 - Claude Code CLI, only if you want Kookr to launch Claude Code agents
 - For Codex CLI agents, the maintained fork — see [Codex CLI Setup](codex-cli-setup.md)
+- Optional: the `kb` knowledge-base CLI for prior-art lookup and lesson capture — Kookr works without it; see [Knowledge Base Setup](knowledge-base-setup.md)
 
 ## Ubuntu / Debian
 

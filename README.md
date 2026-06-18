@@ -28,7 +28,7 @@ You run several Claude Code or Codex CLI agents in parallel. One loops on the sa
 - **Detects common blockers** such as permission prompts, repeated errors, idle/stopped agents, and stuck work.
 - **Routes your attention** to the agent that most needs a human response.
 - **Lets you reply from one dashboard** without switching terminals.
-- **Runs locally** on your machine, with optional integrations for AI suggestions, speech, Telegram, GitHub state, schedules, and playbooks.
+- **Runs locally** on your machine, with optional integrations for AI suggestions, speech, Telegram, GitHub state, schedules, playbooks, and a [knowledge base](docs/knowledge-base-setup.md).
 
 ## Quick Start
 

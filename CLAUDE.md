@@ -123,6 +123,8 @@ A stable Kookr instance runs from a separate git worktree at `../kookr-prod` on 
 
 This policy governs knowledge-base lookup. It is separate from the Persistence Mechanism Picker below, which governs where to save new rules, workflow corrections, and context.
 
+> **`kb` is an optional dependency** (see [docs/knowledge-base-setup.md](docs/knowledge-base-setup.md)). If the `kb` CLI is not installed — or a command is unavailable in the installed version (the published CLI is search-only and lacks `kb remember` / `--gate`) — treat every step below as a graceful no-op: note `KB lookup skipped: kb not installed` (or `kb remember unavailable`) and proceed. Never block work on `kb`.
+
 Run `kb search "<2-line gist of the task>"` before designing or implementing any task in these classes:
 
 - Non-trivial research, architecture, RFC, issue-synthesis, or requirements work.

@@ -92,8 +92,12 @@ codex --version
 You should see output of the form:
 
 ```
-codex-cli 0.118.0+kookr.<short-sha>
+codex-cli <version>+kookr.<short-sha>
 ```
+
+(for example `codex-cli 0.125.0-alpha.3+kookr.36b03d14` — the version tracks
+upstream and changes over time; the `+kookr.<sha>` suffix is the part that
+matters.)
 
 The `+kookr.<sha>` suffix confirms you're on the fork build, not upstream. If the worktree was dirty at build time the suffix becomes `+kookr.<sha>.dirty` — rebuild from a clean checkout for a release-quality binary.
 
