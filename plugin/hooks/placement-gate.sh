@@ -31,7 +31,13 @@ fi
 # be parsed by macOS's default bash 3.2 when the body contains a backtick,
 # which previously made this hook fail to parse and block every tool call.
 HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
-candidate_paths=$(PLACEMENT_GATE_PAYLOAD="$payload" node "$HOOK_DIR/placement-gate.mjs")
+# Suppress the extractor's stderr (a missing/broken .mjs would otherwise dump a
+# Node stack trace on every gated call) and degrade to a single advisory line.
+# This gate must never block a tool call on its own failure — exit 0.
+if ! candidate_paths=$(PLACEMENT_GATE_PAYLOAD="$payload" node "$HOOK_DIR/placement-gate.mjs" 2>/dev/null); then
+  echo "placement-gate: path extractor failed; skipping placement check." >&2
+  exit 0
+fi
 
 if [ -z "$candidate_paths" ]; then
   exit 0

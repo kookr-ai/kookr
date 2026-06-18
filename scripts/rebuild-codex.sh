@@ -29,8 +29,11 @@ MANIFEST="$CODEX_SRC/codex-rs/Cargo.toml"
 # erroring out. An existing checkout is built as-is — update it yourself
 # (see docs/codex-cli-setup.md "Updating the fork").
 if [ ! -f "$MANIFEST" ]; then
-  if [ -e "$CODEX_SRC" ] && [ ! -d "$CODEX_SRC/.git" ]; then
-    echo "ERROR: $CODEX_SRC exists but is not a git checkout of the Codex fork." >&2
+  # A non-empty directory that is not a git checkout would make `git clone`
+  # fail with a cryptic "destination path already exists" — reject it with a
+  # clear message. An empty directory is fine: `git clone` populates it.
+  if [ -d "$CODEX_SRC" ] && [ ! -d "$CODEX_SRC/.git" ] && [ -n "$(ls -A "$CODEX_SRC" 2>/dev/null)" ]; then
+    echo "ERROR: $CODEX_SRC exists, is not empty, and is not a git checkout of the Codex fork." >&2
     echo "       Expected Cargo.toml at $MANIFEST." >&2
     echo "       Move it aside or set CODEX_SRC to a different path." >&2
     exit 1
@@ -46,9 +49,16 @@ if [ ! -f "$MANIFEST" ]; then
     echo "Cloning $CODEX_REPO_URL (branch $CODEX_BRANCH) ..."
     git clone --branch "$CODEX_BRANCH" "$CODEX_REPO_URL" "$CODEX_SRC"
   else
-    echo "Codex fork at $CODEX_SRC is missing $MANIFEST; checking out $CODEX_BRANCH ..."
-    git -C "$CODEX_SRC" fetch origin "$CODEX_BRANCH"
-    git -C "$CODEX_SRC" checkout "$CODEX_BRANCH"
+    # `.git` exists but the manifest does not — most often an interrupted
+    # clone or the wrong repository. Auto-recovery (fetch/checkout) assumes a
+    # healthy `origin` and would fail cryptically on a partial clone, so ask
+    # the user to reset the directory instead.
+    echo "ERROR: $CODEX_SRC is a git checkout but $MANIFEST is missing." >&2
+    echo "       This usually means a previous clone was interrupted, or a" >&2
+    echo "       different repository is checked out there." >&2
+    echo "       Remove $CODEX_SRC and re-run, or point CODEX_SRC at a clean" >&2
+    echo "       checkout of $CODEX_REPO_URL ($CODEX_BRANCH)." >&2
+    exit 1
   fi
 fi
 
@@ -82,12 +92,19 @@ if [ -f "$TOOLCHAIN_FILE" ]; then
     echo "Using toolchain from rust-toolchain.toml: $CHANNEL"
   else
     TOOLCHAIN=""
+    echo "WARNING: found $TOOLCHAIN_FILE but could not parse a channel; building with the default cargo toolchain." >&2
   fi
 else
   TOOLCHAIN=""
 fi
 
 # --- Build --------------------------------------------------------------------
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "ERROR: cargo not found on PATH. The Codex fork is built with Rust." >&2
+  echo "       Install the Rust toolchain via https://rustup.rs and re-run." >&2
+  exit 1
+fi
 
 if [ "$CODEX_BUILD_PROFILE" = "kookr-dev" ]; then
   echo "Building Codex CLI (kookr-dev profile) from $CODEX_SRC ..."
