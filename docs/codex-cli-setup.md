@@ -23,13 +23,21 @@ A deeper gap analysis lives in [`docs/poc/003-codex-compatibility-gaps.md`](poc/
 
 ### Option A — using the Kookr helper (recommended)
 
+Requires a Rust toolchain (install [`rustup`](https://rustup.rs) first) and `git`. The fork pins its exact toolchain in `codex-rs/rust-toolchain.toml`, which `rustup` auto-installs on the first build — you do not hardcode a version.
+
 From a Kookr checkout:
 
 ```bash
 pnpm codex:rebuild
 ```
 
-This runs `scripts/rebuild-codex.sh`, which clones `jeanibarz/codex` into `$HOME/git/codex` if absent, checks out `feat/claude-compat`, pulls latest, and builds the release binary. The default `CODEX_SRC` is `$HOME/git/codex`; override by setting `CODEX_SRC` in the environment.
+This runs `scripts/rebuild-codex.sh`, which:
+
+- **If the fork is absent** at `$CODEX_SRC` (default `$HOME/git/codex`): clones `jeanibarz/codex` and checks out the `feat/claude-compat` branch.
+- **If the fork is already present**: builds the current checkout **as-is** — it does not pull, so update it yourself first (see [Updating the fork](#updating-the-fork)).
+- Builds the release binary and installs it to `$CODEX_INSTALL_DIR` (default `$HOME/bin`).
+
+Overrides (all optional environment variables): `CODEX_SRC` (checkout path), `CODEX_INSTALL_DIR` (install target), `CODEX_REPO_URL` / `CODEX_BRANCH` (clone source), `CODEX_BUILD_PROFILE` (`kookr-dev` default, or `release` for the full upstream-style build).
 
 ### Option B — manual build
 
@@ -65,7 +73,7 @@ CODEX_SRC="${CODEX_SRC:-$HOME/git/codex}"
 CODEX_INSTALL_DIR="${CODEX_INSTALL_DIR:-$HOME/bin}"
 MANIFEST="$CODEX_SRC/codex-rs/Cargo.toml"
 
-TARGET_DIR="$(cargo +1.93.0 metadata --manifest-path "$MANIFEST" --no-deps --format-version 1 \
+TARGET_DIR="$(cargo metadata --manifest-path "$MANIFEST" --no-deps --format-version 1 \
   | node -e 'let i = ""; process.stdin.on("data", c => i += c); process.stdin.on("end", () => process.stdout.write(JSON.parse(i).target_directory));')"
 
 install -m 755 "$TARGET_DIR/release/codex" "$CODEX_INSTALL_DIR/codex"
