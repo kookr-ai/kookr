@@ -1,5 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { TOOLKIT_MARKETPLACE_SLUG, type PluginVersionStatus } from '../../shared/contracts/plugin-version.js';
+import {
+  TOOLKIT_MARKETPLACE_SLUG,
+  pluginInstallCommands,
+  type PluginInstallResult,
+  type PluginUpdateError,
+  type PluginVersionStatus,
+} from '../../shared/contracts/plugin-version.js';
 
 export const PLUGIN_INSTALL_DISMISS_KEY = 'kookr-plugin-install-banner-dismissed';
 
@@ -20,10 +26,19 @@ function readDismissed(): boolean {
  * remains the persistent reminder. Fetches deploy status once on mount, so it
  * stays silent when the dashboard backend is unreachable or the plugin is
  * already installed (stale installs are nudged in the badge popover, not here).
+ *
+ * Variant B — "Guided + safety callout": the banner shows an "Install toolkit"
+ * button that opens a confirmation dialog with a backup/rollback safety note,
+ * plus a "Show manual commands" toggle for power users.
  */
 export function PluginInstallBanner() {
   const [plugin, setPlugin] = useState<PluginVersionStatus | null>(null);
   const [dismissed, setDismissed] = useState<boolean>(readDismissed);
+  const [showDialog, setShowDialog] = useState(false);
+  const [showManual, setShowManual] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [errorCommands, setErrorCommands] = useState<{ slash: string[]; cli: string[] } | null>(null);
 
   useEffect(() => {
     if (dismissed) return;
@@ -57,20 +72,154 @@ export function PluginInstallBanner() {
     setDismissed(true);
   }
 
+  function openDialog() {
+    setError(null);
+    setErrorCommands(null);
+    setShowDialog(true);
+  }
+
+  function closeDialog() {
+    if (installing) return;
+    setShowDialog(false);
+  }
+
+  async function confirmInstall() {
+    if (installing || !plugin) return;
+    setError(null);
+    setErrorCommands(null);
+    setInstalling(true);
+    try {
+      const res = await fetch('/api/deploy/plugin-install', { method: 'POST' });
+      const data = (await res.json()) as PluginInstallResult | PluginUpdateError;
+      if (res.ok && 'status' in data && data.status === 'installed') {
+        // Plugin is now installed — update local state; banner will hide.
+        setPlugin(data.plugin);
+        setShowDialog(false);
+      } else {
+        const errData = data as PluginUpdateError;
+        setError(errData.error ?? 'Install failed. Check server logs.');
+        if (errData.commands) setErrorCommands(errData.commands);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  const commands = pluginInstallCommands(plugin.pluginId, TOOLKIT_MARKETPLACE_SLUG);
+
   return (
     <div className="plugin-install-banner">
       <div className="toast toast-info" role="status" aria-live="polite" aria-atomic="true">
         <span className="toast-message">
           <span>Toolkit plugin not installed — its skills &amp; review agents won&rsquo;t load in sessions you start yourself.</span>
           <span className="toast-details">
-            In Claude Code, run <code>/plugin marketplace add {TOOLKIT_MARKETPLACE_SLUG}</code> then{' '}
-            <code>/plugin install {plugin.pluginId}</code>.
+            <button
+              className="btn-install"
+              onClick={openDialog}
+              aria-label="Install toolkit plugin"
+            >
+              Install toolkit
+            </button>
+            {' '}
+            <button
+              className="linkish"
+              onClick={() => setShowManual((v) => !v)}
+              aria-expanded={showManual}
+            >
+              {showManual ? 'Hide manual commands' : 'Show manual commands'}
+            </button>
+            {showManual && (
+              <span className="toolkit-does">
+                <span><code>/plugin marketplace add {TOOLKIT_MARKETPLACE_SLUG}</code></span>
+                <span><code>/plugin install {plugin.pluginId}</code></span>
+              </span>
+            )}
           </span>
         </span>
         <button className="toast-dismiss" onClick={dismiss} aria-label="Dismiss plugin install notice">
           &times;
         </button>
       </div>
+
+      {showDialog && (
+        <div
+          className="dialog-overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeDialog();
+          }}
+        >
+          <div
+            className="dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="plugin-install-dialog-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="dialog-header">
+              <h3 id="plugin-install-dialog-title">Install kookr-toolkit plugin?</h3>
+              <button
+                className="dialog-close"
+                onClick={closeDialog}
+                disabled={installing}
+                aria-label="Close install dialog"
+              >
+                &times;
+              </button>
+            </div>
+
+            <p style={{ marginTop: 12, color: 'var(--text-secondary)', fontSize: 13 }}>
+              This will modify your Claude Code configuration:
+            </p>
+            <ul className="toolkit-does">
+              <li>Add marketplace <code>{TOOLKIT_MARKETPLACE_SLUG}</code></li>
+              <li>Install <code>{plugin.pluginId}</code>{plugin.availableVersion ? ` (v${plugin.availableVersion})` : ''}</li>
+            </ul>
+
+            <div className="toolkit-safety">
+              <span>🛡</span>
+              <span>
+                Safe by default. Kookr snapshots <code>~/.claude/plugins</code> before installing
+                and rolls it back automatically if the install fails.
+              </span>
+            </div>
+
+            {error && (
+              <div style={{ marginTop: 12, color: 'var(--red)', fontSize: 12 }}>
+                <strong>Install failed:</strong> {error}
+                {(errorCommands ?? commands) && (
+                  <div style={{ marginTop: 8 }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>Run manually in Claude Code:</span>
+                    <ul className="toolkit-does" style={{ marginTop: 4 }}>
+                      {(errorCommands?.slash ?? commands.slash).map((cmd) => (
+                        <li key={cmd}><code>{cmd}</code></li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="dialog-actions">
+              <button
+                className="btn-secondary"
+                onClick={closeDialog}
+                disabled={installing}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn-primary"
+                onClick={confirmInstall}
+                disabled={installing}
+              >
+                {installing ? 'Installing…' : 'Back up & install'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

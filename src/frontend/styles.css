@@ -4351,6 +4351,66 @@ label.task-share-row {
   border-radius: 4px;
 }
 
+/* Install toolkit — inline action button inside the banner toast */
+.btn-install {
+  display: inline-flex;
+  align-items: center;
+  background: var(--teal);
+  color: #0a0e12;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-weight: 700;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+.btn-install:hover { filter: brightness(1.1); }
+.btn-install:disabled { opacity: 0.55; cursor: not-allowed; filter: none; }
+
+/* Text-link button — "Show manual commands" toggle */
+.linkish {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.linkish:hover { color: var(--text); }
+
+/* Plugin install dialog — what will be changed */
+.toolkit-does {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.toolkit-does li { display: flex; align-items: baseline; gap: 4px; }
+.toolkit-does li::before { content: "•"; color: var(--teal); flex-shrink: 0; }
+
+/* Safety callout inside the install dialog */
+.toolkit-safety {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  background: rgba(52, 211, 153, 0.08);
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.toolkit-safety > span:first-child { flex-shrink: 0; }
+
 @keyframes toast-in {
   from { opacity: 0; transform: translateX(20px); }
   to { opacity: 1; transform: translateX(0); }
