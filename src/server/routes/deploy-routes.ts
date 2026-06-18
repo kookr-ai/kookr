@@ -1,7 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve, basename, join } from 'node:path';
-import { access, readFile } from 'node:fs/promises';
+import { access, readFile, cp, rm, rename } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import type { Hono } from 'hono';
 import type { RouteDeps } from './shared.js';
@@ -11,8 +11,11 @@ import { getPluginVersionStatus, type PluginVersionStatus } from '../plugin-vers
 import {
   marketplaceNameFromPluginId,
   pluginUpdateCommands,
+  pluginInstallCommands,
+  TOOLKIT_MARKETPLACE_SLUG,
   type PluginUpdateError,
   type PluginUpdateResult,
+  type PluginInstallResult,
 } from '../../shared/contracts/plugin-version.js';
 
 const execFileAsync = promisify(execFile);
@@ -205,7 +208,8 @@ export function registerDeployRoutes(app: Hono, deps: RouteDeps): void {
   const hookHomeDir = deps.hookHomeDir ?? homedir();
   let deploying = false;
   let toolkitRefreshing = false;
-  let pluginUpdating = false;
+  /** Single shared lock for all operations that mutate ~/.claude/plugins/. */
+  let pluginMutating = false;
   const pluginUpdateBin = deps.pluginUpdateBin ?? process.env.KOOKR_AGENT_BIN ?? 'claude';
 
   app.get('/api/deploy/status', async (c) => {
@@ -386,7 +390,7 @@ export function registerDeployRoutes(app: Hono, deps: RouteDeps): void {
   });
 
   app.post('/api/deploy/plugin-update', async (c) => {
-    if (pluginUpdating) {
+    if (pluginMutating) {
       const pluginStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
       const pluginId = pluginStatus?.pluginId ?? DEFAULT_PLUGIN_ID;
       const marketplace = marketplaceNameFromPluginId(pluginId);
@@ -397,7 +401,7 @@ export function registerDeployRoutes(app: Hono, deps: RouteDeps): void {
       }, 409);
     }
 
-    pluginUpdating = true;
+    pluginMutating = true;
     try {
       const pluginStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
       if (!pluginStatus) {
@@ -443,7 +447,161 @@ export function registerDeployRoutes(app: Hono, deps: RouteDeps): void {
         ...(plugin ? { plugin } : {}),
       }, 500);
     } finally {
-      pluginUpdating = false;
+      pluginMutating = false;
+    }
+  });
+
+  app.post('/api/deploy/plugin-install', async (c) => {
+    if (pluginMutating) {
+      const pluginStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
+      const pluginId = pluginStatus?.pluginId ?? DEFAULT_PLUGIN_ID;
+      return c.json<PluginUpdateError>({
+        error: 'Plugin install already in progress',
+        commands: pluginInstallCommands(pluginId, TOOLKIT_MARKETPLACE_SLUG),
+        ...(pluginStatus ? { plugin: pluginStatus } : {}),
+      }, 409);
+    }
+
+    pluginMutating = true;
+    try {
+      const pluginStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
+      if (!pluginStatus) {
+        return c.json<PluginUpdateError>({
+          error: 'Could not determine toolkit plugin status',
+          commands: pluginInstallCommands(DEFAULT_PLUGIN_ID, TOOLKIT_MARKETPLACE_SLUG),
+        }, 500);
+      }
+
+      const commands = pluginInstallCommands(pluginStatus.pluginId, TOOLKIT_MARKETPLACE_SLUG);
+
+      if (pluginStatus.installedVersion !== null) {
+        return c.json<PluginUpdateError>({
+          error: 'Toolkit plugin is already installed',
+          commands,
+          plugin: pluginStatus,
+        }, 400);
+      }
+
+      // --- Back up the plugins directory before any mutation ---
+      const pluginsDir = join(resolve(hookHomeDir), '.claude', 'plugins');
+      const ts = Date.now();
+      const rand = Math.random().toString(36).slice(2, 7);
+      const backupDir = `${pluginsDir}.kookr-install-backup-${ts}-${process.pid}-${rand}`;
+      let pluginsDirExistedBefore = false;
+      try {
+        await access(pluginsDir);
+        pluginsDirExistedBefore = true;
+        await cp(pluginsDir, backupDir, { recursive: true });
+      } catch {
+        // plugins dir doesn't exist yet — no backup needed; record that fact
+        pluginsDirExistedBefore = false;
+      }
+
+      /**
+       * Atomically restore the plugins dir on failure.
+       *
+       * Returns `{ ok: true }` on success, or `{ ok: false, backupPath }` when
+       * the original config could not be fully restored (caller should surface
+       * `backupPath` in the HTTP 500 body so the user can recover manually).
+       */
+      const restoreOnFailure = async (): Promise<{ ok: boolean; backupPath?: string }> => {
+        if (!pluginsDirExistedBefore) {
+          // Dir did not exist before the install — just remove what was created.
+          await rm(pluginsDir, { recursive: true, force: true });
+          return { ok: true };
+        }
+
+        // Dir existed before: move the partial aside first, THEN restore the backup.
+        const partialTs = Date.now();
+        const partialDir = `${pluginsDir}.kookr-failed-${partialTs}`;
+        try {
+          // Step 1: move the failed/partial install out of the way (if it exists)
+          try {
+            await rename(pluginsDir, partialDir);
+          } catch {
+            // pluginsDir may not exist at all (install errored before creating it) — that's fine
+          }
+
+          // Step 2: restore the backup into the canonical location
+          await rename(backupDir, pluginsDir);
+
+          // Step 3: remove the partial (best-effort, backup is already restored)
+          await rm(partialDir, { recursive: true, force: true });
+
+          return { ok: true };
+        } catch (restoreErr) {
+          console.error(`[deploy] plugin install backup restore failed: ${String(restoreErr)}`);
+          // The original config is still in backupDir — tell the caller.
+          return { ok: false, backupPath: backupDir };
+        }
+      };
+
+      // --- Run the two install commands ---
+      try {
+        await execFileAsync(pluginUpdateBin, ['plugin', 'marketplace', 'add', TOOLKIT_MARKETPLACE_SLUG], {
+          cwd: deps.serverCwd,
+          timeout: 120_000,
+          env: { ...gitEnv, HOME: hookHomeDir },
+        });
+        await execFileAsync(pluginUpdateBin, ['plugin', 'install', pluginStatus.pluginId], {
+          cwd: deps.serverCwd,
+          timeout: 120_000,
+          env: { ...gitEnv, HOME: hookHomeDir },
+        });
+
+        // --- Verify the install succeeded (retry up to 3 times, ~150ms apart) ---
+        let verifiedStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
+        if (!verifiedStatus || verifiedStatus.installedVersion === null) {
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            await new Promise<void>((res) => setTimeout(res, 150));
+            verifiedStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
+            if (verifiedStatus?.installedVersion !== null) break;
+          }
+        }
+
+        if (!verifiedStatus || verifiedStatus.installedVersion === null) {
+          const restoreResult = await restoreOnFailure();
+          const recoveryNote = restoreResult.ok
+            ? ''
+            : ` Your previous Claude plugin config is preserved at ${restoreResult.backupPath}`;
+          console.error(
+            `[deploy] plugin install verification failed bin=${pluginUpdateBin} home=${hookHomeDir}: installedVersion is still null after install`,
+          );
+          return c.json<PluginUpdateError>({
+            error: `Plugin install command succeeded but the plugin does not appear to be installed. Check Claude Code manually.${recoveryNote}`,
+            commands,
+            plugin: verifiedStatus ?? pluginStatus,
+          }, 500);
+        }
+
+        // --- Success: delete backup ---
+        if (pluginsDirExistedBefore) {
+          try {
+            await rm(backupDir, { recursive: true, force: true });
+          } catch {
+            // Best-effort cleanup
+          }
+        }
+
+        const plugin = verifiedStatus;
+        return c.json<PluginInstallResult>({ status: 'installed', plugin, commands });
+      } catch (err) {
+        const restoreResult = await restoreOnFailure();
+        const recoveryNote = restoreResult.ok
+          ? ''
+          : ` Your previous Claude plugin config is preserved at ${restoreResult.backupPath}`;
+        console.error(
+          `[deploy] plugin install failed bin=${pluginUpdateBin} home=${hookHomeDir}: ${commandFailureMessage(err)}`,
+        );
+        const refreshedStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
+        return c.json<PluginUpdateError>({
+          error: `${commandFailureMessage(err)}${recoveryNote}`,
+          commands,
+          ...(refreshedStatus ? { plugin: refreshedStatus } : { plugin: pluginStatus }),
+        }, 500);
+      }
+    } finally {
+      pluginMutating = false;
     }
   });
 }
