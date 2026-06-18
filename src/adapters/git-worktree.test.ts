@@ -22,13 +22,14 @@ vi.mock('node:fs/promises', () => ({
 import {
   cleanupTaskWorktrees,
 } from './git-worktree.js';
+import { DEFAULT_GIT_MAX_BUFFER, DEFAULT_GIT_TIMEOUT_MS } from '../core/git-helpers.js';
 import { TaskStore, type Task } from '../core/tasks.js';
 import type { InteractionLogWriter } from '../core/interaction-log.js';
 import type { InteractionEvent } from '../core/interaction-log.js';
 
 /** Make mockExecFile resolve with given stdout. */
 function mockGitSuccess(stdout: string) {
-  mockExecFile.mockImplementation((_cmd: string, _args: string[], cb: Function) => {
+  mockExecFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
     cb(null, { stdout, stderr: '' });
   });
 }
@@ -38,7 +39,7 @@ function mockGitSuccess(stdout: string) {
  * handlers is a map from a substring of the args to { stdout } or 'error'.
  */
 function mockGitResponses(handlers: Record<string, string | 'error'>) {
-  mockExecFile.mockImplementation((_cmd: string, args: string[], cb: Function) => {
+  mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
     const argsStr = args.join(' ');
     for (const [pattern, response] of Object.entries(handlers)) {
       if (argsStr.includes(pattern)) {
@@ -118,6 +119,15 @@ describe('cleanupTaskWorktrees', () => {
     // Directory removed
     expect(mockRm).toHaveBeenCalledWith('/wt/feature-branch', { recursive: true, force: true });
     expect(taskStore.getTask(task.id)!.sessions[0].worktreeHealth).toBe('cleaned_up');
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'git',
+      expect.any(Array),
+      expect.objectContaining({
+        timeout: DEFAULT_GIT_TIMEOUT_MS,
+        maxBuffer: DEFAULT_GIT_MAX_BUFFER,
+      }),
+      expect.any(Function),
+    );
 
     // worktree_cleaned logged
     const cleaned = events.find((e) => e.type === 'worktree_cleaned');
@@ -310,6 +320,55 @@ describe('cleanupTaskWorktrees', () => {
       type: 'worktree_skipped',
       reason: 'not found',
     });
+  });
+
+  test('git timeout during cleanup → worktree kept and guard warning logged', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Fix bug', '/project');
+    taskStore.addSession(task.id, {
+      tmuxSession: 's1',
+      agentType: 'claude-code',
+      cwd: '/wt/slow',
+      createdAt: new Date(),
+      gitIsWorktree: true,
+      gitBranch: 'feature',
+    });
+    taskStore.completeTask(task.id);
+
+    const { log, events } = makeFakeLog();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+      if (args.includes('status')) {
+        const err = Object.assign(new Error('Command failed: git status timed out'), {
+          code: 'ETIMEDOUT',
+          killed: true,
+          signal: 'SIGTERM',
+        });
+        cb(err, { stdout: '', stderr: '' });
+        return;
+      }
+      cb(null, { stdout: '', stderr: '' });
+    });
+
+    await cleanupTaskWorktrees(taskStore, task.id, log);
+
+    expect(mockRm).not.toHaveBeenCalled();
+    const kept = events.find((e) => e.type === 'worktree_kept');
+    expect(kept).toMatchObject({
+      type: 'worktree_kept',
+      reason: 'git status failed',
+      worktreePath: '/wt/slow',
+    });
+    expect(warn).toHaveBeenCalledWith(
+      '[git-worktree] git subprocess guard tripped',
+      expect.objectContaining({
+        kind: 'timed_out',
+        args: ['-C', '/wt/slow', 'status', '--porcelain'],
+        timeoutMs: DEFAULT_GIT_TIMEOUT_MS,
+        maxBuffer: DEFAULT_GIT_MAX_BUFFER,
+      }),
+    );
   });
 
   test('rm failure → worktree_cleanup_failed logged', async () => {

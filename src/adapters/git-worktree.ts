@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs';
 import type { TaskStore, Task } from '../core/tasks.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
+import { classifyGitError, DEFAULT_GIT_MAX_BUFFER, DEFAULT_GIT_TIMEOUT_MS } from '../core/git-helpers.js';
 import { isProtectedWorktreePath } from './worktree-marker.js';
 
 const execFile = promisify(execFileCb);
@@ -12,9 +13,21 @@ const execFile = promisify(execFileCb);
 /** Run a git command and return trimmed stdout, or null on failure. */
 async function git(...args: string[]): Promise<string | null> {
   try {
-    const { stdout } = await execFile('git', args);
+    const { stdout } = await execFile('git', args, {
+      timeout: DEFAULT_GIT_TIMEOUT_MS,
+      maxBuffer: DEFAULT_GIT_MAX_BUFFER,
+    });
     return stdout.trim();
-  } catch {
+  } catch (err) {
+    const kind = classifyGitError(err);
+    if (kind !== 'failed') {
+      console.warn('[git-worktree] git subprocess guard tripped', {
+        kind,
+        args,
+        timeoutMs: DEFAULT_GIT_TIMEOUT_MS,
+        maxBuffer: DEFAULT_GIT_MAX_BUFFER,
+      });
+    }
     return null;
   }
 }
