@@ -17,18 +17,20 @@
  *
  * The descendant set is snapshotted from `/proc` BEFORE any signal is sent, so
  * children that reparent to init the instant their parent dies are still in the
- * kill list. On platforms without `/proc` (macOS) the snapshot degrades to just
- * the root pid — no worse than the previous master-only behavior.
+ * kill list. On platforms without `/proc` (macOS/BSD) the snapshot is taken from
+ * a single `ps` call instead; it degrades to just the root pid only if neither
+ * `/proc` nor `ps` is available.
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 
 /** Default grace period between the SIGTERM sweep and the SIGKILL sweep. */
 const DEFAULT_GRACE_MS = 10_000;
 
 /**
- * Read `/proc` once and return a pid → ppid map. Returns an empty map on any
- * platform where `/proc` is unavailable (e.g. macOS) so callers degrade to
- * single-pid behavior rather than throwing.
+ * Read `/proc` once and return a pid → ppid map. Falls back to a single `ps`
+ * call on platforms without `/proc` (e.g. macOS) so the tree reap still works
+ * there; returns an empty map only if neither source is available.
  */
 function readProcParentMap(): Map<number, number> {
   const map = new Map<number, number>();
@@ -36,7 +38,7 @@ function readProcParentMap(): Map<number, number> {
   try {
     names = readdirSync('/proc');
   } catch {
-    return map; // no /proc — non-Linux or sandboxed.
+    return readPsParentMap(); // no /proc — fall back to `ps` (macOS/BSD).
   }
   for (const name of names) {
     if (!/^\d+$/.test(name)) continue;
@@ -54,6 +56,29 @@ function readProcParentMap(): Map<number, number> {
     } catch {
       // Process exited between readdir and read — skip it.
     }
+  }
+  return map;
+}
+
+/**
+ * macOS/BSD fallback for `readProcParentMap`: a single `ps -axo pid=,ppid=`
+ * yields the whole pid → ppid table without spawning a process per pid. Returns
+ * an empty map if `ps` is unavailable, degrading callers to single-pid reap.
+ */
+function readPsParentMap(): Map<number, number> {
+  const map = new Map<number, number>();
+  let out: string;
+  try {
+    out = execFileSync('ps', ['-axo', 'pid=,ppid='], { encoding: 'utf-8' });
+  } catch {
+    return map; // no `ps` — degrade to single-pid behavior.
+  }
+  for (const line of out.split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)$/);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    const ppid = Number(m[2]);
+    if (Number.isInteger(pid) && Number.isInteger(ppid)) map.set(pid, ppid);
   }
   return map;
 }

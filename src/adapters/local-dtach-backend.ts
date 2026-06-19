@@ -27,7 +27,7 @@
  * See: docs/rfc/rfc-v8-tmux-removal.md
  * See: docs/adr/014-local-dtach-backend.md
  */
-import { spawn as spawnChild } from 'node:child_process';
+import { spawn as spawnChild, execFileSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -908,7 +908,7 @@ export class LocalDtachBackend implements TerminalBackend {
     try {
       names = readdirSync('/proc');
     } catch {
-      return -1; // no /proc (non-Linux) — caller falls back to -1.
+      return this.findDtachMasterPidViaPs(sock); // no /proc (macOS/BSD) — use `ps`.
     }
     let fallback = -1;
     for (const name of names) {
@@ -923,6 +923,46 @@ export class LocalDtachBackend implements TerminalBackend {
       const tokens = cmdline.split('\0');
       if (tokens.includes('-n')) return Number(name);
       if (fallback < 0) fallback = Number(name);
+    }
+    return fallback;
+  }
+
+  /**
+   * macOS/BSD analogue of the `/proc` scan in `findDtachMasterPidSync`. dtach
+   * daemonizes on `-n` (the spawned child forks and exits), so the spawn-time
+   * `child.pid` is NOT the live master — and there is no `/proc` to scan. A
+   * single `ps -axo pid=,command=` lists every process's argv, from which the
+   * master is the one whose argv[0] IS the dtach binary and whose command line
+   * carries both the socket path and the `-n` flag (the read-side
+   * `dtach -a <sock>` is the same binary + socket, so the `-n` disambiguation
+   * matters here exactly as it does on Linux). Constraining argv[0] to the dtach
+   * binary is stricter than the Linux scan: it prevents an unrelated process
+   * that merely mentions the socket path and a `-n` token (e.g. `tail -n …
+   * <sock>.log`) from being mistaken for the master and killed. Returns -1 if
+   * `ps` is unavailable or no match is found.
+   */
+  private findDtachMasterPidViaPs(sock: string): number {
+    let out: string;
+    try {
+      out = execFileSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf-8' });
+    } catch {
+      return -1; // no `ps` — caller falls back to -1.
+    }
+    const dtachName = this.dtachBinary.split('/').pop() ?? 'dtach';
+    let fallback = -1;
+    for (const line of out.split('\n')) {
+      const m = line.trim().match(/^(\d+)\s+(.*)$/);
+      if (!m) continue;
+      const cmd = m[2]!;
+      // Only actual dtach processes are candidates: argv[0]'s basename must be
+      // the dtach binary. Excludes unrelated processes whose argv happens to
+      // contain the socket path.
+      const argv0Base = cmd.split(/\s+/, 1)[0]!.split('/').pop() ?? '';
+      if (argv0Base !== dtachName) continue;
+      if (!cmd.includes(sock)) continue;
+      // Match `-n` as a standalone argv token (avoid matching it inside a path).
+      if (/(^|\s)-n(\s|$)/.test(cmd)) return Number(m[1]);
+      if (fallback < 0) fallback = Number(m[1]);
     }
     return fallback;
   }

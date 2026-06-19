@@ -756,7 +756,20 @@ describe('LocalDtachBackend', () => {
       // Pump filler then the tail. Use a fixed byte pattern so we can verify
       // the wraparound copy preserves byte order, then send a unique tail
       // marker that MUST land in the surviving suffix.
-      const filler = Buffer.alloc(FILLER_BYTES, 0x41); // ASCII 'A'
+      //
+      // The pattern is `'A' * 255 + '\n'` repeated. The newline every 256 bytes
+      // is load-bearing on macOS: a cooked-mode pty enforces MAX_CANON (the
+      // maximum canonical input line length); a line longer than that with no
+      // newline makes the line discipline ring the bell (BEL, 0x07) and STOP
+      // echoing input — so a flat 1 MB of 'A' never echoes through `cat` and the
+      // tail marker is permanently blocked behind the over-long line. Keeping
+      // each line short keeps `cat`'s tty echo flowing on both Linux and macOS.
+      const fillerLine = Buffer.from('A'.repeat(255) + '\n');
+      const fillerReps = Math.ceil(FILLER_BYTES / fillerLine.length);
+      const filler = Buffer.concat(Array(fillerReps).fill(fillerLine)).subarray(
+        0,
+        FILLER_BYTES,
+      );
       // Chunk the write to stay below the per-write timeout — a single 1 MB
       // pty.write would race the 2 s default.
       const CHUNK = 32 * 1024;
