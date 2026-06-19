@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -43,6 +43,13 @@ exit 0
   }
 
   function writeDriftedRelayState(kookrDir: string, appDir: string): void {
+    // The script computes APP_DIR via `pwd -P`, which resolves symlinks. On
+    // macOS the tmpdir (/tmp) is a symlink to /private/tmp, so the raw mkdtemp
+    // path written here would not equal the script's resolved APP_DIR and the
+    // relay-drift node check (which compares resolve(state.cwd) === APP_DIR)
+    // would silently report no drift. Resolve the path here so state.cwd matches
+    // what `pwd -P` produces on both Linux and macOS.
+    const resolvedAppDir = realpathSync(appDir);
     writeFileSync(
       join(kookrDir, 'relay.state.json'),
       `${JSON.stringify({
@@ -50,7 +57,7 @@ exit 0
         mode: 'detached',
         pid: 123,
         command: ['node', 'dist/relay/server.js'],
-        cwd: appDir,
+        cwd: resolvedAppDir,
         bindHost: '127.0.0.1',
         port: 8080,
         relayUrl: 'http://127.0.0.1:8080',

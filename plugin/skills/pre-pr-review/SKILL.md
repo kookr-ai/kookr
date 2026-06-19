@@ -111,6 +111,46 @@ If a flagged line is intentional, either append a `portability-ok` marker commen
 
 For projects other than Kookr that do not ship the helper, do this step as a manual diff scan for the same patterns.
 
+### 4c. Cross-Platform (macOS) Compatibility
+
+Code that works on Debian/Linux can silently break on macOS, which ships **bash 3.2** (frozen at GPLv2) and **BSD** variants of `sed`/`grep`/`stat`/`date`/`readlink`. Most onboarding and runtime bugs on macOS trace to this.
+
+Run the deterministic linter on changed lines:
+
+```bash
+scripts/check-shell-portability.sh        # defaults to base ref origin/main
+```
+
+It flags the statically-detectable class. Use the catalog below for manual review of anything it can't see (heredocs, runtime behavior):
+
+**GNU-only coreutils flags → use the portable form:**
+
+- `grep -P` / `-oP` → POSIX ERE (`grep -E`) or `perl`/`awk` (BSD grep has no PCRE)
+- `sed -i 's/…'` → `sed -i.bak 's/…' && rm file.bak` (BSD `sed -i` requires an explicit suffix; the no-backup form is the two-arg `sed -i '' …`)
+- `sed -r` → `sed -E`
+- `readlink -f` → a portable realpath helper / `python`/`perl` (older macOS `readlink` lacks `-f`)
+- `stat -c` → gate on `uname` (BSD `stat` uses `-f`)
+- `date -d` → gate on `uname` (BSD `date` uses `-v` / `-j -f`)
+- `find -printf`, `xargs -r` → GNU-only; restructure
+
+**bash 4+ syntax (macOS system bash is 3.2):**
+
+- `mapfile` / `readarray` → `while read` loop
+- `${var,,}` / `${var^^}` case conversion → `tr`
+- `declare -A` / `local -A` associative arrays → not available
+- `echo -n` / `echo -e` → `printf` (literal under POSIX `/bin/sh`)
+
+**Runtime-only traps the linter CANNOT catch — review by hand, and rely on the macOS CI job to actually exercise them:**
+
+- **`set -u` + empty array:** `"${arr[@]}"` raises "unbound variable" on bash 3.2 when `arr` is empty. Use `"${arr[@]+"${arr[@]}"}"`.
+- **Heredoc inside `$(...)`:** bash 3.2 cannot parse a heredoc nested in command substitution when the body contains a backtick. Move the program to a sibling file and invoke it by path.
+- **No `/proc`:** resolve pids/process trees via `ps`, not `/proc`, when `/proc` is absent.
+- **`/var` → `/private/var` symlink:** `mktemp` paths differ from `git rev-parse` / `realpath` output; resolve both sides with `realpath`/`pwd -P` before comparing.
+- **pnpm drops the exec bit** on native binaries (e.g. node-pty's `spawn-helper`); restore `+x` in a `prepare` step.
+- **Unix socket `sun_path` ≤ 103 bytes:** macOS `os.tmpdir()` is long; use a short `/tmp` base for socket paths.
+
+When in doubt, spawn the `macos-compat-reviewer` subagent on the diff, and label the PR `macos` so the macOS CI job runs.
+
 ### 5. Commit Hygiene
 
 - Commits follow Conventional Commits format (`feat:`, `fix:`, `chore:`, `docs:`, `test:`)

@@ -17,29 +17,14 @@ set -euo pipefail
 PAYLOAD=$(cat)
 
 if command -v node >/dev/null 2>&1; then
-  PREFILTER=$(REFLECT_MEMORY_GATE_PAYLOAD="$PAYLOAD" node <<'NODE'
-const home = process.env.HOME || '';
-let event;
-try {
-  event = JSON.parse(process.env.REFLECT_MEMORY_GATE_PAYLOAD || '{}');
-} catch {
-  console.log('memory');
-  process.exit(0);
-}
-const toolName = event.tool_name || '';
-if (!['Write', 'Edit', 'MultiEdit'].includes(toolName)) {
-  console.log('skip');
-  process.exit(0);
-}
-const input = event.tool_input || {};
-const filePath = typeof input.file_path === 'string' ? input.file_path : '';
-if (home && filePath.startsWith(`${home}/.claude/projects/`) && filePath.includes('/memory/')) {
-  console.log('memory');
-} else {
-  console.log('skip');
-}
-NODE
-)
+  # The Node prefilter lives in a sibling .mjs invoked by path, NOT an inline
+  # `node <<'NODE'` heredoc: bash 3.2 (macOS) cannot parse a heredoc nested in
+  # this $(...) when the body contains a backtick (the path template does).
+  # Resolve the sibling dir with pure bash (no `dirname`) so the hook still
+  # works under a minimal PATH that has node but not coreutils.
+  HOOK_DIR="${BASH_SOURCE[0]%/*}"
+  [ "$HOOK_DIR" = "${BASH_SOURCE[0]}" ] && HOOK_DIR="."
+  PREFILTER=$(REFLECT_MEMORY_GATE_PAYLOAD="$PAYLOAD" node "$HOOK_DIR/reflect-memory-prefilter.mjs")
   if [ "$PREFILTER" != "memory" ]; then
     exit 0
   fi

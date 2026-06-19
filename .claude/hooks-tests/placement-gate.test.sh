@@ -13,7 +13,11 @@ FAIL=0
 make_repo() {
   local kind="$1"
   local dir
-  dir=$(mktemp -d -t placement-gate.XXXXXX)
+  # Resolve to the physical path: on macOS `mktemp -d` yields /var/folders/...
+  # but `git rev-parse --show-toplevel` (used by the gate) returns the
+  # symlink-resolved /private/var/folders/... . Without this, the gate's
+  # REPO_ROOT prefix match misses every fixture path and no warning fires.
+  dir=$(cd "$(mktemp -d -t placement-gate.XXXXXX)" && pwd -P)
   (
     cd "$dir"
     git init -q -b main
