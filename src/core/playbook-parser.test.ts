@@ -81,6 +81,38 @@ Ship it.
     expect(pb.deliveryPreAuthorized).toBeUndefined();
   });
 
+  test('parses autoCloseOnSignal frontmatter', () => {
+    const content = `---
+name: Auto-close chain
+autoCloseOnSignal: true
+---
+Ship it.
+`;
+
+    const pb = parsePlaybook(content, 'autoclose.md', '/project');
+
+    expect(pb.autoCloseOnSignal).toBe(true);
+  });
+
+  test('parses autoCloseOnSignal:false frontmatter', () => {
+    const content = `---
+name: Explicit off
+autoCloseOnSignal: false
+---
+Ship it.
+`;
+
+    const pb = parsePlaybook(content, 'off.md', '/project');
+
+    expect(pb.autoCloseOnSignal).toBe(false);
+  });
+
+  test('omits autoCloseOnSignal when absent', () => {
+    const pb = parsePlaybook(MINIMAL_PLAYBOOK, 'simple.md', '/project');
+
+    expect(pb.autoCloseOnSignal).toBeUndefined();
+  });
+
   test('records scope when explicitly set to user', () => {
     const pb = parsePlaybook(MINIMAL_PLAYBOOK, 'simple.md', '/home/u/.kookr/playbooks', 'user');
 

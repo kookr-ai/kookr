@@ -43,6 +43,7 @@ export function parsePlaybook(
   const repoTags = parseStringArray(meta['repo-tags']);
   const dependencies = parseLaunchDependencies(meta.dependencies);
   const deliveryPreAuthorized = parseOptionalBoolean(meta.deliveryPreAuthorized);
+  const autoCloseOnSignal = parseOptionalBoolean(meta.autoCloseOnSignal);
 
   return {
     id: relativePath,
@@ -54,6 +55,7 @@ export function parsePlaybook(
     tags,
     ...(loop.value ? { loop: loop.value } : {}),
     ...(deliveryPreAuthorized === undefined ? {} : { deliveryPreAuthorized }),
+    ...(autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal }),
     ...(effectiveLoop ? { effectiveLoop } : {}),
     ...(loop.error ? { loopValidationError: loop.error } : {}),
     body: body.trim(),

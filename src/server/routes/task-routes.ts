@@ -168,6 +168,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         disableDedup?: unknown;
         metadata?: unknown;
         dependencies?: unknown;
+        autoCloseOnSignal?: unknown;
       };
 
       if (!body.prompt || typeof body.prompt !== 'string') {
@@ -203,6 +204,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       if (body.effort !== undefined && typeof body.effort !== 'string') {
         return c.json({ error: 'effort must be a string' }, 400);
       }
+      if (body.autoCloseOnSignal !== undefined && typeof body.autoCloseOnSignal !== 'boolean') {
+        return c.json({ error: 'autoCloseOnSignal must be a boolean' }, 400);
+      }
 
       const rawSource = c.req.header('X-Kookr-Launch-Source');
       const launchSource: 'cli' | 'ui' | 'api' =
@@ -218,6 +222,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         metadataIntent,
         dependencies: parseLaunchDependencies(body.dependencies),
         launchSource,
+        autoCloseOnSignal: typeof body.autoCloseOnSignal === 'boolean' ? body.autoCloseOnSignal : undefined,
       });
 
       if (duplicate) {
@@ -346,6 +351,40 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       ...(note ? { note } : {}),
     };
     taskStore.setPendingSignal(id, signal);
+
+    // Auto-close opt-in (per-task `autoCloseOnSignal`, set at launch or inherited
+    // from the parent). A `completion_ready` signal completes the task immediately
+    // instead of waiting for manual review, freeing an active slot and promoting
+    // the next pending task. completeTask clears the pending signal it just set.
+    // For an active Ralph loop this ends the current iteration (outcome
+    // 'partial_ralph_completion'); the loop decides whether to continue.
+    // See docs/reference/auto-close-on-signal.md.
+    if (body.kind === 'completion_ready' && task.autoCloseOnSignal === true) {
+      try {
+        const result = await lifecycleCommands.completeTask(id);
+        broadcastSnapshotWithCoordinator();
+        // `autoClosed` reflects whether the task actually reached a terminal
+        // state (and thus freed its slot). An active Ralph loop only ends the
+        // current iteration and stays inProgress, so it is NOT a close — report
+        // it truthfully as autoClosed:false with the outcome, so an automation
+        // reading the boolean isn't misled into assuming a slot was released.
+        return c.json({
+          ok: true,
+          signal,
+          truncated,
+          autoClosed: result.outcome === 'completed',
+          outcome: result.outcome,
+        });
+      } catch (err) {
+        // Never fail the agent's signal call on a completion error — the signal
+        // is recorded and the user can complete manually.
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[signal] auto-close failed for task ${id}: ${message}`);
+        broadcastSnapshotWithCoordinator();
+        return c.json({ ok: true, signal, truncated, autoClosed: false, error: message });
+      }
+    }
+
     broadcastSnapshotWithCoordinator();
     return c.json({ ok: true, signal, truncated });
   });

@@ -136,12 +136,23 @@ export class TaskStore {
       metadata,
       priority,
       deliveryAuthorization,
+      autoCloseOnSignal,
     } = opts;
 
     // Validate parent exists if specified
     if (parentTaskId !== undefined && !this.tasks.has(parentTaskId)) {
       throw new Error(`Parent task not found: ${parentTaskId}`);
     }
+
+    // Resolve the auto-close-on-signal policy. An explicit value on the launch
+    // opts always wins (including an explicit `false` to opt a successor out);
+    // otherwise the child inherits the parent's policy so it propagates down a
+    // self-continuation chain without relying on the agent forwarding a flag.
+    // See docs/reference/auto-close-on-signal.md.
+    const parentForInherit = parentTaskId !== undefined ? this.tasks.get(parentTaskId) : undefined;
+    const effectiveAutoCloseOnSignal = autoCloseOnSignal !== undefined
+      ? autoCloseOnSignal
+      : parentForInherit?.autoCloseOnSignal === true;
 
     const now = new Date();
     const task: Task = {
@@ -170,6 +181,7 @@ export class TaskStore {
     if (metadata) task.metadata = structuredClone(metadata);
     if (priority === 'high') task.priority = priority;
     if (deliveryAuthorization) task.deliveryAuthorization = deliveryAuthorization;
+    if (effectiveAutoCloseOnSignal) task.autoCloseOnSignal = true;
     this.tasks.set(task.id, task);
 
     // Link child to parent

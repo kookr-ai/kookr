@@ -140,6 +140,7 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
       agentType: input.agentType,
       projectId,
       dependencies: playbook.dependencies,
+      ...(playbook.autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal: playbook.autoCloseOnSignal }),
     },
   };
 }

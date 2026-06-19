@@ -76,6 +76,13 @@ export interface CreateTaskOptions {
   priority?: TaskPriority;
   /** Audit marker for the delivery policy resolved at launch. */
   deliveryAuthorization?: DeliveryAuthorization;
+  /**
+   * When true, the task auto-completes the moment its agent raises a
+   * `completion_ready` signal (`kookr signal completion-ready`), instead of
+   * waiting for manual review. Inherited from the parent task when spawning a
+   * successor unless explicitly overridden. See docs/reference/auto-close-on-signal.md.
+   */
+  autoCloseOnSignal?: boolean;
 }
 
 export interface TaskLaunchHealthSummary {
@@ -123,6 +130,12 @@ export interface Task {
   priority?: TaskPriority;
   /** Audit marker for the delivery policy resolved at launch. */
   deliveryAuthorization?: DeliveryAuthorization;
+  /**
+   * When true, a `completion_ready` signal auto-completes this task immediately.
+   * Set at launch (e.g. by a playbook) or inherited from the parent task.
+   * See docs/reference/auto-close-on-signal.md.
+   */
+  autoCloseOnSignal?: boolean;
   status: TaskStatus;
   sessions: SessionInfo[];
   tokenUsage?: TokenUsage;

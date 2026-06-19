@@ -61,6 +61,15 @@ In interactive `warn` mode, `show diff` prints the stored active prompt against 
 
 In `--json` mode, duplicate `warn` prompts are treated as non-interactive and return `DUPLICATE_BLOCKED` instead of asking for confirmation. Use `--dedupe=skip --json` when automation intentionally wants to keep a duplicate.
 
+Auto-close on completion signal:
+
+```bash
+kookr spawn --auto-close-on-signal "implement issue #42 then signal completion-ready"
+kookr spawn --no-auto-close-on-signal "..."   # opt out of an inherited policy
+```
+
+With `--auto-close-on-signal`, the task auto-completes the moment its agent runs `kookr signal completion-ready`, instead of waiting for manual review — freeing an active slot so queued tasks can run. If the flag is omitted, the new task **inherits the policy of its parent task** (the `parentTaskId` linkage, which `kookr spawn` sets from `KOOKR_TASK_ID` by default). That makes the policy propagate automatically down a self-continuation chain. Pass `--no-auto-close-on-signal` to opt a successor out of an inherited policy. See [auto-close-on-signal](./auto-close-on-signal.md).
+
 ## Hook-Safe Prompts
 
 Claude Code PreToolUse hooks may block commands whose argv contains strings such as `gh pr create`, `git push --force`, or `rm -rf`.
@@ -100,8 +109,15 @@ kookr signal completion-ready --task-id <taskId>
 ```
 
 The `completion-ready` signal tells Kookr that the agent believes the task is
-ready for the user to complete. It does not complete or stop the task by itself;
-the user still decides what to do in the dashboard.
+ready for the user to complete. By default it does not complete or stop the task
+by itself; the user still decides what to do in the dashboard.
+
+**Exception — auto-close.** If the task was launched with the `autoCloseOnSignal`
+policy (via `kookr spawn --auto-close-on-signal`, an `autoCloseOnSignal: true`
+playbook, or inherited from a parent task), a `completion-ready` signal completes
+the task immediately and frees its active slot. Only signal when work is truly
+finished — under auto-close the task closes right away. See
+[auto-close-on-signal](./auto-close-on-signal.md).
 
 Kinds:
 

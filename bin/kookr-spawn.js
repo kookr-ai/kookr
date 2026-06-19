@@ -60,6 +60,11 @@ Options:
       --dedupe <mode>      warn, block, or skip (default: warn).
       --parent-task-id <uuid>  Override the parent task linkage explicitly.
       --no-parent-task     Launch detached, ignoring KOOKR_TASK_ID.
+      --auto-close-on-signal
+                           Auto-complete on "kookr signal completion-ready"
+                           (frees an active slot).
+      --no-auto-close-on-signal
+                           Opt this task out, overriding any inherited policy.
   -f, --prompt-file <path> Read prompt from a file (hook-safe).
       --json               Print one machine-readable JSON envelope to stdout.
   -h, --help               Show this help.
@@ -69,6 +74,14 @@ Parent-task linking:
   KOOKR_TASK_ID as parentTaskId so the new task shows up as a child in the
   dashboard. Pass --parent-task-id to override or --no-parent-task to opt out.
   Outside a managed task (no KOOKR_TASK_ID) the field is omitted entirely.
+
+Auto-close on completion signal:
+  When --auto-close-on-signal is set (or inherited from the parent task), the
+  spawned task auto-completes the moment its agent runs
+  "kookr signal completion-ready", instead of waiting for manual review. If the
+  flag is omitted, the new task inherits the parent's policy — so it propagates
+  automatically down a self-continuation chain. Pass --no-auto-close-on-signal
+  to opt a successor out of an inherited policy.
 
 Environment:
   KOOKR_API_BASE_URL              Base URL of a running Kookr server
@@ -107,6 +120,7 @@ function parseArgs(argv) {
     promptFile: null,
     parentTaskId: null,
     noParentTask: false,
+    autoCloseOnSignal: null,
     json: false,
     help: false,
   };
@@ -143,6 +157,16 @@ function parseArgs(argv) {
       out.parentTaskId = tok.slice('--parent-task-id='.length);
     } else if (tok === '--no-parent-task') {
       out.noParentTask = true;
+    } else if (tok === '--auto-close-on-signal') {
+      if (out.autoCloseOnSignal === false) {
+        throw new UsageError('--auto-close-on-signal and --no-auto-close-on-signal are mutually exclusive');
+      }
+      out.autoCloseOnSignal = true;
+    } else if (tok === '--no-auto-close-on-signal') {
+      if (out.autoCloseOnSignal === true) {
+        throw new UsageError('--auto-close-on-signal and --no-auto-close-on-signal are mutually exclusive');
+      }
+      out.autoCloseOnSignal = false;
     } else if (tok === '-f' || tok === '--prompt-file') {
       out.promptFile = eat();
     } else if (tok === '--') {
@@ -388,7 +412,7 @@ function apiAuthHeaders(env = process.env) {
 
 // ---------- HTTP POST ----------
 
-async function postTask({ baseUrl, prompt, cwd, agent, effort = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null }) {
+async function postTask({ baseUrl, prompt, cwd, agent, effort = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null }) {
   const body = { prompt, cwd };
   if (criteria) body.criteria = criteria;
   if (agent) body.agentType = agent;
@@ -396,6 +420,8 @@ async function postTask({ baseUrl, prompt, cwd, agent, effort = null, criteria, 
   if (disableDedup) body.disableDedup = true;
   if (metadataIntent) body.metadata = { intent: metadataIntent };
   if (parentTaskId) body.parentTaskId = parentTaskId;
+  // null = unspecified → let the server inherit the parent's policy.
+  if (autoCloseOnSignal !== null) body.autoCloseOnSignal = autoCloseOnSignal;
 
   const res = await fetch(`${baseUrl}/api/tasks`, {
     method: 'POST',
@@ -762,6 +788,7 @@ async function main({
       disableDedup: args.dedupe === 'skip',
       metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
       parentTaskId,
+      autoCloseOnSignal: args.autoCloseOnSignal,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -860,6 +887,7 @@ async function main({
         disableDedup: true,
         metadataIntent: 'keep_as_duplicate',
         parentTaskId,
+        autoCloseOnSignal: args.autoCloseOnSignal,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

@@ -5,6 +5,10 @@ repo-tags: [github]
 tags: [workflow, loopable]
 dependencies: [kb]
 deliveryPreAuthorized: true
+# Auto-complete the task as soon as the agent runs `kookr signal completion-ready`,
+# instead of leaving it open for manual review. Self-continuation successors inherit
+# this automatically (server-side, via parentTaskId). See docs/reference/auto-close-on-signal.md.
+autoCloseOnSignal: true
 parameters:
   - name: issueSelector
     description: "Blank (next eligible open issue), issue numbers (50, 565, 566), or filter (label:bug,enhancement)"
@@ -509,6 +513,8 @@ fi
 If no further action is possible because external review/checks are pending, leave a concise status note in the PR only if there is new evidence, heartbeat the claim if appropriate, and stop. The next Ralph iteration will re-check the external state.
 
 If `{{selfContinuation}}` is `true` and you are NOT running in Ralph loop mode, after the PR for this target is merged use the `self-continuation-task` skill to spawn a fresh Kookr task that re-runs this playbook for the next batch, forwarding the same parameter values (repo, selector, merge policy, and these toggles). This chains batches without the built-in loop. In Ralph loop mode, do nothing extra — the loop already advances to the next target.
+
+**Releasing this task's slot (standard / self-continuation launches only).** This playbook sets `autoCloseOnSignal: true`, so once your work for this task is genuinely finished — the PR is open/merged and (for a chain) the successor task has been spawned — run `kookr signal completion-ready` to auto-complete *this* task and free its active slot. The successor you spawned inherits `autoCloseOnSignal` automatically (server-side, via `parentTaskId`), so the whole chain keeps releasing slots without piling up open tasks. Do NOT signal completion-ready while work remains — it closes the task immediately. In Ralph loop mode, ignore this: the loop owns the task lifecycle and writes a verdict instead (Phase 9).
 
 ## Phase 8.5: Post-task KB lesson decision
 
