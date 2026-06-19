@@ -195,3 +195,73 @@ jobs:
           name: playwright-report
           path: playwright-report/
           retention-days: 7
+
+  # Deterministic, zero-cost portability gate: flags user-specific absolute
+  # paths and GNU-only / bash-4-only shell idioms in the PR's added lines.
+  # Catches the statically-detectable macOS-incompatibility class on every PR.
+  # PR-only (needs a base ref to diff); ~10s, so it doesn't merit a filter.
+  portability:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Check for user-specific absolute paths
+        run: bash scripts/check-portability.sh "${{ github.event.pull_request.base.sha }}"
+      - name: Check for non-portable shell idioms (BSD coreutils / bash 3.2)
+        run: bash scripts/check-shell-portability.sh "${{ github.event.pull_request.base.sha }}"
+
+  # Real macOS run — the only layer that catches runtime-only breakage
+  # (no /proc, pnpm dropping exec bits, sun_path overflow, bash 3.2 array
+  # expansion under `set -u`). macOS runners cost ~10x Linux minutes, so this
+  # is gated at the JOB level (a self-skipping macOS runner would still burn
+  # minutes): it runs on push to main, or on a PR labeled `macos`.
+  #
+  # ADVISORY (continue-on-error). This PR fixes most macOS-only failures the job
+  # surfaced — vitest host-fragility (deploy-routes /var→/private/var symlink,
+  # prod-restart, ralph-predicate, terminal-input-coordinator) and the hook
+  # scripts (no-personal-paths bash-4 arrays, placement-gate / reflect-memory
+  # heredoc-in-$(), OSS-extension PCRE grep flags + bash-4 expansions). Two items
+  # need a real Mac to finish and are deferred:
+  #   - local-dtach-backend /proc-less reaping (kookr#784) — the fix on branch
+  #     fix/codex-onboarding-macos adds ps-based tests that flake the *Linux*
+  #     blocking gate, so they belong there, stabilised against a real Mac.
+  #   - oss-stale-scout-gate.test.sh — its gh shim passes on Linux but the gate
+  #     reads "gh auth status failed" on the macOS runner (not reproducible off
+  #     a Mac).
+  # Until both land, the job RUNS and reports so regressions are visible without
+  # blocking merges. Drop continue-on-error once vitest + test:hooks are green
+  # on a labeled macOS run.
+  macos:
+    if: >
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'macos')
+    runs-on: macos-latest
+    timeout-minutes: 25
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Kookr doctor (must exit 0)
+        run: pnpm run doctor
+
+      - name: Run tests
+        run: pnpm exec vitest run
+
+      # always() so the bash 3.2 / BSD hook-behavior results still report even
+      # if the vitest step goes red on a future macOS regression.
+      - name: Run hook regression tests
+        if: always()
+        run: pnpm test:hooks
