@@ -131,6 +131,34 @@ For parent/child linkage, use whatever parent-task field the installed launcher
 or API documents. If the launcher cannot express parentage, keep the durable
 state sufficient for tracing the chain without transcript access.
 
+## Releasing the Task Slot (auto-close on completion signal)
+
+A long chain only stays healthy if each finished task actually *closes*.
+Otherwise finished-but-still-open tasks accumulate against Kookr's active-task
+cap (`MAX_ACTIVE_TASKS`, default 10) and eventually block the chain from
+launching its successor. Two mechanisms cooperate here:
+
+- **The completion signal.** When a task's work is genuinely done — the unit is
+  complete, durable state is recorded, and (if applicable) the successor has
+  been spawned — run `kookr signal completion-ready` (optionally
+  `--note "..."`). This is the agent telling Kookr "this task is finished."
+- **Auto-close.** If the task was launched with `autoCloseOnSignal` enabled,
+  that signal completes the task immediately instead of waiting for a human to
+  review and click Complete — freeing the active slot at once.
+
+**Inheritance is automatic and server-side.** A task launched with
+`autoCloseOnSignal` set propagates it to any successor spawned with its task id
+as `parentTaskId` (the linkage you already set above). You do NOT need to pass a
+flag in the successor prompt or launch command — the server reads the parent's
+policy from durable task state, which is exactly the memory-free guarantee this
+skill relies on. To opt a successor out of an inherited policy, launch it with
+`kookr spawn --no-auto-close-on-signal`.
+
+Only signal completion-ready when work is truly finished: under `autoCloseOnSignal`
+it closes the task right away, so signalling mid-work would abort it. If a task
+is NOT auto-close enabled, the signal is harmless — it just surfaces a banner for
+manual review. See docs/reference/auto-close-on-signal.md for the full model.
+
 ## Successor Prompt Template
 
 Use this shape and fill in concrete paths, repo names, selection rules, caps,

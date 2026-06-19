@@ -155,6 +155,19 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['--parent-task-id', 'abc', '--no-parent-task'])).toThrow(UsageError);
     expect(() => parseArgs(['--no-parent-task', '--parent-task-id', 'abc'])).toThrow(UsageError);
   });
+
+  it('parses --auto-close-on-signal / --no-auto-close-on-signal as a tri-state', () => {
+    expect(parseArgs([]).autoCloseOnSignal).toBeNull();
+    expect(parseArgs(['--auto-close-on-signal']).autoCloseOnSignal).toBe(true);
+    expect(parseArgs(['--no-auto-close-on-signal']).autoCloseOnSignal).toBe(false);
+    // A repeated identical flag is redundant, not a conflict.
+    expect(parseArgs(['--auto-close-on-signal', '--auto-close-on-signal']).autoCloseOnSignal).toBe(true);
+  });
+
+  it('rejects combined --auto-close-on-signal and --no-auto-close-on-signal', () => {
+    expect(() => parseArgs(['--auto-close-on-signal', '--no-auto-close-on-signal'])).toThrow(UsageError);
+    expect(() => parseArgs(['--no-auto-close-on-signal', '--auto-close-on-signal'])).toThrow(UsageError);
+  });
 });
 
 // ---------- resolveParentTaskId ----------
@@ -604,6 +617,26 @@ describe('postTask', () => {
       });
       expect(bodies[0].parentTaskId).toBe('parent-uuid');
       expect(bodies[1].parentTaskId).toBeUndefined();
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('sends autoCloseOnSignal only when explicitly set (null lets the server inherit)', async () => {
+    const bodies: any[] = [];
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodies.push(JSON.parse(bodyText));
+      return { status: 201, body: JSON.stringify({ id: 't' }) };
+    });
+    try {
+      await postTask({ baseUrl, prompt: 'a', cwd: '/tmp', agent: null, criteria: null, autoCloseOnSignal: true });
+      await postTask({ baseUrl, prompt: 'b', cwd: '/tmp', agent: null, criteria: null, autoCloseOnSignal: false });
+      await postTask({ baseUrl, prompt: 'c', cwd: '/tmp', agent: null, criteria: null, autoCloseOnSignal: null });
+      await postTask({ baseUrl, prompt: 'd', cwd: '/tmp', agent: null, criteria: null });
+      expect(bodies[0].autoCloseOnSignal).toBe(true);
+      expect(bodies[1].autoCloseOnSignal).toBe(false);
+      expect(bodies[2].autoCloseOnSignal).toBeUndefined();
+      expect(bodies[3].autoCloseOnSignal).toBeUndefined();
     } finally {
       await closeServer(server);
     }

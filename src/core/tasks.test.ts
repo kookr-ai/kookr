@@ -332,6 +332,71 @@ describe('TaskStore', () => {
     });
   });
 
+  describe('autoCloseOnSignal policy', () => {
+    test('stores the flag when explicitly true', () => {
+      const task = store.createTask({ prompt: 'Fix bug', cwd: '/cwd', autoCloseOnSignal: true });
+      expect(task.autoCloseOnSignal).toBe(true);
+    });
+
+    test('omits the flag when not provided and there is no parent', () => {
+      const task = store.createTask({ prompt: 'Fix bug', cwd: '/cwd' });
+      expect(task.autoCloseOnSignal).toBeUndefined();
+    });
+
+    test('child inherits the parent policy when unset', () => {
+      const parent = store.createTask({ prompt: 'Batch', cwd: '/cwd', autoCloseOnSignal: true });
+      const child = store.createTask({ prompt: 'Next unit', cwd: '/cwd', parentTaskId: parent.id });
+      expect(child.autoCloseOnSignal).toBe(true);
+    });
+
+    test('grandchild inherits transitively through the chain', () => {
+      const parent = store.createTask({ prompt: 'Batch', cwd: '/cwd', autoCloseOnSignal: true });
+      const child = store.createTask({ prompt: 'Unit 1', cwd: '/cwd', parentTaskId: parent.id });
+      const grandchild = store.createTask({ prompt: 'Unit 2', cwd: '/cwd', parentTaskId: child.id });
+      expect(grandchild.autoCloseOnSignal).toBe(true);
+    });
+
+    test('explicit true on the child wins under a non-policy parent', () => {
+      const parent = store.createTask({ prompt: 'Batch', cwd: '/cwd' });
+      const child = store.createTask({
+        prompt: 'Opted-in unit',
+        cwd: '/cwd',
+        parentTaskId: parent.id,
+        autoCloseOnSignal: true,
+      });
+      expect(child.autoCloseOnSignal).toBe(true);
+    });
+
+    test('explicit false on the child overrides an inherited true', () => {
+      const parent = store.createTask({ prompt: 'Batch', cwd: '/cwd', autoCloseOnSignal: true });
+      const child = store.createTask({
+        prompt: 'Opted-out unit',
+        cwd: '/cwd',
+        parentTaskId: parent.id,
+        autoCloseOnSignal: false,
+      });
+      expect(child.autoCloseOnSignal).toBeUndefined();
+    });
+
+    test('opted-out child does not re-enable its own children', () => {
+      const parent = store.createTask({ prompt: 'Batch', cwd: '/cwd', autoCloseOnSignal: true });
+      const optedOut = store.createTask({
+        prompt: 'Opted-out',
+        cwd: '/cwd',
+        parentTaskId: parent.id,
+        autoCloseOnSignal: false,
+      });
+      const grandchild = store.createTask({ prompt: 'Unit', cwd: '/cwd', parentTaskId: optedOut.id });
+      expect(grandchild.autoCloseOnSignal).toBeUndefined();
+    });
+
+    test('child of a non-policy parent stays off', () => {
+      const parent = store.createTask({ prompt: 'Batch', cwd: '/cwd' });
+      const child = store.createTask({ prompt: 'Unit', cwd: '/cwd', parentTaskId: parent.id });
+      expect(child.autoCloseOnSignal).toBeUndefined();
+    });
+  });
+
   describe('Task lifecycle state machine', () => {
     test('open -> inProgress via startTask', () => {
       const task = store.createTask('Task', '/cwd');

@@ -369,6 +369,7 @@ export async function launchTask(
     launchHealthSummary,
     launchNote,
     deliveryAuthorization,
+    autoCloseOnSignal: opts.autoCloseOnSignal,
   });
 
   if (taskStore.getActiveCount() >= maxActive) {

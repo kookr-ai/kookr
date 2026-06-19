@@ -995,4 +995,88 @@ describe('POST /api/tasks/:id/signal', () => {
     expect(res.status).toBe(200);
     expect(broadcastToAll).toHaveBeenCalled();
   });
+
+  describe('autoCloseOnSignal', () => {
+    function mkAutoCloseDeps(taskStore: TaskStore): TaskRouteDeps {
+      const queue = new AttentionQueue();
+      const monitor = new Monitor(taskStore, queue);
+      return {
+        taskStore,
+        monitor,
+        queue,
+        adapter: { stop: vi.fn(async () => {}) } as never,
+        hookWatcher: { stop: vi.fn(), isWatching: () => false, watch: vi.fn() } as never,
+        watchdog: { unregisterAgent: vi.fn() } as never,
+        broadcastToAll: vi.fn(),
+        serverCwd: '/server',
+      } as unknown as TaskRouteDeps;
+    }
+
+    function startActiveTask(taskStore: TaskStore, opts: { autoCloseOnSignal?: boolean } = {}): string {
+      const task = taskStore.createTask({ prompt: 'Ship it', cwd: '/repo', ...opts });
+      taskStore.addSession(task.id, {
+        tmuxSession: 'kookr-live',
+        agentType: 'claude-code',
+        cwd: '/repo',
+        createdAt: new Date(),
+      });
+      expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
+      return task.id;
+    }
+
+    test('auto-completes an opted-in task on completion_ready', async () => {
+      const taskStore = new TaskStore();
+      const id = startActiveTask(taskStore, { autoCloseOnSignal: true });
+      const res = await mkApp(mkAutoCloseDeps(taskStore)).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ok).toBe(true);
+      expect(body.autoClosed).toBe(true);
+      expect(body.outcome).toBe('completed');
+      expect(taskStore.getTask(id)!.status).toBe('completed');
+    });
+
+    test('falls back to recording the signal when the opted-in task is not in progress', async () => {
+      const taskStore = new TaskStore();
+      // Opted in, but never started (status 'open', no session) — completeTask
+      // cannot transition it, so the signal must still surface for manual review.
+      const task = taskStore.createTask({ prompt: 'Ship it', cwd: '/repo', autoCloseOnSignal: true });
+      expect(taskStore.getTask(task.id)!.status).toBe('open');
+
+      const res = await mkApp(mkAutoCloseDeps(taskStore)).request(`/api/tasks/${task.id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ok).toBe(true);
+      expect(body.autoClosed).toBe(false);
+      expect(taskStore.getTask(task.id)!.status).toBe('open');
+      expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+    });
+
+    test('does not auto-complete a task that did not opt in', async () => {
+      const taskStore = new TaskStore();
+      const id = startActiveTask(taskStore);
+      const res = await mkApp(mkAutoCloseDeps(taskStore)).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.autoClosed).toBeUndefined();
+      expect(taskStore.getTask(id)!.status).toBe('inProgress');
+      // The signal still surfaces for manual review.
+      expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
+    });
+  });
 });

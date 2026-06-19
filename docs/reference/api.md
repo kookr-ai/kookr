@@ -18,6 +18,7 @@ Kookr exposes local HTTP and WebSocket endpoints from the Hono server. In develo
 | `GET /api/tasks/:id` | A single task by id (404 with `{"error": "Task not found"}` for unknown ids) |
 | `POST /api/tasks` | Create and launch a new task |
 | `POST /api/tasks/:id/complete` | Mark a finished task `completed` (non-destructive) and tear down its idle session |
+| `POST /api/tasks/:id/signal` | Raise an agent → user signal (e.g. `completion_ready`); auto-completes the task when it opted into `autoCloseOnSignal` |
 | `DELETE /api/tasks/:id` | Stop and remove a task |
 | `POST /api/agents/:id/message` | Send a message or hint to a running agent |
 | `GET /api/agents/:agentId/edit-events/:toolUseId` | Fetch a recorded Edit/Write tool event for diff display |
@@ -34,7 +35,16 @@ remains for backwards compatibility.
 ### `POST /api/tasks` body fields
 
 `prompt` (required) and `cwd` (required) plus optional `criteria`, `parentTaskId`,
-`agentType`, `effort`, `disableDedup`, `metadata`, and `dependencies`.
+`agentType`, `effort`, `disableDedup`, `metadata`, `dependencies`, and
+`autoCloseOnSignal`.
+
+`autoCloseOnSignal` (optional, boolean) opts the task into auto-completion when
+its agent raises a `completion_ready` signal (see
+[`POST /api/tasks/:id/signal`](#post-apitasksidsignal) and the
+[Auto-Close on Completion Signal](./auto-close-on-signal.md) reference). A
+non-boolean value returns `400`. When omitted, the task **inherits the policy of
+its `parentTaskId`**, so the behavior propagates down self-continuation chains;
+set it explicitly to `false` to opt a successor out.
 
 `cwd` must name an existing directory on the server's machine — it is
 validated before any task record or session is created, and a missing or
@@ -89,6 +99,35 @@ Worktree-lease release and pending-task promotion run on the periodic
 reconcile/liveness pass rather than inline (the lease service and adapter
 registry are not wired into the route layer — same as `DELETE`); the
 dashboard's WebSocket complete action does both inline.
+
+### `POST /api/tasks/:id/signal`
+
+Raise a non-blocking agent → user signal for a task. The motivating case is
+`completion_ready` — the agent declaring it believes the task is done (raised via
+[`kookr signal`](./cli.md)).
+
+Body: `kind` (required; currently `completion_ready`) and optional `note` (string;
+secrets are best-effort redacted and over-limit notes are visibly truncated).
+
+- Success returns `200 {"ok": true, "signal": {...}, "truncated": <bool>}`.
+- The signal is stored on the task (`pendingSignal`) and surfaced in the
+  dashboard (banner + emphasized **Complete** button). Dismiss via the
+  `dismissAgentSignal` WebSocket message; it is also cleared on terminal
+  transitions.
+- Unknown id returns `404`; a terminal task returns `409`
+  (`{"code": "task_terminal"}`); a malformed body or bad `kind`/`note` returns
+  `400`; remote-owned `shared:` ids return `403`.
+
+**Auto-close.** When the task opted into the policy (`autoCloseOnSignal` — set at
+launch or inherited from its parent; see
+[Auto-Close on Completion Signal](./auto-close-on-signal.md)), a `completion_ready`
+signal completes the task immediately through the same lifecycle as
+`POST /api/tasks/:id/complete`, freeing an active slot and promoting the next
+pending task. The response then includes `"autoClosed": true` and the
+completion `"outcome"`. For a task with an active Ralph loop the signal ends the
+current iteration (`"outcome": "partial_ralph_completion"`). Completion failures
+never fail the signal call — the response carries `"autoClosed": false` and the
+signal remains recorded for manual review.
 
 ## Supervisor Surface
 

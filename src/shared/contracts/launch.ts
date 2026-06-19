@@ -44,6 +44,14 @@ export interface LaunchOpts {
   ralphVerdictEnv?: boolean;
   /** Launch inside the restricted sandbox profile for per-task reflection worktrees. */
   sandboxProfile?: 'reflect';
+  /**
+   * When true, the task auto-completes as soon as its agent raises a
+   * `completion_ready` signal, rather than waiting for manual review. When
+   * undefined, the task inherits its parent's policy (so it propagates through
+   * self-continuation chains). Set explicitly to `false` to opt a successor out.
+   * See docs/reference/auto-close-on-signal.md.
+   */
+  autoCloseOnSignal?: boolean;
 }
 
 export interface LaunchResult<TaskShape extends { id: string } = { id: string }> {

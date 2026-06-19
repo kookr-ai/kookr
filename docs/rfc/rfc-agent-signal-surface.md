@@ -68,10 +68,20 @@ committing:
 - Preserve the boundary: a signal is a **hint**, never a state mutation.
   Surfacing `completion_ready` must NOT complete the task — it only invites it.
 
+> **Follow-up (post-acceptance):** the original RFC made "surfacing must NOT
+> complete the task" a hard non-goal (preserving propose/dispose). A later,
+> **opt-in** extension relaxes this *only* for tasks that explicitly carry the
+> `autoCloseOnSignal` policy — the motivating case being long self-continuation
+> chains where finished-but-unreviewed tasks pile up against `MAX_ACTIVE_TASKS`
+> and stall the chain. The default is unchanged (signal only surfaces); the
+> propose/dispose boundary still holds for every task that did not opt in. See
+> [reference/auto-close-on-signal.md](../reference/auto-close-on-signal.md).
+
 ## Non-Goals
 
 - Do **not** let the agent complete, cancel, or transition the task itself.
-  Completion stays the user-driven `completeTask` WS path.
+  Completion stays the user-driven `completeTask` WS path. *(Relaxed by the
+  opt-in `autoCloseOnSignal` follow-up above — off by default.)*
 - Do **not** replace `AskUserQuestion`. Genuinely blocking questions still use
   it; signals fill the non-blocking gap.
 - Do **not** auto-derive completion intent from the Stop hook. `completed_turn`
