@@ -4,7 +4,7 @@ import { access, chmod, mkdtemp, rm, mkdir, readlink, writeFile, symlink } from 
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { registerDeployRoutes, resolveProdDir } from './deploy-routes.js';
 import type { RouteDeps } from './shared.js';
 import type { WorktreeEntry } from '../../adapters/git-worktree-registry.js';
@@ -54,7 +54,10 @@ describe('deploy-routes', () => {
   let prodDir: string;  // simulates ~/git/kookr-prod
 
   beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), 'deploy-test-'));
+    // Resolve to the physical path so symlink targets (which prod-update.sh
+    // stores via realpath) match the paths we build here. On macOS, mkdtemp
+    // under tmpdir returns /var/folders/... while realpath returns /private/var/...
+    root = realpathSync(await mkdtemp(join(tmpdir(), 'deploy-test-')));
     mainDir = join(root, 'kookr');
     prodDir = join(root, 'kookr-prod');
     await mkdir(mainDir, { recursive: true });
