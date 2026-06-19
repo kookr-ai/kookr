@@ -180,9 +180,10 @@ STRIPPED=$(printf '%s\n' "$BODY" | awk '
 
 # --- 5. Extract all issue references ---
 # Full 9-keyword closing regex + owner/repo prefix + URL form.
-# Uses grep -P (PCRE) for (?:) non-capturing groups.
-ISSUE_REFS=$(printf '%s\n' "$STRIPPED" | grep -oiP '\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]+(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#\d+' || true)
-URL_REFS=$(printf '%s\n' "$STRIPPED" | grep -oiP 'https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\d+' || true)
+# Uses perl for PCRE features ((?:) groups, \K, lookahead) — BSD grep on macOS
+# lacks PCRE support, so a PCRE grep flag errors there; perl is portable.
+ISSUE_REFS=$(printf '%s\n' "$STRIPPED" | perl -nle 'print $& while /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]+(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#\d+/gi' || true)
+URL_REFS=$(printf '%s\n' "$STRIPPED" | perl -nle 'print $& while m{https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\d+}gi' || true)
 
 # Build list of "owner/repo issue_number" pairs
 # Delayed: need target repo first (for bare #NNN refs)
@@ -216,8 +217,8 @@ trap 'rm -f "$TUPLES_FILE"; release_locks 2>/dev/null || true' EXIT
 while IFS= read -r ref; do
   [ -z "$ref" ] && continue
   # Capture optional owner/repo prefix and issue number
-  prefix=$(printf '%s' "$ref" | grep -oP '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?=#)' | head -1 || true)
-  num=$(printf '%s' "$ref" | grep -oP '#\K\d+' | head -1 || true)
+  prefix=$(printf '%s' "$ref" | perl -nle 'print $& while m{[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?=#)}g' | head -1 || true)
+  num=$(printf '%s' "$ref" | perl -nle 'print $& while /#\K\d+/g' | head -1 || true)
   [ -z "$num" ] && continue
   if [ -n "$prefix" ]; then
     printf '%s\t%s\t%s\n' "${prefix%%/*}" "${prefix##*/}" "$num" >> "$TUPLES_FILE"

@@ -72,7 +72,8 @@ repo_from_git_dir() {
 }
 
 # --repo=value or -R=value
-REPO=$(echo "$COMMAND" | grep -oP '(?:--repo[= ]|-R[= ])\K[^\s"'"'"']+' 2>/dev/null | head -1) || true
+# perl (PCRE \K) instead of a PCRE grep flag — BSD grep on macOS lacks it.
+REPO=$(printf '%s\n' "$COMMAND" | perl -nle 'print $& while /(?:--repo[= ]|-R[= ])\K[^\s"'"'"']+/g' 2>/dev/null | head -1) || true
 
 # If no explicit repo flag, try to recover the real repo from an inline `cd`.
 # This is common for playbooks launched from Kookr that shell into another repo

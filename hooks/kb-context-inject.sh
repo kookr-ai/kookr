@@ -26,8 +26,10 @@ set -u
 
 # Fast env gate — exit before spawning node when the hook is opted out.
 # Case-folded so the accepted set matches the TS isHookEnabled() predicate.
+# tr instead of bash-4 lowercase parameter expansion (errors on macOS bash 3.2).
 _kbci_optin="${KOOKR_KB_CONTEXT_INJECT:-}"
-case "${_kbci_optin,,}" in
+_kbci_optin=$(printf '%s' "$_kbci_optin" | tr '[:upper:]' '[:lower:]')
+case "$_kbci_optin" in
   1 | true | on | yes) ;;
   *) exit 0 ;;
 esac
