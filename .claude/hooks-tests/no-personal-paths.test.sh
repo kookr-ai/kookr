@@ -65,20 +65,22 @@ ALLOWLIST=(
   "AGENTS.md # follow-up: NONE — load-bearing personal path"
 )
 
-# --- Build allowlist maps ----------------------------------------------------
-declare -A ALLOWED
-declare -A LABEL
-for entry in "${ALLOWLIST[@]}"; do
-  path="${entry%% #*}"
-  label="${entry#*# }"
-  ALLOWED["$path"]=1
-  LABEL["$path"]="$label"
-done
+# --- Allowlist lookups -------------------------------------------------------
+# macOS ships bash 3.2, which has no associative arrays. Derive membership and
+# labels by scanning the flat ALLOWLIST array instead.
+is_allowed() {  # is_allowed <path>
+  local entry
+  for entry in "${ALLOWLIST[@]}"; do
+    [ "${entry%% #*}" = "$1" ] && return 0
+  done
+  return 1
+}
 
 # --- Validate allowlist labels ----------------------------------------------
 LABEL_FAIL=0
-for path in "${!LABEL[@]}"; do
-  label="${LABEL[$path]}"
+for entry in "${ALLOWLIST[@]}"; do
+  path="${entry%% #*}"
+  label="${entry#*# }"
   case "$label" in
     "follow-up: NONE"*|"follow-up: NONE — "*)
       ;;
@@ -111,7 +113,7 @@ while IFS= read -r f; do TARGETS+=("$f"); done < <(find .claude/playbooks -name 
 VIOLATIONS=0
 for f in "${TARGETS[@]}"; do
   if grep -qE "$PATTERN" "$f"; then
-    if [ -z "${ALLOWED[$f]:-}" ]; then
+    if ! is_allowed "$f"; then
       printf 'FAIL: %s references personal paths but is not on the allowlist.\n' "$f" >&2
       grep -nE "$PATTERN" "$f" | head -3 | sed 's/^/    /' >&2
       VIOLATIONS=$((VIOLATIONS + 1))
@@ -137,7 +139,8 @@ done
 
 # --- Stale allowlist entries (informational, not failing) -------------------
 STALE=()
-for path in "${!ALLOWED[@]}"; do
+for entry in "${ALLOWLIST[@]}"; do
+  path="${entry%% #*}"
   if [ -e "$path" ] && ! grep -qE "$PATTERN" "$path"; then
     STALE+=("$path")
   fi
@@ -154,4 +157,4 @@ if [ "${#STALE[@]}" -gt 0 ]; then
   printf '    %s\n' "${STALE[@]}"
 fi
 
-printf 'Path-lint passed: %d files scanned, %d allowlisted, 0 violations.\n' "${#TARGETS[@]}" "${#ALLOWED[@]}"
+printf 'Path-lint passed: %d files scanned, %d allowlisted, 0 violations.\n' "${#TARGETS[@]}" "${#ALLOWLIST[@]}"
