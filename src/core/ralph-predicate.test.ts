@@ -32,14 +32,14 @@ describe('runStopPredicate', () => {
 
   it('exposes RALPH_ITERATION to the predicate', async () => {
     const out = join(dir, 'iter');
-    await runStopPredicate(`echo -n "$RALPH_ITERATION" > ${out}`, { cwd: dir, iteration: 42 });
+    await runStopPredicate(`printf '%s' "$RALPH_ITERATION" > ${out}`, { cwd: dir, iteration: 42 });
     const written = await readFile(out, 'utf-8');
     expect(written).toBe('42');
   });
 
   it('exposes RALPH_LAST_OUTPUT_FILE when provided', async () => {
     const sink = join(dir, 'sink');
-    await runStopPredicate(`echo -n "$RALPH_LAST_OUTPUT_FILE" > ${sink}`, {
+    await runStopPredicate(`printf '%s' "$RALPH_LAST_OUTPUT_FILE" > ${sink}`, {
       cwd: dir,
       iteration: 1,
       lastOutputFile: '/tmp/some/path.jsonl',
@@ -51,7 +51,7 @@ describe('runStopPredicate', () => {
   it('does not set RALPH_LAST_OUTPUT_FILE when omitted', async () => {
     const sink = join(dir, 'sink');
     await runStopPredicate(
-      `if [ -z "\${RALPH_LAST_OUTPUT_FILE+set}" ]; then echo -n unset > ${sink}; else echo -n set > ${sink}; fi`,
+      `if [ -z "\${RALPH_LAST_OUTPUT_FILE+set}" ]; then printf '%s' unset > ${sink}; else printf '%s' set > ${sink}; fi`,
       { cwd: dir, iteration: 1 },
     );
     const written = await readFile(sink, 'utf-8');

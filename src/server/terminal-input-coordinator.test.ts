@@ -1,6 +1,5 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -34,7 +33,10 @@ async function waitForOutput(
   backend: LocalDtachBackend,
   sessionId: string,
   needle: string,
-  timeoutMs = 3_000,
+  // Generous default: these poll real dtach-backed canary processes, which emit
+  // late under full-suite CPU contention on macOS. Timeout-only — never changes
+  // an assertion outcome.
+  timeoutMs = 6_000,
 ): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   let text = '';
@@ -243,10 +245,14 @@ describe('TerminalInputCoordinator with real dtach-backed terminal', () => {
 
   async function createCanary(sessionId: string, submitReadyMs = 250) {
     await disposeBackend();
-    tmpDir = mkdtempSync(join(tmpdir(), 'terminal-submit-canary-'));
+    // Keep the unix-domain socket path short: on macOS os.tmpdir() resolves to a
+    // long /var/folders/.../T/ path that, combined with the instanceId, session
+    // id, and dtach's .sock suffix, blows past the 103-byte sun_path limit. /tmp
+    // is short and present on both Linux and macOS.
+    tmpDir = mkdtempSync(join('/tmp', 'tsc-'));
     backend = new LocalDtachBackend({
       socketDir: tmpDir,
-      instanceId: 'submit-canary',
+      instanceId: 'sc',
       dtachBinary: DTACH!,
       ringFlushIntervalMs: 10,
     });
@@ -283,7 +289,7 @@ describe('TerminalInputCoordinator with real dtach-backed terminal', () => {
     );
     const submitted = await waitForOutput(backend!, 'delayed', 'SUBMITTED:reply-delayed');
     expect(submitted).not.toContain('IGNORED_EARLY_ENTER:reply-delayed');
-  }, 10_000);
+  }, 20_000);
 
   for (const [agentType, createAdapter] of [
     ['claude-code', (coordinator: TerminalInputCoordinator) => (
@@ -302,7 +308,7 @@ describe('TerminalInputCoordinator with real dtach-backed terminal', () => {
 
       const submitted = await waitForOutput(backend!, sessionId, `SUBMITTED:reply-via-${agentType}`);
       expect(submitted).not.toContain(`IGNORED_EARLY_ENTER:reply-via-${agentType}`);
-    }, 10_000);
+    }, 20_000);
   }
 
   skipIfNoDtach('bracketed-paste sendInput submits when the Enter-suppress window outlasts the inter-payload delay (#935)', async () => {
@@ -318,7 +324,7 @@ describe('TerminalInputCoordinator with real dtach-backed terminal', () => {
       [encoder.encode('supervisor note'), ENTER_BYTES],
       { reason: 'regression-control-busy', interPayloadDelayMs: 500 },
     );
-    const swallowed = await waitForOutput(backend!, 'busy-control', 'IGNORED_EARLY_ENTER:supervisor note', 5_000);
+    const swallowed = await waitForOutput(backend!, 'busy-control', 'IGNORED_EARLY_ENTER:supervisor note', 15_000);
     expect(swallowed).not.toContain('SUBMITTED:supervisor note');
 
     await backend!.killSession('busy-control');
@@ -327,7 +333,7 @@ describe('TerminalInputCoordinator with real dtach-backed terminal', () => {
     coordinator = await createCanary('busy-fixed', 2_000);
     const adapter = new ClaudeCodeAdapter(backend!, new TaskStore(), { terminalInputWriter: coordinator });
     await adapter.sendInput('busy-fixed', 'supervisor note');
-    const submitted = await waitForOutput(backend!, 'busy-fixed', 'SUBMITTED:supervisor note', 5_000);
+    const submitted = await waitForOutput(backend!, 'busy-fixed', 'SUBMITTED:supervisor note', 15_000);
     expect(submitted).not.toContain('IGNORED_EARLY_ENTER:supervisor note');
-  }, 20_000);
+  }, 45_000);
 });
