@@ -200,8 +200,167 @@ describe('bug report bundle', () => {
     });
   });
 
+  test('includes bounded redacted selection transition diagnostics', () => {
+    const { bundle, serialized } = buildBugReportBundle({
+      agents: [agent()],
+      selectedAgentId: 'agent-1',
+      selectedProject: null,
+      buildInfo: null,
+      serverStartedAt: null,
+      alerts: [],
+      wireObservations: [],
+      selectionDiagnostics: {
+        transitions: [{
+          at: '2026-05-24T10:00:00.000Z',
+          atMs: 1,
+          fromTaskId: 'private-task-1',
+          toTaskId: 'private-task-2',
+          fromSessionId: 'private-session-1',
+          toSessionId: 'private-session-2',
+          source: 'selectAgent',
+          reason: 'manual_select',
+          selectedProject: 'github.com/acme/customer-secret-repo',
+          autoAdvance: { enabled: false, selectedAgentSource: 'manual', lastTickReason: null },
+          dashboardSelectionVersion: 2,
+          fromTask: {
+            agentId: 'private-agent-1',
+            taskId: 'private-task-1',
+            sessionId: 'private-session-1',
+            status: 'inProgress',
+            anomalyType: null,
+            anomalySeverity: null,
+            priority: 'normal',
+            snoozed: false,
+            suppressed: false,
+            projectId: 'github.com/acme/customer-secret-repo',
+            coordinatorChip: false,
+          },
+          toTask: {
+            agentId: 'private-agent-2',
+            taskId: 'private-task-2',
+            sessionId: 'private-session-2',
+            status: 'inProgress',
+            anomalyType: 'needs_input',
+            anomalySeverity: 'warning',
+            priority: 'normal',
+            snoozed: false,
+            suppressed: false,
+            projectId: 'github.com/acme/private-repo',
+            coordinatorChip: false,
+          },
+          routingCandidates: [{
+            agentId: 'private-agent-2',
+            taskId: 'private-task-2',
+            sessionId: 'private-session-2',
+            status: 'inProgress',
+            anomalyType: 'needs_input',
+            anomalySeverity: 'warning',
+            priority: 'normal',
+            projectId: 'github.com/acme/private-repo',
+            coordinatorChip: false,
+            originalIndex: 0,
+          }],
+        }],
+        flickerIncidents: [{
+          incidentId: `selection-flicker-${'x'.repeat(180)}`,
+          pairKey: 'private-session-1|private-session-2',
+          taskIds: Array.from({ length: 12 }, (_, index) => `task-${index}-github.com/acme/private-repo`),
+          sessionIds: Array.from({ length: 12 }, (_, index) => `agent-${index}-github.com/acme/private-repo`),
+          firstAt: '2026-05-24T10:00:00.000Z',
+          lastAt: '2026-05-24T10:00:02.000Z',
+          switchCount: 3,
+          switchesPerSecond: 1.5,
+          sourceCounts: Object.fromEntries(
+            Array.from({ length: 12 }, (_, index) => [`selectAgent-${index}-${'x'.repeat(120)}`, index + 1]),
+          ),
+          firstTaskStates: { from: null, to: null },
+          lastTaskStates: {
+            from: null,
+            to: {
+              agentId: 'agent-2',
+            agentId: 'private-agent-2',
+            taskId: 'private-task-2',
+            sessionId: 'private-session-2',
+              status: 'inProgress',
+              anomalyType: 'needs_input',
+              anomalySeverity: 'warning',
+              priority: 'normal',
+              snoozed: false,
+              suppressed: false,
+              projectId: 'github.com/acme/private-repo',
+              coordinatorChip: false,
+            },
+          },
+          websocketMessageCounts: Object.fromEntries(
+            Array.from({ length: 12 }, (_, index) => [`dashboardSelection-${index}-${'y'.repeat(120)}`, index + 1]),
+          ),
+          droppedTransitionCount: 0,
+        }],
+      },
+      now: new Date('2026-05-24T10:00:00.000Z'),
+    });
+
+    expect(bundle.selectionDiagnostics.transitions).toHaveLength(1);
+    expect(bundle.selectionDiagnostics.flickerIncidents[0]).toMatchObject({
+      switchCount: 3,
+    });
+    expect(bundle.selectionDiagnostics.flickerIncidents[0].incidentId).toHaveLength(120);
+    expect(bundle.selectionDiagnostics.flickerIncidents[0].pairKey).toBe('[redacted pair]');
+    expect(bundle.selectionDiagnostics.flickerIncidents[0].taskIds).toHaveLength(8);
+    expect(bundle.selectionDiagnostics.flickerIncidents[0].taskIds.every((id) => id === '[redacted id]')).toBe(true);
+    expect(bundle.selectionDiagnostics.flickerIncidents[0].sessionIds).toHaveLength(8);
+    expect(bundle.selectionDiagnostics.flickerIncidents[0].sessionIds.every((id) => id === '[redacted id]')).toBe(true);
+    expect(Object.keys(bundle.selectionDiagnostics.flickerIncidents[0].sourceCounts)).toHaveLength(10);
+    expect(Object.keys(bundle.selectionDiagnostics.flickerIncidents[0].sourceCounts).every((key) => key.length <= 80)).toBe(true);
+    expect(Object.keys(bundle.selectionDiagnostics.flickerIncidents[0].websocketMessageCounts)).toHaveLength(10);
+    expect(Object.keys(bundle.selectionDiagnostics.flickerIncidents[0].websocketMessageCounts).every((key) => key.length <= 80)).toBe(true);
+    expect(bundle.selectionDiagnostics.transitions[0].selectedProject).toBe('[redacted project]');
+    expect(bundle.selectionDiagnostics.transitions[0].fromTaskId).toBe('[redacted id]');
+    expect(bundle.selectionDiagnostics.transitions[0].toTaskId).toBe('[redacted id]');
+    expect(bundle.selectionDiagnostics.transitions[0].fromSessionId).toBe('[redacted id]');
+    expect(bundle.selectionDiagnostics.transitions[0].toSessionId).toBe('[redacted id]');
+    expect(bundle.selectionDiagnostics.transitions[0].fromTask?.agentId).toBe('[redacted id]');
+    expect(bundle.selectionDiagnostics.transitions[0].fromTask?.taskId).toBe('[redacted id]');
+    expect(bundle.selectionDiagnostics.transitions[0].fromTask?.sessionId).toBe('[redacted id]');
+    expect(bundle.selectionDiagnostics.transitions[0].toTask?.projectId).toBe('[redacted project]');
+    expect(bundle.selectionDiagnostics.transitions[0].toTask?.agentId).toBe('[redacted id]');
+    expect(bundle.selectionDiagnostics.transitions[0].toTask?.taskId).toBe('[redacted id]');
+    expect(bundle.selectionDiagnostics.transitions[0].toTask?.sessionId).toBe('[redacted id]');
+    expect(bundle.selectionDiagnostics.transitions[0].routingCandidates[0].projectId).toBe('[redacted project]');
+    expect(bundle.selectionDiagnostics.transitions[0].routingCandidates[0].agentId).toBe('[redacted id]');
+    expect(bundle.selectionDiagnostics.transitions[0].routingCandidates[0].taskId).toBe('[redacted id]');
+    expect(bundle.selectionDiagnostics.transitions[0].routingCandidates[0].sessionId).toBe('[redacted id]');
+    expect(bundle.selectionDiagnostics.flickerIncidents[0].lastTaskStates.to?.projectId).toBe('[redacted project]');
+    expect(bundle.selectionDiagnostics.flickerIncidents[0].lastTaskStates.to?.agentId).toBe('[redacted id]');
+    expect(bundle.selectionDiagnostics.flickerIncidents[0].lastTaskStates.to?.taskId).toBe('[redacted id]');
+    expect(bundle.selectionDiagnostics.flickerIncidents[0].lastTaskStates.to?.sessionId).toBe('[redacted id]');
+    expect(serialized).not.toContain('customer-secret');
+    expect(serialized).not.toContain('repo-name');
+    expect(serialized).not.toContain('acme');
+    expect(serialized).not.toContain('private-repo');
+    expect(serialized).not.toContain('private-task');
+    expect(serialized).not.toContain('private-session');
+    expect(serialized).not.toContain('private-agent');
+  });
+
   test('truncates oversized bundles deterministically', () => {
     const hugeFieldNames = Array.from({ length: 80_000 }, (_, index) => `field-${index}`);
+    const selectionTransition = {
+      at: '2026-05-24T10:00:00.000Z',
+      atMs: 1,
+      fromTaskId: 'task-1',
+      toTaskId: 'task-2',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      source: 'selectAgent',
+      reason: 'manual_select',
+      selectedProject: 'github.com/acme/private-repo',
+      autoAdvance: { enabled: false, selectedAgentSource: 'manual', lastTickReason: null },
+      dashboardSelectionVersion: 2,
+      fromTask: null,
+      toTask: null,
+      routingCandidates: [],
+    };
     const { bundle, serialized } = buildBugReportBundle({
       agents: [],
       selectedAgentId: null,
@@ -226,11 +385,32 @@ describe('bug report bundle', () => {
         fieldNames: hugeFieldNames,
         truncated: true,
       }],
+      selectionDiagnostics: {
+        transitions: Array.from({ length: 105 }, (_, index) => ({ ...selectionTransition, atMs: index })),
+        flickerIncidents: Array.from({ length: 25 }, (_, index) => ({
+          incidentId: `selection-flicker-${index}`,
+          pairKey: 'agent-1|agent-2',
+          taskIds: ['task-1', 'task-2'],
+          sessionIds: ['agent-1', 'agent-2'],
+          firstAt: '2026-05-24T10:00:00.000Z',
+          lastAt: '2026-05-24T10:00:02.000Z',
+          switchCount: 3,
+          switchesPerSecond: 1.5,
+          sourceCounts: { selectAgent: 3 },
+          firstTaskStates: { from: null, to: null },
+          lastTaskStates: { from: null, to: null },
+          websocketMessageCounts: { dashboardSelection: 1 },
+          droppedTransitionCount: 0,
+        })),
+      },
       now: new Date('2026-05-24T10:00:00.000Z'),
     });
 
     expect(bundle.captureDiagnostics.truncationApplied).toBe(true);
     expect(bundle.wireObservations).toEqual([]);
+    expect(bundle.selectionDiagnostics.transitions).toEqual([]);
+    expect(bundle.selectionDiagnostics.flickerIncidents).toHaveLength(5);
+    expect(bundle.captureDiagnostics.warnings.some((warning) => warning.includes('selection transitions'))).toBe(true);
     expect(bundle.alerts).toHaveLength(1);
     expect(new TextEncoder().encode(serialized).byteLength).toBeLessThan(bundle.captureDiagnostics.sizeLimitBytes);
   });

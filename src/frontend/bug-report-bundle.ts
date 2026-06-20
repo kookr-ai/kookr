@@ -1,6 +1,13 @@
 import type { AgentState, BuildInfo } from '../shared/protocol.js';
 import type { BugReportRecordedAlert, BugReportWireObservation } from './bug-report-recorder.js';
 import type { DebugTimelineEntry } from './debug-timeline.js';
+import type {
+  SelectionFlickerIncidentSummary,
+  SelectionRoutingCandidateSummary,
+  SelectionTaskSummary,
+  SelectionTransitionDiagnostics,
+  SelectionTransitionRecord,
+} from './selection-transition-recorder.js';
 
 export interface BugReportBundle {
   schemaVersion: 'kookr-bug-report.v1';
@@ -18,6 +25,7 @@ export interface BugReportBundle {
   fleetSummary: BugReportFleetSummary;
   alerts: BugReportAlert[];
   wireObservations: BugReportWireObservation[];
+  selectionDiagnostics: SelectionTransitionDiagnostics;
   debugTimeline: DebugTimelineEntry[];
   captureDiagnostics: BugReportCaptureDiagnostics;
 }
@@ -87,6 +95,7 @@ export interface BuildBugReportInput {
   serverStartedAt: string | null;
   alerts: BugReportRecordedAlert[];
   wireObservations: BugReportWireObservation[];
+  selectionDiagnostics?: SelectionTransitionDiagnostics;
   debugTimeline?: DebugTimelineEntry[];
   note?: string;
   now?: Date;
@@ -97,6 +106,10 @@ export interface BuildBugReportInput {
 
 const HARD_SIZE_LIMIT_BYTES = 1_000_000;
 const MAX_TEXT = 240;
+const MAX_SELECTION_ID_LENGTH = 120;
+const MAX_SELECTION_IDS = 8;
+const MAX_SELECTION_COUNT_ENTRIES = 10;
+const MAX_SELECTION_COUNT_KEY_LENGTH = 80;
 
 const SECRET_KEY_RE = /^(token|secret|password|authorization|cookie|apikey|api_key|credential|privatekey|accessToken|refreshToken)$/i;
 const SECRET_VALUE_PATTERNS = [
@@ -193,6 +206,7 @@ export function buildBugReportBundle(input: BuildBugReportInput): { bundle: BugR
         'secret_redaction',
         'wire_payload_summarization',
         'debug_trace_redaction',
+        'selection_diagnostics_redaction',
       ],
     },
     selection: {
@@ -216,6 +230,10 @@ export function buildBugReportBundle(input: BuildBugReportInput): { bundle: BugR
         ...(event.shortPreview ? { shortPreview: summarizePreview(event.shortPreview) } : {}),
       }))
     )) ?? [],
+    selectionDiagnostics: safeSection('selectionDiagnostics', failures, omittedSections, () => ({
+      transitions: (input.selectionDiagnostics?.transitions ?? []).slice(-100).map(toBugReportSelectionTransition),
+      flickerIncidents: (input.selectionDiagnostics?.flickerIncidents ?? []).slice(-20).map(toBugReportSelectionIncident),
+    })) ?? { transitions: [], flickerIncidents: [] },
     debugTimeline: safeSection('debugTimeline', failures, omittedSections, () => (
       (input.debugTimeline ?? []).slice(-50).map(toBugReportDebugTimelineEntry)
     )) ?? [],
@@ -235,12 +253,31 @@ export function buildBugReportBundle(input: BuildBugReportInput): { bundle: BugR
   if (size > HARD_SIZE_LIMIT_BYTES) {
     bundle.wireObservations = [];
     bundle.debugTimeline = [];
+    bundle.selectionDiagnostics = {
+      transitions: [],
+      flickerIncidents: bundle.selectionDiagnostics.flickerIncidents.slice(-5),
+    };
     bundle.alerts = bundle.alerts.slice(-5);
     bundle.captureDiagnostics.truncationApplied = true;
-    bundle.captureDiagnostics.warnings.push('Bundle exceeded hard size cap; wire observations and older alerts were truncated.');
+    bundle.captureDiagnostics.warnings.push('Bundle exceeded hard size cap; wire observations, debug timeline, selection transitions, and older alerts were truncated.');
   }
   serialized = serialize(bundle);
   bundle.captureDiagnostics.bundleSizeBytes = byteLength(serialized);
+  while (
+    bundle.captureDiagnostics.bundleSizeBytes > HARD_SIZE_LIMIT_BYTES
+    && bundle.selectionDiagnostics.flickerIncidents.length > 0
+  ) {
+    bundle.selectionDiagnostics.flickerIncidents.shift();
+    bundle.captureDiagnostics.warnings.push('Bundle still exceeded hard size cap; older selection flicker incidents were dropped.');
+    serialized = serialize(bundle);
+    bundle.captureDiagnostics.bundleSizeBytes = byteLength(serialized);
+  }
+  if (bundle.captureDiagnostics.bundleSizeBytes > HARD_SIZE_LIMIT_BYTES) {
+    bundle.selectionDiagnostics.flickerIncidents = [];
+    bundle.captureDiagnostics.warnings.push('Bundle still exceeded hard size cap; selection flicker incidents were dropped.');
+    serialized = serialize(bundle);
+    bundle.captureDiagnostics.bundleSizeBytes = byteLength(serialized);
+  }
   serialized = serialize(bundle);
   return { bundle, serialized };
 }
@@ -371,6 +408,91 @@ function toBugReportAlert(alert: BugReportRecordedAlert): BugReportAlert {
     summaryCategory: alert.summaryCategory,
     hasDetails: Boolean(alert.details),
   };
+}
+
+function toBugReportSelectionTransition(transition: SelectionTransitionRecord): SelectionTransitionRecord {
+  return {
+    ...transition,
+    fromTaskId: redactNullableSelectionIdentifier(transition.fromTaskId),
+    toTaskId: redactNullableSelectionIdentifier(transition.toTaskId),
+    fromSessionId: redactNullableSelectionIdentifier(transition.fromSessionId),
+    toSessionId: redactNullableSelectionIdentifier(transition.toSessionId),
+    selectedProject: redactProjectId(transition.selectedProject),
+    autoAdvance: { ...transition.autoAdvance },
+    fromTask: toBugReportSelectionTaskSummary(transition.fromTask),
+    toTask: toBugReportSelectionTaskSummary(transition.toTask),
+    routingCandidates: transition.routingCandidates.slice(0, 5).map(toBugReportSelectionCandidate),
+  };
+}
+
+function toBugReportSelectionIncident(incident: SelectionFlickerIncidentSummary): SelectionFlickerIncidentSummary {
+  return {
+    ...incident,
+    incidentId: truncateSelectionString(incident.incidentId),
+    pairKey: redactPairKey(incident.pairKey),
+    taskIds: incident.taskIds.slice(0, MAX_SELECTION_IDS).map(redactSelectionIdentifier),
+    sessionIds: incident.sessionIds.slice(0, MAX_SELECTION_IDS).map(redactSelectionIdentifier),
+    sourceCounts: boundedSelectionCountMap(incident.sourceCounts),
+    firstTaskStates: {
+      from: toBugReportSelectionTaskSummary(incident.firstTaskStates.from),
+      to: toBugReportSelectionTaskSummary(incident.firstTaskStates.to),
+    },
+    lastTaskStates: {
+      from: toBugReportSelectionTaskSummary(incident.lastTaskStates.from),
+      to: toBugReportSelectionTaskSummary(incident.lastTaskStates.to),
+    },
+    websocketMessageCounts: boundedSelectionCountMap(incident.websocketMessageCounts),
+  };
+}
+
+function toBugReportSelectionTaskSummary(summary: SelectionTaskSummary | null): SelectionTaskSummary | null {
+  return summary ? {
+    ...summary,
+    agentId: redactSelectionIdentifier(summary.agentId),
+    taskId: redactNullableSelectionIdentifier(summary.taskId),
+    sessionId: redactSelectionIdentifier(summary.sessionId),
+    projectId: redactProjectId(summary.projectId),
+  } : null;
+}
+
+function toBugReportSelectionCandidate(candidate: SelectionRoutingCandidateSummary): SelectionRoutingCandidateSummary {
+  return {
+    ...candidate,
+    agentId: redactSelectionIdentifier(candidate.agentId),
+    taskId: redactNullableSelectionIdentifier(candidate.taskId),
+    sessionId: redactSelectionIdentifier(candidate.sessionId),
+    projectId: redactProjectId(candidate.projectId),
+  };
+}
+
+function redactProjectId(value: string | null): string | null {
+  return value ? '[redacted project]' : null;
+}
+
+function redactPairKey(value: string): string {
+  return value ? '[redacted pair]' : '';
+}
+
+function redactSelectionIdentifier(value: string): string {
+  return value ? '[redacted id]' : '';
+}
+
+function redactNullableSelectionIdentifier(value: string | null): string | null {
+  return value ? '[redacted id]' : null;
+}
+
+function truncateSelectionString(value: string): string {
+  return value.slice(0, MAX_SELECTION_ID_LENGTH);
+}
+
+function boundedSelectionCountMap(counts: Record<string, number>): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(counts)
+      .filter(([, count]) => Number.isFinite(count) && count > 0)
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .slice(0, MAX_SELECTION_COUNT_ENTRIES)
+      .map(([key, count]) => [key.slice(0, MAX_SELECTION_COUNT_KEY_LENGTH), count]),
+  );
 }
 
 function toBugReportDebugTimelineEntry(event: DebugTimelineEntry): DebugTimelineEntry {

@@ -64,6 +64,7 @@ import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import { buildBugReportBundle } from './bug-report-bundle.js';
 import { getBugReportAlerts, getBugReportWireObservations } from './bug-report-recorder.js';
 import { getDebugTimelineEntries, isDebugTimelineEnabled } from './debug-timeline.js';
+import { getSelectionTransitionDiagnostics } from './selection-transition-recorder.js';
 import './critical.css';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
@@ -565,6 +566,7 @@ export function App() {
       serverStartedAt,
       alerts: getBugReportAlerts(),
       wireObservations: getBugReportWireObservations(),
+      selectionDiagnostics: getSelectionTransitionDiagnostics(),
       debugTimeline: getDebugTimelineEntries(),
       note: bugReportNote,
     });
@@ -579,6 +581,7 @@ export function App() {
       serverStartedAt,
       alerts: getBugReportAlerts(),
       wireObservations: [],
+      selectionDiagnostics: getSelectionTransitionDiagnostics(),
       debugTimeline: getDebugTimelineEntries(),
       note: 'Debug timeline export',
     });

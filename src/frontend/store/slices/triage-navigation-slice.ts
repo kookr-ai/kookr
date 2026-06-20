@@ -4,6 +4,7 @@ import { isDndEnabled } from '../../hooks/useDnd.js';
 import { buildRoutableOrder, compareRoutableAgents } from '../../agent-priority-order.js';
 import { deriveProjectPriorityRanks } from '../../../shared/project-sidebar.js';
 import { recordReportableAlert } from '../../bug-report-recorder.js';
+import { withSelectionTransitionSource } from '../../selection-transition-recorder.js';
 import { saveSelectedProject } from '../selected-project-storage.js';
 import { isActiveFinding } from '../finding-helpers.js';
 
@@ -167,7 +168,9 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
     selectAgent: (agentId) => {
       // selectedAgentSource: 'manual' marks this selection as a user choice
       // (rather than an auto-advance landing) so the engagement guard fires.
-      set({ selectedAgentId: agentId, selectedAgentSource: 'manual', respondAllAgentIds: null, leftPane: 'activity', narrowTab: 'activity' });
+      withSelectionTransitionSource({ source: 'selectAgent', reason: agentId ? 'manual_select' : 'manual_deselect' }, () => {
+        set({ selectedAgentId: agentId, selectedAgentSource: 'manual', respondAllAgentIds: null, leftPane: 'activity', narrowTab: 'activity' });
+      });
     },
 
     nextBottleneck: () => {
@@ -179,18 +182,24 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
         .sort((left, right) => compareRoutableAgents(left, right, order));
 
       if (findings.length === 0) {
-        set({ selectedAgentId: null, selectedAgentSource: 'manual', shortcutsArmed: false });
+        withSelectionTransitionSource({ source: 'nextBottleneck', reason: 'no_active_findings' }, () => {
+          set({ selectedAgentId: null, selectedAgentSource: 'manual', shortcutsArmed: false });
+        });
         return;
       }
 
       const currentIdx = findings.findIndex((agent) => agent.agentId === selectedAgentId);
       const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % findings.length : 0;
       if (findings[nextIdx].agentId === selectedAgentId) {
-        set({ selectedAgentId: null, selectedAgentSource: 'manual', shortcutsArmed: false });
+        withSelectionTransitionSource({ source: 'nextBottleneck', reason: 'only_current_finding' }, () => {
+          set({ selectedAgentId: null, selectedAgentSource: 'manual', shortcutsArmed: false });
+        });
         return;
       }
 
-      set({ ...activateNavigationSelection(agents, findings[nextIdx].agentId, visibleProjectIds), shortcutsArmed: false });
+      withSelectionTransitionSource({ source: 'nextBottleneck', reason: 'cycle_active_findings' }, () => {
+        set({ ...activateNavigationSelection(agents, findings[nextIdx].agentId, visibleProjectIds), shortcutsArmed: false });
+      });
     },
 
     nextTask: () => {
@@ -202,7 +211,9 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
 
       const currentIdx = all.findIndex((agent) => agent.agentId === selectedAgentId);
       const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % all.length : 0;
-      set(activateNavigationSelection(agents, all[nextIdx].agentId, visibleProjectIds));
+      withSelectionTransitionSource({ source: 'nextTask', reason: 'cycle_routable_tasks' }, () => {
+        set(activateNavigationSelection(agents, all[nextIdx].agentId, visibleProjectIds));
+      });
     },
 
     selectNextTaskAfterCompletion: (completedAgentId, completedTaskId) => {
@@ -217,19 +228,23 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
       ));
 
       if (all.length === 0) {
-        set({
-          selectedAgentId: null,
-          selectedAgentSource: 'manual',
-          respondAllAgentIds: null,
-          shortcutsArmed: false,
+        withSelectionTransitionSource({ source: 'selectNextTaskAfterCompletion', reason: 'no_remaining_candidates' }, () => {
+          set({
+            selectedAgentId: null,
+            selectedAgentSource: 'manual',
+            respondAllAgentIds: null,
+            shortcutsArmed: false,
+          });
         });
         return;
       }
 
-      set({
-        ...activateNavigationSelection(agents, all[0].agentId, visibleProjectIds),
-        respondAllAgentIds: null,
-        shortcutsArmed: false,
+      withSelectionTransitionSource({ source: 'selectNextTaskAfterCompletion', reason: 'completed_task_advance' }, () => {
+        set({
+          ...activateNavigationSelection(agents, all[0].agentId, visibleProjectIds),
+          respondAllAgentIds: null,
+          shortcutsArmed: false,
+        });
       });
     },
 
@@ -244,13 +259,17 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
       const { agents, selectedAgentId } = get();
       const findings = agents.filter(isActiveFinding);
       if (findings.length === 0) {
-        get().nextTask();
+        withSelectionTransitionSource({ source: 'advanceEmptyEnter', reason: 'no_findings_cycle_tasks' }, () => {
+          get().nextTask();
+        });
         return;
       }
       if (findings.length === 1 && findings[0].agentId === selectedAgentId) {
         return;
       }
-      get().nextBottleneck();
+      withSelectionTransitionSource({ source: 'advanceEmptyEnter', reason: 'cycle_findings' }, () => {
+        get().nextBottleneck();
+      });
     },
 
     previousTask: () => {
@@ -262,7 +281,9 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
 
       const currentIdx = all.findIndex((agent) => agent.agentId === selectedAgentId);
       const prevIdx = currentIdx >= 0 ? (currentIdx - 1 + all.length) % all.length : all.length - 1;
-      set(activateNavigationSelection(agents, all[prevIdx].agentId, visibleProjectIds));
+      withSelectionTransitionSource({ source: 'previousTask', reason: 'cycle_routable_tasks' }, () => {
+        set(activateNavigationSelection(agents, all[prevIdx].agentId, visibleProjectIds));
+      });
     },
 
     snoozeAgent: (agentId, durationMs) => {
