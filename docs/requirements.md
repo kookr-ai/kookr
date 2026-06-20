@@ -402,12 +402,13 @@ The system SHALL allow relaunching a task with the same or modified prompt and w
 
 ### R4.4: Task Lifecycle Management [F4.4] — SHALL — `done`
 
-The system SHALL manage tasks through a full lifecycle: Open → InProgress → Completed/Cancelled.
+The system SHALL manage tasks through a full lifecycle: Open/Pending → InProgress → Completed/Cancelled/Terminated.
 
 **Acceptance criteria:**
 - Tasks are the unit of work (distinct from agent sessions)
 - A task may go through multiple agent sessions
-- Agent session ending returns the task to `open` — user must explicitly mark complete
+- Agent session ending normally remains user-controlled, but reconciliation auto-completes a task when all sessions are dead and the final recorded turn ended cleanly with `completed_turn`
+- Agent session death without a clean completed turn transitions the task to `terminated` for user acknowledgement/retry
 - Tasks are persisted locally in JSON (`~/.kookr/tasks.json`)
 - Persistence uses atomic writes (temp file → rename)
 - On startup, tasks are loaded from disk and reconciled with live dtach sessions
@@ -987,7 +988,7 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | Req | Feature | Priority | Status | Module(s) |
 |-----|---------|----------|--------|-----------|
 | R1.1 | F1.2 | SHALL | done | types, monitor, ws, useStore |
-| R1.2 | F1.3 | SHOULD | partial | hook-parser, AgentDetail, hook-watcher |
+| R1.2 | F1.3 | SHOULD | partial | hook-parser, DetailPanel, hook-watcher |
 | R1.3 | F1.4 | SHOULD | partial | tasks, frontend components |
 | R1.4 | F1.1 | MAY | deferred | — |
 | R1.5 | F1.5 | MAY | deferred | — |
@@ -1007,12 +1008,12 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R2.11 | F2.10 | SHOULD | done | finding-evidence-audit, monitor, lifecycle-timers, diagnostics-routes |
 | R2.12 | F2.11 | SHOULD | done | review-log-store, finding-evidence-review-service, diagnostics-routes |
 | R2.13 | F2.12 | SHOULD | done | detector-proposal-report, review-log-store, diagnostics-routes |
-| R3.1 | F3.1 | SHALL | done | AgentDetail, useStore |
-| R3.2 | F3.2 | SHALL | done | AgentDetail, ws, claude-code-adapter |
+| R3.1 | F3.1 | SHALL | done | DetailPanel, useStore |
+| R3.2 | F3.2 | SHALL | done | DetailPanel, ws, agent adapters |
 | R3.3 | F3.3 | SHALL | done | attention-queue, loop.test |
 | R3.3a | F3.3 | SHALL | done | terminal-input-coordinator, dashboard-selection-controller, session-bridge, DetailPanel |
-| R3.4 | F3.4 | SHOULD | partial | attention-queue, AgentDetail |
-| R3.5 | F3.5 | SHOULD | done | AgentList, useStore |
+| R3.4 | F3.4 | SHOULD | partial | attention-queue, FindingsPanel |
+| R3.5 | F3.5 | SHOULD | done | FindingsPanel, useStore |
 | R3.6 | F3.6 | SHALL | done | attention-queue, ws, loop.test |
 | R3.7 | F3.7 | SHALL | done | attention-queue, ws, loop.test |
 | R3.8 | — | SHOULD | done | useStore, SentOverlay, DetailPanel |
@@ -1033,8 +1034,8 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R4b.8 | F6.2, F6.6 | SHALL | done | LaunchTaskDialog, PlaybookBrowser, playbook-launch, task-routes |
 | R4c.1 | — | SHALL | done | cleanup-inspector, workspace-cleanup-service, CleanupCandidateTable |
 | R4c.2 | — | SHALL | done | ledger-analytics, project-summary |
-| R5.1 | F5.1 | SHALL | done | AgentList |
-| R5.2 | F5.2 | SHALL | done | AgentDetail |
+| R5.1 | F5.1 | SHALL | done | FindingsPanel |
+| R5.2 | F5.2 | SHALL | done | DetailPanel |
 | R5.3 | F5.3 | SHOULD | done | StatusBar |
 | R5.4 | F5.4 | SHOULD | done | App, useStore, DetailPanel |
 | R5.5 | F5.5 | SHALL | done | useWebSocket, ws, useStore |

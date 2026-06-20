@@ -54,7 +54,7 @@ flowchart LR
 ```mermaid
 flowchart LR
   Detection[Anomaly Detection] --> Det1[Detect asked-question]
-  Detection --> Det2[Detect stuck loops]
+  Detection --> Det2[Detect stuck-loop candidates]
   Detection --> Det3[Detect repeated errors]
   Detection --> Det4[Generate explanation]
 ```
@@ -99,7 +99,7 @@ flowchart LR
 | Track agent status | agent-adapter + supervisor | Must |
 | Show current activity | agent-adapter | Nice-to-have |
 | Detect asked-question | supervisor-agent | Must |
-| Detect stuck loops | supervisor-agent | Nice-to-have |
+| Detect stuck-loop candidates | supervisor-agent | Deferred to V2 semantic supervisor |
 | Detect repeated errors | supervisor-agent | Nice-to-have |
 | Generate explanation | supervisor-agent | Must |
 | Prioritize by urgency | attention-router | Must |

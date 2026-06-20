@@ -25,7 +25,7 @@ You run several Claude Code or Codex CLI agents in parallel. One loops on the sa
 ## What Kookr Does
 
 - **Monitors agent sessions in real time** through hooks, transcripts, and managed terminal sessions.
-- **Detects common blockers** such as permission prompts, repeated errors, idle/stopped agents, and stuck work.
+- **Detects common blockers** such as permission prompts, repeated errors, idle/stopped agents, and budget thresholds.
 - **Routes your attention** to the agent that most needs a human response.
 - **Lets you reply from one dashboard** without switching terminals.
 - **Runs locally** on your machine, with optional integrations for AI suggestions, speech, Telegram, GitHub state, schedules, and playbooks.
@@ -116,10 +116,10 @@ Browser dashboard
   -> Hono HTTP/WebSocket server
   -> Core monitor, anomaly detector, attention queue, task store
   -> Local dtach backend plus Claude Code / Codex CLI adapters
-  -> Managed AI agent sessions
+  -> Managed coding-agent sessions
 ```
 
-Agents run in interactive dtach sessions. Kookr watches hook events, terminal output, transcripts, GitHub state, and task metadata, then turns that signal into a small queue of findings.
+Agents run in interactive dtach sessions. Kookr watches hook events, terminal display snapshots, transcripts, GitHub state, and task metadata, then turns that signal into a small queue of findings. V1 anomaly detection is rule-based; semantic stuck-loop and trajectory-drift detection remain future supervisor work.
 
 Read [Architecture](docs/architecture.md) and [ADR-014](docs/adr/014-local-dtach-backend.md) for the full design.
 

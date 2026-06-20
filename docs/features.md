@@ -11,9 +11,9 @@ Developer runs several AI coding agents
   ↓
 Developer runs `npx kookr` → server prints the local dashboard URL
   ↓
-Kookr's supervisor agent watches all agents' output
+Kookr's supervisor watches structured events from all managed agents
   ↓
-Agent #3 repeats the same failing command without changing approach
+Agent #3 repeatedly hits the same error or asks for input
   → Supervisor detects the anomaly
   → Generates explanation: "Agent #3 is repeatedly hitting
      TypeError in auth.ts without changing strategy..."
@@ -57,7 +57,7 @@ A bottleneck is not necessarily an error — it is a state where human attention
 
 ### F2: Smart Anomaly Detection (Supervisor Agent)
 
-Kookr's supervisor is an AI that watches agent streams and **understands** what they're doing — not just whether they're "running" or "idle."
+Kookr's V1 supervisor watches structured hook events, task/session metadata, and transcript-derived cost/freshness data. Current detection is rule-based with plain-language templates; V2 can add LLM-backed semantic analysis for subtler cases such as stuck loops and trajectory drift.
 
 | ID | Feature | Description |
 |----|---------|-------------|
@@ -88,7 +88,7 @@ Kookr's supervisor is an AI that watches agent streams and **understands** what 
 | F3.4 | **"All clear" state** | When no agents need attention, show a clear "all agents working autonomously" state. |
 | F3.5 | **Manual navigation** | Allow the developer to manually select any agent from the list, not just the next bottleneck. |
 | F3.6 | **Skip agent** | Deprioritize an agent to the back of the queue. Supervisor keeps monitoring — if the agent's state changes (new anomaly, completion), it re-enters the active queue. |
-| F3.7 | **Snooze agent** | Pause monitoring for a chosen duration (+ optional reason). Supervisor stops polling. On timer expiry, supervisor re-evaluates and re-queues if anomaly persists. |
+| F3.7 | **Snooze agent** | Suppress active surfacing for a chosen duration (+ optional reason). Monitoring continues while snoozed; the queue withholds the finding until timer expiry or manual wake, then re-queues if the anomaly persists. |
 | F3.8 | **Quick action buttons** | When an agent stops and its last message contains a recognizable binary or multiple-choice question, Kookr presents clickable quick-action buttons (e.g., "Yes"/"No", numbered options) alongside the free-text input. Keyboard shortcuts (1-5) trigger corresponding actions. |
 | F3.9 | **AI response suggestions** | When an agent needs input and quick actions are insufficient, Kookr generates 3-5 predicted developer responses through the configured LLM provider. Suggestions appear as clickable buttons above the input box. Requires an LLM provider key (Groq, Gemini, Anthropic, or OpenRouter — see [Configuration](configuration.md#ai-suggestions)). |
 
@@ -99,8 +99,8 @@ Kookr's supervisor is an AI that watches agent streams and **understands** what 
 | F4.1 | **Launch new agent** | Start a new agent from the GUI with a task description (natural-language prompt) and working directory. Launched in a managed terminal session (interactive mode) for full monitoring and developer access. See [ADR-007](adr/007-managed-terminal-sessions.md). |
 | F4.2 | **Stop agent** | Terminate a running agent from the GUI. Stopping kills the dtach session, stops the hook file watcher, and marks the agent as stopped in the monitor to prevent resurrection from late-arriving hook events. |
 | F4.3 | **Relaunch agent** | Start another attempt from the same or modified prompt and working directory. User-initiated relaunches create successor tasks for history; crash-recovery and looped-playbook recovery can attach additional sessions to the existing task so attempt history is preserved. |
-| F4.4 | **Task lifecycle management** | Tasks are the unit of work; sessions are attempts attached to a task. A task usually has one live managed session, but may retain multiple historical or recovery sessions. Lifecycle: Open → InProgress → Completed/Cancelled/Terminated. Completing or cancelling a task terminates live sessions. Tasks and session metadata are persisted locally in JSON. |
-| F4.5 | **Optional completion criteria** | When launching an agent, the user can provide a definition of done (e.g., "tests pass", "PR created"). Criteria are stored on the task but not auto-evaluated in V1 — the developer must explicitly mark the task complete. |
+| F4.4 | **Task lifecycle management** | Tasks are the unit of work; sessions are attempts attached to a task. A task usually has one live managed session, but may retain multiple historical or recovery sessions. Lifecycle: Open → InProgress → Completed/Cancelled/Terminated. Completing or cancelling a task terminates live sessions. Startup/runtime reconciliation marks unexpectedly dead tasks `terminated`, but may auto-complete tasks whose final session ended on a clean `completed_turn`. Tasks and session metadata are persisted locally in JSON. |
+| F4.5 | **Optional completion criteria** | When launching an agent, the user can provide a definition of done (e.g., "tests pass", "PR created"). Criteria are stored on the task but not semantically auto-evaluated in V1; completion criteria remain advisory even though reconciliation can auto-complete a cleanly finished turn. |
 | F4.6 | **Attach to agent terminal** | Open an agent's managed dtach session directly from an external terminal when needed. Kookr no longer exposes a GUI button that copies an attach command. See [ADR-007](adr/007-managed-terminal-sessions.md) and [ADR-014](adr/014-local-dtach-backend.md). |
 | F4.7 | **Rename task** | Double-click a task name in the findings panel or detail header to edit it inline. The custom name overrides the auto-generated name (truncated prompt) everywhere in the UI. Clearing the name reverts to the default truncated prompt. |
 | F4.8 | **AI task naming** | When a task is launched, the configured LLM provider generates a concise 3-8 word name from the prompt (e.g., "Fix JWT Token Invalidation"). Requires an LLM provider key (Groq, Gemini, Anthropic, or OpenRouter — see [Configuration](configuration.md#ai-suggestions)); falls back to truncated prompt if unavailable. |
