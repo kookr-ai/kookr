@@ -9,7 +9,6 @@ import type {
   TaskPriorityUpdate,
 } from '../shared/contracts/task.js';
 import type { ChildSessionInfo, GitInfo, SessionInfo, WorktreeHealth } from './session-read-model.js';
-import type { TaskStatus } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
 import type {
   CreateTaskOptions,
@@ -17,6 +16,7 @@ import type {
   Task,
   TaskCompletionFeedback,
 } from './task-read-model.js';
+import { isTerminalStatus, type TaskStatus } from './task-status.js';
 import {
   DETERMINISTIC_RELATION_CONFIDENCE,
   taskRelationKey,
@@ -280,8 +280,14 @@ export class TaskStore {
     if (!VALID_TRANSITIONS[task.status].has(to)) {
       throw new InvalidTransitionError(task.status, to);
     }
+    const now = new Date();
     task.status = to;
-    task.updatedAt = new Date();
+    task.updatedAt = now;
+    if (isTerminalStatus(to)) {
+      task.finishedAt ??= now;
+    } else {
+      delete task.finishedAt;
+    }
     return task;
   }
 

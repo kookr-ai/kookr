@@ -51,6 +51,8 @@ export interface AgentState {
   cwd?: string;
   agentType?: import('../core/agent-types.js').AgentType;
   startedAt?: string; // ISO 8601
+  /** ISO timestamp for the first terminal transition on synthetic terminal rows. */
+  finishedAt?: string;
   playbookId?: string;
   playbookParameterValues?: Record<string, string>;
   launchHealthSummary?: TaskLaunchHealthSummary;

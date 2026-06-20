@@ -28,6 +28,18 @@ export function isHealthyRunningAgent(agent: AgentState): boolean {
     && !isTerminalTaskStatus(agent.taskStatus);
 }
 
+function finishedAtMs(agent: AgentState): number {
+  const finished = agent.finishedAt ? Date.parse(agent.finishedAt) : Number.NaN;
+  if (Number.isFinite(finished)) return finished;
+  const started = agent.startedAt ? Date.parse(agent.startedAt) : Number.NaN;
+  return Number.isFinite(started) ? started : 0;
+}
+
+export function compareCompletedAgents(left: AgentState, right: AgentState): number {
+  return finishedAtMs(right) - finishedAtMs(left)
+    || (right.taskId ?? right.agentId).localeCompare(left.taskId ?? left.agentId);
+}
+
 export function buildAgentBuckets(
   agents: AgentState[],
   selectedProject: string | null,
@@ -50,7 +62,9 @@ export function buildAgentBuckets(
     pending: scopedAgents
       .filter((agent) => agent.taskStatus === 'pending')
       .sort((left, right) => compareRoutableAgents(left, right, { chipTaskIds, originalIndex, projectPriorityRanks })),
-    completed: scopedAgents.filter((agent) => isTerminalTaskStatus(agent.taskStatus)),
+    completed: scopedAgents
+      .filter((agent) => isTerminalTaskStatus(agent.taskStatus))
+      .sort(compareCompletedAgents),
     snoozed: scopedAgents
       .filter((agent) => agent.taskStatus !== 'pending' && !isTerminalTaskStatus(agent.taskStatus) && (!!agent.snoozedUntil || agent.suppressed))
       .sort((a, b) => (a.snoozedUntil ?? 0) - (b.snoozedUntil ?? 0)),

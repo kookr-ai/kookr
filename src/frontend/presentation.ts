@@ -244,6 +244,48 @@ export function formatAge(detectedAt: Date | string | undefined): string {
   return `${h}h ${m}m`;
 }
 
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function parseValidDate(timestamp: Date | string | undefined): Date | null {
+  if (!timestamp) return null;
+  const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+/**
+ * Format a timestamp for compact row display. Uses local time and includes the
+ * year only when it differs from the current year.
+ */
+export function formatCompactDateTime(timestamp: Date | string | undefined, now: Date = new Date()): string {
+  const date = parseValidDate(timestamp);
+  if (!date) return '';
+  const month = MONTH_NAMES[date.getMonth()] ?? '';
+  const datePart = date.getFullYear() === now.getFullYear()
+    ? `${month} ${date.getDate()}`
+    : `${month} ${date.getDate()}, ${date.getFullYear()}`;
+  return `${datePart}, ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+/**
+ * Compact relative age for title text where exact date is already visible.
+ */
+export function formatRelativeTimeAgo(timestamp: Date | string | undefined, nowMs = Date.now()): string {
+  const date = parseValidDate(timestamp);
+  if (!date) return '';
+  const ms = Math.max(0, nowMs - date.getTime());
+  if (ms < 60_000) return 'just now';
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ${mins % 60}m ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
 export function findingWaitStartedAt(agent: AgentState): Date | string | undefined {
   const isSignaledCompleteFinding = agent.anomaly?.type === 'needs_input'
     && agent.turnState === 'completed_turn'

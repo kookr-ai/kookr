@@ -2,7 +2,25 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 import { track, trackClick } from '../telemetry.js';
-import { agentProviderPresentation, formatDuration, formatAge, ageColor, findingWaitStartedAt, healthyDotClass, healthyStatusLabel, formatTokenUsage, projectLabel, projectColor, formatBranch, worktreeHealthLabel, worktreeHealthTitle, turnStateLabel, turnStateClass } from '../presentation.js';
+import {
+  agentProviderPresentation,
+  formatDuration,
+  formatAge,
+  ageColor,
+  findingWaitStartedAt,
+  healthyDotClass,
+  healthyStatusLabel,
+  formatTokenUsage,
+  projectLabel,
+  projectColor,
+  formatBranch,
+  worktreeHealthLabel,
+  worktreeHealthTitle,
+  turnStateLabel,
+  turnStateClass,
+  formatCompactDateTime,
+  formatRelativeTimeAgo,
+} from '../presentation.js';
 import {
   formatSpeakFindingTimingLine,
   formatSpeakFindingTimingTitle,
@@ -21,6 +39,7 @@ import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { sendRalphLoopCommand, type RalphLoopCommand } from '../ralph-loop-api.js';
 import { CoordinatorTaskChipView, coordinatorChipForTask } from './CoordinatorSurfaces.js';
 import { ChildRollupPill } from './RelatedTasksSection.js';
+import { compareCompletedAgents } from '../agent-buckets.js';
 
 export const HEALTHY_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.healthy';
 export const PENDING_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.pending';
@@ -1295,6 +1314,12 @@ function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDeleteTas
   // without ack), or completed (default / user acknowledged). Keep CSS variants
   // aligned with rfc-task-loss-prevention D1.
   const rowVariant = isCancelled ? 'cancelled' : isTerminated ? 'terminated' : 'completed';
+  const terminalLabel = isCancelled ? 'Cancelled' : isTerminated ? 'Terminated' : 'Completed';
+  const finishedAt = formatCompactDateTime(agent.finishedAt);
+  const finishedAgo = formatRelativeTimeAgo(agent.finishedAt);
+  const finishedTitle = finishedAt
+    ? `${terminalLabel} ${finishedAt}${finishedAgo ? ` (${finishedAgo})` : ''}`
+    : terminalLabel;
 
   return (
     <Tooltip text={agent.description}>
@@ -1322,11 +1347,13 @@ function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDeleteTas
           <TaskIdCopyButton taskId={agent.taskId} compact />
           <SpeakTaskSummaryControl agent={agent} selected={selected} />
           <span className="completed-row-meta">
-            {isCancelled && <span className="completed-cancelled-label">cancelled</span>}
-            {isCancelled && (agent.tokenUsage || agent.startedAt) && ' · '}
             {formatTokenUsage(agent.tokenUsage)}
             {agent.tokenUsage && agent.startedAt ? ' · ' : ''}
             {formatDuration(agent.startedAt)}
+          </span>
+          <span className="completed-row-finished" title={finishedTitle} aria-label={finishedTitle}>
+            <span className="completed-row-status-label">{terminalLabel}</span>
+            {finishedAt && <time dateTime={agent.finishedAt}>{finishedAt}</time>}
           </span>
           {agent.taskId && (
             <button className="btn-xs" disabled={pendingDeletion} onClick={(e) => {
@@ -1498,6 +1525,13 @@ export function FindingsPanel({
     () => buildFindingDisplayItems(findings),
     [findings],
   );
+  const sortedCompleted = useMemo(
+    () => [...completed].sort(compareCompletedAgents),
+    [completed],
+  );
+  const latestCompletedLabel = sortedCompleted[0]?.finishedAt
+    ? formatCompactDateTime(sortedCompleted[0].finishedAt)
+    : '';
 
   function handlePanelClick(e: React.MouseEvent) {
     if (isInitialLoad) setIsInitialLoad(false);
@@ -1664,6 +1698,9 @@ export function FindingsPanel({
                   labelClassName="completed-label"
                   onToggle={toggleCompleted}
                 />
+                <span className="completed-sort-hint">
+                  Newest first{latestCompletedLabel ? ` · latest ${latestCompletedLabel}` : ''}
+                </span>
                 <ClearCompletedButton
                   finishedCount={clearCompletedFinishedCount}
                   terminatedCount={clearCompletedTerminatedCount}
@@ -1673,7 +1710,7 @@ export function FindingsPanel({
                   onQueueClearCompleted={onQueueClearCompleted}
                 />
               </div>
-              {!completedCollapsed && completed.map((agent) => (
+              {!completedCollapsed && sortedCompleted.map((agent) => (
                 <CompletedRow
                   key={agent.agentId}
                   agent={agent}

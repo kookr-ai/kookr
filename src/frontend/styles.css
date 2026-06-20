@@ -5709,6 +5709,9 @@ label.task-share-row {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+  row-gap: 4px;
 }
 .completed-row-name {
   font-weight: 600;
@@ -5725,10 +5728,24 @@ label.task-share-row {
   white-space: nowrap;
   flex-shrink: 0;
 }
-.completed-cancelled-label {
-  color: var(--red);
-  font-weight: 600;
+.completed-row-finished {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
+.completed-row-status-label {
+  color: var(--green);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.completed-row.cancelled .completed-row-status-label { color: var(--red); }
+.completed-row.terminated .completed-row-status-label { color: var(--amber); }
 .completed-row-pending-delete {
   flex-shrink: 0;
   color: var(--amber);
@@ -6761,7 +6778,7 @@ label.task-share-row {
 .completed-section-header-row {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   position: sticky;
   top: 0;
   z-index: 1;
@@ -6776,6 +6793,15 @@ label.task-share-row {
   width: auto;
   min-width: 0;
   background: transparent;
+}
+.completed-sort-hint {
+  color: var(--text-muted);
+  font-size: 10px;
+  white-space: nowrap;
+  flex: 0 1 auto;
+}
+.completed-section-header-row .btn-clear-completed {
+  flex-shrink: 0;
 }
 .completed-section .clear-completed-confirm {
   flex-basis: 100%;

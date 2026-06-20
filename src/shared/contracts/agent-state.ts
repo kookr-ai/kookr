@@ -45,6 +45,12 @@ export interface AgentState {
   cwd?: string;
   agentType?: AgentType;
   startedAt?: string;
+  /**
+   * ISO timestamp for the first terminal transition. Present on synthetic
+   * completed/cancelled/terminated entries so the dashboard can show and sort
+   * completed history by finish time.
+   */
+  finishedAt?: string;
   playbookId?: string;
   playbookParameterValues?: Record<string, string>;
   launchHealthSummary?: TaskLaunchHealthSummary;

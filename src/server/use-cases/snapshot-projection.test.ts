@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentState } from '../../core/monitor.js';
 import { TaskStore } from '../../core/tasks.js';
 import { buildSnapshotProjection } from './snapshot-projection.js';
@@ -57,6 +57,10 @@ function needsInput(agentId: string, explanation = 'Waiting') {
 }
 
 describe('snapshot projection', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('enriches live monitor state with linked task metadata without mutating the raw state', () => {
     const taskStore = new TaskStore();
     const task = createTaskForMutation(taskStore, 'Fix auth token refresh in the login flow', '/workspace/webapp');
@@ -296,6 +300,31 @@ describe('snapshot projection', () => {
         cacheWrite: 50,
         costUsd: 0.042,
       },
+    });
+  });
+
+  it('projects a stable terminal finishedAt timestamp after later task edits', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-20T10:00:00.000Z'));
+    const taskStore = new TaskStore();
+    const task = createTaskForMutation(taskStore, 'Ship completed row timestamps', '/workspace/app');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-finished',
+      agentType: 'claude-code',
+      cwd: '/workspace/app',
+      createdAt: new Date('2026-06-20T09:00:00.000Z'),
+    });
+
+    taskStore.completeTask(task.id);
+    vi.setSystemTime(new Date('2026-06-20T11:00:00.000Z'));
+    taskStore.renameTask(task.id, 'Renamed after completion');
+
+    const entry = project(taskStore).find((state) => state.taskId === task.id);
+
+    expect(entry).toMatchObject({
+      taskName: 'Renamed after completion',
+      taskStatus: 'completed',
+      finishedAt: '2026-06-20T10:00:00.000Z',
     });
   });
 
