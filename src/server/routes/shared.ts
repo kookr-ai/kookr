@@ -160,6 +160,34 @@ export interface ViewerShareDeps {
   auditLog: CollaborationAuditLog;
 }
 
+/**
+ * Narrower deps for the deploy / toolkit / plugin maintenance routes
+ * (`/api/deploy/*`, issue #1072). These routes never touch task, monitor, or messaging
+ * state — they only need to locate the production worktree, run plugin
+ * maintenance, and report the running port. Keeping the slice exact prevents
+ * the deploy module from reaching across unrelated server subsystems.
+ */
+export interface DeployRouteDeps {
+  serverCwd: string;
+  /** Port this server bound to. Surfaced via `/api/deploy/status` so the dashboard can detect dev (non-prod) instances and avoid silently triggering prod deploys. */
+  serverPort: number;
+  /** Claude Code binary used for marketplace plugin maintenance. Defaults to KOOKR_AGENT_BIN or `claude`. */
+  pluginUpdateBin?: string;
+  /**
+   * Worktree registry — surfaced to deploy-routes so `resolveProdDir` can
+   * locate the production runtime via the `.kookr-protected` marker rather
+   * than the legacy `kookr-prod` basename heuristic. Optional so tests and
+   * non-server callers can omit it; absent registry falls back to the legacy
+   * sibling-path resolver.
+   */
+  worktreeRegistry?: Pick<WorktreeRegistry, 'all'>;
+  /**
+   * Test seam for routes that inspect or update user-global Claude assets.
+   * Production defaults to os.homedir().
+   */
+  hookHomeDir?: string;
+}
+
 export interface RouteDeps {
   taskStore: TaskStore;
   monitor: Monitor;

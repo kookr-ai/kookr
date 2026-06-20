@@ -4,7 +4,7 @@ import { resolve, basename, join } from 'node:path';
 import { access, readFile, cp, rm, rename } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import type { Hono } from 'hono';
-import type { RouteDeps } from './shared.js';
+import type { DeployRouteDeps } from './shared.js';
 import { isProtectedWorktreePath } from '../../adapters/worktree-marker.js';
 import { getToolkitSymlinkStatus, type ToolkitSymlinkStatus } from '../toolkit-symlink-status.js';
 import { getPluginVersionStatus, type PluginVersionStatus } from '../plugin-version-status.js';
@@ -41,9 +41,9 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
  * throw (operator misconfiguration). When the registry is unavailable or
  * holds no markers, fall back to the legacy `kookr-prod` basename heuristic
  * — necessary for fresh installs where the marker has not yet been written
- * by the startup migration, and for tests that wire a minimal RouteDeps.
+ * by the startup migration, and for tests that wire a minimal DeployRouteDeps.
  */
-export function resolveProdDir(deps: Pick<RouteDeps, 'serverCwd' | 'worktreeRegistry'>): string {
+export function resolveProdDir(deps: Pick<DeployRouteDeps, 'serverCwd' | 'worktreeRegistry'>): string {
   const registry = deps.worktreeRegistry;
   if (registry) {
     const protectedPaths = registry.all()
@@ -187,7 +187,7 @@ function commandFailureMessage(err: unknown): string {
 }
 
 async function readPluginStatusForUpdate(
-  deps: RouteDeps,
+  deps: DeployRouteDeps,
   hookHomeDir: string,
 ): Promise<PluginVersionStatus | undefined> {
   let prodDir: string | null = null;
@@ -202,7 +202,7 @@ async function readPluginStatusForUpdate(
   return await readPluginVersionStatus(prodDir, deps.serverCwd, hookHomeDir);
 }
 
-export function registerDeployRoutes(app: Hono, deps: RouteDeps): void {
+export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
   const prodUpdateScript = resolveProdUpdateScript(deps.serverCwd);
   const runningPort = deps.serverPort;
   const hookHomeDir = deps.hookHomeDir ?? homedir();

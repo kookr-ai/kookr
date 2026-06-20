@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { registerDeployRoutes, resolveProdDir } from './deploy-routes.js';
-import type { RouteDeps } from './shared.js';
+import type { DeployRouteDeps } from './shared.js';
 import type { WorktreeEntry } from '../../adapters/git-worktree-registry.js';
 
 /** Strip GIT_DIR so git subprocesses work in test dirs, not the repo. */
@@ -14,7 +14,7 @@ const cleanEnv = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined 
 
 function makeApp(serverCwd: string, serverPort: number = 4800, hookHomeDir?: string, pluginUpdateBin?: string): Hono {
   const app = new Hono();
-  registerDeployRoutes(app, { serverCwd, serverPort, hookHomeDir, pluginUpdateBin } as unknown as RouteDeps);
+  registerDeployRoutes(app, { serverCwd, serverPort, hookHomeDir, pluginUpdateBin } satisfies DeployRouteDeps);
   return app;
 }
 
