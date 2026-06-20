@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kookr.ai/schemas/kookr-evolution-config.v1.json",
+  "title": "kookr-evolution-config.v1",
+  "description": "Project-supplied manifest declaring how an autonomous evolution run evaluates trials. Lives at `.kookr/evolution/config.json` in the target repo. Kookr reads only this manifest and the trial-result JSON the declared commands emit; all domain logic stays in the project's scripts. See docs/rfc/issue-1061-autonomous-evolution-playbook/RFC.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "evaluate", "artifact"],
+  "properties": {
+    "schemaVersion": {
+      "const": "kookr-evolution-config.v1",
+      "description": "Schema discriminator. Always the literal version string."
+    },
+    "evaluate": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Required. Command (relative to `.kookr/evolution/`) that evaluates the current trial artifact and writes a kookr-evolution-trial.v1 JSON to the path Kookr provides via $KOOKR_EVOLUTION_TRIAL_OUT. Exits non-zero ONLY on evaluation failure, never on a poor score."
+    },
+    "propose": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional. Command that produces the next challenger by mutating the artifact in the trial workspace. When absent, the agent proposes the mutation itself."
+    },
+    "apply": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional. Command that installs a promoted champion back into the project (e.g. commits or copies the winning artifact). When absent, the agent applies the promotion."
+    },
+    "artifact": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Required. Opaque path (relative to the project root) of the artifact under evolution. Kookr mutates a copy in the trial workspace and never parses its contents."
+    },
+    "higherIsBetter": {
+      "type": "boolean",
+      "default": true,
+      "description": "Optimization direction for the trial `score`. Source of truth for the run."
+    },
+    "targetScore": {
+      "type": "number",
+      "description": "Optional project stop threshold. When the champion score crosses this (honoring `higherIsBetter`), the run stops with reason `target_reached`."
+    },
+    "patience": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Optional plateau window. When this many consecutive EVALUATED trials produce no promotion, the run stops with reason `plateau`. Omit to disable plateau stopping."
+    },
+    "minImprovementDelta": {
+      "type": "number",
+      "minimum": 0,
+      "default": 0,
+      "description": "Minimum score gain (in the better direction) required to count as a promotion. Guards against churn on negligible improvements."
+    },
+    "maxConsecutiveFailedTrials": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 3,
+      "description": "Mandatory failure backstop. After this many consecutive FAILED trials (evaluation could not score), the run stops with reason `failure_budget_exhausted`."
+    },
+    "deadlineAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Optional wall-clock budget. When the current time is at or past this ISO-8601 timestamp, the run stops with reason `budget_exhausted`. Usually supplied at launch rather than committed."
+    },
+    "maxTrials": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Optional trial-count budget. When the trial log reaches this length, the run stops with reason `budget_exhausted`. Defaults to the Ralph iteration cap when omitted."
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": "kookr-evolution-config.v1",
+      "evaluate": "./evaluate.sh",
+      "propose": "./propose.sh",
+      "artifact": "strategy.json",
+      "higherIsBetter": true,
+      "targetScore": 2.0,
+      "patience": 8,
+      "minImprovementDelta": 0.01,
+      "maxConsecutiveFailedTrials": 3
+    }
+  ]
+}
