@@ -85,6 +85,85 @@ function liveFrictionCalibration(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function outcomeLedger(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: 'outcome-ledger.v1',
+    generatedAt: '2026-05-21T12:00:00.000Z',
+    window: {
+      value: '7d',
+      start: '2026-05-14T12:00:00.000Z',
+      end: '2026-05-21T12:00:00.000Z',
+    },
+    readiness: 'caution',
+    summary: {
+      taskCount: 2,
+      terminalTaskCount: 2,
+      completedTaskCount: 1,
+      cancelledTaskCount: 1,
+      terminatedTaskCount: 0,
+      activeTaskCount: 0,
+      completionRate: 0.5,
+      prTaskCount: 1,
+      verifiedTaskCount: 1,
+      thumbsUp: 1,
+      thumbsDown: 0,
+      feedbackCoverage: 0.5,
+      thumbsUpRate: 1,
+      totalKnownCostUsd: 0,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+    },
+    quality: {
+      costKnownTasks: 1,
+      zeroCostTasks: 1,
+      missingCostTasks: 1,
+      costCoverage: 0.5,
+      durationKnownTasks: 2,
+      durationCoverage: 1,
+      digestKnownCompletedTasks: 1,
+      digestCoverage: 1,
+      verificationKnownCompletedTasks: 1,
+      verificationCoverage: 1,
+      interventionKnownTasks: 0,
+      interventionCoverage: 0,
+      invalidTimestampTasks: 0,
+      noSessionTasks: 0,
+    },
+    byAgent: [],
+    findings: [{
+      kind: 'data_quality',
+      severity: 'review',
+      taskId: 'task-1',
+      label: 'Cancelled task',
+      metric: 'cost',
+      value: 0,
+      message: 'A task with at least one session reports exactly $0 cost. Verify whether this is true zero work, cancelled work, or missing accounting.',
+    }],
+    tasks: [{
+      taskId: 'task-1',
+      label: 'Cancelled task',
+      agentType: 'claude-code',
+      status: 'cancelled',
+      projectId: null,
+      playbookId: null,
+      startedAt: '2026-05-21T11:00:00.000Z',
+      finishedAt: '2026-05-21T11:10:00.000Z',
+      durationMs: 600_000,
+      knownCostUsd: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      interventionCount: null,
+      hasCompletionDigest: false,
+      hasVerificationEvidence: false,
+      prCount: 0,
+      feedback: null,
+      flags: ['zero_cost', 'missing_intervention_data'],
+    }],
+    notes: ['Treat trends as provisional until the review findings below are explained or fixed.'],
+    ...overrides,
+  };
+}
+
 async function flush() {
   await act(async () => {
     await Promise.resolve();
@@ -101,6 +180,9 @@ beforeEach(() => {
     }
     if (url.startsWith('/api/live-friction-calibration')) {
       return Promise.resolve(fetchResponse(liveFrictionCalibration()));
+    }
+    if (url.startsWith('/api/outcome-ledger')) {
+      return Promise.resolve(fetchResponse(outcomeLedger()));
     }
     if (url.startsWith('/api/finding-evidence-operations-diagnostics')) {
       return Promise.resolve(fetchResponse(findingEvidenceOperationsDiagnostics()));
@@ -133,6 +215,8 @@ describe('OperationsPanel', () => {
     const title = el.querySelector<HTMLElement>('#operations-panel-title');
 
     expect(el.textContent).toContain('Diagnostics');
+    expect(el.textContent).toContain('Outcome Scoreboard');
+    expect(el.textContent).toContain('zero-cost');
     expect(el.textContent).toContain('Audio Alerts');
     expect(el.textContent).toContain('No audio alert decisions recorded yet');
     expect(el.textContent).toContain('No detection checks recorded yet');
@@ -176,6 +260,9 @@ describe('OperationsPanel', () => {
             wouldMutateQueue: false,
           }],
         })));
+      }
+      if (url.startsWith('/api/outcome-ledger')) {
+        return Promise.resolve(fetchResponse(outcomeLedger()));
       }
       if (url.startsWith('/api/finding-evidence-operations-diagnostics')) {
         return Promise.resolve(fetchResponse(findingEvidenceOperationsDiagnostics({
@@ -281,6 +368,9 @@ describe('OperationsPanel', () => {
           recommendations: [],
         })));
       }
+      if (url.startsWith('/api/outcome-ledger')) {
+        return Promise.resolve(fetchResponse(outcomeLedger()));
+      }
       if (url.startsWith('/api/finding-evidence-operations-diagnostics')) {
         return Promise.resolve(fetchResponse(findingEvidenceOperationsDiagnostics()));
       }
@@ -312,6 +402,9 @@ describe('OperationsPanel', () => {
       if (url.startsWith('/api/live-friction-calibration')) {
         return Promise.resolve(fetchResponse({}, false, 500));
       }
+      if (url.startsWith('/api/outcome-ledger')) {
+        return Promise.resolve(fetchResponse(outcomeLedger()));
+      }
       if (url.startsWith('/api/finding-evidence-operations-diagnostics')) {
         return Promise.resolve(fetchResponse(findingEvidenceOperationsDiagnostics()));
       }
@@ -339,6 +432,9 @@ describe('OperationsPanel', () => {
       }
       if (url.startsWith('/api/live-friction-calibration')) {
         return Promise.resolve(fetchResponse(liveFrictionCalibration()));
+      }
+      if (url.startsWith('/api/outcome-ledger')) {
+        return Promise.resolve(fetchResponse(outcomeLedger()));
       }
       if (url.startsWith('/api/finding-evidence-operations-diagnostics')) {
         return Promise.resolve(fetchResponse(findingEvidenceOperationsDiagnostics({

@@ -3496,6 +3496,7 @@ kbd {
   gap: 0;
   margin: 12px -8px 0;
 }
+.operations-panel-body .outcome-ledger-section,
 .operations-panel-body .audio-alerts-section,
 .operations-panel-body .detection-stats-section,
 .operations-panel-body .live-calibration-section,
@@ -3541,6 +3542,13 @@ kbd {
     grid-column: 1 / -1;
     white-space: normal;
   }
+  .operations-panel .outcome-metrics-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .operations-panel .outcome-finding,
+  .operations-panel .outcome-task-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .operations-panel .finding-evidence-metrics,
   .operations-panel .finding-evidence-subgrid {
     grid-template-columns: 1fr;
@@ -3551,6 +3559,168 @@ kbd {
   .operations-panel .live-calibration-row {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+.outcome-ledger-section {
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.outcome-ledger-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 6px;
+}
+.outcome-window-select {
+  width: 72px;
+  min-height: 26px;
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 2px 6px;
+}
+.outcome-window-select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.outcome-readiness {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: rgba(148, 163, 184, 0.06);
+}
+.outcome-readiness.ready {
+  background: rgba(34, 197, 94, 0.08);
+}
+.outcome-readiness.caution {
+  background: rgba(245, 158, 11, 0.08);
+}
+.outcome-readiness.blocked {
+  background: rgba(239, 68, 68, 0.08);
+}
+.outcome-readiness-label {
+  font-weight: 700;
+  color: var(--text-bright);
+}
+.outcome-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.outcome-metric {
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.05);
+}
+.outcome-metric-label,
+.outcome-metric-detail {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.outcome-metric strong {
+  display: block;
+  min-width: 0;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  color: var(--text-bright);
+}
+.outcome-quality-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.outcome-quality-strip span {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: rgba(148, 163, 184, 0.08);
+}
+.outcome-findings-list,
+.outcome-task-audit {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.outcome-findings-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.outcome-finding {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) minmax(90px, 0.35fr);
+  gap: 6px;
+  align-items: start;
+  padding: 5px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: rgba(148, 163, 184, 0.05);
+}
+.outcome-finding.critical {
+  border-left: 3px solid var(--red, #ef4444);
+}
+.outcome-finding.review {
+  border-left: 3px solid var(--orange, #f59e0b);
+}
+.outcome-finding.info {
+  border-left: 3px solid var(--teal, #14b8a6);
+}
+.outcome-finding-severity {
+  font-weight: 700;
+  color: var(--text-bright);
+}
+.outcome-finding-text,
+.outcome-finding-task {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.outcome-finding-task {
+  color: var(--text-muted);
+}
+.outcome-task-audit-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.outcome-task-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.45fr) minmax(0, 1fr);
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: rgba(148, 163, 184, 0.05);
+}
+.outcome-task-label,
+.outcome-task-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.outcome-task-label {
+  font-weight: 700;
+  color: var(--text-bright);
+}
+.outcome-ledger-meta {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: right;
 }
 
 .live-calibration-section {

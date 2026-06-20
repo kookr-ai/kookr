@@ -136,6 +136,14 @@ export interface CostComparisonRouteDeps {
   tasksFile?: string;
 }
 
+/** Narrower deps for the read-only /api/outcome-ledger scoreboard route. */
+export interface OutcomeLedgerRouteDeps {
+  taskStore: TaskStore;
+  tokenTracker?: TokenTracker;
+  tasksFile?: string;
+  interactionLog?: DeferredInteractionLogWriter;
+}
+
 /** Narrower deps for the typed task-relation graph routes (issue #599). */
 export interface TaskRelationsRouteDeps {
   taskStore: TaskStore;

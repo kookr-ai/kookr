@@ -14,6 +14,7 @@ import { registerTaskRoutes } from './routes/task-routes.js';
 import { registerCoordinatorRoutes } from './routes/coordinator-routes.js';
 import { registerAgentRoutes } from './routes/agent-routes.js';
 import { registerCostComparisonRoutes } from './routes/cost-comparison-routes.js';
+import { registerOutcomeLedgerRoutes } from './routes/outcome-ledger-routes.js';
 import { registerTaskRelationsRoutes } from './routes/task-relations-routes.js';
 import { registerRalphRoutes } from './ralph/routes.js';
 import { registerOssAttemptRoutes } from './routes/oss-attempts-routes.js';
@@ -110,6 +111,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerAgentRoutes(app, sharedDeps);
   registerTaskRelationsRoutes(app, sharedDeps);
   registerCostComparisonRoutes(app, sharedDeps);
+  registerOutcomeLedgerRoutes(app, sharedDeps);
   registerProjectRoutes(app, sharedDeps);
   registerOssAttemptRoutes(app, sharedDeps);
   registerScheduleRoutes(app, sharedDeps);
