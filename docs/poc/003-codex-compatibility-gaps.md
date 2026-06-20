@@ -5,6 +5,8 @@
 > **Environment:** Claude Code v2.1.92, Codex CLI v0.0.0 (fork `feat/codex-hook-parity`), Linux (WSL2)
 > **Artifact:** `003-codex-compatibility-gaps/run-poc.sh` + raw results in `/tmp/poc-codex-compat/`
 
+> **Current-status note (2026-06-20):** This PoC is historical evidence, not the current adapter state. The maintained Codex fork and Kookr adapter have since resolved several Kookr-side gaps: `--settings FILE` is plumbed through the fork, Kookr launches Codex with `-c features.codex_hooks=true`, and Kookr writes Codex workspace trust entries before launch. Remaining partial/missing hook semantics are summarized in [Codex CLI Setup](../codex-cli-setup.md#compatibility-status).
+
 ## Purpose
 
 Kookr's supervisor agent relies on Claude Code hooks (`SessionStart`, `PreToolUse`, `PostToolUse`, `Stop`, `PermissionRequest`, `Notification`, `UserPromptSubmit`, `SessionEnd` …) to know what managed agents are doing. The Codex CLI adapter (`src/adapters/codex-cli-adapter.ts`) launches Codex with the same `--settings FILE` flag Claude Code uses, assuming hook parity. This PoC tests that assumption end-to-end by running both CLIs with identical hook settings, capturing every hook event, and diffing behaviour.
@@ -66,7 +68,9 @@ Extra Codex-only fields (`turn_id`, `model`) are harmless — the current `parse
 
 ### Gap inventory
 
-#### Gap 1 — **CRITICAL: `--settings FILE` silently fails to load hooks**
+#### Gap 1 — **HISTORICAL CRITICAL: `--settings FILE` silently failed to load hooks**
+
+> **Current status (2026-06-20): Resolved in the maintained Codex fork.** Kookr still requires the fork documented in [Codex CLI Setup](../codex-cli-setup.md); upstream behaviour may differ.
 
 **Observed:** Passing a valid hooks JSON via `--settings` to either `codex` or `codex exec` does NOT load the hooks. The flag is accepted without error; the hook discovery code path is never hit. `~/.codex/hooks.json` at the user config location DOES work, and a definitive A/B test (remove hooks.json → pass --settings → zero events; add hooks.json → remove --settings → 7 events) proved the flag is a no-op.
 
@@ -77,7 +81,7 @@ Extra Codex-only fields (`turn_id`, `model`) are harmless — the current `parse
 - `RUST_LOG=trace` logs contain zero mentions of `settings_file`, `discover_handlers`, or `ClaudeHooksEngine` during the `--settings` path
 - Same binary + `~/.codex/hooks.json` + no `--settings` → hooks fire correctly
 
-**Why it's critical for Kookr:** `CodexCliAdapter.launch()` (line 72) passes `--settings <per-session-path>`. **Every Codex session launched through Kookr today has zero hook coverage** — Kookr sees no `SessionStart`, no `Stop`, no `PreToolUse`. The supervisor is blind to Codex agents.
+**Why it was critical for Kookr:** In the PoC build, `CodexCliAdapter.launch()` passed `--settings <per-session-path>`, but the fork did not load that file. **Every Codex session launched through Kookr with that build had zero hook coverage** — Kookr saw no `SessionStart`, no `Stop`, no `PreToolUse`.
 
 **Fix location:** **Codex fork.** The discovery function signature was extended but something in the call chain between CLI parsing and `ClaudeHooksEngine::new()` isn't threading `settings_file` through. Needs a single regression test: `codex exec --settings <file>` → assert one hook fires.
 
@@ -86,6 +90,8 @@ Extra Codex-only fields (`turn_id`, `model`) are harmless — the current `parse
 ---
 
 #### Gap 2 — `codex_hooks` feature flag is disabled by default
+
+> **Current status (2026-06-20): Resolved in Kookr launches.** `CodexCliAdapter` passes `-c features.codex_hooks=true`; users may still enable the feature in `~/.codex/config.toml` for manual Codex runs.
 
 **Observed:** Even with a valid `hooks.json` and a working `--settings`, hooks do not fire unless the `codex_hooks` feature is enabled via:
 - `[features] codex_hooks = true` in `~/.codex/config.toml`, OR
@@ -182,6 +188,8 @@ UserPromptSubmit hook (completed)
 
 #### Gap 8 — Workspace trust prompt blocks first-run interactive
 
+> **Current status (2026-06-20): Resolved for Codex-managed sessions.** Kookr writes the Codex `[projects."<abs path>"] trust_level = "trusted"` entry before launching Codex.
+
 **Observed:** Both `claude` and `codex` (interactive) present a full-screen "do you trust this folder?" dialog on first launch in a given workdir. In tmux this dialog waits for keystroke input. Kookr's current adapter just launches and walks away, so the first Codex/Claude session in any new workdir **hangs forever** with zero hook events.
 
 **Fix location:** **Kookr.**
@@ -226,31 +234,31 @@ UserPromptSubmit hook (completed)
 
 | # | Gap | Fork? | Kookr? | Severity |
 |---|---|---|---|---|
-| 1 | `--settings` silently ignored | **FORK** (primary) | Workaround via hooks.json | **CRITICAL** |
-| 2 | `codex_hooks` disabled by default | — | **KOOKR** (add `-c` flag) | HIGH |
+| 1 | `--settings` silently ignored | **Resolved in maintained fork** | Historical workaround via hooks.json | Historical critical |
+| 2 | `codex_hooks` disabled by default | — | **Resolved** (`-c features.codex_hooks=true`) | Historical high |
 | 3 | 4 missing hook events | **FORK** | Inference fallbacks | MEDIUM |
 | 4 | `PostToolUseFailure` never fires | **FORK** | Error-string inference | MEDIUM |
 | 5 | `tool_response` as string, not object | — | **KOOKR** (already handles) | LOW |
 | 6 | Hooks only on shell tool | **FORK** (preferred) | Transcript tailing | MEDIUM |
 | 7 | TUI hook-status text clutter | **FORK** (add `--quiet-hooks`) | Line-filter | LOW |
-| 8 | Trust prompt blocks first run | Both possible | **KOOKR** (write trust entry) | HIGH |
+| 8 | Trust prompt blocks first run | Both possible | **Resolved for Codex** (write trust entry) | Historical high |
 | 9 | Fork version stuck at 0.0.0 | **FORK** | — | LOW |
 | 10 | MCP startup delay looks stuck | Both possible | **KOOKR** (parse TUI) | MEDIUM |
 
-**Total**: **6 fork-side fixes**, **3 Kookr-side fixes**, **1 either-or**.
+**Original total**: **6 fork-side fixes**, **3 Kookr-side fixes**, **1 either-or**. Current Kookr-side resolved items are Gap 2 and Codex side of Gap 8; Gap 1 is resolved in the maintained fork.
 
 ## Recommended action sequence
 
-1. **Fork, Gap 1** — Fix `--settings` file loading. This unblocks every other Codex compatibility effort. Single regression test: `codex exec --settings x.json` fires one hook. (~half day)
-2. **Kookr, Gap 2** — Append `-c features.codex_hooks=true` in `CodexCliAdapter.launch()`. (1 hour)
-3. **Kookr, Gap 8** — Write the trust entry before launching Codex interactively. (1 hour)
-4. **Fork, Gap 3** — Emit `SessionEnd` on shutdown. Stripe the other 3 missing events as follow-ups.
+1. ~~**Fork, Gap 1** — Fix `--settings` file loading.~~ Resolved in the maintained fork.
+2. ~~**Kookr, Gap 2** — Append `-c features.codex_hooks=true` in `CodexCliAdapter.launch()`.~~ Resolved in Kookr.
+3. ~~**Kookr, Gap 8** — Write the trust entry before launching Codex interactively.~~ Resolved for Codex-managed sessions.
+4. **Fork, Gap 3** — Emit `SessionEnd` on shutdown. Treat the other missing events as follow-ups.
 5. **Fork, Gap 4** — Fix `PostToolUseFailure` emission (dispatch based on exit code).
 6. **Fork, Gap 10** — Lazy MCP start OR emit `McpServerReady` hook.
 7. **Fork, Gap 6** — Uniform hook dispatch for all tools.
 8. **Cleanup** — Items 7, 9, 5 are polish.
 
-Once Gaps 1–3 are resolved, Kookr's current Codex adapter code changes are minimal (~5 lines). The bulk of the compatibility work is in the Codex fork, as the user requested.
+The remaining compatibility work is now mostly fork-side hook parity and graceful Kookr fallbacks, not basic Kookr launch plumbing.
 
 ## Raw data
 

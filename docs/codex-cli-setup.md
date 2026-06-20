@@ -6,13 +6,11 @@ This page is the source of truth for installing the fork and verifying it works 
 
 ## Why a custom fork
 
-Kookr's supervisor logic uses the Claude Code hook surface — `SessionStart`, `PreToolUse`, `PostToolUse`, `Stop`, `PermissionRequest`, `Notification`, `SubagentStart`, `SubagentStop`, `SessionEnd`, and a few more. Upstream `openai/codex` ships with only a subset of these events. The fork at `jeanibarz/codex` on the `feat/claude-compat` branch adds:
+Kookr's supervisor logic uses the Claude Code hook surface — `SessionStart`, `PreToolUse`, `PostToolUse`, `Stop`, `PermissionRequest`, `Notification`, `SubagentStart`, `SubagentStop`, `SessionEnd`, and a few more. Upstream `openai/codex` ships with only a subset of these events. The fork at `jeanibarz/codex` on the `feat/claude-compat` branch adds the hook engine and compatibility plumbing Kookr depends on, with remaining event gaps tracked in the compatibility table below:
 
 - **`PermissionRequest` hook** — fired when Codex blocks on a permission prompt, so Kookr can surface it as a finding.
 - **`Notification` hook** — fired when Codex idles, so Kookr can route attention to it.
-- **`SubagentStart` / `SubagentStop` hooks** — fired when Codex spawns or finishes a subagent, so Kookr can track child sessions.
-- **`SessionEnd` hook** — definitive signal that a Codex session terminated (used for crash recovery and queue cleanup).
-- **`PostToolUseFailure` hook** — fired when a tool call exits non-zero, distinguished from a successful `PostToolUse`. Used for anomaly detection.
+- **`PostToolUseFailure` hook schema support** — advertised by the fork but still partial; current builds may emit regular `PostToolUse` with error text instead.
 - **`.claude/skills` and `.claude/agents` loaders** — Codex picks up the same skill and agent files Claude Code uses, so a Kookr repo with `.claude/skills/*` works under both runtimes without duplication.
 - **`--settings FILE` plumbing fixed** — upstream silently ignores the flag; the fork wires it through to the hook engine. Without this, Kookr cannot inject its per-session hook configuration.
 - **Tolerant frontmatter parsing** — Claude-style YAML frontmatter (with list values, related-skill links, etc.) is accepted instead of rejected.
