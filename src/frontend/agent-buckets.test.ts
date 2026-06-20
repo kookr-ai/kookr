@@ -85,4 +85,37 @@ describe('agent buckets', () => {
     expect(buckets.findings.map((a) => a.agentId)).toEqual(['high-a', 'normal-b']);
     expect(buckets.healthy.map((a) => a.agentId)).toEqual(['healthy-b', 'healthy-a']);
   });
+
+  test('orders completed tasks by finish time newest first', () => {
+    const buckets = buildAgentBuckets([
+      agent('old', 'project-a', { taskStatus: 'completed', finishedAt: '2026-06-20T09:00:00.000Z' }),
+      agent('new', 'project-a', { taskStatus: 'completed', finishedAt: '2026-06-20T11:00:00.000Z' }),
+      agent('middle', 'project-a', { taskStatus: 'cancelled', finishedAt: '2026-06-20T10:00:00.000Z' }),
+    ], null);
+
+    expect(buckets.completed.map((a) => a.agentId)).toEqual(['new', 'middle', 'old']);
+  });
+
+  test('orders completed tasks with missing finish times by fallback recency then id', () => {
+    const buckets = buildAgentBuckets([
+      agent('alpha', 'project-a', { taskStatus: 'completed' }),
+      agent('started-old', 'project-a', {
+        taskStatus: 'completed',
+        startedAt: '2026-06-20T09:00:00.000Z',
+      }),
+      agent('started-new', 'project-a', {
+        taskStatus: 'completed',
+        finishedAt: 'not-a-date',
+        startedAt: '2026-06-20T12:00:00.000Z',
+      }),
+      agent('zulu', 'project-a', { taskStatus: 'terminated' }),
+    ], null);
+
+    expect(buckets.completed.map((a) => a.agentId)).toEqual([
+      'started-new',
+      'started-old',
+      'zulu',
+      'alpha',
+    ]);
+  });
 });

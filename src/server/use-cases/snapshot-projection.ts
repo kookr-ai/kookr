@@ -190,6 +190,7 @@ function buildPendingTaskEntry(task: Task): AgentState {
 function buildTerminalTaskEntry(task: Task): AgentState {
   const displayPrompt = displayPromptForTask(task);
   const lastSession = task.sessions[task.sessions.length - 1];
+  const finishedAt = terminalFinishedAt(task, lastSession);
   return {
     agentId: lastSession?.tmuxSession ?? `done-${task.id}`,
     events: [],
@@ -206,6 +207,7 @@ function buildTerminalTaskEntry(task: Task): AgentState {
     cwd: lastSession?.cwd ?? task.cwd,
     agentType: lastSession?.agentType ?? task.agentType,
     startedAt: task.createdAt.toISOString(),
+    finishedAt,
     playbookId: task.playbookId,
     playbookParameterValues: task.playbookParameterValues,
     launchHealthSummary: task.launchHealthSummary,
@@ -224,6 +226,19 @@ function buildTerminalTaskEntry(task: Task): AgentState {
     completionFeedback: task.completionFeedback,
     ralphLoop: task.ralphLoop,
   };
+}
+
+function terminalFinishedAt(task: Task, lastSession: Task['sessions'][number] | undefined): string {
+  if (task.finishedAt) return task.finishedAt.toISOString();
+  if (task.terminatedAt) return task.terminatedAt.toISOString();
+  if (typeof lastSession?.lastEventAt === 'number' && Number.isFinite(lastSession.lastEventAt)) {
+    return new Date(lastSession.lastEventAt).toISOString();
+  }
+  if (typeof lastSession?.lastEventAt === 'string') {
+    const parsed = new Date(lastSession.lastEventAt);
+    if (Number.isFinite(parsed.getTime())) return parsed.toISOString();
+  }
+  return task.updatedAt.toISOString();
 }
 
 /** Truncate a prompt to maxLen chars at a word boundary, adding "..." if truncated. */

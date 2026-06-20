@@ -339,6 +339,7 @@ export async function loadTasks(filePath: string): Promise<LoadTasksResult> {
       task.agentType = normalizeAgentType(task.agentType);
       task.createdAt = new Date(task.createdAt);
       task.updatedAt = new Date(task.updatedAt);
+      if (task.finishedAt) task.finishedAt = new Date(task.finishedAt);
       if (task.terminatedAt) task.terminatedAt = new Date(task.terminatedAt);
       for (const session of task.sessions) {
         session.agentType = normalizeAgentType(session.agentType);

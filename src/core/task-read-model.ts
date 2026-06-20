@@ -153,6 +153,12 @@ export interface Task {
   pendingSignal?: PendingAgentSignal;
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * First time this task entered a terminal lifecycle state. Preserved across
+   * later terminal-task edits so completed history can sort by actual finish
+   * time instead of "last renamed".
+   */
+  finishedAt?: Date;
   /** Set when the task transitions to 'terminated' via reconciliation. */
   terminatedAt?: Date;
   /**

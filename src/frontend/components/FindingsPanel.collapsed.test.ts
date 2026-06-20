@@ -13,6 +13,7 @@ import {
 } from './FindingsPanel.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
+import { formatCompactDateTime } from '../presentation.js';
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -194,6 +195,44 @@ describe('FindingsPanel collapsed-state persistence', () => {
     expect(container.querySelectorAll('.snoozed-row').length).toBe(1);
     expect(container.querySelectorAll('.completed-row').length).toBe(1);
     expect(container.querySelectorAll('.pending-row').length).toBe(0);
+  });
+
+  test('completed section shows newest-first hint and row finish dates', () => {
+    localStorage.setItem(COMPLETED_SECTION_COLLAPSED_KEY, '0');
+
+    root = renderPanel(container, {
+      completed: [
+        makeAgent({
+          agentId: 'older',
+          taskStatus: 'completed',
+          taskName: 'Older task',
+          finishedAt: '2026-06-20T09:00:00.000Z',
+        }),
+        makeAgent({
+          agentId: 'newer',
+          taskStatus: 'completed',
+          taskName: 'Newer task',
+          finishedAt: '2026-06-20T11:30:00.000Z',
+        }),
+      ],
+    });
+
+    expect(container.querySelector('.completed-sort-hint')?.textContent)
+      .toContain('Newest first');
+    const latestLabel = formatCompactDateTime('2026-06-20T11:30:00.000Z');
+    expect(container.querySelector('.completed-sort-hint')?.textContent)
+      .toContain(`latest ${latestLabel}`);
+
+    const rows = Array.from(container.querySelectorAll('.completed-row'));
+    expect(rows.map((row) => row.querySelector('.completed-row-name')?.textContent)).toEqual([
+      'Newer task',
+      'Older task',
+    ]);
+    expect(rows[0].querySelector('.completed-row-finished')?.textContent)
+      .toContain(`Completed${latestLabel}`);
+    const olderLabel = formatCompactDateTime('2026-06-20T09:00:00.000Z');
+    expect(rows[1].querySelector('.completed-row-finished')?.textContent)
+      .toContain(`Completed${olderLabel}`);
   });
 
   test('clicking a section header toggles state and writes "1" / "0" to localStorage', () => {
