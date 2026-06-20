@@ -17,6 +17,9 @@ import { TopBar } from './components/TopBar.js';
 import { CommandPalette } from './components/CommandPalette.js';
 import type { CommandAction, CommandTaskItem } from './components/command-palette-model.js';
 import { FindingsPanel } from './components/FindingsPanel.js';
+import { ScheduledTasksHint } from './components/ScheduledTasksHint.js';
+import { shouldShow as scheduledTasksHintShouldShow } from './store/scheduled-tasks-hint-status.js';
+import type { SchedulePrefill } from './components/SchedulesDialog.js';
 import { DetailPanel } from './components/DetailPanel.js';
 import { StatusBar } from './components/StatusBar.js';
 import { Toasts } from './components/Toasts.js';
@@ -338,6 +341,11 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsFocus, setSettingsFocus] = useState<SettingsFocusField | undefined>(undefined);
   const [showSchedules, setShowSchedules] = useState(false);
+  // Seed for opening the Schedules dialog straight into a pre-filled create form
+  // from a task-panel "schedule this playbook" button. Null = manual open.
+  const [schedulePrefill, setSchedulePrefill] = useState<SchedulePrefill | null>(null);
+  // One-time post-create hint pointing at the command-palette trigger.
+  const [scheduleHintActive, setScheduleHintActive] = useState(false);
   const [showWorkspace, setShowWorkspace] = useState(false);
   const [showCostComparison, setShowCostComparison] = useState(false);
   const [showOperations, setShowOperations] = useState(false);
@@ -1022,6 +1030,10 @@ export function App() {
       pendingDeletionTaskIds={pendingDestructiveTaskIdSet}
       onQueueDeleteTask={queueDeleteTask}
       onQueueClearCompleted={queueClearCompleted}
+      onSchedulePlaybook={(prefill) => {
+        setSchedulePrefill(prefill);
+        setShowSchedules(true);
+      }}
     />
   );
 
@@ -1142,6 +1154,7 @@ export function App() {
         onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'button' }); setShowLaunch(true); }}
         readOnly={isViewer}
         onCommandPalette={() => setShowCommandPalette(true)}
+        scheduleHintActive={scheduleHintActive}
         onOperations={() => setShowOperations((value) => !value)}
         operationsOpen={showOperations}
         onCoordinatorFindings={() => setShowCoordinatorFindings((value) => !value)}
@@ -1401,7 +1414,18 @@ export function App() {
       )}
       {showSchedules && (
         <Suspense fallback={null}>
-          <SchedulesDialog onClose={() => setShowSchedules(false)} />
+          <SchedulesDialog
+            onClose={() => { setShowSchedules(false); setSchedulePrefill(null); }}
+            prefill={schedulePrefill ?? undefined}
+            onCreated={(fromPrefill) => {
+              if (!fromPrefill) return;
+              // Close the dialog so the spotlighted command-palette trigger is
+              // actually visible behind it, then show the discovery hint.
+              setShowSchedules(false);
+              setSchedulePrefill(null);
+              if (scheduledTasksHintShouldShow()) setScheduleHintActive(true);
+            }}
+          />
         </Suspense>
       )}
       {showCostComparison && (
@@ -1451,6 +1475,9 @@ export function App() {
         </Suspense>
       )}
       <OnboardingTour />
+      {scheduleHintActive && (
+        <ScheduledTasksHint onHide={() => setScheduleHintActive(false)} />
+      )}
       {showLaunch && (
         <Suspense fallback={null}>
           <LaunchTaskDialog

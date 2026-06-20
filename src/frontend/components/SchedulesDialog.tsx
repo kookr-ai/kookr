@@ -8,8 +8,29 @@ import { PlaybookParameterForm } from './PlaybookParameterForm.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 
+/**
+ * Seed data for opening the dialog straight into a pre-filled create form,
+ * e.g. from the task-panel "schedule this playbook" button. `playbookId` is the
+ * playbook's relative path (=== `AgentState.playbookId`), which the picker
+ * matches on once the project playbook list for `cwd` loads.
+ */
+export interface SchedulePrefill {
+  cwd: string;
+  playbookId: string;
+  name?: string;
+}
+
 interface Props {
   onClose: () => void;
+  /** When present, opens the create form pre-seeded from a task's playbook. */
+  prefill?: SchedulePrefill;
+  /**
+   * Called after a schedule is successfully created. `fromPrefill` is true when
+   * the create came from the seeded task-panel flow — the App uses this to show
+   * the one-time "where your scheduled tasks live" hint only in that case (a
+   * manual create from the command palette shouldn't trigger the discovery hint).
+   */
+  onCreated?: (fromPrefill: boolean) => void;
 }
 
 interface PreviewResponse {
@@ -147,7 +168,7 @@ async function parseJson(res: Response) {
   return body;
 }
 
-export function SchedulesDialog({ onClose }: Props) {
+export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
   useEscapeToClose(onClose);
   const {
     schedules,
@@ -158,15 +179,21 @@ export function SchedulesDialog({ onClose }: Props) {
     handleSchedules,
   } = useKookrStore();
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
-  const [showCreate, setShowCreate] = useState(schedules.length === 0);
-  const [cwd, setCwd] = useState(serverCwd);
-  const [name, setName] = useState('');
+  const [showCreate, setShowCreate] = useState(schedules.length === 0 || Boolean(prefill));
+  const [cwd, setCwd] = useState(prefill?.cwd?.trim() || serverCwd);
+  const [name, setName] = useState(prefill?.name ?? '');
   const [cron, setCron] = useState('0 9 * * *');
   const [maxTriggers, setMaxTriggers] = useState('');
   const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
   const [playbooksLoading, setPlaybooksLoading] = useState(false);
   const [playbookId, setPlaybookId] = useState('');
   const [parameterValues, setParameterValues] = useState<Record<string, string>>({});
+  // Playbook to pre-select once the project list for `cwd` loads. Cleared after
+  // one attempt so manual edits aren't fought. Null once resolved or absent.
+  const [pendingPlaybookId, setPendingPlaybookId] = useState<string | null>(prefill?.playbookId ?? null);
+  // True after the pending playbook couldn't be matched in the project list
+  // (non-project playbook, or a different source cwd) — drives an inline note.
+  const [prefillUnmatched, setPrefillUnmatched] = useState(false);
   const [agentType, setAgentType] = useState<AgentSelection>(() =>
     defaultAgentType ?? 'claude-code'
   );
@@ -189,6 +216,9 @@ export function SchedulesDialog({ onClose }: Props) {
   }, [handleSchedules]);
 
   useEffect(() => {
+    // Clear any stale "couldn't pre-select" note when the directory changes —
+    // the prefill was evaluated against the previous cwd, not this one.
+    setPrefillUnmatched(false);
     if (!cwd.trim()) {
       setPlaybooks([]);
       setPlaybookId('');
@@ -204,11 +234,27 @@ export function SchedulesDialog({ onClose }: Props) {
           // them from the picker until the schedule path supports scope.
           const projectOnly = items.filter((item) => item.scope === 'project');
           setPlaybooks(projectOnly);
-          setPlaybookId((current) => (current && projectOnly.some((item) => item.id === current)) ? current : '');
+          // Resolve a one-shot prefill against the freshly-loaded list. Done here
+          // (not in a separate effect) so we never evaluate against the initial
+          // empty list before the fetch returns and falsely report "unmatched".
+          setPendingPlaybookId((pending) => {
+            if (!pending) {
+              setPlaybookId((current) => (current && projectOnly.some((item) => item.id === current)) ? current : '');
+              return null;
+            }
+            const matched = projectOnly.some((item) => item.id === pending);
+            setPlaybookId(matched ? pending : '');
+            setPrefillUnmatched(!matched);
+            return null;
+          });
         })
         .catch(() => {
           setPlaybooks([]);
           setPlaybookId('');
+          setPendingPlaybookId((pending) => {
+            if (pending) setPrefillUnmatched(true);
+            return null;
+          });
         })
         .finally(() => setPlaybooksLoading(false));
     }, 200);
@@ -281,6 +327,10 @@ export function SchedulesDialog({ onClose }: Props) {
         setName('');
         setMaxTriggers('');
         setFormError(null);
+        // Only the seeded (task-panel) flow surfaces the "where to find your
+        // scheduled tasks" hint — a manual create from the command palette
+        // shouldn't trigger the discovery nudge.
+        onCreated?.(Boolean(prefill));
       }
     } catch (err) {
       const body = err as { error?: string; fieldErrors?: Record<string, string> };
@@ -398,6 +448,14 @@ export function SchedulesDialog({ onClose }: Props) {
 
               <PlaybookSelector playbooks={playbooks} value={playbookId} onChange={setPlaybookId} />
             </div>
+
+            {prefillUnmatched && !playbookId && !playbooksLoading && (
+              <div className="schedule-preview schedule-prefill-note">
+                Couldn&rsquo;t pre-select{prefill?.name ? <> <strong>{prefill.name}</strong></> : ' that playbook'} under <code>{cwd.trim() || serverCwd}</code>.
+                Pick it from the list below — only project playbooks under
+                {' '}<code>&lt;cwd&gt;/.kookr/playbooks/</code> can be scheduled today.
+              </div>
+            )}
 
             {playbooksLoading && <div className="schedule-preview">Loading playbooks…</div>}
             {!playbooksLoading && playbooks.length === 0 && cwd.trim() && (
