@@ -10939,6 +10939,104 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   }
 }
 
+/* Per-row "schedule this playbook" button: a quiet clock-icon button that
+   sits among the other btn-xs row actions. */
+.schedule-playbook-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 6px;
+  line-height: 0;
+}
+.schedule-playbook-btn svg { display: block; }
+.schedule-playbook-btn:hover { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
+.playbook-group-header .schedule-playbook-btn { margin-left: auto; }
+
+/* Spotlight ring on the command-palette trigger while the post-create hint is
+   active. Self-contained (not part of the onboarding tour target registry);
+   reuses the same amber ring + pulse keyframe. */
+.command-trigger.schedule-hint-spotlight {
+  outline: 3px solid var(--amber, #fbbf24);
+  outline-offset: 3px;
+  border-radius: 6px;
+  box-shadow: 0 0 0 6px rgba(251, 191, 36, 0.18);
+  position: relative;
+  z-index: 1;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .command-trigger.schedule-hint-spotlight {
+    animation: kookr-tour-pulse 2s ease-in-out infinite;
+  }
+}
+
+/* Fixed callout under the top-right action cluster (where the command-palette
+   trigger sits). Positioned in the corner rather than anchored to the button,
+   so it can't drift on resize/scroll — the spotlight ring supplies the precise
+   pointer. */
+.scheduled-tasks-hint {
+  position: fixed;
+  top: 52px;
+  right: 16px;
+  z-index: 210;
+  width: min(320px, calc(100vw - 32px));
+  padding: 14px 16px;
+  background: var(--bg-elevated, #1a1d23);
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--border-dim));
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.scheduled-tasks-hint-arrow {
+  position: absolute;
+  top: -7px;
+  right: 22px;
+  width: 12px;
+  height: 12px;
+  background: var(--bg-elevated, #1a1d23);
+  border-left: 1px solid color-mix(in srgb, var(--amber) 45%, var(--border-dim));
+  border-top: 1px solid color-mix(in srgb, var(--amber) 45%, var(--border-dim));
+  transform: rotate(45deg);
+}
+.scheduled-tasks-hint-body { display: flex; flex-direction: column; gap: 4px; padding-right: 14px; }
+.scheduled-tasks-hint-body strong { color: var(--amber); font-size: 12px; }
+.scheduled-tasks-hint-body kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 5px;
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.scheduled-tasks-hint-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.scheduled-tasks-hint-close:hover { color: var(--text-secondary); }
+.scheduled-tasks-hint-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+.scheduled-tasks-hint-never {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.scheduled-tasks-hint-never:hover { color: var(--text-secondary); }
+
 @media (max-width: 768px) {
   .onboarding-tour {
     padding: 18px 18px 20px;

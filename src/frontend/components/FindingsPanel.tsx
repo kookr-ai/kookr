@@ -13,6 +13,7 @@ import { SupervisorFeedbackDialog } from './SupervisorFeedbackDialog.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 import { groupFindings, groupLabel } from '../group-findings.js';
 import { ScheduleSection } from './ScheduleSection.js';
+import type { SchedulePrefill } from './SchedulesDialog.js';
 import { useDnd } from '../hooks/useDnd.js';
 import { usePersistedCollapsed, useAutoExpandOnItemGain } from '../hooks/usePersistedCollapsed.js';
 import { useSpeakAgent, type SpeakStatus } from '../hooks/useSpeakAgent.js';
@@ -61,6 +62,55 @@ interface Props {
     taskIds: string[];
     count: number;
   }) => void;
+  /**
+   * Open the Schedules dialog pre-seeded to schedule a playbook-backed task.
+   * Optional so non-App call sites (tests) can omit it; when absent the
+   * per-row schedule button is simply not wired.
+   */
+  onSchedulePlaybook?: (prefill: SchedulePrefill) => void;
+}
+
+/** Clock icon for the per-row "schedule this playbook" button. */
+function ScheduleIcon(): React.ReactElement {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <polyline points="12 7 12 12 15 14" />
+    </svg>
+  );
+}
+
+/**
+ * Small icon button shown on playbook-backed task rows. Clicking it opens the
+ * Schedules dialog pre-seeded with this task's playbook + working directory, so
+ * the user only has to choose a cron. Renders nothing for tasks not launched
+ * from a playbook, and nothing when no scheduler callback is wired.
+ */
+function SchedulePlaybookButton({ agent, onSchedule }: {
+  agent: AgentState;
+  onSchedule?: (prefill: SchedulePrefill) => void;
+}): React.ReactElement | null {
+  if (!onSchedule || !agent.playbookId) return null;
+  const playbookId = agent.playbookId;
+  return (
+    <button
+      type="button"
+      className="btn-xs schedule-playbook-btn"
+      title="Schedule this playbook"
+      aria-label="Schedule this playbook"
+      onClick={(e) => {
+        e.stopPropagation();
+        trackClick('schedule_playbook');
+        onSchedule({
+          cwd: agent.cwd ?? '',
+          playbookId,
+          name: agent.taskName ?? playbookId,
+        });
+      }}
+    >
+      <ScheduleIcon />
+    </button>
+  );
 }
 
 function agentProjectLabel(agent: AgentState): string {
@@ -753,10 +803,11 @@ const RootCauseFindingGroup = React.memo(function RootCauseFindingGroup({ root, 
   );
 });
 
-function HealthyRow({ agent, selected, send }: {
+function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
   agent: AgentState;
   selected: boolean;
   send: (msg: ClientMessage) => void;
+  onSchedulePlaybook?: (prefill: SchedulePrefill) => void;
 }) {
   const [showSnooze, setShowSnooze] = useState(false);
   const [showFlagMissed, setShowFlagMissed] = useState(false);
@@ -857,6 +908,7 @@ function HealthyRow({ agent, selected, send }: {
                 {agent.ralphLoop && agent.ralphLoop.status !== 'running' && agent.ralphLoop.status !== 'paused' && (
                   <RalphLoopBadge agent={agent} />
                 )}
+                <SchedulePlaybookButton agent={agent} onSchedule={onSchedulePlaybook} />
               </div>
             </div>
             <CoordinatorTaskChipView chip={coordinatorChip} agent={agent} send={send} />
@@ -892,11 +944,12 @@ function HealthyRow({ agent, selected, send }: {
   );
 }
 
-function PlaybookGroup({ playbookId, agents, selectedAgentId, send }: {
+function PlaybookGroup({ playbookId, agents, selectedAgentId, send, onSchedulePlaybook }: {
   playbookId: string;
   agents: AgentState[];
   selectedAgentId: string | null;
   send: (msg: ClientMessage) => void;
+  onSchedulePlaybook?: (prefill: SchedulePrefill) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const latest = agents[0]; // Most recent iteration (agents sorted by startedAt descending)
@@ -910,7 +963,10 @@ function PlaybookGroup({ playbookId, agents, selectedAgentId, send }: {
         <span className="playbook-group-toggle">{expanded ? '▾' : '▸'}</span>
         <span className="playbook-group-name">{latest.taskName ?? playbookId}</span>
         <span className="playbook-group-count">{agents.length} runs</span>
+        <SchedulePlaybookButton agent={latest} onSchedule={onSchedulePlaybook} />
       </div>
+      {/* Rows inside a group don't repeat the schedule button — the group header
+          already carries one for the shared playbook. */}
       {expanded && agents.map((agent) => (
         <HealthyRow
           key={agent.agentId}
@@ -1025,10 +1081,11 @@ function formatCountdown(snoozedUntil: number): string {
   return `resumes in ${s}s`;
 }
 
-function PendingRow({ agent, selected, send }: {
+function PendingRow({ agent, selected, send, onSchedulePlaybook }: {
   agent: AgentState;
   selected: boolean;
   send: (msg: ClientMessage) => void;
+  onSchedulePlaybook?: (prefill: SchedulePrefill) => void;
 }) {
   const projectLabelText = agentProjectLabel(agent);
   const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
@@ -1061,6 +1118,7 @@ function PendingRow({ agent, selected, send }: {
         <div className="pending-row-meta">
           Queued · waiting for slot
           <TaskPriorityButton agent={agent} send={send} />
+          <SchedulePlaybookButton agent={agent} onSchedule={onSchedulePlaybook} />
           {agent.taskId && (
             <button className="btn-xs btn-danger-xs" onClick={(e) => {
               e.stopPropagation();
@@ -1220,12 +1278,13 @@ function ClearCompletedButton({
   );
 }
 
-function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDeleteTask }: {
+function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDeleteTask, onSchedulePlaybook }: {
   agent: AgentState;
   selected: boolean;
   send: (msg: ClientMessage) => void;
   pendingDeletion: boolean;
   onQueueDeleteTask?: Props['onQueueDeleteTask'];
+  onSchedulePlaybook?: (prefill: SchedulePrefill) => void;
 }) {
   const projectLabelText = agentProjectLabel(agent);
   const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
@@ -1275,6 +1334,7 @@ function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDeleteTas
               send({ type: 'reopenTask', taskId: agent.taskId! });
             }}>Reopen</button>
           )}
+          <SchedulePlaybookButton agent={agent} onSchedule={onSchedulePlaybook} />
           {agent.taskId && (
             <button
               className="btn-xs btn-danger-xs"
@@ -1383,6 +1443,7 @@ export function FindingsPanel({
   pendingDeletionTaskIds = new Set<string>(),
   onQueueDeleteTask,
   onQueueClearCompleted,
+  onSchedulePlaybook,
 }: Props) {
   const { standalone, groups } = useMemo(() => groupHealthyAgents(healthy), [healthy]);
   const totalAgents = findings.length + healthy.length + pending.length + completed.length + snoozed.length;
@@ -1538,6 +1599,7 @@ export function FindingsPanel({
                       agents={agents}
                       selectedAgentId={selectedAgentId}
                       send={send}
+                      onSchedulePlaybook={onSchedulePlaybook}
                     />
                   ))}
                   {standalone.map((agent) => (
@@ -1546,6 +1608,7 @@ export function FindingsPanel({
                       agent={agent}
                       selected={agent.agentId === selectedAgentId}
                       send={send}
+                      onSchedulePlaybook={onSchedulePlaybook}
                     />
                   ))}
                 </>
@@ -1567,6 +1630,7 @@ export function FindingsPanel({
                   agent={agent}
                   selected={agent.agentId === selectedAgentId}
                   send={send}
+                  onSchedulePlaybook={onSchedulePlaybook}
                 />
               ))}
             </div>
@@ -1617,6 +1681,7 @@ export function FindingsPanel({
                   send={send}
                   pendingDeletion={Boolean(agent.taskId && pendingDeletionTaskIds.has(agent.taskId))}
                   onQueueDeleteTask={onQueueDeleteTask}
+                  onSchedulePlaybook={onSchedulePlaybook}
                 />
               ))}
             </div>
