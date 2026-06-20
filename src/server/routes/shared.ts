@@ -128,6 +128,15 @@ export interface AgentRouteDeps {
   taskStore?: TaskStore;
 }
 
+/** Deps for the file-viewer routes (GET /api/files/meta, /api/files/raw).
+ *  `worktreeRegistry` widens the allow-list beyond `serverCwd` so files inside
+ *  active agent worktrees are viewable; absent in tests -> serverCwd only. */
+export interface FileRouteDeps {
+  serverCwd: string;
+  serverStartedAt: string;
+  worktreeRegistry?: Pick<WorktreeRegistry, 'all'>;
+}
+
 /** Narrower deps for the read-only /api/cost-comparison telemetry route. */
 export interface CostComparisonRouteDeps {
   taskStore: TaskStore;
