@@ -114,6 +114,115 @@ Use the KB.
     }
   });
 
+  it('validates autonomous evolution config before launch', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
+    try {
+      await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(cwd, '.kookr', 'playbooks', 'autonomous-evolution.md'), `---
+name: Autonomous Evolution
+parameters:
+  - name: projectCwd
+    required: false
+    default: ""
+  - name: targetScore
+    required: false
+    default: ""
+    gatedBy: evolution-config
+---
+Run evolution in {{projectCwd}} toward {{targetScore}}.
+`);
+
+      await expect(preparePlaybookLaunch({
+        cwd,
+        playbookPath: 'autonomous-evolution.md',
+        parameterValues: { targetScore: '2.0' },
+      })).rejects.toThrow(/requires a valid \.kookr\/evolution\/config\.json/i);
+
+      await mkdir(join(cwd, '.kookr', 'evolution'), { recursive: true });
+      await writeFile(join(cwd, '.kookr', 'evolution', 'config.json'), JSON.stringify({
+        schemaVersion: 'kookr-evolution-config.v1',
+        evaluate: './evaluate.sh',
+        artifact: 'strategy.json',
+      }));
+
+      const launch = await preparePlaybookLaunch({
+        cwd,
+        playbookPath: 'autonomous-evolution.md',
+        parameterValues: { targetScore: '2.0' },
+      });
+
+      expect(launch.prompt).toBe('Run evolution in  toward 2.0.');
+      expect(launch.playbookParameterValues).toEqual({ targetScore: '2.0' });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('surfaces malformed autonomous evolution config errors before launch', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
+    try {
+      await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+      await mkdir(join(cwd, '.kookr', 'evolution'), { recursive: true });
+      await writeFile(join(cwd, '.kookr', 'evolution', 'config.json'), '{not json');
+      await writeFile(join(cwd, '.kookr', 'playbooks', 'autonomous-evolution.md'), `---
+name: Autonomous Evolution
+parameters:
+  - name: targetScore
+    required: false
+    default: ""
+    gatedBy: evolution-config
+---
+Run evolution toward {{targetScore}}.
+`);
+
+      await expect(preparePlaybookLaunch({
+        cwd,
+        playbookPath: 'autonomous-evolution.md',
+        parameterValues: { targetScore: '2.0' },
+      })).rejects.toThrow(/Malformed \.kookr\/evolution\/config\.json/i);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('validates autonomous evolution config from the projectCwd parameter', async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), 'playbook-source-'));
+    const projectCwd = await mkdtemp(join(tmpdir(), 'evolution-project-'));
+    try {
+      await mkdir(join(sourceCwd, '.kookr', 'playbooks'), { recursive: true });
+      await mkdir(join(projectCwd, '.kookr', 'evolution'), { recursive: true });
+      await writeFile(join(projectCwd, '.kookr', 'evolution', 'config.json'), JSON.stringify({
+        schemaVersion: 'kookr-evolution-config.v1',
+        evaluate: './evaluate.sh',
+        artifact: 'strategy.json',
+      }));
+      await writeFile(join(sourceCwd, '.kookr', 'playbooks', 'autonomous-evolution.md'), `---
+name: Autonomous Evolution
+parameters:
+  - name: projectCwd
+    required: false
+    default: ""
+  - name: patience
+    required: false
+    default: ""
+    gatedBy: evolution-config
+---
+Run evolution in {{projectCwd}} with patience {{patience}}.
+`);
+
+      const launch = await preparePlaybookLaunch({
+        cwd: sourceCwd,
+        playbookPath: 'autonomous-evolution.md',
+        parameterValues: { projectCwd, patience: '5' },
+      });
+
+      expect(launch.prompt).toBe(`Run evolution in ${projectCwd} with patience 5.`);
+    } finally {
+      await rm(sourceCwd, { recursive: true, force: true });
+      await rm(projectCwd, { recursive: true, force: true });
+    }
+  });
+
   it('resolves deliveryPreAuthorized to a server-internal delivery policy', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
     try {

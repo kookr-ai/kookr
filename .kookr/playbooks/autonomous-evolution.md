@@ -6,19 +6,26 @@ parameters:
   - name: projectCwd
     description: "Directory of the project to evolve (must contain .kookr/evolution/config.json). Leave empty to use the task cwd."
     required: false
+    default: ""
     type: textarea
   - name: targetScore
     description: "Stop when the champion score crosses this threshold (overrides config.targetScore). Leave empty to use config or disable."
     required: false
+    default: ""
     type: text
+    gatedBy: evolution-config
   - name: patience
     description: "Stop after this many consecutive evaluated trials with no promotion (overrides config.patience). Leave empty to use config or disable."
     required: false
+    default: ""
     type: text
+    gatedBy: evolution-config
   - name: deadlineMinutes
     description: "Wall-clock budget in minutes from the first iteration. Leave empty for no wall-clock budget."
     required: false
+    default: ""
     type: text
+    gatedBy: evolution-config
 loop:
   iterationCap: 20
   costCapUsd: 25

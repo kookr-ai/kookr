@@ -66,7 +66,7 @@ const serverMessageCases = [
       body: 'Fix it',
       sourceCwd: '/tmp/project',
     }],
-    capabilities: { kb: 'available' },
+    capabilities: { kb: 'available', 'evolution-config': 'absent' },
   }),
   serverMessageCase({
     type: 'suggestion',
@@ -155,6 +155,17 @@ describe('ServerMessageSchema', () => {
   test('covers every known server message type exactly once', () => {
     expect(new Set(coveredServerMessageTypes)).toEqual(new Set(SERVER_MESSAGE_TYPES));
     expect(new Set(coveredServerMessageTypes).size).toBe(coveredServerMessageTypes.length);
+  });
+
+  test('accepts partial playbook capability records', () => {
+    const result = ServerMessageSchema.safeParse(serverMessageCase({
+      type: 'playbooks',
+      cwd: '/tmp/project',
+      playbooks: [],
+      capabilities: { kb: 'available' },
+    }));
+
+    expect(result.success).toBe(true);
   });
 
   test.each([

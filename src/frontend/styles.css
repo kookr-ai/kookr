@@ -5396,6 +5396,118 @@ label.task-share-row {
   font-size: 11px;
 }
 
+.evolution-panel {
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 16px;
+  background: var(--surface);
+}
+
+.evolution-panel-state {
+  color: var(--text-muted);
+}
+
+.evolution-panel-state.error,
+.evolution-warning {
+  color: var(--red);
+}
+
+.evolution-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.evolution-panel-header h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.evolution-stop-reason {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.evolution-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.evolution-summary-item {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.evolution-summary-item span,
+.evolution-summary-item strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evolution-summary-item span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.evolution-summary-item strong {
+  margin-top: 2px;
+  font-size: 13px;
+}
+
+.evolution-outcomes,
+.evolution-trajectory {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.evolution-trajectory {
+  margin-top: 10px;
+}
+
+.evolution-outcome,
+.evolution-point {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+.evolution-point {
+  display: inline-flex;
+  gap: 5px;
+}
+
+.evolution-outcome-promoted,
+.evolution-point-promoted {
+  border-color: var(--green);
+}
+
+.evolution-outcome-failed,
+.evolution-point-failed {
+  border-color: var(--red);
+}
+
+.evolution-empty,
+.evolution-warning {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .evolution-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .schedule-field-error {
   color: var(--red);
   font-size: 11px;

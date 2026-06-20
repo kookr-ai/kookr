@@ -405,6 +405,7 @@ function parseParameters(raw: unknown): PlaybookParameter[] {
         description: String(item.description ?? ''),
         required: item.required === true || item.required === 'true',
         ...(item.default !== undefined ? { default: String(item.default) } : {}),
+        ...(item.type === 'text' ? { type: 'text' as const } : {}),
         ...(item.type === 'select' ? { type: 'select' as const } : {}),
         ...(item.type === 'textarea' ? { type: 'textarea' as const } : {}),
         ...(Array.isArray(item.options) ? { options: parseOptions(item.options) } : {}),

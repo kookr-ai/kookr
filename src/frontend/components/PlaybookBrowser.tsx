@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { buildAgentSelectionOptions, type Playbook, type ClientMessage, type AgentSelection } from '../../shared/protocol.js';
-import type { PlaybookParameterOption, PlaybookScope } from '../../shared/contracts/playbook.js';
+import type { LaunchDependency, PlaybookParameterOption, PlaybookScope } from '../../shared/contracts/playbook.js';
 import type { ProjectSummary } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { projectLabel, projectColor } from '../presentation.js';
@@ -14,6 +14,7 @@ import { ConfirmDialog } from './ConfirmDialog.js';
 
 const usageTracker = new PlaybookUsageTracker();
 const recentPaths = new RecentPaths();
+const HOST_COLLAPSIBLE_DEPENDENCIES = new Set<LaunchDependency>(['kb']);
 
 /** Shape of the 409 body when the launch hits an active loop with the same key. */
 interface DuplicateRalphLoopConflict {
@@ -304,7 +305,7 @@ export function PlaybookBrowser({
     }
   }, [playbooksLoading, selected]);
 
-  // Pin capability-collapsed parameters to their default. When a gated
+  // Pin capability-collapsed parameters to their default. When a host-gated
   // dependency is probed `absent` the parameter renders no control, so its
   // submitted value must be the default. Collapse state depends only on the
   // selected playbook and host capabilities — `paramValues`/`setParamValues`
@@ -315,6 +316,7 @@ export function PlaybookBrowser({
     if (!selected) return;
     for (const param of selected.parameters) {
       if (!param.gatedBy || param.default == null) continue;
+      if (!HOST_COLLAPSIBLE_DEPENDENCIES.has(param.gatedBy)) continue;
       if (hostCapabilities[param.gatedBy] !== 'absent') continue;
       setParamValues((prev) =>
         (prev[param.name] ?? '') === param.default ? prev : { ...prev, [param.name]: param.default! },
@@ -757,10 +759,14 @@ export function PlaybookBrowser({
               const options = getEffectiveOptions(param.name, param.options);
               const isSelect = param.type === 'select' && options && options.length > 0;
               const useFilterable = isSelect && options.length > FILTERABLE_THRESHOLD;
-              // A gated parameter whose dependency is probed `absent` is inert.
+              // A host-gated parameter whose dependency is probed `absent` is inert.
               // Collapse it (hide control, pin value to default) when it has a
               // default to pin to; otherwise leave the control plus annotation.
-              const gatedAbsent = param.gatedBy != null && hostCapabilities[param.gatedBy] === 'absent';
+              // Project-cwd capabilities such as `evolution-config` are
+              // validated at launch after `projectCwd` has been resolved.
+              const gatedAbsent = param.gatedBy != null
+                && HOST_COLLAPSIBLE_DEPENDENCIES.has(param.gatedBy)
+                && hostCapabilities[param.gatedBy] === 'absent';
               const collapsed = gatedAbsent && param.default != null;
               const noteId = `playbook-param-gated-${param.name}`;
               // Annotation lives OUTSIDE the <label> so its text does not get

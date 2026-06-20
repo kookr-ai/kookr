@@ -38,6 +38,7 @@ const TerminalPanel = lazy(() => import('./TerminalPanel.js').then((m) => ({ def
 const GitHubPanel = lazy(() => import('./GitHubPanel.js').then((m) => ({ default: pickLazyExport<typeof m.GitHubPanel>(m, 'GitHubPanel') })));
 const ActivityPanel = lazy(() => import('./ActivityPanel.js').then((m) => ({ default: pickLazyExport<typeof m.ActivityPanel>(m, 'ActivityPanel') })));
 const DiffPane = lazy(() => import('./DiffPane.js').then((m) => ({ default: pickLazyExport<typeof m.DiffPane>(m, 'DiffPane') })));
+const EvolutionPanel = lazy(() => import('./EvolutionPanel.js').then((m) => ({ default: pickLazyExport<typeof m.EvolutionPanel>(m, 'EvolutionPanel') })));
 const EffectiveHookSettingsModal = lazy(() => import('./EffectiveHookSettingsModal.js').then((m) => ({ default: pickLazyExport<typeof m.EffectiveHookSettingsModal>(m, 'EffectiveHookSettingsModal') })));
 const NARROW_DETAIL_BREAKPOINT_PX = 1200;
 /** Max auto-grow height of the reply textarea (~6 rows incl. padding). */
@@ -806,6 +807,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
   const leftOnlyMode = effectiveDetailPaneMode === 'left';
   const showLeftPane = !rightOnlyMode;
   const showRightPane = !leftOnlyMode;
+  const showEvolutionPanel = Boolean(agent.taskId && agent.playbookId === 'autonomous-evolution.md');
 
   function focusNextFrame(ref: React.RefObject<HTMLElement | null>) {
     window.requestAnimationFrame(() => ref.current?.focus());
@@ -963,6 +965,11 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
       {!rightOnlyMode && agent.taskId && <CoordinatorChainStripView agent={agent} />}
       {!rightOnlyMode && agent.taskId && <TaskDependencyEditor agent={agent} />}
       {!rightOnlyMode && agent.taskId && <TaskDependencyRail agent={agent} />}
+      {!rightOnlyMode && showEvolutionPanel && (
+        <Suspense fallback={null}>
+          <EvolutionPanel taskId={agent.taskId!} />
+        </Suspense>
+      )}
 
       {/* Side-by-side split (wide) + tab fallback (narrow) */}
       {(() => {

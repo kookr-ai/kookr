@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { LAUNCH_DEPENDENCIES } from './playbook.js';
 
 /**
  * Runtime validators for the ServerMessage discriminated union.
@@ -13,6 +14,7 @@ const agentType = z.enum(['claude-code', 'codex-cli']);
 const agentSelection = z.enum(['claude-code', 'codex-cli', 'round-robin']);
 const anomalySeverity = z.enum(['info', 'warning', 'critical']);
 const hostCapability = z.enum(['available', 'absent']);
+const launchDependency = z.enum(LAUNCH_DEPENDENCIES);
 
 const jsonObject = z.object({}).passthrough();
 
@@ -117,7 +119,7 @@ const playbooksMessage = z.object({
   type: z.literal('playbooks'),
   cwd: z.string(),
   playbooks: z.array(jsonObject),
-  capabilities: z.object({ kb: hostCapability.optional() }).optional(),
+  capabilities: z.partialRecord(launchDependency, hostCapability).optional(),
 });
 
 const quickAction = z.object({

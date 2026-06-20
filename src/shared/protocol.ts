@@ -68,6 +68,13 @@ export type {
 } from './contracts/github.js';
 export type { AgentActivityMeta } from './contracts/hook-events.js';
 export type { Playbook, LaunchDependency } from './contracts/playbook.js';
+export type {
+  EvolutionChampionRecord,
+  EvolutionRunProjection,
+  EvolutionTrajectoryPoint,
+  EvolutionTrialOutcome,
+  EvolutionTrialRecord,
+} from './contracts/evolution.js';
 export type { ProjectConfig } from './contracts/project-config.js';
 export type { ProjectSummary, TaskSummary } from './contracts/project-summary.js';
 export type { QuotaStatus, QuotaWindow } from './contracts/quota.js';

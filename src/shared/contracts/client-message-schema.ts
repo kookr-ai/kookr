@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ClientMessage } from './messages.js';
 import { TELEMETRY_EVENT_TYPES } from './telemetry.js';
+import { LAUNCH_DEPENDENCIES } from './playbook.js';
 
 /**
  * Runtime validators for the ClientMessage discriminated union.
@@ -17,7 +18,7 @@ import { TELEMETRY_EVENT_TYPES } from './telemetry.js';
 // server resolves to a concrete agent. Persisted task/session shapes never do.
 const agentSelection = z.enum(['claude-code', 'codex-cli', 'round-robin']);
 const playbookScope = z.enum(['project', 'user', 'plugin']);
-const launchDependency = z.enum(['kb']);
+const launchDependency = z.enum(LAUNCH_DEPENDENCIES);
 const taskPriorityUpdate = z.enum(['high', 'normal']);
 const permissionRequestBinding = z.object({
   requestId: z.string(),

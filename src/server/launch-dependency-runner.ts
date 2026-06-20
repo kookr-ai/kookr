@@ -23,6 +23,11 @@ export async function runLaunchDependencyPreflights(
         if (finding) findings.push(finding);
         break;
       }
+      case 'evolution-config': {
+        // Evolution config validation is cwd- and playbook-parameter-dependent,
+        // so preparePlaybookLaunch validates it before LaunchOpts are built.
+        break;
+      }
     }
   }
 
