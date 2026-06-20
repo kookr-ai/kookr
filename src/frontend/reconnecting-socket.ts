@@ -36,6 +36,9 @@ export interface MessageEventLike {
   data: unknown;
 }
 
+/** Which handler fired an event from a socket that is no longer current. */
+export type StaleSocketEventKind = 'open' | 'message' | 'close' | 'error';
+
 /** The subset of the browser WebSocket surface the controller manages. */
 export interface SocketLike {
   send(data: string | ArrayBufferLike | ArrayBufferView): void;
@@ -105,6 +108,13 @@ export interface ReconnectingSocketOptions<T extends SocketLike> {
   onClose?: (event: CloseEventLike, info: { wasEstablished: boolean }) => void;
   /** Return false to end the retry loop for this close (e.g. clean PTY exit). */
   shouldReconnect?: (event: CloseEventLike) => boolean;
+  /**
+   * Fired whenever an event from a socket that is no longer `current`
+   * (replaced or stopped) is ignored. The controller owns no telemetry policy;
+   * consumers use this to surface bounded, rate-limited diagnostics for
+   * stale-socket churn without re-implementing the staleness check.
+   */
+  onStaleEvent?: (kind: StaleSocketEventKind) => void;
   backoff?: Partial<BackoffOptions>;
   setTimeoutFn?: (fn: () => void, ms: number) => unknown;
   clearTimeoutFn?: (handle: unknown) => void;
@@ -170,14 +180,16 @@ export function createReconnectingSocket<T extends SocketLike>(
     current = socket;
 
     socket.onopen = () => {
-      if (current !== socket || stopped) return;
+      if (current !== socket) { options.onStaleEvent?.('open'); return; }
+      if (stopped) return;
       options.onOpen?.(socket);
       if (establishOn === 'open') markEstablished(socket);
     };
 
     let receivedMessage = false;
     socket.onmessage = (event) => {
-      if (current !== socket || stopped) return;
+      if (current !== socket) { options.onStaleEvent?.('message'); return; }
+      if (stopped) return;
       if (!receivedMessage) {
         // First server data on this connection is the real health signal —
         // only now does the failure streak end. Resetting on bare open would
@@ -192,7 +204,7 @@ export function createReconnectingSocket<T extends SocketLike>(
     socket.onclose = (event) => {
       // Stale sockets (replaced or stopped) must not touch shared state: no
       // established flip, no rival reconnect chain.
-      if (current !== socket) return;
+      if (current !== socket) { options.onStaleEvent?.('close'); return; }
       current = null;
       const wasEstablished = established;
       established = false;
@@ -205,7 +217,7 @@ export function createReconnectingSocket<T extends SocketLike>(
     };
 
     socket.onerror = () => {
-      if (current !== socket) return;
+      if (current !== socket) { options.onStaleEvent?.('error'); return; }
       // Close handling owns reconnect scheduling; browsers fire close after error.
       try {
         socket.close();

@@ -28,6 +28,7 @@ export const TELEMETRY_EVENT_TYPES = [
   'healthy_agent_inspected',
   'session_started',
   'websocket_reconnect',
+  'websocket_stale_event',
   'suggestion_lifecycle',
 ] as const;
 

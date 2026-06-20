@@ -6,6 +6,7 @@ import {
   type CloseEventLike,
   type MessageEventLike,
   type ReconnectingSocketOptions,
+  type StaleSocketEventKind,
 } from './reconnecting-socket.js';
 
 class FakeSocket {
@@ -194,6 +195,31 @@ describe('createReconnectingSocket', () => {
     expect(events).toEqual(['established']);
     expect(controller.isEstablished()).toBe(true);
     expect(timers).toHaveLength(timerCount);
+  });
+
+  it('reports ignored events from a replaced socket via onStaleEvent, by kind', () => {
+    const stale: StaleSocketEventKind[] = [];
+    const { controller, sockets, runPendingTimers } = createHarness({ onStaleEvent: (k) => stale.push(k) });
+    controller.start();
+    sockets[0].emitClose(); // real close of the current socket — not stale
+    runPendingTimers();     // socket[1] is now current; socket[0] is a zombie
+    expect(stale).toEqual([]);
+
+    sockets[0].emitOpen();
+    sockets[0].emitMessage('zombie');
+    sockets[0].emitClose();
+    sockets[0].onerror?.();
+    expect(stale).toEqual(['open', 'message', 'close', 'error']);
+  });
+
+  it('reports a deliberately stopped socket\'s late close as stale', () => {
+    const stale: StaleSocketEventKind[] = [];
+    const { controller, sockets } = createHarness({ onStaleEvent: (k) => stale.push(k) });
+    controller.start();
+    sockets[0].emitOpen();
+    controller.stop();      // detaches current before closing
+    sockets[0].emitClose(); // browser delivers close after stop()
+    expect(stale).toEqual(['close']);
   });
 
   it('stop() closes the socket without scheduling a reconnect, and its close is treated as stale', () => {

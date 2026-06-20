@@ -7,6 +7,11 @@ import type { TransportSessionSlice, TriageNavigationSlice } from '../store/stor
 import { recordInbound, recordOutbound } from '../bug-report-recorder.js';
 import { createReconnectingSocket, type ReconnectingSocket } from '../reconnecting-socket.js';
 
+// Stale-socket callbacks are ignored silently in the controller; here we count
+// them and emit at most one compact telemetry event per window so a burst of
+// zombie events (reconnect storm, StrictMode churn) can't flood the buffer.
+const STALE_TELEMETRY_WINDOW_MS = 10_000;
+
 export function parseServerMessageForClient(data: string): unknown | null {
   try {
     return JSON.parse(data) as unknown;
@@ -81,10 +86,33 @@ export function useWebSocket() {
   const hasFetchedSchedulesForConnectionRef = useRef(false);
 
   useEffect(() => {
+    // Bounded diagnostics for ignored stale-socket callbacks. Counts accumulate
+    // across the controller's lifetime; telemetry is coalesced to one event per
+    // window so a zombie-event burst stays cheap. The counts are cumulative so
+    // a later emission still carries the full tally.
+    const staleEventCounts = { open: 0, message: 0, close: 0, error: 0 };
+    let lastStaleTelemetryAt = 0;
+
     const controller = createReconnectingSocket<WebSocket>({
       createSocket: () => {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         return new WebSocket(`${protocol}//${window.location.host}/ws`);
+      },
+      onStaleEvent: (kind) => {
+        staleEventCounts[kind] += 1;
+        const now = Date.now();
+        if (now - lastStaleTelemetryAt < STALE_TELEMETRY_WINDOW_MS) return;
+        lastStaleTelemetryAt = now;
+        // Descriptive, count-suffixed keys to match the surrounding telemetry
+        // naming (websocket_reconnect.disconnectDurationMs, session_started.
+        // agentCount). Counts are cumulative for the controller's lifetime.
+        track({
+          type: 'websocket_stale_event',
+          staleOpenCount: staleEventCounts.open,
+          staleMessageCount: staleEventCounts.message,
+          staleCloseCount: staleEventCounts.close,
+          staleErrorCount: staleEventCounts.error,
+        });
       },
       // Only report "connected" once the server actually delivers data (it
       // sends a full snapshot immediately on connect). A proxy or restarting
