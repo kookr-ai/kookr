@@ -1,10 +1,10 @@
 # System Architecture
 
-> **Design principle:** Reuse existing solutions. Don't reinvent what exists in aegiscore or openclaw. Build only what's unique to Kookr: **intelligent attention routing powered by an AI supervisor agent**.
+> **Design principle:** Reuse existing solutions. Don't reinvent what exists in aegiscore or openclaw. Build only what's unique to Kookr: intelligent attention routing for supervised coding agents. V1 detection is deterministic; LLM-backed semantic supervision is a V2 layer.
 
 ## Overview
 
-Kookr is a **supervisor agent + GUI** that sits on top of existing agent processes. The supervisor is itself an AI — it reads the coding agents' output, understands what they're doing, detects anomalies, and explains to the developer what needs attention and why.
+Kookr is a **supervisor agent + GUI** that sits on top of managed coding-agent processes. The current supervisor reads structured events from those agents, detects implemented anomalies with deterministic rules, and explains to the developer what needs attention and why. Future semantic-supervisor work can add LLM-backed stuck-loop and trajectory-drift detection.
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -14,7 +14,7 @@ Kookr is a **supervisor agent + GUI** that sits on top of existing agent process
 │  │ Frontend  │◄──► Backend (local)             │     │
 │  │ (Browser) │ WS │                            │     │
 │  └──────────┘    │  ┌───────────────────────┐  │     │
-│                  │  │ Supervisor Agent (AI)  │  │     │
+│                  │  │ Supervisor Agent       │  │     │
 │                  │  │ - reads agent streams  │  │     │
 │                  │  │ - detects anomalies    │  │     │
 │                  │  │ - explains problems    │  │     │
@@ -34,7 +34,7 @@ Kookr is a **supervisor agent + GUI** that sits on top of existing agent process
 
 ## The Supervisor Agent
 
-This is Kookr's core differentiator. It's not a hardcoded scoring function — it's an **AI agent that understands context**.
+This is Kookr's core differentiator. In V1 it is a deterministic supervisor over structured signals, with optional LLM features elsewhere in the product (response suggestions, task naming, reflection) and semantic anomaly detection reserved for V2.
 
 ### What it does
 
@@ -132,7 +132,7 @@ Other anomaly patterns: `detect-budget-burn` (V2), `detect-trajectory-drift` (V2
 **What it does:**
 - Manages coding agents in terminal sessions (see [ADR-007](adr/007-managed-terminal-sessions.md))
 - Reads structured hook events for each agent; transcript JSONL is parsed separately for token/cost and freshness tracking
-- Feeds normalized events to the supervisor agent
+- Feeds normalized events to the supervisor
 - Receives anomaly detections + explanations from the supervisor
 - **Stores task metadata** locally: task description (the launch prompt), optional completion criteria, agent ID, timestamps. Stored in a JSON file on disk (`~/.kookr/tasks.json`) — lightweight, no database needed for V1. Data directory is `~/.kookr/` for the default port (4800) or `~/.kookr-{port}/` for non-default ports, enabling isolated dev/production instances
 - **Persists agent session state** inline in `~/.kookr/tasks.json` alongside task metadata. On startup, reconciles session data with live dtach sessions the backend reports in its manifest to recover after crashes. Hook output files are written to `~/.kookr/hooks/` as append-only JSONL
@@ -155,7 +155,7 @@ Other anomaly patterns: `detect-budget-burn` (V2), `detect-trajectory-drift` (V2
 
 **What it does:**
 - Wraps each agent type (Claude Code, Codex CLI) behind a common `AgentAdapter` interface. `RoutingAgentAdapter` dispatches to the concrete adapter by `agentType` (`claude-code-adapter.ts` or `codex-cli-adapter.ts`)
-- Spawns and controls agent sessions through `LocalDtachBackend` — creation, byte-level write for input delivery, termination. The backend owns one persistent attach per session, a 64 KB ring buffer, a per-session write mutex, and lazy re-attach with a 3-per-60-s cap. Transport-level failures surface as structured `BackendError` events wired into the anomaly queue and `/api/health`
+- Spawns and controls agent sessions through `LocalDtachBackend` — creation, byte-level write for input delivery, termination. The backend owns one persistent attach per session, a 1 MB byte ring buffer, a per-session write mutex, and lazy re-attach with a 3-per-60-s cap. Transport-level failures surface as structured `BackendError` events wired into the anomaly queue and `/api/health`
 - Registers the agent's **transcript JSONL path** for token/cost and freshness tracking; transcript-derived `AgentEvent` ingestion remains a V2 enhancement
 - Receives **hook events** via per-session JSONL files in `~/.kookr/hooks/`. Full event set is `SessionStart`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`, `PermissionRequest`, `Notification`, `UserPromptSubmit`, `SubagentStart`, `SubagentStop`, `SessionEnd` — see `HookEventName` in `src/core/hook-events.ts`. Codex CLI advertises its supported subset via `codexHookCapabilities` on `session_start`. Hooks are configured per agent via a Kookr-generated settings file (Claude Code `--settings`, Codex CLI config file); they are additive to the user's own hooks. See [PoC 001](poc/001-hook-mechanism-validation.md)
 - Uses **`backend.captureBytes`** for clean terminal display snapshots (shown in the GUI, not used for anomaly detection)
@@ -167,7 +167,7 @@ Other anomaly patterns: `detect-budget-burn` (V2), `detect-trajectory-drift` (V2
 |---------|---------|-----------|
 | Transcript JSONL | Structured session history, token/cost and freshness tracking; future anomaly-event enrichment | Incremental file reads from the agent transcript path |
 | Hooks | Real-time event notifications (session start, tool use, permission requests, stop) | Claude Code hook scripts invoked per event, configured via `--settings` flag |
-| `backend.captureBytes` | Terminal display for GUI | Lock-free snapshot of the 64 KB ring buffer |
+| `backend.captureBytes` | Terminal display for GUI | Lock-free snapshot of the backend-owned 1 MB byte ring buffer |
 | GitHub state | PR/issue status, review comments, CI checks | Periodic polling via `gh` CLI ([ADR-012](adr/012-github-pr-awareness.md)) |
 | Interaction log | Developer actions (inputs, skips, snoozes) for reflection | Append-only JSONL per session ([ADR-010](adr/010-session-reflection-workflow.md)) |
 

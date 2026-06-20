@@ -2,9 +2,9 @@
 
 ## What is Kookr?
 
-Kookr is a **smart attention router** for developers running multiple AI coding agents. Its core is a **supervisor agent** — an AI that watches your coding agents' output streams, detects anomalies (stuck loops, repeated errors, permission blocks, budget burn), and explains what's going wrong in plain language. It then routes the developer to the most urgent agent.
+Kookr is a **smart attention router** for developers running multiple AI coding agents. Its core is a **supervisor agent** — currently a rule-based monitor that watches structured agent events, detects implemented anomalies (needs input, repeated errors, permission blocks, budget thresholds, hook/backend health), and explains what's going wrong in plain language. It then routes the developer to the most urgent agent. Semantic AI detection for stuck loops and trajectory drift is V2 work.
 
-It IS an AI agent — but a supervisor, not a coder. It watches agents, not code.
+It is a supervisor, not a coder. It watches agents, not code.
 
 ## Repository Structure
 
@@ -32,7 +32,7 @@ plugin/agents/         — General-purpose review subagents
 ## Key principles
 
 1. **Reuse, don't reinvent** — Agent drivers from aegiscore, skill format from Claude Code. Check existing solutions before designing new ones.
-2. **Smart supervisor, not coder** — Kookr's AI understands what agents are doing and explains anomalies. It doesn't write code itself.
+2. **Smart supervisor, not coder** — Kookr watches what agents are doing, explains implemented anomalies, and leaves coding to the coding agents. V1 detection is deterministic; LLM-backed semantic detection is a future layer.
 3. **Simple first** — Keep the product local-first and single-package by default. Prefer existing shipped mechanisms (local JSON/JSONL/SQLite stores, Kookr Toolkit plugin, hosted relay transport) before adding new persistence, plugin, or cloud surfaces.
 4. **TypeScript strict** — Full TypeScript stack, strict mode, discriminated unions, exhaustive switches.
 5. **Spec-driven** — Write spec → write tests (Vitest + Playwright) → implement.

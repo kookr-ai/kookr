@@ -238,7 +238,7 @@ stateDiagram-v2
 | Transition | Why Illegal/Ambiguous |
 |---|---|
 | Agent Session: Completed -> Running | Final state for a session. To retry, launch a new session against the same task |
-| Task: InProgress -> Completed (automatic) | Not allowed. Reconciliation transitions to `Terminated`, not `Completed`, when every session dies without user ack — see the transition table and the "Terminated state" design note. The only auto-completion is the `Terminated → Completed` user-driven `ackTerminatedTask` |
+| Task: InProgress -> Completed (automatic) | Allowed only for the clean-turn reconciliation exception: when every session is dead and the latest session ended with `lastTurnState === 'completed_turn'`, reconciliation may complete the task. Other unexpected session deaths transition to `Terminated`, and `Terminated -> Completed` remains user-driven via `ackTerminatedTask`. |
 | Task: Completed/Cancelled/Terminated -> InProgress | Must reopen first (-> Open), then launch agent (Open -> InProgress) |
 | Task: Terminated -> Pending / InProgress directly | Not allowed. `Terminated` exits via `ackTerminatedTask`, `reopen`, or `cancel` only — see `VALID_TRANSITIONS` in `src/core/tasks.ts` |
 | Snoozed -> Stuck | Not allowed directly. Snooze expiry restores a stored anomaly or leaves the agent unqueued; later hook/watchdog processing may detect a fresh anomaly |

@@ -39,7 +39,7 @@ Now informed by concrete research: agents run in interactive mode inside managed
 - [x] Implement Proposal 33 layout: findings panel, terminal, Send & Next
 - [x] "New Task" dialog: task description (natural-language prompt) + working directory + optional completion criteria → spawns agent in managed dtach session
 - [x] Terminal access: interactive xterm.js terminal in browser fully satisfies F4.6. Direct external `dtach -a` remains an operator escape hatch, but the UI no longer exposes a copy-attach button
-- [x] Task lifecycle: Open → InProgress → Completed/Cancelled (persisted in JSON)
+- [x] Task lifecycle: Open/Pending → InProgress → Completed/Cancelled/Terminated (persisted in JSON)
 - [x] Stop agent from GUI (kill dtach session)
 - [x] `npx kookr` starts server (via `bin/kookr.js`). Automatic browser-opening is deferred as a small polish item — users currently open the URL printed on startup.
 
@@ -56,8 +56,8 @@ Now informed by concrete research: agents run in interactive mode inside managed
 - [x] Prioritizer: rank findings severity-first (critical > warning > info), with V1 examples including `budget_exceeded`, `permission_blocked`, and `needs_input`
 - [x] Input box: type response → deliver via byte-level writes to the dtach session (`backend.write` / `backend.writeSequence`)
 - [x] Auto-advance: after sending, navigate to next bottleneck
-- [x] Skip agent (deprioritize to back of queue, supervisor keeps polling)
-- [x] Snooze agent (pause monitoring for a duration, timer-based re-entry)
+- [x] Skip agent (deprioritize to back of queue, supervisor keeps monitoring)
+- [x] Snooze agent (suppress active surfacing for a duration while monitoring continues, timer-based re-entry)
 - [x] "All clear" and "all skipped" states
 - [x] Browser notification when an agent becomes blocked (`useNotifications.ts`)
 - [x] Keyboard shortcuts (Ctrl+N = next bottleneck, Ctrl+Enter = send)
@@ -72,7 +72,7 @@ Now informed by concrete research: agents run in interactive mode inside managed
 - [x] Session reflection: interaction event log + friction pattern analysis via rule-based analyzer ([ADR-010](adr/010-session-reflection-workflow.md))
 - [x] Parent/child task linking for task hierarchies
 
-**Demo:** Run 5 agents. Two get stuck. Kookr highlights #1, you respond, it sends you to #2. Skip #2. Snooze #3 for 10 minutes. "All clear." The loop. Agent #4 creates a PR — the GitHub tab shows its CI status and review comments.
+**Demo:** Run 5 agents. Two need attention because of implemented V1 findings such as repeated errors, permission blocks, or questions. Kookr highlights #1, you respond, it sends you to #2. Skip #2. Snooze #3 for 10 minutes. "All clear." The loop. Agent #4 creates a PR — the GitHub tab shows its CI status and review comments.
 
 ---
 

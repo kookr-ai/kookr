@@ -11,7 +11,7 @@
 | [007](007-managed-terminal-sessions.md) | Managed Terminal Sessions | **Accepted** — run agents in managed terminal sessions. Supersedes ADR-004 headless-only. Persistence layer migrated from tmux to dtach by ADR-014 (default flipped 2026-04-22); the interactive-mode rationale still holds |
 | [008](008-tmux-session-management.md) | Tmux Session Management & Persistence | **Superseded by ADR-014** (persistence layer, 2026-04-22; V8 removed the tmux backend) — the tasks.json-inline session-metadata + startup reconciliation design still applies, now against `LocalDtachBackend` |
 | [009](009-interactive-terminal-in-gui.md) | Interactive Terminal in Browser GUI | **Accepted** — xterm.js + node-pty bridge for full interactive terminal. Dtach default (ADR-014) replaces `TerminalBridge` with `SessionBridge`; the xterm.js front-end contract is unchanged |
-| [010](010-session-reflection-workflow.md) | Session Reflection Workflow | **Accepted** — interaction event log + LLM analysis for friction pattern detection |
+| [010](010-session-reflection-workflow.md) | Session Reflection Workflow | **Accepted** — interaction event log + rule-based friction analysis, with LLM summaries as a future/optional enhancement |
 | [011](011-project-scoped-playbooks.md) | Project-Scoped Playbooks | **Accepted** — Markdown playbook templates in `.kookr/playbooks/` |
 | [012](012-github-pr-awareness.md) | GitHub PR/Issue Awareness | **Accepted** — regex extraction + `gh` CLI polling for PR/issue state tracking |
 | [013](013-stuck-detection-promotion-criteria.md) | Stuck-Loop Detection Promotion Criteria | **Accepted** — precision ≥90%, coverage ≥50%, platform parity, env-var opt-in for shadow→active promotion |

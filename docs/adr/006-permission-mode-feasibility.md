@@ -62,7 +62,7 @@ This is followed by a tool result, but in headless mode the question goes unansw
 1. **Keep `bypassPermissions`** for Claude Code (`acceptEdits` behaves identically in practice)
 2. **Remove** the Phase 3 roadmap item to "switch permission modes"
 3. **Redefine "needs input"** (F2.1) as: agent used `AskUserQuestion` tool, not permission blocks
-4. **Keep** all other anomaly detections (stuck loops, repeated errors, budget burn) — these are purely JSONL-stream based and work fine with `bypassPermissions`
+4. **Keep** other anomaly detections such as repeated errors and budget burn. Stuck-loop detection was later removed from the active anomaly type union and deferred to the V2 semantic supervisor.
 5. **Permission-related signals** that remain useful:
    - `permission_denials` in the `result` event (post-hoc, for logging/display)
    - Agent text mentioning permission issues (heuristic, unreliable)
