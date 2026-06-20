@@ -5,6 +5,7 @@ import { CircuitBreakerPanel } from './CircuitBreakerPanel.js';
 import { AudioAlertsPanel } from './AudioAlertsPanel.js';
 import { FindingEvidenceDiagnosticsPanel } from './FindingEvidenceDiagnosticsPanel.js';
 import { LiveFrictionCalibrationPanel } from './LiveFrictionCalibrationPanel.js';
+import { OutcomeLedgerPanel } from './OutcomeLedgerPanel.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
 
@@ -45,6 +46,7 @@ export function OperationsPanel({ send, onClose }: Props) {
           </button>
         </div>
         <div className="operations-panel-body">
+          <OutcomeLedgerPanel />
           <AudioAlertsPanel />
           <DetectionStatsPanel defaultExpanded showEmpty />
           <LiveFrictionCalibrationPanel />
