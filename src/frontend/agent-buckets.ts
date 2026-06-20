@@ -2,7 +2,7 @@ import type { AgentState } from '../shared/protocol.js';
 import type { CoordinatorSnapshotState } from '../shared/contracts/coordinator.js';
 import type { TaskStatus } from '../shared/contracts/task-status.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
-import { isActiveFinding } from './store/finding-helpers.js';
+import { isActiveFinding, isHealthyRunning } from './store/finding-helpers.js';
 import { compareRoutableAgents } from './agent-priority-order.js';
 
 export interface AgentBuckets {
@@ -18,14 +18,6 @@ export interface AgentBuckets {
 
 export function isTerminalTaskStatus(status: TaskStatus | undefined): boolean {
   return status !== undefined && isTerminalStatus(status);
-}
-
-export function isHealthyRunningAgent(agent: AgentState): boolean {
-  return agent.anomaly === null
-    && !agent.snoozedUntil
-    && !agent.suppressed
-    && agent.taskStatus !== 'pending'
-    && !isTerminalTaskStatus(agent.taskStatus);
 }
 
 function finishedAtMs(agent: AgentState): number {
@@ -72,7 +64,7 @@ export function buildAgentBuckets(
       .filter((agent) => agent.taskStatus !== 'pending' && !isTerminalTaskStatus(agent.taskStatus) && isActiveFinding(agent))
       .sort((left, right) => compareRoutableAgents(left, right, { chipTaskIds, originalIndex, projectPriorityRanks })),
     healthy: scopedAgents
-      .filter(isHealthyRunningAgent)
+      .filter(isHealthyRunning)
       .sort((left, right) => compareRoutableAgents(left, right, { chipTaskIds, originalIndex, projectPriorityRanks, includeSeverity: false })),
     activeTaskCount: agents.filter((agent) => !isTerminalTaskStatus(agent.taskStatus)).length,
     completedTaskCount: agents.filter((agent) => isTerminalTaskStatus(agent.taskStatus)).length,

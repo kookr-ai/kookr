@@ -1,11 +1,11 @@
 import type { DetailPaneMode, TriageNavigationSlice, StoreGet, StoreSet } from '../store-types.js';
 import type { AgentState } from '../../../shared/protocol.js';
 import { isDndEnabled } from '../../hooks/useDnd.js';
-import { compareRoutableAgents } from '../../agent-priority-order.js';
+import { buildRoutableOrder, compareRoutableAgents } from '../../agent-priority-order.js';
 import { deriveProjectPriorityRanks } from '../../../shared/project-sidebar.js';
 import { recordReportableAlert } from '../../bug-report-recorder.js';
 import { saveSelectedProject } from '../selected-project-storage.js';
-import { isActiveFinding, isHealthyRunning } from '../finding-helpers.js';
+import { isActiveFinding } from '../finding-helpers.js';
 
 const TERMINAL_FOCUS_STORAGE_KEY = 'kookr-terminal-focus-mode';
 const DETAIL_PANE_MODE_STORAGE_KEY = 'kookr-detail-panel-mode';
@@ -89,15 +89,8 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
   }
 
   function orderedRoutableAgents(exclude: (agent: AgentState) => boolean = () => false) {
-    const agents = get().agents;
-    const order = getPriorityOrderContext();
-    const findings = agents
-      .filter((agent) => !exclude(agent) && isActiveFinding(agent))
-      .sort((left, right) => compareRoutableAgents(left, right, order));
-    const healthy = agents
-      .filter((agent) => !exclude(agent) && isHealthyRunning(agent))
-      .sort((left, right) => compareRoutableAgents(left, right, { ...order, includeSeverity: false }));
-    return [...findings, ...healthy];
+    const agents = get().agents.filter((agent) => !exclude(agent));
+    return buildRoutableOrder(agents, getPriorityOrderContext());
   }
 
   return {

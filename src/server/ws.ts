@@ -383,6 +383,7 @@ export class MessageRouter {
             sessionId: msg.sessionId,
             selectionVersion: msg.selectionVersion,
             intentId: msg.intentId,
+            orderedCandidateSessionIds: msg.orderedCandidateSessionIds,
           });
           if (advanced.kind === 'rejected') {
             this.deps.send({
@@ -403,6 +404,7 @@ export class MessageRouter {
               selectedTaskId: advanced.state.selectedTaskId,
               selectedSessionId: advanced.state.selectedSessionId,
               selectionVersion: advanced.state.selectionVersion,
+              advanceDiagnostics: advanced.diagnostics,
             });
           }
         }
