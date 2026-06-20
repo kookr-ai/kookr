@@ -15,6 +15,7 @@ export interface EvolutionChampionRecord {
   iteration?: number;
   promotedAt?: string;
   runId?: string;
+  deadlineAt?: string;
 }
 
 export interface EvolutionTrialRecord {

@@ -53,6 +53,7 @@ async function readChampion(path: string): Promise<EvolutionChampionRecord | nul
     ...(typeof parsed.iteration === 'number' ? { iteration: parsed.iteration } : {}),
     ...(typeof parsed.promotedAt === 'string' ? { promotedAt: parsed.promotedAt } : {}),
     ...(typeof parsed.runId === 'string' ? { runId: parsed.runId } : {}),
+    ...(typeof parsed.deadlineAt === 'string' ? { deadlineAt: parsed.deadlineAt } : {}),
   };
 }
 
