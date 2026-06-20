@@ -93,6 +93,16 @@ describe('ClientMessageSchema — happy path sanity', () => {
     expect(result.success).toBe(true);
   });
 
+  test('accepts a launch message with evolution config dependency declaration', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'launch',
+      prompt: 'hi',
+      cwd: '/tmp',
+      dependencies: ['evolution-config'],
+    });
+    expect(result.success).toBe(true);
+  });
+
   test('rejects unsupported launch dependency declarations', () => {
     const result = ClientMessageSchema.safeParse({
       type: 'launch',
@@ -376,7 +386,7 @@ const clientMessageRoundTripCases = [
   clientMessageCase({ type: 'skipAll', agentIds: ['agent-1', 'agent-2'] }),
   clientMessageCase({ type: 'snooze', agentId: 'agent-1', taskId: 'task-1', durationMs: 60000, reason: 'later', resumeMonitoring: true }),
   clientMessageCase({ type: 'cancelSnooze', agentId: 'agent-1', taskId: 'task-1' }),
-  clientMessageCase({ type: 'launch', prompt: 'build it', cwd: '/tmp/project', criteria: 'tests pass', agentType: 'round-robin', dependencies: ['kb'] }),
+  clientMessageCase({ type: 'launch', prompt: 'build it', cwd: '/tmp/project', criteria: 'tests pass', agentType: 'round-robin', dependencies: ['kb', 'evolution-config'] }),
   clientMessageCase({
     type: 'completeTask',
     taskId: 'task-1',

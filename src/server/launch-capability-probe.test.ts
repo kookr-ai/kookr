@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const { mockExecFile } = vi.hoisted(() => ({ mockExecFile: vi.fn() }));
 
@@ -95,11 +98,28 @@ describe('probeKbPresence', () => {
 });
 
 describe('CAPABILITY_PROBES', () => {
-  test('wires `kb` to probeKbPresence', () => {
+  test('wires every supported launch dependency to a probe', () => {
     // The Record<LaunchDependency, ...> type already enforces exhaustiveness
     // at compile time — adding a new LAUNCH_DEPENDENCIES member without
-    // wiring a probe here is a TS error. This single runtime check guards
-    // that the `kb` slot points at the real probe.
-    expect(CAPABILITY_PROBES.kb).toBe(probeKbPresence);
+    // wiring a probe here is a TS error.
+    expect(Object.keys(CAPABILITY_PROBES).sort()).toEqual(['evolution-config', 'kb']);
+  });
+
+  test('wires evolution-config to project-local config validation', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'evolution-probe-'));
+    try {
+      await expect(CAPABILITY_PROBES['evolution-config'](cwd)).resolves.toBe('absent');
+
+      await mkdir(join(cwd, '.kookr', 'evolution'), { recursive: true });
+      await writeFile(join(cwd, '.kookr', 'evolution', 'config.json'), JSON.stringify({
+        schemaVersion: 'kookr-evolution-config.v1',
+        evaluate: './evaluate.sh',
+        artifact: 'strategy.json',
+      }));
+
+      await expect(CAPABILITY_PROBES['evolution-config'](cwd)).resolves.toBe('available');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 });

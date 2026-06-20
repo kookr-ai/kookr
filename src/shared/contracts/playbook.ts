@@ -60,7 +60,7 @@ export interface EffectivePlaybookLoop {
  */
 export type PlaybookScope = 'project' | 'user' | 'plugin';
 
-export const LAUNCH_DEPENDENCIES = ['kb'] as const;
+export const LAUNCH_DEPENDENCIES = ['kb', 'evolution-config'] as const;
 export type LaunchDependency = typeof LAUNCH_DEPENDENCIES[number];
 
 export interface Playbook {

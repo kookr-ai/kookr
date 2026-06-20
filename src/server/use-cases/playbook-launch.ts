@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import { existsSync } from 'node:fs';
 import { parsePlaybook, interpolateParameters } from '../../core/playbook-parser.js';
+import { readEvolutionConfig } from '../../core/evolution-config.js';
 import { userPlaybooksDir, pluginPlaybooksDir } from '../../core/playbook-discovery.js';
 import { getProjectId, projectDisplayName, projectIdFromRepoSpecifier } from '../../core/project-identity.js';
 import type { AgentSelection } from '../../core/agent-types.js';
@@ -98,6 +99,7 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
     input.parameterValues,
     effectiveCwd,
   );
+  await validatePlaybookLaunchCapabilities(playbook, parameterValues, effectiveCwd);
 
   const prompt = normalizePromptFileReferences(
     interpolateParameters(playbook.body, playbook.parameters, parameterValues),
@@ -143,6 +145,21 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
       ...(playbook.autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal: playbook.autoCloseOnSignal }),
     },
   };
+}
+
+async function validatePlaybookLaunchCapabilities(
+  playbook: ReturnType<typeof parsePlaybook>,
+  parameterValues: Record<string, string>,
+  effectiveCwd: string,
+): Promise<void> {
+  if (!playbook.parameters.some((parameter) => parameter.gatedBy === 'evolution-config')) {
+    return;
+  }
+  const projectCwd = parameterValues.projectCwd?.trim() || effectiveCwd;
+  const validation = await readEvolutionConfig(projectCwd);
+  if (!validation.ok) {
+    throw new Error(`Autonomous Evolution requires a valid .kookr/evolution/config.json. ${validation.error}`);
+  }
 }
 
 function resolvePlaybooksDir(scope: PlaybookScope, projectCwd: string): string | undefined {

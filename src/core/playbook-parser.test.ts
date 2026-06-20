@@ -411,6 +411,24 @@ Body.
     );
   });
 
+  test('shipped Autonomous Evolution playbook gates typed launch parameters on valid evolution config', async () => {
+    const content = await readFile('.kookr/playbooks/autonomous-evolution.md', 'utf8');
+    const parsed = parsePlaybook(content, 'autonomous-evolution.md', '/project');
+
+    expect(parsed.parameters.find((p) => p.name === 'projectCwd')).toMatchObject({
+      type: 'textarea',
+      default: '',
+    });
+    expect(parsed.parameters.find((p) => p.name === 'projectCwd')?.gatedBy).toBeUndefined();
+    for (const name of ['targetScore', 'patience', 'deadlineMinutes']) {
+      expect(parsed.parameters.find((p) => p.name === name)).toMatchObject({
+        type: 'text',
+        default: '',
+        gatedBy: 'evolution-config',
+      });
+    }
+  });
+
   test('playbooks reference example parses with the real parser', async () => {
     const content = await readFile('docs/reference/playbooks.md', 'utf8');
     const match = content.match(/```playbook frontmatter-reference-example\n([\s\S]*?)\n```/);

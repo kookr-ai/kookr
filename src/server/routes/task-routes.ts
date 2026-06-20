@@ -15,10 +15,11 @@ import {
 import { TaskLifecycleCommands } from '../use-cases/task-lifecycle-commands.js';
 import { launchTask, DrainModeError, isCwdValidationError, isEffortValidationError } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
-import type { LaunchDependency } from '../../core/playbook.js';
+import { LAUNCH_DEPENDENCIES, type LaunchDependency } from '../../core/playbook.js';
 import type { Task } from '../../core/tasks.js';
 import type { TaskDependencyEdge, TaskMetadataIntent } from '../../shared/contracts/task.js';
 import { normalizeTerminalWorktreeHealth } from '../../core/worktree-health.js';
+import { readEvolutionRunProjection } from '../../core/evolution-summary.js';
 import { isSharedTaskId } from '../../shared/contracts/contact-share.js';
 import { CoordinatorSuppressionStore } from '../coordinator/suppression-store.js';
 import { promotePendingTasks } from '../agent-lifecycle.js';
@@ -90,6 +91,18 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     const normalized = normalizeTaskForApi(task);
     if (!deps.suppressionTracker) return c.json(normalized);
     return c.json(withSuppressionFlag(normalized, deps.suppressionTracker));
+  });
+
+  app.get('/api/tasks/:id/evolution', async (c) => {
+    const id = c.req.param('id');
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+
+    try {
+      return c.json(await readEvolutionRunProjection(task.cwd));
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
   });
 
   app.patch('/api/tasks/:id/name', async (c) => {
@@ -514,9 +527,15 @@ function parseLaunchDependencies(value: unknown): LaunchDependency[] | undefined
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) throw new Error('dependencies must be an array when supplied');
   return value.map((item) => {
-    if (item !== 'kb') throw new Error(`Unsupported launch dependency: ${String(item)}`);
+    if (!isLaunchDependency(item)) {
+      throw new Error(`Unsupported launch dependency: ${String(item)}`);
+    }
     return item;
   });
+}
+
+function isLaunchDependency(value: unknown): value is LaunchDependency {
+  return typeof value === 'string' && (LAUNCH_DEPENDENCIES as readonly string[]).includes(value);
 }
 
 function isLaunchDependencyValidationError(err: unknown): err is Error {
