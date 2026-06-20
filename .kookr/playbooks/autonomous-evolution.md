@@ -266,6 +266,11 @@ Always, regardless of outcome:
    budget consumption per dimension, and — once stopped — the single
    `stopReason`.
 
+When implementing these writes in Kookr code, use the durable-state helpers in
+`src/core/evolution-state.ts`: `writeEvolutionChampionRecord` validates and
+atomically replaces `champion.json`, and `appendEvolutionTrialRecord` validates
+and appends one JSONL trial record.
+
 ## Phase 7: Report the verdict and stop
 
 Write the Ralph verdict to `$RALPH_VERDICT_FILE` (atomic: write `.tmp`, rename)

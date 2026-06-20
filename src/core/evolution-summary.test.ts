@@ -13,6 +13,7 @@ describe('readEvolutionRunProjection', () => {
         artifactRef: 'trials/iter-2/strategy.json',
         iteration: 2,
         promotedAt: '2026-06-20T20:00:00.000Z',
+        deadlineAt: '2026-06-20T22:00:00.000Z',
       }));
       await writeFile(join(cwd, 'evolution-trials.jsonl'), [
         JSON.stringify({ iteration: 0, outcome: 'baseline', score: 1.0 }),
@@ -30,6 +31,7 @@ describe('readEvolutionRunProjection', () => {
           artifactRef: 'trials/iter-2/strategy.json',
           iteration: 2,
           promotedAt: '2026-06-20T20:00:00.000Z',
+          deadlineAt: '2026-06-20T22:00:00.000Z',
         },
         bestScore: 1.42,
         outcomeCounts: {
