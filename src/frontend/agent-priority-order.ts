@@ -1,4 +1,5 @@
 import type { AgentState } from '../shared/protocol.js';
+import { isActiveFinding, isHealthyRunning } from '../shared/task-routing.js';
 import { SEVERITY_ORDER } from './store/store-types.js';
 
 export interface AgentOrderOptions {
@@ -6,6 +7,26 @@ export interface AgentOrderOptions {
   chipTaskIds?: ReadonlySet<string>;
   originalIndex?: ReadonlyMap<string, number>;
   includeSeverity?: boolean;
+}
+
+/**
+ * Builds the routable task order exactly as the dashboard presents it for
+ * empty-Enter navigation: active findings first (severity-aware), then healthy
+ * running tasks (severity ignored), each sorted by {@link compareRoutableAgents}.
+ *
+ * This is the single source of truth for both the frontend cursor movement
+ * (`nextTask`/`previousTask`) and the `orderedCandidateSessionIds` the client
+ * hands the server, so server-driven advancement provably follows the same
+ * order the user sees (#1079).
+ */
+export function buildRoutableOrder(agents: AgentState[], options: AgentOrderOptions = {}): AgentState[] {
+  const findings = agents
+    .filter(isActiveFinding)
+    .sort((left, right) => compareRoutableAgents(left, right, options));
+  const healthy = agents
+    .filter(isHealthyRunning)
+    .sort((left, right) => compareRoutableAgents(left, right, { ...options, includeSeverity: false }));
+  return [...findings, ...healthy];
 }
 
 const UNRANKED_PROJECT = Number.MAX_SAFE_INTEGER;

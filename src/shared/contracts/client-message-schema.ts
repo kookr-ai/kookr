@@ -111,6 +111,7 @@ const ClientMessageSchemaImpl = z.union([
     selectionVersion: z.number().int().nonnegative(),
     inputStateEpoch: z.string(),
     observedReadinessVersion: z.number().int().nonnegative(),
+    orderedCandidateSessionIds: z.array(z.string()).optional(),
   }),
   z.object({ type: z.literal('skip'), agentId: z.string() }),
   z.object({ type: z.literal('skipAll'), agentIds: z.array(z.string()) }),

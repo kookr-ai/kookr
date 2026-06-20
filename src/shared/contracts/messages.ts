@@ -21,6 +21,7 @@ import type { TelemetryEvent } from './telemetry.js';
 import type {
   EmptyEnterIntentRequest,
   EmptyEnterDecision,
+  EmptyEnterAdvanceDiagnostics,
 } from '../terminal-input-contract.js';
 import type {
   WorkspaceView,
@@ -251,6 +252,12 @@ export type ServerMessage =
       selectedTaskId: string | null;
       selectedSessionId: string | null;
       selectionVersion: number;
+      /**
+       * Bounded context explaining an empty-Enter advancement (#1079). Present
+       * only on server-driven advancements; omitted for plain selection
+       * acknowledgements echoed back after `selectionChanged`.
+       */
+      advanceDiagnostics?: EmptyEnterAdvanceDiagnostics;
     }
   | { type: 'emptyEnterDecision'; decision: EmptyEnterDecision }
   | { type: 'contributionWarning'; project: string; message: string; severity: 'approaching' | 'exceeded' }
