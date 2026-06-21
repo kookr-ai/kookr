@@ -1,4 +1,5 @@
 import type { AgentEvent } from '../core/types.js';
+import { isSecretFieldName, redactSecrets } from '../core/redact-secrets.js';
 
 /**
  * Project an AgentEvent for client transport. Drops fields no frontend consumer
@@ -54,7 +55,7 @@ export function projectEventForClient(event: AgentEvent): AgentEvent {
 }
 
 function projectWithToolInput<E extends AgentEvent & { toolName: string; toolInput?: unknown }>(event: E): E {
-  const toolInput = redactSubagentPromptInput(event.toolName, event.toolInput);
+  const toolInput = redactToolInputSecrets(redactSubagentPromptInput(event.toolName, event.toolInput));
   if (toolInput === undefined || toolInput === null) return event;
 
   const serialized = JSON.stringify(toolInput);
@@ -63,6 +64,32 @@ function projectWithToolInput<E extends AgentEvent & { toolName: string; toolInp
   }
 
   return { ...event, toolInput: truncateToolInput(toolInput, serialized.length) };
+}
+
+function redactToolInputSecrets(toolInput: unknown): unknown {
+  if (typeof toolInput === 'string') return redactSecrets(toolInput);
+  if (toolInput === null || typeof toolInput !== 'object') return toolInput;
+
+  if (Array.isArray(toolInput)) {
+    let redacted: unknown[] | undefined;
+    toolInput.forEach((value, index) => {
+      const next = redactToolInputSecrets(value);
+      if (next === value && redacted === undefined) return;
+      redacted ??= toolInput.slice(0, index);
+      redacted.push(next);
+    });
+    return redacted ?? toolInput;
+  }
+
+  const obj = toolInput as Record<string, unknown>;
+  let redacted: Record<string, unknown> | undefined;
+  for (const [key, value] of Object.entries(obj)) {
+    const next = isSecretFieldName(key) ? '[REDACTED]' : redactToolInputSecrets(value);
+    if (next === value && redacted === undefined) continue;
+    redacted ??= { ...obj };
+    redacted[key] = next;
+  }
+  return redacted ?? toolInput;
 }
 
 function redactSubagentPromptInput(toolName: string, toolInput: unknown): unknown {
@@ -109,9 +136,11 @@ function truncateToolInput(toolInput: unknown, originalBytes: number): Record<st
 }
 
 function projectWithLastMessage<E extends AgentEvent & { lastMessage: string }>(event: E): E {
-  const { lastMessage } = event;
+  const lastMessage = redactSecrets(event.lastMessage);
   const bytes = Buffer.byteLength(lastMessage, 'utf-8');
-  if (bytes <= LAST_MESSAGE_MAX_BYTES) return event;
+  if (bytes <= LAST_MESSAGE_MAX_BYTES) {
+    return lastMessage === event.lastMessage ? event : { ...event, lastMessage };
+  }
 
   return { ...event, lastMessage: truncateUtf8(lastMessage, LAST_MESSAGE_MAX_BYTES, bytes) };
 }
