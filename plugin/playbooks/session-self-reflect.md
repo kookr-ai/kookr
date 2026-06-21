@@ -21,7 +21,7 @@ Analyze recent Kookr supervision sessions to identify recurring friction pattern
 Run the interaction stats script to get pre-computed summaries (replaces manual JSONL parsing):
 
 ```bash
-STATS=".claude/skills/self-reflect/scripts/kookr-interaction-stats.ts"
+STATS="${CLAUDE_SKILL_DIR:-plugin/skills/self-reflect}/scripts/kookr-interaction-stats.ts"
 
 # Human-readable summary of new sessions
 bun "$STATS"
@@ -73,7 +73,7 @@ Extract high-intervention sessions (3+ user inputs) and mass-launch sessions (10
 Use the session analyzer CLI for signals from the full Claude Code conversation logs:
 
 ```bash
-SA=".claude/skills/self-reflect/scripts/session-analyzer.ts"
+SA="${CLAUDE_SKILL_DIR:-plugin/skills/self-reflect}/scripts/session-analyzer.ts"
 
 # Find corrections (repeated corrections = skill/CLAUDE.md gap)
 bun "$SA" -p kookr --corrections -n 30 --since <earliest-new-session-date>
@@ -92,7 +92,7 @@ bun "$SA" -p kookr --tools-report -n 30 --since <earliest-new-session-date>
 Extract and analyze what users actually type to agents — this is the highest-signal, lowest-token-cost analysis:
 
 ```bash
-SA=".claude/skills/self-reflect/scripts/session-analyzer.ts"
+SA="${CLAUDE_SKILL_DIR:-plugin/skills/self-reflect}/scripts/session-analyzer.ts"
 
 # Find instructions repeated across sessions (default threshold: 3+)
 bun "$SA" -p kookr --repeated-instructions -n 0 --since <earliest-new-session-date>

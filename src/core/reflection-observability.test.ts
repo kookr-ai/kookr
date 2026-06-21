@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -19,6 +19,37 @@ function runScript(args: string[], home: string): string {
 }
 
 describe('reflection observability scripts', () => {
+  test('self-reflect skill packages required scripts', () => {
+    const home = tempHome();
+    try {
+      const requiredScripts = [
+        'plugin/skills/self-reflect/scripts/kookr-interaction-stats.ts',
+        'plugin/skills/self-reflect/scripts/session-analyzer.ts',
+      ];
+
+      for (const script of requiredScripts) {
+        expect(existsSync(join(repoRoot, script))).toBe(true);
+      }
+
+      const statsOutput = runScript([
+        'plugin/skills/self-reflect/scripts/kookr-interaction-stats.ts',
+        '--json',
+      ], home);
+      expect(JSON.parse(statsOutput)).toMatchObject({
+        status: 'no_new_sessions',
+        analyzed: 0,
+      });
+
+      const analyzerOutput = runScript([
+        'plugin/skills/self-reflect/scripts/session-analyzer.ts',
+        '--help',
+      ], home);
+      expect(analyzerOutput).toContain('Claude Code Session Analyzer');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('interaction stats reports crash-recovery relaunch sessions', () => {
     const home = tempHome();
     try {
@@ -61,7 +92,10 @@ describe('reflection observability scripts', () => {
         }),
       ].join('\n') + '\n');
 
-      const output = runScript(['scripts/kookr-interaction-stats.ts', '--json'], home);
+      const output = runScript([
+        'plugin/skills/self-reflect/scripts/kookr-interaction-stats.ts',
+        '--json',
+      ], home);
       const parsed = JSON.parse(output);
       expect(parsed.stats.crashRecoverySessions).toBe(1);
       expect(parsed.stats.crashRecoveryRelaunches).toBe(2);
