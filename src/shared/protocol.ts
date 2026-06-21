@@ -76,6 +76,11 @@ export type {
   EvolutionTrialRecord,
 } from './contracts/evolution.js';
 export type { ProjectConfig } from './contracts/project-config.js';
+export type {
+  SkillDiscoveryProjectStatus,
+  SkillDiscoveryScanStatus,
+  SkillDiscoveryStateSnapshot,
+} from './contracts/project-discovery.js';
 export type { ProjectSummary, TaskSummary } from './contracts/project-summary.js';
 export type { QuotaStatus, QuotaWindow } from './contracts/quota.js';
 export type { QuickAction } from './contracts/quick-action.js';

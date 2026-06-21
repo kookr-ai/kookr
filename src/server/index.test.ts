@@ -1942,10 +1942,44 @@ describe('createKookrServer', () => {
       expect(snap.warnings.length).toBe(1);
       expect(snap.warnings[0]).toContain('bad-recon');
       expect(snap.lastError).toBeUndefined();
+      expect(snap.cacheStatus).toBe('scanned');
+      expect(snap.staleReasons).toEqual(['recon manifest changed']);
+      expect(snap.projectStatuses).toEqual([
+        {
+          project: 'github.com/grafana/grafana',
+          status: 'scanned',
+          reason: 'recon manifest changed',
+          source: 'grafana-grafana-recon',
+        },
+      ]);
+
+      const unchangedRes = await fetch(`${baseUrl}/api/projects/rescan-skills`, { method: 'POST' });
+      expect(unchangedRes.status).toBe(200);
+      const unchangedSnap = await unchangedRes.json();
+      expect(unchangedSnap.projects).toEqual(['github.com/grafana/grafana']);
+      expect(unchangedSnap.warnings).toEqual(snap.warnings);
+      expect(unchangedSnap.cacheStatus).toBe('skipped');
+      expect(unchangedSnap.projectStatuses[0]).toMatchObject({
+        project: 'github.com/grafana/grafana',
+        status: 'skipped',
+        reason: 'recon manifest unchanged',
+        source: 'grafana-grafana-recon',
+      });
+
+      writeFileSync(
+        join(claudeDir, 'grafana-grafana-recon', 'recon-report.md'),
+        '# Recon Report: grafana/loki\nextra bytes\n',
+      );
+      const changedRes = await fetch(`${baseUrl}/api/projects/rescan-skills`, { method: 'POST' });
+      expect(changedRes.status).toBe(200);
+      const changedSnap = await changedRes.json();
+      expect(changedSnap.projects).toEqual(['github.com/grafana/loki']);
+      expect(changedSnap.cacheStatus).toBe('scanned');
+      expect(changedSnap.staleReasons).toEqual(['recon manifest changed']);
 
       const summaries = await (await fetch(`${baseUrl}/api/projects`)).json();
       expect(summaries).toHaveLength(1);
-      expect(summaries[0].project).toBe('github.com/grafana/grafana');
+      expect(summaries[0].project).toBe('github.com/grafana/loki');
     });
 
     test('GET /api/projects/discovery-status returns the snapshot written by the last rescan', async () => {
@@ -1964,6 +1998,9 @@ describe('createKookrServer', () => {
       const statusSnap = await statusRes.json();
       expect(statusSnap.projects).toEqual(['github.com/foo/bar']);
       expect(statusSnap.scannedAt).toBe(rescanSnap.scannedAt);
+      expect(statusSnap.cacheStatus).toBe(rescanSnap.cacheStatus);
+      expect(statusSnap.staleReasons).toEqual(rescanSnap.staleReasons);
+      expect(statusSnap.projectStatuses).toEqual(rescanSnap.projectStatuses);
     });
 
     test('self-diagnostics stay empty until requested on demand', async () => {

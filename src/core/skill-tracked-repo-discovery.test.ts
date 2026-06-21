@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SkillTrackedRepoDiscovery, SkillDiscoveryStateHolder, parseRepoFromReconReport } from './skill-tracked-repo-discovery.js';
@@ -122,6 +123,22 @@ describe('SkillTrackedRepoDiscovery', () => {
     ]);
     expect(result.warnings).toEqual([]);
     expect(result.scannedAt).toBeTruthy();
+    expect(result.cacheStatus).toBe('scanned');
+    expect(result.staleReasons).toEqual([]);
+    expect(result.projectStatuses).toEqual([
+      {
+        project: 'github.com/grafana/grafana',
+        status: 'scanned',
+        reason: 'initial scan',
+        source: 'grafana-grafana-recon',
+      },
+      {
+        project: 'github.com/n8n-io/n8n',
+        status: 'scanned',
+        reason: 'initial scan',
+        source: 'n8n-io-n8n-recon',
+      },
+    ]);
   });
 
   test('prefers frontmatter repo metadata over heading', async () => {
@@ -202,6 +219,114 @@ repo: real-owner/real-repo
     const result = await discovery.discover();
     expect(result.projects).toEqual(['github.com/ggml-org/llama.cpp']);
   });
+
+  test('skips unchanged recon manifests after the first scan', async () => {
+    writeRecon('owner-repo', '# Recon Report: owner/repo\n');
+    let readCount = 0;
+    const discovery = new SkillTrackedRepoDiscovery(claudeDir, {
+      readReportFile: async (path) => {
+        readCount++;
+        return readFile(path, 'utf-8');
+      },
+    });
+
+    const first = await discovery.discover();
+    expect(readCount).toBe(1);
+
+    const second = await discovery.discover();
+
+    expect(first.cacheStatus).toBe('scanned');
+    expect(readCount).toBe(1);
+    expect(second.projects).toEqual(['github.com/owner/repo']);
+    expect(second.cacheStatus).toBe('skipped');
+    expect(second.staleReasons).toEqual([]);
+    expect(second.projectStatuses).toEqual([
+      {
+        project: 'github.com/owner/repo',
+        status: 'skipped',
+        reason: 'recon manifest unchanged',
+        source: 'owner-repo-recon',
+      },
+    ]);
+  });
+
+  test('rescans when a recon report manifest changes', async () => {
+    writeRecon('owner-repo', '# Recon Report: owner/repo\n');
+    const discovery = new SkillTrackedRepoDiscovery(claudeDir);
+    await discovery.discover();
+
+    writeRecon('owner-repo', '# Recon Report: changed/repo\nextra bytes\n');
+    const changed = await discovery.discover();
+
+    expect(changed.projects).toEqual(['github.com/changed/repo']);
+    expect(changed.cacheStatus).toBe('scanned');
+    expect(changed.staleReasons).toEqual(['recon manifest changed']);
+    expect(changed.projectStatuses).toEqual([
+      {
+        project: 'github.com/changed/repo',
+        status: 'scanned',
+        reason: 'recon manifest changed',
+        source: 'owner-repo-recon',
+      },
+    ]);
+  });
+
+  test('rescans when a recon report is deleted and removes the project', async () => {
+    writeRecon('keep-repo', '# Recon Report: keep/repo\n');
+    writeRecon('gone-repo', '# Recon Report: gone/repo\n');
+    const discovery = new SkillTrackedRepoDiscovery(claudeDir);
+    await discovery.discover();
+
+    rmSync(join(claudeDir, 'gone-repo-recon'), { recursive: true, force: true });
+    const changed = await discovery.discover();
+
+    expect(changed.projects).toEqual(['github.com/keep/repo']);
+    expect(changed.cacheStatus).toBe('scanned');
+    expect(changed.staleReasons).toEqual(['recon manifest changed']);
+    expect(changed.projectStatuses.map((status) => status.project)).toEqual(['github.com/keep/repo']);
+  });
+
+  test('rescans when only a recon report file is deleted and records a warning', async () => {
+    writeRecon('keep-repo', '# Recon Report: keep/repo\n');
+    writeRecon('gone-repo', '# Recon Report: gone/repo\n');
+    const discovery = new SkillTrackedRepoDiscovery(claudeDir);
+    await discovery.discover();
+
+    rmSync(join(claudeDir, 'gone-repo-recon', 'recon-report.md'), { force: true });
+    const changed = await discovery.discover();
+
+    expect(changed.projects).toEqual(['github.com/keep/repo']);
+    expect(changed.cacheStatus).toBe('scanned');
+    expect(changed.staleReasons).toEqual(['recon manifest changed']);
+    expect(changed.warnings).toHaveLength(1);
+    expect(changed.warnings[0]).toContain('gone-repo-recon:');
+    expect(changed.warnings[0]).toContain('not readable');
+    expect(changed.projectStatuses.map((status) => status.project)).toEqual(['github.com/keep/repo']);
+  });
+
+  test('rescans when recon report permissions change without content changes', async () => {
+    writeRecon('owner-repo', '# Recon Report: owner/repo\n');
+    const reportPath = join(claudeDir, 'owner-repo-recon', 'recon-report.md');
+    chmodSync(reportPath, 0o000);
+    const discovery = new SkillTrackedRepoDiscovery(claudeDir);
+
+    try {
+      const unreadable = await discovery.discover();
+      expect(unreadable.projects).toEqual([]);
+      expect(unreadable.warnings[0]).toContain('owner-repo-recon:');
+      expect(unreadable.warnings[0]).toContain('not readable');
+
+      chmodSync(reportPath, 0o644);
+      const readable = await discovery.discover();
+
+      expect(readable.projects).toEqual(['github.com/owner/repo']);
+      expect(readable.cacheStatus).toBe('scanned');
+      expect(readable.staleReasons).toEqual(['recon manifest changed']);
+      expect(readable.warnings).toEqual([]);
+    } finally {
+      chmodSync(reportPath, 0o644);
+    }
+  });
 });
 
 describe('SkillDiscoveryStateHolder', () => {
@@ -257,6 +382,16 @@ describe('SkillDiscoveryStateHolder', () => {
 
     expect(snap.projects).toEqual(['github.com/keeper/repo']);
     expect(snap.lastError).toBe('boom');
+    expect(snap.cacheStatus).toBe('stale');
+    expect(snap.staleReasons).toEqual(['boom']);
+    expect(snap.projectStatuses).toEqual([
+      {
+        project: 'github.com/keeper/repo',
+        status: 'stale',
+        reason: 'boom',
+        source: 'keeper-recon',
+      },
+    ]);
     expect(good.getProjects()).toEqual(['github.com/keeper/repo']);
   });
 
@@ -277,7 +412,20 @@ describe('SkillDiscoveryStateHolder', () => {
       discover: async () => {
         callCount++;
         await new Promise((resolve) => setTimeout(resolve, 10));
-        return { projects: ['github.com/x/y'], warnings: [], scannedAt: new Date().toISOString() };
+        return {
+          projects: ['github.com/x/y'],
+          warnings: [],
+          scannedAt: new Date().toISOString(),
+          cacheStatus: 'scanned',
+          staleReasons: [],
+          projectStatuses: [
+            {
+              project: 'github.com/x/y',
+              status: 'scanned',
+              reason: 'initial scan',
+            },
+          ],
+        };
       },
     } as unknown as SkillTrackedRepoDiscovery;
 
