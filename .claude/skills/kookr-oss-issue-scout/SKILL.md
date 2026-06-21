@@ -435,7 +435,13 @@ priority = clarity + size + acceptance + competition + match + verifiability
 
 ## Competition Check
 
-**PREFERRED EXECUTION PATH: use the `kookr-oss-issue-scout` subagent** (`.claude/agents/kookr-oss-issue-scout.md`). It runs the full scout flow in an isolated context, returns a **ready-to-claim top candidate** (with a draft claim comment and a one-shot `gh api` command), and guarantees the competition check cannot be forgotten or skipped. The subagent does NOT post the claim itself — the caller reviews the candidate and runs the `gh api` command verbatim. The PreToolUse `claim-gate` hook at `~/.claude/hooks/claim-gate.sh` re-runs all three competition queries on the caller's POST as a second line of defense, and also fires for manual claims that bypass the subagent.
+**PREFERRED EXECUTION PATH: use the `kookr-oss-issue-scout` subagent** (`.claude/agents/kookr-oss-issue-scout.md`). It runs the full scout flow in an isolated context, returns a **ready-to-claim top candidate** (with a draft claim comment and a one-shot `gh api` command), and guarantees the competition check cannot be forgotten or skipped. The subagent does NOT post the claim itself — the caller reviews the candidate and runs the `gh api` command verbatim.
+
+**Parse the subagent's trailing machine-readable JSON block — not the prose.** The subagent ends its reply with EXACTLY one fenced `json` result block (schema in its Step 9, "Machine-readable result block"). Read that block and branch on `decision`:
+- `decision == "claim"` → after reviewing the candidate, run the `claimCommand` field verbatim (equivalently `gh api … -F body=@<claimBodyFile>`); take `recommendedBranch` / `baseBranch` / `issueNumber` from the same block.
+- `decision == "abort"` → do not claim; surface `reason` / `candidatesEvaluated`.
+
+Do not scrape the `CLAIM COMMAND:` / `File:` lines out of the prose summary — those are for human review; the JSON block is the parse contract. The PreToolUse `claim-gate` hook at `~/.claude/hooks/claim-gate.sh` re-runs all three competition queries on the caller's POST as a second line of defense, and also fires for manual claims that bypass the subagent.
 
 The following is the canonical check for anyone running the scout workflow manually or auditing the subagent's behavior.
 

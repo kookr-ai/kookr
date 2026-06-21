@@ -369,7 +369,12 @@ curl -fsS -m 2 -X POST -H "Content-Type: application/json" \
 
 ### Step 9 — Return result
 
-Return a tight structured summary to the caller. Do not dump raw JSON. Target under 350 words. The return value MUST include both a draft claim comment body and a one-shot `gh api` command — that is the contract that lets the caller post the claim without re-doing any work.
+Return a tight human-readable summary to the caller, then end with EXACTLY one machine-readable
+JSON result block. Do not dump the raw scoring/recon internals as JSON; the human summary stays
+prose (target under 350 words). The trailing JSON block is the parse contract that lets the
+caller act without re-deriving anything from the prose — it MUST carry the draft claim comment
+file and a one-shot `gh api` command verbatim. The caller parses **only** this block to decide
+what to do (see "Machine-readable result block" below); the prose above it is for human review.
 
 **Success case:**
 ```
@@ -445,9 +450,44 @@ Next steps:
 
 Never return "here's the best one, please check competition yourself." You either return ONE top candidate that has cleared every gate, or you abort. Likewise, never return "here's one, but verification looks hard, please check if you can reproduce it" — that failure is exactly what Step 5.5 exists to prevent.
 
+#### Machine-readable result block (REQUIRED — this is the parse contract)
+
+After the human-readable summary above, end your reply with EXACTLY one fenced `json` block in
+one of the two shapes below. The caller parses **this block only** — it reads `decision` and, on
+`"claim"`, runs `claimCommand` verbatim (equivalently `gh api … -F body=@<claimBodyFile>`). Do
+not omit it, do not emit more than one, and keep field names exact. Paths and the command must be
+copy-paste runnable (no placeholders).
+
+**Claim decision:**
+```json
+{
+  "decision": "claim",
+  "repo": "n8n-io/n8n",
+  "issueNumber": 26450,
+  "issueUrl": "https://github.com/n8n-io/n8n/issues/26450",
+  "score": 28,
+  "scoreBreakdown": { "clarity": 5, "size": 5, "acceptance": 4, "competition": 5, "match": 5, "verifiability": 4 },
+  "recommendedBranch": "fix/26450-todoist-v9-sync-deprecated",
+  "baseBranch": "master",
+  "claimBodyFile": "/tmp/scout-claim-n8n-io-n8n-26450.md",
+  "claimCommand": "gh api repos/n8n-io/n8n/issues/26450/comments -X POST -F body=@/tmp/scout-claim-n8n-io-n8n-26450.md"
+}
+```
+
+**Abort decision:**
+```json
+{
+  "decision": "abort",
+  "repo": "n8n-io/n8n",
+  "candidatesEvaluated": 12,
+  "candidatesRemaining": 0,
+  "reason": "all candidates cleared on label/competition/assignment/reproducibility gates"
+}
+```
+
 ## Anti-patterns — do not do these
 
-- ❌ Posting the claim comment yourself — that's the caller's job; your output ends with the draft body and the gh command
+- ❌ Posting the claim comment yourself — that's the caller's job; your output ends with the machine-readable JSON result block (carrying the draft-body file and the `gh api` command), which the caller parses and runs
 - ❌ Using `/issues/N/timeline` for competition (the prior failure mode)
 - ❌ Scoring a candidate before running the label-based hard exclusion (Step 3.5)
 - ❌ Scoring a candidate before running the competition check
