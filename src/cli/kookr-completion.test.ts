@@ -100,7 +100,7 @@ describe('renderCompletion', () => {
   it('renders a bash completion with root commands, subcommands, and flags', () => {
     const script = renderCompletion('bash');
     expect(script).toContain('complete -F _kookr kookr');
-    expect(script).toContain('spawn signal status ralph drain resume maintenance push completion');
+    expect(script).toContain('spawn signal doctor status ralph drain resume maintenance push completion');
     expect(script).toContain('status pause resume cancel');
     expect(script).toContain('--prompt-file');
     expect(script).toContain('compgen -W "claude-code codex-cli"');
@@ -116,7 +116,7 @@ describe('renderCompletion', () => {
   it('renders a zsh completion with root commands, subcommands, and flags', () => {
     const script = renderCompletion('zsh');
     expect(script).toContain('#compdef kookr');
-    expect(script).toContain('root_commands=(spawn signal status ralph drain resume maintenance push completion)');
+    expect(script).toContain('root_commands=(spawn signal doctor status ralph drain resume maintenance push completion)');
     expect(script).toContain('compadd -- status pause resume cancel');
     expect(script).toContain('compadd claude-code codex-cli');
     expect(script).toContain('compadd none minimal low medium high xhigh max');
@@ -167,6 +167,10 @@ describe('bash completion behavior', () => {
     );
   });
 
+  it('completes doctor flags', async () => {
+    await expect(completeBash(['kookr', 'doctor', ''])).resolves.toEqual(['--json', '-h', '--help']);
+  });
+
   it('completes maintenance subcommands', async () => {
     await expect(completeBash(['kookr', 'maintenance', ''])).resolves.toEqual(['prune', 'backup']);
   });
@@ -203,6 +207,10 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
 
   it('completes completion shells', async () => {
     await expect(completeZsh(['kookr', 'completion', ''], 3)).resolves.toEqual(['bash', 'zsh']);
+  });
+
+  it('completes doctor flags', async () => {
+    await expect(completeZsh(['kookr', 'doctor', ''], 3)).resolves.toEqual(['--json', '-h', '--help']);
   });
 
   it('completes maintenance subcommands and verb-specific flags', async () => {

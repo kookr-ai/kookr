@@ -43,6 +43,10 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     flags: ['--note', '--task-id', '-h', '--help'],
   },
   {
+    name: 'doctor',
+    flags: ['--json', '-h', '--help'],
+  },
+  {
     name: 'status',
     flags: ['--json', '-h', '--help'],
   },
@@ -134,6 +138,7 @@ function renderBashCompletion(): string {
   const spawnFlags = flagsFor('spawn');
   const signalKinds = positionalValuesFor('signal');
   const signalFlags = flagsFor('signal');
+  const doctorFlags = flagsFor('doctor');
   const statusFlags = flagsFor('status');
   const ralphSubcommands = subcommandsFor('ralph');
   const ralphFlags = flagsFor('ralph');
@@ -203,6 +208,9 @@ _kookr()
     status)
       COMPREPLY=( $(compgen -W "${statusFlags}" -- "\${cur}") )
       ;;
+    doctor)
+      COMPREPLY=( $(compgen -W "${doctorFlags}" -- "\${cur}") )
+      ;;
     ralph)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
         COMPREPLY=( $(compgen -W "${ralphSubcommands} ${ralphFlags}" -- "\${cur}") )
@@ -261,6 +269,7 @@ function renderZshCompletion(): string {
   const spawnFlags = flagsFor('spawn');
   const signalKinds = positionalValuesFor('signal');
   const signalFlags = flagsFor('signal');
+  const doctorFlags = flagsFor('doctor');
   const statusFlags = flagsFor('status');
   const ralphSubcommands = subcommandsFor('ralph');
   const ralphFlags = flagsFor('ralph');
@@ -307,6 +316,9 @@ _kookr()
       ;;
     status)
       compadd -- ${statusFlags}
+      ;;
+    doctor)
+      compadd -- ${doctorFlags}
       ;;
     ralph)
       if (( CURRENT == 3 )); then
