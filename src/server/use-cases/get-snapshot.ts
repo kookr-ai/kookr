@@ -19,7 +19,7 @@ import { buildCoordinatorSnapshotState, type CoordinatorAuditTailProvider, type 
 import type { CoordinatorSuppressionReader } from '../coordinator/suppression-store.js';
 import { buildRelationProjection, deriveEffectiveAttentionSeverity } from './build-relation-projection.js';
 import type { TaskRelation } from '../../shared/contracts/task-relations.js';
-import type { PromptStatus } from '../../shared/terminal-input-contract.js';
+import type { PromptStatus } from '../../shared/contracts/terminal-input.js';
 import { buildSnapshotProjection } from './snapshot-projection.js';
 import {
   projectUserInputDeliveryForClient,

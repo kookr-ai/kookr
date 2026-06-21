@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
-import { buildPermissionRequestBinding } from '../../shared/contracts/permission-request-binding.js';
+import { buildPermissionRequestBinding } from '../permission-request-binding.js';
 import type { AgentState } from '../../shared/contracts/agent-state.js';
 import { createPermissionQuickActionsProcessor } from './permission-quick-actions-processor.js';
 

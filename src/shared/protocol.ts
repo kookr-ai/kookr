@@ -129,7 +129,7 @@ export type {
   EmptyEnterRejectReason,
   PromptStatus,
   TerminalInputSnapshot,
-} from './terminal-input-contract.js';
+} from './contracts/terminal-input.js';
 export type {
   RalphLoopStatus,
   RalphLoopState,

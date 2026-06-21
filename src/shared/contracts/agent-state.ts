@@ -17,7 +17,7 @@ import type { TaskStatus, TurnState } from './task-status.js';
 import type { TaskRelationRollup } from './task-relations.js';
 import type { TokenUsage } from './usage.js';
 import type { WorktreeHealth } from './session.js';
-import type { TerminalInputSnapshot } from '../terminal-input-contract.js';
+import type { TerminalInputSnapshot } from './terminal-input.js';
 import type { UserInputDeliverySnapshot } from './user-input-delivery.js';
 
 export interface AgentState {

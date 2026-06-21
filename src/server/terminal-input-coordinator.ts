@@ -8,7 +8,7 @@ import type {
   EmptyEnterDecision,
   EmptyEnterIntentRequest,
   PromptStatus,
-} from '../shared/terminal-input-contract.js';
+} from '../shared/contracts/terminal-input.js';
 
 interface TerminalInputState {
   sessionId: string;

@@ -22,7 +22,7 @@ import type {
   EmptyEnterIntentRequest,
   EmptyEnterDecision,
   EmptyEnterAdvanceDiagnostics,
-} from '../terminal-input-contract.js';
+} from './terminal-input.js';
 import type {
   WorkspaceView,
   CleanupResultSummary,
