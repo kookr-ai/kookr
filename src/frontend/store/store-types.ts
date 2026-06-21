@@ -25,6 +25,7 @@ import type {
   CoordinatorSnapshotState,
   DrainStatusSnapshot,
   LaunchDependency,
+  SkillDiscoveryStateSnapshot,
   TaskRelation,
 } from '../../shared/protocol.js';
 import type {
@@ -236,12 +237,7 @@ export interface TriageNavigationSlice {
 
 export type DetailPaneMode = 'split' | 'left' | 'right';
 
-export interface DiscoveryStatus {
-  projects: string[];
-  warnings: string[];
-  scannedAt?: string;
-  lastError?: string;
-}
+export type DiscoveryStatus = SkillDiscoveryStateSnapshot;
 
 export interface ProjectSidebarSlice {
   selectedProject: string | null;

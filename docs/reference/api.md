@@ -205,8 +205,8 @@ activity diagnostics and malformed/deduplicated counts, use
 | `GET /api/projects/contributions` | Contributions summary across projects |
 | `GET /api/projects/configs` | Per-project configuration |
 | `POST /api/projects/configs` | Update a project's configuration |
-| `GET /api/projects/discovery-status` | Background project-discovery progress |
-| `POST /api/projects/rescan-skills` | Re-scan tracked repos for `.claude/skills/` |
+| `GET /api/projects/discovery-status` | Background project-discovery progress, warnings, cache status, and per-project scan reasons |
+| `POST /api/projects/rescan-skills` | Re-scan skill-tracked repos, skipping unchanged recon manifests and returning per-project scan reasons |
 
 ## Playbooks And Schedules
 
