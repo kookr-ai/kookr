@@ -15,25 +15,40 @@ Before each tool call, ask: **"Do I already have this information in context?"**
 
 ## Patterns
 
-### 1. Don't re-read files after entering a worktree
+### 1. Delegate fan-out exploration by default
+
+For broad or read-heavy exploration, use an available exploration subagent by
+default. This includes multi-file searches, repo orientation, knowledge-base
+scouting, dependency tracing, and any task where the main value is the
+conclusion rather than the raw file dumps.
+
+Ask the subagent to return a compact summary with file paths, line references,
+and the smallest relevant excerpts. Keep the orchestrator's context for
+decisions, edits, and verification instead of filling it with exploratory read
+output.
+
+Stay direct for single known-file reads, targeted grep lookups, or edits where
+the orchestrator needs the exact nearby code.
+
+### 2. Don't re-read files after entering a worktree
 
 Worktrees clone HEAD. Files read before `EnterWorktree` are identical in the worktree. Use the content already in context instead of reading again.
 
-### 2. Prefer one Write over multiple Edits
+### 3. Prefer one Write over multiple Edits
 
 When rewriting more than ~50% of a file, a single `Write` is cheaper than multiple `Edit` calls. Each tool call has fixed overhead (request, response framing, permission check).
 
 **Rule of thumb:** If you need 4+ Edits to a file, consider a single Write instead.
 
-### 3. Run the full test suite directly
+### 4. Run the full test suite directly
 
 Don't run a single test file then the full suite. The full suite covers everything in one pass. Only run a single file when you need to iterate on a specific failing test.
 
-### 4. Don't duplicate glob patterns
+### 5. Don't duplicate glob patterns
 
 Use one brace pattern like `*.{test,spec}.ts` instead of separate overlapping globs (`*.test.ts` does not match `.spec.ts` files).
 
-### 5. Use Grep over Read for type lookups
+### 6. Use Grep over Read for type lookups
 
 When you only need one type definition from a large file, grep for it instead of reading the whole file. Grep returns just the matching lines.
 
@@ -45,29 +60,29 @@ Grep("interface TaskConfig", type: "ts")
 Read("src/core/types.ts")
 ```
 
-### 6. Parallelize independent tool calls
+### 7. Parallelize independent tool calls
 
 When you need to read multiple files or run multiple searches, issue them all in one message instead of sequentially. Independent reads, greps, and globs can all run concurrently.
 
-### 7. Batch known read sets up front
+### 8. Batch known read sets up front
 
 When a reflection, review, or analysis loop already knows it must inspect N
 specific files before reasoning, issue one batched read instead of N sequential
 reads. This is especially useful for "read N files -> analyze" loops, where the
 analysis cannot start until the whole known set is available.
 
-### 8. Don't re-read what you just wrote
+### 9. Don't re-read what you just wrote
 
 After a Write or Edit, you already know the file contents — you just specified them. Don't read the file to "verify" unless you suspect the tool failed.
 
-### 9. Batch git operations
+### 10. Batch git operations
 
 Instead of separate `git add`, `git status`, `git diff` calls, combine what you can:
 ```bash
 git add file1.ts file2.ts && git status
 ```
 
-### 10. Scope reads with offset/limit
+### 11. Scope reads with offset/limit
 
 For large files where you only need a specific section, use `offset` and `limit` parameters on Read instead of reading the entire file.
 
@@ -75,6 +90,7 @@ For large files where you only need a specific section, use `offset` and `limit`
 
 | Wasteful | Efficient |
 |----------|-----------|
+| Main agent reads many files to orient itself | Available exploration subagent returns concise findings with paths |
 | Read file → Edit 1 line → Read file again | Read file → Edit 1 line |
 | Glob `*.test.ts` + Glob `*.spec.ts` | Glob `*.{test,spec}.ts` |
 | Read 2000-line file for one type | Grep for the type name |
