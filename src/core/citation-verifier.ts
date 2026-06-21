@@ -77,6 +77,7 @@ export function verifyCitationClaims(claims: CitationClaim[], sourceRoot: string
 
     const raw = readFileSync(resolvedPath, 'utf8');
 
+    let quoteSource = raw;
     if (normalized.lineRange) {
       const lines = raw.split(/\r?\n/);
       const { start, end } = normalized.lineRange;
@@ -86,11 +87,13 @@ export function verifyCitationClaims(claims: CitationClaim[], sourceRoot: string
           'line_unresolvable',
           `Citation line range ${formatLineRange(normalized.lineRange)} is outside ${normalized.path} (${lines.length} line(s)).`,
         ));
+        continue;
       }
+      quoteSource = lines.slice(start - 1, end).join('\n');
     }
 
     if (normalized.quote && normalized.quote.trim().length > 0) {
-      if (!containsNormalizedQuote(raw, normalized.quote)) {
+      if (!containsNormalizedQuote(quoteSource, normalized.quote)) {
         failures.push(failure(normalized, 'quote_not_found', `Quoted citation text was not found in ${normalized.path}.`));
       }
     }

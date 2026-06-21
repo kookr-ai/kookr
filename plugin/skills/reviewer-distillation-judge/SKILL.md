@@ -53,6 +53,25 @@ For each agent finding not matched to a human comment:
 When in doubt between justified and plausible, choose plausible.
 When in doubt between plausible and wrong, choose plausible.
 
+### Step 4: Ground Evidence Citations
+
+For every specific human review comment or agent finding that affects your
+classification, match, or rating, cite the exact source lines you used.
+
+Use this machine-verifiable Markdown shape:
+
+```markdown
+Evidence: **reviews/pr-{N}.md#L12-L14**
+> exact quoted text copied from that file
+```
+
+Allowed citation paths are only the three input files under `{stateDir}`:
+`context/pr-{N}.md`, `predictions/pr-{N}.md`, and `reviews/pr-{N}.md`.
+Use repo-relative paths from `{stateDir}`, not absolute paths. Before writing
+the evaluation, inspect files with line numbers (for example, `nl -ba`) so the
+`#L` anchors are accurate. The blockquote must be copied exactly enough for the
+deterministic citation verifier to find it after whitespace normalization.
+
 ### Output
 
 Write your full evaluation with reasoning, then end with EXACTLY this
@@ -74,6 +93,35 @@ machine-readable JSON block (fill in real numbers):
 ```
 
 Write your evaluation to: {stateDir}/scores/pr-{N}-judge.md
+
+After writing the evaluation, run the citation gate before finishing:
+
+```bash
+if [ "${SKIP_CITATION_GATE:-}" = "true" ]; then
+  echo "SKIP_CITATION_GATE=true; citation gate skipped for pr-{N}."
+else
+  GATE_OUTPUT=$(node "${CLAUDE_SKILL_DIR}/scripts/verify-citations.mjs" \
+    --input "{stateDir}/scores/pr-{N}-judge.md" \
+    --source-root "{stateDir}" \
+    --format markdown \
+    --allow-prefix "context/pr-{N}.md" \
+    --allow-prefix "predictions/pr-{N}.md" \
+    --allow-prefix "reviews/pr-{N}.md" 2>&1)
+  GATE_STATUS=$?
+  printf '%s\n' "$GATE_OUTPUT"
+  if [ "$GATE_STATUS" -ne 0 ]; then
+    mkdir -p "{stateDir}/scores/rejected"
+    mv "{stateDir}/scores/pr-{N}-judge.md" \
+      "{stateDir}/scores/rejected/pr-{N}-judge-unverifiable.md"
+    echo "Citation gate rejected pr-{N}; moved output to scores/rejected so it is excluded from ranking."
+    exit 1
+  fi
+fi
+```
+
+Non-zero verifier exit means the judge output is unverifiable. Print the JSON
+verifier result in-session, move the output out of the normal score path, and
+exit non-zero so the orchestrator cannot rank it silently.
 
 Do NOT access GitHub or any external resources. Work only with provided files.
 ```
