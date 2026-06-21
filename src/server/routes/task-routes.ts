@@ -24,6 +24,11 @@ import { isSharedTaskId } from '../../shared/contracts/contact-share.js';
 import { CoordinatorSuppressionStore } from '../coordinator/suppression-store.js';
 import { promotePendingTasks } from '../agent-lifecycle.js';
 import type { TaskRouteDeps } from './shared.js';
+import {
+  DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
+  classifyCompletionReadyClosePolicy,
+  listStaleCompletionReadyTasks,
+} from '../../core/completion-ready-cleanup.js';
 
 const MAX_TASK_EDGE_COUNT = 64;
 const MAX_TASK_EDGE_LENGTH = 240;
@@ -82,6 +87,28 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     if (!deps.suppressionTracker) return c.json(tasks);
     const tracker = deps.suppressionTracker;
     return c.json(tasks.map((t) => withSuppressionFlag(t, tracker)));
+  });
+
+  app.get('/api/tasks/completion-ready/stale', (c) => {
+    const thresholdMs = parseThresholdMs(c.req.query('thresholdMs'));
+    if (thresholdMs instanceof Error) return c.json({ error: thresholdMs.message }, 400);
+
+    const generatedAt = new Date();
+    const tasks = listStaleCompletionReadyTasks(taskStore.listTasks(), { now: generatedAt, thresholdMs })
+      .map((entry) => ({
+        task: normalizeTaskForApi(entry.task),
+        signal: entry.signal,
+        ageMs: entry.ageMs,
+        canAutoClose: entry.canAutoClose,
+        ...(entry.manualActionRequiredReason ? { manualActionRequiredReason: entry.manualActionRequiredReason } : {}),
+      }));
+    return c.json({
+      schemaVersion: 'stale-completion-ready-tasks.v1',
+      generatedAt: generatedAt.toISOString(),
+      thresholdMs,
+      count: tasks.length,
+      tasks,
+    });
   });
 
   app.get('/api/tasks/:id', (c) => {
@@ -366,13 +393,16 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     taskStore.setPendingSignal(id, signal);
 
     // Auto-close opt-in (per-task `autoCloseOnSignal`, set at launch or inherited
-    // from the parent). A `completion_ready` signal completes the task immediately
-    // instead of waiting for manual review, freeing an active slot and promoting
-    // the next pending task. completeTask clears the pending signal it just set.
+    // from the parent). Explicit auto-close means a `completion_ready` signal
+    // completes the task immediately instead of waiting for manual review,
+    // freeing an active slot and promoting the next pending task. Without that
+    // opt-in, ask-first delivery tasks keep the signal surfaced for operator
+    // review. completeTask clears the pending signal it just set.
     // For an active Ralph loop this ends the current iteration (outcome
     // 'partial_ralph_completion'); the loop decides whether to continue.
     // See docs/reference/auto-close-on-signal.md.
-    if (body.kind === 'completion_ready' && task.autoCloseOnSignal === true) {
+    const closePolicy = classifyCompletionReadyClosePolicy(task);
+    if (body.kind === 'completion_ready' && closePolicy.canAutoClose) {
       try {
         const result = await lifecycleCommands.completeTask(id);
         broadcastSnapshotWithCoordinator();
@@ -399,7 +429,15 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     }
 
     broadcastSnapshotWithCoordinator();
-    return c.json({ ok: true, signal, truncated });
+    return c.json({
+      ok: true,
+      signal,
+      truncated,
+      ...(!closePolicy.canAutoClose ? {
+        autoClosed: false,
+        manualActionRequiredReason: closePolicy.manualActionRequiredReason,
+      } : {}),
+    });
   });
 
   app.get('/api/playbooks', async (c) => {
@@ -436,6 +474,14 @@ function truncateAtWordBoundary(text: string, maxLength: number): string {
     ? prefix.slice(0, boundaryMatch.index).trimEnd()
     : prefix;
   return `${wordBoundaryPrefix}${ellipsis}`;
+}
+
+function parseThresholdMs(raw: string | undefined): number | Error {
+  if (raw === undefined) return DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS;
+  if (!/^\d+$/.test(raw)) return new Error('thresholdMs must be a non-negative integer');
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) return new Error('thresholdMs must be a safe integer');
+  return value;
 }
 
 /**
