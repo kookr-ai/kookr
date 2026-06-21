@@ -318,6 +318,16 @@ export class HookIngestion implements HookEventInjector {
         result.origin = origin;
         this.cache.set(key, { ts: now, result, firstSource: existing.firstSource });
         this.bumpMeta(kookrSessionId, { duplicate: false, result });
+        this.writeLedger({
+          kookrSessionId,
+          contentHash,
+          source,
+          sequence: result.sequence ?? existing.result.sequence ?? 0,
+          rawBytes: normalized.length,
+          rawJson: normalized,
+          result,
+          projection: 'diagnostic_only',
+        });
         // Replay re-dispatch: recompute the correlation id from the ORIGINAL
         // sequence so the id is identical to the pre-restart dispatch.
         const eventId = mintEventId(kookrSessionId, result.sequence ?? existing.result.sequence ?? 0);
@@ -335,6 +345,7 @@ export class HookIngestion implements HookEventInjector {
         source,
         sequence: existing.result.sequence ?? 0,
         rawBytes: normalized.length,
+        rawJson: normalized,
         result: existing.result,
         projection: 'diagnostic_only',
       });
@@ -386,6 +397,7 @@ export class HookIngestion implements HookEventInjector {
         source,
         sequence,
         rawBytes: normalized.length,
+        rawJson: normalized,
         result: malformed,
         projection: 'diagnostic_only',
       });
@@ -426,6 +438,7 @@ export class HookIngestion implements HookEventInjector {
       source,
       sequence,
       rawBytes: normalized.length,
+      rawJson: normalized,
       result,
       projection: ledgerProjection(result),
     });
@@ -538,10 +551,23 @@ export class HookIngestion implements HookEventInjector {
   async hydrateFromLedger(
     kookrSessionId: string,
     ledger: ActivityLedger,
-  ): Promise<{ hydratedHashes: number; maxSequence: number }> {
+    options?: { replayLiveState?: boolean },
+  ): Promise<{ hydratedHashes: number; maxSequence: number; liveStateReplayed: boolean }> {
     const rows = await ledger.readAll(kookrSessionId);
     let maxSequence = 0;
     let hydratedHashes = 0;
+    let liveStateReplayed = false;
+    const rawBySequence = new Map<number, string>();
+    const primaryParsedRows: ActivityLedgerRow[] = [];
+    for (const row of rows) {
+      if (row.rawJson) rawBySequence.set(row.envelope.sequence, row.rawJson);
+      if (row.envelope.parseStatus === 'ok' && row.projection !== 'diagnostic_only') {
+        primaryParsedRows.push(row);
+      }
+    }
+    const canReplayLiveState = primaryParsedRows.length > 0 && primaryParsedRows.every(
+      (row) => rawBySequence.has(row.envelope.sequence),
+    );
     for (const row of rows) {
       const { envelope } = row;
       if (envelope.sequence > maxSequence) maxSequence = envelope.sequence;
@@ -588,7 +614,32 @@ export class HookIngestion implements HookEventInjector {
       const existing = this.sequenceCounters.get(kookrSessionId) ?? 0;
       if (maxSequence > existing) this.sequenceCounters.set(kookrSessionId, maxSequence);
     }
-    return { hydratedHashes, maxSequence };
+    if (options?.replayLiveState === true && canReplayLiveState) {
+      const origin = deriveEventOrigin(kookrSessionId);
+      let replayedAllRows = true;
+      for (const row of primaryParsedRows) {
+        const raw = rawBySequence.get(row.envelope.sequence);
+        if (!raw) continue;
+        const result = this.adapter.injectHookEvent(
+          kookrSessionId,
+          raw,
+          row.envelope.sequence,
+          { origin },
+        );
+        result.origin = origin;
+        if (result.parseStatus !== 'ok') {
+          replayedAllRows = false;
+        }
+        this.bumpMeta(kookrSessionId, { duplicate: false, result });
+        this.cache.set(`${kookrSessionId}::${row.envelope.contentHash}`, {
+          ts: this.now(),
+          result,
+          firstSource: row.envelope.source,
+        });
+      }
+      liveStateReplayed = replayedAllRows;
+    }
+    return { hydratedHashes, maxSequence, liveStateReplayed };
   }
 
   /** Forget per-session bookkeeping — called when a task / session is deleted. */
@@ -742,6 +793,7 @@ export class HookIngestion implements HookEventInjector {
     source: 'file' | 'http';
     sequence: number;
     rawBytes: number;
+    rawJson: string;
     result: InjectHookEventResult;
     projection: ActivityLedgerRow['projection'];
   }): void {
@@ -765,6 +817,7 @@ export class HookIngestion implements HookEventInjector {
     };
     const row: ActivityLedgerRow = {
       envelope,
+      rawJson: args.rawJson,
       projection: args.projection,
       ...(args.result.error ? { error: args.result.error } : {}),
     };

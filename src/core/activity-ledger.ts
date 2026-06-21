@@ -26,14 +26,15 @@ export interface HookEnvelopeV1 {
   contentHash: string;
   parentage: EventParentage;
   parseStatus: 'ok' | 'repaired' | 'malformed' | 'dropped';
-  /** Byte length of the raw payload — the raw bytes themselves are not
-   *  duplicated here. Operators correlate to the original
-   *  `~/.kookr/hooks/<session>.jsonl` line via contentHash if needed. */
+  /** Byte length of the raw payload. */
   rawBytes: number;
 }
 
 export interface ActivityLedgerRow {
   envelope: HookEnvelopeV1;
+  /** Trimmed raw hook payload. Present for rows written by versions that can
+   *  rebuild startup live state from the ledger before tailing the hook file. */
+  rawJson?: string;
   /** Normalized event when parsing succeeded; absent for malformed/dropped. */
   event?: AgentEvent;
   /** Where this row affected live state, or whether it was diagnostic-only. */

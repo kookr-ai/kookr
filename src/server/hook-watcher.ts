@@ -1,15 +1,39 @@
-import { watch, type FSWatcher, statSync } from 'node:fs';
+import {
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  watch,
+  writeFileSync,
+  type FSWatcher,
+} from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { HookEventInjector } from './hook-ingestion.js';
 import { splitHookRecords } from './hook-record-framing.js';
 
 /** Default poll interval for the backup polling mechanism (ms). */
 const DEFAULT_POLL_INTERVAL_MS = 3_000;
+const REPLAY_CHECKPOINT_TAIL_CHARS = 4_096;
 
 interface WatchOptions {
   replayExisting?: boolean;
   suppressParseAlertsForExisting?: boolean;
+  useReplayCheckpoint?: boolean;
+}
+
+interface HookReplayCheckpointFile {
+  schemaVersion: 'hook-replay-checkpoints.v1';
+  sessions: Record<string, HookReplayCheckpoint>;
+}
+
+interface HookReplayCheckpoint {
+  filePath: string;
+  dev: number;
+  ino: number;
+  sizeBytes: number;
+  offsetChars: number;
+  offsetTail: string;
 }
 
 export type HookWatcherMode = 'fs_watch' | 'poll_until_exists' | 'poll_fallback';
@@ -94,14 +118,18 @@ export class HookFileWatcher {
   private healthBySession = new Map<string, MutableHookWatcherSessionHealth>();
   private pollIntervalMs: number;
   private adapter: HookEventInjector;
+  private replayCheckpointPath: string | null;
+  private replayCheckpoints: HookReplayCheckpointFile;
 
   constructor(
     private hooksDir: string,
     adapter: HookEventInjector,
-    options?: { pollIntervalMs?: number },
+    options?: { pollIntervalMs?: number; replayCheckpointPath?: string },
   ) {
     this.pollIntervalMs = options?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.adapter = adapter;
+    this.replayCheckpointPath = options?.replayCheckpointPath ?? null;
+    this.replayCheckpoints = this.loadReplayCheckpoints();
   }
 
   /** Start watching a hook file for a tmux session.
@@ -114,9 +142,13 @@ export class HookFileWatcher {
     const replay = options?.replayExisting ?? false;
     this.getOrCreateHealth(tmuxName).replayExisting = replay;
 
-    // Initialize offset: 0 to replay existing events, or file size to skip them
+    // Initialize offset: either resume a verified startup replay checkpoint,
+    // replay existing events from zero, or seek to file size for tail-only mode.
     if (replay) {
-      this.offsets.set(tmuxName, 0);
+      this.offsets.set(
+        tmuxName,
+        options?.useReplayCheckpoint === true ? this.resolveReplayOffset(tmuxName, filePath) : 0,
+      );
     } else {
       try {
         const stats = statSync(filePath);
@@ -159,7 +191,7 @@ export class HookFileWatcher {
       // Without forcing replay on the retry, that line would be skipped
       // (offset = stats.size), leaving SessionInfo.claudeSessionId null
       // forever and silently breaking the Ralph cycler's Stop acceptance.
-      this.pollUntilExists(tmuxName, filePath, { replayExisting: replay });
+      this.pollUntilExists(tmuxName, filePath, options);
     }
   }
 
@@ -298,8 +330,6 @@ export class HookFileWatcher {
         health.replayRecordCount += records.filter((line) => line.trim()).length;
       }
 
-      if (records.length === 0) return;
-
       for (const line of records) {
         if (!line.trim()) continue;
         try {
@@ -311,6 +341,10 @@ export class HookFileWatcher {
           this.recordHealthError(tmuxName, err);
           console.error(`Error parsing hook event for ${tmuxName}:`, err);
         }
+      }
+
+      if (options?.replay === true) {
+        await this.writeReplayCheckpoint(tmuxName, filePath, content);
       }
     } catch (err) {
       this.recordHealthError(tmuxName, err);
@@ -451,6 +485,82 @@ export class HookFileWatcher {
   private recordHealthError(tmuxName: string, err: unknown): void {
     this.getOrCreateHealth(tmuxName).lastError = err instanceof Error ? err.message : String(err);
   }
+
+  private loadReplayCheckpoints(): HookReplayCheckpointFile {
+    if (!this.replayCheckpointPath) {
+      return { schemaVersion: 'hook-replay-checkpoints.v1', sessions: {} };
+    }
+    try {
+      const parsed = JSON.parse(readFileSync(this.replayCheckpointPath, 'utf-8')) as unknown;
+      if (!isReplayCheckpointEnvelope(parsed)) {
+        return { schemaVersion: 'hook-replay-checkpoints.v1', sessions: {} };
+      }
+      return parsed;
+    } catch {
+      // Missing/corrupt checkpoint state is intentionally non-fatal: startup
+      // replay falls back to offset zero and rewrites a fresh checkpoint.
+      return { schemaVersion: 'hook-replay-checkpoints.v1', sessions: {} };
+    }
+  }
+
+  private resolveReplayOffset(tmuxName: string, filePath: string): number {
+    const checkpoint = this.replayCheckpoints.sessions[tmuxName];
+    if (!checkpoint || checkpoint.filePath !== filePath) return 0;
+    if (typeof checkpoint.offsetTail !== 'string') return 0;
+
+    try {
+      const stats = statSync(filePath);
+      if (stats.dev !== checkpoint.dev || stats.ino !== checkpoint.ino) return 0;
+      if (stats.size < checkpoint.sizeBytes) return 0;
+      const content = readFileSync(filePath, 'utf-8');
+      if (checkpoint.offsetChars > content.length) return 0;
+      const actualTail = content.slice(
+        Math.max(0, checkpoint.offsetChars - checkpoint.offsetTail.length),
+        checkpoint.offsetChars,
+      );
+      if (actualTail !== checkpoint.offsetTail) return 0;
+      return checkpoint.offsetChars;
+    } catch {
+      return 0;
+    }
+  }
+
+  private async writeReplayCheckpoint(
+    tmuxName: string,
+    filePath: string,
+    content: string,
+  ): Promise<void> {
+    if (!this.replayCheckpointPath) return;
+
+    try {
+      const stats = await stat(filePath);
+      const offset = this.offsets.get(tmuxName) ?? 0;
+      const offsetTailStart = Math.max(0, offset - REPLAY_CHECKPOINT_TAIL_CHARS);
+      this.replayCheckpoints.sessions[tmuxName] = {
+        filePath,
+        dev: stats.dev,
+        ino: stats.ino,
+        sizeBytes: stats.size,
+        offsetChars: offset,
+        offsetTail: content.slice(offsetTailStart, offset),
+      };
+      mkdirSync(dirname(this.replayCheckpointPath), { recursive: true });
+      const tmpPath = `${this.replayCheckpointPath}.tmp`;
+      writeFileSync(tmpPath, `${JSON.stringify(this.replayCheckpoints, null, 2)}\n`, 'utf-8');
+      renameSync(tmpPath, this.replayCheckpointPath);
+    } catch (err) {
+      this.recordHealthError(tmuxName, err);
+      console.warn(`[hook-watcher] failed to write replay checkpoint for ${tmuxName}:`, err);
+    }
+  }
+}
+
+function isReplayCheckpointEnvelope(value: unknown): value is HookReplayCheckpointFile {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as { schemaVersion?: unknown; sessions?: unknown };
+  if (candidate.schemaVersion !== 'hook-replay-checkpoints.v1') return false;
+  if (!candidate.sessions || typeof candidate.sessions !== 'object') return false;
+  return true;
 }
 
 function pushBounded(samples: number[], value: number, limit: number): void {

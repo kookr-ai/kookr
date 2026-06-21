@@ -578,7 +578,7 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
     return mkdtempSync(join(tmpdir(), 'kookr-ingest-hydrate-'));
   }
 
-  it('replays hydrated records into live state without writing duplicate ledger rows', async () => {
+  it('replays hydrated records into live state and backfills raw rows for future checkpoint resumes', async () => {
     const dir = makeDir();
     try {
       const ledger = new ActivityLedger(dir);
@@ -594,16 +594,22 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
       const hydrated = await ingestion.hydrateFromLedger('kookr-1', ledger);
       expect(hydrated.hydratedHashes).toBe(1);
       expect(hydrated.maxSequence).toBe(1);
+      expect(hydrated.liveStateReplayed).toBe(false);
 
       const initialRowCount = (await ledger.readAll('kookr-1')).length;
 
-      // Simulate file-replay arriving with the same payload. It must rebuild
-      // in-memory monitor/watchdog state after restart, but must not append a
-      // duplicate diagnostic ledger row.
+      // Simulate file-replay arriving with the same payload. It rebuilds
+      // in-memory monitor/watchdog state after restart and backfills the raw
+      // payload so a later checkpoint hit can replay live state from ledger.
       const result = ingestion.injectHookEvent('kookr-1', raw);
       expect(result.parseStatus).toBe('ok');
       expect(adapter.calls).toHaveLength(1);
-      expect(await ledger.readAll('kookr-1')).toHaveLength(initialRowCount);
+      const rows = await ledger.readAll('kookr-1');
+      expect(rows).toHaveLength(initialRowCount + 1);
+      expect(rows[1]).toEqual(expect.objectContaining({
+        rawJson: raw,
+        projection: 'diagnostic_only',
+      }));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -669,12 +675,13 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
       const hydrated = await ingestion.hydrateFromLedger('kookr-1', ledger);
       // Only the parent_activity row seeds — the malformed row does not.
       expect(hydrated.hydratedHashes).toBe(1);
+      expect(hydrated.liveStateReplayed).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('a post-restart replay does not advance the sequence counter or write phantom diagnostic rows', async () => {
+  it('a post-restart replay does not advance the sequence counter while backfilling raw replay rows', async () => {
     const dir = makeDir();
     try {
       const ledger = new ActivityLedger(dir);
@@ -690,16 +697,15 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
       const ingestion = new HookIngestion({ adapter, activityLedger: ledger, dedupTtlMs: 5000 });
       await ingestion.hydrateFromLedger('kookr-1', ledger);
 
-      // File-watcher replay arrives. It rebuilds live state, but must NOT
-      // bump the sequence counter (otherwise the next REAL event jumps to 9
-      // instead of 8) and must NOT write a diagnostic-only ledger row
-      // (otherwise stats inflates by N on every restart).
+      // File-watcher replay arrives. It rebuilds live state and backfills raw
+      // payload, but must NOT bump the sequence counter (otherwise the next
+      // REAL event jumps to 9 instead of 8).
       const result = ingestion.injectHookEvent('kookr-1', raw);
       expect(result.parseStatus).toBe('ok');
       expect(adapter.calls).toHaveLength(1);
 
       const afterRowCount = (await ledger.readAll('kookr-1')).length;
-      expect(afterRowCount).toBe(initialRowCount); // no phantom diagnostic row
+      expect(afterRowCount).toBe(initialRowCount + 1);
 
       // The next fresh event takes sequence 8, not 9.
       const adapterWithSeq: HookEventInjector & { lastSeq?: number } = {
@@ -709,8 +715,8 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
         },
       };
       const ingestion2 = new HookIngestion({ adapter: adapterWithSeq, activityLedger: ledger });
-      await ingestion2.hydrateFromLedger('kookr-1', ledger);
-      ingestion2.injectHookEvent('kookr-1', raw);                // replay hit — counter stays
+      const hydration = await ingestion2.hydrateFromLedger('kookr-1', ledger, { replayLiveState: true });
+      expect(hydration.liveStateReplayed).toBe(true);
       ingestion2.injectHookEvent('kookr-1', JSON.stringify({ n: 'fresh' })); // new record
       expect(adapterWithSeq.lastSeq).toBe(8);
     } finally {
@@ -747,6 +753,93 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
       // The hydrated entry was NOT swept by gcExpired; replay still uses the
       // original sequence and dispatches once into live state.
       expect(adapter.calls).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('replays live state directly from ledger rows that carry raw payloads', async () => {
+    const dir = makeDir();
+    try {
+      const ledger = new ActivityLedger(dir);
+      const raw = JSON.stringify({ session_id: 'parent-1', hook_event_name: 'SessionStart' });
+      const { createHash } = await import('node:crypto');
+      const contentHash = createHash('sha256').update(raw.trim()).digest('hex');
+      await ledger.append({
+        ...envelopeRow({ sequence: 4, contentHash, rawSessionId: 'parent-1' }),
+        rawJson: raw,
+      });
+      await ledger.flush();
+
+      const adapter = makeStubAdapter();
+      const ingestion = new HookIngestion({ adapter, activityLedger: ledger });
+      const hydrated = await ingestion.hydrateFromLedger('kookr-1', ledger, { replayLiveState: true });
+
+      expect(hydrated).toEqual(expect.objectContaining({
+        hydratedHashes: 1,
+        maxSequence: 4,
+        liveStateReplayed: true,
+      }));
+      expect(adapter.calls).toEqual([{ tmux: 'kookr-1', raw }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not report live-state replay for an empty ledger', async () => {
+    const dir = makeDir();
+    try {
+      const ledger = new ActivityLedger(dir);
+      const adapter = makeStubAdapter();
+      const ingestion = new HookIngestion({ adapter, activityLedger: ledger });
+
+      const hydrated = await ingestion.hydrateFromLedger('kookr-1', ledger, { replayLiveState: true });
+
+      expect(hydrated).toEqual({
+        hydratedHashes: 0,
+        maxSequence: 0,
+        liveStateReplayed: false,
+      });
+      expect(adapter.calls).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not report live-state replay when a raw ledger row fails to parse on replay', async () => {
+    const dir = makeDir();
+    try {
+      const ledger = new ActivityLedger(dir);
+      const raw = JSON.stringify({ session_id: 'parent-1', hook_event_name: 'SessionStart' });
+      const { createHash } = await import('node:crypto');
+      const contentHash = createHash('sha256').update(raw.trim()).digest('hex');
+      await ledger.append({
+        ...envelopeRow({ sequence: 4, contentHash, rawSessionId: 'parent-1' }),
+        rawJson: raw,
+      });
+      await ledger.flush();
+
+      const adapter: HookEventInjector & { calls: string[] } = {
+        calls: [],
+        injectHookEvent(_tmux, replayedRaw, sequence) {
+          adapter.calls.push(replayedRaw);
+          return {
+            parseStatus: 'malformed',
+            agentType: 'claude-code',
+            error: 'no longer parses',
+            sequence,
+          };
+        },
+      };
+      const ingestion = new HookIngestion({ adapter, activityLedger: ledger });
+      const hydrated = await ingestion.hydrateFromLedger('kookr-1', ledger, { replayLiveState: true });
+
+      expect(hydrated).toEqual(expect.objectContaining({
+        hydratedHashes: 1,
+        maxSequence: 4,
+        liveStateReplayed: false,
+      }));
+      expect(adapter.calls).toEqual([raw]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
