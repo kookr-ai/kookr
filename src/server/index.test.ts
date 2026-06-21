@@ -238,6 +238,41 @@ describe('createKookrServer', () => {
   });
 
   describe('HTTP API', () => {
+    test('POST /api/hook-event routes malformed records through hook runtime diagnostics', async () => {
+      const sessionId = 'hook-runtime-malformed';
+      const res = await fetch(`${baseUrl}/api/hook-event/${sessionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{bad json',
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'received', dispatched: false });
+      expect(server.queue.getActiveAnomaly(sessionId)).toMatchObject({
+        agentId: sessionId,
+        type: 'hook_parse_degraded',
+        severity: 'warning',
+      });
+
+      const ledgerPath = join(tempDir, 'activity', `${sessionId}.jsonl`);
+      await waitForCondition(() => {
+        try {
+          return readFileSync(ledgerPath, 'utf-8').includes('"parseStatus":"malformed"');
+        } catch {
+          return false;
+        }
+      });
+      const [line] = readFileSync(ledgerPath, 'utf-8').trim().split('\n');
+      expect(JSON.parse(line!)).toMatchObject({
+        envelope: {
+          kookrSessionId: sessionId,
+          source: 'http',
+          parseStatus: 'malformed',
+        },
+        projection: 'diagnostic_only',
+      });
+    });
+
     test('env-configured webhook observer posts findings and clears dedupe on resolution', async () => {
       await server.close();
       serverClosed = true;

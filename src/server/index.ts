@@ -9,9 +9,6 @@ import type { ServerMessage, SnapshotMessage } from '../shared/contracts/message
 import type { Scope } from './viewer-data-policy.js';
 import { createTerminalScopeChecker } from './terminal-scope.js';
 import { ContactShareReadModel } from '../core/contact-share.js';
-import { HookFileWatcher } from './hook-watcher.js';
-import { HookIngestion } from './hook-ingestion.js';
-import { ActivityLedger } from '../core/activity-ledger.js';
 import { generateTaskName } from '../core/task-naming.js';
 import type { BackendError, TerminalBackend } from '../adapters/terminal-backend.js';
 import { wireEventPipeline } from './event-pipeline.js';
@@ -45,7 +42,6 @@ import {
 import { createOperationalAlertEvaluator } from './operational-alert-rules.js';
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
 import { TaskStateSaveScheduler } from './task-state-save-scheduler.js';
-import { createHookParseDegradationEvaluator } from './hook-parse-degradation-rules.js';
 import {
   getOperationalAlertConfig,
   resetOperationalAlertConfig,
@@ -68,6 +64,7 @@ import { createContributionWorkspaceServices } from './bootstrap/create-contribu
 import { createAgentRuntime } from './bootstrap/create-agent-runtime.js';
 import { createCoreStores } from './bootstrap/create-core-stores.js';
 import { createGitHubRuntime } from './bootstrap/create-github-runtime.js';
+import { createHookRuntime } from './bootstrap/create-hook-runtime.js';
 import { createOssServices, createOssSourceWatchers } from './bootstrap/create-oss-services.js';
 import { createRealtimeServices, DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS } from './bootstrap/create-realtime-services.js';
 import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
@@ -588,25 +585,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }
   }
 
-  // Hook watcher created here but resumed-session replay is deferred to after crash recovery,
-  // so relaunched sessions have their new tmux names before snooze restore + hook replay.
-  // HookIngestion serializes file-source and http-source delivery through a
-  // content-hash dedup window so the same record never reaches the adapter
-  // twice. The ActivityLedger captures a durable per-session ledger row for
-  // every observed record — parent, child, malformed, duplicate — under
-  // <kookrDir>/activity/ for /api/tasks/:taskId/activity-diagnostics.
-  // See rfc-activity-log-reliability §5, §7.
-  const activityLedger = new ActivityLedger(join(kookrDir, 'activity'));
-  const hookParseDegradationEvaluator = createHookParseDegradationEvaluator();
-  let hookIngestion: HookIngestion;
-  hookIngestion = new HookIngestion({
+  const { activityLedger, hookIngestion, hookWatcher } = createHookRuntime({
+    kookrDir,
+    hooksDir,
     adapter,
     httpPushTracker,
-    activityLedger,
     taskStore,
-    onParseDegradation: (event) => {
-      const evaluation = hookParseDegradationEvaluator.evaluate(event);
-      if (!evaluation) return;
+    onParseDegradation: ({ event, evaluation, hookIngestion }) => {
       queue.enqueue(event.kookrSessionId, evaluation.anomaly);
       broadcastToAll(evaluation.alert);
       broadcastToAll(createSnapshotMessage({
@@ -624,7 +609,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
   });
   realtime.setCoordinatorAuditTailProvider(hookIngestion);
-  const hookWatcher = new HookFileWatcher(hooksDir, hookIngestion);
 
   // Register transcripts for resumed sessions so token tracker picks up existing data
   for (const task of taskStore.getAllTasks()) {
