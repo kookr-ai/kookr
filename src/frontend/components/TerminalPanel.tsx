@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Terminal } from '@xterm/xterm';
+import { Terminal, type ILink } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon, type ISearchOptions, type ISearchResultChangeEvent } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -14,6 +14,8 @@ interface Props {
   tmuxName: string | null;
   visible: boolean;
   onEmptySubmit?: () => void;
+  /** Click handler for a viewable file path detected in terminal output. */
+  onOpenFile?: (path: string) => void;
 }
 
 interface MenuState {
@@ -26,6 +28,12 @@ interface JumpLatestState {
   visible: boolean;
   lines: number;
 }
+
+// Matches file paths ending in a viewable extension, for click-to-view in the
+// right pane. Requires a path prefix (/, ./, ../, ~/) to keep false positives
+// out of ordinary prose. Absolute paths resolve cleanly server-side; relative
+// ones are best-effort against the server cwd.
+const VIEWABLE_FILE_RE = /(?:\.{0,2}\/|~\/)[\w./@+-]*\.(?:md|markdown|html?|png|jpe?g|gif|webp|svg)\b/gi;
 
 const SEARCH_OPTIONS: ISearchOptions = {
   decorations: {
@@ -183,7 +191,7 @@ function shouldHandleEmptyTerminalEnter(
   return true;
 }
 
-export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
+export function TerminalPanel({ tmuxName, visible, onEmptySubmit, onOpenFile }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -193,6 +201,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
   const currentTmuxRef = useRef<string | null>(null);
   const terminalInputDraftRef = useRef('');
   const onEmptySubmitRef = useRef(onEmptySubmit);
+  const onOpenFileRef = useRef(onOpenFile);
   const searchOpenRef = useRef(false);
   const visibleRef = useRef(visible);
   const lastSafePasteAtRef = useRef(0);
@@ -305,6 +314,10 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
   }, [onEmptySubmit]);
 
   useEffect(() => {
+    onOpenFileRef.current = onOpenFile;
+  }, [onOpenFile]);
+
+  useEffect(() => {
     visibleRef.current = visible;
     registerVisibleTerminalSend();
     if (visible) return;
@@ -373,6 +386,39 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);
     terminal.loadAddon(new WebLinksAddon());
+
+    // Make viewable file paths in terminal output clickable -> open the file
+    // viewer pane. WebLinksAddon (above) still owns http(s) URLs; this only adds
+    // local file paths. Single-row matches only (no wrapped-line stitching).
+    const fileLinkDisposable = terminal.registerLinkProvider({
+      provideLinks(y, callback) {
+        if (!onOpenFileRef.current) {
+          callback(undefined);
+          return;
+        }
+        const line = terminal.buffer.active.getLine(y - 1);
+        if (!line) {
+          callback(undefined);
+          return;
+        }
+        const text = line.translateToString(true);
+        const links: ILink[] = [];
+        VIEWABLE_FILE_RE.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = VIEWABLE_FILE_RE.exec(text)) !== null) {
+          const matched = m[0];
+          const startX = m.index;
+          links.push({
+            text: matched,
+            // xterm ranges are 1-based and inclusive on both ends.
+            range: { start: { x: startX + 1, y }, end: { x: startX + matched.length, y } },
+            activate: (_e, t) => onOpenFileRef.current?.(t),
+          });
+          if (VIEWABLE_FILE_RE.lastIndex === m.index) VIEWABLE_FILE_RE.lastIndex++;
+        }
+        callback(links.length > 0 ? links : undefined);
+      },
+    });
 
     // Let Alt+key combinations bubble to the global shortcut handler
     // instead of being swallowed by xterm.js
@@ -534,6 +580,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
       searchResultDisposable.dispose();
       scrollDisposable.dispose();
       clearJumpLatestTimer();
+      fileLinkDisposable.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;

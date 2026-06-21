@@ -13,6 +13,7 @@ import { registerSettingsRoutes } from './routes/settings-routes.js';
 import { registerTaskRoutes } from './routes/task-routes.js';
 import { registerCoordinatorRoutes } from './routes/coordinator-routes.js';
 import { registerAgentRoutes } from './routes/agent-routes.js';
+import { registerFileRoutes } from './routes/file-routes.js';
 import { registerCostComparisonRoutes } from './routes/cost-comparison-routes.js';
 import { registerOutcomeLedgerRoutes } from './routes/outcome-ledger-routes.js';
 import { registerTaskRelationsRoutes } from './routes/task-relations-routes.js';
@@ -109,6 +110,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerTaskRoutes(app, sharedDeps);
   registerCoordinatorRoutes(app, sharedDeps);
   registerAgentRoutes(app, sharedDeps);
+  registerFileRoutes(app, sharedDeps);
   registerTaskRelationsRoutes(app, sharedDeps);
   registerCostComparisonRoutes(app, sharedDeps);
   registerOutcomeLedgerRoutes(app, sharedDeps);

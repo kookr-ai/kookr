@@ -39,6 +39,7 @@ const GitHubPanel = lazy(() => import('./GitHubPanel.js').then((m) => ({ default
 const ActivityPanel = lazy(() => import('./ActivityPanel.js').then((m) => ({ default: pickLazyExport<typeof m.ActivityPanel>(m, 'ActivityPanel') })));
 const DiffPane = lazy(() => import('./DiffPane.js').then((m) => ({ default: pickLazyExport<typeof m.DiffPane>(m, 'DiffPane') })));
 const EvolutionPanel = lazy(() => import('./EvolutionPanel.js').then((m) => ({ default: pickLazyExport<typeof m.EvolutionPanel>(m, 'EvolutionPanel') })));
+const FileViewerPane = lazy(() => import('./FileViewerPane.js').then((m) => ({ default: pickLazyExport<typeof m.FileViewerPane>(m, 'FileViewerPane') })));
 const EffectiveHookSettingsModal = lazy(() => import('./EffectiveHookSettingsModal.js').then((m) => ({ default: pickLazyExport<typeof m.EffectiveHookSettingsModal>(m, 'EffectiveHookSettingsModal') })));
 const NARROW_DETAIL_BREAKPOINT_PX = 1200;
 /** Max auto-grow height of the reply textarea (~6 rows incl. padding). */
@@ -319,13 +320,18 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
   const serverStartedAt = useKookrStore((s) => s.serverStartedAt);
   const replyDraftScope = { taskId: agent?.taskId, agentId: agent?.agentId };
 
-  // Right-pane mode for the Activity+Terminal|Diff split.
-  const [rightPane, setRightPane] = useState<'terminal' | 'diff'>('terminal');
+  // Right-pane mode for the Activity+Terminal|Diff|File split.
+  const [rightPane, setRightPane] = useState<'terminal' | 'diff' | 'file'>('terminal');
   const [activeDiff, setActiveDiff] = useState<
     { agentId: string; toolUseId: string; filePath: string; openedAt: string | null } | null
   >(null);
+  const [activeFile, setActiveFile] = useState<
+    { filePath: string; openedAt: string | null } | null
+  >(null);
   // Element that had focus when the diff opened — restored on close for a11y.
   const diffTriggerRef = useRef<HTMLElement | null>(null);
+  // Same for the file viewer pane.
+  const fileTriggerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     function updateViewportMode() {
@@ -418,12 +424,14 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
     };
   }, [agent?.taskId]);
 
-  // Clear diff state when the selected agent changes. Avoids showing stale diff
-  // content bound to a different agent's toolUseId.
+  // Clear diff/file state when the selected agent changes. Avoids showing stale
+  // content bound to a different agent's toolUseId or worktree.
   useEffect(() => {
     setActiveDiff(null);
+    setActiveFile(null);
     setRightPane('terminal');
     diffTriggerRef.current = null;
+    fileTriggerRef.current = null;
   }, [agent?.agentId]);
 
   function handleOpenDiff(target: DiffClickTarget) {
@@ -440,6 +448,22 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
     setRightPane('diff');
   }
 
+  function handleOpenFile(filePath: string) {
+    if (!agent) return;
+    const active = document.activeElement;
+    fileTriggerRef.current = active instanceof HTMLElement ? active : null;
+    setActiveFile({ filePath, openedAt: serverStartedAt });
+    setRightPane('file');
+  }
+
+  function handleCloseFile() {
+    setRightPane('terminal');
+    const trigger = fileTriggerRef.current;
+    if (trigger && document.body.contains(trigger)) {
+      trigger.focus();
+    }
+  }
+
   function handleCloseDiff() {
     setRightPane('terminal');
     // Restore focus to the triggering element if it's still in the DOM.
@@ -450,22 +474,25 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
     }
   }
 
-  // While the Diff pane is active, intercept Escape at capture phase so it
-  // closes the diff (our intent) instead of reaching the window-level handler
-  // in App.tsx that would deselect the agent. When the diff is hidden,
+  // While the Diff or File pane is active, intercept Escape at capture phase so
+  // it closes that pane (our intent) instead of reaching the window-level
+  // handler in App.tsx that would deselect the agent. When neither is shown,
   // Escape reverts to its normal global behavior.
   //
-  // Route through handleCloseDiff so focus restoration (diffTriggerRef) runs
-  // for keyboard dismissals the same way it does for the close button.
+  // Route through the matching close handler so focus restoration runs for
+  // keyboard dismissals the same way it does for the close button.
   const handleCloseDiffRef = useRef(handleCloseDiff);
   handleCloseDiffRef.current = handleCloseDiff;
+  const handleCloseFileRef = useRef(handleCloseFile);
+  handleCloseFileRef.current = handleCloseFile;
   useEffect(() => {
-    if (rightPane !== 'diff') return;
+    if (rightPane !== 'diff' && rightPane !== 'file') return;
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape' && !e.ctrlKey && !e.altKey && !e.metaKey) {
         e.preventDefault();
         e.stopPropagation();
-        handleCloseDiffRef.current();
+        if (rightPane === 'file') handleCloseFileRef.current();
+        else handleCloseDiffRef.current();
       }
     }
     window.addEventListener('keydown', handleKeyDown, true);
@@ -1144,6 +1171,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
                         tmuxName={agent.agentId}
                         visible={terminalVisible}
                         onEmptySubmit={handleEmptyEnterAdvance}
+                        onOpenFile={handleOpenFile}
                       />
                     </Suspense>
                   </div>
@@ -1159,6 +1187,20 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
                           filePath={activeDiff.filePath}
                           openedAt={activeDiff.openedAt}
                           onClose={handleCloseDiff}
+                        />
+                      </Suspense>
+                    </div>
+                  )}
+                  {activeFile && (
+                    <div
+                      className="right-pane-slot right-pane-slot-file"
+                      style={{ display: rightPane === 'file' ? 'flex' : 'none' }}
+                    >
+                      <Suspense fallback={null}>
+                        <FileViewerPane
+                          filePath={activeFile.filePath}
+                          openedAt={activeFile.openedAt}
+                          onClose={handleCloseFile}
                         />
                       </Suspense>
                     </div>

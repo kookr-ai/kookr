@@ -10375,6 +10375,108 @@ button.act-tool-entry:focus-visible {
   background: rgba(52, 211, 153, 0.18);
   color: var(--green, #34d399);
 }
+
+/* File viewer pane — shares the diff-pane shell, differs in body rendering. */
+.file-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  outline: none;
+  background: var(--bg-panel);
+}
+.file-pane:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: -2px;
+}
+.file-pane-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-dim);
+  flex-shrink: 0;
+}
+.file-pane-path {
+  flex: 1;
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-pane-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 8px;
+  border-radius: 3px;
+}
+.file-pane-close:hover {
+  color: var(--text);
+  background: var(--bg-dim, rgba(255, 255, 255, 0.06));
+}
+.file-pane-close:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+}
+.file-pane-body {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.file-pane-loading,
+.file-pane-error,
+.file-pane-download {
+  padding: 12px;
+  color: var(--text-muted);
+}
+.file-pane-error {
+  color: var(--text-secondary);
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.25);
+  border-radius: 4px;
+  margin: 8px;
+}
+.file-pane-md {
+  padding: 12px 16px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+}
+.file-pane-code {
+  margin: 0;
+  padding: 8px 12px;
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  color: var(--text);
+}
+.file-pane-frame {
+  flex: 1;
+  width: 100%;
+  border: none;
+  background: #fff;
+}
+.file-pane-img {
+  max-width: 100%;
+  height: auto;
+  margin: 12px auto;
+  display: block;
+}
+.file-pane-truncated {
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 .diff-hunk {
   margin-bottom: 10px;
 }

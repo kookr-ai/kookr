@@ -48,6 +48,7 @@ vi.mock('@xterm/xterm', () => {
     write = vi.fn();
     open = vi.fn();
     loadAddon = vi.fn();
+    registerLinkProvider = vi.fn(() => ({ dispose: vi.fn() }));
     attachCustomKeyEventHandler = vi.fn((handler: (event: KeyboardEvent) => boolean) => {
       this.keyHandler = handler;
     });
