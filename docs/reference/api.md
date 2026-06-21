@@ -6,7 +6,7 @@ Kookr exposes local HTTP and WebSocket endpoints from the Hono server. In develo
 
 | Endpoint | Description |
 | --- | --- |
-| `GET /api/health` | Server status, agent count, and build info |
+| `GET /api/health` | Server status, agent count, build info, and launch dependency degradation summary |
 | `GET /api/health/stt` | Bundled speech-to-text container health |
 | `GET /api/startup-summary` | Crash-recovery startup summary fetched once on UI mount |
 
@@ -264,6 +264,7 @@ agent launches at the agent CLI's own default with no effort flag passed
 `POST /api/tasks` (or `kookr-spawn --effort`) overrides this default for one
 launch. Resolution order: per-task override → per-agent-type setting → unset.
 | `GET /api/circuit-breakers` | Snapshots of wrapped-dependency breakers |
+| `GET /api/diagnostics/launch-dependencies` | Aggregates degraded launch dependencies by dependency and category, including affected task IDs and last occurrence times |
 | `GET /api/diagnostic` | Latest self-diagnostic report and last error |
 | `POST /api/diagnostic/run` | Trigger a self-diagnostic run |
 | `GET /api/oss-attempts` | OSS contribution-attempt store snapshot |

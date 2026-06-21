@@ -190,6 +190,117 @@ describe('diagnostics routes', () => {
     resetDetectionStats();
   });
 
+  function createLaunchDependencyDiagnosticsFixture(): {
+    taskStore: TaskStore;
+    firstTaskId: string;
+    secondTaskId: string;
+  } {
+    const taskStore = new TaskStore();
+    const first = taskStore.createTask({
+      prompt: 'first',
+      cwd: '/repo',
+      launchHealthSummary: {
+        degradedDependencies: ['kb'],
+        findings: [
+          {
+            dependency: 'kb',
+            status: 'failed',
+            category: 'cli_unavailable',
+            summary: 'kb unavailable',
+            recommendedAction: 'restart kb',
+          },
+        ],
+      },
+    });
+    const second = taskStore.createTask({
+      prompt: 'second',
+      cwd: '/repo',
+      launchHealthSummary: {
+        degradedDependencies: ['kb', 'gh'],
+        findings: [
+          {
+            dependency: 'kb',
+            status: 'failed',
+            category: 'cli_unavailable',
+            summary: 'kb still unavailable',
+            recommendedAction: 'restart kb',
+          },
+          {
+            dependency: 'gh',
+            status: 'failed',
+            category: 'auth',
+            summary: 'gh auth unavailable',
+            recommendedAction: 'run gh auth login',
+          },
+        ],
+      },
+    });
+    return { taskStore, firstTaskId: first.id, secondTaskId: second.id };
+  }
+
+  function expectLaunchDependencyDiagnostics(
+    diagnostics: {
+      schemaVersion: string;
+      totalDegradedTasks: number;
+      totalFindings: number;
+      dependencies: Array<{
+        dependency: string;
+        degradedTaskCount: number;
+        findingCount: number;
+        affectedTaskIds: string[];
+        categories: string[];
+      }>;
+      categories: Array<{
+        category: string;
+        degradedTaskCount: number;
+        findingCount: number;
+        affectedTaskIds: string[];
+        dependencies: string[];
+      }>;
+    },
+    taskIds: { firstTaskId: string; secondTaskId: string },
+  ): void {
+    expect(diagnostics).toMatchObject({
+      schemaVersion: 'launch-dependency-diagnostics.v1',
+      totalDegradedTasks: 2,
+      totalFindings: 3,
+      dependencies: [
+        {
+          dependency: 'kb',
+          degradedTaskCount: 2,
+          findingCount: 2,
+          affectedTaskIds: [taskIds.firstTaskId, taskIds.secondTaskId].sort(),
+          categories: ['cli_unavailable'],
+        },
+        {
+          dependency: 'gh',
+          degradedTaskCount: 1,
+          findingCount: 1,
+          affectedTaskIds: [taskIds.secondTaskId],
+          categories: ['auth'],
+        },
+      ],
+      categories: [
+        {
+          category: 'cli_unavailable',
+          degradedTaskCount: 2,
+          findingCount: 2,
+          affectedTaskIds: [taskIds.firstTaskId, taskIds.secondTaskId].sort(),
+          dependencies: ['kb'],
+        },
+        {
+          category: 'auth',
+          degradedTaskCount: 1,
+          findingCount: 1,
+          affectedTaskIds: [taskIds.secondTaskId],
+          dependencies: ['gh'],
+        },
+      ],
+    });
+    expect(diagnostics.dependencies[0]).toHaveProperty('lastOccurredAt');
+    expect(diagnostics.categories[0]).toHaveProperty('lastOccurredAt');
+  }
+
   // ---------------------------------------------------------------------------
   // GET /api/diagnostics/request-latencies
   // ---------------------------------------------------------------------------
@@ -438,6 +549,41 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — launchDependencies block
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health launchDependencies block', () => {
+    test('includes launch dependency degradation counts', async () => {
+      const { taskStore, firstTaskId, secondTaskId } = createLaunchDependencyDiagnosticsFixture();
+
+      const res = await mkApp({ taskStore, buildInfo: {} as never }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        launchDependencies: {
+          schemaVersion: string;
+          totalDegradedTasks: number;
+          totalFindings: number;
+          dependencies: Array<{
+            dependency: string;
+            degradedTaskCount: number;
+            findingCount: number;
+            affectedTaskIds: string[];
+            categories: string[];
+          }>;
+          categories: Array<{
+            category: string;
+            degradedTaskCount: number;
+            findingCount: number;
+            affectedTaskIds: string[];
+            dependencies: string[];
+          }>;
+        };
+      };
+      expectLaunchDependencyDiagnostics(body.launchDependencies, { firstTaskId, secondTaskId });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — viewerBroadcaster block (#808 / R10)
   // ---------------------------------------------------------------------------
   describe('GET /api/health viewerBroadcaster block', () => {
@@ -490,6 +636,34 @@ describe('diagnostics routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.status).toBe('unavailable');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/diagnostics/launch-dependencies
+  // ---------------------------------------------------------------------------
+  describe('GET /api/diagnostics/launch-dependencies', () => {
+    test('aggregates degraded launch dependencies', async () => {
+      const { taskStore, firstTaskId, secondTaskId } = createLaunchDependencyDiagnosticsFixture();
+
+      const res = await mkApp({ taskStore }).request('/api/diagnostics/launch-dependencies');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as Parameters<typeof expectLaunchDependencyDiagnostics>[0];
+      expectLaunchDependencyDiagnostics(body, { firstTaskId, secondTaskId });
+    });
+
+    test('returns an empty launch dependency diagnostics snapshot without degraded tasks', async () => {
+      const res = await mkApp({ taskStore: new TaskStore() }).request('/api/diagnostics/launch-dependencies');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        schemaVersion: 'launch-dependency-diagnostics.v1',
+        totalDegradedTasks: 0,
+        totalFindings: 0,
+        dependencies: [],
+        categories: [],
+      });
     });
   });
 

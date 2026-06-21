@@ -6,6 +6,7 @@ import { readTelemetryLog } from '../../core/telemetry.js';
 import { analyzeSession } from '../../core/friction-analyzer.js';
 import { buildLiveFrictionCalibrationSnapshot } from '../../core/live-friction-calibration.js';
 import { getDetectionStats } from '../../core/detection-stats.js';
+import { buildLaunchDependencyDiagnostics } from '../../core/launch-dependency-diagnostics.js';
 import { generateReportFromFile, formatReport } from '../../core/shadow-report.js';
 import { getSnapshotAgentsRaw } from '../use-cases/get-snapshot.js';
 import { buildReflectionRecommendationResponse } from '../reflection-task.js';
@@ -64,11 +65,14 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         grantStoreWritable: deps.viewerShare.grantStore.isWritable(),
       };
     }
+    const tasks = taskStore.listTasks();
+    const launchDependencies = buildLaunchDependencyDiagnostics(tasks);
     return c.json({
       status: 'ok',
-      agents: taskStore.listTasks().length,
+      agents: tasks.length,
       build: buildInfo,
       serverStartedAt,
+      launchDependencies,
       ...(terminalBackendBlock ? { terminalBackend: terminalBackendBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),
@@ -160,6 +164,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     ingestion: deps.hookIngestion?.getDiagnosticsSnapshot() ?? emptyHookIngestionDiagnosticsSnapshot(),
     watcher: deps.hookWatcher?.getHealthSnapshot() ?? emptyHookWatcherHealthSnapshot(),
   }));
+
+  app.get('/api/diagnostics/launch-dependencies', (c) => (
+    c.json(buildLaunchDependencyDiagnostics(taskStore.listTasks()))
+  ));
 
   app.get('/api/live-friction-calibration', async (c) => {
     try {
