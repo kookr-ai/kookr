@@ -7,9 +7,9 @@
  * reproduce a specific detector firing without spinning up a real agent and
  * recreating conditions by hand.
  *
- * It reuses the same seams the production file watcher uses: `splitHookRecords`
- * (from the hook watcher) to parse the JSONL exactly as the watcher would, and
- * the `POST /api/hook-event/:sessionId` ingestion endpoint to push each record.
+ * It reuses the same batch-framing seam the HTTP route uses:
+ * `splitHookRequestBody` parses JSONL / concatenated records, and the
+ * `POST /api/hook-event/:sessionId` ingestion endpoint pushes each record.
  * Every record is pushed against a dedicated *synthetic* session id whose name
  * starts with `kookr-replay-`; ingestion derives `origin: 'replay'` from that
  * prefix, so replayed records are tagged replay-not-live and are scoped to a
@@ -39,7 +39,7 @@
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { splitHookRecords } from '../src/server/hook-watcher.js';
+import { splitHookRequestBody } from '../src/server/hook-record-framing.js';
 import { REPLAY_SESSION_PREFIX } from '../src/server/hook-ingestion.js';
 import { parseHookEvent, HookParseError } from '../src/core/hook-parser.js';
 
@@ -142,6 +142,10 @@ function classify(record: string): 'parsed' | 'unknown' | 'malformed' {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+function splitReplayRecords(content: string): string[] {
+  return splitHookRequestBody(content).filter((record) => record.trim());
+}
+
 async function main(argv: string[]): Promise<number> {
   const parsed = parseArgs(argv);
   if ('help' in parsed) {
@@ -151,8 +155,7 @@ async function main(argv: string[]): Promise<number> {
   const opts = parsed;
 
   const content = await readFile(opts.file, 'utf-8');
-  let { records } = splitHookRecords(content);
-  records = records.filter((r) => r.trim());
+  let records = splitReplayRecords(content);
   if (opts.limit !== undefined) records = records.slice(0, opts.limit);
 
   const sessionId = toReplaySessionId(opts.session, opts.file);
@@ -234,4 +237,4 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
     });
 }
 
-export { parseArgs, toReplaySessionId, resolveBaseUrl, classify };
+export { parseArgs, toReplaySessionId, resolveBaseUrl, classify, splitReplayRecords };

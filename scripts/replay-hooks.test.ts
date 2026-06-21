@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseArgs, toReplaySessionId, resolveBaseUrl, classify } from './replay-hooks.js';
+import { parseArgs, toReplaySessionId, resolveBaseUrl, classify, splitReplayRecords } from './replay-hooks.js';
 import { REPLAY_SESSION_PREFIX } from '../src/server/hook-ingestion.js';
 
 describe('replay-hooks — toReplaySessionId (synthetic replay scoping)', () => {
@@ -80,6 +80,22 @@ describe('replay-hooks — classify', () => {
 
   it('returns malformed for invalid JSON', () => {
     expect(classify('{not json}')).toBe('malformed');
+  });
+});
+
+describe('replay-hooks — splitReplayRecords', () => {
+  it('continues after malformed JSONL records that start with an opening brace', () => {
+    const event = JSON.stringify({
+      session_id: 'x',
+      hook_event_name: 'SessionStart',
+      cwd: '/',
+    });
+
+    expect(splitReplayRecords(`${event}\n{"broken":\n${event}\n`)).toEqual([
+      event,
+      '{"broken":',
+      event,
+    ]);
   });
 });
 

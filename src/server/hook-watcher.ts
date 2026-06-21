@@ -2,6 +2,7 @@ import { watch, type FSWatcher, statSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { HookEventInjector } from './hook-ingestion.js';
+import { splitHookRecords } from './hook-record-framing.js';
 
 /** Default poll interval for the backup polling mechanism (ms). */
 const DEFAULT_POLL_INTERVAL_MS = 3_000;
@@ -73,66 +74,6 @@ interface MutableHookWatcherSessionHealth {
 }
 
 const HEALTH_SAMPLE_LIMIT = 128;
-
-export function splitHookRecords(content: string): { records: string[]; consumedChars: number } {
-  const records: string[] = [];
-  let consumedChars = 0;
-  let i = 0;
-
-  while (i < content.length) {
-    while (i < content.length && /\s/.test(content[i])) i += 1;
-    consumedChars = i;
-    if (i >= content.length) break;
-
-    const start = i;
-    if (content[i] !== '{') {
-      const lineEnd = content.indexOf('\n', i);
-      if (lineEnd === -1) break;
-      records.push(content.slice(start, lineEnd));
-      i = lineEnd + 1;
-      consumedChars = i;
-      continue;
-    }
-
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    let complete = false;
-
-    for (; i < content.length; i += 1) {
-      const ch = content[i];
-      if (inString) {
-        if (escaped) {
-          escaped = false;
-        } else if (ch === '\\') {
-          escaped = true;
-        } else if (ch === '"') {
-          inString = false;
-        }
-        continue;
-      }
-
-      if (ch === '"') {
-        inString = true;
-      } else if (ch === '{') {
-        depth += 1;
-      } else if (ch === '}') {
-        depth -= 1;
-        if (depth === 0) {
-          i += 1;
-          records.push(content.slice(start, i));
-          consumedChars = i;
-          complete = true;
-          break;
-        }
-      }
-    }
-
-    if (!complete) break;
-  }
-
-  return { records, consumedChars };
-}
 
 /**
  * Watches hook JSONL files for new lines and feeds them into the adapter.
