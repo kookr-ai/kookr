@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from 'vitest';
-import { agentProviderPresentation, findingWaitStartedAt, formatAge, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
+import { agentProviderPresentation, findingTypeLabel, findingWaitStartedAt, formatAge, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
 import type { AgentEvent, AgentState } from '../shared/protocol.js';
 
 describe('healthyDotClass', () => {
@@ -306,5 +306,33 @@ describe('taskStatusLabel', () => {
   test('falls back to the raw value for unknown statuses and empty for undefined', () => {
     expect(taskStatusLabel('someFutureStatus')).toBe('someFutureStatus');
     expect(taskStatusLabel(undefined)).toBe('');
+  });
+});
+
+describe('findingTypeLabel', () => {
+  function agent(type: NonNullable<AgentState['anomaly']>['type'], overrides: Partial<AgentState> = {}): AgentState {
+    return {
+      agentId: 'agent-1',
+      events: [],
+      anomaly: {
+        agentId: 'agent-1',
+        type,
+        severity: 'warning',
+        explanation: 'Waiting',
+        detectedAt: new Date('2026-06-21T00:00:00.000Z'),
+      },
+      ...overrides,
+    };
+  }
+
+  test('uses curated labels for protocol anomaly types', () => {
+    expect(findingTypeLabel(agent('api_error'))).toBe('API Error');
+    expect(findingTypeLabel(agent('merge_conflict'))).toBe('Merge Conflict');
+    expect(findingTypeLabel(agent('permission_blocked'))).toBe('Permission');
+  });
+
+  test('distinguishes completed-turn signals from explicit input requests', () => {
+    expect(findingTypeLabel(agent('needs_input'))).toBe('Needs Input');
+    expect(findingTypeLabel(agent('needs_input', { turnState: 'completed_turn' }))).toBe('Signaled Complete');
   });
 });

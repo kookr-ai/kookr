@@ -20,6 +20,7 @@ import {
   turnStateClass,
   formatCompactDateTime,
   formatRelativeTimeAgo,
+  findingTypeLabel,
 } from '../presentation.js';
 import {
   formatSpeakFindingTimingLine,
@@ -224,14 +225,7 @@ function severityClass(agent: AgentState): string {
 }
 
 function severityLabel(agent: AgentState): string {
-  if (!agent.anomaly) return '';
-  switch (agent.anomaly.type) {
-    case 'permission_blocked': return 'Permission';
-    case 'repeated_error': return 'Repeated Error';
-    // `completed_turn` => the agent signaled it is ready for review; `Needs Input`
-    // is reserved for an explicit mid-turn question. See issue #358.
-    case 'needs_input': return agent.turnState === 'completed_turn' ? 'Signaled Complete' : 'Needs Input';
-  }
+  return findingTypeLabel(agent);
 }
 
 function EditableName({ agent, send, onBeforeEdit }: {

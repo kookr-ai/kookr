@@ -3,9 +3,13 @@ import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import {
   filterActions,
+  filterFindings,
+  filterProjects,
   filterTasks,
   groupActionsBySection,
   type CommandAction,
+  type CommandFindingItem,
+  type CommandProjectItem,
   type CommandTaskItem,
 } from './command-palette-model.js';
 import { taskStatusLabel } from '../presentation.js';
@@ -13,13 +17,19 @@ import { taskStatusLabel } from '../presentation.js';
 interface CommandPaletteProps {
   actions: CommandAction[];
   tasks: CommandTaskItem[];
+  findings: CommandFindingItem[];
+  projects: CommandProjectItem[];
   onSelectTask: (agentId: string) => void;
+  onSelectFinding: (agentId: string) => void;
+  onSelectProject: (projectId: string) => void;
   onClose: () => void;
 }
 
 type SelectableItem =
   | { kind: 'action'; action: CommandAction }
-  | { kind: 'task'; task: CommandTaskItem };
+  | { kind: 'task'; task: CommandTaskItem }
+  | { kind: 'finding'; finding: CommandFindingItem }
+  | { kind: 'project'; project: CommandProjectItem };
 
 type RenderRow =
   | { kind: 'header'; key: string; label: string }
@@ -29,10 +39,19 @@ type RenderRow =
  * The unified command palette (top-bar redesign). Opened from the top-bar
  * "Search actions & tasks" field or ⌘K / Ctrl+K. Empty query → a browsable,
  * categorised list of every action that used to live as a top-bar icon. Typing
- * filters and ranks both actions and tasks (a lightweight task switcher).
+ * filters and ranks actions, tasks, active findings, and projects.
  * ↑/↓ move, ↵ runs, Esc closes.
  */
-export function CommandPalette({ actions, tasks, onSelectTask, onClose }: CommandPaletteProps): React.ReactElement {
+export function CommandPalette({
+  actions,
+  tasks,
+  findings,
+  projects,
+  onSelectTask,
+  onSelectFinding,
+  onSelectProject,
+  onClose,
+}: CommandPaletteProps): React.ReactElement {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -45,6 +64,8 @@ export function CommandPalette({ actions, tasks, onSelectTask, onClose }: Comman
   const { rows, selectable } = useMemo(() => {
     const matchedActions = filterActions(actions, query);
     const matchedTasks = filterTasks(tasks, query);
+    const matchedFindings = filterFindings(findings, query);
+    const matchedProjects = filterProjects(projects, query);
     const browse = query.trim().length === 0;
 
     const rows: RenderRow[] = [];
@@ -73,9 +94,25 @@ export function CommandPalette({ actions, tasks, onSelectTask, onClose }: Comman
           rows.push({ kind: 'item', key: `task-${task.taskId}`, index, item: { kind: 'task', task } });
         }
       }
+      if (matchedFindings.length > 0) {
+        rows.push({ kind: 'header', key: 'h-findings', label: 'Findings' });
+        for (const finding of matchedFindings) {
+          const index = selectable.length;
+          selectable.push({ kind: 'finding', finding });
+          rows.push({ kind: 'item', key: `finding-${finding.agentId}`, index, item: { kind: 'finding', finding } });
+        }
+      }
+      if (matchedProjects.length > 0) {
+        rows.push({ kind: 'header', key: 'h-projects', label: 'Projects' });
+        for (const project of matchedProjects) {
+          const index = selectable.length;
+          selectable.push({ kind: 'project', project });
+          rows.push({ kind: 'item', key: `project-${project.projectId}`, index, item: { kind: 'project', project } });
+        }
+      }
     }
     return { rows, selectable };
-  }, [actions, tasks, query]);
+  }, [actions, findings, projects, tasks, query]);
 
   // Keep the selection in range as the result set shrinks/grows.
   useEffect(() => {
@@ -88,7 +125,13 @@ export function CommandPalette({ actions, tasks, onSelectTask, onClose }: Comman
       item.action.run();
     } else {
       onClose();
-      onSelectTask(item.task.agentId);
+      if (item.kind === 'task') {
+        onSelectTask(item.task.agentId);
+      } else if (item.kind === 'finding') {
+        onSelectFinding(item.finding.agentId);
+      } else {
+        onSelectProject(item.project.projectId);
+      }
     }
   };
 
@@ -129,8 +172,8 @@ export function CommandPalette({ actions, tasks, onSelectTask, onClose }: Comman
             className="cmd-input"
             type="text"
             value={query}
-            placeholder="Search actions & tasks…"
-            aria-label="Search actions and tasks"
+            placeholder="Search actions, tasks, findings, projects…"
+            aria-label="Search actions, tasks, findings, and projects"
             data-testid="command-palette-input"
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -196,21 +239,63 @@ function CommandRow({ item, selected, onHover, onRun }: CommandRowProps): React.
       </button>
     );
   }
-  const { task } = item;
+  if (item.kind === 'task') {
+    const { task } = item;
+    return (
+      <button
+        type="button"
+        className={`cmd-row${selected ? ' sel' : ''}`}
+        data-testid="command-palette-task"
+        data-task-id={task.taskId}
+        onMouseMove={onHover}
+        onClick={onRun}
+      >
+        <span className="cmd-row-label">
+          {task.label}
+          {task.projectLabel && <span className="cmd-row-sub">{task.projectLabel}</span>}
+        </span>
+        {task.status && <span className="cmd-row-meta cmd-row-status">{taskStatusLabel(task.status)}</span>}
+      </button>
+    );
+  }
+  if (item.kind === 'finding') {
+    const { finding } = item;
+    return (
+      <button
+        type="button"
+        className={`cmd-row${selected ? ' sel' : ''}`}
+        data-testid="command-palette-finding"
+        data-agent-id={finding.agentId}
+        onMouseMove={onHover}
+        onClick={onRun}
+      >
+        <span className="cmd-row-label">
+          {finding.label}
+          {finding.projectLabel && <span className="cmd-row-sub">{finding.projectLabel}</span>}
+        </span>
+        <span className="cmd-row-meta cmd-row-status">{finding.severity} · {finding.type}</span>
+      </button>
+    );
+  }
+  const { project } = item;
+  const projectMeta = [
+    `${project.activeAgents} active agent${project.activeAgents === 1 ? '' : 's'}`,
+    project.findingCount > 0 ? `${project.findingCount} finding${project.findingCount === 1 ? '' : 's'}` : null,
+  ].filter((value): value is string => Boolean(value)).join(' · ');
   return (
     <button
       type="button"
       className={`cmd-row${selected ? ' sel' : ''}`}
-      data-testid="command-palette-task"
-      data-task-id={task.taskId}
+      data-testid="command-palette-project"
+      data-project-id={project.projectId}
       onMouseMove={onHover}
       onClick={onRun}
     >
       <span className="cmd-row-label">
-        {task.label}
-        {task.projectLabel && <span className="cmd-row-sub">{task.projectLabel}</span>}
+        {project.label}
+        <span className="cmd-row-sub">{project.projectId}</span>
       </span>
-      {task.status && <span className="cmd-row-meta cmd-row-status">{taskStatusLabel(task.status)}</span>}
+      <span className="cmd-row-meta cmd-row-status">{projectMeta}</span>
     </button>
   );
 }

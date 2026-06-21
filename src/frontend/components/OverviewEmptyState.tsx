@@ -6,21 +6,11 @@ import {
   type ShortcutBindingMap,
 } from '../../shared/contracts/shortcut-bindings.js';
 import { useKookrStore } from '../store/useStore.js';
-import { findingWaitStartedAt, formatAge, projectLabel } from '../presentation.js';
+import { findingTypeLabel, findingWaitStartedAt, formatAge, projectLabel } from '../presentation.js';
 import { ShortcutKeys } from './ShortcutKeys.js';
 
 /** Rows shown in the "Waiting on you" list; the rest stay in the findings rail. */
 const MAX_WAITING_ROWS = 6;
-
-/** Mirrors the rail's severityLabel wording (FindingsPanel) for consistency. */
-function anomalyActionLabel(agent: AgentState): string {
-  switch (agent.anomaly?.type) {
-    case 'permission_blocked': return 'Permission';
-    case 'repeated_error': return 'Repeated Error';
-    case 'needs_input': return agent.turnState === 'completed_turn' ? 'Signaled Complete' : 'Needs Input';
-    default: return '';
-  }
-}
 
 interface Props {
   /**
@@ -84,7 +74,7 @@ export function OverviewEmptyState({
                       className="overview-waiting-row"
                       onClick={() => selectAgent(agent.agentId)}
                     >
-                      <span className="overview-waiting-kind">{anomalyActionLabel(agent)}</span>
+                      <span className="overview-waiting-kind">{findingTypeLabel(agent)}</span>
                       <span className="overview-waiting-name">{agent.taskName ?? agent.agentId}</span>
                       <span className="overview-waiting-meta">
                         {agent.projectDisplayLabel ?? projectLabel(agent.cwd)}
