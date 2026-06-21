@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest';
-import { generateTaskName } from './task-naming.js';
-import { createLlmClient } from './llm-client.js';
+import { generateTaskName } from '../../core/task-naming.js';
+import { createLlmClient } from './factory.js';
 
 const hasApiKey = !!(
   process.env.GROQ_API_KEY ||

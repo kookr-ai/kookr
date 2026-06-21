@@ -10,7 +10,7 @@ import {
   type LlmClient,
   type LlmCompletionRequest,
   type LlmProviderFailureCategory,
-} from './llm-types.js';
+} from '../../core/llm-types.js';
 
 export type OpenAiCompatibleProvider = 'openrouter' | 'requesty';
 

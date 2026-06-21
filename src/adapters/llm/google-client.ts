@@ -8,7 +8,7 @@
  */
 
 import { GoogleGenAI, type GenerateContentConfig } from '@google/genai';
-import type { LlmClient, LlmCompletionRequest } from './llm-types.js';
+import type { LlmClient, LlmCompletionRequest } from '../../core/llm-types.js';
 
 const DEFAULT_MODEL = 'gemini-3-flash-preview';
 

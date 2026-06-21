@@ -9,12 +9,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WebSocket } from 'ws';
 
-// Mock the llm-client module BEFORE importing the server
+// Mock the adapter factory BEFORE importing the server
 const mockCreateLlmClient = vi.fn();
 
-vi.mock('../core/llm-client.js', () => ({
+vi.mock('../adapters/llm/factory.js', () => ({
   createLlmClient: (...args: unknown[]) => mockCreateLlmClient(...args),
-  FallbackLlmClient: class {},
 }));
 
 // Mock generateTaskName so we control naming behavior

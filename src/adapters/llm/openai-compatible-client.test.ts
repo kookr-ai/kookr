@@ -3,7 +3,7 @@ import {
   OpenAiCompatibleLlmClient,
   sanitizeProviderErrorDetail,
 } from './openai-compatible-client.js';
-import type { LlmCompletionRequest } from './llm-types.js';
+import type { LlmCompletionRequest } from '../../core/llm-types.js';
 
 const API_KEY = 'req_test-secret-key';
 

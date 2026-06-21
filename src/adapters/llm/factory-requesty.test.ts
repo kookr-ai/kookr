@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { createRequestyLlmClientFromEnv } from '../adapters/requesty-client.js';
-import { createLlmClient } from './llm-factory.js';
+import { createRequestyLlmClientFromEnv } from './requesty-client.js';
+import { createLlmClient } from './factory.js';
 
 function jsonResponse(body: unknown): Response {
   return {
