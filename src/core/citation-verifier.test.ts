@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -148,6 +148,60 @@ describe('citation verifier', () => {
     expect(result).toEqual({ verdict: 'grounded', failures: [] });
   });
 
+  it('checks quoted Markdown evidence against the cited line range', () => {
+    const root = createSourceRoot({
+      'notes/example.md': [
+        'The first line is unrelated.',
+        'The cited quote appears only on the second line.',
+      ].join('\n'),
+    });
+
+    const result = verifyCitationClaims(parseMarkdownCitationClaims([
+      'Evidence: **notes/example.md#L1**',
+      '> The cited quote appears only on the second line.',
+    ].join('\n')), root);
+
+    expect(result.verdict).toBe('unverifiable');
+    expect(result.failures).toEqual([
+      expect.objectContaining({
+        path: 'notes/example.md',
+        reason: 'quote_not_found',
+      }),
+    ]);
+  });
+
+  it('rejects fabricated reviewer-distillation judge evidence citations', () => {
+    const root = createSourceRoot({
+      'reviews/pr-123.md': [
+        'Comment 1: Please add tracking after submit.',
+        'Comment 2: What happens if the folder already exists?',
+      ].join('\n'),
+    });
+    const judgeOutput = [
+      'The review evidence shows a rollback concern.',
+      '',
+      'Evidence: **reviews/pr-123.md#L1-L2**',
+      '> If one of the steps fails, there is no opportunity to roll back.',
+    ].join('\n');
+
+    const claims = parseMarkdownCitationClaims(judgeOutput).map((claim) => ({
+      ...claim,
+      id: 'reviewer-judge-fabrication',
+      label: 'labeled-fabrication',
+    }));
+    const result = verifyCitationClaims(claims, root);
+
+    expect(result.verdict).toBe('unverifiable');
+    expect(result.failures).toEqual([
+      expect.objectContaining({
+        claimId: 'reviewer-judge-fabrication',
+        label: 'labeled-fabrication',
+        path: 'reviews/pr-123.md',
+        reason: 'quote_not_found',
+      }),
+    ]);
+  });
+
   it('prints stable CLI JSON and exits non-zero for unverifiable citations', () => {
     const root = createSourceRoot({
       'source.md': 'A real sentence about grounded citation evidence.\n',
@@ -213,6 +267,332 @@ describe('citation verifier', () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toBe('');
     expect(JSON.parse(result.stdout)).toEqual({ verdict: 'grounded', failures: [] });
+  });
+
+  it('ships a plugin-local verifier for reviewer-distillation judge gates', () => {
+    const root = createSourceRoot({
+      'reviews/pr-123.md': [
+        'Comment 1: Please add tracking after submit.',
+        'Comment 2: What happens if the folder already exists?',
+      ].join('\n'),
+    });
+    const input = join(root, 'scores/pr-123-judge.md');
+    mkdirSync(join(root, 'scores'), { recursive: true });
+    writeFileSync(input, [
+      'The review evidence shows a rollback concern.',
+      '',
+      'Evidence: **reviews/pr-123.md#L1-L2**',
+      '> If one of the steps fails, there is no opportunity to roll back.',
+    ].join('\n'));
+
+    const result = spawnSync(process.execPath, [
+      join(process.cwd(), 'plugin/skills/reviewer-distillation-judge/scripts/verify-citations.mjs'),
+      '--input',
+      input,
+      '--source-root',
+      root,
+      '--format',
+      'markdown',
+      '--allow-prefix',
+      'context/pr-123.md',
+      '--allow-prefix',
+      'predictions/pr-123.md',
+      '--allow-prefix',
+      'reviews/pr-123.md',
+    ], { cwd: process.cwd(), encoding: 'utf8' });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toEqual({
+      verdict: 'unverifiable',
+      failures: [
+        expect.objectContaining({
+          path: 'reviews/pr-123.md',
+          reason: 'quote_not_found',
+        }),
+      ],
+    });
+  });
+
+  it('accepts grounded reviewer-distillation judge citations in the plugin-local verifier', () => {
+    const root = createSourceRoot({
+      'reviews/pr-123.md': [
+        'Comment 1: Please add tracking after submit.',
+        'Comment 2: What happens if the folder already exists?',
+      ].join('\n'),
+    });
+    const input = join(root, 'scores/pr-123-judge.md');
+    mkdirSync(join(root, 'scores'), { recursive: true });
+    writeFileSync(input, [
+      'The review evidence asks about duplicate folder names.',
+      '',
+      'Evidence: **reviews/pr-123.md#L2**',
+      '> Comment 2: What happens if the folder already exists?',
+    ].join('\n'));
+
+    const result = spawnSync(process.execPath, [
+      join(process.cwd(), 'plugin/skills/reviewer-distillation-judge/scripts/verify-citations.mjs'),
+      '--input',
+      input,
+      '--source-root',
+      root,
+      '--format',
+      'markdown',
+      '--allow-prefix',
+      'context/pr-123.md',
+      '--allow-prefix',
+      'predictions/pr-123.md',
+      '--allow-prefix',
+      'reviews/pr-123.md',
+    ], { cwd: process.cwd(), encoding: 'utf8' });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toEqual({ verdict: 'grounded', failures: [] });
+  });
+
+  it('rejects wrong-line reviewer-distillation judge citations in the plugin-local verifier', () => {
+    const root = createSourceRoot({
+      'reviews/pr-123.md': [
+        'Comment 1: Please add tracking after submit.',
+        'Comment 2: What happens if the folder already exists?',
+      ].join('\n'),
+    });
+    const input = join(root, 'scores/pr-123-judge.md');
+    mkdirSync(join(root, 'scores'), { recursive: true });
+    writeFileSync(input, [
+      'The review evidence asks about duplicate folder names.',
+      '',
+      'Evidence: **reviews/pr-123.md#L1**',
+      '> Comment 2: What happens if the folder already exists?',
+    ].join('\n'));
+
+    const result = spawnSync(process.execPath, [
+      join(process.cwd(), 'plugin/skills/reviewer-distillation-judge/scripts/verify-citations.mjs'),
+      '--input',
+      input,
+      '--source-root',
+      root,
+      '--format',
+      'markdown',
+      '--allow-prefix',
+      'context/pr-123.md',
+      '--allow-prefix',
+      'predictions/pr-123.md',
+      '--allow-prefix',
+      'reviews/pr-123.md',
+    ], { cwd: process.cwd(), encoding: 'utf8' });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toEqual({
+      verdict: 'unverifiable',
+      failures: [
+        expect.objectContaining({
+          path: 'reviews/pr-123.md',
+          reason: 'quote_not_found',
+        }),
+      ],
+    });
+  });
+
+  it('rejects reviewer-distillation judge self-citations outside allowed source prefixes', () => {
+    const root = createSourceRoot({});
+    mkdirSync(join(root, 'scores'), { recursive: true });
+    const input = join(root, 'scores/pr-123-judge.md');
+    writeFileSync(input, [
+      'The fabricated point appears only in the judge output.',
+      '',
+      'Evidence: **scores/pr-123-judge.md#L1**',
+      '> The fabricated point appears only in the judge output.',
+    ].join('\n'));
+
+    const result = spawnSync(process.execPath, [
+      join(process.cwd(), 'plugin/skills/reviewer-distillation-judge/scripts/verify-citations.mjs'),
+      '--input',
+      input,
+      '--source-root',
+      root,
+      '--format',
+      'markdown',
+      '--allow-prefix',
+      'context/pr-123.md',
+      '--allow-prefix',
+      'predictions/pr-123.md',
+      '--allow-prefix',
+      'reviews/pr-123.md',
+    ], { cwd: process.cwd(), encoding: 'utf8' });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toEqual({
+      verdict: 'unverifiable',
+      failures: [
+        expect.objectContaining({
+          path: 'scores/pr-123-judge.md',
+          reason: 'path_not_allowed',
+        }),
+      ],
+    });
+  });
+
+  it('rejects reviewer-distillation judge citations without quoted evidence', () => {
+    const root = createSourceRoot({
+      'reviews/pr-123.md': 'Comment 1: Please add tracking after submit.\n',
+    });
+    const input = join(root, 'scores/pr-123-judge.md');
+    mkdirSync(join(root, 'scores'), { recursive: true });
+    writeFileSync(input, 'Evidence: **reviews/pr-123.md#L1**\n');
+
+    const result = spawnSync(process.execPath, [
+      join(process.cwd(), 'plugin/skills/reviewer-distillation-judge/scripts/verify-citations.mjs'),
+      '--input',
+      input,
+      '--source-root',
+      root,
+      '--format',
+      'markdown',
+      '--allow-prefix',
+      'context/pr-123.md',
+      '--allow-prefix',
+      'predictions/pr-123.md',
+      '--allow-prefix',
+      'reviews/pr-123.md',
+    ], { cwd: process.cwd(), encoding: 'utf8' });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toEqual({
+      verdict: 'unverifiable',
+      failures: [
+        expect.objectContaining({
+          path: 'reviews/pr-123.md',
+          reason: 'quote_required',
+        }),
+      ],
+    });
+  });
+
+  it('rejects reviewer-distillation judge citations to other PR files', () => {
+    const root = createSourceRoot({
+      'reviews/pr-124.md': 'Comment from another PR.\n',
+    });
+    const input = join(root, 'scores/pr-123-judge.md');
+    mkdirSync(join(root, 'scores'), { recursive: true });
+    writeFileSync(input, [
+      'Evidence: **reviews/pr-124.md#L1**',
+      '> Comment from another PR.',
+    ].join('\n'));
+
+    const result = spawnSync(process.execPath, [
+      join(process.cwd(), 'plugin/skills/reviewer-distillation-judge/scripts/verify-citations.mjs'),
+      '--input',
+      input,
+      '--source-root',
+      root,
+      '--format',
+      'markdown',
+      '--allow-prefix',
+      'context/pr-123.md',
+      '--allow-prefix',
+      'predictions/pr-123.md',
+      '--allow-prefix',
+      'reviews/pr-123.md',
+    ], { cwd: process.cwd(), encoding: 'utf8' });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toEqual({
+      verdict: 'unverifiable',
+      failures: [
+        expect.objectContaining({
+          path: 'reviews/pr-124.md',
+          reason: 'path_not_allowed',
+        }),
+      ],
+    });
+  });
+
+  it('rejects reviewer-distillation judge path traversal through allowed prefixes', () => {
+    const root = createSourceRoot({});
+    mkdirSync(join(root, 'scores'), { recursive: true });
+    const input = join(root, 'scores/pr-123-judge.md');
+    writeFileSync(input, [
+      'Self-cited fabricated evidence.',
+      '',
+      'Evidence: **reviews/pr-123.md/../../scores/pr-123-judge.md#L1**',
+      '> Self-cited fabricated evidence.',
+    ].join('\n'));
+
+    const result = spawnSync(process.execPath, [
+      join(process.cwd(), 'plugin/skills/reviewer-distillation-judge/scripts/verify-citations.mjs'),
+      '--input',
+      input,
+      '--source-root',
+      root,
+      '--format',
+      'markdown',
+      '--allow-prefix',
+      'context/pr-123.md',
+      '--allow-prefix',
+      'predictions/pr-123.md',
+      '--allow-prefix',
+      'reviews/pr-123.md',
+    ], { cwd: process.cwd(), encoding: 'utf8' });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toEqual({
+      verdict: 'unverifiable',
+      failures: [
+        expect.objectContaining({
+          path: 'reviews/pr-123.md/../../scores/pr-123-judge.md',
+          reason: 'path_not_allowed',
+        }),
+      ],
+    });
+  });
+
+  it('rejects reviewer-distillation judge symlink self-citations', () => {
+    const root = createSourceRoot({});
+    mkdirSync(join(root, 'reviews'), { recursive: true });
+    mkdirSync(join(root, 'scores'), { recursive: true });
+    const input = join(root, 'scores/pr-123-judge.md');
+    writeFileSync(input, [
+      'Self-cited fabricated evidence.',
+      '',
+      'Evidence: **reviews/pr-123.md#L1**',
+      '> Self-cited fabricated evidence.',
+    ].join('\n'));
+    symlinkSync('../scores/pr-123-judge.md', join(root, 'reviews/pr-123.md'));
+
+    const result = spawnSync(process.execPath, [
+      join(process.cwd(), 'plugin/skills/reviewer-distillation-judge/scripts/verify-citations.mjs'),
+      '--input',
+      input,
+      '--source-root',
+      root,
+      '--format',
+      'markdown',
+      '--allow-prefix',
+      'context/pr-123.md',
+      '--allow-prefix',
+      'predictions/pr-123.md',
+      '--allow-prefix',
+      'reviews/pr-123.md',
+    ], { cwd: process.cwd(), encoding: 'utf8' });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toEqual({
+      verdict: 'unverifiable',
+      failures: [
+        expect.objectContaining({
+          path: 'reviews/pr-123.md',
+          reason: 'symlink_not_allowed',
+        }),
+      ],
+    });
   });
 });
 
