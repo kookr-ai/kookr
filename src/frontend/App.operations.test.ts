@@ -8,6 +8,7 @@ import { App, DEFAULT_DESTRUCTIVE_ACTION_UNDO_MS } from './App.js';
 import { createKookrStore, useKookrStore } from './store/useStore.js';
 import { recordOutbound, recordReportableAlert, resetBugReportRecorderForTests } from './bug-report-recorder.js';
 import { clearDebugTimeline, setDebugTimelineEnabledForTests } from './debug-timeline.js';
+import { __resetViewerSessionForTests } from './viewer-session.js';
 import type { AgentState } from '../shared/protocol.js';
 
 const websocketMock = vi.hoisted(() => ({
@@ -84,6 +85,12 @@ function makeAgent(overrides: Partial<AgentState>): AgentState {
   } as AgentState;
 }
 
+function setInputValue(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+  setter.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 describe('App operations modal shortcuts', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -97,6 +104,7 @@ describe('App operations modal shortcuts', () => {
     resetBugReportRecorderForTests();
     setDebugTimelineEnabledForTests(null);
     clearDebugTimeline();
+    __resetViewerSessionForTests();
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/api/anomaly-stats')) {
@@ -122,9 +130,11 @@ describe('App operations modal shortcuts', () => {
     });
     document.body.innerHTML = '';
     localStorage.clear();
+    sessionStorage.clear();
     vi.useRealTimers();
     setDebugTimelineEnabledForTests(null);
     clearDebugTimeline();
+    __resetViewerSessionForTests();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -689,6 +699,104 @@ describe('App operations modal shortcuts', () => {
       'value',
       expect.stringContaining('user-added note'),
     );
+  });
+
+  test('read-only command palette hides owner actions but keeps finding and project navigation', async () => {
+    vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/auth/session')) {
+        return Promise.resolve({
+          status: 200,
+          json: () => Promise.resolve({ actor: 'viewer', scope: { kind: 'all' } }),
+        } as Response);
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ configured: false }),
+      } as Response);
+    });
+    sessionStorage.setItem('kookr.viewer.session', JSON.stringify({ isViewer: true, scope: { kind: 'all' } }));
+    const findingAgent = makeAgent({
+      agentId: 'finding-agent',
+      taskId: 'finding-task',
+      taskName: 'Investigate launch failure',
+      projectId: 'github.com/kookr-ai/kookr',
+      anomaly: {
+        agentId: 'finding-agent',
+        type: 'api_error',
+        severity: 'critical',
+        explanation: 'Launch dependency failed',
+        detectedAt: new Date('2026-06-21T00:00:00.000Z'),
+      },
+    });
+    useKookrStore.setState({
+      agents: [findingAgent],
+      agentsHydrated: true,
+      projectSummariesHydrated: true,
+    });
+    useKookrStore.getState().handleProjectSummaries([
+      {
+        project: 'github.com/kookr-ai/kookr',
+        displayName: 'kookr',
+        color: 0,
+        activeAgents: 1,
+        findingCount: 1,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openContributionAttempts: 0,
+        recentTasks: [{ taskId: 'finding-task', name: 'Investigate launch failure', status: 'inProgress' }],
+        tracked: true,
+        localPath: '/workspace/kookr',
+      },
+      {
+        project: 'github.com/example/openclaw',
+        displayName: 'openclaw',
+        color: 1,
+        activeAgents: 0,
+        findingCount: 0,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openContributionAttempts: 0,
+        recentTasks: [],
+        tracked: true,
+        localPath: '/workspace/openclaw',
+      },
+    ]);
+    useKookrStore.getState().selectProject('github.com/example/openclaw');
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const paletteTrigger = await waitForElement<HTMLButtonElement>(container, '[data-testid="command-trigger"]');
+    await act(async () => {
+      paletteTrigger.click();
+    });
+
+    expect(container.querySelector('[data-action-id="share-viewer"]')).toBeNull();
+    expect(container.querySelector('[data-action-id="settings"]')).toBeNull();
+    expect(container.querySelector('[data-action-id="schedules"]')).toBeNull();
+
+    const input = await waitForElement<HTMLInputElement>(container, '[data-testid="command-palette-input"]');
+    await act(async () => setInputValue(input, 'api error'));
+    const findingRow = await waitForElement<HTMLButtonElement>(container, '[data-testid="command-palette-finding"]');
+    expect(findingRow.textContent).toContain('critical · API Error');
+    await act(async () => {
+      findingRow.click();
+    });
+    expect(useKookrStore.getState().selectedAgentId).toBe('finding-agent');
+
+    await act(async () => {
+      paletteTrigger.click();
+    });
+    const projectInput = await waitForElement<HTMLInputElement>(container, '[data-testid="command-palette-input"]');
+    await act(async () => setInputValue(projectInput, 'kookr-ai'));
+    const projectRow = await waitForElement<HTMLButtonElement>(container, '[data-testid="command-palette-project"]');
+    await act(async () => {
+      projectRow.click();
+    });
+    expect(useKookrStore.getState().selectedProject).toBe('github.com/kookr-ai/kookr');
   });
 
   test('debug timeline export downloads a redacted bundle', async () => {

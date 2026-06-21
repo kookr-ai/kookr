@@ -34,6 +34,25 @@ export interface CommandTaskItem {
   projectLabel?: string;
 }
 
+export interface CommandFindingItem {
+  /** Agent/finding to select when chosen. */
+  agentId: string;
+  label: string;
+  severity: string;
+  type: string;
+  projectLabel?: string;
+  explanation?: string;
+}
+
+export interface CommandProjectItem {
+  /** Project id to select when chosen. */
+  projectId: string;
+  label: string;
+  activeAgents: number;
+  findingCount: number;
+  keywords?: string[];
+}
+
 export const COMMAND_SECTION_LABELS: Record<CommandSection, string> = {
   task: 'This task',
   view: 'View',
@@ -86,6 +105,28 @@ export function filterActions(actions: readonly CommandAction[], query: string):
 export function filterTasks(tasks: readonly CommandTaskItem[], query: string): CommandTaskItem[] {
   if (query.trim().length === 0) return [];
   return rank(tasks, query, (task) => [task.label, task.projectLabel ?? '']);
+}
+
+/** Filter + rank active findings for the current query. Empty query yields []: findings only show while searching. */
+export function filterFindings(findings: readonly CommandFindingItem[], query: string): CommandFindingItem[] {
+  if (query.trim().length === 0) return [];
+  return rank(findings, query, (finding) => [
+    finding.label,
+    finding.projectLabel ?? '',
+    finding.type,
+    finding.severity,
+    finding.explanation ?? '',
+  ]);
+}
+
+/** Filter + rank projects for the current query. Empty query yields []: projects only show while searching. */
+export function filterProjects(projects: readonly CommandProjectItem[], query: string): CommandProjectItem[] {
+  if (query.trim().length === 0) return [];
+  return rank(projects, query, (project) => [
+    project.label,
+    project.projectId,
+    ...(project.keywords ?? []),
+  ]);
 }
 
 /** Group ranked actions into browse-mode sections, preserving rank order within each. */

@@ -15,7 +15,12 @@ import { computeChainMembership, computeDescendants } from './components/related
 import { deriveProjectPriorityRanks } from '../shared/project-sidebar.js';
 import { TopBar } from './components/TopBar.js';
 import { CommandPalette } from './components/CommandPalette.js';
-import type { CommandAction, CommandTaskItem } from './components/command-palette-model.js';
+import type {
+  CommandAction,
+  CommandFindingItem,
+  CommandProjectItem,
+  CommandTaskItem,
+} from './components/command-palette-model.js';
 import { FindingsPanel } from './components/FindingsPanel.js';
 import { ScheduledTasksHint } from './components/ScheduledTasksHint.js';
 import { shouldShow as scheduledTasksHintShouldShow } from './store/scheduled-tasks-hint-status.js';
@@ -65,6 +70,7 @@ import { buildBugReportBundle } from './bug-report-bundle.js';
 import { getBugReportAlerts, getBugReportWireObservations } from './bug-report-recorder.js';
 import { getDebugTimelineEntries, isDebugTimelineEnabled } from './debug-timeline.js';
 import { getSelectionTransitionDiagnostics } from './selection-transition-recorder.js';
+import { findingTypeLabel } from './presentation.js';
 import './critical.css';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
@@ -918,6 +924,10 @@ export function App() {
     () => buildAgentBuckets(agentsAfterRelationFilter, selectedProject, coordinator, projectPriorityRanks),
     [agentsAfterRelationFilter, selectedProject, coordinator, projectPriorityRanks],
   );
+  const commandPaletteFindings = useMemo(
+    () => buildAgentBuckets(agents, null, coordinator, projectPriorityRanks).findings,
+    [agents, coordinator, projectPriorityRanks],
+  );
 
   useEffect(() => {
     if (!isMobileViewport) {
@@ -1140,6 +1150,25 @@ export function App() {
       projectLabel: a.projectId,
     });
   }
+  const commandFindings: CommandFindingItem[] = commandPaletteFindings.map((agent) => ({
+    agentId: agent.agentId,
+    label: agent.taskName ?? agent.agentId,
+    severity: agent.anomaly?.severity ?? agent.effectiveAttentionSeverity ?? 'info',
+    type: findingTypeLabel(agent),
+    projectLabel: agent.projectId,
+    explanation: agent.anomaly?.explanation,
+  }));
+  const commandProjects: CommandProjectItem[] = projectSummaries.map((project) => ({
+    projectId: project.project,
+    label: project.displayName,
+    activeAgents: project.activeAgents,
+    findingCount: project.findingCount,
+    keywords: [
+      project.localPath ?? '',
+      project.notes ?? '',
+      ...(project.recentTasks.map((task) => task.name ?? task.taskId)),
+    ].filter((keyword) => keyword.length > 0),
+  }));
 
   return (
     <div className={`app${isMobileViewport ? ' app-mobile' : ''}${isViewer ? ' app-read-only' : ''}`}>
@@ -1312,7 +1341,11 @@ export function App() {
         <CommandPalette
           actions={commandActions}
           tasks={commandTasks}
+          findings={commandFindings}
+          projects={commandProjects}
           onSelectTask={(agentId) => selectAgent(agentId)}
+          onSelectFinding={(agentId) => selectAgent(agentId)}
+          onSelectProject={(projectId) => selectProject(projectId)}
           onClose={() => setShowCommandPalette(false)}
         />
       )}

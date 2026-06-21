@@ -156,6 +156,31 @@ export function taskStatusLabel(status: string | undefined): string {
 }
 
 /**
+ * Human-readable label for a finding's action/type. Mirrors the findings rail
+ * wording so navigation surfaces describe the same condition consistently.
+ */
+export function findingTypeLabel(agent: AgentState): string {
+  const anomalyType = agent.anomaly?.type;
+  switch (anomalyType) {
+    case 'permission_blocked': return 'Permission';
+    case 'repeated_error': return 'Repeated Error';
+    case 'merge_conflict': return 'Merge Conflict';
+    case 'stale_agent': return 'Stale Agent';
+    case 'hook_disconnected': return 'Hook Disconnected';
+    case 'hook_missing': return 'Hook Missing';
+    case 'hook_parse_degraded': return 'Hook Parse Degraded';
+    case 'tmux_unresponsive': return 'Terminal Unresponsive';
+    case 'api_error': return 'API Error';
+    case 'budget_exceeded': return 'Budget Exceeded';
+    // `completed_turn` => the agent signaled it is ready for review; `Needs Input`
+    // is reserved for an explicit mid-turn question. See issue #358.
+    case 'needs_input': return agent.turnState === 'completed_turn' ? 'Signaled Complete' : 'Needs Input';
+    case undefined: return '';
+    default: return anomalyType.replace(/_/g, ' ');
+  }
+}
+
+/**
  * CSS class suffix for the turn-state line — applied as
  * `.finding-turn-state.turn-state--{suffix}`. Returns '' when there is
  * nothing to render.
