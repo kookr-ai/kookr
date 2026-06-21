@@ -7,6 +7,17 @@ import { PlaybookSelector } from './PlaybookSelector.js';
 import { PlaybookParameterForm } from './PlaybookParameterForm.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
+import {
+  createSchedule,
+  deleteSchedule,
+  listPlaybooksForCwd,
+  listSchedules,
+  previewScheduleCron,
+  runScheduleNow,
+  setScheduleEnabled,
+  type ScheduleApiErrorBody,
+  type SchedulePreviewResponse,
+} from '../schedule-api.js';
 
 /**
  * Seed data for opening the dialog straight into a pre-filled create form,
@@ -31,12 +42,6 @@ interface Props {
    * manual create from the command palette shouldn't trigger the discovery hint).
    */
   onCreated?: (fromPrefill: boolean) => void;
-}
-
-interface PreviewResponse {
-  cronDescription: string;
-  nextRuns: string[];
-  timezone: string;
 }
 
 function formatRelativeTime(iso: string | null | undefined): string {
@@ -160,14 +165,6 @@ function reasonLabel(reason: NonNullable<ScheduleResponse['executionLedger'][num
   }
 }
 
-async function parseJson(res: Response) {
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw body;
-  }
-  return body;
-}
-
 export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
   useEscapeToClose(onClose);
   const {
@@ -198,7 +195,7 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
     defaultAgentType ?? 'claude-code'
   );
   const [enabled, setEnabled] = useState(true);
-  const [preview, setPreview] = useState<PreviewResponse | null>(null);
+  const [preview, setPreview] = useState<SchedulePreviewResponse | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [actionError, setActionError] = useState<string | null>(null);
@@ -209,8 +206,7 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
   );
 
   useEffect(() => {
-    fetch('/api/schedules')
-      .then((res) => res.json())
+    listSchedules()
       .then(handleSchedules)
       .catch(() => {});
   }, [handleSchedules]);
@@ -226,8 +222,7 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
     }
     const timeout = setTimeout(() => {
       setPlaybooksLoading(true);
-      fetch(`/api/playbooks?cwd=${encodeURIComponent(cwd.trim())}`)
-        .then((res) => res.json())
+      listPlaybooksForCwd(cwd.trim())
         .then((items: Playbook[]) => {
           // Schedules currently key playbook lookups off `<cwd>/.kookr/playbooks/`,
           // so non-project (user/plugin) playbooks can't be scheduled yet — hide
@@ -284,13 +279,8 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
       return;
     }
     const timeout = setTimeout(() => {
-      fetch('/api/schedules/preview', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cron }),
-      })
-        .then((res) => res.ok ? res.json() : null)
-        .then((data: PreviewResponse | null) => setPreview(data))
+      previewScheduleCron(cron)
+        .then((data) => setPreview(data))
         .catch(() => setPreview(null));
     }, 250);
     return () => clearTimeout(timeout);
@@ -306,22 +296,18 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
     try {
       setFormError(null);
       setFieldErrors({});
-      const created = await parseJson(await fetch('/api/schedules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: name.trim() || selectedPlaybook.name,
-          cron: cron.trim(),
-          ...(maxTriggers.trim() ? { maxTriggers: Number(maxTriggers) } : {}),
-          cwd: cwd.trim(),
-          enabled,
-          agentType,
-          playbook: {
-            path: selectedPlaybook.id,
-            parameters: parameterValues,
-          },
-        }),
-      }));
+      const created = await createSchedule({
+        name: name.trim() || selectedPlaybook.name,
+        cron: cron.trim(),
+        ...(maxTriggers.trim() ? { maxTriggers: Number(maxTriggers) } : {}),
+        cwd: cwd.trim(),
+        enabled,
+        agentType,
+        playbook: {
+          path: selectedPlaybook.id,
+          parameters: parameterValues,
+        },
+      });
       if (created) {
         setShowCreate(false);
         setName('');
@@ -333,7 +319,7 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
         onCreated?.(Boolean(prefill));
       }
     } catch (err) {
-      const body = err as { error?: string; fieldErrors?: Record<string, string> };
+      const body = err as ScheduleApiErrorBody;
       setFormError(body.error ?? 'Failed to create schedule');
       setFieldErrors(body.fieldErrors ?? {});
     }
@@ -342,13 +328,9 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
   async function toggleEnabled(schedule: ScheduleResponse) {
     try {
       setActionError(null);
-      await parseJson(await fetch(`/api/schedules/${schedule.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: !schedule.enabled }),
-      }));
+      await setScheduleEnabled(schedule.id, !schedule.enabled);
     } catch (err) {
-      const body = err as { error?: string };
+      const body = err as ScheduleApiErrorBody;
       setActionError(body.error ?? 'Failed to update schedule');
     }
   }
@@ -356,9 +338,9 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
   async function runNow(schedule: ScheduleResponse) {
     try {
       setActionError(null);
-      await parseJson(await fetch(`/api/schedules/${schedule.id}/run`, { method: 'POST' }));
+      await runScheduleNow(schedule.id);
     } catch (err) {
-      const body = err as { error?: string };
+      const body = err as ScheduleApiErrorBody;
       setActionError(body.error ?? 'Failed to run schedule');
     }
   }
@@ -369,9 +351,9 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
     setPendingDelete(null);
     try {
       setActionError(null);
-      await parseJson(await fetch(`/api/schedules/${id}`, { method: 'DELETE' }));
+      await deleteSchedule(id);
     } catch (err) {
-      const body = err as { error?: string };
+      const body = err as ScheduleApiErrorBody;
       setActionError(body.error ?? 'Failed to delete schedule');
     }
   }
