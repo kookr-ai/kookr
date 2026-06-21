@@ -82,6 +82,80 @@ describe('projectEventForClient — toolInput truncation', () => {
     expect(projected).toEqual(event);
   });
 
+  it('redacts generic secrets in small client-facing toolInput values', () => {
+    const secret = 'super-secret';
+    const event: AgentEvent = {
+      type: 'tool_use',
+      sessionId: 's1',
+      toolName: 'Bash',
+      toolInput: {
+        command: `curl -H "Authorization: token=${secret}" https://api.github.com`,
+        nested: { url: `https://example.com/callback?password=${secret}` },
+      },
+    };
+
+    const projected = projectEventForClient(event) as typeof event;
+    expect(JSON.stringify(projected.toolInput)).not.toContain(secret);
+    expect((projected.toolInput as Record<string, unknown>).command).toContain('[REDACTED]');
+    expect(((projected.toolInput as Record<string, unknown>).nested as Record<string, unknown>).url).toContain('[REDACTED]');
+  });
+
+  it('redacts generic secrets in structured credential fields', () => {
+    const event: AgentEvent = {
+      type: 'tool_use',
+      sessionId: 's1',
+      toolName: 'CustomTool',
+      toolInput: {
+        token: 'abc123',
+        nested: { password: 'super-secret', client_secret: 'oauth-secret' },
+        command: 'echo ok',
+      },
+    };
+
+    const projected = projectEventForClient(event) as typeof event;
+    expect(projected.toolInput).toEqual({
+      token: '[REDACTED]',
+      nested: { password: '[REDACTED]', client_secret: '[REDACTED]' },
+      command: 'echo ok',
+    });
+  });
+
+  it.each([
+    [
+      'tool_use',
+      {
+        type: 'tool_use',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolInput: { command: 'echo token=abc123' },
+      } satisfies AgentEvent,
+    ],
+    [
+      'tool_error',
+      {
+        type: 'tool_error',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolInput: { command: 'echo token=abc123' },
+        error: 'boom',
+        isInterrupt: false,
+      } satisfies AgentEvent,
+    ],
+    [
+      'permission_request',
+      {
+        type: 'permission_request',
+        sessionId: 's1',
+        toolName: 'Bash',
+        toolInput: { command: 'echo token=abc123' },
+      } satisfies AgentEvent,
+    ],
+  ])('redacts generic secrets in %s toolInput dispatch', (_label, event) => {
+    const projected = projectEventForClient(event) as typeof event;
+    expect(JSON.stringify(projected.toolInput)).not.toContain('abc123');
+    expect((projected.toolInput as Record<string, unknown>).command).toBe('echo [REDACTED]');
+  });
+
   it('large toolInput preserves descriptor keys and truncates the rest', () => {
     const event: AgentEvent = {
       type: 'tool_use',
@@ -96,6 +170,26 @@ describe('projectEventForClient — toolInput truncation', () => {
     const ti = projected.toolInput as Record<string, unknown>;
     expect(ti.file_path).toBe('/README.md');
     expect(ti.content).toBeUndefined();
+    expect(ti._truncated).toMatch(/<\d+ bytes elided>/);
+  });
+
+  it('redacts preserved descriptor values in oversized toolInput', () => {
+    const secret = 'sk-abcdefghijklmnop1234';
+    const event: AgentEvent = {
+      type: 'tool_use',
+      sessionId: 's1',
+      toolName: 'Bash',
+      toolInput: {
+        command: `deploy --token=${secret}`,
+        url: `https://example.com/deploy?api_key=${secret}`,
+        extra_bulk: 'y'.repeat(TOOL_INPUT_MAX_BYTES * 2),
+      },
+    };
+    const projected = projectEventForClient(event) as typeof event;
+    const ti = projected.toolInput as Record<string, unknown>;
+    expect(JSON.stringify(ti)).not.toContain(secret);
+    expect(ti.command).toContain('[REDACTED]');
+    expect(ti.url).toContain('[REDACTED]');
     expect(ti._truncated).toMatch(/<\d+ bytes elided>/);
   });
 
@@ -250,6 +344,21 @@ describe('projectEventForClient — toolInput truncation', () => {
     expect(ti._truncated).toMatch(/<\d+ bytes elided>/);
   });
 
+  it('redacts primitive string toolInput previews before client projection', () => {
+    const secret = 'npm_0123456789abcdefghij';
+    const event: AgentEvent = {
+      type: 'tool_use',
+      sessionId: 's1',
+      toolName: 'CustomTool',
+      toolInput: `publish --token=${secret} ${'q'.repeat(TOOL_INPUT_MAX_BYTES * 2)}`,
+    };
+    const projected = projectEventForClient(event) as typeof event;
+    const ti = projected.toolInput as Record<string, unknown>;
+    expect(ti._preview).toContain('[REDACTED]');
+    expect(JSON.stringify(ti)).not.toContain(secret);
+    expect(ti._truncated).toMatch(/<\d+ bytes elided>/);
+  });
+
   it('array toolInput preserves a prefix instead of silently dropping all content', () => {
     const arr = Array.from({ length: 1000 }, (_, i) => ({ idx: i, data: 'z'.repeat(20) }));
     const event: AgentEvent = {
@@ -296,6 +405,16 @@ describe('projectEventForClient — lastMessage truncation', () => {
     expect(projectEventForClient(event)).toEqual(event);
   });
 
+  it('redacts generic secrets in short lastMessage events', () => {
+    const event: AgentEvent = {
+      type: 'stop',
+      sessionId: 's1',
+      lastMessage: 'Done. token=abc123.',
+    };
+    const projected = projectEventForClient(event) as typeof event;
+    expect(projected.lastMessage).toBe('Done. [REDACTED]');
+  });
+
   it('long lastMessage is truncated to below cap with marker suffix', () => {
     const event: AgentEvent = {
       type: 'subagent_stop',
@@ -306,6 +425,18 @@ describe('projectEventForClient — lastMessage truncation', () => {
     };
     const projected = projectEventForClient(event) as typeof event;
     expect(projected.lastMessage.length).toBeLessThan(event.lastMessage.length);
+    expect(projected.lastMessage).toMatch(/…<\d+ bytes elided>$/);
+  });
+
+  it('redacts generic secrets before truncating long lastMessage events', () => {
+    const event: AgentEvent = {
+      type: 'stop',
+      sessionId: 's1',
+      lastMessage: `token=abc123 ${'A'.repeat(LAST_MESSAGE_MAX_BYTES * 3)}`,
+    };
+    const projected = projectEventForClient(event) as typeof event;
+    expect(projected.lastMessage).toContain('[REDACTED]');
+    expect(projected.lastMessage).not.toContain('abc123');
     expect(projected.lastMessage).toMatch(/…<\d+ bytes elided>$/);
   });
 
