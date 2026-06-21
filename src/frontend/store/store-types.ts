@@ -366,6 +366,7 @@ export interface WorkspaceSlice {
     projects: Array<
       | { kind: 'ok'; projectId: string; summaries: CleanupResultSummary[]; elapsedMs: number }
       | { kind: 'skipped'; projectId: string; reason: 'repo_path_unresolved' }
+      | { kind: 'skipped'; projectId: string; reason: 'workspace_unavailable'; missingDeps: string[] }
       | { kind: 'failed'; projectId: string; code: 'timeout' | 'error'; message: string; elapsedMs: number }
     >;
   }) => void;

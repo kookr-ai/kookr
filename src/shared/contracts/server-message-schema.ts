@@ -271,6 +271,12 @@ const crossProjectSweepProjectResult = z.union([
     reason: z.literal('repo_path_unresolved'),
   }),
   z.object({
+    kind: z.literal('skipped'),
+    projectId: z.string(),
+    reason: z.literal('workspace_unavailable'),
+    missingDeps: z.array(z.string()),
+  }),
+  z.object({
     kind: z.literal('failed'),
     projectId: z.string(),
     code: z.enum(['timeout', 'error']),

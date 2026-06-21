@@ -168,6 +168,18 @@ describe('ServerMessageSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  test('accepts workspace-unavailable sweep results with missing dependency details', () => {
+    const result = ServerMessageSchema.safeParse(serverMessageCase({
+      type: 'workspaceSweepComplete',
+      runId: '',
+      startedAt: '2026-06-10T12:00:00.000Z',
+      finishedAt: '2026-06-10T12:00:00.000Z',
+      projects: [{ kind: 'skipped', projectId: '', reason: 'workspace_unavailable', missingDeps: ['attemptRepository'] }],
+    }));
+
+    expect(result.success).toBe(true);
+  });
+
   test.each([
     {
       name: 'alert without required details',

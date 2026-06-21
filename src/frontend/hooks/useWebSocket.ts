@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import { initTelemetry, track } from '../telemetry.js';
-import type { ClientMessage } from '../../shared/protocol.js';
+import type { ClientMessage, ServerMessage } from '../../shared/protocol.js';
 import { isSystemResourceStatus } from '../resource-status.js';
 import type { TransportSessionSlice, TriageNavigationSlice } from '../store/store-types.js';
 import { recordInbound, recordOutbound } from '../bug-report-recorder.js';
@@ -28,6 +28,19 @@ export function recordAndParseServerMessageForClient(data: string): unknown | nu
 
 export function recordClientMessageForSend(msg: ClientMessage): void {
   recordOutbound(msg);
+}
+
+export function workspaceRefreshMessageAfterSweep(
+  msg: Extract<ServerMessage, { type: 'workspaceSweepComplete' }>,
+  currentWorkspaceProjectId: string | null | undefined,
+): Extract<ClientMessage, { type: 'workspace:getView' }> | null {
+  if (!currentWorkspaceProjectId) return null;
+  const currentProjectWasSwept = msg.projects.some((project) => (
+    project.kind === 'ok' && project.projectId === currentWorkspaceProjectId
+  ));
+  return currentProjectWasSwept
+    ? { type: 'workspace:getView', projectId: currentWorkspaceProjectId }
+    : null;
 }
 
 export function dispatchSnapshotMessageForClient(
@@ -258,6 +271,14 @@ export function useWebSocket() {
                 finishedAt: msg.finishedAt,
                 projects: msg.projects,
               });
+              {
+                const refresh = workspaceRefreshMessageAfterSweep(msg, store.workspaceView?.projectId);
+                if (refresh) {
+                  store.setWorkspaceLoading(true);
+                  const sent = controllerRef.current?.send(JSON.stringify(refresh)) ?? false;
+                  if (sent) recordClientMessageForSend(refresh);
+                }
+              }
               break;
             case 'workspaceSweepBusy':
               store.handleSweepBusy({ holderPid: msg.holderPid, heldSince: msg.heldSince });

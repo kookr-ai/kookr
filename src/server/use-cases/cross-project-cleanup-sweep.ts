@@ -27,6 +27,18 @@ const execFile = promisify(execFileCb);
 const PER_PROJECT_TIMEOUT_MS = 10 * 60_000;
 const LOCK_TTL_MS = 20 * 60 * 1000; // 20 min
 const FETCH_TIMEOUT_MS = 30_000;
+const NESTED_GIT_ENV_VARS = [
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_CEILING_DIRECTORIES',
+  'GIT_COMMON_DIR',
+  'GIT_CONFIG_COUNT',
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_DIR',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_PREFIX',
+  'GIT_WORK_TREE',
+] as const;
 
 export interface CrossProjectSweepDeps {
   cleanupDeps: WorkspaceCleanupDeps;
@@ -146,8 +158,8 @@ async function sweepOneProject(
   // visible to merge-base checks. Then converge half-deleted worktree state
   // from prior sweeps/crashes. Both are non-fatal: the per-candidate
   // classifier still reports visible skipped/blocked reasons where possible.
-  await execFile('git', ['-C', repoPath, 'fetch', 'origin', '--prune'], { timeout: FETCH_TIMEOUT_MS }).catch(() => undefined);
-  await execFile('git', ['-C', repoPath, 'worktree', 'prune'], { timeout: 10_000 }).catch(() => undefined);
+  await execFile('git', ['-C', repoPath, 'fetch', 'origin', '--prune'], { timeout: FETCH_TIMEOUT_MS, env: gitExecEnv() }).catch(() => undefined);
+  await execFile('git', ['-C', repoPath, 'worktree', 'prune'], { timeout: 10_000, env: gitExecEnv() }).catch(() => undefined);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -329,4 +341,12 @@ function readLockHolder(lockPath: string): { pid: number; startedAt: string } {
 
 function isEExist(err: unknown): boolean {
   return !!err && typeof err === 'object' && (err as NodeJS.ErrnoException).code === 'EEXIST';
+}
+
+function gitExecEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const name of NESTED_GIT_ENV_VARS) {
+    delete env[name];
+  }
+  return env;
 }
