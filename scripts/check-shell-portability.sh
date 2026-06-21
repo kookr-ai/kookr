@@ -23,6 +23,19 @@
 # that ref is absent (local dev). An explicit base-ref that cannot be resolved
 # is a hard error (exit 2) — a CI gate must never pass vacuously.
 #
+# Optional caller restriction:
+#   SHELL_PORTABILITY_PATHS_FILE=/tmp/paths scripts/check-shell-portability.sh
+#
+# The file is newline-delimited git pathspecs selected by the caller. This lets
+# hooks restrict the scan to shell/subprocess files while keeping this script's
+# default base-ref semantics.
+#
+# Optional full-tree scan:
+#   SHELL_PORTABILITY_SCAN_ALL=1 scripts/check-shell-portability.sh
+#
+# This is for first-push/fresh-clone hooks where every committed file is the
+# publication set and no merge base exists yet.
+#
 # Opt out a single intentional line by appending a `portability-ok` comment.
 
 set -uo pipefail
@@ -31,7 +44,9 @@ set -uo pipefail
 # "an explicit base was given but is unresolvable" (hard error). The latter
 # means a CI invocation passed a bad/empty ref — failing loudly beats a
 # silent exit-0 that lets violations through the gate.
-if [ "$#" -ge 1 ]; then
+if [ "${SHELL_PORTABILITY_SCAN_ALL:-}" = "1" ]; then
+  BASE=""
+elif [ "$#" -ge 1 ]; then
   BASE="$1"
   if [ -z "$BASE" ] || ! git rev-parse --verify --quiet "$BASE" >/dev/null 2>&1; then
     echo "check-shell-portability: explicit base ref '$BASE' is empty or unresolvable." >&2
@@ -45,6 +60,25 @@ else
   fi
 fi
 
+PATHS=(.)
+if [ -n "${SHELL_PORTABILITY_PATHS_FILE:-}" ]; then
+  if [ ! -f "$SHELL_PORTABILITY_PATHS_FILE" ]; then
+    echo "check-shell-portability: paths file '$SHELL_PORTABILITY_PATHS_FILE' not found." >&2
+    exit 2
+  fi
+
+  PATHS=()
+  while IFS= read -r pathspec || [ -n "$pathspec" ]; do
+    [ -z "$pathspec" ] && continue
+    PATHS+=("$pathspec")
+  done < "$SHELL_PORTABILITY_PATHS_FILE"
+
+  if [ "${#PATHS[@]}" -eq 0 ]; then
+    echo "check-shell-portability: no caller-selected paths to scan."
+    exit 0
+  fi
+fi
+
 # Added lines only (`+` prefix, not the `+++` headers), with the leading `+`
 # stripped and any `portability-ok` opt-out lines removed up front.
 #
@@ -53,14 +87,23 @@ fi
 #     this catalog) legitimately *quote* the very idioms we flag.
 #   - the linter's own source and test — they contain the idioms in regexes,
 #     messages, and fixtures, so scanning them would make the gate self-flag.
-ADDED=$( { git diff --unified=0 --no-color "$BASE...HEAD" -- \
-    . \
-    ':(exclude)*.md' \
-    ':(exclude)*check-shell-portability.sh' \
-    ':(exclude)*check-shell-portability.test.sh' \
-  | grep -E '^\+[^+]' \
-  | sed 's/^+//' \
-  | grep -vE 'portability-ok'; } || true )
+if [ -n "$BASE" ]; then
+  ADDED=$( { git diff --unified=0 --no-color "$BASE...HEAD" -- \
+      "${PATHS[@]}" \
+      ':(exclude)*.md' \
+      ':(exclude)*check-shell-portability.sh' \
+      ':(exclude)*check-shell-portability.test.sh' \
+    | grep -E '^\+[^+]' \
+    | sed 's/^+//' \
+    | grep -vE 'portability-ok'; } || true )
+else
+  ADDED=$( { git grep -hI -e . -- \
+      "${PATHS[@]}" \
+      ':(exclude)*.md' \
+      ':(exclude)*check-shell-portability.sh' \
+      ':(exclude)*check-shell-portability.test.sh' \
+    | grep -vE 'portability-ok'; } || true )
+fi
 
 FOUND=0
 

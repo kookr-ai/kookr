@@ -225,6 +225,101 @@ case_default_base_missing() {
 }
 case_default_base_missing
 
+# --- caller-selected paths restrict what the helper scans ------------------
+case_caller_paths_restrict_scan() {
+  local repo; repo=$(make_repo)
+  (
+    cd "$repo"
+    git update-ref refs/remotes/origin/main main
+    git checkout -q -b feature
+    mkdir -p src scripts
+    printf 'const example = "readlink -f /tmp";\n' > src/note.ts
+    printf 'grep -E "x" file\n' > scripts/portable.sh
+    git add . >/dev/null
+    git commit -q -m "mixed diff"
+    printf 'scripts/portable.sh\n' > paths.txt
+  )
+  local out actual_exit
+  out=$(cd "$repo" && SHELL_PORTABILITY_PATHS_FILE=paths.txt bash check-shell-portability.sh 2>&1) && actual_exit=0 || actual_exit=$?
+  if [ "$actual_exit" = 0 ] && printf '%s' "$out" | grep -q 'no GNU-only'; then
+    PASS=$((PASS + 1)); printf 'PASS: caller-selected paths restrict scan\n'
+  else
+    FAIL=$((FAIL + 1)); FAILED_CASES+=("caller paths restrict scan")
+    printf 'FAIL: caller paths restrict scan — expected exit 0, got exit %s\n' "$actual_exit" >&2
+    printf '      output:\n%s\n' "$out" | sed 's/^/        /' >&2
+  fi
+  rm -rf "$repo"
+}
+case_caller_paths_restrict_scan
+
+case_caller_paths_still_scan_selected_violation() {
+  local repo; repo=$(make_repo)
+  (
+    cd "$repo"
+    git update-ref refs/remotes/origin/main main
+    git checkout -q -b feature
+    mkdir -p src scripts
+    printf 'const example = "readlink -f /tmp";\n' > src/note.ts
+    printf 'grep -P "x" file\n' > scripts/unsafe.sh
+    git add . >/dev/null
+    git commit -q -m "selected violation"
+    printf 'scripts/unsafe.sh\n' > paths.txt
+  )
+  local out actual_exit
+  out=$(cd "$repo" && SHELL_PORTABILITY_PATHS_FILE=paths.txt bash check-shell-portability.sh 2>&1) && actual_exit=0 || actual_exit=$?
+  if [ "$actual_exit" = 1 ] && printf '%s' "$out" | grep -q 'grep -P'; then
+    PASS=$((PASS + 1)); printf 'PASS: caller-selected paths still scan violations\n'
+  else
+    FAIL=$((FAIL + 1)); FAILED_CASES+=("caller paths scan selected violation")
+    printf 'FAIL: caller paths scan selected violation — expected exit 1, got exit %s\n' "$actual_exit" >&2
+    printf '      output:\n%s\n' "$out" | sed 's/^/        /' >&2
+  fi
+  rm -rf "$repo"
+}
+case_caller_paths_still_scan_selected_violation
+
+case_empty_caller_paths_file() {
+  local repo; repo=$(make_repo)
+  commit_line "$repo" 'grep -P "x" file'
+  : > "$repo/paths.txt"
+  local out actual_exit
+  out=$(cd "$repo" && SHELL_PORTABILITY_PATHS_FILE=paths.txt bash check-shell-portability.sh main 2>&1) && actual_exit=0 || actual_exit=$?
+  if [ "$actual_exit" = 0 ] && printf '%s' "$out" | grep -q 'no caller-selected paths'; then
+    PASS=$((PASS + 1)); printf 'PASS: empty caller paths file skips cleanly\n'
+  else
+    FAIL=$((FAIL + 1)); FAILED_CASES+=("empty caller paths file")
+    printf 'FAIL: empty caller paths file — expected exit 0, got exit %s\n' "$actual_exit" >&2
+    printf '      output:\n%s\n' "$out" | sed 's/^/        /' >&2
+  fi
+  rm -rf "$repo"
+}
+case_empty_caller_paths_file
+
+# --- full-tree scan for first-push/fresh-clone hooks -----------------------
+case_scan_all_without_base() {
+  local repo; repo=$(make_repo)
+  (
+    cd "$repo"
+    git checkout -q -b feature
+    printf 'readlink -f "$0"\n' > new.sh
+    git add . >/dev/null
+    git commit -q -m "full tree scan"
+    git update-ref -d refs/remotes/origin/main 2>/dev/null || true
+    printf 'new.sh\n' > paths.txt
+  )
+  local out actual_exit
+  out=$(cd "$repo" && SHELL_PORTABILITY_PATHS_FILE=paths.txt SHELL_PORTABILITY_SCAN_ALL=1 bash check-shell-portability.sh 2>&1) && actual_exit=0 || actual_exit=$?
+  if [ "$actual_exit" = 1 ] && printf '%s' "$out" | grep -q 'readlink -f'; then
+    PASS=$((PASS + 1)); printf 'PASS: full-tree scan works without origin/main\n'
+  else
+    FAIL=$((FAIL + 1)); FAILED_CASES+=("scan all without base")
+    printf 'FAIL: scan all without base — expected exit 1, got exit %s\n' "$actual_exit" >&2
+    printf '      output:\n%s\n' "$out" | sed 's/^/        /' >&2
+  fi
+  rm -rf "$repo"
+}
+case_scan_all_without_base
+
 printf '\n----\n'
 printf 'check-shell-portability tests: %d passed, %d failed.\n' "$PASS" "$FAIL"
 if [ "$FAIL" -ne 0 ]; then
