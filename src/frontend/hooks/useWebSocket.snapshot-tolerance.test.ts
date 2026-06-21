@@ -12,9 +12,11 @@ import {
   recordAndParseServerMessageForClient,
   recordClientMessageForSend,
   useWebSocket,
+  workspaceRefreshMessageAfterSweep,
 } from './useWebSocket.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { getBugReportWireObservations, resetBugReportRecorderForTests } from '../bug-report-recorder.js';
+import type { ServerMessage } from '../../shared/protocol.js';
 
 class RuntimeWebSocket {
   static OPEN = 1;
@@ -173,6 +175,26 @@ describe('parseServerMessageForClient snapshot tolerance', () => {
     expect(serialized).toContain('"type":"respond"');
     expect(serialized).toContain('"input"');
     expect(serialized).not.toContain('private customer prompt');
+  });
+
+  it('refreshes only the currently displayed workspace after a matching sweep project completes', () => {
+    const msg: Extract<ServerMessage, { type: 'workspaceSweepComplete' }> = {
+      type: 'workspaceSweepComplete',
+      runId: 'run-1',
+      startedAt: '2026-06-21T05:00:00.000Z',
+      finishedAt: '2026-06-21T05:00:01.000Z',
+      projects: [
+        { kind: 'ok', projectId: 'github.com/acme/a', summaries: [], elapsedMs: 5 },
+        { kind: 'ok', projectId: 'github.com/acme/b', summaries: [], elapsedMs: 7 },
+      ],
+    };
+
+    expect(workspaceRefreshMessageAfterSweep(msg, 'github.com/acme/a')).toEqual({
+      type: 'workspace:getView',
+      projectId: 'github.com/acme/a',
+    });
+    expect(workspaceRefreshMessageAfterSweep(msg, 'github.com/acme/c')).toBeNull();
+    expect(workspaceRefreshMessageAfterSweep(msg, null)).toBeNull();
   });
 
 

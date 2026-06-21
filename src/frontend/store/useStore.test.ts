@@ -2106,6 +2106,28 @@ describe('Kookr Zustand Store', () => {
     expect(alerts[0].severity).toBe('info');
   });
 
+  test('handleSweepComplete reports workspace-unavailable sweeps as errors', () => {
+    store.getState().setSweepRunning(true);
+    store.getState().handleSweepComplete({
+      runId: '',
+      startedAt: '2026-06-21T05:00:00.000Z',
+      finishedAt: '2026-06-21T05:00:00.000Z',
+      projects: [{
+        kind: 'skipped',
+        projectId: '',
+        reason: 'workspace_unavailable',
+        missingDeps: ['attemptRepository'],
+      }],
+    });
+
+    expect(store.getState().sweepRunning).toBe(false);
+    const alerts = store.getState().alerts;
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].severity).toBe('error');
+    expect(alerts[0].summary).toContain('Sweep unavailable');
+    expect(alerts[0].summary).not.toContain('attemptRepository');
+  });
+
   describe('selectProject auto-select finding', () => {
     const anomaly = {
       agentId: 'agent-1',

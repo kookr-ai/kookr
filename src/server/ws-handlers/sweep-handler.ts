@@ -31,38 +31,48 @@ export class SweepHandler {
   constructor(private readonly deps: SweepHandlerDeps) {}
 
   async handle(): Promise<void> {
-    if (
-      !this.deps.workspaceEnabled
-      || !this.deps.projectConfigStore
-      || !this.deps.attemptRepository
-      || !this.deps.policyResolver
-      || !this.deps.leaseService
-    ) {
+    const missingDeps = this.missingWorkspaceDeps();
+    if (missingDeps.length > 0) {
       this.deps.send({
         type: 'workspaceSweepComplete',
         runId: '',
         startedAt: new Date().toISOString(),
         finishedAt: new Date().toISOString(),
-        projects: [],
+        projects: [{
+          kind: 'skipped',
+          projectId: '',
+          reason: 'workspace_unavailable',
+          missingDeps,
+        }],
       });
+      return;
+    }
+
+    const {
+      projectConfigStore,
+      attemptRepository,
+      policyResolver,
+      leaseService,
+    } = this.deps;
+    if (!projectConfigStore || !attemptRepository || !policyResolver || !leaseService) {
       return;
     }
 
     try {
       const outcome = await runCrossProjectSweep({
         cleanupDeps: {
-          policyResolver: this.deps.policyResolver,
-          leaseService: this.deps.leaseService,
-          attemptRepository: this.deps.attemptRepository,
+          policyResolver,
+          leaseService,
+          attemptRepository,
         },
-        projectConfigStore: this.deps.projectConfigStore,
+        projectConfigStore,
         taskStore: this.deps.taskStore,
         resolveRepoPath: async (projectId) => {
           const context = await resolveWorkspaceContext(projectId, {
             taskStore: this.deps.taskStore,
             serverCwd: this.deps.serverCwd,
             serverProjectId: this.deps.serverProjectId,
-            projectConfigStore: this.deps.projectConfigStore,
+            projectConfigStore,
           });
           return context.repoPath;
         },
@@ -101,5 +111,15 @@ export class SweepHandler {
         }],
       });
     }
+  }
+
+  private missingWorkspaceDeps(): string[] {
+    const missing: string[] = [];
+    if (!this.deps.workspaceEnabled) missing.push('workspaceEnabled');
+    if (!this.deps.projectConfigStore) missing.push('projectConfigStore');
+    if (!this.deps.attemptRepository) missing.push('attemptRepository');
+    if (!this.deps.policyResolver) missing.push('policyResolver');
+    if (!this.deps.leaseService) missing.push('leaseService');
+    return missing;
   }
 }

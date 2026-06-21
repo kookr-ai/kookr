@@ -21,6 +21,18 @@ import type {
 } from '../../core/workspace-types.js';
 
 const execFile = promisify(execFileCb);
+const NESTED_GIT_ENV_VARS = [
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_CEILING_DIRECTORIES',
+  'GIT_COMMON_DIR',
+  'GIT_CONFIG_COUNT',
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_DIR',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_PREFIX',
+  'GIT_WORK_TREE',
+] as const;
 
 /** Default per-subprocess timeout. 15 s tolerates large `git status`
  *  on WSL / cold filesystems without false-positive timeouts on
@@ -188,13 +200,7 @@ type RunGitResult = { kind: 'ok'; stdout: string } | { kind: 'error' };
 async function runGit({ cwd, args, timeoutMs }: RunGitArgs): Promise<RunGitResult> {
   const started = Date.now();
   try {
-    // Strip GIT_DIR / GIT_WORK_TREE so cwd is authoritative (same
-    // contract as core/git-helpers.ts `gitIn`). These env vars leak
-    // from git hooks and otherwise override --work-tree / cwd.
-    const env = { ...process.env };
-    delete env.GIT_DIR;
-    delete env.GIT_WORK_TREE;
-    const { stdout } = await execFile('git', args, { cwd, env, timeout: timeoutMs });
+    const { stdout } = await execFile('git', args, { cwd, env: gitExecEnv(), timeout: timeoutMs });
     return { kind: 'ok', stdout: stdout.replace(/\n+$/, '') };
   } catch (err) {
     logEnrichmentFailure({
@@ -205,6 +211,14 @@ async function runGit({ cwd, args, timeoutMs }: RunGitArgs): Promise<RunGitResul
     });
     return { kind: 'error' };
   }
+}
+
+function gitExecEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const name of NESTED_GIT_ENV_VARS) {
+    delete env[name];
+  }
+  return env;
 }
 
 interface EnrichmentFailure {
