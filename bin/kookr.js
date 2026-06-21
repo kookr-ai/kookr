@@ -10,6 +10,7 @@ const HELP_TEXT = `kookr - local AI agent supervisor.
 Usage:
   kookr                         Start the built Kookr server.
   kookr spawn [OPTIONS] [PROMPT...]    Create a task from the current shell.
+  kookr doctor --json           Run machine-readable launch preflight checks.
   kookr signal <kind> [OPTIONS]  Raise an agent → user signal for the current task.
   kookr status [--json]         Print a read-only server snapshot.
   kookr ralph <command> <taskId> [--json] Inspect or control a Ralph loop.
@@ -19,10 +20,20 @@ Usage:
   kookr push test <deviceId>    Send a relay push test.
   kookr completion bash|zsh     Print a shell completion script.
 
-Use --json with spawn, status, or ralph for one machine-readable output envelope.
+Use --json with spawn, doctor, status, or ralph for one machine-readable output envelope.
 
 Compatibility aliases:
   kookr-spawn, kookr-status, and kookr-ralph still work for now, but are deprecated.
+`;
+
+const DOCTOR_HELP_TEXT = `kookr doctor — run machine-readable launch preflight checks.
+
+Usage:
+  kookr doctor --json
+
+Options:
+  --json       Print one JSON report to stdout.
+  -h, --help   Show this help.
 `;
 
 async function main({
@@ -42,6 +53,11 @@ async function main({
   if (command === 'spawn') {
     const { main: runSpawnCli } = await import('./kookr-spawn.js');
     return runSpawnCli({ argv: rest, env, out, err, exit });
+  }
+
+  if (command === 'doctor') {
+    await runDoctorCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
   }
 
   if (command === 'signal') {
@@ -132,6 +148,30 @@ async function runCommandOutcomeCommand(argv) {
   }
   const mod = await import(entry);
   process.exitCode = await mod.runCommandOutcomeCli(argv);
+}
+
+async function runDoctorCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  if (argv.includes('-h') || argv.includes('--help')) {
+    out.log(DOCTOR_HELP_TEXT);
+    process.exitCode = 0;
+    return;
+  }
+  if (env === process.env) {
+    try {
+      process.loadEnvFile();
+    } catch {}
+  }
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-doctor.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-doctor.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] Doctor module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exit(1);
+  }
+  const mod = await import(pathToFileURL(entry).href);
+  process.exitCode = await mod.runDoctorCli(argv, { env, out, cwd: process.cwd() });
 }
 
 async function loadCompletionModule() {

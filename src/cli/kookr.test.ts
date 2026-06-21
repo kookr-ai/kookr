@@ -66,10 +66,19 @@ describe('kookr dispatcher', () => {
     expect(deps.errors.join('\n')).toContain('Unknown command: wat');
   });
 
+  it('dispatches doctor help through the main binary', async () => {
+    const deps = makeDeps();
+    await main({ argv: ['doctor', '--help'], env: {}, out: deps.out, err: deps.err, exit: deps.exit });
+    expect(deps.codes).toEqual([0]);
+    expect(deps.logs.join('\n')).toContain('kookr doctor');
+    expect(deps.errors).toEqual([]);
+  });
+
   it.each([
     [['--help'], 'kookr - local AI agent supervisor'],
     [['spawn', '--help'], 'kookr spawn'],
     [['status', '--help'], 'kookr status'],
+    [['doctor', '--help'], 'kookr doctor'],
     [['ralph', '--help'], 'kookr ralph'],
     [['completion', 'bash'], 'complete -F _kookr kookr'],
   ])('prints command output through bin/kookr.js %s', async (argv, helpNeedle) => {
