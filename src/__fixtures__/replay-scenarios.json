@@ -1,0 +1,41 @@
+{
+  "$comment": "Built-in hook-replay scenario catalog (issue #1043). Each scenario maps a named, discoverable detector-development case to a fixture in this directory, the detector path it exercises, and the anomaly/finding a developer should expect. Consumed by scripts/replay-hooks.ts (`--list-scenarios`, `--scenario <name>`). Keep `fixture` paths relative to this directory and every entry replayable end-to-end (`--scenario <name> --dry-run` must parse cleanly without a server).",
+  "scenarios": [
+    {
+      "name": "idle-prompt",
+      "fixture": "hook-notification-idle.json",
+      "purpose": "Agent has gone idle and is waiting for user input — exercises the idle/attention routing path.",
+      "expected": "A single Notification event (notification_type=idle_prompt) that should surface the session as needing attention."
+    },
+    {
+      "name": "permission-request",
+      "fixture": "hook-permission-request.json",
+      "purpose": "Agent is blocked on a tool-permission decision — exercises the permission-gating attention path.",
+      "expected": "A PermissionRequest event for a Bash tool call, carrying permission_suggestions; the session should route as blocked-on-permission."
+    },
+    {
+      "name": "tool-failure",
+      "fixture": "hook-post-tool-use-failure.json",
+      "purpose": "A tool call failed mid-task — exercises the tool-failure detector path.",
+      "expected": "A PostToolUseFailure event for a Read tool call with error 'File does not exist.'."
+    },
+    {
+      "name": "billing-stop",
+      "fixture": "hook-stop-failure.json",
+      "purpose": "A run halted on a billing/credit error — exercises the stalled / credit-exhaustion detector.",
+      "expected": "A StopFailure event (error=billing_error, last_assistant_message 'Credit balance is too low')."
+    },
+    {
+      "name": "task-notification",
+      "fixture": "hook-user-prompt-submit-task-notification.json",
+      "purpose": "A subagent completion arrives wrapped in a UserPromptSubmit task-notification — exercises the synthetic-re-entry suppression path.",
+      "expected": "A UserPromptSubmit event whose prompt wraps a <task-notification> payload; the parser intentionally drops it (so the dry-run classifies it as 'unknown', not a user message)."
+    },
+    {
+      "name": "codex-mcp-startup",
+      "fixture": "hook-codex-mcp-startup.jsonl",
+      "purpose": "A multi-record Codex MCP server startup sequence — exercises ordered, multi-event ingestion.",
+      "expected": "A sequence of records beginning with a Notification (mcp_startup_starting) followed by SessionStart and PreToolUse events."
+    }
+  ]
+}

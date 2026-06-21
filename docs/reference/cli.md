@@ -390,10 +390,29 @@ node --import tsx scripts/replay-hooks.ts fixture.jsonl --session repro-660 --de
 node --import tsx scripts/replay-hooks.ts fixture.jsonl --dry-run
 ```
 
-It parses the JSONL with the same `splitHookRecords` the production watcher uses and pushes each record through `POST /api/hook-event/:sessionId`. Every record is replayed against a dedicated **synthetic** session whose id starts with `kookr-replay-` (the prefix is prepended automatically). Ingestion derives `origin: 'replay'` from that prefix, so replayed records are tagged replay-not-live and are scoped to a session that can never be mistaken for — or collide with — a live agent's state.
+It parses the JSONL with the same `splitHookRequestBody` the production HTTP route uses and pushes each record through `POST /api/hook-event/:sessionId`. Every record is replayed against a dedicated **synthetic** session whose id starts with `kookr-replay-` (the prefix is prepended automatically). Ingestion derives `origin: 'replay'` from that prefix, so replayed records are tagged replay-not-live and are scoped to a session that can never be mistaken for — or collide with — a live agent's state.
+
+### Built-in scenario catalog
+
+For detector development you usually don't need a captured log — a curated set of named scenarios maps a detector case to a fixture, the path it exercises, and the anomaly to expect. The catalog lives in `src/__fixtures__/replay-scenarios.json`.
+
+```bash
+# List every built-in scenario (name, fixture, purpose, expected finding)
+node --import tsx scripts/replay-hooks.ts --list-scenarios
+
+# Replay a named scenario instead of a file path
+node --import tsx scripts/replay-hooks.ts --scenario billing-stop
+
+# Dry-run a scenario (parses without a running instance — CI-friendly)
+node --import tsx scripts/replay-hooks.ts --scenario tool-failure --dry-run
+```
+
+Scenarios include `idle-prompt`, `permission-request`, `tool-failure`, `billing-stop`, `task-notification`, and `codex-mcp-startup`. To add one, drop a fixture in `src/__fixtures__/` and append an entry (`name`, `fixture`, `purpose`, `expected`) to the manifest; `scripts/replay-hooks.test.ts` validates the manifest and dry-runs every scenario in CI without a server.
 
 Options:
 
+- `--scenario <name>` — replay a named built-in scenario (see `--list-scenarios`); mutually exclusive with a file argument
+- `--list-scenarios` — print the built-in scenario catalog and exit
 - `--session <id>` — target session id (forced into a `kookr-replay-` session)
 - `--base-url <url>` — target instance; defaults to `KOOKR_API_BASE_URL`, then `KOOKR_PORT`, then a probe of ports `4800`/`4801`
 - `--delay-ms <n>` — fixed delay between records (default `0`)

@@ -1,5 +1,17 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { parseArgs, toReplaySessionId, resolveBaseUrl, classify, splitReplayRecords } from './replay-hooks.js';
+import {
+  parseArgs,
+  toReplaySessionId,
+  resolveBaseUrl,
+  classify,
+  splitReplayRecords,
+  parseScenarioManifest,
+  loadScenarios,
+  resolveScenario,
+  scenarioFixturePath,
+  formatScenarioList,
+} from './replay-hooks.js';
 import { REPLAY_SESSION_PREFIX } from '../src/server/hook-ingestion.js';
 
 describe('replay-hooks — toReplaySessionId (synthetic replay scoping)', () => {
@@ -81,6 +93,20 @@ describe('replay-hooks — classify', () => {
   it('returns malformed for invalid JSON', () => {
     expect(classify('{not json}')).toBe('malformed');
   });
+
+  it('returns unknown for an intentionally dropped UserPromptSubmit task-notification', () => {
+    // parseHookEvent deliberately drops the synthetic <task-notification> re-entry
+    // (returns null), so the harness classifies the task-notification scenario as
+    // unknown — not parsed. Guards the suppression path in hook-parser.ts.
+    expect(
+      classify(JSON.stringify({
+        session_id: 'x',
+        hook_event_name: 'UserPromptSubmit',
+        cwd: '/',
+        prompt: '<task-notification><status>completed</status></task-notification>',
+      })),
+    ).toBe('unknown');
+  });
 });
 
 describe('replay-hooks — splitReplayRecords', () => {
@@ -116,5 +142,130 @@ describe('replay-hooks — resolveBaseUrl precedence', () => {
 
   it('rejects an invalid KOOKR_PORT', async () => {
     await expect(resolveBaseUrl(undefined, { KOOKR_PORT: '99999' })).rejects.toThrow(/KOOKR_PORT/);
+  });
+});
+
+describe('replay-hooks — scenario catalog argument parsing', () => {
+  it('parses --list-scenarios with no positional', () => {
+    expect(parseArgs(['--list-scenarios'])).toMatchObject({ listScenarios: true });
+  });
+
+  it('parses --scenario <name> with no positional', () => {
+    expect(parseArgs(['--scenario', 'billing-stop', '--dry-run'])).toMatchObject({
+      scenario: 'billing-stop',
+      dryRun: true,
+    });
+  });
+
+  it('rejects --scenario combined with a file positional', () => {
+    expect(() => parseArgs(['f.jsonl', '--scenario', 'x'])).toThrow(/not both/);
+  });
+
+  it('rejects --scenario with a missing value or a following flag', () => {
+    expect(() => parseArgs(['--scenario'])).toThrow(/--scenario expects a value/);
+    expect(() => parseArgs(['--scenario', '--dry-run'])).toThrow(/--scenario expects a value/);
+  });
+
+  it('rejects --list-scenarios combined with a file positional or --scenario', () => {
+    expect(() => parseArgs(['--list-scenarios', 'f.jsonl'])).toThrow(/--list-scenarios/);
+    expect(() => parseArgs(['--list-scenarios', '--scenario', 'x'])).toThrow(/--list-scenarios/);
+  });
+});
+
+describe('replay-hooks — parseScenarioManifest validation', () => {
+  const ok = { scenarios: [{ name: 'a', fixture: 'a.json', purpose: 'p', expected: 'e' }] };
+
+  it('accepts a well-formed manifest', () => {
+    expect(parseScenarioManifest(ok)).toEqual([{ name: 'a', fixture: 'a.json', purpose: 'p', expected: 'e' }]);
+  });
+
+  it('ignores unknown manifest keys (e.g. $comment)', () => {
+    expect(parseScenarioManifest({ $comment: 'x', ...ok })).toHaveLength(1);
+  });
+
+  it('rejects a non-object / missing / non-array scenarios', () => {
+    expect(() => parseScenarioManifest(null)).toThrow(/scenarios/);
+    expect(() => parseScenarioManifest({})).toThrow(/scenarios/);
+    expect(() => parseScenarioManifest({ scenarios: 'nope' })).toThrow(/scenarios/);
+  });
+
+  it('rejects an entry missing a required string field', () => {
+    expect(() => parseScenarioManifest({ scenarios: [{ name: 'a', fixture: 'a.json', purpose: 'p' }] }))
+      .toThrow(/expected/);
+    expect(() => parseScenarioManifest({ scenarios: [{ name: '', fixture: 'a.json', purpose: 'p', expected: 'e' }] }))
+      .toThrow(/name/);
+  });
+
+  it('rejects a fixture that is not a bare filename (path escape)', () => {
+    for (const fixture of ['../../etc/passwd', '/etc/passwd', 'sub/dir.json', 'a b.json']) {
+      expect(() => parseScenarioManifest({ scenarios: [{ name: 'a', fixture, purpose: 'p', expected: 'e' }] }))
+        .toThrow(/bare filename/);
+    }
+  });
+
+  it('rejects duplicate scenario names', () => {
+    expect(() => parseScenarioManifest({ scenarios: [ok.scenarios[0], ok.scenarios[0]] }))
+      .toThrow(/Duplicate scenario name: a/);
+  });
+});
+
+describe('replay-hooks — resolveScenario', () => {
+  const scenarios = [
+    { name: 'a', fixture: 'a.json', purpose: 'p', expected: 'e' },
+    { name: 'b', fixture: 'b.json', purpose: 'p', expected: 'e' },
+  ];
+
+  it('resolves a known scenario by name', () => {
+    expect(resolveScenario('b', scenarios).fixture).toBe('b.json');
+  });
+
+  it('throws listing available names for an unknown scenario', () => {
+    expect(() => resolveScenario('z', scenarios)).toThrow(/Unknown scenario: z.*a, b/s);
+  });
+});
+
+describe('replay-hooks — built-in catalog (CI dry-run, no server)', () => {
+  it('loads the real manifest; every scenario resolves and dry-runs without malformed records', async () => {
+    const scenarios = await loadScenarios();
+    expect(scenarios.length).toBeGreaterThan(0);
+
+    let totalParsed = 0;
+    for (const scenario of scenarios) {
+      // Round-trips through the public resolver.
+      expect(resolveScenario(scenario.name, scenarios)).toBe(scenario);
+
+      // The fixture exists and frames/JSON-parses — the "dry-run each scenario
+      // in CI without a server" guarantee. Records may classify as 'unknown'
+      // when the parser intentionally drops them (e.g. task-notification), but
+      // none may be 'malformed'.
+      const path = scenarioFixturePath(scenario);
+      const content = await readFile(path, 'utf-8');
+      const records = splitReplayRecords(content);
+      expect(records.length, `${scenario.name} -> ${scenario.fixture}`).toBeGreaterThan(0);
+      const tally = records.map(classify);
+      const parsed = tally.filter((t) => t === 'parsed').length;
+      expect(tally, `${scenario.name} records should all frame + parse`).not.toContain('malformed');
+      // Every scenario must exercise at least one recognized hook event, except
+      // task-notification, which intentionally exercises the parser's drop path.
+      if (scenario.name !== 'task-notification') {
+        expect(parsed, `${scenario.name} should classify at least one parsed event`).toBeGreaterThan(0);
+      }
+      totalParsed += parsed;
+    }
+    expect(totalParsed).toBeGreaterThan(0);
+  });
+
+  it('formats the catalog with the name, fixture, purpose and expected of each scenario', async () => {
+    const scenarios = await loadScenarios();
+    const listing = formatScenarioList(scenarios);
+    for (const scenario of scenarios) {
+      expect(listing).toContain(scenario.name);
+      expect(listing).toContain(scenario.fixture);
+    }
+    // Spot-check a full entry to guard the multi-line template.
+    const billing = scenarios.find((s) => s.name === 'billing-stop');
+    expect(billing).toBeDefined();
+    expect(listing).toContain(billing!.purpose);
+    expect(listing).toContain(billing!.expected);
   });
 });
