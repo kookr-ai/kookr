@@ -153,6 +153,56 @@ KOOKR_CODEX_BIN=/path/to/codex
 
 Kookr's Codex adapter defaults to `codex` on `PATH`; the local fork is maintained separately at `~/git/codex`.
 
+## Task Launch Blocked By A Dependency Preflight
+
+Some tasks declare runtime **dependencies** — for example, a knowledge-base
+lookup needs the `kb` CLI and a healthy index. Before such a task starts, Kookr
+runs a **dependency preflight** ([`src/core/launch-dependency-preflight.ts`](../src/core/launch-dependency-preflight.ts))
+and **blocks the launch** if a dependency is not ready. This is deliberate:
+starting a KB-dependent agent against a broken or empty index wastes a run and
+produces misleading output.
+
+A blocked launch shows a **critical alert** in the dashboard:
+
+```text
+Error starting "<prompt excerpt>": <summary> (<category>). <detail> Recommended action: <action>
+Dependency: kb
+Failure mode: <category>
+Detail: <what kb doctor reported>
+Recommended action: <what to do>
+```
+
+The `kb` preflight runs `kb doctor --format=json` and sorts the result into one
+of the failure modes below. The **failure mode** tells you *what* is wrong; the
+recovery tells you how to clear it.
+
+| Failure mode | What it means | Recovery |
+| --- | --- | --- |
+| `server_reachability` | The KB backend (embedding server / index service) is down, refusing connections, or timing out. | Start the KB backend (e.g. `ollama serve`, or your configured index service) or fix its URL, then re-run `kb doctor --format=json`. |
+| `provider_api` | The embedding **provider** or its API is misconfigured or unavailable — missing API key, provider/model not running. | Start or reconfigure the embedding provider/API the KB index uses (pull the model, set the API key, point at the right endpoint). |
+| `empty_index_data` | The CLI is healthy but there is **nothing to search** — no ingested chunks, an empty index, or no knowledge bases registered. | Ingest or refresh the knowledge-base index before launching the KB-dependent task. |
+| `configuration` | The `kb` CLI itself is misconfigured — missing from `PATH`, no active model selected, bad config. | Fix the KB CLI configuration, model selection, or `PATH`, then re-run `kb doctor --format=json`. |
+| `unknown` | The preflight failed but the output didn't match a known signature, or `kb doctor` returned unparseable JSON. | Run `kb doctor --format=json` manually and address the reported failure, or check the CLI version. |
+
+### Continue now, or fix first?
+
+The preflight is a **hard gate**, not an advisory warning — a failing dependency
+blocks the launch, so there is no "continue anyway" button. Your two options:
+
+1. **Fix the dependency** (recommended): apply the recovery for the reported
+   failure mode, confirm with `kb doctor --format=json` (clean exit, no
+   `error`/`failed` checks), then re-launch the task.
+2. **Launch a task that doesn't declare the dependency**: the preflight only runs
+   for dependencies the task actually declares, so an unrelated `kb` outage won't
+   block tasks that don't use the knowledge base.
+
+`kb doctor --format=json` is the same probe the preflight runs — use it to
+reproduce a failure and confirm a fix:
+
+```bash
+kb doctor --format=json
+```
+
 ## Ralph Loop Stopped Or Shows "Replace With New"
 
 After a Kookr server crash, OS restart, WSL shutdown, or agent runtime crash, a Ralph loop can look like it is still active even though the underlying agent is no longer making progress. Common symptoms:
