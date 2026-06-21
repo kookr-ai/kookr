@@ -141,8 +141,9 @@ signal remains recorded for manual review.
 
 ### `POST /api/hook-event/:sessionId`
 
-Push one raw agent hook event into Kookr's ingestion pipeline for the Kookr
-session named by `sessionId`. This is the HTTP delivery path used by hook
+Push raw agent hook records into Kookr's ingestion pipeline for the Kookr
+session named by `sessionId`. A request may carry one record or a framed batch
+of records. This is the HTTP delivery path used by hook
 writers and by `scripts/replay-hooks.ts`; the file watcher and this endpoint
 feed the same ingestion service, which deduplicates dual delivery by content
 hash.
@@ -155,9 +156,8 @@ events are tagged `origin: "replay"` internally.
 
 Request body:
 
-- Send exactly one hook record per request: a single JSON object in the raw
-  request body. When the source is a JSONL hook file, split it first and POST
-  each record separately.
+- Send one or more hook records per request. The body may be a single JSON
+  object, newline-delimited hook JSON, or concatenated hook JSON objects.
 - `Content-Type: application/json` is recommended, but the route reads the raw
   text body and does not currently content-negotiate.
 - Common hook fields are `session_id`, `transcript_path`, `cwd`, and
@@ -168,8 +168,9 @@ Request body:
   `PermissionRequest`, `Notification`, `UserPromptSubmit`, `SubagentStart`,
   `SubagentStop`, and `SessionEnd`.
 - There is no endpoint-specific body-size limit in the route. Normal Node/Hono
-  runtime limits still apply, and clients should keep payloads to one hook
-  record.
+  runtime limits still apply. Multi-record responses include `recordCount` and
+  `dispatchedCount` in addition to the boolean `dispatched` compatibility
+  field.
 
 Example:
 
@@ -185,6 +186,7 @@ Responses:
 | --- | --- | --- |
 | `200` | `{"status":"received","dispatched":true}` | The active ingestion service accepted the record and dispatched a parsed event to the adapter/monitor. |
 | `200` | `{"status":"received","dispatched":false}` | The body was non-empty but did not dispatch a parsed event. This includes duplicate deliveries, unknown/dropped hook names, and malformed JSON recorded by ingestion. |
+| `200` | `{"status":"received","dispatched":true,"recordCount":6,"dispatchedCount":6}` | A multi-record body was framed at the HTTP boundary and at least one record dispatched. |
 | `200` | `{"status":"received"}` | Timing-only fallback used only when the route is registered without the active ingestion service. Normal server startup wires active ingestion. |
 | `400` | `{"status":"empty"}` | The body was blank or whitespace-only. |
 | `400` | `{"error":"Invalid session id"}` | The path parameter failed the session-id guard. |

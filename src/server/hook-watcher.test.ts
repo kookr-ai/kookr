@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { HookFileWatcher, splitHookRecords } from './hook-watcher.js';
+import { HookFileWatcher } from './hook-watcher.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { AttentionQueue } from '../core/attention-queue.js';
@@ -208,43 +208,6 @@ describe('HookFileWatcher', () => {
     } finally {
       optionWatcher.stopAll();
     }
-  });
-
-  test('splitHookRecords separates concatenated hook JSON objects', () => {
-    const event1 = JSON.stringify({
-      session_id: 'sess-1',
-      transcript_path: '/path/to/transcript.jsonl',
-      cwd: '/cwd',
-      hook_event_name: 'SessionStart',
-    });
-    const event2 = JSON.stringify({
-      session_id: 'sess-1',
-      transcript_path: '/path/to/transcript.jsonl',
-      cwd: '/cwd',
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Bash',
-      tool_input: { command: 'printf "}{"' },
-    });
-
-    expect(splitHookRecords(`${event1}${event2}`)).toEqual({
-      records: [event1, event2],
-      consumedChars: event1.length + event2.length,
-    });
-  });
-
-  test('splitHookRecords leaves incomplete trailing JSON for the next read', () => {
-    const event = JSON.stringify({
-      session_id: 'sess-1',
-      transcript_path: '/path/to/transcript.jsonl',
-      cwd: '/cwd',
-      hook_event_name: 'SessionStart',
-    });
-    const partial = '{"session_id":"sess-2"';
-
-    expect(splitHookRecords(`${event}${partial}`)).toEqual({
-      records: [event],
-      consumedChars: event.length,
-    });
   });
 
   test('replayExisting=true replays concatenated hook records', async () => {

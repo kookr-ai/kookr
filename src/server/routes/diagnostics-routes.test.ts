@@ -9,6 +9,8 @@ import { CircuitBreaker, CircuitBreakerRegistry } from '../../core/circuit-break
 import { ShadowDetectorRegistry } from '../../core/shadow-detector.js';
 import { GitHubStateStore } from '../../core/github-state-store.js';
 import { recordSuppression, resetDetectionStats } from '../../core/detection-stats.js';
+import { extractRawHookHeader, HookParseError, parseHookEvent } from '../../core/hook-parser.js';
+import { Monitor } from '../../core/monitor.js';
 import { registerDiagnosticsRoutes } from './diagnostics-routes.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
 import { AuthThrottle } from '../auth-throttle.js';
@@ -16,8 +18,9 @@ import { ViewerGrantStore } from '../../core/viewer-grants.js';
 import { ViewerConnectionRegistry } from '../viewer-connection-registry.js';
 import { CollaborationAuditLog } from '../collaboration-audit-log.js';
 import { DeliveryTraceBuffer } from '../../core/delivery-trace.js';
+import { HookIngestion, REPLAY_SESSION_PREFIX, type HookEventInjector } from '../hook-ingestion.js';
 import type { RouteDeps } from './shared.js';
-import type { Anomaly } from '../../core/types.js';
+import type { AgentEvent, Anomaly, InjectHookEventResult } from '../../core/types.js';
 import type { LlmClient } from '../../core/llm-client.js';
 import type { HelperLlmDiagnosticsCounters, HelperLlmDiagnosticsSnapshot } from '../../shared/contracts/diagnostic.js';
 
@@ -72,6 +75,97 @@ function anomaly(overrides: Partial<Anomaly> = {}): Anomaly {
     detectedAt: new Date('2026-06-13T10:00:00.000Z'),
     eventId: 'hook-event-1',
     ...overrides,
+  };
+}
+
+interface HookRouteHarness {
+  app: Hono;
+  ingestion: HookIngestion;
+  monitor: Monitor;
+  calls: Array<{
+    tmuxName: string;
+    sequence?: number;
+    options?: Parameters<HookEventInjector['injectHookEvent']>[3];
+    result: InjectHookEventResult;
+  }>;
+}
+
+function mkHookRouteHarness(): HookRouteHarness {
+  const taskStore = new TaskStore();
+  const monitor = new Monitor(taskStore, new AttentionQueue());
+  const calls: HookRouteHarness['calls'] = [];
+  const adapter: HookEventInjector = {
+    injectHookEvent(tmuxName, rawJson, sequence, options) {
+      const result = parseForRouteReplay(rawJson, sequence);
+      const event = result.parseStatus === 'ok' ? parseHookEvent(rawJson) : null;
+      calls.push({
+        tmuxName,
+        sequence,
+        options,
+        result,
+      });
+      if (event) {
+        monitor.registerAgent(tmuxName);
+        monitor.processEvents(tmuxName, [event]);
+      }
+      return result;
+    },
+  };
+  const ingestion = new HookIngestion({ adapter, now: () => 1_800_000_000_000 });
+  return {
+    app: mkApp({ hookIngestion: ingestion }),
+    ingestion,
+    monitor,
+    calls,
+  };
+}
+
+function parseForRouteReplay(rawJson: string, sequence?: number): InjectHookEventResult {
+  let header: ReturnType<typeof extractRawHookHeader>;
+  try {
+    header = extractRawHookHeader(rawJson);
+  } catch (err) {
+    return {
+      parseStatus: 'malformed',
+      agentType: 'codex-cli',
+      error: err instanceof HookParseError ? err.message : String(err),
+    };
+  }
+
+  let event: AgentEvent | null;
+  try {
+    event = parseHookEvent(rawJson);
+  } catch (err) {
+    return {
+      parseStatus: 'malformed',
+      agentType: 'codex-cli',
+      rawSessionId: header.rawSessionId,
+      rawTurnId: header.rawTurnId,
+      rawHookEventName: header.rawHookEventName,
+      error: err instanceof HookParseError ? err.message : String(err),
+    };
+  }
+
+  if (!event) {
+    return {
+      parseStatus: 'dropped',
+      agentType: 'codex-cli',
+      rawSessionId: header.rawSessionId,
+      rawTurnId: header.rawTurnId,
+      rawHookEventName: header.rawHookEventName,
+      parentage: 'unknown',
+      sequence,
+    };
+  }
+
+  return {
+    parseStatus: 'ok',
+    agentType: 'codex-cli',
+    rawSessionId: header.rawSessionId,
+    rawTurnId: header.rawTurnId,
+    rawHookEventName: header.rawHookEventName,
+    parentage: 'parent',
+    sequence,
   };
 }
 
@@ -1209,6 +1303,172 @@ describe('diagnostics routes', () => {
   // POST /api/hook-event/:sessionId
   // ---------------------------------------------------------------------------
   describe('POST /api/hook-event/:sessionId', () => {
+    test('replays a real hook fixture through HTTP ingestion and updates monitor state', async () => {
+      const harness = mkHookRouteHarness();
+      const sessionId = 'kookr-route-single';
+      const fixture = readFileSync('src/__fixtures__/hook-pre-tool-use.json', 'utf8');
+
+      const res = await harness.app.request(`/api/hook-event/${sessionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: fixture,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'received', dispatched: true });
+      expect(harness.calls).toHaveLength(1);
+      expect(harness.calls[0]).toEqual(expect.objectContaining({
+        tmuxName: sessionId,
+        sequence: 1,
+        result: expect.objectContaining({
+          parseStatus: 'ok',
+          rawHookEventName: 'PreToolUse',
+        }),
+      }));
+      expect(harness.monitor.getAgentEvents(sessionId).map((event) => event.type)).toEqual(['tool_use']);
+      expect(harness.ingestion.getActivityMeta(sessionId)).toEqual(expect.objectContaining({
+        totalEventsSeen: 1,
+        parentEventCount: 1,
+      }));
+    });
+
+    test('accepts a recorded JSONL hook fixture as one route-level replay request', async () => {
+      const harness = mkHookRouteHarness();
+      const sessionId = 'kookr-route-jsonl';
+      const fixture = readFileSync('src/__fixtures__/hook-codex-mcp-startup.jsonl', 'utf8');
+
+      const res = await harness.app.request(`/api/hook-event/${sessionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/jsonl' },
+        body: fixture,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        status: 'received',
+        dispatched: true,
+        recordCount: 6,
+        dispatchedCount: 6,
+      });
+      expect(harness.calls.map((call) => call.result.rawHookEventName)).toEqual([
+        'Notification',
+        'SessionStart',
+        'PreToolUse',
+        'PostToolUse',
+        'Stop',
+        'SessionEnd',
+      ]);
+      expect(harness.calls.map((call) => call.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
+      expect(harness.monitor.getAgentEvents(sessionId)).toHaveLength(6);
+      expect(harness.ingestion.getActivityMeta(sessionId)).toEqual(expect.objectContaining({
+        totalEventsSeen: 6,
+        parentEventCount: 6,
+        malformedRecordCount: 0,
+      }));
+    });
+
+    test('counts concatenated valid records and a malformed tail without dropping diagnostics', async () => {
+      const harness = mkHookRouteHarness();
+      const sessionId = 'kookr-route-concat';
+      const preToolUse = readFileSync('src/__fixtures__/hook-pre-tool-use.json', 'utf8').trim();
+      const postToolUse = readFileSync('src/__fixtures__/hook-post-tool-use.json', 'utf8').trim();
+
+      const res = await harness.app.request(`/api/hook-event/${sessionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: `${preToolUse}${postToolUse}\nnot-json\n`,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        status: 'received',
+        dispatched: true,
+        recordCount: 3,
+        dispatchedCount: 2,
+      });
+      expect(harness.calls.map((call) => call.result.parseStatus)).toEqual(['ok', 'ok', 'malformed']);
+      expect(harness.monitor.getAgentEvents(sessionId).map((event) => event.type)).toEqual(['tool_use', 'tool_result']);
+      expect(harness.ingestion.getActivityMeta(sessionId)).toEqual(expect.objectContaining({
+        totalEventsSeen: 3,
+        parentEventCount: 2,
+        malformedRecordCount: 1,
+      }));
+    });
+
+    test('continues JSONL route replay after a malformed opening line', async () => {
+      const harness = mkHookRouteHarness();
+      const sessionId = 'kookr-route-malformed-leading-line';
+      const sessionStart = readFileSync('src/__fixtures__/hook-session-start.json', 'utf8').trim();
+
+      const res = await harness.app.request(`/api/hook-event/${sessionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/jsonl' },
+        body: `{"broken":\n${sessionStart}\n`,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        status: 'received',
+        dispatched: true,
+        recordCount: 2,
+        dispatchedCount: 1,
+      });
+      expect(harness.calls.map((call) => call.result.parseStatus)).toEqual(['malformed', 'ok']);
+      expect(harness.calls.map((call) => call.result.rawHookEventName)).toEqual([undefined, 'SessionStart']);
+      expect(harness.monitor.getAgentEvents(sessionId).map((event) => event.type)).toEqual(['session_start']);
+      expect(harness.ingestion.getActivityMeta(sessionId)).toEqual(expect.objectContaining({
+        totalEventsSeen: 2,
+        parentEventCount: 1,
+        malformedRecordCount: 1,
+      }));
+    });
+
+    test('keeps duplicate route replay records out of the monitor window', async () => {
+      const harness = mkHookRouteHarness();
+      const sessionId = 'kookr-route-duplicate';
+      const fixture = readFileSync('src/__fixtures__/hook-stop.json', 'utf8');
+
+      const first = await harness.app.request(`/api/hook-event/${sessionId}`, {
+        method: 'POST',
+        body: fixture,
+      });
+      const second = await harness.app.request(`/api/hook-event/${sessionId}`, {
+        method: 'POST',
+        body: fixture,
+      });
+
+      expect(first.status).toBe(200);
+      expect(await first.json()).toEqual({ status: 'received', dispatched: true });
+      expect(second.status).toBe(200);
+      expect(await second.json()).toEqual({ status: 'received', dispatched: false });
+      expect(harness.calls).toHaveLength(1);
+      expect(harness.monitor.getAgentEvents(sessionId)).toHaveLength(1);
+      expect(harness.ingestion.getActivityMeta(sessionId)).toEqual(expect.objectContaining({
+        totalEventsSeen: 1,
+        duplicateRecordCount: 1,
+      }));
+    });
+
+    test('tags synthetic replay sessions before dispatching fixture records', async () => {
+      const harness = mkHookRouteHarness();
+      const sessionId = `${REPLAY_SESSION_PREFIX}route-fixture`;
+      const fixture = readFileSync('src/__fixtures__/hook-session-start.json', 'utf8');
+
+      const res = await harness.app.request(`/api/hook-event/${sessionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: fixture,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'received', dispatched: true });
+      expect(harness.calls[0].options).toEqual(expect.objectContaining({ origin: 'replay' }));
+      expect(harness.ingestion.getActivityMeta(sessionId)).toEqual(expect.objectContaining({
+        totalEventsSeen: 1,
+        parentEventCount: 1,
+      }));
+    });
+
     test('returns 200 and records arrival when body is non-empty', async () => {
       const arrivals: Array<{ tmux: string; body: string }> = [];
       const httpPushTracker = {

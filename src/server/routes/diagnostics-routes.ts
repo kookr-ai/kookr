@@ -20,6 +20,7 @@ import {
 import { ReviewLogStore } from '../review-log-store.js';
 import { buildDetectorProposalReportResponseV1 } from '../detector-proposal-report.js';
 import { REQUEST_LATENCIES_ROUTE } from '../request-duration-metrics.js';
+import { splitHookRequestBody } from '../hook-record-framing.js';
 import type { BackendStats } from '../../adapters/terminal-backend.js';
 import type { RouteDeps } from './shared.js';
 import type { HookIngestionDiagnosticsSnapshot } from '../hook-ingestion.js';
@@ -383,8 +384,23 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       // file watcher uses. Dedup by content hash keeps a single record from
       // reaching the adapter twice when the file watcher also delivers it.
       // See rfc-activity-log-reliability §5.
-      const result = deps.hookIngestion.ingestFromHttp(sessionId, body);
-      return c.json({ status: 'received', dispatched: result.dispatched });
+      const records = splitHookRequestBody(body);
+
+      let dispatchedCount = 0;
+      for (const record of records) {
+        const result = deps.hookIngestion.ingestFromHttp(sessionId, record);
+        if (result.dispatched) dispatchedCount += 1;
+      }
+
+      if (records.length === 1) {
+        return c.json({ status: 'received', dispatched: dispatchedCount === 1 });
+      }
+      return c.json({
+        status: 'received',
+        dispatched: dispatchedCount > 0,
+        recordCount: records.length,
+        dispatchedCount,
+      });
     }
 
     // Fallback: timing-only — shadow-detection era behavior.
