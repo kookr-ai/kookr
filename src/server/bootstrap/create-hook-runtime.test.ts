@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -15,7 +15,8 @@ describe('createHookRuntime', () => {
     try {
       const hooksDir = join(kookrDir, 'hooks');
       await mkdir(hooksDir);
-      await writeFile(join(hooksDir, 'session-1.jsonl'), '');
+      const sessionHookFile = join(hooksDir, 'session-1.jsonl');
+      await writeFile(sessionHookFile, '');
       const injected: Array<{ sessionId: string; raw: string; sequence?: number }> = [];
       const adapter: HookEventInjector = {
         injectHookEvent(sessionId, raw, sequence): InjectHookEventResult {
@@ -65,6 +66,25 @@ describe('createHookRuntime', () => {
       expect(runtime.hookWatcher.isWatching('session-1')).toBe(true);
       runtime.hookWatcher.stop('session-1');
       expect(runtime.hookWatcher.isWatching('session-1')).toBe(false);
+
+      await writeFile(sessionHookFile, JSON.stringify({
+        session_id: 'provider-session-1',
+        transcript_path: '/transcript.jsonl',
+        cwd: '/cwd',
+        hook_event_name: 'SessionStart',
+      }) + '\n');
+
+      runtime.hookWatcher.watch('session-1', { replayExisting: true });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      const checkpoint = JSON.parse(
+        await readFile(join(kookrDir, 'hook-replay-checkpoints.json'), 'utf-8'),
+      ) as { sessions: Record<string, { filePath: string; offsetChars: number }> };
+      expect(checkpoint.sessions['session-1']).toEqual(expect.objectContaining({
+        filePath: sessionHookFile,
+        offsetChars: expect.any(Number),
+      }));
+      runtime.hookWatcher.stop('session-1');
     } finally {
       await rm(kookrDir, { recursive: true, force: true });
     }

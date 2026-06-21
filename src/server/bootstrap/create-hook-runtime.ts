@@ -60,6 +60,8 @@ export function createHookRuntime(deps: HookRuntimeDeps): HookRuntime {
   return {
     activityLedger,
     hookIngestion,
-    hookWatcher: new HookFileWatcher(deps.hooksDir, hookIngestion),
+    hookWatcher: new HookFileWatcher(deps.hooksDir, hookIngestion, {
+      replayCheckpointPath: join(deps.kookrDir, 'hook-replay-checkpoints.json'),
+    }),
   };
 }
