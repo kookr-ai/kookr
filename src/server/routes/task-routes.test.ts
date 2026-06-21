@@ -9,6 +9,7 @@ import { AttentionQueue } from '../../core/attention-queue.js';
 import { Monitor } from '../../core/monitor.js';
 import type { TaskRouteDeps } from './shared.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
+import { DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS } from '../../core/completion-ready-cleanup.js';
 
 vi.mock('../launch-service.js', async (importActual) => {
   const actual = await importActual<typeof import('../launch-service.js')>();
@@ -106,6 +107,76 @@ describe('GET /api/tasks worktree health', () => {
     const tasks = await res.json();
 
     expect(tasks[0].sessions[0].worktreeHealth).toBe('missing_unexpectedly');
+  });
+});
+
+describe('GET /api/tasks/completion-ready/stale', () => {
+  test('returns stale completion-ready tasks as a cleanup queue', async () => {
+    const taskStore = new TaskStore();
+    const stale = taskStore.createTask({ prompt: 'Ready but open', cwd: '/repo' });
+    const fresh = taskStore.createTask({ prompt: 'Fresh ready', cwd: '/repo' });
+    const autoCloseEligible = taskStore.createTask({
+      prompt: 'Auto-close ready',
+      cwd: '/repo',
+      autoCloseOnSignal: true,
+      deliveryAuthorization: 'ask-first',
+    });
+    for (const task of [stale, fresh, autoCloseEligible]) {
+      taskStore.addSession(task.id, {
+        tmuxSession: `kookr-${task.id}`,
+        agentType: 'claude-code',
+        cwd: '/repo-wt',
+        createdAt: new Date('2026-06-20T00:00:00.000Z'),
+      });
+    }
+    taskStore.setPendingSignal(stale.id, { kind: 'completion_ready', raisedAt: '2026-06-19T00:00:00.000Z' });
+    taskStore.setPendingSignal(fresh.id, { kind: 'completion_ready', raisedAt: new Date().toISOString() });
+    taskStore.setPendingSignal(autoCloseEligible.id, { kind: 'completion_ready', raisedAt: '2026-06-19T01:00:00.000Z' });
+
+    const app = mkApp(mkLoopDeps(taskStore));
+    const res = await app.request('/api/tasks/completion-ready/stale?thresholdMs=3600000');
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({
+      schemaVersion: 'stale-completion-ready-tasks.v1',
+      thresholdMs: 3600000,
+      count: 2,
+      tasks: [{
+        task: expect.objectContaining({ id: stale.id, taskId: stale.id, status: 'inProgress' }),
+        signal: { kind: 'completion_ready', raisedAt: '2026-06-19T00:00:00.000Z' },
+        canAutoClose: false,
+        manualActionRequiredReason: 'auto_close_not_enabled',
+      }, {
+        task: expect.objectContaining({ id: autoCloseEligible.id, taskId: autoCloseEligible.id, status: 'inProgress' }),
+        signal: { kind: 'completion_ready', raisedAt: '2026-06-19T01:00:00.000Z' },
+        canAutoClose: true,
+      }],
+    });
+    expect(body.tasks[0].ageMs).toBeGreaterThan(0);
+    expect(body.tasks[1]).not.toHaveProperty('manualActionRequiredReason');
+  });
+
+  test('rejects invalid thresholdMs values', async () => {
+    const app = mkApp(mkLoopDeps(new TaskStore()));
+    const res = await app.request('/api/tasks/completion-ready/stale?thresholdMs=soon');
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'thresholdMs must be a non-negative integer' });
+  });
+
+  test('uses the default stale threshold when thresholdMs is omitted', async () => {
+    const app = mkApp(mkLoopDeps(new TaskStore()));
+    const res = await app.request('/api/tasks/completion-ready/stale');
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.thresholdMs).toBe(DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS);
+  });
+
+  test('rejects unsafe thresholdMs values', async () => {
+    const app = mkApp(mkLoopDeps(new TaskStore()));
+    const res = await app.request('/api/tasks/completion-ready/stale?thresholdMs=9007199254740992');
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'thresholdMs must be a safe integer' });
   });
 });
 
@@ -1073,10 +1144,39 @@ describe('POST /api/tasks/:id/signal', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.autoClosed).toBeUndefined();
+      expect(body.autoClosed).toBe(false);
+      expect(body.manualActionRequiredReason).toBe('auto_close_not_enabled');
       expect(taskStore.getTask(id)!.status).toBe('inProgress');
       // The signal still surfaces for manual review.
       expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
+    });
+
+    test('auto-completes an opted-in task with the default ask-first launch stamp', async () => {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask({
+        prompt: 'Ship it',
+        cwd: '/repo',
+        autoCloseOnSignal: true,
+        deliveryAuthorization: 'ask-first',
+      });
+      taskStore.addSession(task.id, {
+        tmuxSession: 'kookr-ask-first-auto-close',
+        agentType: 'claude-code',
+        cwd: '/repo',
+        createdAt: new Date(),
+      });
+
+      const res = await mkApp(mkAutoCloseDeps(taskStore)).request(`/api/tasks/${task.id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.autoClosed).toBe(true);
+      expect(body.outcome).toBe('completed');
+      expect(taskStore.getTask(task.id)!.status).toBe('completed');
     });
   });
 });
