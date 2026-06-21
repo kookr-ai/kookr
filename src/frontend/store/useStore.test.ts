@@ -4,6 +4,10 @@ import { __resetDndForTests, disableDnd, enableDnd } from '../hooks/useDnd.js';
 import type { AgentState } from '../../shared/protocol.js';
 import { getBugReportAlerts, resetBugReportRecorderForTests } from '../bug-report-recorder.js';
 import {
+  __resetSelectionTransitionRecorderForTests,
+  getSelectionTransitionDiagnostics,
+} from '../selection-transition-recorder.js';
+import {
   clearDebugTimeline,
   getDebugTimelineEntries,
   setDebugTimelineEnabledForTests,
@@ -23,6 +27,7 @@ describe('Kookr Zustand Store', () => {
     });
     __resetDndForTests();
     resetBugReportRecorderForTests();
+    __resetSelectionTransitionRecorderForTests();
     setDebugTimelineEnabledForTests(null);
     clearDebugTimeline();
     store = createKookrStore();
@@ -302,6 +307,41 @@ describe('Kookr Zustand Store', () => {
 
     store.getState().selectAgent('agent-2');
     expect(store.getState().selectedAgentId).toBe('agent-2');
+  });
+
+  test('selectAgent records bounded selection transition diagnostics', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'agent-1', taskId: 'task-1', events: [], anomaly: null, taskStatus: 'inProgress' },
+      { agentId: 'agent-2', taskId: 'task-2', events: [], anomaly: null, taskStatus: 'inProgress' },
+    ]);
+
+    store.getState().selectAgent('agent-1');
+    store.getState().selectAgent('agent-2');
+
+    expect(getSelectionTransitionDiagnostics().transitions.at(-1)).toMatchObject({
+      fromTaskId: 'task-1',
+      toTaskId: 'task-2',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      source: 'selectAgent',
+    });
+  });
+
+  test('nextTask records navigation-specific selection transition diagnostics', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'agent-1', taskId: 'task-1', events: [], anomaly: null, taskStatus: 'inProgress' },
+      { agentId: 'agent-2', taskId: 'task-2', events: [], anomaly: null, taskStatus: 'inProgress' },
+    ]);
+
+    store.getState().selectAgent('agent-1');
+    store.getState().nextTask();
+
+    expect(getSelectionTransitionDiagnostics().transitions.at(-1)).toMatchObject({
+      fromTaskId: 'task-1',
+      toTaskId: 'task-2',
+      source: 'nextTask',
+      reason: 'cycle_routable_tasks',
+    });
   });
 
   test('selectAgent resets leftPane and narrowTab to activity', () => {

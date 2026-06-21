@@ -9,6 +9,7 @@ import { createOssAttemptsSlice } from './slices/oss-attempts-slice.js';
 import { createSystemStatusSlice } from './slices/system-status-slice.js';
 import { createAutoAdvanceSlice, attachAutoAdvanceSubscribers } from './slices/auto-advance-slice.js';
 import { clearSelectedTask, saveSelectedTask } from './selected-task-storage.js';
+import { recordSelectionTransitionFromStore } from '../selection-transition-recorder.js';
 import type {
   AchievementToast,
   Alert,
@@ -82,9 +83,11 @@ function createKookrStoreState(
     const after = get();
     persistSelectedTaskChange(before, after);
 
+    const changedKeys = Object.keys(resolved ?? {});
+    recordSelectionTransitionFromStore(before, after, changedKeys);
+
     if (!isDebugTimelineEnabled()) return;
 
-    const changedKeys = Object.keys(resolved ?? {});
     if (changedKeys.length === 0) return;
     recordStoreMutationDebugEvent(before.agents, after.agents, changedKeys, resolved as Record<string, unknown>);
   };
