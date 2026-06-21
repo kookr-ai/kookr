@@ -1,11 +1,11 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { CodexRolloutScanner, type DiscoveryOutcome } from '../adapters/codex-rollout-scanner.js';
-import { createOpenRouterLlmClientFromEnv } from '../adapters/openrouter-client.js';
-import { createRequestyLlmClientFromEnv } from '../adapters/requesty-client.js';
+import { createOpenRouterLlmClientFromEnv } from '../adapters/llm/openrouter-client.js';
+import { createRequestyLlmClientFromEnv } from '../adapters/llm/requesty-client.js';
 import { generateCompletionDigest, type CompletionDigest, type CompletionTokenUsage } from '../core/completion-digest.js';
 import { evaluateCriteriaVerdict } from '../core/criteria-verdict.js';
-import { createLlmClient } from '../core/llm-factory.js';
+import { createLlmClient } from '../adapters/llm/factory.js';
 import type { LlmClient } from '../core/llm-types.js';
 import { estimateCost, lookupPricing } from '../core/pricing-tables.js';
 import type { Task } from '../core/tasks.js';

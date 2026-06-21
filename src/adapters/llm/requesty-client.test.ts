@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { createRequestyLlmClientFromEnv, RequestyLlmClient } from './requesty-client.js';
-import type { LlmCompletionRequest } from '../core/llm-types.js';
+import type { LlmCompletionRequest } from '../../core/llm-types.js';
 
 const API_KEY = 'req_test-secret-key';
 

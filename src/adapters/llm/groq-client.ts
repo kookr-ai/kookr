@@ -6,7 +6,7 @@
  */
 
 import Groq from 'groq-sdk';
-import type { LlmClient, LlmCompletionRequest } from './llm-types.js';
+import type { LlmClient, LlmCompletionRequest } from '../../core/llm-types.js';
 
 const DEFAULT_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
 

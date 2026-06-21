@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { createOpenRouterLlmClientFromEnv, OpenRouterLlmClient } from './openrouter-client.js';
-import type { LlmCompletionRequest } from '../core/llm-types.js';
+import type { LlmCompletionRequest } from '../../core/llm-types.js';
 
 const API_KEY = 'sk-or-test-secret-key';
 

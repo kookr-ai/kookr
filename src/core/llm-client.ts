@@ -1,6 +1,5 @@
 export {
   completeLlmWithFailureAudit,
-  createLlmClient,
   FallbackLlmClient,
 } from './llm-factory.js';
 export type {

@@ -26,11 +26,10 @@ export async function listTypeScriptFiles(dir: string): Promise<string[]> {
   return files;
 }
 
-export function checkCoreOpenRouterBoundary(file: string): Violation[] {
+export function checkCoreLlmProviderBoundary(file: string): Violation[] {
   const source = readFileSync(file, 'utf8');
   const fileName = basename(file).toLowerCase();
   const violations: Violation[] = [];
-  const allowedProtocolTransport = fileName === 'openai-compatible-client.ts';
 
   if (fileName.includes('openrouter')) {
     violations.push({ file, reason: 'OpenRouter implementation file is under src/core' });
@@ -39,24 +38,26 @@ export function checkCoreOpenRouterBoundary(file: string): Violation[] {
   const forbiddenProviderMarkers = [
     'OpenRouterLlmClient',
     'RequestyLlmClient',
+    'GroqLlmClient',
+    'GoogleLlmClient',
+    'AnthropicLlmClient',
+    'OpenAiCompatibleLlmClient',
+    'groq-sdk',
+    '@google/genai',
+    '@anthropic-ai/sdk',
     'openrouter.ai',
     'router.requesty.ai',
     'KOOKR_OPENROUTER_API_KEY',
     'OPENROUTER_API_KEY',
     'KOOKR_REQUESTY_API_KEY',
     'REQUESTY_API_KEY',
+    'GROQ_API_KEY',
+    'GEMINI_API_KEY',
+    'ANTHROPIC_API_KEY',
   ];
   for (const marker of forbiddenProviderMarkers) {
     if (source.includes(marker)) {
-      violations.push({ file, reason: `OpenRouter/provider transport marker "${marker}" appears in src/core` });
-    }
-  }
-
-  if (!allowedProtocolTransport) {
-    for (const marker of ['chat/completions', 'fetch(']) {
-      if (source.includes(marker)) {
-        violations.push({ file, reason: `OpenAI-compatible transport marker "${marker}" appears outside the shared transport` });
-      }
+      violations.push({ file, reason: `LLM provider transport/config marker "${marker}" appears in src/core` });
     }
   }
 
@@ -65,7 +66,7 @@ export function checkCoreOpenRouterBoundary(file: string): Violation[] {
 
 async function main(): Promise<void> {
   const files = await listTypeScriptFiles(CORE_ROOT);
-  const violations = files.flatMap(checkCoreOpenRouterBoundary);
+  const violations = files.flatMap(checkCoreLlmProviderBoundary);
 
   if (violations.length > 0) {
     console.error('Architecture boundary violations:');

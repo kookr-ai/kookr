@@ -2,8 +2,8 @@
  * Requesty LLM provider wrapper for Kookr helper LLM calls.
  */
 
-import { OpenAiCompatibleLlmClient } from '../core/openai-compatible-client.js';
-import type { LlmClient, LlmCompletionRequest } from '../core/llm-types.js';
+import { OpenAiCompatibleLlmClient } from './openai-compatible-client.js';
+import type { LlmClient, LlmCompletionRequest } from '../../core/llm-types.js';
 
 const DEFAULT_MODEL = 'openai/gpt-4o-mini';
 const DEFAULT_BASE_URL = 'https://router.requesty.ai/v1';
