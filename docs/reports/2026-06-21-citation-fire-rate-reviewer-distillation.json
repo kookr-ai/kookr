@@ -1,0 +1,3021 @@
+{
+  "generatedAt": "2026-06-21T01:13:15.674Z",
+  "targetLoop": "reviewer-distillation-judge",
+  "roots": [
+    "~/.claude/grafana-reviewer-distillation",
+    "~/.claude/grafana-reviewer-distillation-run1",
+    "~/.claude/grafana-grafana-reviewer-distillation"
+  ],
+  "parserConfirmed": {
+    "parseableOutputs": 30,
+    "passages": 196,
+    "passesPrerequisite": true
+  },
+  "totals": {
+    "outputs": 109,
+    "passages": 196,
+    "verbatim": 167,
+    "grounded": 24,
+    "fabricated": 5,
+    "unresolvable": 0,
+    "zeroPassageOutputs": 79
+  },
+  "fireRate": 0.025510204081632654,
+  "decision": "warrants_gate",
+  "decisionRationale": "At least one parseable passage failed deterministic excerpt verification.",
+  "results": [
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation",
+      "output": "scores/pr-119959-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-119959.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation",
+      "output": "scores/pr-120014-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-120014.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation",
+      "output": "scores/pr-120282-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-120282.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation",
+      "output": "scores/pr-120723-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-120723.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation",
+      "output": "scores/pr-120732-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-120732.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation",
+      "output": "scores/pr-121114-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121114.md",
+      "passageCount": 5,
+      "verbatim": 3,
+      "grounded": 1,
+      "fabricated": 1,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "not sure if this matters really but if json encoding fails, write header has already been called with the wrong statuscode instead of the internal server error",
+          "pr": "121114",
+          "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121114.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "I don't really understand all these date changes or if they matter?",
+          "pr": "121114",
+          "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121114.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "Explains the timezone behavior behind generated CSV date changes, describes the TZ=Europe/Istanbul experiment, notes a long-term fix (TZ=UTC).",
+          "pr": "121114",
+          "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121114.md",
+          "fileExists": true,
+          "verdict": "fabricated",
+          "grounding": 0
+        },
+        {
+          "comment": "4",
+          "excerpt": "good point. i will get this PR merged, and fix it in a separate PR (this won't activate anyway until the feature-flag is enabled...)",
+          "pr": "121114",
+          "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121114.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 0.77
+        },
+        {
+          "comment": "5",
+          "excerpt": "(managed to do it in https://github.com/grafana/grafana/pull/121413 )",
+          "pr": "121114",
+          "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121114.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation",
+      "output": "scores/pr-121126-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121126.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation",
+      "output": "scores/pr-121129-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121129.md",
+      "passageCount": 3,
+      "verbatim": 3,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "is this only called once with the same api group info? i am wondering if it is possible that it could be double wrapping if called once per resource or something",
+          "pr": "121129",
+          "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121129.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "it looks like we are ok: https://github.com/grafana/grafana-app-sdk/blob/85d5e76501e417b1f6c42f533282afcdadbce464/k8s/apiserver/installer.go#L538",
+          "pr": "121129",
+          "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121129.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "ah, yeah i guess we don't have codecs here, so the wrapper is needed",
+          "pr": "121129",
+          "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121129.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation",
+      "output": "scores/pr-121254-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121254.md",
+      "passageCount": 4,
+      "verbatim": 3,
+      "grounded": 1,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "the diff in this file is weird... but I removed everything where: `featureKubernetesDashboards: false`",
+          "pr": "121254",
+          "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121254.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "^^ temporary hack so we do not need to fix/update the frontend as part of this same PR",
+          "pr": "121254",
+          "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121254.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "the types are not happy with 'kubernetesDashboards' -- because it has been removed",
+          "pr": "121254",
+          "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121254.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "7",
+          "excerpt": "this will mean we are only running dashboard permissions tests as backed by zanzana - we should keep one for mode 5 not backed by zanzana (should be default?)",
+          "pr": "121254",
+          "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121254.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation",
+      "output": "scores/pr-121405-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121405.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation",
+      "output": "scores/pr-121406-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121406.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation",
+      "output": "scores/pr-121443-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121443.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation",
+      "output": "scores/pr-121445-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121445.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation",
+      "output": "scores/pr-121511-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-121511.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation",
+      "output": "scores/pr-77102-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation/reviews/pr-77102.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-111735-v0-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-111735.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-111735-v0-v7judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-111735.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-111735-v6-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-111735.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-111735-v7-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-111735.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-113653-v9-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-113653.md",
+      "passageCount": 4,
+      "verbatim": 3,
+      "grounded": 1,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "what does this change relate to?",
+          "pr": "113653",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-113653.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "same question",
+          "pr": "113653",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-113653.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "Good shout. The FilterInput is weird, and for some reason automatically escapes characters for use in regexes. So if you type `now-1d`, you'll get back `now\\-1d` as the value. Because this value is not being used in a regex, I disabled this behaviour.",
+          "pr": "113653",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-113653.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "Suggestion block rewriting: \"You can also enter a custom relative time range into the search field. For example, enter `13h` to create a time range for the last 13 hours.",
+          "pr": "113653",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-113653.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 0.88
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-117954-v0-v7judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-117954.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-117954-v8-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-117954.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-118631-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118631.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-118969-v0-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-118969-v0-v7judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+      "passageCount": 17,
+      "verbatim": 15,
+      "grounded": 1,
+      "fabricated": 1,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "top-level-1",
+          "excerpt": "Please add tracking after submit",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "top-level-1",
+          "excerpt": "If one of the steps fails... no opportunity to roll back",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "fabricated",
+          "grounding": 0.14
+        },
+        {
+          "comment": "top-level-1",
+          "excerpt": "What happens if a folder with the same name like the team already exists?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "hmm is that just an alias? or why do we have them there?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "What's the reason for adding the todo here instead of solving the issue?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 0.5
+        },
+        {
+          "comment": "5",
+          "excerpt": "Is there a reason why `help` is missing here?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "6",
+          "excerpt": "Please add a title in order to provide information to screenreader users.",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "8",
+          "excerpt": "just forgot",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "10",
+          "excerpt": "Should this be `status.folderCreationStatus?.state`?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "11",
+          "excerpt": "Should this checkbox be gated behind `config.featureToggles.teamFolders`?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "12",
+          "excerpt": "Nit: can we make these comments less noisy by removing the surrounding `//`?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "13",
+          "excerpt": "Can we move this component to a separate file so we can separate JSX and TS logic?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "14",
+          "excerpt": "I see there is a separate `hooks` file, should that be made into a directory instead and each hook has its own file?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "15",
+          "excerpt": "Should this be memoised since the translations won't change?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "16",
+          "excerpt": "Should we also check that the data is not undefined here, so we don't get the URLs like `/org/teams/edit/undefined`?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "17",
+          "excerpt": "Does folder creation and role setting depend on each other? If not, maybe we can run those API calls in parallel?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "21",
+          "excerpt": "Is this change supposed to be in this PR?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-118969-v6-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-118969-v7-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+      "passageCount": 3,
+      "verbatim": 1,
+      "grounded": 1,
+      "fabricated": 1,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "top-level-1",
+          "excerpt": "Please add tracking after submit",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "top-level-1",
+          "excerpt": "If one of the steps after team creation fails... no opportunity to roll back",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "fabricated",
+          "grounding": 0.4
+        },
+        {
+          "comment": "top-level-1",
+          "excerpt": "What happens if a folder with the same name already exists?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 0.71
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-118969-v8-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+      "passageCount": 25,
+      "verbatim": 19,
+      "grounded": 4,
+      "fabricated": 2,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "top-level-1",
+          "excerpt": "Please add tracking after submit",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "top-level-1",
+          "excerpt": "If one of the steps fails...no opportunity to roll back",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "fabricated",
+          "grounding": 0.14
+        },
+        {
+          "comment": "top-level-1",
+          "excerpt": "What happens if a folder with the same name already exists?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 0.71
+        },
+        {
+          "comment": "1",
+          "excerpt": "btw `act, renderHook, waitFor` are all exported from here as well, if you want to combine imports",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "hmm is that just an alias? or why do we have them there?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "Everything is reexported from there...",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "What's the reason for adding the todo here instead of solving the issue?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 0.5
+        },
+        {
+          "comment": "5",
+          "excerpt": "Is there a reason why `help` is missing here?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "6",
+          "excerpt": "Please add a title in order to provide information to screenreader users.",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "7",
+          "excerpt": "I mean you cannot solve everything in single PR...",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "8",
+          "excerpt": "just forgot",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "9",
+          "excerpt": "Does adding `aria-label={description}` make sense?...",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "10",
+          "excerpt": "Should this be `status.folderCreationStatus?.state`?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "11",
+          "excerpt": "Should this checkbox be gated behind `config.featureToggles.teamFolders`?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "12",
+          "excerpt": "Nit: can we make these comments less noisy by removing the surrounding `//`?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "13",
+          "excerpt": "Can we move this component to a separate file so we can separate JSX and TS logic?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "14",
+          "excerpt": "I see there is a separate `hooks` file, should that be made into a directory instead and each hook has its own file?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "15",
+          "excerpt": "Should this be memoised since the translations won't change?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "16",
+          "excerpt": "Should we also check that the data is not undefined here, so we don't get the URLs like `/org/teams/edit/undefined`?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "17",
+          "excerpt": "Does folder creation and role setting depend on each other? If not, maybe we can run those API calls in parallel?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "18",
+          "excerpt": "I like the more pronounced delineation...",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 1
+        },
+        {
+          "comment": "19",
+          "excerpt": "No but it's not much of an issue performance wise...",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "20",
+          "excerpt": "I think this is more tied to CreateTeamPage...",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "21",
+          "excerpt": "Is this change supposed to be in this PR?",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "22",
+          "excerpt": "Hmm no, weird...",
+          "pr": "118969",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-118969.md",
+          "fileExists": true,
+          "verdict": "fabricated",
+          "grounding": 0
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-119378-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119378.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-119474-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119474.md",
+      "passageCount": 10,
+      "verbatim": 10,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "Why do we need to take into account the two options?",
+          "pr": "119474",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119474.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "good catch. i've normalised it.",
+          "pr": "119474",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119474.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "nit: options property will be included in `...` spread",
+          "pr": "119474",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119474.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "question on this: we don't have `filter` and `topic` fields here that are part of TransformationKind. Is this intentional?",
+          "pr": "119474",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119474.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "5",
+          "excerpt": "yes!!!!!",
+          "pr": "119474",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119474.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "6",
+          "excerpt": "it should, but that not in the scope of this PR, will open a separate on.",
+          "pr": "119474",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119474.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "7",
+          "excerpt": "https://github.com/grafana/grafana/pull/121193",
+          "pr": "119474",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119474.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "8",
+          "excerpt": "`convertSpecToWireFormat` expects `DashboardV2Spec`. Could it be a problem when restoring to a v2beta1 version in `restoreDashboardVersion -> saveDashboard`?",
+          "pr": "119474",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119474.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "9",
+          "excerpt": "You are absolutely right ;) fixed now",
+          "pr": "119474",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119474.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "10",
+          "excerpt": "I tried to check it locally but the revisions are retrieved from v2 endpoint...",
+          "pr": "119474",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119474.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-119952-v0-v7judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119952.md",
+      "passageCount": 5,
+      "verbatim": 5,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "I think we should wrap `filterLabels` in a `useMemo` keyed on [allLabels, labelFilter] to avoid re-running the fuzzy searches on unrelated re-renders (e.g. toggling a label section).",
+          "pr": "119952",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119952.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "maybe it's time for using `useStyles2` Emotion styles here in this file for consistency?",
+          "pr": "119952",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119952.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "I think this component is not used anymore?",
+          "pr": "119952",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119952.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "not used anymore, we can remove it",
+          "pr": "119952",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119952.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "5",
+          "excerpt": "I think we can just use the `Stack` component here since it now also supports height / width.",
+          "pr": "119952",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119952.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-119952-v8-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119952.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-119952-v9-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119952.md",
+      "passageCount": 5,
+      "verbatim": 5,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "I think we should wrap `filterLabels` in a `useMemo` keyed on [allLabels, labelFilter] to avoid re-running the fuzzy searches on unrelated re-renders (e.g. toggling a label section).",
+          "pr": "119952",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119952.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "maybe it's time for using `useStyles2` Emotion styles here in this file for consistency?",
+          "pr": "119952",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119952.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "I think this component is not used anymore?",
+          "pr": "119952",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119952.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "not used anymore, we can remove it",
+          "pr": "119952",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119952.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "5",
+          "excerpt": "I think we can just use the `Stack` component here since it now also supports height / width.",
+          "pr": "119952",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-119952.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120114-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120114.md",
+      "passageCount": 10,
+      "verbatim": 9,
+      "grounded": 1,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "think you said you were worried about adding this - i think it's fine. `isAnalyticsFrameworkEnabled` should be a stable boolean so will only rerun if the value actually changes which is what we want",
+          "pr": "120114",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120114.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "don't think we should do this",
+          "pr": "120114",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120114.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "can this not be set in a `beforeEach`?",
+          "pr": "120114",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120114.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "again, don't think we should do this",
+          "pr": "120114",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120114.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "5",
+          "excerpt": "Reverted",
+          "pr": "120114",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120114.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "6",
+          "excerpt": "Yes. Previously, the 3rd test was not in its own describe block and had the feature disabled. I did not remember to adapt the previous ones to the change.",
+          "pr": "120114",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120114.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "7",
+          "excerpt": "I think we can/should do some typescript magic to ensure that the extraction script can know that each event also has these default properties defined.",
+          "pr": "120114",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120114.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "8",
+          "excerpt": "So - my idea here was that you need to repeat defining the type of the default props on each event's properties type... We'll revisit the exact implementation for this later when we pull in the extraction script.",
+          "pr": "120114",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120114.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "9",
+          "excerpt": "i think there should be a better way to mock/spy. can we do like `jest.spyOn()` or something like that?",
+          "pr": "120114",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120114.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 1
+        },
+        {
+          "comment": "10",
+          "excerpt": "ok. I was following what was already done in this file, but will do the change",
+          "pr": "120114",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120114.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120196-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120196.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120376-v0-v7judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120376.md",
+      "passageCount": 6,
+      "verbatim": 6,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "Maybe we can add a comment why we need to skip it? I guess it's because HeaderGroup is pain to mock as it comes from useTable and has loads of props :( But we may add a comment to indicate that. Related: createMockColumn adds `field` and `justifyContent` which doesn't seem to be part of HeaderGroup interfaces. Are they used somehow?",
+          "pr": "120376",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120376.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "composing together localization strings like this isn't a good idea, because different languages may have different syntaxes, or may not even use `,` as a punctuation. we probably just need a map of all the permutations.",
+          "pr": "120376",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120376.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "that said, this is for TableRT which is not gonna be the way to do this forever, so we can maybe get by just doing this. Your call!",
+          "pr": "120376",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120376.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "I appreciate the tests - if they're validating the behavior, it's really ok that there's a ts-ignore for now, because our goal is to be able to get rid of TableRT in the next year or so anyway, so restructuring anything to make the types work better for the sake of the tests at this point wouldn't be a good use of time. I'm fine if there's a comment explaining why the ignore's there, but also fine without.",
+          "pr": "120376",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120376.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "5",
+          "excerpt": "Done!",
+          "pr": "120376",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120376.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "6",
+          "excerpt": "removed the extra props, thanks @ifrost!",
+          "pr": "120376",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120376.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120376-v8-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120376.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120385-v0-v7judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120385.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120385-v8-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120385.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120484-v0-v7judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120484.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120484-v7-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120484.md",
+      "passageCount": 6,
+      "verbatim": 5,
+      "grounded": 1,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "Inline style has the highest CSS specificity so it beats any class-based rule. Maybe we should do this instead?\" Suggests: `className={cx(styles.icon, resolvedIconColor && css({ color: resolvedIconColor }))}`",
+          "pr": "120484",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120484.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 0.8
+        },
+        {
+          "comment": "2",
+          "excerpt": "Could this be introduced in a separate PR and where this design change is more visible?",
+          "pr": "120484",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120484.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "make sense, reverted!",
+          "pr": "120484",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120484.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "a separate PR https://github.com/grafana/grafana/pull/120880",
+          "pr": "120484",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120484.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "5",
+          "excerpt": "nit: maybe revert this change",
+          "pr": "120484",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120484.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "6",
+          "excerpt": "removed",
+          "pr": "120484",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120484.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120560-v0-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120560.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120560-v0-v7judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120560.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120560-v6-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120560.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120560-v7-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120560.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120560-v8-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120560.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120579-v10-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120579.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120579-v9-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120579.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120600-v0-v7judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120600.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120600-v7-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120600.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120600-v8-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120600.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120606-v0-v7judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120606.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120606-v8-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120606.md",
+      "passageCount": 3,
+      "verbatim": 2,
+      "grounded": 1,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "These should be the actual resource right?",
+          "pr": "120606",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120606.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "This is just a unit test to make sure the header logic works correctly, we could technically remove it, but it doesn't hurt to keep. Basically: 'Given an input, are we setting the correct headers?' The tests under TestDeprecatedHandlers_SetHeaders assert the actual resources and messages to be expected.",
+          "pr": "120606",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120606.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "Sorry, misread the test!",
+          "pr": "120606",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120606.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120633-v10-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120633.md",
+      "passageCount": 10,
+      "verbatim": 8,
+      "grounded": 2,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "The UID should be available on the context if the endpoint has been called by UID, so maybe you only need to call GetTeamByID as a fallback, when the UID is not in the context. (with link to MiddlewareTeamUIDResolver)",
+          "pr": "120633",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120633.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 0.89
+        },
+        {
+          "comment": "2",
+          "excerpt": "Namespace should be coming from the context, so I don't think we need this, however I'm not 100% sure.. what do you think?",
+          "pr": "120633",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120633.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "Should we include the `provisioned` field update here as well?",
+          "pr": "120633",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120633.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "I don't think so, the `UpdateTeamCommand` doesn't include `provisioned`, it's only set at creation. I'll add a test to confirm that it's preserved.",
+          "pr": "120633",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120633.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "5",
+          "excerpt": "These are still legacy REST API paths if I understand correctly, so there's no namespace in the context and we still need `namespaceMapper`...",
+          "pr": "120633",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120633.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "6",
+          "excerpt": "How does SCIM update this flag if there is an existing user?",
+          "pr": "120633",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120633.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "7",
+          "excerpt": "I guess you can do the same in GetTeamByID as well (link to diff line R176). What do you think?",
+          "pr": "120633",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120633.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 0.5
+        },
+        {
+          "comment": "8",
+          "excerpt": "The behavior is a bit different between SCIM users & teams right now, SCIM only provisions its own new teams...",
+          "pr": "120633",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120633.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "9",
+          "excerpt": "Thanks!",
+          "pr": "120633",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120633.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "10",
+          "excerpt": "Agreed, I just added that check.",
+          "pr": "120633",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120633.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120633-v9-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120633.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120643-v9-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120643.md",
+      "passageCount": 4,
+      "verbatim": 4,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "enabled will always be true. Is there a point to having this?",
+          "pr": "120643",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120643.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "Were not refetching all the time. Its expensive and new resources arent added often",
+          "pr": "120643",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120643.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "will use existing datastore.batchDelete() which fixes this",
+          "pr": "120643",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120643.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "it wont return an empty result",
+          "pr": "120643",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120643.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120746-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120746.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120746-v5-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120746.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120746-v6-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120746.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120831-v0-v7judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120831.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120831-v7-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120831.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120835-v9-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120835.md",
+      "passageCount": 5,
+      "verbatim": 5,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "I'll open a ticket for this situation.",
+          "pr": "120835",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120835.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "Let's wait for https://github.com/grafana/grafana/pull/120829 to be merged and tackle this in the new struct - as this bit has been removed from here",
+          "pr": "120835",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120835.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "very nit: Should we cover the case `other` is `nil`?",
+          "pr": "120835",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120835.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "What's the reason behind this?",
+          "pr": "120835",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120835.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "5",
+          "excerpt": "to read the existing object. Let me add a comment.",
+          "pr": "120835",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120835.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120860-v0-v7judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120860.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120860-v7-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120860.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120868-v9-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120868.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120870-v10-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120870.md",
+      "passageCount": 3,
+      "verbatim": 2,
+      "grounded": 1,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "Nit for a followup: shall we name the span differently based on the fact we are writing / renaming the resource?",
+          "pr": "120870",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120870.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "That's a really interesting use-case \u2014 let's write an integration test for it \ud83d\udc40 in a followup",
+          "pr": "120870",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120870.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "I'll do!",
+          "pr": "120870",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120870.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120870-v9-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120870.md",
+      "passageCount": 3,
+      "verbatim": 3,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "Nit for a followup: shall we name the span differently based on the fact we are writing / renaming the resource?",
+          "pr": "120870",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120870.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "That's a really interesting use-case - let's write an integration test for it \ud83d\udc40 in a followup",
+          "pr": "120870",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120870.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "I'll do!",
+          "pr": "120870",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120870.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120882-v9-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120882.md",
+      "passageCount": 4,
+      "verbatim": 4,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "Incremental sync is going to be handled later.",
+          "pr": "120882",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120882.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "This is being done as part of https://github.com/grafana/grafana/pull/120883",
+          "pr": "120882",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120882.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "This is what won't work for incremental.",
+          "pr": "120882",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120882.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "We will need to improve logging for us and metrics about this things. I will add a ticket for that.",
+          "pr": "120882",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120882.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120883-v0-v7judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120883.md",
+      "passageCount": 14,
+      "verbatim": 13,
+      "grounded": 1,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "Addressed",
+          "pr": "120883",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120883.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "Addressed",
+          "pr": "120883",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120883.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "If we go on with this (i.e. no performance penalty worth taking a diff approach) this would make much easier to tackle other related problems (e.g. uid collision with existing folders)",
+          "pr": "120883",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120883.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "let's address this one :)",
+          "pr": "120883",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120883.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "5",
+          "excerpt": "let's address also this one",
+          "pr": "120883",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120883.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "6",
+          "excerpt": "given that we have to push again to this branch. Let's add some comments in the function or here about not having a replacement in this case.",
+          "pr": "120883",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120883.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "7",
+          "excerpt": "do we need to build the tree before calling `NewFolderMetadataIncrementalDiffBuilder` or can we do it right before we trim it? [nit] I would trim the tree before setting it in repositoryResources if possible to know what we put there and prepare before setting it.",
+          "pr": "120883",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120883.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "8",
+          "excerpt": "let's add function comment and / or inline comments",
+          "pr": "120883",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120883.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "9",
+          "excerpt": "ditto",
+          "pr": "120883",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120883.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "10",
+          "excerpt": "This will have conflicts with the orphans PR",
+          "pr": "120883",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120883.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "11",
+          "excerpt": "It seems it doesn't?",
+          "pr": "120883",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120883.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "12",
+          "excerpt": "Checking this - thanks Codex for only sending one comment at a time",
+          "pr": "120883",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120883.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "13",
+          "excerpt": "it's nightmare because you need wait 15 - 20 minutes in between.",
+          "pr": "120883",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120883.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "14",
+          "excerpt": "Had a chat with codex locally, that's the answer from it: [...] I think this is a theoretical race...",
+          "pr": "120883",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120883.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120883-v8-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120883.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120883-v9-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120883.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120889-v0-v7judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120889.md",
+      "passageCount": 5,
+      "verbatim": 5,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "Small conflict with handling invalid metadata PR",
+          "pr": "120889",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120889.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "This logic should also handle invalid metadata file in the other PR.",
+          "pr": "120889",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120889.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "here we will have to handle the invalid one.",
+          "pr": "120889",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120889.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "Do we need a grafana server per test case? Will that be changed as part of simplifications follow-up?",
+          "pr": "120889",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120889.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "5",
+          "excerpt": "I may not have noticed if already done, are we testing the skip for children?",
+          "pr": "120889",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120889.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120889-v8-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120889.md",
+      "passageCount": 5,
+      "verbatim": 5,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "Small conflict with handling invalid metadata PR",
+          "pr": "120889",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120889.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "This logic should also handle invalid metadata file in the other PR.",
+          "pr": "120889",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120889.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "here we will have to handle the invalid one.",
+          "pr": "120889",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120889.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "Do we need a grafana server per test case? Will that be changed as part of simplifications follow-up?",
+          "pr": "120889",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120889.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "5",
+          "excerpt": "I may not have noticed if already done, are we testing the skip for children?",
+          "pr": "120889",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120889.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120919-v0-v7judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120919.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120919-v7-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120919.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120930-v0-v7judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120930.md",
+      "passageCount": 4,
+      "verbatim": 4,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "Very much a nit but 'pick' implies choosing from a selection instead of creating one, wdyt?",
+          "pr": "120930",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120930.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "Nit: do we need a space between `recognize\u2014for`?",
+          "pr": "120930",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120930.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "yes!",
+          "pr": "120930",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120930.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "\ud83d\udcaf",
+          "pr": "120930",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120930.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120930-v8-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120930.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-120994-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-120994.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-121007-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121007.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-121008-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121008.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-121059-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121059.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-121061-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121061.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-121081-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121081.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-121099-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121099.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-121110-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121110.md",
+      "passageCount": 5,
+      "verbatim": 5,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "nit: perhaps a small utility function for this would be useful (if we don't have one already) to determine if a rule is using the default policy.",
+          "pr": "121110",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121110.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "nit: prefer a separate handler function instead of in-lining state management :D",
+          "pr": "121110",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121110.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "nit: we usually explain why something is disabled instead of focusing on how to resolve it, perhaps @JohnnyK-Grafana could assist here \u2013 though the current wording is definitely fine :)",
+          "pr": "121110",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121110.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "nit: same nit as the other one about separate handler functions",
+          "pr": "121110",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121110.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "5",
+          "excerpt": "nit: can we do the same thing for `AdvancedFilters`? That way we can also make sure they're mutually exclusive when we build those.",
+          "pr": "121110",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121110.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-121110-v5-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121110.md",
+      "passageCount": 5,
+      "verbatim": 4,
+      "grounded": 1,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "nit: perhaps a small utility function for this would be useful (if we don't have one already) to determine if a rule is using the default policy.",
+          "pr": "121110",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121110.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "nit: prefer a separate handler function instead of in-lining state management :D",
+          "pr": "121110",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121110.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "nit: we usually explain why something is disabled instead of focusing on how to resolve it, perhaps @JohnnyK-Grafana could assist here -- though the current wording is definitely fine :)",
+          "pr": "121110",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121110.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "nit: same nit as the other one about separate handler functions",
+          "pr": "121110",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121110.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "5",
+          "excerpt": "nit: can we do the same thing for `AdvancedFilters`? That way we can also make sure they're mutually exclusive when we build those.",
+          "pr": "121110",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121110.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-121110-v6-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121110.md",
+      "passageCount": 5,
+      "verbatim": 4,
+      "grounded": 1,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "nit: perhaps a small utility function for this would be useful (if we don't have one already) to determine if a rule is using the default policy.",
+          "pr": "121110",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121110.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "2",
+          "excerpt": "nit: prefer a separate handler function instead of in-lining state management :D",
+          "pr": "121110",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121110.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "nit: we usually explain why something is disabled instead of focusing on how to resolve it, perhaps @JohnnyK-Grafana could assist here -- though the current wording is definitely fine :)",
+          "pr": "121110",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121110.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "nit: same nit as the other one about separate handler functions",
+          "pr": "121110",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121110.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "5",
+          "excerpt": "nit: can we do the same thing for `AdvancedFilters`? That way we can also make sure they're mutually exclusive when we build those.",
+          "pr": "121110",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121110.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-121271-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+      "passageCount": 6,
+      "verbatim": 4,
+      "grounded": 2,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "oh, I think copilot may have a point here. Would these stop working? GF_FEATURE_TOGGLES_OPENFEATURE_PROVIDER, GF_FEATURE_TOGGLES_OPENFEATURE_URL",
+          "pr": "121271",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 0.79
+        },
+        {
+          "comment": "2",
+          "excerpt": "Oh! yeah, that's a good catch. I'll address that.",
+          "pr": "121271",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "this is probably OK - feature flags can have string values, and an empty string is valid, so this should be possible",
+          "pr": "121271",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "copilot strikes again -- we may want to pass appliedKeys to applyFeatureToggleEnvOverrides to prevent creating phantom entries in feature_toggles",
+          "pr": "121271",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 1
+        },
+        {
+          "comment": "5",
+          "excerpt": "Addressed in 0f93b0dedbe7cde3d0b71965172d0f52d91fa498",
+          "pr": "121271",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "6",
+          "excerpt": "I think this was fixed in the last round (I haven't re-triggered copilot since)...",
+          "pr": "121271",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-121271-v5-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+      "passageCount": 6,
+      "verbatim": 4,
+      "grounded": 2,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "oh, I think copilot may have a point here. Would these stop working? GF_FEATURE_TOGGLES_OPENFEATURE_PROVIDER, GF_FEATURE_TOGGLES_OPENFEATURE_URL",
+          "pr": "121271",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 0.79
+        },
+        {
+          "comment": "2",
+          "excerpt": "Oh! yeah, that's a good catch. I'll address that.",
+          "pr": "121271",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "this is probably OK - feature flags can have string values, and an empty string is valid, so this should be possible",
+          "pr": "121271",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "copilot strikes again -- we may want to pass appliedKeys to applyFeatureToggleEnvOverrides to prevent creating phantom entries in feature_toggles",
+          "pr": "121271",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 1
+        },
+        {
+          "comment": "5",
+          "excerpt": "Addressed in 0f93b0dedbe7cde3d0b71965172d0f52d91fa498",
+          "pr": "121271",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "6",
+          "excerpt": "I think this was fixed in the last round (I haven't re-triggered copilot since)...",
+          "pr": "121271",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-reviewer-distillation-run1",
+      "output": "scores/pr-121271-v6-judge.md",
+      "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+      "passageCount": 6,
+      "verbatim": 4,
+      "grounded": 2,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": [
+        {
+          "comment": "1",
+          "excerpt": "oh, I think copilot may have a point here. Would these stop working? GF_FEATURE_TOGGLES_OPENFEATURE_PROVIDER, GF_FEATURE_TOGGLES_OPENFEATURE_URL",
+          "pr": "121271",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 0.79
+        },
+        {
+          "comment": "2",
+          "excerpt": "Oh! yeah, that's a good catch. I'll address that.",
+          "pr": "121271",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "3",
+          "excerpt": "this is probably OK - feature flags can have string values, and an empty string is valid, so this should be possible",
+          "pr": "121271",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "4",
+          "excerpt": "copilot strikes again -- we may want to pass appliedKeys to applyFeatureToggleEnvOverrides to prevent creating phantom entries in feature_toggles",
+          "pr": "121271",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+          "fileExists": true,
+          "verdict": "grounded",
+          "grounding": 1
+        },
+        {
+          "comment": "5",
+          "excerpt": "Addressed in 0f93b0dedbe7cde3d0b71965172d0f52d91fa498",
+          "pr": "121271",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        },
+        {
+          "comment": "6",
+          "excerpt": "I think this was fixed in the last round (I haven't re-triggered copilot since)...",
+          "pr": "121271",
+          "source": "~/.claude/grafana-reviewer-distillation-run1/reviews/pr-121271.md",
+          "fileExists": true,
+          "verdict": "verbatim",
+          "grounding": 1
+        }
+      ]
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-118631-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-118631.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-120723-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-120723.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-120994-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-120994.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-121005-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-121005.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-121005-v0-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-121005.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-121005-v3-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-121005.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-121110-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-121110.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-121114-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-121114.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-121126-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-121126.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-121226-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-121226.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-121226-v0-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-121226.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-121226-v3-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-121226.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-121252-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-121252.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-121254-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-121254.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-121254-v0-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-121254.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-121254-v3-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-121254.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-121271-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-121271.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-121445-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-121445.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    },
+    {
+      "stateDir": "~/.claude/grafana-grafana-reviewer-distillation",
+      "output": "scores/pr-77102-judge.md",
+      "source": "~/.claude/grafana-grafana-reviewer-distillation/reviews/pr-77102.md",
+      "passageCount": 0,
+      "verbatim": 0,
+      "grounded": 0,
+      "fabricated": 0,
+      "unresolvable": 0,
+      "checks": []
+    }
+  ]
+}
