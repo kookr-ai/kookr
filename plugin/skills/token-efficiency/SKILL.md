@@ -49,18 +49,25 @@ Read("src/core/types.ts")
 
 When you need to read multiple files or run multiple searches, issue them all in one message instead of sequentially. Independent reads, greps, and globs can all run concurrently.
 
-### 7. Don't re-read what you just wrote
+### 7. Batch known read sets up front
+
+When a reflection, review, or analysis loop already knows it must inspect N
+specific files before reasoning, issue one batched read instead of N sequential
+reads. This is especially useful for "read N files -> analyze" loops, where the
+analysis cannot start until the whole known set is available.
+
+### 8. Don't re-read what you just wrote
 
 After a Write or Edit, you already know the file contents — you just specified them. Don't read the file to "verify" unless you suspect the tool failed.
 
-### 8. Batch git operations
+### 9. Batch git operations
 
 Instead of separate `git add`, `git status`, `git diff` calls, combine what you can:
 ```bash
 git add file1.ts file2.ts && git status
 ```
 
-### 9. Scope reads with offset/limit
+### 10. Scope reads with offset/limit
 
 For large files where you only need a specific section, use `offset` and `limit` parameters on Read instead of reading the entire file.
 
@@ -71,5 +78,6 @@ For large files where you only need a specific section, use `offset` and `limit`
 | Read file → Edit 1 line → Read file again | Read file → Edit 1 line |
 | Glob `*.test.ts` + Glob `*.spec.ts` | Glob `*.{test,spec}.ts` |
 | Read 2000-line file for one type | Grep for the type name |
+| Read file A -> read file B -> read file C -> analyze | Batch known file reads -> analyze |
 | Run one test → run all tests | Run all tests once |
 | Enter worktree → re-read all files | Enter worktree → use context |
