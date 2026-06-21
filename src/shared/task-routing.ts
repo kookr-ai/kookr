@@ -1,8 +1,8 @@
 import type { AgentState } from './protocol.js';
 import { isTerminalStatus } from './contracts/task-status.js';
-import type { EmptyEnterAdvanceDiagnostics } from './terminal-input-contract.js';
+import type { EmptyEnterAdvanceDiagnostics } from './contracts/terminal-input.js';
 
-export type { EmptyEnterAdvanceDiagnostics } from './terminal-input-contract.js';
+export type { EmptyEnterAdvanceDiagnostics } from './contracts/terminal-input.js';
 
 /**
  * Canonical routability predicates shared by the frontend triage navigation

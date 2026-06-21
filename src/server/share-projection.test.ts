@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { AttentionQueue } from '../core/attention-queue.js';
 import { TaskStore } from '../core/tasks.js';
-import { buildPermissionRequestBinding } from '../shared/contracts/permission-request-binding.js';
+import { buildPermissionRequestBinding } from './permission-request-binding.js';
 import { asNodeId } from '../remote/ids.js';
 import { projectTaskForRemoteShare, sanitizeRemoteTaskLabel } from './share-projection.js';
 

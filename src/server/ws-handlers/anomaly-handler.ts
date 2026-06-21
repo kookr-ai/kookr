@@ -8,7 +8,7 @@ import { SUPPRESSION_THRESHOLD, type SnoozeSuppressionTracker } from '../../core
 import type { Task, TaskStore } from '../../core/tasks.js';
 import { nowISO } from '../../core/interaction-log.js';
 import { recordFalseNegative, recordFalsePositive } from '../../core/anomaly-detector.js';
-import { validatePermissionApprovalBinding } from '../../shared/contracts/permission-request-binding.js';
+import { validatePermissionApprovalBinding } from '../permission-request-binding.js';
 import { sendDirectAgentInput } from '../use-cases/agent-input.js';
 import type { SupervisorFeedbackCaseStore } from '../supervisor-feedback-case-store.js';
 import { SUPERVISOR_FEEDBACK_CASE_SCHEMA_VERSION } from '../supervisor-feedback-case-store.js';

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { TaskStore } from '../core/tasks.js';
 import type { Anomaly } from '../core/types.js';
-import { buildPermissionRequestBinding } from '../shared/contracts/permission-request-binding.js';
+import { buildPermissionRequestBinding } from './permission-request-binding.js';
 import type { RemoteControlEvent } from '../remote/control-events.js';
 import { asGrantId, asNodeEpoch, asNodeId, asPolicyVersion, asSeq, asServerRevision, asSessionEpoch, asSessionId } from '../remote/ids.js';
 import { RemotePolicyCache } from '../remote/policy-cache.js';

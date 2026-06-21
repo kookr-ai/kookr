@@ -10,7 +10,7 @@ import { AttentionQueue } from '../core/attention-queue.js';
 import { Monitor } from '../core/monitor.js';
 import { SnoozeSuppressionTracker, SUPPRESSION_THRESHOLD } from '../core/snooze-suppression.js';
 import { DeferredInteractionLogWriter, readInteractionLog } from '../core/interaction-log.js';
-import { buildPermissionRequestBinding } from '../shared/contracts/permission-request-binding.js';
+import { buildPermissionRequestBinding } from './permission-request-binding.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { GitHubStateStore } from '../core/github-state-store.js';

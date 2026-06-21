@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { buildPermissionRequestBinding } from '../../shared/contracts/permission-request-binding.js';
+import { buildPermissionRequestBinding } from '../permission-request-binding.js';
 import { RemotePermissionBroker } from '../permission-broker.js';
 
 const detectedAt = new Date('2026-05-15T19:00:00.000Z');
