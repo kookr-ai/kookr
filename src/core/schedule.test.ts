@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ScheduleStore, ScheduleValidationError } from './schedule.js';
+import { ScheduleStore, ScheduleValidationError, scheduleResolutionSignature } from './schedule.js';
 
 describe('ScheduleStore', () => {
   let dir: string;
@@ -486,6 +486,42 @@ describe('ScheduleStore', () => {
       const reloaded = new ScheduleStore(dir);
       await reloaded.load();
       expect(reloaded.list()[0].playbook.scope).toBe('plugin');
+    });
+  });
+
+  describe('cached playbook resolution health (R9)', () => {
+    it('reports unknown until the cache is seeded, then the cached tri-state', () => {
+      const schedule = store.create({
+        name: 'Health',
+        cron: '0 0 * * *',
+        playbook: { path: 'a.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const sig = scheduleResolutionSignature(schedule);
+
+      // Cache miss → unknown (never broken).
+      expect(store.getWithComputed(schedule.id)!.playbookResolution).toBe('unknown');
+
+      store.setPlaybookResolution(schedule.id, sig, true);
+      expect(store.getWithComputed(schedule.id)!.playbookResolution).toBe('resolvable');
+
+      store.setPlaybookResolution(schedule.id, sig, false);
+      expect(store.getWithComputed(schedule.id)!.playbookResolution).toBe('unresolvable');
+    });
+
+    it('falls back to unknown when the cached signature is stale (cwd/path edit)', () => {
+      const schedule = store.create({
+        name: 'Edited',
+        cron: '0 0 * * *',
+        playbook: { path: 'a.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      store.setPlaybookResolution(schedule.id, scheduleResolutionSignature(schedule), true);
+      expect(store.getWithComputed(schedule.id)!.playbookResolution).toBe('resolvable');
+
+      // Edit the path — the cached entry's signature no longer matches.
+      store.updateDefinition(schedule.id, { playbook: { path: 'b.md', parameters: {} } });
+      expect(store.getWithComputed(schedule.id)!.playbookResolution).toBe('unknown');
     });
   });
 });

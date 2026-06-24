@@ -111,9 +111,14 @@ export interface Schedule {
   updatedAt: string;
 }
 
+/** Mirrors `core/schedule` — tri-state playbook resolution health (R9). */
+export type PlaybookResolutionState = 'unknown' | 'resolvable' | 'unresolvable';
+
 export interface ScheduleResponse extends Schedule {
   nextRunAt: string | null;
   cronDescription: string;
+  /** Cached resolution health; absent on older servers (treat as `unknown`). */
+  playbookResolution?: PlaybookResolutionState;
 }
 
 export interface ScheduleStatusSnapshot {

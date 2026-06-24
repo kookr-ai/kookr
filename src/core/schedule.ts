@@ -119,10 +119,33 @@ export interface Schedule {
   updatedAt: string;
 }
 
+/**
+ * Tri-state playbook resolution health. A cache miss (the window before the
+ * first scheduler tick, or right after a cwd/path/scope edit) is `unknown` and
+ * renders neutral — never `broken`. See rfc-schedule-playbook-resolution R9.
+ */
+export type PlaybookResolutionState = 'unknown' | 'resolvable' | 'unresolvable';
+
+/**
+ * Cache key for a schedule's resolution health. Includes the inputs that
+ * determine resolvability, so a cwd/path/scope edit invalidates the cached
+ * value (the stale entry no longer matches → `unknown`).
+ */
+export function scheduleResolutionSignature(schedule: Pick<Schedule, 'playbook' | 'cwd'>): string {
+  const scope = schedule.playbook.scope ?? 'project';
+  return [schedule.playbook.path, scope, schedule.cwd].join('\u0000');
+}
+
 /** Schedule enriched with computed fields for API responses. */
 export interface ScheduleResponse extends Schedule {
   nextRunAt: string | null;
   cronDescription: string;
+  /**
+   * Cached, off-hot-path playbook resolution health (R9). Computed on the
+   * scheduler tick cadence — `enrichSchedule` only reads the cache, never the
+   * filesystem. Optional/additive: older servers omit it (treat as `unknown`).
+   */
+  playbookResolution?: PlaybookResolutionState;
 }
 
 export interface ScheduleStatusSnapshot {
@@ -186,6 +209,12 @@ export class ScheduleStore {
   private persistChain: Promise<void> = Promise.resolve();
   private revision = 0;
   private loadError?: string;
+  /**
+   * Off-hot-path resolution-health cache (R9), keyed by schedule id. The
+   * scheduler tick writes it; `enrichSchedule` reads it without any FS access.
+   * A stale entry (signature mismatch after an edit) reads back as `unknown`.
+   */
+  private resolutionCache = new Map<string, { signature: string; resolvable: boolean }>();
 
   constructor(kookrDir: string) {
     this.filePath = join(kookrDir, 'schedules.json');
@@ -228,7 +257,7 @@ export class ScheduleStore {
   }
 
   listWithComputed(): ScheduleResponse[] {
-    return this.list().map(enrichSchedule);
+    return this.list().map((s) => enrichSchedule(s, this.resolutionStateFor(s)));
   }
 
   get(id: string): Schedule | undefined {
@@ -237,7 +266,21 @@ export class ScheduleStore {
 
   getWithComputed(id: string): ScheduleResponse | undefined {
     const s = this.schedules.get(id);
-    return s ? enrichSchedule(s) : undefined;
+    return s ? enrichSchedule(s, this.resolutionStateFor(s)) : undefined;
+  }
+
+  /**
+   * Record the tick-cadence resolution-health result for a schedule (R9).
+   * Called by the scheduler runner; never reads the filesystem here.
+   */
+  setPlaybookResolution(id: string, signature: string, resolvable: boolean): void {
+    this.resolutionCache.set(id, { signature, resolvable });
+  }
+
+  private resolutionStateFor(s: Schedule): PlaybookResolutionState {
+    const entry = this.resolutionCache.get(s.id);
+    if (!entry || entry.signature !== scheduleResolutionSignature(s)) return 'unknown';
+    return entry.resolvable ? 'resolvable' : 'unresolvable';
   }
 
   getRevision(): number {
@@ -332,6 +375,7 @@ export class ScheduleStore {
   delete(id: string): boolean {
     const deleted = this.schedules.delete(id);
     if (deleted) {
+      this.resolutionCache.delete(id);
       this.bumpRevision();
     }
     return deleted;
@@ -547,8 +591,11 @@ function computeUpdatedTriggerState(
   };
 }
 
-/** Enrich a schedule with computed nextRunAt and cronDescription. */
-function enrichSchedule(s: Schedule): ScheduleResponse {
+/** Enrich a schedule with computed nextRunAt, cronDescription and cached health. */
+function enrichSchedule(
+  s: Schedule,
+  playbookResolution: PlaybookResolutionState = 'unknown',
+): ScheduleResponse {
   const after = s.lastScheduledFor ? new Date(s.lastScheduledFor) : new Date(s.createdAt);
   const next = s.enabled && !isTriggerLimitExhausted(s) ? nextRun(s.cron, after) : null;
   const effectiveNext = next && next.getTime() <= Date.now()
@@ -558,5 +605,6 @@ function enrichSchedule(s: Schedule): ScheduleResponse {
     ...s,
     nextRunAt: effectiveNext?.toISOString() ?? null,
     cronDescription: describeCron(s.cron),
+    playbookResolution,
   };
 }
