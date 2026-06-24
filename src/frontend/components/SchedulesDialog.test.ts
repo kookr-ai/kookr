@@ -341,6 +341,50 @@ describe('SchedulesDialog prefill', () => {
     expect(onCreated).toHaveBeenCalledWith(true);
   });
 
+  test('lists a plugin-scoped playbook and round-trips its scope on create (R8)', async () => {
+    const createBodies: Array<{ playbook?: { path?: string; scope?: string } }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/playbooks')) {
+        // A plugin-tier playbook — would have been filtered out before R8.
+        return { ok: true, json: async () => [{ id: 'plug.md', name: 'Plugin Job', scope: 'plugin', parameters: [] }] };
+      }
+      if (url.startsWith('/api/schedules/preview')) {
+        return { ok: true, json: async () => ({ cronDescription: 'Daily at 09:00', nextRuns: [], timezone: 'UTC' }) };
+      }
+      if (url === '/api/schedules' && init?.method === 'POST') {
+        createBodies.push(JSON.parse(init.body as string));
+        return { ok: true, json: async () => ({ id: 'new', name: 'Plugin Job' }) };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          revision: 1,
+          schedules: [],
+          status: { timezone: 'UTC', catchUpMode: 'auto', catchUpEnabled: true, schedulerHealthy: true },
+        }),
+      };
+    }));
+    useKookrStore.setState({ serverCwd: '/repo', schedules: [] });
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(React.createElement(SchedulesDialog, { onClose: () => {} }));
+    });
+    await settle();
+
+    // The plugin playbook is offered in the picker (no project-only filter).
+    const option = Array.from(container.querySelectorAll<HTMLOptionElement>('.schedule-form-field select option'))
+      .find((o) => o.value === 'plug.md');
+    expect(option).toBeTruthy();
+
+    selectPlaybook('plug.md');
+    await act(async () => { await Promise.resolve(); });
+    await submitCreate();
+
+    expect(createBodies).toHaveLength(1);
+    expect(createBodies[0].playbook).toMatchObject({ path: 'plug.md', scope: 'plugin' });
+  });
+
   test('a manual create (no prefill) calls onCreated(false) — does not trigger the hint', async () => {
     stubFetch([{ id: 'triage.md', name: 'Triage', scope: 'project', parameters: [] }]);
     useKookrStore.setState({ serverCwd: '/repo', schedules: [] });

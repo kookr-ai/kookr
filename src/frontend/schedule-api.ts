@@ -1,4 +1,4 @@
-import type { AgentSelection, Playbook, ScheduleListResponse, ScheduleResponse } from '../shared/protocol.js';
+import type { AgentSelection, Playbook, PlaybookScope, ScheduleListResponse, ScheduleResponse } from '../shared/protocol.js';
 
 export interface SchedulePreviewResponse {
   cronDescription: string;
@@ -21,6 +21,8 @@ export interface CreateScheduleRequest {
   playbook: {
     path: string;
     parameters: Record<string, string>;
+    /** Pinned tier for the selected playbook (project | user | plugin). */
+    scope?: PlaybookScope;
   };
 }
 
