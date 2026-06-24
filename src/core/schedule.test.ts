@@ -425,4 +425,67 @@ describe('ScheduleStore', () => {
     await reloaded.load();
     expect(reloaded.list()).toHaveLength(0);
   });
+
+  describe('playbook scope carry-through (R2)', () => {
+    it('create stores an explicit scope', () => {
+      const schedule = store.create({
+        name: 'Plugin Job',
+        cron: '0 0 * * *',
+        playbook: { path: 'plug.md', parameters: {}, scope: 'plugin' },
+        cwd: '/tmp',
+      });
+      expect(schedule.playbook).toEqual({ path: 'plug.md', parameters: {}, scope: 'plugin' });
+    });
+
+    it('create without scope leaves it unset (legacy = project)', () => {
+      const schedule = store.create({
+        name: 'Legacy',
+        cron: '0 0 * * *',
+        playbook: { path: 'a.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      expect(schedule.playbook.scope).toBeUndefined();
+    });
+
+    it('updateDefinition carries a new scope through', () => {
+      const schedule = store.create({
+        name: 'Job',
+        cron: '0 0 * * *',
+        playbook: { path: 'a.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const updated = store.updateDefinition(schedule.id, {
+        playbook: { path: 'usr.md', parameters: {}, scope: 'user' },
+      });
+      expect(updated.playbook).toEqual({ path: 'usr.md', parameters: {}, scope: 'user' });
+    });
+
+    it('an update that omits scope preserves the already-pinned scope (no un-pin)', () => {
+      const schedule = store.create({
+        name: 'Pinned',
+        cron: '0 0 * * *',
+        playbook: { path: 'plug.md', parameters: {}, scope: 'plugin' },
+        cwd: '/tmp',
+      });
+      // Patch path+parameters only — scope omitted. Must stay 'plugin'.
+      const updated = store.updateDefinition(schedule.id, {
+        playbook: { path: 'plug.md', parameters: { branch: 'main' } },
+      });
+      expect(updated.playbook).toEqual({ path: 'plug.md', parameters: { branch: 'main' }, scope: 'plugin' });
+    });
+
+    it('scope survives a persist + reload round-trip', async () => {
+      store.create({
+        name: 'Plugin Job',
+        cron: '0 0 * * *',
+        playbook: { path: 'plug.md', parameters: {}, scope: 'plugin' },
+        cwd: '/tmp',
+      });
+      await store.persist();
+
+      const reloaded = new ScheduleStore(dir);
+      await reloaded.load();
+      expect(reloaded.list()[0].playbook.scope).toBe('plugin');
+    });
+  });
 });
