@@ -39,6 +39,7 @@ describe('agent-launch-context', () => {
     for (const dir of tempDirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
     }
+    vi.unstubAllEnvs();
   });
 
   test('injects task and API context for child-task workflows', async () => {
@@ -160,6 +161,34 @@ describe('agent-launch-context', () => {
     const launcherDir = resolveAgentLauncherBinDir();
     expect(launcherDir).toBeDefined();
     expect(context.env.PATH).toBe(`${launcherDir}:/usr/bin`);
+  });
+
+  test('propagates CLAUDE_CODE_DISABLE_AUTO_MEMORY when set so memory stays disabled under --setting-sources ""', async () => {
+    vi.stubEnv('CLAUDE_CODE_DISABLE_AUTO_MEMORY', '1');
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Task', '/repo');
+    const context = await buildAgentLaunchContext({
+      taskStore,
+      taskId: task.id,
+      cwd: makeTempDir(),
+      basePath: '/usr/bin',
+    });
+
+    expect(context.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
+  });
+
+  test('omits CLAUDE_CODE_DISABLE_AUTO_MEMORY when unset so default auto-memory behavior is unchanged', async () => {
+    vi.stubEnv('CLAUDE_CODE_DISABLE_AUTO_MEMORY', undefined);
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Task', '/repo');
+    const context = await buildAgentLaunchContext({
+      taskStore,
+      taskId: task.id,
+      cwd: makeTempDir(),
+      basePath: '/usr/bin',
+    });
+
+    expect(context.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBeUndefined();
   });
 
   function makeTempDir(): string {
