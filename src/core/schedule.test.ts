@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ScheduleStore, ScheduleValidationError } from './schedule.js';
+import { ScheduleStore, ScheduleValidationError, scheduleResolutionSignature } from './schedule.js';
 
 describe('ScheduleStore', () => {
   let dir: string;
@@ -424,5 +424,104 @@ describe('ScheduleStore', () => {
     const reloaded = new ScheduleStore('/nonexistent/path');
     await reloaded.load();
     expect(reloaded.list()).toHaveLength(0);
+  });
+
+  describe('playbook scope carry-through (R2)', () => {
+    it('create stores an explicit scope', () => {
+      const schedule = store.create({
+        name: 'Plugin Job',
+        cron: '0 0 * * *',
+        playbook: { path: 'plug.md', parameters: {}, scope: 'plugin' },
+        cwd: '/tmp',
+      });
+      expect(schedule.playbook).toEqual({ path: 'plug.md', parameters: {}, scope: 'plugin' });
+    });
+
+    it('create without scope leaves it unset (legacy = project)', () => {
+      const schedule = store.create({
+        name: 'Legacy',
+        cron: '0 0 * * *',
+        playbook: { path: 'a.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      expect(schedule.playbook.scope).toBeUndefined();
+    });
+
+    it('updateDefinition carries a new scope through', () => {
+      const schedule = store.create({
+        name: 'Job',
+        cron: '0 0 * * *',
+        playbook: { path: 'a.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const updated = store.updateDefinition(schedule.id, {
+        playbook: { path: 'usr.md', parameters: {}, scope: 'user' },
+      });
+      expect(updated.playbook).toEqual({ path: 'usr.md', parameters: {}, scope: 'user' });
+    });
+
+    it('an update that omits scope preserves the already-pinned scope (no un-pin)', () => {
+      const schedule = store.create({
+        name: 'Pinned',
+        cron: '0 0 * * *',
+        playbook: { path: 'plug.md', parameters: {}, scope: 'plugin' },
+        cwd: '/tmp',
+      });
+      // Patch path+parameters only — scope omitted. Must stay 'plugin'.
+      const updated = store.updateDefinition(schedule.id, {
+        playbook: { path: 'plug.md', parameters: { branch: 'main' } },
+      });
+      expect(updated.playbook).toEqual({ path: 'plug.md', parameters: { branch: 'main' }, scope: 'plugin' });
+    });
+
+    it('scope survives a persist + reload round-trip', async () => {
+      store.create({
+        name: 'Plugin Job',
+        cron: '0 0 * * *',
+        playbook: { path: 'plug.md', parameters: {}, scope: 'plugin' },
+        cwd: '/tmp',
+      });
+      await store.persist();
+
+      const reloaded = new ScheduleStore(dir);
+      await reloaded.load();
+      expect(reloaded.list()[0].playbook.scope).toBe('plugin');
+    });
+  });
+
+  describe('cached playbook resolution health (R9)', () => {
+    it('reports unknown until the cache is seeded, then the cached tri-state', () => {
+      const schedule = store.create({
+        name: 'Health',
+        cron: '0 0 * * *',
+        playbook: { path: 'a.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const sig = scheduleResolutionSignature(schedule);
+
+      // Cache miss → unknown (never broken).
+      expect(store.getWithComputed(schedule.id)!.playbookResolution).toBe('unknown');
+
+      store.setPlaybookResolution(schedule.id, sig, true);
+      expect(store.getWithComputed(schedule.id)!.playbookResolution).toBe('resolvable');
+
+      store.setPlaybookResolution(schedule.id, sig, false);
+      expect(store.getWithComputed(schedule.id)!.playbookResolution).toBe('unresolvable');
+    });
+
+    it('falls back to unknown when the cached signature is stale (cwd/path edit)', () => {
+      const schedule = store.create({
+        name: 'Edited',
+        cron: '0 0 * * *',
+        playbook: { path: 'a.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      store.setPlaybookResolution(schedule.id, scheduleResolutionSignature(schedule), true);
+      expect(store.getWithComputed(schedule.id)!.playbookResolution).toBe('resolvable');
+
+      // Edit the path — the cached entry's signature no longer matches.
+      store.updateDefinition(schedule.id, { playbook: { path: 'b.md', parameters: {} } });
+      expect(store.getWithComputed(schedule.id)!.playbookResolution).toBe('unknown');
+    });
   });
 });

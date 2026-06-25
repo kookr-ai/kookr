@@ -4,10 +4,18 @@ import { dirname, join } from 'node:path';
 import type { AgentSelection } from './agent-types.js';
 import { DEFAULT_AGENT_TYPE, normalizeAgentSelection } from './agent-types.js';
 import { isValidCron, nextRun, describeCron } from './cron.js';
+import type { PlaybookScope } from './playbook.js';
 
 export interface SchedulePlaybook {
   path: string;
   parameters: Record<string, string>;
+  /**
+   * Pinned tier the playbook is resolved from (`project` | `user` | `plugin`).
+   * Optional and additive: a schedule with no `scope` (un-migrated legacy)
+   * resolves from the project tier only, exactly as before. See
+   * rfc-schedule-playbook-resolution R2/R3.
+   */
+  scope?: PlaybookScope;
 }
 
 export type ScheduleStopReason = 'trigger_limit_reached';
@@ -111,10 +119,33 @@ export interface Schedule {
   updatedAt: string;
 }
 
+/**
+ * Tri-state playbook resolution health. A cache miss (the window before the
+ * first scheduler tick, or right after a cwd/path/scope edit) is `unknown` and
+ * renders neutral — never `broken`. See rfc-schedule-playbook-resolution R9.
+ */
+export type PlaybookResolutionState = 'unknown' | 'resolvable' | 'unresolvable';
+
+/**
+ * Cache key for a schedule's resolution health. Includes the inputs that
+ * determine resolvability, so a cwd/path/scope edit invalidates the cached
+ * value (the stale entry no longer matches → `unknown`).
+ */
+export function scheduleResolutionSignature(schedule: Pick<Schedule, 'playbook' | 'cwd'>): string {
+  const scope = schedule.playbook.scope ?? 'project';
+  return [schedule.playbook.path, scope, schedule.cwd].join('\u0000');
+}
+
 /** Schedule enriched with computed fields for API responses. */
 export interface ScheduleResponse extends Schedule {
   nextRunAt: string | null;
   cronDescription: string;
+  /**
+   * Cached, off-hot-path playbook resolution health (R9). Computed on the
+   * scheduler tick cadence — `enrichSchedule` only reads the cache, never the
+   * filesystem. Optional/additive: older servers omit it (treat as `unknown`).
+   */
+  playbookResolution?: PlaybookResolutionState;
 }
 
 export interface ScheduleStatusSnapshot {
@@ -178,6 +209,12 @@ export class ScheduleStore {
   private persistChain: Promise<void> = Promise.resolve();
   private revision = 0;
   private loadError?: string;
+  /**
+   * Off-hot-path resolution-health cache (R9), keyed by schedule id. The
+   * scheduler tick writes it; `enrichSchedule` reads it without any FS access.
+   * A stale entry (signature mismatch after an edit) reads back as `unknown`.
+   */
+  private resolutionCache = new Map<string, { signature: string; resolvable: boolean }>();
 
   constructor(kookrDir: string) {
     this.filePath = join(kookrDir, 'schedules.json');
@@ -220,7 +257,7 @@ export class ScheduleStore {
   }
 
   listWithComputed(): ScheduleResponse[] {
-    return this.list().map(enrichSchedule);
+    return this.list().map((s) => enrichSchedule(s, this.resolutionStateFor(s)));
   }
 
   get(id: string): Schedule | undefined {
@@ -229,7 +266,21 @@ export class ScheduleStore {
 
   getWithComputed(id: string): ScheduleResponse | undefined {
     const s = this.schedules.get(id);
-    return s ? enrichSchedule(s) : undefined;
+    return s ? enrichSchedule(s, this.resolutionStateFor(s)) : undefined;
+  }
+
+  /**
+   * Record the tick-cadence resolution-health result for a schedule (R9).
+   * Called by the scheduler runner; never reads the filesystem here.
+   */
+  setPlaybookResolution(id: string, signature: string, resolvable: boolean): void {
+    this.resolutionCache.set(id, { signature, resolvable });
+  }
+
+  private resolutionStateFor(s: Schedule): PlaybookResolutionState {
+    const entry = this.resolutionCache.get(s.id);
+    if (!entry || entry.signature !== scheduleResolutionSignature(s)) return 'unknown';
+    return entry.resolvable ? 'resolvable' : 'unresolvable';
   }
 
   getRevision(): number {
@@ -258,6 +309,7 @@ export class ScheduleStore {
       playbook: {
         path: input.playbook.path,
         parameters: { ...(input.playbook.parameters ?? {}) },
+        ...(input.playbook.scope ? { scope: input.playbook.scope } : {}),
       },
       cwd: input.cwd,
       agentType: input.agentType ?? DEFAULT_AGENT_TYPE,
@@ -292,6 +344,12 @@ export class ScheduleStore {
         playbook: {
           path: patch.playbook.path,
           parameters: { ...(patch.playbook.parameters ?? {}) },
+          // Merge-carry, never reconstruct-and-drop: an update that omits
+          // `scope` preserves the already-pinned tier (R2). Prevents an API
+          // client sending only path+parameters from un-pinning a schedule.
+          ...((patch.playbook.scope ?? existing.playbook.scope)
+            ? { scope: patch.playbook.scope ?? existing.playbook.scope }
+            : {}),
         },
       } : {}),
       updatedAt: new Date().toISOString(),
@@ -317,6 +375,7 @@ export class ScheduleStore {
   delete(id: string): boolean {
     const deleted = this.schedules.delete(id);
     if (deleted) {
+      this.resolutionCache.delete(id);
       this.bumpRevision();
     }
     return deleted;
@@ -368,6 +427,12 @@ function normalizeSchedule(raw: unknown): Schedule | null {
     playbook: {
       path: String(candidate.playbook.path),
       parameters: { ...(candidate.playbook.parameters ?? {}) },
+      // Carry an already-persisted scope through normalization so it survives
+      // a reload (R2). Preserved as-is (even an unrecognised value) so the
+      // resolver — not normalization — decides resolvability.
+      ...(typeof candidate.playbook.scope === 'string'
+        ? { scope: candidate.playbook.scope as PlaybookScope }
+        : {}),
     },
     cwd: String(candidate.cwd),
     agentType: normalizeAgentSelection(candidate.agentType),
@@ -526,8 +591,11 @@ function computeUpdatedTriggerState(
   };
 }
 
-/** Enrich a schedule with computed nextRunAt and cronDescription. */
-function enrichSchedule(s: Schedule): ScheduleResponse {
+/** Enrich a schedule with computed nextRunAt, cronDescription and cached health. */
+function enrichSchedule(
+  s: Schedule,
+  playbookResolution: PlaybookResolutionState = 'unknown',
+): ScheduleResponse {
   const after = s.lastScheduledFor ? new Date(s.lastScheduledFor) : new Date(s.createdAt);
   const next = s.enabled && !isTriggerLimitExhausted(s) ? nextRun(s.cron, after) : null;
   const effectiveNext = next && next.getTime() <= Date.now()
@@ -537,5 +605,6 @@ function enrichSchedule(s: Schedule): ScheduleResponse {
     ...s,
     nextRunAt: effectiveNext?.toISOString() ?? null,
     cronDescription: describeCron(s.cron),
+    playbookResolution,
   };
 }

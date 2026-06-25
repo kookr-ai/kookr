@@ -224,20 +224,19 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
       setPlaybooksLoading(true);
       listPlaybooksForCwd(cwd.trim())
         .then((items: Playbook[]) => {
-          // Schedules currently key playbook lookups off `<cwd>/.kookr/playbooks/`,
-          // so non-project (user/plugin) playbooks can't be scheduled yet — hide
-          // them from the picker until the schedule path supports scope.
-          const projectOnly = items.filter((item) => item.scope === 'project');
-          setPlaybooks(projectOnly);
+          // Schedules now resolve from an explicit pinned scope (project | user
+          // | plugin), so offer playbooks from all three tiers and persist the
+          // selected scope on create. See rfc-schedule-playbook-resolution R8.
+          setPlaybooks(items);
           // Resolve a one-shot prefill against the freshly-loaded list. Done here
           // (not in a separate effect) so we never evaluate against the initial
           // empty list before the fetch returns and falsely report "unmatched".
           setPendingPlaybookId((pending) => {
             if (!pending) {
-              setPlaybookId((current) => (current && projectOnly.some((item) => item.id === current)) ? current : '');
+              setPlaybookId((current) => (current && items.some((item) => item.id === current)) ? current : '');
               return null;
             }
-            const matched = projectOnly.some((item) => item.id === pending);
+            const matched = items.some((item) => item.id === pending);
             setPlaybookId(matched ? pending : '');
             setPrefillUnmatched(!matched);
             return null;
@@ -306,6 +305,7 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
         playbook: {
           path: selectedPlaybook.id,
           parameters: parameterValues,
+          scope: selectedPlaybook.scope,
         },
       });
       if (created) {
@@ -434,8 +434,7 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
             {prefillUnmatched && !playbookId && !playbooksLoading && (
               <div className="schedule-preview schedule-prefill-note">
                 Couldn&rsquo;t pre-select{prefill?.name ? <> <strong>{prefill.name}</strong></> : ' that playbook'} under <code>{cwd.trim() || serverCwd}</code>.
-                Pick it from the list below — only project playbooks under
-                {' '}<code>&lt;cwd&gt;/.kookr/playbooks/</code> can be scheduled today.
+                Pick it from the list below.
               </div>
             )}
 

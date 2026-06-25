@@ -1,10 +1,11 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import type { CreateScheduleInput, Schedule, UpdateScheduleDefinitionInput } from '../core/schedule.js';
 import { ScheduleValidationError, isValidMaxTriggers } from '../core/schedule.js';
 import { isPracticalCron, isValidCron } from '../core/cron.js';
 import { parsePlaybook, interpolateParameters, PlaybookParseError } from '../core/playbook-parser.js';
+import type { PlaybookScope } from '../core/playbook.js';
+import { resolvePlaybookInScope } from '../core/playbook-paths.js';
 import { projectIdFromRepoSpecifier } from '../core/project-identity.js';
 import { expandConfiguredCwd } from './cwd-paths.js';
 
@@ -38,6 +39,7 @@ export class ScheduleValidator {
       cwd: input.cwd,
       playbookPath: input.playbook.path,
       parameterValues: input.playbook.parameters,
+      scope: input.playbook.scope,
     });
   }
 
@@ -56,23 +58,33 @@ export class ScheduleValidator {
       cwd: patch.cwd ?? existing.cwd,
       playbookPath: patch.playbook?.path ?? existing.playbook.path,
       parameterValues: patch.playbook?.parameters ?? existing.playbook.parameters,
+      // Resolve the same scope `resolveLaunch` would after the merge-carry
+      // (R6 parity): an omitted scope falls back to the already-pinned one.
+      scope: patch.playbook?.scope ?? existing.playbook.scope,
     };
 
     await this.validateDefinitionFields(effective);
   }
 
   async resolveLaunch(schedule: Schedule): Promise<ResolvedScheduleLaunch> {
-    const playbookPath = join(schedule.cwd, '.kookr', 'playbooks', schedule.playbook.path);
     if (!existsSync(schedule.cwd)) {
       throw new ScheduleValidationError(`cwd does not exist: ${schedule.cwd}`, { cwd: 'Working directory does not exist' });
     }
-    if (!existsSync(playbookPath)) {
-      throw new ScheduleValidationError(`Playbook not found: ${schedule.playbook.path}`, { playbook: 'Playbook not found' });
+    // R3: legacy schedules with no `scope` resolve project-tier only — no
+    // probe, no cross-tier fallback. R5: re-resolve the tier *directory*
+    // (plugin upgrades change the versioned path) but never the *tier*.
+    const scope: PlaybookScope = schedule.playbook.scope ?? 'project';
+    const resolved = resolvePlaybookInScope(schedule.playbook.path, scope, schedule.cwd);
+    if (!resolved) {
+      throw new ScheduleValidationError(
+        `Playbook not found in ${scope} tier: ${schedule.playbook.path}`,
+        { playbook: 'Playbook not found' },
+      );
     }
 
     try {
-      const raw = await readFile(playbookPath, 'utf-8');
-      const playbook = parsePlaybook(raw, schedule.playbook.path, schedule.cwd);
+      const raw = await readFile(resolved.filePath, 'utf-8');
+      const playbook = parsePlaybook(raw, schedule.playbook.path, schedule.cwd, scope);
       const prompt = interpolateParameters(playbook.body, playbook.parameters, schedule.playbook.parameters);
       const criteria = playbook.checklist.length > 0
         ? playbook.checklist.join('\n')
@@ -117,6 +129,7 @@ export class ScheduleValidator {
     cwd: string;
     playbookPath: string;
     parameterValues: Record<string, string>;
+    scope?: PlaybookScope;
   }): Promise<void> {
     const fieldErrors: Record<string, string> = {};
 
@@ -124,18 +137,23 @@ export class ScheduleValidator {
       fieldErrors.cwd = 'Working directory does not exist';
     }
 
-    const playbookPath = join(input.cwd, '.kookr', 'playbooks', input.playbookPath);
-    if (!existsSync(playbookPath)) {
+    // Use the same single-scope resolver as `resolveLaunch` (R6 parity),
+    // defaulting an omitted scope to `project`. An unknown/unrecognised scope
+    // resolves to `undefined` (treated as unresolvable) rather than throwing,
+    // so a PR1 revert while a newer UI persists `scope` cannot wedge updates.
+    const scope: PlaybookScope = input.scope ?? 'project';
+    const resolved = resolvePlaybookInScope(input.playbookPath, scope, input.cwd);
+    if (!resolved) {
       fieldErrors.playbook = 'Playbook not found';
     }
 
-    if (Object.keys(fieldErrors).length > 0) {
+    if (!resolved || Object.keys(fieldErrors).length > 0) {
       throw new ScheduleValidationError('Invalid schedule definition', fieldErrors);
     }
 
     try {
-      const raw = await readFile(playbookPath, 'utf-8');
-      const playbook = parsePlaybook(raw, input.playbookPath, input.cwd);
+      const raw = await readFile(resolved.filePath, 'utf-8');
+      const playbook = parsePlaybook(raw, input.playbookPath, input.cwd, scope);
       const allowedNames = new Set(playbook.parameters.map((param) => param.name));
       const unknown = Object.keys(input.parameterValues).filter((key) => !allowedNames.has(key));
       if (unknown.length > 0) {

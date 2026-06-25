@@ -1,6 +1,7 @@
 import type { Hono } from "hono";
 import { normalizeAgentSelection } from "../../core/agent-types.js";
 import type { CreateScheduleInput, UpdateScheduleDefinitionInput } from "../../core/schedule.js";
+import type { PlaybookScope } from "../../core/playbook.js";
 import type { RouteDeps } from "./shared.js";
 
 function fieldErrorsFrom(err: unknown): Record<string, string> | undefined {
@@ -57,13 +58,17 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
       if (typeof body.cwd === "string") patch.cwd = body.cwd;
       if (typeof body.agentType === "string") patch.agentType = normalizeAgentSelection(body.agentType);
       if (typeof body.playbook === "object" && body.playbook !== null && !Array.isArray(body.playbook)) {
-        const playbook = body.playbook as { path?: unknown; parameters?: unknown };
+        const playbook = body.playbook as { path?: unknown; parameters?: unknown; scope?: unknown };
         if (typeof playbook.path === "string") {
           patch.playbook = {
             path: playbook.path,
             parameters: typeof playbook.parameters === "object" && playbook.parameters !== null && !Array.isArray(playbook.parameters)
               ? Object.fromEntries(Object.entries(playbook.parameters).filter(([, value]) => typeof value === "string"))
               : {},
+            // Carry scope through the rebuild so a PATCH doesn't strip the
+            // pinned tier. Merge-carry against the existing scope happens in
+            // ScheduleStore.updateDefinition.
+            ...(typeof playbook.scope === "string" ? { scope: playbook.scope as PlaybookScope } : {}),
           };
         }
       }

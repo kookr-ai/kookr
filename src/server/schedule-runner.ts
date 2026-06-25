@@ -1,6 +1,8 @@
+import { existsSync } from 'node:fs';
 import type { ScheduleStore, Schedule } from '../core/schedule.js';
 import { nextRun } from '../core/cron.js';
-import { ScheduleValidationError, isTriggerLimitExhausted } from '../core/schedule.js';
+import { ScheduleValidationError, isTriggerLimitExhausted, scheduleResolutionSignature } from '../core/schedule.js';
+import { resolvePlaybookInScope } from '../core/playbook-paths.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator } from './schedule-validator.js';
 import type { LaunchOpts, LaunchResult } from './launch-service.js';
@@ -64,6 +66,14 @@ export class ScheduleRunner {
   private pendingWork = new Set<Promise<void>>();
   private firing = false;
   private deps: ScheduleRunnerDeps;
+  /**
+   * Last observed resolution-health per schedule, for seeded transition `warn`
+   * (R9). The first observation (or one after a path/cwd/scope edit, which
+   * changes the signature) seeds the baseline silently; `warn` fires only on a
+   * true→false transition between two observed ticks — so an already-broken
+   * schedule does not emit a spurious `warn` on every process restart.
+   */
+  private lastResolution = new Map<string, { signature: string; resolvable: boolean }>();
 
   constructor(deps: ScheduleRunnerDeps) {
     this.deps = deps;
@@ -71,6 +81,11 @@ export class ScheduleRunner {
 
   start(): void {
     const catchUpMode = getCatchUpMode();
+    // Seed resolution health BEFORE the first broadcast (recordRunnerStarted
+    // broadcasts) so that broadcast already carries health rather than a full
+    // tick of `unknown`, and so the first observation seeds the transition
+    // baseline silently (no spurious warn on restart).
+    this.refreshPlaybookResolution();
     this.deps.service.recordRunnerStarted(catchUpMode);
 
     if (catchUpMode === 'auto') {
@@ -114,6 +129,10 @@ export class ScheduleRunner {
   }
 
   async tick(): Promise<void> {
+    // Resolution health is computed for ALL schedules (including disabled and
+    // trigger-exhausted ones), independent of the fire-eligibility gate below,
+    // so a disabled-because-broken schedule is still visibly broken (R9).
+    this.refreshPlaybookResolution();
     if (this.firing) return;
     this.firing = true;
     try {
@@ -138,6 +157,30 @@ export class ScheduleRunner {
     const schedule = this.deps.store.get(id);
     if (!schedule) return { error: 'Schedule not found' };
     return this.fire(schedule, 'manual');
+  }
+
+  /**
+   * Compute and cache playbook resolution health for every schedule (R9). One
+   * `resolvePlaybookInScope` per schedule per tick — never on the broadcast hot
+   * path. Emits a `warn` on a true→false transition (greppable without a
+   * dashboard visit), using seeded baseline semantics (see `lastResolution`).
+   */
+  refreshPlaybookResolution(): void {
+    for (const schedule of this.deps.store.list()) {
+      const scope = schedule.playbook.scope ?? 'project';
+      const resolvable = existsSync(schedule.cwd)
+        && resolvePlaybookInScope(schedule.playbook.path, scope, schedule.cwd) !== undefined;
+      const signature = scheduleResolutionSignature(schedule);
+      this.deps.store.setPlaybookResolution(schedule.id, signature, resolvable);
+
+      const prev = this.lastResolution.get(schedule.id);
+      if (prev && prev.signature === signature && prev.resolvable && !resolvable) {
+        console.warn(
+          `[schedule] Playbook for "${schedule.name}" became unresolvable in ${scope} tier: ${schedule.playbook.path}`,
+        );
+      }
+      this.lastResolution.set(schedule.id, { signature, resolvable });
+    }
   }
 
   private async fire(
