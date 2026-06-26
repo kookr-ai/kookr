@@ -67,12 +67,17 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     }
     const tasks = taskStore.listTasks();
     const launchDependencies = buildLaunchDependencyDiagnostics(tasks);
+    const attentionQueueSampledAtMs = Date.now();
     return c.json({
       status: 'ok',
       agents: tasks.length,
       build: buildInfo,
       serverStartedAt,
       launchDependencies,
+      attentionQueue: {
+        activeFindingDepth: queue.getDepth(attentionQueueSampledAtMs),
+        oldestFindingAgeMs: queue.getOldestFindingAgeMs(attentionQueueSampledAtMs),
+      },
       ...(terminalBackendBlock ? { terminalBackend: terminalBackendBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),

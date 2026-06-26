@@ -357,6 +357,27 @@ export class AttentionQueue {
     this.lastRemoved.clear();
   }
 
+  /** Current number of active, non-snoozed findings awaiting attention. */
+  getDepth(now = Date.now()): number {
+    this.restoreExpiredSnoozes(now);
+    return this.entries.size;
+  }
+
+  /** Age in milliseconds of the oldest active finding, or 0 when no finding is active. */
+  getOldestFindingAgeMs(now = Date.now()): number {
+    this.restoreExpiredSnoozes(now);
+    let oldestDetectedAtMs: number | null = null;
+    for (const entry of this.entries.values()) {
+      const detectedAtMs = entry.anomaly.detectedAt.getTime();
+      if (!Number.isFinite(detectedAtMs)) continue;
+      if (oldestDetectedAtMs === null || detectedAtMs < oldestDetectedAtMs) {
+        oldestDetectedAtMs = detectedAtMs;
+      }
+    }
+    if (oldestDetectedAtMs === null) return 0;
+    return Math.max(0, now - oldestDetectedAtMs);
+  }
+
   isAllClear(): boolean {
     this.restoreExpiredSnoozes();
     return this.entries.size === 0;
@@ -378,8 +399,7 @@ export class AttentionQueue {
     this.snoozed.delete(key);
   }
 
-  private restoreExpiredSnoozes(): void {
-    const now = Date.now();
+  private restoreExpiredSnoozes(now = Date.now()): void {
     for (const [key, snooze] of this.snoozed) {
       if (now < snooze.expiresAt) continue;
       if (!snooze.anomaly) {

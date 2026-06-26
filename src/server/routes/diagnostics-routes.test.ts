@@ -555,7 +555,7 @@ describe('diagnostics routes', () => {
     test('includes launch dependency degradation counts', async () => {
       const { taskStore, firstTaskId, secondTaskId } = createLaunchDependencyDiagnosticsFixture();
 
-      const res = await mkApp({ taskStore, buildInfo: {} as never }).request('/api/health');
+      const res = await mkApp({ taskStore, queue: new AttentionQueue(), buildInfo: {} as never }).request('/api/health');
 
       expect(res.status).toBe(200);
       const body = await res.json() as {
@@ -584,11 +584,55 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — attentionQueue block
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health attentionQueue block', () => {
+    test('samples attention queue saturation gauges', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-01-01T00:01:00.000Z'));
+      try {
+        const taskStore = new TaskStore();
+        const queue = new AttentionQueue();
+        queue.enqueue('agent-1', anomaly({
+          agentId: 'agent-1',
+          type: 'needs_input',
+          detectedAt: new Date('2026-01-01T00:00:00.000Z'),
+        }));
+        queue.enqueue('agent-2', anomaly({
+          agentId: 'agent-2',
+          type: 'permission_blocked',
+          detectedAt: new Date('2026-01-01T00:00:30.000Z'),
+        }));
+
+        const res = await mkApp({ taskStore, queue, buildInfo: {} as never }).request('/api/health');
+
+        expect(res.status).toBe(200);
+        const body = await res.json() as {
+          attentionQueue: {
+            activeFindingDepth: number;
+            oldestFindingAgeMs: number;
+          };
+        };
+        expect(body.attentionQueue).toEqual({
+          activeFindingDepth: 2,
+          oldestFindingAgeMs: 60_000,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — viewerBroadcaster block (#808 / R10)
   // ---------------------------------------------------------------------------
   describe('GET /api/health viewerBroadcaster block', () => {
     test('omits the block when the share feature is not wired', async () => {
-      const res = await mkApp({ taskStore: new TaskStore(), buildInfo: {} as never }).request('/api/health');
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
       expect(res.status).toBe(200);
       const body = (await res.json()) as Record<string, unknown>;
       expect(body).not.toHaveProperty('viewerBroadcaster');
@@ -601,6 +645,7 @@ describe('diagnostics routes', () => {
       const auditLog = new CollaborationAuditLog({ kookrDir: tempDir });
       const res = await mkApp({
         taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
         buildInfo: {} as never,
         viewerShare: { grantStore, registry, auditLog },
       }).request('/api/health');
