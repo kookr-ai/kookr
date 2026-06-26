@@ -26,6 +26,7 @@ export type AudioAlertPrimaryCause =
   | 'manual_test';
 
 export type SoundStateSource = 'localStorage' | 'default' | 'memory_fallback';
+export type ChimeSound = 'classic' | 'soft' | 'urgent';
 
 export interface AudioAlertContext {
   source: AudioAlertSource;
@@ -53,6 +54,8 @@ export interface LocalAudioAlertDecision extends AudioAlertContext {
   timestamp: string;
   outcome: AudioAlertOutcome;
   soundEnabled: boolean;
+  audioVolume: number;
+  chimeSound: ChimeSound;
   soundStateSource: SoundStateSource;
   soundStorageAvailable: boolean;
   dndEnabled: boolean;
@@ -91,6 +94,8 @@ export interface RedactedAudioAlertDecision {
   completionSignalId?: string;
   primaryCause?: AudioAlertPrimaryCause;
   soundEnabled: boolean;
+  audioVolume: number;
+  chimeSound: ChimeSound;
   soundStateSource: SoundStateSource;
   soundStorageAvailable: boolean;
   dndEnabled: boolean;
@@ -278,6 +283,8 @@ export function redactAudioAlertDecision(decision: LocalAudioAlertDecision): Red
     completionSignalId: decision.completionSignalId,
     primaryCause: decision.primaryCause,
     soundEnabled: decision.soundEnabled,
+    audioVolume: decision.audioVolume,
+    chimeSound: decision.chimeSound,
     soundStateSource: decision.soundStateSource,
     soundStorageAvailable: decision.soundStorageAvailable,
     dndEnabled: decision.dndEnabled,

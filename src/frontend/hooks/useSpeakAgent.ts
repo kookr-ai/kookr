@@ -82,6 +82,8 @@ function logDecision(
     outcome,
     reason,
     soundEnabled: soundState.enabled,
+    audioVolume: soundState.volume,
+    chimeSound: soundState.chimeSound,
     soundStateSource: soundState.source,
     soundStorageAvailable: soundState.storageAvailable,
     dndEnabled: dndState.enabled,

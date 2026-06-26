@@ -5,6 +5,7 @@ import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { SettingsDialog } from './SettingsDialog.js';
+import { __resetSoundPreferenceForTests, getSoundPreferenceState } from '../audio/sound.js';
 import type { AgentSelection } from '../../shared/protocol.js';
 
 interface MockSettings {
@@ -129,6 +130,7 @@ describe('SettingsDialog tabs', () => {
       ok: true,
       json: async () => DEFAULT_SETTINGS,
     })));
+    __resetSoundPreferenceForTests();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = renderDialog(container);
@@ -142,6 +144,7 @@ describe('SettingsDialog tabs', () => {
     vi.unstubAllGlobals();
     document.body.innerHTML = '';
     localStorage.clear();
+    __resetSoundPreferenceForTests();
   });
 
   test('defaults to the General tab and hides the hook inventory', async () => {
@@ -250,6 +253,30 @@ describe('SettingsDialog tabs', () => {
       defaultAgentType: 'codex-cli',
     });
     expect(localStorage.getItem('kookr:defaultAgentType')).toBeNull();
+  });
+
+  test('updates client-local audio volume and chime preferences from controls', async () => {
+    await flush();
+
+    const volumeInput = container.querySelector<HTMLInputElement>('input[aria-label="Alert volume"]');
+    const chimeSelect = container.querySelector<HTMLSelectElement>('select[aria-label="Chime sound"]');
+    expect(volumeInput).not.toBeNull();
+    expect(chimeSelect).not.toBeNull();
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(volumeInput, '0.35');
+      volumeInput!.dispatchEvent(new Event('input', { bubbles: true }));
+      chimeSelect!.value = 'soft';
+      chimeSelect!.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    expect(getSoundPreferenceState()).toMatchObject({
+      volume: 0.35,
+      chimeSound: 'soft',
+    });
+    expect(localStorage.getItem('kookr-sound-volume')).toBe('0.35');
+    expect(localStorage.getItem('kookr-chime-sound')).toBe('soft');
   });
 
   test('offers and persists the round-robin default agent', async () => {

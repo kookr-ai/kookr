@@ -5,7 +5,9 @@ import {
   __resetSoundPreferenceForTests,
   getSoundPreferenceState,
   isSoundEnabled,
+  setChimeSound,
   setSoundEnabled,
+  setSoundVolume,
   maybePlayChime,
 } from './sound.js';
 import { __resetAudioAlertLogForTests, getAudioAlertSnapshot } from './audio-alert-log.js';
@@ -29,6 +31,8 @@ describe('sound preferences', () => {
     expect(isSoundEnabled()).toBe(true);
     expect(getSoundPreferenceState()).toMatchObject({
       enabled: true,
+      volume: 1,
+      chimeSound: 'classic',
       storageAvailable: true,
       source: 'default',
     });
@@ -52,6 +56,33 @@ describe('sound preferences', () => {
     expect(store.get('kookr-sound-enabled')).toBe('true');
   });
 
+  test('persists volume and chime sound to localStorage', () => {
+    setSoundVolume(0.45);
+    setChimeSound('urgent');
+
+    expect(getSoundPreferenceState()).toMatchObject({
+      enabled: true,
+      volume: 0.45,
+      chimeSound: 'urgent',
+      source: 'localStorage',
+    });
+    expect(store.get('kookr-sound-volume')).toBe('0.45');
+    expect(store.get('kookr-chime-sound')).toBe('urgent');
+  });
+
+  test('clamps invalid stored volume and falls back to classic for unknown chime sound', () => {
+    store.set('kookr-sound-volume', '9');
+    store.set('kookr-chime-sound', 'laser');
+
+    __resetSoundPreferenceForTests();
+
+    expect(getSoundPreferenceState()).toMatchObject({
+      volume: 1,
+      chimeSound: 'classic',
+      source: 'localStorage',
+    });
+  });
+
   test('falls back to memory when localStorage writes throw', () => {
     vi.stubGlobal('localStorage', {
       getItem: () => null,
@@ -70,6 +101,8 @@ describe('sound preferences', () => {
     expect(isSoundEnabled()).toBe(false);
     expect(getSoundPreferenceState()).toMatchObject({
       enabled: false,
+      volume: 1,
+      chimeSound: 'classic',
       storageAvailable: false,
       source: 'memory_fallback',
     });
@@ -82,6 +115,18 @@ describe('sound preferences', () => {
 describe('maybePlayChime — audio-path smoke', () => {
   let store: Map<string, string>;
   let audioContextCtor: ReturnType<typeof vi.fn>;
+  let createdOscillators: Array<{
+    frequency: { value: number };
+    type: OscillatorType | '';
+    start: ReturnType<typeof vi.fn>;
+    stop: ReturnType<typeof vi.fn>;
+  }>;
+  let createdGains: Array<{
+    gain: {
+      setValueAtTime: ReturnType<typeof vi.fn>;
+      exponentialRampToValueAtTime: ReturnType<typeof vi.fn>;
+    };
+  }>;
 
   beforeEach(() => {
     store = new Map();
@@ -95,6 +140,8 @@ describe('maybePlayChime — audio-path smoke', () => {
     __resetAudioAlertLogForTests();
     __resetDndForTests();
     disableDnd();
+    createdOscillators = [];
+    createdGains = [];
 
     // Minimal AudioContext mock: tracks construction and provides the
     // surface playChime exercises (oscillators, gains, currentTime).
@@ -104,20 +151,28 @@ describe('maybePlayChime — audio-path smoke', () => {
       state: 'running',
       destination: {},
       close: vi.fn(),
-      createOscillator: () => ({
-        connect: vi.fn(),
-        frequency: { value: 0 },
-        type: '',
-        start: vi.fn(),
-        stop: vi.fn(),
-      }),
-      createGain: () => ({
-        connect: vi.fn(),
-        gain: {
-          setValueAtTime: vi.fn(),
-          exponentialRampToValueAtTime: vi.fn(),
-        },
-      }),
+      createOscillator: () => {
+        const oscillator = {
+          connect: vi.fn(),
+          frequency: { value: 0 },
+          type: '' as OscillatorType | '',
+          start: vi.fn(),
+          stop: vi.fn(),
+        };
+        createdOscillators.push(oscillator);
+        return oscillator;
+      },
+      createGain: () => {
+        const gain = {
+          connect: vi.fn(),
+          gain: {
+            setValueAtTime: vi.fn(),
+            exponentialRampToValueAtTime: vi.fn(),
+          },
+        };
+        createdGains.push(gain);
+        return gain;
+      },
       };
     });
     vi.stubGlobal('AudioContext', audioContextCtor);
@@ -139,9 +194,60 @@ describe('maybePlayChime — audio-path smoke', () => {
       outcome: 'scheduled',
       reason: 'operator_test',
       soundEnabled: true,
+      audioVolume: 1,
+      chimeSound: 'classic',
       dndEnabled: false,
     });
+    expect(createdOscillators.map((osc) => [osc.frequency.value, osc.type])).toEqual([
+      [880, 'sine'],
+      [1109, 'sine'],
+    ]);
+    expect(createdGains[0]?.gain.setValueAtTime).toHaveBeenCalledWith(0.3, 0);
     expect(getAudioAlertSnapshot().lastDecision?.outcome).toBe('scheduled');
+  });
+
+  test('scales scheduled gain by configured volume', () => {
+    setSoundVolume(0.5);
+
+    const decision = maybePlayChime({ source: 'manual_test', reason: 'operator_test' });
+
+    expect(decision).toMatchObject({
+      outcome: 'scheduled',
+      audioVolume: 0.5,
+      chimeSound: 'classic',
+    });
+    expect(createdGains[0]?.gain.setValueAtTime).toHaveBeenCalledWith(0.15, 0);
+    expect(createdGains[1]?.gain.setValueAtTime).toHaveBeenCalledWith(0.125, 0.15);
+  });
+
+  test('does not construct AudioContext when volume is zero and records muted suppression', () => {
+    setSoundVolume(0);
+
+    const decision = maybePlayChime({ source: 'manual_test', reason: 'operator_test' });
+
+    expect(audioContextCtor).not.toHaveBeenCalled();
+    expect(decision).toMatchObject({
+      outcome: 'suppressed_muted',
+      reason: 'sound volume 0',
+      soundEnabled: true,
+      audioVolume: 0,
+    });
+  });
+
+  test.each([
+    { sound: 'classic' as const, tones: [[880, 'sine'], [1109, 'sine']] },
+    { sound: 'soft' as const, tones: [[660, 'sine'], [880, 'triangle']] },
+    { sound: 'urgent' as const, tones: [[988, 'square'], [1319, 'square'], [988, 'square']] },
+  ])('uses selected $sound chime profile', ({ sound, tones }) => {
+    setChimeSound(sound);
+
+    const decision = maybePlayChime({ source: 'manual_test', reason: 'operator_test' });
+
+    expect(decision).toMatchObject({
+      outcome: 'scheduled',
+      chimeSound: sound,
+    });
+    expect(createdOscillators.map((osc) => [osc.frequency.value, osc.type])).toEqual(tones);
   });
 
   test('does not construct AudioContext when sound disabled and records muted suppression', () => {
