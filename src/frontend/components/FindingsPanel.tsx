@@ -771,6 +771,11 @@ const RootCauseFindingGroup = React.memo(function RootCauseFindingGroup({ root, 
   const [expanded, setExpanded] = useState(true);
   const [showAllRelated, setShowAllRelated] = useState(false);
   const visibleRelated = visibleFindingAgents(related, selectedAgentId, showAllRelated);
+  const selectedInRelated = Boolean(selectedAgentId && related.some((agent) => agent.agentId === selectedAgentId));
+
+  useEffect(() => {
+    if (selectedInRelated) setExpanded(true);
+  }, [selectedInRelated]);
 
   return (
     <div className="root-cause-group">
@@ -1514,6 +1519,16 @@ export function FindingsPanel({
       return () => clearTimeout(timer);
     }
   }, [findings, isInitialLoad]);
+
+  useEffect(() => {
+    if (!selectedAgentId) return;
+    const timer = window.setTimeout(() => {
+      scrollAreaRef.current
+        ?.querySelector<HTMLElement>('[aria-current="true"]')
+        ?.scrollIntoView?.({ block: 'nearest' });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [selectedAgentId]);
 
   const findingDisplayItems = useMemo(
     () => buildFindingDisplayItems(findings),
