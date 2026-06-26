@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ScheduleValidator } from './schedule-validator.js';
@@ -16,6 +16,8 @@ checklist:
 
 Do the ${name} thing.
 `;
+
+const INVALID_PATH_ERROR = 'Playbook path must stay inside the selected playbooks directory';
 
 describe('ScheduleValidator (tier-aware resolution)', () => {
   let root: string;
@@ -116,13 +118,38 @@ describe('ScheduleValidator (tier-aware resolution)', () => {
     });
 
     it('rejects a path that escapes the pinned tier', async () => {
+      await writeFile(join(projectCwd, 'escape.md'), PLAYBOOK('Escaped Playbook'));
+
       await expect(validator.resolveLaunch(makeSchedule({
         playbook: { path: '../../escape.md', parameters: {}, scope: 'project' },
       }))).rejects.toMatchObject({
         name: 'ScheduleValidationError',
-        // Assert it's the traversal/not-found rejection specifically, not some
-        // other ScheduleValidationError (e.g. a missing-cwd path).
-        fieldErrors: { playbook: 'Playbook not found' },
+        fieldErrors: { playbook: INVALID_PATH_ERROR },
+      });
+    });
+
+    it('rejects an absolute playbook path before reading it', async () => {
+      const escaped = join(root, 'absolute.md');
+      await writeFile(escaped, PLAYBOOK('Absolute Playbook'));
+
+      await expect(validator.resolveLaunch(makeSchedule({
+        playbook: { path: escaped, parameters: {}, scope: 'project' },
+      }))).rejects.toMatchObject({
+        name: 'ScheduleValidationError',
+        fieldErrors: { playbook: INVALID_PATH_ERROR },
+      });
+    });
+
+    it('rejects a scoped playbook symlink that resolves outside the playbooks directory', async () => {
+      const escaped = join(root, 'outside.md');
+      await writeFile(escaped, PLAYBOOK('Outside Playbook'));
+      await symlink(escaped, join(projectCwd, '.kookr', 'playbooks', 'linked.md'));
+
+      await expect(validator.resolveLaunch(makeSchedule({
+        playbook: { path: 'linked.md', parameters: {}, scope: 'project' },
+      }))).rejects.toMatchObject({
+        name: 'ScheduleValidationError',
+        fieldErrors: { playbook: INVALID_PATH_ERROR },
       });
     });
 
@@ -158,6 +185,33 @@ describe('ScheduleValidator (tier-aware resolution)', () => {
         cwd: projectCwd,
         playbook: { path: 'plug.md', parameters: {} },
       })).rejects.toMatchObject({ fieldErrors: { playbook: 'Playbook not found' } });
+    });
+
+    it('validateCreate rejects traversal before resolving a playbook', async () => {
+      await writeFile(join(projectCwd, 'escape.md'), PLAYBOOK('Escaped Create Playbook'));
+
+      await expect(validator.validateCreate({
+        name: 'Traversal',
+        cron: '0 9 * * *',
+        cwd: projectCwd,
+        playbook: { path: '../../escape.md', parameters: {} },
+      })).rejects.toMatchObject({
+        name: 'ScheduleValidationError',
+        fieldErrors: { playbook: INVALID_PATH_ERROR },
+      });
+    });
+
+    it('validateDefinitionUpdate rejects an absolute playbook path', async () => {
+      const escaped = join(root, 'absolute-update.md');
+      await writeFile(escaped, PLAYBOOK('Absolute Update Playbook'));
+      const existing = makeSchedule({ playbook: { path: 'proj.md', parameters: {}, scope: 'project' } });
+
+      await expect(validator.validateDefinitionUpdate(existing, {
+        playbook: { path: escaped, parameters: {} },
+      })).rejects.toMatchObject({
+        name: 'ScheduleValidationError',
+        fieldErrors: { playbook: INVALID_PATH_ERROR },
+      });
     });
 
     it('tolerates an unknown scope value gracefully (unresolvable, not a hard throw)', async () => {

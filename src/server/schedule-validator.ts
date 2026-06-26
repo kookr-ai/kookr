@@ -1,11 +1,12 @@
-import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { existsSync, realpathSync } from 'node:fs';
+import { readFile, realpath } from 'node:fs/promises';
+import { isAbsolute, win32 } from 'node:path';
 import type { CreateScheduleInput, Schedule, UpdateScheduleDefinitionInput } from '../core/schedule.js';
 import { ScheduleValidationError, isValidMaxTriggers } from '../core/schedule.js';
 import { isPracticalCron, isValidCron } from '../core/cron.js';
 import { parsePlaybook, interpolateParameters, PlaybookParseError } from '../core/playbook-parser.js';
 import type { PlaybookScope } from '../core/playbook.js';
-import { resolvePlaybookInScope } from '../core/playbook-paths.js';
+import { isPathInside, playbookScopeDir, resolvePlaybookInScope } from '../core/playbook-paths.js';
 import { projectIdFromRepoSpecifier } from '../core/project-identity.js';
 import { expandConfiguredCwd } from './cwd-paths.js';
 
@@ -17,6 +18,8 @@ export interface ResolvedScheduleLaunch {
   playbookId: string;
   projectId?: string;
 }
+
+const INVALID_PLAYBOOK_PATH_MESSAGE = 'Playbook path must stay inside the selected playbooks directory';
 
 export class ScheduleValidator {
   async validateCreate(input: CreateScheduleInput): Promise<void> {
@@ -74,7 +77,7 @@ export class ScheduleValidator {
     // probe, no cross-tier fallback. R5: re-resolve the tier *directory*
     // (plugin upgrades change the versioned path) but never the *tier*.
     const scope: PlaybookScope = schedule.playbook.scope ?? 'project';
-    const resolved = resolvePlaybookInScope(schedule.playbook.path, scope, schedule.cwd);
+    const resolved = await resolveSchedulePlaybook(schedule.playbook.path, scope, schedule.cwd);
     if (!resolved) {
       throw new ScheduleValidationError(
         `Playbook not found in ${scope} tier: ${schedule.playbook.path}`,
@@ -142,9 +145,18 @@ export class ScheduleValidator {
     // resolves to `undefined` (treated as unresolvable) rather than throwing,
     // so a PR1 revert while a newer UI persists `scope` cannot wedge updates.
     const scope: PlaybookScope = input.scope ?? 'project';
-    const resolved = resolvePlaybookInScope(input.playbookPath, scope, input.cwd);
+    let resolved: { filePath: string } | undefined;
+    try {
+      resolved = await resolveSchedulePlaybook(input.playbookPath, scope, input.cwd);
+    } catch (err) {
+      if (err instanceof ScheduleValidationError) {
+        fieldErrors.playbook = err.fieldErrors?.playbook ?? INVALID_PLAYBOOK_PATH_MESSAGE;
+      } else {
+        throw err;
+      }
+    }
     if (!resolved) {
-      fieldErrors.playbook = 'Playbook not found';
+      fieldErrors.playbook ??= 'Playbook not found';
     }
 
     if (!resolved || Object.keys(fieldErrors).length > 0) {
@@ -177,4 +189,66 @@ export function validateCron(cron: string): string | undefined {
   if (!isValidCron(cron)) return 'Invalid cron expression';
   if (!isPracticalCron(cron)) return 'Cron expression must not fire more often than every 5 minutes';
   return undefined;
+}
+
+async function resolveSchedulePlaybook(
+  playbookPath: string,
+  scope: PlaybookScope,
+  cwd: string,
+): Promise<{ filePath: string } | undefined> {
+  validateSchedulePlaybookPath(playbookPath);
+
+  const resolved = resolvePlaybookInScope(playbookPath, scope, cwd);
+  if (!resolved) return undefined;
+
+  const dir = playbookScopeDir(scope, cwd);
+  if (dir === undefined) return undefined;
+
+  const [realDir, realFilePath] = await Promise.all([
+    realpath(dir),
+    realpath(resolved.filePath),
+  ]);
+  if (!isPathInside(realFilePath, realDir)) {
+    throw invalidPlaybookPathError();
+  }
+
+  return { filePath: realFilePath };
+}
+
+export function resolveSchedulePlaybookSync(
+  playbookPath: string,
+  scope: PlaybookScope,
+  cwd: string,
+): { filePath: string } | undefined {
+  validateSchedulePlaybookPath(playbookPath);
+
+  const resolved = resolvePlaybookInScope(playbookPath, scope, cwd);
+  if (!resolved) return undefined;
+
+  const dir = playbookScopeDir(scope, cwd);
+  if (dir === undefined) return undefined;
+
+  const realDir = realpathSync(dir);
+  const realFilePath = realpathSync(resolved.filePath);
+  if (!isPathInside(realFilePath, realDir)) {
+    throw invalidPlaybookPathError();
+  }
+
+  return { filePath: realFilePath };
+}
+
+function validateSchedulePlaybookPath(playbookPath: string): void {
+  if (
+    isAbsolute(playbookPath)
+    || win32.isAbsolute(playbookPath)
+    || playbookPath.split(/[\\/]+/).includes('..')
+  ) {
+    throw invalidPlaybookPathError();
+  }
+}
+
+function invalidPlaybookPathError(): ScheduleValidationError {
+  return new ScheduleValidationError(INVALID_PLAYBOOK_PATH_MESSAGE, {
+    playbook: INVALID_PLAYBOOK_PATH_MESSAGE,
+  });
 }

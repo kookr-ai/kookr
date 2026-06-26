@@ -2,9 +2,8 @@ import { existsSync } from 'node:fs';
 import type { ScheduleStore, Schedule } from '../core/schedule.js';
 import { nextRun } from '../core/cron.js';
 import { ScheduleValidationError, isTriggerLimitExhausted, scheduleResolutionSignature } from '../core/schedule.js';
-import { resolvePlaybookInScope } from '../core/playbook-paths.js';
 import { ScheduleService } from './schedule-service.js';
-import { ScheduleValidator } from './schedule-validator.js';
+import { ScheduleValidator, resolveSchedulePlaybookSync } from './schedule-validator.js';
 import type { LaunchOpts, LaunchResult } from './launch-service.js';
 import type { TaskStatus } from '../core/types.js';
 
@@ -160,16 +159,23 @@ export class ScheduleRunner {
   }
 
   /**
-   * Compute and cache playbook resolution health for every schedule (R9). One
-   * `resolvePlaybookInScope` per schedule per tick — never on the broadcast hot
-   * path. Emits a `warn` on a true→false transition (greppable without a
-   * dashboard visit), using seeded baseline semantics (see `lastResolution`).
+   * Compute and cache playbook resolution health for every schedule (R9). Uses
+   * the same hardened schedule playbook resolver as launch, never on the
+   * broadcast hot path. Emits a `warn` on a true→false transition (greppable
+   * without a dashboard visit), using seeded baseline semantics (see
+   * `lastResolution`).
    */
   refreshPlaybookResolution(): void {
     for (const schedule of this.deps.store.list()) {
       const scope = schedule.playbook.scope ?? 'project';
-      const resolvable = existsSync(schedule.cwd)
-        && resolvePlaybookInScope(schedule.playbook.path, scope, schedule.cwd) !== undefined;
+      let resolvable = false;
+      if (existsSync(schedule.cwd)) {
+        try {
+          resolvable = resolveSchedulePlaybookSync(schedule.playbook.path, scope, schedule.cwd) !== undefined;
+        } catch {
+          resolvable = false;
+        }
+      }
       const signature = scheduleResolutionSignature(schedule);
       this.deps.store.setPlaybookResolution(schedule.id, signature, resolvable);
 
