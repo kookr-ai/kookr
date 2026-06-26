@@ -19,6 +19,7 @@ Usage:
   kookr maintenance backup [OPTIONS]  Create a crash-consistent data-dir backup tarball.
   kookr push test <deviceId>    Send a relay push test.
   kookr completion bash|zsh     Print a shell completion script.
+  kookr command outcome [commandId]  Print command outcome audit rows.
 
 Use --json with spawn, doctor, status, or ralph for one machine-readable output envelope.
 
