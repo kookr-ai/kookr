@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ScheduleStore } from '../core/schedule.js';
@@ -11,6 +11,8 @@ import {
 } from './schedule-runner.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator } from './schedule-validator.js';
+
+const INVALID_PLAYBOOK_PATH_ERROR = 'Playbook path must stay inside the selected playbooks directory';
 
 describe('ScheduleRunner', () => {
   let dir: string;
@@ -278,6 +280,32 @@ Do the test thing.
     expect(launched).toHaveLength(0);
     expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('dispatch_failed');
     expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('missing_playbook');
+  });
+
+  it('rejects a stored traversal playbook path before launching', async () => {
+    await writeFile(join(dir, 'escape.md'), `---
+name: Escaped Playbook
+parameters: []
+---
+
+Do not launch this.
+`);
+    const schedule = store.create({
+      name: 'Traversal Playbook',
+      cron: '* * * * *',
+      playbook: { path: '../../escape.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner();
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('dispatch_failed');
+    expect(store.get(schedule.id)!.latestExecution?.message).toBe(INVALID_PLAYBOOK_PATH_ERROR);
   });
 
   it('fails when cwd does not exist', async () => {
@@ -705,6 +733,22 @@ Do the plugin thing.
 
       expect(store.getWithComputed(ok.id)!.playbookResolution).toBe('resolvable');
       expect(store.getWithComputed(broken.id)!.playbookResolution).toBe('unresolvable');
+    });
+
+    it('marks a symlink that escapes the playbooks directory as unresolvable', async () => {
+      const escaped = join(dir, 'outside.md');
+      await writeFile(escaped, '---\nname: Outside\nparameters: []\n---\nbody\n');
+      await symlink(escaped, join(dir, '.kookr', 'playbooks', 'linked.md'));
+      const schedule = store.create({
+        name: 'Escaping Link',
+        cron: '0 9 * * *',
+        playbook: { path: 'linked.md', parameters: {} },
+        cwd: dir,
+      });
+
+      createRunner().refreshPlaybookResolution();
+
+      expect(store.getWithComputed(schedule.id)!.playbookResolution).toBe('unresolvable');
     });
 
     it('reports a DISABLED broken schedule as unresolvable', () => {
