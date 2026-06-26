@@ -7,7 +7,15 @@
  * `scripts/build-dtach.sh` first.
  */
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -130,6 +138,7 @@ const skipIfNoDtach = DTACH ? it : it.skip;
 const HAS_PROC = existsSync('/proc/self');
 // Tests that exercise the /proc-based pid resolution need both dtach and /proc.
 const skipIfNoProc = DTACH && HAS_PROC ? it : it.skip;
+const skipIfNoSetsidWrapper = process.platform === 'darwin' ? it.skip : it;
 
 describe('LocalDtachBackend', () => {
   let tmpDir: string;
@@ -194,6 +203,78 @@ describe('LocalDtachBackend', () => {
         args: ['-c', 'sleep 1'],
       }),
     ).rejects.toThrow(/too long/);
+  });
+
+  it('handles dtach master spawn errors as a per-session failure', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    const missingDtach = join(tmpDir, 'missing-dtach');
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: missingDtach,
+    });
+
+    const errors: unknown[] = [];
+    backend.onBackendError((err) => {
+      errors.push(err);
+    });
+
+    await expect(
+      backend.createSession({
+        id: 'spawn-error',
+        command: '/bin/sh',
+        args: ['-c', 'cat'],
+      }),
+    ).rejects.toThrow(/dtach master spawn failed.*not found or not executable/);
+
+    expect(errors).toContainEqual({
+      kind: 'dtach-unavailable',
+      binary: missingDtach,
+    });
+    expect(backend.getStats().lastError).toEqual(errors[0]);
+
+    const manifestPath = join(tmpDir, 'test', 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as {
+      entries: Array<{ sessionId: string }>;
+    };
+    expect(manifest.entries.find((e) => e.sessionId === 'spawn-error')).toBeUndefined();
+  });
+
+  skipIfNoSetsidWrapper('handles missing setsid as a per-session failure', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    const fakeDtach = join(tmpDir, 'fake-dtach');
+    writeFileSync(fakeDtach, '#!/bin/sh\nexit 0\n');
+    chmodSync(fakeDtach, 0o755);
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: fakeDtach,
+    });
+
+    const errors: unknown[] = [];
+    backend.onBackendError((err) => {
+      errors.push(err);
+    });
+
+    await expect(
+      backend.createSession({
+        id: 'setsid-error',
+        command: '/bin/sh',
+        args: ['-c', 'cat'],
+        env: { PATH: '' },
+      }),
+    ).rejects.toThrow(/dtach master spawn failed.*not found or not executable/);
+
+    expect(errors).toContainEqual({
+      kind: 'dtach-unavailable',
+      binary: 'setsid',
+    });
+
+    const manifestPath = join(tmpDir, 'test', 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as {
+      entries: Array<{ sessionId: string }>;
+    };
+    expect(manifest.entries.find((e) => e.sessionId === 'setsid-error')).toBeUndefined();
   });
 
   skipIfNoDtach(

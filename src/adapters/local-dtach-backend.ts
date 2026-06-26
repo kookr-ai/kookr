@@ -29,6 +29,8 @@
  */
 import { spawn as spawnChild } from 'node:child_process';
 import {
+  accessSync,
+  constants as fsConstants,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -37,7 +39,7 @@ import {
   unlinkSync,
 } from 'node:fs';
 import { access as fsAccess } from 'node:fs/promises';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { spawn, type IPty } from 'node-pty';
 import {
   type BackendError,
@@ -259,24 +261,34 @@ export class LocalDtachBackend implements TerminalBackend {
     // Step 2: spawn the dtach master so it outlives this Kookr process.
     const dtachArgs = ['-n', sock, '-r', 'winch', '-E', spec.command, ...spec.args];
     const { command, args } = buildDtachSpawn(process.platform, this.dtachBinary, dtachArgs);
+    const env = { ...process.env, ...spec.env };
+    try {
+      this.assertExecutableAvailable(spec.id, this.dtachBinary, env);
+      if (command !== this.dtachBinary) this.assertExecutableAvailable(spec.id, command, env);
+    } catch (err) {
+      await this.removeManifestEntry(spec.id);
+      throw err;
+    }
     const child = spawnChild(command, args, {
-      env: { ...process.env, ...spec.env },
+      env,
       cwd: spec.cwd ?? process.cwd(),
       stdio: 'ignore',
       detached: true,
     });
+
+    const spawnError = new Promise<never>((_, reject) => {
+      child.once('error', (err: NodeJS.ErrnoException) => {
+        reject(this.dtachUnavailableError(spec.id, command, err.code, err));
+      });
+    });
     child.unref();
 
     // Step 3: wait for socket.
-    const deadline = Date.now() + 3_000;
-    while (!existsSync(sock) && Date.now() < deadline) {
-      await sleep(25);
-    }
-    if (!existsSync(sock)) {
-      await this.manifestStore.update((manifest) => {
-        manifest.entries = manifest.entries.filter((e) => e.sessionId !== spec.id);
-      });
-      throw new Error(`dtach socket did not appear for session ${spec.id}`);
+    try {
+      await Promise.race([this.waitForSocket(sock, spec.id), spawnError]);
+    } catch (err) {
+      await this.removeManifestEntry(spec.id);
+      throw err;
     }
 
     // Step 4: resolve dtach master pid (best-effort; -1 ok).
@@ -929,6 +941,65 @@ export class LocalDtachBackend implements TerminalBackend {
 
   private async readEntry(id: SessionId): Promise<DtachManifestEntry | null> {
     return this.manifestStore.getEntry(id);
+  }
+
+  private dtachUnavailableError(
+    id: SessionId,
+    binary: string,
+    detail?: string,
+    cause?: Error,
+  ): Error {
+    const suffix = detail ? ` (${detail})` : '';
+    this.emitError({ kind: 'dtach-unavailable', binary });
+    const error = new Error(
+      `dtach master spawn failed for session ${id}: ${binary} not found or not executable${suffix}`,
+    );
+    if (cause) error.cause = cause;
+    return error;
+  }
+
+  private assertExecutableAvailable(id: SessionId, binary: string, env: NodeJS.ProcessEnv): void {
+    if (binary.includes('/')) {
+      this.assertExecutablePath(id, binary, binary);
+      return;
+    }
+
+    const pathValue = env.PATH ?? '';
+    for (const dir of pathValue.split(delimiter)) {
+      const candidate = join(dir || '.', binary);
+      try {
+        accessSync(candidate, fsConstants.X_OK);
+        return;
+      } catch {
+        // Keep searching PATH.
+      }
+    }
+    throw this.dtachUnavailableError(id, binary, 'ENOENT');
+  }
+
+  private assertExecutablePath(id: SessionId, path: string, binary: string): void {
+    try {
+      accessSync(path, fsConstants.X_OK);
+    } catch (err) {
+      const code = err && typeof err === 'object' && 'code' in err ? String(err.code) : undefined;
+      throw this.dtachUnavailableError(id, binary, code, err instanceof Error ? err : undefined);
+    }
+  }
+
+  private async removeManifestEntry(id: SessionId): Promise<void> {
+    await this.manifestStore.update((manifest) => {
+      manifest.entries = manifest.entries.filter((e) => e.sessionId !== id);
+    });
+  }
+
+  private async waitForSocket(sock: string, id: SessionId): Promise<void> {
+    const deadline = Date.now() + 3_000;
+    while (!existsSync(sock) && Date.now() < deadline) {
+      await sleep(25);
+    }
+    if (!existsSync(sock)) {
+      throw new Error(`dtach socket did not appear for session ${id}`);
+    }
   }
 }
 
