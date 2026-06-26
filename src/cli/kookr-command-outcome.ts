@@ -182,6 +182,7 @@ async function collectRemoteOutcomes(kookrDir: string, commandId?: string): Prom
     };
     if (event.type === 'command.intent') {
       if (typeof event.commandId !== 'string' || typeof event.action !== 'string') continue;
+      if (commandId && event.commandId !== commandId) continue;
       outcomes.set(event.commandId, {
         source: 'remote',
         commandId: event.commandId,

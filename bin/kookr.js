@@ -13,13 +13,13 @@ Usage:
   kookr doctor --json           Run machine-readable launch preflight checks.
   kookr signal <kind> [OPTIONS]  Raise an agent → user signal for the current task.
   kookr status [--json]         Print a read-only server snapshot.
+  kookr command outcome [commandId] Inspect local/remote command outcomes as JSONL.
   kookr ralph <command> <taskId> [--json] Inspect or control a Ralph loop.
   kookr drain|resume [OPTIONS]  Control operator drain mode.
   kookr maintenance prune [OPTIONS]   Prune aged completed-task data-dir artifacts.
   kookr maintenance backup [OPTIONS]  Create a crash-consistent data-dir backup tarball.
   kookr push test <deviceId>    Send a relay push test.
   kookr completion bash|zsh     Print a shell completion script.
-  kookr command outcome [commandId]  Print command outcome audit rows.
 
 Use --json with spawn, doctor, status, or ralph for one machine-readable output envelope.
 

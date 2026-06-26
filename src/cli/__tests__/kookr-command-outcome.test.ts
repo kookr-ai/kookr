@@ -112,6 +112,18 @@ describe('kookr command outcome', () => {
     ]);
   });
 
+  it('filters active audit intent-only commands by command id', async () => {
+    const journal = await CommandJournal.open({
+      kookrDir: dir,
+      nodeId: asNodeId('node-1'),
+      nodeEpoch: asNodeEpoch('1'),
+      compactAfterBytes: Number.MAX_SAFE_INTEGER,
+    });
+    await journal.appendIntent(command({ commandId: asCommandId('cmd-other-active-intent') }));
+
+    await expect(collectCommandOutcomes({ kookrDir: dir, commandId: 'cmd-missing-active-intent' })).resolves.toEqual([]);
+  });
+
   it('deduplicates remote outcomes when snapshot rows are still present in the active audit', async () => {
     const journal = await CommandJournal.open({
       kookrDir: dir,

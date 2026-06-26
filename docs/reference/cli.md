@@ -219,6 +219,32 @@ pnpm status
 
 The command reads `/api/snapshot` and `/api/health`, then reports server uptime, build version, and per-agent severity counts.
 
+## `kookr command outcome`
+
+Inspect recorded local and remote outcomes for terminal commands:
+
+```bash
+kookr command outcome
+kookr command outcome <commandId>
+```
+
+The command reads local interaction logs and the remote command journal from the
+Kookr data directory, then prints one JSON object per line. Without an argument,
+it prints every recorded outcome in timestamp order. With a `commandId`, it
+prints only matching records.
+
+Output records include fields such as `source`, `commandId`, `action`,
+`outcome`, `timestamp`, `agentId`, and `taskId` when those values are available.
+If a specific `commandId` has no local or remote records, the command prints:
+
+```json
+{"commandId":"<commandId>","outcome":"unknown-never-seen"}
+```
+
+Exit behavior:
+
+- `0` when the query completes, including the `unknown-never-seen` case.
+
 ## `kookr ralph`
 
 Inspect or control a Ralph loop:

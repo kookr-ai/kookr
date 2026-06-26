@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { HELP_TEXT, main } from '../../bin/kookr.js';
 import {
   getRootCompletionCommands,
+  KOOKR_COMPLETION_COMMANDS,
   renderCompletion,
   runCompletionCli,
 } from './kookr-completion.js';
@@ -86,13 +87,33 @@ function publicCommandsFromHelp(): string[] {
       if (command !== '') commands.add(command);
     }
   }
-  commands.delete('command');
   return [...commands].sort();
+}
+
+function publicSubcommandsFromHelp(): Map<string, string[]> {
+  const subcommands = new Map<string, Set<string>>();
+  for (const match of HELP_TEXT.matchAll(/^\s+kookr\s+([a-z]+)\s+([a-z|]+)/gm)) {
+    const [, command, subcommandsText] = match;
+    if (command === undefined || subcommandsText === undefined) continue;
+    const values = subcommands.get(command) ?? new Set<string>();
+    for (const subcommand of subcommandsText.split('|')) {
+      if (subcommand !== '') values.add(subcommand);
+    }
+    subcommands.set(command, values);
+  }
+  return new Map([...subcommands.entries()].map(([command, values]) => [command, [...values].sort()]));
 }
 
 describe('kookr completion metadata', () => {
   it('covers every public dispatcher command listed in root help', () => {
     expect(getRootCompletionCommands().toSorted()).toEqual(publicCommandsFromHelp());
+  });
+
+  it('covers public subcommands listed in root help', () => {
+    for (const [commandName, expectedSubcommands] of publicSubcommandsFromHelp()) {
+      const command = KOOKR_COMPLETION_COMMANDS.find((item) => item.name === commandName);
+      expect(command?.subcommands?.toSorted()).toEqual(expectedSubcommands);
+    }
   });
 });
 
@@ -100,7 +121,8 @@ describe('renderCompletion', () => {
   it('renders a bash completion with root commands, subcommands, and flags', () => {
     const script = renderCompletion('bash');
     expect(script).toContain('complete -F _kookr kookr');
-    expect(script).toContain('spawn signal doctor status ralph drain resume maintenance push completion');
+    expect(script).toContain('spawn signal doctor status command ralph drain resume maintenance push completion');
+    expect(script).toContain('compgen -W "outcome"');
     expect(script).toContain('status pause resume cancel');
     expect(script).toContain('--prompt-file');
     expect(script).toContain('compgen -W "claude-code codex-cli"');
@@ -116,7 +138,8 @@ describe('renderCompletion', () => {
   it('renders a zsh completion with root commands, subcommands, and flags', () => {
     const script = renderCompletion('zsh');
     expect(script).toContain('#compdef kookr');
-    expect(script).toContain('root_commands=(spawn signal doctor status ralph drain resume maintenance push completion)');
+    expect(script).toContain('root_commands=(spawn signal doctor status command ralph drain resume maintenance push completion)');
+    expect(script).toContain('compadd outcome');
     expect(script).toContain('compadd -- status pause resume cancel');
     expect(script).toContain('compadd claude-code codex-cli');
     expect(script).toContain('compadd none minimal low medium high xhigh max');
@@ -171,6 +194,11 @@ describe('bash completion behavior', () => {
     await expect(completeBash(['kookr', 'doctor', ''])).resolves.toEqual(['--json', '-h', '--help']);
   });
 
+  it('completes command subcommands', async () => {
+    await expect(completeBash(['kookr', 'command', ''])).resolves.toEqual(['outcome']);
+    await expect(completeBash(['kookr', 'command', 'outcome', ''])).resolves.toEqual([]);
+  });
+
   it('completes maintenance subcommands', async () => {
     await expect(completeBash(['kookr', 'maintenance', ''])).resolves.toEqual(['prune', 'backup']);
   });
@@ -211,6 +239,11 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
 
   it('completes doctor flags', async () => {
     await expect(completeZsh(['kookr', 'doctor', ''], 3)).resolves.toEqual(['--json', '-h', '--help']);
+  });
+
+  it('completes command subcommands', async () => {
+    await expect(completeZsh(['kookr', 'command', ''], 3)).resolves.toEqual(['outcome']);
+    await expect(completeZsh(['kookr', 'command', 'outcome', ''], 4)).resolves.toEqual([]);
   });
 
   it('completes maintenance subcommands and verb-specific flags', async () => {
