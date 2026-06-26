@@ -11,6 +11,22 @@ function fieldErrorsFrom(err: unknown): Record<string, string> | undefined {
   return undefined;
 }
 
+type ScheduleRunErrorCode = "capacity" | "draining" | "previous_run_active" | "validation";
+
+function scheduleRunErrorResponse(error: string): { code: ScheduleRunErrorCode; status: 400 | 409 | 503 } {
+  switch (error) {
+    case "Max active tasks reached":
+      return { code: "capacity", status: 409 };
+    case "Server draining":
+    case "Server is draining; not accepting new task launches":
+      return { code: "draining", status: 503 };
+    case "Previous run still active":
+      return { code: "previous_run_active", status: 409 };
+    default:
+      return { code: "validation", status: 400 };
+  }
+}
+
 export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
   app.get("/api/schedules", (c) => {
     if (!deps.scheduleService) {
@@ -97,7 +113,10 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
     if (!deps.scheduleRunner) return c.json({ error: "Scheduling not configured" }, 500);
     const id = c.req.param("id");
     const result = await deps.scheduleRunner.runNow(id);
-    if (result.error) return c.json({ error: result.error }, 400);
+    if (result.error) {
+      const { code, status } = scheduleRunErrorResponse(result.error);
+      return c.json({ error: result.error, code }, status);
+    }
     return c.json({ ok: true, taskId: result.taskId, ...(result.queued ? { queued: true } : {}) });
   });
 
