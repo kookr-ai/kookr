@@ -925,6 +925,50 @@ describe('AttentionQueue', () => {
     });
   });
 
+  describe('saturation gauges', () => {
+    test('reports active finding depth and oldest active finding age', () => {
+      const oldest = withDetectedAt(makeAnomaly('a1', 'needs_input', 'info'), '2026-01-01T00:00:00.000Z');
+      const newest = withDetectedAt(makeAnomaly('a2', 'permission_blocked', 'warning'), '2026-01-01T00:00:10.000Z');
+      const sampleAt = Date.parse('2026-01-01T00:01:00.000Z');
+
+      expect(queue.getDepth(sampleAt)).toBe(0);
+      expect(queue.getOldestFindingAgeMs(sampleAt)).toBe(0);
+
+      queue.enqueue('a1', oldest);
+      queue.enqueue('a2', newest);
+
+      expect(queue.getDepth(sampleAt)).toBe(2);
+      expect(queue.getOldestFindingAgeMs(sampleAt)).toBe(60_000);
+
+      queue.remove('a1');
+
+      expect(queue.getDepth(sampleAt)).toBe(1);
+      expect(queue.getOldestFindingAgeMs(sampleAt)).toBe(50_000);
+
+      queue.remove('a2');
+
+      expect(queue.getDepth(sampleAt)).toBe(0);
+      expect(queue.getOldestFindingAgeMs(sampleAt)).toBe(0);
+    });
+
+    test('excludes snoozed findings until an agent-keyed snooze expires', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(FIXED_TIME);
+      try {
+        queue.enqueue('a1', makeAnomaly('a1', 'repeated_error', 'critical'));
+        queue.snooze('a1', 60_000);
+
+        expect(queue.getDepth(FIXED_TIME.getTime() + 30_000)).toBe(0);
+        expect(queue.getOldestFindingAgeMs(FIXED_TIME.getTime() + 30_000)).toBe(0);
+
+        expect(queue.getDepth(FIXED_TIME.getTime() + 61_000)).toBe(1);
+        expect(queue.getOldestFindingAgeMs(FIXED_TIME.getTime() + 61_000)).toBe(61_000);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe('getActiveAnomaly', () => {
     test('returns the active anomaly for an enqueued agent', () => {
       queue.enqueue('a1', makeAnomaly('a1', 'repeated_error', 'critical'));
