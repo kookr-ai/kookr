@@ -198,14 +198,58 @@ describe('schedule routes', () => {
       expect(body.queued).toBe(true);
     });
 
-    test('returns 400 when the runner reports an error', async () => {
+    test.each([
+      {
+        runnerError: 'Max active tasks reached',
+        expectedStatus: 409,
+        expectedCode: 'capacity',
+      },
+      {
+        runnerError: 'Server draining',
+        expectedStatus: 503,
+        expectedCode: 'draining',
+      },
+      {
+        runnerError: 'Server is draining; not accepting new task launches',
+        expectedStatus: 503,
+        expectedCode: 'draining',
+      },
+      {
+        runnerError: 'Previous run still active',
+        expectedStatus: 409,
+        expectedCode: 'previous_run_active',
+      },
+      {
+        runnerError: 'Schedule not found',
+        expectedStatus: 400,
+        expectedCode: 'validation',
+      },
+      {
+        runnerError: 'Invalid schedule definition',
+        expectedStatus: 400,
+        expectedCode: 'validation',
+      },
+    ])(
+      'returns $expectedStatus with code $expectedCode when the runner reports "$runnerError"',
+      async ({ runnerError, expectedStatus, expectedCode }) => {
+        const scheduleRunner = {
+          runNow: async () => ({ error: runnerError }),
+        };
+        const res = await mkApp({ scheduleRunner: scheduleRunner as never })
+          .request('/api/schedules/missing/run', { method: 'POST' });
+        expect(res.status).toBe(expectedStatus);
+        expect(await res.json()).toEqual({ error: runnerError, code: expectedCode });
+      },
+    );
+
+    test('returns a validation code for unmapped runner errors', async () => {
       const scheduleRunner = {
-        runNow: async () => ({ error: 'Schedule not found' }),
+        runNow: async () => ({ error: 'Playbook file missing' }),
       };
       const res = await mkApp({ scheduleRunner: scheduleRunner as never })
         .request('/api/schedules/missing/run', { method: 'POST' });
       expect(res.status).toBe(400);
-      expect(await res.json()).toEqual({ error: 'Schedule not found' });
+      expect(await res.json()).toEqual({ error: 'Playbook file missing', code: 'validation' });
     });
 
     test('returns 500 when the runner is not wired', async () => {
