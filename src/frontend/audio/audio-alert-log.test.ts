@@ -20,6 +20,8 @@ function decision(overrides: Partial<LocalAudioAlertDecision> = {}): LocalAudioA
     outcome: overrides.outcome ?? 'scheduled',
     reason: overrides.reason ?? 'test',
     soundEnabled: overrides.soundEnabled ?? true,
+    audioVolume: overrides.audioVolume ?? 1,
+    chimeSound: overrides.chimeSound ?? 'classic',
     soundStateSource: overrides.soundStateSource ?? 'localStorage',
     soundStorageAvailable: overrides.soundStorageAvailable ?? true,
     dndEnabled: overrides.dndEnabled ?? false,

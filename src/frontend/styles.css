@@ -8189,6 +8189,41 @@ button.project-drawer-link:focus-visible {
   color: var(--text-secondary);
   font-weight: 600;
 }
+.audio-alert-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(104px, 0.4fr);
+  gap: 6px;
+  align-items: end;
+}
+.audio-alert-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.audio-alert-control input[type='range'] {
+  min-width: 70px;
+  width: 100%;
+  accent-color: var(--teal);
+}
+.audio-alert-control strong {
+  min-width: 34px;
+  text-align: right;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+.audio-alert-control select {
+  min-width: 76px;
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  color: var(--text-bright);
+  font-size: 11px;
+  padding: 3px 6px;
+}
 .audio-alert-counts {
   display: flex;
   flex-wrap: wrap;
@@ -8750,6 +8785,55 @@ button.project-drawer-link:focus-visible {
   opacity: 0.85;
 }
 
+.settings-audio-controls {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(150px, 0.55fr);
+  gap: 12px;
+  width: 100%;
+}
+
+.settings-audio-volume,
+.settings-audio-sound {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.settings-audio-control-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-audio-control-row input[type='range'] {
+  min-width: 120px;
+  width: 100%;
+  accent-color: var(--teal);
+}
+
+.settings-audio-control-row strong {
+  min-width: 38px;
+  text-align: right;
+  color: var(--text-bright);
+  font-size: 12px;
+}
+
+.settings-audio-sound select {
+  min-height: 32px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  color: var(--text-bright);
+  font-size: 13px;
+  padding: 5px 8px;
+}
+
+.settings-audio-sound select:focus {
+  outline: none;
+  border-color: var(--teal);
+}
+
 /* Toggle switch */
 .settings-toggle {
   position: relative;
@@ -8893,6 +8977,10 @@ button.project-drawer-link:focus-visible {
 
   .settings-snippet-row .settings-button {
     justify-self: start;
+  }
+
+  .settings-audio-controls {
+    grid-template-columns: 1fr;
   }
 }
 

@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo } from 'react';
 import { useAudioAlertLog, type AudioAlertOutcome, type LocalAudioAlertDecision } from '../audio/audio-alert-log.js';
 import { maybePlayChime, useSoundPreference } from '../audio/sound.js';
+import { CHIME_SOUND_LABELS, formatSoundVolume, type ChimeSound } from '../audio/sound-preference.js';
 import { useDnd } from '../hooks/useDnd.js';
 
 const OUTCOME_LABEL: Record<AudioAlertOutcome, string> = {
@@ -91,6 +92,14 @@ export function AudioAlertsPanel() {
     });
   }, []);
 
+  const handleVolumeChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    sound.setVolume(Number(event.target.value));
+  }, [sound]);
+
+  const handleChimeSoundChange = useCallback((event: React.ChangeEvent<HTMLSelectElement>) => {
+    sound.setChimeSound(event.target.value as ChimeSound);
+  }, [sound]);
+
   return (
     <div className="audio-alerts-section">
       <div className="section-header">
@@ -113,12 +122,44 @@ export function AudioAlertsPanel() {
         <div className="audio-alert-summary-grid">
           <span>Sound</span>
           <strong>{sound.enabled ? 'on' : 'muted'}</strong>
+          <span>Volume</span>
+          <strong>{formatSoundVolume(sound.volume)}</strong>
+          <span>Chime</span>
+          <strong>{CHIME_SOUND_LABELS[sound.chimeSound]}</strong>
           <span>Source</span>
           <strong>{sound.source}</strong>
           <span>DND</span>
           <strong>{dnd.enabled ? formatDndExpiry(dnd.expiresAt) : 'off'}</strong>
           <span>Tab</span>
           <strong>{tabId}</strong>
+        </div>
+
+        <div className="audio-alert-controls">
+          <label className="audio-alert-control audio-alert-volume">
+            <span>Volume</span>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={sound.volume}
+              onChange={handleVolumeChange}
+              aria-label="Audio alert volume"
+            />
+            <strong>{formatSoundVolume(sound.volume)}</strong>
+          </label>
+          <label className="audio-alert-control">
+            <span>Chime</span>
+            <select
+              value={sound.chimeSound}
+              onChange={handleChimeSoundChange}
+              aria-label="Audio alert chime sound"
+            >
+              {Object.entries(CHIME_SOUND_LABELS).map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </label>
         </div>
 
         <div className="audio-alert-counts" role="group" aria-label="Audio alert counts by outcome">

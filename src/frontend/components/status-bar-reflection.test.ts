@@ -102,6 +102,8 @@ describe('StatusBar reflection prompt', () => {
       outcome: 'suppressed_muted',
       reason: 'sound disabled',
       soundEnabled: false,
+      audioVolume: 1,
+      chimeSound: 'classic',
       soundStateSource: 'localStorage',
       soundStorageAvailable: true,
       dndEnabled: false,

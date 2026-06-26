@@ -4,7 +4,7 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound.js';
+import { __resetSoundPreferenceForTests, setSoundEnabled, setSoundVolume } from '../audio/sound.js';
 import { __resetDndForTests, disableDnd } from './useDnd.js';
 import {
   __resetProjectNotificationMuteForTests,
@@ -131,6 +131,19 @@ describe('useNotifications', () => {
 
   test('uses desktop notifications as the fallback when sound alerts are muted', () => {
     setSoundEnabled(false);
+    useKookrStore.setState({ agents: [mkAgent('agent-a')] });
+
+    mount();
+
+    expect(notificationCtor).toHaveBeenCalledTimes(1);
+    expect(notificationCtor).toHaveBeenCalledWith(
+      'Agent: permission blocked',
+      expect.objectContaining({ body: 'mock finding' }),
+    );
+  });
+
+  test('uses desktop notifications as the fallback when alert volume is zero', () => {
+    setSoundVolume(0);
     useKookrStore.setState({ agents: [mkAgent('agent-a')] });
 
     mount();

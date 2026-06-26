@@ -21,6 +21,7 @@ import type { VerbosityScale } from '../../shared/contracts/speech.js';
 import type { QuietHoursWindow } from '../../shared/contracts/quiet-hours.js';
 import { MAX_REPLY_SNIPPETS, type ReplySnippet } from '../../shared/contracts/reply-snippets.js';
 import { useSoundPreference } from '../audio/sound.js';
+import { CHIME_SOUND_LABELS, formatSoundVolume, type ChimeSound } from '../audio/sound-preference.js';
 import { setQuietHoursWindows } from '../hooks/useDnd.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
@@ -788,6 +789,14 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
     sound.setEnabled(!sound.enabled);
   }
 
+  function handleSoundVolumeChange(value: string) {
+    sound.setVolume(Number(value));
+  }
+
+  function handleChimeSoundChange(value: string) {
+    sound.setChimeSound(value as ChimeSound);
+  }
+
   function updateShortcutOverride(actionId: ShortcutActionId, value: string) {
     if (!settings) return;
     const platformOverrides = { ...(settings.shortcutBindings?.[SHORTCUT_PLATFORM] ?? {}) };
@@ -934,6 +943,41 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                       >
                         <span className="settings-toggle-knob" />
                       </button>
+                    </div>
+                    <div className="settings-row settings-row-fieldset">
+                      <div className="settings-audio-controls">
+                        <label className="settings-audio-volume">
+                          <span className="settings-label">Alert volume</span>
+                          <span className="settings-desc">
+                            Sets the browser chime volume for warning, critical, and completion alerts.
+                          </span>
+                          <div className="settings-audio-control-row">
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.05"
+                              value={sound.volume}
+                              onChange={(e) => handleSoundVolumeChange(e.target.value)}
+                              aria-label="Alert volume"
+                            />
+                            <strong>{formatSoundVolume(sound.volume)}</strong>
+                          </div>
+                        </label>
+                        <label className="settings-audio-sound">
+                          <span className="settings-label">Chime sound</span>
+                          <span className="settings-desc">Choose the synthesized alert tone used for browser chimes.</span>
+                          <select
+                            value={sound.chimeSound}
+                            onChange={(e) => handleChimeSoundChange(e.target.value)}
+                            aria-label="Chime sound"
+                          >
+                            {Object.entries(CHIME_SOUND_LABELS).map(([value, label]) => (
+                              <option key={value} value={value}>{label}</option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
                     </div>
                     <div className="settings-row settings-row-fieldset">
                       <fieldset className="settings-radio-group">
