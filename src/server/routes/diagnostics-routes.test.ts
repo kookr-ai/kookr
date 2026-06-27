@@ -1009,7 +1009,38 @@ describe('diagnostics routes', () => {
       expect(body.mode).toBe('estimate_only');
     });
 
-    test('rejects missing or wrong review CSRF token when configured', async () => {
+    test('rejects wrong, short, and empty admin tokens on a non-loopback request', async () => {
+      process.env.KOOKR_FINDING_REVIEW_ENABLED = 'true';
+      process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
+
+      for (const presentedToken of ['admin-secreu', 'admin', '']) {
+        const res = await mkApp(reviewDeps()).request('http://example.com/api/finding-evidence-review', {
+          method: 'POST',
+          headers: { 'x-kookr-admin-token': presentedToken },
+        });
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: 'finding-review-forbidden' });
+      }
+    });
+
+    test('allows the correct review CSRF token when configured', async () => {
+      process.env.KOOKR_FINDING_REVIEW_ENABLED = 'true';
+      process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
+      process.env.KOOKR_FINDING_REVIEW_TOKEN = 'csrf-secret';
+
+      const res = await mkApp(reviewDeps()).request('http://example.com/api/finding-evidence-review', {
+        method: 'POST',
+        headers: {
+          'x-kookr-admin-token': 'admin-secret',
+          'x-kookr-finding-review-token': 'csrf-secret',
+        },
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.mode).toBe('estimate_only');
+    });
+
+    test('rejects missing, wrong, short, or empty review CSRF token when configured', async () => {
       process.env.KOOKR_FINDING_REVIEW_ENABLED = 'true';
       process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
       process.env.KOOKR_FINDING_REVIEW_TOKEN = 'csrf-secret';
@@ -1021,15 +1052,17 @@ describe('diagnostics routes', () => {
       expect(missing.status).toBe(403);
       expect(await missing.json()).toEqual({ error: 'invalid-finding-review-token' });
 
-      const wrong = await mkApp(reviewDeps()).request('http://example.com/api/finding-evidence-review', {
-        method: 'POST',
-        headers: {
-          'x-kookr-admin-token': 'admin-secret',
-          'x-kookr-finding-review-token': 'wrong',
-        },
-      });
-      expect(wrong.status).toBe(403);
-      expect(await wrong.json()).toEqual({ error: 'invalid-finding-review-token' });
+      for (const presentedToken of ['csrf-secreu', 'csrf', '']) {
+        const res = await mkApp(reviewDeps()).request('http://example.com/api/finding-evidence-review', {
+          method: 'POST',
+          headers: {
+            'x-kookr-admin-token': 'admin-secret',
+            'x-kookr-finding-review-token': presentedToken,
+          },
+        });
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: 'invalid-finding-review-token' });
+      }
     });
 
     test('rejects malformed JSON and invalid mode before service execution', async () => {

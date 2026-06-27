@@ -1,5 +1,6 @@
 import type { Context, Hono } from 'hono';
 import { getConnInfo } from '@hono/node-server/conninfo';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { accessSync, constants as fsConstants } from 'node:fs';
 import { readInteractionLog } from '../../core/interaction-log.js';
 import { readTelemetryLog } from '../../core/telemetry.js';
@@ -241,7 +242,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       return c.json({ error: 'finding-review-forbidden' }, 403);
     }
     const requiredToken = process.env.KOOKR_FINDING_REVIEW_TOKEN?.trim();
-    if (requiredToken && c.req.header(REVIEW_CSRF_HEADER) !== requiredToken) {
+    if (requiredToken && !timingSafeTokenEqual(requiredToken, c.req.header(REVIEW_CSRF_HEADER))) {
       return c.json({ error: 'invalid-finding-review-token' }, 403);
     }
 
@@ -612,8 +613,19 @@ function emptyHookWatcherHealthSnapshot(): HookWatcherHealthSnapshot {
 
 function isAuthorizedFindingReviewRequest(remoteAddress: string | undefined, adminTokenHeader: string | undefined): boolean {
   const configuredAdminToken = process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN?.trim();
-  if (configuredAdminToken && adminTokenHeader === configuredAdminToken) return true;
+  if (configuredAdminToken && timingSafeTokenEqual(configuredAdminToken, adminTokenHeader)) return true;
   return remoteAddress !== undefined && isLoopbackAddress(remoteAddress);
+}
+
+function timingSafeTokenEqual(expected: string, presented: string | undefined): boolean {
+  if (presented === undefined) return false;
+  const expectedBytes = Buffer.from(expected, 'utf8');
+  const presentedBytes = Buffer.from(presented, 'utf8');
+  const expectedDigest = createHash('sha256').update(expectedBytes).digest();
+  const presentedDigest = createHash('sha256').update(presentedBytes).digest();
+  const equalLength = expectedBytes.length === presentedBytes.length;
+  const equalDigest = timingSafeEqual(expectedDigest, presentedDigest);
+  return equalLength && equalDigest;
 }
 
 function getRemoteAddress(c: Context): string | undefined {
