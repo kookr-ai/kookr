@@ -24,9 +24,6 @@ const APPROVED_DIRECT_CALLERS = new Set<string>([
   'src/server/use-cases/get-snapshot.ts',
   // Permission-action state lookup; reads anomaly/agentId only (no events).
   'src/server/ws-handlers/anomaly-handler.ts',
-  // Raw anomaly/turn-state diffing in the event-processing pipeline; projected
-  // agent state there goes through getSnapshotAgentsRaw.
-  'src/server/event-pipeline.ts',
 ]);
 
 function repoRoot(): string {
