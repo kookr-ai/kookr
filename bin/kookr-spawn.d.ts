@@ -9,6 +9,7 @@ export const EXIT_USER_ERROR: 2;
 export const EXIT_NO_SERVER: 3;
 export const EXIT_SERVER_ERROR: 4;
 export const EXIT_DUPLICATE_BLOCKED: 5;
+export const EXIT_WAIT_TIMEOUT: 6;
 export const HELP_TEXT: string;
 
 export class UsageError extends Error {}
@@ -24,6 +25,10 @@ export interface ParsedArgs {
   promptFile: string | null;
   parentTaskId: string | null;
   noParentTask: boolean;
+  autoCloseOnSignal: boolean | null;
+  json: boolean;
+  wait: boolean;
+  waitTimeoutSeconds: number | null;
   help: boolean;
 }
 
@@ -65,6 +70,7 @@ export interface PostTaskArgs {
   disableDedup?: boolean;
   metadataIntent?: 'keep_as_duplicate' | null;
   parentTaskId?: string | null;
+  autoCloseOnSignal?: boolean | null;
 }
 
 export interface TaskPayload {
@@ -79,6 +85,26 @@ export type PostTaskResult =
   | { kind: 'created'; task: TaskPayload; queued: boolean }
   | { kind: 'duplicate'; task: TaskPayload }
   | { kind: 'server_error'; status: number; message: string };
+
+export type WaitResult =
+  | { kind: 'completion_ready'; status: string | null; agent: Record<string, unknown> }
+  | { kind: 'terminal'; status: string; agent: Record<string, unknown> }
+  | { kind: 'timeout' }
+  | { kind: 'server_error'; message: string };
+
+export type WaitState =
+  | { kind: 'completion_ready'; status: string | null }
+  | { kind: 'terminal'; status: string }
+  | { kind: 'pending'; status: string | null };
+
+export interface WaitForTaskReadyArgs {
+  baseUrl: string;
+  taskId: string;
+  timeoutMs?: number | null;
+  pollIntervalMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
 
 export interface FormatSuccessArgs {
   task: TaskPayload;
@@ -100,6 +126,7 @@ export interface MainDeps {
   err?: { log: (msg: string) => void; error: (msg: string) => void };
   exit?: (code: number) => never | void;
   sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
 }
 
 export function apiAuthHeaders(env?: Record<string, string | undefined>): Record<string, string>;
@@ -107,12 +134,16 @@ export function parseArgs(argv: string[]): ParsedArgs;
 export function parseMaxBytes(raw: string | undefined): number;
 export function parsePortEnv(raw: string | undefined): PortEnvParse;
 export function parseRetries(raw: string | undefined): number;
+export function parseWaitTimeoutSeconds(raw: string): number;
 export function resolvePrompt(inputs: ResolvePromptInputs): Promise<string>;
 export function resolveCwd(explicit: string | null, pwd: string): string;
 export function probeHealth(baseUrl: string, timeoutMs: number): Promise<boolean>;
 export function resolveBaseUrl(deps: ResolveBaseUrlDeps): Promise<BaseUrlResolution>;
 export function resolveParentTaskId(inputs: ResolveParentTaskIdInputs): string | null;
 export function postTask(args: PostTaskArgs): Promise<PostTaskResult>;
+export function classifyWaitState(agent: Record<string, unknown> | undefined | null): WaitState;
+export function waitForTaskReady(args: WaitForTaskReadyArgs): Promise<WaitResult>;
+export function formatWaitOutcome(result: WaitResult): string;
 export function formatSuccess(args: FormatSuccessArgs): string;
 export function formatDedup(args: FormatDedupArgs): string;
 export function main(deps?: MainDeps): Promise<void>;

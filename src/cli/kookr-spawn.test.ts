@@ -10,20 +10,25 @@ import {
   EXIT_OK,
   EXIT_SERVER_ERROR,
   EXIT_USER_ERROR,
+  EXIT_WAIT_TIMEOUT,
   UsageError,
+  classifyWaitState,
   formatDedup,
   formatSuccess,
+  formatWaitOutcome,
   main,
   parseArgs,
   parseMaxBytes,
   parsePortEnv,
   parseRetries,
+  parseWaitTimeoutSeconds,
   postTask,
   probeHealth,
   resolveBaseUrl,
   resolveCwd,
   resolveParentTaskId,
   resolvePrompt,
+  waitForTaskReady,
 } from '../../bin/kookr-spawn.js';
 
 type StdinLike = NodeJS.ReadableStream & { isTTY?: boolean };
@@ -103,6 +108,22 @@ describe('parseArgs', () => {
   it('parses --dedupe=<mode> and defaults to warn', () => {
     expect(parseArgs([]).dedupe).toBe('warn');
     expect(parseArgs(['--dedupe=skip']).dedupe).toBe('skip');
+  });
+
+  it('parses --wait with an optional timeout in seconds', () => {
+    expect(parseArgs([]).wait).toBe(false);
+    expect(parseArgs(['--wait', 'hello']).wait).toBe(true);
+    expect(parseArgs(['--wait', 'hello']).waitTimeoutSeconds).toBeNull();
+    expect(parseArgs(['--wait=30', 'hello']).wait).toBe(true);
+    expect(parseArgs(['--wait=30', 'hello']).waitTimeoutSeconds).toBe(30);
+    expect(parseArgs(['--wait=0.25', 'hello']).waitTimeoutSeconds).toBe(0.25);
+  });
+
+  it('rejects invalid --wait timeout values', () => {
+    expect(() => parseArgs(['--wait=', 'hello'])).toThrow(UsageError);
+    expect(() => parseArgs(['--wait=0', 'hello'])).toThrow(UsageError);
+    expect(() => parseArgs(['--wait=-1', 'hello'])).toThrow(UsageError);
+    expect(() => parseArgs(['--wait=abc', 'hello'])).toThrow(UsageError);
   });
 
   it('rejects unknown options', () => {
@@ -251,6 +272,20 @@ describe('parseMaxBytes', () => {
   it('rejects zero and non-integers', () => {
     expect(() => parseMaxBytes('0')).toThrow(UsageError);
     expect(() => parseMaxBytes('abc')).toThrow(UsageError);
+  });
+});
+
+describe('parseWaitTimeoutSeconds', () => {
+  it('accepts positive finite seconds', () => {
+    expect(parseWaitTimeoutSeconds('1')).toBe(1);
+    expect(parseWaitTimeoutSeconds('0.5')).toBe(0.5);
+  });
+
+  it('rejects empty, zero, negative, and non-numeric values', () => {
+    expect(() => parseWaitTimeoutSeconds('')).toThrow(UsageError);
+    expect(() => parseWaitTimeoutSeconds('0')).toThrow(UsageError);
+    expect(() => parseWaitTimeoutSeconds('-1')).toThrow(UsageError);
+    expect(() => parseWaitTimeoutSeconds('nope')).toThrow(UsageError);
   });
 });
 
@@ -717,6 +752,123 @@ describe('output formatting', () => {
     });
     expect(out).not.toContain('parent_task_id=');
   });
+
+  it('classifies wait-ready and terminal snapshot states', () => {
+    expect(classifyWaitState({
+      taskId: 't1',
+      taskStatus: 'inProgress',
+      pendingSignal: { kind: 'completion_ready', raisedAt: 'now' },
+    })).toEqual({ kind: 'completion_ready', status: 'inProgress' });
+    expect(classifyWaitState({ taskId: 't1', taskStatus: 'completed' })).toEqual({
+      kind: 'terminal',
+      status: 'completed',
+    });
+    expect(classifyWaitState({ taskId: 't1', taskStatus: 'inProgress' })).toEqual({
+      kind: 'pending',
+      status: 'inProgress',
+    });
+    expect(classifyWaitState({
+      id: 't1',
+      status: 'inProgress',
+      pendingSignal: { kind: 'completion_ready', raisedAt: 'now' },
+    })).toEqual({ kind: 'completion_ready', status: 'inProgress' });
+  });
+
+  it('formats wait outcomes', () => {
+    expect(formatWaitOutcome({ kind: 'completion_ready', status: 'inProgress', agent: {} })).toContain('completion-ready');
+    expect(formatWaitOutcome({ kind: 'terminal', status: 'completed', agent: {} })).toContain('completed');
+    expect(formatWaitOutcome({ kind: 'terminal', status: 'terminated', agent: {} })).toContain('terminated');
+    expect(formatWaitOutcome({ kind: 'timeout' })).toContain('timed out');
+  });
+});
+
+describe('waitForTaskReady', () => {
+  it('polls /api/snapshot until the task raises completion-ready', async () => {
+    let snapshots = 0;
+    const { server, baseUrl } = await startFakeApi(
+      () => ({ status: 201, body: JSON.stringify({ id: 't1' }) }),
+      () => {
+        snapshots += 1;
+        return {
+          status: 200,
+          body: JSON.stringify([
+            snapshots === 1
+              ? { taskId: 't1', taskStatus: 'inProgress' }
+              : { taskId: 't1', taskStatus: 'inProgress', pendingSignal: { kind: 'completion_ready', raisedAt: 'now' } },
+          ]),
+        };
+      },
+      () => ({ status: 200, body: JSON.stringify([{ id: 't1', status: 'inProgress' }]) }),
+    );
+    try {
+      const result = await waitForTaskReady({
+        baseUrl,
+        taskId: 't1',
+        sleep: async () => {},
+      });
+      expect(result.kind).toBe('completion_ready');
+      expect(snapshots).toBe(2);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('returns timeout when the deadline elapses before readiness', async () => {
+    const { server, baseUrl } = await startFakeApi(
+      () => ({ status: 201, body: JSON.stringify({ id: 't1' }) }),
+      () => ({ status: 200, body: JSON.stringify([{ taskId: 't1', taskStatus: 'inProgress' }]) }),
+      () => ({ status: 200, body: JSON.stringify([{ id: 't1', status: 'inProgress' }]) }),
+    );
+    let now = 0;
+    try {
+      const result = await waitForTaskReady({
+        baseUrl,
+        taskId: 't1',
+        timeoutMs: 100,
+        sleep: async (ms) => { now += ms; },
+        now: () => now,
+      });
+      expect(result).toEqual({ kind: 'timeout' });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('falls back to /api/tasks for pending completion-ready signals', async () => {
+    const { server, baseUrl } = await startFakeApi(
+      () => ({ status: 201, body: JSON.stringify({ id: 't1' }) }),
+      () => ({ status: 200, body: JSON.stringify([{ taskId: 't1', taskStatus: 'inProgress' }]) }),
+      () => ({
+        status: 200,
+        body: JSON.stringify([
+          { id: 't1', status: 'inProgress', pendingSignal: { kind: 'completion_ready', raisedAt: 'now' } },
+        ]),
+      }),
+    );
+    try {
+      const result = await waitForTaskReady({
+        baseUrl,
+        taskId: 't1',
+        sleep: async () => {},
+      });
+      expect(result.kind).toBe('completion_ready');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('returns server_error instead of throwing when a wait read fails', async () => {
+    const result = await waitForTaskReady({
+      baseUrl: 'http://127.0.0.1:9',
+      taskId: 't1',
+      timeoutMs: 100,
+      sleep: async () => {},
+    });
+    expect(result.kind).toBe('server_error');
+    if (result.kind === 'server_error') {
+      expect(result.message).toBeTruthy();
+    }
+  });
 });
 
 // ---------- main (end-to-end against a fake API server) ----------
@@ -837,6 +989,198 @@ describe('main', () => {
       expect(envelope.details.task.id).toBe('mk-json');
       expect(envelope.details.task.prompt).toBeUndefined();
       expect(JSON.stringify(envelope)).not.toContain('secret=do-not-echo');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('waits after creating a task and exits 0 on completion-ready', async () => {
+    const { server, baseUrl } = await startFakeApi(
+      () => ({
+        status: 201,
+        body: JSON.stringify({ id: 'wait-1', agentType: 'claude-code', cwd: tmpCwd }),
+      }),
+      () => ({
+        status: 200,
+        body: JSON.stringify([
+          { taskId: 'wait-1', taskStatus: 'inProgress' },
+        ]),
+      }),
+      () => ({
+        status: 200,
+        body: JSON.stringify([
+          {
+            id: 'wait-1',
+            status: 'inProgress',
+            pendingSignal: { kind: 'completion_ready', raisedAt: '2026-06-27T00:00:00.000Z' },
+          },
+        ]),
+      }),
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--wait', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(logs.join('\n')).toContain('task_id=wait-1');
+      expect(logs.join('\n')).toContain('completion-ready');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('waits after creating a task and exits 4 on cancelled terminal state', async () => {
+    const { server, baseUrl } = await startFakeApi(
+      () => ({
+        status: 201,
+        body: JSON.stringify({ id: 'wait-1', agentType: 'claude-code', cwd: tmpCwd }),
+      }),
+      () => ({
+        status: 200,
+        body: JSON.stringify([{ taskId: 'wait-1', taskStatus: 'cancelled' }]),
+      }),
+      () => ({
+        status: 200,
+        body: JSON.stringify([{ id: 'wait-1', status: 'cancelled' }]),
+      }),
+    );
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--wait', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_SERVER_ERROR]);
+      expect(errBucket.errors.join('\n')).toContain('cancelled');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('waits after creating a task and exits 0 on completed terminal state', async () => {
+    const { server, baseUrl } = await startFakeApi(
+      () => ({
+        status: 201,
+        body: JSON.stringify({ id: 'wait-1', agentType: 'claude-code', cwd: tmpCwd }),
+      }),
+      () => ({
+        status: 200,
+        body: JSON.stringify([{ taskId: 'wait-1', taskStatus: 'completed' }]),
+      }),
+      () => ({
+        status: 200,
+        body: JSON.stringify([{ id: 'wait-1', status: 'completed' }]),
+      }),
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--wait', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(logs.join('\n')).toContain('Task completed');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('waits on the duplicate task returned by --dedupe=skip --wait', async () => {
+    const { server, baseUrl } = await startFakeApi(
+      () => ({
+        status: 200,
+        body: JSON.stringify({ duplicate: true, task: { id: 'dup-1', status: 'inProgress', cwd: tmpCwd } }),
+      }),
+      () => ({
+        status: 200,
+        body: JSON.stringify([{ taskId: 'dup-1', taskStatus: 'completed' }]),
+      }),
+      () => ({
+        status: 200,
+        body: JSON.stringify([{ id: 'dup-1', status: 'completed' }]),
+      }),
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--dedupe=skip', '--wait', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(logs.join('\n')).toContain('task_id=dup-1');
+      expect(logs.join('\n')).toContain('Task completed');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('exits 6 when --wait times out', async () => {
+    const { server, baseUrl } = await startFakeApi(
+      () => ({
+        status: 201,
+        body: JSON.stringify({ id: 'wait-1', agentType: 'claude-code', cwd: tmpCwd }),
+      }),
+      () => ({
+        status: 200,
+        body: JSON.stringify([{ taskId: 'wait-1', taskStatus: 'inProgress' }]),
+      }),
+      () => ({
+        status: 200,
+        body: JSON.stringify([{ id: 'wait-1', status: 'inProgress' }]),
+      }),
+    );
+    let now = 0;
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--wait=1', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async (ms) => { now += ms; },
+        now: () => now,
+      });
+      expect(codes).toEqual([EXIT_WAIT_TIMEOUT]);
+      expect(errBucket.errors.join('\n')).toContain('timed out');
     } finally {
       await closeServer(server);
     }
@@ -1394,8 +1738,26 @@ async function startFakeHealth(health: Record<string, unknown>): Promise<{ serve
 type ApiResponse = { status: number; body: string; headers?: Record<string, string> };
 type ApiHandler = (req: import('node:http').IncomingMessage, bodyText: string) => ApiResponse;
 
-async function startFakeApi(handler: ApiHandler): Promise<{ server: Server; baseUrl: string }> {
+async function startFakeApi(
+  handler: ApiHandler,
+  snapshotHandler?: (req: import('node:http').IncomingMessage) => ApiResponse,
+  tasksHandler?: (req: import('node:http').IncomingMessage) => ApiResponse,
+): Promise<{ server: Server; baseUrl: string }> {
   const server = createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/api/snapshot' && snapshotHandler) {
+      const result = snapshotHandler(req);
+      const headers = { 'Content-Type': 'application/json', ...(result.headers ?? {}) };
+      res.writeHead(result.status, headers);
+      res.end(result.body);
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/api/tasks' && tasksHandler) {
+      const result = tasksHandler(req);
+      const headers = { 'Content-Type': 'application/json', ...(result.headers ?? {}) };
+      res.writeHead(result.status, headers);
+      res.end(result.body);
+      return;
+    }
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => chunks.push(c));
     req.on('end', () => {

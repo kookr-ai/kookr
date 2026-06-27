@@ -21,6 +21,8 @@ const RETRY_DELAY_MS = 3000;
 const DEFAULT_RETRIES = 3;
 const MAX_RETRIES = 10;
 const POST_TIMEOUT_MS = 10_000;
+const WAIT_READ_TIMEOUT_MS = 2_000;
+const WAIT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_MAX_PROMPT_BYTES = 1024 * 1024;
 const CLI_VERSION = '1.0.0';
 
@@ -29,7 +31,9 @@ const EXIT_USER_ERROR = 2;
 const EXIT_NO_SERVER = 3;
 const EXIT_SERVER_ERROR = 4;
 const EXIT_DUPLICATE_BLOCKED = 5;
+const EXIT_WAIT_TIMEOUT = 6;
 const DEDUPE_MODES = new Set(['warn', 'block', 'skip']);
+const TERMINAL_TASK_STATUSES = new Set(['completed', 'cancelled', 'terminated']);
 // #681: union of every agent's accepted reasoning-effort levels — claude-code
 // (low|medium|high|xhigh|max) ∪ codex-cli (none|minimal|low|medium|high|xhigh).
 // This is a cross-agent fast-fail check only: the CLI cannot know which agent a
@@ -58,6 +62,8 @@ Options:
                            codex-cli:   none|minimal|low|medium|high|xhigh.
       --criteria <text>    Acceptance criteria. Note: this is argv-exposed.
       --dedupe <mode>      warn, block, or skip (default: warn).
+      --wait[=<seconds>]   After creating the task, poll until it raises
+                           completion-ready or reaches a terminal state.
       --parent-task-id <uuid>  Override the parent task linkage explicitly.
       --no-parent-task     Launch detached, ignoring KOOKR_TASK_ID.
       --auto-close-on-signal
@@ -106,7 +112,8 @@ Exit codes:
   2  User error (bad flags, empty prompt, missing cwd, etc.).
   3  No Kookr server reachable.
   4  Server returned an error.
-  5  Duplicate active prompt blocked.`;
+  5  Duplicate active prompt blocked.
+  6  --wait timed out before the task was ready or terminal.`;
 
 function parseArgs(argv) {
   const out = {
@@ -122,6 +129,8 @@ function parseArgs(argv) {
     noParentTask: false,
     autoCloseOnSignal: null,
     json: false,
+    wait: false,
+    waitTimeoutSeconds: null,
     help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -151,6 +160,11 @@ function parseArgs(argv) {
       out.dedupe = eat();
     } else if (tok.startsWith('--dedupe=')) {
       out.dedupe = tok.slice('--dedupe='.length);
+    } else if (tok === '--wait') {
+      out.wait = true;
+    } else if (tok.startsWith('--wait=')) {
+      out.wait = true;
+      out.waitTimeoutSeconds = parseWaitTimeoutSeconds(tok.slice('--wait='.length));
     } else if (tok === '--parent-task-id') {
       out.parentTaskId = eat();
     } else if (tok.startsWith('--parent-task-id=')) {
@@ -201,6 +215,18 @@ function parseArgs(argv) {
     throw new UsageError('--parent-task-id and --no-parent-task are mutually exclusive');
   }
   return out;
+}
+
+function parseWaitTimeoutSeconds(raw) {
+  const trimmed = String(raw).trim();
+  if (trimmed === '') {
+    throw new UsageError('--wait timeout must be a positive number of seconds');
+  }
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new UsageError(`--wait timeout must be a positive number of seconds (got: ${raw})`);
+  }
+  return n;
 }
 
 /**
@@ -458,6 +484,156 @@ async function postTask({ baseUrl, prompt, cwd, agent, effort = null, criteria, 
   return { kind: 'created', task: json, queued: Boolean(json?.queued) };
 }
 
+// ---------- wait polling ----------
+
+async function fetchSnapshot(baseUrl) {
+  let res;
+  try {
+    res = await fetch(`${baseUrl}/api/snapshot`, {
+      headers: apiAuthHeaders(),
+      signal: AbortSignal.timeout(WAIT_READ_TIMEOUT_MS),
+    });
+  } catch (err) {
+    return { kind: 'error', message: err instanceof Error ? err.message : String(err) };
+  }
+  const text = await res.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    return { kind: 'error', message: 'invalid JSON from /api/snapshot' };
+  }
+  if (!res.ok) {
+    return { kind: 'error', message: json?.error ?? (text || `HTTP ${res.status}`) };
+  }
+  if (!Array.isArray(json)) {
+    return { kind: 'error', message: 'unexpected /api/snapshot response (expected an array)' };
+  }
+  return { kind: 'ok', agents: json };
+}
+
+async function fetchTasks(baseUrl) {
+  let res;
+  try {
+    res = await fetch(`${baseUrl}/api/tasks`, {
+      headers: apiAuthHeaders(),
+      signal: AbortSignal.timeout(WAIT_READ_TIMEOUT_MS),
+    });
+  } catch (err) {
+    return { kind: 'error', message: err instanceof Error ? err.message : String(err) };
+  }
+  const text = await res.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    return { kind: 'error', message: 'invalid JSON from /api/tasks' };
+  }
+  if (!res.ok) {
+    return { kind: 'error', message: json?.error ?? (text || `HTTP ${res.status}`) };
+  }
+  if (!Array.isArray(json)) {
+    return { kind: 'error', message: 'unexpected /api/tasks response (expected an array)' };
+  }
+  return { kind: 'ok', tasks: json };
+}
+
+function classifyWaitState(agent) {
+  const taskStatus = typeof agent?.taskStatus === 'string'
+    ? agent.taskStatus
+    : (typeof agent?.status === 'string' ? agent.status : null);
+  if (agent?.pendingSignal?.kind === 'completion_ready') {
+    return { kind: 'completion_ready', status: taskStatus };
+  }
+  if (taskStatus && TERMINAL_TASK_STATUSES.has(taskStatus)) {
+    return { kind: 'terminal', status: taskStatus };
+  }
+  return { kind: 'pending', status: taskStatus };
+}
+
+async function waitForTaskReady({
+  baseUrl,
+  taskId,
+  timeoutMs = null,
+  pollIntervalMs = WAIT_POLL_INTERVAL_MS,
+  sleep = defaultSleep,
+  now = () => Date.now(),
+} = {}) {
+  const deadline = timeoutMs === null ? null : now() + timeoutMs;
+  for (;;) {
+    if (deadline !== null && now() >= deadline) {
+      return { kind: 'timeout' };
+    }
+    const snapshot = await fetchSnapshot(baseUrl);
+    if (snapshot.kind === 'error') {
+      return { kind: 'server_error', message: snapshot.message };
+    }
+    const agent = snapshot.agents.find((candidate) => candidate?.taskId === taskId);
+    if (agent) {
+      const state = classifyWaitState(agent);
+      if (state.kind !== 'pending') {
+        return { ...state, agent };
+      }
+    }
+    const tasks = await fetchTasks(baseUrl);
+    if (tasks.kind === 'error') {
+      return { kind: 'server_error', message: tasks.message };
+    }
+    const task = tasks.tasks.find((candidate) => candidate?.id === taskId);
+    if (task) {
+      const state = classifyWaitState(task);
+      if (state.kind !== 'pending') {
+        return { ...state, agent: task };
+      }
+    }
+    if (deadline !== null && now() >= deadline) {
+      return { kind: 'timeout' };
+    }
+    const sleepMs = deadline === null ? pollIntervalMs : Math.min(pollIntervalMs, deadline - now());
+    if (sleepMs <= 0) return { kind: 'timeout' };
+    await sleep(sleepMs);
+  }
+}
+
+function formatWaitOutcome(result) {
+  if (result.kind === 'completion_ready') {
+    return '✓ Task signaled completion-ready';
+  }
+  if (result.kind === 'terminal' && result.status === 'completed') {
+    return '✓ Task completed';
+  }
+  if (result.kind === 'terminal') {
+    return `kookr-spawn: task reached terminal state: ${result.status}`;
+  }
+  if (result.kind === 'timeout') {
+    return 'kookr-spawn: --wait timed out before the task was completion-ready or terminal';
+  }
+  return `kookr-spawn: failed while waiting: ${result.message}`;
+}
+
+async function waitAndExit({ args, task, baseUrl, out, err, exit, sleep, now }) {
+  if (!args.wait) return exit(EXIT_OK);
+  const taskId = task?.id;
+  if (typeof taskId !== 'string' || taskId.length === 0) {
+    err.error('kookr-spawn: server response did not include a task id to wait for');
+    return exit(EXIT_SERVER_ERROR);
+  }
+  const timeoutMs = args.waitTimeoutSeconds === null ? null : args.waitTimeoutSeconds * 1000;
+  const waitResult = await waitForTaskReady({ baseUrl, taskId, timeoutMs, sleep, ...(now ? { now } : {}) });
+  const message = formatWaitOutcome(waitResult);
+  if (waitResult.kind === 'completion_ready') {
+    out.log(message);
+    return exit(EXIT_OK);
+  }
+  if (waitResult.kind === 'terminal' && waitResult.status === 'completed') {
+    out.log(message);
+    return exit(EXIT_OK);
+  }
+  err.error(message);
+  if (waitResult.kind === 'timeout') return exit(EXIT_WAIT_TIMEOUT);
+  return exit(EXIT_SERVER_ERROR);
+}
+
 // ---------- output rendering ----------
 
 function formatSuccess({ task, baseUrl, queued }) {
@@ -633,6 +809,7 @@ async function main({
   err = console,
   exit = process.exit,
   sleep = defaultSleep,
+  now,
 } = {}) {
   let args;
   try {
@@ -838,7 +1015,7 @@ async function main({
         });
       }
       out.log(formatDedup({ task: result.task, baseUrl }));
-      return exit(EXIT_OK);
+      return waitAndExit({ args, task: result.task, baseUrl, out, err, exit, sleep, now });
     }
     if (args.dedupe === 'block') {
       if (args.json) {
@@ -917,7 +1094,7 @@ async function main({
     });
   }
   out.log(formatSuccess({ task: result.task, baseUrl, queued: result.queued }));
-  return exit(EXIT_OK);
+  return waitAndExit({ args, task: result.task, baseUrl, out, err, exit, sleep, now });
 }
 
 // ---------- entry guard (so tests can import without running) ----------
@@ -951,19 +1128,24 @@ export {
   EXIT_OK,
   EXIT_SERVER_ERROR,
   EXIT_USER_ERROR,
+  EXIT_WAIT_TIMEOUT,
   HELP_TEXT,
   UsageError,
+  classifyWaitState,
   formatDedup,
   formatSuccess,
+  formatWaitOutcome,
   main,
   parseArgs,
   parseMaxBytes,
   parsePortEnv,
   parseRetries,
+  parseWaitTimeoutSeconds,
   postTask,
   probeHealth,
   resolveBaseUrl,
   resolveCwd,
   resolveParentTaskId,
   resolvePrompt,
+  waitForTaskReady,
 };
