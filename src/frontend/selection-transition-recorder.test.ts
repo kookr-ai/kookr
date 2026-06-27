@@ -79,14 +79,19 @@ describe('selection transition recorder', () => {
     expect(track).not.toHaveBeenCalled();
   });
 
-  test('detects A/B flicker and emits one compact rate-limited telemetry event', () => {
+  test('detects A/B flicker and emits one enriched rate-limited telemetry event', () => {
     const base = Date.now();
     const switches: Array<[string, string]> = [['a', 'b'], ['b', 'a'], ['a', 'b'], ['b', 'a']];
 
     switches.forEach(([from, to], index) => {
-      withSelectionTransitionSource({ source: index % 2 === 0 ? 'handleDashboardSelection' : 'selectedAgentUpdateAfterServerState' }, () => {
-        recordSelectionTransitionFromStore(state(from), state(to), ['selectedAgentId'], base + index * 1000);
-      });
+      withSelectionTransitionSource(
+        index % 2 === 0
+          ? { source: 'handleDashboardSelection', reason: 'server_dashboard_selection' }
+          : { source: 'selectedAgentUpdateAfterServerState' },
+        () => {
+          recordSelectionTransitionFromStore(state(from), state(to), ['selectedAgentId'], base + index * 1000);
+        },
+      );
     });
 
     expect(track).toHaveBeenCalledTimes(1);
@@ -102,13 +107,31 @@ describe('selection transition recorder', () => {
       },
     });
     expect(telemetryEvent.pairKey).toMatch(/^pair-/);
-    expect(telemetryEvent).not.toHaveProperty('taskIds');
-    expect(telemetryEvent).not.toHaveProperty('sessionIds');
-    expect(telemetryEvent).not.toHaveProperty('firstTaskStates');
-    expect(telemetryEvent).not.toHaveProperty('lastTaskStates');
-    expect(JSON.stringify(telemetryEvent)).not.toContain('project-1');
-    expect(JSON.stringify(telemetryEvent)).not.toContain('task-a');
-    expect(JSON.stringify(telemetryEvent)).not.toContain('"a"');
+    // Enriched identity + per-task context so a recurrence can be pinned to the
+    // exact two tasks straight from the persisted telemetry log (self-hosted).
+    expect(telemetryEvent.taskIds).toEqual(['task-a', 'task-b']);
+    expect(telemetryEvent.sessionIds).toEqual(['a', 'b']);
+    expect(telemetryEvent.firstTaskStates).toMatchObject({
+      from: { agentId: 'a', taskId: 'task-a', projectId: 'project-1', anomalyType: 'needs_input' },
+      to: { agentId: 'b', taskId: 'task-b' },
+    });
+    expect(telemetryEvent.lastTaskStates).toMatchObject({
+      from: { taskId: 'task-a' },
+      to: { taskId: 'task-b' },
+    });
+    const transitions = telemetryEvent.transitions as Array<Record<string, unknown>>;
+    expect(transitions).toHaveLength(3);
+    expect(transitions[0]).toMatchObject({
+      fromSessionId: 'a',
+      toSessionId: 'b',
+      fromTaskId: 'task-a',
+      toTaskId: 'task-b',
+      source: 'handleDashboardSelection',
+      reason: 'server_dashboard_selection',
+      selectedProject: 'project-1',
+      dashboardSelectionVersion: 7,
+    });
+    expect(transitions[0].autoAdvance).toMatchObject({ enabled: false, selectedAgentSource: 'manual' });
     expect(getSelectionTransitionDiagnostics().flickerIncidents).toHaveLength(1);
   });
 
