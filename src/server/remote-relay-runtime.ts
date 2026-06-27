@@ -23,6 +23,7 @@ import type { ServerRevision, SessionEpoch, SessionId } from '../remote/ids.js';
 import type { RemoteLaunchBroker } from '../remote/launch-broker.js';
 import type { RemoteNodeClient } from '../remote/node-client.js';
 import type { RemotePolicyCache } from '../remote/policy-cache.js';
+import type { PushAlertOutbox } from '../remote/push.js';
 import type { SessionStreamPublisher } from '../remote/session-stream-publisher.js';
 
 interface RemoteRelayRuntimeDeps {
@@ -56,6 +57,37 @@ export interface RemoteRelayRuntime {
   publishPermissionBlocked(taskId: string): void;
 }
 
+export async function publishPermissionBlockedPushAlert(opts: {
+  taskId: string;
+  taskStore: Pick<TaskStore, 'getTask'>;
+  remoteNodeClient: RemoteNodeClient | null;
+  outbox: PushAlertOutbox;
+  env?: Partial<Pick<NodeJS.ProcessEnv, 'KOOKR_PUSH_DISABLED' | 'KOOKR_RELAY_DISPLAY_NAME'>>;
+  now?: () => Date;
+}): Promise<boolean> {
+  const {
+    isPushDisabled,
+    makePermissionBlockedPushPayload,
+    publishPushAlertDelta,
+  } = await import('../remote/push.js');
+  const env = opts.env ?? process.env;
+  if (!opts.remoteNodeClient || isPushDisabled(env)) return false;
+  const task = opts.taskStore.getTask(opts.taskId);
+  if (!task) return false;
+
+  const payload = makePermissionBlockedPushPayload({
+    nodeDisplayName: env.KOOKR_RELAY_DISPLAY_NAME,
+    task,
+    alertId: `permission-${opts.taskId}-${Date.now()}`,
+  });
+  const sent = publishPushAlertDelta(opts.remoteNodeClient, payload, {
+    env,
+    ...(opts.now ? { now: opts.now } : {}),
+  });
+  if (!sent) opts.outbox.enqueue(payload);
+  return sent;
+}
+
 export async function createRemoteRelayRuntime(deps: RemoteRelayRuntimeDeps): Promise<RemoteRelayRuntime> {
   let remoteNodeClient: RemoteNodeClient | null = null;
   let sessionStreamPublisher: SessionStreamPublisher | null = null;
@@ -65,6 +97,7 @@ export async function createRemoteRelayRuntime(deps: RemoteRelayRuntimeDeps): Pr
   let remotePolicyCache: RemotePolicyCache | null = null;
   let taskShareService: TaskShareService | null = null;
   let remoteShareRevision = 0;
+  let pushAlertOutbox: PushAlertOutbox | null = null;
 
   const nextRemoteShareRevision = (): ServerRevision => {
     remoteShareRevision += 1;
@@ -85,6 +118,8 @@ export async function createRemoteRelayRuntime(deps: RemoteRelayRuntimeDeps): Pr
     RELAY_TRUSTED_ENV_NAME,
     relayTrustedProcessValue,
   } = await import('../remote/handshake.js');
+  const { createPushAlertOutbox } = await import('../remote/push.js');
+  pushAlertOutbox = createPushAlertOutbox();
   const shareDiagnostics = new ShareDiagnosticsService({
     serverCwd: deps.serverCwd,
     processStartedAt: deps.serverStartedAt,
@@ -165,6 +200,7 @@ export async function createRemoteRelayRuntime(deps: RemoteRelayRuntimeDeps): Pr
     taskShareService = null;
     remoteShare.client = null;
     delete remoteShare.service;
+    pushAlertOutbox = createPushAlertOutbox();
   };
 
   const startRuntime = async (credentials: RelayConnectionCredentials): Promise<RelayRuntimeHandle> => {
@@ -251,7 +287,13 @@ export async function createRemoteRelayRuntime(deps: RemoteRelayRuntimeDeps): Pr
     });
     nodeClient.setConnectionObserver((state) => {
       if (state === 'disconnected') controllerLeaseManager?.handleRelayDisconnect();
-      else controllerLeaseManager?.handleRelayReconnect();
+      else {
+        controllerLeaseManager?.handleRelayReconnect();
+        const replay = pushAlertOutbox?.flush(nodeClient) ?? { sent: 0, pending: 0 };
+        if (replay.sent > 0) {
+          console.log(`[remote-push] replayed ${replay.sent} buffered alert(s); pending=${replay.pending}`);
+        }
+      }
     });
     const { createSessionStreamPublisher } = await import('../remote/session-stream-publisher.js');
     sessionStreamPublisher = createSessionStreamPublisher({
@@ -336,21 +378,20 @@ export async function createRemoteRelayRuntime(deps: RemoteRelayRuntimeDeps): Pr
       taskShareService?.publishTaskProjectionForTask(taskId);
     },
     publishPermissionBlocked: (taskId) => {
-      const task = remoteNodeClient && process.env.KOOKR_PUSH_DISABLED !== 'true'
-        ? deps.taskStore.getTask(taskId)
-        : undefined;
-      if (!task) return;
-      void import('../remote/push.js')
-        .then(({ makePermissionBlockedPushPayload, publishPushAlertDelta }) => {
-          publishPushAlertDelta(remoteNodeClient, makePermissionBlockedPushPayload({
-            nodeDisplayName: process.env.KOOKR_RELAY_DISPLAY_NAME,
-            task,
-            alertId: `permission-${taskId}-${Date.now()}`,
-          }));
-        })
-        .catch((err) => {
+      const outbox = pushAlertOutbox;
+      if (!outbox) return;
+      try {
+        void publishPermissionBlockedPushAlert({
+          taskId,
+          taskStore: deps.taskStore,
+          remoteNodeClient,
+          outbox,
+        }).catch((err) => {
           console.warn('[remote-push] failed to publish permission alert:', err);
         });
+      } catch (err) {
+        console.warn('[remote-push] failed to publish permission alert:', err);
+      }
     },
   };
 }
