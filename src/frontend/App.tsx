@@ -1,4 +1,5 @@
 import React, { lazy, Suspense, useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import type { ClientMessage, ProjectSummary } from '../shared/protocol.js';
 import { deriveLaunchProjectCwd } from './derive-project-cwd.js';
 import { useKookrStore } from './store/useStore.js';
@@ -413,7 +414,41 @@ export function App() {
     terminalFocusMode,
     setNarrowTab,
     toggleTerminalFocusMode,
-  } = useKookrStore();
+  } = useKookrStore(useShallow((state) => ({
+    agents: state.agents,
+    agentsHydrated: state.agentsHydrated,
+    buildInfo: state.buildInfo,
+    serverStartedAt: state.serverStartedAt,
+    selectedAgentId: state.selectedAgentId,
+    selectAgent: state.selectAgent,
+    nextBottleneck: state.nextBottleneck,
+    nextTask: state.nextTask,
+    selectNextTaskAfterCompletion: state.selectNextTaskAfterCompletion,
+    advanceEmptyEnter: state.advanceEmptyEnter,
+    previousTask: state.previousTask,
+    relaunchTask: state.relaunchTask,
+    clearRelaunchTask: state.clearRelaunchTask,
+    selectedProject: state.selectedProject,
+    selectProject: state.selectProject,
+    toggleProjectSidebar: state.toggleProjectSidebar,
+    projectSummaries: state.projectSummaries,
+    projectSummariesHydrated: state.projectSummariesHydrated,
+    projectSidebarPrefs: state.projectSidebarPrefs,
+    showAchievements: state.showAchievements,
+    toggleAchievementsPanel: state.toggleAchievementsPanel,
+    workspaceEnabled: state.workspaceEnabled,
+    clearWorkspaceView: state.clearWorkspaceView,
+    handleAlert: state.handleAlert,
+    ossShowView: state.ossShowView,
+    closeOssView: state.closeOssView,
+    toggleOssView: state.toggleOssView,
+    coordinator: state.coordinator,
+    leftPane: state.leftPane,
+    detailPaneMode: state.detailPaneMode,
+    terminalFocusMode: state.terminalFocusMode,
+    setNarrowTab: state.setNarrowTab,
+    toggleTerminalFocusMode: state.toggleTerminalFocusMode,
+  })));
 
   useEffect(() => {
     sendRef.current = send;
