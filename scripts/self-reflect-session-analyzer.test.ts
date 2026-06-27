@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   analyzeMessages,
+  collectRepeatedInstructions,
   parseCodexMessage,
   parseMessage,
   parseSubagentNotification,
@@ -21,6 +22,22 @@ function notification(status: Record<string, string>, agentPath = "019ee564-revi
   return `<subagent_notification>
 ${JSON.stringify({ agent_path: agentPath, status })}
 </subagent_notification>`;
+}
+
+function analysisWithHumanMessage(sessionId: string, text: string): ReturnType<typeof analyzeMessages> {
+  return analyzeMessages(
+    { ...meta, sessionId },
+    [{
+      type: "user",
+      timestamp: "2026-06-27T10:00:00.000Z",
+      isHumanInput: true,
+      humanText: text,
+    }],
+  );
+}
+
+function repeatedAnalyses(prefix: string, count: number, text: string): ReturnType<typeof analyzeMessages>[] {
+  return Array.from({ length: count }, (_, index) => analysisWithHumanMessage(`${index.toString(16).padStart(8, "0")}-${prefix}`, text));
 }
 
 describe("session analyzer reviewer fan-out", () => {
@@ -204,5 +221,107 @@ describe("session analyzer reviewer fan-out", () => {
 
   test("returns undefined for normal human messages", () => {
     expect(parseSubagentNotification("please run tests")).toBeUndefined();
+  });
+});
+
+describe("session analyzer repeated-instruction workflow filtering", () => {
+  test("excludes repeated harness notes by default and includes them with debug flag", () => {
+    const harnessNote = "Harness note: the read-only KB command is `kb-ro`. When the variant instructions say `kb ...`, run `kb-ro ...` instead.";
+    const organicInstruction = "Run the focused self-reflect session analyzer test";
+    const analyses = [
+      ...repeatedAnalyses("harness", 64, harnessNote),
+      ...repeatedAnalyses("organic", 3, organicInstruction),
+    ];
+
+    const filtered = collectRepeatedInstructions(analyses, 3);
+    expect(filtered.filteredCount).toBe(64);
+    expect(filtered.filteredReasons).toMatchObject({ harness_note: 64 });
+    expect(filtered.repeated.map((pattern) => pattern.normalized)).toEqual([
+      "run the focused self-reflect session analyzer test",
+    ]);
+
+    const debug = collectRepeatedInstructions(analyses, 3, { includeFilteredWorkflow: true });
+    expect(debug.repeated).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          normalized: "harness note: the read-only kb command is `kb-ro`. when the variant instructions",
+          intent: "machine_workflow",
+          filteredReason: "harness_note",
+          messages: expect.arrayContaining([
+            expect.objectContaining({ original: harnessNote }),
+          ]),
+        }),
+      ]),
+    );
+  });
+
+  test("excludes reviewer-specialist launch prompts from repeated instructions by default", () => {
+    const reviewerPrompt = [
+      "You are the correctness-specialist reviewer for a Kookr PR.",
+      "",
+      "Repo checkout: /home/jean/git/kookr-issue-1046",
+      "Review the merge-base diff and report blocking correctness issues only.",
+    ].join("\n");
+    const analyses = repeatedAnalyses("reviewer", 3, reviewerPrompt);
+
+    const filtered = collectRepeatedInstructions(analyses, 2);
+    expect(filtered.repeated).toEqual([]);
+    expect(filtered.filteredReasons).toMatchObject({ reviewer_prompt: 3 });
+
+    const debug = collectRepeatedInstructions(analyses, 2, { includeFilteredWorkflow: true });
+    expect(debug.repeated).toEqual([
+      expect.objectContaining({
+        intent: "machine_workflow",
+        filteredReason: "reviewer_prompt",
+      }),
+    ]);
+  });
+
+  test("excludes repeated eval task gist fixtures by default", () => {
+    const taskGist = [
+      "## Task gist",
+      "",
+      "I'm serving an LLM with very long contexts (100k-1M tokens) and the KV cache is blowing up memory.",
+      "",
+      "## Criteria",
+      "",
+      "Find the smallest practical implementation strategy.",
+    ].join("\n");
+    const analyses = repeatedAnalyses("eval", 10, taskGist);
+
+    const filtered = collectRepeatedInstructions(analyses, 3);
+    expect(filtered.repeated).toEqual([]);
+    expect(filtered.filteredReasons).toMatchObject({ eval_fixture: 10 });
+
+    const debug = collectRepeatedInstructions(analyses, 3, { includeFilteredWorkflow: true });
+    expect(debug.repeated).toEqual([
+      expect.objectContaining({
+        intent: "machine_workflow",
+        filteredReason: "eval_fixture",
+      }),
+    ]);
+  });
+
+  test("excludes repeated workflow launch prompts by default", () => {
+    const launchPrompt = [
+      "You are continuing a sequential Kookr GitHub-issue implementation chain.",
+      "",
+      "Goal: Implement Kookr GitHub issue #1046 end-to-end.",
+      "",
+      "Continue from the previous handoff and push the branch when done.",
+    ].join("\n");
+    const analyses = repeatedAnalyses("workflow", 4, launchPrompt);
+
+    const filtered = collectRepeatedInstructions(analyses, 2);
+    expect(filtered.repeated).toEqual([]);
+    expect(filtered.filteredReasons).toMatchObject({ workflow_launch: 4 });
+
+    const debug = collectRepeatedInstructions(analyses, 2, { includeFilteredWorkflow: true });
+    expect(debug.repeated).toEqual([
+      expect.objectContaining({
+        intent: "machine_workflow",
+        filteredReason: "workflow_launch",
+      }),
+    ]);
   });
 });

@@ -31,6 +31,7 @@ interface CliArgs {
   patterns: boolean;
   userMessages: boolean;
   repeatedInstructions: boolean;
+  includeFilteredRepeatedInstructions: boolean;
   repeatThreshold: number;
   help: boolean;
 }
@@ -143,6 +144,31 @@ export interface SessionAnalysis {
   messages: ParsedMessage[]; // full parsed messages (only populated for detail modes that need it)
 }
 
+type WorkflowFilteredReason = "harness_note" | "eval_fixture" | "reviewer_prompt" | "workflow_launch";
+
+export interface RepeatedInstructionRecord {
+  normalized: string;
+  original: string;
+  sessionId: string;
+  timestamp: string;
+  intent: string;
+  filteredReason?: WorkflowFilteredReason;
+}
+
+export interface RepeatedInstructionPattern {
+  normalized: string;
+  messages: RepeatedInstructionRecord[];
+  intent: string;
+  filteredReason?: WorkflowFilteredReason;
+}
+
+export interface RepeatedInstructionCollection {
+  allMessages: RepeatedInstructionRecord[];
+  repeated: RepeatedInstructionPattern[];
+  filteredCount: number;
+  filteredReasons: Partial<Record<WorkflowFilteredReason, number>>;
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const CLAUDE_DIR = join(homedir(), ".claude");
@@ -190,6 +216,7 @@ function parseArgs(argv: string[]): CliArgs {
     patterns: false,
     userMessages: false,
     repeatedInstructions: false,
+    includeFilteredRepeatedInstructions: false,
     repeatThreshold: 3,
     help: false,
   };
@@ -258,6 +285,10 @@ function parseArgs(argv: string[]): CliArgs {
       case "--repeated-instructions":
         args.repeatedInstructions = true;
         break;
+      case "--include-filtered-workflow":
+      case "--include-filtered-repeated-instructions":
+        args.includeFilteredRepeatedInstructions = true;
+        break;
       case "--repeat-threshold":
         args.repeatThreshold = parseInt(next, 10);
         i++;
@@ -314,6 +345,8 @@ Reports:
   --patterns                 Cross-session pattern analysis
   --user-messages            Extract only human-typed messages (no tool results)
   --repeated-instructions    Find instructions repeated across sessions (default: 3+)
+  --include-filtered-workflow
+                              Include filtered machine/workflow prompts in repeated instructions (debug)
   --repeat-threshold <N>     Min occurrences for repeated instructions (default: 3)
 
 Output:
@@ -1587,11 +1620,33 @@ function classifyIntent(text: string): string {
   return "other";
 }
 
-function renderRepeatedInstructions(analyses: SessionAnalysis[], threshold: number): void {
-  console.log(`\nRepeated User Instructions Across ${analyses.length} Sessions (threshold: ${threshold}+)\n`);
+function classifyWorkflowInjectedInstruction(text: string): WorkflowFilteredReason | undefined {
+  const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
 
-  // Collect all user messages with metadata
-  const allMessages: Array<{ normalized: string; original: string; sessionId: string; timestamp: string; intent: string }> = [];
+  if (lower.startsWith("harness note:")) return "harness_note";
+  if (lower.startsWith("## task gist")) return "eval_fixture";
+  if (/^you are the (?:test|correctness|dead[- ]?code|conventions|a11y|accessibility)-specialist reviewer for a kookr pr\b/i.test(trimmed)) {
+    return "reviewer_prompt";
+  }
+  if (/^you are continuing a sequential kookr github-issue implementation chain\b/i.test(trimmed)) {
+    return "workflow_launch";
+  }
+  if (/^# (?:agent )?task assignment\b/i.test(trimmed) && /\b(repo checkout|worktree|issue #?\d+)\b/i.test(trimmed)) {
+    return "workflow_launch";
+  }
+
+  return undefined;
+}
+
+export function collectRepeatedInstructions(
+  analyses: SessionAnalysis[],
+  threshold: number,
+  options: { includeFilteredWorkflow?: boolean } = {},
+): RepeatedInstructionCollection {
+  const allMessages: RepeatedInstructionRecord[] = [];
+  let filteredCount = 0;
+  const filteredReasons: Partial<Record<WorkflowFilteredReason, number>> = {};
 
   for (const a of analyses) {
     for (const msg of a.humanMessages) {
@@ -1599,30 +1654,64 @@ function renderRepeatedInstructions(analyses: SessionAnalysis[], threshold: numb
       if (text === "[Request interrupted by user]" || text.length < 5) continue;
       if (isAnalyzerNoise(text)) continue;
 
+      const filteredReason = classifyWorkflowInjectedInstruction(text);
+      if (filteredReason) {
+        filteredCount++;
+        filteredReasons[filteredReason] = (filteredReasons[filteredReason] ?? 0) + 1;
+        if (!options.includeFilteredWorkflow) continue;
+      }
+
       allMessages.push({
         normalized: normalizeForMatching(text),
         original: text,
         sessionId: a.meta.sessionId.slice(0, 8),
         timestamp: msg.timestamp ? formatDate(msg.timestamp) : "unknown",
-        intent: classifyIntent(text),
+        intent: filteredReason ? "machine_workflow" : classifyIntent(text),
+        filteredReason,
       });
     }
   }
 
-  // Group by normalized text
-  const groups: Record<string, typeof allMessages> = {};
+  const groups: Record<string, RepeatedInstructionRecord[]> = {};
   for (const msg of allMessages) {
     if (!groups[msg.normalized]) groups[msg.normalized] = [];
     groups[msg.normalized].push(msg);
   }
 
-  // Filter to messages that appear across 2+ different sessions AND meet threshold
   const repeated = Object.entries(groups)
     .filter(([_, msgs]) => {
       const uniqueSessions = new Set(msgs.map((m) => m.sessionId));
       return msgs.length >= threshold && uniqueSessions.size >= 2;
     })
-    .sort((a, b) => b[1].length - a[1].length);
+    .sort((a, b) => b[1].length - a[1].length)
+    .map(([normalized, messages]) => ({
+      normalized,
+      messages,
+      intent: messages[0].intent,
+      filteredReason: messages[0].filteredReason,
+    }));
+
+  return { allMessages, repeated, filteredCount, filteredReasons };
+}
+
+function renderRepeatedInstructions(
+  analyses: SessionAnalysis[],
+  threshold: number,
+  options: { includeFilteredWorkflow?: boolean } = {},
+): void {
+  console.log(`\nRepeated User Instructions Across ${analyses.length} Sessions (threshold: ${threshold}+)\n`);
+
+  const collection = collectRepeatedInstructions(analyses, threshold, options);
+  const { allMessages, repeated } = collection;
+
+  if (!options.includeFilteredWorkflow && collection.filteredCount > 0) {
+    const reasonSummary = Object.entries(collection.filteredReasons)
+      .sort((a, b) => b[1] - a[1])
+      .map(([reason, count]) => `${count} ${reason}`)
+      .join(", ");
+    console.log(`Filtered ${collection.filteredCount} machine/workflow prompt(s): ${reasonSummary}.`);
+    console.log("Use --include-filtered-workflow to include them for debugging.\n");
+  }
 
   if (repeated.length === 0) {
     console.log("No repeated instructions found above threshold.\n");
@@ -1634,10 +1723,14 @@ function renderRepeatedInstructions(analyses: SessionAnalysis[], threshold: numb
 
   console.log(`Found ${repeated.length} repeated instruction patterns:\n`);
 
-  for (const [normalized, msgs] of repeated) {
+  for (const pattern of repeated) {
+    const { normalized, messages: msgs } = pattern;
     const uniqueSessions = new Set(msgs.map((m) => m.sessionId));
-    const intent = msgs[0].intent;
+    const intent = pattern.intent;
     console.log(`  ${msgs.length}x across ${uniqueSessions.size} sessions [${intent}]`);
+    if (pattern.filteredReason) {
+      console.log(`  Filter: ${pattern.filteredReason}`);
+    }
     console.log(`  Pattern: "${normalized}"`);
     // Show first 3 examples with session context
     for (const ex of msgs.slice(0, 3)) {
@@ -1651,9 +1744,9 @@ function renderRepeatedInstructions(analyses: SessionAnalysis[], threshold: numb
   console.log("─".repeat(72));
   console.log("Improvement Suggestions:\n");
 
-  const byIntent: Record<string, typeof repeated> = {};
+  const byIntent: Record<string, RepeatedInstructionPattern[]> = {};
   for (const entry of repeated) {
-    const intent = entry[1][0].intent;
+    const intent = entry.intent;
     if (!byIntent[intent]) byIntent[intent] = [];
     byIntent[intent].push(entry);
   }
@@ -1913,7 +2006,9 @@ async function main(): Promise<void> {
   }
 
   if (args.repeatedInstructions) {
-    renderRepeatedInstructions(limited, args.repeatThreshold);
+    renderRepeatedInstructions(limited, args.repeatThreshold, {
+      includeFilteredWorkflow: args.includeFilteredRepeatedInstructions,
+    });
     return;
   }
 
