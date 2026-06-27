@@ -5,7 +5,8 @@ import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { track, trackClick } from '../telemetry.js';
 import type { DiffClickTarget } from './ActivityPanel.js';
-import { formatDuration, formatCost, formatTokens, projectLabel, projectColor, formatBranch, agentProviderPresentation, worktreeHealthLabel, worktreeHealthTitle } from '../presentation.js';
+import { formatDuration, formatCost, formatTokens, projectLabel, projectColor, formatBranch, agentProviderPresentation, worktreeHealthLabel, worktreeHealthTitle, deriveTaskNextStepRecommendations } from '../presentation.js';
+import type { NextStepRecommendation } from '../presentation.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';
 import { computeTerminalVisible } from './detail-panel-visibility.js';
@@ -149,6 +150,85 @@ function AgentProviderBadge({
       <span className="detail-agent-provider-label">{provider.label}</span>
       <span className="sr-only"> by {provider.provider}</span>
     </span>
+  );
+}
+
+function TaskNextActionsPanel({
+  agentId,
+  recommendations,
+  onRelaunch,
+  onReflect,
+  onAction,
+}: {
+  agentId: string;
+  recommendations: NextStepRecommendation[];
+  onRelaunch: () => void | Promise<void>;
+  onReflect: () => void;
+  onAction: (recommendation: NextStepRecommendation) => void;
+}) {
+  const recommendationKey = recommendations.map((recommendation) => recommendation.id).join('|');
+
+  useEffect(() => {
+    if (recommendations.length === 0) return;
+    track({
+      type: 'suggestion_lifecycle',
+      agentId,
+      action: 'next_steps_shown',
+      recommendationIds: recommendations.map((recommendation) => recommendation.id),
+    });
+  }, [agentId, recommendationKey]);
+
+  if (recommendations.length === 0) return null;
+
+  function renderAction(recommendation: NextStepRecommendation) {
+    const { action } = recommendation;
+    if (action.type === 'open-pr') {
+      return (
+        <a
+          className="action-btn action-btn--neutral detail-next-action-link"
+          href={action.href}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={() => onAction(recommendation)}
+        >
+          {recommendation.actionLabel}
+        </a>
+      );
+    }
+
+    return (
+      <button
+        type="button"
+        className={action.type === 'snapshot-reflect' ? 'action-btn action-btn--reflect' : 'action-btn action-btn--success'}
+        onClick={() => {
+          onAction(recommendation);
+          if (action.type === 'snapshot-reflect') onReflect();
+          if (action.type === 'relaunch') void onRelaunch();
+        }}
+      >
+        {recommendation.actionLabel}
+      </button>
+    );
+  }
+
+  return (
+    <section className="detail-next-actions" aria-labelledby="detail-next-actions-title">
+      <div className="detail-next-actions-header">
+        <h3 id="detail-next-actions-title">Next actions</h3>
+        <span>{recommendations.length}</span>
+      </div>
+      <div className="detail-next-actions-list">
+        {recommendations.map((recommendation) => (
+          <div className="detail-next-action" key={recommendation.id}>
+            <div className="detail-next-action-copy">
+              <strong>{recommendation.title}</strong>
+              <p>{recommendation.detail}</p>
+            </div>
+            {renderAction(recommendation)}
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -663,6 +743,8 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     ? isCompletedTurn ? 'SIGNALED COMPLETE' : agent.anomaly.type.replace('_', ' ').toUpperCase()
     : 'RUNNING';
   const agentProvider = agent.agentType ? agentProviderPresentation(agent.agentType) : null;
+  const taskGitHubState = agent.taskId ? githubState[agent.taskId] : undefined;
+  const nextStepRecommendations = deriveTaskNextStepRecommendations(agent, taskGitHubState?.prs ?? []);
   const shareHeaderStatus = deriveTaskShareHeaderStatus(agent.taskId, shareHeaderShares);
   const requestedDetailPaneMode = detailPaneMode ?? (terminalFocusMode ? 'right' : storedDetailPaneMode);
   const splitRenderingTaskVisible = !(isTerminalTaskStatus(agent.taskStatus) && agent.completionDigest);
@@ -689,6 +771,14 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
   function showBothPanesFromRight() {
     setDetailPaneMode('split');
     focusNextFrame(hideRightPaneButtonRef);
+  }
+
+  function handleNextStepAction(recommendation: NextStepRecommendation) {
+    track({
+      type: 'quick_action_clicked',
+      agentId: agent.agentId,
+      actionLabel: `next_step:${recommendation.id}`,
+    });
   }
 
   return (
@@ -810,10 +900,17 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
       {!rightOnlyMode && agent.taskId && <CoordinatorChainStripView agent={agent} />}
       {!rightOnlyMode && agent.taskId && <TaskDependencyEditor agent={agent} />}
       {!rightOnlyMode && agent.taskId && <TaskDependencyRail agent={agent} />}
+      <TaskNextActionsPanel
+        agentId={agent.agentId}
+        recommendations={nextStepRecommendations}
+        onRelaunch={handleRelaunch}
+        onReflect={handleReflect}
+        onAction={handleNextStepAction}
+      />
 
       {/* Side-by-side split (wide) + tab fallback (narrow) */}
       {(() => {
-        const gh = agent.taskId ? githubState[agent.taskId] : undefined;
+        const gh = taskGitHubState;
         const ghCount = (gh?.prs.length ?? 0) + (gh?.issues.length ?? 0);
         const isCompleted = isTerminalTaskStatus(agent.taskStatus);
         const terminalVisible = showRightPane && (
