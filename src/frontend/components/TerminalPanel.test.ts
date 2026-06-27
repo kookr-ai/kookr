@@ -39,6 +39,7 @@ class MockWebSocket {
 vi.mock('@xterm/xterm', () => {
   class MockTerminal {
     rows = 24;
+    options: Record<string, unknown>;
     resizeHandler: ((size: { cols: unknown; rows: unknown }) => void) | null = null;
     dataHandler: ((data: string) => void) | null = null;
     scrollHandler: (() => void) | null = null;
@@ -81,7 +82,8 @@ vi.mock('@xterm/xterm', () => {
       },
     };
 
-    constructor() {
+    constructor(options: Record<string, unknown>) {
+      this.options = { ...options };
       mocks.terminalInstances.push(this);
     }
   }
@@ -139,6 +141,12 @@ import { TerminalPanel } from './TerminalPanel.js';
 import { buildPasteFrame } from '../terminal-paste.js';
 import { registerTerminalSend } from '../terminal-send.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
+import {
+  DEFAULT_TERMINAL_FONT_SIZE,
+  MAX_TERMINAL_FONT_SIZE,
+  MIN_TERMINAL_FONT_SIZE,
+  TERMINAL_FONT_SIZE_STORAGE_KEY,
+} from '../hooks/usePersistedTerminalFontSize.js';
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -189,6 +197,26 @@ function openSearchViaShortcut(terminal: { keyHandler: ((event: KeyboardEvent) =
   return { handled, preventDefault, stopPropagation };
 }
 
+function dispatchTerminalShortcut(
+  terminal: { keyHandler: ((event: KeyboardEvent) => boolean) | null },
+  key: string,
+  overrides: Partial<KeyboardEvent> = {},
+) {
+  const preventDefault = vi.fn();
+  const stopPropagation = vi.fn();
+  const handled = terminal.keyHandler?.({
+    type: 'keydown',
+    key,
+    ctrlKey: true,
+    metaKey: false,
+    altKey: false,
+    preventDefault,
+    stopPropagation,
+    ...overrides,
+  } as KeyboardEvent);
+  return { handled, preventDefault, stopPropagation };
+}
+
 function setTerminalBufferLines(terminal: {
   buffer: { active: { length: number; getLine: ReturnType<typeof vi.fn> } };
 }, lines: string[]) {
@@ -221,6 +249,7 @@ describe('TerminalPanel', () => {
     mocks.searchAddonInstances.length = 0;
     mocks.webSocketInstances.length = 0;
     mocks.searchFound = true;
+    localStorage.clear();
     vi.clearAllMocks();
     syncGlobalStore();
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -1403,6 +1432,110 @@ describe('TerminalPanel', () => {
       expect.objectContaining({ incremental: true }),
     );
     expect(container.textContent).toContain('1/1');
+  });
+
+  test('initializes xterm with the persisted terminal font size', () => {
+    localStorage.setItem(TERMINAL_FONT_SIZE_STORAGE_KEY, '17');
+
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    expect(terminal.options.fontSize).toBe(17);
+  });
+
+  test('terminal-scoped font-size shortcuts update xterm, persist, refit, and repaint', () => {
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const fitAddon = mocks.fitAddonInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onopen?.();
+    });
+    fitAddon.fit.mockClear();
+    terminal.refresh.mockClear();
+    ws.send.mockClear();
+
+    let shortcut: ReturnType<typeof dispatchTerminalShortcut> | null = null;
+    act(() => {
+      shortcut = dispatchTerminalShortcut(terminal, '=');
+    });
+
+    expect(shortcut?.handled).toBe(false);
+    expect(shortcut?.preventDefault).toHaveBeenCalledOnce();
+    expect(shortcut?.stopPropagation).toHaveBeenCalledOnce();
+    expect(terminal.options.fontSize).toBe(DEFAULT_TERMINAL_FONT_SIZE + 1);
+    expect(localStorage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY)).toBe(String(DEFAULT_TERMINAL_FONT_SIZE + 1));
+    expect(fitAddon.fit).toHaveBeenCalledOnce();
+    expect(terminal.refresh).toHaveBeenCalledWith(0, terminal.rows - 1);
+    expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resize', cols: 80, rows: 24 }));
+
+    act(() => {
+      dispatchTerminalShortcut(terminal, '-');
+    });
+    expect(terminal.options.fontSize).toBe(DEFAULT_TERMINAL_FONT_SIZE);
+    expect(localStorage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY)).toBe(String(DEFAULT_TERMINAL_FONT_SIZE));
+
+    act(() => {
+      dispatchTerminalShortcut(terminal, '+');
+    });
+    expect(terminal.options.fontSize).toBe(DEFAULT_TERMINAL_FONT_SIZE + 1);
+
+    act(() => {
+      dispatchTerminalShortcut(terminal, '0');
+    });
+    expect(terminal.options.fontSize).toBe(DEFAULT_TERMINAL_FONT_SIZE);
+    expect(localStorage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY)).toBe(String(DEFAULT_TERMINAL_FONT_SIZE));
+  });
+
+  test('terminal font-size shortcuts clamp to the supported range', () => {
+    localStorage.setItem(TERMINAL_FONT_SIZE_STORAGE_KEY, String(MAX_TERMINAL_FONT_SIZE));
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+    let terminal = mocks.terminalInstances[0];
+
+    act(() => {
+      dispatchTerminalShortcut(terminal, '=');
+    });
+    expect(terminal.options.fontSize).toBe(MAX_TERMINAL_FONT_SIZE);
+    expect(localStorage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY)).toBe(String(MAX_TERMINAL_FONT_SIZE));
+
+    act(() => {
+      root.unmount();
+    });
+    container.innerHTML = '';
+    root = createRoot(container);
+    localStorage.setItem(TERMINAL_FONT_SIZE_STORAGE_KEY, String(MIN_TERMINAL_FONT_SIZE));
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+    terminal = mocks.terminalInstances[mocks.terminalInstances.length - 1];
+
+    act(() => {
+      dispatchTerminalShortcut(terminal, '-');
+    });
+    expect(terminal.options.fontSize).toBe(MIN_TERMINAL_FONT_SIZE);
+    expect(localStorage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY)).toBe(String(MIN_TERMINAL_FONT_SIZE));
+  });
+
+  test('terminal font-size shortcuts are ignored while hidden', () => {
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: false }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const shortcut = dispatchTerminalShortcut(terminal, '=');
+
+    expect(shortcut.handled).toBe(false);
+    expect(shortcut.preventDefault).not.toHaveBeenCalled();
+    expect(shortcut.stopPropagation).not.toHaveBeenCalled();
+    expect(terminal.options.fontSize).toBe(DEFAULT_TERMINAL_FONT_SIZE);
+    expect(localStorage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY)).toBeNull();
   });
 
   test('search controls navigate previous and next matches', () => {

@@ -9,6 +9,10 @@ import { registerTerminalSend } from '../terminal-send.js';
 import { isMultilinePaste, buildPasteFrame } from '../terminal-paste.js';
 import { createReconnectingSocket, type ReconnectingSocket } from '../reconnecting-socket.js';
 import { track } from '../telemetry.js';
+import {
+  DEFAULT_TERMINAL_FONT_SIZE,
+  usePersistedTerminalFontSize,
+} from '../hooks/usePersistedTerminalFontSize.js';
 
 interface Props {
   tmuxName: string | null;
@@ -214,6 +218,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit, onOpenFile }: 
   const [searchTerm, setSearchTerm] = useState('');
   const [searchFound, setSearchFound] = useState<boolean | null>(null);
   const [searchResult, setSearchResult] = useState<ISearchResultChangeEvent | null>(null);
+  const [terminalFontSize, setTerminalFontSize] = usePersistedTerminalFontSize();
 
   function clearJumpLatestTimer() {
     if (jumpLatestTimerRef.current === null) return;
@@ -293,6 +298,41 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit, onOpenFile }: 
     });
   }
 
+  function refitRefreshAndNotifyResize() {
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!terminal || !fitAddon) return;
+
+    fitAddon.fit();
+    if (terminal.rows > 0) {
+      terminal.refresh(0, terminal.rows - 1);
+    }
+    const dims = fitAddon.proposeDimensions();
+    const resize = getValidatedResize(dims?.cols, dims?.rows);
+    if (resize) {
+      controllerRef.current?.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
+    }
+  }
+
+  function handleTerminalFontSizeShortcut(e: KeyboardEvent): boolean {
+    if (!visibleRef.current || e.type !== 'keydown' || e.altKey || !(e.ctrlKey || e.metaKey)) {
+      return false;
+    }
+    if (e.key === '+' || e.key === '=') {
+      setTerminalFontSize((current) => current + 1);
+    } else if (e.key === '-' || e.key === '_') {
+      setTerminalFontSize((current) => current - 1);
+    } else if (e.key === '0') {
+      setTerminalFontSize(DEFAULT_TERMINAL_FONT_SIZE);
+    } else {
+      return false;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+    return true;
+  }
+
   function runSearch(term: string, direction: 'next' | 'previous', incremental = false) {
     const searchAddon = searchAddonRef.current;
     if (!searchAddon || term.length === 0) {
@@ -340,7 +380,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit, onOpenFile }: 
     // Create terminal instance
     const terminal = new Terminal({
       cursorBlink: true,
-      fontSize: 12,
+      fontSize: terminalFontSize,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace",
       scrollback: 10000,
       // Scroll tuning cribbed from the VS Code / JupyterLab / Hyper / Theia
@@ -424,6 +464,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit, onOpenFile }: 
     // instead of being swallowed by xterm.js
     terminal.attachCustomKeyEventHandler((e) => {
       if (!visibleRef.current) return false;
+      if (handleTerminalFontSizeShortcut(e)) return false;
       if ((e.ctrlKey || e.metaKey) && !e.altKey && e.type === 'keydown' && e.key.toLowerCase() === 'f') {
         e.preventDefault();
         e.stopPropagation();
@@ -587,6 +628,13 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit, onOpenFile }: 
       searchAddonRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    terminal.options.fontSize = terminalFontSize;
+    refitRefreshAndNotifyResize();
+  }, [terminalFontSize]);
 
   useEffect(() => {
     if (!searchOpen) return;
@@ -844,17 +892,8 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit, onOpenFile }: 
 
     const rafId = requestAnimationFrame(() => {
       const terminal = terminalRef.current;
-      const fitAddon = fitAddonRef.current;
-      if (!fitAddon || !terminal) return;
-      fitAddon.fit();
-      if (terminal.rows > 0) {
-        terminal.refresh(0, terminal.rows - 1);
-      }
-      const dims = fitAddon.proposeDimensions();
-      const resize = getValidatedResize(dims?.cols, dims?.rows);
-      if (resize) {
-        controllerRef.current?.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
-      }
+      if (!terminal) return;
+      refitRefreshAndNotifyResize();
     });
 
     return () => cancelAnimationFrame(rafId);
