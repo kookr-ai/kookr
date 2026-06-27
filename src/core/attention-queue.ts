@@ -14,6 +14,10 @@ interface QueueEntry {
   skipped: boolean;
 }
 
+export const ATTENTION_QUEUE_SUPPRESSION_REASONS = ['queue_dedupe', 'queue_snoozed'] as const;
+export type AttentionQueueSuppressionReason = typeof ATTENTION_QUEUE_SUPPRESSION_REASONS[number];
+export type AttentionQueueSuppressionCounts = Record<AttentionQueueSuppressionReason, number>;
+
 export type SnoozeKind = 'finding' | 'task';
 
 export interface SnoozeEntry {
@@ -62,7 +66,7 @@ export interface AttentionQueueSuppression {
   agentId: string;
   anomaly: Anomaly;
   fingerprint: string;
-  reason: 'queue_dedupe' | 'queue_snoozed';
+  reason: AttentionQueueSuppressionReason;
 }
 
 export interface AttentionQueueObserver {
@@ -84,6 +88,10 @@ export class AttentionQueue {
   private lastRemoved = new Map<string, Anomaly>();
   private taskIdFor: (agentId: string) => string | null;
   private observers = new Set<AttentionQueueObserver>();
+  private suppressionCounts: AttentionQueueSuppressionCounts = {
+    queue_dedupe: 0,
+    queue_snoozed: 0,
+  };
 
   constructor(opts: AttentionQueueOpts = {}) {
     this.taskIdFor = opts.taskIdFor ?? (() => null);
@@ -378,6 +386,10 @@ export class AttentionQueue {
     return Math.max(0, now - oldestDetectedAtMs);
   }
 
+  getSuppressionCounts(): AttentionQueueSuppressionCounts {
+    return { ...this.suppressionCounts };
+  }
+
   isAllClear(): boolean {
     this.restoreExpiredSnoozes();
     return this.entries.size === 0;
@@ -466,6 +478,7 @@ export class AttentionQueue {
   }
 
   private notifySuppressed(agentId: string, anomaly: Anomaly, reason: AttentionQueueSuppression['reason']): void {
+    this.suppressionCounts[reason] += 1;
     if (this.observers.size === 0) return;
     const event = { agentId, anomaly, fingerprint: anomalyFingerprint(anomaly), reason };
     for (const observer of this.observers) {

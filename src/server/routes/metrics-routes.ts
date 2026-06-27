@@ -25,6 +25,7 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
     return c.body(renderPrometheusExposition({
       requestDurations,
       circuitBreakers: deps.circuitBreakerRegistry?.getAllSnapshots() ?? [],
+      attentionQueueSuppressions: deps.queue?.getSuppressionCounts(),
     }), 200, {
       'Content-Type': PROMETHEUS_CONTENT_TYPE,
     });
