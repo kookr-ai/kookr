@@ -15,6 +15,11 @@ const MAX_CANDIDATES = 5;
 const MAX_RATE_LIMIT_PAIRS = 100;
 const MAX_COUNT_MAP_ENTRIES = 10;
 const MAX_COUNT_MAP_KEY_LENGTH = 80;
+// Cap the per-transition list embedded in the persisted telemetry incident so
+// the event stays a few KB even for a long flicker burst. The alternating
+// `recent` window is already bounded by FLICKER_WINDOW_MS / MAX_TRANSITIONS;
+// this is a second, telemetry-specific guard.
+const MAX_TELEMETRY_TRANSITIONS = 50;
 
 export interface SelectionTransitionMeta {
   source: string;
@@ -276,7 +281,7 @@ function maybeEmitFlickerIncident(record: SelectionTransitionRecord, nowMs: numb
 
   incidents = [...incidents, incident].slice(-MAX_RECENT_INCIDENTS);
   rateLimitByPair.set(pairKey, { lastEmittedAtMs: nowMs, suppressedCount: 0 });
-  track(toTelemetryIncident(incident));
+  track(toTelemetryIncident(incident, recent));
 }
 
 function isAlternating(entries: SelectionTransitionRecord[]): boolean {
@@ -305,7 +310,10 @@ function recentWebSocketCounts(nowMs: number): Record<string, number> {
   return counts;
 }
 
-function toTelemetryIncident(incident: SelectionFlickerIncidentSummary): Record<string, unknown> {
+function toTelemetryIncident(
+  incident: SelectionFlickerIncidentSummary,
+  recent: SelectionTransitionRecord[],
+): Record<string, unknown> {
   return {
     type: 'selection_flicker_incident',
     pairKey: fingerprint(incident.pairKey),
@@ -318,6 +326,33 @@ function toTelemetryIncident(incident: SelectionFlickerIncidentSummary): Record<
     sourceCounts: boundedCountMap(incident.sourceCounts),
     websocketMessageCounts: boundedCountMap(incident.websocketMessageCounts),
     droppedTransitionCount: incident.droppedTransitionCount,
+    // Identity + per-task context so a recurrence (or a regression after a fix)
+    // can be pinned to the exact two tasks without needing a manually-filed
+    // bug-report bundle. Self-hosted telemetry, so real ids are intentional.
+    taskIds: incident.taskIds,
+    sessionIds: incident.sessionIds,
+    firstTaskStates: incident.firstTaskStates,
+    lastTaskStates: incident.lastTaskStates,
+    transitions: recent.slice(-MAX_TELEMETRY_TRANSITIONS).map(toTelemetryTransition),
+  };
+}
+
+// Compact a transition record for the persisted telemetry incident. Field
+// order mirrors SelectionTransitionRecord (task ids before session ids), and
+// autoAdvance is spread so the emitted event never aliases a live record (track
+// buffers events before serializing — see cloneTransition for the same guard).
+function toTelemetryTransition(record: SelectionTransitionRecord): Record<string, unknown> {
+  return {
+    at: record.at,
+    fromTaskId: record.fromTaskId,
+    toTaskId: record.toTaskId,
+    fromSessionId: record.fromSessionId,
+    toSessionId: record.toSessionId,
+    source: record.source,
+    reason: record.reason,
+    selectedProject: record.selectedProject,
+    dashboardSelectionVersion: record.dashboardSelectionVersion,
+    autoAdvance: { ...record.autoAdvance },
   };
 }
 
