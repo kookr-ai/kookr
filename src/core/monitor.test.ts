@@ -77,6 +77,46 @@ describe('Monitor', () => {
     }
   }
 
+  test('getAgentState returns undefined for unknown agents like getSnapshot().find', () => {
+    expect(monitor.getAgentState('missing-agent')).toBeUndefined();
+    expect(monitor.getAgentState('missing-agent')).toBe(
+      monitor.getSnapshot().find((state) => state.agentId === 'missing-agent'),
+    );
+  });
+
+  test('getAgentState returns the same live state slice as getSnapshot().find', () => {
+    monitor.processEvents('agent-1', [
+      makeToolUse('s1', 'Read', { file_path: '/tmp/a' }, 'tool-1'),
+      makeToolResult('s1', 'Read', 'tool-1', { content: 'done' }),
+      makeStop('s1', 'Waiting for input.'),
+    ]);
+    monitor.processEvents('agent-2', [
+      makeToolUse('s2', 'Bash', { command: 'pnpm test' }, 'tool-2'),
+    ]);
+
+    expect(monitor.getAgentState('agent-1')).toEqual(
+      monitor.getSnapshot().find((state) => state.agentId === 'agent-1'),
+    );
+    expect(monitor.getAgentState('agent-2')).toEqual(
+      monitor.getSnapshot().find((state) => state.agentId === 'agent-2'),
+    );
+  });
+
+  test('getAgentState preserves snapshot queue-derived fields for a single agent', () => {
+    monitor.processEvents('agent-1', [
+      makeToolUse('s1', 'Read', { file_path: '/tmp/a' }, 'tool-1'),
+      makeToolResult('s1', 'Read', 'tool-1', { content: 'done' }),
+      makeStop('s1', 'Waiting for input.'),
+    ]);
+    queue.snooze('agent-1', 60_000);
+
+    const state = monitor.getAgentState('agent-1');
+    expect(state?.snoozedUntil).toBeGreaterThan(Date.now());
+    expect(state).toEqual(
+      monitor.getSnapshot().find((snapshotState) => snapshotState.agentId === 'agent-1'),
+    );
+  });
+
   test('Stop event for agent enters attention queue as needs_input', () => {
     const events: AgentEvent[] = [
       makeToolUse('s1', 'Bash'),

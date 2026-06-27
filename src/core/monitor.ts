@@ -916,6 +916,53 @@ export class Monitor {
     return this.suppressedCompletionSignalIds.get(agentId)?.has(signalId) ?? false;
   }
 
+  private buildAgentState(agentId: string, events: AgentEvent[]): AgentState {
+    const turnState = this.deriveTurnStateForSnapshot(agentId, events);
+    const currentAnomaly = this.getCurrentAnomaly(agentId);
+    const anomaly = this.shouldSuppressSnapshotNeedsInput(agentId, events, currentAnomaly)
+      ? null
+      : currentAnomaly;
+    const state: AgentState = {
+      agentId,
+      events,
+      anomaly,
+      turnState,
+      lastEventSeq: events.at(-1)?.eventSeq ?? 0,
+    };
+    const findingEvidenceAudit = this.findingEvidenceAuditor.getActiveRecord(agentId);
+    if (findingEvidenceAudit) state.findingEvidenceAudit = findingEvidenceAudit;
+
+    // Mark snoozed agents so the frontend can filter them from findings
+    const snoozedUntil = this.attentionQueue.getSnoozedUntil(agentId);
+    if (snoozedUntil !== null) {
+      state.snoozedUntil = snoozedUntil;
+    }
+
+    // Mark suppressed agents — hidden when an active non-liveness finding exists
+    if (this.suppressionTracker?.isSuppressed(agentId)) {
+      const hasActiveNonLiveness = anomaly !== null
+        && anomaly.type !== 'stale_agent'
+        && anomaly.type !== 'hook_disconnected';
+      if (!hasActiveNonLiveness) {
+        state.suppressed = true;
+      }
+    }
+
+    return state;
+  }
+
+  /**
+   * Get raw live monitor state for one known agent.
+   *
+   * Preserves `getSnapshot().find(...)` semantics for missing agents by
+   * returning undefined when the agent has no live event window.
+   */
+  getAgentState(agentId: string): AgentState | undefined {
+    const events = this.agentEvents.get(agentId);
+    if (events === undefined) return undefined;
+    return this.buildAgentState(agentId, events);
+  }
+
   /**
    * Get raw live monitor state for all known agents.
    *
@@ -926,38 +973,7 @@ export class Monitor {
   getSnapshot(): AgentState[] {
     const states: AgentState[] = [];
     for (const [agentId, events] of this.agentEvents) {
-      const turnState = this.deriveTurnStateForSnapshot(agentId, events);
-      const currentAnomaly = this.getCurrentAnomaly(agentId);
-      const anomaly = this.shouldSuppressSnapshotNeedsInput(agentId, events, currentAnomaly)
-        ? null
-        : currentAnomaly;
-      const state: AgentState = {
-        agentId,
-        events,
-        anomaly,
-        turnState,
-        lastEventSeq: events.at(-1)?.eventSeq ?? 0,
-      };
-      const findingEvidenceAudit = this.findingEvidenceAuditor.getActiveRecord(agentId);
-      if (findingEvidenceAudit) state.findingEvidenceAudit = findingEvidenceAudit;
-
-      // Mark snoozed agents so the frontend can filter them from findings
-      const snoozedUntil = this.attentionQueue.getSnoozedUntil(agentId);
-      if (snoozedUntil !== null) {
-        state.snoozedUntil = snoozedUntil;
-      }
-
-      // Mark suppressed agents — hidden when an active non-liveness finding exists
-      if (this.suppressionTracker?.isSuppressed(agentId)) {
-        const hasActiveNonLiveness = anomaly !== null
-          && anomaly.type !== 'stale_agent'
-          && anomaly.type !== 'hook_disconnected';
-        if (!hasActiveNonLiveness) {
-          state.suppressed = true;
-        }
-      }
-
-      states.push(state);
+      states.push(this.buildAgentState(agentId, events));
     }
     return states;
   }
