@@ -18,6 +18,28 @@ export interface PushAlertDeltaPayload {
   payload: RedactedPushPayload;
 }
 
+export const DEFAULT_PUSH_ALERT_OUTBOX_CAPACITY = 32;
+
+export interface PushAlertOutboxEnqueueResult {
+  pending: number;
+  droppedAlertId: string | null;
+}
+
+export interface PushAlertOutboxFlushResult {
+  attempted: number;
+  sent: number;
+  pending: number;
+}
+
+export interface PushAlertOutbox {
+  enqueue(payload: RedactedPushPayload): PushAlertOutboxEnqueueResult;
+  flush(
+    client: RemoteNodeClient | null,
+    opts?: { now?: () => Date; env?: Partial<Pick<NodeJS.ProcessEnv, 'KOOKR_PUSH_DISABLED'>> },
+  ): PushAlertOutboxFlushResult;
+  snapshot(): RedactedPushPayload[];
+}
+
 const TASK_LABEL_ALLOWLIST = /[^A-Za-z0-9 .,!?-]+/g;
 const MIN_SAFE_LABEL_LENGTH = 4;
 const MAX_TASK_LABEL_LENGTH = 64;
@@ -117,6 +139,49 @@ export function publishPushAlertDelta(
     },
   };
   return client.publish(event);
+}
+
+export function createPushAlertOutbox(opts: { capacity?: number } = {}): PushAlertOutbox {
+  const capacity = Math.max(1, Math.trunc(opts.capacity ?? DEFAULT_PUSH_ALERT_OUTBOX_CAPACITY));
+  const pending = new Map<string, RedactedPushPayload>();
+
+  return {
+    enqueue(payload) {
+      if (pending.has(payload.alertId)) {
+        // Updating an existing key preserves Map insertion order, so retries
+        // keep the original FIFO replay position while refreshing the payload.
+        pending.set(payload.alertId, payload);
+        return { pending: pending.size, droppedAlertId: null };
+      }
+
+      let droppedAlertId: string | null = null;
+      if (pending.size >= capacity) {
+        const oldest = pending.keys().next().value as string | undefined;
+        if (oldest !== undefined) {
+          pending.delete(oldest);
+          droppedAlertId = oldest;
+        }
+      }
+      pending.set(payload.alertId, payload);
+      return { pending: pending.size, droppedAlertId };
+    },
+    flush(client, flushOpts = {}) {
+      let attempted = 0;
+      let sent = 0;
+      for (const payload of Array.from(pending.values())) {
+        attempted += 1;
+        // Stop at the first failed replay so later alerts do not jump ahead
+        // of an older one still waiting for a usable relay connection.
+        if (!publishPushAlertDelta(client, payload, flushOpts)) break;
+        pending.delete(payload.alertId);
+        sent += 1;
+      }
+      return { attempted, sent, pending: pending.size };
+    },
+    snapshot() {
+      return Array.from(pending.values());
+    },
+  };
 }
 
 export function isPushAlertDeltaPayload(value: unknown): value is PushAlertDeltaPayload {

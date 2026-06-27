@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  createPushAlertOutbox,
   makeRedactedPushPayload,
   publishPushAlertDelta,
   redactTaskShortLabel,
   taskLabelFallback,
+  type PushAlertDeltaPayload,
   type RedactedPushPayload,
 } from './push.js';
 import type { RemoteNodeClient } from './node-client.js';
@@ -127,6 +129,12 @@ describe('push alert publishing', () => {
     alertId: 'alert-1',
   };
 
+  const payloadWithId = (alertId: string): RedactedPushPayload => ({
+    ...payload,
+    alertId,
+    taskShortLabel: `Task ${alertId}`,
+  });
+
   it('is inert without a relay client', () => {
     expect(publishPushAlertDelta(null, payload)).toBe(false);
   });
@@ -160,5 +168,89 @@ describe('push alert publishing', () => {
         payload,
       },
     }));
+  });
+
+  it('buffers failed push alerts and replays them in insertion order', () => {
+    const outbox = createPushAlertOutbox({ capacity: 4 });
+    outbox.enqueue(payloadWithId('alert-1'));
+    outbox.enqueue(payloadWithId('alert-2'));
+
+    const client = makeClient();
+    expect(outbox.flush(client, {
+      now: () => new Date('2026-05-15T00:00:00.000Z'),
+      env: {},
+    })).toEqual({ attempted: 2, sent: 2, pending: 0 });
+
+    expect(vi.mocked(client.publish).mock.calls.map(([event]) => {
+      return event.kind === 'state.delta'
+        ? (event.payload as PushAlertDeltaPayload).payload.alertId
+        : null;
+    })).toEqual(['alert-1', 'alert-2']);
+  });
+
+  it('keeps buffering bounded by dropping the oldest alert on overflow', () => {
+    const outbox = createPushAlertOutbox({ capacity: 2 });
+
+    expect(outbox.enqueue(payloadWithId('alert-1'))).toEqual({ pending: 1, droppedAlertId: null });
+    expect(outbox.enqueue(payloadWithId('alert-2'))).toEqual({ pending: 2, droppedAlertId: null });
+    expect(outbox.enqueue(payloadWithId('alert-3'))).toEqual({ pending: 2, droppedAlertId: 'alert-1' });
+
+    expect(outbox.snapshot().map((entry) => entry.alertId)).toEqual(['alert-2', 'alert-3']);
+  });
+
+  it('dedupes pending alerts by alertId without reordering the outbox', () => {
+    const outbox = createPushAlertOutbox({ capacity: 3 });
+    outbox.enqueue(payloadWithId('alert-1'));
+    outbox.enqueue(payloadWithId('alert-2'));
+    outbox.enqueue({
+      ...payloadWithId('alert-1'),
+      taskShortLabel: 'Updated label',
+    });
+
+    expect(outbox.snapshot().map((entry) => [entry.alertId, entry.taskShortLabel])).toEqual([
+      ['alert-1', 'Updated label'],
+      ['alert-2', 'Task alert-2'],
+    ]);
+  });
+
+  it('does not resend an alert after a successful replay', () => {
+    const outbox = createPushAlertOutbox({ capacity: 4 });
+    outbox.enqueue(payloadWithId('alert-1'));
+    const client = makeClient();
+
+    expect(outbox.flush(client, { env: {} })).toEqual({ attempted: 1, sent: 1, pending: 0 });
+    expect(outbox.flush(client, { env: {} })).toEqual({ attempted: 0, sent: 0, pending: 0 });
+
+    expect(client.publish).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the first failed replay and does not send later alerts ahead of it', () => {
+    const outbox = createPushAlertOutbox({ capacity: 4 });
+    outbox.enqueue(payloadWithId('alert-1'));
+    outbox.enqueue(payloadWithId('alert-2'));
+
+    const client = makeClient({ relayConnected: false, connectionState: 'backing-off' });
+    expect(outbox.flush(client, { env: {} })).toEqual({ attempted: 1, sent: 0, pending: 2 });
+    expect(client.publish).not.toHaveBeenCalled();
+    expect(outbox.snapshot().map((entry) => entry.alertId)).toEqual(['alert-1', 'alert-2']);
+  });
+
+  it('keeps a connected-but-failed replay queued until a later flush succeeds', () => {
+    const outbox = createPushAlertOutbox({ capacity: 4 });
+    outbox.enqueue(payloadWithId('alert-1'));
+    outbox.enqueue(payloadWithId('alert-2'));
+
+    const client = makeClient();
+    vi.mocked(client.publish).mockReturnValueOnce(false);
+
+    expect(outbox.flush(client, { env: {} })).toEqual({ attempted: 1, sent: 0, pending: 2 });
+    expect(outbox.snapshot().map((entry) => entry.alertId)).toEqual(['alert-1', 'alert-2']);
+
+    expect(outbox.flush(client, { env: {} })).toEqual({ attempted: 2, sent: 2, pending: 0 });
+    expect(vi.mocked(client.publish).mock.calls.map(([event]) => {
+      return event.kind === 'state.delta'
+        ? (event.payload as PushAlertDeltaPayload).payload.alertId
+        : null;
+    })).toEqual(['alert-1', 'alert-1', 'alert-2']);
   });
 });
