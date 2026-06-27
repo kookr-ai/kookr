@@ -34,6 +34,20 @@ kookr spawn --prompt-file /tmp/prompt.md
 
 `--prompt-file` is the safest form inside Claude Code sessions because hooks inspect the bash command line, not the file contents.
 
+Options:
+
+| Option | Argument | Default | Description |
+| --- | --- | --- | --- |
+| `-C`, `--cwd` | path | Current shell directory | Working directory for the task. Relative paths are resolved from the invoking process's cwd. |
+| `-a`, `--agent` | `claude-code` or `codex-cli` | Server default | Agent type to launch for this task. |
+| `--effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` | Server per-agent setting, then agent CLI default | Reasoning effort override for this task. `claude-code` accepts `low`, `medium`, `high`, `xhigh`, and `max`; `codex-cli` accepts `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`. |
+| `--criteria` | text | unset | Acceptance criteria sent with the task request. This value is argv-exposed; use prompt files or stdin for hook-sensitive text. |
+| `--dedupe` | `warn`, `block`, or `skip` | `warn` | Active duplicate-prompt handling. `warn` prompts interactively and blocks in non-interactive shells, `block` exits with code 5, and `skip` creates the task intentionally while suppressing duplicate-cluster findings. |
+| `--parent-task-id` | task id | `KOOKR_TASK_ID` when set | Explicit parent task to link in the dashboard. Mutually exclusive with `--no-parent-task`. |
+| `--no-parent-task` | none | false | Launch detached and ignore `KOOKR_TASK_ID`. Mutually exclusive with `--parent-task-id`. |
+| `-f`, `--prompt-file` | path | unset | Read the prompt from a file instead of positional argv or stdin. |
+| `-h`, `--help` | none | false | Print command help and exit. |
+
 Duplicate prompt handling:
 
 ```bash
