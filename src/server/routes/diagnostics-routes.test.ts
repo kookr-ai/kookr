@@ -17,6 +17,7 @@ import { AuthThrottle } from '../auth-throttle.js';
 import { ViewerGrantStore } from '../../core/viewer-grants.js';
 import { ViewerConnectionRegistry } from '../viewer-connection-registry.js';
 import { CollaborationAuditLog } from '../collaboration-audit-log.js';
+import { DrainController } from '../drain-state.js';
 import { DeliveryTraceBuffer } from '../../core/delivery-trace.js';
 import { HookIngestion, REPLAY_SESSION_PREFIX, type HookEventInjector } from '../hook-ingestion.js';
 import type { RouteDeps } from './shared.js';
@@ -774,6 +775,43 @@ describe('diagnostics routes', () => {
       const body = await res.json();
       expect(body.ready).toBe(true);
       expect(body.checks.terminalBackend).toEqual({ critical: true, ready: true, status: 'degraded' });
+    });
+
+    test('accepting drain controller ⇒ 200 ready with accepting drain check', async () => {
+      const drainController = new DrainController();
+      const res = await mkApp({
+        terminalBackend: backend({}) as never,
+        kookrDir: tempDir,
+        drainController,
+      }).request('/api/ready');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ready).toBe(true);
+      expect(body.checks.drainMode).toEqual({ critical: true, ready: true, status: 'accepting' });
+    });
+
+    test('draining drain controller ⇒ 503 not ready so orchestrators cordon the node', async () => {
+      const drainController = new DrainController();
+      drainController.drain(new Date('2026-06-27T12:00:00.000Z'));
+
+      const res = await mkApp({
+        terminalBackend: backend({}) as never,
+        kookrDir: tempDir,
+        drainController,
+      }).request('/api/ready');
+
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.ready).toBe(false);
+      expect(body.checks.drainMode).toEqual({
+        critical: true,
+        ready: false,
+        status: 'draining',
+        reason: 'drain-mode',
+      });
+      expect(body.checks.terminalBackend.ready).toBe(true);
+      expect(body.checks.persistence.ready).toBe(true);
     });
 
     test('unwritable persistence directory ⇒ 503 not ready', async () => {

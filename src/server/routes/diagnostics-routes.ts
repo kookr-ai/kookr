@@ -88,10 +88,11 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   // Machine-readable readiness verdict for orchestrators / load balancers
   // (issue #660). Unlike /api/health — which always returns 200 so the
   // dashboard never sees a hard error — /api/ready turns 503 when a *critical*
-  // subsystem is down: the terminal/dtach backend in `error`
-  // (manifest-corrupt / dtach-unavailable) or the persistence directory
-  // unwritable. Non-critical degradation (terminal `degraded`) stays
-  // 200/ready so transient blips do not cordon a node out of rotation.
+  // subsystem is down or unavailable for new work: operator drain mode,
+  // the terminal/dtach backend in `error` (manifest-corrupt /
+  // dtach-unavailable), or the persistence directory unwritable.
+  // Non-critical degradation (terminal `degraded`) stays 200/ready so
+  // transient blips do not cordon a node out of rotation.
   // Read-only and unauthenticated by design: probes must reach it without an
   // admin token.
   app.get('/api/ready', (c) => {
@@ -101,6 +102,16 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     if (terminalBackend) {
       const status = deriveTerminalBackendStatus(terminalBackend.getStats());
       checks.terminalBackend = { critical: true, ready: status !== 'error', status };
+    }
+
+    if (deps.drainController) {
+      const status = deps.drainController.status();
+      checks.drainMode = {
+        critical: true,
+        ready: !status.draining,
+        status: status.draining ? 'draining' : 'accepting',
+        ...(status.draining ? { reason: 'drain-mode' } : {}),
+      };
     }
 
     checks.persistence = checkPersistenceWritable(deps.kookrDir);
