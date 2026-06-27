@@ -39,13 +39,17 @@ class MockWebSocket {
 vi.mock('@xterm/xterm', () => {
   class MockTerminal {
     rows = 24;
+    options: Record<string, unknown>;
     resizeHandler: ((size: { cols: unknown; rows: unknown }) => void) | null = null;
     dataHandler: ((data: string) => void) | null = null;
+    scrollHandler: (() => void) | null = null;
     keyHandler: ((event: KeyboardEvent) => boolean) | null = null;
     clear = vi.fn();
+    reset = vi.fn();
     write = vi.fn();
     open = vi.fn();
     loadAddon = vi.fn();
+    registerLinkProvider = vi.fn(() => ({ dispose: vi.fn() }));
     attachCustomKeyEventHandler = vi.fn((handler: (event: KeyboardEvent) => boolean) => {
       this.keyHandler = handler;
     });
@@ -57,7 +61,12 @@ vi.mock('@xterm/xterm', () => {
       this.resizeHandler = cb;
       return { dispose: vi.fn() };
     });
+    onScroll = vi.fn((cb) => {
+      this.scrollHandler = cb;
+      return { dispose: vi.fn() };
+    });
     scrollLines = vi.fn();
+    scrollToBottom = vi.fn();
     refresh = vi.fn();
     dispose = vi.fn();
     hasSelection = vi.fn(() => false);
@@ -66,12 +75,15 @@ vi.mock('@xterm/xterm', () => {
     focus = vi.fn();
     buffer = {
       active: {
+        baseY: 0,
+        viewportY: 0,
         length: 0,
         getLine: vi.fn(() => undefined),
       },
     };
 
-    constructor() {
+    constructor(options: Record<string, unknown>) {
+      this.options = { ...options };
       mocks.terminalInstances.push(this);
     }
   }
@@ -129,6 +141,12 @@ import { TerminalPanel } from './TerminalPanel.js';
 import { buildPasteFrame } from '../terminal-paste.js';
 import { registerTerminalSend } from '../terminal-send.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
+import {
+  DEFAULT_TERMINAL_FONT_SIZE,
+  MAX_TERMINAL_FONT_SIZE,
+  MIN_TERMINAL_FONT_SIZE,
+  TERMINAL_FONT_SIZE_STORAGE_KEY,
+} from '../hooks/usePersistedTerminalFontSize.js';
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -179,6 +197,26 @@ function openSearchViaShortcut(terminal: { keyHandler: ((event: KeyboardEvent) =
   return { handled, preventDefault, stopPropagation };
 }
 
+function dispatchTerminalShortcut(
+  terminal: { keyHandler: ((event: KeyboardEvent) => boolean) | null },
+  key: string,
+  overrides: Partial<KeyboardEvent> = {},
+) {
+  const preventDefault = vi.fn();
+  const stopPropagation = vi.fn();
+  const handled = terminal.keyHandler?.({
+    type: 'keydown',
+    key,
+    ctrlKey: true,
+    metaKey: false,
+    altKey: false,
+    preventDefault,
+    stopPropagation,
+    ...overrides,
+  } as KeyboardEvent);
+  return { handled, preventDefault, stopPropagation };
+}
+
 function setTerminalBufferLines(terminal: {
   buffer: { active: { length: number; getLine: ReturnType<typeof vi.fn> } };
 }, lines: string[]) {
@@ -187,6 +225,18 @@ function setTerminalBufferLines(terminal: {
     const text = lines[index];
     return text === undefined ? undefined : { translateToString: vi.fn(() => text) };
   });
+}
+
+function setTerminalScroll(terminal: {
+  rows: number;
+  scrollHandler: (() => void) | null;
+  buffer: { active: { baseY: number; viewportY: number; length: number } };
+}, scroll: { viewportY: number; baseY?: number; length?: number; rows?: number }) {
+  terminal.rows = scroll.rows ?? 24;
+  terminal.buffer.active.baseY = scroll.baseY ?? 0;
+  terminal.buffer.active.viewportY = scroll.viewportY;
+  terminal.buffer.active.length = scroll.length ?? 100;
+  terminal.scrollHandler?.();
 }
 
 describe('TerminalPanel', () => {
@@ -199,6 +249,7 @@ describe('TerminalPanel', () => {
     mocks.searchAddonInstances.length = 0;
     mocks.webSocketInstances.length = 0;
     mocks.searchFound = true;
+    localStorage.clear();
     vi.clearAllMocks();
     syncGlobalStore();
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -219,6 +270,7 @@ describe('TerminalPanel', () => {
       act(() => root.unmount());
     }
     container?.remove();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -272,6 +324,89 @@ describe('TerminalPanel', () => {
     expect(typeof visibleSender).toBe('function');
     (visibleSender as (data: string) => void)('1');
     expect(ws.send).toHaveBeenCalledWith('1');
+  });
+
+  test('shows counted jump-to-latest pill for new output while scrolled up', () => {
+    vi.useFakeTimers();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      setTerminalScroll(terminal, { baseY: 76, viewportY: 40, length: 100, rows: 24 });
+      ws.onmessage?.({ data: 'one\r\ntwo\r\nthree\r\n' });
+    });
+
+    expect(container.querySelector('button[aria-label="3 new lines, jump to latest"]')).toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(80);
+    });
+
+    expect(container.querySelector('button[aria-label="3 new lines, jump to latest"]')).not.toBeNull();
+  });
+
+  test('counts binary terminal frames in the jump-to-latest pill', () => {
+    vi.useFakeTimers();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    const encoded = new TextEncoder().encode('one\r\ntwo\r\n');
+    act(() => {
+      setTerminalScroll(terminal, { baseY: 76, viewportY: 40, length: 100, rows: 24 });
+      ws.onmessage?.({ data: arrayBufferFrom(encoded) });
+      vi.advanceTimersByTime(80);
+    });
+
+    expect(container.querySelector('button[aria-label="2 new lines, jump to latest"]')).not.toBeNull();
+  });
+
+  test('jump-to-latest pill scrolls to bottom and hides', () => {
+    vi.useFakeTimers();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      setTerminalScroll(terminal, { baseY: 76, viewportY: 40, length: 100, rows: 24 });
+      ws.onmessage?.({ data: 'new line\r\n' });
+      vi.advanceTimersByTime(80);
+    });
+
+    const button = container.querySelector('button[aria-label="1 new line, jump to latest"]') as HTMLButtonElement | null;
+    expect(button).not.toBeNull();
+
+    act(() => {
+      button!.click();
+    });
+
+    expect(terminal.scrollToBottom).toHaveBeenCalledOnce();
+    expect(terminal.focus).toHaveBeenCalled();
+    expect(container.querySelector('button[aria-label="1 new line, jump to latest"]')).toBeNull();
+  });
+
+  test('writing while already at the bottom shows no jump-to-latest pill', () => {
+    vi.useFakeTimers();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      setTerminalScroll(terminal, { baseY: 76, viewportY: 76, length: 100, rows: 24 });
+      ws.onmessage?.({ data: 'new line\r\n' });
+      vi.advanceTimersByTime(120);
+    });
+
+    expect(container.querySelector('button[aria-label$="jump to latest"]')).toBeNull();
   });
 
   test('hidden terminals do not forward input or resize frames', () => {
@@ -1299,6 +1434,110 @@ describe('TerminalPanel', () => {
     expect(container.textContent).toContain('1/1');
   });
 
+  test('initializes xterm with the persisted terminal font size', () => {
+    localStorage.setItem(TERMINAL_FONT_SIZE_STORAGE_KEY, '17');
+
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    expect(terminal.options.fontSize).toBe(17);
+  });
+
+  test('terminal-scoped font-size shortcuts update xterm, persist, refit, and repaint', () => {
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const fitAddon = mocks.fitAddonInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      ws.onopen?.();
+    });
+    fitAddon.fit.mockClear();
+    terminal.refresh.mockClear();
+    ws.send.mockClear();
+
+    let shortcut: ReturnType<typeof dispatchTerminalShortcut> | null = null;
+    act(() => {
+      shortcut = dispatchTerminalShortcut(terminal, '=');
+    });
+
+    expect(shortcut?.handled).toBe(false);
+    expect(shortcut?.preventDefault).toHaveBeenCalledOnce();
+    expect(shortcut?.stopPropagation).toHaveBeenCalledOnce();
+    expect(terminal.options.fontSize).toBe(DEFAULT_TERMINAL_FONT_SIZE + 1);
+    expect(localStorage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY)).toBe(String(DEFAULT_TERMINAL_FONT_SIZE + 1));
+    expect(fitAddon.fit).toHaveBeenCalledOnce();
+    expect(terminal.refresh).toHaveBeenCalledWith(0, terminal.rows - 1);
+    expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resize', cols: 80, rows: 24 }));
+
+    act(() => {
+      dispatchTerminalShortcut(terminal, '-');
+    });
+    expect(terminal.options.fontSize).toBe(DEFAULT_TERMINAL_FONT_SIZE);
+    expect(localStorage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY)).toBe(String(DEFAULT_TERMINAL_FONT_SIZE));
+
+    act(() => {
+      dispatchTerminalShortcut(terminal, '+');
+    });
+    expect(terminal.options.fontSize).toBe(DEFAULT_TERMINAL_FONT_SIZE + 1);
+
+    act(() => {
+      dispatchTerminalShortcut(terminal, '0');
+    });
+    expect(terminal.options.fontSize).toBe(DEFAULT_TERMINAL_FONT_SIZE);
+    expect(localStorage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY)).toBe(String(DEFAULT_TERMINAL_FONT_SIZE));
+  });
+
+  test('terminal font-size shortcuts clamp to the supported range', () => {
+    localStorage.setItem(TERMINAL_FONT_SIZE_STORAGE_KEY, String(MAX_TERMINAL_FONT_SIZE));
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+    let terminal = mocks.terminalInstances[0];
+
+    act(() => {
+      dispatchTerminalShortcut(terminal, '=');
+    });
+    expect(terminal.options.fontSize).toBe(MAX_TERMINAL_FONT_SIZE);
+    expect(localStorage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY)).toBe(String(MAX_TERMINAL_FONT_SIZE));
+
+    act(() => {
+      root.unmount();
+    });
+    container.innerHTML = '';
+    root = createRoot(container);
+    localStorage.setItem(TERMINAL_FONT_SIZE_STORAGE_KEY, String(MIN_TERMINAL_FONT_SIZE));
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+    });
+    terminal = mocks.terminalInstances[mocks.terminalInstances.length - 1];
+
+    act(() => {
+      dispatchTerminalShortcut(terminal, '-');
+    });
+    expect(terminal.options.fontSize).toBe(MIN_TERMINAL_FONT_SIZE);
+    expect(localStorage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY)).toBe(String(MIN_TERMINAL_FONT_SIZE));
+  });
+
+  test('terminal font-size shortcuts are ignored while hidden', () => {
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: false }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const shortcut = dispatchTerminalShortcut(terminal, '=');
+
+    expect(shortcut.handled).toBe(false);
+    expect(shortcut.preventDefault).not.toHaveBeenCalled();
+    expect(shortcut.stopPropagation).not.toHaveBeenCalled();
+    expect(terminal.options.fontSize).toBe(DEFAULT_TERMINAL_FONT_SIZE);
+    expect(localStorage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY)).toBeNull();
+  });
+
   test('search controls navigate previous and next matches', () => {
     act(() => {
       root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
@@ -1674,6 +1913,77 @@ describe('TerminalPanel', () => {
     act(() => { terminal.dataHandler?.('\r'); });
     expect(onEmptySubmit).toHaveBeenCalledOnce();
     expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  test('reconnects after an abnormal close and resets the terminal before the ring-buffer replay', () => {
+    // Server restart / host offline: the byte stream must come back on its
+    // own, and because the server replays the session ring buffer on every
+    // connect, the terminal must reset exactly once per reconnect or the
+    // scrollback would be duplicated.
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+      });
+      const terminal = mocks.terminalInstances[0];
+      const first = mocks.webSocketInstances[0];
+      act(() => {
+        first.onopen?.();
+      });
+      expect(terminal.reset).not.toHaveBeenCalled();
+
+      act(() => {
+        first.onclose?.({ code: 1006 });
+      });
+      const written = terminal.write.mock.calls.map(([data]: [unknown]) => String(data)).join('');
+      expect(written).toContain('reconnecting');
+      expect(written).not.toContain('Session ended.');
+      expect(mocks.webSocketInstances).toHaveLength(1);
+
+      act(() => {
+        vi.advanceTimersByTime(2_000); // past the 1s ± 20% first retry
+      });
+      expect(mocks.webSocketInstances).toHaveLength(2);
+
+      const second = mocks.webSocketInstances[1];
+      act(() => {
+        second.onopen?.();
+      });
+      expect(terminal.reset).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test.each([
+    ['clean PTY exit', 1000],
+    ['backend session gone', 1011],
+  ])('a session-over close (%s, code %i) shows "Session ended." and never reconnects', (_label, code) => {
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+      });
+      const terminal = mocks.terminalInstances[0];
+      const ws = mocks.webSocketInstances[0];
+      act(() => {
+        ws.onopen?.();
+      });
+      act(() => {
+        ws.onclose?.({ code });
+      });
+      const written = terminal.write.mock.calls.map(([data]: [unknown]) => String(data)).join('');
+      expect(written).toContain('Session ended.');
+      expect(written).not.toContain('reconnecting');
+
+      act(() => {
+        vi.advanceTimersByTime(120_000);
+      });
+      expect(mocks.webSocketInstances).toHaveLength(1);
+      expect(terminal.reset).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('empty-Enter fires repeatedly within the same task as the user mashes Enter', () => {

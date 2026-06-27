@@ -34,6 +34,9 @@ interface Props {
   onTerminalFocusToggle: () => void;
   /** Read-only viewer: hide mutation entry points (e.g. Launch) (#811). */
   readOnly?: boolean;
+  /** When true, spotlight the command-palette trigger (driven by the
+   *  scheduled-tasks discovery hint — Schedules now lives in the palette). */
+  scheduleHintActive?: boolean;
 }
 
 interface DeployStatus {
@@ -75,8 +78,8 @@ function formatDateTime(isoString: string): string {
   return new Date(isoString).toLocaleString();
 }
 
-export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onCommandPalette, onOperations, operationsOpen = false, onCoordinatorFindings, coordinatorFindingsOpen = false, terminalFocusMode = false, terminalFocusAvailable = true, terminalFocusTriggerRef, onTerminalFocusToggle, readOnly = false }: Props) {
-  const { connected, buildInfo, serverStartedAt, totalSpendUsd, agents, circuitBreakers, diagnosticReport, coordinator } = useKookrStore();
+export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onCommandPalette, onOperations, operationsOpen = false, onCoordinatorFindings, coordinatorFindingsOpen = false, terminalFocusMode = false, terminalFocusAvailable = true, terminalFocusTriggerRef, onTerminalFocusToggle, readOnly = false, scheduleHintActive = false }: Props) {
+  const { connected, buildInfo, serverStartedAt, totalSpendUsd, circuitBreakers, diagnosticReport, coordinator } = useKookrStore();
   const [showPopover, setShowPopover] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
   const [deployLoading, setDeployLoading] = useState(false);
@@ -255,6 +258,7 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
     : undefined;
   const queueDotCount = Math.max(totalFindings, 1);
   const spendLabel = totalSpendUsd > 0 ? formatCost(totalSpendUsd) : '$0.00';
+  const connectionLabel = connected ? 'Dashboard WebSocket connected' : 'Dashboard WebSocket disconnected';
 
   return (
     <div className={`topbar kookr-tour-target-layout${compact ? ' compact' : ''}`}>
@@ -271,7 +275,12 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
           aria-expanded={showPopover}
           aria-controls="version-popover"
         >
-          <span className={`health-dot ${connected ? 'health-dot-connected' : 'health-dot-disconnected'}`} />
+          <span
+            className={`health-dot ${connected ? 'health-dot-connected' : 'health-dot-disconnected'}`}
+            role="img"
+            aria-label={connectionLabel}
+            title={connectionLabel}
+          />
           {deploying && <span className="deploy-spinner" />}
           {versionLabel}
           {!compact && !isDev && builtAgo && <span className="version-built"> · {builtAgo}</span>}
@@ -468,7 +477,7 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
         <div className="metric-group topbar-spend-group">
           <span
             className={`topbar-spend${totalSpendUsd > 0 ? '' : ' topbar-spend-placeholder'}`}
-            title={totalSpendUsd > 0 ? `Lifetime total across ${agents.length} task${agents.length !== 1 ? 's' : ''}` : undefined}
+            title={totalSpendUsd > 0 ? 'All-time agent spend recorded by this Kookr server — includes cleared and deleted tasks' : undefined}
             aria-hidden={totalSpendUsd > 0 ? undefined : true}
           >
             {spendLabel}
@@ -479,7 +488,7 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
           <DndPill />
           <button
             type="button"
-            className={`command-trigger${compact ? ' command-trigger--compact' : ''}`}
+            className={`command-trigger${compact ? ' command-trigger--compact' : ''}${scheduleHintActive ? ' schedule-hint-spotlight' : ''}`}
             onClick={onCommandPalette}
             title="Search actions & tasks (⌘K)"
             aria-label="Search actions and tasks"

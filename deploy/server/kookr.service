@@ -1,0 +1,24 @@
+[Unit]
+Description=Kookr production server
+Documentation=https://github.com/kookr-ai/kookr
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h/git/kookr-prod
+Environment=NODE_ENV=production
+EnvironmentFile=-%h/.config/kookr/kookr.env
+ExecStart=/usr/bin/env node dist/server/start.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=default.target

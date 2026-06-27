@@ -160,8 +160,8 @@ test.describe('Session Reflection — API', () => {
     // Wait for finding to appear and respond to it
     await expect(page.locator('.finding-card')).toBeVisible();
     await page.locator('.finding-card').click();
-    await page.locator('.response-row input').fill('Try running vitest');
-    await page.locator('.btn-primary:has-text("Send & Next")').click();
+    await page.locator('.response-row textarea').fill('Try running vitest');
+    await page.locator('[data-testid="send-next-button"]').click();
 
     // Wait for the response to be processed
     await expect(page.locator('.sent-overlay')).toBeVisible();
@@ -191,14 +191,14 @@ test.describe('Session Reflection — API', () => {
 
     // Click first finding card and respond via detail panel
     await page.locator('.finding-card').first().click();
-    await page.locator('.response-row input').fill('run tests');
-    await page.locator('.btn-primary:has-text("Send & Next")').click();
+    await page.locator('.response-row textarea').fill('run tests');
+    await page.locator('[data-testid="send-next-button"]').click();
 
     await waitForReflectionReport(request, 1);
 
     // Second finding card is now selected after advance; respond again
-    await page.locator('.response-row input').fill('run tests');
-    await page.locator('.btn-primary:has-text("Send & Next")').click();
+    await page.locator('.response-row textarea').fill('run tests');
+    await page.locator('[data-testid="send-next-button"]').click();
 
     const report = await waitForReflectionFinding(request, 'Repeated input', 2);
 

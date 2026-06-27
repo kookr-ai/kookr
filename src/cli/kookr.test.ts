@@ -66,17 +66,41 @@ describe('kookr dispatcher', () => {
     expect(deps.errors.join('\n')).toContain('Unknown command: wat');
   });
 
+  it('dispatches doctor help through the main binary', async () => {
+    const deps = makeDeps();
+    await main({ argv: ['doctor', '--help'], env: {}, out: deps.out, err: deps.err, exit: deps.exit });
+    expect(deps.codes).toEqual([0]);
+    expect(deps.logs.join('\n')).toContain('kookr doctor');
+    expect(deps.errors).toEqual([]);
+  });
+
   it.each([
     [['--help'], 'kookr - local AI agent supervisor'],
     [['spawn', '--help'], 'kookr spawn'],
     [['status', '--help'], 'kookr status'],
+    [['doctor', '--help'], 'kookr doctor'],
     [['ralph', '--help'], 'kookr ralph'],
-  ])('prints help through bin/kookr.js %s', async (argv, helpNeedle) => {
+    [['completion', 'bash'], 'complete -F _kookr kookr'],
+  ])('prints command output through bin/kookr.js %s', async (argv, helpNeedle) => {
     const { stdout, stderr } = await execFileAsync(process.execPath, ['bin/kookr.js', ...argv], {
       cwd: process.cwd(),
     });
     expect(stderr).toBe('');
     expect(stdout).toContain(helpNeedle);
+  });
+
+  it('dispatches subcommand JSON help through the main binary', async () => {
+    const { stdout, stderr } = await execFileAsync(process.execPath, ['bin/kookr.js', 'status', '--json', '--help'], {
+      cwd: process.cwd(),
+    });
+    const envelope = JSON.parse(stdout);
+    expect(stderr).toBe('');
+    expect(envelope).toMatchObject({
+      ok: true,
+      code: 'OK',
+      message: 'Help',
+    });
+    expect(envelope.details.help).toContain('kookr status');
   });
 });
 
@@ -91,5 +115,19 @@ describe('deprecated standalone aliases', () => {
     });
     expect(stderr).toContain(warning);
     expect(stdout).toContain(helpNeedle);
+  });
+
+  it.each([
+    ['bin/kookr-spawn.js', 'kookr spawn'],
+    ['bin/kookr-status.js', 'kookr status'],
+    ['bin/kookr-ralph.js', 'kookr ralph'],
+  ])('%s suppresses the deprecation warning in JSON mode', async (script, helpNeedle) => {
+    const { stdout, stderr } = await execFileAsync(process.execPath, [script, '--json', '--help'], {
+      cwd: process.cwd(),
+    });
+    const envelope = JSON.parse(stdout);
+    expect(stderr).toBe('');
+    expect(envelope).toMatchObject({ ok: true, code: 'OK' });
+    expect(envelope.details.help).toContain(helpNeedle);
   });
 });

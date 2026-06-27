@@ -355,9 +355,21 @@ function verifyNode(
       continue;
     }
     if (token.startsWith('-')) continue;
-    return verifyRepoPath(token, context, 'node entrypoint');
+    return verifyNodeEntrypoint(token, context);
   }
   return { kind: 'skip', reason: 'node command has no repo-local entrypoint' };
+}
+
+function verifyNodeEntrypoint(
+  path: string,
+  context: RepoCommandContext,
+): { kind: 'ok'; normalized: string } | { kind: 'skip'; reason: string } | { kind: 'issue'; message: string } {
+  const result = verifyRepoPath(path, context, 'node entrypoint');
+  if (result.kind !== 'issue') return result;
+  const normalizedPath = path.startsWith('./') ? path.slice(2) : path;
+  const sourcePath = generatedNodeEntrypointSource(normalizedPath, context);
+  if (!sourcePath) return result;
+  return { kind: 'ok', normalized: `node entrypoint ${normalizedPath} (built from ${sourcePath})` };
 }
 
 function verifyShellScript(
@@ -382,6 +394,12 @@ function verifyRepoPath(
     return { kind: 'issue', message: `${label} does not exist: ${normalizedPath}` };
   }
   return { kind: 'ok', normalized: `${label} ${normalizedPath}` };
+}
+
+function generatedNodeEntrypointSource(normalizedPath: string, context: RepoCommandContext): string | undefined {
+  if (!normalizedPath.startsWith('dist/') || !normalizedPath.endsWith('.js')) return undefined;
+  const sourcePath = `src/${normalizedPath.slice('dist/'.length, -'.js'.length)}.ts`;
+  return existsSync(join(context.repoRoot, sourcePath)) ? sourcePath : undefined;
 }
 
 function isPackageAvailable(packageName: string, context: RepoCommandContext): boolean {

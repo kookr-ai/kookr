@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { chmod, mkdtemp, rm, mkdir, readlink, writeFile, symlink } from 'node:fs/promises';
+import { access, chmod, mkdtemp, rm, mkdir, readlink, writeFile, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { registerDeployRoutes, resolveProdDir } from './deploy-routes.js';
-import type { RouteDeps } from './shared.js';
+import type { DeployRouteDeps } from './shared.js';
 import type { WorktreeEntry } from '../../adapters/git-worktree-registry.js';
 
 /** Strip GIT_DIR so git subprocesses work in test dirs, not the repo. */
@@ -14,7 +14,7 @@ const cleanEnv = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined 
 
 function makeApp(serverCwd: string, serverPort: number = 4800, hookHomeDir?: string, pluginUpdateBin?: string): Hono {
   const app = new Hono();
-  registerDeployRoutes(app, { serverCwd, serverPort, hookHomeDir, pluginUpdateBin } as unknown as RouteDeps);
+  registerDeployRoutes(app, { serverCwd, serverPort, hookHomeDir, pluginUpdateBin } satisfies DeployRouteDeps);
   return app;
 }
 
@@ -54,7 +54,10 @@ describe('deploy-routes', () => {
   let prodDir: string;  // simulates ~/git/kookr-prod
 
   beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), 'deploy-test-'));
+    // Resolve to the physical path so symlink targets (which prod-update.sh
+    // stores via realpath) match the paths we build here. On macOS, mkdtemp
+    // under tmpdir returns /var/folders/... while realpath returns /private/var/...
+    root = realpathSync(await mkdtemp(join(tmpdir(), 'deploy-test-')));
     mainDir = join(root, 'kookr');
     prodDir = join(root, 'kookr-prod');
     await mkdir(mainDir, { recursive: true });
@@ -654,6 +657,355 @@ exit 2
         'plugin marketplace update kookr',
         'plugin update kookr-toolkit@kookr',
       ]);
+    });
+  });
+
+  describe('POST /api/deploy/plugin-install', () => {
+    /** Write minimal plugin manifests to mainDir so resolveAvailablePlugin can find them on disk. */
+    async function writeLocalPluginManifests(version: string): Promise<void> {
+      await mkdir(join(mainDir, 'plugin', '.claude-plugin'), { recursive: true });
+      await mkdir(join(mainDir, '.claude-plugin'), { recursive: true });
+      await writeFile(
+        join(mainDir, 'plugin', '.claude-plugin', 'plugin.json'),
+        JSON.stringify({ name: 'kookr-toolkit', version }),
+      );
+      await writeFile(
+        join(mainDir, '.claude-plugin', 'marketplace.json'),
+        JSON.stringify({ name: 'kookr', plugins: [{ name: 'kookr-toolkit', source: './plugin' }] }),
+      );
+    }
+
+    async function writeInstalledPlugin(home: string, version: string): Promise<void> {
+      await mkdir(join(home, '.claude', 'plugins'), { recursive: true });
+      await writeFile(
+        join(home, '.claude', 'plugins', 'installed_plugins.json'),
+        JSON.stringify({ version: 2, plugins: { 'kookr-toolkit@kookr': [{ scope: 'user', version }] } }),
+      );
+    }
+
+    /**
+     * A fake claude binary that handles `plugin marketplace add <slug>` and
+     * `plugin install <id>` — on `plugin install` it writes an installed_plugins.json
+     * to $HOME/.claude/plugins/ so the post-install verification passes.
+     */
+    async function writeFakeInstallBin(logPath: string, installedVersion: string): Promise<string> {
+      const bin = join(root, 'fake-claude-install');
+      await writeFile(bin, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${logPath}"
+if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "add" ]; then
+  exit 0
+fi
+if [ "$1" = "plugin" ] && [ "$2" = "install" ]; then
+  PLUGINS_DIR="$HOME/.claude/plugins"
+  mkdir -p "$PLUGINS_DIR"
+  REGISTRY="$PLUGINS_DIR/installed_plugins.json"
+  node - "$REGISTRY" "${installedVersion}" <<'NODE'
+const fs = require('node:fs');
+const file = process.argv[2];
+const version = process.argv[3];
+let parsed = { version: 2, plugins: {} };
+try { parsed = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+if (!parsed.plugins['kookr-toolkit@kookr']) parsed.plugins['kookr-toolkit@kookr'] = [];
+parsed.plugins['kookr-toolkit@kookr'].push({ scope: 'user', version });
+fs.writeFileSync(file, JSON.stringify(parsed));
+NODE
+  exit 0
+fi
+echo "unexpected claude args: $*" >&2
+exit 2
+`);
+      await chmod(bin, 0o755);
+      return bin;
+    }
+
+    /** A fake claude binary that fails on the first `plugin marketplace add` command. */
+    async function writeFailingInstallBin(logPath: string): Promise<string> {
+      const bin = join(root, 'fake-claude-install-fail');
+      await writeFile(bin, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${logPath}"
+if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "add" ]; then
+  echo "marketplace add failed: network error" >&2
+  exit 17
+fi
+echo "unexpected claude args: $*" >&2
+exit 2
+`);
+      await chmod(bin, 0o755);
+      return bin;
+    }
+
+    /** Slow bin for concurrency test (sleeps on marketplace add). */
+    async function writeSlowInstallBin(logPath: string, installedVersion: string): Promise<string> {
+      const bin = join(root, 'fake-claude-install-slow');
+      await writeFile(bin, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${logPath}"
+if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "add" ]; then
+  sleep 0.2
+  exit 0
+fi
+if [ "$1" = "plugin" ] && [ "$2" = "install" ]; then
+  PLUGINS_DIR="$HOME/.claude/plugins"
+  mkdir -p "$PLUGINS_DIR"
+  REGISTRY="$PLUGINS_DIR/installed_plugins.json"
+  node - "$REGISTRY" "${installedVersion}" <<'NODE'
+const fs = require('node:fs');
+const file = process.argv[2];
+const version = process.argv[3];
+let parsed = { version: 2, plugins: {} };
+try { parsed = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+if (!parsed.plugins['kookr-toolkit@kookr']) parsed.plugins['kookr-toolkit@kookr'] = [];
+parsed.plugins['kookr-toolkit@kookr'].push({ scope: 'user', version });
+fs.writeFileSync(file, JSON.stringify(parsed));
+NODE
+  exit 0
+fi
+echo "unexpected claude args: $*" >&2
+exit 2
+`);
+      await chmod(bin, 0o755);
+      return bin;
+    }
+
+    it('installs the marketplace and plugin and returns status installed', async () => {
+      const hookHome = join(root, 'home');
+      const commandLog = join(root, 'claude-commands.log');
+      await writeLocalPluginManifests('0.7.4');
+      const fakeClaude = await writeFakeInstallBin(commandLog, '0.7.4');
+      const app = makeApp(mainDir, 4800, hookHome, fakeClaude);
+
+      const res = await app.request('/api/deploy/plugin-install', { method: 'POST' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe('installed');
+      expect(body.plugin.installedVersion).toBe('0.7.4');
+      expect(body.plugin.stale).toBe(false);
+      expect(body.commands.slash).toEqual([
+        '/plugin marketplace add kookr-ai/kookr',
+        '/plugin install kookr-toolkit@kookr',
+      ]);
+      expect(readFileSync(commandLog, 'utf8').trim().split('\n')).toEqual([
+        'plugin marketplace add kookr-ai/kookr',
+        'plugin install kookr-toolkit@kookr',
+      ]);
+    });
+
+    it('returns 400 when the plugin is already installed', async () => {
+      const hookHome = join(root, 'home');
+      const commandLog = join(root, 'claude-commands.log');
+      await writeLocalPluginManifests('0.7.4');
+      await writeInstalledPlugin(hookHome, '0.7.4');
+      const fakeClaude = await writeFakeInstallBin(commandLog, '0.7.4');
+      const app = makeApp(mainDir, 4800, hookHome, fakeClaude);
+
+      const res = await app.request('/api/deploy/plugin-install', { method: 'POST' });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe('Toolkit plugin is already installed');
+      expect(body.plugin.installedVersion).toBe('0.7.4');
+      // No claude commands should have been run
+      expect(() => readFileSync(commandLog, 'utf8')).toThrow();
+    });
+
+    it('restores the backup and returns 500 with commands when the install command fails', async () => {
+      const hookHome = join(root, 'home');
+      const commandLog = join(root, 'claude-commands.log');
+      await writeLocalPluginManifests('0.7.4');
+
+      // Pre-existing plugins dir with some config the install shouldn't destroy
+      await mkdir(join(hookHome, '.claude', 'plugins'), { recursive: true });
+      const existingRegistry = JSON.stringify({
+        version: 2,
+        plugins: { 'some-other-plugin@other': [{ scope: 'user', version: '1.0.0' }] },
+      });
+      await writeFile(
+        join(hookHome, '.claude', 'plugins', 'installed_plugins.json'),
+        existingRegistry,
+      );
+
+      const fakeClaude = await writeFailingInstallBin(commandLog);
+      const app = makeApp(mainDir, 4800, hookHome, fakeClaude);
+
+      const res = await app.request('/api/deploy/plugin-install', { method: 'POST' });
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toContain('marketplace add failed');
+      expect(body.commands.slash).toEqual([
+        '/plugin marketplace add kookr-ai/kookr',
+        '/plugin install kookr-toolkit@kookr',
+      ]);
+      // Verify the backup was restored: the registry must still have the original content
+      const restoredRegistry = readFileSync(
+        join(hookHome, '.claude', 'plugins', 'installed_plugins.json'),
+        'utf8',
+      );
+      expect(JSON.parse(restoredRegistry)).toEqual(JSON.parse(existingRegistry));
+    });
+
+    it('returns 409 when a concurrent install is already in progress', async () => {
+      const hookHome = join(root, 'home');
+      const commandLog = join(root, 'claude-commands.log');
+      await writeLocalPluginManifests('0.7.4');
+      const fakeClaude = await writeSlowInstallBin(commandLog, '0.7.4');
+      const app = makeApp(mainDir, 4800, hookHome, fakeClaude);
+
+      const [first, second] = await Promise.all([
+        app.request('/api/deploy/plugin-install', { method: 'POST' }),
+        app.request('/api/deploy/plugin-install', { method: 'POST' }),
+      ]);
+      const statuses = [first.status, second.status].sort();
+      expect(statuses).toEqual([200, 409]);
+      const rejected = first.status === 409 ? first : second;
+      const body = await rejected.json();
+      expect(body.error).toBe('Plugin install already in progress');
+    });
+
+    it('restores original installed_plugins.json when marketplace add succeeds but plugin install fails', async () => {
+      const hookHome = join(root, 'home');
+      const commandLog = join(root, 'claude-commands.log');
+      await writeLocalPluginManifests('0.7.4');
+
+      // Pre-existing plugins dir with a registry entry
+      await mkdir(join(hookHome, '.claude', 'plugins'), { recursive: true });
+      const existingRegistry = JSON.stringify({
+        version: 2,
+        plugins: { 'some-other-plugin@other': [{ scope: 'user', version: '2.0.0' }] },
+      });
+      await writeFile(join(hookHome, '.claude', 'plugins', 'installed_plugins.json'), existingRegistry);
+
+      // Fake claude: marketplace add succeeds, plugin install fails
+      const bin = join(root, 'fake-claude-partial-fail');
+      await writeFile(bin, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${commandLog}"
+if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "add" ]; then
+  exit 0
+fi
+if [ "$1" = "plugin" ] && [ "$2" = "install" ]; then
+  echo "plugin install failed: registry locked" >&2
+  exit 17
+fi
+echo "unexpected claude args: $*" >&2
+exit 2
+`);
+      await chmod(bin, 0o755);
+      const app = makeApp(mainDir, 4800, hookHome, bin);
+
+      const res = await app.request('/api/deploy/plugin-install', { method: 'POST' });
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toContain('plugin install failed');
+
+      // The original registry must be fully restored
+      const restoredRegistry = readFileSync(
+        join(hookHome, '.claude', 'plugins', 'installed_plugins.json'),
+        'utf8',
+      );
+      expect(JSON.parse(restoredRegistry)).toEqual(JSON.parse(existingRegistry));
+    });
+
+    it('removes plugins dir when it did not exist before and the install fails', async () => {
+      const hookHome = join(root, 'home');
+      const commandLog = join(root, 'claude-commands.log');
+      await writeLocalPluginManifests('0.7.4');
+      // No plugins dir — first-time user
+
+      // Fake claude: marketplace add creates some stray files, plugin install fails
+      const bin = join(root, 'fake-claude-stray-fail');
+      await writeFile(bin, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${commandLog}"
+if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "add" ]; then
+  mkdir -p "$HOME/.claude/plugins/marketplaces/kookr"
+  echo '{"name":"kookr"}' > "$HOME/.claude/plugins/known_marketplaces.json"
+  exit 0
+fi
+if [ "$1" = "plugin" ] && [ "$2" = "install" ]; then
+  echo "plugin install failed: registry locked" >&2
+  exit 17
+fi
+echo "unexpected claude args: $*" >&2
+exit 2
+`);
+      await chmod(bin, 0o755);
+      const app = makeApp(mainDir, 4800, hookHome, bin);
+
+      const res = await app.request('/api/deploy/plugin-install', { method: 'POST' });
+      expect(res.status).toBe(500);
+
+      // ~/.claude/plugins/ must not exist — stray files should be gone
+      const pluginsDir = join(hookHome, '.claude', 'plugins');
+      await expect(access(pluginsDir)).rejects.toThrow();
+    });
+
+    it('returns 500 with backup path in error body when restore rename fails', async () => {
+      const hookHome = join(root, 'home');
+      const commandLog = join(root, 'claude-commands.log');
+      await writeLocalPluginManifests('0.7.4');
+
+      // Pre-existing plugins dir
+      const claudeDir = join(hookHome, '.claude');
+      await mkdir(join(claudeDir, 'plugins'), { recursive: true });
+      const existingRegistry = JSON.stringify({ version: 2, plugins: {} });
+      await writeFile(join(claudeDir, 'plugins', 'installed_plugins.json'), existingRegistry);
+
+      // Fake claude: marketplace add succeeds, then makes .claude/ non-writable
+      // so that the restore rename will fail, then plugin install fails.
+      const bin = join(root, 'fake-claude-restore-fail');
+      await writeFile(bin, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${commandLog}"
+if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "add" ]; then
+  # Remove write permission from .claude/ so subsequent renames inside it fail
+  chmod 555 "${hookHome}/.claude"
+  exit 0
+fi
+if [ "$1" = "plugin" ] && [ "$2" = "install" ]; then
+  echo "install failed: registry locked" >&2
+  exit 17
+fi
+echo "unexpected claude args: $*" >&2
+exit 2
+`);
+      await chmod(bin, 0o755);
+      const app = makeApp(mainDir, 4800, hookHome, bin);
+
+      let res: Response;
+      try {
+        res = await app.request('/api/deploy/plugin-install', { method: 'POST' });
+      } finally {
+        // Restore so afterEach rm can clean up
+        await chmod(claudeDir, 0o755);
+      }
+
+      expect(res!.status).toBe(500);
+      const body = await res!.json();
+      // Error body must include the backup path so the user can recover
+      expect(body.error).toMatch(/kookr-install-backup/);
+    });
+
+    it('holding the install lock makes a concurrent plugin-update return 409', async () => {
+      const hookHome = join(root, 'home');
+      const commandLog = join(root, 'claude-commands.log');
+      await writeLocalPluginManifests('0.7.4');
+      // slow install to hold the lock
+      const slowInstall = await writeSlowInstallBin(commandLog, '0.7.4');
+      const app = makeApp(mainDir, 4800, hookHome, slowInstall);
+
+      // Fire install (takes 200ms) and a quick update simultaneously
+      const [installRes, updateRes] = await Promise.all([
+        app.request('/api/deploy/plugin-install', { method: 'POST' }),
+        app.request('/api/deploy/plugin-update', { method: 'POST' }),
+      ]);
+
+      // One of them must be 409 (the one that lost the lock race)
+      const statuses = [installRes.status, updateRes.status].sort();
+      expect(statuses).toContain(409);
+      const rejected = updateRes.status === 409 ? updateRes : installRes;
+      const body = await rejected.json();
+      expect(body.error).toMatch(/already in progress/);
     });
   });
 

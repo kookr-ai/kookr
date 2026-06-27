@@ -9,13 +9,20 @@ import { CircuitBreaker, CircuitBreakerRegistry } from '../../core/circuit-break
 import { ShadowDetectorRegistry } from '../../core/shadow-detector.js';
 import { GitHubStateStore } from '../../core/github-state-store.js';
 import { recordSuppression, resetDetectionStats } from '../../core/detection-stats.js';
+import { extractRawHookHeader, HookParseError, parseHookEvent } from '../../core/hook-parser.js';
+import { Monitor } from '../../core/monitor.js';
 import { registerDiagnosticsRoutes } from './diagnostics-routes.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
+import { AuthThrottle } from '../auth-throttle.js';
 import { ViewerGrantStore } from '../../core/viewer-grants.js';
 import { ViewerConnectionRegistry } from '../viewer-connection-registry.js';
 import { CollaborationAuditLog } from '../collaboration-audit-log.js';
+import { DeliveryTraceBuffer } from '../../core/delivery-trace.js';
+import { HookIngestion, REPLAY_SESSION_PREFIX, type HookEventInjector } from '../hook-ingestion.js';
 import type { RouteDeps } from './shared.js';
+import type { AgentEvent, Anomaly, InjectHookEventResult } from '../../core/types.js';
 import type { LlmClient } from '../../core/llm-client.js';
+import type { HelperLlmDiagnosticsCounters, HelperLlmDiagnosticsSnapshot } from '../../shared/contracts/diagnostic.js';
 
 function mkApp(deps: Partial<RouteDeps>): Hono {
   const app = new Hono();
@@ -28,6 +35,137 @@ function fakeLlm(output: string | null): LlmClient {
     provider: 'fake-provider',
     model: 'fake-model',
     complete: vi.fn(async () => output),
+  };
+}
+
+function helperLlmCounters(overrides: Partial<HelperLlmDiagnosticsCounters> = {}): HelperLlmDiagnosticsCounters {
+  return {
+    requestCount: 0,
+    successCount: 0,
+    failureCount: 0,
+    nullResponseCount: 0,
+    errorCount: 0,
+    abortedCount: 0,
+    totalLatencyMs: 0,
+    averageLatencyMs: 0,
+    maxLatencyMs: 0,
+    failureCategories: {},
+    ...overrides,
+  };
+}
+
+function helperLlmSnapshot(overrides: Partial<HelperLlmDiagnosticsSnapshot> = {}): HelperLlmDiagnosticsSnapshot {
+  return {
+    schemaVersion: 'helper-llm-diagnostics.v1',
+    generatedAt: 123,
+    totals: helperLlmCounters(),
+    byUseCase: [],
+    byProvider: [],
+    byUseCaseProvider: [],
+    ...overrides,
+  } satisfies HelperLlmDiagnosticsSnapshot;
+}
+
+function anomaly(overrides: Partial<Anomaly> = {}): Anomaly {
+  return {
+    agentId: 'session-1',
+    type: 'permission_blocked',
+    severity: 'warning',
+    explanation: 'Raw finding explanation should not be in delivery diagnostics',
+    detectedAt: new Date('2026-06-13T10:00:00.000Z'),
+    eventId: 'hook-event-1',
+    ...overrides,
+  };
+}
+
+interface HookRouteHarness {
+  app: Hono;
+  ingestion: HookIngestion;
+  monitor: Monitor;
+  calls: Array<{
+    tmuxName: string;
+    sequence?: number;
+    options?: Parameters<HookEventInjector['injectHookEvent']>[3];
+    result: InjectHookEventResult;
+  }>;
+}
+
+function mkHookRouteHarness(): HookRouteHarness {
+  const taskStore = new TaskStore();
+  const monitor = new Monitor(taskStore, new AttentionQueue());
+  const calls: HookRouteHarness['calls'] = [];
+  const adapter: HookEventInjector = {
+    injectHookEvent(tmuxName, rawJson, sequence, options) {
+      const result = parseForRouteReplay(rawJson, sequence);
+      const event = result.parseStatus === 'ok' ? parseHookEvent(rawJson) : null;
+      calls.push({
+        tmuxName,
+        sequence,
+        options,
+        result,
+      });
+      if (event) {
+        monitor.registerAgent(tmuxName);
+        monitor.processEvents(tmuxName, [event]);
+      }
+      return result;
+    },
+  };
+  const ingestion = new HookIngestion({ adapter, now: () => 1_800_000_000_000 });
+  return {
+    app: mkApp({ hookIngestion: ingestion }),
+    ingestion,
+    monitor,
+    calls,
+  };
+}
+
+function parseForRouteReplay(rawJson: string, sequence?: number): InjectHookEventResult {
+  let header: ReturnType<typeof extractRawHookHeader>;
+  try {
+    header = extractRawHookHeader(rawJson);
+  } catch (err) {
+    return {
+      parseStatus: 'malformed',
+      agentType: 'codex-cli',
+      error: err instanceof HookParseError ? err.message : String(err),
+    };
+  }
+
+  let event: AgentEvent | null;
+  try {
+    event = parseHookEvent(rawJson);
+  } catch (err) {
+    return {
+      parseStatus: 'malformed',
+      agentType: 'codex-cli',
+      rawSessionId: header.rawSessionId,
+      rawTurnId: header.rawTurnId,
+      rawHookEventName: header.rawHookEventName,
+      error: err instanceof HookParseError ? err.message : String(err),
+    };
+  }
+
+  if (!event) {
+    return {
+      parseStatus: 'dropped',
+      agentType: 'codex-cli',
+      rawSessionId: header.rawSessionId,
+      rawTurnId: header.rawTurnId,
+      rawHookEventName: header.rawHookEventName,
+      parentage: 'unknown',
+      sequence,
+    };
+  }
+
+  return {
+    parseStatus: 'ok',
+    agentType: 'codex-cli',
+    rawSessionId: header.rawSessionId,
+    rawTurnId: header.rawTurnId,
+    rawHookEventName: header.rawHookEventName,
+    parentage: 'parent',
+    sequence,
   };
 }
 
@@ -51,6 +189,117 @@ describe('diagnostics routes', () => {
     delete process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN;
     resetDetectionStats();
   });
+
+  function createLaunchDependencyDiagnosticsFixture(): {
+    taskStore: TaskStore;
+    firstTaskId: string;
+    secondTaskId: string;
+  } {
+    const taskStore = new TaskStore();
+    const first = taskStore.createTask({
+      prompt: 'first',
+      cwd: '/repo',
+      launchHealthSummary: {
+        degradedDependencies: ['kb'],
+        findings: [
+          {
+            dependency: 'kb',
+            status: 'failed',
+            category: 'cli_unavailable',
+            summary: 'kb unavailable',
+            recommendedAction: 'restart kb',
+          },
+        ],
+      },
+    });
+    const second = taskStore.createTask({
+      prompt: 'second',
+      cwd: '/repo',
+      launchHealthSummary: {
+        degradedDependencies: ['kb', 'gh'],
+        findings: [
+          {
+            dependency: 'kb',
+            status: 'failed',
+            category: 'cli_unavailable',
+            summary: 'kb still unavailable',
+            recommendedAction: 'restart kb',
+          },
+          {
+            dependency: 'gh',
+            status: 'failed',
+            category: 'auth',
+            summary: 'gh auth unavailable',
+            recommendedAction: 'run gh auth login',
+          },
+        ],
+      },
+    });
+    return { taskStore, firstTaskId: first.id, secondTaskId: second.id };
+  }
+
+  function expectLaunchDependencyDiagnostics(
+    diagnostics: {
+      schemaVersion: string;
+      totalDegradedTasks: number;
+      totalFindings: number;
+      dependencies: Array<{
+        dependency: string;
+        degradedTaskCount: number;
+        findingCount: number;
+        affectedTaskIds: string[];
+        categories: string[];
+      }>;
+      categories: Array<{
+        category: string;
+        degradedTaskCount: number;
+        findingCount: number;
+        affectedTaskIds: string[];
+        dependencies: string[];
+      }>;
+    },
+    taskIds: { firstTaskId: string; secondTaskId: string },
+  ): void {
+    expect(diagnostics).toMatchObject({
+      schemaVersion: 'launch-dependency-diagnostics.v1',
+      totalDegradedTasks: 2,
+      totalFindings: 3,
+      dependencies: [
+        {
+          dependency: 'kb',
+          degradedTaskCount: 2,
+          findingCount: 2,
+          affectedTaskIds: [taskIds.firstTaskId, taskIds.secondTaskId].sort(),
+          categories: ['cli_unavailable'],
+        },
+        {
+          dependency: 'gh',
+          degradedTaskCount: 1,
+          findingCount: 1,
+          affectedTaskIds: [taskIds.secondTaskId],
+          categories: ['auth'],
+        },
+      ],
+      categories: [
+        {
+          category: 'cli_unavailable',
+          degradedTaskCount: 2,
+          findingCount: 2,
+          affectedTaskIds: [taskIds.firstTaskId, taskIds.secondTaskId].sort(),
+          dependencies: ['kb'],
+        },
+        {
+          category: 'auth',
+          degradedTaskCount: 1,
+          findingCount: 1,
+          affectedTaskIds: [taskIds.secondTaskId],
+          dependencies: ['gh'],
+        },
+      ],
+    });
+    expect(diagnostics.dependencies[0]).toHaveProperty('lastOccurredAt');
+    expect(diagnostics.categories[0]).toHaveProperty('lastOccurredAt');
+  }
 
   // ---------------------------------------------------------------------------
   // GET /api/diagnostics/request-latencies
@@ -99,11 +348,291 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/diagnostics/auth-throttle
+  // ---------------------------------------------------------------------------
+  describe('GET /api/diagnostics/auth-throttle', () => {
+    test('returns the shared auth throttle snapshot when wired', async () => {
+      const authThrottle = new AuthThrottle({ freeFailures: 0, audit: () => {} });
+      authThrottle.recordFailure('10.0.0.11', 'bad_token');
+
+      const res = await mkApp({
+        apiAuth: { required: true, token: 'secret', authThrottle },
+      }).request('/api/diagnostics/auth-throttle');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(expect.objectContaining({
+        schemaVersion: 'auth-throttle.v1',
+        totalFailedAttempts: 1,
+        lockedOutSources: [expect.objectContaining({ source: '10.0.0.11', failures: 1 })],
+      }));
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/diagnostics/delivery-trace
+  // ---------------------------------------------------------------------------
+  describe('GET /api/diagnostics/delivery-trace', () => {
+    test('returns an empty v1 snapshot when the delivery trace is not wired', async () => {
+      const res = await mkApp({}).request('/api/diagnostics/delivery-trace');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        schemaVersion: 'delivery-trace.v1',
+        maxRecords: 0,
+        totalRecorded: 0,
+        records: [],
+      });
+    });
+
+    test('exposes a bounded privacy-safe delivery trace with filters and limit', async () => {
+      const nowValues = [
+        new Date('2026-06-13T10:00:01.000Z'),
+        new Date('2026-06-13T10:00:02.000Z'),
+        new Date('2026-06-13T10:00:03.000Z'),
+      ];
+      const deliveryTrace = new DeliveryTraceBuffer({
+        maxRecords: 2,
+        now: () => nowValues.shift() ?? new Date('2026-06-13T10:00:09.000Z'),
+      });
+      deliveryTrace.recordAdmitted({
+        agentId: 'session-1',
+        anomaly: anomaly({ eventId: 'evicted-event' }),
+        fingerprint: 'permission_blocked::evicted',
+      });
+      deliveryTrace.recordSuppressed({
+        agentId: 'session-2',
+        anomaly: anomaly({ agentId: 'session-2', eventId: 'correlation-2' }),
+        fingerprint: 'needs_input::Raw finding explanation should not be in delivery diagnostics',
+      }, 'queue_snoozed');
+      deliveryTrace.recordWebhookResult({
+        agentId: 'session-3',
+        anomaly: anomaly({ agentId: 'session-3', type: 'budget_exceeded', severity: 'critical', eventId: 'correlation-3' }),
+        fingerprint: 'budget_exceeded::expensive',
+      }, {
+        attempt: 2,
+        outcome: 'failure',
+        httpStatus: 502,
+      });
+
+      const all = await mkApp({ deliveryTrace }).request('/api/diagnostics/delivery-trace');
+      const allBody = await all.json();
+      expect(allBody).toEqual({
+        schemaVersion: 'delivery-trace.v1',
+        maxRecords: 2,
+        totalRecorded: 3,
+        records: [
+          expect.objectContaining({
+            stage: 'suppressed',
+            reason: 'queue_snoozed',
+            agentId: 'session-2',
+            correlationId: 'correlation-2',
+          }),
+          expect.objectContaining({
+            stage: 'webhook_result',
+            outcome: 'failure',
+            attempt: 2,
+            httpStatus: 502,
+            anomalyType: 'budget_exceeded',
+            severity: 'critical',
+            correlationId: 'correlation-3',
+          }),
+        ],
+      });
+      expect(JSON.stringify(allBody)).not.toContain('Raw finding explanation');
+
+      const filtered = await mkApp({ deliveryTrace }).request('/api/diagnostics/delivery-trace?correlationId=correlation-3');
+      expect((await filtered.json()).records).toEqual([
+        expect.objectContaining({ agentId: 'session-3', fingerprintHash: expect.stringMatching(/^[0-9a-f]{64}$/) }),
+      ]);
+
+      const limited = await mkApp({ deliveryTrace }).request('/api/diagnostics/delivery-trace?limit=1');
+      expect((await limited.json()).records).toEqual([
+        expect.objectContaining({ agentId: 'session-3' }),
+      ]);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/diagnostics/hook-ingestion
+  // ---------------------------------------------------------------------------
+  describe('GET /api/diagnostics/hook-ingestion', () => {
+    test('returns empty v1 snapshots when hook services are not wired', async () => {
+      const res = await mkApp({}).request('/api/diagnostics/hook-ingestion');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        schemaVersion: 'hook-ingestion-diagnostics-route.v1',
+        ingestion: expect.objectContaining({
+          schemaVersion: 'hook-ingestion-diagnostics.v1',
+          sessionCount: 0,
+          totalArrivals: 0,
+          missingWriteTimestampCount: 0,
+          notableLagCount: 0,
+          sessions: [],
+        }),
+        watcher: expect.objectContaining({
+          schemaVersion: 'hook-watcher-health.v1',
+          sessionCount: 0,
+          sessions: [],
+        }),
+      });
+    });
+
+    test('returns ingestion lag and watcher health snapshots when wired', async () => {
+      const ingestionSnapshot = {
+        schemaVersion: 'hook-ingestion-diagnostics.v1',
+        generatedAt: '2026-06-11T12:00:00.000Z',
+        lagWarningThresholdMs: 2000,
+        sessionCount: 1,
+        totalArrivals: 2,
+        missingWriteTimestampCount: 0,
+        notableLagCount: 1,
+        sessions: [{
+          kookrSessionId: 'kookr-1',
+          totalArrivals: 2,
+          dispatchedArrivals: 1,
+          duplicateArrivals: 1,
+          missingWriteTimestampCount: 0,
+          invalidWriteTimestampCount: 0,
+          futureWriteTimestampCount: 0,
+          notableLagCount: 1,
+          lastProcessedAt: '2026-06-11T12:00:02.000Z',
+          lastWriteTimestampAt: '2026-06-11T12:00:00.000Z',
+          lastWriteTimestampSource: 'payload',
+          lag: { count: 2, lastMs: 2000, meanMs: 1500, maxMs: 2000, p95Ms: 2000 },
+          sourceCounts: { file: 1, http: 1 },
+          writeTimestampSourceCounts: { payload: 2, file_mtime: 0, missing: 0, invalid: 0 },
+        }],
+      };
+      const watcherSnapshot = {
+        schemaVersion: 'hook-watcher-health.v1',
+        generatedAt: '2026-06-11T12:00:00.000Z',
+        sessionCount: 1,
+        sessions: [{
+          tmuxName: 'kookr-1',
+          mode: 'fs_watch',
+          offset: 123,
+          pollBackupActive: true,
+          replayExisting: true,
+          transitionCount: 1,
+          lastTransitionAt: '2026-06-11T12:00:00.000Z',
+          lastTransitionReason: 'watch_started',
+          readCount: 1,
+          recordCount: 2,
+          replayRecordCount: 2,
+          pollTickCount: 1,
+          pollChangeDetectedCount: 0,
+          drainNowCount: 1,
+          drainNowSkippedCount: 0,
+          lastPollDriftMs: 0,
+          maxPollDriftMs: 0,
+          p95PollDriftMs: 0,
+          lastDrainLatencyMs: 1,
+          maxDrainLatencyMs: 1,
+          p95DrainLatencyMs: 1,
+          lastReadAt: '2026-06-11T12:00:01.000Z',
+          lastError: null,
+        }],
+      };
+      const res = await mkApp({
+        hookIngestion: { getDiagnosticsSnapshot: () => ingestionSnapshot } as never,
+        hookWatcher: { getHealthSnapshot: () => watcherSnapshot } as never,
+      }).request('/api/diagnostics/hook-ingestion');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        schemaVersion: 'hook-ingestion-diagnostics-route.v1',
+        ingestion: ingestionSnapshot,
+        watcher: watcherSnapshot,
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — launchDependencies block
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health launchDependencies block', () => {
+    test('includes launch dependency degradation counts', async () => {
+      const { taskStore, firstTaskId, secondTaskId } = createLaunchDependencyDiagnosticsFixture();
+
+      const res = await mkApp({ taskStore, queue: new AttentionQueue(), buildInfo: {} as never }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        launchDependencies: {
+          schemaVersion: string;
+          totalDegradedTasks: number;
+          totalFindings: number;
+          dependencies: Array<{
+            dependency: string;
+            degradedTaskCount: number;
+            findingCount: number;
+            affectedTaskIds: string[];
+            categories: string[];
+          }>;
+          categories: Array<{
+            category: string;
+            degradedTaskCount: number;
+            findingCount: number;
+            affectedTaskIds: string[];
+            dependencies: string[];
+          }>;
+        };
+      };
+      expectLaunchDependencyDiagnostics(body.launchDependencies, { firstTaskId, secondTaskId });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — attentionQueue block
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health attentionQueue block', () => {
+    test('samples attention queue saturation gauges', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-01-01T00:01:00.000Z'));
+      try {
+        const taskStore = new TaskStore();
+        const queue = new AttentionQueue();
+        queue.enqueue('agent-1', anomaly({
+          agentId: 'agent-1',
+          type: 'needs_input',
+          detectedAt: new Date('2026-01-01T00:00:00.000Z'),
+        }));
+        queue.enqueue('agent-2', anomaly({
+          agentId: 'agent-2',
+          type: 'permission_blocked',
+          detectedAt: new Date('2026-01-01T00:00:30.000Z'),
+        }));
+
+        const res = await mkApp({ taskStore, queue, buildInfo: {} as never }).request('/api/health');
+
+        expect(res.status).toBe(200);
+        const body = await res.json() as {
+          attentionQueue: {
+            activeFindingDepth: number;
+            oldestFindingAgeMs: number;
+          };
+        };
+        expect(body.attentionQueue).toEqual({
+          activeFindingDepth: 2,
+          oldestFindingAgeMs: 60_000,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — viewerBroadcaster block (#808 / R10)
   // ---------------------------------------------------------------------------
   describe('GET /api/health viewerBroadcaster block', () => {
     test('omits the block when the share feature is not wired', async () => {
-      const res = await mkApp({ taskStore: new TaskStore(), buildInfo: {} as never }).request('/api/health');
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
       expect(res.status).toBe(200);
       const body = (await res.json()) as Record<string, unknown>;
       expect(body).not.toHaveProperty('viewerBroadcaster');
@@ -116,6 +645,7 @@ describe('diagnostics routes', () => {
       const auditLog = new CollaborationAuditLog({ kookrDir: tempDir });
       const res = await mkApp({
         taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
         buildInfo: {} as never,
         viewerShare: { grantStore, registry, auditLog },
       }).request('/api/health');
@@ -151,6 +681,34 @@ describe('diagnostics routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.status).toBe('unavailable');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/diagnostics/launch-dependencies
+  // ---------------------------------------------------------------------------
+  describe('GET /api/diagnostics/launch-dependencies', () => {
+    test('aggregates degraded launch dependencies', async () => {
+      const { taskStore, firstTaskId, secondTaskId } = createLaunchDependencyDiagnosticsFixture();
+
+      const res = await mkApp({ taskStore }).request('/api/diagnostics/launch-dependencies');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as Parameters<typeof expectLaunchDependencyDiagnostics>[0];
+      expectLaunchDependencyDiagnostics(body, { firstTaskId, secondTaskId });
+    });
+
+    test('returns an empty launch dependency diagnostics snapshot without degraded tasks', async () => {
+      const res = await mkApp({ taskStore: new TaskStore() }).request('/api/diagnostics/launch-dependencies');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        schemaVersion: 'launch-dependency-diagnostics.v1',
+        totalDegradedTasks: 0,
+        totalFindings: 0,
+        dependencies: [],
+        categories: [],
+      });
     });
   });
 
@@ -451,7 +1009,38 @@ describe('diagnostics routes', () => {
       expect(body.mode).toBe('estimate_only');
     });
 
-    test('rejects missing or wrong review CSRF token when configured', async () => {
+    test('rejects wrong, short, and empty admin tokens on a non-loopback request', async () => {
+      process.env.KOOKR_FINDING_REVIEW_ENABLED = 'true';
+      process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
+
+      for (const presentedToken of ['admin-secreu', 'admin', '']) {
+        const res = await mkApp(reviewDeps()).request('http://example.com/api/finding-evidence-review', {
+          method: 'POST',
+          headers: { 'x-kookr-admin-token': presentedToken },
+        });
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: 'finding-review-forbidden' });
+      }
+    });
+
+    test('allows the correct review CSRF token when configured', async () => {
+      process.env.KOOKR_FINDING_REVIEW_ENABLED = 'true';
+      process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
+      process.env.KOOKR_FINDING_REVIEW_TOKEN = 'csrf-secret';
+
+      const res = await mkApp(reviewDeps()).request('http://example.com/api/finding-evidence-review', {
+        method: 'POST',
+        headers: {
+          'x-kookr-admin-token': 'admin-secret',
+          'x-kookr-finding-review-token': 'csrf-secret',
+        },
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.mode).toBe('estimate_only');
+    });
+
+    test('rejects missing, wrong, short, or empty review CSRF token when configured', async () => {
       process.env.KOOKR_FINDING_REVIEW_ENABLED = 'true';
       process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN = 'admin-secret';
       process.env.KOOKR_FINDING_REVIEW_TOKEN = 'csrf-secret';
@@ -463,15 +1052,17 @@ describe('diagnostics routes', () => {
       expect(missing.status).toBe(403);
       expect(await missing.json()).toEqual({ error: 'invalid-finding-review-token' });
 
-      const wrong = await mkApp(reviewDeps()).request('http://example.com/api/finding-evidence-review', {
-        method: 'POST',
-        headers: {
-          'x-kookr-admin-token': 'admin-secret',
-          'x-kookr-finding-review-token': 'wrong',
-        },
-      });
-      expect(wrong.status).toBe(403);
-      expect(await wrong.json()).toEqual({ error: 'invalid-finding-review-token' });
+      for (const presentedToken of ['csrf-secreu', 'csrf', '']) {
+        const res = await mkApp(reviewDeps()).request('http://example.com/api/finding-evidence-review', {
+          method: 'POST',
+          headers: {
+            'x-kookr-admin-token': 'admin-secret',
+            'x-kookr-finding-review-token': presentedToken,
+          },
+        });
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: 'invalid-finding-review-token' });
+      }
     });
 
     test('rejects malformed JSON and invalid mode before service execution', async () => {
@@ -964,6 +1555,172 @@ describe('diagnostics routes', () => {
   // POST /api/hook-event/:sessionId
   // ---------------------------------------------------------------------------
   describe('POST /api/hook-event/:sessionId', () => {
+    test('replays a real hook fixture through HTTP ingestion and updates monitor state', async () => {
+      const harness = mkHookRouteHarness();
+      const sessionId = 'kookr-route-single';
+      const fixture = readFileSync('src/__fixtures__/hook-pre-tool-use.json', 'utf8');
+
+      const res = await harness.app.request(`/api/hook-event/${sessionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: fixture,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'received', dispatched: true });
+      expect(harness.calls).toHaveLength(1);
+      expect(harness.calls[0]).toEqual(expect.objectContaining({
+        tmuxName: sessionId,
+        sequence: 1,
+        result: expect.objectContaining({
+          parseStatus: 'ok',
+          rawHookEventName: 'PreToolUse',
+        }),
+      }));
+      expect(harness.monitor.getAgentEvents(sessionId).map((event) => event.type)).toEqual(['tool_use']);
+      expect(harness.ingestion.getActivityMeta(sessionId)).toEqual(expect.objectContaining({
+        totalEventsSeen: 1,
+        parentEventCount: 1,
+      }));
+    });
+
+    test('accepts a recorded JSONL hook fixture as one route-level replay request', async () => {
+      const harness = mkHookRouteHarness();
+      const sessionId = 'kookr-route-jsonl';
+      const fixture = readFileSync('src/__fixtures__/hook-codex-mcp-startup.jsonl', 'utf8');
+
+      const res = await harness.app.request(`/api/hook-event/${sessionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/jsonl' },
+        body: fixture,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        status: 'received',
+        dispatched: true,
+        recordCount: 6,
+        dispatchedCount: 6,
+      });
+      expect(harness.calls.map((call) => call.result.rawHookEventName)).toEqual([
+        'Notification',
+        'SessionStart',
+        'PreToolUse',
+        'PostToolUse',
+        'Stop',
+        'SessionEnd',
+      ]);
+      expect(harness.calls.map((call) => call.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
+      expect(harness.monitor.getAgentEvents(sessionId)).toHaveLength(6);
+      expect(harness.ingestion.getActivityMeta(sessionId)).toEqual(expect.objectContaining({
+        totalEventsSeen: 6,
+        parentEventCount: 6,
+        malformedRecordCount: 0,
+      }));
+    });
+
+    test('counts concatenated valid records and a malformed tail without dropping diagnostics', async () => {
+      const harness = mkHookRouteHarness();
+      const sessionId = 'kookr-route-concat';
+      const preToolUse = readFileSync('src/__fixtures__/hook-pre-tool-use.json', 'utf8').trim();
+      const postToolUse = readFileSync('src/__fixtures__/hook-post-tool-use.json', 'utf8').trim();
+
+      const res = await harness.app.request(`/api/hook-event/${sessionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: `${preToolUse}${postToolUse}\nnot-json\n`,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        status: 'received',
+        dispatched: true,
+        recordCount: 3,
+        dispatchedCount: 2,
+      });
+      expect(harness.calls.map((call) => call.result.parseStatus)).toEqual(['ok', 'ok', 'malformed']);
+      expect(harness.monitor.getAgentEvents(sessionId).map((event) => event.type)).toEqual(['tool_use', 'tool_result']);
+      expect(harness.ingestion.getActivityMeta(sessionId)).toEqual(expect.objectContaining({
+        totalEventsSeen: 3,
+        parentEventCount: 2,
+        malformedRecordCount: 1,
+      }));
+    });
+
+    test('continues JSONL route replay after a malformed opening line', async () => {
+      const harness = mkHookRouteHarness();
+      const sessionId = 'kookr-route-malformed-leading-line';
+      const sessionStart = readFileSync('src/__fixtures__/hook-session-start.json', 'utf8').trim();
+
+      const res = await harness.app.request(`/api/hook-event/${sessionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/jsonl' },
+        body: `{"broken":\n${sessionStart}\n`,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        status: 'received',
+        dispatched: true,
+        recordCount: 2,
+        dispatchedCount: 1,
+      });
+      expect(harness.calls.map((call) => call.result.parseStatus)).toEqual(['malformed', 'ok']);
+      expect(harness.calls.map((call) => call.result.rawHookEventName)).toEqual([undefined, 'SessionStart']);
+      expect(harness.monitor.getAgentEvents(sessionId).map((event) => event.type)).toEqual(['session_start']);
+      expect(harness.ingestion.getActivityMeta(sessionId)).toEqual(expect.objectContaining({
+        totalEventsSeen: 2,
+        parentEventCount: 1,
+        malformedRecordCount: 1,
+      }));
+    });
+
+    test('keeps duplicate route replay records out of the monitor window', async () => {
+      const harness = mkHookRouteHarness();
+      const sessionId = 'kookr-route-duplicate';
+      const fixture = readFileSync('src/__fixtures__/hook-stop.json', 'utf8');
+
+      const first = await harness.app.request(`/api/hook-event/${sessionId}`, {
+        method: 'POST',
+        body: fixture,
+      });
+      const second = await harness.app.request(`/api/hook-event/${sessionId}`, {
+        method: 'POST',
+        body: fixture,
+      });
+
+      expect(first.status).toBe(200);
+      expect(await first.json()).toEqual({ status: 'received', dispatched: true });
+      expect(second.status).toBe(200);
+      expect(await second.json()).toEqual({ status: 'received', dispatched: false });
+      expect(harness.calls).toHaveLength(1);
+      expect(harness.monitor.getAgentEvents(sessionId)).toHaveLength(1);
+      expect(harness.ingestion.getActivityMeta(sessionId)).toEqual(expect.objectContaining({
+        totalEventsSeen: 1,
+        duplicateRecordCount: 1,
+      }));
+    });
+
+    test('tags synthetic replay sessions before dispatching fixture records', async () => {
+      const harness = mkHookRouteHarness();
+      const sessionId = `${REPLAY_SESSION_PREFIX}route-fixture`;
+      const fixture = readFileSync('src/__fixtures__/hook-session-start.json', 'utf8');
+
+      const res = await harness.app.request(`/api/hook-event/${sessionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: fixture,
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'received', dispatched: true });
+      expect(harness.calls[0].options).toEqual(expect.objectContaining({ origin: 'replay' }));
+      expect(harness.ingestion.getActivityMeta(sessionId)).toEqual(expect.objectContaining({
+        totalEventsSeen: 1,
+        parentEventCount: 1,
+      }));
+    });
+
     test('returns 200 and records arrival when body is non-empty', async () => {
       const arrivals: Array<{ tmux: string; body: string }> = [];
       const httpPushTracker = {
@@ -1152,14 +1909,19 @@ describe('diagnostics routes', () => {
     });
 
     test('returns the runner status when wired', async () => {
+      const helperLlm = helperLlmSnapshot({
+        generatedAt: 123,
+        totals: helperLlmCounters({ requestCount: 1, successCount: 1 }),
+        byUseCase: [{ useCase: 'task_naming', ...helperLlmCounters({ requestCount: 1, successCount: 1 }) }],
+      });
       const diagnosticRunner = {
-        getStatus: () => ({ report: { findings: [] }, lastError: null }),
+        getStatus: () => ({ report: { findings: [], helperLlm }, lastError: null }),
       };
       const res = await mkApp({ diagnosticRunner: diagnosticRunner as never })
         .request('/api/diagnostic');
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.report).toEqual({ findings: [] });
+      expect(body.report).toEqual({ findings: [], helperLlm });
       expect(body.lastError).toBeNull();
     });
   });
@@ -1173,11 +1935,16 @@ describe('diagnostics routes', () => {
 
     test('invokes runNow and returns the report', async () => {
       let called = 0;
+      const helperLlm = helperLlmSnapshot({
+        generatedAt: 456,
+        totals: helperLlmCounters({ requestCount: 2, successCount: 2 }),
+        byProvider: [{ provider: 'groq', model: 'groq-model', ...helperLlmCounters({ requestCount: 2, successCount: 2 }) }],
+      });
       const diagnosticRunner = {
         getStatus: () => ({ report: null, lastError: null }),
         runNow: () => {
           called++;
-          return { findings: [{ type: 'slow-route', severity: 'warn' }] };
+          return { findings: [{ type: 'slow-route', severity: 'warn' }], helperLlm };
         },
       };
       const res = await mkApp({ diagnosticRunner: diagnosticRunner as never })
@@ -1186,6 +1953,7 @@ describe('diagnostics routes', () => {
       expect(called).toBe(1);
       const body = await res.json();
       expect(body.report.findings).toHaveLength(1);
+      expect(body.report.helperLlm).toEqual(helperLlm);
     });
   });
 

@@ -2,6 +2,8 @@
 
 Playbooks are reusable task templates. Kookr discovers them from three independent tiers, so generic workflows can ship once and apply everywhere instead of being copy-pasted into every repo.
 
+For the frontmatter schema, parameter fields, completion criteria, dependency declarations, and loop settings, see the [Playbooks Reference](reference/playbooks.md).
+
 ## The three tiers
 
 | Tier      | Location                                              | Use case                                   |
@@ -12,15 +14,20 @@ Playbooks are reusable task templates. Kookr discovers them from three independe
 
 The plugin tier is auto-detected from the running kookr install. Override with `KOOKR_PLUGIN_DIR` if you've installed the plugin somewhere unusual.
 
-## Plugin portability policy
+## Plugin coupling and portability
 
-Plugin-tier playbooks must run as ordinary toolkit content in any consumer repo. They must not depend on Kookr runtime context, local Kookr state, or Kookr development commands, even when that dependency is guarded with a fallback such as `[ -n "${KOOKR_API_BASE_URL:-}" ]`.
+The kookr-toolkit plugin ships together with Kookr, so plugin-tier playbooks **may** couple to the Kookr runtime — `KOOKR_*` env vars, the issue-claim API, Ralph verdict files, `~/.kookr/` state — when that integration is the point of the workflow. A Kookr-aware playbook (for example a GitHub-issue batch runner that reports verdicts to the Ralph engine) is a legitimate thing to bundle with Kookr.
 
-Put Kookr-aware workflows in a higher-precedence tier instead:
+Plugin playbooks still must **not**:
+
+- **Hardcode absolute home paths** (`/home/<user>/git/kookr`) — they break every checkout but the author's. Use relative paths, `~/...`, or discover the path at runtime.
+- **Assume a tool the user may not have.** If a playbook needs the `gh` CLI, a github remote, or `kb`, gate it with `repo-tags` / `dependencies` so it only surfaces where it actually works.
+
+Choosing a tier:
 
 - Use `project` scope (`<cwd>/.kookr/playbooks/*.md`) when the workflow only applies to one repository.
-- Use `user` scope (`~/.kookr/playbooks/*.md`) when the workflow is personal and useful across repos, but enriches itself from Kookr runtime variables, Kookr APIs, or local Kookr state.
-- Use `plugin` scope only for portable defaults that do not mention `KOOKR_*`, `~/.kookr/`, Kookr development commands, or repository-local Kookr paths.
+- Use `user` scope (`~/.kookr/playbooks/*.md`) for personal workflows you don't want to commit to a repo.
+- Use `plugin` scope for workflows you want bundled with Kookr and available in every matching repo — Kookr coupling is fine here.
 
 ## Precedence
 

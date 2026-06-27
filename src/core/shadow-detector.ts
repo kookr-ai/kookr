@@ -9,7 +9,7 @@
  * Fire-and-forget logging: never throws, never blocks the caller.
  */
 
-import { appendFile, mkdir } from 'node:fs/promises';
+import { appendFile, mkdir, rename, stat, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import type { Anomaly, AnomalyType, AnomalyConfidence } from './types.js';
@@ -77,6 +77,16 @@ export interface ShadowHeartbeat {
 
 export type ShadowLogEntry = ShadowTransition | ShadowHeartbeat;
 
+const DEFAULT_MAX_LOG_BYTES = 256 * 1024 * 1024;
+const DEFAULT_ROTATED_GENERATIONS = 2;
+
+export interface ShadowDetectorRegistryOptions {
+  /** Rotate shadow-detection.jsonl before an append would exceed this size. */
+  maxLogBytes?: number;
+  /** Number of rotated files to retain, e.g. 2 keeps .1 and .2. */
+  rotatedGenerations?: number;
+}
+
 // --- Registry ---
 
 /**
@@ -89,9 +99,14 @@ export class ShadowDetectorRegistry {
   /** Previous shadow verdict per (agentId, source) — null means healthy */
   private previousState = new Map<string, AnomalyType | null>();
   private logFilePath: string;
+  private appendQueue: Promise<void> = Promise.resolve();
+  private maxLogBytes: number;
+  private rotatedGenerations: number;
 
-  constructor(logFilePath?: string) {
+  constructor(logFilePath?: string, options: ShadowDetectorRegistryOptions = {}) {
     this.logFilePath = logFilePath ?? join(homedir(), '.kookr', 'shadow-detection.jsonl');
+    this.maxLogBytes = Math.max(1, Math.floor(options.maxLogBytes ?? DEFAULT_MAX_LOG_BYTES));
+    this.rotatedGenerations = Math.max(1, Math.floor(options.rotatedGenerations ?? DEFAULT_ROTATED_GENERATIONS));
   }
 
   register(strategy: ShadowStrategy): void {
@@ -173,7 +188,7 @@ export class ShadowDetectorRegistry {
 
     // Fire-and-forget: log all entries
     if (entries.length > 0) {
-      this.appendEntries(entries);
+      void this.appendEntries(entries);
     }
 
     return entries;
@@ -200,10 +215,57 @@ export class ShadowDetectorRegistry {
     return this.logFilePath;
   }
 
-  private appendEntries(entries: ShadowLogEntry[]): void {
+  /** Await pending fire-and-forget writes (for tests and orderly shutdown hooks). */
+  async flush(): Promise<void> {
+    await this.appendQueue.catch(() => {});
+  }
+
+  private appendEntries(entries: ShadowLogEntry[]): Promise<void> {
     const lines = entries.map((e) => JSON.stringify(e)).join('\n') + '\n';
-    mkdir(dirname(this.logFilePath), { recursive: true })
-      .then(() => appendFile(this.logFilePath, lines, 'utf-8'))
+    const next = this.appendQueue
+      .catch(() => { /* keep the queue alive after an earlier write failure */ })
+      .then(() => this.appendLines(lines))
       .catch(() => { /* fire-and-forget */ });
+    this.appendQueue = next;
+    return next;
+  }
+
+  private async appendLines(lines: string): Promise<void> {
+    await mkdir(dirname(this.logFilePath), { recursive: true });
+
+    let currentSize = 0;
+    try {
+      currentSize = (await stat(this.logFilePath)).size;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+
+    if (currentSize > 0 && currentSize + Buffer.byteLength(lines, 'utf8') > this.maxLogBytes) {
+      await this.rotateLog();
+    }
+
+    await appendFile(this.logFilePath, lines, 'utf-8');
+  }
+
+  private async rotateLog(): Promise<void> {
+    try {
+      await unlink(`${this.logFilePath}.${this.rotatedGenerations}`);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+
+    for (let generation = this.rotatedGenerations - 1; generation >= 1; generation--) {
+      try {
+        await rename(`${this.logFilePath}.${generation}`, `${this.logFilePath}.${generation + 1}`);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+    }
+
+    try {
+      await rename(this.logFilePath, `${this.logFilePath}.1`);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
   }
 }

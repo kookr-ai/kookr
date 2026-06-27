@@ -5,7 +5,7 @@ import type { SessionInfo } from './session-read-model.js';
 import type { TaskStatus } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
 import type { RalphLoopState } from '../shared/contracts/ralph.js';
-import type { TaskDependencyEdge, TaskMetadata, TaskPriority } from '../shared/contracts/task.js';
+import type { DeliveryAuthorization, TaskDependencyEdge, TaskMetadata, TaskPriority } from '../shared/contracts/task.js';
 
 export type {
   BurnedOutTarget,
@@ -74,6 +74,15 @@ export interface CreateTaskOptions {
   metadata?: TaskMetadata;
   /** User-declared task priority. Omitted means normal priority. */
   priority?: TaskPriority;
+  /** Audit marker for the delivery policy resolved at launch. */
+  deliveryAuthorization?: DeliveryAuthorization;
+  /**
+   * When true, the task auto-completes the moment its agent raises a
+   * `completion_ready` signal (`kookr signal completion-ready`), instead of
+   * waiting for manual review. Inherited from the parent task when spawning a
+   * successor unless explicitly overridden. See docs/reference/auto-close-on-signal.md.
+   */
+  autoCloseOnSignal?: boolean;
 }
 
 export interface TaskLaunchHealthSummary {
@@ -119,6 +128,14 @@ export interface Task {
   metadata?: TaskMetadata;
   /** User-declared task priority. Omitted means normal priority. */
   priority?: TaskPriority;
+  /** Audit marker for the delivery policy resolved at launch. */
+  deliveryAuthorization?: DeliveryAuthorization;
+  /**
+   * When true, a `completion_ready` signal auto-completes this task immediately.
+   * Set at launch (e.g. by a playbook) or inherited from the parent task.
+   * See docs/reference/auto-close-on-signal.md.
+   */
+  autoCloseOnSignal?: boolean;
   status: TaskStatus;
   sessions: SessionInfo[];
   tokenUsage?: TokenUsage;
@@ -136,6 +153,12 @@ export interface Task {
   pendingSignal?: PendingAgentSignal;
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * First time this task entered a terminal lifecycle state. Preserved across
+   * later terminal-task edits so completed history can sort by actual finish
+   * time instead of "last renamed".
+   */
+  finishedAt?: Date;
   /** Set when the task transitions to 'terminated' via reconciliation. */
   terminatedAt?: Date;
   /**

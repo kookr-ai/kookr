@@ -52,6 +52,7 @@ export type {
   UserInputDeliverySource,
   UserInputDeliveryStatus,
 } from './contracts/user-input-delivery.js';
+export { DELIVERY_SOURCE_LABEL } from './contracts/user-input-delivery.js';
 export type { BuildInfo } from './contracts/build-info.js';
 export type { CircuitBreakerSnapshot } from './contracts/circuit-breaker.js';
 export type { CompletionDigest } from './contracts/completion-digest.js';
@@ -60,13 +61,26 @@ export type { CoordinatorSnapshotState } from './contracts/coordinator.js';
 export type {
   GitHubCheck,
   GitHubIssueState,
+  GitHubPRMergeable,
   GitHubPRState,
   GitHubReviewThread,
   GitHubStateChange,
 } from './contracts/github.js';
 export type { AgentActivityMeta } from './contracts/hook-events.js';
-export type { Playbook, LaunchDependency } from './contracts/playbook.js';
+export type { Playbook, LaunchDependency, PlaybookScope } from './contracts/playbook.js';
+export type {
+  EvolutionChampionRecord,
+  EvolutionRunProjection,
+  EvolutionTrajectoryPoint,
+  EvolutionTrialOutcome,
+  EvolutionTrialRecord,
+} from './contracts/evolution.js';
 export type { ProjectConfig } from './contracts/project-config.js';
+export type {
+  SkillDiscoveryProjectStatus,
+  SkillDiscoveryScanStatus,
+  SkillDiscoveryStateSnapshot,
+} from './contracts/project-discovery.js';
 export type { ProjectSummary, TaskSummary } from './contracts/project-summary.js';
 export type { QuotaStatus, QuotaWindow } from './contracts/quota.js';
 export type { QuickAction } from './contracts/quick-action.js';
@@ -78,7 +92,7 @@ export type {
   STTCapability,
   TTSCapability,
 } from './contracts/speech.js';
-export type { TaskCompletionFeedback } from './contracts/task.js';
+export type { TaskCompletionFeedback, TaskLaunchPermissionPosture } from './contracts/task.js';
 export type {
   TaskRelation,
   TaskRelationEvidence,
@@ -108,6 +122,7 @@ export type {
 } from './contracts/workspace.js';
 export type {
   ClientMessage,
+  DrainStatusSnapshot,
   ResourceUnavailableReason,
   ServerMessage,
   SnapshotMessage,
@@ -119,7 +134,7 @@ export type {
   EmptyEnterRejectReason,
   PromptStatus,
   TerminalInputSnapshot,
-} from './terminal-input-contract.js';
+} from './contracts/terminal-input.js';
 export type {
   RalphLoopStatus,
   RalphLoopState,

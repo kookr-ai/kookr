@@ -98,11 +98,11 @@ export function worktreeHealthLabel(health: string | undefined, registryStale?: 
   if (registryStale) return 'git stale';
   switch (health) {
     case 'missing_unexpectedly':
-      return 'missing unexpectedly';
+      return 'worktree missing';
     case 'cleaned_up':
       return 'cleaned up';
     case 'missing':
-      return 'missing';
+      return 'worktree missing';
     case 'stale':
       return 'stale';
     case 'ok':
@@ -117,11 +117,11 @@ export function worktreeHealthTitle(health: string | undefined, registryStale?: 
   if (registryStale) return 'Worktree registry refresh failed; showing stale git state';
   switch (health) {
     case 'missing_unexpectedly':
-      return 'Worktree is missing unexpectedly';
+      return "Worktree directory is missing unexpectedly — the agent's working copy may have been deleted. Check the session before sending new work.";
     case 'cleaned_up':
       return 'Worktree was cleaned up after successful completion';
     case 'missing':
-      return 'Worktree is missing';
+      return "Worktree directory is missing — the agent's working copy may have been deleted. Check the session before sending new work.";
     case 'stale':
       return 'Worktree registry entry is stale';
     default:
@@ -196,6 +196,50 @@ export function turnStateLabel(turnState: TurnState | undefined): string {
     case 'unknown':
     case undefined:
       return '';
+  }
+}
+
+/**
+ * Human-readable label for a task status. Accepts a loose string (some
+ * surfaces carry the status as `string | undefined`) and falls back to the
+ * raw value for unknown statuses so new enum members degrade gracefully
+ * instead of disappearing.
+ */
+export function taskStatusLabel(status: string | undefined): string {
+  switch (status) {
+    case 'open': return 'Open';
+    case 'pending': return 'Pending';
+    case 'inProgress': return 'In progress';
+    case 'completed': return 'Completed';
+    case 'terminated': return 'Terminated';
+    case 'cancelled': return 'Cancelled';
+    case undefined: return '';
+    default: return status;
+  }
+}
+
+/**
+ * Human-readable label for a finding's action/type. Mirrors the findings rail
+ * wording so navigation surfaces describe the same condition consistently.
+ */
+export function findingTypeLabel(agent: AgentState): string {
+  const anomalyType = agent.anomaly?.type;
+  switch (anomalyType) {
+    case 'permission_blocked': return 'Permission';
+    case 'repeated_error': return 'Repeated Error';
+    case 'merge_conflict': return 'Merge Conflict';
+    case 'stale_agent': return 'Stale Agent';
+    case 'hook_disconnected': return 'Hook Disconnected';
+    case 'hook_missing': return 'Hook Missing';
+    case 'hook_parse_degraded': return 'Hook Parse Degraded';
+    case 'tmux_unresponsive': return 'Terminal Unresponsive';
+    case 'api_error': return 'API Error';
+    case 'budget_exceeded': return 'Budget Exceeded';
+    // `completed_turn` => the agent signaled it is ready for review; `Needs Input`
+    // is reserved for an explicit mid-turn question. See issue #358.
+    case 'needs_input': return agent.turnState === 'completed_turn' ? 'Signaled Complete' : 'Needs Input';
+    case undefined: return '';
+    default: return anomalyType.replace(/_/g, ' ');
   }
 }
 
@@ -282,9 +326,61 @@ export function formatAge(detectedAt: Date | string | undefined): string {
   const ms = Date.now() - new Date(detectedAt).getTime();
   if (ms < 120_000) return '';
   if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
+  if (ms >= 86_400_000) return `${Math.floor(ms / 86_400_000)}d`;
   const h = Math.floor(ms / 3_600_000);
   const m = Math.floor((ms % 3_600_000) / 60_000);
   return `${h}h ${m}m`;
+}
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function parseValidDate(timestamp: Date | string | undefined): Date | null {
+  if (!timestamp) return null;
+  const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+/**
+ * Format a timestamp for compact row display. Uses local time and includes the
+ * year only when it differs from the current year.
+ */
+export function formatCompactDateTime(timestamp: Date | string | undefined, now: Date = new Date()): string {
+  const date = parseValidDate(timestamp);
+  if (!date) return '';
+  const month = MONTH_NAMES[date.getMonth()] ?? '';
+  const datePart = date.getFullYear() === now.getFullYear()
+    ? `${month} ${date.getDate()}`
+    : `${month} ${date.getDate()}, ${date.getFullYear()}`;
+  return `${datePart}, ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+/**
+ * Compact relative age for title text where exact date is already visible.
+ */
+export function formatRelativeTimeAgo(timestamp: Date | string | undefined, nowMs = Date.now()): string {
+  const date = parseValidDate(timestamp);
+  if (!date) return '';
+  const ms = Math.max(0, nowMs - date.getTime());
+  if (ms < 60_000) return 'just now';
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ${mins % 60}m ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+export function findingWaitStartedAt(agent: AgentState): Date | string | undefined {
+  const isSignaledCompleteFinding = agent.anomaly?.type === 'needs_input'
+    && agent.turnState === 'completed_turn'
+    && agent.pendingSignal?.kind === 'completion_ready';
+  // Completion signals survive anomaly re-stamps across server restarts; other
+  // finding types must keep their own detection time for DND and urgency.
+  return isSignaledCompleteFinding ? agent.pendingSignal?.raisedAt : agent.anomaly?.detectedAt;
 }
 
 /**

@@ -1,3 +1,4 @@
+import { statfsSync } from 'node:fs';
 import { cpus, freemem, totalmem } from 'node:os';
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 import type { SystemResourceStatus } from '../shared/contracts/messages.js';
@@ -15,6 +16,13 @@ export interface EventLoopDelayMonitor {
   count?: number | bigint;
 }
 
+export interface DataDirectoryDiskUsage {
+  path: string;
+  diskFreeBytes: number | null;
+  diskTotalBytes: number | null;
+  diskFreePercent: number | null;
+}
+
 export interface SystemResourceSamplerDeps {
   readCpus?: () => CpuCoreSample[];
   readTotalMemoryBytes?: () => number;
@@ -23,6 +31,8 @@ export interface SystemResourceSamplerDeps {
   nowMs?: () => number;
   nowIso?: () => string;
   createEventLoopMonitor?: () => EventLoopDelayMonitor;
+  dataDirectoryPath?: string | null;
+  readDataDirectoryDiskUsage?: (path: string) => DataDirectoryDiskUsage | null;
   intervalMs?: number;
 }
 
@@ -35,6 +45,8 @@ export class SystemResourceSampler {
   private readonly nowMs: () => number;
   private readonly nowIso: () => string;
   private readonly eventLoopMonitor: EventLoopDelayMonitor;
+  private readonly dataDirectoryPath: string | null;
+  private readonly readDataDirectoryDiskUsage: (path: string) => DataDirectoryDiskUsage | null;
   private eventLoopEnabled = false;
 
   constructor(deps: SystemResourceSamplerDeps = {}) {
@@ -47,6 +59,8 @@ export class SystemResourceSampler {
     this.nowMs = deps.nowMs ?? (() => performance.now());
     this.nowIso = deps.nowIso ?? (() => new Date().toISOString());
     this.eventLoopMonitor = (deps.createEventLoopMonitor ?? (() => monitorEventLoopDelay({ resolution: EVENT_LOOP_RESOLUTION_MS })))();
+    this.dataDirectoryPath = deps.dataDirectoryPath ?? null;
+    this.readDataDirectoryDiskUsage = deps.readDataDirectoryDiskUsage ?? readDataDirectoryDiskUsageWithStatfs;
   }
 
   start(): void {
@@ -77,6 +91,10 @@ export class SystemResourceSampler {
     }
 
     const processMemory = this.readProcessMemory();
+    const dataDirectory = this.readDataDirectory();
+    if (dataDirectory.diskFreeBytes === null || dataDirectory.diskFreePercent === null) {
+      unavailable.push('data_directory_disk_unavailable');
+    }
 
     return {
       source: { kind: 'server-host' },
@@ -88,6 +106,7 @@ export class SystemResourceSampler {
         memoryUsedPercent: memory.memoryUsedPercent,
         memoryFreeBytes: memory.memoryFreeBytes,
         memoryTotalBytes: memory.memoryTotalBytes,
+        dataDirectory,
       },
       server: {
         eventLoopDelayP95Ms,
@@ -107,8 +126,56 @@ export class SystemResourceSampler {
     if (!Number.isFinite(p95Ns)) return null;
     return p95Ns / NS_PER_MS;
   }
+
+  private readDataDirectory(): SystemResourceStatus['host']['dataDirectory'] {
+    if (this.dataDirectoryPath === null || this.dataDirectoryPath.trim() === '') {
+      return {
+        path: null,
+        diskFreeBytes: null,
+        diskTotalBytes: null,
+        diskFreePercent: null,
+      };
+    }
+    const usage = this.readDataDirectoryDiskUsage(this.dataDirectoryPath);
+    return usage ?? {
+      path: this.dataDirectoryPath,
+      diskFreeBytes: null,
+      diskTotalBytes: null,
+      diskFreePercent: null,
+    };
+  }
 }
 
 export function createSystemResourceSampler(deps?: SystemResourceSamplerDeps): SystemResourceSampler {
   return new SystemResourceSampler(deps);
+}
+
+export function readDataDirectoryDiskUsageWithStatfs(path: string): DataDirectoryDiskUsage | null {
+  if (typeof statfsSync !== 'function') return null;
+  try {
+    const stats = statfsSync(path);
+    const blockSize = Number(stats.bsize);
+    const availableBlocks = Number(stats.bavail);
+    const totalBlocks = Number(stats.blocks);
+    const diskFreeBytes = availableBlocks * blockSize;
+    const diskTotalBytes = totalBlocks * blockSize;
+    if (
+      !Number.isFinite(blockSize)
+      || blockSize <= 0
+      || !Number.isFinite(diskFreeBytes)
+      || diskFreeBytes < 0
+      || !Number.isFinite(diskTotalBytes)
+      || diskTotalBytes <= 0
+    ) {
+      return null;
+    }
+    return {
+      path,
+      diskFreeBytes,
+      diskTotalBytes,
+      diskFreePercent: (diskFreeBytes / diskTotalBytes) * 100,
+    };
+  } catch {
+    return null;
+  }
 }

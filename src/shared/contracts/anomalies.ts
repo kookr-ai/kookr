@@ -8,6 +8,7 @@ export type AnomalyType =
   | 'stale_agent'
   | 'hook_disconnected'
   | 'hook_missing'
+  | 'hook_parse_degraded'
   | 'tmux_unresponsive'
   | 'api_error'
   | 'budget_exceeded';
@@ -15,6 +16,12 @@ export type AnomalyType =
 export type AnomalySeverity = 'info' | 'warning' | 'critical';
 
 export type AnomalyConfidence = 'high' | 'medium' | 'low';
+
+export interface FindingTranscriptExcerpt {
+  excerpt: string;
+  truncated: boolean;
+  readAtOffset: number;
+}
 
 export interface Anomaly {
   agentId: string;
@@ -43,6 +50,10 @@ export interface Anomaly {
   likelyRootCause?: boolean;
   /** Human-readable basis for why the active findings were linked. */
   causalityReason?: string;
+  /** Optional transcript-derived context attached to active findings behind a feature flag. */
+  transcriptContext?: {
+    lastAssistantMessage: FindingTranscriptExcerpt;
+  };
 }
 
 export type FindingEvidenceObservationSource = 'event' | 'watchdog_tick';

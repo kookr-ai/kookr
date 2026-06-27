@@ -612,21 +612,24 @@ describe('CodexCliAdapter', () => {
     expect(mockGetGitInfo).toHaveBeenCalledWith('/workspace/repo-command');
   });
 
-  test('sendInput writes text and Enter as two distinct payloads in submission order', async () => {
+  test('sendInput writes clear-line, text, and Enter as distinct payloads in submission order', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
     const before = backend.getWrittenBytes(sessionId).length;
 
     await adapter.sendInput(sessionId, 'yes, continue');
 
-    // Codex's TUI distinguishes paste-bursts from typed-then-submit by the
-    // syscall boundary. writeSequence([text, ENTER]) must preserve that split
-    // inside a single mutex acquisition — the fake captures each payload
-    // separately in submission order.
+    // writeSequence([CLEAR_LINE, paste-wrapped text, ENTER]) must preserve
+    // the syscall split inside a single mutex acquisition — the fake captures
+    // each payload separately in submission order. The leading Ctrl-U clears
+    // any unsubmitted terminal-typed draft so it cannot fuse into the message
+    // (F15). The body is wrapped in bracketed-paste markers so Codex parses
+    // it as one explicit paste and the trailing Enter is a submit keystroke.
     const written = backend.getWrittenBytes(sessionId).slice(before);
-    expect(written).toHaveLength(2);
-    expect(new TextDecoder().decode(written[0])).toBe('yes, continue');
-    expect(written[1]).toEqual(Uint8Array.of(0x0d));
+    expect(written).toHaveLength(3);
+    expect(written[0]).toEqual(Uint8Array.of(0x15));
+    expect(new TextDecoder().decode(written[1])).toBe('\x1b[200~yes, continue\x1b[201~');
+    expect(written[2]).toEqual(Uint8Array.of(0x0d));
   });
 
   test('sendInput requests a delayed submitting Enter', async () => {
@@ -643,9 +646,24 @@ describe('CodexCliAdapter', () => {
 
     expect(writer.writeInputSequence).toHaveBeenCalledWith(
       'session-1',
-      [new TextEncoder().encode('yes, continue'), Uint8Array.of(0x0d)],
+      [Uint8Array.of(0x15), new TextEncoder().encode('\x1b[200~yes, continue\x1b[201~'), Uint8Array.of(0x0d)],
       { reason: 'adapter-send-input', interPayloadDelayMs: DEFAULT_PROMPT_SUBMIT_DELAY_MS },
     );
+  });
+
+  test('sendInput clears unsubmitted terminal-typed input before delivering the message', async () => {
+    // F15 regression: a draft typed into the terminal panel but never
+    // submitted must not be fused onto the front of a composer message.
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    await backend.write(sessionId, new TextEncoder().encode('stray draft'));
+    const before = backend.sessions.get(sessionId)!.keysReceived.length;
+
+    await adapter.sendInput(sessionId, 'composer message');
+
+    expect(backend.sessions.get(sessionId)!.keysReceived.slice(before)).toEqual([
+      'composer message',
+    ]);
   });
 
   test('unknown hook events are silently skipped', () => {

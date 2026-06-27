@@ -262,7 +262,12 @@ function CoordinatorFindingCard({
     <div className={`coordinator-finding-card coordinator-finding-card--${finding.kind}`}>
       <div className="coordinator-finding-title">
         <span>{finding.title}</span>
-        <span className="coordinator-finding-count">{GLYPHS[finding.evidenceGlyph] ?? finding.evidenceGlyph} {finding.evidenceCount}</span>
+        <span
+          className="coordinator-finding-count"
+          title={`${finding.evidenceCount} evidence item${finding.evidenceCount === 1 ? '' : 's'}`}
+        >
+          {GLYPHS[finding.evidenceGlyph] ?? finding.evidenceGlyph} {finding.evidenceCount}
+        </span>
       </div>
       <div className="coordinator-finding-tasks">
         {finding.taskIds.map((taskId) => {

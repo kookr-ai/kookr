@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from 'vitest';
-import { agentProviderPresentation, deriveTaskNextStepRecommendations, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, turnStateLabel, turnStateClass } from './presentation.js';
+import { agentProviderPresentation, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
 import type { AgentEvent, AgentState, GitHubPRState } from '../shared/protocol.js';
 
 function makeCompletedAgent(overrides: Partial<AgentState> = {}): AgentState {
@@ -63,6 +63,38 @@ describe('healthyDotClass', () => {
       { type: 'stop', sessionId: 's1', lastMessage: 'All done!' },
     ];
     expect(healthyDotClass(events)).toBe('done');
+  });
+});
+
+describe('finding wait age', () => {
+  test('formats day-old waits compactly', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-11T18:57:00Z'));
+
+    expect(formatAge('2026-06-07T22:47:00Z')).toBe('3d');
+
+    vi.useRealTimers();
+  });
+
+  test('uses pendingSignal.raisedAt instead of re-stamped anomaly.detectedAt', () => {
+    const agent = {
+      agentId: 'agent-1',
+      events: [],
+      turnState: 'completed_turn',
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: '2026-06-07T22:47:00Z',
+      },
+      anomaly: {
+        agentId: 'agent-1',
+        type: 'needs_input',
+        severity: 'warning',
+        explanation: 'Agent is waiting for review.',
+        detectedAt: new Date('2026-06-11T18:49:00Z'),
+      },
+    } satisfies AgentState;
+
+    expect(findingWaitStartedAt(agent)).toBe('2026-06-07T22:47:00Z');
   });
 });
 
@@ -298,5 +330,94 @@ describe('deriveTaskNextStepRecommendations', () => {
 
   test('does not suggest next steps for active tasks', () => {
     expect(deriveTaskNextStepRecommendations(makeCompletedAgent({ taskStatus: 'inProgress' }))).toEqual([]);
+  });
+});
+
+describe('worktreeHealthLabel (F14)', () => {
+  test('missing states say "worktree" so the badge is unambiguous', () => {
+    expect(worktreeHealthLabel('missing_unexpectedly')).toBe('worktree missing');
+    expect(worktreeHealthLabel('missing')).toBe('worktree missing');
+  });
+
+  test('registry-stale flag wins over health', () => {
+    expect(worktreeHealthLabel('missing_unexpectedly', true)).toBe('git stale');
+  });
+
+  test('ok and undefined render no badge', () => {
+    expect(worktreeHealthLabel('ok')).toBe('');
+    expect(worktreeHealthLabel(undefined)).toBe('');
+  });
+
+  test('other states keep their short labels', () => {
+    expect(worktreeHealthLabel('stale')).toBe('stale');
+    expect(worktreeHealthLabel('cleaned_up')).toBe('cleaned up');
+  });
+});
+
+describe('worktreeHealthTitle (F14)', () => {
+  test('missing_unexpectedly explains the working copy may be gone and to check before sending work', () => {
+    const title = worktreeHealthTitle('missing_unexpectedly');
+    expect(title).toBe(
+      "Worktree directory is missing unexpectedly — the agent's working copy may have been deleted. Check the session before sending new work.",
+    );
+  });
+
+  test('legacy missing carries the same working-copy warning', () => {
+    expect(worktreeHealthTitle('missing')).toContain("the agent's working copy may have been deleted");
+    expect(worktreeHealthTitle('missing')).toContain('Check the session before sending new work.');
+  });
+
+  test('registry-stale flag wins over health', () => {
+    expect(worktreeHealthTitle('missing_unexpectedly', true)).toBe(
+      'Worktree registry refresh failed; showing stale git state',
+    );
+  });
+
+  test('ok and undefined render no tooltip', () => {
+    expect(worktreeHealthTitle(undefined)).toBe('');
+  });
+});
+
+describe('taskStatusLabel', () => {
+  test('maps raw task-status enums to human labels', () => {
+    expect(taskStatusLabel('open')).toBe('Open');
+    expect(taskStatusLabel('pending')).toBe('Pending');
+    expect(taskStatusLabel('inProgress')).toBe('In progress');
+    expect(taskStatusLabel('completed')).toBe('Completed');
+    expect(taskStatusLabel('terminated')).toBe('Terminated');
+    expect(taskStatusLabel('cancelled')).toBe('Cancelled');
+  });
+
+  test('falls back to the raw value for unknown statuses and empty for undefined', () => {
+    expect(taskStatusLabel('someFutureStatus')).toBe('someFutureStatus');
+    expect(taskStatusLabel(undefined)).toBe('');
+  });
+});
+
+describe('findingTypeLabel', () => {
+  function agent(type: NonNullable<AgentState['anomaly']>['type'], overrides: Partial<AgentState> = {}): AgentState {
+    return {
+      agentId: 'agent-1',
+      events: [],
+      anomaly: {
+        agentId: 'agent-1',
+        type,
+        severity: 'warning',
+        explanation: 'Waiting',
+        detectedAt: new Date('2026-06-21T00:00:00.000Z'),
+      },
+      ...overrides,
+    };
+  }
+
+  test('uses curated labels for protocol anomaly types', () => {
+    expect(findingTypeLabel(agent('api_error'))).toBe('API Error');
+    expect(findingTypeLabel(agent('merge_conflict'))).toBe('Merge Conflict');
+    expect(findingTypeLabel(agent('permission_blocked'))).toBe('Permission');
+  });
+
+  test('distinguishes completed-turn signals from explicit input requests', () => {
+    expect(findingTypeLabel(agent('needs_input'))).toBe('Needs Input');
+    expect(findingTypeLabel(agent('needs_input', { turnState: 'completed_turn' }))).toBe('Signaled Complete');
   });
 });

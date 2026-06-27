@@ -4,6 +4,7 @@
 //
 // Usage:
 //   kookr signal completion-ready
+//   kookr signal completion-ready --json
 //   kookr signal completion-ready --note "tests green, PR #812 opened"
 //   kookr signal completion-ready --task-id <uuid>
 //
@@ -34,7 +35,6 @@ import {
 } from './kookr-spawn.js';
 
 const POST_TIMEOUT_MS = 10_000;
-const MAX_NOTE_LENGTH = 280;
 
 // Accept the hook-safe hyphenated form on the CLI and normalize to the wire
 // enum. Bare arguments (no shell metacharacters) sidestep PreToolUse command
@@ -53,9 +53,10 @@ Kinds:
   completion-ready   Tell the user you believe this task is ready to complete.
 
 Options:
-      --note <text>      Optional short note (best-effort secret-scrubbed,
-                         capped to ${MAX_NOTE_LENGTH} chars).
+      --note <text>      Optional note. The server best-effort secret-scrubs it
+                         and visibly truncates over-limit notes.
       --task-id <uuid>   Target task (default: KOOKR_TASK_ID).
+      --json             Print one machine-readable output envelope.
   -h, --help             Show this help.
 
 Environment:
@@ -72,7 +73,7 @@ Exit codes:
 class UsageError extends Error {}
 
 function parseArgs(argv) {
-  const out = { kind: null, note: null, taskId: null, help: false };
+  const out = { kind: null, note: null, taskId: null, json: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const tok = argv[i];
     const eat = () => {
@@ -82,6 +83,8 @@ function parseArgs(argv) {
     };
     if (tok === '-h' || tok === '--help') {
       out.help = true;
+    } else if (tok === '--json') {
+      out.json = true;
     } else if (tok === '--note') {
       out.note = eat();
     } else if (tok.startsWith('--note=')) {
@@ -99,6 +102,19 @@ function parseArgs(argv) {
     }
   }
   return out;
+}
+
+function wantsJson(argv) {
+  return argv.includes('--json');
+}
+
+function emitJson(out, { ok, code, message, details = {} }) {
+  out.log(JSON.stringify({ ok, code, message, details }));
+}
+
+function exitJson({ out, exit, exitCode, ok, code, message, details }) {
+  emitJson(out, { ok, code, message, details });
+  return exit(exitCode);
 }
 
 function resolveTaskId({ args, env }) {
@@ -132,7 +148,7 @@ async function postSignal({ baseUrl, taskId, kind, note }) {
   if (!res.ok) {
     return { kind: 'rejected', status: res.status, message: json?.error ?? (text || `HTTP ${res.status}`) };
   }
-  return { kind: 'ok' };
+  return { kind: 'ok', truncated: json?.truncated === true };
 }
 
 async function main({
@@ -148,6 +164,17 @@ async function main({
     args = parseArgs(argv);
   } catch (e) {
     if (e instanceof UsageError) {
+      if (wantsJson(argv)) {
+        return exitJson({
+          out,
+          exit,
+          exitCode: EXIT_USER_ERROR,
+          ok: false,
+          code: 'USER_ERROR',
+          message: e.message,
+          details: { subcommand: 'signal' },
+        });
+      }
       err.error(`kookr signal: ${e.message}`);
       err.error('Try --help.');
       return exit(EXIT_USER_ERROR);
@@ -155,29 +182,73 @@ async function main({
     throw e;
   }
   if (args.help) {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_OK,
+        ok: true,
+        code: 'OK',
+        message: 'Help',
+        details: { help: HELP_TEXT },
+      });
+    }
     out.log(HELP_TEXT);
     return exit(EXIT_OK);
   }
 
   if (args.kind === null) {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_USER_ERROR,
+        ok: false,
+        code: 'USER_ERROR',
+        message: 'a kind is required (e.g. `kookr signal completion-ready`).',
+        details: { subcommand: 'signal' },
+      });
+    }
     err.error('kookr signal: a kind is required (e.g. `kookr signal completion-ready`).');
     return exit(EXIT_USER_ERROR);
   }
   const kind = KIND_ALIASES.get(args.kind);
   if (!kind) {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_USER_ERROR,
+        ok: false,
+        code: 'USER_ERROR',
+        message: `unknown kind "${args.kind}". Known kinds: ${[...KIND_ALIASES.keys()].join(', ')}.`,
+        details: { subcommand: 'signal' },
+      });
+    }
     err.error(`kookr signal: unknown kind "${args.kind}". Known kinds: ${[...KIND_ALIASES.keys()].join(', ')}.`);
     return exit(EXIT_USER_ERROR);
   }
 
   const taskId = resolveTaskId({ args, env });
   if (!taskId) {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_USER_ERROR,
+        ok: false,
+        code: 'USER_ERROR',
+        message: 'no task id. Set KOOKR_TASK_ID (auto-injected into managed tasks) or pass --task-id.',
+        details: { subcommand: 'signal' },
+      });
+    }
     err.error('kookr signal: no task id. Set KOOKR_TASK_ID (auto-injected into managed tasks) or pass --task-id.');
     return exit(EXIT_USER_ERROR);
   }
 
   let note = null;
   if (args.note !== null) {
-    const trimmed = args.note.trim().slice(0, MAX_NOTE_LENGTH);
+    const trimmed = args.note.trim();
     if (trimmed) note = trimmed;
   }
 
@@ -185,17 +256,53 @@ async function main({
   try {
     resolved = await resolveBaseUrl({ env, ...(sleep ? { sleep } : {}) });
   } catch (e) {
-    err.error(`kookr signal: ${e instanceof Error ? e.message : String(e)}`);
+    const message = e instanceof Error ? e.message : String(e);
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_USER_ERROR,
+        ok: false,
+        code: 'USER_ERROR',
+        message,
+        details: { subcommand: 'signal' },
+      });
+    }
+    err.error(`kookr signal: ${message}`);
     return exit(EXIT_USER_ERROR);
   }
   if (resolved.kind === 'invalid_port') {
-    err.error(`kookr signal: KOOKR_PORT must be an integer in 1..65535 (got: ${resolved.raw})`);
+    const message = `KOOKR_PORT must be an integer in 1..65535 (got: ${resolved.raw})`;
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_USER_ERROR,
+        ok: false,
+        code: 'USER_ERROR',
+        message,
+        details: { subcommand: 'signal' },
+      });
+    }
+    err.error(`kookr signal: ${message}`);
     return exit(EXIT_USER_ERROR);
   }
   if (resolved.kind === 'ambiguous' || resolved.kind === 'none') {
     // Advisory: signaling is best-effort. The agent should NOT fail its task
     // because the dashboard server happens to be unreachable.
-    err.error('kookr signal: no Kookr server reachable; skipping (advisory, not a task failure).');
+    const message = 'no Kookr server reachable; skipping (advisory, not a task failure).';
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_NO_SERVER,
+        ok: false,
+        code: 'NO_SERVER',
+        message,
+        details: { subcommand: 'signal' },
+      });
+    }
+    err.error(`kookr signal: ${message}`);
     return exit(EXIT_NO_SERVER);
   }
 
@@ -204,17 +311,55 @@ async function main({
   try {
     result = await postSignal({ baseUrl, taskId, kind, note });
   } catch (e) {
-    err.error(`kookr signal: request failed: ${e instanceof Error ? e.message : String(e)} (advisory)`);
+    const message = `request failed: ${e instanceof Error ? e.message : String(e)} (advisory)`;
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_NO_SERVER,
+        ok: false,
+        code: 'NO_SERVER',
+        message,
+        details: { subcommand: 'signal' },
+      });
+    }
+    err.error(`kookr signal: ${message}`);
     return exit(EXIT_NO_SERVER);
   }
 
   if (result.kind === 'rejected') {
+    const message = `server rejected the signal (HTTP ${result.status}): ${result.message}`;
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_SERVER_ERROR,
+        ok: false,
+        code: 'SERVER_ERROR',
+        message,
+        details: { status: result.status },
+      });
+    }
     err.error(`kookr signal: server rejected the signal (HTTP ${result.status}): ${result.message}`);
     err.error('Your KOOKR_TASK_ID may be wrong or the task may already be finished.');
     return exit(EXIT_SERVER_ERROR);
   }
 
+  if (args.json) {
+    return exitJson({
+      out,
+      exit,
+      exitCode: EXIT_OK,
+      ok: true,
+      code: 'OK',
+      message: 'Signal raised.',
+      details: { truncated: result.truncated },
+    });
+  }
   out.log(`✓ Signal raised: ${kind}${note ? ` (note attached)` : ''} for task ${taskId}`);
+  if (result.truncated) {
+    out.log('Note was truncated by the server; shorten and re-signal if important detail was omitted.');
+  }
   return exit(EXIT_OK);
 }
 

@@ -1,11 +1,13 @@
 import type { Context, Hono } from 'hono';
 import { getConnInfo } from '@hono/node-server/conninfo';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { accessSync, constants as fsConstants } from 'node:fs';
 import { readInteractionLog } from '../../core/interaction-log.js';
 import { readTelemetryLog } from '../../core/telemetry.js';
 import { analyzeSession } from '../../core/friction-analyzer.js';
 import { buildLiveFrictionCalibrationSnapshot } from '../../core/live-friction-calibration.js';
 import { getDetectionStats } from '../../core/detection-stats.js';
+import { buildLaunchDependencyDiagnostics } from '../../core/launch-dependency-diagnostics.js';
 import { generateReportFromFile, formatReport } from '../../core/shadow-report.js';
 import { getSnapshotAgentsRaw } from '../use-cases/get-snapshot.js';
 import { buildReflectionRecommendationResponse } from '../reflection-task.js';
@@ -20,12 +22,18 @@ import {
 import { ReviewLogStore } from '../review-log-store.js';
 import { buildDetectorProposalReportResponseV1 } from '../detector-proposal-report.js';
 import { REQUEST_LATENCIES_ROUTE } from '../request-duration-metrics.js';
+import { splitHookRequestBody } from '../hook-record-framing.js';
 import type { BackendStats } from '../../adapters/terminal-backend.js';
 import type { RouteDeps } from './shared.js';
+import type { HookIngestionDiagnosticsSnapshot } from '../hook-ingestion.js';
+import type { HookWatcherHealthSnapshot } from '../hook-watcher.js';
+import { getAuthThrottleSnapshot } from '../auth.js';
+import { DELIVERY_TRACE_SCHEMA_VERSION, type DeliveryTraceFilter } from '../../shared/contracts/delivery-trace.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const REVIEW_ADMIN_TOKEN_HEADER = 'x-kookr-admin-token';
 const REVIEW_CSRF_HEADER = 'x-kookr-finding-review-token';
+const DEFAULT_HOOK_INGESTION_LAG_WARNING_THRESHOLD_MS = 2_000;
 
 export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   const { taskStore, queue, adapter, interactionLog, githubScanner, githubStateStore, buildInfo, serverStartedAt } = deps;
@@ -58,11 +66,19 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         grantStoreWritable: deps.viewerShare.grantStore.isWritable(),
       };
     }
+    const tasks = taskStore.listTasks();
+    const launchDependencies = buildLaunchDependencyDiagnostics(tasks);
+    const attentionQueueSampledAtMs = Date.now();
     return c.json({
       status: 'ok',
-      agents: taskStore.listTasks().length,
+      agents: tasks.length,
       build: buildInfo,
       serverStartedAt,
+      launchDependencies,
+      attentionQueue: {
+        activeFindingDepth: queue.getDepth(attentionQueueSampledAtMs),
+        oldestFindingAgeMs: queue.getOldestFindingAgeMs(attentionQueueSampledAtMs),
+      },
       ...(terminalBackendBlock ? { terminalBackend: terminalBackendBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),
@@ -133,6 +149,32 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     return c.json(deps.requestDurationMetrics.snapshot());
   });
 
+  app.get('/api/diagnostics/auth-throttle', (c) => c.json(getAuthThrottleSnapshot(deps.apiAuth)));
+
+  app.get('/api/diagnostics/delivery-trace', (c) => {
+    const snapshot = deps.deliveryTrace?.snapshot(parseDeliveryTraceFilter(c)) ?? {
+      schemaVersion: DELIVERY_TRACE_SCHEMA_VERSION,
+      maxRecords: 0,
+      totalRecorded: 0,
+      records: [],
+    };
+    const limit = parsePositiveInt(c.req.query('limit'));
+    return c.json(limit === undefined ? snapshot : {
+      ...snapshot,
+      records: snapshot.records.slice(-limit),
+    });
+  });
+
+  app.get('/api/diagnostics/hook-ingestion', (c) => c.json({
+    schemaVersion: 'hook-ingestion-diagnostics-route.v1',
+    ingestion: deps.hookIngestion?.getDiagnosticsSnapshot() ?? emptyHookIngestionDiagnosticsSnapshot(),
+    watcher: deps.hookWatcher?.getHealthSnapshot() ?? emptyHookWatcherHealthSnapshot(),
+  }));
+
+  app.get('/api/diagnostics/launch-dependencies', (c) => (
+    c.json(buildLaunchDependencyDiagnostics(taskStore.listTasks()))
+  ));
+
   app.get('/api/live-friction-calibration', async (c) => {
     try {
       const logPath = interactionLog.getFilePath();
@@ -200,7 +242,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       return c.json({ error: 'finding-review-forbidden' }, 403);
     }
     const requiredToken = process.env.KOOKR_FINDING_REVIEW_TOKEN?.trim();
-    if (requiredToken && c.req.header(REVIEW_CSRF_HEADER) !== requiredToken) {
+    if (requiredToken && !timingSafeTokenEqual(requiredToken, c.req.header(REVIEW_CSRF_HEADER))) {
       return c.json({ error: 'invalid-finding-review-token' }, 403);
     }
 
@@ -356,8 +398,23 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       // file watcher uses. Dedup by content hash keeps a single record from
       // reaching the adapter twice when the file watcher also delivers it.
       // See rfc-activity-log-reliability §5.
-      const result = deps.hookIngestion.ingestFromHttp(sessionId, body);
-      return c.json({ status: 'received', dispatched: result.dispatched });
+      const records = splitHookRequestBody(body);
+
+      let dispatchedCount = 0;
+      for (const record of records) {
+        const result = deps.hookIngestion.ingestFromHttp(sessionId, record);
+        if (result.dispatched) dispatchedCount += 1;
+      }
+
+      if (records.length === 1) {
+        return c.json({ status: 'received', dispatched: dispatchedCount === 1 });
+      }
+      return c.json({
+        status: 'received',
+        dispatched: dispatchedCount > 0,
+        recordCount: records.length,
+        dispatchedCount,
+      });
     }
 
     // Fallback: timing-only — shadow-detection era behavior.
@@ -513,10 +570,62 @@ function checkPersistenceWritable(kookrDir: string | undefined): ReadinessCheck 
   }
 }
 
+function parseDeliveryTraceFilter(c: Context): DeliveryTraceFilter {
+  const filter: DeliveryTraceFilter = {};
+  const findingId = c.req.query('findingId')?.trim();
+  const correlationId = c.req.query('correlationId')?.trim();
+  const agentId = c.req.query('agentId')?.trim();
+  const fingerprintHash = c.req.query('fingerprintHash')?.trim();
+  if (findingId) filter.findingId = findingId;
+  if (correlationId) filter.correlationId = correlationId;
+  if (agentId) filter.agentId = agentId;
+  if (fingerprintHash) filter.fingerprintHash = fingerprintHash;
+  return filter;
+}
+
+function parsePositiveInt(raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function emptyHookIngestionDiagnosticsSnapshot(): HookIngestionDiagnosticsSnapshot {
+  return {
+    schemaVersion: 'hook-ingestion-diagnostics.v1',
+    generatedAt: new Date().toISOString(),
+    lagWarningThresholdMs: DEFAULT_HOOK_INGESTION_LAG_WARNING_THRESHOLD_MS,
+    sessionCount: 0,
+    totalArrivals: 0,
+    missingWriteTimestampCount: 0,
+    notableLagCount: 0,
+    sessions: [],
+  };
+}
+
+function emptyHookWatcherHealthSnapshot(): HookWatcherHealthSnapshot {
+  return {
+    schemaVersion: 'hook-watcher-health.v1',
+    generatedAt: new Date().toISOString(),
+    sessionCount: 0,
+    sessions: [],
+  };
+}
+
 function isAuthorizedFindingReviewRequest(remoteAddress: string | undefined, adminTokenHeader: string | undefined): boolean {
   const configuredAdminToken = process.env.KOOKR_FINDING_REVIEW_ADMIN_TOKEN?.trim();
-  if (configuredAdminToken && adminTokenHeader === configuredAdminToken) return true;
+  if (configuredAdminToken && timingSafeTokenEqual(configuredAdminToken, adminTokenHeader)) return true;
   return remoteAddress !== undefined && isLoopbackAddress(remoteAddress);
+}
+
+function timingSafeTokenEqual(expected: string, presented: string | undefined): boolean {
+  if (presented === undefined) return false;
+  const expectedBytes = Buffer.from(expected, 'utf8');
+  const presentedBytes = Buffer.from(presented, 'utf8');
+  const expectedDigest = createHash('sha256').update(expectedBytes).digest();
+  const presentedDigest = createHash('sha256').update(presentedBytes).digest();
+  const equalLength = expectedBytes.length === presentedBytes.length;
+  const equalDigest = timingSafeEqual(expectedDigest, presentedDigest);
+  return equalLength && equalDigest;
 }
 
 function getRemoteAddress(c: Context): string | undefined {

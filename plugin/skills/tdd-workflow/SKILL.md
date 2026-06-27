@@ -2,7 +2,7 @@
 name: tdd-workflow
 description: Implement features using TDD workflow with requirements-first approach. Use when implementing new features, adding functionality, or when user asks to build something.
 keywords: tdd, test-driven, red-green-refactor, requirements, feature implementation
-related: testing-patterns, test-quality-discipline, vitest-bun-mocking, safe-refactoring
+related: testing-patterns, safe-refactoring
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, Task
 ---
 
@@ -21,7 +21,7 @@ Implement features using Test-Driven Development with requirements-first approac
 
 ### 1. Requirement First
 Before any code:
-1. Add/update the canonical requirement in the appropriate file under `docs/requirements/` (start from `docs/requirements/INDEX.md`; `docs/FUNCTIONAL_SPECIFICATIONS.md` is a redirect/snapshot)
+1. Add/update the canonical requirement in `docs/requirements.md`
 2. Use "shall" for mandatory, active voice, positive statements, quantifiable criteria
 3. Assign unique ID: `{CATEGORY}-{AREA}-{NUMBER}` (FR-*, NFR-*, API-*, DR-*)
 4. Define testable acceptance criteria
@@ -33,7 +33,7 @@ describe('FR-AUTH-001: User authentication', () => {
   it('shall authenticate valid credentials', () => { ... });
 });
 ```
-Map acceptance criteria to test cases. Update the appropriate spec under `docs/testing/` (start from `docs/testing/INDEX.md`) and the traceability matrix.
+Map acceptance criteria to test cases.
 
 ### 3. Implement
 Write minimal code to pass tests. If deviation needed, STOP and ask:
@@ -53,9 +53,6 @@ Run tests. Check:
 ### 5. Commit
 Reference requirement: `git commit -m "feat: implement FR-AUTH-001 user authentication"`
 Include code + docs in same commit when possible.
-
-### 6. Update Progress
-Update `PROGRESS.md`.
 
 ## Requirement ID Schema
 

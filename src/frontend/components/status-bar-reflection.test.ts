@@ -102,6 +102,8 @@ describe('StatusBar reflection prompt', () => {
       outcome: 'suppressed_muted',
       reason: 'sound disabled',
       soundEnabled: false,
+      audioVolume: 1,
+      chimeSound: 'classic',
       soundStateSource: 'localStorage',
       soundStorageAvailable: true,
       dndEnabled: false,
@@ -139,6 +141,12 @@ describe('StatusBar reflection prompt', () => {
         memoryUsedPercent: 68,
         memoryFreeBytes: 4_000_000_000,
         memoryTotalBytes: 12_000_000_000,
+        dataDirectory: {
+          path: '/tmp/kookr-data',
+          diskFreeBytes: 8_000_000_000,
+          diskTotalBytes: 100_000_000_000,
+          diskFreePercent: 8,
+        },
       },
       server: {
         eventLoopDelayP95Ms: 21,
@@ -183,6 +191,12 @@ describe('StatusBar reflection prompt', () => {
         memoryUsedPercent: 68,
         memoryFreeBytes: 4_000_000_000,
         memoryTotalBytes: 12_000_000_000,
+        dataDirectory: {
+          path: '/tmp/kookr-data',
+          diskFreeBytes: 8_000_000_000,
+          diskTotalBytes: 100_000_000_000,
+          diskFreePercent: 8,
+        },
       },
       server: {
         eventLoopDelayP95Ms: 180,

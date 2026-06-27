@@ -14,10 +14,10 @@ import type { ProjectSidebarStore } from '../core/project-sidebar-store.js';
 import type { SkillDiscoveryStateHolder } from '../core/skill-tracked-repo-discovery.js';
 import type { PrLessonsStateHolder } from '../core/pr-lessons-discovery.js';
 import type { AchievementWatcher } from './achievement-watcher.js';
-import type { ServerMessage, ClientMessage, QuotaStatus, SystemResourceStatus } from '../shared/protocol.js';
+import type { DrainStatusSnapshot, ServerMessage, ClientMessage, QuotaStatus, SystemResourceStatus } from '../shared/protocol.js';
 import { ClientMessageSchema, summarizeZodIssues } from '../shared/contracts/client-message-schema.js';
 import { MessageRouter } from './ws.js';
-import type { LaunchOpts, LaunchResult } from './launch-service.js';
+import type { LaunchOpts, LaunchResult, LaunchTaskServerOptions } from './launch-service.js';
 import type { AgentLifecycleDeps } from './agent-lifecycle.js';
 import type { CircuitBreakerRegistry } from '../core/circuit-breaker.js';
 import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
@@ -38,6 +38,11 @@ import type { SocketRegistrar } from './viewer-connection-registry.js';
 import type { DashboardSelectionController } from './dashboard-selection-controller.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from './user-input-delivery-service.js';
+import {
+  serializeServerMessageWithSnapshotPayloadPolicy,
+  snapshotScopeKey,
+  type SnapshotPayloadSizePolicy,
+} from './snapshot-payload-size-policy.js';
 
 /**
  * Application-level inbound WS message types a viewer (read-only actor) is
@@ -92,7 +97,7 @@ export interface WsConnectionDeps {
   agentLifecycleDeps: AgentLifecycleDeps;
   broadcastToAll: (msg: ServerMessage) => void;
   broadcastProjectSummaries: () => void;
-  launchTask: (opts: LaunchOpts) => Promise<LaunchResult>;
+  launchTask: (opts: LaunchOpts, serverOpts?: LaunchTaskServerOptions) => Promise<LaunchResult>;
   githubStateStore: GitHubStateStore;
   ledgerAnalytics: LedgerAnalytics;
   projectConfigStore: ProjectConfigStore;
@@ -109,6 +114,7 @@ export interface WsConnectionDeps {
   availableAgentTypes?: AvailableAgentType[];
   defaultAgentType?: AgentSelection;
   getDefaultAgentType?: () => AgentSelection;
+  bypassAllPermissions?: boolean;
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
   coordinatorAuditTailProvider?: CoordinatorAuditTailProvider;
   coordinatorSuppressions?: CoordinatorSuppressionReader;
@@ -118,6 +124,8 @@ export interface WsConnectionDeps {
   getDiagnosticStatus?: () => { report: import('../core/self-diagnostic.js').DiagnosticReport | null; lastError: string | null };
   /** Get latest server-host resource status for the initial connection burst. */
   getLatestResourceStatus?: () => SystemResourceStatus | null;
+  /** Startup alerts replayed to every dashboard connection until restart. */
+  startupAlerts?: ServerMessage[];
   /** Workspace services (Phase 1a). */
   workspaceEnabled?: boolean;
   attemptRepository?: WorkspaceAttemptRepository;
@@ -126,6 +134,8 @@ export interface WsConnectionDeps {
   serverProjectId?: string;
   /** Wired by createKookrServer so ws.ts can trigger a predelete snapshot. */
   takePredeleteSnapshot?: () => Promise<void>;
+  /** Append-only audit.jsonl path for destructive task lifecycle actions. */
+  auditLogPath?: string;
   /** Persistent store for user-flagged supervisor FP/FN cases (offline analysis). */
   supervisorFeedbackCaseStore?: import('./supervisor-feedback-case-store.js').SupervisorFeedbackCaseStore;
   selectionController?: DashboardSelectionController;
@@ -139,6 +149,7 @@ export interface WsConnectionDeps {
   /** Where hook JSONLs live. */
   hooksDir?: string;
   userInputDeliveries?: UserInputDeliveryService;
+  getDrainStatus?: () => DrainStatusSnapshot;
   /**
    * Single owner of WS scope filtering (#809). When a **viewer** connects, the
    * initial-connection burst is served entirely from this factory
@@ -149,6 +160,18 @@ export interface WsConnectionDeps {
    * fails closed (no snapshot served).
    */
   buildScopedSnapshot?: (scope: Scope) => SnapshotMessage;
+  snapshotPayloadSizePolicy?: SnapshotPayloadSizePolicy;
+}
+
+function sendServerMessage(
+  ws: WebSocket,
+  msg: ServerMessage,
+  scopeKey: string,
+  policy: SnapshotPayloadSizePolicy | undefined,
+): void {
+  if (ws.readyState !== 1 /* WebSocket.OPEN */) return;
+  const data = serializeServerMessageWithSnapshotPayloadPolicy(msg, scopeKey, policy);
+  if (data) ws.send(data);
 }
 
 /**
@@ -182,9 +205,7 @@ export function handleWsConnection(
     taskStore, queue, monitor, adapter,
     adapterRegistry: deps.adapterRegistry,
     send: (msg) => {
-      if (ws.readyState === 1 /* WebSocket.OPEN */) {
-        ws.send(JSON.stringify(msg));
-      }
+      sendServerMessage(ws, msg, 'all', deps.snapshotPayloadSizePolicy);
     },
     serverCwd, interactionLog, buildInfo, serverStartedAt,
     onRespond: abortPendingSuggestion, telemetryLog,
@@ -196,6 +217,7 @@ export function handleWsConnection(
     availableAgentTypes: deps.availableAgentTypes,
     defaultAgentType: deps.defaultAgentType,
     getDefaultAgentType: deps.getDefaultAgentType,
+    bypassAllPermissions: deps.bypassAllPermissions,
     activityMetaProvider: deps.activityMetaProvider,
     coordinatorAuditTailProvider: deps.coordinatorAuditTailProvider,
     coordinatorSuppressions: deps.coordinatorSuppressions,
@@ -207,6 +229,7 @@ export function handleWsConnection(
     leaseService: deps.leaseService,
     serverProjectId: deps.serverProjectId,
     takePredeleteSnapshot: deps.takePredeleteSnapshot,
+    auditLogPath: deps.auditLogPath,
     projectConfigStore,
     broadcastProjectSummaries,
     supervisorFeedbackCaseStore: deps.supervisorFeedbackCaseStore,
@@ -218,6 +241,7 @@ export function handleWsConnection(
     selectionController: deps.selectionController,
     terminalInputCoordinator: deps.terminalInputCoordinator,
     userInputDeliveries: deps.userInputDeliveries,
+    getDrainStatus: deps.getDrainStatus,
   });
 
   // Initial-connection burst (RFC §"Initial-connection burst (consolidated)").
@@ -236,6 +260,12 @@ export function handleWsConnection(
   }
 
   router.handleConnect();
+
+  for (const alert of deps.startupAlerts ?? []) {
+    if (ws.readyState === 1) {
+      ws.send(JSON.stringify(alert));
+    }
+  }
 
   const latestResourceStatus = deps.getLatestResourceStatus?.();
   if (latestResourceStatus && ws.readyState === 1) {
@@ -267,6 +297,7 @@ export function handleWsConnection(
       getRegistryActiveProjects: deps.getRegistryActiveProjects,
       prLessonsHolder: deps.prLessonsState,
       getTaskGithubReferences: (taskId) => githubStateStore.getReferences(taskId),
+      getGithubRefOpenState: (ref) => githubStateStore.isRefOpen(ref),
     });
     if (projects.length > 0 && ws.readyState === 1) {
       ws.send(JSON.stringify({ type: 'projectSummaries', projects }));
@@ -317,9 +348,12 @@ function sendViewerInitialBurst(
     console.warn('[ws] viewer connected without a buildScopedSnapshot factory; serving no snapshot (fail-closed)');
     return;
   }
-  if (ws.readyState === 1) {
-    ws.send(JSON.stringify(deps.buildScopedSnapshot(scope)));
-  }
+  sendServerMessage(
+    ws,
+    deps.buildScopedSnapshot(scope),
+    snapshotScopeKey(scope),
+    deps.snapshotPayloadSizePolicy,
+  );
   const projects = getProjectSummaries({
     monitor: ctx.monitor,
     ledgerAnalytics: ctx.ledgerAnalytics,

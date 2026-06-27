@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type { Playbook, PlaybookParameter } from '../../core/playbook.js';
 
-const { mockDiscoverPlaybooks, mockKbProbe } = vi.hoisted(() => ({
+const { mockDiscoverPlaybooks, mockKbProbe, mockEvolutionConfigProbe } = vi.hoisted(() => ({
   mockDiscoverPlaybooks: vi.fn(),
   mockKbProbe: vi.fn(),
+  mockEvolutionConfigProbe: vi.fn(),
 }));
 
 vi.mock('../../core/playbook-discovery.js', () => ({
@@ -13,7 +14,7 @@ vi.mock('../../core/playbook-discovery.js', () => ({
 // preparePlaybookList only consumes CAPABILITY_PROBES; we mock the whole
 // module so the table dispatches to the controlled fake.
 vi.mock('../launch-capability-probe.js', () => ({
-  CAPABILITY_PROBES: { kb: mockKbProbe },
+  CAPABILITY_PROBES: { kb: mockKbProbe, 'evolution-config': mockEvolutionConfigProbe },
 }));
 
 import { preparePlaybookList } from './playbook-list.js';
@@ -102,6 +103,18 @@ describe('preparePlaybookList', () => {
 
     await preparePlaybookList('/cwd');
     expect(mockKbProbe).toHaveBeenCalledTimes(1);
+  });
+
+  test('probes evolution config against the catalog cwd for evolution-gated parameters', async () => {
+    mockDiscoverPlaybooks.mockResolvedValueOnce([
+      playbook([param({ name: 'targetScore', gatedBy: 'evolution-config' })]),
+    ]);
+    mockEvolutionConfigProbe.mockResolvedValueOnce('available');
+
+    const result = await preparePlaybookList('/project-with-config');
+
+    expect(mockEvolutionConfigProbe).toHaveBeenCalledWith('/project-with-config');
+    expect(result.capabilities).toEqual({ 'evolution-config': 'available' });
   });
 
   test('propagates a discoverPlaybooks rejection (probe failure cannot mask it)', async () => {

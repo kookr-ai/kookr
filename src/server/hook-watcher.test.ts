@@ -1,12 +1,16 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, appendFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { HookFileWatcher, splitHookRecords } from './hook-watcher.js';
+import { HookFileWatcher } from './hook-watcher.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
+import { AttentionQueue } from '../core/attention-queue.js';
 import { TaskStore } from '../core/tasks.js';
 import type { AgentEvent } from '../core/types.js';
+import { HookIngestion, type HookEventInjector } from './hook-ingestion.js';
+import { createHookParseDegradationEvaluator } from './hook-parse-degradation-rules.js';
+import type { ServerMessage } from '../shared/contracts/messages.js';
 
 describe('HookFileWatcher', () => {
   let tempDir: string;
@@ -29,6 +33,17 @@ describe('HookFileWatcher', () => {
     watcher.stopAll();
     rmSync(tempDir, { recursive: true, force: true });
   });
+
+  function registerSession(tmuxName: string): void {
+    const task = taskStore.createTask('Test', '/cwd');
+    adapter['tmuxToTaskId'].set(tmuxName, task.id);
+    taskStore.addSession(task.id, {
+      tmuxSession: tmuxName,
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+  }
 
   test('isWatching returns false before watch', () => {
     expect(watcher.isWatching('kookr-abc')).toBe(false);
@@ -142,12 +157,16 @@ describe('HookFileWatcher', () => {
     expect(events[1].type).toBe('tool_use');
   });
 
-  test('splitHookRecords separates concatenated hook JSON objects', () => {
+  test('replayExisting=true resumes from a matching replay checkpoint', async () => {
+    const hookFile = join(tempDir, 'kookr-checkpoint.jsonl');
+    const checkpointPath = join(tempDir, 'hook-replay-checkpoints.json');
+
     const event1 = JSON.stringify({
       session_id: 'sess-1',
       transcript_path: '/path/to/transcript.jsonl',
       cwd: '/cwd',
       hook_event_name: 'SessionStart',
+      model: 'claude-sonnet-4-20250514',
     });
     const event2 = JSON.stringify({
       session_id: 'sess-1',
@@ -155,28 +174,226 @@ describe('HookFileWatcher', () => {
       cwd: '/cwd',
       hook_event_name: 'PreToolUse',
       tool_name: 'Bash',
-      tool_input: { command: 'printf "}{"' },
+      permission_mode: 'acceptEdits',
     });
+    writeFileSync(hookFile, `${event1}\n${event2}\n`);
 
-    expect(splitHookRecords(`${event1}${event2}`)).toEqual({
-      records: [event1, event2],
-      consumedChars: event1.length + event2.length,
+    registerSession('kookr-checkpoint');
+
+    watcher.stopAll();
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    watcher.watch('kookr-checkpoint', { replayExisting: true, useReplayCheckpoint: true });
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(events.map((event) => event.type)).toEqual(['session_start', 'tool_use']);
+    const checkpoint = JSON.parse(readFileSync(checkpointPath, 'utf-8')) as {
+      sessions: Record<string, { offsetChars: number }>;
+    };
+    expect(checkpoint.sessions['kookr-checkpoint'].offsetChars).toBe(`${event1}\n${event2}\n`.length);
+
+    watcher.stopAll();
+    events = [];
+    const event3 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_response: { stdout: 'ok' },
     });
+    appendFileSync(hookFile, `${event3}\n`);
+
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    watcher.watch('kookr-checkpoint', { replayExisting: true, useReplayCheckpoint: true });
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('tool_result');
+    expect(watcher.getOffset('kookr-checkpoint')).toBe(`${event1}\n${event2}\n${event3}\n`.length);
   });
 
-  test('splitHookRecords leaves incomplete trailing JSON for the next read', () => {
-    const event = JSON.stringify({
+  test('replay checkpoint invalidates when the hook file is truncated', async () => {
+    const hookFile = join(tempDir, 'kookr-checkpoint-trunc.jsonl');
+    const checkpointPath = join(tempDir, 'hook-replay-checkpoints.json');
+
+    const event1 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      note: 'x'.repeat(400),
+    });
+    const event2 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+    });
+    writeFileSync(hookFile, `${event1}\n${event2}\n`);
+
+    registerSession('kookr-checkpoint-trunc');
+
+    watcher.stopAll();
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    watcher.watch('kookr-checkpoint-trunc', { replayExisting: true, useReplayCheckpoint: true });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(events).toHaveLength(2);
+
+    watcher.stopAll();
+    events = [];
+    const event3 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'Notification',
+      message: 'fresh shorter file',
+    });
+    writeFileSync(hookFile, `${event3}\n`);
+
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    watcher.watch('kookr-checkpoint-trunc', { replayExisting: true, useReplayCheckpoint: true });
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('notification');
+    expect(watcher.getOffset('kookr-checkpoint-trunc')).toBe(`${event3}\n`.length);
+  });
+
+  test('replay checkpoint invalidates when the hook file truncates and regrows past the old offset', async () => {
+    const hookFile = join(tempDir, 'kookr-checkpoint-regrow.jsonl');
+    const checkpointPath = join(tempDir, 'hook-replay-checkpoints.json');
+
+    const oldEvent = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      note: 'old'.repeat(200),
+    });
+    writeFileSync(hookFile, `${oldEvent}\n`);
+    registerSession('kookr-checkpoint-regrow');
+
+    watcher.stopAll();
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    watcher.watch('kookr-checkpoint-regrow', { replayExisting: true, useReplayCheckpoint: true });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(events).toHaveLength(1);
+
+    watcher.stopAll();
+    events = [];
+    const newEvent1 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'Notification',
+      message: 'fresh after truncate',
+    });
+    const newEvent2 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'true' },
+      note: 'new'.repeat(300),
+    });
+    writeFileSync(hookFile, `${newEvent1}\n${newEvent2}\n`);
+    expect(`${newEvent1}\n${newEvent2}\n`.length).toBeGreaterThan(`${oldEvent}\n`.length);
+
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    watcher.watch('kookr-checkpoint-regrow', { replayExisting: true, useReplayCheckpoint: true });
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(events.map((event) => event.type)).toEqual(['notification', 'tool_use']);
+  });
+
+  test('replay checkpoint falls back to offset zero when the checkpoint file is invalid', async () => {
+    const hookFile = join(tempDir, 'kookr-checkpoint-invalid.jsonl');
+    const checkpointPath = join(tempDir, 'hook-replay-checkpoints.json');
+    const event1 = JSON.stringify({
       session_id: 'sess-1',
       transcript_path: '/path/to/transcript.jsonl',
       cwd: '/cwd',
       hook_event_name: 'SessionStart',
     });
-    const partial = '{"session_id":"sess-2"';
+    writeFileSync(hookFile, `${event1}\n`);
+    writeFileSync(checkpointPath, 'not json');
 
-    expect(splitHookRecords(`${event}${partial}`)).toEqual({
-      records: [event],
-      consumedChars: event.length,
+    registerSession('kookr-checkpoint-invalid');
+
+    watcher.stopAll();
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    watcher.watch('kookr-checkpoint-invalid', { replayExisting: true, useReplayCheckpoint: true });
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('session_start');
+    expect(watcher.getOffset('kookr-checkpoint-invalid')).toBe(`${event1}\n`.length);
+  });
+
+  test('startup replay malformed records stay quiet but later live malformed records alert once', async () => {
+    const hookFile = join(tempDir, 'kookr-startup-replay.jsonl');
+    writeFileSync(hookFile, '{"old":true}\n');
+    const alerts: Array<Extract<ServerMessage, { type: 'alert' }>> = [];
+    const queue = new AttentionQueue();
+    const evaluator = createHookParseDegradationEvaluator();
+    const malformedAdapter: HookEventInjector = {
+      injectHookEvent(_tmux, _raw, sequence, options) {
+        return {
+          parseStatus: 'malformed',
+          agentType: 'claude-code',
+          error: 'bad hook record',
+          sequence: sequence ?? 0,
+          origin: options?.origin,
+        };
+      },
+    };
+    const ingestion = new HookIngestion({
+      adapter: malformedAdapter,
+      now: () => Date.parse('2026-06-11T10:00:00.000Z'),
+      onParseDegradation: (event) => {
+        const evaluation = evaluator.evaluate(event);
+        if (!evaluation) return;
+        queue.enqueue(event.kookrSessionId, evaluation.anomaly);
+        alerts.push(evaluation.alert);
+      },
     });
+    const optionWatcher = new HookFileWatcher(tempDir, ingestion);
+
+    try {
+      optionWatcher.watch('kookr-startup-replay', {
+        replayExisting: true,
+        suppressParseAlertsForExisting: true,
+      });
+      await new Promise((r) => setTimeout(r, 200));
+
+      expect(alerts).toEqual([]);
+      expect(queue.peek('kookr-startup-replay')).toBeNull();
+      expect(ingestion.getActivityMeta('kookr-startup-replay')?.malformedRecordCount).toBe(1);
+
+      appendFileSync(hookFile, '{"live":true}\n');
+      await optionWatcher.drainNow('kookr-startup-replay');
+
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0].details).toContain('{"live":true}');
+      expect(alerts[0].details).toContain('Event: evt_');
+      const alertEventId = alerts[0].details.match(/Event: (evt_[^ ]+)/)?.[1];
+      expect(alertEventId).toBeDefined();
+      expect(queue.peek('kookr-startup-replay')).toMatchObject({
+        type: 'hook_parse_degraded',
+        eventId: alertEventId,
+      });
+
+      appendFileSync(hookFile, '{"live":2}\n');
+      await optionWatcher.drainNow('kookr-startup-replay');
+
+      expect(alerts).toHaveLength(1);
+      expect(queue.peek('kookr-startup-replay')?.type).toBe('hook_parse_degraded');
+      expect(ingestion.getActivityMeta('kookr-startup-replay')?.malformedRecordCount).toBe(3);
+    } finally {
+      optionWatcher.stopAll();
+    }
   });
 
   test('replayExisting=true replays concatenated hook records', async () => {
@@ -305,6 +522,100 @@ describe('HookFileWatcher', () => {
     // Second drain with no new data should not re-deliver.
     await watcher.drainNow('kookr-drain');
     expect(events.length).toBe(1);
+  });
+
+  test('health snapshot reports watcher mode, replay records, and drain latency', async () => {
+    const hookFile = join(tempDir, 'kookr-health.jsonl');
+    const sessionStart = JSON.stringify({
+      session_id: 'health-sess',
+      transcript_path: '/health.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+    });
+    writeFileSync(hookFile, `${sessionStart}\n`);
+
+    const task = taskStore.createTask('Health', '/cwd');
+    adapter['tmuxToTaskId'].set('kookr-health', task.id);
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-health',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+
+    watcher.watch('kookr-health', { replayExisting: true });
+    await new Promise((r) => setTimeout(r, 200));
+    await watcher.drainNow('kookr-health');
+
+    const snapshot = watcher.getHealthSnapshot();
+    expect(snapshot).toEqual(expect.objectContaining({
+      schemaVersion: 'hook-watcher-health.v1',
+      sessionCount: 1,
+    }));
+    expect(snapshot.sessions[0]).toEqual(expect.objectContaining({
+      tmuxName: 'kookr-health',
+      mode: 'fs_watch',
+      pollBackupActive: true,
+      replayExisting: true,
+      readCount: expect.any(Number),
+      recordCount: 1,
+      replayRecordCount: 1,
+      drainNowCount: 1,
+      lastDrainLatencyMs: expect.any(Number),
+      maxDrainLatencyMs: expect.any(Number),
+      p95DrainLatencyMs: expect.any(Number),
+      lastReadAt: expect.any(String),
+      lastError: null,
+    }));
+  });
+
+  test('health snapshot reports poll-until-exists mode before a missing hook file appears', () => {
+    watcher.watch('kookr-missing-health');
+
+    const snapshot = watcher.getHealthSnapshot();
+    expect(snapshot.sessions[0]).toEqual(expect.objectContaining({
+      tmuxName: 'kookr-missing-health',
+      mode: 'poll_until_exists',
+      pollBackupActive: false,
+      lastTransitionReason: 'watch_file_missing',
+    }));
+  });
+
+  test('forwards file mtime metadata to the ingestion adapter', async () => {
+    const hookFile = join(tempDir, 'kookr-mtime.jsonl');
+    const raw = JSON.stringify({
+      session_id: 'mtime-sess',
+      transcript_path: '/mtime.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+    });
+    writeFileSync(hookFile, `${raw}\n`);
+
+    const calls: Array<Parameters<HookEventInjector['injectHookEvent']>> = [];
+    const captureAdapter: HookEventInjector = {
+      injectHookEvent(...args) {
+        calls.push(args);
+        return {
+          parseStatus: 'ok',
+          agentType: 'claude-code',
+          parentage: 'parent',
+          sequence: args[2] ?? 0,
+        };
+      },
+    };
+    const mtimeWatcher = new HookFileWatcher(tempDir, captureAdapter);
+
+    try {
+      mtimeWatcher.watch('kookr-mtime', { replayExisting: true });
+      await new Promise((r) => setTimeout(r, 200));
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0][3]).toEqual(expect.objectContaining({
+        fileMtimeMs: expect.any(Number),
+      }));
+    } finally {
+      mtimeWatcher.stopAll();
+    }
   });
 
   test('replayExisting=true is preserved when file appears after watch (pollUntilExists path)', async () => {

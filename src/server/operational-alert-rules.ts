@@ -1,6 +1,12 @@
 import type { ServerMessage, SystemResourceStatus } from '../shared/contracts/messages.js';
 import type { AnomalySeverity } from '../shared/contracts/anomalies.js';
+import type { CircuitBreakerSnapshot } from '../shared/contracts/circuit-breaker.js';
 import type { OperationalAlertConfig } from './config.js';
+import type {
+  PersistenceHealthSnapshot,
+  PersistenceHealthTarget,
+  PersistenceTargetHealth,
+} from '../core/persistence-health.js';
 
 /**
  * Synthetic agent id used for host-level operational alerts that are not tied
@@ -9,7 +15,16 @@ import type { OperationalAlertConfig } from './config.js';
  */
 export const OPERATIONAL_ALERT_AGENT_ID = 'system';
 
-export type OperationalAlertMetric = 'cpu' | 'memory' | 'event_loop_delay';
+export type OperationalAlertMetric =
+  | 'cpu'
+  | 'memory'
+  | 'event_loop_delay'
+  | 'data_directory_disk_free';
+
+const PERSISTENCE_TARGET_LABELS: Record<PersistenceHealthTarget, string> = {
+  task_state: 'task-state',
+  detection_stats: 'detection-stats',
+};
 
 /**
  * Static description of one operational alert rule: how to read its value out
@@ -41,15 +56,33 @@ interface RuleState {
   configKey: string | null;
 }
 
+/** Mutable edge-trigger state for persistence health, whose failure count is owned by PersistenceHealthTracker. */
+interface PersistenceRuleState {
+  /** Whether an alert is currently firing (awaiting recovery). */
+  firing: boolean;
+  /** Sustain tuple that owns the current firing state. */
+  configKey: string | null;
+}
+
+/** Mutable edge-trigger state for one named circuit breaker. */
+interface CircuitBreakerRuleState {
+  /** Whether an alert is currently firing (awaiting recovery). */
+  firing: boolean;
+  /** Duration threshold that owns the current firing state. */
+  configKey: string | null;
+}
+
 /**
  * Edge-triggered evaluator for operational alerts on already-sampled host
- * signals (CPU, memory, event-loop delay).
+ * signals (CPU, memory, event-loop delay, data-directory disk pressure).
  *
- * For each rule it fires a single `warning` alert once the metric stays at or
- * above its threshold for `sustainSamples` consecutive samples, and a single
- * `info` "recovered" alert when the metric next drops back below the
- * threshold. This avoids per-tick alert spam while still surfacing sustained
- * saturation through Kookr's existing alert broadcast channel.
+ * For scalar high-watermark rules it fires a single `warning` alert once the
+ * metric stays at or above its threshold for `sustainSamples` consecutive
+ * samples, and a single `info` "recovered" alert when the metric next drops
+ * back below the threshold. Disk pressure uses the same edge-trigger state but
+ * breaches when free space falls at or below either enabled floor. This avoids
+ * per-tick alert spam while still surfacing sustained saturation through
+ * Kookr's existing alert broadcast channel.
  *
  * Fail-open behaviour:
  * - A rule whose threshold is `<= 0` is disabled and never evaluated.
@@ -62,9 +95,16 @@ export class OperationalAlertEvaluator {
   private readonly rules: RuleDefinition[];
   private readonly getConfig: () => OperationalAlertConfig;
   private readonly states = new Map<OperationalAlertMetric, RuleState>();
+  private readonly getPersistenceHealth: (() => PersistenceHealthSnapshot) | null;
+  private readonly persistenceStates = new Map<PersistenceHealthTarget, PersistenceRuleState>();
+  private readonly circuitBreakerStates = new Map<string, CircuitBreakerRuleState>();
 
-  constructor(config: OperationalAlertConfig | (() => OperationalAlertConfig)) {
+  constructor(
+    config: OperationalAlertConfig | (() => OperationalAlertConfig),
+    getPersistenceHealth?: () => PersistenceHealthSnapshot,
+  ) {
     this.getConfig = typeof config === 'function' ? config : () => config;
+    this.getPersistenceHealth = getPersistenceHealth ?? null;
     this.rules = [
       {
         metric: 'cpu',
@@ -91,12 +131,19 @@ export class OperationalAlertEvaluator {
     for (const rule of this.rules) {
       this.states.set(rule.metric, { consecutive: 0, firing: false, configKey: null });
     }
+    this.states.set('data_directory_disk_free', { consecutive: 0, firing: false, configKey: null });
+    this.persistenceStates.set('task_state', { firing: false, configKey: null });
+    this.persistenceStates.set('detection_stats', { firing: false, configKey: null });
   }
 
-  /** Whether any rule is enabled (threshold `> 0`). */
+  /** Whether any host-resource or persistence-health rule is enabled. */
   hasEnabledRules(): boolean {
     const config = this.getConfig();
-    return this.rules.some((rule) => rule.threshold(config) > 0);
+    return this.getPersistenceHealth !== null
+      || this.rules.some((rule) => rule.threshold(config) > 0)
+      || config.dataDirectoryFreePercent > 0
+      || config.dataDirectoryFreeBytes > 0
+      || config.circuitBreakerOpenMs > 0;
   }
 
   /**
@@ -143,12 +190,190 @@ export class OperationalAlertEvaluator {
         }
       }
     }
+    messages.push(...this.evaluateDataDirectoryDiskPressure(status, config, sustainSamples));
+    messages.push(...this.evaluatePersistenceHealth(sustainSamples));
+    messages.push(...this.evaluateCircuitBreakers(status, config));
     return messages;
+  }
+
+  private evaluateDataDirectoryDiskPressure(
+    status: SystemResourceStatus,
+    config: OperationalAlertConfig,
+    sustainSamples: number,
+  ): ServerMessage[] {
+    const state = this.states.get('data_directory_disk_free');
+    if (!state) return [];
+    const percentThreshold = config.dataDirectoryFreePercent;
+    const bytesThreshold = config.dataDirectoryFreeBytes;
+    if (percentThreshold <= 0 && bytesThreshold <= 0) {
+      resetState(state);
+      return [];
+    }
+
+    const configKey = `data-directory:${percentThreshold}:${bytesThreshold}:${sustainSamples}`;
+    if (state.configKey !== null && state.configKey !== configKey) {
+      resetState(state);
+    }
+    state.configKey = configKey;
+
+    const disk = status.host.dataDirectory;
+    const freePercent = disk.diskFreePercent;
+    const freeBytes = disk.diskFreeBytes;
+    const percentEnabled = percentThreshold > 0;
+    const bytesEnabled = bytesThreshold > 0;
+    const percentKnown = freePercent !== null && Number.isFinite(freePercent);
+    const bytesKnown = freeBytes !== null && Number.isFinite(freeBytes);
+    const percentBreached = percentEnabled && percentKnown && freePercent <= percentThreshold;
+    const bytesBreached = bytesEnabled && bytesKnown && freeBytes <= bytesThreshold;
+    const hasAnyEnabledReading = (percentEnabled && percentKnown) || (bytesEnabled && bytesKnown);
+
+    if (!hasAnyEnabledReading) {
+      // No data: preserve current state, matching the scalar fail-open rules.
+      return [];
+    }
+
+    if (percentBreached || bytesBreached) {
+      state.consecutive += 1;
+      if (!state.firing && state.consecutive >= sustainSamples) {
+        state.firing = true;
+        return [buildDataDirectoryDiskBreachAlert({
+          path: disk.path,
+          freePercent,
+          freeBytes,
+          percentThreshold,
+          bytesThreshold,
+          sustainSamples,
+        })];
+      }
+      return [];
+    }
+
+    const allEnabledReadingsKnown = (!percentEnabled || percentKnown) && (!bytesEnabled || bytesKnown);
+    if (!allEnabledReadingsKnown) {
+      return [];
+    }
+
+    state.consecutive = 0;
+    if (state.firing) {
+      state.firing = false;
+      return [buildDataDirectoryDiskRecoveryAlert({
+        path: disk.path,
+        freePercent,
+        freeBytes,
+        percentThreshold,
+        bytesThreshold,
+      })];
+    }
+    return [];
+  }
+
+  private evaluatePersistenceHealth(sustainSamples: number): ServerMessage[] {
+    if (!this.getPersistenceHealth) return [];
+    const messages: ServerMessage[] = [];
+    const snapshot = this.getPersistenceHealth();
+
+    for (const target of Object.values(snapshot.targets)) {
+      const state = this.persistenceStates.get(target.target);
+      if (!state) continue;
+      const configKey = `persistence:${sustainSamples}`;
+      if (state.configKey !== null && state.configKey !== configKey) {
+        resetPersistenceState(state);
+      }
+      state.configKey = configKey;
+
+      const activeFailure = target.consecutiveFailures > 0;
+      const shouldFire = activeFailure && (
+        target.consecutiveFailures >= sustainSamples || target.lastError?.hard === true
+      );
+      if (shouldFire && !state.firing) {
+        state.firing = true;
+        messages.push(buildPersistenceBreachAlert(target, sustainSamples));
+        continue;
+      }
+      if (!activeFailure) {
+        if (state.firing) {
+          state.firing = false;
+          messages.push(buildPersistenceRecoveryAlert(target));
+        }
+      }
+    }
+    return messages;
+  }
+
+  private evaluateCircuitBreakers(
+    status: SystemResourceStatus,
+    config: OperationalAlertConfig,
+  ): ServerMessage[] {
+    const thresholdMs = config.circuitBreakerOpenMs;
+    if (thresholdMs <= 0) {
+      this.circuitBreakerStates.clear();
+      return [];
+    }
+
+    const snapshots = status.circuitBreakers ?? [];
+    const presentNames = new Set<string>();
+    const messages: ServerMessage[] = [];
+    const sampledAtMs = Date.parse(status.sampledAt);
+    const nowMs = Number.isFinite(sampledAtMs) ? sampledAtMs : Date.now();
+    const configKey = `circuit-breaker-open:${thresholdMs}`;
+
+    for (const snapshot of snapshots) {
+      presentNames.add(snapshot.name);
+      const state = this.getCircuitBreakerState(snapshot.name);
+      if (state.configKey !== null && state.configKey !== configKey) {
+        resetCircuitBreakerState(state);
+      }
+      state.configKey = configKey;
+
+      if (snapshot.state === 'open') {
+        const openForMs = Math.max(0, nowMs - snapshot.lastStateChange);
+        if (!state.firing && openForMs >= thresholdMs) {
+          state.firing = true;
+          messages.push(buildCircuitBreakerOpenAlert(snapshot, openForMs, thresholdMs));
+        }
+        continue;
+      }
+
+      if (state.firing) {
+        state.firing = false;
+        messages.push(buildCircuitBreakerRecoveryAlert(snapshot, thresholdMs));
+      }
+      if (!state.firing) {
+        this.circuitBreakerStates.delete(snapshot.name);
+      }
+    }
+
+    for (const name of this.circuitBreakerStates.keys()) {
+      if (!presentNames.has(name)) {
+        this.circuitBreakerStates.delete(name);
+      }
+    }
+
+    return messages;
+  }
+
+  private getCircuitBreakerState(name: string): CircuitBreakerRuleState {
+    let state = this.circuitBreakerStates.get(name);
+    if (!state) {
+      state = { firing: false, configKey: null };
+      this.circuitBreakerStates.set(name, state);
+    }
+    return state;
   }
 }
 
 function resetState(state: RuleState): void {
   state.consecutive = 0;
+  state.firing = false;
+  state.configKey = null;
+}
+
+function resetPersistenceState(state: PersistenceRuleState): void {
+  state.firing = false;
+  state.configKey = null;
+}
+
+function resetCircuitBreakerState(state: CircuitBreakerRuleState): void {
   state.firing = false;
   state.configKey = null;
 }
@@ -189,8 +414,156 @@ function buildRecoveryAlert(
   };
 }
 
+function buildDataDirectoryDiskBreachAlert(args: {
+  path: string | null;
+  freePercent: number | null;
+  freeBytes: number | null;
+  percentThreshold: number;
+  bytesThreshold: number;
+  sustainSamples: number;
+}): Extract<ServerMessage, { type: 'alert' }> {
+  const severity: AnomalySeverity = 'warning';
+  const location = args.path ?? 'unknown data directory';
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `Low Kookr data-directory disk space: ${formatDiskFree(args.freePercent, args.freeBytes)}`,
+    details:
+      `Sustained operational alert: filesystem containing ${location} has ` +
+      `${formatDiskFree(args.freePercent, args.freeBytes)} free for ` +
+      `${args.sustainSamples} consecutive samples (threshold ${formatDiskThresholds(args.percentThreshold, args.bytesThreshold)}). ` +
+      'Run `kookr maintenance prune --dry-run --dir <dataDir>` to inspect conservative cleanup candidates.',
+    severity,
+  };
+}
+
+function buildDataDirectoryDiskRecoveryAlert(args: {
+  path: string | null;
+  freePercent: number | null;
+  freeBytes: number | null;
+  percentThreshold: number;
+  bytesThreshold: number;
+}): Extract<ServerMessage, { type: 'alert' }> {
+  const severity: AnomalySeverity = 'info';
+  const location = args.path ?? 'unknown data directory';
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `Recovered Kookr data-directory disk space: ${formatDiskFree(args.freePercent, args.freeBytes)}`,
+    details:
+      `Operational alert cleared: filesystem containing ${location} is back above ` +
+      `the enabled low-space threshold(s) (${formatDiskThresholds(args.percentThreshold, args.bytesThreshold)}).`,
+    severity,
+  };
+}
+
+function formatDiskFree(freePercent: number | null, freeBytes: number | null): string {
+  const percent = freePercent === null ? '--' : `${Math.round(freePercent * 10) / 10}%`;
+  return `${percent} / ${formatBytes(freeBytes)}`;
+}
+
+function formatDiskThresholds(percentThreshold: number, bytesThreshold: number): string {
+  const parts: string[] = [];
+  if (percentThreshold > 0) parts.push(`<= ${percentThreshold}% free`);
+  if (bytesThreshold > 0) parts.push(`<= ${formatBytes(bytesThreshold)} free`);
+  return parts.join(' or ');
+}
+
+function formatBytes(bytes: number | null): string {
+  if (bytes === null) return '--';
+  const gib = bytes / 1_073_741_824;
+  if (gib >= 1) return `${Math.round(gib * 10) / 10} GiB`;
+  const mib = bytes / 1_048_576;
+  return `${Math.round(mib)} MiB`;
+}
+
+function buildPersistenceBreachAlert(
+  target: PersistenceTargetHealth,
+  sustainSamples: number,
+): Extract<ServerMessage, { type: 'alert' }> {
+  const severity: AnomalySeverity = 'warning';
+  const label = PERSISTENCE_TARGET_LABELS[target.target];
+  const code = target.lastError?.code ? ` (${target.lastError.code})` : '';
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `Persistence failure: ${label} save failed ${formatCount(target.consecutiveFailures, 'consecutive time')}`,
+    details:
+      `${label} persistence has failed ${formatCount(target.consecutiveFailures, 'consecutive save attempt')}, ` +
+      `${formatCount(target.totalFailures, 'total failure')}. Alert threshold is ` +
+      `${formatCount(sustainSamples, 'consecutive failure')}, with ENOSPC/EACCES/EROFS/EDQUOT firing immediately. ` +
+      `Last error${code}: ${target.lastError?.message ?? 'unknown'}`,
+    severity,
+  };
+}
+
+function formatCount(count: number, singular: string): string {
+  return `${count} ${singular}${count === 1 ? '' : 's'}`;
+}
+
+function buildPersistenceRecoveryAlert(
+  target: PersistenceTargetHealth,
+): Extract<ServerMessage, { type: 'alert' }> {
+  const severity: AnomalySeverity = 'info';
+  const label = PERSISTENCE_TARGET_LABELS[target.target];
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `Recovered ${label} persistence`,
+    details:
+      `${label} persistence recovered after ${formatCount(target.totalFailures, 'total failure')}. ` +
+      `Last successful save: ${target.lastSuccessAt ?? 'unknown'}.`,
+    severity,
+  };
+}
+
+function buildCircuitBreakerOpenAlert(
+  snapshot: CircuitBreakerSnapshot,
+  openForMs: number,
+  thresholdMs: number,
+): Extract<ServerMessage, { type: 'alert' }> {
+  const severity: AnomalySeverity = 'warning';
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `Circuit breaker open: ${snapshot.name} has been OPEN for ${formatDuration(openForMs)}`,
+    details:
+      `Advisory operational alert: circuit breaker "${snapshot.name}" has remained OPEN for ` +
+      `${formatDuration(openForMs)} (threshold ${formatDuration(thresholdMs)}). ` +
+      `Calls protected by this breaker are degraded until it recovers or is manually rearmed.`,
+    severity,
+  };
+}
+
+function buildCircuitBreakerRecoveryAlert(
+  snapshot: CircuitBreakerSnapshot,
+  thresholdMs: number,
+): Extract<ServerMessage, { type: 'alert' }> {
+  const severity: AnomalySeverity = 'info';
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `Recovered circuit breaker: ${snapshot.name} is ${snapshot.state}`,
+    details:
+      `Operational alert cleared: circuit breaker "${snapshot.name}" is no longer OPEN ` +
+      `(open-duration threshold ${formatDuration(thresholdMs)}).`,
+    severity,
+  };
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${Math.round(seconds * 10) / 10}s`;
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${Math.round(minutes * 10) / 10}m`;
+  const hours = minutes / 60;
+  return `${Math.round(hours * 10) / 10}h`;
+}
+
 export function createOperationalAlertEvaluator(
   config: OperationalAlertConfig | (() => OperationalAlertConfig),
+  getPersistenceHealth?: () => PersistenceHealthSnapshot,
 ): OperationalAlertEvaluator {
-  return new OperationalAlertEvaluator(config);
+  return new OperationalAlertEvaluator(config, getPersistenceHealth);
 }

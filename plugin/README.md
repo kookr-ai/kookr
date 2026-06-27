@@ -40,7 +40,7 @@ sessions can also see it when the plugin is installed or synced locally.
 
 **Codex PR analysis:** `codex-pr-{critic,distill,plan,threshold}`.
 
-**Review subagents (15):** `api-surface-auditor`, `architecture-drift-detector`, `architecture-smell-scanner`, `boundary-critic`, `delivery-pragmatist`, `dependency-graph-analyzer`, `design-experimenter`, `design-minimalist`, `failure-mode-analyst`, `module-interface-auditor`, `operability-reviewer`, `socratic-challenger`, `state-machine-verifier`, `test-fixer`, `test-quality-reviewer`.
+**Review subagents (16):** `api-surface-auditor`, `architecture-drift-detector`, `architecture-smell-scanner`, `boundary-critic`, `delivery-pragmatist`, `dependency-graph-analyzer`, `design-experimenter`, `design-minimalist`, `failure-mode-analyst`, `macos-compat-reviewer`, `module-interface-auditor`, `operability-reviewer`, `socratic-challenger`, `state-machine-verifier`, `test-fixer`, `test-quality-reviewer`.
 
 ## One-time setup for the OSS extension
 

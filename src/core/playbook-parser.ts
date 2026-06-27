@@ -42,6 +42,8 @@ export function parsePlaybook(
     : undefined;
   const repoTags = parseStringArray(meta['repo-tags']);
   const dependencies = parseLaunchDependencies(meta.dependencies);
+  const deliveryPreAuthorized = parseOptionalBoolean(meta.deliveryPreAuthorized);
+  const autoCloseOnSignal = parseOptionalBoolean(meta.autoCloseOnSignal);
 
   return {
     id: relativePath,
@@ -52,6 +54,8 @@ export function parsePlaybook(
     checklist: parseStringArray(meta.checklist),
     tags,
     ...(loop.value ? { loop: loop.value } : {}),
+    ...(deliveryPreAuthorized === undefined ? {} : { deliveryPreAuthorized }),
+    ...(autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal }),
     ...(effectiveLoop ? { effectiveLoop } : {}),
     ...(loop.error ? { loopValidationError: loop.error } : {}),
     body: body.trim(),
@@ -401,6 +405,7 @@ function parseParameters(raw: unknown): PlaybookParameter[] {
         description: String(item.description ?? ''),
         required: item.required === true || item.required === 'true',
         ...(item.default !== undefined ? { default: String(item.default) } : {}),
+        ...(item.type === 'text' ? { type: 'text' as const } : {}),
         ...(item.type === 'select' ? { type: 'select' as const } : {}),
         ...(item.type === 'textarea' ? { type: 'textarea' as const } : {}),
         ...(Array.isArray(item.options) ? { options: parseOptions(item.options) } : {}),
@@ -439,6 +444,13 @@ function parseOptions(raw: unknown[]): PlaybookParameterOption[] {
 function parseStringArray(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((item): item is string => typeof item === 'string');
+}
+
+function parseOptionalBoolean(raw: unknown): boolean | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === true || raw === 'true') return true;
+  if (raw === false || raw === 'false') return false;
+  return undefined;
 }
 
 function parseLaunchDependencies(raw: unknown): LaunchDependency[] {

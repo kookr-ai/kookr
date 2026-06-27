@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -11,6 +11,16 @@ import type { SystemResourceStatus } from '../shared/contracts/messages.js';
 import { createRelayServer } from '../../relay/server.js';
 
 const RELAY_TRUSTED_ENV = 'KOOKR_RELAY_' + 'TRUSTED';
+
+// RFC F12: launchTask validates that the working directory exists before
+// spawning, so launch cwds used by these integration tests must be real
+// directories. (Direct taskStore.createTask calls are not validated, but the
+// same constants are reused there for consistency.)
+const CWD = mkdtempSync(join(tmpdir(), 'kookr-it-cwd-'));
+const PROJECT_DIR = mkdtempSync(join(tmpdir(), 'kookr-it-project-'));
+const REPO_A = mkdtempSync(join(tmpdir(), 'kookr-it-repo-a-'));
+const REPO_B = mkdtempSync(join(tmpdir(), 'kookr-it-repo-b-'));
+const CLI_CWD = mkdtempSync(join(tmpdir(), 'kookr-it-cli-'));
 
 function getActualPort(server: KookrServerInternal): number {
   const addr = server.httpServer.address();
@@ -82,6 +92,21 @@ function waitForOperationalAlert(ws: WebSocket, summaryText: string): Promise<Ma
   });
 }
 
+function withEnv<T>(updates: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(updates)) {
+    previous.set(key, process.env[key]);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  return fn().finally(() => {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+}
+
 async function waitForCondition(predicate: () => boolean): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const started = Date.now();
@@ -111,6 +136,12 @@ class FixedResourceSampler implements ResourceStatusSampler {
         memoryUsedPercent: 95,
         memoryFreeBytes: 5,
         memoryTotalBytes: 100,
+        dataDirectory: {
+          path: '/tmp/kookr-data',
+          diskFreeBytes: 3_000_000_000,
+          diskTotalBytes: 100_000_000_000,
+          diskFreePercent: 3,
+        },
       },
       server: {
         eventLoopDelayP95Ms: 1,
@@ -207,6 +238,115 @@ describe('createKookrServer', () => {
   });
 
   describe('HTTP API', () => {
+    test('POST /api/hook-event routes malformed records through hook runtime diagnostics', async () => {
+      const sessionId = 'hook-runtime-malformed';
+      const res = await fetch(`${baseUrl}/api/hook-event/${sessionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{bad json',
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'received', dispatched: false });
+      expect(server.queue.getActiveAnomaly(sessionId)).toMatchObject({
+        agentId: sessionId,
+        type: 'hook_parse_degraded',
+        severity: 'warning',
+      });
+
+      const ledgerPath = join(tempDir, 'activity', `${sessionId}.jsonl`);
+      await waitForCondition(() => {
+        try {
+          return readFileSync(ledgerPath, 'utf-8').includes('"parseStatus":"malformed"');
+        } catch {
+          return false;
+        }
+      });
+      const [line] = readFileSync(ledgerPath, 'utf-8').trim().split('\n');
+      expect(JSON.parse(line!)).toMatchObject({
+        envelope: {
+          kookrSessionId: sessionId,
+          source: 'http',
+          parseStatus: 'malformed',
+        },
+        projection: 'diagnostic_only',
+      });
+    });
+
+    test('env-configured webhook observer posts findings and clears dedupe on resolution', async () => {
+      await server.close();
+      serverClosed = true;
+
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok', { status: 200 }));
+      let webhookServer: KookrServerInternal | null = null;
+      try {
+        await withEnv({
+          KOOKR_WEBHOOK_URL: 'https://receiver.example/kookr',
+          KOOKR_WEBHOOK_MIN_SEVERITY: 'critical',
+        }, async () => {
+          webhookServer = await createKookrServerInternal({
+            port: 0,
+            host: '127.0.0.1',
+            kookrDir: join(tempDir, 'webhook-kookr'),
+            tasksFile: join(tempDir, 'webhook-tasks.json'),
+            hooksDir: join(tempDir, 'webhook-hooks'),
+            settingsDir: join(tempDir, 'webhook-settings'),
+            serverCwd: '/test/cwd',
+            frontendDir: join(tempDir, 'frontend'),
+            saveIntervalMs: 600_000,
+            livenessIntervalMs: 600_000,
+            terminalBackend: new FakeTerminalBackend(),
+            claudeDir: join(tempDir, 'claude'),
+          });
+        });
+
+        const task = webhookServer!.taskStore.createTask('Webhook task', '/repo');
+        webhookServer!.taskStore.setProjectId(task.id, 'github.com/kookr-ai/kookr');
+        webhookServer!.projectConfigStore.setConfig('github.com/kookr-ai/kookr', {
+          webhook: { minSeverity: 'warning' },
+        });
+        webhookServer!.taskStore.addSession(task.id, {
+          tmuxSession: 'webhook-session',
+          agentType: 'claude-code',
+          cwd: '/repo',
+          createdAt: new Date('2026-06-12T10:00:00.000Z'),
+          lastStatus: 'running',
+        });
+
+        const anomaly = {
+          agentId: 'webhook-session',
+          type: 'permission_blocked' as const,
+          severity: 'warning' as const,
+          explanation: 'Agent is waiting for permission',
+          detectedAt: new Date('2026-06-12T10:00:00.000Z'),
+        };
+        webhookServer!.queue.enqueue('webhook-session', anomaly);
+        webhookServer!.queue.enqueue('webhook-session', anomaly);
+
+        await waitForCondition(() => fetchSpy.mock.calls.some(([url]) => url === 'https://receiver.example/kookr'));
+        expect(fetchSpy.mock.calls.filter(([url]) => url === 'https://receiver.example/kookr')).toHaveLength(1);
+
+        webhookServer!.queue.respondAndAdvance('webhook-session');
+        webhookServer!.queue.enqueue('webhook-session', anomaly);
+
+        await waitForCondition(() => fetchSpy.mock.calls.filter(([url]) => url === 'https://receiver.example/kookr').length === 2);
+        const [, init] = fetchSpy.mock.calls.find(([url]) => url === 'https://receiver.example/kookr')!;
+        const body = JSON.parse(String(init?.body));
+        expect(body.finding).toMatchObject({
+          agentId: 'webhook-session',
+          type: 'permission_blocked',
+          severity: 'warning',
+        });
+        expect(body.task).toMatchObject({
+          id: task.id,
+          prompt: 'Webhook task',
+        });
+      } finally {
+        fetchSpy.mockRestore();
+        await webhookServer?.close();
+      }
+    });
+
     test('admin alert-config update changes the live operational alert evaluator', async () => {
       await server.close();
       serverClosed = true;
@@ -1197,7 +1337,7 @@ describe('createKookrServer', () => {
       const createRes = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'No GitHub refs yet', cwd: '/cwd' }),
+        body: JSON.stringify({ prompt: 'No GitHub refs yet', cwd: CWD }),
       });
       const task = await createRes.json();
 
@@ -1215,7 +1355,7 @@ describe('createKookrServer', () => {
       const createRes = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'Boom on delete', cwd: '/cwd' }),
+        body: JSON.stringify({ prompt: 'Boom on delete', cwd: CWD }),
       });
       expect(createRes.status).toBe(201);
       const task = await createRes.json();
@@ -1243,7 +1383,7 @@ describe('createKookrServer', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: 'Fix the auth bug',
-          cwd: '/test/project',
+          cwd: PROJECT_DIR,
           criteria: 'Tests pass',
         }),
       });
@@ -1252,7 +1392,7 @@ describe('createKookrServer', () => {
       const task = await res.json();
       expect(task.id).toBeDefined();
       expect(task.prompt).toBe('Fix the auth bug');
-      expect(task.cwd).toBe('/test/project');
+      expect(task.cwd).toBe(PROJECT_DIR);
       expect(task.criteria).toBe('Tests pass');
       expect(task.status).toBe('inProgress');
       expect(task.sessions).toHaveLength(1);
@@ -1271,7 +1411,7 @@ describe('createKookrServer', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt,
-          cwd: '/test/project',
+          cwd: PROJECT_DIR,
         }),
       });
 
@@ -1289,7 +1429,7 @@ describe('createKookrServer', () => {
       const parentRes = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'Parent task', cwd: '/cwd' }),
+        body: JSON.stringify({ prompt: 'Parent task', cwd: CWD }),
       });
       const parent = await parentRes.json();
 
@@ -1299,7 +1439,7 @@ describe('createKookrServer', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: 'Child task',
-          cwd: '/cwd',
+          cwd: CWD,
           parentTaskId: parent.id,
         }),
       });
@@ -1317,7 +1457,7 @@ describe('createKookrServer', () => {
       const res = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cwd: '/cwd' }),
+        body: JSON.stringify({ cwd: CWD }),
       });
 
       expect(res.status).toBe(400);
@@ -1343,7 +1483,7 @@ describe('createKookrServer', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: 'Child task',
-          cwd: '/cwd',
+          cwd: CWD,
           parentTaskId: 'nonexistent-id',
         }),
       });
@@ -1370,7 +1510,7 @@ describe('createKookrServer', () => {
       const res1 = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'Deduplicate me', cwd: '/cwd' }),
+        body: JSON.stringify({ prompt: 'Deduplicate me', cwd: CWD }),
       });
       expect(res1.status).toBe(201);
       const first = await res1.json();
@@ -1379,7 +1519,7 @@ describe('createKookrServer', () => {
       const res2 = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'Deduplicate me', cwd: '/cwd' }),
+        body: JSON.stringify({ prompt: 'Deduplicate me', cwd: CWD }),
       });
       expect(res2.status).toBe(200);
       const second = await res2.json();
@@ -1397,7 +1537,7 @@ describe('createKookrServer', () => {
       const res1 = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'cli' },
-        body: JSON.stringify({ prompt: 'Keep duplicate', cwd: '/cwd' }),
+        body: JSON.stringify({ prompt: 'Keep duplicate', cwd: CWD }),
       });
       expect(res1.status).toBe(201);
       const first = await res1.json();
@@ -1407,7 +1547,7 @@ describe('createKookrServer', () => {
         headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'cli' },
         body: JSON.stringify({
           prompt: 'Keep duplicate',
-          cwd: '/cwd',
+          cwd: CWD,
           disableDedup: true,
           metadata: { intent: 'keep_as_duplicate' },
         }),
@@ -1429,7 +1569,7 @@ describe('createKookrServer', () => {
         headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'cli' },
         body: JSON.stringify({
           prompt: 'Unmarked duplicate bypass',
-          cwd: '/cwd',
+          cwd: CWD,
           disableDedup: true,
         }),
       });
@@ -1470,7 +1610,7 @@ describe('createKookrServer', () => {
         headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'cli' },
         body: JSON.stringify({
           prompt: `Invalid duplicate metadata: ${expectedError}`,
-          cwd: '/cwd',
+          cwd: CWD,
           ...payload,
         }),
       });
@@ -1484,7 +1624,7 @@ describe('createKookrServer', () => {
       const res1 = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'Complete me first', cwd: '/cwd' }),
+        body: JSON.stringify({ prompt: 'Complete me first', cwd: CWD }),
       });
       const first = await res1.json();
       server.taskStore.completeTask(first.id);
@@ -1493,7 +1633,7 @@ describe('createKookrServer', () => {
       const res2 = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'Complete me first', cwd: '/cwd' }),
+        body: JSON.stringify({ prompt: 'Complete me first', cwd: CWD }),
       });
       expect(res2.status).toBe(201);
       const second = await res2.json();
@@ -1504,7 +1644,7 @@ describe('createKookrServer', () => {
       const res1 = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'review the diff', cwd: '/tmp/repo-a' }),
+        body: JSON.stringify({ prompt: 'review the diff', cwd: REPO_A }),
       });
       expect(res1.status).toBe(201);
       const first = await res1.json();
@@ -1512,7 +1652,7 @@ describe('createKookrServer', () => {
       const res2 = await fetch(`${baseUrl}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'review the diff', cwd: '/tmp/repo-b' }),
+        body: JSON.stringify({ prompt: 'review the diff', cwd: REPO_B }),
       });
       expect(res2.status).toBe(201);
       const second = await res2.json();
@@ -1527,12 +1667,12 @@ describe('createKookrServer', () => {
           'Content-Type': 'application/json',
           'X-Kookr-Launch-Source': 'cli',
         },
-        body: JSON.stringify({ prompt: 'launched via cli', cwd: '/cwd-from-cli' }),
+        body: JSON.stringify({ prompt: 'launched via cli', cwd: CLI_CWD }),
       });
       expect(res.status).toBe(201);
       const task = await res.json();
       expect(task.id).toBeDefined();
-      expect(task.cwd).toBe('/cwd-from-cli');
+      expect(task.cwd).toBe(CLI_CWD);
     });
 
     test('SPA fallback returns 404 when frontend not built', async () => {
@@ -1543,8 +1683,8 @@ describe('createKookrServer', () => {
     });
 
     test('GET /api/health reflects task count', async () => {
-      server.taskStore.createTask('Task 1', '/cwd');
-      server.taskStore.createTask('Task 2', '/cwd');
+      server.taskStore.createTask('Task 1', CWD);
+      server.taskStore.createTask('Task 2', CWD);
       const res = await fetch(`${baseUrl}/api/health`);
       const data = await res.json();
       expect(data.agents).toBe(2);
@@ -1665,8 +1805,24 @@ describe('createKookrServer', () => {
       const summaries = await (await fetch(`${baseUrl}/api/projects`)).json();
       expect(summaries).toHaveLength(1);
       expect(summaries[0].project).toBe('github.com/grafana/grafana');
-      expect(summaries[0].tracked).toBeUndefined();
+      expect(summaries[0].tracked).toBe(false);
       expect(summaries[0].notes).toBe('keep changes small');
+    });
+
+    test('GET /api/projects exposes contribution-attempt count without legacy openPrs', async () => {
+      server.ossAttemptStore.upsertPr({
+        repo: 'grafana/grafana',
+        prNumber: 42,
+        prUrl: 'https://github.com/grafana/grafana/pull/42',
+        prTitle: 'Fix issue 907',
+        source: 'posttool_hook',
+      });
+
+      const summaries = await (await fetch(`${baseUrl}/api/projects`)).json();
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0].project).toBe('github.com/grafana/grafana');
+      expect(summaries[0].openContributionAttempts).toBe(1);
+      expect(summaries[0]).not.toHaveProperty('openPrs');
     });
 
     test('POST /api/projects/untrack preserves config row when PR limits remain', async () => {
@@ -1696,7 +1852,7 @@ describe('createKookrServer', () => {
       // but no longer flagged as manually tracked.
       const summaries = await (await fetch(`${baseUrl}/api/projects`)).json();
       expect(summaries).toHaveLength(1);
-      expect(summaries[0].tracked).toBeUndefined();
+      expect(summaries[0].tracked).toBe(false);
       expect(summaries[0].dailyLimit).toBe(2);
     });
 
@@ -1744,7 +1900,7 @@ describe('createKookrServer', () => {
       const summaries = await (await fetch(`${baseUrl}/api/projects`)).json();
       expect(summaries).toHaveLength(1);
       expect(summaries[0].project).toBe('github.com/grafana/grafana');
-      expect(summaries[0].tracked).toBeUndefined();
+      expect(summaries[0].tracked).toBe(false);
 
       const configs = await (await fetch(`${baseUrl}/api/projects/configs`)).json();
       expect(configs).toHaveLength(0);
@@ -1786,10 +1942,44 @@ describe('createKookrServer', () => {
       expect(snap.warnings.length).toBe(1);
       expect(snap.warnings[0]).toContain('bad-recon');
       expect(snap.lastError).toBeUndefined();
+      expect(snap.cacheStatus).toBe('scanned');
+      expect(snap.staleReasons).toEqual(['recon manifest changed']);
+      expect(snap.projectStatuses).toEqual([
+        {
+          project: 'github.com/grafana/grafana',
+          status: 'scanned',
+          reason: 'recon manifest changed',
+          source: 'grafana-grafana-recon',
+        },
+      ]);
+
+      const unchangedRes = await fetch(`${baseUrl}/api/projects/rescan-skills`, { method: 'POST' });
+      expect(unchangedRes.status).toBe(200);
+      const unchangedSnap = await unchangedRes.json();
+      expect(unchangedSnap.projects).toEqual(['github.com/grafana/grafana']);
+      expect(unchangedSnap.warnings).toEqual(snap.warnings);
+      expect(unchangedSnap.cacheStatus).toBe('skipped');
+      expect(unchangedSnap.projectStatuses[0]).toMatchObject({
+        project: 'github.com/grafana/grafana',
+        status: 'skipped',
+        reason: 'recon manifest unchanged',
+        source: 'grafana-grafana-recon',
+      });
+
+      writeFileSync(
+        join(claudeDir, 'grafana-grafana-recon', 'recon-report.md'),
+        '# Recon Report: grafana/loki\nextra bytes\n',
+      );
+      const changedRes = await fetch(`${baseUrl}/api/projects/rescan-skills`, { method: 'POST' });
+      expect(changedRes.status).toBe(200);
+      const changedSnap = await changedRes.json();
+      expect(changedSnap.projects).toEqual(['github.com/grafana/loki']);
+      expect(changedSnap.cacheStatus).toBe('scanned');
+      expect(changedSnap.staleReasons).toEqual(['recon manifest changed']);
 
       const summaries = await (await fetch(`${baseUrl}/api/projects`)).json();
       expect(summaries).toHaveLength(1);
-      expect(summaries[0].project).toBe('github.com/grafana/grafana');
+      expect(summaries[0].project).toBe('github.com/grafana/loki');
     });
 
     test('GET /api/projects/discovery-status returns the snapshot written by the last rescan', async () => {
@@ -1808,6 +1998,9 @@ describe('createKookrServer', () => {
       const statusSnap = await statusRes.json();
       expect(statusSnap.projects).toEqual(['github.com/foo/bar']);
       expect(statusSnap.scannedAt).toBe(rescanSnap.scannedAt);
+      expect(statusSnap.cacheStatus).toBe(rescanSnap.cacheStatus);
+      expect(statusSnap.staleReasons).toEqual(rescanSnap.staleReasons);
+      expect(statusSnap.projectStatuses).toEqual(rescanSnap.projectStatuses);
     });
 
     test('self-diagnostics stay empty until requested on demand', async () => {
@@ -2075,6 +2268,80 @@ Review daily work.
       await new Promise<void>((r) => ws.on('close', () => r()));
     });
 
+    test('recovers corrupt tasks.json at startup and replays a dashboard alert', async () => {
+      await server.close();
+      serverClosed = true;
+
+      const recoveryDir = join(tempDir, 'recovery');
+      mkdirSync(recoveryDir, { recursive: true });
+      const recoveredTasksFile = join(recoveryDir, 'tasks.json');
+      const restoredTask = {
+        id: 'restored-task',
+        prompt: 'Recovered task',
+        cwd: '/restored',
+        agentType: 'claude-code',
+        status: 'open',
+        sessions: [],
+        createdAt: '2026-06-10T00:00:00.000Z',
+        updatedAt: '2026-06-10T00:00:00.000Z',
+      };
+      writeFileSync(recoveredTasksFile, '{"tasks": [');
+      writeFileSync(`${recoveredTasksFile}.daily.20260611`, JSON.stringify({
+        version: 2,
+        lifetimeSpendUsd: 4.25,
+        tasks: [restoredTask],
+      }));
+
+      const recoveredServer = await createKookrServerInternal({
+        port: 0,
+        host: '127.0.0.1',
+        kookrDir: recoveryDir,
+        tasksFile: recoveredTasksFile,
+        hooksDir: join(recoveryDir, 'hooks'),
+        settingsDir: join(recoveryDir, 'settings'),
+        serverCwd: '/test/cwd',
+        frontendDir: join(recoveryDir, 'frontend'),
+        saveIntervalMs: 600_000,
+        livenessIntervalMs: 600_000,
+        terminalBackend: new FakeTerminalBackend(),
+        claudeDir: join(recoveryDir, 'claude'),
+      });
+
+      try {
+        expect(recoveredServer.taskStore.listTasks()).toHaveLength(1);
+        expect(recoveredServer.taskStore.getTask('restored-task')?.prompt).toBe('Recovered task');
+        expect(JSON.parse(readFileSync(recoveredTasksFile, 'utf-8')).tasks[0].id).toBe('restored-task');
+
+        const recoveredPort = getActualPort(recoveredServer);
+        const ws = new WebSocket(`ws://127.0.0.1:${recoveredPort}/ws`);
+        const messages = await new Promise<Array<{ type: string; summary?: string; details?: string; severity?: string }>>((resolve, reject) => {
+          const seen: Array<{ type: string; summary?: string; details?: string; severity?: string }> = [];
+          const timer = setTimeout(() => reject(new Error('WS timeout')), 3000);
+          ws.on('message', (data) => {
+            const parsed = JSON.parse(data.toString());
+            seen.push(parsed);
+            if (seen.some((msg) => msg.type === 'snapshot') && seen.some((msg) => msg.summary === 'Recovered from corrupt tasks.json')) {
+              clearTimeout(timer);
+              resolve(seen);
+            }
+          });
+          ws.on('error', reject);
+        });
+        const recoveryAlert = messages.find((msg) => msg.summary === 'Recovered from corrupt tasks.json');
+        expect(recoveryAlert).toMatchObject({
+          type: 'alert',
+          severity: 'critical',
+        });
+        expect(recoveryAlert?.details).toContain('Quarantined corrupt file');
+        expect(recoveryAlert?.details).toContain(`${recoveredTasksFile}.daily.20260611`);
+
+        ws.close();
+        await new Promise<void>((r) => ws.on('close', () => r()));
+      } finally {
+        await recoveredServer.close();
+      }
+    });
+
     test('sends cached resource status after the initial snapshot', async () => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
 
@@ -2119,7 +2386,7 @@ Review daily work.
       ws.send(JSON.stringify({
         type: 'launch',
         prompt: 'Fix the bug',
-        cwd: '/test/project',
+        cwd: PROJECT_DIR,
       }));
 
       // Wait for broadcast snapshot after launch (may be preceded by achievement messages)
@@ -2169,7 +2436,7 @@ Review daily work.
       ws1.send(JSON.stringify({
         type: 'launch',
         prompt: 'Test broadcast',
-        cwd: '/cwd',
+        cwd: CWD,
       }));
 
       // Both should receive a snapshot broadcast (may be preceded by achievement messages)
@@ -2373,16 +2640,21 @@ Review daily work.
       mkdirSync(join(newTempDir, 'hooks'), { recursive: true });
       mkdirSync(join(newTempDir, 'settings'), { recursive: true });
       const tasksFile = join(newTempDir, 'tasks.json');
+      // Deliberately nonexistent cwd: crash recovery skips (and reconcile
+      // terminates) a dead-session task whose cwd is gone. With an existing
+      // cwd, startup crash recovery would *relaunch* this task instead and
+      // it would stay inProgress.
+      const goneCwd = '/nonexistent/kookr-persist-cwd';
       writeFileSync(tasksFile, JSON.stringify([
         {
           id: 'persisted-task-1',
           prompt: 'Pre-existing task',
-          cwd: '/cwd',
+          cwd: goneCwd,
           status: 'inProgress',
           sessions: [{
             tmuxSession: 'kookr-dead-session',
             agentType: 'claude-code',
-            cwd: '/cwd',
+            cwd: goneCwd,
             createdAt: '2026-03-25T00:00:00.000Z',
           }],
           createdAt: '2026-03-25T00:00:00.000Z',
@@ -2438,7 +2710,7 @@ Review daily work.
       ws.send(JSON.stringify({
         type: 'launch',
         prompt: 'Test event wiring',
-        cwd: '/cwd',
+        cwd: CWD,
       }));
 
       // Wait for launch snapshot; resourceStatus messages may be interleaved.
@@ -2462,7 +2734,7 @@ Review daily work.
       server.adapter.injectHookEvent(tmuxName, JSON.stringify({
         session_id: 'sess-1',
         transcript_path: '/path/to/transcript.jsonl',
-        cwd: '/cwd',
+        cwd: CWD,
         hook_event_name: 'PreToolUse',
         tool_name: 'Bash',
         permission_mode: 'acceptEdits',

@@ -46,6 +46,11 @@ export function formatGitHubAlert(change: GitHubStateChange, label: string): Git
         summary: `PR ${label}: closed`,
         severity: 'info',
       };
+    case 'pr_conflicting':
+      return {
+        summary: `PR ${label}: merge conflicts detected`,
+        severity: 'warning',
+      };
     case 'new_comment':
       return {
         summary: `PR ${label}: ${change.comment.body}`,

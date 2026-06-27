@@ -21,6 +21,7 @@ interface SessionSnapshotMeta {
   playbookId?: string;
   playbookParameterValues?: Record<string, string>;
   launchHealthSummary?: TaskLaunchHealthSummary;
+  launchPermissionPosture?: NonNullable<Task['metadata']>['launchPermissionPosture'];
   projectId?: string;
   projectDisplayLabel: string;
   priority?: TaskPriority;
@@ -66,6 +67,7 @@ export function buildSnapshotProjection(deps: {
         playbookId: task.playbookId,
         playbookParameterValues: task.playbookParameterValues,
         launchHealthSummary: task.launchHealthSummary,
+        launchPermissionPosture: task.metadata?.launchPermissionPosture,
         projectId: task.projectId,
         projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: session.cwd }),
         priority: task.priority,
@@ -126,6 +128,7 @@ function enrichLiveState(state: AgentState, meta: SessionSnapshotMeta): void {
   state.playbookId = meta.playbookId;
   state.playbookParameterValues = meta.playbookParameterValues;
   state.launchHealthSummary = meta.launchHealthSummary;
+  state.launchPermissionPosture = meta.launchPermissionPosture;
   state.gitBranch = meta.gitBranch;
   state.gitCommit = meta.gitCommit;
   state.gitIsWorktree = meta.gitIsWorktree;
@@ -176,6 +179,7 @@ function buildPendingTaskEntry(task: Task): AgentState {
     playbookId: task.playbookId,
     playbookParameterValues: task.playbookParameterValues,
     launchHealthSummary: task.launchHealthSummary,
+    launchPermissionPosture: task.metadata?.launchPermissionPosture,
     projectId: task.projectId,
     projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: task.cwd }),
     priority: task.priority,
@@ -186,6 +190,7 @@ function buildPendingTaskEntry(task: Task): AgentState {
 function buildTerminalTaskEntry(task: Task): AgentState {
   const displayPrompt = displayPromptForTask(task);
   const lastSession = task.sessions[task.sessions.length - 1];
+  const finishedAt = terminalFinishedAt(task, lastSession);
   return {
     agentId: lastSession?.tmuxSession ?? `done-${task.id}`,
     events: [],
@@ -202,9 +207,11 @@ function buildTerminalTaskEntry(task: Task): AgentState {
     cwd: lastSession?.cwd ?? task.cwd,
     agentType: lastSession?.agentType ?? task.agentType,
     startedAt: task.createdAt.toISOString(),
+    finishedAt,
     playbookId: task.playbookId,
     playbookParameterValues: task.playbookParameterValues,
     launchHealthSummary: task.launchHealthSummary,
+    launchPermissionPosture: task.metadata?.launchPermissionPosture,
     projectId: task.projectId,
     projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: lastSession?.cwd ?? task.cwd }),
     priority: task.priority,
@@ -219,6 +226,19 @@ function buildTerminalTaskEntry(task: Task): AgentState {
     completionFeedback: task.completionFeedback,
     ralphLoop: task.ralphLoop,
   };
+}
+
+function terminalFinishedAt(task: Task, lastSession: Task['sessions'][number] | undefined): string {
+  if (task.finishedAt) return task.finishedAt.toISOString();
+  if (task.terminatedAt) return task.terminatedAt.toISOString();
+  if (typeof lastSession?.lastEventAt === 'number' && Number.isFinite(lastSession.lastEventAt)) {
+    return new Date(lastSession.lastEventAt).toISOString();
+  }
+  if (typeof lastSession?.lastEventAt === 'string') {
+    const parsed = new Date(lastSession.lastEventAt);
+    if (Number.isFinite(parsed.getTime())) return parsed.toISOString();
+  }
+  return task.updatedAt.toISOString();
 }
 
 /** Truncate a prompt to maxLen chars at a word boundary, adding "..." if truncated. */

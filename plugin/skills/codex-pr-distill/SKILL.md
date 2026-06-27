@@ -165,8 +165,10 @@ Each batch appends a section below. When this file exceeds 200 lines, distillati
 ```bash
 # Increment distillation_count
 # Set last_distillation_at to current ISO timestamp
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
 cat ~/.claude/codex-pr-lessons/state.json | jq \
-  '.distillation_count += 1 | .last_distillation_at = "TIMESTAMP"' \
+  ".distillation_count += 1 | .last_distillation_at = \"${NOW}\"" \
   > /tmp/state-tmp.json && mv /tmp/state-tmp.json ~/.claude/codex-pr-lessons/state.json
 ```
 

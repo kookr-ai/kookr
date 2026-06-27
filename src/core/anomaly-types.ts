@@ -7,6 +7,7 @@ export type AnomalyType =
   | 'stale_agent'
   | 'hook_disconnected'
   | 'hook_missing'
+  | 'hook_parse_degraded'
   | 'tmux_unresponsive'
   | 'api_error'
   | 'budget_exceeded';
@@ -29,6 +30,7 @@ export const ANOMALY_TYPES = [
   'stale_agent',
   'hook_disconnected',
   'hook_missing',
+  'hook_parse_degraded',
   'tmux_unresponsive',
   'api_error',
   'budget_exceeded',
@@ -47,6 +49,12 @@ export type AnomalySeverity = 'info' | 'warning' | 'critical';
  * the real detector's anomalies are implicitly high-confidence.
  */
 export type AnomalyConfidence = 'high' | 'medium' | 'low';
+
+export interface FindingTranscriptExcerpt {
+  excerpt: string;
+  truncated: boolean;
+  readAtOffset: number;
+}
 
 export interface Anomaly {
   agentId: string;
@@ -77,6 +85,10 @@ export interface Anomaly {
   likelyRootCause?: boolean;
   /** Human-readable basis for why the active findings were linked. */
   causalityReason?: string;
+  /** Optional transcript-derived context attached to active findings behind a feature flag. */
+  transcriptContext?: {
+    lastAssistantMessage: FindingTranscriptExcerpt;
+  };
 }
 
 /** Serialized anomaly for persistence - detectedAt is ISO string, not Date. */

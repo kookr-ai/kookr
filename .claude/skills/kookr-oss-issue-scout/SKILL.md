@@ -2,12 +2,12 @@
 name: kookr-oss-issue-scout
 description: Find the best contribution opportunity in an external repository — scores issues by clarity, size, acceptance likelihood, competition, match, and local reproducibility
 keywords: issue, triage, scout, contribute, good first issue, help wanted, open source, oss, find issue, contribution opportunity, performance, optimization, reproducibility, verifiability
-related: [oss-repo-recon, oss-fork-manager, oss-pr-critic]
+related: [kookr-oss-repo-recon, oss-fork-manager, oss-pr-critic]
 ---
 
 # OSS Issue Scout
 
-> **Requires:** per-repo recon at `~/.claude/{org}-{repo}-recon/recon-report.md` (created by `[[oss-repo-recon]]`) and, optionally, distilled patterns at `${KOOKR_PLUGIN_DIR:-$HOME/git/kookr/plugin}/skills/pr-contribution-excellence/repo/{slug}.md` (part of the optional OSS extension — see `docs/hooks-setup.md`). If recon is missing, stop and run `[[oss-repo-recon]]` first rather than scouting blind. If only the patterns are missing, proceed but do not invent substitutes.
+> **Requires:** per-repo recon at `~/.claude/{org}-{repo}-recon/recon-report.md` (created by `[[kookr-oss-repo-recon]]`) and, optionally, distilled patterns at `${KOOKR_PLUGIN_DIR:-$HOME/git/kookr/plugin}/skills/pr-contribution-excellence/repo/{slug}.md` (part of the optional OSS extension — see `docs/hooks-setup.md`). If recon is missing, stop and run `[[kookr-oss-repo-recon]]` first rather than scouting blind. If only the patterns are missing, proceed but do not invent substitutes.
 
 Find the best issue to contribute to in an external repository. Not just "good first issue" — intelligent triage of what an external contributor can realistically fix and get merged.
 
@@ -435,7 +435,13 @@ priority = clarity + size + acceptance + competition + match + verifiability
 
 ## Competition Check
 
-**PREFERRED EXECUTION PATH: use the `kookr-oss-issue-scout` subagent** (`.claude/agents/kookr-oss-issue-scout.md`). It runs the full scout flow in an isolated context, returns a **ready-to-claim top candidate** (with a draft claim comment and a one-shot `gh api` command), and guarantees the competition check cannot be forgotten or skipped. The subagent does NOT post the claim itself — the caller reviews the candidate and runs the `gh api` command verbatim. The PreToolUse `claim-gate` hook at `~/.claude/hooks/claim-gate.sh` re-runs all three competition queries on the caller's POST as a second line of defense, and also fires for manual claims that bypass the subagent.
+**PREFERRED EXECUTION PATH: use the `kookr-oss-issue-scout` subagent** (`.claude/agents/kookr-oss-issue-scout.md`). It runs the full scout flow in an isolated context, returns a **ready-to-claim top candidate** (with a draft claim comment and a one-shot `gh api` command), and guarantees the competition check cannot be forgotten or skipped. The subagent does NOT post the claim itself — the caller reviews the candidate and runs the `gh api` command verbatim.
+
+**Parse the subagent's trailing machine-readable JSON block — not the prose.** The subagent ends its reply with EXACTLY one fenced `json` result block (schema in its Step 9, "Machine-readable result block"). Read that block and branch on `decision`:
+- `decision == "claim"` → after reviewing the candidate, run the `claimCommand` field verbatim (equivalently `gh api … -F body=@<claimBodyFile>`); take `recommendedBranch` / `baseBranch` / `issueNumber` from the same block.
+- `decision == "abort"` → do not claim; surface `reason` / `candidatesEvaluated`.
+
+Do not scrape the `CLAIM COMMAND:` / `File:` lines out of the prose summary — those are for human review; the JSON block is the parse contract. The PreToolUse `claim-gate` hook at `~/.claude/hooks/claim-gate.sh` re-runs all three competition queries on the caller's POST as a second line of defense, and also fires for manual claims that bypass the subagent.
 
 The following is the canonical check for anyone running the scout workflow manually or auditing the subagent's behavior.
 
@@ -732,6 +738,6 @@ Once an issue is selected:
 
 ## See Also
 
-- [[oss-repo-recon]] — Must run before scouting
+- [[kookr-oss-repo-recon]] — Must run before scouting
 - [[oss-fork-manager]] — Set up fork for the selected issue
 - [[oss-pr-critic]] — Learn what PRs succeed in this repo

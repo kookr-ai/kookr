@@ -1,6 +1,7 @@
 import type { Hono } from "hono";
 import { normalizeAgentSelection } from "../../core/agent-types.js";
 import type { CreateScheduleInput, UpdateScheduleDefinitionInput } from "../../core/schedule.js";
+import type { PlaybookScope } from "../../core/playbook.js";
 import type { RouteDeps } from "./shared.js";
 
 function fieldErrorsFrom(err: unknown): Record<string, string> | undefined {
@@ -8,6 +9,22 @@ function fieldErrorsFrom(err: unknown): Record<string, string> | undefined {
     return (err as { fieldErrors?: Record<string, string> }).fieldErrors;
   }
   return undefined;
+}
+
+type ScheduleRunErrorCode = "capacity" | "draining" | "previous_run_active" | "validation";
+
+function scheduleRunErrorResponse(error: string): { code: ScheduleRunErrorCode; status: 400 | 409 | 503 } {
+  switch (error) {
+    case "Max active tasks reached":
+      return { code: "capacity", status: 409 };
+    case "Server draining":
+    case "Server is draining; not accepting new task launches":
+      return { code: "draining", status: 503 };
+    case "Previous run still active":
+      return { code: "previous_run_active", status: 409 };
+    default:
+      return { code: "validation", status: 400 };
+  }
 }
 
 export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
@@ -57,13 +74,17 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
       if (typeof body.cwd === "string") patch.cwd = body.cwd;
       if (typeof body.agentType === "string") patch.agentType = normalizeAgentSelection(body.agentType);
       if (typeof body.playbook === "object" && body.playbook !== null && !Array.isArray(body.playbook)) {
-        const playbook = body.playbook as { path?: unknown; parameters?: unknown };
+        const playbook = body.playbook as { path?: unknown; parameters?: unknown; scope?: unknown };
         if (typeof playbook.path === "string") {
           patch.playbook = {
             path: playbook.path,
             parameters: typeof playbook.parameters === "object" && playbook.parameters !== null && !Array.isArray(playbook.parameters)
               ? Object.fromEntries(Object.entries(playbook.parameters).filter(([, value]) => typeof value === "string"))
               : {},
+            // Carry scope through the rebuild so a PATCH doesn't strip the
+            // pinned tier. Merge-carry against the existing scope happens in
+            // ScheduleStore.updateDefinition.
+            ...(typeof playbook.scope === "string" ? { scope: playbook.scope as PlaybookScope } : {}),
           };
         }
       }
@@ -92,7 +113,10 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
     if (!deps.scheduleRunner) return c.json({ error: "Scheduling not configured" }, 500);
     const id = c.req.param("id");
     const result = await deps.scheduleRunner.runNow(id);
-    if (result.error) return c.json({ error: result.error }, 400);
+    if (result.error) {
+      const { code, status } = scheduleRunErrorResponse(result.error);
+      return c.json({ error: result.error, code }, status);
+    }
     return c.json({ ok: true, taskId: result.taskId, ...(result.queued ? { queued: true } : {}) });
   });
 

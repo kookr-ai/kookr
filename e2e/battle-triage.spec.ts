@@ -62,8 +62,8 @@ test.describe('Triage loop', () => {
     const firstAgentName = await page.locator('.detail-header h2').textContent();
 
     // Respond
-    await page.locator('.response-row input').fill('Try this approach');
-    await page.locator('.btn-primary:has-text("Send & Next")').click();
+    await page.locator('.response-row textarea').fill('Try this approach');
+    await page.locator('[data-testid="send-next-button"]').click();
 
     // Should see sent overlay
     await expect(page.locator('.sent-overlay')).toBeVisible();
@@ -138,13 +138,13 @@ test.describe('Triage loop', () => {
     await page.locator('.finding-card').click();
 
     // Send button should be disabled when input is empty
-    const sendBtn = page.locator('.btn-primary:has-text("Send & Next")');
+    const sendBtn = page.locator('[data-testid="send-next-button"]');
     await expect(sendBtn).toBeDisabled();
 
     // Fill then clear
-    await page.locator('.response-row input').fill('something');
+    await page.locator('.response-row textarea').fill('something');
     await expect(sendBtn).toBeEnabled();
-    await page.locator('.response-row input').fill('');
+    await page.locator('.response-row textarea').fill('');
     await expect(sendBtn).toBeDisabled();
   });
 
@@ -155,7 +155,7 @@ test.describe('Triage loop', () => {
     await injectStopEvent(request, tmuxName);
 
     await page.locator('.finding-card').click();
-    const input = page.locator('.response-row input');
+    const input = page.locator('.response-row textarea');
     await input.fill('Fix with Enter');
     await input.press('Enter');
 

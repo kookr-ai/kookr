@@ -9,6 +9,7 @@ import {
   validateSettingsWithWarnings,
   isWithinQuietHours,
   DEFAULT_SETTINGS,
+  MAX_REPLY_SNIPPETS,
 } from './settings-store.js';
 
 describe('validateSettings', () => {
@@ -94,6 +95,56 @@ describe('validateSettings', () => {
     expect(result.defaultAgentType).toBe('claude-code');
     expect(result.shortcutBindings).toEqual({});
     expect(result.speakVerbosity).toBe('medium');
+    expect(result.replySnippets).toEqual([]);
+  });
+
+  it('defaults replySnippets to an empty list', () => {
+    expect(validateSettings({}).replySnippets).toEqual([]);
+    expect(DEFAULT_SETTINGS.replySnippets).toEqual([]);
+  });
+
+  it('trims valid reply snippets and drops malformed ones with warnings', () => {
+    const result = validateSettingsWithWarnings({
+      replySnippets: [
+        { label: ' Continue ', text: ' continue\n' },
+        { label: ' ', text: 'missing label' },
+        { label: 'Missing text', text: '' },
+        { label: 'Bad text', text: 42 },
+        'not an object',
+      ],
+    });
+
+    expect(result.settings.replySnippets).toEqual([
+      { label: 'Continue', text: 'continue' },
+    ]);
+    expect(result.warnings).toEqual([
+      'Invalid replySnippets[1] (label and text must be non-empty strings); ignored',
+      'Invalid replySnippets[2] (label and text must be non-empty strings); ignored',
+      'Invalid replySnippets[3] (label and text must be non-empty strings); ignored',
+      'Invalid replySnippets[4] (expected an object); ignored',
+    ]);
+  });
+
+  it('caps reply snippets at 20 entries', () => {
+    const snippets = Array.from({ length: MAX_REPLY_SNIPPETS + 5 }, (_, index) => ({
+      label: `Snippet ${index + 1}`,
+      text: `reply ${index + 1}`,
+    }));
+
+    const result = validateSettingsWithWarnings({ replySnippets: snippets });
+
+    expect(result.settings.replySnippets).toHaveLength(MAX_REPLY_SNIPPETS);
+    expect(result.settings.replySnippets.at(-1)).toEqual({
+      label: `Snippet ${MAX_REPLY_SNIPPETS}`,
+      text: `reply ${MAX_REPLY_SNIPPETS}`,
+    });
+    expect(result.warnings).toEqual([`replySnippets capped at ${MAX_REPLY_SNIPPETS} entries`]);
+  });
+
+  it('ignores non-array replySnippets with a warning', () => {
+    const result = validateSettingsWithWarnings({ replySnippets: { label: 'Continue', text: 'continue' } });
+    expect(result.settings.replySnippets).toEqual([]);
+    expect(result.warnings).toEqual(['Invalid replySnippets (expected an array); ignored']);
   });
 
   it('accepts valid speakVerbosity values', () => {
@@ -249,6 +300,7 @@ describe('loadSettings / saveSettings', () => {
       speakVerbosity: 'detailed' as const,
       agentEffort: { 'claude-code': 'high' as const, 'codex-cli': 'minimal' as const },
       quietHours: [{ start: '22:00', end: '08:00' }],
+      replySnippets: [{ label: 'Continue', text: 'continue' }],
     };
     await saveSettings(filePath, settings);
     const result = await loadSettings(filePath);
@@ -306,6 +358,7 @@ describe('loadSettings / saveSettings', () => {
     expect(result.settings.defaultAgentType).toBe('claude-code');
     expect(result.settings.shortcutBindings).toEqual({});
     expect(result.settings.speakVerbosity).toBe('medium');
+    expect(result.settings.replySnippets).toEqual([]);
     expect(result.loadedFromDefaults).toBe(false);
     expect(result.warnings).toEqual([]);
   });

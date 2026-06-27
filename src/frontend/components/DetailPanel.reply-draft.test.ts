@@ -59,14 +59,14 @@ function renderDetailPanel(root: Root, agent: AgentState, send: (msg: ClientMess
   });
 }
 
-function responseInput(container: HTMLElement): HTMLInputElement {
-  const input = container.querySelector<HTMLInputElement>('.response-row input');
-  expect(input).toBeInstanceOf(HTMLInputElement);
+function responseInput(container: HTMLElement): HTMLTextAreaElement {
+  const input = container.querySelector<HTMLTextAreaElement>('.response-row textarea');
+  expect(input).toBeInstanceOf(HTMLTextAreaElement);
   return input!;
 }
 
-function setInputValue(input: HTMLInputElement, value: string): void {
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+function setInputValue(input: HTMLTextAreaElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
   setter?.call(input, value);
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
@@ -87,6 +87,7 @@ describe('DetailPanel reply draft persistence', () => {
 
   afterEach(() => {
     act(() => root.unmount());
+    vi.unstubAllGlobals();
     container.remove();
     document.body.innerHTML = '';
     localStorage.clear();
@@ -160,5 +161,50 @@ describe('DetailPanel reply draft persistence', () => {
     expect(localStorage.getItem(detailReplyDraftKey({ taskId: agent.taskId, agentId: agent.agentId })!)).toBe(
       JSON.stringify({ input: 'voice reply' }),
     );
+  });
+
+  test('inserts a saved reply snippet without sending it', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const path = typeof url === 'string' ? url : url instanceof URL ? url.pathname : url.url;
+      if (path === '/api/settings') {
+        return {
+          ok: true,
+          json: async () => ({
+            replySnippets: [{ label: 'Run tests', text: 'pnpm test -- settings-store settings-routes' }],
+          }),
+        } as Response;
+      }
+      if (path === '/api/share/task') {
+        return { ok: true, json: async () => ({ shares: [] }) } as Response;
+      }
+      throw new Error(`unexpected fetch ${path}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      callback(0);
+      return 0;
+    });
+    const agent = makeAgent('agent-1');
+    const sent: ClientMessage[] = [];
+
+    renderDetailPanel(root, agent, (msg) => {
+      sent.push(msg);
+      return true;
+    });
+    await act(async () => {});
+
+    const picker = container.querySelector<HTMLSelectElement>('#reply-snippet-picker');
+    expect(picker).toBeInstanceOf(HTMLSelectElement);
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(picker, '0');
+      picker!.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    expect(responseInput(container).value).toBe('pnpm test -- settings-store settings-routes');
+    expect(fetchMock).toHaveBeenCalledWith('/api/settings');
+    expect(localStorage.getItem(detailReplyDraftKey({ taskId: agent.taskId, agentId: agent.agentId })!)).toBe(
+      JSON.stringify({ input: 'pnpm test -- settings-store settings-routes' }),
+    );
+    expect(sent).toEqual([]);
   });
 });

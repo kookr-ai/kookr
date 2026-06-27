@@ -7,7 +7,7 @@ function zeroCounts(): Record<AnomalyType, number> {
   const types: AnomalyType[] = [
     'needs_input', 'permission_blocked', 'repeated_error', 'merge_conflict',
     'stale_agent', 'hook_disconnected', 'hook_missing', 'tmux_unresponsive',
-    'api_error', 'budget_exceeded',
+    'hook_parse_degraded', 'api_error', 'budget_exceeded',
   ];
   return Object.fromEntries(types.map((t) => [t, 0])) as Record<AnomalyType, number>;
 }
@@ -24,6 +24,25 @@ function createMockDeps(overrides?: Partial<DiagnosticRunnerDeps>): DiagnosticRu
     getWsBroadcastCount: () => 0,
     getEventCounts: () => ({}),
     measureSnapshotSizeBytes: () => 10_000,
+    getHelperLlmDiagnosticsSnapshot: () => ({
+      schemaVersion: 'helper-llm-diagnostics.v1',
+      generatedAt: 123,
+      totals: {
+        requestCount: 0,
+        successCount: 0,
+        failureCount: 0,
+        nullResponseCount: 0,
+        errorCount: 0,
+        abortedCount: 0,
+        totalLatencyMs: 0,
+        averageLatencyMs: 0,
+        maxLatencyMs: 0,
+        failureCategories: {},
+      },
+      byUseCase: [],
+      byProvider: [],
+      byUseCaseProvider: [],
+    }),
     ...overrides,
   };
 }
@@ -39,6 +58,42 @@ describe('DiagnosticRunner', () => {
     expect(report).toBeDefined();
     expect(report.timestamp).toBeGreaterThan(0);
     expect(report.findings).toEqual([]);
+    expect(report.helperLlm.schemaVersion).toBe('helper-llm-diagnostics.v1');
+  });
+
+  test('includes persistence health when provided', () => {
+    const runner = new DiagnosticRunner(createMockDeps({
+      getPersistenceHealthSnapshot: () => ({
+        schemaVersion: 'persistence-health.v1',
+        targets: {
+          task_state: {
+            target: 'task_state',
+            totalAttempts: 1,
+            totalFailures: 1,
+            consecutiveFailures: 1,
+            lastAttemptAt: '2026-06-12T10:00:00.000Z',
+            lastSuccessAt: null,
+            lastFailureAt: '2026-06-12T10:00:00.000Z',
+            lastError: { message: 'permission denied', code: 'EACCES', hard: true },
+          },
+          detection_stats: {
+            target: 'detection_stats',
+            totalAttempts: 0,
+            totalFailures: 0,
+            consecutiveFailures: 0,
+            lastAttemptAt: null,
+            lastSuccessAt: null,
+            lastFailureAt: null,
+            lastError: null,
+          },
+        },
+      }),
+    }));
+
+    const report = runner.runNow();
+
+    expect(report.persistenceHealth?.targets.task_state.lastError?.code).toBe('EACCES');
+    expect(report.findings.map((finding) => finding.checkId)).toContain('persistence-health');
   });
 
   test('getStatus returns null report before first run', () => {
@@ -54,6 +109,7 @@ describe('DiagnosticRunner', () => {
     const status = runner.getStatus();
     expect(status.report).not.toBeNull();
     expect(status.report!.findings).toEqual([]);
+    expect(status.report!.helperLlm.generatedAt).toBe(123);
   });
 
   test('runNow records lastError when a dependency throws', () => {

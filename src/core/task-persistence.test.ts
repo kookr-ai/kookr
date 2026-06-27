@@ -1,8 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readdirSync, existsSync, utimesSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { saveTasks, loadTasks, CorruptTaskFileError, serializeSnoozed, deserializeSnoozed, saveTasksWithSnapshotPolicy } from './task-persistence.js';
+import { saveTasks, loadTasks, loadTasksWithRecovery, CorruptTaskFileError, serializeSnoozed, deserializeSnoozed, saveTasksWithSnapshotPolicy } from './task-persistence.js';
 import { TaskStore } from './tasks.js';
 import { AttentionQueue } from './attention-queue.js';
 import type { Anomaly, PersistedSnooze } from './types.js';
@@ -59,11 +59,21 @@ describe('Task Persistence', () => {
     createTaskForMutation(store, 'Fix auth', '/cwd');
     createTaskForMutation(store, 'Add tests', '/cwd');
 
-    await saveTasks(store.getAllTasks(), filePath);
+    const metrics = await saveTasks(store.getAllTasks(), filePath);
 
     // File should exist and be valid JSON
     const { tasks } = await loadTasks(filePath);
     expect(tasks).toHaveLength(2);
+    expect(metrics).toMatchObject({
+      filePath,
+      bytes: expect.any(Number),
+      taskCount: 2,
+      relationCount: 0,
+      serializeMs: expect.any(Number),
+      writeMs: expect.any(Number),
+      totalMs: expect.any(Number),
+    });
+    expect(metrics.bytes).toBeGreaterThan(0);
   });
 
   test('load reads existing tasks.json (round-trip)', async () => {
@@ -91,6 +101,57 @@ describe('Task Persistence', () => {
     writeFileSync(filePath, 'this is not json!!!');
 
     await expect(loadTasks(filePath)).rejects.toThrow(CorruptTaskFileError);
+  });
+
+  test('loadTasksWithRecovery quarantines corrupt file and restores newest valid daily snapshot', async () => {
+    const olderStore = new TaskStore();
+    createTaskForMutation(olderStore, 'Older snapshot task', '/older');
+    await saveTasks(olderStore.getAllTasks(), `${filePath}.daily.20260609`);
+
+    writeFileSync(`${filePath}.daily.20260610`, 'not json');
+
+    const newestValidStore = new TaskStore();
+    const restoredTask = createTaskForMutation(newestValidStore, 'Newest valid snapshot task', '/restored');
+    await saveTasks(newestValidStore.getAllTasks(), `${filePath}.daily.20260611`, 12.34);
+
+    const corruptContents = '{"tasks": [';
+    writeFileSync(filePath, corruptContents);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await loadTasksWithRecovery(filePath);
+
+    expect(result.tasks).toHaveLength(1);
+    expect(result.tasks[0].id).toBe(restoredTask.id);
+    expect(result.tasks[0].prompt).toBe('Newest valid snapshot task');
+    expect(result.lifetimeSpendUsd).toBe(12.34);
+    expect(result.recovery).toEqual({
+      quarantinedPath: expect.stringContaining('tasks.json.corrupt-'),
+      restoredFrom: `${filePath}.daily.20260611`,
+    });
+    expect(existsSync(filePath)).toBe(true);
+    expect(JSON.parse(readFileSync(filePath, 'utf-8')).tasks[0].id).toBe(restoredTask.id);
+    expect(readFileSync(result.recovery!.quarantinedPath, 'utf-8')).toBe(corruptContents);
+    expect(warn).not.toHaveBeenCalled();
+
+    warn.mockRestore();
+  });
+
+  test('loadTasksWithRecovery skips corrupt daily snapshots and boots empty when none restore', async () => {
+    writeFileSync(`${filePath}.daily.20260611`, 'not json');
+    writeFileSync(filePath, 'also not json');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await loadTasksWithRecovery(filePath);
+
+    expect(result.tasks).toEqual([]);
+    expect(result.recovery).toEqual({
+      quarantinedPath: expect.stringContaining('tasks.json.corrupt-'),
+    });
+    expect(result.recovery!.restoredFrom).toBeUndefined();
+    expect(readFileSync(result.recovery!.quarantinedPath, 'utf-8')).toBe('also not json');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('skipping corrupt daily snapshot'));
+
+    warn.mockRestore();
   });
 
   test('v1 format (plain array) loads as tasks with no lifetime counter', async () => {

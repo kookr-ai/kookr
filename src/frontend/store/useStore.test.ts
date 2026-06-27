@@ -4,6 +4,10 @@ import { __resetDndForTests, disableDnd, enableDnd } from '../hooks/useDnd.js';
 import type { AgentState } from '../../shared/protocol.js';
 import { getBugReportAlerts, resetBugReportRecorderForTests } from '../bug-report-recorder.js';
 import {
+  __resetSelectionTransitionRecorderForTests,
+  getSelectionTransitionDiagnostics,
+} from '../selection-transition-recorder.js';
+import {
   clearDebugTimeline,
   getDebugTimelineEntries,
   setDebugTimelineEnabledForTests,
@@ -23,6 +27,7 @@ describe('Kookr Zustand Store', () => {
     });
     __resetDndForTests();
     resetBugReportRecorderForTests();
+    __resetSelectionTransitionRecorderForTests();
     setDebugTimelineEnabledForTests(null);
     clearDebugTimeline();
     store = createKookrStore();
@@ -106,6 +111,12 @@ describe('Kookr Zustand Store', () => {
         memoryUsedPercent: 68,
         memoryFreeBytes: 4_000_000_000,
         memoryTotalBytes: 12_000_000_000,
+        dataDirectory: {
+          path: '/tmp/kookr-data',
+          diskFreeBytes: 8_000_000_000,
+          diskTotalBytes: 100_000_000_000,
+          diskFreePercent: 8,
+        },
       },
       server: {
         eventLoopDelayP95Ms: 21,
@@ -229,6 +240,65 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().alerts[0].summary).toBe('audible');
   });
 
+  describe('handleAlert focus guard (F20)', () => {
+    function seedTwoAgents() {
+      store.getState().handleSnapshot([
+        { agentId: 'agent-focused', events: [], anomaly: null },
+        { agentId: 'agent-other', events: [], anomaly: null },
+      ]);
+      store.getState().selectAgent('agent-focused');
+    }
+
+    test('suppresses toast from a different agent while composing in the reply input', () => {
+      seedTwoAgents();
+      store.getState().setFocusZone('response-input');
+
+      store.getState().handleAlert('agent-other', 'Agent is stuck in a loop');
+
+      expect(store.getState().alerts).toHaveLength(0);
+      // Still recorded for the bug-report history — only the popup is dropped.
+      expect(getBugReportAlerts()).toHaveLength(1);
+    });
+
+    test('suppresses toast from a different agent while composing in the terminal', () => {
+      seedTwoAgents();
+      store.getState().setFocusZone('terminal');
+
+      store.getState().handleAlert('agent-other', 'Error: repeated failure', 'error');
+
+      expect(store.getState().alerts).toHaveLength(0);
+    });
+
+    test('shows toast from the focused agent while composing', () => {
+      seedTwoAgents();
+      store.getState().setFocusZone('response-input');
+
+      store.getState().handleAlert('agent-focused', 'Needs your input');
+
+      expect(store.getState().alerts).toHaveLength(1);
+      expect(store.getState().alerts[0].agentId).toBe('agent-focused');
+    });
+
+    test('shows toast from another agent when not composing', () => {
+      seedTwoAgents();
+      expect(store.getState().focusZone).toBe('none');
+
+      store.getState().handleAlert('agent-other', 'Agent is stuck in a loop');
+
+      expect(store.getState().alerts).toHaveLength(1);
+    });
+
+    test('shows non-agent alerts (empty / workspace ids) even while composing', () => {
+      seedTwoAgents();
+      store.getState().setFocusZone('response-input');
+
+      store.getState().handleAlert('', 'Message not sent — connection lost.', 'error');
+      store.getState().handleAlert('workspace', 'Sweep complete');
+
+      expect(store.getState().alerts).toHaveLength(2);
+    });
+  });
+
   test('selectAgent updates selectedAgentId', () => {
     expect(store.getState().selectedAgentId).toBeNull();
 
@@ -237,6 +307,41 @@ describe('Kookr Zustand Store', () => {
 
     store.getState().selectAgent('agent-2');
     expect(store.getState().selectedAgentId).toBe('agent-2');
+  });
+
+  test('selectAgent records bounded selection transition diagnostics', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'agent-1', taskId: 'task-1', events: [], anomaly: null, taskStatus: 'inProgress' },
+      { agentId: 'agent-2', taskId: 'task-2', events: [], anomaly: null, taskStatus: 'inProgress' },
+    ]);
+
+    store.getState().selectAgent('agent-1');
+    store.getState().selectAgent('agent-2');
+
+    expect(getSelectionTransitionDiagnostics().transitions.at(-1)).toMatchObject({
+      fromTaskId: 'task-1',
+      toTaskId: 'task-2',
+      fromSessionId: 'agent-1',
+      toSessionId: 'agent-2',
+      source: 'selectAgent',
+    });
+  });
+
+  test('nextTask records navigation-specific selection transition diagnostics', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'agent-1', taskId: 'task-1', events: [], anomaly: null, taskStatus: 'inProgress' },
+      { agentId: 'agent-2', taskId: 'task-2', events: [], anomaly: null, taskStatus: 'inProgress' },
+    ]);
+
+    store.getState().selectAgent('agent-1');
+    store.getState().nextTask();
+
+    expect(getSelectionTransitionDiagnostics().transitions.at(-1)).toMatchObject({
+      fromTaskId: 'task-1',
+      toTaskId: 'task-2',
+      source: 'nextTask',
+      reason: 'cycle_routable_tasks',
+    });
   });
 
   test('selectAgent resets leftPane and narrowTab to activity', () => {
@@ -248,6 +353,28 @@ describe('Kookr Zustand Store', () => {
     store.getState().selectAgent('agent-1');
     expect(store.getState().leftPane).toBe('activity');
     expect(store.getState().narrowTab).toBe('activity');
+  });
+
+  test('selectAgent persists the selected task for reload restore', () => {
+    store.getState().handleSnapshot([
+      {
+        agentId: 'agent-1',
+        taskId: 'task-1',
+        events: [],
+        anomaly: null,
+      },
+    ]);
+
+    store.getState().selectAgent('agent-1');
+
+    expect(JSON.parse(localStore.get('kookr-selected-task') ?? 'null')).toMatchObject({
+      taskId: 'task-1',
+      agentId: 'agent-1',
+    });
+
+    store.getState().selectAgent(null);
+
+    expect(localStore.has('kookr-selected-task')).toBe(false);
   });
 
   test('setLeftPane and setNarrowTab update panel state', () => {
@@ -611,6 +738,71 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().selectedAgentId).toBe('agent-completed');
   });
 
+  test('handleSnapshot restores the persisted selected task on first hydration', () => {
+    localStore.set('kookr-selected-task', JSON.stringify({
+      taskId: 'task-2',
+      agentId: 'old-session-for-task-2',
+      selectedAt: 123,
+    }));
+    const freshStore = createKookrStore();
+
+    freshStore.getState().handleSnapshot([
+      { agentId: 'agent-1', taskId: 'task-1', events: [], anomaly: null },
+      { agentId: 'agent-2', taskId: 'task-2', events: [], anomaly: null },
+    ]);
+
+    expect(freshStore.getState().selectedAgentId).toBe('agent-2');
+    expect(freshStore.getState().selectedAgentSource).toBe('manual');
+    expect(freshStore.getState().alerts).toHaveLength(0);
+    expect(JSON.parse(localStore.get('kookr-selected-task') ?? 'null')).toMatchObject({
+      taskId: 'task-2',
+      agentId: 'agent-2',
+    });
+  });
+
+  test('handleSnapshot restores persisted agent-only selection on first hydration', () => {
+    localStore.set('kookr-selected-task', JSON.stringify({
+      taskId: null,
+      agentId: 'agent-1',
+      selectedAt: 123,
+    }));
+    const freshStore = createKookrStore();
+
+    freshStore.getState().handleSnapshot([
+      { agentId: 'agent-1', events: [], anomaly: null },
+    ]);
+
+    expect(freshStore.getState().selectedAgentId).toBe('agent-1');
+    expect(freshStore.getState().selectedAgentSource).toBe('manual');
+    expect(freshStore.getState().alerts).toHaveLength(0);
+    expect(JSON.parse(localStore.get('kookr-selected-task') ?? 'null')).toMatchObject({
+      taskId: null,
+      agentId: 'agent-1',
+    });
+  });
+
+  test('handleSnapshot clears stale persisted selection with a visible fallback alert', () => {
+    localStore.set('kookr-selected-task', JSON.stringify({
+      taskId: 'task-missing',
+      agentId: 'agent-missing',
+      selectedAt: 123,
+    }));
+    const freshStore = createKookrStore();
+
+    freshStore.getState().handleSnapshot([
+      { agentId: 'agent-live', taskId: 'task-live', events: [], anomaly: null },
+    ]);
+
+    expect(freshStore.getState().selectedAgentId).toBeNull();
+    expect(localStore.has('kookr-selected-task')).toBe(false);
+    expect(freshStore.getState().alerts).toHaveLength(1);
+    expect(freshStore.getState().alerts[0]).toMatchObject({
+      agentId: 'workspace',
+      summary: 'Previously watched task finished or was removed.',
+      severity: 'info',
+    });
+  });
+
   test('sentOverlay defaults to null', () => {
     expect(store.getState().sentOverlay).toBeNull();
   });
@@ -844,7 +1036,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 2,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -952,8 +1144,8 @@ describe('Kookr Zustand Store', () => {
 
   test('nextBottleneck selects and persists the target project', () => {
     store.getState().handleProjectSummaries([
-      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
-      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
+      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
     ]);
     store.getState().handleSnapshot([
       {
@@ -984,8 +1176,8 @@ describe('Kookr Zustand Store', () => {
 
   test('nextBottleneck selects the target project when localStorage persistence fails', () => {
     store.getState().handleProjectSummaries([
-      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
-      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
+      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
     ]);
     store.getState().handleSnapshot([
       {
@@ -1014,8 +1206,8 @@ describe('Kookr Zustand Store', () => {
 
   test('nextBottleneck falls back to All Projects when the target project is hidden', () => {
     store.getState().handleProjectSummaries([
-      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
-      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
+      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
     ]);
     store.getState().hideSidebarProject('proj-b');
     store.getState().handleSnapshot([
@@ -1096,7 +1288,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 1,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
       {
@@ -1107,7 +1299,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 1,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -1157,8 +1349,8 @@ describe('Kookr Zustand Store', () => {
 
   test('nextTask selects and persists the target project', () => {
     store.getState().handleProjectSummaries([
-      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
-      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 0, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
+      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 0, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
     ]);
     store.getState().handleSnapshot([
       {
@@ -1222,8 +1414,8 @@ describe('Kookr Zustand Store', () => {
 
   test('previousTask selects and persists the target project', () => {
     store.getState().handleProjectSummaries([
-      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
-      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 0, todayPrCount: 0, weekPrCount: 0, openPrs: 0, recentTasks: [] },
+      { project: 'proj-a', displayName: 'Project A', color: 1, activeAgents: 1, findingCount: 1, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
+      { project: 'proj-b', displayName: 'Project B', color: 2, activeAgents: 1, findingCount: 0, todayPrCount: 0, weekPrCount: 0, openContributionAttempts: 0, recentTasks: [] },
     ]);
     store.getState().handleSnapshot([
       {
@@ -1449,7 +1641,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
       {
@@ -1460,7 +1652,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -1484,7 +1676,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -1507,7 +1699,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -1532,7 +1724,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
       {
@@ -1543,7 +1735,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
       {
@@ -1554,7 +1746,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -1581,7 +1773,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
       {
@@ -1592,7 +1784,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -1617,7 +1809,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
       {
@@ -1628,7 +1820,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
       {
@@ -1639,7 +1831,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -1665,7 +1857,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
       {
@@ -1676,7 +1868,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -1702,7 +1894,7 @@ describe('Kookr Zustand Store', () => {
         findingCount: 0,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -1737,6 +1929,18 @@ describe('Kookr Zustand Store', () => {
 
   test('maxActiveTasks defaults to 0 (unknown until first snapshot)', () => {
     expect(store.getState().maxActiveTasks).toBe(0);
+  });
+
+  test('bypassAllPermissions defaults to false', () => {
+    expect(store.getState().bypassAllPermissions).toBe(false);
+  });
+
+  test('handleSnapshot sets and clears bypassAllPermissions from current snapshot', () => {
+    store.getState().handleSnapshot([], '/cwd', undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, true);
+    expect(store.getState().bypassAllPermissions).toBe(true);
+
+    store.getState().handleSnapshot([], '/cwd');
+    expect(store.getState().bypassAllPermissions).toBe(false);
   });
 
   test('handleSnapshot sets maxActiveTasks', () => {
@@ -1900,6 +2104,28 @@ describe('Kookr Zustand Store', () => {
     expect(alerts).toHaveLength(1);
     expect(alerts[0].summary).toContain('task-9');
     expect(alerts[0].severity).toBe('info');
+  });
+
+  test('handleSweepComplete reports workspace-unavailable sweeps as errors', () => {
+    store.getState().setSweepRunning(true);
+    store.getState().handleSweepComplete({
+      runId: '',
+      startedAt: '2026-06-21T05:00:00.000Z',
+      finishedAt: '2026-06-21T05:00:00.000Z',
+      projects: [{
+        kind: 'skipped',
+        projectId: '',
+        reason: 'workspace_unavailable',
+        missingDeps: ['attemptRepository'],
+      }],
+    });
+
+    expect(store.getState().sweepRunning).toBe(false);
+    const alerts = store.getState().alerts;
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].severity).toBe('error');
+    expect(alerts[0].summary).toContain('Sweep unavailable');
+    expect(alerts[0].summary).not.toContain('attemptRepository');
   });
 
   describe('selectProject auto-select finding', () => {

@@ -66,6 +66,11 @@ function makeExitCapture() {
   return { codes, exit };
 }
 
+function parseSingleJsonLog(logs: string[]): any {
+  expect(logs).toHaveLength(1);
+  return JSON.parse(logs[0]);
+}
+
 // ---------- parseArgs ----------
 
 describe('parseArgs', () => {
@@ -149,6 +154,19 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['--parent-task-id', '   '])).toThrow(UsageError);
     expect(() => parseArgs(['--parent-task-id', 'abc', '--no-parent-task'])).toThrow(UsageError);
     expect(() => parseArgs(['--no-parent-task', '--parent-task-id', 'abc'])).toThrow(UsageError);
+  });
+
+  it('parses --auto-close-on-signal / --no-auto-close-on-signal as a tri-state', () => {
+    expect(parseArgs([]).autoCloseOnSignal).toBeNull();
+    expect(parseArgs(['--auto-close-on-signal']).autoCloseOnSignal).toBe(true);
+    expect(parseArgs(['--no-auto-close-on-signal']).autoCloseOnSignal).toBe(false);
+    // A repeated identical flag is redundant, not a conflict.
+    expect(parseArgs(['--auto-close-on-signal', '--auto-close-on-signal']).autoCloseOnSignal).toBe(true);
+  });
+
+  it('rejects combined --auto-close-on-signal and --no-auto-close-on-signal', () => {
+    expect(() => parseArgs(['--auto-close-on-signal', '--no-auto-close-on-signal'])).toThrow(UsageError);
+    expect(() => parseArgs(['--no-auto-close-on-signal', '--auto-close-on-signal'])).toThrow(UsageError);
   });
 });
 
@@ -604,6 +622,26 @@ describe('postTask', () => {
     }
   });
 
+  it('sends autoCloseOnSignal only when explicitly set (null lets the server inherit)', async () => {
+    const bodies: any[] = [];
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodies.push(JSON.parse(bodyText));
+      return { status: 201, body: JSON.stringify({ id: 't' }) };
+    });
+    try {
+      await postTask({ baseUrl, prompt: 'a', cwd: '/tmp', agent: null, criteria: null, autoCloseOnSignal: true });
+      await postTask({ baseUrl, prompt: 'b', cwd: '/tmp', agent: null, criteria: null, autoCloseOnSignal: false });
+      await postTask({ baseUrl, prompt: 'c', cwd: '/tmp', agent: null, criteria: null, autoCloseOnSignal: null });
+      await postTask({ baseUrl, prompt: 'd', cwd: '/tmp', agent: null, criteria: null });
+      expect(bodies[0].autoCloseOnSignal).toBe(true);
+      expect(bodies[1].autoCloseOnSignal).toBe(false);
+      expect(bodies[2].autoCloseOnSignal).toBeUndefined();
+      expect(bodies[3].autoCloseOnSignal).toBeUndefined();
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it('includes explicit duplicate intent when requested', async () => {
     let bodySeen: any = null;
     const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
@@ -755,6 +793,55 @@ describe('main', () => {
     }
   });
 
+  it('prints a JSON envelope when a task is created with --json', async () => {
+    const { server, baseUrl } = await startFakeApi(() => ({
+      status: 201,
+      body: JSON.stringify({
+        id: 'mk-json',
+        agentType: 'claude-code',
+        cwd: tmpCwd,
+        prompt: 'secret=do-not-echo',
+        parentTaskId: 'parent-1',
+      }),
+    }));
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--json', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      const envelope = parseSingleJsonLog(logs);
+      expect(codes).toEqual([EXIT_OK]);
+      expect(errBucket.errors).toEqual([]);
+      expect(envelope).toMatchObject({
+        ok: true,
+        code: 'OK',
+        message: 'Task created',
+        details: {
+          taskId: 'mk-json',
+          parentTaskId: 'parent-1',
+          queued: false,
+          baseUrl,
+          openUrl: `${baseUrl}/#/tasks/mk-json`,
+          parentUrl: `${baseUrl}/#/tasks/parent-1`,
+        },
+      });
+      expect(envelope.details.task.id).toBe('mk-json');
+      expect(envelope.details.task.prompt).toBeUndefined();
+      expect(JSON.stringify(envelope)).not.toContain('secret=do-not-echo');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it('blocks a duplicate active prompt in non-interactive default warn mode', async () => {
     const { server, baseUrl } = await startFakeApi(() => ({
       status: 200,
@@ -802,6 +889,44 @@ describe('main', () => {
       });
       expect(codes).toEqual([EXIT_DUPLICATE_BLOCKED]);
       expect(errBucket.errors.join('\n')).toContain('--dedupe=block');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('prints a JSON envelope when a duplicate is blocked with --json', async () => {
+    const { server, baseUrl } = await startFakeApi(() => ({
+      status: 200,
+      body: JSON.stringify({
+        duplicate: true,
+        task: { id: 'dup-json', status: 'inProgress', cwd: tmpCwd },
+      }),
+    }));
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--json', '--dedupe=block', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      const envelope = parseSingleJsonLog(logs);
+      expect(codes).toEqual([EXIT_DUPLICATE_BLOCKED]);
+      expect(errBucket.errors).toEqual([]);
+      expect(envelope).toMatchObject({
+        ok: false,
+        code: 'DUPLICATE_BLOCKED',
+        details: {
+          taskId: 'dup-json',
+          baseUrl,
+        },
+      });
     } finally {
       await closeServer(server);
     }

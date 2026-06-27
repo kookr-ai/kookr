@@ -51,6 +51,11 @@ fi
 # Lockfiles deliberately NOT in the allowlist (supply-chain attack surface).
 TRIVIAL_PATTERN='^(docs/|\.github/|[^/]+\.md$|.*\.test\.(ts|tsx|js|jsx)$|.*\.spec\.(ts|tsx|js|jsx)$|tsconfig.*\.json$|\.gitignore$|\.review-state/)'
 
+# Separate from the review-marker allowlist above. Docs-only lane skipping is
+# intentionally narrower: prose Markdown only, and only when the diff against
+# origin/main is non-empty and unambiguous.
+DOCS_ONLY_PATTERN='^(docs/.*[.]md|README[.]md|CONTRIBUTING[.]md|CODE_OF_CONDUCT[.]md|CLA[.]md|SECURITY[.]md)$'
+
 # Build the diff range. Three cases:
 # 1. origin/main exists → use the THREE-DOT (symmetric) form which `git diff`
 #    resolves to `git diff $(git merge-base origin/main HEAD) HEAD` — i.e.
@@ -63,6 +68,7 @@ TRIVIAL_PATTERN='^(docs/|\.github/|[^/]+\.md$|.*\.test\.(ts|tsx|js|jsx)$|.*\.spe
 # 3. branch IS at origin/main → empty diff, gate is no-op
 HEAD_SHA=$(git rev-parse HEAD 2>/dev/null) || HEAD_SHA=""
 CHANGED_FILES=""
+PORTABILITY_SCAN_ALL=0
 if [ -n "$HEAD_SHA" ]; then
   if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
     CHANGED_FILES=$(git diff --name-only "origin/main...HEAD" 2>/dev/null)
@@ -71,9 +77,30 @@ if [ -n "$HEAD_SHA" ]; then
     # diff. First-push case: someone with a brand-new clone forking off
     # no upstream MUST run the gate against everything they're publishing.
     CHANGED_FILES=$(git ls-tree -r --name-only HEAD 2>/dev/null)
+    PORTABILITY_SCAN_ALL=1
   fi
 fi
 NONTRIVIAL=$(printf '%s\n' "$CHANGED_FILES" | grep -vE "$TRIVIAL_PATTERN" | grep -v '^$' | head -5)
+DOCS_ONLY_SKIP=0
+if [ -n "$CHANGED_FILES" ] && git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+  DOCS_ONLY_STATUS=$(git diff --name-status "origin/main...HEAD" 2>/dev/null)
+  NON_DOCS_PROSE=$(printf '%s\n' "$DOCS_ONLY_STATUS" | awk -v pattern="$DOCS_ONLY_PATTERN" '
+    $1 == "A" || $1 == "M" {
+      if ($2 !~ pattern) {
+        print $0
+        exit
+      }
+      next
+    }
+    NF {
+      print $0
+      exit
+    }
+  ')
+  if [ -z "$NON_DOCS_PROSE" ]; then
+    DOCS_ONLY_SKIP=1
+  fi
+fi
 
 if [ -n "$NONTRIVIAL" ]; then
   # Choose a marker key that survives detached HEAD AND avoids slash
@@ -151,18 +178,68 @@ if [ -n "$NONTRIVIAL" ]; then
   esac
 fi
 
-echo "Type-checking server..."
-if ! pnpm build:server; then
-  echo ""
-  echo "Push rejected: server type-check failed."
-  exit 1
-fi
+if [ "$DOCS_ONLY_SKIP" -eq 1 ]; then
+  echo "Docs-only prose diff detected; skipping server and E2E type-check lanes."
+else
+  if [ -n "${SKIP_PORTABILITY_CHECK:-}" ]; then
+    echo "[pre-push] shell-portability: skipped via SKIP_PORTABILITY_CHECK."
+  elif [ -n "$CHANGED_FILES" ]; then
+    PORTABILITY_PATHS=$(mktemp -t kookr-shell-portability.XXXXXX)
+    trap 'rm -f "$PORTABILITY_PATHS"' EXIT
 
-echo "Type-checking E2E tests..."
-if ! pnpm check:e2e; then
-  echo ""
-  echo "Push rejected: E2E type-check failed."
-  exit 1
+    printf '%s\n' "$CHANGED_FILES" | while IFS= read -r path; do
+      [ -z "$path" ] && continue
+      case "$path" in
+        *.sh|*.bash)
+          printf '%s\n' "$path"
+          continue
+          ;;
+        .hooks/*|hooks/*)
+          name=${path##*/}
+          case "$name" in
+            *.*) ;;
+            *)
+              printf '%s\n' "$path"
+              continue
+              ;;
+          esac
+          ;;
+        *.ts|*.mjs|*.js|*.cjs)
+          if git show "HEAD:$path" 2>/dev/null | grep -Eq "(node:child_process|['\"]child_process['\"]|['\"]execa['\"]|(^|[^A-Za-z0-9_])(spawn|spawnSync|exec|execSync|execFile|execFileSync|execa)[[:space:]]*[(]|Bun[.]spawn[[:space:]]*[(]|new[[:space:]]+Deno[.]Command[[:space:]]*[(])"; then
+            printf '%s\n' "$path"
+            continue
+          fi
+          ;;
+      esac
+    done | sort -u > "$PORTABILITY_PATHS"
+
+    if [ -s "$PORTABILITY_PATHS" ]; then
+      echo "Checking shell portability..."
+      if ! SHELL_PORTABILITY_PATHS_FILE="$PORTABILITY_PATHS" SHELL_PORTABILITY_SCAN_ALL="$PORTABILITY_SCAN_ALL" bash scripts/check-shell-portability.sh; then
+        echo ""
+        echo "Push rejected: shell portability check failed."
+        exit 1
+      fi
+    else
+      echo "[pre-push] shell-portability: no shell/subprocess files changed."
+    fi
+    rm -f "$PORTABILITY_PATHS"
+    trap - EXIT
+  fi
+
+  echo "Type-checking server..."
+  if ! pnpm build:server; then
+    echo ""
+    echo "Push rejected: server type-check failed."
+    exit 1
+  fi
+
+  echo "Type-checking E2E tests..."
+  if ! pnpm check:e2e; then
+    echo ""
+    echo "Push rejected: E2E type-check failed."
+    exit 1
+  fi
 fi
 
 echo "Validating skill frontmatter..."
@@ -186,40 +263,32 @@ if ! pnpm validate:requirements; then
   exit 1
 fi
 
-echo "Running tests..."
-if ! pnpm test; then
-  echo ""
-  echo "Push rejected: tests failed. Fix failing tests before pushing."
-  exit 1
+if [ "$DOCS_ONLY_SKIP" -eq 1 ]; then
+  echo "Docs-only prose diff detected; skipping Vitest lane."
+else
+  echo "Running tests..."
+  if ! pnpm test; then
+    echo ""
+    echo "Push rejected: tests failed. Fix failing tests before pushing."
+    exit 1
+  fi
 fi
 
-# --- kookr-toolkit plugin portability + version bump enforcement ---
-# Plugin playbooks ship as reusable defaults for any consumer repo. They must
-# not depend on Kookr runtime context, local Kookr state, Kookr development
-# commands, or repo-local Kookr hooks, even when that dependency is guarded by
-# a fallback path. Also enforce the plugin.json#version bump on plugin/skills/**,
-# plugin/agents/**, and plugin/hooks/** changes.
+# --- kookr-toolkit plugin hygiene + version bump enforcement ---
+# The kookr-toolkit plugin ships together with Kookr, so plugin playbooks MAY
+# couple to the Kookr runtime (KOOKR_* env vars, the issue-claim API, Ralph
+# verdict files) when that integration is the whole point of the workflow —
+# a Kookr-aware playbook is a legitimate thing to bundle with Kookr. We still
+# reject hardcoded absolute home paths (they break every checkout but the
+# author's) and enforce a plugin.json#version bump on ANY change to bundled
+# plugin content (skills, agents, hooks, playbooks, commands, README, ...).
 if [ -d plugin ]; then
   # Three-dot symmetric form so unrelated origin/main movement doesn't pollute
   # the diff (same fix rationale as the review-gate range above).
   RANGE="origin/main...HEAD"
   git rev-parse --verify --quiet origin/main >/dev/null 2>&1 || RANGE="HEAD"
 
-  # 1. Plugin playbooks must stay portable across consumer repos. Guarded
-  # fallbacks still couple the playbook to Kookr's local runtime.
-  BAD=$(grep -RInE 'KOOKR_[A-Z0-9_]+|~/\.kookr|pnpm (prod:[A-Za-z0-9:_-]+|build:server)|\.hooks/|/home/[^/]+/git/kookr' plugin/playbooks 2>/dev/null || true)
-  if [ -n "$BAD" ]; then
-    echo ""
-    echo "Push rejected: plugin/playbooks contains Kookr-specific runtime references."
-    echo "Guarded or fallback-only Kookr integrations still make the file Kookr-specific."
-    echo "Move Kookr-aware workflows to project/user playbooks, or make the plugin"
-    echo "playbook fully portable."
-    echo ""
-    echo "$BAD" | head -20
-    exit 1
-  fi
-
-  # 2. Hardcoded absolute home path — breaks any checkout but the author's.
+  # 1. Hardcoded absolute home path — breaks any checkout but the author's.
   BAD=$(grep -rIE '/home/[^/]+/git/kookr' plugin/ 2>/dev/null || true)
   if [ -n "$BAD" ]; then
     echo ""
@@ -232,7 +301,7 @@ if [ -d plugin ]; then
     exit 1
   fi
 
-  # 3. Skill/agent placement gate — covers naming, empty-agents, collisions,
+  # 2. Skill/agent placement gate — covers naming, empty-agents, collisions,
   #    and unqualified subagent_type references. See hooks/skill-placement-gate.sh.
   if [ -x hooks/skill-placement-gate.sh ] || [ -f hooks/skill-placement-gate.sh ]; then
     if ! bash hooks/skill-placement-gate.sh "$REPO_ROOT"; then
@@ -242,7 +311,7 @@ if [ -d plugin ]; then
     fi
   fi
 
-  # 3b. Legacy collision check for non-skill/agent kinds (commands, etc.) that
+  # 2b. Legacy collision check for non-skill/agent kinds (commands, etc.) that
   #     the placement gate doesn't cover.
   for kind in commands; do
     if [ -d ".claude/$kind" ] && [ -d "plugin/$kind" ]; then
@@ -259,13 +328,30 @@ if [ -d plugin ]; then
     fi
   done
 
-  # 4. Version bump — plugin/skills/**, plugin/agents/**, or plugin/hooks/** changes require version bump.
-  if git diff --name-only "$RANGE" 2>/dev/null | grep -qE '^plugin/(skills|agents|hooks)/'; then
-    if ! git diff --name-only "$RANGE" 2>/dev/null | grep -q '^plugin/.claude-plugin/plugin.json$'; then
+  # 3. Version bump — ANY change to bundled plugin content (skills, agents,
+  #    hooks, playbooks, commands, reviewer-specialists, README, ...) requires a
+  #    real bump of the version VALUE, because installed-plugin users only
+  #    receive updates when the version string changes. The trigger is "any
+  #    plugin/ path except plugin.json itself"; the satisfier compares the
+  #    extracted version value at origin/main vs HEAD — not a line-level diff,
+  #    which a trailing comma or reordering could fake without a real release.
+  PLUGIN_CONTENT_CHANGED=$(git diff --name-only "$RANGE" 2>/dev/null \
+    | grep -E '^plugin/' | grep -vE '^plugin/\.claude-plugin/plugin\.json$' || true)
+  if [ -n "$PLUGIN_CONTENT_CHANGED" ]; then
+    PLUGIN_VER_RE='"version"[[:space:]]*:[[:space:]]*"[^"]+"'
+    NEW_VER=$(git show HEAD:plugin/.claude-plugin/plugin.json 2>/dev/null | grep -oE "$PLUGIN_VER_RE" | head -1)
+    if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+      OLD_VER=$(git show origin/main:plugin/.claude-plugin/plugin.json 2>/dev/null | grep -oE "$PLUGIN_VER_RE" | head -1)
+    else
+      OLD_VER=""
+    fi
+    if [ -n "$OLD_VER" ] && [ "$OLD_VER" = "$NEW_VER" ]; then
       echo ""
       echo "Push rejected: plugin/ content changed without bumping plugin.json#version."
-      echo "Edit plugin/.claude-plugin/plugin.json — installed-plugin users only get updates"
-      echo "when the version string changes."
+      echo "Installed-plugin users only get updates when the version string changes."
+      echo "Version is unchanged (${NEW_VER:-<unreadable>}); bump \"version\" in"
+      echo "plugin/.claude-plugin/plugin.json. Changed plugin files:"
+      echo "$PLUGIN_CONTENT_CHANGED" | sed 's/^/  /' | head -20
       exit 1
     fi
   fi

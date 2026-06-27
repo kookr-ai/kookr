@@ -1,8 +1,15 @@
 import type { AgentSelection } from './agent-types.js';
+import type { PlaybookScope } from './playbook.js';
 
 export interface SchedulePlaybook {
   path: string;
   parameters: Record<string, string>;
+  /**
+   * Pinned tier the playbook is resolved from. Optional/additive — absence
+   * means the legacy project-tier-only behaviour. Mirrors the `core/schedule`
+   * definition (both must carry the field or the types diverge).
+   */
+  scope?: PlaybookScope;
 }
 
 export type ScheduleStopReason = 'trigger_limit_reached';
@@ -104,9 +111,14 @@ export interface Schedule {
   updatedAt: string;
 }
 
+/** Mirrors `core/schedule` — tri-state playbook resolution health (R9). */
+export type PlaybookResolutionState = 'unknown' | 'resolvable' | 'unresolvable';
+
 export interface ScheduleResponse extends Schedule {
   nextRunAt: string | null;
   cronDescription: string;
+  /** Cached resolution health; absent on older servers (treat as `unknown`). */
+  playbookResolution?: PlaybookResolutionState;
 }
 
 export interface ScheduleStatusSnapshot {

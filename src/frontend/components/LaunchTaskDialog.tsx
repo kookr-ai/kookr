@@ -5,10 +5,13 @@ import { useKookrStore } from '../store/useStore.js';
 import { track } from '../telemetry.js';
 import { RecentPaths } from '../store/recent-paths.js';
 import {
-  loadLaunchTaskDialogDraft,
+  loadLaunchTaskDialogDraftForOpen,
   saveLaunchTaskDialogDraft,
   clearLaunchTaskDialogDraft,
+  markLaunchTaskDialogDraftSubmitted,
+  type LaunchTaskDialogDraft,
 } from '../store/launch-task-dialog-draft.js';
+import { loadLastAgentType, saveLastAgentType } from '../store/last-agent-type.js';
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { PlaybookBrowser } from './PlaybookBrowser.js';
@@ -25,6 +28,27 @@ const recentPaths = new RecentPaths();
 const PLAYBOOK_CACHE_TTL_MS = 30_000;
 
 type Tab = 'manual' | 'playbooks';
+
+/** A cwd dropdown entry: an MRU path, optionally labeled as a tracked project. */
+interface CwdSuggestion {
+  path: string;
+  /** Display name of the tracked project this path belongs to, when known. */
+  projectName?: string;
+}
+
+/**
+ * Was a previously-submitted draft's launch confirmed? True when a task whose
+ * display prompt matches the draft is visible in the store snapshot. Used on
+ * dialog open to decide whether an optimistically-kept draft (RFC F12) can be
+ * cleared. A non-match keeps the draft — the safe direction.
+ */
+function draftLaunchConfirmed(draft: LaunchTaskDialogDraft): boolean {
+  const target = draft.prompt.trim();
+  if (!target) return true;
+  return useKookrStore.getState().agents.some(
+    (agent) => (agent.description ?? '').trim() === target,
+  );
+}
 
 interface Props {
   send: (msg: ClientMessage) => boolean;
@@ -56,23 +80,45 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   const playbooksLastFetchedAt = useKookrStore((s) => s.playbooksLastFetchedAt);
   const playbooksLastFetchedCwd = useKookrStore((s) => s.playbooksLastFetchedCwd);
   const hostCapabilities = useKookrStore((s) => s.hostCapabilities);
+  const projectSummaries = useKookrStore((s) => s.projectSummaries);
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
   // Relaunch paths drive the form from props. In that mode we neither read
   // nor write the persisted draft — the relaunched task owns its own state.
   const isRelaunch = defaultPrompt != null || defaultCriteria != null || defaultCwd != null;
-  const initialDraft = isRelaunch ? null : loadLaunchTaskDialogDraft();
+  // Resolved once per open (lazy initializer): a draft kept across an
+  // optimistic submit (RFC F12) is cleared here when the launch is confirmed
+  // by a matching task in the store, and restored otherwise.
+  const [initialDraft] = useState(() =>
+    isRelaunch ? null : loadLaunchTaskDialogDraftForOpen(draftLaunchConfirmed),
+  );
   // Was this dialog opened with content hydrated from a stored draft? Recorded
   // once at mount so subsequent typing (which keeps writing to storage) does
   // not flip the indicator on/off. cwd alone doesn't count — see saveLaunchTaskDialogDraft
   // for the same "cwd is auto-populated, ignore it" rationale.
   const initialHadDraft = !isRelaunch && initialDraft != null
     && (initialDraft.prompt.trim().length > 0 || initialDraft.criteria.trim().length > 0);
+  // Local checkouts of tracked projects, labeled for the cwd dropdown and
+  // used as a default ahead of the server's own runtime checkout (RFC F13).
+  const trackedProjectPaths = useMemo<CwdSuggestion[]>(
+    () => projectSummaries.flatMap((p) =>
+      p.localPath ? [{ path: p.localPath, projectName: p.displayName }] : [],
+    ),
+    [projectSummaries],
+  );
   // `||` (not `??`) for the cwd fallback chain: a persisted empty-string cwd
   // must fall through to the recentPaths default rather than leave the field
   // blank on reopen. `projectCwd` slots above the draft so launching from a
   // project drawer overrides the persisted draft path with that project's cwd.
+  // serverCwd — the supervisor's *own* runtime checkout — is deliberately the
+  // LAST resort (RFC F13): it must never win while MRU entries or tracked
+  // project checkouts exist.
   const resolvedInitialCwd =
-    defaultCwd ?? projectCwd ?? (initialDraft?.cwd || recentPaths.getAll()[0] || serverCwd);
+    defaultCwd ?? projectCwd ?? (
+      initialDraft?.cwd
+      || recentPaths.getAll()[0]
+      || trackedProjectPaths[0]?.path
+      || serverCwd
+    );
   const [prompt, setPrompt] = useState(defaultPrompt ?? initialDraft?.prompt ?? '');
   const [cwd, setCwd] = useState(resolvedInitialCwd);
   const [criteria, setCriteria] = useState(defaultCriteria ?? initialDraft?.criteria ?? '');
@@ -83,9 +129,16 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     : requestedInitialTab ?? (projectContext ? 'playbooks' : 'manual');
   const [tab, setTab] = useState<Tab>(initialTab);
   const [submitting, setSubmitting] = useState(false);
-  const [agentType, setAgentType] = useState<AgentSelection>(
-    () => defaultAgentType ?? serverDefaultAgentType ?? 'claude-code',
-  );
+  // Agent default chain (RFC F6): explicit prop → user's last-used selection
+  // (persisted on successful submit) → server default → 'claude-code'. The
+  // last-used entry is skipped when it is not currently offered (e.g.
+  // 'round-robin' after the server drops to a single agent).
+  const [agentType, setAgentType] = useState<AgentSelection>(() => {
+    if (defaultAgentType) return defaultAgentType;
+    const lastUsed = loadLastAgentType();
+    if (lastUsed && agentOptions.some((opt) => opt.type === lastUsed)) return lastUsed;
+    return serverDefaultAgentType ?? 'claude-code';
+  });
   const [draftRestored, setDraftRestored] = useState(initialHadDraft);
   const dialogRef = useRef<HTMLDivElement>(null);
   const playbooksTabRef = useRef<HTMLButtonElement>(null);
@@ -126,7 +179,13 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   // When opening directly to playbooks, ensure the list is fetched.
   useEffect(() => {
     if (relaunchPlaybookId || (projectContext && initialTab === 'playbooks')) {
-      const targetCwd = projectContext ? serverCwd : (cwd.trim() || serverCwd);
+      // The playbook catalog follows the focused project: `cwd` is seeded from
+      // the project (defaultCwd ?? projectCwd ?? …), so scanning it lists the
+      // project's own `.kookr/playbooks/`. Falls back to serverCwd when the
+      // project cwd is empty/unresolved so we never scan `<empty>/.kookr/...`.
+      // This only changes which playbooks are LISTED — getTaskTargetCwd() keeps
+      // the execution cwd unchanged (catalog/target split from #209). See #1019.
+      const targetCwd = cwd.trim() || serverCwd;
       // A cached `absent` capability is treated as stale so a user who just
       // installed the dependency is not stuck with a collapsed control until
       // the cache TTL expires. See rfc-capability-gated-playbook-params.md.
@@ -142,7 +201,29 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- run once on mount
 
-  const suggestions = useMemo(() => recentPaths.filter(cwd), [cwd]);
+  // MRU paths merged with tracked-project checkouts (RFC F13). MRU entries
+  // keep their recency order; project paths not already in the MRU follow,
+  // labeled with the project displayName. A path that is both stays in its
+  // MRU slot but picks up the label.
+  const allCwdSuggestions = useMemo<CwdSuggestion[]>(() => {
+    const merged = new Map<string, CwdSuggestion>();
+    for (const path of recentPaths.getAll()) merged.set(path, { path });
+    for (const entry of trackedProjectPaths) {
+      const existing = merged.get(entry.path);
+      if (existing) existing.projectName = entry.projectName;
+      else merged.set(entry.path, { ...entry });
+    }
+    return [...merged.values()];
+  }, [trackedProjectPaths]);
+
+  const suggestions = useMemo(() => {
+    if (!cwd) return allCwdSuggestions;
+    const query = cwd.toLowerCase();
+    return allCwdSuggestions.filter((s) =>
+      s.path.toLowerCase().includes(query)
+      || s.projectName?.toLowerCase().includes(query),
+    );
+  }, [cwd, allCwdSuggestions]);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -165,11 +246,17 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
       agentType,
     });
     if (sent) {
-      // Set the ref *before* clearing so any pending save-effect re-run sees
-      // it and early-returns instead of re-persisting the just-launched draft.
+      // Set the ref *before* marking so any pending save-effect re-run sees
+      // it and early-returns instead of overwriting the submitted marker.
       submittedRef.current = true;
-      clearLaunchTaskDialogDraft();
-      useKookrStore.getState().handleAlert('', `Starting task: ${excerpt}`, 'info');
+      // RFC F12: do NOT clear the draft here — the dialog closes before the
+      // server confirms the launch, and a server-side failure (e.g. missing
+      // working directory) would otherwise lose the typed prompt. The marked
+      // draft is reconciled on the next dialog open (cleared once a matching
+      // task is visible, restored otherwise).
+      markLaunchTaskDialogDraftSubmitted();
+      saveLastAgentType(agentType);
+      useKookrStore.getState().handleAlert('', `Launching task: ${excerpt}`, 'info');
     } else {
       useKookrStore.getState().handleAlert(
         '',
@@ -231,12 +318,14 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
       setHighlightIdx((prev) => (prev <= 0 ? suggestions.length - 1 : prev - 1));
     } else if (e.key === 'Enter' && highlightIdx >= 0) {
       e.preventDefault();
-      selectSuggestion(suggestions[highlightIdx]);
+      selectSuggestion(suggestions[highlightIdx].path);
     }
   }
 
   function getPlaybookSourceCwd(): string {
-    return projectContext ? serverCwd : (cwd.trim() || serverCwd);
+    // Catalog source follows the focused project's seeded cwd (see the
+    // mount-time fetch above and #1019); falls back to serverCwd when empty.
+    return cwd.trim() || serverCwd;
   }
 
   function getTaskTargetCwd(): string {
@@ -337,12 +426,12 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                     onClick={useServerCwd}
                     title={
                       serverCwdProtected
-                        ? `Server cwd is a protected worktree (${serverCwd}). Click to use parent repo: ${serverCwdTarget}`
+                        ? `Server cwd is a protected worktree (${serverCwd}). Click to use main checkout: ${serverCwdTarget}`
                         : `Use server cwd: ${serverCwdTarget}`
                     }
                   >
                     {serverCwdProtected
-                      ? `↩ Use parent of server cwd (${serverCwdTarget})`
+                      ? `↩ Use main checkout (${serverCwdTarget})`
                       : `↩ Use server cwd (${serverCwdTarget})`}
                   </button>
                 )}
@@ -371,23 +460,31 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                 />
                 {showDropdown && suggestions.length > 0 && (
                   <ul ref={dropdownRef} className="combo-dropdown" role="listbox">
-                    {suggestions.map((path, i) => (
+                    {suggestions.map((suggestion, i) => (
                       <li
-                        key={path}
+                        key={suggestion.path}
                         role="option"
                         aria-selected={i === highlightIdx}
                         className={i === highlightIdx ? 'highlighted' : ''}
                         onMouseDown={(e) => {
                           e.preventDefault();
-                          selectSuggestion(path);
+                          selectSuggestion(suggestion.path);
                         }}
                       >
-                        {path}
+                        {suggestion.path}
+                        {suggestion.projectName && (
+                          <span className="combo-dropdown-project">{suggestion.projectName}</span>
+                        )}
                       </li>
                     ))}
                   </ul>
                 )}
               </div>
+              {serverCwd && (cwd.trim() === serverCwd || cwd.trim() === serverCwdTarget) && (
+                <span className="cwd-server-hint" role="note">
+                  This is Kookr&apos;s own runtime checkout — agents launched here work on Kookr itself.
+                </span>
+              )}
             </label>
             <AgentTypeSelector
               value={agentType}

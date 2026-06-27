@@ -21,6 +21,8 @@ interface CheckoutContext {
   isWorktree: boolean;
 }
 
+export type DeliveryPolicy = 'pre-authorized' | 'ask-first';
+
 async function getCheckoutContext(cwd: string): Promise<CheckoutContext | null> {
   const toplevel = await gitIn(cwd, 'rev-parse', '--show-toplevel');
   if (!toplevel) return null;
@@ -53,24 +55,40 @@ function describeBranch(branchLabel: string): string {
   return branchLabel === 'detached HEAD' ? '(detached HEAD)' : `on branch \`${branchLabel}\``;
 }
 
-function buildGuidance(context: CheckoutContext, branchLabel: string, repoName: string): string {
+function deliveryGateSentence(deliveryPolicy: DeliveryPolicy): string {
+  if (deliveryPolicy === 'pre-authorized') {
+    return 'Delivery is pre-authorized for this task: when your work is committed and verified, push the branch and open the PR without asking — the PR is the review gate. If the work does not actually satisfy the task, do NOT open a PR; stop and report what\'s wrong instead.';
+  }
+  return "After committing, don't end your turn silently — unless the task already told you to deliver, ask the user whether to push the branch and open a PR.";
+}
+
+function buildGuidance(
+  context: CheckoutContext,
+  branchLabel: string,
+  repoName: string,
+  deliveryPolicy: DeliveryPolicy,
+): string {
   const branchPhrase = describeBranch(branchLabel);
   const here = context.isWorktree
     ? `You are currently in the git worktree \`${context.topLevel}\` ${branchPhrase}. The main checkout is at \`${context.repoRoot}\`.`
     : `You are currently in the main checkout \`${context.repoRoot}\` ${branchPhrase}.`;
   const noCommitTarget = context.isWorktree
-    ? 'Do NOT commit in this worktree or in the main checkout'
-    : 'Do NOT commit in this checkout';
+    ? 'Do NOT commit to main, in this worktree, or in the main checkout'
+    : 'Do NOT commit to main or in this checkout';
   return [
     `${here} ${noCommitTarget} — every Kookr task must make tracked-file changes in a fresh git worktree of its own, not in any pre-existing checkout (the main repo, the production runtime worktree, or any sibling worktree spawned for unrelated work).`,
     `- Create one: \`git worktree add ../${repoName}-<short-name> -b <feature-branch> HEAD\``,
     `- Perform all tracked-file edits, commits, and pushes from that new worktree.`,
     `- If the task stays read-only, you may remain in the current checkout.`,
-    `- After committing, don't end your turn silently — unless the task already told you to deliver, ask the user whether to push the branch and open a PR.`,
+    `- ${deliveryGateSentence(deliveryPolicy)}`,
   ].join('\n');
 }
 
-export async function applyWorktreeGuardrails(prompt: string, cwd: string): Promise<string> {
+export async function applyWorktreeGuardrails(
+  prompt: string,
+  cwd: string,
+  deliveryPolicy: DeliveryPolicy = 'ask-first',
+): Promise<string> {
   if (!prompt.trim() || hasWorktreeGuardrails(prompt)) return prompt;
 
   const context = await getCheckoutContext(cwd);
@@ -78,6 +96,6 @@ export async function applyWorktreeGuardrails(prompt: string, cwd: string): Prom
 
   const branchLabel = await readBranchLabel(cwd);
   const repoName = basename(context.repoRoot) || 'repo';
-  const guidance = buildGuidance(context, branchLabel, repoName);
+  const guidance = buildGuidance(context, branchLabel, repoName, deliveryPolicy);
   return `${guidance}\n\n${prompt}`;
 }

@@ -8,13 +8,20 @@ import {
   __resetAudibleAlertForTests,
   evaluateChime,
   evaluateFindingChime,
+  GLOBAL_CHIME_MIN_INTERVAL_MS,
   RECHIME_COOLDOWN_MS,
   useAudibleAlert,
   type ChimeRecord,
+  type GlobalChimeState,
 } from './useAudibleAlert.js';
 import { __resetAudioAlertLogForTests, getAudioAlertSnapshot } from '../audio/audio-alert-log.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound.js';
 import { __resetDndForTests, disableDnd } from './useDnd.js';
+import {
+  __resetProjectNotificationMuteForTests,
+  muteProjectNotifications,
+  unmuteProjectNotifications,
+} from './useProjectNotificationMute.js';
 import { useKookrStore } from '../store/useStore.js';
 import type { AgentState, AnomalySeverity, AnomalyType } from '../../shared/protocol.js';
 import type { Anomaly } from '../../shared/contracts/anomalies.js';
@@ -29,6 +36,7 @@ function mkAgent(opts: {
   snoozedUntil?: number;
   suppressed?: boolean;
   taskStatus?: AgentState['taskStatus'];
+  projectId?: string;
 }): AgentState {
   const anomaly: Anomaly | null = opts.anomaly
     ? {
@@ -45,6 +53,7 @@ function mkAgent(opts: {
     snoozedUntil: opts.snoozedUntil,
     suppressed: opts.suppressed,
     taskStatus: opts.taskStatus,
+    projectId: opts.projectId ?? 'github.com/kookr-ai/kookr',
   };
 }
 
@@ -285,7 +294,11 @@ describe('evaluateChime — dedup and flicker suppression', () => {
     expect(evaluateChime([a, b], state, T0 + 1_000)).toBe(true);
   });
 
-  test('anomaly type change for the same agent (no clear in between) chimes', () => {
+  test('anomaly type change for the same agent within the cooldown does not re-chime', () => {
+    // Production storm pattern: stale_agent ↔ hook_disconnected type flips
+    // while the agent stays in findings re-chimed instantly because the
+    // dedup key changed. The same logical problem morphing is not a new
+    // call for attention.
     const state = new Map<string, ChimeRecord>();
     const initial = mkAgent({
       agentId: 'a',
@@ -301,7 +314,49 @@ describe('evaluateChime — dedup and flicker suppression', () => {
         detectedAt: new Date(detectedAt.getTime() + 1_000),
       },
     });
-    expect(evaluateChime([escalated], state, T0 + 1_000)).toBe(true);
+    expect(evaluateChime([escalated], state, T0 + 1_000)).toBe(false);
+  });
+
+  test('anomaly type change re-chimes once the per-agent cooldown has elapsed', () => {
+    const state = new Map<string, ChimeRecord>();
+    const initial = mkAgent({
+      agentId: 'a',
+      anomaly: { type: 'stale_agent', severity: 'warning', detectedAt },
+    });
+    expect(evaluateChime([initial], state, T0)).toBe(true);
+
+    const escalated = mkAgent({
+      agentId: 'a',
+      anomaly: {
+        type: 'permission_blocked',
+        severity: 'warning',
+        detectedAt: new Date(detectedAt.getTime() + RECHIME_COOLDOWN_MS + 1_000),
+      },
+    });
+    expect(evaluateChime([escalated], state, T0 + RECHIME_COOLDOWN_MS + 1_000)).toBe(true);
+  });
+
+  test('detectedAt churn for the same agent within the cooldown does not re-chime', () => {
+    const state = new Map<string, ChimeRecord>();
+    const initial = mkAgent({
+      agentId: 'a',
+      anomaly: { type: 'stale_agent', severity: 'warning', detectedAt },
+    });
+    expect(evaluateChime([initial], state, T0)).toBe(true);
+
+    // Same type, fresh detectedAt every snapshot — stays silent while the
+    // agent never leaves findings.
+    for (let i = 1; i <= 5; i++) {
+      const churned = mkAgent({
+        agentId: 'a',
+        anomaly: {
+          type: 'stale_agent',
+          severity: 'warning',
+          detectedAt: new Date(detectedAt.getTime() + i * 2_000),
+        },
+      });
+      expect(evaluateChime([churned], state, T0 + i * 2_000)).toBe(false);
+    }
   });
 
   test('same anomaly type re-chimes after agent fully clears past the cooldown', () => {
@@ -367,6 +422,94 @@ describe('evaluateChime — dedup and flicker suppression', () => {
   });
 });
 
+describe('evaluateFindingChime — cross-agent global rate limit', () => {
+  const T0 = 1_700_000_000_000;
+  const detectedAt = new Date('2026-05-08T12:00:00Z');
+
+  const findingFor = (agentId: string, offsetMs = 0) => mkAgent({
+    agentId,
+    anomaly: {
+      type: 'hook_disconnected',
+      severity: 'warning',
+      detectedAt: new Date(detectedAt.getTime() + offsetMs),
+    },
+  });
+
+  test('a second agent entering findings inside the window is suppressed, not chimed', () => {
+    // Production storm pattern: a 1-second finding rotating across many
+    // different agents defeats per-agent dedup entirely — only a cross-agent
+    // limit can bound the sound rate.
+    const state = new Map<string, ChimeRecord>();
+    const global: GlobalChimeState = { lastChimeAt: null };
+
+    expect(evaluateFindingChime([findingFor('a')], state, T0, global).shouldChime).toBe(true);
+
+    const second = evaluateFindingChime([findingFor('b', 1_000)], state, T0 + 2_000, global);
+    expect(second.shouldChime).toBe(false);
+    expect(second.suppressed).toBe('global_rate_limit');
+    // Context is still populated so the suppression can be logged.
+    expect(second.context?.agentId).toBe('b');
+  });
+
+  test('a suppressed candidate is dropped, not deferred past the window', () => {
+    const state = new Map<string, ChimeRecord>();
+    const global: GlobalChimeState = { lastChimeAt: null };
+
+    evaluateFindingChime([findingFor('a')], state, T0, global);
+    const suppressed = evaluateFindingChime([findingFor('a'), findingFor('b', 1_000)], state, T0 + 2_000, global);
+    // Agent b was suppressed specifically by the global rate limit (not, say,
+    // per-agent dedup) — so the "dropped" semantics below are unambiguous.
+    expect(suppressed.suppressed).toBe('global_rate_limit');
+
+    // Window elapses with both findings unchanged — agent b was marked as
+    // seen during the suppressed evaluation and stays silent.
+    const later = evaluateFindingChime(
+      [findingFor('a'), findingFor('b', 1_000)],
+      state,
+      T0 + GLOBAL_CHIME_MIN_INTERVAL_MS + 1_000,
+      global,
+    );
+    expect(later.shouldChime).toBe(false);
+    expect(later.candidateCount).toBe(0);
+  });
+
+  test('a genuinely new finding after the window elapses chimes again', () => {
+    const state = new Map<string, ChimeRecord>();
+    const global: GlobalChimeState = { lastChimeAt: null };
+
+    evaluateFindingChime([findingFor('a')], state, T0, global);
+
+    const afterWindow = evaluateFindingChime(
+      [findingFor('a'), findingFor('b', GLOBAL_CHIME_MIN_INTERVAL_MS + 1_000)],
+      state,
+      T0 + GLOBAL_CHIME_MIN_INTERVAL_MS + 1_000,
+      global,
+    );
+    expect(afterWindow.shouldChime).toBe(true);
+    expect(afterWindow.context?.agentId).toBe('b');
+  });
+
+  test('omitting globalState (pure-evaluation callers) applies no global limit', () => {
+    const state = new Map<string, ChimeRecord>();
+    expect(evaluateChime([findingFor('a')], state, T0)).toBe(true);
+    expect(evaluateChime([findingFor('a'), findingFor('b', 1_000)], state, T0 + 1_000)).toBe(true);
+  });
+
+  test('muted-project candidates are remembered without chiming', () => {
+    const state = new Map<string, ChimeRecord>();
+    const muted = (projectId: string | undefined) => projectId === 'github.com/kookr-ai/kookr';
+
+    const suppressed = evaluateFindingChime([findingFor('a')], state, T0, undefined, muted);
+
+    expect(suppressed.shouldChime).toBe(false);
+    expect(suppressed.candidateCount).toBe(0);
+    expect(state.has('a')).toBe(true);
+
+    const afterUnmute = evaluateFindingChime([findingFor('a')], state, T0 + 1_000);
+    expect(afterUnmute.shouldChime).toBe(false);
+  });
+});
+
 describe('useAudibleAlert — runtime hook behavior', () => {
   let root: Root;
   let container: HTMLDivElement;
@@ -403,6 +546,7 @@ describe('useAudibleAlert — runtime hook behavior', () => {
     __resetAudibleAlertForTests();
     __resetSoundPreferenceForTests();
     __resetDndForTests();
+    __resetProjectNotificationMuteForTests();
     disableDnd();
 
     audioContextCtor = vi.fn().mockImplementation(function () {
@@ -439,6 +583,7 @@ describe('useAudibleAlert — runtime hook behavior', () => {
     __resetAudibleAlertForTests();
     __resetSoundPreferenceForTests();
     __resetDndForTests();
+    __resetProjectNotificationMuteForTests();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     useKookrStore.setState({ agents: [], selectedAgentId: null });
@@ -475,6 +620,31 @@ describe('useAudibleAlert — runtime hook behavior', () => {
 
     expect(audioContextCtor).toHaveBeenCalledTimes(1);
     expect(getAudioAlertSnapshot().entries).toHaveLength(1);
+  });
+
+  test('muted project finding does not chime and does not replay after unmute', () => {
+    const finding = mkAgent({
+      agentId: 'agent-muted',
+      taskStatus: 'inProgress',
+      anomaly: {
+        type: 'permission_blocked',
+        severity: 'warning',
+        detectedAt: new Date('2026-05-08T12:00:00Z'),
+      },
+    });
+    muteProjectNotifications('github.com/kookr-ai/kookr');
+    useKookrStore.setState({ agents: [finding] });
+
+    mount();
+
+    expect(audioContextCtor).not.toHaveBeenCalled();
+
+    act(() => {
+      unmuteProjectNotifications('github.com/kookr-ai/kookr');
+      useKookrStore.setState({ agents: [{ ...finding }] });
+    });
+
+    expect(audioContextCtor).not.toHaveBeenCalled();
   });
 
   test('reacts when a warning finding appears after mount', () => {

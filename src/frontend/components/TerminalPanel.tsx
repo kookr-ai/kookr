@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Terminal } from '@xterm/xterm';
+import { Terminal, type ILink } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon, type ISearchOptions, type ISearchResultChangeEvent } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -7,12 +7,19 @@ import '@xterm/xterm/css/xterm.css';
 import { useKookrStore } from '../store/useStore.js';
 import { registerTerminalSend } from '../terminal-send.js';
 import { isMultilinePaste, buildPasteFrame } from '../terminal-paste.js';
+import { createReconnectingSocket, type ReconnectingSocket } from '../reconnecting-socket.js';
 import { track } from '../telemetry.js';
+import {
+  DEFAULT_TERMINAL_FONT_SIZE,
+  usePersistedTerminalFontSize,
+} from '../hooks/usePersistedTerminalFontSize.js';
 
 interface Props {
   tmuxName: string | null;
   visible: boolean;
   onEmptySubmit?: () => void;
+  /** Click handler for a viewable file path detected in terminal output. */
+  onOpenFile?: (path: string) => void;
 }
 
 interface MenuState {
@@ -20,6 +27,17 @@ interface MenuState {
   y: number;
   hasSelection: boolean;
 }
+
+interface JumpLatestState {
+  visible: boolean;
+  lines: number;
+}
+
+// Matches file paths ending in a viewable extension, for click-to-view in the
+// right pane. Requires a path prefix (/, ./, ../, ~/) to keep false positives
+// out of ordinary prose. Absolute paths resolve cleanly server-side; relative
+// ones are best-effort against the server cwd.
+const VIEWABLE_FILE_RE = /(?:\.{0,2}\/|~\/)[\w./@+-]*\.(?:md|markdown|html?|png|jpe?g|gif|webp|svg)\b/gi;
 
 const SEARCH_OPTIONS: ISearchOptions = {
   decorations: {
@@ -41,6 +59,22 @@ function getValidatedResize(cols: unknown, rows: unknown): { cols: number; rows:
   if (!Number.isInteger(cols) || !Number.isInteger(rows)) return null;
   if (cols <= 0 || rows <= 0) return null;
   return { cols, rows };
+}
+
+function isTerminalAtBottom(terminal: Terminal): boolean {
+  try {
+    const buffer = terminal.buffer.active;
+    return buffer.viewportY >= buffer.baseY || buffer.viewportY + terminal.rows >= buffer.length;
+  } catch {
+    return true;
+  }
+}
+
+function countTerminalNewLines(data: string | ArrayBuffer | Uint8Array): number {
+  const text = typeof data === 'string'
+    ? data
+    : new TextDecoder().decode(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
+  return Math.max(1, text.match(/\r\n|\r|\n/g)?.length ?? 0);
 }
 
 // xterm.onData forwards more than user keystrokes — it also emits replies
@@ -161,24 +195,82 @@ function shouldHandleEmptyTerminalEnter(
   return true;
 }
 
-export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
+export function TerminalPanel({ tmuxName, visible, onEmptySubmit, onOpenFile }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const controllerRef = useRef<ReconnectingSocket | null>(null);
   const currentTmuxRef = useRef<string | null>(null);
   const terminalInputDraftRef = useRef('');
   const onEmptySubmitRef = useRef(onEmptySubmit);
+  const onOpenFileRef = useRef(onOpenFile);
   const searchOpenRef = useRef(false);
   const visibleRef = useRef(visible);
   const lastSafePasteAtRef = useRef(0);
+  const atBottomRef = useRef(true);
+  const pendingJumpLinesRef = useRef(0);
+  const jumpLatestTimerRef = useRef<number | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [jumpLatest, setJumpLatest] = useState<JumpLatestState>({ visible: false, lines: 0 });
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [searchFound, setSearchFound] = useState<boolean | null>(null);
   const [searchResult, setSearchResult] = useState<ISearchResultChangeEvent | null>(null);
+  const [terminalFontSize, setTerminalFontSize] = usePersistedTerminalFontSize();
+
+  function clearJumpLatestTimer() {
+    if (jumpLatestTimerRef.current === null) return;
+    window.clearTimeout(jumpLatestTimerRef.current);
+    jumpLatestTimerRef.current = null;
+  }
+
+  function resetJumpLatest() {
+    clearJumpLatestTimer();
+    pendingJumpLinesRef.current = 0;
+    atBottomRef.current = true;
+    setJumpLatest((prev) => (
+      prev.visible || prev.lines !== 0 ? { visible: false, lines: 0 } : prev
+    ));
+  }
+
+  function hideJumpLatestAtBottom() {
+    clearJumpLatestTimer();
+    pendingJumpLinesRef.current = 0;
+    setJumpLatest((prev) => (
+      prev.visible || prev.lines !== 0 ? { visible: false, lines: 0 } : prev
+    ));
+  }
+
+  function scheduleJumpLatest(lines: number) {
+    if (lines <= 0 || atBottomRef.current) return;
+    pendingJumpLinesRef.current += lines;
+    if (jumpLatestTimerRef.current !== null) return;
+
+    jumpLatestTimerRef.current = window.setTimeout(() => {
+      jumpLatestTimerRef.current = null;
+      const pending = pendingJumpLinesRef.current;
+      pendingJumpLinesRef.current = 0;
+      if (pending <= 0 || atBottomRef.current) return;
+      setJumpLatest((prev) => ({ visible: true, lines: prev.lines + pending }));
+    }, 80);
+  }
+
+  function syncAtBottom(terminal: Terminal): boolean {
+    const atBottom = isTerminalAtBottom(terminal);
+    atBottomRef.current = atBottom;
+    if (atBottom) hideJumpLatestAtBottom();
+    return atBottom;
+  }
+
+  function handleJumpToLatest() {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    terminal.scrollToBottom();
+    resetJumpLatest();
+    terminal.focus();
+  }
 
   function openSearch() {
     searchOpenRef.current = true;
@@ -195,14 +287,50 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     terminalRef.current?.focus();
   }
 
-  function registerVisibleTerminalSend(ws: WebSocket | null) {
-    if (!visibleRef.current || !ws || ws.readyState !== WebSocket.OPEN) {
+  function registerVisibleTerminalSend() {
+    const controller = controllerRef.current;
+    if (!visibleRef.current || !controller?.isEstablished()) {
       registerTerminalSend(null);
       return;
     }
     registerTerminalSend((data) => {
-      if (visibleRef.current && ws.readyState === WebSocket.OPEN) ws.send(data);
+      if (visibleRef.current) controllerRef.current?.send(data);
     });
+  }
+
+  function refitRefreshAndNotifyResize() {
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!terminal || !fitAddon) return;
+
+    fitAddon.fit();
+    if (terminal.rows > 0) {
+      terminal.refresh(0, terminal.rows - 1);
+    }
+    const dims = fitAddon.proposeDimensions();
+    const resize = getValidatedResize(dims?.cols, dims?.rows);
+    if (resize) {
+      controllerRef.current?.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
+    }
+  }
+
+  function handleTerminalFontSizeShortcut(e: KeyboardEvent): boolean {
+    if (!visibleRef.current || e.type !== 'keydown' || e.altKey || !(e.ctrlKey || e.metaKey)) {
+      return false;
+    }
+    if (e.key === '+' || e.key === '=') {
+      setTerminalFontSize((current) => current + 1);
+    } else if (e.key === '-' || e.key === '_') {
+      setTerminalFontSize((current) => current - 1);
+    } else if (e.key === '0') {
+      setTerminalFontSize(DEFAULT_TERMINAL_FONT_SIZE);
+    } else {
+      return false;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+    return true;
   }
 
   function runSearch(term: string, direction: 'next' | 'previous', incremental = false) {
@@ -226,8 +354,12 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
   }, [onEmptySubmit]);
 
   useEffect(() => {
+    onOpenFileRef.current = onOpenFile;
+  }, [onOpenFile]);
+
+  useEffect(() => {
     visibleRef.current = visible;
-    registerVisibleTerminalSend(wsRef.current);
+    registerVisibleTerminalSend();
     if (visible) return;
 
     searchOpenRef.current = false;
@@ -236,6 +368,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     setSearchResult(null);
     searchAddonRef.current?.clearDecorations();
     setMenu(null);
+    hideJumpLatestAtBottom();
     if (useKookrStore.getState().focusZone === 'terminal') {
       useKookrStore.getState().setFocusZone('none');
     }
@@ -247,7 +380,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     // Create terminal instance
     const terminal = new Terminal({
       cursorBlink: true,
-      fontSize: 12,
+      fontSize: terminalFontSize,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace",
       scrollback: 10000,
       // Scroll tuning cribbed from the VS Code / JupyterLab / Hyper / Theia
@@ -294,10 +427,44 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     terminal.loadAddon(searchAddon);
     terminal.loadAddon(new WebLinksAddon());
 
+    // Make viewable file paths in terminal output clickable -> open the file
+    // viewer pane. WebLinksAddon (above) still owns http(s) URLs; this only adds
+    // local file paths. Single-row matches only (no wrapped-line stitching).
+    const fileLinkDisposable = terminal.registerLinkProvider({
+      provideLinks(y, callback) {
+        if (!onOpenFileRef.current) {
+          callback(undefined);
+          return;
+        }
+        const line = terminal.buffer.active.getLine(y - 1);
+        if (!line) {
+          callback(undefined);
+          return;
+        }
+        const text = line.translateToString(true);
+        const links: ILink[] = [];
+        VIEWABLE_FILE_RE.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = VIEWABLE_FILE_RE.exec(text)) !== null) {
+          const matched = m[0];
+          const startX = m.index;
+          links.push({
+            text: matched,
+            // xterm ranges are 1-based and inclusive on both ends.
+            range: { start: { x: startX + 1, y }, end: { x: startX + matched.length, y } },
+            activate: (_e, t) => onOpenFileRef.current?.(t),
+          });
+          if (VIEWABLE_FILE_RE.lastIndex === m.index) VIEWABLE_FILE_RE.lastIndex++;
+        }
+        callback(links.length > 0 ? links : undefined);
+      },
+    });
+
     // Let Alt+key combinations bubble to the global shortcut handler
     // instead of being swallowed by xterm.js
     terminal.attachCustomKeyEventHandler((e) => {
       if (!visibleRef.current) return false;
+      if (handleTerminalFontSizeShortcut(e)) return false;
       if ((e.ctrlKey || e.metaKey) && !e.altKey && e.type === 'keydown' && e.key.toLowerCase() === 'f') {
         e.preventDefault();
         e.stopPropagation();
@@ -326,6 +493,9 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
       if (event.resultCount === 0) {
         setSearchFound(false);
       }
+    });
+    const scrollDisposable = terminal.onScroll(() => {
+      syncAtBottom(terminal);
     });
 
     // Track focus zone via DOM events (xterm v6 removed onFocus/onBlur)
@@ -449,12 +619,22 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
       container.removeEventListener('keydown', handleKeyDownCapture, { capture: true });
       resizeObserver.disconnect();
       searchResultDisposable.dispose();
+      scrollDisposable.dispose();
+      clearJumpLatestTimer();
+      fileLinkDisposable.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
       searchAddonRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    terminal.options.fontSize = terminalFontSize;
+    refitRefreshAndNotifyResize();
+  }, [terminalFontSize]);
 
   useEffect(() => {
     if (!searchOpen) return;
@@ -480,8 +660,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
 
   /** Send a frame on the live terminal WebSocket, if one is open. */
   function sendOverWs(payload: string | Uint8Array) {
-    const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) ws.send(payload);
+    controllerRef.current?.send(payload);
   }
 
   /**
@@ -547,17 +726,12 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
     const terminal = terminalRef.current;
     if (!terminal) return;
 
-    // Clean up previous connection
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-
     const sessionChanged = tmuxName !== currentTmuxRef.current;
 
     if (sessionChanged) {
       searchOpenRef.current = false;
       terminalInputDraftRef.current = '';
+      resetJumpLatest();
       setSearchOpen(false);
       setSearchTerm('');
       setSearchFound(null);
@@ -584,60 +758,92 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${protocol}//${window.location.host}/ws/terminal/${encodeURIComponent(tmuxName)}`;
-    const ws = new WebSocket(url);
-    // v7 SessionBridge sends binary frames. Legacy TerminalBridge (tmux) sends
-    // string frames. `arraybuffer` is accepted by xterm.js's `.write` for both
-    // Uint8Array and ArrayBuffer, and string frames still arrive as strings
-    // on `event.data` regardless — so this is forward-compatible with both.
-    ws.binaryType = 'arraybuffer';
-    wsRef.current = ws;
 
-    ws.onopen = () => {
-      if (!visibleRef.current) {
-        registerTerminalSend(null);
-        return;
-      }
-      // Send initial size
-      const fitAddon = fitAddonRef.current;
-      if (fitAddon) {
-        fitAddon.fit();
-        const dims = fitAddon.proposeDimensions();
-        const resize = getValidatedResize(dims?.cols, dims?.rows);
-        if (resize) {
-          ws.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
+    // The byte stream auto-reconnects (with backoff) when the server restarts
+    // or the host drops offline, instead of leaving a frozen terminal behind.
+    // Two close codes mean the session itself is finished and must NOT retry:
+    // 1000 (clean close) and 1011 — SessionBridge's closeBridgeForFailure uses
+    // 1011 when the backend session is gone/dead, and the upgrade handshake is
+    // accepted before that liveness check runs, so retrying 1011 would loop
+    // open→close forever on a pane showing an ended session. Server restarts
+    // close with 1001/1006, which do retry.
+    const SESSION_OVER_CLOSE_CODES = [1000, 1011];
+    let hasConnectedOnce = false;
+    let notifiedOutage = false;
+
+    const controller = createReconnectingSocket<WebSocket>({
+      createSocket: () => {
+        const ws = new WebSocket(url);
+        // v7 SessionBridge sends binary frames. Legacy TerminalBridge (tmux) sends
+        // string frames. `arraybuffer` is accepted by xterm.js's `.write` for both
+        // Uint8Array and ArrayBuffer, and string frames still arrive as strings
+        // on `event.data` regardless — so this is forward-compatible with both.
+        ws.binaryType = 'arraybuffer';
+        return ws;
+      },
+      shouldReconnect: (event) => !SESSION_OVER_CLOSE_CODES.includes(event.code ?? -1),
+      backoff: { initialDelayMs: 1_000, maxDelayMs: 10_000 },
+      onOpen: (ws) => {
+        // The server replays the session's ring buffer on every connect, so a
+        // reconnect must reset the terminal first or the replayed scrollback
+        // would be appended twice.
+        if (hasConnectedOnce) {
+          terminal.reset();
         }
-      }
+        hasConnectedOnce = true;
+        notifiedOutage = false;
+        if (!visibleRef.current) {
+          registerTerminalSend(null);
+          return;
+        }
+        // Send initial size
+        const fitAddon = fitAddonRef.current;
+        if (fitAddon) {
+          fitAddon.fit();
+          const dims = fitAddon.proposeDimensions();
+          const resize = getValidatedResize(dims?.cols, dims?.rows);
+          if (resize) {
+            ws.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
+          }
+        }
+      },
       // Register send function so global shortcuts can write only when this
-      // terminal is actually visible.
-      registerVisibleTerminalSend(ws);
-    };
-
-    ws.onmessage = (event) => {
-      // Binary frames arrive as ArrayBuffer (because ws.binaryType = 'arraybuffer'
-      // above). Convert to Uint8Array for byte-exact handoff to xterm.js — its
-      // .write() accepts both Uint8Array and string. String frames (from the
-      // legacy TerminalBridge path) pass through unchanged.
-      if (event.data instanceof ArrayBuffer) {
-        const bytes = new Uint8Array(event.data);
-        terminal.write(bytes);
-      } else {
-        terminal.write(event.data);
-      }
-    };
-
-    ws.onclose = (event) => {
-      // If the PTY exited (e.g. dead terminal session), show feedback
-      if (event.code === 1000 && terminal) {
-        terminal.write('\r\n\x1b[90m  Session ended.\x1b[0m\r\n');
-      }
-    };
-
-    ws.onerror = () => {
-      if (terminal) {
-        terminal.write('\r\n\x1b[90m  Could not connect to terminal.\x1b[0m\r\n');
-      }
-      ws.close();
-    };
+      // terminal is actually visible. Done here rather than in onOpen because
+      // the connection counts as established only after onOpen returns.
+      onEstablished: () => {
+        registerVisibleTerminalSend();
+      },
+      onMessage: (event) => {
+        const atBottomBeforeWrite = syncAtBottom(terminal);
+        const newLineCount = atBottomBeforeWrite ? 0 : countTerminalNewLines(event.data);
+        // Binary frames arrive as ArrayBuffer (because ws.binaryType = 'arraybuffer'
+        // above). Convert to Uint8Array for byte-exact handoff to xterm.js — its
+        // .write() accepts both Uint8Array and string. String frames (from the
+        // legacy TerminalBridge path) pass through unchanged.
+        if (event.data instanceof ArrayBuffer) {
+          const bytes = new Uint8Array(event.data);
+          terminal.write(bytes);
+        } else if (typeof event.data === 'string') {
+          terminal.write(event.data);
+        }
+        scheduleJumpLatest(newLineCount);
+      },
+      onClose: (event, { wasEstablished }) => {
+        registerTerminalSend(null);
+        if (SESSION_OVER_CLOSE_CODES.includes(event.code ?? -1)) {
+          // The PTY exited or the backend session is gone — show feedback.
+          terminal.write('\r\n\x1b[90m  Session ended.\x1b[0m\r\n');
+        } else if (!notifiedOutage) {
+          // Say it once per outage; retries continue silently in the background.
+          notifiedOutage = true;
+          terminal.write(wasEstablished
+            ? '\r\n\x1b[90m  Terminal connection lost — reconnecting…\x1b[0m\r\n'
+            : '\r\n\x1b[90m  Could not connect to terminal — retrying…\x1b[0m\r\n');
+        }
+      },
+    });
+    controllerRef.current = controller;
+    controller.start();
 
     // Terminal input → WebSocket
     const inputDisposable = terminal.onData((data) => {
@@ -654,17 +860,15 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
         return;
       }
       terminalInputDraftRef.current = updateTerminalInputDraft(terminalInputDraftRef.current, data);
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(data);
-      }
+      controller.send(data);
     });
 
     // Terminal resize → WebSocket
     const resizeDisposable = terminal.onResize(({ cols, rows }) => {
       if (!visibleRef.current) return;
       const resize = getValidatedResize(cols, rows);
-      if (resize && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
+      if (resize) {
+        controller.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
       }
     });
 
@@ -672,8 +876,8 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
       registerTerminalSend(null);
       inputDisposable.dispose();
       resizeDisposable.dispose();
-      ws.close();
-      wsRef.current = null;
+      controller.stop();
+      controllerRef.current = null;
     };
   }, [tmuxName, visible]);
 
@@ -688,18 +892,8 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
 
     const rafId = requestAnimationFrame(() => {
       const terminal = terminalRef.current;
-      const fitAddon = fitAddonRef.current;
-      if (!fitAddon || !terminal) return;
-      fitAddon.fit();
-      if (terminal.rows > 0) {
-        terminal.refresh(0, terminal.rows - 1);
-      }
-      const dims = fitAddon.proposeDimensions();
-      const resize = getValidatedResize(dims?.cols, dims?.rows);
-      const ws = wsRef.current;
-      if (resize && ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
-      }
+      if (!terminal) return;
+      refitRefreshAndNotifyResize();
     });
 
     return () => cancelAnimationFrame(rafId);
@@ -780,6 +974,33 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit }: Props) {
         </form>
       )}
       <div className="terminal-xterm" ref={containerRef} />
+      {jumpLatest.visible && (
+        <button
+          type="button"
+          className="terminal-search-btn"
+          onClick={handleJumpToLatest}
+          aria-label={`${jumpLatest.lines} new ${jumpLatest.lines === 1 ? 'line' : 'lines'}, jump to latest`}
+          style={{
+            position: 'absolute',
+            right: 12,
+            bottom: 12,
+            zIndex: 45,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            height: 28,
+            padding: '0 10px',
+            background: 'rgba(15, 17, 23, 0.96)',
+            border: '1px solid var(--border)',
+            borderRadius: 999,
+            color: 'var(--text-bright)',
+            boxShadow: '0 8px 18px rgba(0, 0, 0, 0.35)',
+          }}
+        >
+          <span aria-hidden="true">⌄</span>
+          {jumpLatest.lines} new {jumpLatest.lines === 1 ? 'line' : 'lines'}, jump to latest
+        </button>
+      )}
       {menu && (
         // Plain popover, not role="menu". The full ARIA menu pattern requires
         // focus trapping, arrow-key navigation, and keyboard-open support

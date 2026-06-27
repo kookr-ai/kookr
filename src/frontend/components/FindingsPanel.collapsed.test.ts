@@ -13,6 +13,7 @@ import {
 } from './FindingsPanel.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
+import { formatCompactDateTime } from '../presentation.js';
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -44,7 +45,15 @@ function renderPanel(container: HTMLElement, lists: {
   send?: (msg: ClientMessage) => void;
   clearCompletedFinishedCount?: number;
   clearCompletedTerminatedCount?: number;
+  clearCompletedFinishedTaskIds?: string[];
+  clearCompletedTerminatedTaskIds?: string[];
   clearCompletedProjectId?: string;
+  onQueueClearCompleted?: (args: {
+    includeTerminated: boolean;
+    projectId?: string;
+    taskIds: string[];
+    count: number;
+  }) => void;
 }): Root {
   const root = createRoot(container);
   act(() => {
@@ -58,7 +67,10 @@ function renderPanel(container: HTMLElement, lists: {
       send: lists.send ?? vi.fn(),
       clearCompletedFinishedCount: lists.clearCompletedFinishedCount ?? 0,
       clearCompletedTerminatedCount: lists.clearCompletedTerminatedCount ?? 0,
+      clearCompletedFinishedTaskIds: lists.clearCompletedFinishedTaskIds,
+      clearCompletedTerminatedTaskIds: lists.clearCompletedTerminatedTaskIds,
       clearCompletedProjectId: lists.clearCompletedProjectId,
+      onQueueClearCompleted: lists.onQueueClearCompleted,
     }));
   });
   return root;
@@ -108,6 +120,60 @@ describe('FindingsPanel collapsed-state persistence', () => {
     expect(container.querySelectorAll('.pending-row').length).toBe(1);
   });
 
+  test('collapsible section headers use native focusable button controls', () => {
+    root = renderPanel(container, {
+      healthy: [makeAgent({ agentId: 'h1' })],
+      pending: [makeAgent({ agentId: 'p1' })],
+      snoozed: [makeAgent({ agentId: 's1', snoozedUntil: Date.now() + 60_000 })],
+      completed: [makeAgent({ agentId: 'c1', taskStatus: 'completed' })],
+      clearCompletedFinishedCount: 1,
+    });
+
+    const selectors = [
+      '.healthy-section .section-header',
+      '.pending-section .section-header',
+      '.snoozed-section .section-header',
+      '.completed-section .section-header',
+    ];
+
+    for (const selector of selectors) {
+      const header = container.querySelector(selector);
+      expect(header, `header missing for ${selector}`).toBeInstanceOf(HTMLButtonElement);
+      expect(header?.getAttribute('type')).toBe('button');
+      expect(header?.getAttribute('aria-expanded')).toMatch(/^(true|false)$/);
+      (header as HTMLButtonElement).focus();
+      expect(document.activeElement).toBe(header);
+    }
+
+    const completedHeader = container.querySelector('.completed-section .section-header') as HTMLButtonElement;
+    expect(completedHeader.querySelector('button')).toBeNull();
+    expect(container.querySelector('.completed-section .btn-clear-completed')).toBeInstanceOf(HTMLButtonElement);
+  });
+
+  test('bulk toggle label reflects the rendered sections instead of hidden empty sections', () => {
+    root = renderPanel(container, {
+      completed: [makeAgent({ agentId: 'c1', taskStatus: 'completed' })],
+    });
+
+    expect(container.querySelector('button[aria-label="Expand all findings sections"]')).toBeInstanceOf(HTMLButtonElement);
+  });
+
+  test('bulk toggle is disabled when no collapsible sections are rendered', () => {
+    root = renderPanel(container, {});
+
+    const collapseAll = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Collapse all findings sections"]',
+    );
+    expect(collapseAll).toBeInstanceOf(HTMLButtonElement);
+    expect(collapseAll?.disabled).toBe(true);
+
+    act(() => collapseAll!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(localStorage.getItem(HEALTHY_SECTION_COLLAPSED_KEY)).toBeNull();
+    expect(localStorage.getItem(PENDING_SECTION_COLLAPSED_KEY)).toBeNull();
+    expect(localStorage.getItem(SNOOZED_SECTION_COLLAPSED_KEY)).toBeNull();
+    expect(localStorage.getItem(COMPLETED_SECTION_COLLAPSED_KEY)).toBeNull();
+  });
+
   test('stored localStorage value overrides the default for each section', () => {
     localStorage.setItem(HEALTHY_SECTION_COLLAPSED_KEY, '1');
     localStorage.setItem(SNOOZED_SECTION_COLLAPSED_KEY, '0');
@@ -131,6 +197,44 @@ describe('FindingsPanel collapsed-state persistence', () => {
     expect(container.querySelectorAll('.pending-row').length).toBe(0);
   });
 
+  test('completed section shows newest-first hint and row finish dates', () => {
+    localStorage.setItem(COMPLETED_SECTION_COLLAPSED_KEY, '0');
+
+    root = renderPanel(container, {
+      completed: [
+        makeAgent({
+          agentId: 'older',
+          taskStatus: 'completed',
+          taskName: 'Older task',
+          finishedAt: '2026-06-20T09:00:00.000Z',
+        }),
+        makeAgent({
+          agentId: 'newer',
+          taskStatus: 'completed',
+          taskName: 'Newer task',
+          finishedAt: '2026-06-20T11:30:00.000Z',
+        }),
+      ],
+    });
+
+    expect(container.querySelector('.completed-sort-hint')?.textContent)
+      .toContain('Newest first');
+    const latestLabel = formatCompactDateTime('2026-06-20T11:30:00.000Z');
+    expect(container.querySelector('.completed-sort-hint')?.textContent)
+      .toContain(`latest ${latestLabel}`);
+
+    const rows = Array.from(container.querySelectorAll('.completed-row'));
+    expect(rows.map((row) => row.querySelector('.completed-row-name')?.textContent)).toEqual([
+      'Newer task',
+      'Older task',
+    ]);
+    expect(rows[0].querySelector('.completed-row-finished')?.textContent)
+      .toContain(`Completed${latestLabel}`);
+    const olderLabel = formatCompactDateTime('2026-06-20T09:00:00.000Z');
+    expect(rows[1].querySelector('.completed-row-finished')?.textContent)
+      .toContain(`Completed${olderLabel}`);
+  });
+
   test('clicking a section header toggles state and writes "1" / "0" to localStorage', () => {
     root = renderPanel(container, {
       snoozed: [makeAgent({ agentId: 's1', snoozedUntil: Date.now() + 60_000 })],
@@ -146,6 +250,91 @@ describe('FindingsPanel collapsed-state persistence', () => {
     act(() => header.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     expect(localStorage.getItem(SNOOZED_SECTION_COLLAPSED_KEY)).toBe('1');
     expect(header.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  test('collapse all button collapses every section and persists the collapsed state across remount', () => {
+    localStorage.setItem(HEALTHY_SECTION_COLLAPSED_KEY, '0');
+    localStorage.setItem(PENDING_SECTION_COLLAPSED_KEY, '0');
+    localStorage.setItem(SNOOZED_SECTION_COLLAPSED_KEY, '0');
+    localStorage.setItem(COMPLETED_SECTION_COLLAPSED_KEY, '0');
+
+    root = renderPanel(container, {
+      healthy: [makeAgent({ agentId: 'h1' })],
+      pending: [makeAgent({ agentId: 'p1' })],
+      snoozed: [makeAgent({ agentId: 's1', snoozedUntil: Date.now() + 60_000 })],
+      completed: [makeAgent({ agentId: 'c1', taskStatus: 'completed' })],
+    });
+
+    expect(container.querySelector('.healthy-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('.pending-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('.snoozed-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+
+    const collapseAll = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Collapse all findings sections"]',
+    );
+    expect(collapseAll).toBeInstanceOf(HTMLButtonElement);
+
+    act(() => collapseAll!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    expect(container.querySelector('.healthy-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.pending-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.snoozed-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+
+    expect(localStorage.getItem(HEALTHY_SECTION_COLLAPSED_KEY)).toBe('1');
+    expect(localStorage.getItem(PENDING_SECTION_COLLAPSED_KEY)).toBe('1');
+    expect(localStorage.getItem(SNOOZED_SECTION_COLLAPSED_KEY)).toBe('1');
+    expect(localStorage.getItem(COMPLETED_SECTION_COLLAPSED_KEY)).toBe('1');
+
+    act(() => root?.unmount());
+    root = null;
+    root = renderPanel(container, {
+      healthy: [makeAgent({ agentId: 'h1' })],
+      pending: [makeAgent({ agentId: 'p1' })],
+      snoozed: [makeAgent({ agentId: 's1', snoozedUntil: Date.now() + 60_000 })],
+      completed: [makeAgent({ agentId: 'c1', taskStatus: 'completed' })],
+    });
+
+    expect(container.querySelector('.healthy-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.pending-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.snoozed-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('button[aria-label="Expand all findings sections"]')).toBeInstanceOf(HTMLButtonElement);
+  });
+
+  test('expand all button expands every persisted section from the all-collapsed state', () => {
+    localStorage.setItem(HEALTHY_SECTION_COLLAPSED_KEY, '1');
+    localStorage.setItem(PENDING_SECTION_COLLAPSED_KEY, '1');
+    localStorage.setItem(SNOOZED_SECTION_COLLAPSED_KEY, '1');
+    localStorage.setItem(COMPLETED_SECTION_COLLAPSED_KEY, '1');
+
+    root = renderPanel(container, {
+      healthy: [makeAgent({ agentId: 'h1' })],
+      pending: [makeAgent({ agentId: 'p1' })],
+      snoozed: [makeAgent({ agentId: 's1', snoozedUntil: Date.now() + 60_000 })],
+      completed: [makeAgent({ agentId: 'c1', taskStatus: 'completed' })],
+    });
+
+    const expandAll = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Expand all findings sections"]',
+    );
+    expect(expandAll).toBeInstanceOf(HTMLButtonElement);
+
+    act(() => expandAll!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    expect(container.querySelector('.healthy-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('.pending-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('.snoozed-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+
+    expect(localStorage.getItem(HEALTHY_SECTION_COLLAPSED_KEY)).toBe('0');
+    expect(localStorage.getItem(PENDING_SECTION_COLLAPSED_KEY)).toBe('0');
+    expect(localStorage.getItem(SNOOZED_SECTION_COLLAPSED_KEY)).toBe('0');
+    expect(localStorage.getItem(COMPLETED_SECTION_COLLAPSED_KEY)).toBe('0');
+    expect(container.querySelectorAll('.snoozed-row').length).toBe(1);
+    expect(container.querySelectorAll('.completed-row').length).toBe(1);
+    expect(container.querySelectorAll('.pending-row').length).toBe(1);
   });
 
   test('each section uses its own localStorage key (Healthy / Pending / Completed wiring)', () => {
@@ -172,13 +361,14 @@ describe('FindingsPanel collapsed-state persistence', () => {
     }
   });
 
-  test('clear completed sends the selected project scope when provided', async () => {
-    const send = vi.fn();
+  test('clear completed queues the selected project scope when provided', async () => {
+    const onQueueClearCompleted = vi.fn();
     root = renderPanel(container, {
       completed: [makeAgent({ agentId: 'c1', taskStatus: 'completed' })],
-      send,
       clearCompletedFinishedCount: 1,
+      clearCompletedFinishedTaskIds: ['task-1'],
       clearCompletedProjectId: 'github.com/acme/project',
+      onQueueClearCompleted,
     });
 
     const clearButton = container.querySelector<HTMLButtonElement>('button.btn-clear-completed')!;
@@ -192,19 +382,21 @@ describe('FindingsPanel collapsed-state persistence', () => {
       deleteButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(send).toHaveBeenCalledWith({
-      type: 'clearCompleted',
+    expect(onQueueClearCompleted).toHaveBeenCalledWith({
       includeTerminated: false,
       projectId: 'github.com/acme/project',
+      taskIds: ['task-1'],
+      count: 1,
     });
   });
 
-  test('clear completed omits project scope for the all-projects panel', async () => {
-    const send = vi.fn();
+  test('clear completed queues without project scope for the all-projects panel', async () => {
+    const onQueueClearCompleted = vi.fn();
     root = renderPanel(container, {
       completed: [makeAgent({ agentId: 'c1', taskStatus: 'completed' })],
-      send,
       clearCompletedFinishedCount: 1,
+      clearCompletedFinishedTaskIds: ['task-1'],
+      onQueueClearCompleted,
     });
 
     const clearButton = container.querySelector<HTMLButtonElement>('button.btn-clear-completed')!;
@@ -218,9 +410,10 @@ describe('FindingsPanel collapsed-state persistence', () => {
       deleteButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(send).toHaveBeenCalledWith({
-      type: 'clearCompleted',
+    expect(onQueueClearCompleted).toHaveBeenCalledWith({
       includeTerminated: false,
+      taskIds: ['task-1'],
+      count: 1,
     });
   });
 });

@@ -1,5 +1,5 @@
 import type { ServerMessage } from '../../shared/contracts/messages.js';
-import type { LaunchResult } from '../launch-service.js';
+import { isCwdValidationError, type LaunchResult } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 
 const GENERIC_LAUNCH_RECOVERY_DETAILS = [
@@ -7,6 +7,15 @@ const GENERIC_LAUNCH_RECOVERY_DETAILS = [
   '- Run `pnpm run doctor` from the Kookr checkout and follow the suggested fixes.',
   '- Check that the selected agent binary is installed and authenticated.',
   '- Verify the working directory exists and no required Kookr port is already in use.',
+].join('\n');
+
+// RFC F12: a missing cwd is validated before any session spawns, so the
+// recovery guidance leads with the actual cause instead of burying it in the
+// generic checklist.
+const CWD_LAUNCH_RECOVERY_DETAILS = [
+  'The working directory was not found on this machine — nothing was launched.',
+  '- Create the directory, or reopen the Launch dialog and pick an existing checkout.',
+  '- If you typed the prompt in the Launch dialog, it is preserved as a draft and restored when the dialog reopens.',
 ].join('\n');
 
 /**
@@ -32,7 +41,9 @@ export function handleLaunchResult(
   if (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[launch] failed prompt="${promptExcerpt}" err=${message}`);
-    const details = err instanceof LaunchPreflightError
+    const details = isCwdValidationError(err)
+      ? CWD_LAUNCH_RECOVERY_DETAILS
+      : err instanceof LaunchPreflightError
       ? err.findings.map((finding) =>
           [
             `Dependency: ${finding.dependency}`,

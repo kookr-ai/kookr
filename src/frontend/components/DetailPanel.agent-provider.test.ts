@@ -100,4 +100,19 @@ describe('DetailPanel agent provider header controls', () => {
     expect(hooksButton?.getAttribute('aria-label')).toBe(`Hooks: view effective hook settings for ${label} session`);
     expect(hooksButton?.getAttribute('title')).toBe(`Hooks: view effective hook settings for ${label} session`);
   });
+
+  test('shows a task header badge when the task launched with permissions bypassed', () => {
+    root = renderDetailPanel(container, {
+      ...makeAgent('claude-code'),
+      launchPermissionPosture: {
+        bypassAllPermissions: true,
+        mode: 'bypass-all',
+        capturedAt: '2026-06-11T08:00:00.000Z',
+      },
+    });
+
+    const badge = container.querySelector('[data-testid="task-permission-bypass-badge"]');
+    expect(badge?.textContent).toContain('Permissions bypassed');
+    expect(badge?.getAttribute('title')).toContain('KOOKR_BYPASS_ALL_PERMISSIONS');
+  });
 });

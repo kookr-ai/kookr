@@ -8,6 +8,8 @@ import { createWorkspaceSlice } from './slices/workspace-slice.js';
 import { createOssAttemptsSlice } from './slices/oss-attempts-slice.js';
 import { createSystemStatusSlice } from './slices/system-status-slice.js';
 import { createAutoAdvanceSlice, attachAutoAdvanceSubscribers } from './slices/auto-advance-slice.js';
+import { clearSelectedTask, saveSelectedTask } from './selected-task-storage.js';
+import { recordSelectionTransitionFromStore } from '../selection-transition-recorder.js';
 import type {
   AchievementToast,
   Alert,
@@ -38,18 +40,36 @@ export type {
   TaskGitHub,
 };
 
+function persistSelectedTaskChange(before: KookrStore, after: KookrStore): void {
+  const beforeSelectedTaskId = before.selectedAgentId
+    ? before.agents.find((agent) => agent.agentId === before.selectedAgentId)?.taskId ?? null
+    : null;
+  const afterSelectedTaskId = after.selectedAgentId
+    ? after.agents.find((agent) => agent.agentId === after.selectedAgentId)?.taskId ?? null
+    : null;
+  if (
+    before.selectedAgentId === after.selectedAgentId
+    && beforeSelectedTaskId === afterSelectedTaskId
+  ) {
+    return;
+  }
+
+  if (!after.selectedAgentId) {
+    clearSelectedTask();
+    return;
+  }
+
+  saveSelectedTask(afterSelectedTaskId, after.selectedAgentId);
+}
+
 function createKookrStoreState(
   set: (fn: Partial<KookrStore> | ((s: KookrStore) => Partial<KookrStore>)) => void,
   get: () => KookrStore,
 ): KookrStore {
   const tracedSet: StoreSet = (partial) => {
-    if (!isDebugTimelineEnabled()) {
-      set(partial);
-      return;
-    }
-
     const before = get();
     let resolved: Partial<KookrStore> | undefined;
+
     if (typeof partial === 'function') {
       set((state) => {
         resolved = partial(state);
@@ -60,13 +80,20 @@ function createKookrStoreState(
       set(partial);
     }
 
+    const after = get();
+    persistSelectedTaskChange(before, after);
+
     const changedKeys = Object.keys(resolved ?? {});
+    recordSelectionTransitionFromStore(before, after, changedKeys);
+
+    if (!isDebugTimelineEnabled()) return;
+
     if (changedKeys.length === 0) return;
-    recordStoreMutationDebugEvent(before.agents, get().agents, changedKeys, resolved as Record<string, unknown>);
+    recordStoreMutationDebugEvent(before.agents, after.agents, changedKeys, resolved as Record<string, unknown>);
   };
 
   return {
-    ...createTransportSessionSlice(tracedSet),
+    ...createTransportSessionSlice(tracedSet, get),
     ...createTriageNavigationSlice(tracedSet, get),
     ...createProjectSidebarSlice(tracedSet, get),
     ...createAchievementsSystemSlice(tracedSet, get),

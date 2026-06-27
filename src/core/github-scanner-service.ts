@@ -4,7 +4,9 @@ import type {
   GitHubFetcher,
   GitHubIssueState,
   GitHubPRState,
+  GitHubRateLimit,
   GitHubReference,
+  GitHubRepoHealthFetchResult,
   GitHubScannerConfig,
   GitHubStateChange,
 } from './github-types.js';
@@ -22,7 +24,9 @@ const REPO_HEALTH_WATCHDOG_MS = 60_000;
 export type RepoHealthFetcher = (
   repos: ReadonlyArray<{ projectId: string; owner: string; repo: string }>,
   login: string | null,
-) => Promise<Map<string, ProjectRepoHealth> | null>;
+) => Promise<RepoHealthFetchResult>;
+
+export type RepoHealthFetchResult = GitHubRepoHealthFetchResult<ProjectRepoHealth>;
 
 /** Resolves the authenticated `gh` login (e.g. "jeanibarz") or null if unauthed. */
 export type GhUserLoginResolver = () => Promise<string | null>;
@@ -70,6 +74,8 @@ export class GitHubScannerService {
   private ghAvailable = false;
   private fetching = false;
   private repoHealthInflight = false;
+  private stateFetchRateLimitedUntilMs = 0;
+  private repoHealthRateLimitedUntilMs = 0;
   /** Generation counter — incremented on stop/reconfigure to cancel orphaned fetches. */
   private generation = 0;
 
@@ -287,6 +293,11 @@ export class GitHubScannerService {
 
   /** Fetch current state for the provided references and emit changes. */
   private async fetchReferences(refs: GitHubReference[]): Promise<void> {
+    const now = Date.now();
+    if (now < this.stateFetchRateLimitedUntilMs) {
+      console.warn(`[github] state fetch skipped during rate-limit backoff (${this.stateFetchRateLimitedUntilMs - now}ms remaining)`);
+      return;
+    }
     // Prevent concurrent fetches — if one is already running, skip
     if (this.fetching) return;
     this.fetching = true;
@@ -300,6 +311,10 @@ export class GitHubScannerService {
         try {
           const batch = await this.fetcher.fetchStates(uniqueRefs);
           if (this.generation !== gen) return;
+
+          if (batch.rateLimit) {
+            this.deferStateFetches(batch.rateLimit);
+          }
 
           for (const current of batch.prs) {
             this.applyPRState(current);
@@ -399,6 +414,11 @@ export class GitHubScannerService {
   private async repoHealthTick(): Promise<void> {
     if (!this.repoHealthFetcher) return;
     if (this.repoHealthInflight) return;
+    const now = Date.now();
+    if (now < this.repoHealthRateLimitedUntilMs) {
+      console.warn(`[github] repo-health tick skipped during rate-limit backoff (${this.repoHealthRateLimitedUntilMs - now}ms remaining)`);
+      return;
+    }
     if (this.trackedRepos.size === 0) {
       if (this.repoHealth.size > 0) {
         this.repoHealth = new Map();
@@ -423,7 +443,15 @@ export class GitHubScannerService {
       if (batch.length === 0) return;
 
       const fresh = await this.repoHealthFetcher(batch, this.ghUserLogin);
+      if (isGitHubRateLimit(fresh)) {
+        this.deferRepoHealthFetches(fresh);
+        return;
+      }
       if (fresh === null) return; // whole-batch failure — preserve previous cache
+      const freshMap = fresh instanceof Map ? fresh : fresh.repoHealth;
+      if (!(fresh instanceof Map) && fresh.rateLimit) {
+        this.deferRepoHealthFetches(fresh.rateLimit);
+      }
 
       // Eviction-race fix: re-read the tracked set at write time and only
       // commit entries for repos still in it.
@@ -431,10 +459,10 @@ export class GitHubScannerService {
       const next = new Map<string, ProjectRepoHealth>();
       for (const [projectId, prev] of this.repoHealth) {
         if (!currentTracked.has(projectId)) continue;
-        if (fresh.has(projectId)) continue; // about to overwrite
+        if (freshMap.has(projectId)) continue; // about to overwrite
         next.set(projectId, prev);
       }
-      for (const [projectId, entry] of fresh) {
+      for (const [projectId, entry] of freshMap) {
         if (!currentTracked.has(projectId)) continue;
         next.set(projectId, entry);
       }
@@ -446,6 +474,18 @@ export class GitHubScannerService {
       clearTimeout(watchdog);
       this.repoHealthInflight = false;
     }
+  }
+
+  private deferStateFetches(rateLimit: GitHubRateLimit): void {
+    const retryAt = Date.now() + rateLimit.retryAfterMs;
+    this.stateFetchRateLimitedUntilMs = Math.max(this.stateFetchRateLimitedUntilMs, retryAt);
+    console.warn(`[github] state fetch rate-limited; retrying after ${rateLimit.retryAfterMs}ms: ${rateLimit.message}`);
+  }
+
+  private deferRepoHealthFetches(rateLimit: GitHubRateLimit): void {
+    const retryAt = Date.now() + rateLimit.retryAfterMs;
+    this.repoHealthRateLimitedUntilMs = Math.max(this.repoHealthRateLimitedUntilMs, retryAt);
+    console.warn(`[github] repo-health rate-limited; retrying after ${rateLimit.retryAfterMs}ms: ${rateLimit.message}`);
   }
 
   /** Resolve owner/repo for a task from its working directory. */
@@ -465,6 +505,13 @@ export class GitHubScannerService {
     this.ownerRepoCache.set(cwd, result);
     return result;
   }
+}
+
+function isGitHubRateLimit(value: unknown): value is GitHubRateLimit {
+  return typeof value === 'object'
+    && value !== null
+    && (value as { kind?: unknown }).kind === 'rate-limited'
+    && typeof (value as { retryAfterMs?: unknown }).retryAfterMs === 'number';
 }
 
 function dedupeRefs(refs: GitHubReference[]): GitHubReference[] {

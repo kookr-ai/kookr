@@ -9,6 +9,8 @@ import { ScheduleValidator } from '../schedule-validator.js';
 import { registerScheduleRoutes } from './schedule-routes.js';
 import type { RouteDeps } from './shared.js';
 
+const INVALID_PLAYBOOK_PATH_ERROR = 'Playbook path must stay inside the selected playbooks directory';
+
 function mkApp(deps: Partial<RouteDeps>): Hono {
   const app = new Hono();
   registerScheduleRoutes(app, deps as unknown as RouteDeps);
@@ -86,6 +88,119 @@ describe('schedule routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // POST /api/schedules
+  // ---------------------------------------------------------------------------
+  describe('POST /api/schedules', () => {
+    test('rejects cron expressions that fire more often than every five minutes', async () => {
+      const res = await mkApp({ scheduleService: service }).request(
+        '/api/schedules',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Too fast',
+            cron: '* * * * *',
+            cwd: tempDir,
+            playbook: { path: 'daily.md', parameters: {} },
+          }),
+        },
+      );
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Invalid schedule definition',
+        fieldErrors: {
+          cron: 'Cron expression must not fire more often than every 5 minutes',
+        },
+      });
+    });
+
+    test('rejects traversal playbook paths without creating a schedule', async () => {
+      writeFileSync(join(tempDir, 'escape.md'), `---
+name: Escape
+parameters: []
+---
+Do not schedule.
+`);
+
+      const res = await mkApp({ scheduleService: service }).request(
+        '/api/schedules',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Traversal',
+            cron: '0 9 * * *',
+            cwd: tempDir,
+            playbook: { path: '../../escape.md', parameters: {} },
+          }),
+        },
+      );
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Invalid schedule definition',
+        fieldErrors: { playbook: INVALID_PLAYBOOK_PATH_ERROR },
+      });
+      expect(store.list()).toHaveLength(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // PATCH /api/schedules/:id
+  // ---------------------------------------------------------------------------
+  describe('PATCH /api/schedules/:id', () => {
+    test('rejects cron expressions that fire more often than every five minutes', async () => {
+      const schedule = await seedSchedule(service, tempDir);
+      const res = await mkApp({ scheduleService: service }).request(
+        `/api/schedules/${schedule.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cron: '0,1 * * * *' }),
+        },
+      );
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Invalid schedule definition',
+        fieldErrors: {
+          cron: 'Cron expression must not fire more often than every 5 minutes',
+        },
+      });
+    });
+
+    test('rejects absolute playbook paths without mutating the schedule', async () => {
+      const schedule = await seedSchedule(service, tempDir);
+      const escaped = join(tempDir, 'absolute.md');
+      writeFileSync(escaped, `---
+name: Absolute
+parameters: []
+---
+Do not schedule.
+`);
+
+      const res = await mkApp({ scheduleService: service }).request(
+        `/api/schedules/${schedule.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            playbook: { path: escaped, parameters: {} },
+          }),
+        },
+      );
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Invalid schedule definition',
+        fieldErrors: { playbook: INVALID_PLAYBOOK_PATH_ERROR },
+      });
+      expect(store.get(schedule.id)?.playbook.path).toBe('daily.md');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // DELETE /api/schedules/:id
   // ---------------------------------------------------------------------------
   describe('DELETE /api/schedules/:id', () => {
@@ -151,7 +266,7 @@ describe('schedule routes', () => {
       const res = await mkApp({ scheduleRunner: scheduleRunner as never })
         .request('/api/schedules/missing/run', { method: 'POST' });
       expect(res.status).toBe(400);
-      expect(await res.json()).toEqual({ error: 'Schedule not found' });
+      expect(await res.json()).toEqual({ error: 'Schedule not found', code: 'validation' });
     });
 
     test('returns 500 when the runner is not wired', async () => {
@@ -207,6 +322,25 @@ describe('schedule routes', () => {
       expect(res.status).toBe(400);
       const body = await res.json();
       expect(body.error).toContain('Invalid');
+    });
+
+    test('returns 400 when the cron expression fires too often', async () => {
+      const res = await mkApp({ scheduleService: service }).request(
+        '/api/schedules/preview',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cron: '* * * * *' }),
+        },
+      );
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Invalid cron expression',
+        fieldErrors: {
+          cron: 'Cron expression must not fire more often than every 5 minutes',
+        },
+      });
     });
 
     test('returns 500 when scheduling is not configured', async () => {

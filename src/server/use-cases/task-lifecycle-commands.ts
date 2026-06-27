@@ -1,5 +1,5 @@
-import { rm, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { appendFile, mkdir, rm, readdir } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import type { AgentActivityMeta, AgentEvent } from '../../core/types.js';
 import type { Monitor } from '../../core/monitor.js';
 import type { Task, TaskCompletionFeedback, TaskStore } from '../../core/tasks.js';
@@ -43,8 +43,41 @@ export interface TaskLifecycleCommandDeps {
   taskSnapshotDir?: string;
   reflectWorktreesDir?: string;
   hooksDir?: string;
+  auditLogPath?: string;
   readInteractionLogSnapshot?: () => Promise<import('../../core/interaction-log.js').InteractionEvent[]>;
 }
+
+export interface TaskDeletionAuditActor {
+  source: 'websocket' | 'api' | 'unknown';
+  actorId?: string;
+}
+
+interface TaskDeletionAuditOpts {
+  actor?: TaskDeletionAuditActor;
+}
+
+interface TaskDeletionAuditRecord {
+  action: 'deleteTask' | 'clearCompleted';
+  actor?: TaskDeletionAuditActor;
+  projectId?: string;
+  includeTerminated?: boolean;
+  count: number;
+  deletedTaskIds: string[];
+  targetTaskId?: string;
+  outcome: 'deleted' | 'not_found' | 'cleared' | 'invalid_scope' | 'snapshot_failed';
+}
+
+type TaskDeletionAuditRow = {
+  type: 'task.deleteTask' | 'task.clearCompleted';
+  timestamp: string;
+  actor: TaskDeletionAuditActor;
+  scope: { kind: 'project'; projectId: string } | { kind: 'all' };
+  count: number;
+  deletedTaskIds: string[];
+  outcome: TaskDeletionAuditRecord['outcome'];
+  taskId?: string;
+  includeTerminated?: boolean;
+};
 
 export type TaskLifecycleCommandResult =
   | { outcome: 'completed'; task: Task }
@@ -146,28 +179,73 @@ export class TaskLifecycleCommands {
     return { outcome: 'reopened', task: this.deps.taskStore.reopenTask(taskId) };
   }
 
-  async deleteTask(taskId: string, opts: { gcFeedbackBundle?: boolean } = {}): Promise<TaskLifecycleCommandResult> {
+  async deleteTask(
+    taskId: string,
+    opts: { gcFeedbackBundle?: boolean } & TaskDeletionAuditOpts = {},
+  ): Promise<TaskLifecycleCommandResult> {
+    const task = this.deps.taskStore.getTask(taskId);
     const deleted = await deleteTask(this.deps.getLifecycleDeps(), taskId);
+    await this.writeTaskDeletionAudit({
+      action: 'deleteTask',
+      actor: opts.actor,
+      projectId: task?.projectId,
+      count: deleted ? 1 : 0,
+      deletedTaskIds: deleted ? [taskId] : [],
+      targetTaskId: taskId,
+      outcome: deleted ? 'deleted' : 'not_found',
+    });
     if (!deleted) return { outcome: 'not_found', error: `Task not found: ${taskId}` };
     if (opts.gcFeedbackBundle !== false) this.gcFeedbackBundle(taskId);
     return { outcome: 'deleted' };
   }
 
-  async clearFinishedTasks(opts: { includeTerminated?: boolean; projectId?: string } = {}): Promise<TaskLifecycleCommandResult> {
+  async clearFinishedTasks(
+    opts: { includeTerminated?: boolean; projectId?: string } & TaskDeletionAuditOpts = {},
+  ): Promise<TaskLifecycleCommandResult> {
     const projectId = opts.projectId?.trim();
-    if (opts.projectId !== undefined && !projectId) return { outcome: 'cleared', deletedTaskIds: [] };
+    if (opts.projectId !== undefined && !projectId) {
+      await this.writeTaskDeletionAudit({
+        action: 'clearCompleted',
+        actor: opts.actor,
+        includeTerminated: opts.includeTerminated === true,
+        count: 0,
+        deletedTaskIds: [],
+        outcome: 'invalid_scope',
+      });
+      return { outcome: 'cleared', deletedTaskIds: [] };
+    }
     const toClear = this.deps.taskStore.listTasks().filter((task) => {
       if (projectId && task.projectId !== projectId) return false;
       if (task.status === 'completed' || task.status === 'cancelled') return true;
       return opts.includeTerminated === true && task.status === 'terminated';
     });
-    if (toClear.length === 0) return { outcome: 'cleared', deletedTaskIds: [] };
+    if (toClear.length === 0) {
+      await this.writeTaskDeletionAudit({
+        action: 'clearCompleted',
+        actor: opts.actor,
+        projectId,
+        includeTerminated: opts.includeTerminated === true,
+        count: 0,
+        deletedTaskIds: [],
+        outcome: 'cleared',
+      });
+      return { outcome: 'cleared', deletedTaskIds: [] };
+    }
 
     if (this.deps.takePredeleteSnapshot) {
       try {
         await this.deps.takePredeleteSnapshot();
       } catch (err) {
         console.error('[clearCompleted] predelete snapshot failed, aborting delete to prevent unrecoverable data loss:', err);
+        await this.writeTaskDeletionAudit({
+          action: 'clearCompleted',
+          actor: opts.actor,
+          projectId,
+          includeTerminated: opts.includeTerminated === true,
+          count: 0,
+          deletedTaskIds: [],
+          outcome: 'snapshot_failed',
+        });
         return {
           outcome: 'snapshot_failed',
           error: err instanceof Error ? err.message : String(err),
@@ -184,6 +262,16 @@ export class TaskLifecycleCommands {
       deletedTaskIds.push(task.id);
     }
 
+    await this.writeTaskDeletionAudit({
+      action: 'clearCompleted',
+      actor: opts.actor,
+      projectId,
+      includeTerminated: opts.includeTerminated === true,
+      count: deletedTaskIds.length,
+      deletedTaskIds,
+      outcome: 'cleared',
+    });
+    this.broadcastClearCompleted(deletedTaskIds.length, projectId);
     return { outcome: 'cleared', deletedTaskIds };
   }
 
@@ -473,6 +561,38 @@ export class TaskLifecycleCommands {
       this.gcFeedbackBundle(task.id);
       this.gcTaskSnapshotBundle(task.id);
     }
+  }
+
+  private async writeTaskDeletionAudit(record: TaskDeletionAuditRecord): Promise<void> {
+    if (!this.deps.auditLogPath) return;
+    const row: TaskDeletionAuditRow = {
+      type: `task.${record.action}`,
+      timestamp: nowISO(),
+      actor: record.actor ?? { source: 'unknown' },
+      scope: record.projectId ? { kind: 'project', projectId: record.projectId } : { kind: 'all' },
+      count: record.count,
+      deletedTaskIds: record.deletedTaskIds,
+      outcome: record.outcome,
+      ...(record.targetTaskId ? { taskId: record.targetTaskId } : {}),
+      ...(record.includeTerminated !== undefined ? { includeTerminated: record.includeTerminated } : {}),
+    };
+    try {
+      await mkdir(dirname(this.deps.auditLogPath), { recursive: true });
+      await appendFile(this.deps.auditLogPath, `${JSON.stringify(row)}\n`, 'utf-8');
+    } catch (err) {
+      console.warn('[task-audit] failed to append deletion audit row:', err);
+    }
+  }
+
+  private broadcastClearCompleted(count: number, projectId?: string): void {
+    if (!this.deps.broadcastToAll || count === 0) return;
+    this.deps.broadcastToAll({
+      type: 'alert',
+      agentId: '',
+      summary: `Cleared ${count} task${count === 1 ? '' : 's'}`,
+      details: projectId ? `Project: ${projectId}` : 'Scope: all projects',
+      severity: 'info',
+    });
   }
 }
 

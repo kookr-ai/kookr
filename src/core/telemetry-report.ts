@@ -32,6 +32,12 @@ export interface TelemetryReport {
     nonMruRate: number | null;
   };
   tabSwitchCounts: Record<string, number>;
+  selectionFlickerMetrics: {
+    totalIncidents: number;
+    topPairs: Array<{ pairKey: string; incidentCount: number }>;
+    highestSwitchRate: number | null;
+    sourceBreakdown: Record<string, number>;
+  };
 }
 
 const ALL_EVENT_TYPES = [...TELEMETRY_EVENT_TYPES];
@@ -52,6 +58,8 @@ export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryRepo
   const shortcuts: Record<string, number> = {};
   const platforms: Record<string, number> = {};
   const tabSwitches: Record<string, number> = {};
+  const selectionFlickerPairs: Record<string, number> = {};
+  const selectionFlickerSources: Record<string, number> = {};
 
   let rapidRepeatClicks = 0;
   let healthyInspections = 0;
@@ -60,6 +68,8 @@ export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryRepo
   let launchOpened = 0;
   let launchSubmitted = 0;
   let launchAbandoned = 0;
+  let selectionFlickerIncidents = 0;
+  let highestSelectionSwitchRate: number | null = null;
   const launchDwells: number[] = [];
   const cwdFieldMethodCounts: Record<string, number> = {};
 
@@ -119,6 +129,22 @@ export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryRepo
         tabSwitches[to] = (tabSwitches[to] ?? 0) + 1;
         break;
       }
+      case 'selection_flicker_incident': {
+        selectionFlickerIncidents++;
+        const pairKey = String(event.pairKey ?? 'unknown');
+        selectionFlickerPairs[pairKey] = (selectionFlickerPairs[pairKey] ?? 0) + 1;
+        if (typeof event.switchesPerSecond === 'number') {
+          highestSelectionSwitchRate = Math.max(highestSelectionSwitchRate ?? 0, event.switchesPerSecond);
+        }
+        if (event.sourceCounts && typeof event.sourceCounts === 'object' && !Array.isArray(event.sourceCounts)) {
+          for (const [source, count] of Object.entries(event.sourceCounts as Record<string, unknown>)) {
+            if (typeof count === 'number' && Number.isFinite(count)) {
+              selectionFlickerSources[source] = (selectionFlickerSources[source] ?? 0) + count;
+            }
+          }
+        }
+        break;
+      }
     }
   }
 
@@ -168,5 +194,14 @@ export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryRepo
       nonMruRate: computeNonMruRate(cwdFieldMethodCounts),
     },
     tabSwitchCounts: tabSwitches,
+    selectionFlickerMetrics: {
+      totalIncidents: selectionFlickerIncidents,
+      topPairs: Object.entries(selectionFlickerPairs)
+        .map(([pairKey, incidentCount]) => ({ pairKey, incidentCount }))
+        .sort((left, right) => right.incidentCount - left.incidentCount || left.pairKey.localeCompare(right.pairKey))
+        .slice(0, 5),
+      highestSwitchRate: highestSelectionSwitchRate,
+      sourceBreakdown: selectionFlickerSources,
+    },
   };
 }

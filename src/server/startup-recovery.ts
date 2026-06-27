@@ -137,12 +137,20 @@ export async function runStartupRecoveryPhase({
     // replay. See rfc-activity-log-reliability edge cases.
     if (hookIngestion && activityLedger) {
       try {
-        await hookIngestion.hydrateFromLedger(tmuxName, activityLedger);
+        const hydration = await hookIngestion.hydrateFromLedger(tmuxName, activityLedger, {
+          replayLiveState: true,
+        });
+        hookWatcher.watch(tmuxName, {
+          replayExisting: true,
+          suppressParseAlertsForExisting: true,
+          useReplayCheckpoint: hydration.liveStateReplayed,
+        });
+        continue;
       } catch (err) {
         console.warn(`[hook-ingestion] hydrate failed for ${tmuxName}:`, err);
       }
     }
-    hookWatcher.watch(tmuxName, { replayExisting: true });
+    hookWatcher.watch(tmuxName, { replayExisting: true, suppressParseAlertsForExisting: true });
   }
 
   // Ralph startup reconcile. Runs AFTER recoverCrashedSessions so dead-but-relaunched

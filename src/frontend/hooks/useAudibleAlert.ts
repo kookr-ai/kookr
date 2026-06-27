@@ -1,7 +1,8 @@
 import { useEffect } from 'react';
 import { useKookrStore } from '../store/useStore.js';
-import { maybePlayChime } from '../audio/sound.js';
+import { maybePlayChime, recordChimeSuppression } from '../audio/sound.js';
 import { isActiveFinding } from '../store/finding-helpers.js';
+import { isProjectNotificationMuted } from './useProjectNotificationMute.js';
 import type { AgentState } from '../../shared/protocol.js';
 import type { AudioAlertContext } from '../audio/audio-alert-log.js';
 
@@ -9,7 +10,23 @@ import type { AudioAlertContext } from '../audio/audio-alert-log.js';
 // Guards against transient anomaly flicker (subagent boundaries, watchdog
 // re-evaluation, brief stale_agent oscillation) where the same logical issue
 // rapidly cycles in and out of finding state with a fresh detectedAt each time.
+// Also the per-agent minimum gap between chimes: a key change for an agent
+// that chimed less than this long ago (e.g. a stale_agent↔hook_disconnected
+// type flip while staying in findings) does not re-chime.
 export const RECHIME_COOLDOWN_MS = 30_000;
+
+// Minimum gap between chimes across ALL agents. Per-agent dedup cannot stop a
+// storm where *different* agents enter findings every few seconds in rotation
+// (observed in production: a flapping systemic guard rotated a 1-second
+// finding across ~15 agents, chiming every 1–4s). One chime per window is
+// enough to route attention to the dashboard; candidates that arrive inside
+// the window are marked as seen and intentionally dropped, not deferred.
+export const GLOBAL_CHIME_MIN_INTERVAL_MS = 15_000;
+
+/** Mutable cross-agent rate-limit state, threaded explicitly for testability. */
+export interface GlobalChimeState {
+  lastChimeAt: number | null;
+}
 
 /**
  * Stable identity for a single logical finding: type + detectedAt.
@@ -39,6 +56,13 @@ export interface ChimeRecord {
   key: string;
   /** null = agent currently in findings; non-null = post-clear cooldown deadline. */
   cooldownUntil: number | null;
+  /**
+   * When this agent last produced an accepted chime candidate, or null if it
+   * never has (e.g. its key was recorded during a flicker cooldown). Used to
+   * suppress re-chimes on key changes (type flips, detectedAt churn) within
+   * RECHIME_COOLDOWN_MS while the agent stays in findings.
+   */
+  lastChimeCandidateAt: number | null;
 }
 
 export interface FindingChimeEvaluation {
@@ -47,6 +71,8 @@ export interface FindingChimeEvaluation {
   candidateCount: number;
   primaryCandidate?: AgentState;
   context?: AudioAlertContext;
+  /** Set when candidates existed but the sound was suppressed. */
+  suppressed?: 'global_rate_limit';
 }
 
 interface FindingCandidate {
@@ -54,6 +80,8 @@ interface FindingCandidate {
   dedupeKey: string;
   detectedAt: string;
 }
+
+type ProjectMutePredicate = (projectId: string | undefined) => boolean;
 
 function severityRank(severity: string | undefined): number {
   if (severity === 'critical') return 2;
@@ -89,14 +117,17 @@ export function evaluateChime(
   agents: AgentState[],
   state: Map<string, ChimeRecord>,
   now: number,
+  globalState?: GlobalChimeState,
 ): boolean {
-  return evaluateFindingChime(agents, state, now).shouldChime;
+  return evaluateFindingChime(agents, state, now, globalState).shouldChime;
 }
 
 export function evaluateFindingChime(
   agents: AgentState[],
   state: Map<string, ChimeRecord>,
   now: number,
+  globalState?: GlobalChimeState,
+  isProjectMuted: ProjectMutePredicate = () => false,
 ): FindingChimeEvaluation {
   const activeAgentIds = new Set<string>();
   const candidates: FindingCandidate[] = [];
@@ -113,11 +144,31 @@ export function evaluateFindingChime(
 
     const prior = state.get(agent.agentId);
     if (prior?.key === key) continue;
-    if (prior?.cooldownUntil != null && prior.cooldownUntil > now) {
-      // In flicker cooldown — suppress, but record the new key so the chime
-      // does not fire when the cooldown later expires while this same anomaly
-      // is still on the queue.
-      state.set(agent.agentId, { key, cooldownUntil: prior.cooldownUntil });
+    // Both suppression branches below record the new key while preserving the
+    // prior cooldown/last-chime timestamps, so the chime does not fire when
+    // the cooldown later expires with this same anomaly still active.
+    if (prior) {
+      const carryForward: ChimeRecord = {
+        key,
+        cooldownUntil: prior.cooldownUntil,
+        lastChimeCandidateAt: prior.lastChimeCandidateAt,
+      };
+      if (prior.cooldownUntil != null && prior.cooldownUntil > now) {
+        // In flicker cooldown (anomaly briefly cleared and reappeared).
+        state.set(agent.agentId, carryForward);
+        continue;
+      }
+      if (prior.lastChimeCandidateAt != null && now - prior.lastChimeCandidateAt < RECHIME_COOLDOWN_MS) {
+        // The key changed (anomaly type flip or detectedAt churn) but this
+        // agent chimed recently — the same logical problem morphing is not a
+        // new call for attention.
+        state.set(agent.agentId, carryForward);
+        continue;
+      }
+    }
+
+    if (isProjectMuted(agent.projectId)) {
+      state.set(agent.agentId, { key, cooldownUntil: null, lastChimeCandidateAt: now });
       continue;
     }
 
@@ -126,7 +177,7 @@ export function evaluateFindingChime(
       dedupeKey: `${agent.agentId}:${key}`,
       detectedAt: detectedAtString(agent) ?? '',
     });
-    state.set(agent.agentId, { key, cooldownUntil: null });
+    state.set(agent.agentId, { key, cooldownUntil: null, lastChimeCandidateAt: now });
   }
 
   // Sweep agents that have left findings: start cooldown, or evict if the
@@ -134,7 +185,11 @@ export function evaluateFindingChime(
   for (const [agentId, record] of state) {
     if (activeAgentIds.has(agentId)) continue;
     if (record.cooldownUntil === null) {
-      state.set(agentId, { key: record.key, cooldownUntil: now + RECHIME_COOLDOWN_MS });
+      state.set(agentId, {
+        key: record.key,
+        cooldownUntil: now + RECHIME_COOLDOWN_MS,
+        lastChimeCandidateAt: record.lastChimeCandidateAt,
+      });
     } else if (record.cooldownUntil <= now) {
       state.delete(agentId);
     }
@@ -145,8 +200,24 @@ export function evaluateFindingChime(
   const primaryDetectedAt = primary ? detectedAtString(primary) : null;
   const primaryKey = primary ? findingKey(primary) : null;
   const candidateCount = candidates.length;
+
+  // Cross-agent rate limit: at most one chime per GLOBAL_CHIME_MIN_INTERVAL_MS,
+  // regardless of which agent raised it. Candidates were already marked as
+  // seen above, so a suppressed candidate is dropped — never deferred.
+  let suppressed: 'global_rate_limit' | undefined;
+  let shouldChime = candidateCount > 0;
+  if (shouldChime && globalState) {
+    if (globalState.lastChimeAt != null && now - globalState.lastChimeAt < GLOBAL_CHIME_MIN_INTERVAL_MS) {
+      shouldChime = false;
+      suppressed = 'global_rate_limit';
+    } else {
+      globalState.lastChimeAt = now;
+    }
+  }
+
   return {
-    shouldChime: candidateCount > 0,
+    shouldChime,
+    suppressed,
     evaluationId: `finding-${now}-${candidates.map((candidate) => candidate.dedupeKey).sort().join('|')}`,
     candidateCount,
     primaryCandidate: primary,
@@ -178,9 +249,11 @@ export function evaluateFindingChime(
  * functionally identical for production but stable across StrictMode mounts.
  */
 const chimedState = new Map<string, ChimeRecord>();
+const globalChimeState: GlobalChimeState = { lastChimeAt: null };
 
 export function __resetAudibleAlertForTests(): void {
   chimedState.clear();
+  globalChimeState.lastChimeAt = null;
 }
 
 /**
@@ -198,9 +271,19 @@ export function useAudibleAlert(): void {
   const agents = useKookrStore((s) => s.agents);
 
   useEffect(() => {
-    const evaluation = evaluateFindingChime(agents, chimedState, Date.now());
+    const evaluation = evaluateFindingChime(
+      agents,
+      chimedState,
+      Date.now(),
+      globalChimeState,
+      isProjectNotificationMuted,
+    );
     if (evaluation.shouldChime && evaluation.context) {
       maybePlayChime(evaluation.context);
+    } else if (evaluation.suppressed === 'global_rate_limit' && evaluation.context) {
+      // Operator diagnosability: a finding arrived but made no sound — record
+      // why in the same decision log the chime path uses.
+      recordChimeSuppression(evaluation.context, 'global chime rate limit');
     }
   }, [agents]);
 }

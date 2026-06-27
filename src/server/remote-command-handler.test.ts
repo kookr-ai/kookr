@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { buildPermissionRequestBinding } from '../shared/contracts/permission-request-binding.js';
+import { buildPermissionRequestBinding } from './permission-request-binding.js';
 import type { AgentEvent } from '../core/types.js';
 import { executeWithPipeline } from '../remote/command-pipeline.js';
 import { CommandJournal, type CommandEnvelope, type CommandResult } from '../remote/command-journal.js';

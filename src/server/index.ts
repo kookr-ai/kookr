@@ -2,16 +2,13 @@ import { join } from 'node:path';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
-import { loadTasks, saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
+import { loadTasksWithRecovery, saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
 import { reconcile } from './reconciliation.js';
 import { type AgentPreflightSnapshot, type PreflightLogger } from './agent-preflight.js';
 import type { ServerMessage, SnapshotMessage } from '../shared/contracts/messages.js';
 import type { Scope } from './viewer-data-policy.js';
 import { createTerminalScopeChecker } from './terminal-scope.js';
 import { ContactShareReadModel } from '../core/contact-share.js';
-import { HookFileWatcher } from './hook-watcher.js';
-import { HookIngestion } from './hook-ingestion.js';
-import { ActivityLedger } from '../core/activity-ledger.js';
 import { generateTaskName } from '../core/task-naming.js';
 import type { BackendError, TerminalBackend } from '../adapters/terminal-backend.js';
 import { wireEventPipeline } from './event-pipeline.js';
@@ -43,6 +40,8 @@ import {
   type ResourceStatusSampler,
 } from './resource-status-service.js';
 import { createOperationalAlertEvaluator } from './operational-alert-rules.js';
+import { PersistenceHealthTracker } from '../core/persistence-health.js';
+import { TaskStateSaveScheduler } from './task-state-save-scheduler.js';
 import {
   getOperationalAlertConfig,
   resetOperationalAlertConfig,
@@ -65,8 +64,9 @@ import { createContributionWorkspaceServices } from './bootstrap/create-contribu
 import { createAgentRuntime } from './bootstrap/create-agent-runtime.js';
 import { createCoreStores } from './bootstrap/create-core-stores.js';
 import { createGitHubRuntime } from './bootstrap/create-github-runtime.js';
+import { createHookRuntime } from './bootstrap/create-hook-runtime.js';
 import { createOssServices, createOssSourceWatchers } from './bootstrap/create-oss-services.js';
-import { createRealtimeServices } from './bootstrap/create-realtime-services.js';
+import { createRealtimeServices, DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS } from './bootstrap/create-realtime-services.js';
 import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
@@ -89,8 +89,15 @@ import { RuntimeAttentionMissSampler } from './attention-miss-runtime-sampler.js
 import { CoordinatorSuppressionStore } from './coordinator/suppression-store.js';
 import { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { DashboardSelectionController } from './dashboard-selection-controller.js';
+import { DeliveryTraceBuffer } from '../core/delivery-trace.js';
 import type { ApiAuthConfig } from './auth.js';
 import type { SessionAuthConfig } from './auth-session.js';
+import {
+  WebhookNotifier,
+  buildDashboardBaseUrl,
+  readWebhookConfigFromEnv,
+  resolveWebhookRouting,
+} from '../integrations/webhook/index.js';
 
 // --- Exported types ---
 
@@ -170,6 +177,13 @@ export interface KookrConfig {
    * to enable `POST /api/auth/session` and the owner-mutation CSRF guard.
    */
   sessionAuth?: SessionAuthConfig;
+  /**
+   * Test seam for the launch cwd existence check (RFC F12). The E2E test
+   * server passes a no-op because its specs launch into the fictional
+   * `/test/project` against FakeTerminalBackend. Production omits this and
+   * gets the real check. See `LaunchServiceDeps.validateLaunchCwd`.
+   */
+  validateLaunchCwd?: (cwd: string) => Promise<void>;
 }
 
 function getOrCreatePrivateNetworkNodeId(kookrDir: string): NodeId {
@@ -230,6 +244,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     resourceStatusIntervalMs,
     lifecycleSignal,
   } = config;
+  const apiAuth: ApiAuthConfig = config.apiAuth ?? { required: false };
 
   const coreStores = await createCoreStores({ kookrDir, hooksDir, settingsDir, frontendDir });
   const coordinatorSuppressions = new CoordinatorSuppressionStore(kookrDir);
@@ -267,6 +282,36 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // next launch without a restart (the PUT path reassigns `currentSettings`).
   const getAgentEffort = () => currentSettings.agentEffort;
   const terminalInputCoordinator = new TerminalInputCoordinator(terminalBackend);
+  const deliveryTrace = new DeliveryTraceBuffer();
+  const stopDeliveryTraceObserver = queue.addObserver({
+    admitted: (event) => deliveryTrace.recordAdmitted(event),
+    suppressed: (event) => deliveryTrace.recordSuppressed(event, event.reason),
+  });
+
+  const webhookConfig = readWebhookConfigFromEnv(process.env, {
+    dashboardBaseUrl: buildDashboardBaseUrl({ host, port, env: process.env }),
+    logger: console,
+  });
+  let stopWebhookObserver: (() => void) | undefined;
+  if (webhookConfig) {
+    const notifier = new WebhookNotifier({ config: webhookConfig, taskStore, deliveryTrace, logger: console });
+    console.log(`[webhook] Outbound finding webhook enabled (minSeverity=${webhookConfig.minSeverity})`);
+    stopWebhookObserver = queue.addObserver({
+      admitted: (event) => {
+        const task = taskStore.findTaskBySession(event.agentId);
+        const projectWebhook = task?.projectId
+          ? projectConfigStore.getConfig(task.projectId)?.webhook
+          : undefined;
+        void notifier.notifyFinding(event, resolveWebhookRouting({
+          globalMinSeverity: webhookConfig.minSeverity,
+          projectWebhook,
+        }));
+      },
+      resolved: (event) => {
+        notifier.clearFingerprint(event);
+      },
+    });
+  }
 
   const { adapterRegistry, adapter, agentPreflight } = await createAgentRuntime({
     terminalBackend,
@@ -282,7 +327,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     preflightLogger,
     getAgentEffort,
   });
-  const userInputDeliveries = new UserInputDeliveryService({ adapter, interactionLog });
+  const userInputDeliveries = new UserInputDeliveryService({
+    adapter,
+    interactionLog,
+    retry: {
+      sendEnter: (sessionId) => adapter.sendKeystroke(sessionId, 'Enter'),
+      capturePane: (sessionId) => adapter.captureDisplay(sessionId),
+    },
+  });
 
   const ossServices = await createOssServices({ kookrDir, claudeDir });
   const {
@@ -363,6 +415,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
   });
 
+  // Operator drain / resume state (issue #659). In-memory only: a restarted
+  // node always comes back accepting. Shared by snapshots, launch gates,
+  // schedule skips, and admin drain routes.
+  const drainController = new DrainController();
+
   // Single owner of WS scope filtering (#809, RFC §"Outbound scope filtering").
   // The broadcaster (#805) and the viewer initial-connection burst both call
   // this to build the snapshot a `projects` viewer receives; for an `all` scope
@@ -376,7 +433,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       monitor,
       serverCwd,
       scope,
+      bypassAllPermissions,
       relationTaskStore: taskStore,
+      drainStatus: drainController.status(),
       terminalInputSnapshots: terminalInputCoordinator,
       userInputDeliveryProvider: userInputDeliveries,
     });
@@ -413,6 +472,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getRegistryActiveRepos,
     ossAttemptStore,
     getDefaultAgentType,
+    bypassAllPermissions,
+    getDrainStatus: () => drainController.status(),
     coordinatorSuppressions,
     resolveGrantLiveness: (grantId) => viewerGrantStore.liveness(grantId),
     isActorAllowedTerminalSession,
@@ -457,12 +518,27 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   realtime.setProjectSummaryGitHubDeps({
     getRepoHealthSnapshot: () => githubScanner.getRepoHealthSnapshot(),
     getTaskGithubReferences: (taskId) => githubStateStore.getReferences(taskId),
+    getGithubRefOpenState: (ref) => githubStateStore.isRefOpen(ref),
     setTrackedGithubRepos: (repos) => githubScanner.setTrackedGithubRepos(repos),
   });
   broadcastProjectSummariesRef = broadcastProjectSummaries;
 
   // Load persisted tasks
-  const persisted = await loadTasks(tasksFile);
+  const persisted = await loadTasksWithRecovery(tasksFile);
+  const startupAlerts: ServerMessage[] = [];
+  if (persisted.recovery) {
+    const details = persisted.recovery.restoredFrom
+      ? `Quarantined corrupt file at ${persisted.recovery.quarantinedPath}; restored tasks from ${persisted.recovery.restoredFrom}.`
+      : `Quarantined corrupt file at ${persisted.recovery.quarantinedPath}; no valid daily snapshot was available, so Kookr started with an empty task store.`;
+    console.warn(`[tasks-recovery] ${details}`);
+    startupAlerts.push({
+      type: 'alert',
+      agentId: '',
+      summary: 'Recovered from corrupt tasks.json',
+      details,
+      severity: 'critical',
+    });
+  }
   if (persisted.tasks.length > 0) {
     taskStore.loadTasks(persisted.tasks, persisted.lifetimeSpendUsd);
     console.log(`Loaded ${persisted.tasks.length} task(s) from ${tasksFile} (lifetime spend: $${taskStore.getLifetimeSpendUsd().toFixed(2)})`);
@@ -509,18 +585,30 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }
   }
 
-  // Hook watcher created here but resumed-session replay is deferred to after crash recovery,
-  // so relaunched sessions have their new tmux names before snooze restore + hook replay.
-  // HookIngestion serializes file-source and http-source delivery through a
-  // content-hash dedup window so the same record never reaches the adapter
-  // twice. The ActivityLedger captures a durable per-session ledger row for
-  // every observed record — parent, child, malformed, duplicate — under
-  // <kookrDir>/activity/ for /api/tasks/:taskId/activity-diagnostics.
-  // See rfc-activity-log-reliability §5, §7.
-  const activityLedger = new ActivityLedger(join(kookrDir, 'activity'));
-  const hookIngestion = new HookIngestion({ adapter, httpPushTracker, activityLedger, taskStore });
+  const { activityLedger, hookIngestion, hookWatcher } = createHookRuntime({
+    kookrDir,
+    hooksDir,
+    adapter,
+    httpPushTracker,
+    taskStore,
+    onParseDegradation: ({ event, evaluation, hookIngestion }) => {
+      queue.enqueue(event.kookrSessionId, evaluation.anomaly);
+      broadcastToAll(evaluation.alert);
+      broadcastToAll(createSnapshotMessage({
+        monitor,
+        serverCwd,
+        sttUrl,
+        ttsUrl,
+        activityMetaProvider: hookIngestion,
+        coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
+        getMaxActiveTasks,
+        relationTaskStore: taskStore,
+        terminalInputSnapshots: terminalInputCoordinator,
+        userInputDeliveryProvider: userInputDeliveries,
+      }));
+    },
+  });
   realtime.setCoordinatorAuditTailProvider(hookIngestion);
-  const hookWatcher = new HookFileWatcher(hooksDir, hookIngestion);
 
   // Register transcripts for resumed sessions so token tracker picks up existing data
   for (const task of taskStore.getAllTasks()) {
@@ -641,11 +729,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalInputCoordinator,
   };
 
-  // Operator drain / resume state (issue #659). In-memory only: a restarted
-  // node always comes back accepting. Shared by the launch path, the scheduler,
-  // and the admin drain routes so a cordon holds across every launch entry.
-  const drainController = new DrainController();
-
   // Launch service deps — shared by WS handler, REST routes, and the Ralph
   // cycler's fresh-runtime launcher inside wireEventPipeline.
   const launchServiceDeps: LaunchServiceDeps = {
@@ -658,6 +741,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     interactionLog,
     terminalBackend,
     isAccepting: () => drainController.isAccepting(),
+    validateLaunchCwd: config.validateLaunchCwd,
+    bypassAllPermissions,
   };
 
   let remoteLaunchBroker: import('../remote/launch-broker.js').RemoteLaunchBroker | undefined;
@@ -781,6 +866,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
   realtime.setScheduleStore(scheduleStore);
   realtime.setSnapshotAchievementsReady(true);
+  const persistenceHealth = new PersistenceHealthTracker();
+  const taskStateSaveScheduler = new TaskStateSaveScheduler({
+    taskStore,
+    tasksFile,
+    queue,
+    suppressionTracker,
+    persistenceHealth,
+  });
 
   // --- Self-diagnostic runner ---
   const serverStartMs = Date.now();
@@ -802,6 +895,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       });
       return JSON.stringify(msg).length;
     },
+    getPersistenceHealthSnapshot: () => persistenceHealth.snapshot(),
   });
   // Diagnostics are on-demand by default; /api/diagnostic/run triggers runNow().
 
@@ -920,18 +1014,20 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ossAttemptStore, ledgerAnalytics, ossRefresher, broadcastOssAttempts, getRegistryActiveRepos,
     skillDiscoveryState, prLessonsState, getRegistryActiveProjects, broadcastProjectSummaries,
     suppressionTracker, scheduleService, scheduleRunner,
+    taskStateSaveScheduler,
     diagnosticRunner,
     terminalBackend,
+    deliveryTrace,
     coordinatorSuppressions,
     drainController,
-    apiAuth: config.apiAuth,
+    apiAuth,
     sessionAuth: config.sessionAuth,
     // #808: owner share control surface + health block. The viewer feature is a
     // non-loopback concern (a viewer must reach the host over the network), so it
     // is exposed only when the API-token gate is active; on a loopback bind the
     // share routes report `share-feature-disabled` and `/api/health` omits the
     // `viewerBroadcaster` block, keeping the default localhost flow untouched (R9).
-    ...(config.apiAuth?.required
+    ...(apiAuth.required
       ? {
           viewerShare: {
             grantStore: viewerGrantStore,
@@ -1017,34 +1113,48 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // silent-data-loss pipeline this RFC set out to prevent.
     const snoozes = serializeSnoozed(queue, taskStore);
     const suppressionState = suppressionTracker?.export();
-    await saveTasksWithSnapshotPolicy(
-      taskStore.getAllTasks(),
-      tasksFile,
-      'predelete',
-      taskStore.getLifetimeSpendUsd(),
-      snoozes,
-      suppressionState,
-      taskStore.listRelations(),
-    );
+    try {
+      await saveTasksWithSnapshotPolicy(
+        taskStore.getAllTasks(),
+        tasksFile,
+        'predelete',
+        taskStore.getLifetimeSpendUsd(),
+        snoozes,
+        suppressionState,
+        taskStore.listRelations(),
+      );
+      persistenceHealth.recordSuccess('task_state');
+    } catch (err) {
+      persistenceHealth.recordFailure('task_state', err);
+      throw err;
+    }
   };
 
   const operationalAlertConfig = resetOperationalAlertConfig();
-  const operationalAlertEvaluator = createOperationalAlertEvaluator(getOperationalAlertConfig);
+  const operationalAlertEvaluator = createOperationalAlertEvaluator(
+    getOperationalAlertConfig,
+    () => persistenceHealth.snapshot(),
+  );
   if (operationalAlertEvaluator.hasEnabledRules()) {
     const sustainSeconds = (operationalAlertConfig.sustainSamples * RESOURCE_STATUS_INTERVAL_MS) / 1000;
     console.log(
       `[ops-alerts] thresholds: cpu=${operationalAlertConfig.cpuPercent || 'off'}% ` +
         `mem=${operationalAlertConfig.memoryPercent || 'off'}% ` +
         `eventLoopDelay=${operationalAlertConfig.eventLoopDelayMs || 'off'}ms ` +
-        `(fires after ${operationalAlertConfig.sustainSamples} samples ≈ ${sustainSeconds}s sustained)`,
+        `dataDirFree=${operationalAlertConfig.dataDirectoryFreePercent || 'off'}%/` +
+        `${operationalAlertConfig.dataDirectoryFreeBytes || 'off'}B ` +
+        `persistence=on ` +
+        `(sampled-resource alerts fire after ${operationalAlertConfig.sustainSamples} samples ≈ ${sustainSeconds}s sustained); ` +
+        `circuitBreakerOpen=${operationalAlertConfig.circuitBreakerOpenMs || 'off'}ms`,
     );
   } else {
     console.log('[ops-alerts] Operational alerts disabled (set KOOKR_ALERT_* thresholds to enable)');
   }
   const resourceStatusService = createResourceStatusService({
-    sampler: resourceStatusSampler ?? createSystemResourceSampler(),
+    sampler: resourceStatusSampler ?? createSystemResourceSampler({ dataDirectoryPath: kookrDir }),
     broadcastToAll,
     alertEvaluator: operationalAlertEvaluator,
+    getCircuitBreakerSnapshots: () => circuitBreakerRegistry.getAllSnapshots(),
     intervalMs: resourceStatusIntervalMs,
   });
 
@@ -1058,7 +1168,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     lifecycleExtras: { hookWatcher, watchdog, shadowRegistry, tokenTracker },
     agentLifecycleDeps: lifecycleDeps, broadcastToAll,
     broadcastProjectSummaries,
-    launchTask: (opts) => launchTask(launchServiceDeps, opts),
+    launchTask: (opts, serverOpts) => launchTask(launchServiceDeps, opts, serverOpts),
     githubStateStore, ledgerAnalytics, projectConfigStore, projectSidebarStore,
     skillDiscoveryState, prLessonsState, getRegistryActiveProjects,
     achievementWatcher,
@@ -1068,6 +1178,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     availableAgentTypes: AVAILABLE_AGENT_TYPES.filter((item) => adapterRegistry.getTypes().includes(item.type)),
     defaultAgentType: getDefaultAgentType(),
     getDefaultAgentType,
+    bypassAllPermissions,
+    getDrainStatus: () => drainController.status(),
     activityMetaProvider: hookIngestion,
     coordinatorAuditTailProvider: hookIngestion,
     coordinatorSuppressions,
@@ -1075,12 +1187,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ralphLoopService,
     getDiagnosticStatus: () => diagnosticRunner.getStatus(),
     getLatestResourceStatus: () => resourceStatusService.getLatest(),
+    startupAlerts,
     workspaceEnabled: true,
     attemptRepository,
     policyResolver,
     leaseService,
     serverProjectId,
     takePredeleteSnapshot,
+    auditLogPath: join(kookrDir, 'audit.jsonl'),
     supervisorFeedbackCaseStore,
     feedbackDir: join(kookrDir, 'feedback'),
     taskSnapshotDir: join(kookrDir, 'task-snapshots'),
@@ -1090,6 +1204,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalInputCoordinator,
     userInputDeliveries,
     buildScopedSnapshot,
+    snapshotPayloadSizePolicy: DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS,
   };
 
   const backgroundServices = startBackgroundServices({
@@ -1112,9 +1227,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       quotaAdapter, getMaxActiveTasks, suppressionTracker,
       budgetChecker, progressBudgetBurnDiagnostics,
       detectionStatsStore,
+      persistenceHealth,
       worktreeRegistry,
       worktreeRegistryRepoPath: serverCwd,
       getDashboardClientCount: () => connectionRegistry.dashboardCount(),
+      bypassAllPermissions,
+      userInputDeliveries,
+      taskStateSaveScheduler,
     },
   });
 
@@ -1128,7 +1247,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalInputWriter: terminalInputCoordinator,
     terminalDeps,
     useFakeTerminalBridge,
-    apiAuth: config.apiAuth,
+    apiAuth,
     onLocalTerminalActivity: (sessionId) => remoteRelayRuntime?.recordLocalTerminalActivity(sessionId),
     onDashboardConnection: (ws) => handleWsConnection(ws, connectionRegistry, wsConnectionDeps),
     // Register terminal sockets with the connection registry so the revocation
@@ -1201,8 +1320,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     isClosed = true;
 
     await backgroundServices.stop();
+    try {
+      await taskStateSaveScheduler.close();
+    } catch (err) {
+      console.error('Error flushing pending task-state save on shutdown:', err);
+    }
+    stopWebhookObserver?.();
+    stopDeliveryTraceObserver();
 
-    // Final save
+    // Final task-state save
     try {
       const snoozedFindings = serializeSnoozed(queue, taskStore);
       await saveTasks(
@@ -1213,6 +1339,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         undefined,
         taskStore.listRelations(),
       );
+      persistenceHealth.recordSuccess('task_state');
+    } catch (err) {
+      persistenceHealth.recordFailure('task_state', err);
+      console.error('Error saving tasks on shutdown:', err);
+    }
+
+    try {
       await ossAttemptStore.save();
       await projectConfigStore.save();
       await scheduleStore.persist();

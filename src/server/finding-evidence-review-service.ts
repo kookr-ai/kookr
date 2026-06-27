@@ -139,6 +139,7 @@ export class FindingEvidenceReviewService {
     for (let index = 0; index < inputs.length; index += 1) {
       const input = inputs[index]!;
       const raw = await this.deps.llmClient!.complete({
+        useCase: 'finding_evidence_review',
         maxTokens: DEFAULT_MODEL_REVIEW_MAX_TOKENS,
         system: REVIEW_SYSTEM_PROMPT,
         userMessage: buildReviewUserPrompt(input),

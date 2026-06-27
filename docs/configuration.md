@@ -170,6 +170,82 @@ Use the panic switch to disable the integration even if other variables are set:
 KOOKR_REMOTE_CHAT_DISABLED=1
 ```
 
+## Outbound Finding Webhooks
+
+Set a generic HTTP receiver URL to POST each new attention finding as JSON:
+
+```bash
+KOOKR_WEBHOOK_URL=https://example.com/kookr-findings
+KOOKR_WEBHOOK_MIN_SEVERITY=warning
+KOOKR_WEBHOOK_SECRET=change-me
+```
+
+`KOOKR_WEBHOOK_MIN_SEVERITY` is optional and accepts `info`, `warning`, or `critical`.
+Repeated re-enqueues of the same finding fingerprint are deduplicated until the
+finding resolves.
+
+Per-project routing can override whether the outbound finding webhook fires and
+the minimum severity for that project:
+
+```json
+{
+  "project": "github.com/kookr-ai/kookr",
+  "webhook": {
+    "enabled": true,
+    "minSeverity": "critical"
+  }
+}
+```
+
+If a project omits `webhook`, Kookr falls back to `KOOKR_WEBHOOK_MIN_SEVERITY`.
+If `webhook.enabled` is `false`, findings for that project are not posted. The
+webhook receiver URL and signing secret remain env-only; project settings store
+only `enabled` and `minSeverity`.
+
+Delivery decisions are visible through the owner diagnostics endpoint:
+
+```bash
+curl http://127.0.0.1:4801/api/diagnostics/delivery-trace
+curl 'http://127.0.0.1:4801/api/diagnostics/delivery-trace?correlationId=<event-id>'
+```
+
+The trace is a bounded in-memory tail. It records server-observable finding
+queue admission/suppression decisions and outbound webhook attempts/results,
+including webhook routing suppressions such as disabled project routing,
+minimum severity, and duplicate delivery fingerprint hashes. Browser desktop
+notification display, hosted relay/web-push outcomes, and Telegram inbound
+audit are not included until those channels report server-visible delivery
+outcomes.
+
+`KOOKR_WEBHOOK_SECRET` is optional. When set, Kookr signs each POST with:
+
+```text
+X-Kookr-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret, t + "." + body)>
+```
+
+For rotation, set a comma-separated list such as `new-secret,old-secret`. Kookr
+signs with the first configured secret; receivers should verify the signature
+against any currently accepted secret and reject timestamps outside a short
+replay window, for example five minutes.
+
+```ts
+import { createHmac, timingSafeEqual } from 'node:crypto';
+
+export function verifyKookrWebhook(body: string, header: string, secrets: string[]): boolean {
+  const parts = Object.fromEntries(header.split(',').map((part) => part.split('=', 2)));
+  const timestamp = Number(parts.t);
+  if (!Number.isFinite(timestamp) || Math.abs(Date.now() / 1000 - timestamp) > 300) return false;
+  if (!/^[0-9a-f]{64}$/i.test(parts.v1 ?? '')) return false;
+
+  return secrets.some((secret) => {
+    const expected = createHmac('sha256', secret)
+      .update(`${parts.t}.${body}`)
+      .digest('hex');
+    return timingSafeEqual(Buffer.from(parts.v1 ?? '', 'hex'), Buffer.from(expected, 'hex'));
+  });
+}
+```
+
 ## Production-Style Instance
 
 `pnpm prod:setup` creates a sibling `../kookr-prod` worktree. The dev checkout's `.env` is symlinked into that worktree, so runtime configuration stays in one place.

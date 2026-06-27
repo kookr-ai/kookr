@@ -105,12 +105,12 @@ if command -v pnpm >/dev/null 2>&1; then
     print_row "pnpm" "$PNPM_VERSION" "OK" "(>= 10)"
   else
     print_row "pnpm" "$PNPM_VERSION" "FAIL" "need >= 10"
-    add_fix "pnpm >= 10 required. Run: sudo npm install -g pnpm@latest"
+    add_fix "pnpm >= 10 required. Run: corepack enable (runs the version pinned in package.json), or: sudo npm install -g pnpm@10"
     FAILS=$((FAILS + 1))
   fi
 else
   print_row "pnpm" "missing" "FAIL" "command not found"
-  add_fix "Install pnpm: sudo npm install -g pnpm@latest (or via corepack: corepack enable && corepack prepare pnpm@latest --activate)"
+  add_fix "Install pnpm. Recommended: corepack enable (runs the version pinned in package.json). Or: sudo npm install -g pnpm@10"
   FAILS=$((FAILS + 1))
 fi
 
@@ -145,6 +145,34 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Required: python3 (node-gyp builds node-pty from source; node-gyp needs python3)
+# ---------------------------------------------------------------------------
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON_VERSION="$(python3 --version 2>&1 | awk '{print $2}')"
+  print_row "python3" "$PYTHON_VERSION" "OK" "(node-gyp / node-pty)"
+else
+  print_row "python3" "missing" "FAIL" "node-gyp needs it"
+  add_fix "Install python3 — node-pty compiles via node-gyp, which requires it. Linux: sudo apt-get install -y python3. macOS: ships with Xcode CLT (xcode-select --install)."
+  FAILS=$((FAILS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Required: setsid (Linux only). Kookr spawns dtach masters via `setsid -f`
+# so they outlive the server. macOS has no setsid; the backend detects that
+# and spawns dtach directly (see local-dtach-backend.ts buildDtachSpawn), so
+# its absence is expected and fine there.
+# ---------------------------------------------------------------------------
+if [ "$(uname -s)" = "Darwin" ]; then
+  print_row "setsid" "n/a (macOS)" "INFO" "not needed; dtach spawned directly"
+elif command -v setsid >/dev/null 2>&1; then
+  print_row "setsid" "available" "OK" "(dtach session detach)"
+else
+  print_row "setsid" "missing" "FAIL" "needed to launch agents"
+  add_fix "Install setsid (util-linux). Debian/Ubuntu: sudo apt-get install -y util-linux. Without it, agent task launch fails with 'dtach socket did not appear'."
+  FAILS=$((FAILS + 1))
+fi
+
+# ---------------------------------------------------------------------------
 # Required: dtach binary (vendored, built by `pnpm install` via prepare hook)
 # ---------------------------------------------------------------------------
 DTACH_BIN="$REPO_ROOT/vendor/dtach/dtach"
@@ -154,6 +182,95 @@ else
   print_row "dtach binary" "vendor/dtach/dtach" "FAIL" "not built"
   add_fix "Build the vendored dtach: pnpm build:dtach (or rerun pnpm install)"
   FAILS=$((FAILS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Required on macOS: node-pty's `spawn-helper` must be executable. pnpm strips
+# the executable bit off the prebuilt binary; `pnpm install` re-applies it via
+# `fix:native-perms`. Without it, every agent terminal launch fails with
+# "posix_spawnp failed." (Linux does not use spawn-helper, so this is skipped.)
+# ---------------------------------------------------------------------------
+if [ "$(uname -s)" = "Darwin" ]; then
+  case "$(uname -m)" in
+    arm64) PTY_ARCH_DIR="darwin-arm64" ;;
+    x86_64) PTY_ARCH_DIR="darwin-x64" ;;
+    *) PTY_ARCH_DIR="" ;;
+  esac
+  PTY_HELPER=""
+  if [ -n "$PTY_ARCH_DIR" ]; then
+    PTY_HELPER="$(find "$REPO_ROOT/node_modules" -path "*node-pty*${PTY_ARCH_DIR}*" -name spawn-helper 2>/dev/null | head -n1)"
+  fi
+  if [ -z "$PTY_HELPER" ]; then
+    print_row "node-pty helper" "not found" "WARN" "spawn-helper missing (run pnpm install)"
+    WARNS=$((WARNS + 1))
+  elif [ -x "$PTY_HELPER" ]; then
+    print_row "node-pty helper" "executable" "OK" "(agent PTY spawn)"
+  else
+    print_row "node-pty helper" "not executable" "FAIL" "agent launch fails (posix_spawnp)"
+    add_fix "node-pty spawn-helper lacks the executable bit (pnpm strips it). Fix: pnpm fix:native-perms (or rerun pnpm install). File: $PTY_HELPER"
+    FAILS=$((FAILS + 1))
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Required when explicitly configured: startup env + agent binary preflight
+#
+# Uses the same src/server/config-preflight.ts module as server startup so bad
+# KOOKR_AGENT_BIN / KOOKR_CODEX_BIN values and documented env-var constraint
+# violations are visible before first launch.
+# Missing default agent commands are WARN only: a minimal install may use one
+# agent type without installing the other.
+# ---------------------------------------------------------------------------
+if [ -d "$REPO_ROOT/node_modules" ]; then
+  CONFIG_PREFLIGHT_OUTPUT="$(
+    cd "$REPO_ROOT" && node --import tsx --eval '
+      import("./src/server/config-preflight.ts").then(async (ns) => {
+        // tsx on Node 22 (the documented `brew install node@22` on macOS) can
+        // expose this module'\''s named exports only under `.default`, while
+        // Node 24 exposes them at the top level. Accept either shape so the
+        // preflight does not spuriously report "runConfigPreflight is not a
+        // function" on a supported Node version.
+        const mod = typeof ns.runConfigPreflight === "function" ? ns : (ns.default ?? ns);
+        try { process.loadEnvFile(); } catch {}
+        const result = await mod.runConfigPreflight(process.env);
+        console.log(mod.formatConfigPreflightCliOutput(result));
+        process.exit(mod.hasFatalConfigPreflightIssues(result) ? 2 : result.issues.length > 0 ? 1 : 0);
+      }).catch((err) => {
+        console.error(err instanceof Error ? err.message : String(err));
+        process.exit(2);
+      });
+    ' 2>&1
+  )"
+  CONFIG_PREFLIGHT_STATUS=$?
+  CONFIG_PREFLIGHT_FIRST_LINE="$(printf '%s\n' "$CONFIG_PREFLIGHT_OUTPUT" | head -n1 | tr '\t' ' ')"
+  case "$CONFIG_PREFLIGHT_STATUS" in
+    0)
+      print_row "startup config" "env + agents" "OK" "${CONFIG_PREFLIGHT_FIRST_LINE#OK }"
+      ;;
+    1)
+      if printf '%s\n' "$CONFIG_PREFLIGHT_OUTPUT" | grep -q '^WARN	'; then
+        print_row "startup config" "env + agents" "WARN" "${CONFIG_PREFLIGHT_FIRST_LINE#WARN }"
+        add_fix "Startup config warning(s): $(printf '%s' "$CONFIG_PREFLIGHT_OUTPUT" | tr '\n' ' ')"
+        WARNS=$((WARNS + 1))
+      else
+        print_row "startup config" "env + agents" "WARN" "preflight probe failed"
+        add_fix "Could not run startup config preflight. Run from a fully installed checkout: pnpm install && pnpm doctor. Output: $CONFIG_PREFLIGHT_OUTPUT"
+        WARNS=$((WARNS + 1))
+      fi
+      ;;
+    2)
+      print_row "startup config" "env + agents" "FAIL" "${CONFIG_PREFLIGHT_FIRST_LINE#FAIL }"
+      add_fix "Fix startup configuration: $(printf '%s' "$CONFIG_PREFLIGHT_OUTPUT" | tr '\n' ' ')"
+      FAILS=$((FAILS + 1))
+      ;;
+    *)
+      print_row "startup config" "env + agents" "WARN" "preflight probe failed"
+      add_fix "Could not run startup config preflight. Run from a fully installed checkout: pnpm install && pnpm doctor. Output: $CONFIG_PREFLIGHT_OUTPUT"
+      WARNS=$((WARNS + 1))
+      ;;
+  esac
+else
+  print_row "startup config" "env + agents" "INFO" "skip until pnpm install"
 fi
 
 # ---------------------------------------------------------------------------

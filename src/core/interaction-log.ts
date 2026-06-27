@@ -1,11 +1,12 @@
 import { appendFile, readFile, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { AnomalyType } from './types.js';
+import type { UserInputDeliverySource } from '../shared/contracts/user-input-delivery.js';
 
 // --- Interaction event types ---
 
 export type InteractionEvent =
-  | { type: 'user_input'; agentId: string; content: string; timestamp: string }
+  | { type: 'user_input'; agentId: string; content: string; timestamp: string; source?: UserInputDeliverySource }
   | { type: 'agent_selected'; agentId: string; source: 'auto' | 'manual'; timestamp: string }
   | { type: 'finding_skipped'; agentId: string; anomalyType: AnomalyType; timestamp: string }
   | { type: 'finding_snoozed'; agentId: string; durationMs: number; anomalyType?: AnomalyType; timestamp: string }
@@ -30,6 +31,14 @@ export type InteractionEvent =
   | { type: 'worktree_cleanup_failed'; taskId: string; worktreePath: string; error: string; timestamp: string }
   | { type: 'crash_recovery'; relaunched: number; skipped: number; failed: number; details: unknown; timestamp: string }
   | { type: 'submission_rejected_dedup'; existingTaskId: string; promptHash: string; canonicalCwd: string; timestamp: string }
+  | {
+      type: 'task_launch_permission_posture';
+      taskId: string;
+      agentType: string;
+      bypassAllPermissions: true;
+      mode: 'bypass-all';
+      timestamp: string;
+    }
   | { type: 'auto_suppressed'; agentId: string; anomalyType: AnomalyType; suppressionCount: number; timestamp: string }
   | { type: 'monitoring_resumed'; agentId: string; reason: 'respond' | 'cleanup'; timestamp: string }
   | {

@@ -19,13 +19,16 @@
   ],
   "scripts": {
     "test": "vitest run",
+    "test:changed": "vitest run --changed origin/main",
     "test:smoke": "pnpm build:frontend && node --import tsx scripts/check-remote-import-boundaries.ts && vitest run src/remote/__tests__/load-purity.test.ts src/server/session-bridge.test.ts && node --import tsx scripts/local-only-smoke.ts",
     "test:e2e:relay": "vitest run relay/__tests__/two-nodes.test.ts",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "build": "pnpm generate-build-info && pnpm build:dtach && pnpm build:server && pnpm build:relay && pnpm build:frontend",
     "build:dtach": "bash scripts/build-dtach.sh",
+    "fix:native-perms": "bash scripts/fix-native-perms.sh",
     "doctor": "bash scripts/doctor.sh",
+    "check:portability": "bash scripts/check-portability.sh && bash scripts/check-shell-portability.sh",
     "relay:start": "node --import tsx scripts/relay-lifecycle.ts start",
     "relay:status": "node --import tsx scripts/relay-lifecycle.ts status",
     "relay:logs": "node --import tsx scripts/relay-lifecycle.ts logs",
@@ -40,9 +43,10 @@
     "start": "pnpm build:dtach && node dist/server/start.js",
     "start:dev": "pnpm build:dtach && KOOKR_PORT=4801 node dist/server/start.js",
     "status": "node bin/kookr.js status",
-    "dev": "pnpm build:dtach && (KOOKR_PORT=4801 node --import tsx --watch-path=src/server --watch-path=src/core --watch-path=src/adapters --watch-path=src/shared --watch-path=src/remote --watch-path=src/integrations src/server/start.ts & vite & wait)",
+    "dev": "pnpm build:dtach && bash scripts/dev-processes.sh dev",
     "dev:server": "pnpm build:dtach && KOOKR_PORT=4801 node --import tsx --watch-path=src/server --watch-path=src/core --watch-path=src/adapters --watch-path=src/shared --watch-path=src/remote --watch-path=src/integrations src/server/start.ts",
     "dev:frontend": "vite",
+    "dev:demo": "bash scripts/dev-processes.sh demo",
     "prod:setup": "git worktree add --detach ../kookr-prod HEAD && if [ -f .env ]; then ln -sfn \"$(pwd)/.env\" ../kookr-prod/.env; fi && cd ../kookr-prod && pnpm install && pnpm build",
     "prod:update": "bash scripts/prod-update.sh",
     "prod:restart": "ROOT_DIR=$(pwd) && cd ../kookr-prod && bash \"$ROOT_DIR/scripts/prod-restart.sh\"",
@@ -58,9 +62,10 @@
     "validate:docs-commands": "node --import tsx scripts/verify-documented-commands.ts",
     "validate:docs-env-vars": "node --import tsx scripts/verify-documented-env-vars.ts",
     "demo:record": "pnpm build && node --import tsx demo/record.ts",
+    "demo:check": "pnpm build && DEMO_CHECK=1 node --import tsx demo/record.ts",
     "codex:rebuild": "bash scripts/rebuild-codex.sh",
     "merge": "bash scripts/kookr-merge.sh",
-    "prepare": "git config core.hooksPath .hooks && pnpm build:dtach"
+    "prepare": "git config core.hooksPath .hooks && pnpm build:dtach && pnpm fix:native-perms"
   },
   "keywords": [],
   "author": "Jean Ibarz",
@@ -71,34 +76,34 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.3",
-    "@playwright/test": "^1.60.0",
+    "@playwright/test": "^1.61.0",
     "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^25.9.2",
+    "@types/node": "^26.0.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@types/web-push": "^3.6.4",
     "@vitejs/plugin-react": "^6.0.2",
-    "@vitest/coverage-v8": "^4.1.8",
+    "@vitest/coverage-v8": "^4.1.9",
     "jsdom": "^29.1.1",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
-    "vitest": "^4.1.8",
+    "vitest": "^4.1.9",
     "yaml": "^2.9.0"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.102.0",
-    "@google/genai": "^2.8.0",
-    "@hono/node-server": "^2.0.4",
+    "@anthropic-ai/sdk": "^0.105.0",
+    "@google/genai": "^2.9.0",
+    "@hono/node-server": "^2.0.6",
     "@types/ws": "^8.18.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-search": "^0.16.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "^6.0.0",
-    "better-sqlite3": "^12.10.0",
-    "cron-parser": "^5.5.0",
-    "groq-sdk": "^1.2.1",
-    "hono": "^4.12.24",
+    "better-sqlite3": "^12.11.1",
+    "cron-parser": "^5.6.0",
+    "groq-sdk": "^1.3.0",
+    "hono": "^4.12.26",
     "node-pty": "^1.1.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
@@ -106,21 +111,5 @@
     "ws": "^8.21.0",
     "zod": "^4.4.3",
     "zustand": "^5.0.14"
-  },
-  "pnpm": {
-    "packageExtensions": {
-      "node-pty@1.1.0": {
-        "dependencies": {
-          "node-gyp": "^12.3.0"
-        }
-      }
-    },
-    "onlyBuiltDependencies": [
-      "@google/genai",
-      "better-sqlite3",
-      "esbuild",
-      "node-pty",
-      "protobufjs"
-    ]
   }
 }

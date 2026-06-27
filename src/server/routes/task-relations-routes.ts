@@ -53,7 +53,9 @@ export function registerTaskRelationsRoutes(app: Hono, deps: TaskRelationsRouteD
       return c.json({ error: `Target task not found: ${input.targetTaskId}` }, 404);
     }
     const relation = taskStore.upsertRelation(input);
-    if (deps.tasksFile) {
+    if (deps.taskStateSaveScheduler) {
+      deps.taskStateSaveScheduler.requestSave('task_relation_mutation');
+    } else if (deps.tasksFile) {
       const snoozes = deps.queue ? serializeSnoozed(deps.queue, taskStore) : undefined;
       const suppressionState = deps.suppressionTracker?.export();
       await saveTasks(

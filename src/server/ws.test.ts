@@ -10,7 +10,7 @@ import { AttentionQueue } from '../core/attention-queue.js';
 import { Monitor } from '../core/monitor.js';
 import { SnoozeSuppressionTracker, SUPPRESSION_THRESHOLD } from '../core/snooze-suppression.js';
 import { DeferredInteractionLogWriter, readInteractionLog } from '../core/interaction-log.js';
-import { buildPermissionRequestBinding } from '../shared/contracts/permission-request-binding.js';
+import { buildPermissionRequestBinding } from './permission-request-binding.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { GitHubStateStore } from '../core/github-state-store.js';
@@ -1594,6 +1594,53 @@ describe('WebSocket MessageRouter', () => {
     expect(remaining).toEqual([projectDone.id, unscopedDone.id].sort());
   });
 
+  test('clearCompleted writes a websocket actor audit row', async () => {
+    const auditDir = await mkdtemp(join(tmpdir(), 'kookr-ws-clear-audit-'));
+    const auditLogPath = join(auditDir, 'audit.jsonl');
+    try {
+      const done = taskStore.createTask({ prompt: 'Done', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+      const cancelled = taskStore.createTask({ prompt: 'Cancelled', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+      const active = taskStore.createTask({ prompt: 'Active', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+      taskStore.startTask(done.id);
+      taskStore.completeTask(done.id);
+      taskStore.startTask(cancelled.id);
+      taskStore.cancelTask(cancelled.id);
+      taskStore.startTask(active.id);
+      const r = new MessageRouter({
+        taskStore, queue, monitor, adapter,
+        send: (msg) => { sentMessages.push(msg); },
+        broadcastToAll: (msg) => { sentMessages.push(msg); },
+        serverCwd: '/test/cwd',
+        auditLogPath,
+        connectionId: 'connection-audit-1',
+      });
+
+      await r.handleMessage({ type: 'clearCompleted', projectId: 'github.com/org/a' });
+
+      const row = JSON.parse((await readFile(auditLogPath, 'utf-8')).trim()) as {
+        type: string;
+        actor: { source: string; actorId?: string };
+        scope: { kind: string; projectId?: string };
+        count: number;
+        deletedTaskIds: string[];
+      };
+      expect(row).toEqual(expect.objectContaining({
+        type: 'task.clearCompleted',
+        actor: { source: 'websocket', actorId: 'connection-audit-1' },
+        scope: { kind: 'project', projectId: 'github.com/org/a' },
+        count: 2,
+      }));
+      expect(row.deletedTaskIds.sort()).toEqual([cancelled.id, done.id].sort());
+      expect(sentMessages).toContainEqual(expect.objectContaining({
+        type: 'alert',
+        summary: 'Cleared 2 tasks',
+        severity: 'info',
+      }));
+    } finally {
+      await rm(auditDir, { recursive: true, force: true });
+    }
+  });
+
   test('clearCompleted invokes takePredeleteSnapshot when sweeping any task', async () => {
     const t = taskStore.createTask('Done', '/cwd');
     taskStore.startTask(t.id);
@@ -2188,6 +2235,7 @@ describe('GitHub initial sync on WebSocket connection', () => {
       ref,
       title: `PR #${ref.number}`,
       status: 'open',
+      mergeable: 'MERGEABLE',
       author: 'test-user',
       branch: 'feature-branch',
       baseBranch: 'main',

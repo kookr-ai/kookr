@@ -4,10 +4,11 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { App } from './App.js';
+import { App, DEFAULT_DESTRUCTIVE_ACTION_UNDO_MS } from './App.js';
 import { createKookrStore, useKookrStore } from './store/useStore.js';
 import { recordOutbound, recordReportableAlert, resetBugReportRecorderForTests } from './bug-report-recorder.js';
 import { clearDebugTimeline, setDebugTimelineEnabledForTests } from './debug-timeline.js';
+import { __resetViewerSessionForTests } from './viewer-session.js';
 import type { AgentState } from '../shared/protocol.js';
 
 const websocketMock = vi.hoisted(() => ({
@@ -84,6 +85,12 @@ function makeAgent(overrides: Partial<AgentState>): AgentState {
   } as AgentState;
 }
 
+function setInputValue(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+  setter.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 describe('App operations modal shortcuts', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -97,6 +104,7 @@ describe('App operations modal shortcuts', () => {
     resetBugReportRecorderForTests();
     setDebugTimelineEnabledForTests(null);
     clearDebugTimeline();
+    __resetViewerSessionForTests();
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/api/anomaly-stats')) {
@@ -122,8 +130,11 @@ describe('App operations modal shortcuts', () => {
     });
     document.body.innerHTML = '';
     localStorage.clear();
+    sessionStorage.clear();
+    vi.useRealTimers();
     setDebugTimelineEnabledForTests(null);
     clearDebugTimeline();
+    __resetViewerSessionForTests();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -181,7 +192,163 @@ describe('App operations modal shortcuts', () => {
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Thumbs down"]')).toBeInstanceOf(HTMLButtonElement);
   });
 
-  test('clear completed from a selected project panel sends project scope', async () => {
+  test('delete task undo cancels the deferred destructive send', async () => {
+    useKookrStore.setState({
+      agents: [
+        makeAgent({
+          agentId: 'done-agent',
+          taskId: 'task-delete',
+          taskName: 'Accidental delete',
+          taskStatus: 'completed',
+        }),
+      ],
+      selectedAgentId: 'done-agent',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const completedToggle = await waitForElement<HTMLButtonElement>(container, '.completed-section .section-header');
+    await act(async () => {
+      completedToggle.click();
+    });
+
+    const deleteButton = await waitForElement<HTMLButtonElement>(container, 'button[aria-label="Delete Accidental delete"]');
+    websocketMock.send.mockClear();
+    vi.useFakeTimers();
+    await act(async () => {
+      deleteButton.click();
+    });
+
+    expect(websocketMock.send).not.toHaveBeenCalledWith({
+      type: 'deleteTask',
+      taskId: 'task-delete',
+    });
+    expect(useKookrStore.getState().selectedAgentId).toBeNull();
+    expect(container.querySelector('.completed-row.pending-deletion')?.textContent).toContain('deleting soon');
+    expect(container.querySelector('.toast-undo')?.textContent).toContain('Deleting "Accidental delete"');
+
+    const undoButton = container.querySelector<HTMLButtonElement>('.toast-action');
+    expect(undoButton).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      undoButton!.click();
+    });
+    act(() => {
+      vi.advanceTimersByTime(DEFAULT_DESTRUCTIVE_ACTION_UNDO_MS + 1);
+    });
+
+    expect(websocketMock.send).not.toHaveBeenCalledWith({
+      type: 'deleteTask',
+      taskId: 'task-delete',
+    });
+    expect(container.querySelector('.completed-row.pending-deletion')).toBeNull();
+    expect(container.querySelector('.toast-undo')).toBeNull();
+  });
+
+  test('delete task sends only after the undo window expires', async () => {
+    useKookrStore.setState({
+      agents: [
+        makeAgent({
+          agentId: 'done-agent',
+          taskId: 'task-delete',
+          taskName: 'Expired delete',
+          taskStatus: 'completed',
+        }),
+      ],
+      selectedAgentId: null,
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const completedToggle = await waitForElement<HTMLButtonElement>(container, '.completed-section .section-header');
+    await act(async () => {
+      completedToggle.click();
+    });
+    const deleteButton = await waitForElement<HTMLButtonElement>(container, 'button[aria-label="Delete Expired delete"]');
+    websocketMock.send.mockClear();
+    vi.useFakeTimers();
+    await act(async () => {
+      deleteButton.click();
+    });
+
+    expect(websocketMock.send).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(DEFAULT_DESTRUCTIVE_ACTION_UNDO_MS - 1);
+    });
+    expect(websocketMock.send).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+
+    expect(websocketMock.send).toHaveBeenCalledWith({
+      type: 'deleteTask',
+      taskId: 'task-delete',
+    });
+    expect(container.querySelector('.toast-undo')).toBeNull();
+  });
+
+  test('clear completed undo cancels the deferred project-scoped send', async () => {
+    useKookrStore.setState({
+      agents: [
+        makeAgent({
+          agentId: 'project-a-done',
+          taskId: 'task-a',
+          taskName: 'Project A done',
+          projectId: 'github.com/acme/a',
+          taskStatus: 'completed',
+        }),
+        makeAgent({
+          agentId: 'project-b-done',
+          taskId: 'task-b',
+          taskName: 'Project B done',
+          projectId: 'github.com/acme/b',
+          taskStatus: 'completed',
+        }),
+      ],
+      selectedProject: 'github.com/acme/a',
+      selectedAgentId: null,
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const completedToggle = await waitForElement<HTMLButtonElement>(container, '.completed-section .section-header');
+    await act(async () => {
+      completedToggle.click();
+    });
+    const clearButton = await waitForElement<HTMLButtonElement>(container, 'button.btn-clear-completed');
+    await act(async () => {
+      clearButton.click();
+    });
+    const deleteButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-danger');
+    websocketMock.send.mockClear();
+    vi.useFakeTimers();
+    await act(async () => {
+      deleteButton.click();
+    });
+
+    expect(websocketMock.send).not.toHaveBeenCalled();
+    expect(container.querySelectorAll('.completed-row.pending-deletion')).toHaveLength(1);
+    expect(container.querySelector('.toast-undo')?.textContent).toContain('Deleting 1 finished task');
+
+    const undoButton = container.querySelector<HTMLButtonElement>('.toast-action');
+    expect(undoButton).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      undoButton!.click();
+    });
+    act(() => {
+      vi.advanceTimersByTime(DEFAULT_DESTRUCTIVE_ACTION_UNDO_MS + 1);
+    });
+
+    expect(websocketMock.send).not.toHaveBeenCalled();
+    expect(container.querySelector('.completed-row.pending-deletion')).toBeNull();
+  });
+
+  test('clear completed deletes only the captured project task after the undo window expires', async () => {
     useKookrStore.setState({
       agents: [
         makeAgent({
@@ -215,14 +382,27 @@ describe('App operations modal shortcuts', () => {
     expect(container.querySelector('.confirm-dialog-message')?.textContent).toContain('Delete 1 finished task?');
 
     const deleteButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-danger');
+    websocketMock.send.mockClear();
+    vi.useFakeTimers();
     await act(async () => {
       deleteButton.click();
     });
 
+    expect(websocketMock.send).not.toHaveBeenCalled();
+    expect(container.querySelector('.toast-undo')?.textContent).toContain('Deleting 1 finished task');
+
+    act(() => {
+      vi.advanceTimersByTime(DEFAULT_DESTRUCTIVE_ACTION_UNDO_MS - 1);
+    });
+    expect(websocketMock.send).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+
+    expect(websocketMock.send).toHaveBeenCalledTimes(1);
     expect(websocketMock.send).toHaveBeenCalledWith({
-      type: 'clearCompleted',
-      includeTerminated: false,
-      projectId: 'github.com/acme/a',
+      type: 'deleteTask',
+      taskId: 'task-a',
     });
   });
 
@@ -519,6 +699,104 @@ describe('App operations modal shortcuts', () => {
       'value',
       expect.stringContaining('user-added note'),
     );
+  });
+
+  test('read-only command palette hides owner actions but keeps finding and project navigation', async () => {
+    vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/auth/session')) {
+        return Promise.resolve({
+          status: 200,
+          json: () => Promise.resolve({ actor: 'viewer', scope: { kind: 'all' } }),
+        } as Response);
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ configured: false }),
+      } as Response);
+    });
+    sessionStorage.setItem('kookr.viewer.session', JSON.stringify({ isViewer: true, scope: { kind: 'all' } }));
+    const findingAgent = makeAgent({
+      agentId: 'finding-agent',
+      taskId: 'finding-task',
+      taskName: 'Investigate launch failure',
+      projectId: 'github.com/kookr-ai/kookr',
+      anomaly: {
+        agentId: 'finding-agent',
+        type: 'api_error',
+        severity: 'critical',
+        explanation: 'Launch dependency failed',
+        detectedAt: new Date('2026-06-21T00:00:00.000Z'),
+      },
+    });
+    useKookrStore.setState({
+      agents: [findingAgent],
+      agentsHydrated: true,
+      projectSummariesHydrated: true,
+    });
+    useKookrStore.getState().handleProjectSummaries([
+      {
+        project: 'github.com/kookr-ai/kookr',
+        displayName: 'kookr',
+        color: 0,
+        activeAgents: 1,
+        findingCount: 1,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openContributionAttempts: 0,
+        recentTasks: [{ taskId: 'finding-task', name: 'Investigate launch failure', status: 'inProgress' }],
+        tracked: true,
+        localPath: '/workspace/kookr',
+      },
+      {
+        project: 'github.com/example/openclaw',
+        displayName: 'openclaw',
+        color: 1,
+        activeAgents: 0,
+        findingCount: 0,
+        todayPrCount: 0,
+        weekPrCount: 0,
+        openContributionAttempts: 0,
+        recentTasks: [],
+        tracked: true,
+        localPath: '/workspace/openclaw',
+      },
+    ]);
+    useKookrStore.getState().selectProject('github.com/example/openclaw');
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const paletteTrigger = await waitForElement<HTMLButtonElement>(container, '[data-testid="command-trigger"]');
+    await act(async () => {
+      paletteTrigger.click();
+    });
+
+    expect(container.querySelector('[data-action-id="share-viewer"]')).toBeNull();
+    expect(container.querySelector('[data-action-id="settings"]')).toBeNull();
+    expect(container.querySelector('[data-action-id="schedules"]')).toBeNull();
+
+    const input = await waitForElement<HTMLInputElement>(container, '[data-testid="command-palette-input"]');
+    await act(async () => setInputValue(input, 'api error'));
+    const findingRow = await waitForElement<HTMLButtonElement>(container, '[data-testid="command-palette-finding"]');
+    expect(findingRow.textContent).toContain('critical · API Error');
+    await act(async () => {
+      findingRow.click();
+    });
+    expect(useKookrStore.getState().selectedAgentId).toBe('finding-agent');
+
+    await act(async () => {
+      paletteTrigger.click();
+    });
+    const projectInput = await waitForElement<HTMLInputElement>(container, '[data-testid="command-palette-input"]');
+    await act(async () => setInputValue(projectInput, 'kookr-ai'));
+    const projectRow = await waitForElement<HTMLButtonElement>(container, '[data-testid="command-palette-project"]');
+    await act(async () => {
+      projectRow.click();
+    });
+    expect(useKookrStore.getState().selectedProject).toBe('github.com/kookr-ai/kookr');
   });
 
   test('debug timeline export downloads a redacted bundle', async () => {

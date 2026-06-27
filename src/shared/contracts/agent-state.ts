@@ -5,12 +5,19 @@ import type { Anomaly, AnomalySeverity, FindingEvidenceAuditRecord } from './ano
 import type { PendingAgentSignal } from './agent-signal.js';
 import type { CompletionDigest } from './completion-digest.js';
 import type { LatestCompletionSignal } from './completion-signal.js';
-import type { RalphLoopState, TaskCompletionFeedback, TaskDependencyEdge, TaskLaunchHealthSummary, TaskPriority } from './task.js';
+import type {
+  RalphLoopState,
+  TaskCompletionFeedback,
+  TaskDependencyEdge,
+  TaskLaunchHealthSummary,
+  TaskLaunchPermissionPosture,
+  TaskPriority,
+} from './task.js';
 import type { TaskStatus, TurnState } from './task-status.js';
 import type { TaskRelationRollup } from './task-relations.js';
 import type { TokenUsage } from './usage.js';
 import type { WorktreeHealth } from './session.js';
-import type { TerminalInputSnapshot } from '../terminal-input-contract.js';
+import type { TerminalInputSnapshot } from './terminal-input.js';
 import type { UserInputDeliverySnapshot } from './user-input-delivery.js';
 
 export interface AgentState {
@@ -38,9 +45,16 @@ export interface AgentState {
   cwd?: string;
   agentType?: AgentType;
   startedAt?: string;
+  /**
+   * ISO timestamp for the first terminal transition. Present on synthetic
+   * completed/cancelled/terminated entries so the dashboard can show and sort
+   * completed history by finish time.
+   */
+  finishedAt?: string;
   playbookId?: string;
   playbookParameterValues?: Record<string, string>;
   launchHealthSummary?: TaskLaunchHealthSummary;
+  launchPermissionPosture?: TaskLaunchPermissionPosture;
   tokenUsage?: TokenUsage;
   gitBranch?: string;
   gitCommit?: string;

@@ -12,6 +12,18 @@ import { inspectCleanupCandidate, inspectCleanupCandidates } from './cleanup-ins
 import { hydrateCleanupCandidateDetail } from './workspace-cleanup-detail-query.js';
 
 const execFile = promisify(execFileCb);
+const NESTED_GIT_ENV_VARS = [
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_CEILING_DIRECTORIES',
+  'GIT_COMMON_DIR',
+  'GIT_CONFIG_COUNT',
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_DIR',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_PREFIX',
+  'GIT_WORK_TREE',
+] as const;
 
 export interface WorkspaceCleanupDeps {
   policyResolver: RepoPolicyResolver;
@@ -387,7 +399,7 @@ async function runGit(
   signal?: AbortSignal,
 ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   try {
-    const { stdout, stderr } = await execFile('git', ['-C', repoPath, ...args], { signal });
+    const { stdout, stderr } = await execFile('git', ['-C', repoPath, ...args], { signal, env: gitExecEnv() });
     return { ok: true, stdout: stdout.trim(), stderr: stderr.trim() };
   } catch (err) {
     const stderr = err && typeof err === 'object' && 'stderr' in err
@@ -395,4 +407,12 @@ async function runGit(
       : err instanceof Error ? err.message : String(err);
     return { ok: false, stdout: '', stderr: stderr.trim() };
   }
+}
+
+function gitExecEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const name of NESTED_GIT_ENV_VARS) {
+    delete env[name];
+  }
+  return env;
 }

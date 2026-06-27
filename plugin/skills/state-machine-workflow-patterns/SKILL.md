@@ -2,7 +2,7 @@
 name: state-machine-workflow-patterns
 description: State machine discipline, saga compensation, event-sourced persistence, workflow orchestration. Use when state transitions, workflow steps, saga, compensation, event sourcing, or state machine testing.
 keywords: state machine, FSM, XState, state transition, saga, compensation, event sourcing, workflow orchestration, choreography, transition guard, append-only, replay, discriminated union, optimistic locking, heartbeat, timeout, model-based testing
-related: error-handling-patterns, race-conditions-atomicity, resilience-patterns, async-flow-control, process-lifecycle-patterns, event-driven-messaging-patterns, domain-driven-design
+related: error-handling-patterns, async-flow-control, process-lifecycle-patterns, event-driven-messaging-patterns, domain-driven-design
 ---
 
 # State Machine & Workflow Patterns
@@ -286,7 +286,7 @@ await redis.xadd(`order:${orderId}:events`, '*', 'event', JSON.stringify({
 // Single consumer per stream key ensures serial processing
 ```
 
-**Rule:** Never do read-modify-write on state without either optimistic locking (`WHERE version = $v`), pessimistic locking (`FOR UPDATE`), or single-writer guarantee (per-entity queue). See [[race-conditions-atomicity]] for DB-level patterns.
+**Rule:** Never do read-modify-write on state without either optimistic locking (`WHERE version = $v`), pessimistic locking (`FOR UPDATE`), or single-writer guarantee (per-entity queue). See race-conditions-atomicity for DB-level patterns.
 
 ## Common Anti-Patterns Checklist
 
@@ -305,8 +305,8 @@ Before submitting workflow/state-machine code, verify:
 ## See Also
 
 [[error-handling-patterns]] - Error classification, discriminated union results, cause chaining
-[[race-conditions-atomicity]] - Optimistic locking, SKIP LOCKED, distributed locks, idempotency
-[[resilience-patterns]] - Circuit breakers, TaskReaper, auto-healing, multi-layer recovery
+race-conditions-atomicity - Optimistic locking, SKIP LOCKED, distributed locks, idempotency
+resilience-patterns - Circuit breakers, TaskReaper, auto-healing, multi-layer recovery
 [[async-flow-control]] - AbortController cancellation, Promise combinators, graceful shutdown
 [[event-driven-messaging-patterns]] - Outbox pattern, consumer idempotency, DLQ
 [[domain-driven-design]] - Aggregate boundaries, value objects, domain events

@@ -1,9 +1,12 @@
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
+  clearAllTimers,
   findFirstActiveSession,
   restoreExpiredSnoozes,
   runBudgetCheck,
+  runPersistenceSaveTick,
   runProgressBudgetBurnDiagnosticSample,
+  startLifecycleTimers,
 } from './lifecycle-timers.js';
 import { BudgetChecker } from '../core/budget-checker.js';
 import type { Task } from '../core/tasks.js';
@@ -11,6 +14,12 @@ import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import type { Anomaly } from '../core/types.js';
 import type { ProgressBudgetBurnDiagnostics } from '../core/progress-budget-burn-diagnostics.js';
+import { PersistenceHealthTracker } from '../core/persistence-health.js';
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 function makeAnomaly(agentId: string): Anomaly {
   return {
@@ -272,5 +281,212 @@ describe('restoreExpiredSnoozes', () => {
 
     expect(queue.next()).toBeNull();
     expect(queue.getSnoozed()).toHaveLength(0);
+  });
+});
+
+describe('runPersistenceSaveTick', () => {
+  test('records task-state and detection-stats save failures without blocking either path', async () => {
+    const taskStore = new TaskStore();
+    const queue = new AttentionQueue();
+    const tracker = new PersistenceHealthTracker();
+    const taskError = Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    const statsError = new Error('stats busy');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await runPersistenceSaveTick({
+      taskStore,
+      queue,
+      tasksFile: '/tmp/tasks.json',
+      persistenceHealth: tracker,
+      taskStateSaver: vi.fn(async () => {
+        throw taskError;
+      }),
+      detectionStatsStore: {
+        save: vi.fn(async () => {
+          throw statsError;
+        }),
+      },
+      getDetectionStatsSnapshot: () => ({ checks: {}, fires: {}, falsePositives: {} } as never),
+    });
+
+    expect(tracker.snapshot().targets.task_state).toMatchObject({
+      totalFailures: 1,
+      consecutiveFailures: 1,
+      lastError: { code: 'ENOSPC', hard: true },
+    });
+    expect(tracker.snapshot().targets.detection_stats).toMatchObject({
+      totalFailures: 1,
+      consecutiveFailures: 1,
+      lastError: { message: 'stats busy', hard: false },
+    });
+    expect(consoleError).toHaveBeenCalledWith('Error saving tasks:', taskError);
+    expect(consoleError).toHaveBeenCalledWith('Error saving detection stats:', statsError);
+
+    consoleError.mockRestore();
+  });
+
+  test('records recovery after successful saves', async () => {
+    const taskStore = new TaskStore();
+    const queue = new AttentionQueue();
+    const tracker = new PersistenceHealthTracker();
+    tracker.recordFailure('task_state', new Error('previous failure'));
+    tracker.recordFailure('detection_stats', new Error('previous failure'));
+
+    await runPersistenceSaveTick({
+      taskStore,
+      queue,
+      tasksFile: '/tmp/tasks.json',
+      persistenceHealth: tracker,
+      taskStateSaver: vi.fn(async () => undefined),
+      detectionStatsStore: { save: vi.fn(async () => undefined) },
+      getDetectionStatsSnapshot: () => ({ checks: {}, fires: {}, falsePositives: {} } as never),
+    });
+
+    expect(tracker.snapshot().targets.task_state).toMatchObject({
+      consecutiveFailures: 0,
+      lastError: null,
+    });
+    expect(tracker.snapshot().targets.detection_stats).toMatchObject({
+      consecutiveFailures: 0,
+      lastError: null,
+    });
+  });
+
+  test('force-flushes coalesced task-state saves on the periodic tick', async () => {
+    const taskStore = new TaskStore();
+    const queue = new AttentionQueue();
+    const flush = vi.fn(async () => undefined);
+
+    await runPersistenceSaveTick({
+      taskStore,
+      queue,
+      tasksFile: '/tmp/tasks.json',
+      taskStateSaveScheduler: {
+        requestSave: vi.fn(),
+        close: vi.fn(async () => undefined),
+        flush,
+      },
+      detectionStatsStore: { save: vi.fn(async () => undefined) },
+      getDetectionStatsSnapshot: () => ({ checks: {}, fires: {}, falsePositives: {} } as never),
+    });
+
+    expect(flush).toHaveBeenCalledWith('periodic', { force: true, policy: 'daily' });
+  });
+});
+
+describe('startLifecycleTimers user input delivery retry sweep', () => {
+  test('runs the sweep on watchdog cadence and broadcasts when it nudges input', async () => {
+    vi.useFakeTimers();
+    const taskStore = new TaskStore();
+    const broadcastToAll = vi.fn();
+    const sweepUnsubmittedDeliveries = vi.fn(async () => 1);
+    const handles = startLifecycleTimers({
+      monitor: {
+        getSnapshot: () => [],
+        getAgentEvents: () => [],
+        applyWatchdogVerdict: vi.fn(),
+        sampleFindingEvidence: vi.fn(),
+        getCurrentAnomaly: vi.fn(),
+      } as any,
+      taskStore,
+      queue: new AttentionQueue(),
+      adapter: {
+        captureDisplay: vi.fn(async () => ''),
+      } as any,
+      adapterRegistry: {} as any,
+      tokenTracker: {
+        scanGrowth: vi.fn(async () => []),
+        scanAll: vi.fn(async () => undefined),
+        getTrackedTaskIds: vi.fn(() => []),
+      } as any,
+      watchdog: {
+        getTrackedAgents: vi.fn(() => []),
+        recordTokenActivity: vi.fn(),
+        tick: vi.fn(),
+      } as any,
+      hookWatcher: {
+        drainNow: vi.fn(async () => undefined),
+      } as any,
+      terminalBackend: {
+        listSessions: vi.fn(async () => []),
+      } as any,
+      hooksDir: '/tmp/hooks',
+      tasksFile: '/tmp/tasks.json',
+      serverCwd: '/tmp/repo',
+      saveIntervalMs: 60_000,
+      livenessIntervalMs: 60_000,
+      broadcastToAll,
+      userInputDeliveries: { sweepUnsubmittedDeliveries },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(sweepUnsubmittedDeliveries).toHaveBeenCalledTimes(1);
+      expect(broadcastToAll).toHaveBeenCalledWith(expect.objectContaining({ type: 'snapshot' }));
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
+  test('logs sweep failures without broadcasting a retry snapshot', async () => {
+    vi.useFakeTimers();
+    const taskStore = new TaskStore();
+    const broadcastToAll = vi.fn();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const sweepUnsubmittedDeliveries = vi.fn(async () => {
+      throw new Error('capture failed');
+    });
+    const handles = startLifecycleTimers({
+      monitor: {
+        getSnapshot: () => [],
+        getAgentEvents: () => [],
+        applyWatchdogVerdict: vi.fn(),
+        sampleFindingEvidence: vi.fn(),
+        getCurrentAnomaly: vi.fn(),
+      } as any,
+      taskStore,
+      queue: new AttentionQueue(),
+      adapter: {
+        captureDisplay: vi.fn(async () => ''),
+      } as any,
+      adapterRegistry: {} as any,
+      tokenTracker: {
+        scanGrowth: vi.fn(async () => []),
+        scanAll: vi.fn(async () => undefined),
+        getTrackedTaskIds: vi.fn(() => []),
+      } as any,
+      watchdog: {
+        getTrackedAgents: vi.fn(() => []),
+        recordTokenActivity: vi.fn(),
+        tick: vi.fn(),
+      } as any,
+      hookWatcher: {
+        drainNow: vi.fn(async () => undefined),
+      } as any,
+      terminalBackend: {
+        listSessions: vi.fn(async () => []),
+      } as any,
+      hooksDir: '/tmp/hooks',
+      tasksFile: '/tmp/tasks.json',
+      serverCwd: '/tmp/repo',
+      saveIntervalMs: 60_000,
+      livenessIntervalMs: 60_000,
+      broadcastToAll,
+      userInputDeliveries: { sweepUnsubmittedDeliveries },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(sweepUnsubmittedDeliveries).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        'Error sweeping unsubmitted user-input deliveries:',
+        expect.any(Error),
+      );
+      expect(broadcastToAll).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'snapshot' }));
+    } finally {
+      clearAllTimers(handles);
+    }
   });
 });

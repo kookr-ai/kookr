@@ -3,6 +3,7 @@ import { createRoutes } from './routes.js';
 import type { RouteDeps } from './routes/shared.js';
 import type { ApiAuthConfig } from './auth.js';
 import { SESSION_COOKIE_NAME } from './auth.js';
+import { AuthThrottle } from './auth-throttle.js';
 import {
   CSRF_HEADER,
   computeCsrfToken,
@@ -59,6 +60,37 @@ describe('createRoutes API-token middleware install (issue #708)', () => {
     expect(res.status).toBe(404);
   });
 
+  it('throttles failed token attempts per source and resets after a later success', async () => {
+    let now = 0;
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const apiAuth: ApiAuthConfig = {
+      required: true,
+      token: 'secret',
+      authThrottle: new AuthThrottle({
+        freeFailures: 1,
+        baseBackoffMs: 1_000,
+        nowMs: () => now,
+        audit: () => {},
+      }),
+    };
+    const app = createRoutes(makeDeps(apiAuth));
+    const headers = { 'x-forwarded-for': '10.0.0.10', authorization: 'Bearer wrong' };
+
+    expect((await app.request('http://lan.example/api/does-not-exist', { headers })).status).toBe(401);
+    expect((await app.request('http://lan.example/api/does-not-exist', { headers })).status).toBe(401);
+    const lockedSuccess = await app.request('http://lan.example/api/does-not-exist', {
+      headers: { 'x-forwarded-for': '10.0.0.10', authorization: 'Bearer secret' },
+    });
+    expect(lockedSuccess.status).toBe(401);
+
+    now += 1_000;
+    const unlockedSuccess = await app.request('http://lan.example/api/does-not-exist', {
+      headers: { 'x-forwarded-for': '10.0.0.10', authorization: 'Bearer secret' },
+    });
+    expect(unlockedSuccess.status).toBe(404);
+    expect(apiAuth.authThrottle?.snapshot().activeSourceCount).toBe(0);
+  });
+
   it('GET /api/ready stays reachable without a credential (unauthenticated probe allow-list)', async () => {
     const app = createRoutes(makeDeps({ required: true, token: 'secret' }));
     const res = await app.request('http://lan.example/api/ready');
@@ -73,9 +105,29 @@ describe('createRoutes API-token middleware install (issue #708)', () => {
     expect(res.status).toBe(404);
   });
 
-  it('does NOT install the gate when apiAuth.required is false', async () => {
+  it('keeps headerless loopback mutations token-free when apiAuth.required is false', async () => {
     const app = createRoutes(makeDeps({ required: false }));
     const res = await app.request('http://localhost/api/does-not-exist', { method: 'POST' });
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects a browser-origin-crossing loopback mutation when apiAuth.required is false', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const app = createRoutes(makeDeps({ required: false }));
+    const res = await app.request('http://127.0.0.1:4800/api/does-not-exist', {
+      method: 'POST',
+      headers: { origin: 'http://evil.example' },
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'cross-origin' });
+  });
+
+  it('allows a same-origin loopback mutation when apiAuth.required is false', async () => {
+    const app = createRoutes(makeDeps({ required: false }));
+    const res = await app.request('http://127.0.0.1:4800/api/does-not-exist', {
+      method: 'POST',
+      headers: { host: '127.0.0.1:4800', origin: 'http://127.0.0.1:4800' },
+    });
     expect(res.status).toBe(404);
   });
 });
@@ -97,6 +149,52 @@ describe('createRoutes session-auth wiring (issue #804)', () => {
     });
     expect(res.status).toBe(200);
     expect(res.headers.get('set-cookie') ?? '').toContain(`${SESSION_COOKIE_NAME}=${OWNER}`);
+  });
+
+  it('throttles failed POST /api/auth/session token exchanges using the shared auth throttle', async () => {
+    let now = 0;
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const apiAuth: ApiAuthConfig = {
+      required: true,
+      token: OWNER,
+      authThrottle: new AuthThrottle({
+        freeFailures: 1,
+        baseBackoffMs: 1_000,
+        nowMs: () => now,
+        audit: () => {},
+      }),
+    };
+    const app = createRoutes(makeDeps(apiAuth, sessionAuth()));
+    const headers = {
+      'sec-fetch-site': 'same-origin',
+      'content-type': 'application/json',
+      'x-forwarded-for': '10.0.0.20',
+    };
+
+    expect((await app.request('http://lan.example/api/auth/session', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ token: 'wrong' }),
+    })).status).toBe(401);
+    expect((await app.request('http://lan.example/api/auth/session', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ token: 'wrong' }),
+    })).status).toBe(401);
+    expect((await app.request('http://lan.example/api/auth/session', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ token: OWNER }),
+    })).status).toBe(401);
+
+    now += 1_000;
+    const recovered = await app.request('http://lan.example/api/auth/session', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ token: OWNER }),
+    });
+    expect(recovered.status).toBe(200);
+    expect(apiAuth.authThrottle?.snapshot().activeSourceCount).toBe(0);
   });
 
   it('session route 503s when the session feature is unconfigured (no sessionAuth)', async () => {

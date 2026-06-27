@@ -16,6 +16,7 @@ import type { ListTaskSharesApiResponse, TaskShareSummary } from '../../shared/c
 import { deriveTaskShareHeaderStatus } from './task-share-header-status.js';
 import { TaskDependencyEditor } from './TaskDependencyEditor.js';
 import { TaskDependencyRail } from './TaskDependencyRail.js';
+import type { ReplySnippet } from '../../shared/contracts/reply-snippets.js';
 import { CoordinatorChainStripView } from './CoordinatorSurfaces.js';
 import { clearDetailReplyDraft, loadDetailReplyDraft, saveDetailReplyDraft } from '../store/detail-reply-draft.js';
 import {
@@ -23,7 +24,7 @@ import {
   getDefaultShortcutBindings,
   type ShortcutBindingMap,
 } from '../../shared/contracts/shortcut-bindings.js';
-import { ShortcutKeys } from './ShortcutKeys.js';
+import { OverviewEmptyState } from './OverviewEmptyState.js';
 import type { DetailPaneMode } from '../store/store-types.js';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
@@ -38,8 +39,12 @@ const TerminalPanel = lazy(() => import('./TerminalPanel.js').then((m) => ({ def
 const GitHubPanel = lazy(() => import('./GitHubPanel.js').then((m) => ({ default: pickLazyExport<typeof m.GitHubPanel>(m, 'GitHubPanel') })));
 const ActivityPanel = lazy(() => import('./ActivityPanel.js').then((m) => ({ default: pickLazyExport<typeof m.ActivityPanel>(m, 'ActivityPanel') })));
 const DiffPane = lazy(() => import('./DiffPane.js').then((m) => ({ default: pickLazyExport<typeof m.DiffPane>(m, 'DiffPane') })));
+const EvolutionPanel = lazy(() => import('./EvolutionPanel.js').then((m) => ({ default: pickLazyExport<typeof m.EvolutionPanel>(m, 'EvolutionPanel') })));
+const FileViewerPane = lazy(() => import('./FileViewerPane.js').then((m) => ({ default: pickLazyExport<typeof m.FileViewerPane>(m, 'FileViewerPane') })));
 const EffectiveHookSettingsModal = lazy(() => import('./EffectiveHookSettingsModal.js').then((m) => ({ default: pickLazyExport<typeof m.EffectiveHookSettingsModal>(m, 'EffectiveHookSettingsModal') })));
 const NARROW_DETAIL_BREAKPOINT_PX = 1200;
+/** Max auto-grow height of the reply textarea (~6 rows incl. padding). */
+const REPLY_MAX_HEIGHT_PX = 140;
 
 /**
  * Exhaustive terminal-status check tolerant of the optional taskStatus.
@@ -70,16 +75,72 @@ function truncate(text: string, max: number): string {
   return text.slice(0, max - 1) + '\u2026';
 }
 
+function criterionCountLabel(count: number, suffix: string): string {
+  return `${count} ${count === 1 ? 'criterion' : 'criteria'} ${suffix}`;
+}
+
+function criterionVerdictLabel(verdict: 'pass' | 'fail' | 'unknown'): string {
+  switch (verdict) {
+    case 'pass': return 'Passed';
+    case 'fail': return 'Failed';
+    case 'unknown': return 'Unknown';
+  }
+}
+
+function CriteriaVerdictBlock({ digest }: { digest: NonNullable<AgentState['completionDigest']> }) {
+  const verdict = digest.criteriaVerdict;
+  if (!verdict || verdict.items.length === 0) return null;
+  const failed = verdict.summary.fail > 0;
+  const allPassed = verdict.summary.pass === verdict.items.length;
+  const label = failed
+    ? criterionCountLabel(verdict.summary.fail, 'failed')
+    : allPassed
+      ? 'Criteria passed'
+      : criterionCountLabel(verdict.summary.unknown, 'unknown');
+
+  return (
+    <div className={`criteria-verdict criteria-verdict--${failed ? 'fail' : allPassed ? 'pass' : 'unknown'}`} data-testid="criteria-verdict">
+      <div className="criteria-verdict-header">
+        <span className="criteria-verdict-title">Criteria</span>
+        <span className="criteria-verdict-badge">{label}</span>
+      </div>
+      <ul className="criteria-verdict-list">
+        {verdict.items.map((item, i) => (
+          <li key={`${item.criterion}-${i}`} className={`criteria-verdict-item criteria-verdict-item--${item.verdict}`}>
+            <span className="criteria-verdict-mark" aria-hidden="true">
+              {item.verdict === 'pass' ? '✓' : item.verdict === 'fail' ? '!' : '?'}
+            </span>
+            <span className="criteria-verdict-text">
+              <span className="sr-only">{criterionVerdictLabel(item.verdict)}: </span>
+              <span className="criteria-verdict-criterion">{item.criterion}</span>
+              <span className="criteria-verdict-reason">{item.reason}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 interface Props {
   agent: AgentState | null;
   send: (msg: ClientMessage) => boolean;
   onLaunch: () => void;
   onRequestComplete: () => void;
-  collapsed?: boolean;
   detailPaneMode?: DetailPaneMode;
   wideDetailActive?: boolean;
   terminalFocusMode?: boolean;
   shortcutBindings?: ShortcutBindingMap;
+  /**
+   * Rail bucket data for the no-selection overview (F8). Passed down from
+   * App's buildAgentBuckets result so the overview matches the rail exactly
+   * instead of reclassifying agents here.
+   */
+  overview?: {
+    waiting: AgentState[];
+    runningCount: number;
+    completedCount: number;
+  };
 }
 
 function defaultShortcutBindings(): ShortcutBindingMap {
@@ -320,12 +381,13 @@ function DetailMetadataMenu({
   );
 }
 
-export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapsed, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings() }: Props) {
+export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), overview }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
   const [showHookSettings, setShowHookSettings] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
   const [shareHeaderShares, setShareHeaderShares] = useState<TaskShareSummary[]>([]);
+  const [replySnippets, setReplySnippets] = useState<ReplySnippet[]>([]);
   const hookSettingsTriggerRef = useRef<HTMLButtonElement>(null);
   const showRightPaneButtonRef = useRef<HTMLButtonElement>(null);
   const hideRightPaneButtonRef = useRef<HTMLButtonElement>(null);
@@ -333,18 +395,23 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
   const [isNarrowViewport, setIsNarrowViewport] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth <= NARROW_DETAIL_BREAKPOINT_PX : false,
   );
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const { selectAgent, nextBottleneck, advanceEmptyEnter, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, detailPaneMode: storedDetailPaneMode, setDetailPaneMode, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore();
   const serverStartedAt = useKookrStore((s) => s.serverStartedAt);
   const replyDraftScope = { taskId: agent?.taskId, agentId: agent?.agentId };
 
-  // Right-pane mode for the Activity+Terminal|Diff split.
-  const [rightPane, setRightPane] = useState<'terminal' | 'diff'>('terminal');
+  // Right-pane mode for the Activity+Terminal|Diff|File split.
+  const [rightPane, setRightPane] = useState<'terminal' | 'diff' | 'file'>('terminal');
   const [activeDiff, setActiveDiff] = useState<
     { agentId: string; toolUseId: string; filePath: string; openedAt: string | null } | null
   >(null);
+  const [activeFile, setActiveFile] = useState<
+    { filePath: string; openedAt: string | null } | null
+  >(null);
   // Element that had focus when the diff opened — restored on close for a11y.
   const diffTriggerRef = useRef<HTMLElement | null>(null);
+  // Same for the file viewer pane.
+  const fileTriggerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     function updateViewportMode() {
@@ -354,6 +421,51 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     updateViewportMode();
     window.addEventListener('resize', updateViewportMode);
     return () => window.removeEventListener('resize', updateViewportMode);
+  }, []);
+
+  useEffect(() => {
+    function normalizeReplySnippets(raw: unknown): ReplySnippet[] {
+      if (!Array.isArray(raw)) return [];
+      return raw.filter((entry): entry is ReplySnippet => (
+        typeof entry === 'object' &&
+        entry !== null &&
+        !Array.isArray(entry) &&
+        typeof (entry as { label?: unknown }).label === 'string' &&
+        typeof (entry as { text?: unknown }).text === 'string' &&
+        (entry as { label: string }).label.trim().length > 0 &&
+        (entry as { text: string }).text.trim().length > 0
+      ));
+    }
+
+    let cancelled = false;
+    async function loadReplySnippets() {
+      try {
+        const res = await fetch('/api/settings');
+        if (!res.ok) return;
+        const data = await res.json() as { replySnippets?: unknown };
+        if (!cancelled) setReplySnippets(normalizeReplySnippets(data.replySnippets));
+      } catch {
+        if (!cancelled) setReplySnippets([]);
+      }
+    }
+
+    function handleSettingsUpdated(event: Event) {
+      const detail = event instanceof CustomEvent ? detailFromCustomEvent(event) : undefined;
+      setReplySnippets(normalizeReplySnippets(detail?.replySnippets));
+    }
+
+    function detailFromCustomEvent(event: CustomEvent): { replySnippets?: unknown } | undefined {
+      return typeof event.detail === 'object' && event.detail !== null
+        ? event.detail as { replySnippets?: unknown }
+        : undefined;
+    }
+
+    void loadReplySnippets();
+    window.addEventListener('kookr:settings-updated', handleSettingsUpdated);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('kookr:settings-updated', handleSettingsUpdated);
+    };
   }, []);
 
   useEffect(() => {
@@ -392,12 +504,14 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     };
   }, [agent?.taskId]);
 
-  // Clear diff state when the selected agent changes. Avoids showing stale diff
-  // content bound to a different agent's toolUseId.
+  // Clear diff/file state when the selected agent changes. Avoids showing stale
+  // content bound to a different agent's toolUseId or worktree.
   useEffect(() => {
     setActiveDiff(null);
+    setActiveFile(null);
     setRightPane('terminal');
     diffTriggerRef.current = null;
+    fileTriggerRef.current = null;
   }, [agent?.agentId]);
 
   function handleOpenDiff(target: DiffClickTarget) {
@@ -414,6 +528,22 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     setRightPane('diff');
   }
 
+  function handleOpenFile(filePath: string) {
+    if (!agent) return;
+    const active = document.activeElement;
+    fileTriggerRef.current = active instanceof HTMLElement ? active : null;
+    setActiveFile({ filePath, openedAt: serverStartedAt });
+    setRightPane('file');
+  }
+
+  function handleCloseFile() {
+    setRightPane('terminal');
+    const trigger = fileTriggerRef.current;
+    if (trigger && document.body.contains(trigger)) {
+      trigger.focus();
+    }
+  }
+
   function handleCloseDiff() {
     setRightPane('terminal');
     // Restore focus to the triggering element if it's still in the DOM.
@@ -424,22 +554,25 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     }
   }
 
-  // While the Diff pane is active, intercept Escape at capture phase so it
-  // closes the diff (our intent) instead of reaching the window-level handler
-  // in App.tsx that would deselect the agent. When the diff is hidden,
+  // While the Diff or File pane is active, intercept Escape at capture phase so
+  // it closes that pane (our intent) instead of reaching the window-level
+  // handler in App.tsx that would deselect the agent. When neither is shown,
   // Escape reverts to its normal global behavior.
   //
-  // Route through handleCloseDiff so focus restoration (diffTriggerRef) runs
-  // for keyboard dismissals the same way it does for the close button.
+  // Route through the matching close handler so focus restoration runs for
+  // keyboard dismissals the same way it does for the close button.
   const handleCloseDiffRef = useRef(handleCloseDiff);
   handleCloseDiffRef.current = handleCloseDiff;
+  const handleCloseFileRef = useRef(handleCloseFile);
+  handleCloseFileRef.current = handleCloseFile;
   useEffect(() => {
-    if (rightPane !== 'diff') return;
+    if (rightPane !== 'diff' && rightPane !== 'file') return;
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape' && !e.ctrlKey && !e.altKey && !e.metaKey) {
         e.preventDefault();
         e.stopPropagation();
-        handleCloseDiffRef.current();
+        if (rightPane === 'file') handleCloseFileRef.current();
+        else handleCloseDiffRef.current();
       }
     }
     window.addEventListener('keydown', handleKeyDown, true);
@@ -464,6 +597,16 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     setInput(agent ? loadDetailReplyDraft(replyDraftScope) : '');
   }, [agent?.taskId, agent?.agentId]);
 
+  // Auto-grow the reply textarea with its content (1 row up to ~6 rows), then
+  // scroll internally. Runs on every input change so drafts, typing, and voice
+  // transcripts all resize consistently.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, REPLY_MAX_HEIGHT_PX)}px`;
+  }, [input]);
+
   // Reset permission button disabled state when agent or suggestions change
   const suggestion = agent ? suggestions[agent.agentId] ?? null : null;
   useEffect(() => {
@@ -471,29 +614,15 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
   }, [agent?.agentId, suggestion]);
 
   if (!agent) {
-    const allAgents = useKookrStore.getState().agents;
-    const findingsCount = allAgents.filter(a => a.anomaly !== null && !a.snoozedUntil && !a.suppressed).length;
-    const totalCount = allAgents.length;
-
     return (
-      <div className={`detail-panel kookr-tour-target-layout${collapsed ? ' collapsed' : ''}`}>
-        <div className="detail-empty">
-          {findingsCount > 0 ? (
-            <p>{findingsCount} finding{findingsCount > 1 ? 's' : ''} need{findingsCount === 1 ? 's' : ''} attention.</p>
-          ) : totalCount > 0 ? (
-            <p className="findings-all-clear">All clear — agents working autonomously.</p>
-          ) : (
-            <p>No agents running.</p>
-          )}
-          <button className="btn-primary" onClick={onLaunch}>Launch New Task</button>
-          <p className="detail-empty-hint">
-            <ShortcutKeys binding={shortcutBindings.quick_launch} /> quick launch
-            {(findingsCount > 0 || totalCount > 0) && (
-              <> · <ShortcutKeys binding={shortcutBindings.next_task} />/<ShortcutKeys binding={shortcutBindings.previous_task} /> cycle tasks</>
-            )}
-            {findingsCount > 0 && <> · <ShortcutKeys binding={shortcutBindings.next_bottleneck} /> next finding</>}
-          </p>
-        </div>
+      <div className="detail-panel kookr-tour-target-layout">
+        <OverviewEmptyState
+          waiting={overview?.waiting ?? []}
+          runningCount={overview?.runningCount ?? 0}
+          completedCount={overview?.completedCount ?? 0}
+          onLaunch={onLaunch}
+          shortcutBindings={shortcutBindings}
+        />
       </div>
     );
   }
@@ -503,8 +632,21 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     saveDetailReplyDraft(replyDraftScope, nextInput);
   }
 
-  function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+  function handleInputChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     setReplyInput(e.target.value);
+  }
+
+  function insertReplySnippet(snippetText: string) {
+    const textarea = inputRef.current;
+    const start = textarea?.selectionStart ?? input.length;
+    const end = textarea?.selectionEnd ?? start;
+    const nextInput = `${input.slice(0, start)}${snippetText}${input.slice(end)}`;
+    const nextCursor = start + snippetText.length;
+    setReplyInput(nextInput);
+    window.requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(nextCursor, nextCursor);
+    });
   }
 
   // Combine pattern-matched quick actions and AI suggestions into a unified button list
@@ -576,12 +718,23 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
 
   const isDirectReply = !agent?.anomaly;
 
-  function handleSendAndNext(viaShortcut: boolean = false) {
+  /**
+   * Send the composed reply. The Send button stays on the current task; Enter
+   * and Send & Next advance after a finding reply. Direct replies to healthy
+   * tasks always stay on the current task.
+   */
+  function handleSend(opts: { viaShortcut?: boolean; andNext?: boolean; shortcutKey?: string } = {}) {
+    const { viaShortcut = false, andNext = false, shortcutKey } = opts;
     if (!input.trim() || !agent) return;
     const agentName = agent.taskName ?? agent.agentId;
     track({ type: 'response_sent', agentId: agent.agentId, method: viaShortcut ? 'shortcut' : 'input_box', charCount: input.trim().length, anomalyType: agent.anomaly?.type ?? null });
     if (viaShortcut) {
-      track({ type: 'shortcut_used', key: 'Enter', action: isDirectReply ? 'direct_reply' : 'send_and_next', context: 'input_focused' });
+      track({
+        type: 'shortcut_used',
+        key: shortcutKey ?? (andNext ? 'Ctrl+Enter' : 'Enter'),
+        action: isDirectReply ? 'direct_reply' : andNext ? 'send_and_next' : 'send_stay',
+        context: 'input_focused',
+      });
     }
     // If suggestion text was available but user typed their own, track as ignored
     if (suggestion && suggestion.suggestions.length > 0) {
@@ -604,7 +757,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
     clearDetailReplyDraft(replyDraftScope);
     clearSuggestion(agent.agentId);
     showSentOverlay(agentName);
-    if (!isDirectReply) {
+    if (andNext && !isDirectReply) {
       nextBottleneck();
     }
   }
@@ -688,16 +841,26 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
+    // Ctrl/Cmd+Enter: send and jump to the next finding.
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      if (!input.trim()) return;
+      handleSend({ viaShortcut: true, andNext: true });
+      return;
+    }
     // Guard: skip Enter during IME composition (e.g., CJK input) or browser
     // autocomplete acceptance — these fire keydown with key='Enter' but the user
     // intends to confirm the composition, not to send the message.
-    if (e.key === 'Enter' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.nativeEvent.isComposing) {
+    // Shift+Enter falls through to insert a newline in the textarea.
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       if (!input.trim()) {
         handleEmptyEnterAdvance();
         return;
       }
-      handleSendAndNext(true);
+      // Plain Enter advances after a finding reply, but healthy direct replies
+      // stay on the current task.
+      handleSend({ viaShortcut: true, andNext: !isDirectReply && !respondAllAgentIds, shortcutKey: 'Enter' });
       return;
     }
     // Number keys 1-5 trigger quick actions (only when input is empty AND shortcuts armed)
@@ -753,6 +916,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
   const leftOnlyMode = effectiveDetailPaneMode === 'left';
   const showLeftPane = !rightOnlyMode;
   const showRightPane = !leftOnlyMode;
+  const showEvolutionPanel = Boolean(agent.taskId && agent.playbookId === 'autonomous-evolution.md');
 
   function focusNextFrame(ref: React.RefObject<HTMLElement | null>) {
     window.requestAnimationFrame(() => ref.current?.focus());
@@ -788,6 +952,15 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
           <EditableHeading agent={agent} send={send} />
           {agent.playbookId && <span className="detail-badge playbook">Playbook</span>}
           {agent.taskStatus === 'pending' && <span className="detail-badge pending">Pending</span>}
+          {agent.launchPermissionPosture?.bypassAllPermissions && (
+            <span
+              className="detail-badge permission-bypassed"
+              title="This task was launched while KOOKR_BYPASS_ALL_PERMISSIONS was active"
+              data-testid="task-permission-bypass-badge"
+            >
+              Permissions bypassed
+            </span>
+          )}
           {agent.anomaly && <span className={`detail-badge ${badgeClass}`}>{badgeLabel}</span>}
         </div>
         <div className="detail-header-right">
@@ -888,6 +1061,15 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
           )}
         </div>
       )}
+      {agent.anomaly?.transcriptContext?.lastAssistantMessage && (
+        <div className="detail-transcript-context" data-testid="detail-transcript-context">
+          <div className="detail-transcript-context-label">Last agent message</div>
+          <div className="detail-transcript-context-text">
+            {agent.anomaly.transcriptContext.lastAssistantMessage.excerpt}
+            {agent.anomaly.transcriptContext.lastAssistantMessage.truncated ? '...' : ''}
+          </div>
+        </div>
+      )}
       {agent.taskId && (
         <TaskShareModal
           taskId={agent.taskId}
@@ -907,6 +1089,11 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
         onReflect={handleReflect}
         onAction={handleNextStepAction}
       />
+      {!rightOnlyMode && showEvolutionPanel && (
+        <Suspense fallback={null}>
+          <EvolutionPanel taskId={agent.taskId!} />
+        </Suspense>
+      )}
 
       {/* Side-by-side split (wide) + tab fallback (narrow) */}
       {(() => {
@@ -938,6 +1125,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
                     <strong>Files changed:</strong> {agent.completionDigest.filesChanged.join(', ')}
                   </div>
                 )}
+                <CriteriaVerdictBlock digest={agent.completionDigest} />
               </div>
             </div>
           );
@@ -1080,6 +1268,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
                         tmuxName={agent.agentId}
                         visible={terminalVisible}
                         onEmptySubmit={handleEmptyEnterAdvance}
+                        onOpenFile={handleOpenFile}
                       />
                     </Suspense>
                   </div>
@@ -1095,6 +1284,20 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
                           filePath={activeDiff.filePath}
                           openedAt={activeDiff.openedAt}
                           onClose={handleCloseDiff}
+                        />
+                      </Suspense>
+                    </div>
+                  )}
+                  {activeFile && (
+                    <div
+                      className="right-pane-slot right-pane-slot-file"
+                      style={{ display: rightPane === 'file' ? 'flex' : 'none' }}
+                    >
+                      <Suspense fallback={null}>
+                        <FileViewerPane
+                          filePath={activeFile.filePath}
+                          openedAt={activeFile.openedAt}
+                          onClose={handleCloseFile}
                         />
                       </Suspense>
                     </div>
@@ -1142,10 +1345,31 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
             }
           </div>
         )}
+        {replySnippets.length > 0 && (
+          <div className="reply-snippet-picker">
+            <label className="reply-snippet-picker-label" htmlFor="reply-snippet-picker">
+              Saved replies
+            </label>
+            <select
+              id="reply-snippet-picker"
+              className="reply-snippet-picker-select"
+              value=""
+              onChange={(e) => {
+                const snippet = replySnippets[Number(e.target.value)];
+                if (snippet) insertReplySnippet(snippet.text);
+              }}
+            >
+              <option value="" disabled>Insert snippet...</option>
+              {replySnippets.map((snippet, index) => (
+                <option key={`${snippet.label}-${index}`} value={index}>{snippet.label}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <div className="response-row">
-          <input
+          <textarea
             ref={inputRef}
-            type="text"
+            rows={1}
             className=""
             autoComplete="off"
             placeholder={
@@ -1177,11 +1401,23 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, collapse
           <button
             className="btn-primary"
             data-testid="send-button"
-            onClick={() => handleSendAndNext()}
+            onClick={() => handleSend()}
             disabled={!input.trim()}
+            title={!isDirectReply && !respondAllAgentIds ? 'Send and stay on this task' : undefined}
           >
-            {respondAllAgentIds ? `Send to All (${respondAllAgentIds.length})` : isDirectReply ? 'Send' : 'Send & Next'}
+            {respondAllAgentIds ? `Send to All (${respondAllAgentIds.length})` : 'Send'}
           </button>
+          {!isDirectReply && !respondAllAgentIds && (
+            <button
+              className="btn-secondary"
+              data-testid="send-next-button"
+              onClick={() => handleSend({ andNext: true })}
+              disabled={!input.trim()}
+              title="Send and jump to the next finding (Ctrl+Enter)"
+            >
+              Send & Next
+            </button>
+          )}
           {!isDirectReply && <button className="btn-secondary" onClick={() => handleSkip()}>Skip</button>}
           {!isDirectReply && <button className="btn-secondary" onClick={() => setShowSnooze(true)}>Snooze</button>}
         </div>

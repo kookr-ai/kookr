@@ -161,6 +161,15 @@ export async function buildAgentLaunchContext(
     env.KOOKR_NUDGE_DISABLED = process.env.KOOKR_NUDGE_DISABLED;
   }
 
+  // Propagate Claude Code's auto-memory kill switch so spawned sessions (which
+  // run with `--setting-sources ''`, i.e. no user/project settings) honor it.
+  // When set, the harness disables auto memory AND the toolkit's memory hooks
+  // switch from permissive validation to a hard block that redirects writes to
+  // `kb remember`. Unset = unchanged behavior for operators who use memory.
+  if (process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY) {
+    env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
+  }
+
   if (opts.serverPort) {
     env.KOOKR_PORT = String(opts.serverPort);
     env.KOOKR_API_BASE_URL = `http://127.0.0.1:${opts.serverPort}`;
@@ -291,14 +300,24 @@ export function isBracketedPasteModeEnabled(rawBytes: Uint8Array): boolean {
  * narrow and high-confidence rather than broad.
  */
 export function isClaudeBusyOrResponding(rawBytes: Uint8Array): boolean {
-  const text = stripTerminalControls(promptDecoder.decode(rawBytes));
+  return isPaneBusyOrAwaitingDialog(promptDecoder.decode(rawBytes));
+}
+
+/**
+ * Decoded-pane variant of {@link isClaudeBusyOrResponding}. Used when the
+ * caller already has display text from `captureDisplay`, such as the
+ * mid-session submit retry sweep.
+ */
+export function isPaneBusyOrAwaitingDialog(pane: string): boolean {
+  const text = stripTerminalControls(pane);
   for (const marker of CLAUDE_BUSY_MARKERS) {
     if (text.includes(marker)) return true;
   }
   return CLAUDE_PERMISSION_PROMPT_RE.test(text);
 }
 
-function stripTerminalControls(text: string): string {
+/** Strip OSC and CSI escape sequences from captured pane text. */
+export function stripTerminalControls(text: string): string {
   return text
     // OSC sequences, including terminal-title updates.
     .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')

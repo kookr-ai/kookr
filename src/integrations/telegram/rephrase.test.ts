@@ -155,7 +155,22 @@ describe('rephrase', () => {
     const r = await rephrase('x', { allowedProjects: PROJECTS, llm });
     expect(r.kind).toBe('failed');
     if (r.kind === 'failed') {
-      expect(r.reason).toMatch(/timeout|exhausted/i);
+      expect(r.reason).toBe('rephrase failed (malformed_response)');
+    }
+  });
+
+  it('includes provider failure category when rephrase LLM fails', async () => {
+    const llm: LlmClient = {
+      provider: 'fake',
+      model: 'fake-1',
+      complete: vi.fn().mockRejectedValue(Object.assign(new Error('invalid api key'), { providerFailureCategory: 'auth' })),
+    };
+
+    const r = await rephrase('x', { allowedProjects: PROJECTS, llm });
+
+    expect(r.kind).toBe('failed');
+    if (r.kind === 'failed') {
+      expect(r.reason).toBe('rephrase failed (auth)');
     }
   });
 });

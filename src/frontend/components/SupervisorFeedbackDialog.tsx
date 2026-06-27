@@ -61,7 +61,7 @@ export function SupervisorFeedbackDialog({
   const reasonLabel = mode === 'false_positive'
     ? 'What was wrong with this finding? (optional)'
     : 'What should Kookr have flagged? (required)';
-  const submitLabel = mode === 'false_positive' ? 'Flag FP' : 'Flag missed';
+  const submitLabel = mode === 'false_positive' ? 'Not a real issue' : 'Missed a real issue';
 
   function handleSubmit() {
     if (!isValid) return;

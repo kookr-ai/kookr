@@ -108,6 +108,16 @@ export class TelegramApiError extends Error {
   }
 }
 
+export class TelegramDownloadTooLargeError extends Error {
+  constructor(
+    public readonly limitBytes: number,
+    public readonly bytesRead: number,
+  ) {
+    super(`Telegram download exceeded ${limitBytes} bytes (read ${bytesRead} bytes)`);
+    this.name = 'TelegramDownloadTooLargeError';
+  }
+}
+
 export class TelegramApiClient {
   private readonly baseUrl: string;
   constructor(private readonly token: string, baseUrl?: string) {
@@ -192,8 +202,12 @@ export class TelegramApiClient {
    * `https://api.telegram.org/bot<TOKEN>/<method>`. The base URL override
    * (`KOOKR_TELEGRAM_API_URL`) is honored so tests can intercept this
    * download with the same in-process fake server they use for the JSON API.
+   *
+   * When `maxBytes` is set, the response body is streamed with a running byte
+   * counter and aborts with `TelegramDownloadTooLargeError` as soon as the cap
+   * is crossed, before materializing the rest of the payload in memory.
    */
-  async downloadFile(filePath: string, timeoutMs = 30_000): Promise<Buffer> {
+  async downloadFile(filePath: string, timeoutMs = 30_000, maxBytes?: number): Promise<Buffer> {
     const url = `${this.baseUrl}/file/bot${this.token}/${filePath}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -203,8 +217,25 @@ export class TelegramApiClient {
         const text = await res.text().catch(() => '');
         throw new TelegramApiError(res.status, null, `Telegram downloadFile ${res.status}: ${text.slice(0, 200)}`);
       }
-      const ab = await res.arrayBuffer();
-      return Buffer.from(ab);
+      if (!res.body) return Buffer.alloc(0);
+      const reader = res.body.getReader();
+      const chunks: Buffer[] = [];
+      let bytesRead = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          bytesRead += value.byteLength;
+          if (maxBytes !== undefined && bytesRead > maxBytes) {
+            controller.abort();
+            throw new TelegramDownloadTooLargeError(maxBytes, bytesRead);
+          }
+          chunks.push(Buffer.from(value));
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      return Buffer.concat(chunks, bytesRead);
     } finally {
       clearTimeout(timer);
     }

@@ -2,7 +2,7 @@
 name: monorepo-architecture
 description: TypeScript monorepo structure - module boundaries, dependency direction, god objects, abstraction discipline, configuration management, interface design. Use when creating packages, refactoring cross-package imports, or reviewing architecture.
 keywords: monorepo, module boundaries, circular dependency, barrel file, god object, feature envy, abstraction, Rule of Three, composition over inheritance, configuration, dependency management, workspace protocol, interface design, options object, Clean Architecture, SOLID
-related: error-handling-patterns, rest-api-design, database-schema-patterns, service-integration-wiring, typescript-type-safety, domain-driven-design, vue3-composition-api, safe-refactoring, dependency-injection-patterns
+related: error-handling-patterns, typescript-type-safety, domain-driven-design, safe-refactoring, dependency-injection-patterns
 ---
 
 # Monorepo Architecture Patterns
@@ -250,9 +250,6 @@ Before submitting code, verify:
 ## See Also
 
 - [[error-handling-patterns]] - Error handling within and across package boundaries
-- [[rest-api-design]] - API contract patterns (interface design for HTTP)
-- [[database-schema-patterns]] - Data layer patterns
-- [[service-integration-wiring]] - Cross-service integration
 - [[typescript-type-safety]] - Type safety fundamentals (unknown vs any, import type, satisfies, generics)
 - [[domain-driven-design]] - DDD strategic/tactical patterns (bounded contexts, aggregates, domain events)
 - [[safe-refactoring]] - Safe refactoring process (characterization tests, baby steps, Expand-Migrate-Contract, Strangler Fig)

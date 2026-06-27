@@ -60,7 +60,13 @@ Options:
       --dedupe <mode>      warn, block, or skip (default: warn).
       --parent-task-id <uuid>  Override the parent task linkage explicitly.
       --no-parent-task     Launch detached, ignoring KOOKR_TASK_ID.
+      --auto-close-on-signal
+                           Auto-complete on "kookr signal completion-ready"
+                           (frees an active slot).
+      --no-auto-close-on-signal
+                           Opt this task out, overriding any inherited policy.
   -f, --prompt-file <path> Read prompt from a file (hook-safe).
+      --json               Print one machine-readable JSON envelope to stdout.
   -h, --help               Show this help.
 
 Parent-task linking:
@@ -68,6 +74,14 @@ Parent-task linking:
   KOOKR_TASK_ID as parentTaskId so the new task shows up as a child in the
   dashboard. Pass --parent-task-id to override or --no-parent-task to opt out.
   Outside a managed task (no KOOKR_TASK_ID) the field is omitted entirely.
+
+Auto-close on completion signal:
+  When --auto-close-on-signal is set (or inherited from the parent task), the
+  spawned task auto-completes the moment its agent runs
+  "kookr signal completion-ready", instead of waiting for manual review. If the
+  flag is omitted, the new task inherits the parent's policy — so it propagates
+  automatically down a self-continuation chain. Pass --no-auto-close-on-signal
+  to opt a successor out of an inherited policy.
 
 Environment:
   KOOKR_API_BASE_URL              Base URL of a running Kookr server
@@ -106,6 +120,8 @@ function parseArgs(argv) {
     promptFile: null,
     parentTaskId: null,
     noParentTask: false,
+    autoCloseOnSignal: null,
+    json: false,
     help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -119,6 +135,8 @@ function parseArgs(argv) {
     };
     if (tok === '-h' || tok === '--help') {
       out.help = true;
+    } else if (tok === '--json') {
+      out.json = true;
     } else if (tok === '-C' || tok === '--cwd') {
       out.cwd = eat();
     } else if (tok === '-a' || tok === '--agent') {
@@ -139,6 +157,16 @@ function parseArgs(argv) {
       out.parentTaskId = tok.slice('--parent-task-id='.length);
     } else if (tok === '--no-parent-task') {
       out.noParentTask = true;
+    } else if (tok === '--auto-close-on-signal') {
+      if (out.autoCloseOnSignal === false) {
+        throw new UsageError('--auto-close-on-signal and --no-auto-close-on-signal are mutually exclusive');
+      }
+      out.autoCloseOnSignal = true;
+    } else if (tok === '--no-auto-close-on-signal') {
+      if (out.autoCloseOnSignal === true) {
+        throw new UsageError('--auto-close-on-signal and --no-auto-close-on-signal are mutually exclusive');
+      }
+      out.autoCloseOnSignal = false;
     } else if (tok === '-f' || tok === '--prompt-file') {
       out.promptFile = eat();
     } else if (tok === '--') {
@@ -384,7 +412,7 @@ function apiAuthHeaders(env = process.env) {
 
 // ---------- HTTP POST ----------
 
-async function postTask({ baseUrl, prompt, cwd, agent, effort = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null }) {
+async function postTask({ baseUrl, prompt, cwd, agent, effort = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null }) {
   const body = { prompt, cwd };
   if (criteria) body.criteria = criteria;
   if (agent) body.agentType = agent;
@@ -392,6 +420,8 @@ async function postTask({ baseUrl, prompt, cwd, agent, effort = null, criteria, 
   if (disableDedup) body.disableDedup = true;
   if (metadataIntent) body.metadata = { intent: metadataIntent };
   if (parentTaskId) body.parentTaskId = parentTaskId;
+  // null = unspecified → let the server inherit the parent's policy.
+  if (autoCloseOnSignal !== null) body.autoCloseOnSignal = autoCloseOnSignal;
 
   const res = await fetch(`${baseUrl}/api/tasks`, {
     method: 'POST',
@@ -518,6 +548,37 @@ function formatPromptDiff(existingPrompt, newPrompt) {
   return lines.join('\n');
 }
 
+function emitJson(out, { ok, code, message, details = {} }) {
+  out.log(JSON.stringify({ ok, code, message, details }));
+}
+
+function exitJson({ out, exit, exitCode, ok, code, message, details }) {
+  emitJson(out, { ok, code, message, details });
+  return exit(exitCode);
+}
+
+function taskDetails({ task = {}, baseUrl, queued = false }) {
+  const taskId = task?.id ?? null;
+  const parentTaskId = typeof task?.parentTaskId === 'string' && task.parentTaskId.length > 0
+    ? task.parentTaskId
+    : null;
+  return {
+    taskId,
+    parentTaskId,
+    queued,
+    task: {
+      id: taskId,
+      agentType: task?.agentType ?? null,
+      cwd: task?.cwd ?? null,
+      status: task?.status ?? null,
+      parentTaskId,
+    },
+    baseUrl,
+    openUrl: taskId ? `${baseUrl}/#/tasks/${taskId}` : null,
+    parentUrl: parentTaskId ? `${baseUrl}/#/tasks/${parentTaskId}` : null,
+  };
+}
+
 function createLineReader(stdin) {
   const iterator = stdin[Symbol.asyncIterator]();
   let buffered = '';
@@ -578,6 +639,17 @@ async function main({
     args = parseArgs(argv);
   } catch (e) {
     if (e instanceof UsageError) {
+      if (argv.includes('--json')) {
+        return exitJson({
+          out,
+          exit,
+          exitCode: EXIT_USER_ERROR,
+          ok: false,
+          code: 'USER_ERROR',
+          message: e.message,
+          details: { subcommand: 'spawn' },
+        });
+      }
       err.error(`kookr-spawn: ${e.message}`);
       err.error('Try --help.');
       return exit(EXIT_USER_ERROR);
@@ -585,6 +657,17 @@ async function main({
     throw e;
   }
   if (args.help) {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_OK,
+        ok: true,
+        code: 'OK',
+        message: 'Help',
+        details: { help: HELP_TEXT },
+      });
+    }
     out.log(HELP_TEXT);
     return exit(EXIT_OK);
   }
@@ -596,6 +679,17 @@ async function main({
     cwdAbs = resolveCwd(args.cwd, cwd);
   } catch (e) {
     if (e instanceof UsageError) {
+      if (args.json) {
+        return exitJson({
+          out,
+          exit,
+          exitCode: EXIT_USER_ERROR,
+          ok: false,
+          code: 'USER_ERROR',
+          message: e.message,
+          details: { subcommand: 'spawn' },
+        });
+      }
       err.error(`kookr-spawn: ${e.message}`);
       return exit(EXIT_USER_ERROR);
     }
@@ -607,6 +701,17 @@ async function main({
     resolved = await resolveBaseUrl({ env, sleep });
   } catch (e) {
     if (e instanceof UsageError) {
+      if (args.json) {
+        return exitJson({
+          out,
+          exit,
+          exitCode: EXIT_USER_ERROR,
+          ok: false,
+          code: 'USER_ERROR',
+          message: e.message,
+          details: { subcommand: 'spawn' },
+        });
+      }
       err.error(`kookr-spawn: ${e.message}`);
       return exit(EXIT_USER_ERROR);
     }
@@ -614,10 +719,32 @@ async function main({
   }
 
   if (resolved.kind === 'invalid_port') {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_USER_ERROR,
+        ok: false,
+        code: 'USER_ERROR',
+        message: `KOOKR_PORT must be an integer in 1..65535 (got: ${resolved.raw})`,
+        details: { raw: resolved.raw },
+      });
+    }
     err.error(`kookr-spawn: KOOKR_PORT must be an integer in 1..65535 (got: ${resolved.raw})`);
     return exit(EXIT_USER_ERROR);
   }
   if (resolved.kind === 'ambiguous') {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_NO_SERVER,
+        ok: false,
+        code: 'NO_SERVER',
+        message: `both Kookr instances are running on :${resolved.ports[0]} and :${resolved.ports[1]}`,
+        details: { ports: resolved.ports },
+      });
+    }
     err.error(
       `kookr-spawn: both Kookr instances are running on :${resolved.ports[0]} and :${resolved.ports[1]}.\n` +
       `Set KOOKR_PORT=${resolved.ports[0]} or KOOKR_PORT=${resolved.ports[1]} to choose.`,
@@ -625,6 +752,17 @@ async function main({
     return exit(EXIT_NO_SERVER);
   }
   if (resolved.kind === 'none') {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_NO_SERVER,
+        ok: false,
+        code: 'NO_SERVER',
+        message: `no Kookr server reachable on :${resolved.ports.join(' or :')} after ${resolved.attempts} attempts`,
+        details: { ports: resolved.ports, attempts: resolved.attempts },
+      });
+    }
     err.error(
       `kookr-spawn: no Kookr server reachable on :${resolved.ports.join(' or :')} after ${resolved.attempts} attempts.\n` +
       `If Kookr is restarting (pnpm prod:update is running), wait a few seconds and retry.\n` +
@@ -650,28 +788,84 @@ async function main({
       disableDedup: args.dedupe === 'skip',
       metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
       parentTaskId,
+      autoCloseOnSignal: args.autoCloseOnSignal,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_SERVER_ERROR,
+        ok: false,
+        code: 'SERVER_ERROR',
+        message: `request failed: ${msg}`,
+        details: { baseUrl },
+      });
+    }
     err.error(`kookr-spawn: request failed: ${msg}`);
     err.error(`Check the dashboard at ${baseUrl} before re-running to avoid duplicate launches.`);
     return exit(EXIT_SERVER_ERROR);
   }
 
   if (result.kind === 'server_error') {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_SERVER_ERROR,
+        ok: false,
+        code: 'SERVER_ERROR',
+        message: result.message,
+        details: { status: result.status, baseUrl, parentTaskId },
+      });
+    }
     reportServerError({ result, baseUrl, parentTaskId, err });
     return exit(EXIT_SERVER_ERROR);
   }
 
   if (result.kind === 'duplicate') {
     if (args.dedupe === 'skip') {
+      if (args.json) {
+        return exitJson({
+          out,
+          exit,
+          exitCode: EXIT_OK,
+          ok: true,
+          code: 'OK',
+          message: 'Active task already exists for this prompt and cwd',
+          details: taskDetails({ task: result.task, baseUrl }),
+        });
+      }
       out.log(formatDedup({ task: result.task, baseUrl }));
       return exit(EXIT_OK);
     }
     if (args.dedupe === 'block') {
+      if (args.json) {
+        return exitJson({
+          out,
+          exit,
+          exitCode: EXIT_DUPLICATE_BLOCKED,
+          ok: false,
+          code: 'DUPLICATE_BLOCKED',
+          message: 'Duplicate active prompt blocked by --dedupe=block',
+          details: taskDetails({ task: result.task, baseUrl }),
+        });
+      }
       err.error(formatDuplicateWarning({ task: result.task }));
       err.error('kookr-spawn: duplicate active prompt blocked by --dedupe=block.');
       return exit(EXIT_DUPLICATE_BLOCKED);
+    }
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_DUPLICATE_BLOCKED,
+        ok: false,
+        code: 'DUPLICATE_BLOCKED',
+        message: 'Duplicate active prompt blocked in JSON mode',
+        details: taskDetails({ task: result.task, baseUrl }),
+      });
     }
     const confirmed = await confirmDuplicateSpawn({
       task: result.task,
@@ -693,6 +887,7 @@ async function main({
         disableDedup: true,
         metadataIntent: 'keep_as_duplicate',
         parentTaskId,
+        autoCloseOnSignal: args.autoCloseOnSignal,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -710,6 +905,17 @@ async function main({
     }
   }
 
+  if (args.json) {
+    return exitJson({
+      out,
+      exit,
+      exitCode: EXIT_OK,
+      ok: true,
+      code: 'OK',
+      message: result.queued ? 'Task queued' : 'Task created',
+      details: taskDetails({ task: result.task, baseUrl, queued: result.queued }),
+    });
+  }
   out.log(formatSuccess({ task: result.task, baseUrl, queued: result.queued }));
   return exit(EXIT_OK);
 }
@@ -727,7 +933,9 @@ function isInvokedDirectly() {
 }
 
 if (isInvokedDirectly()) {
-  console.error('[kookr] WARNING: `kookr-spawn` is deprecated; use `kookr spawn`.');
+  if (!process.argv.includes('--json')) {
+    console.error('[kookr] WARNING: `kookr-spawn` is deprecated; use `kookr spawn`.');
+  }
   main().catch((e) => {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`kookr-spawn: ${msg}`);

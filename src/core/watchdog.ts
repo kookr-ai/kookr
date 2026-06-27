@@ -342,7 +342,7 @@ export class Watchdog {
             agentId,
             type: 'stale_agent',
             severity: 'warning',
-            explanation: `Tool running for ${Math.round(timeSinceLastEvent / 1000)}s with no response — may be hung`,
+            explanation: `Tool running for ${formatActivityGap(timeSinceLastEvent)} with no response — may be hung`,
             detectedAt: new Date(now),
           },
         };
@@ -375,7 +375,7 @@ export class Watchdog {
             agentId,
             type: 'hook_disconnected',
             severity: 'warning',
-            explanation: `No hook events for ${Math.round(timeSinceLastEvent / 1000)}s but agent is visibly active — hook pipeline may be broken`,
+            explanation: `No hook events for ${formatActivityGap(timeSinceLastEvent)} but agent is visibly active — hook pipeline may be broken`,
             detectedAt: new Date(now),
           },
         };
@@ -399,11 +399,26 @@ export class Watchdog {
         agentId,
         type: 'stale_agent',
         severity: 'warning',
-        explanation: `No activity for ${Math.round(timeSinceLastEvent / 1000)}s — agent may be stuck or disconnected`,
+        explanation: `No activity for ${formatActivityGap(timeSinceLastEvent)} — agent may be stuck or disconnected`,
         detectedAt: new Date(now),
       },
     };
   }
+}
+
+/**
+ * Humanize an activity gap for anomaly explanations: raw seconds are
+ * unreadable past a couple of minutes ("2365s"), so switch to minutes/hours
+ * once the gap is large enough ("39 min", "2h 5m").
+ */
+function formatActivityGap(ms: number): string {
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 90) return `${totalSeconds}s`;
+  const mins = Math.floor(totalSeconds / 60);
+  if (mins < 60) return `${mins} min`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
 /**

@@ -256,7 +256,7 @@ describe('computeProjectSummaries', () => {
     expect(summaries[0].tracked).toBe(true);
   });
 
-  test('summary omits tracked when row has no explicit opt-in (skill-discovered)', () => {
+  test('summary exposes tracked:false when row has no explicit opt-in (skill-discovered)', () => {
     const summaries = computeProjectSummaries({
       agents: [],
       ledgerAnalytics,
@@ -264,13 +264,28 @@ describe('computeProjectSummaries', () => {
       skillTrackedProjects: ['github.com/org/skill'],
     });
     expect(summaries).toHaveLength(1);
-    expect(summaries[0].tracked).toBeUndefined();
+    expect(summaries[0].tracked).toBe(false);
   });
 
-  test('summary omits tracked when config has limits/notes but tracked is not set', () => {
+  test('summary exposes tracked:false when config has limits/notes but tracked is not set', () => {
     configStore.setConfig('github.com/org/limits', { dailyPrLimit: 2, notes: 'plan' });
     const summaries = computeProjectSummaries({ agents: [], ledgerAnalytics, configStore });
-    expect(summaries[0].tracked).toBeUndefined();
+    expect(summaries[0].tracked).toBe(false);
+  });
+
+  test('summary exposes tracked:false when config explicitly opted out but activity keeps membership', () => {
+    configStore.setConfig('github.com/org/untracked-active', { tracked: false });
+    const summaries = computeProjectSummaries({
+      agents: [makeAgent({
+        agentId: 'a1',
+        projectId: 'github.com/org/untracked-active',
+        taskStatus: 'inProgress',
+        taskId: 't1',
+      })],
+      ledgerAnalytics,
+      configStore,
+    });
+    expect(summaries[0].tracked).toBe(false);
   });
 
   test('config entry with tracked:false and nothing else does not seed membership', () => {
@@ -291,7 +306,7 @@ describe('computeProjectSummaries', () => {
     expect(summaries).toHaveLength(0);
   });
 
-  test('ingested ledger PRs seed membership and produce open-PR count', async () => {
+  test('ingested ledger PRs seed membership and produce open contribution attempt count', async () => {
     const now = new Date().toISOString();
     appendLedgerEntry(tempDir, {
       timestamp: now,
@@ -302,10 +317,10 @@ describe('computeProjectSummaries', () => {
     const summaries = computeProjectSummaries({ agents: [], ledgerAnalytics, configStore });
     const grafana = summaries.find((s) => s.project === 'github.com/grafana/grafana');
     expect(grafana).toBeTruthy();
-    expect(grafana?.openPrs).toBe(1);
+    expect(grafana?.openContributionAttempts).toBe(1);
   });
 
-  test('counts currently open PRs even when they were created before the recent window', async () => {
+  test('counts currently open contribution attempts even when they were created before the recent window', async () => {
     const oldTimestamp = new Date(Date.now() - 30 * 86_400_000).toISOString();
     appendLedgerEntry(tempDir, {
       timestamp: oldTimestamp,
@@ -318,7 +333,80 @@ describe('computeProjectSummaries', () => {
     const grafana = summaries.find((s) => s.project === 'github.com/grafana/grafana');
 
     expect(grafana).toBeTruthy();
-    expect(grafana?.openPrs).toBe(1);
+    expect(grafana?.openContributionAttempts).toBe(1);
+  });
+
+  describe('dead local/* project filtering', () => {
+    const missingChecker = { isMissing: (path: string) => path.startsWith('/tmp/gone/') };
+
+    test('excludes a local project whose localPath is missing and has no active tasks', () => {
+      configStore.setConfig('local/test_launch_abc', { tracked: true, localPath: '/tmp/gone/test_launch_abc' });
+      const summaries = computeProjectSummaries({
+        agents: [],
+        ledgerAnalytics,
+        configStore,
+        localPathChecker: missingChecker,
+      });
+      expect(summaries).toHaveLength(0);
+      // The config row is untouched — only presentation filtering.
+      expect(configStore.getConfig('local/test_launch_abc')).toBeDefined();
+    });
+
+    test('keeps a local project whose localPath is missing while a task is in progress', () => {
+      configStore.setConfig('local/tmp', { tracked: true, localPath: '/tmp/gone/tmp' });
+      const summaries = computeProjectSummaries({
+        agents: [makeAgent({ agentId: 'a-1', projectId: 'local/tmp', taskId: 't-1', taskStatus: 'inProgress' })],
+        ledgerAnalytics,
+        configStore,
+        localPathChecker: missingChecker,
+      });
+      expect(summaries.map((s) => s.project)).toEqual(['local/tmp']);
+    });
+
+    test('keeps a local project whose localPath still exists', () => {
+      configStore.setConfig('local/alive', { tracked: true, localPath: '/srv/checkouts/alive' });
+      const summaries = computeProjectSummaries({
+        agents: [],
+        ledgerAnalytics,
+        configStore,
+        localPathChecker: missingChecker,
+      });
+      expect(summaries.map((s) => s.project)).toEqual(['local/alive']);
+    });
+
+    test('keeps a local project with no recorded localPath (cannot verify)', () => {
+      configStore.setConfig('local/unknown-path', { tracked: true });
+      const summaries = computeProjectSummaries({
+        agents: [],
+        ledgerAnalytics,
+        configStore,
+        localPathChecker: { isMissing: () => true },
+      });
+      expect(summaries.map((s) => s.project)).toEqual(['local/unknown-path']);
+    });
+
+    test('never filters github.com projects on the local-path check', () => {
+      configStore.setConfig('github.com/octo/cat', { tracked: true, localPath: '/tmp/gone/cat' });
+      const summaries = computeProjectSummaries({
+        agents: [],
+        ledgerAnalytics,
+        configStore,
+        localPathChecker: missingChecker,
+      });
+      expect(summaries.map((s) => s.project)).toEqual(['github.com/octo/cat']);
+    });
+
+    test('also filters sidebar-seeded dead local projects', () => {
+      configStore.setConfig('local/test_launch_xyz', { localPath: '/tmp/gone/test_launch_xyz' });
+      const summaries = computeProjectSummaries({
+        agents: [],
+        ledgerAnalytics,
+        configStore,
+        sidebarProjects: ['local/test_launch_xyz'],
+        localPathChecker: missingChecker,
+      });
+      expect(summaries).toHaveLength(0);
+    });
   });
 });
 
@@ -343,6 +431,12 @@ describe('configSeedsMembership', () => {
   });
   test('notes all-whitespace returns false', () => {
     expect(configSeedsMembership({ project: 'p', notes: '  \n ' })).toBe(false);
+  });
+  test('webhook routing returns true', () => {
+    expect(configSeedsMembership({ project: 'p', webhook: { enabled: false } })).toBe(true);
+  });
+  test('empty webhook routing returns false', () => {
+    expect(configSeedsMembership({ project: 'p', webhook: {} })).toBe(false);
   });
 });
 

@@ -1,4 +1,8 @@
 import type { AgentState } from '../shared/protocol.js';
+import {
+  selectNextRoutableSessionId,
+  type EmptyEnterAdvanceDiagnostics,
+} from '../shared/task-routing.js';
 
 export interface DashboardSelectionState {
   connectionId: string;
@@ -9,7 +13,11 @@ export interface DashboardSelectionState {
 }
 
 export type AdvanceSelectionResult =
-  | { kind: 'advanced'; state: Omit<DashboardSelectionState, 'consumedIntentIds'> }
+  | {
+      kind: 'advanced';
+      state: Omit<DashboardSelectionState, 'consumedIntentIds'>;
+      diagnostics: EmptyEnterAdvanceDiagnostics;
+    }
   | { kind: 'rejected'; reason: 'stale-selection' | 'duplicate-intent' | 'unknown-connection' };
 
 export class DashboardSelectionController {
@@ -61,6 +69,12 @@ export class DashboardSelectionController {
     sessionId: string;
     selectionVersion: number;
     intentId: string;
+    /**
+     * Routable session ids in the frontend's presentation order. When provided
+     * the server follows this order (re-validated against its snapshot);
+     * otherwise it derives a routable order from the snapshot itself (#1079).
+     */
+    orderedCandidateSessionIds?: readonly string[];
   }): AdvanceSelectionResult {
     const state = this.states.get(input.connectionId);
     if (!state) return { kind: 'rejected', reason: 'unknown-connection' };
@@ -76,22 +90,15 @@ export class DashboardSelectionController {
     }
 
     state.consumedIntentIds.add(input.intentId);
-    const next = this.nextAgentAfter(input.sessionId);
+    const { next, diagnostics } = selectNextRoutableSessionId({
+      orderedSessionIds: input.orderedCandidateSessionIds,
+      currentSessionId: input.sessionId,
+      agents: this.deps.getAgents(),
+    });
     state.selectedTaskId = next?.taskId ?? null;
-    state.selectedSessionId = next?.agentId ?? null;
+    state.selectedSessionId = next?.sessionId ?? null;
     state.selectionVersion += 1;
-    return { kind: 'advanced', state: this.publicState(state) };
-  }
-
-  private nextAgentAfter(sessionId: string): AgentState | null {
-    const agents = this.deps.getAgents();
-    const activeFindings = agents.filter((agent) => agent.anomaly && agent.taskStatus !== 'pending');
-    const healthy = agents.filter((agent) => !agent.anomaly && agent.taskStatus === 'inProgress');
-    const all = [...activeFindings, ...healthy];
-    if (all.length === 0) return null;
-    const currentIndex = all.findIndex((agent) => agent.agentId === sessionId);
-    const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % all.length : 0;
-    return all[nextIndex] ?? null;
+    return { kind: 'advanced', state: this.publicState(state), diagnostics };
   }
 
   private publicState(state: DashboardSelectionState): Omit<DashboardSelectionState, 'consumedIntentIds'> {

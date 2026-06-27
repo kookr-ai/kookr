@@ -119,6 +119,12 @@ export function createWorkspaceSlice(set: StoreSet, get: StoreGet): WorkspaceSli
       const ok = result.projects.filter((p) => p.kind === 'ok');
       const skipped = result.projects.filter((p) => p.kind === 'skipped');
       const failed = result.projects.filter((p) => p.kind === 'failed');
+      const unavailable = skipped.find((p) => p.kind === 'skipped' && p.reason === 'workspace_unavailable');
+
+      if (unavailable?.kind === 'skipped') {
+        get().handleAlert('workspace', 'Sweep unavailable: workspace cleanup services are not configured.', 'error');
+        return;
+      }
 
       const removedCount = ok.reduce((acc, p) => {
         if (p.kind !== 'ok') return acc;

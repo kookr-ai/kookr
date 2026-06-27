@@ -61,8 +61,8 @@ function renderDetailPanel(container: HTMLElement, agent: AgentState, send: (msg
   return root;
 }
 
-function setInputValue(input: HTMLInputElement, value: string): void {
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+function setInputValue(input: HTMLTextAreaElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
   setter?.call(input, value);
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
@@ -109,8 +109,8 @@ describe('DetailPanel empty Enter behavior', () => {
       return true;
     });
 
-    const input = container.querySelector<HTMLInputElement>('.response-row input');
-    expect(input).toBeInstanceOf(HTMLInputElement);
+    const input = container.querySelector<HTMLTextAreaElement>('.response-row textarea');
+    expect(input).toBeInstanceOf(HTMLTextAreaElement);
     act(() => {
       input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
@@ -191,8 +191,8 @@ describe('DetailPanel empty Enter behavior', () => {
       return true;
     });
 
-    const input = container.querySelector<HTMLInputElement>('.response-row input');
-    expect(input).toBeInstanceOf(HTMLInputElement);
+    const input = container.querySelector<HTMLTextAreaElement>('.response-row textarea');
+    expect(input).toBeInstanceOf(HTMLTextAreaElement);
     act(() => {
       setInputValue(input!, '   ');
     });
@@ -220,8 +220,8 @@ describe('DetailPanel empty Enter behavior', () => {
       return true;
     });
 
-    const input = container.querySelector<HTMLInputElement>('.response-row input');
-    expect(input).toBeInstanceOf(HTMLInputElement);
+    const input = container.querySelector<HTMLTextAreaElement>('.response-row textarea');
+    expect(input).toBeInstanceOf(HTMLTextAreaElement);
     act(() => {
       input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
@@ -246,8 +246,8 @@ describe('DetailPanel empty Enter behavior', () => {
       return true;
     });
 
-    const input = container.querySelector<HTMLInputElement>('.response-row input');
-    expect(input).toBeInstanceOf(HTMLInputElement);
+    const input = container.querySelector<HTMLTextAreaElement>('.response-row textarea');
+    expect(input).toBeInstanceOf(HTMLTextAreaElement);
     act(() => {
       input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
@@ -272,8 +272,8 @@ describe('DetailPanel empty Enter behavior', () => {
       return true;
     });
 
-    const input = container.querySelector<HTMLInputElement>('.response-row input');
-    expect(input).toBeInstanceOf(HTMLInputElement);
+    const input = container.querySelector<HTMLTextAreaElement>('.response-row textarea');
+    expect(input).toBeInstanceOf(HTMLTextAreaElement);
     act(() => {
       setInputValue(input!, '   ');
     });
@@ -308,8 +308,8 @@ describe('DetailPanel empty Enter behavior', () => {
       return true;
     });
 
-    const input = container.querySelector<HTMLInputElement>('.response-row input');
-    expect(input).toBeInstanceOf(HTMLInputElement);
+    const input = container.querySelector<HTMLTextAreaElement>('.response-row textarea');
+    expect(input).toBeInstanceOf(HTMLTextAreaElement);
     act(() => {
       input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
@@ -337,8 +337,8 @@ describe('DetailPanel empty Enter behavior', () => {
       return true;
     });
 
-    const input = container.querySelector<HTMLInputElement>('.response-row input');
-    expect(input).toBeInstanceOf(HTMLInputElement);
+    const input = container.querySelector<HTMLTextAreaElement>('.response-row textarea');
+    expect(input).toBeInstanceOf(HTMLTextAreaElement);
     act(() => {
       input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
@@ -423,8 +423,8 @@ describe('DetailPanel empty Enter behavior', () => {
       return true;
     });
 
-    const input = container.querySelector<HTMLInputElement>('.response-row input');
-    expect(input).toBeInstanceOf(HTMLInputElement);
+    const input = container.querySelector<HTMLTextAreaElement>('.response-row textarea');
+    expect(input).toBeInstanceOf(HTMLTextAreaElement);
     act(() => {
       input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });

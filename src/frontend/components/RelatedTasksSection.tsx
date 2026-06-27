@@ -228,9 +228,12 @@ export function ChildRollupPill({ agent }: { agent: AgentState }): React.ReactEl
   const rollup = agent.childRollup;
   if (!rollup || rollup.childCount === 0) return null;
   const finding = rollup.mostUrgentChildFinding;
+  // Always spell out what the "{N}c {r}/{c}/{b}" numbers mean — the breakdown
+  // is cryptic on its own, even when a child finding takes top billing.
+  const breakdown = `${rollup.childCount} child task${rollup.childCount === 1 ? '' : 's'}: ${rollup.running} running / ${rollup.completed} completed / ${rollup.blocked} blocked`;
   const title = finding
-    ? `${rollup.childCount} children — most urgent: ${finding.anomalyType} (${finding.severity}) — ${finding.explanation}`
-    : `${rollup.childCount} children · ${rollup.running} running · ${rollup.completed} completed · ${rollup.blocked} blocked`;
+    ? `${breakdown} — most urgent: ${finding.anomalyType} (${finding.severity}) — ${finding.explanation}`
+    : breakdown;
   return (
     <span
       className={`child-rollup-pill${finding ? ` child-rollup-pill--${finding.severity}` : ''}`}

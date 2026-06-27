@@ -1,7 +1,23 @@
+import { stat } from 'node:fs/promises';
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import { getGitInfo } from '../adapters/git-info.js';
 import type { WorktreeRegistry } from '../adapters/git-worktree-registry.js';
+
+/**
+ * Default on-disk existence probe for {@link reconcile}'s `pathExists`
+ * dependency. Any stat failure (ENOENT, EACCES, ...) is treated as "not
+ * verifiably present" — callers only use this to corroborate a registry miss,
+ * so the conservative answer for an unreadable path is `false`.
+ */
+async function defaultPathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export interface ReconciliationResult {
   /** Sessions that are alive and monitoring can resume */
@@ -32,7 +48,11 @@ export interface ReconciliationResult {
   tasksTerminated: string[];
   /** Backend sessions not found in tasks (orphans from a prior run) */
   orphans: string[];
-  /** Sessions whose cwd no longer appears in the git worktree registry */
+  /**
+   * Sessions whose cwd no longer appears in the git worktree registry AND is
+   * verifiably gone from disk. A registry miss alone is not enough — the
+   * snapshot can hiccup or simply not cover the session's repo (F14).
+   */
   worktreesMissing: string[];
   /** Sessions whose worktree registry entry is prunable/stale */
   worktreesStale: string[];
@@ -65,6 +85,7 @@ export async function reconcile(
   taskStore: TaskStore,
   backend: TerminalBackend,
   worktreeRegistry?: Pick<WorktreeRegistry, 'byPath' | 'snapshot'>,
+  pathExists: (path: string) => Promise<boolean> = defaultPathExists,
 ): Promise<ReconciliationResult> {
   const result: ReconciliationResult = {
     resumed: [],
@@ -105,8 +126,24 @@ export async function reconcile(
           taskStore.updateSessionWorktreeHealth(task.id, session.tmuxSession, 'stale', { registryStale: true });
           result.worktreesStale.push(session.tmuxSession);
         } else if (shouldTrackWorktreeHealth && worktreeRegistry && registrySnapshot?.refreshedAt && !registryEntry) {
-          taskStore.updateSessionWorktreeHealth(task.id, session.tmuxSession, 'missing_unexpectedly');
-          result.worktreesMissing.push(session.tmuxSession);
+          // The registry snapshot (built from `git worktree list --porcelain`)
+          // is not authoritative on its own: a transient refresh hiccup, or a
+          // session cwd living outside the refreshed repos, both produce a
+          // registry miss for a perfectly healthy worktree. Corroborate with
+          // the filesystem before raising the alarm (F14).
+          if (await pathExists(session.cwd)) {
+            // Directory is intact — the registry miss is a blind spot, not a
+            // deleted worktree. Mark 'ok' rather than leaving health
+            // unchanged so a previously persisted false 'missing_unexpectedly'
+            // self-heals on the next reconcile sweep. (The health union in
+            // core/session-read-model.ts has no softer "registry doesn't know
+            // this path" state, and 'stale' is reserved for prunable entries /
+            // failed refreshes.)
+            taskStore.updateSessionWorktreeHealth(task.id, session.tmuxSession, 'ok');
+          } else {
+            taskStore.updateSessionWorktreeHealth(task.id, session.tmuxSession, 'missing_unexpectedly');
+            result.worktreesMissing.push(session.tmuxSession);
+          }
         } else if (shouldTrackWorktreeHealth && registryEntry?.isPrunable) {
           taskStore.updateSessionWorktreeHealth(task.id, session.tmuxSession, 'stale');
           result.worktreesStale.push(session.tmuxSession);

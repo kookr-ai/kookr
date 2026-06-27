@@ -11,15 +11,21 @@ import {
 } from './useTaskCompletionChime.js';
 import { useKookrStore } from '../store/useStore.js';
 import { __resetDndForTests, disableDnd, enableDnd } from '../hooks/useDnd.js';
+import {
+  __resetProjectNotificationMuteForTests,
+  muteProjectNotifications,
+  unmuteProjectNotifications,
+} from './useProjectNotificationMute.js';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound.js';
 import { __resetAudioAlertLogForTests, getAudioAlertSnapshot } from '../audio/audio-alert-log.js';
 import type { AgentState } from '../../shared/protocol.js';
 
-function mkAgent(agentId: string, signalId?: string): AgentState {
+function mkAgent(agentId: string, signalId?: string, projectId = 'github.com/kookr-ai/kookr'): AgentState {
   return {
     agentId,
     taskId: `task-${agentId}`,
     taskName: `Task ${agentId}`,
+    projectId,
     events: [],
     anomaly: null,
     taskStatus: 'inProgress',
@@ -98,6 +104,14 @@ describe('evaluateCompletionSignalChime', () => {
 
     expect(evaluateCompletionSignalChime([mkAgent('b', 'sig-b')], 5000).contexts).toEqual([]);
   });
+
+  test('muted-project signals are remembered without producing contexts', () => {
+    evaluateCompletionSignalChime([], 1000);
+
+    const muted = (projectId: string | undefined) => projectId === 'github.com/kookr-ai/kookr';
+    expect(evaluateCompletionSignalChime([mkAgent('a', 'sig-a')], 3000, muted)).toEqual({ contexts: [] });
+    expect(evaluateCompletionSignalChime([mkAgent('a', 'sig-a')], 5000).contexts).toEqual([]);
+  });
 });
 
 describe('useTaskCompletionChime', () => {
@@ -133,6 +147,7 @@ describe('useTaskCompletionChime', () => {
     });
     __resetTaskCompletionChimeForTests();
     __resetDndForTests();
+    __resetProjectNotificationMuteForTests();
     __resetSoundPreferenceForTests();
     __resetAudioAlertLogForTests();
     disableDnd();
@@ -168,6 +183,7 @@ describe('useTaskCompletionChime', () => {
     container?.remove();
     __resetTaskCompletionChimeForTests();
     __resetDndForTests();
+    __resetProjectNotificationMuteForTests();
     __resetSoundPreferenceForTests();
     __resetAudioAlertLogForTests();
     vi.unstubAllGlobals();
@@ -218,6 +234,25 @@ describe('useTaskCompletionChime', () => {
       useKookrStore.setState({ agents: [mkAgent('a'), mkAgent('b', 'sig-b')] });
     });
     expect(audioContextCtor).toHaveBeenCalledTimes(1);
+  });
+
+  test('muted project signal does not chime and does not replay after unmute', () => {
+    useKookrStore.setState({ agents: [], agentsHydrated: true });
+    muteProjectNotifications('github.com/kookr-ai/kookr');
+    mount();
+
+    act(() => {
+      useKookrStore.setState({ agents: [mkAgent('a', 'sig-a')] });
+    });
+
+    expect(audioContextCtor).not.toHaveBeenCalled();
+
+    act(() => {
+      unmuteProjectNotifications('github.com/kookr-ai/kookr');
+      useKookrStore.setState({ agents: [mkAgent('a', 'sig-a')] });
+    });
+
+    expect(audioContextCtor).not.toHaveBeenCalled();
   });
 
   test('multiple new signals record every signal while scheduling one audible cue', () => {

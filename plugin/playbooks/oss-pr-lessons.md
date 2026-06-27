@@ -24,7 +24,7 @@ checklist:
 
 Compute these from `{{repoFullName}}`:
 - **repoSlug**: replace `/` with `-` (e.g., `microsoft/vscode` → `microsoft-vscode`)
-- **forkName**: `jeanibarz/<repo>` where `<repo>` is the part after `/` (e.g., `microsoft/vscode` → `jeanibarz/vscode`)
+- **forkName**: `<your-login>/<repo>` where `<your-login>` is the authenticated `gh` user (`gh api user --jq .login`) and `<repo>` is the part after `/` (e.g., `microsoft/vscode` → `<your-login>/vscode`)
 
 Use these derived values wherever repoSlug and forkName appear below.
 

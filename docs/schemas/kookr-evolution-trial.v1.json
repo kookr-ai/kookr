@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kookr.ai/schemas/kookr-evolution-trial.v1.json",
+  "title": "kookr-evolution-trial.v1",
+  "description": "Result of evaluating a single trial in an autonomous evolution run. This JSON is the ONLY interface between Kookr and a project's evaluation command: the project writes it, Kookr reads it. Kookr never parses the artifact under evolution. See docs/rfc/issue-1061-autonomous-evolution-playbook/RFC.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "ok"],
+  "properties": {
+    "schemaVersion": {
+      "const": "kookr-evolution-trial.v1",
+      "description": "Schema discriminator. Always the literal version string."
+    },
+    "ok": {
+      "type": "boolean",
+      "description": "true: the trial was evaluated and `score` is meaningful. false: evaluation failed (a FAILED trial, not a regression) — `score` is ignored and the trial counts toward the failure budget, not the plateau window."
+    },
+    "score": {
+      "type": "number",
+      "description": "The primary scalar the run optimizes. Required when `ok` is true. Direction is set by the run config's `higherIsBetter`."
+    },
+    "higherIsBetter": {
+      "type": "boolean",
+      "description": "Optional echo of the optimization direction for this score. The run config is the source of truth; if present here it MUST agree with the config."
+    },
+    "metrics": {
+      "type": "object",
+      "description": "Optional secondary metrics, passed through verbatim to the trial log and run summary. Kookr never interprets these beyond display.",
+      "additionalProperties": {
+        "type": ["number", "string", "boolean", "null"]
+      }
+    },
+    "artifactRef": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Opaque pointer (relative path or id) to the trial's artifact. Kookr archives this on promotion but never parses it."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Free-text rationale or observation about this trial, surfaced in the run summary."
+    },
+    "evaluatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 timestamp of when the trial was evaluated."
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "A successfully evaluated trial MUST carry a numeric score. A missing score on ok:true is treated by the playbook as a FAILED trial.",
+      "if": {
+        "properties": { "ok": { "const": true } }
+      },
+      "then": {
+        "required": ["score"]
+      }
+    }
+  ],
+  "examples": [
+    {
+      "schemaVersion": "kookr-evolution-trial.v1",
+      "ok": true,
+      "score": 1.834,
+      "higherIsBetter": true,
+      "metrics": {
+        "sharpe": 1.834,
+        "maxDrawdown": 0.12,
+        "trades": 412
+      },
+      "artifactRef": "trials/iter-7/strategy.json",
+      "notes": "widened the entry band; fewer whipsaws",
+      "evaluatedAt": "2026-06-20T19:30:00Z"
+    },
+    {
+      "schemaVersion": "kookr-evolution-trial.v1",
+      "ok": false,
+      "notes": "backtest aborted: missing price data for 2024-03",
+      "evaluatedAt": "2026-06-20T19:42:00Z"
+    }
+  ]
+}

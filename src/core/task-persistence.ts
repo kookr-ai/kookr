@@ -1,5 +1,6 @@
-import { readFile, access, copyFile, readdir, unlink } from 'node:fs/promises';
+import { readFile, access, copyFile, readdir, unlink, rename } from 'node:fs/promises';
 import { join, dirname, basename } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { isActiveStatus, type Task } from './tasks.js';
 import type { Anomaly, LegacyPersistedSnooze, PersistedSnooze } from './types.js';
 import type { AttentionQueue, SnoozeEntry } from './attention-queue.js';
@@ -7,6 +8,7 @@ import type { TaskStore } from './tasks.js';
 import type { PersistedSuppressionEntry } from './snooze-suppression.js';
 import { normalizeAgentType } from './agent-types.js';
 import { atomicWriteFile } from './persistence-utils.js';
+import { createLogger } from './logger.js';
 import {
   isTaskRelationLifecycle,
   isTaskRelationSource,
@@ -34,6 +36,35 @@ interface TaskFileEnvelope {
   relations?: TaskRelation[];
 }
 
+const logger = createLogger('task-persistence');
+
+export interface TaskSaveMetrics {
+  filePath: string;
+  bytes: number;
+  taskCount: number;
+  relationCount: number;
+  serializeMs: number;
+  writeMs: number;
+  totalMs: number;
+}
+
+function roundDuration(ms: number): number {
+  return Math.round(ms * 100) / 100;
+}
+
+function maybeLogTaskSaveMetrics(metrics: TaskSaveMetrics): void {
+  if (process.env.KOOKR_LOG_TASK_SAVE_METRICS !== '1') return;
+  logger.info('saved tasks.json', {
+    filePath: metrics.filePath,
+    bytes: metrics.bytes,
+    taskCount: metrics.taskCount,
+    relationCount: metrics.relationCount,
+    serializeMs: metrics.serializeMs,
+    writeMs: metrics.writeMs,
+    totalMs: metrics.totalMs,
+  });
+}
+
 /**
  * Save tasks to a JSON file atomically (write to temp, fsync, then rename).
  * The fsync ensures data is durable on disk before the rename, preventing
@@ -46,7 +77,8 @@ export async function saveTasks(
   snoozes?: PersistedSnooze[],
   suppressionState?: PersistedSuppressionEntry[],
   relations?: TaskRelation[],
-): Promise<void> {
+): Promise<TaskSaveMetrics> {
+  const startedAt = performance.now();
   const envelope: TaskFileEnvelope = {
     version: 2,
     lifetimeSpendUsd: lifetimeSpendUsd ?? 0,
@@ -61,7 +93,21 @@ export async function saveTasks(
   if (relations && relations.length > 0) {
     envelope.relations = relations;
   }
-  await atomicWriteFile(filePath, JSON.stringify(envelope, null, 2));
+  const serialized = JSON.stringify(envelope, null, 2);
+  const serializedAt = performance.now();
+  await atomicWriteFile(filePath, serialized);
+  const finishedAt = performance.now();
+  const metrics: TaskSaveMetrics = {
+    filePath,
+    bytes: Buffer.byteLength(serialized, 'utf-8'),
+    taskCount: tasks.length,
+    relationCount: relations?.length ?? 0,
+    serializeMs: roundDuration(serializedAt - startedAt),
+    writeMs: roundDuration(finishedAt - serializedAt),
+    totalMs: roundDuration(finishedAt - startedAt),
+  };
+  maybeLogTaskSaveMetrics(metrics);
+  return metrics;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +290,12 @@ export interface LoadTasksResult {
   suppressionState?: PersistedSuppressionEntry[];
   /** Validated relations. Empty array when the file pre-dates #599 or has no relations. */
   relations?: TaskRelation[];
+  recovery?: TaskFileRecovery;
+}
+
+export interface TaskFileRecovery {
+  quarantinedPath: string;
+  restoredFrom?: string;
 }
 
 /**
@@ -287,6 +339,7 @@ export async function loadTasks(filePath: string): Promise<LoadTasksResult> {
       task.agentType = normalizeAgentType(task.agentType);
       task.createdAt = new Date(task.createdAt);
       task.updatedAt = new Date(task.updatedAt);
+      if (task.finishedAt) task.finishedAt = new Date(task.finishedAt);
       if (task.terminatedAt) task.terminatedAt = new Date(task.terminatedAt);
       for (const session of task.sessions) {
         session.agentType = normalizeAgentType(session.agentType);
@@ -297,6 +350,79 @@ export async function loadTasks(filePath: string): Promise<LoadTasksResult> {
   } catch (err) {
     throw new CorruptTaskFileError(filePath, err);
   }
+}
+
+/**
+ * Boot-time task loader. A corrupt live `tasks.json` should not brick Kookr:
+ * preserve the bad file before any autosave can overwrite it, then restore
+ * from the newest valid daily snapshot or continue with an empty store.
+ */
+export async function loadTasksWithRecovery(filePath: string): Promise<LoadTasksResult> {
+  try {
+    return await loadTasks(filePath);
+  } catch (err) {
+    if (!(err instanceof CorruptTaskFileError)) throw err;
+  }
+
+  const quarantinedPath = await quarantineCorruptTaskFile(filePath);
+  const restored = await loadNewestDailySnapshot(filePath);
+  if (restored) {
+    await restoreSnapshotToLiveFile(restored.path, filePath);
+  }
+  const recovery: TaskFileRecovery = restored
+    ? { quarantinedPath, restoredFrom: restored.path }
+    : { quarantinedPath };
+  return { ...(restored?.result ?? { tasks: [] }), recovery };
+}
+
+async function restoreSnapshotToLiveFile(snapshotPath: string, filePath: string): Promise<void> {
+  await atomicWriteFile(filePath, await readFile(snapshotPath, 'utf-8'));
+}
+
+async function quarantineCorruptTaskFile(filePath: string): Promise<string> {
+  const stamp = new Date().toISOString();
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const suffix = attempt === 0 ? '' : `-${attempt}`;
+    const target = `${filePath}.corrupt-${stamp}${suffix}`;
+    try {
+      await rename(filePath, target);
+      return target;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue;
+      throw err;
+    }
+  }
+  throw new Error(`Unable to choose a quarantine path for corrupt task file: ${filePath}`);
+}
+
+async function loadNewestDailySnapshot(filePath: string): Promise<{ path: string; result: LoadTasksResult } | null> {
+  let entries: string[];
+  try {
+    entries = await readdir(dirname(filePath));
+  } catch {
+    return null;
+  }
+
+  const base = basename(filePath);
+  const prefix = `${base}.daily.`;
+  const snapshots = entries
+    .filter((entry) => entry.startsWith(prefix) && parseYmd(entry.slice(prefix.length)))
+    .sort()
+    .reverse();
+
+  for (const snapshot of snapshots) {
+    const snapshotPath = join(dirname(filePath), snapshot);
+    try {
+      return { path: snapshotPath, result: await loadTasks(snapshotPath) };
+    } catch (err) {
+      if (err instanceof CorruptTaskFileError) {
+        console.warn(`[tasks-recovery] skipping corrupt daily snapshot ${snapshotPath}`);
+        continue;
+      }
+      console.warn(`[tasks-recovery] skipping unreadable daily snapshot ${snapshotPath}:`, err);
+    }
+  }
+  return null;
 }
 
 /**

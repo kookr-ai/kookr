@@ -7,6 +7,7 @@ import {
   REPLAY_SESSION_PREFIX,
   deriveEventOrigin,
   mintEventId,
+  type HookParseDegradationEvent,
   type HookEventInjector,
 } from './hook-ingestion.js';
 import type { EventOrigin } from '../core/types.js';
@@ -420,6 +421,156 @@ describe('HookIngestion — dual-delivery dedup (rfc-activity-log-reliability §
     const retry = ingestion.ingestFromHttp('kookr-1', raw);
     expect(retry.dispatched).toBe(true);
   });
+
+  it('aggregates write-to-processed lag per session and logs threshold crossings', () => {
+    const adapter = makeStubAdapter();
+    let now = Date.parse('2026-06-11T12:00:10.000Z');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const ingestion = new HookIngestion({
+      adapter,
+      now: () => now,
+      lagWarningThresholdMs: 2000,
+    });
+
+    ingestion.ingestFromHttp('kookr-1', JSON.stringify({
+      session_id: 'x',
+      hook_event_name: 'SessionStart',
+      kookr_hook_written_at: '2026-06-11T12:00:09.000Z',
+    }));
+    now = Date.parse('2026-06-11T12:00:14.000Z');
+    ingestion.ingestFromHttp('kookr-1', JSON.stringify({
+      session_id: 'x',
+      hook_event_name: 'PreToolUse',
+      kookr_hook_written_at_ms: Date.parse('2026-06-11T12:00:10.000Z'),
+    }));
+
+    const snapshot = ingestion.getDiagnosticsSnapshot();
+    expect(snapshot).toEqual(expect.objectContaining({
+      schemaVersion: 'hook-ingestion-diagnostics.v1',
+      lagWarningThresholdMs: 2000,
+      sessionCount: 1,
+      totalArrivals: 2,
+      notableLagCount: 1,
+    }));
+    expect(snapshot.sessions[0]).toEqual(expect.objectContaining({
+      kookrSessionId: 'kookr-1',
+      totalArrivals: 2,
+      dispatchedArrivals: 2,
+      missingWriteTimestampCount: 0,
+      notableLagCount: 1,
+      sourceCounts: { file: 0, http: 2 },
+      writeTimestampSourceCounts: { payload: 2, file_mtime: 0, missing: 0, invalid: 0 },
+      lag: {
+        count: 2,
+        lastMs: 4000,
+        meanMs: 2500,
+        maxMs: 4000,
+        p95Ms: 4000,
+      },
+    }));
+    expect(warn).toHaveBeenCalledWith('[hook-ingestion] lag threshold crossed', {
+      kookrSessionId: 'kookr-1',
+      source: 'http',
+      lagMs: 4000,
+      thresholdMs: 2000,
+      writeTimestampSource: 'payload',
+    });
+    warn.mockRestore();
+  });
+
+  it('records file-mtime fallback lag even when the file arrival is a duplicate', () => {
+    const adapter = makeStubAdapter();
+    let now = Date.parse('2026-06-11T12:00:10.000Z');
+    const ingestion = new HookIngestion({ adapter, now: () => now });
+    const raw = JSON.stringify({ session_id: 'x', hook_event_name: 'SessionStart' });
+
+    ingestion.ingestFromHttp('kookr-1', raw);
+    now = Date.parse('2026-06-11T12:00:14.000Z');
+    ingestion.injectHookEvent('kookr-1', raw, undefined, {
+      fileMtimeMs: Date.parse('2026-06-11T12:00:12.000Z'),
+    });
+
+    const session = ingestion.getDiagnosticsSnapshot().sessions[0];
+    expect(adapter.calls).toHaveLength(1);
+    expect(session).toEqual(expect.objectContaining({
+      totalArrivals: 2,
+      dispatchedArrivals: 1,
+      duplicateArrivals: 1,
+      missingWriteTimestampCount: 1,
+      sourceCounts: { file: 1, http: 1 },
+      writeTimestampSourceCounts: { payload: 0, file_mtime: 1, missing: 1, invalid: 0 },
+      lag: expect.objectContaining({
+        count: 1,
+        lastMs: 2000,
+        maxMs: 2000,
+      }),
+    }));
+  });
+
+  it('counts invalid and future hook write timestamps in diagnostics', () => {
+    const adapter = makeStubAdapter();
+    const now = Date.parse('2026-06-11T12:00:10.000Z');
+    const ingestion = new HookIngestion({ adapter, now: () => now });
+
+    ingestion.ingestFromHttp('kookr-1', JSON.stringify({
+      session_id: 'x',
+      hook_event_name: 'SessionStart',
+      timestamp: 'not-a-date',
+    }));
+    ingestion.ingestFromHttp('kookr-1', JSON.stringify({
+      session_id: 'x',
+      hook_event_name: 'PreToolUse',
+      timestamp: '2026-06-11T12:00:12.000Z',
+    }));
+
+    const session = ingestion.getDiagnosticsSnapshot().sessions[0];
+    expect(session).toEqual(expect.objectContaining({
+      totalArrivals: 2,
+      invalidWriteTimestampCount: 1,
+      futureWriteTimestampCount: 1,
+      writeTimestampSourceCounts: { payload: 1, file_mtime: 0, missing: 0, invalid: 1 },
+      lag: expect.objectContaining({
+        count: 1,
+        lastMs: 0,
+        maxMs: 0,
+      }),
+    }));
+  });
+
+  it('counts startup replay arrivals without treating historical file mtimes as live lag', () => {
+    const adapter = makeStubAdapter();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const ingestion = new HookIngestion({
+      adapter,
+      now: () => Date.parse('2026-06-11T12:00:00.000Z'),
+      lagWarningThresholdMs: 2000,
+    });
+
+    ingestion.injectHookEvent('kookr-1', JSON.stringify({
+      session_id: 'x',
+      hook_event_name: 'SessionStart',
+    }), undefined, {
+      startupReplay: true,
+      fileMtimeMs: Date.parse('2026-06-11T11:00:00.000Z'),
+    });
+
+    const session = ingestion.getDiagnosticsSnapshot().sessions[0];
+    expect(session).toEqual(expect.objectContaining({
+      totalArrivals: 1,
+      dispatchedArrivals: 1,
+      startupReplayArrivalCount: 1,
+      notableLagCount: 0,
+      lag: {
+        count: 0,
+        lastMs: null,
+        meanMs: null,
+        maxMs: null,
+        p95Ms: null,
+      },
+    }));
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
 });
 
 describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
@@ -427,7 +578,7 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
     return mkdtempSync(join(tmpdir(), 'kookr-ingest-hydrate-'));
   }
 
-  it('replays hydrated records into live state without writing duplicate ledger rows', async () => {
+  it('replays hydrated records into live state and backfills raw rows for future checkpoint resumes', async () => {
     const dir = makeDir();
     try {
       const ledger = new ActivityLedger(dir);
@@ -443,16 +594,22 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
       const hydrated = await ingestion.hydrateFromLedger('kookr-1', ledger);
       expect(hydrated.hydratedHashes).toBe(1);
       expect(hydrated.maxSequence).toBe(1);
+      expect(hydrated.liveStateReplayed).toBe(false);
 
       const initialRowCount = (await ledger.readAll('kookr-1')).length;
 
-      // Simulate file-replay arriving with the same payload. It must rebuild
-      // in-memory monitor/watchdog state after restart, but must not append a
-      // duplicate diagnostic ledger row.
+      // Simulate file-replay arriving with the same payload. It rebuilds
+      // in-memory monitor/watchdog state after restart and backfills the raw
+      // payload so a later checkpoint hit can replay live state from ledger.
       const result = ingestion.injectHookEvent('kookr-1', raw);
       expect(result.parseStatus).toBe('ok');
       expect(adapter.calls).toHaveLength(1);
-      expect(await ledger.readAll('kookr-1')).toHaveLength(initialRowCount);
+      const rows = await ledger.readAll('kookr-1');
+      expect(rows).toHaveLength(initialRowCount + 1);
+      expect(rows[1]).toEqual(expect.objectContaining({
+        rawJson: raw,
+        projection: 'diagnostic_only',
+      }));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -518,12 +675,13 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
       const hydrated = await ingestion.hydrateFromLedger('kookr-1', ledger);
       // Only the parent_activity row seeds — the malformed row does not.
       expect(hydrated.hydratedHashes).toBe(1);
+      expect(hydrated.liveStateReplayed).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('a post-restart replay does not advance the sequence counter or write phantom diagnostic rows', async () => {
+  it('a post-restart replay does not advance the sequence counter while backfilling raw replay rows', async () => {
     const dir = makeDir();
     try {
       const ledger = new ActivityLedger(dir);
@@ -539,16 +697,15 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
       const ingestion = new HookIngestion({ adapter, activityLedger: ledger, dedupTtlMs: 5000 });
       await ingestion.hydrateFromLedger('kookr-1', ledger);
 
-      // File-watcher replay arrives. It rebuilds live state, but must NOT
-      // bump the sequence counter (otherwise the next REAL event jumps to 9
-      // instead of 8) and must NOT write a diagnostic-only ledger row
-      // (otherwise stats inflates by N on every restart).
+      // File-watcher replay arrives. It rebuilds live state and backfills raw
+      // payload, but must NOT bump the sequence counter (otherwise the next
+      // REAL event jumps to 9 instead of 8).
       const result = ingestion.injectHookEvent('kookr-1', raw);
       expect(result.parseStatus).toBe('ok');
       expect(adapter.calls).toHaveLength(1);
 
       const afterRowCount = (await ledger.readAll('kookr-1')).length;
-      expect(afterRowCount).toBe(initialRowCount); // no phantom diagnostic row
+      expect(afterRowCount).toBe(initialRowCount + 1);
 
       // The next fresh event takes sequence 8, not 9.
       const adapterWithSeq: HookEventInjector & { lastSeq?: number } = {
@@ -558,8 +715,8 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
         },
       };
       const ingestion2 = new HookIngestion({ adapter: adapterWithSeq, activityLedger: ledger });
-      await ingestion2.hydrateFromLedger('kookr-1', ledger);
-      ingestion2.injectHookEvent('kookr-1', raw);                // replay hit — counter stays
+      const hydration = await ingestion2.hydrateFromLedger('kookr-1', ledger, { replayLiveState: true });
+      expect(hydration.liveStateReplayed).toBe(true);
       ingestion2.injectHookEvent('kookr-1', JSON.stringify({ n: 'fresh' })); // new record
       expect(adapterWithSeq.lastSeq).toBe(8);
     } finally {
@@ -596,6 +753,93 @@ describe('HookIngestion.hydrateFromLedger (restart-replay edge case)', () => {
       // The hydrated entry was NOT swept by gcExpired; replay still uses the
       // original sequence and dispatches once into live state.
       expect(adapter.calls).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('replays live state directly from ledger rows that carry raw payloads', async () => {
+    const dir = makeDir();
+    try {
+      const ledger = new ActivityLedger(dir);
+      const raw = JSON.stringify({ session_id: 'parent-1', hook_event_name: 'SessionStart' });
+      const { createHash } = await import('node:crypto');
+      const contentHash = createHash('sha256').update(raw.trim()).digest('hex');
+      await ledger.append({
+        ...envelopeRow({ sequence: 4, contentHash, rawSessionId: 'parent-1' }),
+        rawJson: raw,
+      });
+      await ledger.flush();
+
+      const adapter = makeStubAdapter();
+      const ingestion = new HookIngestion({ adapter, activityLedger: ledger });
+      const hydrated = await ingestion.hydrateFromLedger('kookr-1', ledger, { replayLiveState: true });
+
+      expect(hydrated).toEqual(expect.objectContaining({
+        hydratedHashes: 1,
+        maxSequence: 4,
+        liveStateReplayed: true,
+      }));
+      expect(adapter.calls).toEqual([{ tmux: 'kookr-1', raw }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not report live-state replay for an empty ledger', async () => {
+    const dir = makeDir();
+    try {
+      const ledger = new ActivityLedger(dir);
+      const adapter = makeStubAdapter();
+      const ingestion = new HookIngestion({ adapter, activityLedger: ledger });
+
+      const hydrated = await ingestion.hydrateFromLedger('kookr-1', ledger, { replayLiveState: true });
+
+      expect(hydrated).toEqual({
+        hydratedHashes: 0,
+        maxSequence: 0,
+        liveStateReplayed: false,
+      });
+      expect(adapter.calls).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not report live-state replay when a raw ledger row fails to parse on replay', async () => {
+    const dir = makeDir();
+    try {
+      const ledger = new ActivityLedger(dir);
+      const raw = JSON.stringify({ session_id: 'parent-1', hook_event_name: 'SessionStart' });
+      const { createHash } = await import('node:crypto');
+      const contentHash = createHash('sha256').update(raw.trim()).digest('hex');
+      await ledger.append({
+        ...envelopeRow({ sequence: 4, contentHash, rawSessionId: 'parent-1' }),
+        rawJson: raw,
+      });
+      await ledger.flush();
+
+      const adapter: HookEventInjector & { calls: string[] } = {
+        calls: [],
+        injectHookEvent(_tmux, replayedRaw, sequence) {
+          adapter.calls.push(replayedRaw);
+          return {
+            parseStatus: 'malformed',
+            agentType: 'claude-code',
+            error: 'no longer parses',
+            sequence,
+          };
+        },
+      };
+      const ingestion = new HookIngestion({ adapter, activityLedger: ledger });
+      const hydrated = await ingestion.hydrateFromLedger('kookr-1', ledger, { replayLiveState: true });
+
+      expect(hydrated).toEqual(expect.objectContaining({
+        hydratedHashes: 1,
+        maxSequence: 4,
+        liveStateReplayed: false,
+      }));
+      expect(adapter.calls).toEqual([raw]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -816,4 +1060,71 @@ describe('HookIngestion — replay-vs-live origin tagging (issue #701)', () => {
     expect(result.injectResult.origin).toBe('replay');
     expect(adapter.origins).toHaveLength(0);
   });
+});
+
+describe('HookIngestion — hook parse degradation alerting (issue #841)', () => {
+  function makeMalformedAdapter(error = 'Unexpected token b in JSON at position 1'): HookEventInjector {
+    return {
+      injectHookEvent(_tmux, _raw, sequence, options) {
+        return {
+          parseStatus: 'malformed',
+          agentType: 'claude-code',
+          error,
+          sequence: sequence ?? 0,
+          origin: options?.origin,
+        };
+      },
+    };
+  }
+
+  it('reports live malformed hook records with a bounded excerpt', () => {
+    const observed: HookParseDegradationEvent[] = [];
+    const ingestion = new HookIngestion({
+      adapter: makeMalformedAdapter('bad hook JSON'),
+      now: () => Date.parse('2026-06-11T10:00:00.000Z'),
+      onParseDegradation: (event) => observed.push(event),
+    });
+
+    const raw = '{"hook_event_name":"SessionStart","payload":"broken schema","long":"' + 'x'.repeat(300) + '"}';
+    const result = ingestion.ingestFromHttp('kookr-live-1', raw);
+
+    expect(result.dispatched).toBe(false);
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({
+      kookrSessionId: 'kookr-live-1',
+      source: 'http',
+      error: 'bad hook JSON',
+      eventId: result.eventId,
+      sequence: 1,
+      observedAt: '2026-06-11T10:00:00.000Z',
+    });
+    expect(observed[0].excerpt).toContain('SessionStart');
+    expect(observed[0].excerpt.length).toBeLessThanOrEqual(160);
+  });
+
+  it('does not report startup replay of old malformed records', () => {
+    const onParseDegradation = vi.fn();
+    const ingestion = new HookIngestion({
+      adapter: makeMalformedAdapter(),
+      onParseDegradation,
+    });
+
+    ingestion.injectHookEvent('kookr-live-1', '{"bad":', undefined, { startupReplay: true });
+
+    expect(onParseDegradation).not.toHaveBeenCalled();
+    expect(ingestion.getActivityMeta('kookr-live-1')?.malformedRecordCount).toBe(1);
+  });
+
+  it('does not report synthetic replay sessions as live parse degradation', () => {
+    const onParseDegradation = vi.fn();
+    const ingestion = new HookIngestion({
+      adapter: makeMalformedAdapter(),
+      onParseDegradation,
+    });
+
+    ingestion.ingestFromHttp(`${REPLAY_SESSION_PREFIX}demo`, '{"bad":');
+
+    expect(onParseDegradation).not.toHaveBeenCalled();
+  });
+
 });

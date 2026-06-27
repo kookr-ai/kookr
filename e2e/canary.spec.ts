@@ -6,7 +6,7 @@
  *
  * Run:  CANARY=1 npx playwright test e2e/canary.spec.ts
  * Cost: ~$0.001 per run (Haiku, trivial task)
- * Requires: tmux, claude CLI, ANTHROPIC_API_KEY (or authenticated session)
+ * Requires: claude CLI, ANTHROPIC_API_KEY (or authenticated session)
  *
  * This test is skipped by default. Run it:
  *  - After upgrading the Claude Code CLI

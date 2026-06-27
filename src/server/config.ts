@@ -3,13 +3,16 @@ export const MAX_ACTIVE_TASKS = 10;
 
 /** Default consecutive breaching samples required before an operational alert fires. */
 export const DEFAULT_OPERATIONAL_ALERT_SUSTAIN_SAMPLES = 3;
+export const DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT = 5;
+export const DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES = 2 * 1024 * 1024 * 1024;
+export const DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS = 30 * 1000;
 
 /** Default maximum JSON request body size accepted by the dashboard server. */
 export const DEFAULT_REQUEST_BODY_LIMIT_BYTES = 1_000_000;
 
 /**
  * Threshold configuration for operational alerts on already-sampled host
- * signals. A threshold of `0` (the default) disables that rule, mirroring the
+ * signals. A threshold of `0` disables that rule, mirroring the
  * `KOOKR_BUDGET_WARN_USD=0` opt-out convention.
  */
 export interface OperationalAlertConfig {
@@ -19,6 +22,12 @@ export interface OperationalAlertConfig {
   memoryPercent: number;
   /** Event-loop delay p95 threshold in milliseconds (`0` disables). */
   eventLoopDelayMs: number;
+  /** Data-directory filesystem free-space percent threshold (`0` disables). */
+  dataDirectoryFreePercent: number;
+  /** Data-directory filesystem free-space byte threshold (`0` disables). */
+  dataDirectoryFreeBytes: number;
+  /** Circuit-breaker OPEN duration threshold in milliseconds (`0` disables). */
+  circuitBreakerOpenMs: number;
   /** Consecutive breaching samples required before firing (>= 1). */
   sustainSamples: number;
 }
@@ -38,10 +47,10 @@ function readPositiveInt(raw: string | undefined, fallback: number): number {
 }
 
 /**
- * Read operational alert thresholds from the environment. All thresholds
- * default to `0` (disabled) so the feature is opt-in and never surprises an
- * existing deployment with new alerts. Invalid or blank values fall back to
- * the documented defaults.
+ * Read operational alert thresholds from the environment. CPU, memory, and
+ * event-loop thresholds default to `0` (disabled); data-directory disk pressure
+ * uses conservative enabled defaults. Invalid or blank values fall back to the
+ * documented defaults.
  */
 export function readOperationalAlertConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
@@ -50,6 +59,18 @@ export function readOperationalAlertConfigFromEnv(
     cpuPercent: readNonNegativeNumber(env.KOOKR_ALERT_CPU_PERCENT, 0),
     memoryPercent: readNonNegativeNumber(env.KOOKR_ALERT_MEMORY_PERCENT, 0),
     eventLoopDelayMs: readNonNegativeNumber(env.KOOKR_ALERT_EVENT_LOOP_DELAY_MS, 0),
+    dataDirectoryFreePercent: readNonNegativeNumber(
+      env.KOOKR_ALERT_DATA_DIR_FREE_PERCENT,
+      DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+    ),
+    dataDirectoryFreeBytes: readNonNegativeNumber(
+      env.KOOKR_ALERT_DATA_DIR_FREE_BYTES,
+      DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
+    ),
+    circuitBreakerOpenMs: readNonNegativeNumber(
+      env.KOOKR_ALERT_CIRCUIT_BREAKER_OPEN_MS,
+      DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
+    ),
     sustainSamples: readPositiveInt(
       env.KOOKR_ALERT_SUSTAIN_SAMPLES,
       DEFAULT_OPERATIONAL_ALERT_SUSTAIN_SAMPLES,

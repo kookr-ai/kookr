@@ -15,8 +15,7 @@ import {
   ScheduleStore,
   ScheduleValidationError,
 } from '../core/schedule.js';
-import { isValidCron } from '../core/cron.js';
-import { ScheduleValidator } from './schedule-validator.js';
+import { ScheduleValidator, validateCron } from './schedule-validator.js';
 
 export interface ScheduleServiceDeps {
   store: ScheduleStore;
@@ -480,8 +479,9 @@ export class ScheduleService {
     if (!cron.trim()) {
       throw new ScheduleValidationError('Invalid cron expression', { cron: 'Required' });
     }
-    if (!isValidCron(cron)) {
-      throw new ScheduleValidationError('Invalid cron expression', { cron: 'Invalid cron expression' });
+    const cronError = validateCron(cron);
+    if (cronError) {
+      throw new ScheduleValidationError('Invalid cron expression', { cron: cronError });
     }
     const { describeCron, nextRun } = await import('../core/cron.js');
     const nextRuns: string[] = [];

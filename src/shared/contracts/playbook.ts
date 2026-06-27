@@ -60,7 +60,7 @@ export interface EffectivePlaybookLoop {
  */
 export type PlaybookScope = 'project' | 'user' | 'plugin';
 
-export const LAUNCH_DEPENDENCIES = ['kb'] as const;
+export const LAUNCH_DEPENDENCIES = ['kb', 'evolution-config'] as const;
 export type LaunchDependency = typeof LAUNCH_DEPENDENCIES[number];
 
 export interface Playbook {
@@ -80,6 +80,15 @@ export interface Playbook {
   tags: string[];
   /** Raw loop defaults declared in frontmatter. */
   loop?: PlaybookLoopConfig;
+  /** Server-consumed policy flag: when true, playbook launches may deliver without asking first. */
+  deliveryPreAuthorized?: boolean;
+  /**
+   * Server-consumed policy flag: when true, tasks launched from this playbook
+   * auto-complete on a `completion_ready` signal instead of waiting for manual
+   * review. Successors spawned via parentTaskId inherit it automatically.
+   * See docs/reference/auto-close-on-signal.md.
+   */
+  autoCloseOnSignal?: boolean;
   /** Server-normalized bounded loop config for loopable playbooks. */
   effectiveLoop?: EffectivePlaybookLoop;
   /** Non-fatal loop metadata error. Standard launch remains available. */

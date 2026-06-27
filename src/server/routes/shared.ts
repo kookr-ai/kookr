@@ -49,6 +49,10 @@ import type { SessionAuthConfig } from '../auth-session.js';
 import { bodyLimit } from 'hono/body-limit';
 import type { MiddlewareHandler } from 'hono';
 import type { RequestDurationMetrics } from '../request-duration-metrics.js';
+import type { TaskStateSaveSchedulerLike } from '../task-state-save-scheduler.js';
+import type { TerminalInputCoordinator } from '../terminal-input-coordinator.js';
+import type { UserInputDeliveryService } from '../user-input-delivery-service.js';
+import type { DeliveryTraceReader } from '../../core/delivery-trace.js';
 export type { RemoteShareDeps } from '../remote-share-deps.js';
 
 /**
@@ -72,6 +76,8 @@ export interface TaskRouteDeps {
   launchServiceDeps: LaunchServiceDeps;
   suppressionTracker?: SnoozeSuppressionTracker;
   tasksFile?: string;
+  /** Coalesced task-state saver for bursty mutation paths. */
+  taskStateSaveScheduler?: TaskStateSaveSchedulerLike;
   kookrDir?: string;
   coordinatorSuppressions?: CoordinatorSuppressionRegistry;
   /**
@@ -122,6 +128,15 @@ export interface AgentRouteDeps {
   taskStore?: TaskStore;
 }
 
+/** Deps for the file-viewer routes (GET /api/files/meta, /api/files/raw).
+ *  `worktreeRegistry` widens the allow-list beyond `serverCwd` so files inside
+ *  active agent worktrees are viewable; absent in tests -> serverCwd only. */
+export interface FileRouteDeps {
+  serverCwd: string;
+  serverStartedAt: string;
+  worktreeRegistry?: Pick<WorktreeRegistry, 'all'>;
+}
+
 /** Narrower deps for the read-only /api/cost-comparison telemetry route. */
 export interface CostComparisonRouteDeps {
   taskStore: TaskStore;
@@ -130,12 +145,22 @@ export interface CostComparisonRouteDeps {
   tasksFile?: string;
 }
 
+/** Narrower deps for the read-only /api/outcome-ledger scoreboard route. */
+export interface OutcomeLedgerRouteDeps {
+  taskStore: TaskStore;
+  tokenTracker?: TokenTracker;
+  tasksFile?: string;
+  interactionLog?: DeferredInteractionLogWriter;
+}
+
 /** Narrower deps for the typed task-relation graph routes (issue #599). */
 export interface TaskRelationsRouteDeps {
   taskStore: TaskStore;
   queue?: AttentionQueue;
   suppressionTracker?: SnoozeSuppressionTracker;
   tasksFile?: string;
+  /** Coalesced task-state saver for bursty mutation paths. */
+  taskStateSaveScheduler?: TaskStateSaveSchedulerLike;
 }
 
 /**
@@ -150,6 +175,34 @@ export interface ViewerShareDeps {
   grantStore: ViewerGrantStore;
   registry: ViewerConnectionRegistry;
   auditLog: CollaborationAuditLog;
+}
+
+/**
+ * Narrower deps for the deploy / toolkit / plugin maintenance routes
+ * (`/api/deploy/*`, issue #1072). These routes never touch task, monitor, or messaging
+ * state — they only need to locate the production worktree, run plugin
+ * maintenance, and report the running port. Keeping the slice exact prevents
+ * the deploy module from reaching across unrelated server subsystems.
+ */
+export interface DeployRouteDeps {
+  serverCwd: string;
+  /** Port this server bound to. Surfaced via `/api/deploy/status` so the dashboard can detect dev (non-prod) instances and avoid silently triggering prod deploys. */
+  serverPort: number;
+  /** Claude Code binary used for marketplace plugin maintenance. Defaults to KOOKR_AGENT_BIN or `claude`. */
+  pluginUpdateBin?: string;
+  /**
+   * Worktree registry — surfaced to deploy-routes so `resolveProdDir` can
+   * locate the production runtime via the `.kookr-protected` marker rather
+   * than the legacy `kookr-prod` basename heuristic. Optional so tests and
+   * non-server callers can omit it; absent registry falls back to the legacy
+   * sibling-path resolver.
+   */
+  worktreeRegistry?: Pick<WorktreeRegistry, 'all'>;
+  /**
+   * Test seam for routes that inspect or update user-global Claude assets.
+   * Production defaults to os.homedir().
+   */
+  hookHomeDir?: string;
 }
 
 export interface RouteDeps {
@@ -222,6 +275,8 @@ export interface RouteDeps {
   suppressionTracker?: SnoozeSuppressionTracker;
   scheduleService?: ScheduleService;
   scheduleRunner?: ScheduleRunner;
+  /** Coalesced task-state saver for bursty mutation paths. */
+  taskStateSaveScheduler?: TaskStateSaveSchedulerLike;
   diagnosticRunner?: DiagnosticRunner;
   /**
    * V8 terminal backend — exposed to routes so `/api/health` can report its
@@ -275,6 +330,9 @@ export interface RouteDeps {
   coordinatorSuppressions?: CoordinatorSuppressionRegistry;
   /** Operator drain / resume state (issue #659). Absent disables the admin drain routes. */
   drainController?: DrainController;
+  /** Optional snapshot enrichers used by admin-triggered drain/resume broadcasts. */
+  terminalInputCoordinator?: TerminalInputCoordinator;
+  userInputDeliveries?: UserInputDeliveryService;
   /**
    * Resolved API-token auth posture (issue #708). When `required` is true (the
    * server bound to a non-loopback host), a global middleware enforces a bearer
@@ -293,6 +351,8 @@ export interface RouteDeps {
   requestBodyLimitBytes?: number;
   /** In-memory per-route request duration aggregation exposed through diagnostics. */
   requestDurationMetrics?: RequestDurationMetrics;
+  /** Bounded in-memory notification delivery trace exposed through diagnostics. */
+  deliveryTrace?: DeliveryTraceReader;
   /**
    * Owner share control surface (#808): viewer-grant store + connection registry
    * + audit log backing `POST/GET /api/share/viewers`, the revoke route, and the

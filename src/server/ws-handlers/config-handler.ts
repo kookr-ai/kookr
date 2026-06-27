@@ -4,6 +4,7 @@ import type { DeferredTelemetryLogWriter } from '../../core/telemetry.js';
 import type { CircuitBreakerRegistry } from '../../core/circuit-breaker.js';
 import type { ProjectConfig, ProjectConfigStore } from '../../core/project-config-store.js';
 import { nowISO } from '../../core/interaction-log.js';
+import { normalizeProjectWebhookRoutingSettings } from '../../shared/contracts/project-config.js';
 
 /**
  * Narrow dependency bag for configuration-family messages.
@@ -50,6 +51,10 @@ export class ConfigHandler {
           if (config.dailyPrLimit !== undefined) patch.dailyPrLimit = config.dailyPrLimit;
           if (config.weeklyPrLimit !== undefined) patch.weeklyPrLimit = config.weeklyPrLimit;
           if (config.notes !== undefined) patch.notes = config.notes;
+          if (config.webhook !== undefined) {
+            const webhook = normalizeProjectWebhookRoutingSettings(config.webhook);
+            if (webhook !== undefined) patch.webhook = webhook;
+          }
           this.deps.projectConfigStore.setConfig(project, patch);
           await this.deps.projectConfigStore.save();
           this.deps.broadcastProjectSummaries?.();

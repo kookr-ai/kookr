@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, DrainModeError, EffortValidationError, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, type LaunchServiceDeps } from './launch-service.js';
 import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
 
 // Minimal stubs for adapter and lifecycle deps
@@ -671,6 +671,75 @@ describe('launchTask', () => {
     expect(result.task.playbookParameterValues).toEqual({ repo: 'owner/repo', count: '10' });
   });
 
+  it('stamps ask-first delivery authorization by default', async () => {
+    const result = await launchTask(deps, { prompt: 'hello', cwd: '/tmp' });
+
+    expect(result.task.deliveryAuthorization).toBe('ask-first');
+    expect(store.getTask(result.task.id)?.deliveryAuthorization).toBe('ask-first');
+  });
+
+  it('stamps pre-authorized delivery authorization from server-only launch options', async () => {
+    const result = await launchTask(
+      deps,
+      { prompt: 'hello pre-authorized', cwd: '/tmp' },
+      { deliveryPolicy: 'pre-authorized' },
+    );
+
+    expect(result.task.deliveryAuthorization).toBe('pre-authorized');
+    expect(store.getTask(result.task.id)?.deliveryAuthorization).toBe('pre-authorized');
+  });
+
+  it('records launch permission posture when bypass-all-permissions mode is active', async () => {
+    const interactionLog = { append: vi.fn().mockResolvedValue(undefined) } as any;
+    const result = await launchTask({
+      ...deps,
+      interactionLog,
+      bypassAllPermissions: true,
+    }, { prompt: 'hello unguarded', cwd: '/tmp' });
+
+    expect(result.task.metadata?.launchPermissionPosture).toMatchObject({
+      bypassAllPermissions: true,
+      mode: 'bypass-all',
+    });
+    expect(store.getTask(result.task.id)?.metadata?.launchPermissionPosture).toMatchObject({
+      bypassAllPermissions: true,
+      mode: 'bypass-all',
+    });
+    expect(interactionLog.append).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'task_launch_permission_posture',
+      taskId: result.task.id,
+      agentType: 'claude-code',
+      bypassAllPermissions: true,
+      mode: 'bypass-all',
+    }));
+  });
+
+  it('does not stamp launch permission posture until a bypass-mode task actually launches', async () => {
+    const result = await launchTask({
+      ...deps,
+      getMaxActiveTasks: () => 0,
+      bypassAllPermissions: true,
+    }, { prompt: 'queued unguarded later', cwd: '/tmp' });
+
+    expect(result.queued).toBe(true);
+    expect(result.task.metadata?.launchPermissionPosture).toBeUndefined();
+    expect(store.getTask(result.task.id)?.metadata?.launchPermissionPosture).toBeUndefined();
+    expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
+
+  it('does not record launch permission posture by default', async () => {
+    const interactionLog = { append: vi.fn().mockResolvedValue(undefined) } as any;
+    const result = await launchTask({ ...deps, interactionLog, bypassAllPermissions: false }, {
+      prompt: 'hello guarded',
+      cwd: '/tmp',
+    });
+
+    expect(result.task.metadata?.launchPermissionPosture).toBeUndefined();
+    expect(interactionLog.append).not.toHaveBeenCalledWith(expect.objectContaining({
+      type: 'task_launch_permission_posture',
+    }));
+  });
+
   it('does not set playbookParameterValues when not provided', async () => {
     const result = await launchTask(deps, { prompt: 'hello', cwd: '/tmp' });
     expect(result.task.playbookParameterValues).toBeUndefined();
@@ -869,11 +938,30 @@ describe('launchTask', () => {
     expect(result.task.userPrompt).toBe('Implement the bug fix and update tests.');
     expect(result.task.prompt).toContain('You are currently in the main checkout');
     expect(result.task.prompt).toContain(realpathSync(repoDir));
-    expect(result.task.prompt).toContain('Do NOT commit in this checkout');
+    expect(result.task.prompt).toContain('Do NOT commit to main or in this checkout');
     expect(result.task.prompt).toContain('every Kookr task must make tracked-file changes in a fresh git worktree of its own');
     expect(result.task.prompt).toContain(`git worktree add ../${repoDir.split('/').pop()}-<short-name> -b <feature-branch> HEAD`);
     expect(result.task.prompt).toContain('ask the user whether to push the branch and open a PR');
     expect(result.task.prompt).toContain('Implement the bug fix and update tests.');
+  });
+
+  it('prefixes pre-authorized delivery guidance when requested by server launch context', async () => {
+    await initGitRepo(repoDir);
+
+    const result = await launchTask(
+      deps,
+      {
+        prompt: 'Implement the bug fix and update tests.',
+        cwd: repoDir,
+      },
+      { deliveryPolicy: 'pre-authorized' },
+    );
+
+    expect(result.task.prompt).toContain('Delivery is pre-authorized for this task');
+    expect(result.task.prompt).toContain('push the branch and open the PR without asking');
+    expect(result.task.prompt).toContain("If the work does not actually satisfy the task, do NOT open a PR; stop and report what's wrong instead.");
+    expect(result.task.prompt).not.toContain('ask the user whether to push the branch and open a PR');
+    expect(result.task.deliveryAuthorization).toBe('pre-authorized');
   });
 
   it('does not duplicate worktree guidance when the prompt already includes it', async () => {
@@ -910,7 +998,7 @@ describe('launchTask', () => {
     expect(result.task.prompt).toContain(realpathSync(worktreeDir));
     expect(result.task.prompt).toContain('feature/test');
     expect(result.task.prompt).toContain(realpathSync(repoDir));
-    expect(result.task.prompt).toContain('Do NOT commit in this worktree or in the main checkout');
+    expect(result.task.prompt).toContain('Do NOT commit to main, in this worktree, or in the main checkout');
     expect(result.task.prompt).toContain('every Kookr task must make tracked-file changes in a fresh git worktree of its own');
     expect(result.task.prompt).toContain(`git worktree add ../${repoDir.split('/').pop()}-<short-name> -b <feature-branch> HEAD`);
     expect(result.task.prompt).toContain('ask the user whether to push the branch and open a PR');
@@ -1202,5 +1290,87 @@ describe('launchTask round-robin', () => {
     const result = await launchTask(soloDeps, { prompt: 'solo', cwd: '/tmp' });
     expect(result.task.agentType).toBe('codex-cli');
     expect(registry.get('codex-cli').launch).toHaveBeenCalledOnce();
+  });
+});
+
+describe('launchTask cwd validation (RFC F12)', () => {
+  let store: TaskStore;
+  let deps: LaunchServiceDeps;
+
+  beforeEach(() => {
+    store = new TaskStore();
+    deps = makeDeps(store);
+  });
+
+  it('rejects a nonexistent working directory before creating any task record', async () => {
+    const missing = '/nonexistent/kookr-test-cwd';
+    await expect(launchTask(deps, { prompt: 'go', cwd: missing }))
+      .rejects.toThrow(`Working directory does not exist: ${missing}`);
+
+    // Fails fast: no task record, no spawn attempt, nothing to clean up.
+    expect(store.listTasks()).toHaveLength(0);
+    expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
+
+  it('throws a CwdValidationError with code invalid_cwd (for the 400 mapping)', async () => {
+    let caught: unknown;
+    try {
+      await launchTask(deps, { prompt: 'go', cwd: '/nonexistent/kookr-test-cwd' });
+    } catch (err) {
+      caught = err;
+    }
+    expect(isCwdValidationError(caught)).toBe(true);
+    expect(caught).toBeInstanceOf(CwdValidationError);
+    expect((caught as CwdValidationError).code).toBe('invalid_cwd');
+    // The message must LEAD with the actual cause — the WS alert summary
+    // embeds it verbatim, and the old "dtach socket did not appear" flow
+    // buried the cwd hint as the third recovery bullet.
+    expect((caught as CwdValidationError).message).toMatch(/^Working directory does not exist:/);
+  });
+
+  it('rejects a cwd that exists but is a file, not a directory', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-cwd-test-'));
+    try {
+      const file = join(dir, 'not-a-dir');
+      await writeFile(file, 'x');
+      await expect(launchTask(deps, { prompt: 'go', cwd: file }))
+        .rejects.toThrow(`Working directory is not a directory: ${file}`);
+      expect(store.listTasks()).toHaveLength(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts an existing directory', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-cwd-test-'));
+    try {
+      const result = await launchTask(deps, { prompt: 'go', cwd: dir });
+      expect(result.task.cwd).toBe(dir);
+      expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The validateLaunchCwd seam exists for the E2E test server, whose specs
+  // launch into the fictional /test/project. These two tests pin the dispatch
+  // contract: the override fully replaces the default existence check (it
+  // does not run in addition), and a rejecting override still fails fast
+  // before any task record or spawn.
+  it('validateLaunchCwd override replaces the default existence check', async () => {
+    const missing = '/nonexistent/kookr-test-cwd';
+    const validateLaunchCwd = vi.fn().mockResolvedValue(undefined);
+    const result = await launchTask({ ...deps, validateLaunchCwd }, { prompt: 'go', cwd: missing });
+    expect(result.task.cwd).toBe(missing);
+    expect(validateLaunchCwd).toHaveBeenCalledExactlyOnceWith(missing);
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('a rejecting validateLaunchCwd override still fails fast before task creation', async () => {
+    const validateLaunchCwd = vi.fn().mockRejectedValue(new CwdValidationError('Working directory does not exist: /custom'));
+    await expect(launchTask({ ...deps, validateLaunchCwd }, { prompt: 'go', cwd: '/custom' }))
+      .rejects.toThrow('Working directory does not exist: /custom');
+    expect(store.listTasks()).toHaveLength(0);
+    expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
   });
 });

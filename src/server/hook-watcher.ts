@@ -1,70 +1,103 @@
-import { watch, type FSWatcher, statSync } from 'node:fs';
+import {
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  watch,
+  writeFileSync,
+  type FSWatcher,
+} from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { HookEventInjector } from './hook-ingestion.js';
+import { splitHookRecords } from './hook-record-framing.js';
 
 /** Default poll interval for the backup polling mechanism (ms). */
 const DEFAULT_POLL_INTERVAL_MS = 3_000;
+const REPLAY_CHECKPOINT_TAIL_CHARS = 4_096;
 
-export function splitHookRecords(content: string): { records: string[]; consumedChars: number } {
-  const records: string[] = [];
-  let consumedChars = 0;
-  let i = 0;
-
-  while (i < content.length) {
-    while (i < content.length && /\s/.test(content[i])) i += 1;
-    consumedChars = i;
-    if (i >= content.length) break;
-
-    const start = i;
-    if (content[i] !== '{') {
-      const lineEnd = content.indexOf('\n', i);
-      if (lineEnd === -1) break;
-      records.push(content.slice(start, lineEnd));
-      i = lineEnd + 1;
-      consumedChars = i;
-      continue;
-    }
-
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    let complete = false;
-
-    for (; i < content.length; i += 1) {
-      const ch = content[i];
-      if (inString) {
-        if (escaped) {
-          escaped = false;
-        } else if (ch === '\\') {
-          escaped = true;
-        } else if (ch === '"') {
-          inString = false;
-        }
-        continue;
-      }
-
-      if (ch === '"') {
-        inString = true;
-      } else if (ch === '{') {
-        depth += 1;
-      } else if (ch === '}') {
-        depth -= 1;
-        if (depth === 0) {
-          i += 1;
-          records.push(content.slice(start, i));
-          consumedChars = i;
-          complete = true;
-          break;
-        }
-      }
-    }
-
-    if (!complete) break;
-  }
-
-  return { records, consumedChars };
+interface WatchOptions {
+  replayExisting?: boolean;
+  suppressParseAlertsForExisting?: boolean;
+  useReplayCheckpoint?: boolean;
 }
+
+interface HookReplayCheckpointFile {
+  schemaVersion: 'hook-replay-checkpoints.v1';
+  sessions: Record<string, HookReplayCheckpoint>;
+}
+
+interface HookReplayCheckpoint {
+  filePath: string;
+  dev: number;
+  ino: number;
+  sizeBytes: number;
+  offsetChars: number;
+  offsetTail: string;
+}
+
+export type HookWatcherMode = 'fs_watch' | 'poll_until_exists' | 'poll_fallback';
+
+export interface HookWatcherSessionHealth {
+  tmuxName: string;
+  mode: HookWatcherMode;
+  offset: number;
+  pollBackupActive: boolean;
+  replayExisting: boolean;
+  transitionCount: number;
+  lastTransitionAt: string | null;
+  lastTransitionReason: string | null;
+  readCount: number;
+  recordCount: number;
+  replayRecordCount: number;
+  pollTickCount: number;
+  pollChangeDetectedCount: number;
+  drainNowCount: number;
+  drainNowSkippedCount: number;
+  lastPollDriftMs: number | null;
+  maxPollDriftMs: number | null;
+  p95PollDriftMs: number | null;
+  lastDrainLatencyMs: number | null;
+  maxDrainLatencyMs: number | null;
+  p95DrainLatencyMs: number | null;
+  lastReadAt: string | null;
+  lastError: string | null;
+}
+
+export interface HookWatcherHealthSnapshot {
+  schemaVersion: 'hook-watcher-health.v1';
+  generatedAt: string;
+  sessionCount: number;
+  sessions: HookWatcherSessionHealth[];
+}
+
+interface MutableHookWatcherSessionHealth {
+  tmuxName: string;
+  mode: HookWatcherMode;
+  pollBackupActive: boolean;
+  replayExisting: boolean;
+  transitionCount: number;
+  lastTransitionAtMs: number | null;
+  lastTransitionReason: string | null;
+  readCount: number;
+  recordCount: number;
+  replayRecordCount: number;
+  pollTickCount: number;
+  pollChangeDetectedCount: number;
+  drainNowCount: number;
+  drainNowSkippedCount: number;
+  lastPollTickAtMs: number | null;
+  lastPollDriftMs: number | null;
+  maxPollDriftMs: number | null;
+  pollDriftSamples: number[];
+  lastDrainLatencyMs: number | null;
+  maxDrainLatencyMs: number | null;
+  drainLatencySamples: number[];
+  lastReadAtMs: number | null;
+  lastError: string | null;
+}
+
+const HEALTH_SAMPLE_LIMIT = 128;
 
 /**
  * Watches hook JSONL files for new lines and feeds them into the adapter.
@@ -82,30 +115,40 @@ export class HookFileWatcher {
   private pollIntervals = new Map<string, ReturnType<typeof setInterval>>();
   private offsets = new Map<string, number>();
   private reading = new Set<string>(); // Mutex: prevent concurrent reads for same agent
+  private healthBySession = new Map<string, MutableHookWatcherSessionHealth>();
   private pollIntervalMs: number;
   private adapter: HookEventInjector;
+  private replayCheckpointPath: string | null;
+  private replayCheckpoints: HookReplayCheckpointFile;
 
   constructor(
     private hooksDir: string,
     adapter: HookEventInjector,
-    options?: { pollIntervalMs?: number },
+    options?: { pollIntervalMs?: number; replayCheckpointPath?: string },
   ) {
     this.pollIntervalMs = options?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.adapter = adapter;
+    this.replayCheckpointPath = options?.replayCheckpointPath ?? null;
+    this.replayCheckpoints = this.loadReplayCheckpoints();
   }
 
   /** Start watching a hook file for a tmux session.
    *  When replayExisting is true (e.g. after restart), reads from offset 0
    *  to rebuild anomaly state from all prior events. */
-  watch(tmuxName: string, options?: { replayExisting?: boolean }): void {
+  watch(tmuxName: string, options?: WatchOptions): void {
     if (this.watchers.has(tmuxName)) return;
 
     const filePath = join(this.hooksDir, `${tmuxName}.jsonl`);
     const replay = options?.replayExisting ?? false;
+    this.getOrCreateHealth(tmuxName).replayExisting = replay;
 
-    // Initialize offset: 0 to replay existing events, or file size to skip them
+    // Initialize offset: either resume a verified startup replay checkpoint,
+    // replay existing events from zero, or seek to file size for tail-only mode.
     if (replay) {
-      this.offsets.set(tmuxName, 0);
+      this.offsets.set(
+        tmuxName,
+        options?.useReplayCheckpoint === true ? this.resolveReplayOffset(tmuxName, filePath) : 0,
+      );
     } else {
       try {
         const stats = statSync(filePath);
@@ -119,17 +162,28 @@ export class HookFileWatcher {
       const watcher = watch(filePath, { persistent: false }, () => {
         this.readNewLines(tmuxName, filePath);
       });
+      watcher.on('error', (err) => {
+        this.recordHealthError(tmuxName, err);
+        this.transitionMode(tmuxName, 'poll_fallback', 'fs_watch_error');
+        watcher.close();
+        this.watchers.delete(tmuxName);
+      });
 
       this.watchers.set(tmuxName, watcher);
+      this.transitionMode(tmuxName, 'fs_watch', 'watch_started');
 
       // Start backup poll alongside fs.watch
       this.startBackupPoll(tmuxName, filePath);
 
       // If replaying, immediately read existing content
       if (replay) {
-        this.readNewLines(tmuxName, filePath);
+        this.readNewLines(tmuxName, filePath, {
+          startupReplay: options?.suppressParseAlertsForExisting === true,
+          replay: true,
+        });
       }
-    } catch {
+    } catch (err) {
+      this.recordHealthError(tmuxName, err);
       // File might not exist yet — poll until it appears. Preserve the
       // caller's replay intent: when the file finally appears it almost
       // certainly already contains a SessionStart line that the agent
@@ -137,7 +191,7 @@ export class HookFileWatcher {
       // Without forcing replay on the retry, that line would be skipped
       // (offset = stats.size), leaving SessionInfo.claudeSessionId null
       // forever and silently breaking the Ralph cycler's Stop acceptance.
-      this.pollUntilExists(tmuxName, filePath, { replayExisting: replay });
+      this.pollUntilExists(tmuxName, filePath, options);
     }
   }
 
@@ -159,9 +213,22 @@ export class HookFileWatcher {
    * double-process a line regardless of which path observed it first.
    */
   async drainNow(tmuxName: string): Promise<void> {
-    if (!this.offsets.has(tmuxName)) return;
+    const health = this.healthBySession.get(tmuxName);
+    if (!this.offsets.has(tmuxName)) {
+      if (health) health.drainNowSkippedCount += 1;
+      return;
+    }
     const filePath = join(this.hooksDir, `${tmuxName}.jsonl`);
+    const startedAt = Date.now();
     await this.readNewLines(tmuxName, filePath);
+    const latencyMs = Math.max(0, Date.now() - startedAt);
+    const sessionHealth = this.getOrCreateHealth(tmuxName);
+    sessionHealth.drainNowCount += 1;
+    sessionHealth.lastDrainLatencyMs = latencyMs;
+    sessionHealth.maxDrainLatencyMs = sessionHealth.maxDrainLatencyMs === null
+      ? latencyMs
+      : Math.max(sessionHealth.maxDrainLatencyMs, latencyMs);
+    pushBounded(sessionHealth.drainLatencySamples, latencyMs, HEALTH_SAMPLE_LIMIT);
   }
 
   /** Check if a session is being watched. */
@@ -183,6 +250,7 @@ export class HookFileWatcher {
     }
     this.offsets.delete(tmuxName);
     this.reading.delete(tmuxName);
+    this.healthBySession.delete(tmuxName);
   }
 
   /** Stop all watchers. */
@@ -197,6 +265,19 @@ export class HookFileWatcher {
     }
     this.pollIntervals.clear();
     this.reading.clear();
+    this.healthBySession.clear();
+  }
+
+  getHealthSnapshot(): HookWatcherHealthSnapshot {
+    const sessions = [...this.healthBySession.values()]
+      .map((health) => projectWatcherHealth(health, this.offsets.get(health.tmuxName) ?? 0))
+      .sort((a, b) => a.tmuxName.localeCompare(b.tmuxName));
+    return {
+      schemaVersion: 'hook-watcher-health.v1',
+      generatedAt: new Date().toISOString(),
+      sessionCount: sessions.length,
+      sessions,
+    };
   }
 
   /**
@@ -209,11 +290,16 @@ export class HookFileWatcher {
    * future refactorer should not "fix" it to queue-and-wait without
    * re-evaluating watchdog-tick latency.
    */
-  private async readNewLines(tmuxName: string, filePath: string): Promise<void> {
+  private async readNewLines(
+    tmuxName: string,
+    filePath: string,
+    options?: { startupReplay?: boolean; replay?: boolean },
+  ): Promise<void> {
     if (this.reading.has(tmuxName)) return;
     this.reading.add(tmuxName);
 
     try {
+      const fileStat = await stat(filePath).catch(() => undefined);
       const content = await readFile(filePath, 'utf-8');
       let offset = this.offsets.get(tmuxName) ?? 0;
 
@@ -236,18 +322,32 @@ export class HookFileWatcher {
       const newContent = content.slice(offset);
       const { records, consumedChars } = splitHookRecords(newContent);
       this.offsets.set(tmuxName, offset + consumedChars);
-
-      if (records.length === 0) return;
+      const health = this.getOrCreateHealth(tmuxName);
+      health.readCount += 1;
+      health.lastReadAtMs = Date.now();
+      health.recordCount += records.filter((line) => line.trim()).length;
+      if (options?.replay === true) {
+        health.replayRecordCount += records.filter((line) => line.trim()).length;
+      }
 
       for (const line of records) {
         if (!line.trim()) continue;
         try {
-          this.adapter.injectHookEvent(tmuxName, line);
+          this.adapter.injectHookEvent(tmuxName, line, undefined, {
+            startupReplay: options?.startupReplay === true,
+            fileMtimeMs: fileStat?.mtimeMs,
+          });
         } catch (err) {
+          this.recordHealthError(tmuxName, err);
           console.error(`Error parsing hook event for ${tmuxName}:`, err);
         }
       }
+
+      if (options?.replay === true) {
+        await this.writeReplayCheckpoint(tmuxName, filePath, content);
+      }
     } catch (err) {
+      this.recordHealthError(tmuxName, err);
       console.error(`Error reading hook file for ${tmuxName}:`, err);
     } finally {
       this.reading.delete(tmuxName);
@@ -264,6 +364,7 @@ export class HookFileWatcher {
 
     const interval = setInterval(async () => {
       try {
+        this.recordPollTick(tmuxName);
         const fileStat = await stat(filePath);
         const knownOffset = this.offsets.get(tmuxName) ?? 0;
         if (fileStat.size !== knownOffset) {
@@ -276,6 +377,7 @@ export class HookFileWatcher {
           // one read keeps this size-vs-offset check a coarse change trigger,
           // not a correctness gate, so the byte/char unit mismatch here can
           // never drop a record on its own.
+          this.getOrCreateHealth(tmuxName).pollChangeDetectedCount += 1;
           await this.readNewLines(tmuxName, filePath);
         }
       } catch {
@@ -284,6 +386,7 @@ export class HookFileWatcher {
     }, this.pollIntervalMs);
 
     this.pollIntervals.set(tmuxName, interval);
+    this.getOrCreateHealth(tmuxName).pollBackupActive = true;
   }
 
   /**
@@ -299,9 +402,10 @@ export class HookFileWatcher {
   private pollUntilExists(
     tmuxName: string,
     filePath: string,
-    options?: { replayExisting?: boolean },
+    options?: WatchOptions,
   ): void {
     if (this.watchers.has(tmuxName)) return;
+    this.transitionMode(tmuxName, 'poll_until_exists', 'watch_file_missing');
 
     const interval = setInterval(async () => {
       try {
@@ -321,4 +425,187 @@ export class HookFileWatcher {
     } as FSWatcher;
     this.watchers.set(tmuxName, sentinel);
   }
+
+  private getOrCreateHealth(tmuxName: string): MutableHookWatcherSessionHealth {
+    const existing = this.healthBySession.get(tmuxName);
+    if (existing) return existing;
+    const created: MutableHookWatcherSessionHealth = {
+      tmuxName,
+      mode: 'poll_until_exists',
+      pollBackupActive: false,
+      replayExisting: false,
+      transitionCount: 0,
+      lastTransitionAtMs: null,
+      lastTransitionReason: null,
+      readCount: 0,
+      recordCount: 0,
+      replayRecordCount: 0,
+      pollTickCount: 0,
+      pollChangeDetectedCount: 0,
+      drainNowCount: 0,
+      drainNowSkippedCount: 0,
+      lastPollTickAtMs: null,
+      lastPollDriftMs: null,
+      maxPollDriftMs: null,
+      pollDriftSamples: [],
+      lastDrainLatencyMs: null,
+      maxDrainLatencyMs: null,
+      drainLatencySamples: [],
+      lastReadAtMs: null,
+      lastError: null,
+    };
+    this.healthBySession.set(tmuxName, created);
+    return created;
+  }
+
+  private transitionMode(tmuxName: string, mode: HookWatcherMode, reason: string): void {
+    const health = this.getOrCreateHealth(tmuxName);
+    if (health.mode === mode && health.lastTransitionReason === reason) return;
+    health.mode = mode;
+    health.transitionCount += 1;
+    health.lastTransitionAtMs = Date.now();
+    health.lastTransitionReason = reason;
+    console.info('[hook-watcher] mode transition', { tmuxName, mode, reason });
+  }
+
+  private recordPollTick(tmuxName: string): void {
+    const health = this.getOrCreateHealth(tmuxName);
+    const now = Date.now();
+    if (health.lastPollTickAtMs !== null) {
+      const elapsedMs = now - health.lastPollTickAtMs;
+      const driftMs = Math.max(0, elapsedMs - this.pollIntervalMs);
+      health.lastPollDriftMs = driftMs;
+      health.maxPollDriftMs = health.maxPollDriftMs === null ? driftMs : Math.max(health.maxPollDriftMs, driftMs);
+      pushBounded(health.pollDriftSamples, driftMs, HEALTH_SAMPLE_LIMIT);
+    }
+    health.lastPollTickAtMs = now;
+    health.pollTickCount += 1;
+  }
+
+  private recordHealthError(tmuxName: string, err: unknown): void {
+    this.getOrCreateHealth(tmuxName).lastError = err instanceof Error ? err.message : String(err);
+  }
+
+  private loadReplayCheckpoints(): HookReplayCheckpointFile {
+    if (!this.replayCheckpointPath) {
+      return { schemaVersion: 'hook-replay-checkpoints.v1', sessions: {} };
+    }
+    try {
+      const parsed = JSON.parse(readFileSync(this.replayCheckpointPath, 'utf-8')) as unknown;
+      if (!isReplayCheckpointEnvelope(parsed)) {
+        return { schemaVersion: 'hook-replay-checkpoints.v1', sessions: {} };
+      }
+      return parsed;
+    } catch {
+      // Missing/corrupt checkpoint state is intentionally non-fatal: startup
+      // replay falls back to offset zero and rewrites a fresh checkpoint.
+      return { schemaVersion: 'hook-replay-checkpoints.v1', sessions: {} };
+    }
+  }
+
+  private resolveReplayOffset(tmuxName: string, filePath: string): number {
+    const checkpoint = this.replayCheckpoints.sessions[tmuxName];
+    if (!checkpoint || checkpoint.filePath !== filePath) return 0;
+    if (typeof checkpoint.offsetTail !== 'string') return 0;
+
+    try {
+      const stats = statSync(filePath);
+      if (stats.dev !== checkpoint.dev || stats.ino !== checkpoint.ino) return 0;
+      if (stats.size < checkpoint.sizeBytes) return 0;
+      const content = readFileSync(filePath, 'utf-8');
+      if (checkpoint.offsetChars > content.length) return 0;
+      const actualTail = content.slice(
+        Math.max(0, checkpoint.offsetChars - checkpoint.offsetTail.length),
+        checkpoint.offsetChars,
+      );
+      if (actualTail !== checkpoint.offsetTail) return 0;
+      return checkpoint.offsetChars;
+    } catch {
+      return 0;
+    }
+  }
+
+  private async writeReplayCheckpoint(
+    tmuxName: string,
+    filePath: string,
+    content: string,
+  ): Promise<void> {
+    if (!this.replayCheckpointPath) return;
+
+    try {
+      const stats = await stat(filePath);
+      const offset = this.offsets.get(tmuxName) ?? 0;
+      const offsetTailStart = Math.max(0, offset - REPLAY_CHECKPOINT_TAIL_CHARS);
+      this.replayCheckpoints.sessions[tmuxName] = {
+        filePath,
+        dev: stats.dev,
+        ino: stats.ino,
+        sizeBytes: stats.size,
+        offsetChars: offset,
+        offsetTail: content.slice(offsetTailStart, offset),
+      };
+      mkdirSync(dirname(this.replayCheckpointPath), { recursive: true });
+      const tmpPath = `${this.replayCheckpointPath}.tmp`;
+      writeFileSync(tmpPath, `${JSON.stringify(this.replayCheckpoints, null, 2)}\n`, 'utf-8');
+      renameSync(tmpPath, this.replayCheckpointPath);
+    } catch (err) {
+      this.recordHealthError(tmuxName, err);
+      console.warn(`[hook-watcher] failed to write replay checkpoint for ${tmuxName}:`, err);
+    }
+  }
+}
+
+function isReplayCheckpointEnvelope(value: unknown): value is HookReplayCheckpointFile {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as { schemaVersion?: unknown; sessions?: unknown };
+  if (candidate.schemaVersion !== 'hook-replay-checkpoints.v1') return false;
+  if (!candidate.sessions || typeof candidate.sessions !== 'object') return false;
+  return true;
+}
+
+function pushBounded(samples: number[], value: number, limit: number): void {
+  samples.push(value);
+  if (samples.length > limit) samples.splice(0, samples.length - limit);
+}
+
+function projectWatcherHealth(
+  health: MutableHookWatcherSessionHealth,
+  offset: number,
+): HookWatcherSessionHealth {
+  return {
+    tmuxName: health.tmuxName,
+    mode: health.mode,
+    offset,
+    pollBackupActive: health.pollBackupActive,
+    replayExisting: health.replayExisting,
+    transitionCount: health.transitionCount,
+    lastTransitionAt: isoOrNull(health.lastTransitionAtMs),
+    lastTransitionReason: health.lastTransitionReason,
+    readCount: health.readCount,
+    recordCount: health.recordCount,
+    replayRecordCount: health.replayRecordCount,
+    pollTickCount: health.pollTickCount,
+    pollChangeDetectedCount: health.pollChangeDetectedCount,
+    drainNowCount: health.drainNowCount,
+    drainNowSkippedCount: health.drainNowSkippedCount,
+    lastPollDriftMs: health.lastPollDriftMs,
+    maxPollDriftMs: health.maxPollDriftMs,
+    p95PollDriftMs: percentile(health.pollDriftSamples, 0.95),
+    lastDrainLatencyMs: health.lastDrainLatencyMs,
+    maxDrainLatencyMs: health.maxDrainLatencyMs,
+    p95DrainLatencyMs: percentile(health.drainLatencySamples, 0.95),
+    lastReadAt: isoOrNull(health.lastReadAtMs),
+    lastError: health.lastError,
+  };
+}
+
+function percentile(samples: number[], pct: number): number | null {
+  if (samples.length === 0) return null;
+  const sorted = [...samples].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.ceil(sorted.length * pct) - 1);
+  return sorted[index];
+}
+
+function isoOrNull(ms: number | null): string | null {
+  return ms === null ? null : new Date(ms).toISOString();
 }

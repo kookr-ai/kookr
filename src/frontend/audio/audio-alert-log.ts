@@ -13,6 +13,7 @@ export type AudioAlertOutcome =
   | 'suppressed_muted'
   | 'suppressed_dnd'
   | 'suppressed_debounced'
+  | 'suppressed_rate_limited'
   | 'audio_context_unavailable'
   | 'audio_context_error'
   | 'audio_context_suspended';
@@ -25,6 +26,7 @@ export type AudioAlertPrimaryCause =
   | 'manual_test';
 
 export type SoundStateSource = 'localStorage' | 'default' | 'memory_fallback';
+export type ChimeSound = 'classic' | 'soft' | 'urgent';
 
 export interface AudioAlertContext {
   source: AudioAlertSource;
@@ -52,6 +54,8 @@ export interface LocalAudioAlertDecision extends AudioAlertContext {
   timestamp: string;
   outcome: AudioAlertOutcome;
   soundEnabled: boolean;
+  audioVolume: number;
+  chimeSound: ChimeSound;
   soundStateSource: SoundStateSource;
   soundStorageAvailable: boolean;
   dndEnabled: boolean;
@@ -90,6 +94,8 @@ export interface RedactedAudioAlertDecision {
   completionSignalId?: string;
   primaryCause?: AudioAlertPrimaryCause;
   soundEnabled: boolean;
+  audioVolume: number;
+  chimeSound: ChimeSound;
   soundStateSource: SoundStateSource;
   soundStorageAvailable: boolean;
   dndEnabled: boolean;
@@ -149,7 +155,10 @@ export function getClientAudioIdentity(): { clientSessionId: string; clientTabId
 }
 
 function isSuppressedOutcome(outcome: AudioAlertOutcome): boolean {
-  return outcome === 'suppressed_muted' || outcome === 'suppressed_dnd' || outcome === 'suppressed_debounced';
+  return outcome === 'suppressed_muted'
+    || outcome === 'suppressed_dnd'
+    || outcome === 'suppressed_debounced'
+    || outcome === 'suppressed_rate_limited';
 }
 
 function coalesceKey(decision: LocalAudioAlertDecision): string {
@@ -274,6 +283,8 @@ export function redactAudioAlertDecision(decision: LocalAudioAlertDecision): Red
     completionSignalId: decision.completionSignalId,
     primaryCause: decision.primaryCause,
     soundEnabled: decision.soundEnabled,
+    audioVolume: decision.audioVolume,
+    chimeSound: decision.chimeSound,
     soundStateSource: decision.soundStateSource,
     soundStorageAvailable: decision.soundStorageAvailable,
     dndEnabled: decision.dndEnabled,

@@ -77,7 +77,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
       agentType,
     });
     if (sent) {
-      useKookrStore.getState().handleAlert('', `Starting task: ${excerpt}`, 'info');
+      useKookrStore.getState().handleAlert('', `Launching task: ${excerpt}`, 'info');
     } else {
       useKookrStore.getState().handleAlert(
         '',

@@ -1,10 +1,14 @@
 import { describe, expect, test } from 'vitest';
 import {
   filterActions,
+  filterFindings,
+  filterProjects,
   filterTasks,
   groupActionsBySection,
   scoreMatch,
   type CommandAction,
+  type CommandFindingItem,
+  type CommandProjectItem,
   type CommandTaskItem,
 } from './command-palette-model.js';
 
@@ -75,6 +79,62 @@ describe('filterTasks', () => {
   test('matches task label and project label', () => {
     expect(filterTasks(tasks, 'telegram').map((t) => t.taskId)).toEqual(['t1']);
     expect(filterTasks(tasks, 'kookr').map((t) => t.taskId)).toEqual(['t2']);
+  });
+});
+
+describe('filterFindings', () => {
+  const findings: CommandFindingItem[] = [
+    {
+      agentId: 'a1',
+      label: 'Fix telegram STT',
+      severity: 'warning',
+      type: 'needs input',
+      projectLabel: 'kookr',
+      explanation: 'Agent asked for model choice',
+    },
+    {
+      agentId: 'a2',
+      label: 'Investigate launch failure',
+      severity: 'critical',
+      type: 'api error',
+      projectLabel: 'openclaw',
+      explanation: 'Launch dependency failed',
+    },
+  ];
+
+  test('empty query yields no findings (findings only appear while searching)', () => {
+    expect(filterFindings(findings, '')).toEqual([]);
+  });
+
+  test('matches finding label, type, severity, project, and explanation', () => {
+    expect(filterFindings(findings, 'telegram').map((f) => f.agentId)).toEqual(['a1']);
+    expect(filterFindings(findings, 'api error').map((f) => f.agentId)).toEqual(['a2']);
+    expect(filterFindings(findings, 'critical').map((f) => f.agentId)).toEqual(['a2']);
+    expect(filterFindings(findings, 'openclaw').map((f) => f.agentId)).toEqual(['a2']);
+    expect(filterFindings(findings, 'model choice').map((f) => f.agentId)).toEqual(['a1']);
+  });
+});
+
+describe('filterProjects', () => {
+  const projects: CommandProjectItem[] = [
+    { projectId: 'github.com/kookr-ai/kookr', label: 'kookr', activeAgents: 3, findingCount: 1 },
+    {
+      projectId: 'github.com/example/openclaw',
+      label: 'openclaw',
+      activeAgents: 1,
+      findingCount: 0,
+      keywords: ['/srv/openclaw'],
+    },
+  ];
+
+  test('empty query yields no projects (projects only appear while searching)', () => {
+    expect(filterProjects(projects, '')).toEqual([]);
+  });
+
+  test('matches project label, id, and keywords', () => {
+    expect(filterProjects(projects, 'kookr-ai').map((p) => p.projectId)).toEqual(['github.com/kookr-ai/kookr']);
+    expect(filterProjects(projects, 'openclaw').map((p) => p.projectId)).toEqual(['github.com/example/openclaw']);
+    expect(filterProjects(projects, '/srv').map((p) => p.projectId)).toEqual(['github.com/example/openclaw']);
   });
 });
 

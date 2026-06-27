@@ -62,6 +62,7 @@ describe('generateTaskName', () => {
     expect(call.maxTokens).toBeLessThanOrEqual(100);
     expect(call.timeoutMs).toBeGreaterThan(0);
     expect(call.timeoutMs).toBeLessThanOrEqual(30000);
+    expect(call.useCase).toBe('task_naming');
   });
 
   test('requests structured output for task naming', async () => {

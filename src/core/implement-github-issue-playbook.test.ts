@@ -11,7 +11,7 @@ import { KB_LESSON_SKIP_MARKER } from './kb-lesson-classifier.js';
  * fail this suite.
  */
 describe('implement-github-issue playbook', () => {
-  const playbookPath = join(import.meta.dirname, '..', '..', '.kookr', 'playbooks', 'implement-github-issue.md');
+  const playbookPath = join(import.meta.dirname, '..', '..', 'plugin', 'playbooks', 'implement-github-issue.md');
   const content = readFileSync(playbookPath, 'utf-8');
   const pb = parsePlaybook(content, 'implement-github-issue.md', '/');
   const claudeMdPath = join(import.meta.dirname, '..', '..', 'CLAUDE.md');

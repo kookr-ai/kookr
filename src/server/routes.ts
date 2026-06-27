@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { Hono } from 'hono';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { registerDiagnosticsRoutes } from './routes/diagnostics-routes.js';
+import { registerMetricsRoutes } from './routes/metrics-routes.js';
 import { registerAdminRoutes } from './routes/admin-routes.js';
 import { registerProjectRoutes } from './routes/project-routes.js';
 import { registerDeployRoutes } from './routes/deploy-routes.js';
@@ -12,7 +13,9 @@ import { registerSettingsRoutes } from './routes/settings-routes.js';
 import { registerTaskRoutes } from './routes/task-routes.js';
 import { registerCoordinatorRoutes } from './routes/coordinator-routes.js';
 import { registerAgentRoutes } from './routes/agent-routes.js';
+import { registerFileRoutes } from './routes/file-routes.js';
 import { registerCostComparisonRoutes } from './routes/cost-comparison-routes.js';
+import { registerOutcomeLedgerRoutes } from './routes/outcome-ledger-routes.js';
 import { registerTaskRelationsRoutes } from './routes/task-relations-routes.js';
 import { registerRalphRoutes } from './ralph/routes.js';
 import { registerOssAttemptRoutes } from './routes/oss-attempts-routes.js';
@@ -33,23 +36,24 @@ import { isShareGuardedRoute } from './routes/share-routes.js';
 import { readRequestBodyLimitBytesFromEnv } from './config.js';
 import { createJsonRequestBodyLimitMiddleware, type RouteDeps } from './routes/shared.js';
 import { createRequestDurationMiddleware, RequestDurationMetrics } from './request-duration-metrics.js';
+import { createDashboardSecurityHeadersMiddleware } from './security-headers-middleware.js';
+import { createInFlightRequestMiddleware, inFlightRequestRegistry } from './in-flight-request-registry.js';
 
 export type { RouteDeps } from './routes/shared.js';
 
 export function createRoutes(deps: RouteDeps): Hono {
   const app = new Hono();
 
-  // Issue #708: when the server bound to a non-loopback host, enforce a bearer
-  // token on state-changing requests. Registered before route handlers and
-  // body-reading middleware. On a loopback bind `apiAuth.required` is false and
-  // this is a no-op pass-through, keeping the default localhost flow token-free.
-  if (deps.apiAuth?.required) {
+  // Issue #708 + #846: when the server binds to a non-loopback host, enforce
+  // actor auth. On loopback, keep the credential-free owner flow but reject
+  // browser-origin-crossing mutations before route handlers/body parsing.
+  if (deps.apiAuth) {
     app.use('*', createApiAuthMiddleware(deps.apiAuth));
     // #804: double-submit CSRF guard for owner cookie mutations. Installed right
     // after the actor gate so it only ever sees already-authenticated requests;
     // a no-op when no CSRF secret is configured (e.g. tests construct routes
     // without the session feature).
-    if (deps.sessionAuth) {
+    if (deps.apiAuth.required && deps.sessionAuth) {
       app.use(
         '*',
         createCsrfMiddleware({
@@ -66,14 +70,14 @@ export function createRoutes(deps: RouteDeps): Hono {
     }
   }
 
+  const requestDurationMetrics = deps.requestDurationMetrics ?? new RequestDurationMetrics();
+  app.use('*', createInFlightRequestMiddleware(inFlightRequestRegistry));
   app.use(
     '/api/*',
     createJsonRequestBodyLimitMiddleware(
       deps.requestBodyLimitBytes ?? readRequestBodyLimitBytesFromEnv(),
     ),
   );
-
-  const requestDurationMetrics = deps.requestDurationMetrics ?? new RequestDurationMetrics();
   app.use('*', createRequestDurationMiddleware(requestDurationMetrics));
 
   // Hoist the coordinator-suppression-store fallback so task-routes (PATCH /edges
@@ -99,14 +103,17 @@ export function createRoutes(deps: RouteDeps): Hono {
   });
 
   registerDiagnosticsRoutes(app, sharedDeps);
+  registerMetricsRoutes(app, sharedDeps);
   registerAdminRoutes(app, sharedDeps);
   registerSettingsRoutes(app, sharedDeps);
   registerRalphRoutes(app, sharedDeps);
   registerTaskRoutes(app, sharedDeps);
   registerCoordinatorRoutes(app, sharedDeps);
   registerAgentRoutes(app, sharedDeps);
+  registerFileRoutes(app, sharedDeps);
   registerTaskRelationsRoutes(app, sharedDeps);
   registerCostComparisonRoutes(app, sharedDeps);
+  registerOutcomeLedgerRoutes(app, sharedDeps);
   registerProjectRoutes(app, sharedDeps);
   registerOssAttemptRoutes(app, sharedDeps);
   registerScheduleRoutes(app, sharedDeps);
@@ -141,9 +148,11 @@ export function createRoutes(deps: RouteDeps): Hono {
     ttsVoice: deps.ttsVoice ?? DEFAULT_TTS_VOICE,
   });
 
-  // Cache headers for frontend assets:
+  // Dashboard response headers:
+  // - security headers apply to HTML and static assets
   // - /assets/* have content hashes in filenames → cache forever
   // - everything else (index.html) → always revalidate so deploys take effect
+  app.use('/*', createDashboardSecurityHeadersMiddleware());
   app.use('/*', async (c, next) => {
     await next();
     if (c.req.path.startsWith('/assets/')) {

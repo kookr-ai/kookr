@@ -1,5 +1,7 @@
+import { stat } from 'node:fs/promises';
 import type { Task, TaskLaunchHealthSummary, TaskStore } from '../core/tasks.js';
 import type { LaunchOpts, LaunchResult as SharedLaunchResult } from '../shared/contracts/launch.js';
+import type { DeliveryAuthorization } from '../shared/contracts/task.js';
 import {
   type AgentType,
   type AgentSelection,
@@ -26,10 +28,15 @@ import { hashPrompt } from './hash-prompt.js';
 import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
 import { canonicalizeCwd } from './cwd.js';
 import { normalizePromptFileReferences } from './prompt-file-paths.js';
-import { applyWorktreeGuardrails } from './worktree-guardrails.js';
+import { applyWorktreeGuardrails, type DeliveryPolicy } from './worktree-guardrails.js';
 
 export type { LaunchOpts } from '../shared/contracts/launch.js';
 export type LaunchResult = SharedLaunchResult<Task>;
+
+export interface LaunchTaskServerOptions {
+  /** Server-internal policy resolved from trusted launch context, never from shared LaunchOpts. */
+  deliveryPolicy?: DeliveryPolicy;
+}
 
 export interface LaunchServiceDeps {
   taskStore: TaskStore;
@@ -63,6 +70,16 @@ export interface LaunchServiceDeps {
    * launches normally — in-flight agents are never affected either way.
    */
   isAccepting?: () => boolean;
+  /**
+   * Test seam for the launch cwd existence check (RFC F12). E2E specs launch
+   * tasks into the fictional `/test/project` against FakeTerminalBackend,
+   * where nothing is ever spawned in that directory; a no-op override keeps
+   * those launches accepted. Omitted in production: launches into a missing
+   * cwd are rejected with {@link CwdValidationError}.
+   */
+  validateLaunchCwd?: (cwd: string) => Promise<void>;
+  /** True when launches should be audited as running without permission prompts. */
+  bypassAllPermissions?: boolean;
 }
 
 /**
@@ -95,6 +112,41 @@ export class EffortValidationError extends Error {
 /** Type guard for {@link EffortValidationError}, for callers mapping to 400. */
 export function isEffortValidationError(err: unknown): err is EffortValidationError {
   return err instanceof EffortValidationError;
+}
+
+/**
+ * Thrown by {@link launchTask} when the requested working directory does not
+ * exist (or is not a directory) on this machine. Validated up front — before
+ * any task record or terminal session is created — because launching into a
+ * missing cwd otherwise fails seconds later with a cryptic backend error
+ * ("dtach socket did not appear...") that buries the real cause (RFC F12).
+ * The REST API maps this to HTTP 400; the WS path surfaces it as an alert
+ * whose summary leads with the missing-directory cause.
+ */
+export class CwdValidationError extends Error {
+  readonly code = 'invalid_cwd';
+  constructor(message: string) {
+    super(message);
+    this.name = 'CwdValidationError';
+  }
+}
+
+/** Type guard for {@link CwdValidationError}, for callers mapping to 400. */
+export function isCwdValidationError(err: unknown): err is CwdValidationError {
+  return err instanceof CwdValidationError;
+}
+
+/** Fail fast when the launch cwd is missing or not a directory (RFC F12). */
+async function assertLaunchCwdExists(cwd: string): Promise<void> {
+  let stats;
+  try {
+    stats = await stat(cwd);
+  } catch {
+    throw new CwdValidationError(`Working directory does not exist: ${cwd}`);
+  }
+  if (!stats.isDirectory()) {
+    throw new CwdValidationError(`Working directory is not a directory: ${cwd}`);
+  }
 }
 
 /** Active statuses — tasks in these states block duplicate submissions. */
@@ -202,6 +254,7 @@ async function validateDuplicateCandidate(
 export async function launchTask(
   deps: LaunchServiceDeps,
   opts: LaunchOpts,
+  serverOpts: LaunchTaskServerOptions = {},
 ): Promise<LaunchResult> {
   const { taskStore, adapterRegistry, lifecycleDeps } = deps;
   // Operator drain gate (issue #659): refuse new launches while draining, before
@@ -209,6 +262,11 @@ export async function launchTask(
   if (deps.isAccepting && !deps.isAccepting()) {
     throw new DrainModeError();
   }
+  // Fail fast on a missing working directory (RFC F12) — before dedup, task
+  // creation, or any spawn attempt, so the caller gets the actual cause
+  // instead of a delayed "dtach socket did not appear" session failure and no
+  // cleanup is needed.
+  await (deps.validateLaunchCwd ?? assertLaunchCwdExists)(opts.cwd);
   const maxActive = deps.getMaxActiveTasks?.() ?? MAX_ACTIVE_TASKS;
   // Resolve the agent for this launch. An explicit per-launch request wins
   // over the configured default; either may be the `round-robin` sentinel,
@@ -265,8 +323,10 @@ export async function launchTask(
   const launchNote = formatLaunchNote(dependencyFindings);
 
   const userPrompt = normalizePromptFileReferences(opts.prompt, opts.cwd);
-  const guardedPrompt = await applyWorktreeGuardrails(opts.prompt, opts.cwd);
+  const deliveryAuthorization: DeliveryAuthorization = serverOpts.deliveryPolicy ?? 'ask-first';
+  const guardedPrompt = await applyWorktreeGuardrails(opts.prompt, opts.cwd, deliveryAuthorization);
   const effectivePrompt = normalizePromptFileReferences(guardedPrompt, opts.cwd);
+  const bypassAllPermissions = deps.bypassAllPermissions === true;
 
   // Dedup: if an active task with the same prompt and canonical cwd exists,
   // return it idempotently
@@ -308,6 +368,8 @@ export async function launchTask(
     metadata: opts.metadataIntent ? { intent: opts.metadataIntent } : undefined,
     launchHealthSummary,
     launchNote,
+    deliveryAuthorization,
+    autoCloseOnSignal: opts.autoCloseOnSignal,
   });
 
   if (taskStore.getActiveCount() >= maxActive) {
@@ -343,6 +405,24 @@ export async function launchTask(
 
   try {
     await adapterRegistry.get(agentType).launch(task.id, promptWithLaunchNote(task), opts.cwd, undefined, adapterOpts);
+    if (bypassAllPermissions) {
+      const launchPermissionPosture = {
+        bypassAllPermissions: true as const,
+        mode: 'bypass-all' as const,
+        capturedAt: nowISO(),
+      };
+      taskStore.setLaunchPermissionPosture(task.id, launchPermissionPosture);
+      await deps.interactionLog?.append({
+        type: 'task_launch_permission_posture',
+        taskId: task.id,
+        agentType,
+        bypassAllPermissions: true,
+        mode: 'bypass-all',
+        timestamp: launchPermissionPosture.capturedAt,
+      });
+    } else {
+      taskStore.setLaunchPermissionPosture(task.id, undefined);
+    }
   } catch (err) {
     // Clean up the task record so dedup doesn't block future retries. The
     // round-robin cursor was not advanced yet, so a failed launch leaves the

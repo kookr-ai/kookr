@@ -15,17 +15,21 @@
  * (`KOOKR_DEBUG` env ownership/docs stays with the parallel #663 work).
  */
 
-export const LOG_LEVELS = ['error', 'warn', 'info', 'debug'] as const;
-export type LogLevel = (typeof LOG_LEVELS)[number];
+import {
+  LOG_LEVEL_RANK,
+  LOG_LEVELS,
+  isLogLevel as isKnownLogLevel,
+  setLoggerRuntimeLevelGetter,
+  type LogLevel,
+} from '../core/logger.js';
 
-/** Higher rank means more verbose. A level is enabled when the current rank is >= its rank. */
-const LEVEL_RANK: Record<LogLevel, number> = { error: 0, warn: 1, info: 2, debug: 3 };
+export { LOG_LEVELS, type LogLevel };
 
 /** Cap so a fat-fingered TTL can't pin `debug` on for an unreasonable span. */
 const MAX_TTL_SECONDS = 24 * 60 * 60;
 
 export function isLogLevel(value: unknown): value is LogLevel {
-  return typeof value === 'string' && (LOG_LEVELS as readonly string[]).includes(value);
+  return isKnownLogLevel(value);
 }
 
 /** Seed the default level from the startup-only `KOOKR_DEBUG` flag. */
@@ -71,7 +75,7 @@ export function getLogLevel(): LogLevel {
 
 /** True when `level` is at or below the current verbosity (i.e. would be emitted). */
 export function isLevelEnabled(level: LogLevel): boolean {
-  return LEVEL_RANK[getLogLevel()] >= LEVEL_RANK[level];
+  return LOG_LEVEL_RANK[getLogLevel()] >= LOG_LEVEL_RANK[level];
 }
 
 /** Runtime-aware replacement for the static `KOOKR_DEBUG` check. */
@@ -148,3 +152,5 @@ export function resetLogLevel(): void {
   currentLevel = defaultLevel;
   ttlExpiresAt = null;
 }
+
+setLoggerRuntimeLevelGetter(getLogLevel);

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   cpuSeverity,
   eventLoopSeverity,
+  formatResourceDetails,
   formatResourcePercent,
   isResourceStatusStale,
   isSystemResourceStatus,
@@ -20,6 +21,12 @@ function status(overrides: Partial<SystemResourceStatus> = {}): SystemResourceSt
       memoryUsedPercent: 68,
       memoryFreeBytes: 4_000_000_000,
       memoryTotalBytes: 12_000_000_000,
+      dataDirectory: {
+        path: '/tmp/kookr-data',
+        diskFreeBytes: 8_000_000_000,
+        diskTotalBytes: 100_000_000_000,
+        diskFreePercent: 8,
+      },
     },
     server: {
       eventLoopDelayP95Ms: 20,
@@ -60,5 +67,11 @@ describe('resource status helpers', () => {
   test('marks resource status stale from browser receive time', () => {
     expect(isResourceStatusStale(1_000, 10_999)).toBe(false);
     expect(isResourceStatusStale(1_000, 11_001)).toBe(true);
+  });
+
+  test('includes data-directory disk usage in resource details', () => {
+    const details = formatResourceDetails(status(), Date.parse('2026-05-13T00:00:05.000Z'));
+
+    expect(details).toContain('Data dir disk 7.5 GB free / 93 GB total');
   });
 });

@@ -24,7 +24,7 @@ checklist:
 
 Compute these from `{{repoFullName}}`:
 - **repoSlug**: replace `/` with `-` (e.g., `microsoft/vscode` → `microsoft-vscode`)
-- **forkName**: `jeanibarz/<repo>` where `<repo>` is the part after `/`
+- **forkName**: `<your-login>/<repo>` where `<your-login>` is the authenticated `gh` user (`gh api user --jq .login`) and `<repo>` is the part after `/`
 - **defaultBranch**: look up from recon report at `~/.claude/<repoSlug>-recon/recon-report.md`, or default to `main`
 - **testCommand**: look up from recon report (build/test section), or infer from repo language
 - **lintCommand**: look up from recon report, or leave empty

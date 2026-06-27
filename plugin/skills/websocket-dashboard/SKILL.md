@@ -2,7 +2,7 @@
 name: websocket-dashboard
 description: WebSocket patterns for Hono/Bun dashboard connections, connection manager, per-client state, browser lifecycle, back-pressure, rate limiting, message versioning
 keywords: WebSocket, upgradeWebSocket, Hono, Bun, connection manager, per-client state, reconnection, BroadcastChannel, Page Visibility, leader election, ping pong, subscription filtering, back-pressure, bufferedAmount, rate limiting, slow consumer, message envelope, versioning, error budget
-related: realtime-state-sync, dashboard-development, api-route-patterns, error-handling-patterns, resilience-patterns, fouc-rendering-stability, browser-memory-management, incremental-migration-patterns, frontend-error-boundaries
+related: realtime-state-sync, error-handling-patterns
 ---
 
 # WebSocket Dashboard Patterns
@@ -179,4 +179,4 @@ Every message published to Redis; every server subscribes and fans out only to i
 
 ## See Also
 
-[[realtime-state-sync]], [[dashboard-development]], [[api-route-patterns]], [[error-handling-patterns]]
+[[realtime-state-sync]], dashboard-development, api-route-patterns, [[error-handling-patterns]]

@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest';
 import { runDiagnostic, type DiagnosticInput, type PreviousSnapshot } from './self-diagnostic.js';
 import type { AnomalyType } from './types.js';
 import type { DetectionStats } from './detection-stats.js';
+import { getHelperLlmDiagnosticsSnapshot } from './llm-factory.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -10,7 +11,7 @@ import type { DetectionStats } from './detection-stats.js';
 const ANOMALY_TYPES: AnomalyType[] = [
   'needs_input', 'permission_blocked', 'repeated_error', 'merge_conflict',
   'stale_agent', 'hook_disconnected', 'hook_missing', 'tmux_unresponsive',
-  'api_error', 'budget_exceeded',
+  'hook_parse_degraded', 'api_error', 'budget_exceeded',
 ];
 
 function zeroCounts(): Record<AnomalyType, number> {
@@ -29,6 +30,7 @@ function makeInput(overrides: Partial<DiagnosticInput> = {}): DiagnosticInput {
     wsBroadcastCount: 0,
     eventCounts: {},
     lastSnapshotSizeBytes: 10_000,
+    helperLlm: getHelperLlmDiagnosticsSnapshot(),
     ...overrides,
   };
 }
@@ -64,7 +66,48 @@ describe('Self-Diagnostic', () => {
     });
     const report = runDiagnostic(input);
     expect(report.findings).toEqual([]);
+    expect(report.helperLlm.schemaVersion).toBe('helper-llm-diagnostics.v1');
+    expect(report.helperLlm.totals.requestCount).toBe(0);
     expect(report.timestamp).toBeGreaterThan(0);
+  });
+
+  test('exposes active persistence failures with last error details', () => {
+    const input = makeInput({
+      persistenceHealth: {
+        schemaVersion: 'persistence-health.v1',
+        targets: {
+          task_state: {
+            target: 'task_state',
+            totalAttempts: 3,
+            totalFailures: 3,
+            consecutiveFailures: 3,
+            lastAttemptAt: '2026-06-12T10:00:00.000Z',
+            lastSuccessAt: null,
+            lastFailureAt: '2026-06-12T10:00:00.000Z',
+            lastError: { message: 'no space left', code: 'ENOSPC', hard: true },
+          },
+          detection_stats: {
+            target: 'detection_stats',
+            totalAttempts: 0,
+            totalFailures: 0,
+            consecutiveFailures: 0,
+            lastAttemptAt: null,
+            lastSuccessAt: null,
+            lastFailureAt: null,
+            lastError: null,
+          },
+        },
+      },
+    });
+
+    const report = runDiagnostic(input);
+
+    expect(report.persistenceHealth?.targets.task_state.lastError?.code).toBe('ENOSPC');
+    expect(expectSingleFinding(report, 'persistence-health')).toMatchObject({
+      scope: 'task_state',
+      severity: 'critical',
+      observed: 3,
+    });
   });
 
   // --- Minimum uptime gate ---

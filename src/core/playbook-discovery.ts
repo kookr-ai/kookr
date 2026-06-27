@@ -1,4 +1,4 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Playbook, PlaybookScope } from './playbook.js';
@@ -8,6 +8,24 @@ import { detectRepoTags, repoTagsAllow } from './repo-tags.js';
 
 const PROJECT_PLAYBOOKS_SUBDIR = '.kookr/playbooks';
 const PLUGIN_PLAYBOOKS_SUBDIR = 'playbooks';
+const MAX_PLAYBOOK_DIR_CACHE_ENTRIES = 128;
+
+type PlaybookFileSignature = {
+  filename: string;
+  mtimeMs: number;
+  size: number;
+};
+
+type PlaybookDirFingerprint = {
+  dirMtimeMs: number;
+  files: PlaybookFileSignature[];
+};
+
+type PlaybookDirCacheEntry = PlaybookDirFingerprint & {
+  playbooks: Playbook[];
+};
+
+const playbookDirCache = new Map<string, PlaybookDirCacheEntry>();
 
 /**
  * Resolve the per-user playbooks directory. Honours `KOOKR_USER_PLAYBOOKS_DIR`
@@ -51,24 +69,25 @@ export async function discoverPlaybooks(cwd: string): Promise<Playbook[]> {
   // avoid double-reading identical files when paths overlap (e.g. a user runs
   // Kookr inside their home dir and projectDir == userDir).
   const seen = new Set<string>();
-  const scans: Promise<Playbook[]>[] = [];
 
-  scans.push(scanPlaybooksDir(projectDir, cwd, 'project'));
+  const projectPlaybooksPromise = scanPlaybooksDirCached(projectDir, cwd, 'project');
   seen.add(projectDir);
 
+  let userPlaybooksPromise: Promise<Playbook[]> = Promise.resolve([]);
   if (!seen.has(userDir)) {
-    scans.push(scanPlaybooksDir(userDir, userDir, 'user'));
+    userPlaybooksPromise = scanPlaybooksDirCached(userDir, userDir, 'user');
     seen.add(userDir);
   }
+  let pluginPlaybooksPromise: Promise<Playbook[]> = Promise.resolve([]);
   if (pluginDir !== undefined && !seen.has(pluginDir)) {
-    scans.push(scanPlaybooksDir(pluginDir, pluginDir, 'plugin'));
+    pluginPlaybooksPromise = scanPlaybooksDirCached(pluginDir, pluginDir, 'plugin');
     seen.add(pluginDir);
   }
 
   const [projectPlaybooks, userPlaybooks, pluginPlaybooks, repoTags] = await Promise.all([
-    scans[0],
-    scans[1] ?? Promise.resolve([] as Playbook[]),
-    scans[2] ?? Promise.resolve([] as Playbook[]),
+    projectPlaybooksPromise,
+    userPlaybooksPromise,
+    pluginPlaybooksPromise,
     detectRepoTags(cwd),
   ]);
 
@@ -87,19 +106,84 @@ export async function discoverPlaybooks(cwd: string): Promise<Playbook[]> {
   return Array.from(byId.values()).sort((a, b) => a.id.localeCompare(b.id));
 }
 
-async function scanPlaybooksDir(
+async function scanPlaybooksDirCached(
   dir: string,
   sourceCwd: string,
   scope: PlaybookScope,
 ): Promise<Playbook[]> {
-  let filenames: string[];
-  try {
-    const entries = await readdir(dir);
-    filenames = entries.filter((e) => e.endsWith('.md')).sort();
-  } catch {
+  const cacheKey = `${scope}\0${sourceCwd}\0${dir}`;
+  const fingerprint = await fingerprintPlaybooksDir(dir);
+  if (fingerprint === undefined) {
+    playbookDirCache.delete(cacheKey);
     return [];
   }
 
+  const cached = playbookDirCache.get(cacheKey);
+  if (cached !== undefined && fingerprintsEqual(cached, fingerprint)) {
+    return cached.playbooks.slice();
+  }
+
+  const playbooks = await scanPlaybooksDir(
+    dir,
+    sourceCwd,
+    scope,
+    fingerprint.files.map((file) => file.filename),
+  );
+  rememberPlaybookDir(cacheKey, { ...fingerprint, playbooks });
+  return playbooks.slice();
+}
+
+async function fingerprintPlaybooksDir(dir: string): Promise<PlaybookDirFingerprint | undefined> {
+  let dirMtimeMs: number;
+  let filenames: string[];
+  try {
+    const [dirStats, entries] = await Promise.all([stat(dir), readdir(dir)]);
+    dirMtimeMs = dirStats.mtimeMs;
+    filenames = entries.filter((entry) => entry.endsWith('.md')).sort();
+  } catch {
+    return undefined;
+  }
+
+  const files: PlaybookFileSignature[] = [];
+  for (const filename of filenames) {
+    const fileStats = await stat(join(dir, filename));
+    files.push({ filename, mtimeMs: fileStats.mtimeMs, size: fileStats.size });
+  }
+  return { dirMtimeMs, files };
+}
+
+function fingerprintsEqual(
+  cached: PlaybookDirFingerprint,
+  current: PlaybookDirFingerprint,
+): boolean {
+  if (cached.dirMtimeMs !== current.dirMtimeMs) return false;
+  if (cached.files.length !== current.files.length) return false;
+  return cached.files.every((cachedFile, index) => {
+    const currentFile = current.files[index];
+    return (
+      currentFile !== undefined &&
+      cachedFile.filename === currentFile.filename &&
+      cachedFile.mtimeMs === currentFile.mtimeMs &&
+      cachedFile.size === currentFile.size
+    );
+  });
+}
+
+function rememberPlaybookDir(cacheKey: string, entry: PlaybookDirCacheEntry): void {
+  playbookDirCache.delete(cacheKey);
+  playbookDirCache.set(cacheKey, entry);
+
+  if (playbookDirCache.size <= MAX_PLAYBOOK_DIR_CACHE_ENTRIES) return;
+  const oldestKey = playbookDirCache.keys().next().value;
+  if (oldestKey !== undefined) playbookDirCache.delete(oldestKey);
+}
+
+async function scanPlaybooksDir(
+  dir: string,
+  sourceCwd: string,
+  scope: PlaybookScope,
+  filenames: string[],
+): Promise<Playbook[]> {
   const playbooks: Playbook[] = [];
 
   for (const filename of filenames) {

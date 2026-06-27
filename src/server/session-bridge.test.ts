@@ -30,10 +30,18 @@ import type { TerminalInputWriterPort } from '../core/ports/terminal-input-write
 class FakeWs {
   public readyState = 1;
   public OPEN = 1;
+  public bufferedAmount = 0;
+  public closeCode: number | undefined;
+  public closeReason: string | undefined;
   public sent: Array<Buffer | string> = [];
   private listeners = new Map<string, Array<(...a: unknown[]) => void>>();
   send(payload: Buffer | string): void { this.sent.push(payload); }
-  close(_code?: number, _reason?: string): void { this.readyState = 3; this.emit('close'); }
+  close(code?: number, reason?: string): void {
+    this.closeCode = code;
+    this.closeReason = reason;
+    this.readyState = 3;
+    this.emit('close');
+  }
   on(event: string, cb: (...a: unknown[]) => void): void {
     const arr = this.listeners.get(event) ?? [];
     arr.push(cb);
@@ -53,6 +61,29 @@ async function makeReadySession(id: string): Promise<FakeTerminalBackend> {
   return backend;
 }
 
+async function waitForOutputFlush(ms = 15): Promise<void> {
+  await new Promise((r) => setTimeout(r, ms));
+}
+
+async function withEnv<T>(values: Record<string, string>, fn: () => Promise<T>): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const [name, value] of Object.entries(values)) {
+    previous.set(name, process.env[name]);
+    process.env[name] = value;
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  }
+}
+
 describe('SessionBridge', () => {
   it('sends backend-emitted bytes as binary frames', async () => {
     const backend = await makeReadySession('s1');
@@ -61,6 +92,7 @@ describe('SessionBridge', () => {
 
     await bridge.start();
     backend.emit('s1', new Uint8Array([0x48, 0x69])); // "Hi"
+    await waitForOutputFlush();
 
     // Multiple bin frames land — the replay snapshot (may be empty or the
     // fake's synthetic banner) and the live "Hi" emit. Assert on the
@@ -71,6 +103,226 @@ describe('SessionBridge', () => {
       .map((b) => b.toString('utf-8'))
       .join('');
     expect(merged).toContain('Hi');
+  });
+
+  it('batches live backend output into fewer binary frames while preserving byte order', async () => {
+    const backend = await makeReadySession('s1');
+    const ws = new FakeWs();
+    const bridge = new SessionBridge(
+      's1',
+      ws as unknown as never,
+      backend,
+      undefined,
+      undefined,
+      undefined,
+      { outputBatchMs: 1 },
+    );
+    await bridge.start();
+    ws.sent = [];
+
+    backend.emit('s1', new TextEncoder().encode('a'));
+    backend.emit('s1', new TextEncoder().encode('bc'));
+    backend.emit('s1', new TextEncoder().encode('def'));
+    await waitForOutputFlush();
+
+    expect(ws.sent).toHaveLength(1);
+    expect(Buffer.concat(ws.sent.filter(Buffer.isBuffer)).toString('utf-8')).toBe('abcdef');
+  });
+
+  it('defers live output while the websocket is over the soft backpressure threshold', async () => {
+    const backend = await makeReadySession('s1');
+    const ws = new FakeWs();
+    const bridge = new SessionBridge(
+      's1',
+      ws as unknown as never,
+      backend,
+      undefined,
+      undefined,
+      undefined,
+      {
+        outputBatchMs: 1,
+        backpressureRetryMs: 1,
+        backpressureSoftBytes: 10,
+        ownerBackpressureHardBytes: 1000,
+      },
+    );
+    await bridge.start();
+    ws.sent = [];
+    ws.bufferedAmount = 11;
+
+    backend.emit('s1', new TextEncoder().encode('slow'));
+    await waitForOutputFlush();
+    expect(ws.sent).toHaveLength(0);
+
+    ws.bufferedAmount = 0;
+    await waitForOutputFlush();
+    expect(Buffer.concat(ws.sent.filter(Buffer.isBuffer)).toString('utf-8')).toBe('slow');
+  });
+
+  it('uses the environment live-output batch window when constructor options omit it', async () => {
+    await withEnv({ KOOKR_SESSION_BRIDGE_OUTPUT_BATCH_MS: '50' }, async () => {
+      const backend = await makeReadySession('s1');
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+      await bridge.start();
+      ws.sent = [];
+
+      backend.emit('s1', new TextEncoder().encode('env-batched'));
+      await waitForOutputFlush();
+      expect(ws.sent).toHaveLength(0);
+
+      await waitForOutputFlush(50);
+      expect(Buffer.concat(ws.sent.filter(Buffer.isBuffer)).toString('utf-8')).toBe('env-batched');
+    });
+  });
+
+  it('uses environment soft backpressure and retry thresholds when options omit them', async () => {
+    await withEnv({
+      KOOKR_SESSION_BRIDGE_OUTPUT_BATCH_MS: '1',
+      KOOKR_SESSION_BRIDGE_BACKPRESSURE_RETRY_MS: '1',
+      KOOKR_SESSION_BRIDGE_BACKPRESSURE_SOFT_BYTES: '10',
+      KOOKR_SESSION_BRIDGE_OWNER_BACKPRESSURE_HARD_BYTES: '1000',
+    }, async () => {
+      const backend = await makeReadySession('s1');
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+      await bridge.start();
+      ws.sent = [];
+      ws.bufferedAmount = 11;
+
+      backend.emit('s1', new TextEncoder().encode('env-soft'));
+      await waitForOutputFlush();
+      expect(ws.sent).toHaveLength(0);
+
+      ws.bufferedAmount = 0;
+      await waitForOutputFlush();
+      expect(Buffer.concat(ws.sent.filter(Buffer.isBuffer)).toString('utf-8')).toBe('env-soft');
+    });
+  });
+
+  it('closes a backed-up viewer when live output would exceed the hard ceiling', async () => {
+    const backend = await makeReadySession('s1');
+    const ws = new FakeWs();
+    const bridge = new SessionBridge(
+      's1',
+      ws as unknown as never,
+      backend,
+      undefined,
+      undefined,
+      undefined,
+      {
+        readOnly: true,
+        outputBatchMs: 1,
+        backpressureSoftBytes: 10,
+        viewerBackpressureHardBytes: 12,
+      },
+    );
+    await bridge.start();
+    ws.bufferedAmount = 10;
+
+    backend.emit('s1', new TextEncoder().encode('abc'));
+    await waitForOutputFlush();
+
+    expect(ws.readyState).toBe(3);
+    expect(ws.closeCode).toBe(1011);
+    expect(ws.closeReason).toContain('terminal output backpressure exceeded');
+  });
+
+  it('uses the environment owner hard ceiling when constructor options omit it', async () => {
+    await withEnv({
+      KOOKR_SESSION_BRIDGE_OUTPUT_BATCH_MS: '1',
+      KOOKR_SESSION_BRIDGE_OWNER_BACKPRESSURE_HARD_BYTES: '12',
+    }, async () => {
+      const backend = await makeReadySession('s1');
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+      await bridge.start();
+      ws.bufferedAmount = 10;
+
+      backend.emit('s1', new TextEncoder().encode('abc'));
+      await waitForOutputFlush();
+
+      expect(ws.readyState).toBe(3);
+      expect(ws.closeReason).toContain('terminal output backpressure exceeded');
+    });
+  });
+
+  it('uses the environment viewer hard ceiling for read-only bridges', async () => {
+    await withEnv({
+      KOOKR_SESSION_BRIDGE_OUTPUT_BATCH_MS: '1',
+      KOOKR_SESSION_BRIDGE_OWNER_BACKPRESSURE_HARD_BYTES: '1000',
+      KOOKR_SESSION_BRIDGE_VIEWER_BACKPRESSURE_HARD_BYTES: '12',
+    }, async () => {
+      const backend = await makeReadySession('s1');
+      const ws = new FakeWs();
+      const bridge = new SessionBridge(
+        's1',
+        ws as unknown as never,
+        backend,
+        undefined,
+        undefined,
+        undefined,
+        { readOnly: true },
+      );
+      await bridge.start();
+      ws.bufferedAmount = 10;
+
+      backend.emit('s1', new TextEncoder().encode('abc'));
+      await waitForOutputFlush();
+
+      expect(ws.readyState).toBe(3);
+      expect(ws.closeReason).toContain('terminal output backpressure exceeded');
+    });
+  });
+
+  it('ignores fractional environment tuning values instead of flooring them to zero', async () => {
+    await withEnv({
+      KOOKR_SESSION_BRIDGE_OUTPUT_BATCH_MS: '0.5',
+      KOOKR_SESSION_BRIDGE_BACKPRESSURE_RETRY_MS: '0.5',
+      KOOKR_SESSION_BRIDGE_OWNER_BACKPRESSURE_HARD_BYTES: '0.5',
+    }, async () => {
+      const backend = await makeReadySession('s1');
+      const ws = new FakeWs();
+      const bridge = new SessionBridge(
+        's1',
+        ws as unknown as never,
+        backend,
+        undefined,
+        undefined,
+        undefined,
+        { outputBatchMs: 1 },
+      );
+      await bridge.start();
+      ws.sent = [];
+
+      backend.emit('s1', new TextEncoder().encode('not-closed'));
+      await waitForOutputFlush();
+
+      expect(ws.readyState).toBe(ws.OPEN);
+      expect(Buffer.concat(ws.sent.filter(Buffer.isBuffer)).toString('utf-8')).toBe('not-closed');
+    });
+  });
+
+  it('clears pending live output when disposed before the batch flush', async () => {
+    const backend = await makeReadySession('s1');
+    const ws = new FakeWs();
+    const bridge = new SessionBridge(
+      's1',
+      ws as unknown as never,
+      backend,
+      undefined,
+      undefined,
+      undefined,
+      { outputBatchMs: 20 },
+    );
+    await bridge.start();
+    ws.sent = [];
+
+    backend.emit('s1', new TextEncoder().encode('dropped'));
+    bridge.dispose();
+    await waitForOutputFlush(30);
+
+    expect(ws.sent).toHaveLength(0);
   });
 
   it('replays the backend ring buffer to a new attach', async () => {
@@ -480,6 +732,7 @@ describe('SessionBridge', () => {
       expect(() => {
         backend.emit('s1', new Uint8Array([0x48, 0x69]));
       }).not.toThrow();
+      await waitForOutputFlush();
     });
 
     it('closes the WS when captureBytes rejects with SessionAttachFailedError', async () => {
@@ -507,6 +760,169 @@ describe('SessionBridge', () => {
       await bridge.start();
 
       expect(ws.readyState).toBe(3);
+    });
+
+    it('closes the WS without retrying when onData reports the session is gone', async () => {
+      const backend = makeFaultyBackend({
+        onDataError: new SessionGoneError('s1'),
+      });
+      const onDataSpy = vi.spyOn(backend, 'onData');
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+
+      try {
+        await bridge.start();
+
+        expect(onDataSpy).toHaveBeenCalledTimes(1);
+        expect(warn).not.toHaveBeenCalled();
+        expect(err).not.toHaveBeenCalled();
+        expect(ws.readyState).toBe(3);
+      } finally {
+        warn.mockRestore();
+        err.mockRestore();
+      }
+    });
+
+    it('retries transient onData subscription failures before wiring live bytes', async () => {
+      const backend = await makeReadySession('s1');
+      const originalOnData = backend.onData.bind(backend);
+      let attempts = 0;
+      backend.onData = (id: string, cb: (bytes: Uint8Array) => void): (() => void) => {
+        attempts += 1;
+        if (attempts < 3) {
+          throw new Error(`temporary subscribe failure ${attempts}`);
+        }
+        return originalOnData(id, cb);
+      };
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+
+      try {
+        await bridge.start();
+        backend.emit('s1', new Uint8Array([0x48, 0x69])); // "Hi"
+        await waitForOutputFlush();
+
+        const subscribers = (backend.sessions.get('s1') as unknown as { dataSubscribers: Set<unknown> }).dataSubscribers;
+        const merged = ws.sent
+          .filter((s): s is Buffer => Buffer.isBuffer(s))
+          .map((b) => b.toString('utf-8'))
+          .join('');
+        expect(attempts).toBe(3);
+        expect(subscribers.size).toBe(1);
+        expect(ws.readyState).toBe(1);
+        expect(merged).toContain('Hi');
+        expect(warn).toHaveBeenCalledTimes(2);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('replays bytes emitted during transient onData retry backoff', async () => {
+      const backend = await makeReadySession('s1');
+      const originalOnData = backend.onData.bind(backend);
+      let attempts = 0;
+      backend.onData = (id: string, cb: (bytes: Uint8Array) => void): (() => void) => {
+        attempts += 1;
+        if (attempts === 1) {
+          setTimeout(() => backend.emit('s1', 'during-retry'), 0);
+          throw new Error('temporary subscribe failure');
+        }
+        return originalOnData(id, cb);
+      };
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+
+      try {
+        await bridge.start();
+        await waitForOutputFlush();
+
+        const merged = ws.sent
+          .filter((s): s is Buffer => Buffer.isBuffer(s))
+          .map((b) => b.toString('utf-8'))
+          .join('');
+        expect(attempts).toBe(2);
+        expect(merged).toContain('during-retry');
+        expect(ws.readyState).toBe(1);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('does not duplicate bytes emitted after subscribe but before replay capture returns', async () => {
+      const backend = await makeReadySession('s1');
+      const originalCapture = backend.captureBytes.bind(backend);
+      backend.captureBytes = async (id: string): Promise<Uint8Array> => {
+        const subscribers = (backend.sessions.get('s1') as unknown as { dataSubscribers: Set<unknown> }).dataSubscribers;
+        expect(subscribers.size).toBe(1);
+        backend.emit('s1', 'during-capture');
+        return originalCapture(id);
+      };
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+
+      await bridge.start();
+      await waitForOutputFlush();
+
+      const merged = ws.sent
+        .filter((s): s is Buffer => Buffer.isBuffer(s))
+        .map((b) => b.toString('utf-8'))
+        .join('');
+      expect(merged.match(/during-capture/g)).toHaveLength(1);
+    });
+
+    it('closes the WS after exhausting transient onData subscription retries', async () => {
+      const backend = await makeReadySession('s1');
+      let attempts = 0;
+      backend.onData = (): (() => void) => {
+        attempts += 1;
+        throw new Error(`temporary subscribe failure ${attempts}`);
+      };
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+
+      try {
+        await bridge.start();
+
+        const subscribers = (backend.sessions.get('s1') as unknown as { dataSubscribers: Set<unknown> }).dataSubscribers;
+        expect(attempts).toBe(4);
+        expect(subscribers.size).toBe(0);
+        expect(warn).toHaveBeenCalledTimes(3);
+        expect(err).toHaveBeenCalledTimes(1);
+        expect(ws.readyState).toBe(3);
+      } finally {
+        warn.mockRestore();
+        err.mockRestore();
+      }
+    });
+
+    it('stops retrying onData subscription when the WS closes during backoff', async () => {
+      const backend = await makeReadySession('s1');
+      let attempts = 0;
+      backend.onData = (): (() => void) => {
+        attempts += 1;
+        setTimeout(() => ws.close(), 0);
+        throw new Error(`temporary subscribe failure ${attempts}`);
+      };
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+
+      try {
+        await bridge.start();
+
+        const subscribers = (backend.sessions.get('s1') as unknown as { dataSubscribers: Set<unknown> }).dataSubscribers;
+        expect(attempts).toBe(1);
+        expect(subscribers.size).toBe(0);
+        expect(ws.readyState).toBe(3);
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it('ws error during the initial replay window does not escape', async () => {
@@ -702,6 +1118,7 @@ describe('SessionBridge', () => {
       await bridge.start();
 
       backend.emit('s1', new Uint8Array([0x48, 0x69])); // "Hi"
+      await waitForOutputFlush();
 
       const merged = ws.sent
         .filter((s): s is Buffer => Buffer.isBuffer(s))

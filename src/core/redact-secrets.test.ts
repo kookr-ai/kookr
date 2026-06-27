@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { redactSecrets } from './redact-secrets.js';
+import { isSecretFieldName, redactSecrets } from './redact-secrets.js';
 
 describe('redactSecrets', () => {
   it.each([
@@ -27,6 +27,25 @@ describe('redactSecrets', () => {
   it('redacts a PEM block spanning multiple lines', () => {
     const pem = '-----BEGIN PRIVATE KEY-----\nMIIBVwIBADANBg\n-----END PRIVATE KEY-----';
     expect(redactSecrets(`key:\n${pem}`)).toBe('key:\n[REDACTED]');
+  });
+
+  it.each([
+    'token=abc123',
+    'password:super-secret',
+    'api_key=abc123',
+    'access_token=abc123',
+    'client_secret=super-secret',
+    'secret:abc123',
+  ])('redacts key-value credential text: %s', (input) => {
+    expect(redactSecrets(`run with ${input} now`)).toBe('run with [REDACTED] now');
+  });
+
+  it.each(['token', 'access_token', 'client_secret', 'api-key', 'password'])('detects secret field names: %s', (field) => {
+    expect(isSecretFieldName(field)).toBe(true);
+  });
+
+  it.each(['file_path', 'command', 'prompt', 'url'])('does not treat ordinary descriptor fields as secret fields: %s', (field) => {
+    expect(isSecretFieldName(field)).toBe(false);
   });
 
   it('leaves ordinary text untouched', () => {

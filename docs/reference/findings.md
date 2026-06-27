@@ -30,6 +30,7 @@ positive regardless of its type — see [Cross-cutting controls](#cross-cutting-
 | [`stale_agent`](#stale_agent) | info / warning | Agent appears stuck, exited, or hung with no progress. |
 | [`hook_disconnected`](#hook_disconnected) | warning | Agent is visibly active but the hook pipeline stopped delivering events. |
 | [`hook_missing`](#hook_missing) | warning | Hooks were never wired up for the session. |
+| [`hook_parse_degraded`](#hook_parse_degraded) | warning | Hook records are arriving but failing to parse. |
 | [`tmux_unresponsive`](#tmux_unresponsive) | warning | The terminal backend is unreachable. |
 | [`api_error`](#api_error) | warning / critical | The model/provider API failed and killed the turn. |
 | [`budget_exceeded`](#budget_exceeded) | warning / critical | Task cost crossed the configured USD threshold. |
@@ -189,6 +190,27 @@ findings for that session are unavailable.
 **Suppression / tuning.** No threshold knob. Resolve by configuring hooks; this
 is a setup gap, not a tunable signal.
 
+## `hook_parse_degraded`
+
+**Meaning.** Hook records are arriving for the session but at least one live
+record could not be parsed, so Kookr may be missing the agent events that drive
+attention routing.
+
+**Severity.** `warning`.
+
+**Trigger.** Raised by hook ingestion when a live malformed hook record is
+observed. Startup replay of old malformed records and synthetic replay sessions
+remain diagnostics-only. The finding includes a short malformed excerpt and the
+correlation id for the ingested record.
+
+**Recommended response.** Check the hook writer / adapter payload shape for the
+session. A recent agent CLI or hook schema change may be producing records that
+the adapter no longer understands.
+
+**Suppression / tuning.** The signal is edge-triggered per session and re-arms
+after a successful parse, so repeated malformed records do not spam alerts.
+Snooze or mark a false positive if you are intentionally replaying bad payloads.
+
 ## `tmux_unresponsive`
 
 **Meaning.** The terminal backend is unreachable, so Kookr cannot read the
@@ -268,9 +290,48 @@ These apply to any finding regardless of type:
 - **Do Not Disturb** (F5.8) silences toasts, notifications, and the chime while
   detection keeps running.
 
+## Delivery Diagnostics
+
+Operators can inspect a bounded server-side tail of finding delivery decisions
+at `GET /api/diagnostics/delivery-trace`. Records include the finding key,
+correlation id, timestamp, stage (`admitted`, `suppressed`, `webhook_attempt`,
+`webhook_result`), suppression reason, webhook attempt, HTTP status, and
+delivery error where relevant. Raw finding fingerprints are exposed only as
+SHA-256 hashes so explanations and transcript excerpts do not leak through this
+diagnostics surface.
+
+Optional exact-match query filters are `findingId`, `correlationId`, `agentId`,
+and `fingerprintHash`; `limit` returns only the newest matching records. This
+trace only covers decisions the server can observe: attention-queue
+admission/suppression and outbound generic webhook delivery. Browser desktop
+notifications, hosted relay/web-push outcomes, and Telegram inbound audit are
+out of scope until those channels report server-visible outcomes.
+
+## Coordinator detector concepts
+
+Coordinator detector concepts are not `AnomalyType` values and do not participate
+in severity ordering. They power task coordinator chips, chain strips, and the
+coordinator findings pane. Use this section to interpret those surfaces; use the
+catalog above for supervisor anomaly finding cards.
+
+| Coordinator detector | User surface | Trigger | Recommended response |
+| --- | --- | --- | --- |
+| `declared_edge` | Chain chip, chain strip, orphan-edge coordinator card | A task has declared `blocks` or `blocked_by` edges, or a declared `task:<id>` edge points at a task that no longer exists. | Open the relationships control. Keep valid dependencies, remove orphan task edges, or snooze a blocked task while upstream work finishes. |
+| `stale` | `Nudge` coordinator chip with a clock | An in-progress task has no recent `PostToolUse` activity, falling back to the latest active session start when no hook activity exists, for about 30 minutes. | Nudge the agent for a concise status update and next step, then decide whether to let it continue, reply with guidance, or stop/relaunch. |
+| `duplicate` | `Compare` coordinator chip and duplicate-cluster coordinator card | Two or more active tasks share the same normalized prompt, canonical working directory, and agent type. Tasks launched with intentional duplicate metadata are excluded. | Compare the peer task, close or complete the redundant one, or keep both when the duplication was intentional. Use `kookr spawn --dedupe=skip` for intentional duplicate launches. |
+| `done_not_cleared` | `Acknowledge` coordinator chip | A completed task has a completion digest and no follow-up signal, next action, or active anomaly. | Acknowledge it to hide that task-level recommendation for 30 days, or reopen the task detail if follow-up work still exists. |
+
+Coordinator suppressions are persisted locally in `coordinator-suppressions.json`
+under the active Kookr data directory. A class-level dismissal hides a detector
+for an agent type for 7 days; after the third dismissal it widens to 30 days.
+Task acknowledgements, such as acknowledging `done_not_cleared`, apply to one
+task for 30 days.
+
 ## See also
 
 - [Features — F2: Smart Anomaly Detection](../features.md#f2-smart-anomaly-detection-supervisor-agent)
+- [Features — F17: Meta Task Coordinator](../features.md#f17-meta-task-coordinator)
 - [User Guide — Finding Types](../user-guide.md#finding-types)
+- [User Guide — Task Coordinator](../user-guide.md#task-coordinator)
 - [Environment Variables](environment-variables.md)
 - [Architecture — anomaly catalogue](../architecture.md)

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ScheduleStore } from '../core/schedule.js';
@@ -11,6 +11,8 @@ import {
 } from './schedule-runner.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator } from './schedule-validator.js';
+
+const INVALID_PLAYBOOK_PATH_ERROR = 'Playbook path must stay inside the selected playbooks directory';
 
 describe('ScheduleRunner', () => {
   let dir: string;
@@ -278,6 +280,32 @@ Do the test thing.
     expect(launched).toHaveLength(0);
     expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('dispatch_failed');
     expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('missing_playbook');
+  });
+
+  it('rejects a stored traversal playbook path before launching', async () => {
+    await writeFile(join(dir, 'escape.md'), `---
+name: Escaped Playbook
+parameters: []
+---
+
+Do not launch this.
+`);
+    const schedule = store.create({
+      name: 'Traversal Playbook',
+      cron: '* * * * *',
+      playbook: { path: '../../escape.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner();
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('dispatch_failed');
+    expect(store.get(schedule.id)!.latestExecution?.message).toBe(INVALID_PLAYBOOK_PATH_ERROR);
   });
 
   it('fails when cwd does not exist', async () => {
@@ -612,6 +640,206 @@ Do the test thing.
     await tick2;
 
     expect(launchCount).toBe(1);
+  });
+
+  describe('tier-aware firing and resolution health (R9)', () => {
+    let pluginRoot: string;
+
+    beforeEach(async () => {
+      pluginRoot = join(dir, 'plugin');
+      await mkdir(join(pluginRoot, 'playbooks'), { recursive: true });
+      await mkdir(join(pluginRoot, '.claude-plugin'), { recursive: true });
+      await writeFile(join(pluginRoot, '.claude-plugin', 'plugin.json'), '{"name":"kookr-toolkit"}');
+      await writeFile(join(pluginRoot, 'playbooks', 'plug.md'), `---
+name: Plugin Playbook
+description: A plugin playbook
+parameters: []
+checklist:
+  - Step 1
+---
+
+Do the plugin thing.
+`);
+      process.env.KOOKR_PLUGIN_DIR = pluginRoot;
+    });
+
+    afterEach(() => {
+      delete process.env.KOOKR_PLUGIN_DIR;
+    });
+
+    function makeDue(id: string) {
+      replaceSchedule(id, { createdAt: new Date(Date.now() - 2 * 60_000).toISOString() });
+    }
+
+    it('fires a plugin-scoped schedule whose cwd lacks the file', async () => {
+      // `dir` has no plug.md in its project tier — only the plugin tier does.
+      const schedule = store.create({
+        name: 'Plugin Job',
+        cron: '* * * * *',
+        playbook: { path: 'plug.md', parameters: {}, scope: 'plugin' },
+        cwd: dir,
+      });
+      makeDue(schedule.id);
+
+      await createRunner().tick();
+
+      expect(launched).toHaveLength(1);
+      expect(launched[0].prompt).toContain('Do the plugin thing');
+    });
+
+    it('pinned-tier-deleted fails loudly with NO cross-tier substitution', async () => {
+      // test.md exists in the PROJECT tier but the schedule is pinned to plugin,
+      // which has no test.md. Must fail missing_playbook, never substitute.
+      const schedule = store.create({
+        name: 'Mispinned',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {}, scope: 'plugin' },
+        cwd: dir,
+      });
+      makeDue(schedule.id);
+
+      await createRunner().tick();
+
+      expect(launched).toHaveLength(0);
+      expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('dispatch_failed');
+      expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('missing_playbook');
+    });
+
+    it('cache miss renders unknown before the first refresh', () => {
+      const schedule = store.create({
+        name: 'Fresh',
+        cron: '0 9 * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+      });
+      expect(store.getWithComputed(schedule.id)!.playbookResolution).toBe('unknown');
+    });
+
+    it('marks a resolvable schedule resolvable and an unresolvable one unresolvable', () => {
+      const ok = store.create({
+        name: 'OK',
+        cron: '0 9 * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+      });
+      const broken = store.create({
+        name: 'Broken',
+        cron: '0 9 * * *',
+        playbook: { path: 'gone.md', parameters: {} },
+        cwd: dir,
+      });
+
+      createRunner().refreshPlaybookResolution();
+
+      expect(store.getWithComputed(ok.id)!.playbookResolution).toBe('resolvable');
+      expect(store.getWithComputed(broken.id)!.playbookResolution).toBe('unresolvable');
+    });
+
+    it('marks a symlink that escapes the playbooks directory as unresolvable', async () => {
+      const escaped = join(dir, 'outside.md');
+      await writeFile(escaped, '---\nname: Outside\nparameters: []\n---\nbody\n');
+      await symlink(escaped, join(dir, '.kookr', 'playbooks', 'linked.md'));
+      const schedule = store.create({
+        name: 'Escaping Link',
+        cron: '0 9 * * *',
+        playbook: { path: 'linked.md', parameters: {} },
+        cwd: dir,
+      });
+
+      createRunner().refreshPlaybookResolution();
+
+      expect(store.getWithComputed(schedule.id)!.playbookResolution).toBe('unresolvable');
+    });
+
+    it('reports a DISABLED broken schedule as unresolvable', () => {
+      const broken = store.create({
+        name: 'Disabled Broken',
+        cron: '0 9 * * *',
+        playbook: { path: 'gone.md', parameters: {} },
+        cwd: dir,
+        enabled: false,
+      });
+
+      createRunner().refreshPlaybookResolution();
+
+      expect(store.getWithComputed(broken.id)!.playbookResolution).toBe('unresolvable');
+    });
+
+    it('renders unknown after a cwd/path edit invalidates the cached signature', () => {
+      const schedule = store.create({
+        name: 'Edited',
+        cron: '0 9 * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+      });
+      createRunner().refreshPlaybookResolution();
+      expect(store.getWithComputed(schedule.id)!.playbookResolution).toBe('resolvable');
+
+      // Edit the path — the cached entry's signature no longer matches.
+      replaceSchedule(schedule.id, { playbook: { path: 'other.md', parameters: {} } });
+      expect(store.getWithComputed(schedule.id)!.playbookResolution).toBe('unknown');
+    });
+
+    it('emits a warn on a resolvable→unresolvable transition', async () => {
+      const schedule = store.create({
+        name: 'Flips',
+        cron: '0 9 * * *',
+        playbook: { path: 'flip.md', parameters: {} },
+        cwd: dir,
+      });
+      const file = join(dir, '.kookr', 'playbooks', 'flip.md');
+      await writeFile(file, '---\nname: Flip\nparameters: []\n---\nbody\n');
+
+      const runner = createRunner();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      runner.refreshPlaybookResolution(); // seed: resolvable
+      await rm(file, { force: true });
+      runner.refreshPlaybookResolution(); // transition: unresolvable
+      const warned = warnSpy.mock.calls.some(([msg]) => typeof msg === 'string' && msg.includes('became unresolvable'));
+      warnSpy.mockRestore();
+
+      expect(store.getWithComputed(schedule.id)!.playbookResolution).toBe('unresolvable');
+      expect(warned).toBe(true);
+    });
+
+    it('emits NO spurious warn for an already-broken schedule across restarts', () => {
+      store.create({
+        name: 'Born Broken',
+        cron: '0 9 * * *',
+        playbook: { path: 'gone.md', parameters: {} },
+        cwd: dir,
+      });
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      // Two fresh runners simulate a restart — each seeds its own baseline.
+      createRunner().refreshPlaybookResolution();
+      createRunner().refreshPlaybookResolution();
+      const warned = warnSpy.mock.calls.some(([msg]) => typeof msg === 'string' && msg.includes('became unresolvable'));
+      warnSpy.mockRestore();
+
+      expect(warned).toBe(false);
+    });
+
+    it('emits NO warn when the SAME runner re-observes an unchanged-broken schedule (false→false)', () => {
+      store.create({
+        name: 'Stays Broken',
+        cron: '0 9 * * *',
+        playbook: { path: 'gone.md', parameters: {} },
+        cwd: dir,
+      });
+
+      const runner = createRunner();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      // Same runner, two ticks: seed (unresolvable) then re-observe still
+      // unresolvable. The `prev.resolvable` guard must suppress a re-warn —
+      // only a true→false transition warns, not steady-state brokenness.
+      runner.refreshPlaybookResolution();
+      runner.refreshPlaybookResolution();
+      const warned = warnSpy.mock.calls.some(([msg]) => typeof msg === 'string' && msg.includes('became unresolvable'));
+      warnSpy.mockRestore();
+
+      expect(warned).toBe(false);
+    });
   });
 });
 

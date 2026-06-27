@@ -8,6 +8,11 @@ import {
   getOperationalAlertConfig,
   resetOperationalAlertConfig,
 } from '../operational-alert-config.js';
+import {
+  DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
+  DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
+  DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+} from '../config.js';
 import type { RouteDeps } from './shared.js';
 
 function mkApp(deps: Partial<RouteDeps>): Hono {
@@ -80,8 +85,24 @@ describe('admin operational-alert-config routes (issue #737)', () => {
     const res = await get(mkApp({}));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
-      config: { cpuPercent: 70, memoryPercent: 0, eventLoopDelayMs: 0, sustainSamples: 3 },
-      default: { cpuPercent: 70, memoryPercent: 0, eventLoopDelayMs: 0, sustainSamples: 3 },
+      config: {
+        cpuPercent: 70,
+        memoryPercent: 0,
+        eventLoopDelayMs: 0,
+        dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+        dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
+        circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
+        sustainSamples: 3,
+      },
+      default: {
+        cpuPercent: 70,
+        memoryPercent: 0,
+        eventLoopDelayMs: 0,
+        dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+        dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
+        circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
+        sustainSamples: 3,
+      },
     });
   });
 
@@ -92,16 +113,35 @@ describe('admin operational-alert-config routes (issue #737)', () => {
   });
 
   test('POST applies a valid partial update process-wide', async () => {
-    const res = await post(mkApp({}), { memoryPercent: 88, sustainSamples: 2 });
+    const res = await post(mkApp({}), { memoryPercent: 88, dataDirectoryFreeBytes: 1_000, sustainSamples: 2 });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
-      config: { cpuPercent: 70, memoryPercent: 88, eventLoopDelayMs: 0, sustainSamples: 2 },
-      default: { cpuPercent: 70, memoryPercent: 0, eventLoopDelayMs: 0, sustainSamples: 3 },
+      config: {
+        cpuPercent: 70,
+        memoryPercent: 88,
+        eventLoopDelayMs: 0,
+        dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+        dataDirectoryFreeBytes: 1_000,
+        circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
+        sustainSamples: 2,
+      },
+      default: {
+        cpuPercent: 70,
+        memoryPercent: 0,
+        eventLoopDelayMs: 0,
+        dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+        dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
+        circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
+        sustainSamples: 3,
+      },
     });
     expect(getOperationalAlertConfig()).toEqual({
       cpuPercent: 70,
       memoryPercent: 88,
       eventLoopDelayMs: 0,
+      dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+      dataDirectoryFreeBytes: 1_000,
+      circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
       sustainSamples: 2,
     });
   });
@@ -118,12 +158,23 @@ describe('admin operational-alert-config routes (issue #737)', () => {
     expect(await res.json()).toEqual({
       error: 'invalid-sustain-samples',
       field: 'sustainSamples',
-      validFields: ['cpuPercent', 'memoryPercent', 'eventLoopDelayMs', 'sustainSamples'],
+      validFields: [
+        'cpuPercent',
+        'memoryPercent',
+        'eventLoopDelayMs',
+        'dataDirectoryFreePercent',
+        'dataDirectoryFreeBytes',
+        'circuitBreakerOpenMs',
+        'sustainSamples',
+      ],
     });
     expect(getOperationalAlertConfig()).toEqual({
       cpuPercent: 70,
       memoryPercent: 0,
       eventLoopDelayMs: 0,
+      dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+      dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
+      circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
       sustainSamples: 3,
     });
   });
@@ -180,6 +231,74 @@ describe('admin drain routes', () => {
     expect(resumeRes.status).toBe(200);
     expect(await resumeRes.json()).toMatchObject({ accepting: true, draining: false, changed: true });
     expect(drainController.isAccepting()).toBe(true);
+  });
+
+  test('broadcasts a drain-status snapshot when drain state changes', async () => {
+    process.env.KOOKR_ADMIN_TOKEN = 'secret';
+    const headers = { 'x-kookr-admin-token': 'secret' };
+    const broadcastToAll = vi.fn();
+    const monitor = {
+      getSnapshot: () => [{ agentId: 'session-1', taskId: 'task-1', events: [], anomaly: null }],
+    };
+    const terminalInputCoordinator = {
+      getSnapshot: vi.fn(() => ({
+        sessionId: 'session-1',
+        inputStateEpoch: 'epoch-1',
+        readinessVersion: 1,
+        prompt: { kind: 'ready' },
+      })),
+    };
+    const userInputDeliveries = {
+      getSnapshot: vi.fn(() => [{
+        deliveryId: 'delivery-1',
+        sessionId: 'session-1',
+        deliverySeq: 1,
+        source: 'respond',
+        text: 'continue',
+        status: 'queued',
+        createdAt: '2026-06-13T10:00:00.000Z',
+        updatedAt: '2026-06-13T10:00:00.000Z',
+      }]),
+    };
+    const app = mkApp({
+      ...deps,
+      monitor,
+      serverCwd: '/repo',
+      broadcastToAll,
+      terminalInputCoordinator,
+      userInputDeliveries,
+    } as Partial<RouteDeps>);
+
+    await app.request('http://example.com/api/admin/drain', { method: 'POST', headers });
+    await app.request('http://example.com/api/admin/drain', { method: 'POST', headers });
+    await app.request('http://example.com/api/admin/resume', { method: 'POST', headers });
+
+    expect(broadcastToAll).toHaveBeenCalledTimes(2);
+    expect(broadcastToAll.mock.calls[0][0]).toMatchObject({
+      type: 'snapshot',
+      serverCwd: '/repo',
+      drainStatus: { accepting: false, draining: true },
+      agents: [{
+        agentId: 'session-1',
+        terminalInputSnapshot: {
+          sessionId: 'session-1',
+          taskId: 'task-1',
+          inputStateEpoch: 'epoch-1',
+          readinessVersion: 1,
+          promptReady: true,
+        },
+        userInputDeliveries: [{
+          deliveryId: 'delivery-1',
+          status: 'queued',
+          text: 'continue',
+        }],
+      }],
+    });
+    expect(broadcastToAll.mock.calls[1][0]).toMatchObject({
+      type: 'snapshot',
+      serverCwd: '/repo',
+      drainStatus: { accepting: true, draining: false },
+    });
   });
 
   test('repeated drain reports changed:false (idempotent)', async () => {

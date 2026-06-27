@@ -2,7 +2,7 @@
 name: shell-subprocess-safety
 description: Shell subprocess safety patterns - execFileSync over execSync, array arguments, shell feature replacements, static analysis guards. Use when spawning child processes, running git/docker/system commands, or reviewing code that calls execSync.
 keywords: execSync, execFileSync, spawnSync, shell injection, command injection, child_process, CWE-78, shellQuote, escapeShellArg, template literal, subprocess, git command, docker command
-related: error-handling-patterns, process-lifecycle-patterns, cross-language-contract-propagation, testing-patterns
+related: error-handling-patterns, process-lifecycle-patterns, testing-patterns
 ---
 # Shell Subprocess Safety
 ## When to Use
@@ -66,11 +66,15 @@ function assertPort(port: number): void {
 ```
 
 ## Static Analysis Guard
-Run `bun run scripts/lint-execsync.ts` to detect violations:
-- **SA-SINJ-001**: `execSync` with template literal
-- **SA-SINJ-002**: `execSync` with string concatenation
+Detect violations by grepping for the two injection-prone shapes
+(`execSync` with a template literal; `execSync` with string concatenation):
 
-Add to CI pipeline or pre-commit hook to prevent regression.
+```bash
+grep -rn 'execSync(`' src/
+grep -rn 'execSync(.*+' src/
+```
+
+Add the checks to CI or a pre-commit hook to prevent regression.
 
 ## Common Pitfalls
 | Pitfall | Why It Fails | Fix |
@@ -81,8 +85,25 @@ Add to CI pipeline or pre-commit hook to prevent regression.
 | Forgetting `encoding: 'utf-8'` | Returns Buffer not string | Always pass encoding option |
 | Not handling exit code 1 | grep returns 1 for no matches | Wrap in try/catch, check `status` |
 
+## Cross-Platform Portability (Linux ↔ macOS)
+A binary that exists on both platforms may still take different flags. macOS ships **BSD** coreutils and **bash 3.2** (frozen at GPLv2), so GNU-only flags and bash-4 syntax that pass on Debian fail silently on Mac. Whether you call these via `execFileSync` or in a `.sh` script, prefer the portable form.
+
+| GNU-only / bash-4 | Why it breaks on macOS | Portable form |
+|---|---|---|
+| `grep -P` / `-oP` | BSD grep has no PCRE | `grep -E` (POSIX ERE), or `perl`/`awk` |
+| `sed -i 's/…'` | BSD `sed -i` consumes the next token as a backup suffix | `sed -i.bak 's/…' && rm f.bak`; no-backup = `sed -i '' …` |
+| `sed -r` | GNU-only | `sed -E` (both) |
+| `readlink -f` | older macOS `readlink` lacks `-f` | realpath helper / `python`/`perl` |
+| `stat -c`, `date -d` | BSD uses `-f`, `-v`/`-j -f` | gate on `uname -s` |
+| `find -printf`, `xargs -r` | GNU-only | restructure (`-print0`, guard input) |
+| `mapfile`/`readarray`, `${var,,}`, `declare -A` | bash 4+ | `while read`, `tr`, plain arrays |
+| `echo -n` / `echo -e` | literal under POSIX `/bin/sh` | `printf` |
+
+Runtime-only traps no linter catches — verify on a real Mac (or macOS CI): `"${arr[@]}"` under `set -u` when empty (use `"${arr[@]+"${arr[@]}"}"`); heredoc nested in `$(...)` with a backtick (move to a sibling file); `/proc` absence (use `ps`); `/var`→`/private/var` symlink (resolve with `realpath`/`pwd -P`); pnpm dropping native exec bits (restore `+x` in `prepare`); Unix socket `sun_path` ≤ 103 bytes (short `/tmp` base).
+
+Defense in depth: a diff-scoped linter (a `check-shell-portability` helper) catches the static class on every PR for free; a gated macOS CI job is the only thing that exercises the runtime class. A reviewer pass (e.g. a `macos-compat-reviewer` subagent) covers idioms the linter misses, but cannot confirm runtime traps from reading alone.
+
 ## See Also
 - [[error-handling-patterns]] — try/catch discipline for failed commands
 - [[process-lifecycle-patterns]] — signal handling and cleanup
-- [[cross-language-contract-propagation]] — when shell scripts also call same binaries
 - [[testing-patterns]] — testing subprocess calls with mocked execFileSync

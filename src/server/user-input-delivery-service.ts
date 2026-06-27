@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
+import { isPaneBusyOrAwaitingDialog } from '../adapters/agent-launch-context.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
+import { stripTerminalControls, visibleLinesFromTerminalText } from '../shared/pane-semantics.js';
 import type {
   UserInputDeliverySnapshot,
   UserInputDeliverySource,
@@ -10,9 +12,35 @@ import type {
 interface UserInputDeliveryServiceDeps {
   adapter: Pick<AgentAdapter, 'sendInput'>;
   interactionLog?: DeferredInteractionLogWriter;
+  retry?: UserInputDeliveryRetryDeps;
   now?: () => Date;
   idGenerator?: () => string;
 }
+
+export interface UserInputDeliveryRetryDeps {
+  /** Send one bare Enter keystroke to the session. */
+  sendEnter: (sessionId: string) => Promise<void>;
+  /** Capture the current rendered pane for retry evidence gates. */
+  capturePane: (sessionId: string) => Promise<string>;
+  /** Age after PTY acceptance or last retry before another Enter nudge. */
+  confirmTimeoutMs?: number;
+  /** Max bare-Enter retries per delivery. */
+  maxEnterRetries?: number;
+}
+
+const DEFAULT_SUBMIT_CONFIRM_TIMEOUT_MS = 15_000;
+const DEFAULT_MAX_ENTER_RETRIES = 2;
+const PASTED_TEXT_PLACEHOLDER = '[Pasted text';
+const PANE_EVIDENCE_FRAGMENT_CHARS = 48;
+const COMPOSER_DRAFT_LINE_RE = /^\s*[❯›]\s+\S/;
+const EMPTY_COMPOSER_LINE_RE = /^\s*[❯›]\s*$/;
+const TRAILING_COMPOSER_EVIDENCE_LINES = 6;
+const COMPOSER_TRAILING_DECORATION_RES = [
+  /^\s*$/,
+  /^[╭╰│─\s]+$/,
+  /\b(?:esc to interrupt|ctrl\+[a-z]|shift\+tab|tab to queue message)\b/i,
+  /^\s{2}(?:gpt-[\w.-].*|Fast on\s*$|.*(?:% left|context left).*)$/i,
+];
 
 function normalizePrompt(text: string): string {
   return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n+$/g, '');
@@ -20,6 +48,27 @@ function normalizePrompt(text: string): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+export function paneShowsUnsubmittedDelivery(pane: string, deliveryText: string): boolean {
+  const trailingLines = visibleLinesFromTerminalText(stripTerminalControls(pane))
+    .map((line) => line.trimEnd())
+    .slice(-TRAILING_COMPOSER_EVIDENCE_LINES);
+  if (trailingLines.length === 0) return false;
+  const firstLine = normalizePrompt(deliveryText).split('\n').find((line) => line.trim().length > 0);
+  if (!firstLine) return false;
+  const fragment = firstLine.slice(0, PANE_EVIDENCE_FRAGMENT_CHARS);
+
+  for (let i = trailingLines.length - 1; i >= 0; i -= 1) {
+    const line = trailingLines[i];
+    if (EMPTY_COMPOSER_LINE_RE.test(line)) return false;
+    if (!COMPOSER_DRAFT_LINE_RE.test(line)) {
+      if (COMPOSER_TRAILING_DECORATION_RES.some((re) => re.test(line))) continue;
+      return false;
+    }
+    return line.includes(PASTED_TEXT_PLACEHOLDER) || line.includes(fragment);
+  }
+  return false;
 }
 
 export class UserInputDeliveryService {
@@ -55,6 +104,7 @@ export class UserInputDeliveryService {
           type: 'user_input',
           agentId: sessionId,
           content: text,
+          source,
           timestamp: acceptedAt,
         });
       } catch (error) {
@@ -115,6 +165,79 @@ export class UserInputDeliveryService {
         terminalReason: 'session_ended_before_submit_hook',
       });
     }
+  }
+
+  /**
+   * Closed-loop submit retry for mid-session messages. If a delivery was
+   * accepted by the PTY but no provider `UserPromptSubmit` hook arrives, the
+   * original Enter may have been swallowed by TUI paste-burst handling. Send a
+   * bare Enter only when the pane still shows the queued text and is not busy
+   * or awaiting a permission choice.
+   */
+  async sweepUnsubmittedDeliveries(): Promise<number> {
+    const retry = this.deps.retry;
+    if (!retry) return 0;
+
+    const confirmTimeoutMs = retry.confirmTimeoutMs ?? DEFAULT_SUBMIT_CONFIRM_TIMEOUT_MS;
+    const maxEnterRetries = retry.maxEnterRetries ?? DEFAULT_MAX_ENTER_RETRIES;
+    const nowMs = (this.deps.now?.() ?? new Date()).getTime();
+    let nudges = 0;
+
+    for (const [sessionId, deliveries] of this.deliveriesBySession) {
+      const candidates = deliveries.filter((delivery) => (
+        delivery.status === 'queued'
+        && delivery.ptyAcceptedAt !== undefined
+        && delivery.submittedHookLineId === undefined
+        && (delivery.enterRetries ?? 0) < maxEnterRetries
+        && nowMs - Date.parse(delivery.lastRetryAt ?? delivery.ptyAcceptedAt) >= confirmTimeoutMs
+      ));
+      if (candidates.length === 0) continue;
+
+      let pane: string;
+      try {
+        pane = await retry.capturePane(sessionId);
+      } catch {
+        continue;
+      }
+      if (isPaneBusyOrAwaitingDialog(pane)) continue;
+
+      for (const delivery of candidates) {
+        // Re-read before acting: the UserPromptSubmit hook may have
+        // confirmed this delivery while we awaited the pane capture.
+        const beforeEnter = deliveries.find((d) => d.deliveryId === delivery.deliveryId);
+        if (!beforeEnter || beforeEnter.status !== 'queued' || beforeEnter.submittedHookLineId !== undefined) continue;
+        if (!paneShowsUnsubmittedDelivery(pane, beforeEnter.text)) continue;
+        try {
+          await retry.sendEnter(sessionId);
+        } catch {
+          break;
+        }
+        nudges += 1;
+
+        // Re-read again: a confirmation that raced the Enter write must not
+        // be clobbered back to 'queued' by the stale pre-await snapshot —
+        // the hook line is dedup-consumed and could never re-confirm.
+        const afterEnter = deliveries.find((d) => d.deliveryId === delivery.deliveryId);
+        if (!afterEnter || afterEnter.status !== 'queued') break;
+        const retriedAt = this.nowIso();
+        const attempt = (afterEnter.enterRetries ?? 0) + 1;
+        this.replaceDelivery(sessionId, afterEnter.deliveryId, {
+          ...afterEnter,
+          enterRetries: attempt,
+          lastRetryAt: retriedAt,
+          updatedAt: retriedAt,
+        });
+        console.log(JSON.stringify({
+          event: 'user_input_delivery.retry_enter',
+          sessionId,
+          deliveryId: delivery.deliveryId,
+          attempt,
+        }));
+        break;
+      }
+    }
+
+    return nudges;
   }
 
   getSnapshot(sessionId: string): UserInputDeliverySnapshot[] {

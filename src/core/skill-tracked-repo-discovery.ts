@@ -1,6 +1,11 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseOwnerRepoSlug } from '../shared/repo-slug.js';
+import type {
+  SkillDiscoveryProjectStatus,
+  SkillDiscoveryScanStatus,
+  SkillDiscoveryStateSnapshot,
+} from '../shared/contracts/project-discovery.js';
 
 export interface SkillTrackedRepoDiscoveryResult {
   /** Normalized project IDs (e.g. "github.com/owner/repo"). */
@@ -9,17 +14,32 @@ export interface SkillTrackedRepoDiscoveryResult {
   warnings: string[];
   /** ISO timestamp for when discovery completed. */
   scannedAt: string;
+  /** Whether discovery scanned files or skipped because the recon manifest was unchanged. */
+  cacheStatus: Exclude<SkillDiscoveryScanStatus, 'stale'>;
+  /** Why the previous cache was considered stale enough to rescan. */
+  staleReasons: string[];
+  /** Per-project scan/cache status for diagnostics and UI surfaces. */
+  projectStatuses: SkillDiscoveryProjectStatus[];
 }
 
-export interface SkillDiscoveryStateSnapshot {
-  /** Project IDs from the last successful discovery (last-known-good). */
-  projects: string[];
-  /** Warnings from the most recent scan attempt. */
-  warnings: string[];
-  /** ISO timestamp of the last successful scan (if any). */
-  scannedAt?: string;
-  /** Non-null if the latest rescan attempt failed wholesale and state is stale. */
-  lastError?: string;
+interface SkillTrackedRepoDiscoveryOptions {
+  readReportFile?: (path: string) => Promise<string>;
+}
+
+interface ReconManifestEntry {
+  entry: string;
+  kind: 'directory' | 'file';
+  report?: {
+    mode: number;
+    size: number;
+    ctimeMs: number;
+    mtimeMs: number;
+  };
+}
+
+interface ReconManifest {
+  rootReadable: boolean;
+  entries: ReconManifestEntry[];
 }
 
 /**
@@ -34,41 +54,62 @@ export interface SkillDiscoveryStateSnapshot {
  */
 export class SkillTrackedRepoDiscovery {
   private claudeDir: string;
+  private readReportFile: (path: string) => Promise<string>;
+  private cachedManifestKey: string | null = null;
+  private cachedResult: SkillTrackedRepoDiscoveryResult | null = null;
 
-  constructor(claudeDir: string) {
+  constructor(claudeDir: string, options: SkillTrackedRepoDiscoveryOptions = {}) {
     this.claudeDir = claudeDir;
+    this.readReportFile = options.readReportFile ?? ((path) => readFile(path, 'utf-8'));
   }
 
   async discover(): Promise<SkillTrackedRepoDiscoveryResult> {
     const scannedAt = new Date().toISOString();
-    const projects: string[] = [];
-    const warnings: string[] = [];
-    const seen = new Set<string>();
-
-    let entries: string[];
-    try {
-      entries = await readdir(this.claudeDir);
-    } catch {
-      // Missing or unreadable ~/.claude is not an error; treat as empty.
-      return { projects: [], warnings: [], scannedAt };
+    const manifest = await this.readManifest();
+    const manifestKey = JSON.stringify(manifest);
+    if (this.cachedManifestKey === manifestKey && this.cachedResult) {
+      return copyDiscoveryResult({
+        ...this.cachedResult,
+        scannedAt,
+        cacheStatus: 'skipped',
+        staleReasons: [],
+        projectStatuses: this.cachedResult.projectStatuses.map((status) => ({
+          ...status,
+          status: 'skipped',
+          reason: 'recon manifest unchanged',
+        })),
+      });
     }
 
-    for (const entry of entries) {
-      if (!entry.endsWith('-recon')) continue;
+    const projects: string[] = [];
+    const warnings: string[] = [];
+    const projectStatuses: SkillDiscoveryProjectStatus[] = [];
+    const seen = new Set<string>();
+
+    const staleReasons = this.describeStaleReasons(manifest);
+    if (!manifest.rootReadable) {
+      const result = {
+        projects: [],
+        warnings: [],
+        scannedAt,
+        cacheStatus: 'scanned' as const,
+        staleReasons,
+        projectStatuses,
+      };
+      this.cacheResult(manifestKey, result);
+      return copyDiscoveryResult(result);
+    }
+
+    for (const manifestEntry of manifest.entries) {
+      const entry = manifestEntry.entry;
 
       const dirPath = join(this.claudeDir, entry);
-      let dirStat;
-      try {
-        dirStat = await stat(dirPath);
-      } catch {
-        continue;
-      }
-      if (!dirStat.isDirectory()) continue;
+      if (manifestEntry.kind !== 'directory') continue;
 
       const reportPath = join(dirPath, 'recon-report.md');
       let raw: string;
       try {
-        raw = await readFile(reportPath, 'utf-8');
+        raw = await this.readReportFile(reportPath);
       } catch {
         warnings.push(`${entry}: recon-report.md not readable`);
         continue;
@@ -84,10 +125,84 @@ export class SkillTrackedRepoDiscovery {
       if (seen.has(projectId)) continue;
       seen.add(projectId);
       projects.push(projectId);
+      projectStatuses.push({
+        project: projectId,
+        status: 'scanned',
+        reason: staleReasons.length > 0 ? staleReasons.join('; ') : 'initial scan',
+        source: entry,
+      });
     }
 
     projects.sort();
-    return { projects, warnings, scannedAt };
+    projectStatuses.sort((a, b) => a.project.localeCompare(b.project));
+    const result = {
+      projects,
+      warnings,
+      scannedAt,
+      cacheStatus: 'scanned' as const,
+      staleReasons,
+      projectStatuses,
+    };
+    this.cacheResult(manifestKey, result);
+    return copyDiscoveryResult(result);
+  }
+
+  private async readManifest(): Promise<ReconManifest> {
+    let entries: string[];
+    try {
+      entries = await readdir(this.claudeDir);
+    } catch {
+      // Missing or unreadable ~/.claude is not an error; treat as empty.
+      return { rootReadable: false, entries: [] };
+    }
+
+    const manifestEntries: ReconManifestEntry[] = [];
+    for (const entry of entries.sort()) {
+      if (!entry.endsWith('-recon')) continue;
+
+      const dirPath = join(this.claudeDir, entry);
+      let dirStat;
+      try {
+        dirStat = await stat(dirPath);
+      } catch {
+        // Directory listing can race with user edits; skip vanished entries.
+        continue;
+      }
+      if (!dirStat.isDirectory()) {
+        manifestEntries.push({ entry, kind: 'file' });
+        continue;
+      }
+
+      const reportPath = join(dirPath, 'recon-report.md');
+      try {
+        const reportStat = await stat(reportPath);
+        manifestEntries.push({
+          entry,
+          kind: 'directory',
+          report: {
+            mode: reportStat.mode,
+            size: reportStat.size,
+            ctimeMs: reportStat.ctimeMs,
+            mtimeMs: reportStat.mtimeMs,
+          },
+        });
+      } catch {
+        manifestEntries.push({ entry, kind: 'directory' });
+      }
+    }
+
+    return { rootReadable: true, entries: manifestEntries };
+  }
+
+  private describeStaleReasons(manifest: ReconManifest): string[] {
+    if (!this.cachedManifestKey) return [];
+    if (this.cachedManifestKey === JSON.stringify(manifest)) return [];
+    return ['recon manifest changed'];
+  }
+
+  private cacheResult(manifestKey: string, result: SkillTrackedRepoDiscoveryResult): void {
+    this.cachedManifestKey = manifestKey;
+    this.cachedResult = copyDiscoveryResult(result);
   }
 }
 
@@ -117,6 +232,9 @@ export class SkillDiscoveryStateHolder {
       warnings: [...this.snapshot.warnings],
       scannedAt: this.snapshot.scannedAt,
       lastError: this.snapshot.lastError,
+      cacheStatus: this.snapshot.cacheStatus,
+      staleReasons: this.snapshot.staleReasons ? [...this.snapshot.staleReasons] : undefined,
+      projectStatuses: this.snapshot.projectStatuses?.map((status) => ({ ...status })),
     };
   }
 
@@ -152,6 +270,14 @@ export class SkillDiscoveryStateHolder {
         warnings: this.snapshot.warnings,
         scannedAt: this.snapshot.scannedAt,
         lastError: message,
+        cacheStatus: 'stale',
+        staleReasons: [message],
+        projectStatuses: this.snapshot.projects.map((project) => ({
+          project,
+          status: 'stale',
+          reason: message,
+          source: this.snapshot.projectStatuses?.find((status) => status.project === project)?.source,
+        })),
       };
       return this.getSnapshot();
     }
@@ -160,9 +286,23 @@ export class SkillDiscoveryStateHolder {
       projects: result.projects,
       warnings: result.warnings,
       scannedAt: result.scannedAt,
+      cacheStatus: result.cacheStatus,
+      staleReasons: result.staleReasons,
+      projectStatuses: result.projectStatuses,
     };
     return this.getSnapshot();
   }
+}
+
+function copyDiscoveryResult(result: SkillTrackedRepoDiscoveryResult): SkillTrackedRepoDiscoveryResult {
+  return {
+    projects: [...result.projects],
+    warnings: [...result.warnings],
+    scannedAt: result.scannedAt,
+    cacheStatus: result.cacheStatus,
+    staleReasons: [...result.staleReasons],
+    projectStatuses: result.projectStatuses.map((status) => ({ ...status })),
+  };
 }
 
 /**

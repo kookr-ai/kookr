@@ -8,7 +8,7 @@ import {
   validatePermissionApprovalBinding,
   type PermissionApprovalPayload,
   type PermissionRequestBinding,
-} from '../shared/contracts/permission-request-binding.js';
+} from './permission-request-binding.js';
 
 export interface RemotePermissionBrokerDeps {
   adapter: Pick<AgentInteractionPort, 'sendKeystroke'>;

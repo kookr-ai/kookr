@@ -390,7 +390,10 @@ export class ContactIdentityStore {
 
   async load(): Promise<void> {
     if (!this.filePath) return;
-    const loaded = normalizeStoreFile(await readJsonFile<unknown>(this.filePath, null));
+    const loaded = normalizeStoreFile(await readJsonFile<unknown>(this.filePath, null, {
+      quarantineCorrupt: true,
+      warningPrefix: 'contact-identity-store',
+    }));
     this.contacts = new Map(loaded.contacts.map((contact) => [contact.contactId, cloneContact(contact)]));
     this.pairingOffers = new Map(loaded.pairingOffers.map((offer) => [offer.pairingId, { ...offer }]));
     this.acceptedAuthNonces = new Map(

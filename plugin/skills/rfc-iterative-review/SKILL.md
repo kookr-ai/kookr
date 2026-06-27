@@ -84,7 +84,7 @@ If `assumption-archaeologist` reports any `unverified` assumptions, invoke `desi
 
 ### Invocation log (manual)
 
-After invoking `ambition-amplifier` or `assumption-archaeologist`, add a one-line entry to the RFC's "Critic feedback incorporated" section: `<agent-name> <date>: <novel finding | no novel finding | out-of-scope>`. The line is the sole record. If invocation entries stop appearing across 90 days, the agent has been retired by disuse — that is the retirement signal. See `docs/rfc/rfc-hamming-subagents.md` for falsifier criteria.
+After invoking `ambition-amplifier` or `assumption-archaeologist`, add a one-line entry to the RFC's "Critic feedback incorporated" section: `<agent-name> <date>: <novel finding | no novel finding | out-of-scope>`. The line is the sole record. If invocation entries stop appearing across 90 days, the agent has been retired by disuse — that is the retirement signal.
 
 ### After round 1 — Empirical validation checkpoint (MANDATORY)
 
@@ -109,7 +109,8 @@ Converge early (skip further critic rounds) if empirical probes have falsified t
 1. **Triage feedback** — categorize each finding as: incorporate, reject with reason, or defer
 2. **Edit the RFC** — apply incorporated feedback directly to the document
 3. **Add a revision note** — at the bottom of the RFC or in the Status line (e.g., `Draft (v2 — post-review revision)`)
-4. **Early convergence** — if a round produces no substantive findings (only minor or already-addressed items), you may stop iterating early. Note this in your summary.
+4. **Intent preservation check** — before deciding whether to continue, re-read the original user ask, the RFC's Non-Goals, and its Alternatives considered section. Identify any explicit user motivation, constraint, or rejected alternative that is load-bearing. Verify the post-critic design still honors each one. If critic feedback would pivot away from one, the next revision must present that pivot as an explicit tradeoff/choice, not as the silent recommendation. If the original ask has no load-bearing motivation or rejected alternative, record this as a no-op: `Intent preservation check: no load-bearing motivation.`
+5. **Early convergence** — if a round produces no substantive findings (only minor or already-addressed items), you may stop iterating early. Note this in your summary.
 
 ### What counts as substantive
 

@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -94,6 +94,38 @@ describe('verifyDocumentedCommands', () => {
     ]);
   });
 
+  it('accepts documented built node entrypoints when the source exists', () => {
+    const repoRoot = createRepo({
+      scripts: {},
+      docs: '`node dist/server/start.js`',
+      files: ['src/server/start.ts'],
+    });
+
+    const result = verifyDocumentedCommands(repoRoot);
+
+    expect(result.issues).toEqual([]);
+    expect(result.checked.map((command) => command.normalized)).toEqual([
+      'node entrypoint dist/server/start.js (built from src/server/start.ts)',
+    ]);
+  });
+
+  it('does not apply the built-entrypoint fallback to shell scripts', () => {
+    const repoRoot = createRepo({
+      scripts: {},
+      docs: '`bash dist/server/start.js`',
+      files: ['src/server/start.ts'],
+    });
+
+    const result = verifyDocumentedCommands(repoRoot);
+
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        text: 'bash dist/server/start.js',
+        message: 'shell script does not exist: dist/server/start.js',
+      }),
+    ]);
+  });
+
   it('skips manual, placeholder, and compound shell commands instead of failing them', () => {
     const repoRoot = createRepo({
       scripts: {},
@@ -144,6 +176,25 @@ describe('verifyDocumentedCommands', () => {
     expect(result.stderr).toContain('Documented command verification failed:');
     expect(result.stderr).toContain('docs/development.md:1 `pnpm test:e2e`');
     expect(result.stderr).toContain('package.json has no script named "test:e2e"');
+  });
+
+  it('keeps data-directory reference commands and snapshot tokens checkable', () => {
+    const file = 'docs/reference/data-directory.md';
+    const content = readFileSync(join(process.cwd(), file), 'utf8');
+
+    expect(content).toContain('tasks.json.daily.YYYYMMDD');
+    expect(content).toContain('tasks.json.predelete.YYYYMMDDTHHMMSS');
+    expect(content).toContain('KOOKR_DATA_DIR');
+
+    const commands = extractDocumentedCommands(file, content);
+    expect(commands.map((command) => command.text)).toEqual(expect.arrayContaining([
+      'kookr maintenance prune --dry-run --dir "$KOOKR_DATA_DIR"',
+      'kookr maintenance prune --max-age-days 30 --dir "$KOOKR_DATA_DIR"',
+      'pnpm prod:restart',
+    ]));
+
+    const result = verifyDocumentedCommands(process.cwd());
+    expect(result.issues.filter((issue) => issue.file === file)).toEqual([]);
   });
 });
 

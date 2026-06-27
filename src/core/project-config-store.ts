@@ -1,5 +1,9 @@
 import { join } from 'node:path';
 import { atomicWriteFile, readJsonFile } from './persistence-utils.js';
+import {
+  sanitizeProjectConfig,
+  type ProjectConfig,
+} from '../shared/contracts/project-config.js';
 
 // --- Rate Limit Config (from oss-contribution-gate hook) ---
 
@@ -11,23 +15,7 @@ export interface RateLimitConfig {
 
 // --- Project Config ---
 
-export interface ProjectConfig {
-  project: string;       // "github.com/grafana/grafana"
-  /** Explicit user-opted tracking (e.g. added from the GUI) — seeds sidebar membership. */
-  tracked?: boolean;
-  dailyPrLimit?: number; // Default: 2
-  weeklyPrLimit?: number;
-  notes?: string;        // Developer notes about contribution strategy
-  /**
-   * Absolute local checkout path for this project. Stamped on first task
-   * start so the launch dialog can pre-fill the cwd when "Playbook task"
-   * is invoked from the project drawer.
-   *
-   * Machine-local — not meaningful when ~/.kookr/project-configs.json is
-   * synced across machines.
-   */
-  localPath?: string;
-}
+export type { ProjectConfig };
 
 /**
  * Extract "owner/repo" from a project ID ("github.com/owner/repo").
@@ -61,10 +49,14 @@ export class ProjectConfigStore {
   }
 
   async load(): Promise<void> {
-    const arr = await readJsonFile<ProjectConfig[]>(this.filePath, []);
+    const arr = await readJsonFile<unknown[]>(this.filePath, [], {
+      quarantineCorrupt: true,
+      warningPrefix: 'project-config-store',
+    });
     this.configs.clear();
-    for (const config of arr) {
-      this.configs.set(config.project, config);
+    for (const rawConfig of arr) {
+      const config = sanitizeProjectConfig(rawConfig);
+      if (config) this.configs.set(config.project, config);
     }
   }
 
@@ -73,7 +65,10 @@ export class ProjectConfigStore {
    * Merges with any manually-set project configs (manual configs take precedence).
    */
   async loadRateLimits(): Promise<void> {
-    this.rateLimits = await readJsonFile<RateLimitConfig | null>(this.rateLimitsPath, null);
+    this.rateLimits = await readJsonFile<RateLimitConfig | null>(this.rateLimitsPath, null, {
+      quarantineCorrupt: true,
+      warningPrefix: 'project-config-store',
+    });
     if (!this.rateLimits) return;
 
     // Track blocked repos
@@ -126,7 +121,8 @@ export class ProjectConfigStore {
 
   setConfig(project: string, patch: Partial<Omit<ProjectConfig, 'project'>>): ProjectConfig {
     const existing = this.configs.get(project) ?? { project };
-    const updated = { ...existing, ...patch, project };
+    const updated = sanitizeProjectConfig({ ...existing, ...patch, project });
+    if (!updated) throw new Error(`Invalid project config: ${project}`);
     this.configs.set(project, updated);
     return updated;
   }

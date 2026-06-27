@@ -1,10 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_AGENT_TYPE, type AgentType } from './agent-types.js';
 import type { CompletionDigest } from './completion-digest.js';
+import type { CriteriaCompletionVerdict } from '../shared/contracts/completion-digest.js';
 import type { PendingAgentSignal } from '../shared/contracts/agent-signal.js';
-import type { TaskDependencyEdge, TaskPriorityUpdate } from '../shared/contracts/task.js';
+import type {
+  TaskDependencyEdge,
+  TaskLaunchPermissionPosture,
+  TaskPriorityUpdate,
+} from '../shared/contracts/task.js';
 import type { ChildSessionInfo, GitInfo, SessionInfo, WorktreeHealth } from './session-read-model.js';
-import type { TaskStatus } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
 import type {
   CreateTaskOptions,
@@ -12,6 +16,7 @@ import type {
   Task,
   TaskCompletionFeedback,
 } from './task-read-model.js';
+import { isTerminalStatus, type TaskStatus } from './task-status.js';
 import {
   DETERMINISTIC_RELATION_CONFIDENCE,
   taskRelationKey,
@@ -130,12 +135,24 @@ export class TaskStore {
       projectId,
       metadata,
       priority,
+      deliveryAuthorization,
+      autoCloseOnSignal,
     } = opts;
 
     // Validate parent exists if specified
     if (parentTaskId !== undefined && !this.tasks.has(parentTaskId)) {
       throw new Error(`Parent task not found: ${parentTaskId}`);
     }
+
+    // Resolve the auto-close-on-signal policy. An explicit value on the launch
+    // opts always wins (including an explicit `false` to opt a successor out);
+    // otherwise the child inherits the parent's policy so it propagates down a
+    // self-continuation chain without relying on the agent forwarding a flag.
+    // See docs/reference/auto-close-on-signal.md.
+    const parentForInherit = parentTaskId !== undefined ? this.tasks.get(parentTaskId) : undefined;
+    const effectiveAutoCloseOnSignal = autoCloseOnSignal !== undefined
+      ? autoCloseOnSignal
+      : parentForInherit?.autoCloseOnSignal === true;
 
     const now = new Date();
     const task: Task = {
@@ -163,6 +180,8 @@ export class TaskStore {
     if (launchNote) task.launchNote = launchNote;
     if (metadata) task.metadata = structuredClone(metadata);
     if (priority === 'high') task.priority = priority;
+    if (deliveryAuthorization) task.deliveryAuthorization = deliveryAuthorization;
+    if (effectiveAutoCloseOnSignal) task.autoCloseOnSignal = true;
     this.tasks.set(task.id, task);
 
     // Link child to parent
@@ -261,8 +280,14 @@ export class TaskStore {
     if (!VALID_TRANSITIONS[task.status].has(to)) {
       throw new InvalidTransitionError(task.status, to);
     }
+    const now = new Date();
     task.status = to;
-    task.updatedAt = new Date();
+    task.updatedAt = now;
+    if (isTerminalStatus(to)) {
+      task.finishedAt ??= now;
+    } else {
+      delete task.finishedAt;
+    }
     return task;
   }
 
@@ -482,7 +507,18 @@ export class TaskStore {
   setCompletionDigest(taskId: string, digest: CompletionDigest): void {
     const task = this.tasks.get(taskId);
     if (!task) return;
-    task.completionDigest = digest;
+    const criteriaVerdict = digest.criteriaVerdict ?? task.completionDigest?.criteriaVerdict;
+    task.completionDigest = criteriaVerdict ? { ...digest, criteriaVerdict } : digest;
+    task.updatedAt = new Date();
+  }
+
+  setCriteriaVerdict(taskId: string, verdict: CriteriaCompletionVerdict): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    task.completionDigest = {
+      ...(task.completionDigest ?? { bullets: ['Task completed'], filesChanged: [] }),
+      criteriaVerdict: structuredClone(verdict) as CriteriaCompletionVerdict,
+    };
     task.updatedAt = new Date();
   }
 
@@ -511,6 +547,25 @@ export class TaskStore {
     if (!task) return;
     task.reflectMeta = meta;
     task.updatedAt = new Date();
+  }
+
+  setLaunchPermissionPosture(taskId: string, posture: TaskLaunchPermissionPosture | undefined): Task {
+    const task = this.tasks.get(taskId);
+    if (!task) {
+      throw new Error(`Task not found: ${taskId}`);
+    }
+    if (posture) {
+      task.metadata = {
+        ...(task.metadata ?? {}),
+        launchPermissionPosture: structuredClone(posture),
+      };
+    } else if (task.metadata?.launchPermissionPosture) {
+      const metadata = structuredClone(task.metadata);
+      delete metadata.launchPermissionPosture;
+      task.metadata = Object.keys(metadata).length > 0 ? metadata : undefined;
+    }
+    task.updatedAt = new Date();
+    return cloneTask(task);
   }
 
   updateTokenUsage(taskId: string, usage: TokenUsage): Task {

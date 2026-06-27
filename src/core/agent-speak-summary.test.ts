@@ -106,6 +106,8 @@ describe('summarizeAgent', () => {
     expect(result.usedFallback).toBe(false);
     expect(result.fallbackReason).toBe(null);
     expect(result.text).toBe('Refactor auth. Working through the auth refactor.');
+    const call = (client.complete as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.useCase).toBe('agent_speech_summary');
   });
 
   test('rejects malformed JSON with reason=schema-violation', async () => {

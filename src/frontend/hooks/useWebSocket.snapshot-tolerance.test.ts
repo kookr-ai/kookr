@@ -12,9 +12,11 @@ import {
   recordAndParseServerMessageForClient,
   recordClientMessageForSend,
   useWebSocket,
+  workspaceRefreshMessageAfterSweep,
 } from './useWebSocket.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { getBugReportWireObservations, resetBugReportRecorderForTests } from '../bug-report-recorder.js';
+import type { ServerMessage } from '../../shared/protocol.js';
 
 class RuntimeWebSocket {
   static OPEN = 1;
@@ -86,6 +88,72 @@ describe('parseServerMessageForClient snapshot tolerance', () => {
     });
   });
 
+  it('updates bypass permission state through the mounted snapshot runtime path', async () => {
+    RuntimeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', RuntimeWebSocket);
+    const container = document.createElement('div');
+    const root: Root = createRoot(container);
+    useKookrStore.setState({ bypassAllPermissions: false });
+
+    await act(async () => {
+      root.render(React.createElement(WebSocketProbe, { onReady: () => {} }));
+    });
+
+    const socket = RuntimeWebSocket.instances[0];
+    expect(socket).toBeDefined();
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'snapshot',
+          agents: [],
+          serverCwd: '/repo',
+          bypassAllPermissions: true,
+        }),
+      });
+    });
+
+    expect(useKookrStore.getState().bypassAllPermissions).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('updates drain status through the mounted snapshot runtime path', async () => {
+    RuntimeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', RuntimeWebSocket);
+    const container = document.createElement('div');
+    const root: Root = createRoot(container);
+    useKookrStore.setState({ drainStatus: { accepting: true, draining: false } });
+
+    await act(async () => {
+      root.render(React.createElement(WebSocketProbe, { onReady: () => {} }));
+    });
+
+    const socket = RuntimeWebSocket.instances[0];
+    expect(socket).toBeDefined();
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'snapshot',
+          agents: [],
+          serverCwd: '/repo',
+          drainStatus: { accepting: false, draining: true, since: '2026-05-29T12:00:00.000Z' },
+        }),
+      });
+    });
+
+    expect(useKookrStore.getState().drainStatus).toEqual({
+      accepting: false,
+      draining: true,
+      since: '2026-05-29T12:00:00.000Z',
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it('records malformed inbound messages before returning null', () => {
     resetBugReportRecorderForTests();
 
@@ -107,6 +175,26 @@ describe('parseServerMessageForClient snapshot tolerance', () => {
     expect(serialized).toContain('"type":"respond"');
     expect(serialized).toContain('"input"');
     expect(serialized).not.toContain('private customer prompt');
+  });
+
+  it('refreshes only the currently displayed workspace after a matching sweep project completes', () => {
+    const msg: Extract<ServerMessage, { type: 'workspaceSweepComplete' }> = {
+      type: 'workspaceSweepComplete',
+      runId: 'run-1',
+      startedAt: '2026-06-21T05:00:00.000Z',
+      finishedAt: '2026-06-21T05:00:01.000Z',
+      projects: [
+        { kind: 'ok', projectId: 'github.com/acme/a', summaries: [], elapsedMs: 5 },
+        { kind: 'ok', projectId: 'github.com/acme/b', summaries: [], elapsedMs: 7 },
+      ],
+    };
+
+    expect(workspaceRefreshMessageAfterSweep(msg, 'github.com/acme/a')).toEqual({
+      type: 'workspace:getView',
+      projectId: 'github.com/acme/a',
+    });
+    expect(workspaceRefreshMessageAfterSweep(msg, 'github.com/acme/c')).toBeNull();
+    expect(workspaceRefreshMessageAfterSweep(msg, null)).toBeNull();
   });
 
 
@@ -143,6 +231,8 @@ describe('parseServerMessageForClient snapshot tolerance', () => {
           'local-node': [],
         },
       },
+      bypassAllPermissions: true,
+      drainStatus: { accepting: false, draining: true },
     }, (...args) => {
       calls.push(args);
     });
@@ -151,6 +241,8 @@ describe('parseServerMessageForClient snapshot tolerance', () => {
     expect(calls[0][12]).toBe(7);
     expect(calls[0][13]).toEqual({ capabilitiesByDevice: { 'local-node': [] } });
     expect(calls[0][14]).toEqual({ outputs: [{ detectorId: 'stale', taskId: 'task-1', evidence: {} }], chips: [], findings: [], chains: {} });
+    expect(calls[0][16]).toBe(true);
+    expect(calls[0][17]).toEqual({ accepting: false, draining: true });
   });
 
   it('dispatches standalone coordinator snapshots through the coordinator runtime path', () => {

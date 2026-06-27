@@ -17,10 +17,14 @@ const EXIT_SERVER_ERROR = 4;
 const HELP_TEXT = `kookr ralph — inspect or control a Ralph loop.
 
 Usage:
-  kookr ralph status <taskId>
-  kookr ralph pause <taskId>
-  kookr ralph resume <taskId>
-  kookr ralph cancel <taskId>
+  kookr ralph status <taskId> [--json]
+  kookr ralph pause <taskId> [--json]
+  kookr ralph resume <taskId> [--json]
+  kookr ralph cancel <taskId> [--json]
+
+Options:
+  --json             Print one machine-readable JSON envelope to stdout.
+  -h, --help         Show this help.
 
 Environment:
   KOOKR_API_BASE_URL   Base URL of a running Kookr server.
@@ -30,10 +34,16 @@ Environment:
 class UsageError extends Error {}
 
 function parseRalphArgs(argv) {
-  if (argv.length === 0 || argv[0] === '-h' || argv[0] === '--help') {
-    return { help: true };
+  const filtered = [];
+  let json = false;
+  for (const tok of argv) {
+    if (tok === '--json') json = true;
+    else filtered.push(tok);
   }
-  const [command, taskId, ...rest] = argv;
+  if (filtered.length === 0 || filtered[0] === '-h' || filtered[0] === '--help') {
+    return { help: true, json };
+  }
+  const [command, taskId, ...rest] = filtered;
   if (!['status', 'pause', 'resume', 'cancel'].includes(command)) {
     throw new UsageError(`unknown Ralph command: ${command}`);
   }
@@ -43,7 +53,7 @@ function parseRalphArgs(argv) {
   if (rest.length > 0) {
     throw new UsageError(`unexpected argument: ${rest[0]}`);
   }
-  return { help: false, command, taskId };
+  return { help: false, command, taskId, json };
 }
 
 function parsePortEnv(raw) {
@@ -143,6 +153,15 @@ function renderRalphControl(result) {
   return `Ralph loop ${result.command} OK for task ${result.taskId} (status=${status}).`;
 }
 
+function emitJson(out, { ok, code, message, details = {} }) {
+  out.log(JSON.stringify({ ok, code, message, details }));
+}
+
+function exitJson({ out, exit, exitCode, ok, code, message, details }) {
+  emitJson(out, { ok, code, message, details });
+  return exit(exitCode);
+}
+
 async function main({
   argv = process.argv.slice(2),
   env = process.env,
@@ -155,6 +174,17 @@ async function main({
     args = parseRalphArgs(argv);
   } catch (e) {
     if (e instanceof UsageError) {
+      if (argv.includes('--json')) {
+        return exitJson({
+          out,
+          exit,
+          exitCode: EXIT_USER_ERROR,
+          ok: false,
+          code: 'USER_ERROR',
+          message: e.message,
+          details: { subcommand: 'ralph' },
+        });
+      }
       err.error(`kookr ralph: ${e.message}`);
       err.error('Try `kookr ralph --help`.');
       return exit(EXIT_USER_ERROR);
@@ -163,20 +193,64 @@ async function main({
   }
 
   if (args.help) {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_OK,
+        ok: true,
+        code: 'OK',
+        message: 'Help',
+        details: { help: HELP_TEXT },
+      });
+    }
     out.log(HELP_TEXT);
     return exit(EXIT_OK);
   }
 
   const resolved = await resolveBaseUrl(env);
   if (resolved.kind === 'invalid_port') {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_USER_ERROR,
+        ok: false,
+        code: 'USER_ERROR',
+        message: `KOOKR_PORT must be an integer in 1..65535 (got: ${resolved.raw})`,
+        details: { raw: resolved.raw },
+      });
+    }
     err.error(`kookr ralph: KOOKR_PORT must be an integer in 1..65535 (got: ${resolved.raw})`);
     return exit(EXIT_USER_ERROR);
   }
   if (resolved.kind === 'ambiguous') {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_NO_SERVER,
+        ok: false,
+        code: 'NO_SERVER',
+        message: `multiple Kookr instances are running (${resolved.ports.map((p) => `:${p}`).join(', ')}). Set KOOKR_PORT.`,
+        details: { ports: resolved.ports },
+      });
+    }
     err.error(`kookr ralph: multiple Kookr instances are running (${resolved.ports.map((p) => `:${p}`).join(', ')}). Set KOOKR_PORT.`);
     return exit(EXIT_NO_SERVER);
   }
   if (resolved.kind === 'none') {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_NO_SERVER,
+        ok: false,
+        code: 'NO_SERVER',
+        message: `no Kookr server reachable on :${resolved.ports.join(' or :')}`,
+        details: { ports: resolved.ports },
+      });
+    }
     err.error(`kookr ralph: no Kookr server reachable on :${resolved.ports.join(' or :')}.`);
     return exit(EXIT_NO_SERVER);
   }
@@ -188,19 +262,63 @@ async function main({
       : await requestRalphControl({ baseUrl: resolved.baseUrl, command: args.command, taskId: args.taskId });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_SERVER_ERROR,
+        ok: false,
+        code: 'SERVER_ERROR',
+        message: `request failed: ${msg}`,
+        details: { baseUrl: resolved.baseUrl },
+      });
+    }
     err.error(`kookr ralph: request failed: ${msg}`);
     return exit(EXIT_SERVER_ERROR);
   }
 
   if (result.kind === 'server_error') {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_SERVER_ERROR,
+        ok: false,
+        code: 'SERVER_ERROR',
+        message: result.message,
+        details: { status: result.status, result },
+      });
+    }
     err.error(`kookr ralph: server returned ${result.status}: ${result.message}`);
     return exit(EXIT_SERVER_ERROR);
   }
   if (result.kind === 'not_found') {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_SERVER_ERROR,
+        ok: false,
+        code: 'SERVER_ERROR',
+        message: `Task not found: ${result.taskId}`,
+        details: { result },
+      });
+    }
     err.error(renderRalphStatus(result));
     return exit(EXIT_SERVER_ERROR);
   }
 
+  if (args.json) {
+    return exitJson({
+      out,
+      exit,
+      exitCode: EXIT_OK,
+      ok: true,
+      code: 'OK',
+      message: result.kind === 'controlled' ? `Ralph loop ${result.command} OK` : 'Ralph loop status',
+      details: { result },
+    });
+  }
   out.log(result.kind === 'controlled' ? renderRalphControl(result) : renderRalphStatus(result));
   return exit(EXIT_OK);
 }
@@ -216,7 +334,9 @@ function isInvokedDirectly() {
 }
 
 if (isInvokedDirectly()) {
-  console.error('[kookr] WARNING: `kookr-ralph` is deprecated; use `kookr ralph`.');
+  if (!process.argv.includes('--json')) {
+    console.error('[kookr] WARNING: `kookr-ralph` is deprecated; use `kookr ralph`.');
+  }
   main().catch((e) => {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`kookr ralph: ${msg}`);

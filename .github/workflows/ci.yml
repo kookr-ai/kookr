@@ -13,51 +13,42 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Path filtering runs as a step inside each job rather than as a dedicated
+# filter job: every job occupies a runner slot, and with concurrent agent PRs
+# the 20-job concurrency limit made queue wait rival execution time. The
+# filter step only runs on pull_request (paths-filter resolves changed files
+# via the API there); on push its outputs are empty, so gates use
+# `!= 'false'` to fail open — push to main always runs everything.
+
 jobs:
-  smoke-filter:
-    runs-on: ubuntu-latest
-    outputs:
-      src: ${{ steps.filter.outputs.src }}
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dorny/paths-filter@v4
-        id: filter
-        with:
-          filters: |
-            src:
-              - 'src/**'
-
-  smoke:
-    needs: smoke-filter
-    if: github.event_name != 'pull_request' || needs.smoke-filter.outputs.src == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: pnpm/action-setup@v6
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Run local-only smoke gates
-        run: pnpm test:smoke
-        env:
-          KOOKR_RELAY_URL: ''
-          KOOKR_FAKE_TERMINAL: 'false'
-          KOOKR_USE_FAKE_AGENT: 'false'
-
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         node-version: [22]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            code:
+              - 'src/**'
+              - 'relay/**'
+              - 'scripts/**'
+              - 'e2e/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'vitest.config.ts'
+              - 'vite.config.ts'
+              - 'tsconfig*.json'
+              - '.github/workflows/ci.yml'
+            hooks:
+              - '.claude/**'
+              - '.hooks/**'
 
       - uses: pnpm/action-setup@v6
 
@@ -70,11 +61,15 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Type-check server
+        if: steps.filter.outputs.code != 'false'
         run: pnpm build:server
 
       - name: Type-check E2E tests
+        if: steps.filter.outputs.code != 'false'
         run: pnpm check:e2e
 
+      # The four validators are cheap (<2s each) and cover docs/skills-only
+      # changes, so they run unconditionally.
       - name: Validate skill frontmatter
         run: pnpm validate:skills
 
@@ -92,10 +87,11 @@ jobs:
       # is the only flag this step adds; do not re-pass reporters here or
       # the CLI list will override the config and they will drift.
       - name: Run tests with coverage
+        if: steps.filter.outputs.code != 'false'
         run: pnpm exec vitest run --coverage
 
       - name: Upload coverage artifacts
-        if: always()
+        if: always() && steps.filter.outputs.code != 'false'
         uses: actions/upload-artifact@v7
         with:
           name: coverage
@@ -106,44 +102,91 @@ jobs:
           if-no-files-found: warn
 
       - name: Summarize coverage
-        if: always()
+        if: always() && steps.filter.outputs.code != 'false'
         run: pnpm coverage:summary >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Run local-only smoke gates
+        if: steps.filter.outputs.code != 'false'
+        run: pnpm test:smoke
+        env:
+          KOOKR_RELAY_URL: ''
+          KOOKR_FAKE_TERMINAL: 'false'
+          KOOKR_USE_FAKE_AGENT: 'false'
+
       - name: Run hook regression tests
+        if: steps.filter.outputs.code != 'false' || steps.filter.outputs.hooks == 'true'
         run: pnpm test:hooks
 
   build:
     runs-on: ubuntu-latest
-    container:
-      image: mcr.microsoft.com/playwright:v1.60.0-noble
+    # A red E2E suite with retries + trace capture has run 27+ minutes;
+    # green runs finish in ~5. Cap the job well above green-path time.
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
-      # Inside the playwright container the working tree is owned by a
-      # different uid than the user running the steps; without this, every
-      # `git` invocation (the prepare hook, scripts/generate-build-info.ts,
-      # etc.) fails with "fatal: detected dubious ownership in repository".
-      - name: Mark workspace as a git safe directory
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: dorny/paths-filter@v4
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            e2e:
+              - 'src/**'
+              - 'e2e/**'
+              - 'scripts/**'
+              - 'playwright.config.ts'
+              - 'vite.config.ts'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'tsconfig*.json'
+              - '.github/workflows/ci.yml'
 
       - uses: pnpm/action-setup@v6
+        if: steps.filter.outputs.e2e != 'false'
 
       - uses: actions/setup-node@v6
+        if: steps.filter.outputs.e2e != 'false'
         with:
           node-version: 22
           cache: pnpm
 
-      - name: Install native build tools
-        run: apt-get update && apt-get install -y build-essential lsof
-
       - name: Install dependencies
+        if: steps.filter.outputs.e2e != 'false'
         run: pnpm install --frozen-lockfile
 
+      # prod-restart.spec.ts and resolve-listen-port.ts shell out to lsof.
+      # ubuntu-latest ships it preinstalled; this is a no-op guard in case a
+      # future runner image drops it.
+      - name: Ensure lsof
+        if: steps.filter.outputs.e2e != 'false'
+        run: command -v lsof || (sudo apt-get update && sudo apt-get install -y lsof)
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        if: steps.filter.outputs.e2e != 'false'
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install Playwright browsers
+        if: steps.filter.outputs.e2e != 'false' && steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Install Playwright system deps
+        if: steps.filter.outputs.e2e != 'false' && steps.playwright-cache.outputs.cache-hit == 'true'
+        run: pnpm exec playwright install-deps chromium
+
       - name: Build
+        if: steps.filter.outputs.e2e != 'false'
         run: pnpm build
 
+      # --max-failures on PRs makes a systemically broken suite fail fast
+      # instead of retrying every spec with trace capture. Push to main runs
+      # unbounded so the post-merge signal is a complete failure report.
       - name: Run E2E tests
-        run: pnpm exec playwright test
+        if: steps.filter.outputs.e2e != 'false'
+        run: pnpm exec playwright test ${{ github.event_name == 'pull_request' && '--max-failures=10' || '' }}
 
       - name: Upload E2E report
         if: failure()
@@ -152,3 +195,73 @@ jobs:
           name: playwright-report
           path: playwright-report/
           retention-days: 7
+
+  # Deterministic, zero-cost portability gate: flags user-specific absolute
+  # paths and GNU-only / bash-4-only shell idioms in the PR's added lines.
+  # Catches the statically-detectable macOS-incompatibility class on every PR.
+  # PR-only (needs a base ref to diff); ~10s, so it doesn't merit a filter.
+  portability:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Check for user-specific absolute paths
+        run: bash scripts/check-portability.sh "${{ github.event.pull_request.base.sha }}"
+      - name: Check for non-portable shell idioms (BSD coreutils / bash 3.2)
+        run: bash scripts/check-shell-portability.sh "${{ github.event.pull_request.base.sha }}"
+
+  # Real macOS run — the only layer that catches runtime-only breakage
+  # (no /proc, pnpm dropping exec bits, sun_path overflow, bash 3.2 array
+  # expansion under `set -u`). macOS runners cost ~10x Linux minutes, so this
+  # is gated at the JOB level (a self-skipping macOS runner would still burn
+  # minutes): it runs on push to main, or on a PR labeled `macos`.
+  #
+  # ADVISORY (continue-on-error). This PR fixes most macOS-only failures the job
+  # surfaced — vitest host-fragility (deploy-routes /var→/private/var symlink,
+  # prod-restart, ralph-predicate, terminal-input-coordinator) and the hook
+  # scripts (no-personal-paths bash-4 arrays, placement-gate / reflect-memory
+  # heredoc-in-$(), OSS-extension PCRE grep flags + bash-4 expansions). Two items
+  # need a real Mac to finish and are deferred:
+  #   - local-dtach-backend /proc-less reaping (kookr#784) — the fix on branch
+  #     fix/codex-onboarding-macos adds ps-based tests that flake the *Linux*
+  #     blocking gate, so they belong there, stabilised against a real Mac.
+  #   - oss-stale-scout-gate.test.sh — its gh shim passes on Linux but the gate
+  #     reads "gh auth status failed" on the macOS runner (not reproducible off
+  #     a Mac).
+  # Until both land, the job RUNS and reports so regressions are visible without
+  # blocking merges. Drop continue-on-error once vitest + test:hooks are green
+  # on a labeled macOS run.
+  macos:
+    if: >
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'macos')
+    runs-on: macos-latest
+    timeout-minutes: 25
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Kookr doctor (must exit 0)
+        run: pnpm run doctor
+
+      - name: Run tests
+        run: pnpm exec vitest run
+
+      # always() so the bash 3.2 / BSD hook-behavior results still report even
+      # if the vitest step goes red on a future macOS regression.
+      - name: Run hook regression tests
+        if: always()
+        run: pnpm test:hooks

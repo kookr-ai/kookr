@@ -11,7 +11,7 @@ function makeSummary(project: string, displayName: string): ProjectSummary {
     findingCount: 0,
     todayPrCount: 0,
     weekPrCount: 0,
-    openPrs: 0,
+    openContributionAttempts: 0,
     recentTasks: [],
   };
 }

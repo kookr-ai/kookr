@@ -94,6 +94,40 @@ export class GitHubStateStore {
     return key ? this.issueStates.get(key) ?? null : null;
   }
 
+  /**
+   * Verified open/closed state for a reference, regardless of which task it
+   * was detected from. Returns:
+   * - `true`  — last fetched state says the issue/PR is open (draft PRs count as open)
+   * - `false` — last fetched state says it is closed or merged
+   * - `undefined` — never successfully fetched (unknown, possibly nonexistent)
+   *
+   * Used by the project-summary overlay so "open issues/PRs tied to active
+   * tasks" only counts items GitHub has confirmed open.
+   */
+  isRefOpen(ref: { type: GitHubReference['type']; owner: string; repo: string; number: number }): boolean | undefined {
+    // Scan every tracked (taskId, ref) entry for this item — the same ref can
+    // be tracked under several tasks and state may have been fetched for any
+    // of them. First entry with fetched state wins (states for the same item
+    // agree modulo fetch timing).
+    for (const storedRef of this.references.values()) {
+      if (
+        storedRef.type !== ref.type
+        || storedRef.owner !== ref.owner
+        || storedRef.repo !== ref.repo
+        || storedRef.number !== ref.number
+      ) continue;
+      const key = this.refKey(storedRef);
+      if (ref.type === 'issue') {
+        const state = this.issueStates.get(key);
+        if (state) return state.status === 'open';
+      } else {
+        const state = this.prStates.get(key);
+        if (state) return state.status === 'open' || state.status === 'draft';
+      }
+    }
+    return undefined;
+  }
+
   /** Record a state change for a task. */
   addChange(taskId: string, change: GitHubStateChange): void {
     const changes = this.recentChanges.get(taskId) ?? [];

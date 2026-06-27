@@ -136,4 +136,26 @@ describe('FindingsPanel turn-state badge (issue #358)', () => {
     root = renderPanel(container, [makeAgent({ agentId: 'f-none', anomaly: STOP_ANOMALY })]);
     expect(container.querySelector('[data-testid="finding-turn-state"]')).toBeNull();
   });
+
+  test('renders transcript last assistant message context when present', () => {
+    root = renderPanel(container, [
+      makeAgent({
+        agentId: 'f-transcript',
+        anomaly: {
+          ...STOP_ANOMALY,
+          transcriptContext: {
+            lastAssistantMessage: {
+              excerpt: 'Should I merge this once CI passes?',
+              truncated: false,
+              readAtOffset: 42,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const context = container.querySelector('[data-testid="finding-transcript-context"]');
+    expect(context?.textContent).toContain('Last agent message');
+    expect(context?.textContent).toContain('Should I merge this once CI passes?');
+  });
 });

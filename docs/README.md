@@ -57,8 +57,12 @@ We publish drafts intentionally — the design history is part of the engineerin
 [`reference/`](reference/) — canonical reference material:
 
 - [API Reference](reference/api.md)
+- [Auto-Close on Completion Signal](reference/auto-close-on-signal.md)
+- [Circuit Breakers](reference/circuit-breakers.md)
 - [CLI Reference](reference/cli.md)
 - [Environment Variables](reference/environment-variables.md)
+- [Playbooks Reference](reference/playbooks.md)
+- [Production Server Service](reference/production-server-service.md)
 - [Read-Only Shared View Setup](reference/shared-view-setup.md)
 
 ## A note on transparency

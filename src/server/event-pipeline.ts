@@ -1,4 +1,4 @@
-import type { Monitor } from '../core/monitor.js';
+import type { AgentState, Monitor } from '../core/monitor.js';
 import { type HookIngestion, mintEventId } from './hook-ingestion.js';
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { TokenTracker } from '../core/token-tracker.js';
@@ -11,7 +11,7 @@ import type { Anomaly } from '../shared/contracts/anomalies.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import type { LlmClient } from '../core/llm-client.js';
 import type { DeferredTelemetryLogWriter } from '../core/telemetry.js';
-import { createSnapshotMessage, getSnapshotAgentsRaw } from './use-cases/get-snapshot.js';
+import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import type { RalphCycler } from '../core/ralph-cycler.js';
 import type { RalphLoopService } from './ralph-loop-service.js';
 import { createGitHubEventProcessor } from './event-processors/github-event-processor.js';
@@ -24,6 +24,7 @@ import { createStopTokenScanProcessor } from './event-processors/stop-token-scan
 import { createTokenAccountingProcessor } from './event-processors/token-accounting-processor.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from './user-input-delivery-service.js';
+import { buildSnapshotProjection } from './use-cases/snapshot-projection.js';
 
 export interface EventPipelineDeps {
   adapter: AgentAdapter;
@@ -87,6 +88,14 @@ function isAttentionAnomaly(anomaly: Anomaly | null | undefined): boolean {
   return !!anomaly && (anomaly.severity === 'warning' || anomaly.severity === 'critical');
 }
 
+function getProjectedAgentState(monitor: Monitor, taskStore: TaskStore, agentId: string): AgentState | undefined {
+  const rawState = monitor.getAgentState(agentId);
+  if (!rawState) return undefined;
+  const ownerTask = taskStore.findTaskBySession(agentId);
+  if (!ownerTask) return rawState;
+  return buildSnapshotProjection({ monitorStates: [rawState], tasks: [ownerTask] })[0];
+}
+
 /**
  * Wire adapter events into the monitor, watchdog, token tracker, smart response assist,
  * and GitHub scanner. Returns a cleanup function to cancel any pending suggestions.
@@ -148,7 +157,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
   const publishTaskProjection = (taskId: string) => {
     deps.taskShareService?.publishTaskProjectionForTask(taskId);
   };
-  const getAgentState = (agentId: string) => getSnapshotAgentsRaw({ monitor }).find(s => s.agentId === agentId);
+  const getAgentState = (agentId: string) => getProjectedAgentState(monitor, taskStore, agentId);
 
   const tokenAccountingProcessor = createTokenAccountingProcessor({
     taskLookup: taskStore,
@@ -250,14 +259,14 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
     // ⚠ ORDERING CONTRACT: pre-capture must precede processEvents();
     // post-capture must follow it. The anomaly-diff detects any transition
     // away from needs_input (e.g. tool_use, session_start) and clears stale suggestions.
-    const preState = monitor.getSnapshot().find(s => s.agentId === tmuxName);
+    const preState = monitor.getAgentState(tmuxName);
     const wasNeedsInput = preState?.anomaly?.type === 'needs_input';
 
     monitor.processEvents(tmuxName, [pipelineEvent], { eventId });
     watchdog.recordEvents(tmuxName, [pipelineEvent]);
 
     // Post-event: if anomaly transitioned away from needs_input, clear stale suggestions
-    const postState = monitor.getSnapshot().find(s => s.agentId === tmuxName);
+    const postState = monitor.getAgentState(tmuxName);
 
     // Structured lineage log (#705): emit one line tying the correlation id to a
     // finding when an anomaly newly appears or changes type/severity/subType.
@@ -304,7 +313,6 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
       }
     }
     sessionActivityProcessor.process(tmuxName);
-    const snapshot = getSnapshotAgentsRaw({ monitor });
     broadcastSnapshot();
     // Attention transition: an anomaly that newly becomes (or escalates to a
     // different type/severity within) warning/critical is a low-frequency,
@@ -328,7 +336,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
       ralphStopProcessor.process(stopTask, tmuxName, pipelineEvent);
     }
 
-    const agentState = snapshot.find((s) => s.agentId === tmuxName);
+    const agentState = getAgentState(tmuxName);
     responseAssistProcessor.process({ tmuxName, event: pipelineEvent, agentState });
     permissionQuickActionsProcessor.process({ tmuxName, agentState });
     githubEventProcessor.process({ tmuxName, event: pipelineEvent, postState });

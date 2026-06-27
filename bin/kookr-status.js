@@ -14,8 +14,12 @@ const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'terminated']);
 const HELP_TEXT = `kookr status — print a read-only snapshot of a running Kookr instance.
 
 Usage:
-  kookr status
-  kookr-status        Deprecated compatibility alias.
+  kookr status [--json]
+  kookr-status [--json]        Deprecated compatibility alias.
+
+Options:
+  --json             Print one machine-readable JSON envelope to stdout.
+  -h, --help         Show this help.
 
 Environment:
   KOOKR_PORT          Specific port on 127.0.0.1.
@@ -161,23 +165,93 @@ function renderReport({ port, health, agents }) {
   return lines.join('\n');
 }
 
-async function main({ argv = process.argv.slice(2), env = process.env, out = console, exit = process.exit } = {}) {
-  if (argv.length > 0) {
-    if (argv.length === 1 && (argv[0] === '-h' || argv[0] === '--help')) {
-      out.log(HELP_TEXT);
-      return exit(0);
+function parseStatusArgs(argv) {
+  const args = { help: false, json: false };
+  let error = null;
+  for (const tok of argv) {
+    if (tok === '-h' || tok === '--help') {
+      args.help = true;
+    } else if (tok === '--json') {
+      args.json = true;
+    } else if (error === null) {
+      error = `Unexpected argument: ${tok}`;
     }
-    out.error(`Unexpected argument: ${argv[0]}`);
+  }
+  if (error) return { ...args, error };
+  return args;
+}
+
+function emitJson(out, { ok, code, message, details = {} }) {
+  out.log(JSON.stringify({ ok, code, message, details }));
+}
+
+function exitJson({ out, exit, exitCode, ok, code, message, details }) {
+  emitJson(out, { ok, code, message, details });
+  return exit(exitCode);
+}
+
+async function main({ argv = process.argv.slice(2), env = process.env, out = console, exit = process.exit } = {}) {
+  const args = parseStatusArgs(argv);
+  if (args.error) {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: 2,
+        ok: false,
+        code: 'USER_ERROR',
+        message: args.error,
+        details: { subcommand: 'status' },
+      });
+    }
+    out.error(args.error);
     out.error('Try `kookr status --help`.');
     return exit(2);
+  }
+  if (args.help) {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: 0,
+        ok: true,
+        code: 'OK',
+        message: 'Help',
+        details: { help: HELP_TEXT },
+      });
+    }
+    out.log(HELP_TEXT);
+    return exit(0);
   }
 
   const resolved = await resolvePort(env);
   if (resolved.kind === 'invalid') {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: 1,
+        ok: false,
+        code: 'USER_ERROR',
+        message: `KOOKR_PORT must be an integer between 1 and 65535 (got: ${JSON.stringify(resolved.raw)}).`,
+        details: { raw: resolved.raw },
+      });
+    }
     out.error(`KOOKR_PORT must be an integer between 1 and 65535 (got: ${JSON.stringify(resolved.raw)}).`);
     return exit(1);
   }
   if (resolved.kind === 'none') {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: 1,
+        ok: false,
+        code: 'NO_SERVER',
+        message: `Kookr is not running on ports ${PORTS_TO_TRY.join(', ')}.`,
+        details: { ports: PORTS_TO_TRY },
+      });
+    }
     out.error(
       `Kookr is not running on ports ${PORTS_TO_TRY.join(', ')}.\n` +
       `Set KOOKR_PORT if using a non-default port.`,
@@ -196,6 +270,19 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     ]);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: 1,
+        ok: false,
+        code: 'SERVER_ERROR',
+        message: resolved.kind === 'explicit'
+          ? `Failed to reach Kookr on port ${port} (${msg}).`
+          : `Failed to reach Kookr on port ${port}: ${msg}`,
+        details: { port, resolvedKind: resolved.kind, error: msg },
+      });
+    }
     if (resolved.kind === 'explicit') {
       out.error(
         `Failed to reach Kookr on port ${port} (${msg}).\n` +
@@ -208,10 +295,37 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
   }
 
   if (!Array.isArray(agents)) {
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: 1,
+        ok: false,
+        code: 'SERVER_ERROR',
+        message: 'Unexpected /api/snapshot response (expected an array).',
+        details: { port, health, snapshot: agents },
+      });
+    }
     out.error(`Unexpected /api/snapshot response (expected an array).`);
     return exit(1);
   }
 
+  if (args.json) {
+    return exitJson({
+      out,
+      exit,
+      exitCode: 0,
+      ok: true,
+      code: 'OK',
+      message: 'Kookr status snapshot',
+      details: {
+        port,
+        health,
+        agents,
+        summary: summarize(agents),
+      },
+    });
+  }
   out.log(renderReport({ port, health, agents }));
 }
 
@@ -229,7 +343,9 @@ function isInvokedDirectly() {
 }
 
 if (isInvokedDirectly()) {
-  console.error('[kookr] WARNING: `kookr-status` is deprecated; use `kookr status`.');
+  if (!process.argv.includes('--json')) {
+    console.error('[kookr] WARNING: `kookr-status` is deprecated; use `kookr status`.');
+  }
   main().catch((err) => {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`kookr-status: ${msg}`);
@@ -237,4 +353,4 @@ if (isInvokedDirectly()) {
   });
 }
 
-export { HELP_TEXT, apiAuthHeaders, formatUptime, formatCost, isActiveFinding, summarize, renderReport, resolvePort, parsePortEnv, main };
+export { HELP_TEXT, apiAuthHeaders, formatUptime, formatCost, isActiveFinding, summarize, renderReport, resolvePort, parsePortEnv, parseStatusArgs, main };

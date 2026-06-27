@@ -151,8 +151,8 @@ test.describe('Supervisor flow — auto-advance', () => {
     await expect(page.locator('.detail-badge')).toContainText('PERMISSION');
 
     // Send response to the permission finding
-    await page.locator('.response-row input').fill('Allow it');
-    await page.locator('.btn-primary:has-text("Send & Next")').click();
+    await page.locator('.response-row textarea').fill('Allow it');
+    await page.locator('[data-testid="send-next-button"]').click();
 
     // Sent overlay appears
     await expect(page.locator('.sent-overlay')).toBeVisible();
@@ -558,7 +558,8 @@ test.describe('Supervisor flow — task lifecycle', () => {
     expect(tasks[0].status).toBe('cancelled');
   });
 
-  test('clear completed sweeps both completed and cancelled tasks via the section-header button', async ({ page, request }) => {
+  test('clear completed sweeps both completed and cancelled tasks via the section-header button', async ({ page, request }, testInfo) => {
+    testInfo.setTimeout(30_000);
     // Launch 3 tasks
     await launchViaUI(page, 'Keep running', '/test/project');
     await launchViaUI(page, 'Will complete', '/test/project');
@@ -577,6 +578,11 @@ test.describe('Supervisor flow — task lifecycle', () => {
     // Wait for Completed section to appear — the clear button lives in its header now.
     const completedSection = page.locator('.completed-section');
     await expect(completedSection).toBeVisible({ timeout: 5000 });
+    const completedToggle = completedSection.locator('.section-header');
+    if (await completedToggle.getAttribute('aria-expanded') === 'false') {
+      await completedToggle.click();
+    }
+    await expect(completedSection.locator('.completed-row')).toHaveCount(2);
 
     // Scope the button locator to the section so we don't pick up any legacy
     // status-bar duplicate if one ever reappears.
@@ -584,13 +590,17 @@ test.describe('Supervisor flow — task lifecycle', () => {
     await expect(clearBtn).toBeVisible();
     await clearBtn.click();
 
-    // First click opens the inline confirmation; second click on Confirm commits.
+    // First click opens the confirmation; the destructive calls are deferred
+    // behind the client-side undo window, so rows become pending before they
+    // disappear.
     const confirmBtn = page.getByRole('dialog', { name: 'Clear completed tasks' }).getByRole('button', { name: 'Delete' });
     await expect(confirmBtn).toBeVisible({ timeout: 2000 });
     await confirmBtn.click();
+    await expect(completedSection.locator('.completed-row.pending-deletion')).toHaveCount(2);
+    await expect(page.locator('.toast-undo')).toContainText('Deleting 2 finished tasks');
 
     // The whole Completed section disappears because no terminal tasks remain.
-    await expect(completedSection).not.toBeVisible({ timeout: 5000 });
+    await expect(completedSection).not.toBeVisible({ timeout: 15000 });
 
     // Only the running task should remain on the server.
     await waitForAgentCount(page, 1);

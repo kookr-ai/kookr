@@ -1,5 +1,5 @@
 import { extractPermissionActions } from '../../core/permission-actions.js';
-import { buildPermissionRequestBinding, latestPermissionRequestEvent } from '../../shared/contracts/permission-request-binding.js';
+import { buildPermissionRequestBinding, latestPermissionRequestEvent } from '../permission-request-binding.js';
 import { isPermissionRequestEvent } from '../../core/types.js';
 import type { AgentState } from '../../shared/contracts/agent-state.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';

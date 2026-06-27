@@ -2,6 +2,7 @@
 name: OSS Contribution Pipeline
 description: End-to-end workflow for contributing a perfect PR to a trending open-source repository — recon, learn, scout, fix, submit
 repo-tags: [github]
+deliveryPreAuthorized: true
 parameters:
   - name: repoFullName
     description: "Target repository (owner/repo)"
@@ -67,6 +68,8 @@ checklist:
 
 Make one perfect pull request to {{repoFullName}}. This playbook orchestrates the full journey from first contact to PR submission.
 
+If you face a design choice the issue does not settle, pick the smallest implementation that satisfies the issue, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
+
 ## Ad-hoc instruction
 
 The user may attach a free-text note to this run. When present it is enclosed between the markers below:
@@ -92,7 +95,7 @@ Derive the repo slug from the full name (replace `/` with `-`, `.` with `-`):
 REPO="{{repoFullName}}"
 SLUG=$(echo "$REPO" | tr '/' '-' | tr '.' '-')
 REPO_NAME=$(echo "$REPO" | cut -d/ -f2)
-FORK="jeanibarz/${REPO_NAME}"
+FORK="$(gh api user --jq .login)/${REPO_NAME}"
 LOCAL="$HOME/git/${REPO_NAME}"
 echo "REPO=$REPO SLUG=$SLUG FORK=$FORK LOCAL=$LOCAL"
 ```
@@ -104,7 +107,7 @@ If `{{phase}}` is `auto`, determine the next phase:
 ```bash
 SLUG=$(echo "{{repoFullName}}" | tr '/' '-' | tr '.' '-')
 REPO_NAME=$(echo "{{repoFullName}}" | cut -d/ -f2)
-FORK="jeanibarz/${REPO_NAME}"
+FORK="$(gh api user --jq .login)/${REPO_NAME}"
 LOCAL="$HOME/git/${REPO_NAME}"
 
 # Sanity check: warn if prior work exists at a non-standard path (e.g. legacy slash-separated).
@@ -147,7 +150,7 @@ fi
 ```bash
 REPO="{{repoFullName}}"
 REPO_NAME=$(echo "$REPO" | cut -d/ -f2)
-FORK="jeanibarz/${REPO_NAME}"
+FORK="$(gh api user --jq .login)/${REPO_NAME}"
 LOCAL="$HOME/git/${REPO_NAME}"
 
 # Create fork if needed
@@ -251,7 +254,7 @@ The subagent (`Agent(subagent_type: "oss-issue-scout", ...)`) is the preferred p
 4. Create PR targeting upstream:
    ```bash
    gh pr create -R {{repoFullName}} \
-     --head "jeanibarz:${BRANCH}" \
+     --head "$(gh api user --jq .login):${BRANCH}" \
      --base ${DEFAULT} \
      --title "{type}: {description}" \
      --body "{body following repo's PR template}"

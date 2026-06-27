@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import { ResourceStatusService } from './resource-status-service.js';
 import type { ServerMessage, SystemResourceStatus } from '../shared/contracts/messages.js';
+import type { CircuitBreakerSnapshot } from '../shared/contracts/circuit-breaker.js';
 
 function status(sampledAt = '2026-05-13T00:00:00.000Z'): SystemResourceStatus {
   return {
@@ -13,6 +14,12 @@ function status(sampledAt = '2026-05-13T00:00:00.000Z'): SystemResourceStatus {
       memoryUsedPercent: 50,
       memoryFreeBytes: 500,
       memoryTotalBytes: 1_000,
+      dataDirectory: {
+        path: '/tmp/kookr-data',
+        diskFreeBytes: 900,
+        diskTotalBytes: 1_000,
+        diskFreePercent: 90,
+      },
     },
     server: {
       eventLoopDelayP95Ms: null,
@@ -127,6 +134,46 @@ describe('ResourceStatusService', () => {
         { type: 'resourceStatus', status: status() },
         alert,
       ]);
+
+      service.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('attaches circuit breaker snapshots to the sampled status before broadcast and alert evaluation', () => {
+    vi.useFakeTimers();
+    try {
+      const broadcasts: ServerMessage[] = [];
+      const evaluated: SystemResourceStatus[] = [];
+      const breakers: CircuitBreakerSnapshot[] = [{
+        name: 'llm',
+        state: 'open',
+        failureCount: 5,
+        successCount: 0,
+        lastFailureTime: 1_000,
+        lastStateChange: 1_000,
+        resetTimeoutMs: 30_000,
+      }];
+      const service = new ResourceStatusService({
+        sampler: { start: vi.fn(), stop: vi.fn(), sample: vi.fn(() => status()) },
+        broadcastToAll: (msg) => broadcasts.push(msg),
+        alertEvaluator: {
+          evaluate: (sample) => {
+            evaluated.push(sample);
+            return [];
+          },
+        },
+        getCircuitBreakerSnapshots: () => breakers,
+        nowMs: () => 1_000,
+        intervalMs: 2_000,
+      });
+
+      service.start();
+
+      expect(service.getLatest()?.circuitBreakers).toEqual(breakers);
+      expect(broadcasts).toEqual([{ type: 'resourceStatus', status: { ...status(), circuitBreakers: breakers } }]);
+      expect(evaluated).toEqual([{ ...status(), circuitBreakers: breakers }]);
 
       service.stop();
     } finally {

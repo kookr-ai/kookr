@@ -120,7 +120,7 @@ Review the error output and provide a hint about an alternative approach.
 Other anomaly patterns: `detect-budget-burn` (V2), `detect-trajectory-drift` (V2), `detect-repeated-error`, `detect-idle-agent`.
 
 > **Updated 2026-05-12 — current anomaly catalogue.** The live `AnomalyType` union is defined in `src/shared/contracts/anomalies.ts` and re-exported through `src/core/types.ts`:
-> `needs_input`, `permission_blocked`, `repeated_error`, `merge_conflict`, `stale_agent`, `hook_disconnected`, `hook_missing`, `tmux_unresponsive`, `api_error`, `budget_exceeded`.
+> `needs_input`, `permission_blocked`, `repeated_error`, `merge_conflict`, `stale_agent`, `hook_disconnected`, `hook_missing`, `hook_parse_degraded`, `tmux_unresponsive`, `api_error`, `budget_exceeded`.
 > `needs_input` subsumes both `stop` and `ask_user_question` (via `Anomaly.subType`). `budget_exceeded` is emitted by `src/core/budget-checker.ts` when a task crosses its configured per-task USD threshold (F4.9). `stuck_loop` was removed; the aspirational `detect-stuck-loop` and `detect-trajectory-drift` patterns above remain V2 directions, not V1 code. Note: `tmux_unresponsive` is the symbol the code emits today; V8 Main C rename to `backend_unreachable` is pending.
 
 ---
@@ -146,7 +146,7 @@ Other anomaly patterns: `detect-budget-burn` (V2), `detect-trajectory-drift` (V2
 **What it does:**
 - Displays supervisor findings as rich cards with severity, explanation, and inline quick-reply — findings are the primary UI element, not the agent list
 - Shows the selected agent's interactive terminal (xterm.js bridged to the agent's dtach session via `SessionBridge`) as the main content area
-- Provides "Send & Next" as the primary action — responds and auto-advances to the next finding
+- Provides "Send" (respond and stay, Enter) as the primary action, with "Send & Next" (respond and auto-advance to the next finding, Ctrl/Cmd+Enter) alongside
 - Tracks triage progress with queue dots in the top bar
 - Collapses healthy agents into a compact section below findings
 - Shows "all clear" when no agents need attention

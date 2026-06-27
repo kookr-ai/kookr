@@ -185,4 +185,38 @@ describe('generateTelemetryReport', () => {
     const report = generateTelemetryReport(events);
     expect(report.tabSwitchCounts).toEqual({ github: 2, terminal: 1 });
   });
+
+  test('summarizes selection flicker incidents', () => {
+    const report = generateTelemetryReport([
+      makeEvent('selection_flicker_incident', {
+        pairKey: 'a|b',
+        switchesPerSecond: 2.5,
+        sourceCounts: { selectAgent: 2, handleDashboardSelection: 1 },
+      }),
+      makeEvent('selection_flicker_incident', {
+        pairKey: 'a|b',
+        switchesPerSecond: 3,
+        sourceCounts: { selectAgent: 1 },
+      }),
+      makeEvent('selection_flicker_incident', {
+        pairKey: 'b|c',
+        switchesPerSecond: 1,
+        sourceCounts: { nextTask: 3 },
+      }),
+    ]);
+
+    expect(report.selectionFlickerMetrics).toEqual({
+      totalIncidents: 3,
+      topPairs: [
+        { pairKey: 'a|b', incidentCount: 2 },
+        { pairKey: 'b|c', incidentCount: 1 },
+      ],
+      highestSwitchRate: 3,
+      sourceBreakdown: {
+        selectAgent: 3,
+        handleDashboardSelection: 1,
+        nextTask: 3,
+      },
+    });
+  });
 });

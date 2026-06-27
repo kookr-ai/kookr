@@ -88,6 +88,50 @@ For the full catalog — every anomaly type, what triggers it, the recommended r
 
 LLM-powered trajectory analysis is a later direction. The current system favors reliable signals before speculative interpretation.
 
+## Task Coordinator
+
+The task coordinator is a lightweight layer for supervising relationships between tasks. It is separate from the main findings queue: findings answer "which agent needs attention now?", while the coordinator answers "which tasks are related, duplicated, stale, or ready to clear?" Coordinator state is derived from live task records, hook activity, and declared task relationships.
+
+### Coordinator Chips
+
+Coordinator chips appear on task rows when Kookr has a recommendation for that task. The chip text is the action; the icon and number summarize the evidence.
+
+| Chip action | When it appears | What it does |
+| --- | --- | --- |
+| `Nudge` with a clock | An in-progress task has no recent `PostToolUse` activity and no newer active session start for about 30 minutes. | Sends "Please provide a concise status update and the next concrete step." to that agent. |
+| `Compare` with a match icon | Another active task has the same effective prompt, canonical working directory, and agent type. | Opens a peer task so you can compare or close the duplicate. |
+| `Acknowledge` with a check | A completed task has a completion digest and no follow-up signal or active anomaly. | Hides that task-level recommendation for 30 days. |
+| `Nudge` or `Snooze` with a chain icon | The task has declared `blocks` or `blocked_by` edges, or an edge points at a missing task. | `Nudge` is used for downstream-only edges. `Snooze` is used when the selected task is blocked by upstream work. |
+
+The small dismiss button on a chip suppresses that detector class for that agent type, not just the selected task. The first two dismissals last 7 days; the third and later dismissals last 30 days. Suppressions persist in the Kookr data directory as `coordinator-suppressions.json`, and widened suppressions are also recorded in `coordinator-feedback.jsonl`.
+
+### Chain Strips
+
+When a selected task has related tasks, Kookr shows a chain strip with compact members such as `parent`, `child`, `blocks`, and `blocked by`. Parent and child entries come from task launch linkage. `blocks` and `blocked by` entries come from manually declared task edges.
+
+The strip's `Mark prior N done` action applies only to prior tasks: parent tasks and tasks listed as `blocked_by`. Before changing anything, Kookr refreshes GitHub state for those prior tasks and verifies that the chain has not changed. It only marks prior tasks done when each prior task is already terminal, has a freshly verified merged PR, has passing or neutral post-merge checks, and has no dirty worktree health.
+
+### Declaring And Removing Edges
+
+Use the **Relationships** control in the task detail panel to declare task dependencies:
+
+1. Open the relationships control.
+2. Choose **Add blocker** when the selected task is waiting on another task, or **Add downstream** when the selected task blocks another task.
+3. Search for a non-terminal task by name or ID, or type a milestone name.
+4. Select the task result or use **Add milestone**.
+
+Task edges are stored as `task:<task-id>`. Milestone edges are stored as `milestone:<name>`. Removing an edge from the relationships menu updates the task immediately. Task edges can appear in chain strips and coordinator chips; milestone edges stay visible in the relationships control but do not appear in chain strips because they have no task status to display.
+
+### Duplicate Launch Interrupts
+
+`kookr spawn` checks for active duplicate prompts before launching. A duplicate means the same effective prompt, working directory, and agent type already has an active task.
+
+- `--dedupe=warn` is the default. In an interactive terminal it warns, lets you view a prompt diff, and asks whether to continue. In non-interactive mode and JSON mode it blocks with exit code `5`.
+- `--dedupe=block` always blocks a duplicate active prompt with exit code `5`.
+- `--dedupe=skip` bypasses the interrupt and marks the new task as an intentional duplicate so the coordinator does not group it as accidental duplication.
+
+The dashboard duplicate chip is the follow-up surface for active duplicates that already exist. The CLI interrupt prevents many duplicates before they start.
+
 ## Multi-Project Tracking
 
 Kookr can track several project directories. Registered projects appear in the workspace UI and are used for project-scoped configuration, playbooks, contribution summaries, and task launch defaults.
@@ -100,7 +144,7 @@ Playbooks are reusable task templates. Kookr discovers them from three tiers:
 - User playbooks under `~/.kookr/playbooks/`
 - Project playbooks under `<repo>/.kookr/playbooks/`
 
-Project playbooks can define parameters and completion criteria. See [Playbook Scoping](playbook-scoping.md) for the exact discovery and precedence rules.
+Project playbooks can define parameters and completion criteria. See [Playbook Scoping](playbook-scoping.md) for the exact discovery and precedence rules, and the [Playbooks Reference](reference/playbooks.md) for the authoring schema.
 
 ## Schedules
 

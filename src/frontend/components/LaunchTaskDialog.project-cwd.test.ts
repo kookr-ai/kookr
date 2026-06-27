@@ -63,7 +63,7 @@ const projectSummary: ProjectSummary = {
   findingCount: 0,
   todayPrCount: 0,
   weekPrCount: 0,
-  openPrs: 0,
+  openContributionAttempts: 0,
   recentTasks: [],
 };
 
@@ -134,7 +134,10 @@ describe('LaunchTaskDialog projectCwd prop', () => {
     act(() => root.unmount());
   });
 
-  test('project context lists playbooks from server cwd and keeps unresolved target empty', async () => {
+  // Empty/unresolved project cwd (deriveLaunchProjectCwd can return '' or null):
+  // the catalog must fall back to serverCwd, never scan `<empty>/.kookr/...`.
+  // The execution cwd (getTaskTargetCwd) stays empty here — unchanged by #1019.
+  test('project context with empty cwd falls back to server cwd for the catalog and keeps the target empty', async () => {
     localStorage.setItem(
       LAUNCH_TASK_DIALOG_DRAFT_KEY,
       JSON.stringify({ prompt: 'pending', cwd: '/old/draft/path', criteria: '' }),
@@ -164,10 +167,108 @@ describe('LaunchTaskDialog projectCwd prop', () => {
     expect(container.textContent).toContain('Playbooks from:');
     expect(container.textContent).toContain('/server/cwd');
     expect(container.textContent).not.toContain('/old/draft/path');
+    // [catalog, target]: catalog falls back to serverCwd, target stays empty.
     expect(Array.from(container.querySelectorAll('.playbook-resolved-cwd-path')).map((el) => el.textContent)).toEqual(['/server/cwd', '']);
     const playbooksTab = Array.from(container.querySelectorAll<HTMLButtonElement>('.dialog-tab'))
       .find((button) => button.textContent === 'Playbooks');
     expect(document.activeElement).toBe(playbooksTab);
+
+    act(() => root.unmount());
+  });
+
+  // The null branch of deriveLaunchProjectCwd surfaces as a missing projectCwd
+  // prop (App passes `deriveLaunchProjectCwd(...) ?? ''`, but the prop itself is
+  // `string | undefined`). With no project cwd and no draft/recent/tracked path,
+  // the catalog must still resolve to serverCwd, never `<undefined>/.kookr/...`.
+  test('project context with no project cwd falls back to server cwd for the catalog', async () => {
+    const sent: ClientMessage[] = [];
+    const { root } = renderDialog(container, {
+      projectContext: projectSummary,
+      send: (msg) => {
+        sent.push(msg);
+        return true;
+      },
+    });
+    await flush();
+    await act(async () => {
+      useKookrStore.setState({
+        playbooksLoading: false,
+        playbooks: [],
+        playbooksLastFetchedCwd: '/server/cwd',
+        playbooksLastFetchedAt: Date.now(),
+      });
+    });
+    await flush();
+
+    expect(sent).toContainEqual({ type: 'listPlaybooks', cwd: '/server/cwd' });
+    // Catalog and execution cwd both resolve to serverCwd, so the resolved-cwd
+    // line collapses to the single "Running in:" serverCwd path.
+    expect(Array.from(container.querySelectorAll('.playbook-resolved-cwd-path')).map((el) => el.textContent)).toEqual(['/server/cwd']);
+
+    act(() => root.unmount());
+  });
+
+  // Core #1019 behavior: a project-focused launch lists THAT project's catalog
+  // cwd, while the execution cwd (getTaskTargetCwd) stays the project cwd —
+  // unchanged from the catalog/target split of #209.
+  test('project context lists the focused project catalog cwd and runs in the project cwd', async () => {
+    const sent: ClientMessage[] = [];
+    const { root } = renderDialog(container, {
+      projectCwd: '/work/grafana',
+      projectContext: projectSummary,
+      send: (msg) => {
+        sent.push(msg);
+        return true;
+      },
+    });
+    await flush();
+    await act(async () => {
+      useKookrStore.setState({
+        playbooksLoading: false,
+        playbooks: [],
+        playbooksLastFetchedCwd: '/work/grafana',
+        playbooksLastFetchedAt: Date.now(),
+      });
+    });
+    await flush();
+
+    // Catalog query targets the project, not serverCwd.
+    expect(sent).toContainEqual({ type: 'listPlaybooks', cwd: '/work/grafana' });
+    expect(sent).not.toContainEqual({ type: 'listPlaybooks', cwd: '/server/cwd' });
+    // Catalog source now coincides with the execution cwd, so PlaybookBrowser
+    // collapses to the single "Running in:" line (no separate "Playbooks from:"
+    // tier). The lone resolved path is the project's execution cwd — unchanged.
+    expect(container.textContent).toContain('Running in:');
+    expect(container.textContent).not.toContain('Playbooks from:');
+    expect(Array.from(container.querySelectorAll('.playbook-resolved-cwd-path')).map((el) => el.textContent)).toEqual(['/work/grafana']);
+
+    act(() => root.unmount());
+  });
+
+  // No-project ("+ Launch") behavior is unchanged: with no typed cwd the catalog
+  // falls back to serverCwd. (getPlaybookSourceCwd never special-cased the
+  // no-project case, so this guards against regressing the fallback.)
+  test('without a project, switching to playbooks lists the server cwd catalog', async () => {
+    const sent: ClientMessage[] = [];
+    const { root } = renderDialog(container, {
+      send: (msg) => {
+        sent.push(msg);
+        return true;
+      },
+    });
+    await flush();
+
+    // No mount-time fetch without a project; the dialog opens on Manual.
+    expect(sent).toEqual([]);
+    const playbooksTab = Array.from(container.querySelectorAll<HTMLButtonElement>('.dialog-tab'))
+      .find((button) => button.textContent === 'Playbooks');
+    if (!playbooksTab) throw new Error('Playbooks tab not rendered');
+    await act(async () => {
+      playbooksTab.click();
+    });
+    await flush();
+
+    expect(sent).toContainEqual({ type: 'listPlaybooks', cwd: '/server/cwd' });
 
     act(() => root.unmount());
   });

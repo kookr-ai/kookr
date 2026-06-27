@@ -1,5 +1,6 @@
 const TOKEN_PATTERNS = [
-  /(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi,
+  /((?:authorization["']?\s*[:=]\s*["']?Bearer[^\S\r\n]+))[^"'\s]+/gi,
+  /(Bearer[^\S\r\n]+)(?=[A-Za-z0-9._~+/=-]{8,})(?=[A-Za-z0-9._~+/=-]*[0-9._~+/=-])[A-Za-z0-9._~+/=-]+/gi,
   /(KOOKR_[A-Z_]*(?:TOKEN|SECRET|KEY|PASSWORD)=)[^\s]+/g,
   /(kookr_tok_v1_)[A-Za-z0-9_-]+/g,
   /("?(?:relayToken|nodeToken|adminToken|accountToken)"?\s*:\s*")[^"]+/g,

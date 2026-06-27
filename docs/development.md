@@ -16,6 +16,7 @@ pnpm install
 
 ```bash
 pnpm dev                 # backend on 4801 plus Vite frontend on 5173
+pnpm dev:demo            # synthetic agents on 4801 plus Vite frontend on 5173
 pnpm dev:server          # backend only
 pnpm dev:frontend        # frontend only
 pnpm test                # Vitest unit/integration tests
@@ -27,6 +28,30 @@ pnpm run doctor          # local setup diagnostics
 ```
 
 Dev mode uses port `4801` so it can run beside a stable production-style instance on port `4800`. Treat `pnpm dev` as a live development target, not the Kookr instance supervising important work: it restarts on source changes and may be broken while edits are in progress.
+
+## Demo Mode
+
+Use demo mode when you want a populated dashboard without installing Claude Code, Codex, or launching real agents:
+
+```bash
+pnpm dev:demo
+```
+
+The command starts a fake backend on `4801` and Vite on `5173`, then seeds synthetic tasks across three projects. The scenario includes a permission-blocked agent, a needs-input agent, healthy running agents, a completed task, a pending task, token spend, project IDs, and scripted terminal output from `demo/terminal-content.ts`.
+
+Open `http://127.0.0.1:5173`. Demo data is temporary and resets each time the command starts. Keep the backend on `4801` when using Vite; the dev proxy is configured for that port.
+
+## Debugging
+
+The repo ships VS Code debug presets in `.vscode/launch.json` for the dev server and Vitest. Use **Kookr: Launch + debug dev server** to start the backend on port `4801` with breakpoints enabled. If the vendored dtach binary has not been built in this checkout yet, run `pnpm build:dtach` first; the normal `pnpm dev:server` script performs the same preflight before starting the server.
+
+To attach to a server you started manually, run:
+
+```bash
+pnpm build:dtach && KOOKR_PORT=4801 node --inspect=9229 --import tsx --watch-path=src/server --watch-path=src/core --watch-path=src/adapters src/server/start.ts
+```
+
+Then pick **Kookr: Attach to dev server** in VS Code. Use **Kookr: Debug current Vitest file** from a test file to run that file under the debugger. JetBrains IDEs can use the same `node --import tsx ... src/server/start.ts` and `node node_modules/vitest/vitest.mjs run <test file>` entrypoints.
 
 ## Production-Style Worktree
 

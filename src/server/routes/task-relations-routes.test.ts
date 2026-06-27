@@ -1,6 +1,6 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../../core/tasks.js';
@@ -92,6 +92,36 @@ describe('task-relation graph (issue #599)', () => {
     const persisted = await loadTasks(deps.tasksFile!);
     expect(persisted.relations ?? []).toHaveLength(1);
     expect((persisted.relations ?? [])[0].id).toBe(body.relation.id);
+  });
+
+  test('POST /api/task-relations uses the coalesced task-state saver when provided', async () => {
+    const taskStore = new TaskStore();
+    const a = taskStore.createTask('A', '/cwd');
+    const b = taskStore.createTask('B', '/cwd');
+    const requestSave = vi.fn();
+
+    const res = await mkApp({
+      ...mkRelationDeps(taskStore),
+      taskStateSaveScheduler: {
+        requestSave,
+        flush: vi.fn(async () => undefined),
+        close: vi.fn(async () => undefined),
+      },
+    }).request('/api/task-relations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sourceTaskId: a.id,
+        targetTaskId: b.id,
+        type: 'depends_on',
+        confidence: 0.7,
+        source: 'manual',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(requestSave).toHaveBeenCalledWith('task_relation_mutation');
+    expect(existsSync(join(tempDir, 'tasks.json'))).toBe(false);
   });
 
   test('POST /api/task-relations is idempotent — same (source, target, type) updates instead of duplicating', async () => {

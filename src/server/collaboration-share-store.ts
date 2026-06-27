@@ -41,6 +41,10 @@ interface CollaborationShareStoreFile {
   tombstones: CollaborationGrantRevocationTombstone[];
 }
 
+function emptyStoreFile(): CollaborationShareStoreFile {
+  return { version: COLLABORATION_SHARE_STORE_VERSION, policyVersion: 0, invites: [], grants: [], tombstones: [] };
+}
+
 export class CollaborationShareError extends Error {
   constructor(
     public readonly code: string,
@@ -282,9 +286,13 @@ function normalizeTombstone(value: unknown): CollaborationGrantRevocationTombsto
 
 function normalizeStoreFile(raw: unknown): CollaborationShareStoreFile {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { version: COLLABORATION_SHARE_STORE_VERSION, policyVersion: 0, invites: [], grants: [], tombstones: [] };
+    return emptyStoreFile();
   }
   const row = raw as Record<string, unknown>;
+  if (row.version !== COLLABORATION_SHARE_STORE_VERSION) {
+    // Unknown envelopes may have different trust-state semantics; fail closed instead of partially interpreting them.
+    return emptyStoreFile();
+  }
   const invites = Array.isArray(row.invites) ? row.invites.flatMap((invite) => {
     const normalized = normalizeInvite(invite);
     return normalized ? [normalized] : [];

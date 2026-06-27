@@ -79,7 +79,10 @@ export class ProjectSidebarStore {
   }
 
   async load(): Promise<void> {
-    this.state = normalizeProjectSidebarState(await readJsonFile<ProjectSidebarRaw | null>(this.filePath, null));
+    this.state = normalizeProjectSidebarState(await readJsonFile<ProjectSidebarRaw | null>(this.filePath, null, {
+      quarantineCorrupt: true,
+      warningPrefix: 'project-sidebar-store',
+    }));
   }
 
   async save(): Promise<void> {

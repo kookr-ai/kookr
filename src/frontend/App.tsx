@@ -1,9 +1,11 @@
 import React, { lazy, Suspense, useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import type { ProjectSummary } from '../shared/protocol.js';
+import { useShallow } from 'zustand/react/shallow';
+import type { ClientMessage, ProjectSummary } from '../shared/protocol.js';
 import { deriveLaunchProjectCwd } from './derive-project-cwd.js';
 import { useKookrStore } from './store/useStore.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { useNotifications } from './hooks/useNotifications.js';
+import { useTabAttentionBadge } from './hooks/useTabAttentionBadge.js';
 import { useAudibleAlert } from './hooks/useAudibleAlert.js';
 import { useTaskCompletionChime } from './hooks/useTaskCompletionChime.js';
 import { sendToTerminal } from './terminal-send.js';
@@ -14,12 +16,23 @@ import { computeChainMembership, computeDescendants } from './components/related
 import { deriveProjectPriorityRanks } from '../shared/project-sidebar.js';
 import { TopBar } from './components/TopBar.js';
 import { CommandPalette } from './components/CommandPalette.js';
-import type { CommandAction, CommandTaskItem } from './components/command-palette-model.js';
+import type {
+  CommandAction,
+  CommandFindingItem,
+  CommandProjectItem,
+  CommandTaskItem,
+} from './components/command-palette-model.js';
 import { FindingsPanel } from './components/FindingsPanel.js';
+import { ScheduledTasksHint } from './components/ScheduledTasksHint.js';
+import { shouldShow as scheduledTasksHintShouldShow } from './store/scheduled-tasks-hint-status.js';
+import type { SchedulePrefill } from './components/SchedulesDialog.js';
 import { DetailPanel } from './components/DetailPanel.js';
 import { StatusBar } from './components/StatusBar.js';
 import { Toasts } from './components/Toasts.js';
 import { PluginInstallBanner } from './components/PluginInstallBanner.js';
+import { PermissionBypassBanner } from './components/PermissionBypassBanner.js';
+import { DrainModeBanner } from './components/DrainModeBanner.js';
+import { ConnectionBanner } from './components/ConnectionBanner.js';
 import { BugReportDialog } from './components/BugReportDialog.js';
 import { ShareViewerDialog } from './components/ShareViewerDialog.js';
 import { ReadOnlyBanner } from './components/ReadOnlyBanner.js';
@@ -29,6 +42,7 @@ import { SentOverlay } from './components/SentOverlay.js';
 import { SnoozeDialog } from './components/SnoozeDialog.js';
 import { ConfirmDialog } from './components/ConfirmDialog.js';
 import { CompleteDialogFooter } from './components/CompleteDialogFooter.js';
+import { DestructiveUndoToasts } from './components/DestructiveUndoToasts.js';
 import type { TaskCompletionFeedback } from '../shared/contracts/messages.js';
 import { ProjectSidebar } from './components/ProjectSidebar.js';
 import { ProjectDetailDrawer } from './components/ProjectDetailDrawer.js';
@@ -56,6 +70,8 @@ import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import { buildBugReportBundle } from './bug-report-bundle.js';
 import { getBugReportAlerts, getBugReportWireObservations } from './bug-report-recorder.js';
 import { getDebugTimelineEntries, isDebugTimelineEnabled } from './debug-timeline.js';
+import { getSelectionTransitionDiagnostics } from './selection-transition-recorder.js';
+import { findingTypeLabel } from './presentation.js';
 import './critical.css';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
@@ -90,6 +106,31 @@ interface ReflectionSuggestion {
   totalFindings: number;
 }
 
+export const DEFAULT_DESTRUCTIVE_ACTION_UNDO_MS = 10_000;
+
+type DestructiveClientMessage = Extract<ClientMessage, { type: 'deleteTask' }>;
+
+interface PendingDestructiveAction {
+  id: string;
+  kind: 'deleteTask' | 'clearCompleted';
+  summary: string;
+  taskIds: string[];
+  messages: DestructiveClientMessage[];
+  expiresAt: number;
+}
+
+interface QueueDeleteTaskArgs {
+  taskId: string;
+  label: string;
+}
+
+interface QueueClearCompletedArgs {
+  includeTerminated: boolean;
+  projectId?: string;
+  taskIds: string[];
+  count: number;
+}
+
 type MobileDashboardTab = 'findings' | 'task';
 type LaunchInitialTab = 'manual' | 'playbooks';
 
@@ -106,6 +147,11 @@ const WIDE_DETAIL_BREAKPOINT_PX = 1200;
 // reserved when the findings panel is resized, so the terminal can never be
 // squeezed to an unusable width on narrow desktops.
 const MIN_TERMINAL_RESERVE_PX = 480;
+
+function quotedTaskLabel(label: string): string {
+  const trimmed = label.trim();
+  return trimmed.length > 0 ? `"${trimmed}"` : 'task';
+}
 
 function reflectionDismissKey(sessionId: string): string {
   return `kookr-reflection-dismissed-${sessionId}`;
@@ -266,6 +312,7 @@ export function App() {
     installReadOnlyNoticeListener();
   }, []);
   useNotifications();
+  useTabAttentionBadge();
   // Audible alerts. Findings are unfocused (anomaly chimes regardless of
   // which task is focused — that's when the user most needs to switch).
   // Completion-signal audio is also unfocused: it means an agent has said a
@@ -302,6 +349,11 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsFocus, setSettingsFocus] = useState<SettingsFocusField | undefined>(undefined);
   const [showSchedules, setShowSchedules] = useState(false);
+  // Seed for opening the Schedules dialog straight into a pre-filled create form
+  // from a task-panel "schedule this playbook" button. Null = manual open.
+  const [schedulePrefill, setSchedulePrefill] = useState<SchedulePrefill | null>(null);
+  // One-time post-create hint pointing at the command-palette trigger.
+  const [scheduleHintActive, setScheduleHintActive] = useState(false);
   const [showWorkspace, setShowWorkspace] = useState(false);
   const [showCostComparison, setShowCostComparison] = useState(false);
   const [showOperations, setShowOperations] = useState(false);
@@ -317,8 +369,12 @@ export function App() {
   const [launchProjectCwd, setLaunchProjectCwd] = useState<string | null>(null);
   const [launchInitialTab, setLaunchInitialTab] = useState<LaunchInitialTab | null>(null);
   const [reflectionSuggestion, setReflectionSuggestion] = useState<ReflectionSuggestion | null>(null);
+  const [pendingDestructiveActions, setPendingDestructiveActions] = useState<PendingDestructiveAction[]>([]);
   const operationsPopoverRef = useRef<HTMLDivElement>(null);
   const terminalFocusTriggerRef = useRef<HTMLButtonElement>(null);
+  const destructiveTimersRef = useRef<Map<string, number>>(new Map());
+  const destructiveActionSeqRef = useRef(0);
+  const sendRef = useRef(send);
   const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
   const shortcutBindings = useMemo(
     () => resolveShortcutBindings(shortcutPlatform, shortcutOverrides),
@@ -358,7 +414,108 @@ export function App() {
     terminalFocusMode,
     setNarrowTab,
     toggleTerminalFocusMode,
-  } = useKookrStore();
+  } = useKookrStore(useShallow((state) => ({
+    agents: state.agents,
+    agentsHydrated: state.agentsHydrated,
+    buildInfo: state.buildInfo,
+    serverStartedAt: state.serverStartedAt,
+    selectedAgentId: state.selectedAgentId,
+    selectAgent: state.selectAgent,
+    nextBottleneck: state.nextBottleneck,
+    nextTask: state.nextTask,
+    selectNextTaskAfterCompletion: state.selectNextTaskAfterCompletion,
+    advanceEmptyEnter: state.advanceEmptyEnter,
+    previousTask: state.previousTask,
+    relaunchTask: state.relaunchTask,
+    clearRelaunchTask: state.clearRelaunchTask,
+    selectedProject: state.selectedProject,
+    selectProject: state.selectProject,
+    toggleProjectSidebar: state.toggleProjectSidebar,
+    projectSummaries: state.projectSummaries,
+    projectSummariesHydrated: state.projectSummariesHydrated,
+    projectSidebarPrefs: state.projectSidebarPrefs,
+    showAchievements: state.showAchievements,
+    toggleAchievementsPanel: state.toggleAchievementsPanel,
+    workspaceEnabled: state.workspaceEnabled,
+    clearWorkspaceView: state.clearWorkspaceView,
+    handleAlert: state.handleAlert,
+    ossShowView: state.ossShowView,
+    closeOssView: state.closeOssView,
+    toggleOssView: state.toggleOssView,
+    coordinator: state.coordinator,
+    leftPane: state.leftPane,
+    detailPaneMode: state.detailPaneMode,
+    terminalFocusMode: state.terminalFocusMode,
+    setNarrowTab: state.setNarrowTab,
+    toggleTerminalFocusMode: state.toggleTerminalFocusMode,
+  })));
+
+  useEffect(() => {
+    sendRef.current = send;
+  }, [send]);
+
+  const removePendingDestructiveAction = useCallback((id: string) => {
+    const timer = destructiveTimersRef.current.get(id);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      destructiveTimersRef.current.delete(id);
+    }
+    setPendingDestructiveActions((actions) => actions.filter((action) => action.id !== id));
+  }, []);
+
+  const queueDestructiveAction = useCallback((action: Omit<PendingDestructiveAction, 'id' | 'expiresAt'>) => {
+    const delay = DEFAULT_DESTRUCTIVE_ACTION_UNDO_MS;
+    const id = `${action.kind}-${Date.now()}-${destructiveActionSeqRef.current++}`;
+    const expiresAt = Date.now() + delay;
+    const pendingAction: PendingDestructiveAction = { ...action, id, expiresAt };
+
+    const timer = window.setTimeout(() => {
+      destructiveTimersRef.current.delete(id);
+      setPendingDestructiveActions((actions) => actions.filter((candidate) => candidate.id !== id));
+      for (const message of pendingAction.messages) {
+        const sent = sendRef.current(message);
+        if (!sent) {
+          useKookrStore.getState().handleAlert(
+            '',
+            `${pendingAction.summary} was not sent because the connection is down.`,
+            'error',
+          );
+          break;
+        }
+      }
+    }, delay);
+
+    destructiveTimersRef.current.set(id, timer);
+    setPendingDestructiveActions((actions) => [...actions, pendingAction]);
+  }, []);
+
+  const queueDeleteTask = useCallback(({ taskId, label }: QueueDeleteTaskArgs) => {
+    queueDestructiveAction({
+      kind: 'deleteTask',
+      summary: `Deleting ${quotedTaskLabel(label)}`,
+      taskIds: [taskId],
+      messages: [{ type: 'deleteTask', taskId }],
+    });
+  }, [queueDestructiveAction]);
+
+  const queueClearCompleted = useCallback((args: QueueClearCompletedArgs) => {
+    if (args.count === 0 || args.taskIds.length === 0) return;
+    queueDestructiveAction({
+      kind: 'clearCompleted',
+      summary: `Deleting ${args.count} finished task${args.count === 1 ? '' : 's'}`,
+      taskIds: args.taskIds,
+      messages: args.taskIds.map((taskId) => ({ type: 'deleteTask', taskId })),
+    });
+  }, [queueDestructiveAction]);
+
+  useEffect(() => {
+    return () => {
+      for (const timer of destructiveTimersRef.current.values()) {
+        window.clearTimeout(timer);
+      }
+      destructiveTimersRef.current.clear();
+    };
+  }, []);
 
   useEffect(() => {
     void import('./styles.css');
@@ -450,6 +607,7 @@ export function App() {
       serverStartedAt,
       alerts: getBugReportAlerts(),
       wireObservations: getBugReportWireObservations(),
+      selectionDiagnostics: getSelectionTransitionDiagnostics(),
       debugTimeline: getDebugTimelineEntries(),
       note: bugReportNote,
     });
@@ -464,6 +622,7 @@ export function App() {
       serverStartedAt,
       alerts: getBugReportAlerts(),
       wireObservations: [],
+      selectionDiagnostics: getSelectionTransitionDiagnostics(),
       debugTimeline: getDebugTimelineEntries(),
       note: 'Debug timeline export',
     });
@@ -587,7 +746,7 @@ export function App() {
       }
       if (matchesShortcutAction(e, shortcutBindings, 'focus_reply')) {
         e.preventDefault();
-        const replyInput = document.querySelector('.detail-panel .response-row input[type="text"]') as HTMLInputElement | null;
+        const replyInput = document.querySelector('.detail-panel .response-row textarea') as HTMLTextAreaElement | null;
         if (replyInput) {
           track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.focus_reply), action: 'focus_reply', context: 'global' });
           replyInput.focus();
@@ -800,6 +959,10 @@ export function App() {
     () => buildAgentBuckets(agentsAfterRelationFilter, selectedProject, coordinator, projectPriorityRanks),
     [agentsAfterRelationFilter, selectedProject, coordinator, projectPriorityRanks],
   );
+  const commandPaletteFindings = useMemo(
+    () => buildAgentBuckets(agents, null, coordinator, projectPriorityRanks).findings,
+    [agents, coordinator, projectPriorityRanks],
+  );
 
   useEffect(() => {
     if (!isMobileViewport) {
@@ -865,14 +1028,38 @@ export function App() {
     setReflectionSuggestion(null);
   }
 
+  const pendingDestructiveTaskIdSet = useMemo(() => {
+    const ids = new Set<string>();
+    for (const action of pendingDestructiveActions) {
+      for (const taskId of action.taskIds) ids.add(taskId);
+    }
+    return ids;
+  }, [pendingDestructiveActions]);
+
+  useEffect(() => {
+    if (selectedAgent?.taskId && pendingDestructiveTaskIdSet.has(selectedAgent.taskId)) {
+      selectAgent(null);
+    }
+  }, [pendingDestructiveTaskIdSet, selectAgent, selectedAgent?.taskId]);
+
   // Clear-completed counts must match the server-side sweep scope. The
   // all-projects panel omits projectId and sweeps globally; project panels pass
   // projectId and sweep only tasks in that project.
   const clearCompletedScopeAgents = selectedProject
     ? agents.filter((a) => a.projectId === selectedProject)
     : agents;
-  const clearCompletedFinishedCount = clearCompletedScopeAgents.filter((a) => a.taskStatus === 'completed' || a.taskStatus === 'cancelled').length;
-  const clearCompletedTerminatedCount = clearCompletedScopeAgents.filter((a) => a.taskStatus === 'terminated').length;
+  const clearCompletedFinishedAgents = clearCompletedScopeAgents.filter((a) =>
+    a.taskId
+    && !pendingDestructiveTaskIdSet.has(a.taskId)
+    && (a.taskStatus === 'completed' || a.taskStatus === 'cancelled')
+  );
+  const clearCompletedTerminatedAgents = clearCompletedScopeAgents.filter((a) =>
+    a.taskId
+    && !pendingDestructiveTaskIdSet.has(a.taskId)
+    && a.taskStatus === 'terminated'
+  );
+  const clearCompletedFinishedCount = clearCompletedFinishedAgents.length;
+  const clearCompletedTerminatedCount = clearCompletedTerminatedAgents.length;
 
   const findingsPanel = (
     <FindingsPanel
@@ -885,7 +1072,16 @@ export function App() {
       send={send}
       clearCompletedFinishedCount={clearCompletedFinishedCount}
       clearCompletedTerminatedCount={clearCompletedTerminatedCount}
+      clearCompletedFinishedTaskIds={clearCompletedFinishedAgents.map((agent) => agent.taskId!)}
+      clearCompletedTerminatedTaskIds={clearCompletedTerminatedAgents.map((agent) => agent.taskId!)}
       clearCompletedProjectId={selectedProject ?? undefined}
+      pendingDeletionTaskIds={pendingDestructiveTaskIdSet}
+      onQueueDeleteTask={queueDeleteTask}
+      onQueueClearCompleted={queueClearCompleted}
+      onSchedulePlaybook={(prefill) => {
+        setSchedulePrefill(prefill);
+        setShowSchedules(true);
+      }}
     />
   );
 
@@ -904,11 +1100,13 @@ export function App() {
         });
         setConfirmAction('complete');
       }}
-      collapsed={!isMobileViewport && !selectedAgent}
       detailPaneMode={detailPaneMode}
       wideDetailActive={wideDetailActive}
       terminalFocusMode={terminalFocusActive}
       shortcutBindings={shortcutBindings}
+      // Overview data for the no-selection state (F8) — the rail's own bucket
+      // classification, so "Waiting on you" and the counts match the rail.
+      overview={{ waiting: findings, runningCount: healthy.length, completedCount: completed.length }}
     />
   );
 
@@ -987,10 +1185,32 @@ export function App() {
       projectLabel: a.projectId,
     });
   }
+  const commandFindings: CommandFindingItem[] = commandPaletteFindings.map((agent) => ({
+    agentId: agent.agentId,
+    label: agent.taskName ?? agent.agentId,
+    severity: agent.anomaly?.severity ?? agent.effectiveAttentionSeverity ?? 'info',
+    type: findingTypeLabel(agent),
+    projectLabel: agent.projectId,
+    explanation: agent.anomaly?.explanation,
+  }));
+  const commandProjects: CommandProjectItem[] = projectSummaries.map((project) => ({
+    projectId: project.project,
+    label: project.displayName,
+    activeAgents: project.activeAgents,
+    findingCount: project.findingCount,
+    keywords: [
+      project.localPath ?? '',
+      project.notes ?? '',
+      ...(project.recentTasks.map((task) => task.name ?? task.taskId)),
+    ].filter((keyword) => keyword.length > 0),
+  }));
 
   return (
     <div className={`app${isMobileViewport ? ' app-mobile' : ''}${isViewer ? ' app-read-only' : ''}`}>
       <ReadOnlyBanner />
+      <DrainModeBanner />
+      <ConnectionBanner />
+      <PermissionBypassBanner />
       <TopBar
         findings={findings.length}
         currentIndex={selectedAgent && selectedAgent.anomaly
@@ -1001,6 +1221,7 @@ export function App() {
         onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'button' }); setShowLaunch(true); }}
         readOnly={isViewer}
         onCommandPalette={() => setShowCommandPalette(true)}
+        scheduleHintActive={scheduleHintActive}
         onOperations={() => setShowOperations((value) => !value)}
         operationsOpen={showOperations}
         onCoordinatorFindings={() => setShowCoordinatorFindings((value) => !value)}
@@ -1048,60 +1269,62 @@ export function App() {
             {!terminalFocusActive && <CoordinatorFindingsPane open={showCoordinatorFindings} onClose={() => setShowCoordinatorFindings(false)} />}
             {mobileTab === 'findings' ? findingsPanel : detailPanel}
           </div>
-          <div className="mobile-quick-actions" data-testid="mobile-quick-actions">
-            <button
-              type="button"
-              className="mobile-action-btn"
-              data-testid="mobile-action-next-finding"
-              disabled={findings.length === 0}
-              onClick={() => {
-                track({ type: 'shortcut_used', key: 'Mobile Next Finding', action: 'next_bottleneck', context: 'touch' });
-                nextBottleneck();
-                setMobileTab('task');
-              }}
-            >
-              Next finding
-            </button>
-            <button
-              type="button"
-              className="mobile-action-btn"
-              data-testid="mobile-action-prev-task"
-              disabled={filteredAgents.length === 0}
-              onClick={() => {
-                track({ type: 'shortcut_used', key: 'Mobile Prev Task', action: 'previous_task', context: 'touch' });
-                previousTask();
-                setMobileTab('task');
-              }}
-            >
-              Prev task
-            </button>
-            <button
-              type="button"
-              className="mobile-action-btn"
-              data-testid="mobile-action-next-task"
-              disabled={filteredAgents.length === 0}
-              onClick={() => {
-                track({ type: 'shortcut_used', key: 'Mobile Next Task', action: 'next_task', context: 'touch' });
-                nextTask();
-                setMobileTab('task');
-              }}
-            >
-              Next task
-            </button>
-            {!isViewer && (
+          {mobileTab === 'findings' && (
+            <div className="mobile-quick-actions" data-testid="mobile-quick-actions">
               <button
                 type="button"
-                className="mobile-action-btn mobile-action-btn-primary"
-                data-testid="mobile-action-launch"
+                className="mobile-action-btn"
+                data-testid="mobile-action-next-finding"
+                disabled={findings.length === 0}
                 onClick={() => {
-                  track({ type: 'launch_dialog_opened', method: 'mobile_action' });
-                  setShowLaunch(true);
+                  track({ type: 'shortcut_used', key: 'Mobile Next Finding', action: 'next_bottleneck', context: 'touch' });
+                  nextBottleneck();
+                  setMobileTab('task');
                 }}
               >
-                Launch
+                Next finding
               </button>
-            )}
-          </div>
+              <button
+                type="button"
+                className="mobile-action-btn"
+                data-testid="mobile-action-prev-task"
+                disabled={filteredAgents.length === 0}
+                onClick={() => {
+                  track({ type: 'shortcut_used', key: 'Mobile Prev Task', action: 'previous_task', context: 'touch' });
+                  previousTask();
+                  setMobileTab('task');
+                }}
+              >
+                Prev task
+              </button>
+              <button
+                type="button"
+                className="mobile-action-btn"
+                data-testid="mobile-action-next-task"
+                disabled={filteredAgents.length === 0}
+                onClick={() => {
+                  track({ type: 'shortcut_used', key: 'Mobile Next Task', action: 'next_task', context: 'touch' });
+                  nextTask();
+                  setMobileTab('task');
+                }}
+              >
+                Next task
+              </button>
+              {!isViewer && (
+                <button
+                  type="button"
+                  className="mobile-action-btn mobile-action-btn-primary"
+                  data-testid="mobile-action-launch"
+                  onClick={() => {
+                    track({ type: 'launch_dialog_opened', method: 'mobile_action' });
+                    setShowLaunch(true);
+                  }}
+                >
+                  Launch
+                </button>
+              )}
+            </div>
+          )}
         </>
       ) : (
         <div
@@ -1137,6 +1360,10 @@ export function App() {
         shortcutBindings={shortcutBindings}
       />
       <Toasts />
+      <DestructiveUndoToasts
+        actions={pendingDestructiveActions}
+        onUndo={removePendingDestructiveAction}
+      />
       {debugTimelineEnabled && (
         <Suspense fallback={null}>
           <DebugTimelinePanel onExport={exportDebugTrace} />
@@ -1149,7 +1376,11 @@ export function App() {
         <CommandPalette
           actions={commandActions}
           tasks={commandTasks}
+          findings={commandFindings}
+          projects={commandProjects}
           onSelectTask={(agentId) => selectAgent(agentId)}
+          onSelectFinding={(agentId) => selectAgent(agentId)}
+          onSelectProject={(projectId) => selectProject(projectId)}
           onClose={() => setShowCommandPalette(false)}
         />
       )}
@@ -1254,7 +1485,18 @@ export function App() {
       )}
       {showSchedules && (
         <Suspense fallback={null}>
-          <SchedulesDialog onClose={() => setShowSchedules(false)} />
+          <SchedulesDialog
+            onClose={() => { setShowSchedules(false); setSchedulePrefill(null); }}
+            prefill={schedulePrefill ?? undefined}
+            onCreated={(fromPrefill) => {
+              if (!fromPrefill) return;
+              // Close the dialog so the spotlighted command-palette trigger is
+              // actually visible behind it, then show the discovery hint.
+              setShowSchedules(false);
+              setSchedulePrefill(null);
+              if (scheduledTasksHintShouldShow()) setScheduleHintActive(true);
+            }}
+          />
         </Suspense>
       )}
       {showCostComparison && (
@@ -1304,6 +1546,9 @@ export function App() {
         </Suspense>
       )}
       <OnboardingTour />
+      {scheduleHintActive && (
+        <ScheduledTasksHint onHide={() => setScheduleHintActive(false)} />
+      )}
       {showLaunch && (
         <Suspense fallback={null}>
           <LaunchTaskDialog

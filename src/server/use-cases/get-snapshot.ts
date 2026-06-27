@@ -7,7 +7,7 @@ import type { PrLessonsStateHolder } from '../../core/pr-lessons-discovery.js';
 import type { AvailableAgentType, AgentSelection } from '../../core/agent-types.js';
 import type { ProjectSummary, ProjectRepoHealth } from '../../core/project-summary.js';
 import type { GitHubReference } from '../../core/github-types.js';
-import type { SnapshotMessage } from '../../shared/contracts/messages.js';
+import type { DrainStatusSnapshot, SnapshotMessage } from '../../shared/contracts/messages.js';
 import type { CollaborationCapabilities, SpeechCapability } from '../../shared/contracts/speech.js';
 import { projectEventForClient } from '../event-projection.js';
 import type { AgentActivityMeta } from '../../core/types.js';
@@ -19,7 +19,7 @@ import { buildCoordinatorSnapshotState, type CoordinatorAuditTailProvider, type 
 import type { CoordinatorSuppressionReader } from '../coordinator/suppression-store.js';
 import { buildRelationProjection, deriveEffectiveAttentionSeverity } from './build-relation-projection.js';
 import type { TaskRelation } from '../../shared/contracts/task-relations.js';
-import type { PromptStatus } from '../../shared/terminal-input-contract.js';
+import type { PromptStatus } from '../../shared/contracts/terminal-input.js';
 import { buildSnapshotProjection } from './snapshot-projection.js';
 import {
   projectUserInputDeliveryForClient,
@@ -90,7 +90,9 @@ export interface SnapshotMessageDeps extends SnapshotQueryDeps {
   availableAgentTypes?: AvailableAgentType[];
   defaultAgentType?: AgentSelection;
   workspaceEnabled?: boolean;
+  bypassAllPermissions?: boolean;
   sweepRunning?: boolean;
+  drainStatus?: DrainStatusSnapshot;
   /** Live getter for the configured concurrency cap (settings.maxActiveTasks). */
   getMaxActiveTasks?: () => number;
   coordinator?: {
@@ -179,6 +181,13 @@ export interface ProjectSummaryQueryDeps extends SnapshotQueryDeps {
    * `ProjectSummary` are omitted.
    */
   getTaskGithubReferences?: (taskId: string) => GitHubReference[];
+  /**
+   * Verified open/closed state per reference, bound to
+   * `GitHubStateStore.isRefOpen`. When supplied, the tied-counts overlay only
+   * counts refs GitHub has confirmed open — see
+   * {@link BuildGithubTaskOverlayInput.getRefOpenState}.
+   */
+  getGithubRefOpenState?: (ref: GitHubReference) => boolean | undefined;
 }
 
 /**
@@ -381,7 +390,9 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
     ...(deps.availableAgentTypes && !projectsScope ? { availableAgentTypes: deps.availableAgentTypes } : {}),
     ...(deps.defaultAgentType && !projectsScope ? { defaultAgentType: deps.defaultAgentType } : {}),
     ...(deps.workspaceEnabled && !projectsScope ? { workspaceEnabled: true } : {}),
+    ...(deps.bypassAllPermissions && !projectsScope ? { bypassAllPermissions: true } : {}),
     ...(deps.sweepRunning && !projectsScope ? { sweepRunning: true } : {}),
+    ...(deps.drainStatus && !projectsScope ? { drainStatus: deps.drainStatus } : {}),
     ...(deps.getMaxActiveTasks && !projectsScope ? { maxActiveTasks: deps.getMaxActiveTasks() } : {}),
     // Coordinator is whole-world detector state — omitted for a `projects` viewer.
     ...(deps.coordinator && !projectsScope ? {
@@ -429,7 +440,11 @@ export function buildCoordinatorDetectorTasks(
 export function getProjectSummaries(deps: ProjectSummaryQueryDeps): ProjectSummary[] {
   const agents = getSnapshotAgentsRaw(deps);
   const githubTaskOverlay = deps.getTaskGithubReferences
-    ? buildGithubTaskOverlay({ agents, getTaskGithubReferences: deps.getTaskGithubReferences })
+    ? buildGithubTaskOverlay({
+        agents,
+        getTaskGithubReferences: deps.getTaskGithubReferences,
+        getRefOpenState: deps.getGithubRefOpenState,
+      })
     : undefined;
   const summaries = computeProjectSummaries({
     agents,

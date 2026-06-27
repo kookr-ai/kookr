@@ -12,12 +12,15 @@ uncomment only the values you need.
 | `KOOKR_HOST` | `127.0.0.1` | Hostname or IP address | Bind address for the HTTP/WebSocket server. Binding to a non-loopback host (a LAN IP or `0.0.0.0`) activates the API-token gate below. |
 | `KOOKR_API_TOKEN` | unset | Secret string | Bearer token required on **every** API request (including GETs) and WebSocket upgrades **when `KOOKR_HOST` is non-loopback**. Loopback binds (`127.0.0.1`/`::1`/`localhost`) ignore it and stay token-free. Non-browser clients (the `kookr spawn` / `kookr status` CLIs) send it as `Authorization: Bearer <token>` and read it from the process environment (so it must be **exported** in the shell — they do not load `.env`). The browser dashboard authenticates differently: it exchanges a one-time token (carried in the share/handoff URL **fragment**, `#token=<token>`) for an `HttpOnly` session cookie via `POST /api/auth/session`, and the cookie then rides automatically on HTTP fetches and the WebSocket handshake (no token in any WS URL — the legacy `?token=` query parameter was removed). This closed issue #708. If a non-loopback bind has no token and `KOOKR_ALLOW_NON_LOOPBACK=true`, one is auto-generated and printed at startup. |
 | `KOOKR_ALLOW_NON_LOOPBACK` | unset | `true` to enable | Explicit opt-out of the non-loopback fail-closed guard. When `KOOKR_HOST` is non-loopback and `KOOKR_API_TOKEN` is unset: `true` auto-generates an API token (printed at startup) and enforces it; unset/other refuses to start. Has no effect on a loopback bind. |
+| `KOOKR_DISABLE_ORIGIN_GATE` | unset | `true` to disable | Emergency escape hatch for the loopback browser-origin gate. By default, loopback binds stay token-free for local clients but reject browser-origin-crossing mutating API requests and WebSocket upgrades. Set only when an unusual local wrapper sends a mismatched `Origin`/`Sec-Fetch-Site`; headerless CLI, curl, and hook requests do not need this. Has no effect on non-loopback API-token enforcement. |
 | `KOOKR_TRUSTED_TUNNEL` | unset | `true` to assert | Operator assertion that a non-loopback bind sits behind a mesh-encrypted tunnel (Tailscale / WireGuard). The browser session cookie is `Secure` only over HTTPS; a `Secure` cookie is never sent over plain HTTP, so on a non-loopback **plain-HTTP** bind the cookie exchange (`POST /api/auth/session`) is **refused** unless `KOOKR_TRUSTED_TUNNEL=true`, in which case a non-`Secure` cookie is issued over the asserted tunnel. Prefer fronting the dashboard with HTTPS (e.g. **Tailscale Serve**), which keeps `Secure` on and needs no flag. **Trusted, not validated** — do not set it on a routable public bind; doing so would ship a non-`Secure` cookie on an unencrypted path. Has no effect on a loopback bind. See [Read-Only Shared View Setup](shared-view-setup.md). |
 | `KOOKR_REQUEST_BODY_LIMIT_BYTES` | `1000000` | Positive integer bytes | Maximum JSON request body size accepted by the dashboard server API routes. Oversized requests return HTTP 413 before route handlers parse the body. |
 | `KOOKR_DEV_HOST` | unset (Vite dev server binds dual-stack) | Hostname or IP address | Bind address for the Vite frontend dev server (`pnpm dev`, `pnpm dev:frontend`). Default leaves Vite reachable on both `127.0.0.1:5173` and `[::1]:5173`. Set to `0.0.0.0` for LAN access, or to a specific IP to restrict the bind. |
 | `KOOKR_HEALTH_URL` | `http://127.0.0.1:${KOOKR_PORT}/api/health` | HTTP URL | Health endpoint used by `scripts/prod-restart.sh` while waiting for startup. |
 | `KOOKR_STARTUP_TIMEOUT_SECONDS` | `720` | Positive integer seconds | Maximum wait for production restart health checks. |
 | `KOOKR_STARTUP_CHECK_INTERVAL_SECONDS` | `2` | Positive integer seconds | Poll interval for production restart health checks. |
+| `KOOKR_LOG_FORMAT` | unset, human-readable lines | unset or `json` | Selects server logger output format for logger-backed call sites. The default preserves human-readable `[subsystem] message` lines. Set `json` to emit one JSON object per line with `ts`, `level`, `subsystem`, `msg`, and `fields`. |
+| `KOOKR_LOG_TASK_SAVE_METRICS` | unset | `1` to enable | Logs each `tasks.json` save with serialized byte count, task/relation counts, and serialize/write/total duration. Intended for short dogfooding measurements of task-state write amplification; leave unset for normal operation. |
 | `KOOKR_PROD_DIR` | Auto-resolved `../kookr-prod` | Absolute or relative path | Overrides the production worktree used by `scripts/prod-update.sh` and deployment routes. |
 | `KOOKR_ENV_ROOT_DIR` | Auto-resolved Kookr main checkout when `prod-update.sh` runs from `kookr-prod`; otherwise current checkout | Absolute or relative path | Overrides the checkout whose `.env` is symlinked into the production worktree by `scripts/prod-update.sh`. |
 
@@ -79,6 +82,20 @@ not user configuration knobs.
 | --- | --- | --- | --- |
 | `KOOKR_BACKEND` | unset, treated as `dtach` | unset or `dtach` | Compatibility guard only. Any other value hard-fails startup because the tmux backend was removed. |
 | `KOOKR_DTACH_SOCK_DIR` | `/tmp/kookr-dtach/$(id -u)` | Directory path | Overrides the dtach socket root used by `scripts/rollback-dtach.sh`. |
+
+## Terminal Streaming
+
+These variables tune live PTY-output forwarding from `SessionBridge` to browser
+terminal sockets. The defaults are intended for normal local use; change them
+only when diagnosing slow viewers or unusually high terminal-output volume.
+
+| Variable | Default | Accepted values | Effect |
+| --- | --- | --- | --- |
+| `KOOKR_SESSION_BRIDGE_OUTPUT_BATCH_MS` | `5` | Positive integer milliseconds | Live PTY-output coalescing window. Chunks received within this window are concatenated into one binary WebSocket frame. Replay bytes are unaffected. |
+| `KOOKR_SESSION_BRIDGE_BACKPRESSURE_RETRY_MS` | `25` | Positive integer milliseconds | Retry cadence while a browser socket remains above the soft buffered-output threshold. |
+| `KOOKR_SESSION_BRIDGE_BACKPRESSURE_SOFT_BYTES` | `1048576` | Positive integer bytes | If `ws.bufferedAmount` is above this value, live PTY output stays queued for that socket instead of sending another frame. |
+| `KOOKR_SESSION_BRIDGE_OWNER_BACKPRESSURE_HARD_BYTES` | `67108864` | Positive integer bytes | Hard queued-plus-buffered ceiling for owner terminal sockets. Above this, the bridge closes the socket so the client can reconnect and replay from the backend ring buffer. |
+| `KOOKR_SESSION_BRIDGE_VIEWER_BACKPRESSURE_HARD_BYTES` | `16777216` | Positive integer bytes | Hard queued-plus-buffered ceiling for read-only viewer terminal sockets. Viewers use a lower ceiling so slow remote readers cannot retain unbounded server memory. |
 
 ## Recovery And Scheduling
 
@@ -153,6 +170,18 @@ set.
 | `KOOKR_TELEGRAM_API_URL` | Telegram API default | HTTP URL | Overrides the Telegram API base URL. Used by tests and local fakes. |
 | `KOOKR_STT_WHISPER_URL` | unset | HTTP URL of the local faster-whisper-server (e.g. `http://127.0.0.1:8010`) | Enables Telegram audio transcription for voice, uploaded audio, video notes, and audio documents. When unset, audio messages are dropped with the `dropped_audio_disabled` audit kind and the user is told audio is unsupported. The server must expose the OpenAI-compatible `POST /v1/audio/transcriptions` endpoint and is reached over plain HTTP — bind it to localhost only. |
 
+## Outbound Finding Webhook
+
+Outbound webhooks are off by default. Set `KOOKR_WEBHOOK_URL` to POST each new
+attention finding to a generic JSON receiver. The webhook URL is operator-supplied
+local configuration; do not store shared secrets in checked-in `.env` files.
+
+| Variable | Default | Accepted values | Effect |
+| --- | --- | --- | --- |
+| `KOOKR_WEBHOOK_URL` | unset | HTTP or HTTPS URL | Enables generic outbound JSON POST notifications when findings enter the active attention queue. |
+| `KOOKR_WEBHOOK_MIN_SEVERITY` | `info` | `info`, `warning`, `critical` | Sends only findings at or above the configured severity. Invalid values fall back to `info` with a warning. |
+| `KOOKR_WEBHOOK_SECRET` | unset | Secret string, or comma-separated secrets for rotation | Adds `X-Kookr-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret, t + "." + body)>` to outbound finding webhook POSTs. Kookr signs with the first configured secret; receivers should verify against any accepted secret during rotation. |
+
 ## Relay
 
 Hosted relay is inert until the operational gate is explicitly enabled; see
@@ -219,9 +248,13 @@ Bundled STT and TTS run via Docker Compose. The default STT config targets an NV
 | `KOOKR_ALERT_CPU_PERCENT` | `0` (disabled) | Non-negative number (percent), `0` disables | Host CPU usage threshold for operational alerts on the already-sampled resource feed. Fires one `warning` alert when CPU stays at or above this for `KOOKR_ALERT_SUSTAIN_SAMPLES` consecutive samples, and one `info` alert on recovery. Negative or invalid values are treated as `0`. |
 | `KOOKR_ALERT_MEMORY_PERCENT` | `0` (disabled) | Non-negative number (percent), `0` disables | Host memory-used threshold for operational alerts, evaluated like `KOOKR_ALERT_CPU_PERCENT`. |
 | `KOOKR_ALERT_EVENT_LOOP_DELAY_MS` | `0` (disabled) | Non-negative number (milliseconds), `0` disables | Server event-loop delay (p95) threshold for operational alerts, evaluated like `KOOKR_ALERT_CPU_PERCENT`. |
-| `KOOKR_ALERT_SUSTAIN_SAMPLES` | `3` | Integer `>= 1` | Consecutive breaching resource samples required before any operational alert fires (edge-triggered; clears on the first sample back below threshold). Samples are taken roughly every 2 seconds. Invalid or blank values use the default. |
+| `KOOKR_ALERT_DATA_DIR_FREE_PERCENT` | `5` | Non-negative number (percent), `0` disables | Free-space floor for the filesystem containing the Kookr data directory (`~/.kookr` or `~/.kookr-<port>`). Fires one `warning` alert when free space stays at or below this percent for `KOOKR_ALERT_SUSTAIN_SAMPLES` consecutive samples, and one `info` alert after all enabled free-space floors recover. |
+| `KOOKR_ALERT_DATA_DIR_FREE_BYTES` | `2147483648` | Non-negative number (bytes), `0` disables | Absolute free-space floor for the Kookr data-directory filesystem, evaluated together with `KOOKR_ALERT_DATA_DIR_FREE_PERCENT`; breaching either enabled floor triggers the same low-disk-space rule. |
+| `KOOKR_ALERT_CIRCUIT_BREAKER_OPEN_MS` | `30000` | Non-negative number (milliseconds), `0` disables | Circuit-breaker OPEN duration threshold. Fires one advisory `warning` alert when a breaker remains OPEN for at least this long, and one `info` alert when it recovers to HALF_OPEN or CLOSED. |
+| `KOOKR_ALERT_SUSTAIN_SAMPLES` | `3` | Integer `>= 1` | Consecutive breaching resource samples required before sampled-resource operational alerts fire (edge-triggered; clears on the first sample back below threshold). Circuit-breaker alerts use `KOOKR_ALERT_CIRCUIT_BREAKER_OPEN_MS` instead. Samples are taken roughly every 2 seconds. Invalid or blank values use the default. |
 | `KOOKR_AUTO_REFLECT_DISABLE` | unset | `1` to disable | Kill switch for task-feedback reflection spawning. |
 | `KOOKR_FINDING_REVIEW_ENABLED` | unset | `true` to enable | Enables local/admin finding-evidence review diagnostics. Required before manual model review or the background sampler can call the LLM. |
+| `KOOKR_FINDING_TRANSCRIPT_CONTEXT` | unset | `true` or `1` to enable | Attaches the last assistant text message from the registered transcript JSONL to `needs_input` and `stale_agent` findings. Reads only a bounded transcript tail and leaves findings unchanged when unset. |
 | `KOOKR_FINDING_REVIEW_DAILY_COST_CENTS` | `0` | Non-negative integer cents | Daily cost budget for finding-evidence model reviews. `0` keeps model calls disabled. |
 | `KOOKR_FINDING_REVIEW_MAX_CANDIDATES` | `5` | Positive integer | Maximum candidates reviewed by one manual finding-evidence review request. |
 | `KOOKR_FINDING_REVIEW_TIMEOUT_MS` | `15000` | Positive integer milliseconds | Timeout for each finding-evidence review model call. |
@@ -239,6 +272,15 @@ Bundled STT and TTS run via Docker Compose. The default STT config targets an NV
 | `KOOKR_FINDING_REVIEW_SAMPLER_MAX_ATTEMPTS` | `3` | Positive integer | Maximum review attempts before a queue entry becomes terminal. |
 | `KOOKR_FINDING_REVIEW_SAMPLER_RETRY_BASE_MS` | `60000` | Positive integer milliseconds | Base delay for exponential retry backoff. |
 | `KOOKR_FINDING_REVIEW_SAMPLER_CANDIDATE_READ_LIMIT` | `50` | Positive integer | Number of audit candidates read from the monitor per sampler pass. |
+
+Disk-pressure sampling uses Node's filesystem statistics for the directory that
+contains Kookr state. If the runtime does not support that API, or the data
+directory cannot be read, Kookr reports the disk fields as `null` and marks the
+sample unavailable. Operational alert rules fail open for missing samples: a
+low-disk alert will not fire on absent data, and an already-firing alert will
+not clear until a later readable sample shows recovery. Kookr does not
+auto-prune or throttle writes; use `kookr maintenance prune --dry-run --dir <dataDir>`
+to inspect conservative cleanup candidates.
 
 ## Hooks And Contribution Tracking
 

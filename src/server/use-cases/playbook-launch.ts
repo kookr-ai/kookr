@@ -1,13 +1,16 @@
 import { readFile } from 'node:fs/promises';
-import { join, relative, resolve, sep } from 'node:path';
+import { join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { parsePlaybook, interpolateParameters } from '../../core/playbook-parser.js';
+import { readEvolutionConfig } from '../../core/evolution-config.js';
 import { userPlaybooksDir, pluginPlaybooksDir } from '../../core/playbook-discovery.js';
+import { isPathInside } from '../../core/playbook-paths.js';
 import { getProjectId, projectDisplayName, projectIdFromRepoSpecifier } from '../../core/project-identity.js';
 import type { AgentSelection } from '../../core/agent-types.js';
 import type { PlaybookParameter, PlaybookScope } from '../../core/playbook.js';
 import { canonicalizeCwd } from '../cwd.js';
 import type { LaunchOpts } from '../launch-service.js';
+import type { DeliveryPolicy } from '../worktree-guardrails.js';
 import { normalizePromptFileReferences } from '../prompt-file-paths.js';
 import { expandConfiguredCwd } from '../cwd-paths.js';
 
@@ -44,6 +47,7 @@ export interface NormalizedPlaybookLaunchInput extends PreparePlaybookLaunchInpu
 export interface PreparedPlaybookLaunch {
   playbook: ReturnType<typeof parsePlaybook>;
   launchOpts: LaunchOpts;
+  deliveryPolicy: DeliveryPolicy;
 }
 
 export async function preparePlaybookLaunch(input: PreparePlaybookLaunchInput): Promise<LaunchOpts> {
@@ -96,6 +100,7 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
     input.parameterValues,
     effectiveCwd,
   );
+  await validatePlaybookLaunchCapabilities(playbook, parameterValues, effectiveCwd);
 
   const prompt = normalizePromptFileReferences(
     interpolateParameters(playbook.body, playbook.parameters, parameterValues),
@@ -127,6 +132,7 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
 
   return {
     playbook,
+    deliveryPolicy: playbook.deliveryPreAuthorized ? 'pre-authorized' : 'ask-first',
     launchOpts: {
       prompt,
       cwd: effectiveCwd,
@@ -137,8 +143,24 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
       agentType: input.agentType,
       projectId,
       dependencies: playbook.dependencies,
+      ...(playbook.autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal: playbook.autoCloseOnSignal }),
     },
   };
+}
+
+async function validatePlaybookLaunchCapabilities(
+  playbook: ReturnType<typeof parsePlaybook>,
+  parameterValues: Record<string, string>,
+  effectiveCwd: string,
+): Promise<void> {
+  if (!playbook.parameters.some((parameter) => parameter.gatedBy === 'evolution-config')) {
+    return;
+  }
+  const projectCwd = parameterValues.projectCwd?.trim() || effectiveCwd;
+  const validation = await readEvolutionConfig(projectCwd);
+  if (!validation.ok) {
+    throw new Error(`Autonomous Evolution requires a valid .kookr/evolution/config.json. ${validation.error}`);
+  }
 }
 
 function resolvePlaybooksDir(scope: PlaybookScope, projectCwd: string): string | undefined {
@@ -221,9 +243,4 @@ function normalizeRequestedProjectId(projectId: string | undefined): string | un
   if (!trimmed) return undefined;
   if (trimmed.startsWith('local/')) return trimmed;
   return projectIdFromRepoSpecifier(trimmed) ?? trimmed.toLowerCase();
-}
-
-function isPathInside(path: string, parent: string): boolean {
-  const relativePath = relative(resolve(parent), resolve(path));
-  return relativePath === '' || (!relativePath.startsWith('..') && relativePath !== '..' && !relativePath.startsWith(`..${sep}`));
 }

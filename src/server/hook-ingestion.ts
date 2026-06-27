@@ -39,8 +39,18 @@ export interface HookEventInjector {
     tmuxName: string,
     rawJson: string,
     sequence?: number,
-    options?: { origin?: EventOrigin },
+    options?: { origin?: EventOrigin; startupReplay?: boolean; fileMtimeMs?: number },
   ): InjectHookEventResult;
+}
+
+export interface HookParseDegradationEvent {
+  kookrSessionId: string;
+  source: IngestInput['source'];
+  eventId: string;
+  sequence: number;
+  error: string;
+  excerpt: string;
+  observedAt: string;
 }
 
 export interface HookIngestionDeps {
@@ -60,12 +70,21 @@ export interface HookIngestionDeps {
   dedupTtlMs?: number;
   /** Test seam: overridable clock for deterministic dedup-window assertions. */
   now?: () => number;
+  /**
+   * Called for live malformed hook records only. Startup replay and synthetic
+   * replay sessions remain diagnostics-only so old bad records do not alert.
+   */
+  onParseDegradation?: (event: HookParseDegradationEvent) => void;
+  /** Lag threshold for structured diagnostics. Defaults to 2 seconds. */
+  lagWarningThresholdMs?: number;
 }
 
 export interface IngestInput {
   kookrSessionId: string;
   raw: string;
   source: 'file' | 'http';
+  startupReplay?: boolean;
+  fileMtimeMs?: number;
 }
 
 export interface IngestResult {
@@ -137,6 +156,66 @@ interface CacheEntry {
 }
 
 const COORDINATOR_AUDIT_TAIL_LIMIT = 1_000;
+const DEFAULT_LAG_WARNING_THRESHOLD_MS = 2_000;
+const LAG_SAMPLE_LIMIT = 128;
+
+export type HookWriteTimestampSource = 'payload' | 'file_mtime' | 'missing' | 'invalid';
+
+export interface HookIngestionSessionDiagnostics {
+  kookrSessionId: string;
+  totalArrivals: number;
+  dispatchedArrivals: number;
+  duplicateArrivals: number;
+  missingWriteTimestampCount: number;
+  invalidWriteTimestampCount: number;
+  futureWriteTimestampCount: number;
+  notableLagCount: number;
+  startupReplayArrivalCount: number;
+  lastProcessedAt: string | null;
+  lastWriteTimestampAt: string | null;
+  lastWriteTimestampSource: HookWriteTimestampSource | null;
+  lag: {
+    count: number;
+    lastMs: number | null;
+    meanMs: number | null;
+    maxMs: number | null;
+    p95Ms: number | null;
+  };
+  sourceCounts: Record<'file' | 'http', number>;
+  writeTimestampSourceCounts: Record<HookWriteTimestampSource, number>;
+}
+
+export interface HookIngestionDiagnosticsSnapshot {
+  schemaVersion: 'hook-ingestion-diagnostics.v1';
+  generatedAt: string;
+  lagWarningThresholdMs: number;
+  sessionCount: number;
+  totalArrivals: number;
+  missingWriteTimestampCount: number;
+  notableLagCount: number;
+  sessions: HookIngestionSessionDiagnostics[];
+}
+
+interface MutableHookIngestionSessionDiagnostics {
+  kookrSessionId: string;
+  totalArrivals: number;
+  dispatchedArrivals: number;
+  duplicateArrivals: number;
+  missingWriteTimestampCount: number;
+  invalidWriteTimestampCount: number;
+  futureWriteTimestampCount: number;
+  notableLagCount: number;
+  startupReplayArrivalCount: number;
+  lastProcessedAtMs: number | null;
+  lastWriteTimestampMs: number | null;
+  lastWriteTimestampSource: HookWriteTimestampSource | null;
+  lastLagMs: number | null;
+  lagMaxMs: number | null;
+  lagSamples: number[];
+  sourceCounts: Record<'file' | 'http', number>;
+  writeTimestampSourceCounts: Record<HookWriteTimestampSource, number>;
+  overLagThreshold: boolean;
+}
 
 export class HookIngestion implements HookEventInjector {
   private cache = new Map<string, CacheEntry>();
@@ -151,6 +230,9 @@ export class HookIngestion implements HookEventInjector {
   private taskStore?: Pick<TaskStore, 'findTaskBySession'>;
   private dedupTtlMs: number;
   private now: () => number;
+  private onParseDegradation?: (event: HookParseDegradationEvent) => void;
+  private lagWarningThresholdMs: number;
+  private diagnosticsBySession = new Map<string, MutableHookIngestionSessionDiagnostics>();
 
   constructor(deps: HookIngestionDeps) {
     this.adapter = deps.adapter;
@@ -159,11 +241,24 @@ export class HookIngestion implements HookEventInjector {
     this.taskStore = deps.taskStore;
     this.dedupTtlMs = deps.dedupTtlMs ?? 5000;
     this.now = deps.now ?? Date.now;
+    this.onParseDegradation = deps.onParseDegradation;
+    this.lagWarningThresholdMs = deps.lagWarningThresholdMs ?? DEFAULT_LAG_WARNING_THRESHOLD_MS;
   }
 
   /** HookFileWatcher-compatible alias. Treats the call as file-source. */
-  injectHookEvent(tmuxName: string, rawJson: string): InjectHookEventResult {
-    const result = this.ingest({ kookrSessionId: tmuxName, raw: rawJson, source: 'file' });
+  injectHookEvent(
+    tmuxName: string,
+    rawJson: string,
+    _sequence?: number,
+    options?: { origin?: EventOrigin; startupReplay?: boolean; fileMtimeMs?: number },
+  ): InjectHookEventResult {
+    const result = this.ingest({
+      kookrSessionId: tmuxName,
+      raw: rawJson,
+      source: 'file',
+      startupReplay: options?.startupReplay,
+      fileMtimeMs: options?.fileMtimeMs,
+    });
     return result.injectResult;
   }
 
@@ -172,7 +267,7 @@ export class HookIngestion implements HookEventInjector {
     return this.ingest({ kookrSessionId: sessionId, raw: body, source: 'http' });
   }
 
-  private ingest({ kookrSessionId, raw, source }: IngestInput): IngestResult {
+  private ingest({ kookrSessionId, raw, source, startupReplay = false, fileMtimeMs }: IngestInput): IngestResult {
     const normalized = raw.trim();
     const contentHash = createHash('sha256').update(normalized).digest('hex');
     const origin = deriveEventOrigin(kookrSessionId);
@@ -189,6 +284,14 @@ export class HookIngestion implements HookEventInjector {
 
     const key = `${kookrSessionId}::${contentHash}`;
     const now = this.now();
+    const lagSample = this.recordLagSample({
+      kookrSessionId,
+      raw: normalized,
+      source,
+      processedAtMs: now,
+      fileMtimeMs,
+      startupReplay,
+    });
     this.gcExpired(now);
 
     const httpTrackerCall = () => {
@@ -215,21 +318,34 @@ export class HookIngestion implements HookEventInjector {
         result.origin = origin;
         this.cache.set(key, { ts: now, result, firstSource: existing.firstSource });
         this.bumpMeta(kookrSessionId, { duplicate: false, result });
+        this.writeLedger({
+          kookrSessionId,
+          contentHash,
+          source,
+          sequence: result.sequence ?? existing.result.sequence ?? 0,
+          rawBytes: normalized.length,
+          rawJson: normalized,
+          result,
+          projection: 'diagnostic_only',
+        });
         // Replay re-dispatch: recompute the correlation id from the ORIGINAL
         // sequence so the id is identical to the pre-restart dispatch.
         const eventId = mintEventId(kookrSessionId, result.sequence ?? existing.result.sequence ?? 0);
+        this.markDiagnosticsArrival(kookrSessionId, { duplicate: false, dispatched: result.parseStatus === 'ok' });
         return { dispatched: result.parseStatus === 'ok', contentHash, eventId, origin, injectResult: result };
       }
       // Steady-state dual-delivery: the OTHER source already dispatched this
       // record. Reuse the original sequence number on the diagnostic ledger
       // row so the sequence space tracks dispatches, not arrivals.
       this.bumpMeta(kookrSessionId, { duplicate: true });
+      this.markDiagnosticsArrival(kookrSessionId, { duplicate: true, dispatched: false });
       this.writeLedger({
         kookrSessionId,
         contentHash,
         source,
         sequence: existing.result.sequence ?? 0,
         rawBytes: normalized.length,
+        rawJson: normalized,
         result: existing.result,
         projection: 'diagnostic_only',
       });
@@ -265,12 +381,23 @@ export class HookIngestion implements HookEventInjector {
         origin,
       };
       this.bumpMeta(kookrSessionId, { duplicate: false, result: malformed });
+      this.emitParseDegradation({
+        kookrSessionId,
+        source,
+        eventId,
+        sequence,
+        result: malformed,
+        raw: normalized,
+        origin,
+        startupReplay,
+      });
       this.writeLedger({
         kookrSessionId,
         contentHash,
         source,
         sequence,
         rawBytes: normalized.length,
+        rawJson: normalized,
         result: malformed,
         projection: 'diagnostic_only',
       });
@@ -279,6 +406,10 @@ export class HookIngestion implements HookEventInjector {
         kookrSessionId,
         sequence,
         source,
+        ...(lagSample ? {
+          lagMs: lagSample.lagMs,
+          writeTimestampSource: lagSample.writeTimestampSource,
+        } : {}),
         parseStatus: malformed.parseStatus,
       });
       throw err;
@@ -288,12 +419,26 @@ export class HookIngestion implements HookEventInjector {
       this.cache.set(key, { ts: now, result, firstSource: source });
     }
     this.bumpMeta(kookrSessionId, { duplicate: false, result });
+    this.markDiagnosticsArrival(kookrSessionId, { duplicate: false, dispatched: result.parseStatus === 'ok' });
+    if (result.parseStatus === 'malformed') {
+      this.emitParseDegradation({
+        kookrSessionId,
+        source,
+        eventId,
+        sequence,
+        result,
+        raw: normalized,
+        origin,
+        startupReplay,
+      });
+    }
     this.writeLedger({
       kookrSessionId,
       contentHash,
       source,
       sequence,
       rawBytes: normalized.length,
+      rawJson: normalized,
       result,
       projection: ledgerProjection(result),
     });
@@ -317,6 +462,10 @@ export class HookIngestion implements HookEventInjector {
       kookrSessionId,
       sequence,
       source,
+      ...(lagSample ? {
+        lagMs: lagSample.lagMs,
+        writeTimestampSource: lagSample.writeTimestampSource,
+      } : {}),
       parentage: result.parentage ?? 'unknown',
       parseStatus: result.parseStatus,
       ...(result.rawHookEventName ? { rawHookEventName: result.rawHookEventName } : {}),
@@ -346,6 +495,22 @@ export class HookIngestion implements HookEventInjector {
       [...rowsByKey.values()].map(cloneAndFreezeCoordinatorAuditTailRow),
     );
     return [...this.coordinatorAuditTailProjectionCache];
+  }
+
+  getDiagnosticsSnapshot(): HookIngestionDiagnosticsSnapshot {
+    const sessions = [...this.diagnosticsBySession.values()]
+      .map(projectIngestionSessionDiagnostics)
+      .sort((a, b) => a.kookrSessionId.localeCompare(b.kookrSessionId));
+    return {
+      schemaVersion: 'hook-ingestion-diagnostics.v1',
+      generatedAt: new Date(this.now()).toISOString(),
+      lagWarningThresholdMs: this.lagWarningThresholdMs,
+      sessionCount: sessions.length,
+      totalArrivals: sessions.reduce((sum, session) => sum + session.totalArrivals, 0),
+      missingWriteTimestampCount: sessions.reduce((sum, session) => sum + session.missingWriteTimestampCount, 0),
+      notableLagCount: sessions.reduce((sum, session) => sum + session.notableLagCount, 0),
+      sessions,
+    };
   }
 
   private appendCoordinatorAuditTail(row: CoordinatorAuditTailRow): void {
@@ -386,10 +551,23 @@ export class HookIngestion implements HookEventInjector {
   async hydrateFromLedger(
     kookrSessionId: string,
     ledger: ActivityLedger,
-  ): Promise<{ hydratedHashes: number; maxSequence: number }> {
+    options?: { replayLiveState?: boolean },
+  ): Promise<{ hydratedHashes: number; maxSequence: number; liveStateReplayed: boolean }> {
     const rows = await ledger.readAll(kookrSessionId);
     let maxSequence = 0;
     let hydratedHashes = 0;
+    let liveStateReplayed = false;
+    const rawBySequence = new Map<number, string>();
+    const primaryParsedRows: ActivityLedgerRow[] = [];
+    for (const row of rows) {
+      if (row.rawJson) rawBySequence.set(row.envelope.sequence, row.rawJson);
+      if (row.envelope.parseStatus === 'ok' && row.projection !== 'diagnostic_only') {
+        primaryParsedRows.push(row);
+      }
+    }
+    const canReplayLiveState = primaryParsedRows.length > 0 && primaryParsedRows.every(
+      (row) => rawBySequence.has(row.envelope.sequence),
+    );
     for (const row of rows) {
       const { envelope } = row;
       if (envelope.sequence > maxSequence) maxSequence = envelope.sequence;
@@ -436,12 +614,38 @@ export class HookIngestion implements HookEventInjector {
       const existing = this.sequenceCounters.get(kookrSessionId) ?? 0;
       if (maxSequence > existing) this.sequenceCounters.set(kookrSessionId, maxSequence);
     }
-    return { hydratedHashes, maxSequence };
+    if (options?.replayLiveState === true && canReplayLiveState) {
+      const origin = deriveEventOrigin(kookrSessionId);
+      let replayedAllRows = true;
+      for (const row of primaryParsedRows) {
+        const raw = rawBySequence.get(row.envelope.sequence);
+        if (!raw) continue;
+        const result = this.adapter.injectHookEvent(
+          kookrSessionId,
+          raw,
+          row.envelope.sequence,
+          { origin },
+        );
+        result.origin = origin;
+        if (result.parseStatus !== 'ok') {
+          replayedAllRows = false;
+        }
+        this.bumpMeta(kookrSessionId, { duplicate: false, result });
+        this.cache.set(`${kookrSessionId}::${row.envelope.contentHash}`, {
+          ts: this.now(),
+          result,
+          firstSource: row.envelope.source,
+        });
+      }
+      liveStateReplayed = replayedAllRows;
+    }
+    return { hydratedHashes, maxSequence, liveStateReplayed };
   }
 
   /** Forget per-session bookkeeping — called when a task / session is deleted. */
   forgetSession(kookrSessionId: string): void {
     this.metaByKookrSession.delete(kookrSessionId);
+    this.diagnosticsBySession.delete(kookrSessionId);
     this.sequenceCounters.delete(kookrSessionId);
     this.coordinatorAuditTail = this.coordinatorAuditTail.filter(
       (row) => row.envelope?.kookrSessionId !== kookrSessionId,
@@ -489,12 +693,107 @@ export class HookIngestion implements HookEventInjector {
     return next;
   }
 
+  private recordLagSample(args: {
+    kookrSessionId: string;
+    raw: string;
+    source: IngestInput['source'];
+    processedAtMs: number;
+    fileMtimeMs?: number;
+    startupReplay: boolean;
+  }): { lagMs: number; writeTimestampSource: HookWriteTimestampSource } | undefined {
+    const diagnostics = this.getOrCreateDiagnostics(args.kookrSessionId);
+    diagnostics.totalArrivals += 1;
+    diagnostics.sourceCounts[args.source] += 1;
+    diagnostics.lastProcessedAtMs = args.processedAtMs;
+    if (args.startupReplay) {
+      diagnostics.startupReplayArrivalCount += 1;
+      diagnostics.overLagThreshold = false;
+      return undefined;
+    }
+
+    const writeTimestamp = extractHookWriteTimestampMs(args.raw, args.fileMtimeMs);
+    diagnostics.writeTimestampSourceCounts[writeTimestamp.source] += 1;
+    diagnostics.lastWriteTimestampSource = writeTimestamp.source;
+
+    if (writeTimestamp.source === 'missing') {
+      diagnostics.missingWriteTimestampCount += 1;
+      diagnostics.overLagThreshold = false;
+      return undefined;
+    }
+    if (writeTimestamp.source === 'invalid') {
+      diagnostics.invalidWriteTimestampCount += 1;
+      diagnostics.overLagThreshold = false;
+      return undefined;
+    }
+
+    diagnostics.lastWriteTimestampMs = writeTimestamp.ms;
+    const rawLagMs = args.processedAtMs - writeTimestamp.ms;
+    const lagMs = Math.max(0, Math.round(rawLagMs));
+    if (rawLagMs < 0) diagnostics.futureWriteTimestampCount += 1;
+    diagnostics.lastLagMs = lagMs;
+    diagnostics.lagMaxMs = diagnostics.lagMaxMs === null ? lagMs : Math.max(diagnostics.lagMaxMs, lagMs);
+    pushBounded(diagnostics.lagSamples, lagMs, LAG_SAMPLE_LIMIT);
+
+    const overThreshold = lagMs > this.lagWarningThresholdMs;
+    if (overThreshold) {
+      diagnostics.notableLagCount += 1;
+      if (!diagnostics.overLagThreshold) {
+        console.warn('[hook-ingestion] lag threshold crossed', {
+          kookrSessionId: args.kookrSessionId,
+          source: args.source,
+          lagMs,
+          thresholdMs: this.lagWarningThresholdMs,
+          writeTimestampSource: writeTimestamp.source,
+        });
+      }
+    }
+    diagnostics.overLagThreshold = overThreshold;
+    return { lagMs, writeTimestampSource: writeTimestamp.source };
+  }
+
+  private markDiagnosticsArrival(
+    kookrSessionId: string,
+    args: { duplicate: boolean; dispatched: boolean },
+  ): void {
+    const diagnostics = this.getOrCreateDiagnostics(kookrSessionId);
+    if (args.duplicate) diagnostics.duplicateArrivals += 1;
+    if (args.dispatched) diagnostics.dispatchedArrivals += 1;
+  }
+
+  private getOrCreateDiagnostics(kookrSessionId: string): MutableHookIngestionSessionDiagnostics {
+    const existing = this.diagnosticsBySession.get(kookrSessionId);
+    if (existing) return existing;
+    const created: MutableHookIngestionSessionDiagnostics = {
+      kookrSessionId,
+      totalArrivals: 0,
+      dispatchedArrivals: 0,
+      duplicateArrivals: 0,
+      missingWriteTimestampCount: 0,
+      invalidWriteTimestampCount: 0,
+      futureWriteTimestampCount: 0,
+      notableLagCount: 0,
+      startupReplayArrivalCount: 0,
+      lastProcessedAtMs: null,
+      lastWriteTimestampMs: null,
+      lastWriteTimestampSource: null,
+      lastLagMs: null,
+      lagMaxMs: null,
+      lagSamples: [],
+      sourceCounts: { file: 0, http: 0 },
+      writeTimestampSourceCounts: { payload: 0, file_mtime: 0, missing: 0, invalid: 0 },
+      overLagThreshold: false,
+    };
+    this.diagnosticsBySession.set(kookrSessionId, created);
+    return created;
+  }
+
   private writeLedger(args: {
     kookrSessionId: string;
     contentHash: string;
     source: 'file' | 'http';
     sequence: number;
     rawBytes: number;
+    rawJson: string;
     result: InjectHookEventResult;
     projection: ActivityLedgerRow['projection'];
   }): void {
@@ -518,11 +817,35 @@ export class HookIngestion implements HookEventInjector {
     };
     const row: ActivityLedgerRow = {
       envelope,
+      rawJson: args.rawJson,
       projection: args.projection,
       ...(args.result.error ? { error: args.result.error } : {}),
     };
     // Fire-and-forget: ledger latency must not sit in front of hook delivery.
     void this.activityLedger.append(row).catch(() => { /* diagnostics-only path */ });
+  }
+
+  private emitParseDegradation(args: {
+    kookrSessionId: string;
+    source: IngestInput['source'];
+    eventId: string;
+    sequence: number;
+    result: InjectHookEventResult;
+    raw: string;
+    origin: EventOrigin;
+    startupReplay: boolean;
+  }): void {
+    if (!this.onParseDegradation) return;
+    if (args.origin !== 'live' || args.startupReplay) return;
+    this.onParseDegradation({
+      kookrSessionId: args.kookrSessionId,
+      source: args.source,
+      eventId: args.eventId,
+      sequence: args.sequence,
+      error: args.result.error ?? 'malformed hook payload',
+      excerpt: malformedExcerpt(args.raw),
+      observedAt: new Date(this.now()).toISOString(),
+    });
   }
 
   private gcExpired(now: number): void {
@@ -594,4 +917,101 @@ function emptyMeta(): AgentActivityMeta {
     droppedRecordCount: 0,
     duplicateRecordCount: 0,
   };
+}
+
+function malformedExcerpt(raw: string): string {
+  return raw.replace(/\s+/g, ' ').trim().slice(0, 160);
+}
+
+function extractHookWriteTimestampMs(
+  raw: string,
+  fileMtimeMs: number | undefined,
+): { source: HookWriteTimestampSource; ms: number } {
+  const payloadTimestamp = extractPayloadTimestampMs(raw);
+  if (payloadTimestamp) return payloadTimestamp;
+  if (typeof fileMtimeMs === 'number' && Number.isFinite(fileMtimeMs)) {
+    return { source: 'file_mtime', ms: fileMtimeMs };
+  }
+  return { source: 'missing', ms: 0 };
+}
+
+function extractPayloadTimestampMs(raw: string): { source: HookWriteTimestampSource; ms: number } | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  const record = parsed as Record<string, unknown>;
+  const timestampValue = record.kookr_hook_written_at_ms
+    ?? record.kookr_hook_written_at
+    ?? record.kookrHookWrittenAt
+    ?? record.written_at
+    ?? record.writtenAt
+    ?? record.timestamp
+    ?? record.ts
+    ?? record.created_at
+    ?? record.createdAt;
+  if (timestampValue === undefined || timestampValue === null) return undefined;
+  const timestampMs = parseTimestampMs(timestampValue);
+  return Number.isFinite(timestampMs)
+    ? { source: 'payload', ms: timestampMs }
+    : { source: 'invalid', ms: 0 };
+}
+
+function parseTimestampMs(value: unknown): number {
+  if (typeof value === 'number') return value > 10_000_000_000 ? value : value * 1000;
+  if (typeof value !== 'string') return Number.NaN;
+  const trimmed = value.trim();
+  if (!trimmed) return Number.NaN;
+  const numeric = Number(trimmed);
+  if (Number.isFinite(numeric)) return numeric > 10_000_000_000 ? numeric : numeric * 1000;
+  return Date.parse(trimmed);
+}
+
+function pushBounded(samples: number[], value: number, limit: number): void {
+  samples.push(value);
+  if (samples.length > limit) samples.splice(0, samples.length - limit);
+}
+
+function projectIngestionSessionDiagnostics(
+  diagnostics: MutableHookIngestionSessionDiagnostics,
+): HookIngestionSessionDiagnostics {
+  const lagCount = diagnostics.lagSamples.length;
+  const lagTotalMs = diagnostics.lagSamples.reduce((sum, value) => sum + value, 0);
+  return {
+    kookrSessionId: diagnostics.kookrSessionId,
+    totalArrivals: diagnostics.totalArrivals,
+    dispatchedArrivals: diagnostics.dispatchedArrivals,
+    duplicateArrivals: diagnostics.duplicateArrivals,
+    missingWriteTimestampCount: diagnostics.missingWriteTimestampCount,
+    invalidWriteTimestampCount: diagnostics.invalidWriteTimestampCount,
+    futureWriteTimestampCount: diagnostics.futureWriteTimestampCount,
+    notableLagCount: diagnostics.notableLagCount,
+    startupReplayArrivalCount: diagnostics.startupReplayArrivalCount,
+    lastProcessedAt: isoOrNull(diagnostics.lastProcessedAtMs),
+    lastWriteTimestampAt: isoOrNull(diagnostics.lastWriteTimestampMs),
+    lastWriteTimestampSource: diagnostics.lastWriteTimestampSource,
+    lag: {
+      count: lagCount,
+      lastMs: diagnostics.lastLagMs,
+      meanMs: lagCount === 0 ? null : Math.round(lagTotalMs / lagCount),
+      maxMs: diagnostics.lagMaxMs,
+      p95Ms: percentile(diagnostics.lagSamples, 0.95),
+    },
+    sourceCounts: { ...diagnostics.sourceCounts },
+    writeTimestampSourceCounts: { ...diagnostics.writeTimestampSourceCounts },
+  };
+}
+
+function percentile(samples: number[], pct: number): number | null {
+  if (samples.length === 0) return null;
+  const sorted = [...samples].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.ceil(sorted.length * pct) - 1);
+  return sorted[index];
+}
+
+function isoOrNull(ms: number | null): string | null {
+  return ms === null ? null : new Date(ms).toISOString();
 }

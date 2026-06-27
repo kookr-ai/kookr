@@ -115,12 +115,16 @@ Operational rule:
 - Keep runtime/UI/app-server version surfaces aligned with the same build version where practical
 - After changing versioning, rebuild and reinstall `${KOOKR_CODEX_BIN:-$HOME/bin/codex}` before concluding the task
 
-Build from the single fork checkout, on `feat/claude-compat`:
+Build from the single fork checkout, on `feat/claude-compat`. **Use the
+toolchain pinned in `codex-rs/rust-toolchain.toml`** (1.95.0 as of
+2026-06-12; upstream syncs bump it — a stale `+<version>` pin fails with
+"rustc X is not supported by the following packages"; `scripts/rebuild-codex.sh`
+auto-detects it):
 
 ```bash
 KOOKR_CODEX_CHECKOUT="${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}"
 cd "$KOOKR_CODEX_CHECKOUT" && git checkout feat/claude-compat && git pull
-cargo +1.93.0 build \
+cargo +1.95.0 build \
   --manifest-path "$KOOKR_CODEX_CHECKOUT/codex-rs/Cargo.toml" \
   -p codex-cli \
   --release
@@ -134,7 +138,7 @@ Install the built binary for Kookr use:
 CODEX_SRC="${CODEX_SRC:-${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}}"
 CODEX_INSTALL_DIR="${CODEX_INSTALL_DIR:-$HOME/bin}"
 MANIFEST="$CODEX_SRC/codex-rs/Cargo.toml"
-TARGET_DIR="$(cargo +1.93.0 metadata --manifest-path "$MANIFEST" --no-deps --format-version 1 | node -e 'let input = ""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(input).target_directory));')"
+TARGET_DIR="$(cargo +1.95.0 metadata --manifest-path "$MANIFEST" --no-deps --format-version 1 | node -e 'let input = ""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(input).target_directory));')"
 
 install -m 755 "$TARGET_DIR/release/codex" "$CODEX_INSTALL_DIR/codex"
 ```
@@ -238,7 +242,7 @@ KOOKR_CODEX_BIN="${KOOKR_CODEX_BIN:-$(command -v codex)}"
 
 ```bash
 KOOKR_CODEX_CHECKOUT="${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}"
-cargo +1.93.0 run \
+cargo +1.95.0 run \
   --manifest-path "$KOOKR_CODEX_CHECKOUT/codex-rs/Cargo.toml" \
   -p codex-app-server-test-client \
   -- \
@@ -272,7 +276,9 @@ That PoC runs both CLIs with identical hook settings and documents 10 concrete g
 Top findings to know before editing the adapter or the fork:
 
 - **`--settings FILE` was previously silently broken in the installed binary.** The hook-parity batch fixed the root CLI plumbing and added regressions; if this regresses again, treat it as a critical blocker because Kookr loses hook coverage.
-- **`codex_hooks` feature flag is off by default.** Enable via `-c features.codex_hooks=true` or `[features] codex_hooks = true` in `~/.codex/config.toml`.
+- **Settings parsing regressed again on 2026-06-12 via upstream sync — strict `HooksFile`.** Upstream parses settings JSON with `#[serde(deny_unknown_fields)]` and only a `hooks` member; Kookr settings files carry `permissions` alongside `hooks`, so the whole file was rejected (warning only: `unknown field "permissions", expected "hooks"`) and every codex session launched after the binary swap ran with zero hooks. Fixed in fork commit `8f21230e8d` (tolerant `ClaudeSettingsHooks` struct in `codex-rs/hooks/src/engine/discovery.rs`, used for `--settings` files and `.claude/settings.json` layers; codex-native `hooks.json` stays strict). Regression tests: `settings_file_with_claude_top_level_keys_still_loads_hooks`, `claude_settings_with_top_level_permissions_still_load_hooks`. **After every upstream sync, smoke-test hooks with a production-shaped settings file (one that includes `permissions`), in TUI mode, not just `exec`.**
+- **Hook-coverage debugging gotchas (from the 2026-06-12 incident):** a missing `~/.kookr/hooks/<session>.jsonl` has at least three distinct causes — (1) settings file rejected by the strict parser (above); (2) untrusted project directory: the TUI blocks on the trust onboarding screen before any session starts, so headless dtach launches in a never-seen cwd produce no session and no hooks (`codex exec` does not show this screen); (3) running sessions keep their in-memory binary — swapping `~/bin/codex` only fixes *new* launches, existing hook-silent sessions must be restarted. Also note `codex exec --dangerously-bypass-approvals-and-sandbox` persists a `[projects."<cwd>"]` trust entry in `~/.codex/config.toml`, which can silently change repro behavior between runs in the same scratch dir.
+- **`codex_hooks` feature flag graduated.** The key is now `hooks`, **stable and enabled by default**; `codex_hooks` is a deprecated legacy alias that prints a startup deprecation warning. The adapter's `-c features.codex_hooks=true` is harmless but obsolete and can be dropped.
 - **Codex emits 8/12 hook events.** Missing: `SessionEnd`, `StopFailure`, `SubagentStart`, `SubagentStop`.
 - **Payload format is ~95% compatible.** Same event names, same field names, same PascalCase, same `tool_name: "Bash"`, `tool_input.command` is a **string** (not an array as earlier RFCs guessed).
 

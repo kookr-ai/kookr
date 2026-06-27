@@ -8,12 +8,12 @@ import { readInteractionLog, type DeferredInteractionLogWriter } from '../core/i
 import type { DeferredTelemetryLogWriter } from '../core/telemetry.js';
 import type { BuildInfo } from '../core/build-info.js';
 import type { ProjectConfigStore } from '../core/project-config-store.js';
-import type { ServerMessage, ClientMessage } from '../shared/contracts/messages.js';
+import type { DrainStatusSnapshot, ServerMessage, ClientMessage } from '../shared/contracts/messages.js';
 import {
   type LifecycleDeps,
   promotePendingTasks,
 } from './agent-lifecycle.js';
-import type { LaunchOpts, LaunchResult } from './launch-service.js';
+import type { LaunchOpts, LaunchResult, LaunchTaskServerOptions } from './launch-service.js';
 import type { CircuitBreakerRegistry } from '../core/circuit-breaker.js';
 import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
 import type { AgentSelection, AvailableAgentType } from '../core/agent-types.js';
@@ -60,7 +60,7 @@ export interface MessageRouterDeps {
   ttsUrl?: string;
   agentLifecycleDeps?: import('./agent-lifecycle.js').AgentLifecycleDeps;
   broadcastToAll?: (msg: ServerMessage) => void;
-  launchTask?: (opts: LaunchOpts) => Promise<LaunchResult>;
+  launchTask?: (opts: LaunchOpts, serverOpts?: LaunchTaskServerOptions) => Promise<LaunchResult>;
   circuitBreakerRegistry?: CircuitBreakerRegistry;
   /** Live getter for max concurrent tasks. */
   getMaxActiveTasks?: () => number;
@@ -68,6 +68,8 @@ export interface MessageRouterDeps {
   availableAgentTypes?: AvailableAgentType[];
   defaultAgentType?: AgentSelection;
   getDefaultAgentType?: () => AgentSelection;
+  bypassAllPermissions?: boolean;
+  getDrainStatus?: () => DrainStatusSnapshot;
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
   coordinatorAuditTailProvider?: CoordinatorAuditTailProvider;
   coordinatorSuppressions?: CoordinatorSuppressionReader;
@@ -86,6 +88,8 @@ export interface MessageRouterDeps {
    * `await` this without handling errors.
    */
   takePredeleteSnapshot?: () => Promise<void>;
+  /** Append-only audit.jsonl path for destructive task lifecycle actions. */
+  auditLogPath?: string;
   /** Project config persistence for `setProjectConfig` messages. */
   projectConfigStore?: ProjectConfigStore;
   /** Rebroadcasts `projectSummaries` to all clients after config changes. */
@@ -175,6 +179,8 @@ export class MessageRouter {
       broadcastToAll: this.deps.broadcastToAll,
       activityMetaProvider: this.deps.activityMetaProvider,
       takePredeleteSnapshot: this.deps.takePredeleteSnapshot,
+      auditLogPath: this.deps.auditLogPath,
+      deletionAuditActor: () => this.deletionAuditActor(),
       feedbackDir: this.deps.feedbackDir,
       taskSnapshotDir: this.deps.taskSnapshotDir,
       reflectWorktreesDir: this.deps.reflectWorktreesDir,
@@ -209,6 +215,14 @@ export class MessageRouter {
       policyResolver: this.deps.policyResolver,
       leaseService: this.deps.leaseService,
     });
+  }
+
+  /** Actor metadata for destructive task-lifecycle audit rows. */
+  private deletionAuditActor(): { source: 'websocket'; actorId?: string } {
+    return {
+      source: 'websocket',
+      ...(this.deps.connectionId ? { actorId: this.deps.connectionId } : {}),
+    };
   }
 
   /** Resolved server cwd with the `process.cwd()` fallback applied. */
@@ -246,6 +260,8 @@ export class MessageRouter {
       totalSpendUsd: this.deps.taskStore.getLifetimeSpendUsd(),
       availableAgentTypes: this.deps.availableAgentTypes,
       defaultAgentType: this.deps.getDefaultAgentType?.() ?? this.deps.defaultAgentType,
+      bypassAllPermissions: this.deps.bypassAllPermissions,
+      drainStatus: this.deps.getDrainStatus?.(),
       sttUrl: this.deps.sttUrl,
       ttsUrl: this.deps.ttsUrl,
       workspaceEnabled: this.deps.workspaceEnabled,
@@ -367,6 +383,7 @@ export class MessageRouter {
             sessionId: msg.sessionId,
             selectionVersion: msg.selectionVersion,
             intentId: msg.intentId,
+            orderedCandidateSessionIds: msg.orderedCandidateSessionIds,
           });
           if (advanced.kind === 'rejected') {
             this.deps.send({
@@ -387,6 +404,7 @@ export class MessageRouter {
               selectedTaskId: advanced.state.selectedTaskId,
               selectedSessionId: advanced.state.selectedSessionId,
               selectionVersion: advanced.state.selectionVersion,
+              advanceDiagnostics: advanced.diagnostics,
             });
           }
         }

@@ -11,6 +11,7 @@
  * See `docs/rfc/rfc-capability-gated-playbook-params.md`.
  */
 import { execFile } from 'node:child_process';
+import { readEvolutionConfig } from '../core/evolution-config.js';
 import type { LaunchDependency } from '../core/playbook.js';
 import type { HostCapability } from '../shared/contracts/messages.js';
 
@@ -62,13 +63,23 @@ export function probeKbPresence(): Promise<HostCapability | undefined> {
 }
 
 /**
+ * Probe whether the selected project cwd has a valid autonomous-evolution
+ * manifest. Unlike `kb`, this is a project-local file capability.
+ */
+export async function probeEvolutionConfigPresence(cwd: string): Promise<HostCapability> {
+  const result = await readEvolutionConfig(cwd);
+  return result.ok ? 'available' : 'absent';
+}
+
+/**
  * Capability probes keyed by {@link LaunchDependency}. Exhaustive over the
  * union by construction: adding a `LAUNCH_DEPENDENCIES` member without wiring a
  * probe here is a compile error.
  */
 export const CAPABILITY_PROBES: Record<
   LaunchDependency,
-  () => Promise<HostCapability | undefined>
+  (cwd: string) => Promise<HostCapability | undefined>
 > = {
-  kb: probeKbPresence,
+  kb: () => probeKbPresence(),
+  'evolution-config': probeEvolutionConfigPresence,
 };

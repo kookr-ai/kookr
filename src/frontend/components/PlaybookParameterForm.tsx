@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import type { Playbook } from '../../shared/protocol.js';
-import type { PlaybookParameterOption } from '../../shared/contracts/playbook.js';
+import type { LaunchDependency, PlaybookParameterOption } from '../../shared/contracts/playbook.js';
 import { useKookrStore } from '../store/useStore.js';
 import { resolveParameterSource, mergeSourceAndStaticOptions } from '../store/playbook-source-resolver.js';
 import { FilterableSelect } from './FilterableSelect.js';
 
 const FILTERABLE_THRESHOLD = 5;
+const HOST_COLLAPSIBLE_DEPENDENCIES = new Set<LaunchDependency>(['kb']);
 
 interface Props {
   playbook: Playbook | null;
@@ -61,6 +62,7 @@ export function PlaybookParameterForm({ playbook, values, onChange }: Props) {
     if (!playbook) return;
     for (const param of playbook.parameters) {
       if (!param.gatedBy || param.default == null) continue;
+      if (!HOST_COLLAPSIBLE_DEPENDENCIES.has(param.gatedBy)) continue;
       if (hostCapabilities[param.gatedBy] !== 'absent') continue;
       if ((values[param.name] ?? '') !== param.default) {
         onChange(param.name, param.default);
@@ -76,10 +78,15 @@ export function PlaybookParameterForm({ playbook, values, onChange }: Props) {
         const options = resolvedOptions[param.name] ?? param.options;
         const isSelect = param.type === 'select' && options && options.length > 0;
         const useFilterable = isSelect && options.length > FILTERABLE_THRESHOLD;
-        // A gated parameter whose dependency is probed `absent` is inert.
+        // A host-gated parameter whose dependency is probed `absent` is inert.
         // Collapse it (hide control, pin value to default) when it has a
         // default to pin to; otherwise leave the control plus annotation.
-        const gatedAbsent = param.gatedBy != null && hostCapabilities[param.gatedBy] === 'absent';
+        // Project-cwd capabilities such as `evolution-config` are validated
+        // at launch after `projectCwd` has been resolved, so do not collapse
+        // them based on the catalog cwd probe.
+        const gatedAbsent = param.gatedBy != null
+          && HOST_COLLAPSIBLE_DEPENDENCIES.has(param.gatedBy)
+          && hostCapabilities[param.gatedBy] === 'absent';
         const collapsed = gatedAbsent && param.default != null;
         const noteId = `playbook-param-gated-${param.name}`;
         const nameSpan = (

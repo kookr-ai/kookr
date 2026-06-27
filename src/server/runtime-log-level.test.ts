@@ -9,6 +9,7 @@ import {
   resetLogLevel,
   setLogLevel,
 } from './runtime-log-level.js';
+import { createLogger } from '../core/logger.js';
 
 const DAY_SECONDS = 24 * 60 * 60;
 
@@ -119,5 +120,18 @@ describe('runtime-log-level', () => {
     expect(getLogLevel()).toBe('warn');
     vi.advanceTimersByTime(90 * 1000);
     expect(getLogLevel()).toBe('info');
+  });
+
+  test('runtime level is the logger verbosity source', () => {
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const logger = createLogger('runtime-test');
+
+    setLogLevel('info');
+    logger.debug('hidden');
+    expect(debugSpy).not.toHaveBeenCalled();
+
+    setLogLevel('debug');
+    logger.debug('visible');
+    expect(debugSpy).toHaveBeenCalledWith('[runtime-test] visible');
   });
 });

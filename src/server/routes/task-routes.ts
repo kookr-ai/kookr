@@ -1,4 +1,5 @@
 import type { Hono } from 'hono';
+import { join } from 'node:path';
 import { discoverPlaybooks } from '../../core/playbook-discovery.js';
 import { saveTasks, serializeSnoozed } from '../../core/task-persistence.js';
 import { normalizeAgentSelection } from '../../core/agent-types.js';
@@ -12,16 +13,22 @@ import {
   type PendingAgentSignal,
 } from '../../shared/contracts/agent-signal.js';
 import { TaskLifecycleCommands } from '../use-cases/task-lifecycle-commands.js';
-import { launchTask, DrainModeError, isEffortValidationError } from '../launch-service.js';
+import { launchTask, DrainModeError, isCwdValidationError, isEffortValidationError } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
-import type { LaunchDependency } from '../../core/playbook.js';
+import { LAUNCH_DEPENDENCIES, type LaunchDependency } from '../../core/playbook.js';
 import type { Task } from '../../core/tasks.js';
 import type { TaskDependencyEdge, TaskMetadataIntent } from '../../shared/contracts/task.js';
 import { normalizeTerminalWorktreeHealth } from '../../core/worktree-health.js';
+import { readEvolutionRunProjection } from '../../core/evolution-summary.js';
 import { isSharedTaskId } from '../../shared/contracts/contact-share.js';
 import { CoordinatorSuppressionStore } from '../coordinator/suppression-store.js';
 import { promotePendingTasks } from '../agent-lifecycle.js';
 import type { TaskRouteDeps } from './shared.js';
+import {
+  DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
+  classifyCompletionReadyClosePolicy,
+  listStaleCompletionReadyTasks,
+} from '../../core/completion-ready-cleanup.js';
 
 const MAX_TASK_EDGE_COUNT = 64;
 const MAX_TASK_EDGE_LENGTH = 240;
@@ -36,6 +43,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     scheduleService: deps.scheduleService,
     broadcastToAll,
     activityMetaProvider: hookIngestion,
+    auditLogPath: deps.kookrDir ? join(deps.kookrDir, 'audit.jsonl') : undefined,
     getLifecycleDeps: () => ({
       adapter,
       monitor,
@@ -78,12 +86,50 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     const tasks = taskStore.listTasks().map(normalizeTaskForApi);
     if (!deps.suppressionTracker) return c.json(tasks);
     const tracker = deps.suppressionTracker;
-    return c.json(tasks.map((t) => {
-      const hasSuppressedSession = t.sessions.some(
-        (s) => s.lastStatus !== 'completed' && s.lastStatus !== 'aborted' && tracker.isSuppressed(s.tmuxSession),
-      );
-      return hasSuppressedSession ? { ...t, suppressed: true } : t;
-    }));
+    return c.json(tasks.map((t) => withSuppressionFlag(t, tracker)));
+  });
+
+  app.get('/api/tasks/completion-ready/stale', (c) => {
+    const thresholdMs = parseThresholdMs(c.req.query('thresholdMs'));
+    if (thresholdMs instanceof Error) return c.json({ error: thresholdMs.message }, 400);
+
+    const generatedAt = new Date();
+    const tasks = listStaleCompletionReadyTasks(taskStore.listTasks(), { now: generatedAt, thresholdMs })
+      .map((entry) => ({
+        task: normalizeTaskForApi(entry.task),
+        signal: entry.signal,
+        ageMs: entry.ageMs,
+        canAutoClose: entry.canAutoClose,
+        ...(entry.manualActionRequiredReason ? { manualActionRequiredReason: entry.manualActionRequiredReason } : {}),
+      }));
+    return c.json({
+      schemaVersion: 'stale-completion-ready-tasks.v1',
+      generatedAt: generatedAt.toISOString(),
+      thresholdMs,
+      count: tasks.length,
+      tasks,
+    });
+  });
+
+  app.get('/api/tasks/:id', (c) => {
+    const id = c.req.param('id');
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+    const normalized = normalizeTaskForApi(task);
+    if (!deps.suppressionTracker) return c.json(normalized);
+    return c.json(withSuppressionFlag(normalized, deps.suppressionTracker));
+  });
+
+  app.get('/api/tasks/:id/evolution', async (c) => {
+    const id = c.req.param('id');
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+
+    try {
+      return c.json(await readEvolutionRunProjection(task.cwd));
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
   });
 
   app.patch('/api/tasks/:id/name', async (c) => {
@@ -132,7 +178,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     }
 
     const updated = taskStore.setTaskEdges(id, patch);
-    if (deps.tasksFile) {
+    if (deps.taskStateSaveScheduler) {
+      deps.taskStateSaveScheduler.requestSave('task_edges_mutation');
+    } else if (deps.tasksFile) {
       const snoozes = deps.queue ? serializeSnoozed(deps.queue, taskStore) : undefined;
       const suppressionState = deps.suppressionTracker?.export();
       await saveTasks(
@@ -160,6 +208,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         disableDedup?: unknown;
         metadata?: unknown;
         dependencies?: unknown;
+        autoCloseOnSignal?: unknown;
       };
 
       if (!body.prompt || typeof body.prompt !== 'string') {
@@ -195,6 +244,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       if (body.effort !== undefined && typeof body.effort !== 'string') {
         return c.json({ error: 'effort must be a string' }, 400);
       }
+      if (body.autoCloseOnSignal !== undefined && typeof body.autoCloseOnSignal !== 'boolean') {
+        return c.json({ error: 'autoCloseOnSignal must be a boolean' }, 400);
+      }
 
       const rawSource = c.req.header('X-Kookr-Launch-Source');
       const launchSource: 'cli' | 'ui' | 'api' =
@@ -210,6 +262,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         metadataIntent,
         dependencies: parseLaunchDependencies(body.dependencies),
         launchSource,
+        autoCloseOnSignal: typeof body.autoCloseOnSignal === 'boolean' ? body.autoCloseOnSignal : undefined,
       });
 
       if (duplicate) {
@@ -223,6 +276,11 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         return c.json({ error: err.message }, 400);
       }
       if (isEffortValidationError(err)) {
+        return c.json({ error: err.message, code: err.code }, 400);
+      }
+      // RFC F12: a missing working directory is a client error, surfaced
+      // before any session spawn with the actual cause leading the message.
+      if (isCwdValidationError(err)) {
         return c.json({ error: err.message, code: err.code }, 400);
       }
       if (err instanceof LaunchPreflightError) {
@@ -243,7 +301,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     if (!task) return c.json({ error: 'Task not found' }, 404);
 
     try {
-      await lifecycleCommands.deleteTask(id);
+      await lifecycleCommands.deleteTask(id, { actor: { source: 'api' } });
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
       return c.json({ ok: true });
     } catch (err) {
@@ -317,13 +375,14 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       return c.json({ error: `kind must be one of: ${AGENT_SIGNAL_KINDS.join(', ')}` }, 400);
     }
     let note: string | undefined;
+    let truncated = false;
     if (body.note !== undefined) {
       if (typeof body.note !== 'string') {
         return c.json({ error: 'note must be a string when supplied' }, 400);
       }
-      const trimmed = body.note.slice(0, MAX_AGENT_SIGNAL_NOTE_LENGTH);
-      const redacted = redactSecrets(trimmed).trim();
-      if (redacted) note = redacted;
+      const normalized = normalizeSignalNote(body.note);
+      truncated = normalized.truncated;
+      if (normalized.note) note = normalized.note;
     }
 
     const signal: PendingAgentSignal = {
@@ -332,8 +391,53 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       ...(note ? { note } : {}),
     };
     taskStore.setPendingSignal(id, signal);
+
+    // Auto-close opt-in (per-task `autoCloseOnSignal`, set at launch or inherited
+    // from the parent). Explicit auto-close means a `completion_ready` signal
+    // completes the task immediately instead of waiting for manual review,
+    // freeing an active slot and promoting the next pending task. Without that
+    // opt-in, ask-first delivery tasks keep the signal surfaced for operator
+    // review. completeTask clears the pending signal it just set.
+    // For an active Ralph loop this ends the current iteration (outcome
+    // 'partial_ralph_completion'); the loop decides whether to continue.
+    // See docs/reference/auto-close-on-signal.md.
+    const closePolicy = classifyCompletionReadyClosePolicy(task);
+    if (body.kind === 'completion_ready' && closePolicy.canAutoClose) {
+      try {
+        const result = await lifecycleCommands.completeTask(id);
+        broadcastSnapshotWithCoordinator();
+        // `autoClosed` reflects whether the task actually reached a terminal
+        // state (and thus freed its slot). An active Ralph loop only ends the
+        // current iteration and stays inProgress, so it is NOT a close — report
+        // it truthfully as autoClosed:false with the outcome, so an automation
+        // reading the boolean isn't misled into assuming a slot was released.
+        return c.json({
+          ok: true,
+          signal,
+          truncated,
+          autoClosed: result.outcome === 'completed',
+          outcome: result.outcome,
+        });
+      } catch (err) {
+        // Never fail the agent's signal call on a completion error — the signal
+        // is recorded and the user can complete manually.
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[signal] auto-close failed for task ${id}: ${message}`);
+        broadcastSnapshotWithCoordinator();
+        return c.json({ ok: true, signal, truncated, autoClosed: false, error: message });
+      }
+    }
+
     broadcastSnapshotWithCoordinator();
-    return c.json({ ok: true, signal });
+    return c.json({
+      ok: true,
+      signal,
+      truncated,
+      ...(!closePolicy.canAutoClose ? {
+        autoClosed: false,
+        manualActionRequiredReason: closePolicy.manualActionRequiredReason,
+      } : {}),
+    });
   });
 
   app.get('/api/playbooks', async (c) => {
@@ -347,7 +451,48 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   });
 }
 
-function normalizeTaskForApi(task: Task): Task {
+function normalizeSignalNote(raw: string): { note?: string; truncated: boolean } {
+  const redacted = redactSecrets(raw).trim();
+  if (!redacted) return { truncated: false };
+  if (redacted.length <= MAX_AGENT_SIGNAL_NOTE_LENGTH) {
+    return { note: redacted, truncated: false };
+  }
+  return {
+    note: truncateAtWordBoundary(redacted, MAX_AGENT_SIGNAL_NOTE_LENGTH),
+    truncated: true,
+  };
+}
+
+function truncateAtWordBoundary(text: string, maxLength: number): string {
+  const ellipsis = '…';
+  const sliceLimit = Math.max(0, maxLength - ellipsis.length);
+  const prefix = text.slice(0, sliceLimit).trimEnd();
+  const boundaryMatch = prefix.match(/[\s,.;:!?]+[^\s,.;:!?]*$/);
+  // Prefer a clean word boundary, but avoid discarding too much context for a
+  // single long token near the limit.
+  const wordBoundaryPrefix = boundaryMatch && boundaryMatch.index && boundaryMatch.index >= Math.floor(sliceLimit * 0.6)
+    ? prefix.slice(0, boundaryMatch.index).trimEnd()
+    : prefix;
+  return `${wordBoundaryPrefix}${ellipsis}`;
+}
+
+function parseThresholdMs(raw: string | undefined): number | Error {
+  if (raw === undefined) return DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS;
+  if (!/^\d+$/.test(raw)) return new Error('thresholdMs must be a non-negative integer');
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) return new Error('thresholdMs must be a safe integer');
+  return value;
+}
+
+/**
+ * Task shape returned by the REST surface. Carries `taskId` as an alias of
+ * `id` so scripts can use one field name across `/api/tasks`,
+ * `/api/projects` `recentTasks[]`, and `/api/snapshot` agents (which all key
+ * by `taskId`). `id` stays for backwards compatibility.
+ */
+type ApiTask = Task & { taskId: string };
+
+function normalizeTaskForApi(task: Task): ApiTask {
   let changed = false;
   const sessions = task.sessions.map((session) => {
     const worktreeHealth = normalizeTerminalWorktreeHealth(task.status, session.worktreeHealth);
@@ -356,7 +501,17 @@ function normalizeTaskForApi(task: Task): Task {
     return { ...session, worktreeHealth };
   });
 
-  return changed ? { ...task, sessions } : task;
+  return changed ? { ...task, sessions, taskId: task.id } : { ...task, taskId: task.id };
+}
+
+function withSuppressionFlag(
+  task: ApiTask,
+  tracker: { isSuppressed(tmuxSession: string): boolean },
+): ApiTask | (ApiTask & { suppressed: true }) {
+  const hasSuppressedSession = task.sessions.some(
+    (s) => s.lastStatus !== 'completed' && s.lastStatus !== 'aborted' && tracker.isSuppressed(s.tmuxSession),
+  );
+  return hasSuppressedSession ? { ...task, suppressed: true } : task;
 }
 
 function normalizeTaskEdges(value: unknown, field: 'blocks' | 'blocked_by'): TaskDependencyEdge[] {
@@ -418,9 +573,15 @@ function parseLaunchDependencies(value: unknown): LaunchDependency[] | undefined
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) throw new Error('dependencies must be an array when supplied');
   return value.map((item) => {
-    if (item !== 'kb') throw new Error(`Unsupported launch dependency: ${String(item)}`);
+    if (!isLaunchDependency(item)) {
+      throw new Error(`Unsupported launch dependency: ${String(item)}`);
+    }
     return item;
   });
+}
+
+function isLaunchDependency(value: unknown): value is LaunchDependency {
+  return typeof value === 'string' && (LAUNCH_DEPENDENCIES as readonly string[]).includes(value);
 }
 
 function isLaunchDependencyValidationError(err: unknown): err is Error {

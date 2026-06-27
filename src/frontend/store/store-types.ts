@@ -23,7 +23,9 @@ import type {
   SystemResourceStatus,
   CollaborationCapabilities,
   CoordinatorSnapshotState,
+  DrainStatusSnapshot,
   LaunchDependency,
+  SkillDiscoveryStateSnapshot,
   TaskRelation,
 } from '../../shared/protocol.js';
 import type {
@@ -126,6 +128,10 @@ export interface TransportSessionSlice {
    * getter through.
    */
   maxActiveTasks: number;
+  /** Current server process is launching agents with permission prompts bypassed. */
+  bypassAllPermissions: boolean;
+  /** Current operator drain mode. While draining, new launches and schedule fires are paused. */
+  drainStatus: DrainStatusSnapshot;
   coordinator: CoordinatorSnapshotState | null;
   dashboardSelection: {
     selectedTaskId: string | null;
@@ -168,6 +174,8 @@ export interface TransportSessionSlice {
     speechCapabilities?: CollaborationCapabilities,
     coordinator?: CoordinatorSnapshotState,
     ttsUrl?: string,
+    bypassAllPermissions?: boolean,
+    drainStatus?: DrainStatusSnapshot,
   ) => void;
   handleUpdate: (agentId: string, state: AgentState) => void;
   handlePlaybooks: (
@@ -229,12 +237,7 @@ export interface TriageNavigationSlice {
 
 export type DetailPaneMode = 'split' | 'left' | 'right';
 
-export interface DiscoveryStatus {
-  projects: string[];
-  warnings: string[];
-  scannedAt?: string;
-  lastError?: string;
-}
+export type DiscoveryStatus = SkillDiscoveryStateSnapshot;
 
 export interface ProjectSidebarSlice {
   selectedProject: string | null;
@@ -359,6 +362,7 @@ export interface WorkspaceSlice {
     projects: Array<
       | { kind: 'ok'; projectId: string; summaries: CleanupResultSummary[]; elapsedMs: number }
       | { kind: 'skipped'; projectId: string; reason: 'repo_path_unresolved' }
+      | { kind: 'skipped'; projectId: string; reason: 'workspace_unavailable'; missingDeps: string[] }
       | { kind: 'failed'; projectId: string; code: 'timeout' | 'error'; message: string; elapsedMs: number }
     >;
   }) => void;

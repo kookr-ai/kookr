@@ -21,7 +21,8 @@ import type { TelemetryEvent } from './telemetry.js';
 import type {
   EmptyEnterIntentRequest,
   EmptyEnterDecision,
-} from '../terminal-input-contract.js';
+  EmptyEnterAdvanceDiagnostics,
+} from './terminal-input.js';
 import type {
   WorkspaceView,
   CleanupResultSummary,
@@ -45,10 +46,17 @@ export type { TaskCompletionFeedback };
  */
 export type HostCapability = 'available' | 'absent';
 
+/**
+ * Sentinel duration for "snooze until next change". Kept finite so it survives
+ * JSON, schema validation, and existing duration-only command paths.
+ */
+export const SNOOZE_UNTIL_NEXT_CHANGE_DURATION_MS = 100 * 365 * 24 * 60 * 60 * 1000;
+
 /** Per-project outcome of a cross-project worktree sweep. */
 export type CrossProjectSweepProjectResult =
   | { kind: 'ok'; projectId: string; summaries: CleanupResultSummary[]; elapsedMs: number }
   | { kind: 'skipped'; projectId: string; reason: 'repo_path_unresolved' }
+  | { kind: 'skipped'; projectId: string; reason: 'workspace_unavailable'; missingDeps: string[] }
   | { kind: 'failed'; projectId: string; code: 'timeout' | 'error'; message: string; elapsedMs: number };
 
 /**
@@ -73,6 +81,7 @@ export type ResourceUnavailableReason =
   | 'cpu_unavailable'
   | 'cpu_delta_invalid'
   | 'memory_unavailable'
+  | 'data_directory_disk_unavailable'
   | 'event_loop_unavailable'
   | 'sampler_error';
 
@@ -81,11 +90,19 @@ export interface SystemResourceStatus {
   sampledAt: string;
   sampleGapMs: number | null;
   timerDriftMs: number | null;
+  /** Optional server-side dependency breaker snapshots sampled on the same tick. */
+  circuitBreakers?: CircuitBreakerSnapshot[];
   host: {
     cpuUsagePercent: number | null;
     memoryUsedPercent: number | null;
     memoryFreeBytes: number | null;
     memoryTotalBytes: number | null;
+    dataDirectory: {
+      path: string | null;
+      diskFreeBytes: number | null;
+      diskTotalBytes: number | null;
+      diskFreePercent: number | null;
+    };
   };
   server: {
     eventLoopDelayP95Ms: number | null;
@@ -94,6 +111,13 @@ export interface SystemResourceStatus {
     processHeapTotalBytes: number | null;
   };
   unavailable: ResourceUnavailableReason[];
+}
+
+export interface DrainStatusSnapshot {
+  accepting: boolean;
+  draining: boolean;
+  /** ISO timestamp the current drain began; absent while accepting. */
+  since?: string;
 }
 
 export type SnapshotMessage = {
@@ -139,8 +163,16 @@ export type SnapshotMessage = {
   defaultAgentType?: AgentSelection;
   /** Server capability: contribution workspace is available. */
   workspaceEnabled?: boolean;
+  /**
+   * True when this server is launching agents with permission prompts disabled
+   * via KOOKR_BYPASS_ALL_PERMISSIONS. Omitted when false for additive
+   * compatibility with older clients.
+   */
+  bypassAllPermissions?: boolean;
   /** True if a cross-project sweep is currently in progress on this server. */
   sweepRunning?: boolean;
+  /** Operator drain mode: while draining, new launches and schedule fires are paused. */
+  drainStatus?: DrainStatusSnapshot;
   /**
    * Configured concurrency cap (settings.maxActiveTasks). When the count of
    * inProgress tasks reaches this number, new launches are queued as pending.
@@ -221,6 +253,12 @@ export type ServerMessage =
       selectedTaskId: string | null;
       selectedSessionId: string | null;
       selectionVersion: number;
+      /**
+       * Bounded context explaining an empty-Enter advancement (#1079). Present
+       * only on server-driven advancements; omitted for plain selection
+       * acknowledgements echoed back after `selectionChanged`.
+       */
+      advanceDiagnostics?: EmptyEnterAdvanceDiagnostics;
     }
   | { type: 'emptyEnterDecision'; decision: EmptyEnterDecision }
   | { type: 'contributionWarning'; project: string; message: string; severity: 'approaching' | 'exceeded' }
@@ -330,3 +368,90 @@ export type ClientMessage =
   | { type: 'workspace:bulkSafeCleanup'; projectId: string }
   | { type: 'workspace:runCleanupDiagnostic'; projectId: string; worktreePath: string; reviewFingerprint: string }
   | { type: 'workspace:sweep' };
+
+export const SERVER_MESSAGE_TYPES = [
+  'snapshot',
+  'update',
+  'alert',
+  'githubUpdate',
+  'playbooks',
+  'suggestion',
+  'projectSummaries',
+  'coordinator.snapshot',
+  'dashboardSelection',
+  'emptyEnterDecision',
+  'contributionWarning',
+  'achievement:unlocked',
+  'achievement:reset:ack',
+  'quotaStatus',
+  'resourceStatus',
+  'circuitBreakerStatus',
+  'schedules',
+  'scheduleFired',
+  'workspaceView',
+  'workspaceCleanupDetail',
+  'workspaceSweepComplete',
+  'workspaceSweepBusy',
+  'diagnosticReport',
+  'ossAttempts',
+] as const satisfies readonly ServerMessage['type'][];
+
+export const CLIENT_MESSAGE_TYPES = [
+  'respond',
+  'respondAll',
+  'directReply',
+  'navigate',
+  'getNext',
+  'selectionChanged',
+  'emptyEnterIntent',
+  'skip',
+  'skipAll',
+  'snooze',
+  'cancelSnooze',
+  'launch',
+  'completeTask',
+  'setTaskFeedback',
+  'requestTaskReflect',
+  'requestTaskSnapshotReflect',
+  'relaunch',
+  'cancelTask',
+  'reopenTask',
+  'dismissAgentSignal',
+  'deleteTask',
+  'renameTask',
+  'setTaskPriority',
+  'stop',
+  'reflect',
+  'listPlaybooks',
+  'launchPlaybook',
+  'telemetry',
+  'setProjectConfig',
+  'clearCompleted',
+  'ackTerminatedTask',
+  'achievement:reset',
+  'achievement:setEnabled',
+  'permissionChoice',
+  'rearmCircuitBreaker',
+  'findingFeedback',
+  'missedFinding',
+  'workspace:getView',
+  'workspace:getCleanupDetail',
+  'workspace:cleanupCandidate',
+  'workspace:bulkSafeCleanup',
+  'workspace:runCleanupDiagnostic',
+  'workspace:sweep',
+] as const satisfies readonly ClientMessage['type'][];
+
+type _MissingServerMessageType = Exclude<ServerMessage['type'], (typeof SERVER_MESSAGE_TYPES)[number]>;
+type _ExtraServerMessageType = Exclude<(typeof SERVER_MESSAGE_TYPES)[number], ServerMessage['type']>;
+type _MissingClientMessageType = Exclude<ClientMessage['type'], (typeof CLIENT_MESSAGE_TYPES)[number]>;
+type _ExtraClientMessageType = Exclude<(typeof CLIENT_MESSAGE_TYPES)[number], ClientMessage['type']>;
+
+const _serverMessageTypesExhaustive: _MissingServerMessageType extends never ? true : never = true;
+const _serverMessageTypesOnlyKnown: _ExtraServerMessageType extends never ? true : never = true;
+const _clientMessageTypesExhaustive: _MissingClientMessageType extends never ? true : never = true;
+const _clientMessageTypesOnlyKnown: _ExtraClientMessageType extends never ? true : never = true;
+void _serverMessageTypesExhaustive;
+void _serverMessageTypesOnlyKnown;
+void _clientMessageTypesExhaustive;
+void _clientMessageTypesOnlyKnown;

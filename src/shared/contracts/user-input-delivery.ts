@@ -1,6 +1,12 @@
 export type UserInputDeliveryStatus = 'queued' | 'submitted_by_agent' | 'failed';
 
-export type UserInputDeliverySource = 'respond' | 'directReply';
+export type UserInputDeliverySource = 'respond' | 'directReply' | 'github_watcher';
+
+export const DELIVERY_SOURCE_LABEL: Record<UserInputDeliverySource, string> = {
+  respond: 'You',
+  directReply: 'You',
+  github_watcher: 'Kookr watcher',
+};
 
 export interface UserInputDeliverySnapshot {
   deliveryId: string;
@@ -15,6 +21,10 @@ export interface UserInputDeliverySnapshot {
   submittedHookLineId?: string;
   terminalReason?: 'session_ended_before_submit_hook';
   error?: string;
+  /** Bare-Enter retries sent because the submit hook did not confirm. */
+  enterRetries?: number;
+  /** Timestamp of the most recent bare-Enter retry. */
+  lastRetryAt?: string;
 }
 
 export const USER_INPUT_DELIVERY_TEXT_MAX_CHARS = 2_000;

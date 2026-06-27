@@ -112,7 +112,7 @@ describe('App terminal focus mode', () => {
         findingCount: 1,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -189,7 +189,7 @@ describe('App terminal focus mode', () => {
         findingCount: 1,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -239,7 +239,7 @@ describe('App terminal focus mode', () => {
         findingCount: 1,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -281,7 +281,7 @@ describe('App terminal focus mode', () => {
         findingCount: 1,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -342,7 +342,7 @@ describe('App terminal focus mode', () => {
         findingCount: 1,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);
@@ -429,7 +429,7 @@ describe('App terminal focus mode', () => {
         findingCount: 1,
         todayPrCount: 0,
         weekPrCount: 0,
-        openPrs: 0,
+        openContributionAttempts: 0,
         recentTasks: [],
       },
     ]);

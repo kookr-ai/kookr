@@ -62,6 +62,57 @@ describe('parsePlaybook', () => {
     expect(pb.body).toBe('Do the thing.');
   });
 
+  test('parses deliveryPreAuthorized frontmatter', () => {
+    const content = `---
+name: Pre-authorized delivery
+deliveryPreAuthorized: true
+---
+Ship it.
+`;
+
+    const pb = parsePlaybook(content, 'ship.md', '/project');
+
+    expect(pb.deliveryPreAuthorized).toBe(true);
+  });
+
+  test('omits deliveryPreAuthorized when absent', () => {
+    const pb = parsePlaybook(MINIMAL_PLAYBOOK, 'simple.md', '/project');
+
+    expect(pb.deliveryPreAuthorized).toBeUndefined();
+  });
+
+  test('parses autoCloseOnSignal frontmatter', () => {
+    const content = `---
+name: Auto-close chain
+autoCloseOnSignal: true
+---
+Ship it.
+`;
+
+    const pb = parsePlaybook(content, 'autoclose.md', '/project');
+
+    expect(pb.autoCloseOnSignal).toBe(true);
+  });
+
+  test('parses autoCloseOnSignal:false frontmatter', () => {
+    const content = `---
+name: Explicit off
+autoCloseOnSignal: false
+---
+Ship it.
+`;
+
+    const pb = parsePlaybook(content, 'off.md', '/project');
+
+    expect(pb.autoCloseOnSignal).toBe(false);
+  });
+
+  test('omits autoCloseOnSignal when absent', () => {
+    const pb = parsePlaybook(MINIMAL_PLAYBOOK, 'simple.md', '/project');
+
+    expect(pb.autoCloseOnSignal).toBeUndefined();
+  });
+
   test('records scope when explicitly set to user', () => {
     const pb = parsePlaybook(MINIMAL_PLAYBOOK, 'simple.md', '/home/u/.kookr/playbooks', 'user');
 
@@ -296,7 +347,7 @@ Body.
   });
 
   test('shipped GitHub issue playbook uses grep status for duplicate branch detection', async () => {
-    const playbook = await readFile('.kookr/playbooks/implement-github-issue.md', 'utf8');
+    const playbook = await readFile('plugin/playbooks/implement-github-issue.md', 'utf8');
 
     expect(playbook).toContain('grep -qE "(^|[-_./])issue[-_.]${N}([-_.]|$)"');
     expect(playbook).not.toContain('| grep -E "(^|[-_./])issue[-_.]${N}([-_.]|$)" | head -1');
@@ -323,7 +374,7 @@ Body.
   });
 
   test('shipped parallel issue batch playbook keeps orchestration guardrails', async () => {
-    const playbook = await readFile('.kookr/playbooks/parallel-issue-batch.md', 'utf8');
+    const playbook = await readFile('plugin/playbooks/parallel-issue-batch.md', 'utf8');
     const parsed = parsePlaybook(playbook, 'parallel-issue-batch.md', '/project');
 
     expect(parsed.name).toBe('Parallel Issue Batch');
@@ -336,7 +387,7 @@ Body.
   });
 
   test('shipped Repository Idea Scout playbook grounds ideas in the knowledge base', async () => {
-    const content = await readFile('.kookr/playbooks/repository-idea-scout.md', 'utf8');
+    const content = await readFile('plugin/playbooks/repository-idea-scout.md', 'utf8');
     const parsed = parsePlaybook(content, 'repository-idea-scout.md', '/project');
 
     expect(parsed.name).toBe('Repository Idea Scout');
@@ -358,6 +409,57 @@ Body.
     expect(parsed.body).toContain(
       'literal headings `## Duplicate evidence table` and `## Knowledge base grounding`',
     );
+  });
+
+  test('shipped Autonomous Evolution playbook gates typed launch parameters on valid evolution config', async () => {
+    const content = await readFile('.kookr/playbooks/autonomous-evolution.md', 'utf8');
+    const parsed = parsePlaybook(content, 'autonomous-evolution.md', '/project');
+
+    expect(parsed.parameters.find((p) => p.name === 'projectCwd')).toMatchObject({
+      type: 'textarea',
+      default: '',
+    });
+    expect(parsed.parameters.find((p) => p.name === 'projectCwd')?.gatedBy).toBeUndefined();
+    for (const name of ['targetScore', 'patience', 'deadlineMinutes']) {
+      expect(parsed.parameters.find((p) => p.name === name)).toMatchObject({
+        type: 'text',
+        default: '',
+        gatedBy: 'evolution-config',
+      });
+    }
+  });
+
+  test('playbooks reference example parses with the real parser', async () => {
+    const content = await readFile('docs/reference/playbooks.md', 'utf8');
+    const match = content.match(/```playbook frontmatter-reference-example\n([\s\S]*?)\n```/);
+
+    expect(match).not.toBeNull();
+
+    const parsed = parsePlaybook(match?.[1] ?? '', 'docs/reference/playbooks.md example', '/project');
+
+    expect(parsed.name).toBe('Investigate GitHub Issue');
+    expect(parsed.tags).toEqual(['workflow', 'loopable']);
+    expect(parsed.repoTags).toEqual(['github']);
+    expect(parsed.dependencies).toEqual(['kb']);
+    expect(parsed.parameters.map((parameter) => parameter.name)).toEqual([
+      'repoFullName',
+      'issueNumber',
+      'useKnowledgeBase',
+    ]);
+    expect(parsed.parameters[0].defaultFrom).toBe('git-remote');
+    expect(parsed.parameters[0].source).toBe('tracked-projects');
+    expect(parsed.parameters[2].gatedBy).toBe('kb');
+    expect(parsed.checklist).toEqual([
+      'Issue context summarized',
+      'Implementation scope identified',
+      'Risks and verification plan recorded',
+    ]);
+    expect(parsed.effectiveLoop).toMatchObject({
+      iterationCap: 4,
+      zeroDiffConsecutiveIterations: 2,
+      costCapUsd: 10,
+    });
+    expect(parsed.effectiveLoop?.stopPredicate).toContain('.kookr-stop');
   });
 
   test('validates zero-diff convergence against default iteration cap', () => {

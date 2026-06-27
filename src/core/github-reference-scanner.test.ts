@@ -181,22 +181,40 @@ describe('extractRefsFromPrompt', () => {
     expect(refs[0].url).toBeUndefined();
   });
 
-  test('treats bare #N as issue ref in prompt context', () => {
+  test('does NOT extract mid-prose bare #N (over-attribution fix)', () => {
+    // Previously "Please look at #25 and fix it" produced an issue ref. Bare
+    // #N without an action verb or issue/PR adjacency no longer creates a
+    // task↔GitHub edge — prompts cite many numbers as mere context.
     const refs = extractRefsFromPrompt('Please look at #25 and fix it');
+    expect(refs).toHaveLength(0);
+  });
+
+  test('does NOT extract a list of bare context refs', () => {
+    const refs = extractRefsFromPrompt('Background reading: #4 #7 #12 describe earlier attempts');
+    expect(refs).toHaveLength(0);
+  });
+
+  test('extracts a prompt that is ONLY "#123" as an issue ref', () => {
+    const refs = extractRefsFromPrompt('#123');
     expect(refs).toHaveLength(1);
-    expect(refs[0]).toMatchObject({ type: 'issue', number: 25 });
+    expect(refs[0]).toMatchObject({ type: 'issue', number: 123 });
     expect(refs[0].url).toBeUndefined();
+  });
+
+  test('extracts a prompt that starts with "#123:" as an issue ref', () => {
+    const refs = extractRefsFromPrompt('#123: fix the login flow');
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ type: 'issue', number: 123 });
   });
 
   test('still extracts PR references from prompt', () => {
     const refs = extractRefsFromPrompt('Review PR #10 and fix issue #18');
-    // NOTE: Returns 3 refs — the bare #10 also matches as issue via prompt action-verb patterns.
-    // This is a known false-positive: PR #10 gets a duplicate issue #10 extraction.
-    // Tracked for separate fix.
-    expect(refs).toHaveLength(3);
+    // Exactly 2 refs — the old bare-#N pass used to add a bogus duplicate
+    // issue #10 here; that false-positive is fixed.
+    expect(refs).toHaveLength(2);
     expect(refs.find((r) => r.type === 'pr' && r.number === 10)).toBeDefined();
     expect(refs.find((r) => r.type === 'issue' && r.number === 18)).toBeDefined();
-    expect(refs.find((r) => r.type === 'issue' && r.number === 10)).toBeDefined();
+    expect(refs.find((r) => r.type === 'issue' && r.number === 10)).toBeUndefined();
   });
 
   test('still extracts full URLs from prompt', () => {

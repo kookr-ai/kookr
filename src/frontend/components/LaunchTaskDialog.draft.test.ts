@@ -127,7 +127,7 @@ describe('LaunchTaskDialog draft persistence', () => {
     act(() => root2.unmount());
   });
 
-  test('successful launch clears the draft so next open starts empty', async () => {
+  test('submit keeps the draft, marked as submitted (optimistic close must not lose it — RFC F12)', async () => {
     const { root, sent } = renderDialog(container, { sendReturns: true });
     await flush();
 
@@ -135,18 +135,46 @@ describe('LaunchTaskDialog draft persistence', () => {
     await act(async () => { setInputValue(getCwdEl(container), '/tmp/work'); });
     await flush();
 
-    // Submit.
     const form = container.querySelector('form')!;
     await act(async () => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
     await flush();
 
     expect(sent).toHaveLength(1);
     expect(sent[0].type).toBe('launch');
-    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+    const { alerts } = useKookrStore.getState();
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].severity).toBe('info');
+    expect(alerts[0].summary).toBe('Launching task: do the thing');
+    // The dialog closes before the server confirms the launch, so the draft
+    // survives submit — only stamped with a submittedAt marker.
+    const stored = JSON.parse(localStorage.getItem(DRAFT_KEY)!);
+    expect(stored.prompt).toBe('do the thing');
+    expect(typeof stored.submittedAt).toBe('number');
+
+    act(() => root.unmount());
+  });
+
+  test('confirmed launch (matching task in store) clears the draft so next open starts empty', async () => {
+    const { root } = renderDialog(container, { sendReturns: true });
+    await flush();
+
+    await act(async () => { setInputValue(getPromptEl(container), 'do the thing'); });
+    await act(async () => { setInputValue(getCwdEl(container), '/tmp/work'); });
+    await flush();
+
+    const form = container.querySelector('form')!;
+    await act(async () => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+    await flush();
 
     act(() => root.unmount());
 
-    // Reopen — should be empty.
+    // The launch went through: a snapshot delivered a task matching the
+    // submitted prompt before the dialog reopened.
+    useKookrStore.setState({
+      agents: [{ agentId: 'kookr-1', events: [], anomaly: null, description: 'do the thing' }],
+    });
+
+    // Reopen — should be empty, draft consumed.
     container.remove();
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -154,16 +182,46 @@ describe('LaunchTaskDialog draft persistence', () => {
     await flush();
 
     expect(getPromptEl(container).value).toBe('');
+    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
 
     act(() => root2.unmount());
   });
 
-  test('post-submit state mutations do not resurrect the draft (submittedRef guard)', async () => {
+  test('failed server-side launch (no matching task) restores the draft on reopen', async () => {
+    const { root } = renderDialog(container, { sendReturns: true });
+    await flush();
+
+    await act(async () => { setInputValue(getPromptEl(container), 'launch into missing dir'); });
+    await act(async () => { setInputValue(getCwdEl(container), '/does/not/exist'); });
+    await flush();
+
+    const form = container.querySelector('form')!;
+    await act(async () => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+    await flush();
+
+    act(() => root.unmount());
+
+    // No matching task ever appeared (the server rejected the launch, e.g.
+    // nonexistent working directory). Reopen must restore the typed prompt.
+    container.remove();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    const { root: root2 } = renderDialog(container);
+    await flush();
+
+    expect(getPromptEl(container).value).toBe('launch into missing dir');
+    expect(container.querySelector('.draft-restored-banner')).not.toBeNull();
+
+    act(() => root2.unmount());
+  });
+
+  test('post-submit state mutations do not overwrite the submitted draft (submittedRef guard)', async () => {
     // Regression test for the race the RFC's H1 section calls out: after a
     // successful launch, the save effect is still wired; any subsequent render
     // that re-runs it must see submittedRef=true and early-return. We simulate
     // that "post-submit render" by typing into the prompt field after submit —
-    // if the ref guard regresses, this mutation would re-persist the draft.
+    // if the ref guard regresses, this mutation would overwrite the marked
+    // draft (dropping the submittedAt marker and the launched prompt).
     const { root } = renderDialog(container, { sendReturns: true });
     await flush();
 
@@ -175,15 +233,17 @@ describe('LaunchTaskDialog draft persistence', () => {
     await act(async () => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
     await flush();
 
-    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+    const afterSubmit = JSON.parse(localStorage.getItem(DRAFT_KEY)!);
+    expect(afterSubmit.prompt).toBe('ship it');
+    expect(typeof afterSubmit.submittedAt).toBe('number');
 
     // Mutate the field *after* submit while the component is still mounted.
     await act(async () => { setInputValue(getPromptEl(container), 'zombie draft'); });
     await flush();
 
     // The save effect must have early-returned due to submittedRef — the
-    // cleared key must remain null despite the state change.
-    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+    // marked draft must be byte-identical despite the state change.
+    expect(JSON.parse(localStorage.getItem(DRAFT_KEY)!)).toEqual(afterSubmit);
 
     act(() => root.unmount());
   });

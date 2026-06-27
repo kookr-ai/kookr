@@ -54,6 +54,15 @@ function createMockDeps(): {
 } {
   let eventHandler: EventHandler | null = null;
   const broadcasts: ServerMessage[] = [];
+  const monitorMock = {
+    processEvents: vi.fn(),
+    getSnapshot: vi.fn().mockReturnValue([]),
+    getAgentEvents: vi.fn().mockReturnValue([]),
+    markInputReceived: vi.fn(),
+  } as any;
+  monitorMock.getAgentState = vi.fn((agentId: string) =>
+    monitorMock.getSnapshot().find((state: { agentId: string }) => state.agentId === agentId),
+  );
 
   const deps: EventPipelineDeps = {
     adapter: {
@@ -67,12 +76,7 @@ function createMockDeps(): {
       onRefreshNeeded: vi.fn(),
       injectHookEvent: vi.fn(),
     },
-    monitor: {
-      processEvents: vi.fn(),
-      getSnapshot: vi.fn().mockReturnValue([]),
-      getAgentEvents: vi.fn().mockReturnValue([]),
-      markInputReceived: vi.fn(),
-    } as any,
+    monitor: monitorMock,
     taskStore: {
       findTaskBySession: vi.fn().mockReturnValue(null),
       updateSession: vi.fn(),
@@ -143,17 +147,33 @@ describe('event-pipeline: anomaly-diff clearing (mock-based)', () => {
     broadcasts = mocks.broadcasts;
   });
 
+  test('uses single-agent monitor reads on the hook hot path before coalesced snapshot flush', () => {
+    vi.useFakeTimers();
+    try {
+      const state = { agentId: 'agent-1', anomaly: null, events: [] };
+      (deps.monitor.getAgentState as any).mockReturnValue(state);
+      (deps.monitor.getSnapshot as any).mockReturnValue([state]);
+      wireEventPipeline(deps);
+
+      fireEvent('agent-1', { type: 'tool_use', toolName: 'Read', toolUseId: 'tu-1' } as AgentEvent);
+
+      expect(deps.monitor.getAgentState).toHaveBeenCalledWith('agent-1');
+      expect(deps.monitor.getSnapshot).not.toHaveBeenCalled();
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('clears suggestions when needs_input transitions to healthy', () => {
-    // First snapshot call (pre): needs_input
-    // After processEvents: monitor mock returns healthy
-    let callCount = 0;
+    let phase: 'pre' | 'post' = 'pre';
     (deps.monitor.getSnapshot as any).mockImplementation(() => {
-      callCount++;
-      if (callCount <= 1) {
+      if (phase === 'pre') {
         return [{ agentId: 'agent-1', anomaly: { type: 'needs_input' }, events: [] }];
       }
       return [{ agentId: 'agent-1', anomaly: null, events: [] }];
     });
+    (deps.monitor.processEvents as any).mockImplementation(() => { phase = 'post'; });
     wireEventPipeline(deps);
 
     fireEvent('agent-1', { type: 'tool_use', toolName: 'Read', toolUseId: 'tu-1' } as AgentEvent);
@@ -204,10 +224,9 @@ describe('event-pipeline: anomaly-diff clearing (mock-based)', () => {
   });
 
   test('clearing is per-agent — does not affect other agents', () => {
-    let callCount = 0;
+    let phase: 'pre' | 'post' = 'pre';
     (deps.monitor.getSnapshot as any).mockImplementation(() => {
-      callCount++;
-      if (callCount <= 1) {
+      if (phase === 'pre') {
         return [
           { agentId: 'agent-1', anomaly: { type: 'needs_input' }, events: [] },
           { agentId: 'agent-2', anomaly: { type: 'needs_input' }, events: [] },
@@ -218,6 +237,7 @@ describe('event-pipeline: anomaly-diff clearing (mock-based)', () => {
         { agentId: 'agent-2', anomaly: { type: 'needs_input' }, events: [] },
       ];
     });
+    (deps.monitor.processEvents as any).mockImplementation(() => { phase = 'post'; });
     wireEventPipeline(deps);
 
     fireEvent('agent-1', { type: 'tool_use', toolName: 'Read', toolUseId: 'tu-1' } as AgentEvent);

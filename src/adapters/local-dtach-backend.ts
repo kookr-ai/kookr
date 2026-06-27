@@ -29,6 +29,8 @@
  */
 import { spawn as spawnChild } from 'node:child_process';
 import {
+  accessSync,
+  constants as fsConstants,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -37,7 +39,7 @@ import {
   unlinkSync,
 } from 'node:fs';
 import { access as fsAccess } from 'node:fs/promises';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { spawn, type IPty } from 'node-pty';
 import {
   type BackendError,
@@ -136,6 +138,32 @@ export interface LocalDtachBackendOptions {
   ringFlushIntervalMs?: number;
 }
 
+/**
+ * Build the argv for spawning a dtach master that must outlive Kookr.
+ *
+ * Linux/BSD: wrap in `setsid -f` so the master gets a brand-new session and
+ * forks into the background, fully detached from Kookr's process group.
+ *
+ * macOS: `setsid` is util-linux-only and is not shipped on macOS (and the
+ * hand-ported builds users compile frequently lack the `-f` flag), so a
+ * literal `setsid -f` either ENOENTs or rejects the flag — the dtach master
+ * never starts and the socket never appears. We therefore spawn dtach
+ * directly there: `dtach -n` already daemonizes, and the caller passes
+ * `detached: true`, which runs the child through `setsid(2)` for the same
+ * new-session detachment. See docs/adr/014-local-dtach-backend.md and the
+ * "dtach socket did not appear" entry in docs/troubleshooting.md.
+ */
+export function buildDtachSpawn(
+  platform: NodeJS.Platform,
+  dtachBinary: string,
+  dtachArgs: string[],
+): { command: string; args: string[] } {
+  if (platform === 'darwin') {
+    return { command: dtachBinary, args: dtachArgs };
+  }
+  return { command: 'setsid', args: ['-f', dtachBinary, ...dtachArgs] };
+}
+
 export class LocalDtachBackend implements TerminalBackend {
   private readonly instanceDir: string;
   private readonly manifestStore: DtachManifestStore;
@@ -230,26 +258,37 @@ export class LocalDtachBackend implements TerminalBackend {
       });
     });
 
-    // Step 2: spawn dtach master via setsid so it outlives this Kookr process.
+    // Step 2: spawn the dtach master so it outlives this Kookr process.
     const dtachArgs = ['-n', sock, '-r', 'winch', '-E', spec.command, ...spec.args];
-    const child = spawnChild('setsid', ['-f', this.dtachBinary, ...dtachArgs], {
-      env: { ...process.env, ...spec.env },
+    const { command, args } = buildDtachSpawn(process.platform, this.dtachBinary, dtachArgs);
+    const env = { ...process.env, ...spec.env };
+    try {
+      this.assertExecutableAvailable(spec.id, this.dtachBinary, env);
+      if (command !== this.dtachBinary) this.assertExecutableAvailable(spec.id, command, env);
+    } catch (err) {
+      await this.removeManifestEntry(spec.id);
+      throw err;
+    }
+    const child = spawnChild(command, args, {
+      env,
       cwd: spec.cwd ?? process.cwd(),
       stdio: 'ignore',
       detached: true,
     });
+
+    const spawnError = new Promise<never>((_, reject) => {
+      child.once('error', (err: NodeJS.ErrnoException) => {
+        reject(this.dtachUnavailableError(spec.id, command, err.code, err));
+      });
+    });
     child.unref();
 
     // Step 3: wait for socket.
-    const deadline = Date.now() + 3_000;
-    while (!existsSync(sock) && Date.now() < deadline) {
-      await sleep(25);
-    }
-    if (!existsSync(sock)) {
-      await this.manifestStore.update((manifest) => {
-        manifest.entries = manifest.entries.filter((e) => e.sessionId !== spec.id);
-      });
-      throw new Error(`dtach socket did not appear for session ${spec.id}`);
+    try {
+      await Promise.race([this.waitForSocket(sock, spec.id), spawnError]);
+    } catch (err) {
+      await this.removeManifestEntry(spec.id);
+      throw err;
     }
 
     // Step 4: resolve dtach master pid (best-effort; -1 ok).
@@ -540,7 +579,12 @@ export class LocalDtachBackend implements TerminalBackend {
     });
 
     pty.onData((data) => {
-      const buf = typeof data === 'string' ? Buffer.from(data, 'binary') : Buffer.from(data);
+      // With `encoding: null` node-pty emits Buffers, so the string branch is
+      // defensive only. If it ever fires, the string was produced by node-pty's
+      // default UTF-8 decode — re-encode with UTF-8 to invert it. (A 'binary'
+      // i.e. Latin-1 re-encode here corrupted multi-byte UTF-8: "—" became
+      // "â" in the activity stream.)
+      const buf = typeof data === 'string' ? Buffer.from(data, 'utf-8') : Buffer.from(data);
       const bytes = new Uint8Array(buf);
       // Fan out to subscribers FIRST, then update the ring. `captureBytes` is
       // lock-free; subscribers see the stream before it is buffered for pull
@@ -620,7 +664,12 @@ export class LocalDtachBackend implements TerminalBackend {
       throw new SessionAttachFailedError(sess.id, sess.reattachCount);
     }
 
-    const payload = Buffer.from(data).toString('binary');
+    // Pass the bytes to node-pty as a Buffer so they reach the PTY verbatim.
+    // The previous `Buffer.from(data).toString('binary')` round trip decoded
+    // the bytes as Latin-1 and node-pty re-encoded the string as UTF-8,
+    // corrupting every multi-byte UTF-8 character (e.g. the em-dash "—",
+    // 0xE2 0x80 0x94, arrived at the agent as the six bytes of "â").
+    const payload = Buffer.from(data);
     const start = Date.now();
 
     const writeTask = new Promise<void>((resolve, reject) => {
@@ -892,6 +941,65 @@ export class LocalDtachBackend implements TerminalBackend {
 
   private async readEntry(id: SessionId): Promise<DtachManifestEntry | null> {
     return this.manifestStore.getEntry(id);
+  }
+
+  private dtachUnavailableError(
+    id: SessionId,
+    binary: string,
+    detail?: string,
+    cause?: Error,
+  ): Error {
+    const suffix = detail ? ` (${detail})` : '';
+    this.emitError({ kind: 'dtach-unavailable', binary });
+    const error = new Error(
+      `dtach master spawn failed for session ${id}: ${binary} not found or not executable${suffix}`,
+    );
+    if (cause) error.cause = cause;
+    return error;
+  }
+
+  private assertExecutableAvailable(id: SessionId, binary: string, env: NodeJS.ProcessEnv): void {
+    if (binary.includes('/')) {
+      this.assertExecutablePath(id, binary, binary);
+      return;
+    }
+
+    const pathValue = env.PATH ?? '';
+    for (const dir of pathValue.split(delimiter)) {
+      const candidate = join(dir || '.', binary);
+      try {
+        accessSync(candidate, fsConstants.X_OK);
+        return;
+      } catch {
+        // Keep searching PATH.
+      }
+    }
+    throw this.dtachUnavailableError(id, binary, 'ENOENT');
+  }
+
+  private assertExecutablePath(id: SessionId, path: string, binary: string): void {
+    try {
+      accessSync(path, fsConstants.X_OK);
+    } catch (err) {
+      const code = err && typeof err === 'object' && 'code' in err ? String(err.code) : undefined;
+      throw this.dtachUnavailableError(id, binary, code, err instanceof Error ? err : undefined);
+    }
+  }
+
+  private async removeManifestEntry(id: SessionId): Promise<void> {
+    await this.manifestStore.update((manifest) => {
+      manifest.entries = manifest.entries.filter((e) => e.sessionId !== id);
+    });
+  }
+
+  private async waitForSocket(sock: string, id: SessionId): Promise<void> {
+    const deadline = Date.now() + 3_000;
+    while (!existsSync(sock) && Date.now() < deadline) {
+      await sleep(25);
+    }
+    if (!existsSync(sock)) {
+      throw new Error(`dtach socket did not appear for session ${id}`);
+    }
   }
 }
 

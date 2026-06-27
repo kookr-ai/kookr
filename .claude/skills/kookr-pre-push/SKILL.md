@@ -2,7 +2,7 @@
 name: kookr-pre-push
 description: Repo delivery-cycle entrypoint before git push or PR creation — compose the repo pre-push hook, pre-pr-review, reviewer specialists, and PR gate without duplicating them.
 keywords: pre-push, before push, git push, before PR, delivery cycle, push, PR gate, reviewer specialists
-related: pre-pr-review, post-push, pr-lifecycle, pr-review-triage, git-commit-discipline
+related: pre-pr-review, kookr-post-push, kookr-pr-lifecycle, pr-review-triage, git-commit-discipline
 ---
 
 # Pre-Push
@@ -117,7 +117,7 @@ Before you tell the user "push succeeded", "looks good", or "open a PR", report 
 - reviewer specialists: run / skipped, with reason
 - repo pre-push hook: passed / failed
 - branch state: pushed / needs another push
-- next step: create PR / run `[[post-push]]` / fix blockers
+- next step: create PR / run `[[kookr-post-push]]` / fix blockers
 
 Do not make the user ask whether the pre-push workflow or reviewer layer actually ran.
 
@@ -150,4 +150,4 @@ These checks live here (not in the global PR gate) because they apply **before**
 
 - `[[pre-pr-review]]` is the enforced pre-PR gate and the place where the reviewer specialists live
 - `.hooks/pre-push` is the enforced push-time verification
-- `[[post-push]]` starts after the branch is on GitHub and continues through PR follow-through, including the `pnpm merge <PR>` wrapper that substitutes for `gh pr merge --auto` on this repo (issue #29)
+- `[[kookr-post-push]]` starts after the branch is on GitHub and continues through PR follow-through, including the `pnpm merge <PR>` wrapper that substitutes for `gh pr merge --auto` on this repo (issue #29)

@@ -43,7 +43,7 @@ export async function preparePlaybookList(cwd: string): Promise<PlaybookListResu
   const capabilities: Partial<Record<LaunchDependency, HostCapability>> = {};
   await Promise.all(
     [...gatedDeps].map(async (dependency) => {
-      const status = await CAPABILITY_PROBES[dependency]();
+      const status = await CAPABILITY_PROBES[dependency](cwd);
       // Omit on `undefined` (unknown) so the form fails open.
       if (status) capabilities[dependency] = status;
     }),

@@ -50,6 +50,26 @@ if (!filePath || !isMemoryPath(filePath)) {
   process.exit(0);
 }
 
+// Operator opt-out: when Claude Code's auto memory is disabled
+// (CLAUDE_CODE_DISABLE_AUTO_MEMORY set — Kookr propagates it from the daemon
+// env when the operator has retired the file-based memory system), block ALL
+// writes to memory paths regardless of frontmatter and redirect durable
+// knowledge to `kb remember`. When the variable is unset, the permissive
+// frontmatter gate below is unchanged for operators who use memory.
+if (process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY) {
+  const home = process.env.HOME ?? '';
+  console.error(
+    [
+      `reflect-memory-frontmatter-gate: blocked write to ${filePath}.`,
+      `Reason: auto memory is disabled (CLAUDE_CODE_DISABLE_AUTO_MEMORY is set); the file-based memory system is retired.`,
+      ``,
+      `→ Facts about tools/stack/environment: ~/knowledge_bases/ via 'kb remember'.`,
+      `→ Behavioral rules: ${home}/.claude/CLAUDE.md (user) or the repo CLAUDE.md (project).`,
+    ].join('\n'),
+  );
+  process.exit(2);
+}
+
 // Memory path. Determine the would-be content.
 let content: string;
 if (toolName === 'Write') {

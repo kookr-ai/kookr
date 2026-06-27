@@ -6,11 +6,16 @@ import {
 } from './operational-alert-rules.js';
 import type { OperationalAlertConfig } from './config.js';
 import type { ServerMessage, SystemResourceStatus } from '../shared/contracts/messages.js';
+import type { CircuitBreakerSnapshot, CircuitBreakerState } from '../shared/contracts/circuit-breaker.js';
+import { PersistenceHealthTracker } from '../core/persistence-health.js';
 
 const DISABLED: OperationalAlertConfig = {
   cpuPercent: 0,
   memoryPercent: 0,
   eventLoopDelayMs: 0,
+  dataDirectoryFreePercent: 0,
+  dataDirectoryFreeBytes: 0,
+  circuitBreakerOpenMs: 0,
   sustainSamples: 3,
 };
 
@@ -18,20 +23,32 @@ interface SampleOverrides {
   cpuUsagePercent?: number | null;
   memoryUsedPercent?: number | null;
   eventLoopDelayP95Ms?: number | null;
+  dataDirectoryDiskFreeBytes?: number | null;
+  dataDirectoryDiskTotalBytes?: number | null;
+  dataDirectoryDiskFreePercent?: number | null;
+  sampledAt?: string;
+  circuitBreakers?: CircuitBreakerSnapshot[];
   unavailable?: SystemResourceStatus['unavailable'];
 }
 
 function status(overrides: SampleOverrides = {}): SystemResourceStatus {
   return {
     source: { kind: 'server-host' },
-    sampledAt: '2026-05-13T00:00:00.000Z',
+    sampledAt: overrides.sampledAt ?? '2026-05-13T00:00:00.000Z',
     sampleGapMs: null,
     timerDriftMs: null,
+    circuitBreakers: overrides.circuitBreakers,
     host: {
       cpuUsagePercent: overrides.cpuUsagePercent ?? null,
       memoryUsedPercent: overrides.memoryUsedPercent ?? null,
       memoryFreeBytes: null,
       memoryTotalBytes: null,
+      dataDirectory: {
+        path: '/tmp/kookr-data',
+        diskFreeBytes: overrides.dataDirectoryDiskFreeBytes ?? null,
+        diskTotalBytes: overrides.dataDirectoryDiskTotalBytes ?? null,
+        diskFreePercent: overrides.dataDirectoryDiskFreePercent ?? null,
+      },
     },
     server: {
       eventLoopDelayP95Ms: overrides.eventLoopDelayP95Ms ?? null,
@@ -40,6 +57,22 @@ function status(overrides: SampleOverrides = {}): SystemResourceStatus {
       processHeapTotalBytes: null,
     },
     unavailable: overrides.unavailable ?? [],
+  };
+}
+
+function breakerSnapshot(overrides: {
+  name?: string;
+  state: CircuitBreakerState;
+  lastStateChange: number;
+}): CircuitBreakerSnapshot {
+  return {
+    name: overrides.name ?? 'llm',
+    state: overrides.state,
+    failureCount: overrides.state === 'open' ? 5 : 0,
+    successCount: 0,
+    lastFailureTime: overrides.state === 'open' ? overrides.lastStateChange : null,
+    lastStateChange: overrides.lastStateChange,
+    resetTimeoutMs: 30_000,
   };
 }
 
@@ -55,6 +88,11 @@ describe('OperationalAlertEvaluator', () => {
     expect(
       createOperationalAlertEvaluator({ ...DISABLED, cpuPercent: 90 }).hasEnabledRules(),
     ).toBe(true);
+    expect(
+      createOperationalAlertEvaluator({ ...DISABLED, dataDirectoryFreePercent: 5 }).hasEnabledRules(),
+    ).toBe(true);
+    const persistenceHealth = new PersistenceHealthTracker();
+    expect(createOperationalAlertEvaluator(DISABLED, () => persistenceHealth.snapshot()).hasEnabledRules()).toBe(true);
   });
 
   test('a sustained crossing fires exactly once after the sustain count', () => {
@@ -164,6 +202,96 @@ describe('OperationalAlertEvaluator', () => {
     expect(alertsFor(evaluator, status({ cpuUsagePercent: 30 }))).toHaveLength(1);
   });
 
+  test('data-directory disk pressure fires once after sustained low free space', () => {
+    const evaluator = createOperationalAlertEvaluator({
+      ...DISABLED,
+      dataDirectoryFreePercent: 5,
+      dataDirectoryFreeBytes: 2_147_483_648,
+      sustainSamples: 3,
+    });
+
+    const lowSpace = status({
+      dataDirectoryDiskFreePercent: 4.9,
+      dataDirectoryDiskFreeBytes: 3_000_000_000,
+      dataDirectoryDiskTotalBytes: 100_000_000_000,
+    });
+
+    expect(alertsFor(evaluator, lowSpace)).toEqual([]);
+    expect(alertsFor(evaluator, lowSpace)).toEqual([]);
+    const fired = alertsFor(evaluator, lowSpace);
+
+    expect(fired).toHaveLength(1);
+    expect(fired[0]).toMatchObject({
+      type: 'alert',
+      agentId: OPERATIONAL_ALERT_AGENT_ID,
+      severity: 'warning',
+    });
+    expect(fired[0].summary).toContain('data-directory disk space');
+    expect(fired[0].details).toContain('kookr maintenance prune --dry-run --dir <dataDir>');
+
+    expect(alertsFor(evaluator, lowSpace)).toEqual([]);
+  });
+
+  test('data-directory disk pressure can breach on byte floor and clears after full recovery', () => {
+    const evaluator = createOperationalAlertEvaluator({
+      ...DISABLED,
+      dataDirectoryFreePercent: 5,
+      dataDirectoryFreeBytes: 2_147_483_648,
+      sustainSamples: 1,
+    });
+
+    const fired = alertsFor(evaluator, status({
+      dataDirectoryDiskFreePercent: 10,
+      dataDirectoryDiskFreeBytes: 1_000_000_000,
+      dataDirectoryDiskTotalBytes: 100_000_000_000,
+    }));
+    expect(fired).toHaveLength(1);
+    expect(fired[0].severity).toBe('warning');
+
+    const missingByteReading = alertsFor(evaluator, status({
+      dataDirectoryDiskFreePercent: 10,
+      dataDirectoryDiskFreeBytes: null,
+      dataDirectoryDiskTotalBytes: 100_000_000_000,
+    }));
+    expect(missingByteReading).toEqual([]);
+
+    const cleared = alertsFor(evaluator, status({
+      dataDirectoryDiskFreePercent: 10,
+      dataDirectoryDiskFreeBytes: 3_000_000_000,
+      dataDirectoryDiskTotalBytes: 100_000_000_000,
+    }));
+    expect(cleared).toHaveLength(1);
+    expect(cleared[0]).toMatchObject({ severity: 'info', agentId: OPERATIONAL_ALERT_AGENT_ID });
+    expect(cleared[0].summary).toContain('Recovered');
+  });
+
+  test('data-directory disk pressure ignores missing data and disabled thresholds', () => {
+    const missingEvaluator = createOperationalAlertEvaluator({
+      ...DISABLED,
+      dataDirectoryFreePercent: 5,
+      sustainSamples: 1,
+    });
+
+    expect(alertsFor(missingEvaluator, status({
+      dataDirectoryDiskFreePercent: null,
+      dataDirectoryDiskFreeBytes: null,
+      unavailable: ['data_directory_disk_unavailable'],
+    }))).toEqual([]);
+
+    const disabledEvaluator = createOperationalAlertEvaluator({
+      ...DISABLED,
+      dataDirectoryFreePercent: 0,
+      dataDirectoryFreeBytes: 0,
+      sustainSamples: 1,
+    });
+
+    expect(alertsFor(disabledEvaluator, status({
+      dataDirectoryDiskFreePercent: 1,
+      dataDirectoryDiskFreeBytes: 1,
+      dataDirectoryDiskTotalBytes: 100_000_000_000,
+    }))).toEqual([]);
+  });
+
   test('a transient gap does not reset accumulated breaches', () => {
     const evaluator = createOperationalAlertEvaluator({
       ...DISABLED,
@@ -196,6 +324,9 @@ describe('OperationalAlertEvaluator', () => {
       cpuPercent: 80,
       memoryPercent: 90,
       eventLoopDelayMs: 0,
+      dataDirectoryFreePercent: 0,
+      dataDirectoryFreeBytes: 0,
+      circuitBreakerOpenMs: 0,
       sustainSamples: 1,
     });
 
@@ -240,5 +371,128 @@ describe('OperationalAlertEvaluator', () => {
     expect(alertsFor(evaluator, status({ cpuUsagePercent: 95 }))).toEqual([]);
     expect(alertsFor(evaluator, status({ cpuUsagePercent: 95 }))).toEqual([]);
     expect(alertsFor(evaluator, status({ cpuUsagePercent: 95 }))).toHaveLength(1);
+  });
+
+  test('circuit breaker OPEN duration fires after the configured threshold', () => {
+    const openedAt = Date.parse('2026-05-13T00:00:00.000Z');
+    const evaluator = createOperationalAlertEvaluator({
+      ...DISABLED,
+      circuitBreakerOpenMs: 60_000,
+    });
+
+    const fired = alertsFor(evaluator, status({
+      sampledAt: '2026-05-13T00:01:00.000Z',
+      circuitBreakers: [breakerSnapshot({ state: 'open', lastStateChange: openedAt })],
+    }));
+
+    expect(fired).toHaveLength(1);
+    expect(fired[0]).toMatchObject({
+      agentId: OPERATIONAL_ALERT_AGENT_ID,
+      severity: 'warning',
+    });
+    expect(fired[0].summary).toContain('Circuit breaker open: llm');
+  });
+
+  test('circuit breaker OPEN duration does not fire before the configured threshold', () => {
+    const openedAt = Date.parse('2026-05-13T00:00:00.000Z');
+    const evaluator = createOperationalAlertEvaluator({
+      ...DISABLED,
+      circuitBreakerOpenMs: 60_000,
+    });
+
+    expect(alertsFor(evaluator, status({
+      sampledAt: '2026-05-13T00:00:59.999Z',
+      circuitBreakers: [breakerSnapshot({ state: 'open', lastStateChange: openedAt })],
+    }))).toEqual([]);
+  });
+
+  test('circuit breaker OPEN alert clears on recovery', () => {
+    const openedAt = Date.parse('2026-05-13T00:00:00.000Z');
+    const evaluator = createOperationalAlertEvaluator({
+      ...DISABLED,
+      circuitBreakerOpenMs: 60_000,
+    });
+
+    expect(alertsFor(evaluator, status({
+      sampledAt: '2026-05-13T00:02:00.000Z',
+      circuitBreakers: [breakerSnapshot({ state: 'open', lastStateChange: openedAt })],
+    }))).toHaveLength(1);
+
+    const cleared = alertsFor(evaluator, status({
+      sampledAt: '2026-05-13T00:02:01.000Z',
+      circuitBreakers: [breakerSnapshot({
+        state: 'half-open',
+        lastStateChange: Date.parse('2026-05-13T00:02:01.000Z'),
+      })],
+    }));
+
+    expect(cleared).toHaveLength(1);
+    expect(cleared[0]).toMatchObject({ severity: 'info', agentId: OPERATIONAL_ALERT_AGENT_ID });
+    expect(cleared[0].summary).toContain('Recovered circuit breaker: llm');
+
+    const reopenedAt = Date.parse('2026-05-13T00:03:00.000Z');
+    const refired = alertsFor(evaluator, status({
+      sampledAt: '2026-05-13T00:04:00.000Z',
+      circuitBreakers: [breakerSnapshot({ state: 'open', lastStateChange: reopenedAt })],
+    }));
+    expect(refired).toHaveLength(1);
+    expect(refired[0]).toMatchObject({ severity: 'warning', agentId: OPERATIONAL_ALERT_AGENT_ID });
+  });
+
+  test('circuit breaker OPEN alert is edge-triggered once per OPEN episode', () => {
+    const openedAt = Date.parse('2026-05-13T00:00:00.000Z');
+    const evaluator = createOperationalAlertEvaluator({
+      ...DISABLED,
+      circuitBreakerOpenMs: 60_000,
+    });
+
+    expect(alertsFor(evaluator, status({
+      sampledAt: '2026-05-13T00:02:00.000Z',
+      circuitBreakers: [breakerSnapshot({ state: 'open', lastStateChange: openedAt })],
+    }))).toHaveLength(1);
+    expect(alertsFor(evaluator, status({
+      sampledAt: '2026-05-13T00:03:00.000Z',
+      circuitBreakers: [breakerSnapshot({ state: 'open', lastStateChange: openedAt })],
+    }))).toEqual([]);
+  });
+
+  test('persistence failures fire after sustained failed attempts and clear on recovery', () => {
+    const tracker = new PersistenceHealthTracker();
+    const evaluator = createOperationalAlertEvaluator(DISABLED, () => tracker.snapshot());
+    const failure = new Error('temporary write failure');
+
+    tracker.recordFailure('task_state', failure);
+    expect(alertsFor(evaluator, status())).toEqual([]);
+    tracker.recordFailure('task_state', failure);
+    expect(alertsFor(evaluator, status())).toEqual([]);
+    tracker.recordFailure('task_state', failure);
+
+    const fired = alertsFor(evaluator, status());
+    expect(fired).toHaveLength(1);
+    expect(fired[0]).toMatchObject({
+      agentId: OPERATIONAL_ALERT_AGENT_ID,
+      severity: 'warning',
+    });
+    expect(fired[0].summary).toContain('Persistence failure: task-state');
+
+    expect(alertsFor(evaluator, status())).toEqual([]);
+
+    tracker.recordSuccess('task_state');
+    const cleared = alertsFor(evaluator, status());
+    expect(cleared).toHaveLength(1);
+    expect(cleared[0]).toMatchObject({ severity: 'info' });
+    expect(cleared[0].summary).toContain('Recovered task-state persistence');
+  });
+
+  test('hard persistence failures fire on first failed attempt', () => {
+    const tracker = new PersistenceHealthTracker();
+    const evaluator = createOperationalAlertEvaluator(DISABLED, () => tracker.snapshot());
+    tracker.recordFailure('detection_stats', Object.assign(new Error('no space left'), { code: 'ENOSPC' }));
+
+    const fired = alertsFor(evaluator, status());
+
+    expect(fired).toHaveLength(1);
+    expect(fired[0].summary).toContain('detection-stats');
+    expect(fired[0].details).toContain('ENOSPC');
   });
 });

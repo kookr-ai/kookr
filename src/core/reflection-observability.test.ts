@@ -1,10 +1,15 @@
 import { describe, expect, test } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { resolvePluginDir } from './plugin-paths.js';
 
 const repoRoot = join(import.meta.dirname, '..', '..');
+const requiredSelfReflectScripts = [
+  'skills/self-reflect/scripts/kookr-interaction-stats.ts',
+  'skills/self-reflect/scripts/session-analyzer.ts',
+];
 
 function tempHome(): string {
   return mkdtempSync(join(tmpdir(), 'kookr-reflection-observability-'));
@@ -19,6 +24,43 @@ function runScript(args: string[], home: string): string {
 }
 
 describe('reflection observability scripts', () => {
+  // Packaging smoke: mirror the released runtime layout where dist/core resolves
+  // the toolkit from ../../plugin, then execute scripts from that resolved tree.
+  test('packaged runtime plugin layout includes runnable self-reflect scripts', () => {
+    const home = tempHome();
+    const runtimeRoot = mkdtempSync(join(tmpdir(), 'kookr-packaged-runtime-'));
+    try {
+      cpSync(join(repoRoot, 'plugin'), join(runtimeRoot, 'plugin'), { recursive: true });
+      const compiledCoreDir = join(runtimeRoot, 'dist', 'core');
+      mkdirSync(compiledCoreDir, { recursive: true });
+
+      const pluginRoot = resolvePluginDir(undefined, {} as NodeJS.ProcessEnv, compiledCoreDir);
+      expect(pluginRoot).toBe(join(runtimeRoot, 'plugin'));
+
+      for (const script of requiredSelfReflectScripts) {
+        expect(existsSync(join(pluginRoot!, script))).toBe(true);
+      }
+
+      const statsOutput = runScript([
+        join(pluginRoot!, requiredSelfReflectScripts[0]),
+        '--json',
+      ], home);
+      expect(JSON.parse(statsOutput)).toMatchObject({
+        status: 'no_new_sessions',
+        analyzed: 0,
+      });
+
+      const analyzerOutput = runScript([
+        join(pluginRoot!, requiredSelfReflectScripts[1]),
+        '--help',
+      ], home);
+      expect(analyzerOutput).toContain('Claude Code Session Analyzer');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(runtimeRoot, { recursive: true, force: true });
+    }
+  });
+
   test('interaction stats reports crash-recovery relaunch sessions', () => {
     const home = tempHome();
     try {
@@ -61,7 +103,10 @@ describe('reflection observability scripts', () => {
         }),
       ].join('\n') + '\n');
 
-      const output = runScript(['scripts/kookr-interaction-stats.ts', '--json'], home);
+      const output = runScript([
+        'plugin/skills/self-reflect/scripts/kookr-interaction-stats.ts',
+        '--json',
+      ], home);
       const parsed = JSON.parse(output);
       expect(parsed.stats.crashRecoverySessions).toBe(1);
       expect(parsed.stats.crashRecoveryRelaunches).toBe(2);

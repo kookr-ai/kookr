@@ -34,8 +34,11 @@ import {
   SESSION_COOKIE_NAME,
   classifyCredential,
   extractBearerToken,
+  getOrCreateAuthThrottle,
+  isBrowserSameOriginRequest,
   isLoopbackHost,
   parseCookieHeader,
+  remoteAddrFromContext,
   type Actor,
   type ApiAuthConfig,
 } from './auth.js';
@@ -145,19 +148,13 @@ export function isSameOriginRequest(headers: {
   origin?: string | null;
   host?: string | null;
 }): boolean {
-  const secFetchSite = headers.secFetchSite?.trim().toLowerCase();
-  if (secFetchSite) {
-    // Only an exact same-origin request is accepted; 'same-site' (sibling
-    // subdomain), 'cross-site', and 'none' (cross-document / direct nav) are not.
-    return secFetchSite === 'same-origin';
-  }
-  if (!headers.origin) return false;
-  try {
-    const originUrl = new URL(headers.origin);
-    return !!headers.host && originUrl.host === headers.host;
-  } catch {
-    return false;
-  }
+  // Only an exact same-origin request is accepted; 'same-site' (sibling
+  // subdomain), 'cross-site', 'none' (cross-document / direct nav), and missing
+  // browser provenance are not.
+  return isBrowserSameOriginRequest(headers, {
+    allowMissingHeaders: false,
+    allowSecFetchSiteNone: false,
+  });
 }
 
 /**
@@ -290,11 +287,17 @@ export function registerAuthSessionRoutes(
       : '';
     if (!token) return c.json({ error: 'missing-token' }, 400);
 
+    const remoteAddr = remoteAddrFromContext(c);
+    const throttle = getOrCreateAuthThrottle(apiAuth);
+    const lockedOut = throttle?.isLockedOut(remoteAddr) ?? false;
     const actor = classifyPresentedToken(apiAuth, token);
-    if (!actor) {
-      console.warn(JSON.stringify({ event: 'auth_session_rejected', reason: 'invalid_token' }));
+    if (!actor || lockedOut) {
+      if (lockedOut) throttle?.recordThrottledAttempt(remoteAddr);
+      else throttle?.recordFailure(remoteAddr, 'bad_token');
+      console.warn(JSON.stringify({ event: 'auth_session_rejected', reason: lockedOut ? 'throttled' : 'invalid_token' }));
       return c.json({ error: 'invalid-token' }, 401);
     }
+    if (actor.kind === 'owner') throttle?.reset(remoteAddr);
 
     // Secure iff the request actually arrived over HTTPS (posture above already
     // gated plain-HTTP without a tunnel assertion).

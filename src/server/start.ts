@@ -19,9 +19,14 @@ import {
   generateCsrfSecret,
   type SessionAuthConfig,
 } from './auth-session.js';
+import { runStartupConfigPreflightOrExit } from './config-preflight.js';
 import { resolveListenPort } from './resolve-listen-port.js';
 import { parseSTTDevice, startSTT, type STTManager } from './stt-manager.js';
 import { DEFAULT_TTS_VOICE, parseTTSDeviceFromEnv, startTTS, type TTSManager } from './tts-manager.js';
+import {
+  inFlightRequestRegistry,
+  startInFlightRequestShutdownLogger,
+} from './in-flight-request-registry.js';
 
 const HOST = process.env.KOOKR_HOST ?? '127.0.0.1';
 const STT_ENABLED = process.env.KOOKR_STT === 'true';
@@ -102,6 +107,8 @@ function resolveApiAuthOrExit(host: string): ApiAuthConfig {
 }
 
 async function main(): Promise<void> {
+  await runStartupConfigPreflightOrExit(process.env);
+
   // Resolve KOOKR_PORT: validate, probe for EADDRINUSE with actionable
   // guidance, or scan for a free port when KOOKR_PORT=auto. See
   // src/server/resolve-listen-port.ts.
@@ -179,17 +186,6 @@ async function main(): Promise<void> {
     console.log('[tts] Text-to-speech disabled (set KOOKR_TTS=true or KOOKR_TTS_URL to enable)');
   }
 
-  // V8: the legacy `KOOKR_BACKEND=tmux` escape hatch is gone. Fail loud
-  // so a stale .env entry does not boot a tmux-era Kookr against a
-  // dtach-only codebase. See rfc-v8-tmux-removal.md §Risks #5.
-  if (process.env.KOOKR_BACKEND && process.env.KOOKR_BACKEND !== 'dtach') {
-    console.error(
-      `[fatal] KOOKR_BACKEND=${process.env.KOOKR_BACKEND} is not supported. ` +
-        'V8 removed the tmux backend. Remove the env var or set KOOKR_BACKEND=dtach.',
-    );
-    process.exit(1);
-  }
-
   const dtachBinary = resolveDtachBinaryOrExit();
   const terminalBackend = new LocalDtachBackend({ instanceId: INSTANCE_ID, dtachBinary });
   console.log(`[terminal] backend=dtach instanceId=${INSTANCE_ID} dtach=${dtachBinary}`);
@@ -239,7 +235,12 @@ async function main(): Promise<void> {
     if (ttsManager) {
       await ttsManager.stop();
     }
-    await server.close();
+    const stopInFlightRequestLogging = startInFlightRequestShutdownLogger(inFlightRequestRegistry);
+    try {
+      await server.close();
+    } finally {
+      stopInFlightRequestLogging();
+    }
     console.log('Server closed.');
     process.exit(0);
   }

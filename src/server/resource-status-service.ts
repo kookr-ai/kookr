@@ -1,4 +1,5 @@
 import type { ServerMessage, SystemResourceStatus } from '../shared/contracts/messages.js';
+import type { CircuitBreakerSnapshot } from '../shared/contracts/circuit-breaker.js';
 import { RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
 
 export interface ResourceStatusSampler {
@@ -21,6 +22,8 @@ export interface ResourceStatusServiceDeps {
   broadcastToAll: (msg: ServerMessage) => void;
   /** Optional operational-alert evaluator fed each broadcast sample. */
   alertEvaluator?: ResourceAlertEvaluator;
+  /** Optional provider for dependency breaker snapshots sampled with each resource tick. */
+  getCircuitBreakerSnapshots?: () => CircuitBreakerSnapshot[];
   intervalMs?: number;
   nowMs?: () => number;
   nowIso?: () => string;
@@ -33,6 +36,7 @@ export class ResourceStatusService {
   private readonly sampler: ResourceStatusSampler;
   private readonly broadcastToAll: (msg: ServerMessage) => void;
   private readonly alertEvaluator: ResourceAlertEvaluator | null;
+  private readonly getCircuitBreakerSnapshots: (() => CircuitBreakerSnapshot[]) | null;
   private readonly intervalMs: number;
   private readonly nowMs: () => number;
   private readonly nowIso: () => string;
@@ -49,6 +53,7 @@ export class ResourceStatusService {
     this.sampler = deps.sampler;
     this.broadcastToAll = deps.broadcastToAll;
     this.alertEvaluator = deps.alertEvaluator ?? null;
+    this.getCircuitBreakerSnapshots = deps.getCircuitBreakerSnapshots ?? null;
     this.intervalMs = deps.intervalMs ?? RESOURCE_STATUS_INTERVAL_MS;
     this.nowMs = deps.nowMs ?? (() => Date.now());
     this.nowIso = deps.nowIso ?? (() => new Date().toISOString());
@@ -81,7 +86,7 @@ export class ResourceStatusService {
   private tick(expectedAtMs: number | null): void {
     if (!this.running) return;
 
-    const status = this.takeSample(expectedAtMs);
+    const status = this.attachCircuitBreakerSnapshots(this.takeSample(expectedAtMs));
     this.latest = status;
     this.broadcastToAll({ type: 'resourceStatus', status });
 
@@ -126,6 +131,13 @@ export class ResourceStatusService {
       return createUnavailableResourceStatus(this.nowIso());
     }
   }
+
+  private attachCircuitBreakerSnapshots(status: SystemResourceStatus): SystemResourceStatus {
+    if (!this.getCircuitBreakerSnapshots) return status;
+    const circuitBreakers = this.getCircuitBreakerSnapshots();
+    if (circuitBreakers.length === 0) return status;
+    return { ...status, circuitBreakers };
+  }
 }
 
 export function createUnavailableResourceStatus(sampledAt: string): SystemResourceStatus {
@@ -139,6 +151,12 @@ export function createUnavailableResourceStatus(sampledAt: string): SystemResour
       memoryUsedPercent: null,
       memoryFreeBytes: null,
       memoryTotalBytes: null,
+      dataDirectory: {
+        path: null,
+        diskFreeBytes: null,
+        diskTotalBytes: null,
+        diskFreePercent: null,
+      },
     },
     server: {
       eventLoopDelayP95Ms: null,

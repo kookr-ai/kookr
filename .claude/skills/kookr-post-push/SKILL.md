@@ -2,7 +2,7 @@
 name: kookr-post-push
 description: Repo delivery-cycle follow-through after push or PR creation — verify mergeability, checklist state, CI, and early feedback by composing pr-lifecycle and pr-review-triage.
 keywords: post-push, after push, after PR, PR follow-up, CI, merge conflict, review comments, delivery cycle
-related: pre-push, pr-lifecycle, pr-review-triage, pre-pr-review
+related: kookr-pre-push, kookr-pr-lifecycle, pr-review-triage, pre-pr-review
 ---
 
 # Post-Push
@@ -11,7 +11,7 @@ Use this immediately after pushing a branch that has a PR, and again after any f
 
 ## What This Skill Composes
 
-- `[[pr-lifecycle]]` for PR creation, checklist updates, and CI monitoring
+- `[[kookr-pr-lifecycle]]` for PR creation, checklist updates, and CI monitoring
 - `[[pr-review-triage]]` for comment triage, fixes, and thread resolution
 
 This skill fills the gap between "push succeeded" and "the PR is actually ready."
@@ -26,7 +26,7 @@ If the branch already has a PR:
 gh pr view --json number,url,mergeable,mergeStateStatus,reviewDecision
 ```
 
-If the PR does not exist yet, create or update it via [[pr-lifecycle]] after `[[pre-push]]` has completed.
+If the PR does not exist yet, create or update it via [[kookr-pr-lifecycle]] after `[[kookr-pre-push]]` has completed.
 
 **Listing PRs for the post-merge rebase scan:** use `gh prs` (alias: `pr list --limit 200`) or pass `--limit 200` explicitly — the bare `gh pr list` default of 30 silently truncates and misses PRs in busy repos. Set the alias once with `gh alias set prs 'pr list --limit 200'` (older gh versions without `--clobber`: `gh alias delete prs 2>/dev/null; gh alias set prs 'pr list --limit 200'`).
 
@@ -47,7 +47,7 @@ Typical Kookr checklist items:
 - Tests pass: `pnpm test`
 - Manual verification: describe what was actually checked
 
-Use the `[[pr-lifecycle]]` REST-update flow to keep the PR body current. Do not leave stale unchecked items behind.
+Use the `[[kookr-pr-lifecycle]]` REST-update flow to keep the PR body current. Do not leave stale unchecked items behind.
 
 Also re-read the PR title and summary against the **current** branch diff after every follow-up push:
 
@@ -82,7 +82,7 @@ If the push changed tests, test helpers, mocks, or build/test harness code, re-r
 
 - If CI fails, fix the problem, push again, and repeat this skill
 - If bots or reviewers left actionable comments, switch to [[pr-review-triage]]
-- If checklist items or PR metadata are stale, switch to [[pr-lifecycle]]
+- If checklist items or PR metadata are stale, switch to [[kookr-pr-lifecycle]]
 
 ### 6. Wait-then-merge (substitute for `gh pr merge --auto`)
 

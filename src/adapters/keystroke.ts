@@ -13,8 +13,42 @@ const ENTER_BYTES = Uint8Array.of(0x0d);
 const CR_LF_BYTES = Uint8Array.of(0x0d, 0x0a);
 const ESC_BYTES = Uint8Array.of(0x1b);
 const TAB_BYTES = Uint8Array.of(0x09);
+/**
+ * Ctrl-U (NAK, 0x15) — "kill line" in readline-style editors. Both the
+ * Claude Code and Codex CLI composers honor it as delete-to-start-of-line,
+ * and it is a no-op on an empty input line. Adapters send it ahead of a
+ * composer message so keystrokes typed into the terminal panel but never
+ * submitted cannot be fused onto the front of the message (kookr F15).
+ */
+const CLEAR_LINE_BYTES = Uint8Array.of(0x15);
 
 const encoder = new TextEncoder();
+
+/**
+ * Bracketed-paste markers (DECSET 2004). Agent TUIs parse everything between
+ * these markers as a single paste event, so a trailing Enter sent separately
+ * remains a submit keystroke even when the TUI drains input bytes in a burst.
+ */
+export const PASTE_START_TEXT = '\x1b[200~';
+export const PASTE_END_TEXT = '\x1b[201~';
+
+/**
+ * Wrap a composer message in bracketed-paste markers. Embedded markers are
+ * stripped first so message content cannot break out of the paste envelope
+ * and turn following bytes into terminal commands.
+ */
+export function encodeBracketedPaste(text: string): Uint8Array {
+  // Strip to a fixed point: a single replaceAll pass can reassemble a live
+  // marker from fragments (e.g. '\x1b[201' + a marker the pass removes +
+  // '~'), letting content close the paste envelope early.
+  let safeBody = text;
+  for (;;) {
+    const next = safeBody.replaceAll(PASTE_START_TEXT, '').replaceAll(PASTE_END_TEXT, '');
+    if (next === safeBody) break;
+    safeBody = next;
+  }
+  return encoder.encode(`${PASTE_START_TEXT}${safeBody}${PASTE_END_TEXT}`);
+}
 
 /**
  * Translate a keystroke name to its byte sequence. Unknown key names fall
@@ -38,4 +72,4 @@ export function translateKeystroke(key: string): Uint8Array {
 }
 
 /** Byte constants exported for callers that assemble write-sequences. */
-export { ENTER_BYTES };
+export { ENTER_BYTES, CLEAR_LINE_BYTES };

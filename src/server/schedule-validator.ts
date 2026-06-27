@@ -1,10 +1,12 @@
-import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { existsSync, realpathSync } from 'node:fs';
+import { readFile, realpath } from 'node:fs/promises';
+import { isAbsolute, win32 } from 'node:path';
 import type { CreateScheduleInput, Schedule, UpdateScheduleDefinitionInput } from '../core/schedule.js';
 import { ScheduleValidationError, isValidMaxTriggers } from '../core/schedule.js';
-import { isValidCron } from '../core/cron.js';
+import { isPracticalCron, isValidCron } from '../core/cron.js';
 import { parsePlaybook, interpolateParameters, PlaybookParseError } from '../core/playbook-parser.js';
+import type { PlaybookScope } from '../core/playbook.js';
+import { isPathInside, playbookScopeDir, resolvePlaybookInScope } from '../core/playbook-paths.js';
 import { projectIdFromRepoSpecifier } from '../core/project-identity.js';
 import { expandConfiguredCwd } from './cwd-paths.js';
 
@@ -17,6 +19,8 @@ export interface ResolvedScheduleLaunch {
   projectId?: string;
 }
 
+const INVALID_PLAYBOOK_PATH_MESSAGE = 'Playbook path must stay inside the selected playbooks directory';
+
 export class ScheduleValidator {
   async validateCreate(input: CreateScheduleInput): Promise<void> {
     const fieldErrors: Record<string, string> = {};
@@ -24,7 +28,8 @@ export class ScheduleValidator {
     if (!input.name?.trim()) fieldErrors.name = 'Required';
     if (!input.cwd?.trim()) fieldErrors.cwd = 'Required';
     if (!input.playbook?.path) fieldErrors.playbook = 'Required';
-    if (!isValidCron(input.cron)) fieldErrors.cron = 'Invalid cron expression';
+    const cronError = validateCron(input.cron);
+    if (cronError) fieldErrors.cron = cronError;
     if (input.maxTriggers !== undefined && !isValidMaxTriggers(input.maxTriggers)) {
       fieldErrors.maxTriggers = 'Must be a positive integer';
     }
@@ -37,12 +42,16 @@ export class ScheduleValidator {
       cwd: input.cwd,
       playbookPath: input.playbook.path,
       parameterValues: input.playbook.parameters,
+      scope: input.playbook.scope,
     });
   }
 
   async validateDefinitionUpdate(existing: Schedule, patch: UpdateScheduleDefinitionInput): Promise<void> {
-    if (patch.cron !== undefined && !isValidCron(patch.cron)) {
-      throw new ScheduleValidationError('Invalid schedule definition', { cron: 'Invalid cron expression' });
+    if (patch.cron !== undefined) {
+      const cronError = validateCron(patch.cron);
+      if (cronError) {
+        throw new ScheduleValidationError('Invalid schedule definition', { cron: cronError });
+      }
     }
     if (patch.maxTriggers !== undefined && patch.maxTriggers !== null && !isValidMaxTriggers(patch.maxTriggers)) {
       throw new ScheduleValidationError('Invalid schedule definition', { maxTriggers: 'Must be a positive integer' });
@@ -52,23 +61,33 @@ export class ScheduleValidator {
       cwd: patch.cwd ?? existing.cwd,
       playbookPath: patch.playbook?.path ?? existing.playbook.path,
       parameterValues: patch.playbook?.parameters ?? existing.playbook.parameters,
+      // Resolve the same scope `resolveLaunch` would after the merge-carry
+      // (R6 parity): an omitted scope falls back to the already-pinned one.
+      scope: patch.playbook?.scope ?? existing.playbook.scope,
     };
 
     await this.validateDefinitionFields(effective);
   }
 
   async resolveLaunch(schedule: Schedule): Promise<ResolvedScheduleLaunch> {
-    const playbookPath = join(schedule.cwd, '.kookr', 'playbooks', schedule.playbook.path);
     if (!existsSync(schedule.cwd)) {
       throw new ScheduleValidationError(`cwd does not exist: ${schedule.cwd}`, { cwd: 'Working directory does not exist' });
     }
-    if (!existsSync(playbookPath)) {
-      throw new ScheduleValidationError(`Playbook not found: ${schedule.playbook.path}`, { playbook: 'Playbook not found' });
+    // R3: legacy schedules with no `scope` resolve project-tier only — no
+    // probe, no cross-tier fallback. R5: re-resolve the tier *directory*
+    // (plugin upgrades change the versioned path) but never the *tier*.
+    const scope: PlaybookScope = schedule.playbook.scope ?? 'project';
+    const resolved = await resolveSchedulePlaybook(schedule.playbook.path, scope, schedule.cwd);
+    if (!resolved) {
+      throw new ScheduleValidationError(
+        `Playbook not found in ${scope} tier: ${schedule.playbook.path}`,
+        { playbook: 'Playbook not found' },
+      );
     }
 
     try {
-      const raw = await readFile(playbookPath, 'utf-8');
-      const playbook = parsePlaybook(raw, schedule.playbook.path, schedule.cwd);
+      const raw = await readFile(resolved.filePath, 'utf-8');
+      const playbook = parsePlaybook(raw, schedule.playbook.path, schedule.cwd, scope);
       const prompt = interpolateParameters(playbook.body, playbook.parameters, schedule.playbook.parameters);
       const criteria = playbook.checklist.length > 0
         ? playbook.checklist.join('\n')
@@ -113,6 +132,7 @@ export class ScheduleValidator {
     cwd: string;
     playbookPath: string;
     parameterValues: Record<string, string>;
+    scope?: PlaybookScope;
   }): Promise<void> {
     const fieldErrors: Record<string, string> = {};
 
@@ -120,18 +140,32 @@ export class ScheduleValidator {
       fieldErrors.cwd = 'Working directory does not exist';
     }
 
-    const playbookPath = join(input.cwd, '.kookr', 'playbooks', input.playbookPath);
-    if (!existsSync(playbookPath)) {
-      fieldErrors.playbook = 'Playbook not found';
+    // Use the same single-scope resolver as `resolveLaunch` (R6 parity),
+    // defaulting an omitted scope to `project`. An unknown/unrecognised scope
+    // resolves to `undefined` (treated as unresolvable) rather than throwing,
+    // so a PR1 revert while a newer UI persists `scope` cannot wedge updates.
+    const scope: PlaybookScope = input.scope ?? 'project';
+    let resolved: { filePath: string } | undefined;
+    try {
+      resolved = await resolveSchedulePlaybook(input.playbookPath, scope, input.cwd);
+    } catch (err) {
+      if (err instanceof ScheduleValidationError) {
+        fieldErrors.playbook = err.fieldErrors?.playbook ?? INVALID_PLAYBOOK_PATH_MESSAGE;
+      } else {
+        throw err;
+      }
+    }
+    if (!resolved) {
+      fieldErrors.playbook ??= 'Playbook not found';
     }
 
-    if (Object.keys(fieldErrors).length > 0) {
+    if (!resolved || Object.keys(fieldErrors).length > 0) {
       throw new ScheduleValidationError('Invalid schedule definition', fieldErrors);
     }
 
     try {
-      const raw = await readFile(playbookPath, 'utf-8');
-      const playbook = parsePlaybook(raw, input.playbookPath, input.cwd);
+      const raw = await readFile(resolved.filePath, 'utf-8');
+      const playbook = parsePlaybook(raw, input.playbookPath, input.cwd, scope);
       const allowedNames = new Set(playbook.parameters.map((param) => param.name));
       const unknown = Object.keys(input.parameterValues).filter((key) => !allowedNames.has(key));
       if (unknown.length > 0) {
@@ -149,4 +183,72 @@ export class ScheduleValidator {
       throw new ScheduleValidationError('Invalid schedule definition', { parameters: message });
     }
   }
+}
+
+export function validateCron(cron: string): string | undefined {
+  if (!isValidCron(cron)) return 'Invalid cron expression';
+  if (!isPracticalCron(cron)) return 'Cron expression must not fire more often than every 5 minutes';
+  return undefined;
+}
+
+async function resolveSchedulePlaybook(
+  playbookPath: string,
+  scope: PlaybookScope,
+  cwd: string,
+): Promise<{ filePath: string } | undefined> {
+  validateSchedulePlaybookPath(playbookPath);
+
+  const resolved = resolvePlaybookInScope(playbookPath, scope, cwd);
+  if (!resolved) return undefined;
+
+  const dir = playbookScopeDir(scope, cwd);
+  if (dir === undefined) return undefined;
+
+  const [realDir, realFilePath] = await Promise.all([
+    realpath(dir),
+    realpath(resolved.filePath),
+  ]);
+  if (!isPathInside(realFilePath, realDir)) {
+    throw invalidPlaybookPathError();
+  }
+
+  return { filePath: realFilePath };
+}
+
+export function resolveSchedulePlaybookSync(
+  playbookPath: string,
+  scope: PlaybookScope,
+  cwd: string,
+): { filePath: string } | undefined {
+  validateSchedulePlaybookPath(playbookPath);
+
+  const resolved = resolvePlaybookInScope(playbookPath, scope, cwd);
+  if (!resolved) return undefined;
+
+  const dir = playbookScopeDir(scope, cwd);
+  if (dir === undefined) return undefined;
+
+  const realDir = realpathSync(dir);
+  const realFilePath = realpathSync(resolved.filePath);
+  if (!isPathInside(realFilePath, realDir)) {
+    throw invalidPlaybookPathError();
+  }
+
+  return { filePath: realFilePath };
+}
+
+function validateSchedulePlaybookPath(playbookPath: string): void {
+  if (
+    isAbsolute(playbookPath)
+    || win32.isAbsolute(playbookPath)
+    || playbookPath.split(/[\\/]+/).includes('..')
+  ) {
+    throw invalidPlaybookPathError();
+  }
+}
+
+function invalidPlaybookPathError(): ScheduleValidationError {
+  return new ScheduleValidationError(INVALID_PLAYBOOK_PATH_MESSAGE, {
+    playbook: INVALID_PLAYBOOK_PATH_MESSAGE,
+  });
 }

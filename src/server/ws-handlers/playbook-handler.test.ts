@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import type { Playbook } from '../../core/playbook.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
 
@@ -65,5 +68,39 @@ describe('PlaybookHandler.listPlaybooks', () => {
     // schema treats this as fail-open.
     const playbooksMsg = sent[0] as Extract<ServerMessage, { type: 'playbooks' }>;
     expect(playbooksMsg.capabilities).toBeUndefined();
+  });
+
+  test('passes parsed delivery policy as server-only launch metadata', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'playbook-handler-'));
+    try {
+      await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(cwd, '.kookr', 'playbooks', 'ship.md'), `---
+name: Ship
+deliveryPreAuthorized: true
+---
+
+Ship it.
+`);
+      const sent: ServerMessage[] = [];
+      const launchTask = vi.fn().mockResolvedValue({
+        task: { id: 'task-1' },
+        queued: false,
+      });
+      const handler = new PlaybookHandler({ send: (msg) => sent.push(msg), launchTask });
+
+      await handler.handle({
+        type: 'launchPlaybook',
+        cwd,
+        playbookPath: 'ship.md',
+        parameterValues: {},
+      });
+
+      expect(launchTask).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Ship', prompt: 'Ship it.' }),
+        { deliveryPolicy: 'pre-authorized' },
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 });

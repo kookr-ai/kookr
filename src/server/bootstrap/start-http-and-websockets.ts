@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server } from 'node:http';
+import { performance } from 'node:perf_hooks';
 
 import { getRequestListener } from '@hono/node-server';
 import type { Hono } from 'hono';
@@ -13,9 +14,26 @@ import { HOOK_EVENTS, LOAD_BEARING_HOOKS } from '../../core/hook-spec.js';
 import { handleTerminalInput, handleTerminalKeystroke, type TerminalInputDeps } from '../agent-lifecycle.js';
 import { FakeTerminalBridge } from '../fake-terminal-bridge.js';
 import { SessionBridge } from '../session-bridge.js';
-import { resolveUpgradeIdentity, type ApiAuthConfig, type Actor } from '../auth.js';
+import {
+  isLoopbackUpgradeOriginAllowed,
+  resolveUpgradeIdentity,
+  type ApiAuthConfig,
+  type Actor,
+} from '../auth.js';
 import type { SocketRegistrar } from '../viewer-connection-registry.js';
 import type { IsActorAllowedTerminalSession } from '../terminal-scope.js';
+
+type WebSocketServerOptions = ConstructorParameters<typeof WebSocketServer>[0];
+type PerMessageDeflatePolicy = Exclude<NonNullable<WebSocketServerOptions>['perMessageDeflate'], boolean>;
+
+// Compress only frames large enough to benefit, and avoid per-client deflate
+// history so dashboard fan-out cannot retain unbounded compression contexts.
+export const WEBSOCKET_PER_MESSAGE_DEFLATE: PerMessageDeflatePolicy = {
+  clientNoContextTakeover: true,
+  serverNoContextTakeover: true,
+  concurrencyLimit: 10,
+  threshold: 1024,
+};
 
 export interface HttpAndWebSocketsDeps {
   app: Hono;
@@ -84,6 +102,13 @@ export interface HttpAndWebSockets {
 const DEFAULT_GRACEFUL_WEBSOCKET_SHUTDOWN_MS = 1_000;
 const SHUTDOWN_CLOSE_CODE = 1001;
 const SHUTDOWN_CLOSE_REASON = 'Server shutting down';
+const DASHBOARD_WS_CLIENT_ID_SPACE = 1_000_000;
+let nextDashboardWsClientOrdinal = 0;
+
+function allocateDashboardWsClientId(): string {
+  nextDashboardWsClientOrdinal = (nextDashboardWsClientOrdinal % DASHBOARD_WS_CLIENT_ID_SPACE) + 1;
+  return `dashboard-ws-${nextDashboardWsClientOrdinal}`;
+}
 
 function terminateOpenWebSockets(wss: WebSocketServer): void {
   for (const ws of wss.clients) {
@@ -162,8 +187,14 @@ async function closeHttpAndWebSockets(
 export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promise<HttpAndWebSockets> {
   const requestListener = getRequestListener(deps.app.fetch);
   const httpServer = createServer(requestListener);
-  const wss = new WebSocketServer({ noServer: true });
-  const terminalWss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({
+    noServer: true,
+    perMessageDeflate: WEBSOCKET_PER_MESSAGE_DEFLATE,
+  });
+  const terminalWss = new WebSocketServer({
+    noServer: true,
+    perMessageDeflate: WEBSOCKET_PER_MESSAGE_DEFLATE,
+  });
   const terminalInputWriter = deps.terminalInputWriter ?? asTerminalInputWriterPort(deps.terminalBackend);
 
   // Terminal context resolved ONCE at the HTTP upgrade (actor + canonical session
@@ -181,10 +212,21 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
     // query params from the WS upgrade; auth now rides on header or cookie.)
     const path = url.split('?', 1)[0];
 
-    // Issue #708: on a non-loopback bind, reject unauthenticated upgrades before
-    // any handshake. The dashboard WS carries the full live snapshot stream and
-    // terminal I/O, so it must be gated alongside state-changing HTTP routes.
+    // Issues #708/#846: reject unauthenticated non-loopback upgrades and
+    // browser-origin-crossing loopback upgrades before any handshake. The
+    // dashboard WS carries the full live snapshot stream and terminal I/O, so
+    // it must be gated alongside state-changing HTTP routes.
     if (deps.apiAuth) {
+      if (!isLoopbackUpgradeOriginAllowed(deps.apiAuth, req)) {
+        console.warn(JSON.stringify({
+          event: 'auth_rejected',
+          reason: 'cross_origin',
+          remoteAddr: req.socket.remoteAddress ?? null,
+        }));
+        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
       const upgradeActor = resolveUpgradeIdentity(deps.apiAuth, req);
       if (!upgradeActor) {
         socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
@@ -325,6 +367,24 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
   });
 
   wss.on('connection', (ws: WebSocket) => {
+    const clientId = allocateDashboardWsClientId();
+    const connectedAt = performance.now();
+
+    console.log(JSON.stringify({
+      msg: 'dashboard_ws_connected',
+      clientId,
+    }));
+
+    ws.on('close', (code, reason) => {
+      console.log(JSON.stringify({
+        msg: 'dashboard_ws_disconnected',
+        clientId,
+        code,
+        reason: reason.toString('utf8'),
+        durationMs: Math.max(0, Math.round(performance.now() - connectedAt)),
+      }));
+    });
+
     deps.onDashboardConnection(ws);
   });
 

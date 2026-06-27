@@ -19,7 +19,9 @@ import {
 } from '../../shared/contracts/shortcut-bindings.js';
 import type { VerbosityScale } from '../../shared/contracts/speech.js';
 import type { QuietHoursWindow } from '../../shared/contracts/quiet-hours.js';
+import { MAX_REPLY_SNIPPETS, type ReplySnippet } from '../../shared/contracts/reply-snippets.js';
 import { useSoundPreference } from '../audio/sound.js';
+import { CHIME_SOUND_LABELS, formatSoundVolume, type ChimeSound } from '../audio/sound-preference.js';
 import { setQuietHoursWindows } from '../hooks/useDnd.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
@@ -47,6 +49,7 @@ interface ServerSettings {
   shortcutBindings: PlatformShortcutBindingOverrides;
   speakVerbosity?: VerbosityScale;
   quietHours?: QuietHoursWindow[];
+  replySnippets?: ReplySnippet[];
   loadedFromDefaults?: boolean;
   warnings?: string[];
 }
@@ -569,8 +572,13 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
   const didFocusRef = useRef(false);
   const saveQueueRef = useRef(Promise.resolve());
   const latestSaveIdRef = useRef(0);
+  const latestSettingsRef = useRef<ServerSettings | null>(null);
 
   useDialogFocus({ dialogRef, initialFocusRef: closeButtonRef });
+
+  useEffect(() => {
+    latestSettingsRef.current = settings;
+  }, [settings]);
 
   useEffect(() => {
     fetch('/api/settings')
@@ -627,6 +635,7 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
         if (saveId !== latestSaveIdRef.current) return;
         setWarnings(saved.warnings ?? []);
         setSettings(saved);
+        window.dispatchEvent(new CustomEvent('kookr:settings-updated', { detail: saved }));
         // Re-mirror the server-normalized windows (invalid ones dropped) so the
         // live gate matches exactly what was persisted.
         setQuietHoursWindows(saved.quietHours ?? []);
@@ -660,7 +669,7 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
 
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      void saveSettings(updated);
+      void saveSettings(latestSettingsRef.current ?? updated);
     }, 500);
   }
 
@@ -692,6 +701,38 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
     const updated = { ...settings, speakVerbosity: value };
     setSettings(updated);
     void saveSettings(updated);
+  }
+
+  function commitReplySnippets(snippets: ReplySnippet[]) {
+    if (!settings) return;
+    const updated = { ...settings, replySnippets: snippets.slice(0, MAX_REPLY_SNIPPETS) };
+    setSettings(updated);
+    void saveSettings(updated);
+  }
+
+  function addReplySnippet() {
+    if (!settings) return;
+    const snippets = settings.replySnippets ?? [];
+    if (snippets.length >= MAX_REPLY_SNIPPETS) return;
+    commitReplySnippets([...snippets, { label: 'New reply', text: 'continue' }]);
+  }
+
+  function updateReplySnippetDraft(index: number, field: keyof ReplySnippet, value: string) {
+    if (!settings) return;
+    const snippets = (settings.replySnippets ?? []).map((snippet, i) =>
+      i === index ? { ...snippet, [field]: value } : snippet,
+    );
+    setSettings({ ...settings, replySnippets: snippets });
+  }
+
+  function saveReplySnippets() {
+    if (!settings) return;
+    void saveSettings(settings);
+  }
+
+  function removeReplySnippet(index: number) {
+    if (!settings) return;
+    commitReplySnippets((settings.replySnippets ?? []).filter((_, i) => i !== index));
   }
 
   function commitQuietHours(windows: QuietHoursWindow[]) {
@@ -746,6 +787,14 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
 
   function handleSoundToggle() {
     sound.setEnabled(!sound.enabled);
+  }
+
+  function handleSoundVolumeChange(value: string) {
+    sound.setVolume(Number(value));
+  }
+
+  function handleChimeSoundChange(value: string) {
+    sound.setChimeSound(value as ChimeSound);
   }
 
   function updateShortcutOverride(actionId: ShortcutActionId, value: string) {
@@ -894,6 +943,41 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                       >
                         <span className="settings-toggle-knob" />
                       </button>
+                    </div>
+                    <div className="settings-row settings-row-fieldset">
+                      <div className="settings-audio-controls">
+                        <label className="settings-audio-volume">
+                          <span className="settings-label">Alert volume</span>
+                          <span className="settings-desc">
+                            Sets the browser chime volume for warning, critical, and completion alerts.
+                          </span>
+                          <div className="settings-audio-control-row">
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.05"
+                              value={sound.volume}
+                              onChange={(e) => handleSoundVolumeChange(e.target.value)}
+                              aria-label="Alert volume"
+                            />
+                            <strong>{formatSoundVolume(sound.volume)}</strong>
+                          </div>
+                        </label>
+                        <label className="settings-audio-sound">
+                          <span className="settings-label">Chime sound</span>
+                          <span className="settings-desc">Choose the synthesized alert tone used for browser chimes.</span>
+                          <select
+                            value={sound.chimeSound}
+                            onChange={(e) => handleChimeSoundChange(e.target.value)}
+                            aria-label="Chime sound"
+                          >
+                            {Object.entries(CHIME_SOUND_LABELS).map(([value, label]) => (
+                              <option key={value} value={value}>{label}</option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
                     </div>
                     <div className="settings-row settings-row-fieldset">
                       <fieldset className="settings-radio-group">
@@ -1120,6 +1204,69 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                             ))}
                           </select>
                         </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Reply snippets */}
+                  <div className="settings-section">
+                    <div className="settings-section-title">Reply Snippets</div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-label">Saved replies</span>
+                        <span className="settings-desc">
+                          Reusable text inserted into the response box. Selecting a snippet never sends it automatically.
+                        </span>
+                        <span className="settings-hint">
+                          {(settings.replySnippets ?? []).length}/{MAX_REPLY_SNIPPETS} saved
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className="settings-button"
+                        onClick={addReplySnippet}
+                        disabled={(settings.replySnippets ?? []).length >= MAX_REPLY_SNIPPETS}
+                      >
+                        Add snippet
+                      </button>
+                    </div>
+                    {(settings.replySnippets ?? []).length === 0 && (
+                      <div className="settings-empty-note">No saved reply snippets.</div>
+                    )}
+                    {(settings.replySnippets ?? []).map((snippet, index) => (
+                      <div className="settings-snippet-row" key={index}>
+                        <label className="settings-snippet-label">
+                          <span className="settings-label">Label</span>
+                          <input
+                            value={snippet.label}
+                            onChange={(e) => updateReplySnippetDraft(index, 'label', e.target.value)}
+                            onBlur={saveReplySnippets}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                saveReplySnippets();
+                                e.currentTarget.blur();
+                              }
+                            }}
+                          />
+                        </label>
+                        <label className="settings-snippet-text">
+                          <span className="settings-label">Text</span>
+                          <textarea
+                            rows={2}
+                            value={snippet.text}
+                            onChange={(e) => updateReplySnippetDraft(index, 'text', e.target.value)}
+                            onBlur={saveReplySnippets}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="settings-button secondary"
+                          aria-label={`Remove reply snippet ${index + 1}`}
+                          onClick={() => removeReplySnippet(index)}
+                        >
+                          Remove
+                        </button>
                       </div>
                     ))}
                   </div>

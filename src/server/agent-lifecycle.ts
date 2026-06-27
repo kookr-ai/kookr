@@ -2,6 +2,7 @@ import type { Task, TaskStore } from '../core/tasks.js';
 import type { Monitor } from '../core/monitor.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { Watchdog } from '../core/watchdog.js';
+import type { AgentEvent } from '../core/types.js';
 import type { HookFileWatcher } from './hook-watcher.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
@@ -18,6 +19,7 @@ import type { ProjectConfigStore } from '../core/project-config-store.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import { removeReflectWorktree } from './use-cases/request-task-reflect.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
+import { evaluateCriteriaVerdict } from '../core/criteria-verdict.js';
 
 // ---------------------------------------------------------------------------
 // Post-launch registration (used by WS handler and REST routes)
@@ -171,7 +173,7 @@ export function handleTerminalKeystroke(
  */
 export interface LifecycleDeps {
   adapter: { stop(tmuxName: string): Promise<void> };
-  monitor: { unregisterAgent(agentId: string): void };
+  monitor: { unregisterAgent(agentId: string): void; getAgentEvents?(agentId: string): AgentEvent[] };
   taskStore: TaskStore;
   interactionLog?: DeferredInteractionLogWriter;
   hookWatcher?: { stop(tmuxName: string): void };
@@ -284,6 +286,30 @@ function markCompletedMissingWorktreesCleanedUp(task: Task, deps: LifecycleDeps)
   }
 }
 
+function captureCompletionEvents(task: Task, deps: LifecycleDeps): AgentEvent[] {
+  const getAgentEvents = deps.monitor.getAgentEvents;
+  if (!getAgentEvents) return [];
+  return task.sessions.flatMap((session) => getAgentEvents.call(deps.monitor, session.tmuxSession));
+}
+
+function scheduleNoEventCriteriaVerdict(task: Task, events: AgentEvent[], deps: LifecycleDeps): void {
+  if (!task.criteria?.trim() || events.length > 0) return;
+  void (async () => {
+    const verdict = await evaluateCriteriaVerdict({
+      criteria: task.criteria,
+      events,
+      llmClient: null,
+    });
+    if (!verdict) return;
+    deps.taskStore.setCriteriaVerdict(task.id, verdict);
+  })().catch((err) => {
+    console.warn(
+      `[completion] criteria verdict failed for ${task.id}:`,
+      err instanceof Error ? err.message : err,
+    );
+  });
+}
+
 /**
  * Complete a task: mark completed immediately, then stop active sessions in
  * the background so a slow terminal shutdown does not block the dashboard.
@@ -294,11 +320,13 @@ export async function completeTask(
 ): Promise<void> {
   const task = deps.taskStore.getTask(taskId);
   if (!task) throw new Error(`Task not found: ${taskId}`);
+  const completionEvents = captureCompletionEvents(task, deps);
 
   completeLiveSessionsInBackground(task, deps);
   deps.queue?.purgeTask(taskId);
   deps.taskStore.completeTask(taskId);
   markCompletedMissingWorktreesCleanedUp(task, deps);
+  scheduleNoEventCriteriaVerdict(task, completionEvents, deps);
 
   await deps.interactionLog?.append({
     type: 'task_completed',
@@ -398,6 +426,8 @@ export interface PromotionDeps {
   serverCwd: string;
   /** Live getter for max concurrent tasks. Falls back to static default if not provided. */
   getMaxActiveTasks?: () => number;
+  /** True when promoted launches should be audited as running without permission prompts. */
+  bypassAllPermissions?: boolean;
 }
 
 /**
@@ -427,6 +457,24 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       const adapter = adapterRegistry.get(pending.agentType);
       const launchPrompt = pending.launchNote ? `${pending.launchNote}\n\n${pending.prompt}` : pending.prompt;
       await adapter.launch(pending.id, launchPrompt, pending.cwd);
+      if (deps.bypassAllPermissions === true) {
+        const launchPermissionPosture = {
+          bypassAllPermissions: true as const,
+          mode: 'bypass-all' as const,
+          capturedAt: nowISO(),
+        };
+        taskStore.setLaunchPermissionPosture(pending.id, launchPermissionPosture);
+        await lifecycleDeps.interactionLog?.append({
+          type: 'task_launch_permission_posture',
+          taskId: pending.id,
+          agentType: pending.agentType,
+          bypassAllPermissions: true,
+          mode: 'bypass-all',
+          timestamp: launchPermissionPosture.capturedAt,
+        });
+      } else {
+        taskStore.setLaunchPermissionPosture(pending.id, undefined);
+      }
       const launched = taskStore.getTask(pending.id);
       if (!launched) throw new Error(`Task disappeared after launch: ${pending.id}`);
       await registerNewAgent(launched, lifecycleDeps);

@@ -27,15 +27,30 @@ function readSourceFiles(root: URL, displayRoot: string): Array<{ path: string; 
   return walk(root);
 }
 
-function coreImportMatches(source: string): string[] {
+function importSpecifiers(source: string): string[] {
   const importSpecifierPattern =
     /\bfrom\s+['"]([^'"]+)['"]|\bimport\s+['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
   return [...source.matchAll(importSpecifierPattern)]
-    .filter((match) => {
-      const specifier = match[1] ?? match[2] ?? match[3] ?? '';
-      return specifier.split('/').includes('core');
-    })
-    .map((match) => match[0]);
+    .map((match) => match[1] ?? match[2] ?? match[3] ?? '');
+}
+
+function coreImportMatches(source: string): string[] {
+  return importSpecifiers(source)
+    .filter((specifier) => specifier.split('/').includes('core'));
+}
+
+function contractBoundaryImportMatches(source: string): string[] {
+  return importSpecifiers(source)
+    .filter((specifier) => {
+      if (specifier.startsWith('..')) return true;
+      return specifier.split('/').some((part) => (
+        part === 'adapters'
+        || part === 'core'
+        || part === 'frontend'
+        || part === 'remote'
+        || part === 'server'
+      ));
+    });
 }
 
 describe('shared protocol boundary', () => {
@@ -43,9 +58,9 @@ describe('shared protocol boundary', () => {
     expect(coreImportMatches(readSharedFile('protocol.ts'))).toEqual([]);
   });
 
-  test('shared contracts do not import core implementation modules', () => {
+  test('shared contracts do not import runtime or non-contract shared modules', () => {
     const offenders = readSourceFiles(contractsRoot, 'src/shared/contracts').flatMap(({ path, source }) =>
-      coreImportMatches(source).map((match) => `${path}: ${match}`),
+      contractBoundaryImportMatches(source).map((specifier) => `${path}: ${specifier}`),
     );
 
     expect(offenders).toEqual([]);

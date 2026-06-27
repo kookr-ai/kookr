@@ -6,9 +6,11 @@ This guide is for a first local Kookr install. It keeps optional features out of
 
 - `git`
 - Node.js `>=22` (the project is tested with newer Node 22/24 releases)
-- `pnpm >=10`
-- Build tools for native module compilation (`node-pty`) and the vendored `dtach` binary
+- `pnpm` — use the version pinned in `package.json` (`packageManager: pnpm@10.x`). The simplest way is `corepack enable`, which runs the pinned version automatically. Installing an unpinned global pnpm (e.g. pnpm 11) works but prints a harmless "pnpm field is no longer read" deprecation warning and can rewrite the lockfile.
+- Build tools (`build-essential` / Xcode CLT) **and `python3`** — `node-pty` compiles via `node-gyp`, which needs python3. The `dtach` binary is vendored and built automatically.
+- On Linux, `setsid` (from `util-linux`, present on virtually every distro) — Kookr uses it to detach agent sessions. macOS does not need it.
 - Claude Code CLI, only if you want Kookr to launch Claude Code agents
+- For Codex CLI agents, the maintained fork — see [Codex CLI Setup](codex-cli-setup.md)
 
 ## Ubuntu / Debian
 
@@ -17,22 +19,33 @@ This guide is for a first local Kookr install. It keeps optional features out of
 curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
 sudo apt-get install -y nodejs
 
-# Build tools and git. dtach is vendored and built by `pnpm build:dtach`.
-sudo apt-get install -y build-essential git
+# Build tools, python3 (node-gyp/node-pty), git, and setsid (util-linux).
+# dtach is vendored and built by `pnpm build:dtach`.
+sudo apt-get install -y build-essential python3 git util-linux
 
-# pnpm
-sudo npm install -g pnpm
+# pnpm — Corepack runs the version pinned in package.json.
+corepack enable
 ```
 
 ## macOS
 
 ```bash
-# Xcode command line tools provide git and build tools.
+# Xcode command line tools provide git, build tools, and python3.
 xcode-select --install
 
-# Node.js and pnpm via Homebrew.
-brew install node@22 pnpm
+# Homebrew, if you don't already have it. When it finishes, run the two
+# `eval "$(... shellenv)"` lines it prints so `brew` is on your PATH (and add
+# that line to ~/.zprofile for future shells).
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Node.js via Homebrew. Corepack runs the pinned pnpm version.
+brew install node@22
+corepack enable
 ```
+
+macOS is supported and does **not** require `setsid` or a manually installed
+`dtach` — Kookr detects macOS, spawns the vendored `dtach` directly, and builds
+it for you during `pnpm install`.
 
 ## Install And Run
 

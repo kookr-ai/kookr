@@ -2,7 +2,26 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 import { track, trackClick } from '../telemetry.js';
-import { agentProviderPresentation, formatDuration, formatAge, ageColor, healthyDotClass, healthyStatusLabel, formatTokenUsage, projectLabel, projectColor, formatBranch, worktreeHealthLabel, worktreeHealthTitle, turnStateLabel, turnStateClass } from '../presentation.js';
+import {
+  agentProviderPresentation,
+  formatDuration,
+  formatAge,
+  ageColor,
+  findingWaitStartedAt,
+  healthyDotClass,
+  healthyStatusLabel,
+  formatTokenUsage,
+  projectLabel,
+  projectColor,
+  formatBranch,
+  worktreeHealthLabel,
+  worktreeHealthTitle,
+  turnStateLabel,
+  turnStateClass,
+  formatCompactDateTime,
+  formatRelativeTimeAgo,
+  findingTypeLabel,
+} from '../presentation.js';
 import {
   formatSpeakFindingTimingLine,
   formatSpeakFindingTimingTitle,
@@ -13,13 +32,15 @@ import { SupervisorFeedbackDialog } from './SupervisorFeedbackDialog.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 import { groupFindings, groupLabel } from '../group-findings.js';
 import { ScheduleSection } from './ScheduleSection.js';
+import type { SchedulePrefill } from './SchedulesDialog.js';
 import { useDnd } from '../hooks/useDnd.js';
-import { usePersistedCollapsed } from '../hooks/usePersistedCollapsed.js';
+import { usePersistedCollapsed, useAutoExpandOnItemGain } from '../hooks/usePersistedCollapsed.js';
 import { useSpeakAgent, type SpeakStatus } from '../hooks/useSpeakAgent.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { sendRalphLoopCommand, type RalphLoopCommand } from '../ralph-loop-api.js';
 import { CoordinatorTaskChipView, coordinatorChipForTask } from './CoordinatorSurfaces.js';
 import { ChildRollupPill } from './RelatedTasksSection.js';
+import { compareCompletedAgents } from '../agent-buckets.js';
 
 export const HEALTHY_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.healthy';
 export const PENDING_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.pending';
@@ -27,6 +48,13 @@ export const SNOOZED_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.snoozed';
 export const COMPLETED_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.completed';
 
 const SPEAK_FINDING_STOP_OTHERS_EVENT = 'kookr:speak-finding-stop-others';
+const FINDING_GROUP_RENDER_LIMIT = 25;
+const FINDINGS_SECTION_COLLAPSED_KEYS = [
+  HEALTHY_SECTION_COLLAPSED_KEY,
+  PENDING_SECTION_COLLAPSED_KEY,
+  SNOOZED_SECTION_COLLAPSED_KEY,
+  COMPLETED_SECTION_COLLAPSED_KEY,
+] as const;
 
 interface Props {
   findings: AgentState[];
@@ -43,7 +71,66 @@ interface Props {
    */
   clearCompletedFinishedCount: number;
   clearCompletedTerminatedCount: number;
+  clearCompletedFinishedTaskIds?: string[];
+  clearCompletedTerminatedTaskIds?: string[];
   clearCompletedProjectId?: string;
+  pendingDeletionTaskIds?: ReadonlySet<string>;
+  onQueueDeleteTask?: (args: { taskId: string; label: string }) => void;
+  onQueueClearCompleted?: (args: {
+    includeTerminated: boolean;
+    projectId?: string;
+    taskIds: string[];
+    count: number;
+  }) => void;
+  /**
+   * Open the Schedules dialog pre-seeded to schedule a playbook-backed task.
+   * Optional so non-App call sites (tests) can omit it; when absent the
+   * per-row schedule button is simply not wired.
+   */
+  onSchedulePlaybook?: (prefill: SchedulePrefill) => void;
+}
+
+/** Clock icon for the per-row "schedule this playbook" button. */
+function ScheduleIcon(): React.ReactElement {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <polyline points="12 7 12 12 15 14" />
+    </svg>
+  );
+}
+
+/**
+ * Small icon button shown on playbook-backed task rows. Clicking it opens the
+ * Schedules dialog pre-seeded with this task's playbook + working directory, so
+ * the user only has to choose a cron. Renders nothing for tasks not launched
+ * from a playbook, and nothing when no scheduler callback is wired.
+ */
+function SchedulePlaybookButton({ agent, onSchedule }: {
+  agent: AgentState;
+  onSchedule?: (prefill: SchedulePrefill) => void;
+}): React.ReactElement | null {
+  if (!onSchedule || !agent.playbookId) return null;
+  const playbookId = agent.playbookId;
+  return (
+    <button
+      type="button"
+      className="btn-xs schedule-playbook-btn"
+      title="Schedule this playbook"
+      aria-label="Schedule this playbook"
+      onClick={(e) => {
+        e.stopPropagation();
+        trackClick('schedule_playbook');
+        onSchedule({
+          cwd: agent.cwd ?? '',
+          playbookId,
+          name: agent.taskName ?? playbookId,
+        });
+      }}
+    >
+      <ScheduleIcon />
+    </button>
+  );
 }
 
 function agentProjectLabel(agent: AgentState): string {
@@ -52,6 +139,16 @@ function agentProjectLabel(agent: AgentState): string {
 
 function agentProjectColor(agent: AgentState): number {
   return projectColor(agent.projectId ?? agent.cwd);
+}
+
+function persistAllSectionsCollapsed(collapsed: boolean): void {
+  try {
+    for (const key of FINDINGS_SECTION_COLLAPSED_KEYS) {
+      localStorage.setItem(key, collapsed ? '1' : '0');
+    }
+  } catch {
+    // localStorage may be unavailable (private mode, quota); preference is best-effort.
+  }
 }
 
 // ─── Ralph loop helpers ──────────────────────────────────────────────────────
@@ -128,14 +225,7 @@ function severityClass(agent: AgentState): string {
 }
 
 function severityLabel(agent: AgentState): string {
-  if (!agent.anomaly) return '';
-  switch (agent.anomaly.type) {
-    case 'permission_blocked': return 'Permission';
-    case 'repeated_error': return 'Repeated Error';
-    // `completed_turn` => the agent signaled it is ready for review; `Needs Input`
-    // is reserved for an explicit mid-turn question. See issue #358.
-    case 'needs_input': return agent.turnState === 'completed_turn' ? 'Signaled Complete' : 'Needs Input';
-  }
+  return findingTypeLabel(agent);
 }
 
 function EditableName({ agent, send, onBeforeEdit }: {
@@ -356,10 +446,66 @@ function LikelyRootCauseBadge({ agent }: { agent: AgentState }): React.ReactElem
   );
 }
 
+function FindingTranscriptContext({ agent }: { agent: AgentState }): React.ReactElement | null {
+  const message = agent.anomaly?.transcriptContext?.lastAssistantMessage;
+  if (!message) return null;
+  return (
+    <div className="finding-transcript-context" data-testid="finding-transcript-context">
+      <div className="finding-transcript-context-label">Last agent message</div>
+      <div className="finding-transcript-context-text">
+        {message.excerpt}{message.truncated ? '...' : ''}
+      </div>
+    </div>
+  );
+}
+
 type FindingDisplayItem =
   | { kind: 'single'; agent: AgentState }
   | { kind: 'rootCauseGroup'; root: AgentState; related: AgentState[] }
   | { kind: 'duplicateGroup'; type: string; agents: AgentState[] };
+
+function visibleFindingAgents(
+  agents: AgentState[],
+  selectedAgentId: string | null,
+  showAll: boolean,
+): AgentState[] {
+  if (showAll || agents.length <= FINDING_GROUP_RENDER_LIMIT) return agents;
+
+  const visible = agents.slice(0, FINDING_GROUP_RENDER_LIMIT);
+  if (selectedAgentId && !visible.some((agent) => agent.agentId === selectedAgentId)) {
+    const selected = agents.find((agent) => agent.agentId === selectedAgentId);
+    // Keep keyboard/current selection visible even when it falls outside the default flood cap.
+    if (selected) return [...visible, selected];
+  }
+  return visible;
+}
+
+function FindingGroupRenderCap({
+  visibleCount,
+  totalCount,
+  label,
+  onShowAll,
+}: {
+  visibleCount: number;
+  totalCount: number;
+  label: string;
+  onShowAll: () => void;
+}): React.ReactElement | null {
+  if (visibleCount >= totalCount) return null;
+  return (
+    <button
+      type="button"
+      className="btn-xs finding-group-show-all"
+      aria-label={`Show all ${totalCount} ${label}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onShowAll();
+      }}
+    >
+      Showing {visibleCount} of {totalCount} - show all
+    </button>
+  );
+}
 
 function buildFindingDisplayItems(findings: AgentState[]): FindingDisplayItem[] {
   const byAgentId = new Map(findings.map((agent) => [agent.agentId, agent]));
@@ -415,23 +561,26 @@ function buildFindingDisplayItems(findings: AgentState[]): FindingDisplayItem[] 
   return items;
 }
 
-function FindingCard({ agent, selected, send }: {
+const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
   agent: AgentState;
   selected: boolean;
   send: (msg: ClientMessage) => void;
-}) {
+}): React.ReactElement {
   const [showSnooze, setShowSnooze] = useState(false);
   const [showFlagFP, setShowFlagFP] = useState(false);
-  const { selectAgent, nextBottleneck } = useKookrStore();
+  const selectAgent = useKookrStore((s) => s.selectAgent);
+  const nextBottleneck = useKookrStore((s) => s.nextBottleneck);
   const selectedProject = useKookrStore((s) => s.selectedProject);
   const dnd = useDnd();
   const cls = severityClass(agent);
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const waitStartedAt = findingWaitStartedAt(agent);
+  const waitAge = formatAge(waitStartedAt);
   const arrivedDuringDnd =
     dnd.enabled &&
     dnd.startedAt !== null &&
-    agent.anomaly?.detectedAt !== undefined &&
-    new Date(agent.anomaly.detectedAt).getTime() >= dnd.startedAt;
+    waitStartedAt !== undefined &&
+    new Date(waitStartedAt).getTime() >= dnd.startedAt;
 
   // Clean up pending click timer on unmount
   useEffect(() => {
@@ -467,7 +616,11 @@ function FindingCard({ agent, selected, send }: {
 
   const tooltipText = [agent.description, agent.anomaly?.explanation].filter(Boolean).join('\n\n');
   const showProjectBadge = !selectedProject || agent.projectId !== selectedProject;
-  const coordinatorChip = coordinatorChipForTask(useKookrStore((s) => s.coordinator), agent.taskId);
+  const coordinator = useKookrStore((s) => s.coordinator);
+  const coordinatorChip = useMemo(
+    () => coordinatorChipForTask(coordinator, agent.taskId),
+    [coordinator, agent.taskId],
+  );
 
   return (
     <Tooltip text={tooltipText}>
@@ -497,7 +650,7 @@ function FindingCard({ agent, selected, send }: {
         <div className="finding-header">
           <span className="finding-header-left">
             <AgentProviderMark agent={agent} state="finding" />
-            <span className={`finding-severity ${cls}`} aria-label={`${severityLabel(agent)}${agent.anomaly?.detectedAt && formatAge(agent.anomaly.detectedAt) ? `, waiting ${formatAge(agent.anomaly.detectedAt)}` : ''}`}>{severityLabel(agent)}</span>
+            <span className={`finding-severity ${cls}`} aria-label={`${severityLabel(agent)}${waitAge ? `, waiting ${waitAge}` : ''}`}>{severityLabel(agent)}</span>
             {arrivedDuringDnd && (
               <span
                 className="dnd-arrived-badge"
@@ -511,9 +664,9 @@ function FindingCard({ agent, selected, send }: {
           </span>
           <span className="finding-meta">
             <SpeakTaskSummaryControl agent={agent} selected={selected} />
-            {agent.anomaly?.detectedAt && formatAge(agent.anomaly.detectedAt) && (
-              <span className={`age-badge ${ageColor(agent.anomaly.detectedAt)}`}>
-                waiting {formatAge(agent.anomaly.detectedAt)}
+            {waitStartedAt && waitAge && (
+              <span className={`age-badge ${ageColor(waitStartedAt)}`}>
+                waiting {waitAge}
               </span>
             )}
           </span>
@@ -572,6 +725,7 @@ function FindingCard({ agent, selected, send }: {
         {agent.anomaly && (
           <div className="finding-explanation">{agent.anomaly.explanation}</div>
         )}
+        <FindingTranscriptContext agent={agent} />
         <CoordinatorTaskChipView chip={coordinatorChip} agent={agent} send={send} />
         {(agent.tokenUsage || agent.startedAt) && (
           <div className="finding-cost">
@@ -584,7 +738,7 @@ function FindingCard({ agent, selected, send }: {
           <TaskPriorityButton agent={agent} send={send} />
           <button className="btn-xs" onClick={(e) => { e.stopPropagation(); handleSkip(); }}>Skip</button>
           <button className="btn-xs" onClick={(e) => { e.stopPropagation(); setShowSnooze(true); }}>Snooze</button>
-          <button className="btn-xs btn-fp" onClick={(e) => { e.stopPropagation(); setShowFlagFP(true); }} title="Mark as false positive">Flag FP</button>
+          <button className="btn-xs btn-fp" onClick={(e) => { e.stopPropagation(); setShowFlagFP(true); }} title="Flag this finding as a false positive">Not a real issue</button>
         </div>
         {showSnooze && (
           <SnoozeDialog
@@ -606,15 +760,22 @@ function FindingCard({ agent, selected, send }: {
       </div>
     </Tooltip>
   );
-}
+});
 
-function RootCauseFindingGroup({ root, related, selectedAgentId, send }: {
+const RootCauseFindingGroup = React.memo(function RootCauseFindingGroup({ root, related, selectedAgentId, send }: {
   root: AgentState;
   related: AgentState[];
   selectedAgentId: string | null;
   send: (msg: ClientMessage) => void;
-}) {
+}): React.ReactElement {
   const [expanded, setExpanded] = useState(true);
+  const [showAllRelated, setShowAllRelated] = useState(false);
+  const visibleRelated = visibleFindingAgents(related, selectedAgentId, showAllRelated);
+  const selectedInRelated = Boolean(selectedAgentId && related.some((agent) => agent.agentId === selectedAgentId));
+
+  useEffect(() => {
+    if (selectedInRelated) setExpanded(true);
+  }, [selectedInRelated]);
 
   return (
     <div className="root-cause-group">
@@ -640,7 +801,7 @@ function RootCauseFindingGroup({ root, related, selectedAgentId, send }: {
       </div>
       {expanded && (
         <div className="root-cause-related">
-          {related.map((agent) => (
+          {visibleRelated.map((agent) => (
             <FindingCard
               key={agent.agentId}
               agent={agent}
@@ -648,16 +809,23 @@ function RootCauseFindingGroup({ root, related, selectedAgentId, send }: {
               send={send}
             />
           ))}
+          <FindingGroupRenderCap
+            visibleCount={visibleRelated.length}
+            totalCount={related.length}
+            label="related findings"
+            onShowAll={() => setShowAllRelated(true)}
+          />
         </div>
       )}
     </div>
   );
-}
+});
 
-function HealthyRow({ agent, selected, send }: {
+function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
   agent: AgentState;
   selected: boolean;
   send: (msg: ClientMessage) => void;
+  onSchedulePlaybook?: (prefill: SchedulePrefill) => void;
 }) {
   const [showSnooze, setShowSnooze] = useState(false);
   const [showFlagMissed, setShowFlagMissed] = useState(false);
@@ -673,7 +841,7 @@ function HealthyRow({ agent, selected, send }: {
     useKookrStore.getState().selectAgent(agent.agentId);
     // Focus the response input after React re-renders
     requestAnimationFrame(() => {
-      const input = document.querySelector('.response-area input') as HTMLInputElement | null;
+      const input = document.querySelector('.response-area textarea') as HTMLTextAreaElement | null;
       input?.focus();
     });
   }
@@ -749,15 +917,16 @@ function HealthyRow({ agent, selected, send }: {
                 <button
                   className="btn-xs btn-fn"
                   onClick={(e) => { e.stopPropagation(); setShowFlagMissed(true); }}
-                  title="Report that Kookr should have flagged this agent"
-                  aria-label={`Report missed finding for ${agent.taskName ?? agent.agentId}`}
+                  title="Report that Kookr missed a real issue on this agent"
+                  aria-label={`Missed a real issue — report for ${agent.taskName ?? agent.agentId}`}
                 >
-                  Flag missed
+                  Missed a real issue
                 </button>
                 <RalphLoopControls agent={agent} />
                 {agent.ralphLoop && agent.ralphLoop.status !== 'running' && agent.ralphLoop.status !== 'paused' && (
                   <RalphLoopBadge agent={agent} />
                 )}
+                <SchedulePlaybookButton agent={agent} onSchedule={onSchedulePlaybook} />
               </div>
             </div>
             <CoordinatorTaskChipView chip={coordinatorChip} agent={agent} send={send} />
@@ -793,11 +962,12 @@ function HealthyRow({ agent, selected, send }: {
   );
 }
 
-function PlaybookGroup({ playbookId, agents, selectedAgentId, send }: {
+function PlaybookGroup({ playbookId, agents, selectedAgentId, send, onSchedulePlaybook }: {
   playbookId: string;
   agents: AgentState[];
   selectedAgentId: string | null;
   send: (msg: ClientMessage) => void;
+  onSchedulePlaybook?: (prefill: SchedulePrefill) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const latest = agents[0]; // Most recent iteration (agents sorted by startedAt descending)
@@ -811,7 +981,10 @@ function PlaybookGroup({ playbookId, agents, selectedAgentId, send }: {
         <span className="playbook-group-toggle">{expanded ? '▾' : '▸'}</span>
         <span className="playbook-group-name">{latest.taskName ?? playbookId}</span>
         <span className="playbook-group-count">{agents.length} runs</span>
+        <SchedulePlaybookButton agent={latest} onSchedule={onSchedulePlaybook} />
       </div>
+      {/* Rows inside a group don't repeat the schedule button — the group header
+          already carries one for the shared playbook. */}
       {expanded && agents.map((agent) => (
         <HealthyRow
           key={agent.agentId}
@@ -831,14 +1004,16 @@ function PlaybookGroup({ playbookId, agents, selectedAgentId, send }: {
   );
 }
 
-function FindingGroup({ type, agents, selectedAgentId, send }: {
+const FindingGroup = React.memo(function FindingGroup({ type, agents, selectedAgentId, send }: {
   type: string;
   agents: AgentState[];
   selectedAgentId: string | null;
   send: (msg: ClientMessage) => void;
-}) {
+}): React.ReactElement {
   const [expanded, setExpanded] = useState(false);
-  const { setRespondAllAgentIds, selectAgent } = useKookrStore();
+  const [showAllAgents, setShowAllAgents] = useState(false);
+  const setRespondAllAgentIds = useKookrStore((s) => s.setRespondAllAgentIds);
+  const selectAgent = useKookrStore((s) => s.selectAgent);
   const selectedInGroup = Boolean(selectedAgentId && agents.some((agent) => agent.agentId === selectedAgentId));
   // A `needs_input` group can mix completed turns and explicit AskUserQuestion
   // waits. The header should only read as a completed turn when every member
@@ -846,6 +1021,7 @@ function FindingGroup({ type, agents, selectedAgentId, send }: {
   // See issue #358.
   const headerAgent = agents.find((a) => a.turnState !== 'completed_turn') ?? agents[0];
   const cls = headerAgent ? severityClass(headerAgent) : '';
+  const visibleAgents = visibleFindingAgents(agents, selectedAgentId, showAllAgents);
 
   useEffect(() => {
     if (selectedInGroup) setExpanded(true);
@@ -862,7 +1038,7 @@ function FindingGroup({ type, agents, selectedAgentId, send }: {
     trackClick('respond_all');
     // Focus the response input after React re-renders
     requestAnimationFrame(() => {
-      const input = document.querySelector('.response-area input') as HTMLInputElement | null;
+      const input = document.querySelector('.response-area textarea') as HTMLTextAreaElement | null;
       input?.focus();
     });
   }
@@ -889,17 +1065,27 @@ function FindingGroup({ type, agents, selectedAgentId, send }: {
           <button className="btn-xs btn-primary-xs" onClick={handleRespondAll}>Respond to All</button>
         </span>
       </div>
-      {expanded && agents.map((agent) => (
-        <FindingCard
-          key={agent.agentId}
-          agent={agent}
-          selected={agent.agentId === selectedAgentId}
-          send={send}
-        />
-      ))}
+      {expanded && (
+        <>
+          {visibleAgents.map((agent) => (
+            <FindingCard
+              key={agent.agentId}
+              agent={agent}
+              selected={agent.agentId === selectedAgentId}
+              send={send}
+            />
+          ))}
+          <FindingGroupRenderCap
+            visibleCount={visibleAgents.length}
+            totalCount={agents.length}
+            label="findings in this group"
+            onShowAll={() => setShowAllAgents(true)}
+          />
+        </>
+      )}
     </div>
   );
-}
+});
 
 function formatCountdown(snoozedUntil: number): string {
   const remaining = Math.max(0, snoozedUntil - Date.now());
@@ -913,10 +1099,11 @@ function formatCountdown(snoozedUntil: number): string {
   return `resumes in ${s}s`;
 }
 
-function PendingRow({ agent, selected, send }: {
+function PendingRow({ agent, selected, send, onSchedulePlaybook }: {
   agent: AgentState;
   selected: boolean;
   send: (msg: ClientMessage) => void;
+  onSchedulePlaybook?: (prefill: SchedulePrefill) => void;
 }) {
   const projectLabelText = agentProjectLabel(agent);
   const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
@@ -949,6 +1136,7 @@ function PendingRow({ agent, selected, send }: {
         <div className="pending-row-meta">
           Queued · waiting for slot
           <TaskPriorityButton agent={agent} send={send} />
+          <SchedulePlaybookButton agent={agent} onSchedule={onSchedulePlaybook} />
           {agent.taskId && (
             <button className="btn-xs btn-danger-xs" onClick={(e) => {
               e.stopPropagation();
@@ -1030,11 +1218,20 @@ function SnoozedRow({ agent, selected, send }: {
 // cancelled); terminated is opt-in via the checkbox inside the dialog. See
 // rfc-task-loss-prevention.md D2.
 //
-function ClearCompletedButton({ finishedCount, terminatedCount, projectId, send }: {
+function ClearCompletedButton({
+  finishedCount,
+  terminatedCount,
+  finishedTaskIds,
+  terminatedTaskIds,
+  projectId,
+  onQueueClearCompleted,
+}: {
   finishedCount: number;
   terminatedCount: number;
+  finishedTaskIds: string[];
+  terminatedTaskIds: string[];
   projectId?: string;
-  send: (msg: ClientMessage) => void;
+  onQueueClearCompleted?: Props['onQueueClearCompleted'];
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [includeTerminated, setIncludeTerminated] = useState(false);
@@ -1052,7 +1249,15 @@ function ClearCompletedButton({ finishedCount, terminatedCount, projectId, send 
   };
   const cancelConfirm = () => setConfirmOpen(false);
   const confirmClear = () => {
-    send({ type: 'clearCompleted', includeTerminated, ...(projectId ? { projectId } : {}) });
+    const taskIds = includeTerminated
+      ? [...finishedTaskIds, ...terminatedTaskIds]
+      : finishedTaskIds;
+    onQueueClearCompleted?.({
+      includeTerminated,
+      ...(projectId ? { projectId } : {}),
+      taskIds,
+      count: taskIds.length,
+    });
     setConfirmOpen(false);
   };
 
@@ -1091,10 +1296,13 @@ function ClearCompletedButton({ finishedCount, terminatedCount, projectId, send 
   );
 }
 
-function CompletedRow({ agent, selected, send }: {
+function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDeleteTask, onSchedulePlaybook }: {
   agent: AgentState;
   selected: boolean;
   send: (msg: ClientMessage) => void;
+  pendingDeletion: boolean;
+  onQueueDeleteTask?: Props['onQueueDeleteTask'];
+  onSchedulePlaybook?: (prefill: SchedulePrefill) => void;
 }) {
   const projectLabelText = agentProjectLabel(agent);
   const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
@@ -1105,13 +1313,20 @@ function CompletedRow({ agent, selected, send }: {
   // without ack), or completed (default / user acknowledged). Keep CSS variants
   // aligned with rfc-task-loss-prevention D1.
   const rowVariant = isCancelled ? 'cancelled' : isTerminated ? 'terminated' : 'completed';
+  const terminalLabel = isCancelled ? 'Cancelled' : isTerminated ? 'Terminated' : 'Completed';
+  const finishedAt = formatCompactDateTime(agent.finishedAt);
+  const finishedAgo = formatRelativeTimeAgo(agent.finishedAt);
+  const finishedTitle = finishedAt
+    ? `${terminalLabel} ${finishedAt}${finishedAgo ? ` (${finishedAgo})` : ''}`
+    : terminalLabel;
 
   return (
     <Tooltip text={agent.description}>
       <div
-        className={`completed-row${selected ? ' selected' : ''} ${rowVariant}`}
+        className={`completed-row${selected ? ' selected' : ''} ${rowVariant}${pendingDeletion ? ' pending-deletion' : ''}`}
         aria-current={selected ? 'true' : undefined}
         onClick={() => {
+          if (pendingDeletion) return;
           track({ type: 'agent_clicked', agentId: agent.agentId, source: 'completed_row', anomalyType: null });
           useKookrStore.getState().selectAgent(agent.agentId);
         }}
@@ -1131,17 +1346,39 @@ function CompletedRow({ agent, selected, send }: {
           <TaskIdCopyButton taskId={agent.taskId} compact />
           <SpeakTaskSummaryControl agent={agent} selected={selected} />
           <span className="completed-row-meta">
-            {isCancelled && <span className="completed-cancelled-label">cancelled</span>}
-            {isCancelled && (agent.tokenUsage || agent.startedAt) && ' · '}
             {formatTokenUsage(agent.tokenUsage)}
             {agent.tokenUsage && agent.startedAt ? ' · ' : ''}
             {formatDuration(agent.startedAt)}
           </span>
+          <span className="completed-row-finished" title={finishedTitle} aria-label={finishedTitle}>
+            <span className="completed-row-status-label">{terminalLabel}</span>
+            {finishedAt && <time dateTime={agent.finishedAt}>{finishedAt}</time>}
+          </span>
           {agent.taskId && (
-            <button className="btn-xs" onClick={(e) => {
+            <button className="btn-xs" disabled={pendingDeletion} onClick={(e) => {
               e.stopPropagation();
               send({ type: 'reopenTask', taskId: agent.taskId! });
             }}>Reopen</button>
+          )}
+          <SchedulePlaybookButton agent={agent} onSchedule={onSchedulePlaybook} />
+          {agent.taskId && (
+            <button
+              className="btn-xs btn-danger-xs"
+              disabled={pendingDeletion}
+              aria-label={`Delete ${agent.taskName ?? agent.agentId}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onQueueDeleteTask?.({
+                  taskId: agent.taskId!,
+                  label: agent.taskName ?? agent.agentId,
+                });
+              }}
+            >
+              Delete
+            </button>
+          )}
+          {pendingDeletion && (
+            <span className="completed-row-pending-delete">deleting soon</span>
           )}
         </div>
         {agent.ralphLoop && (
@@ -1190,6 +1427,32 @@ function groupHealthyAgents(agents: AgentState[]): { standalone: AgentState[]; g
   return { standalone, groups: realGroups };
 }
 
+function SectionToggleButton({
+  collapsed,
+  label,
+  count,
+  labelClassName,
+  onToggle,
+}: {
+  collapsed: boolean;
+  label: string;
+  count: number;
+  labelClassName: string;
+  onToggle: () => void;
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      className="section-header findings-section-toggle"
+      onClick={onToggle}
+      aria-expanded={!collapsed}
+    >
+      <span className="section-chevron" aria-hidden="true">{collapsed ? '▸' : '▾'}</span>
+      <span className={labelClassName}>{label} ({count})</span>
+    </button>
+  );
+}
+
 export function FindingsPanel({
   findings,
   healthy,
@@ -1200,18 +1463,40 @@ export function FindingsPanel({
   send,
   clearCompletedFinishedCount,
   clearCompletedTerminatedCount,
+  clearCompletedFinishedTaskIds = [],
+  clearCompletedTerminatedTaskIds = [],
   clearCompletedProjectId,
+  pendingDeletionTaskIds = new Set<string>(),
+  onQueueDeleteTask,
+  onQueueClearCompleted,
+  onSchedulePlaybook,
 }: Props) {
   const { standalone, groups } = useMemo(() => groupHealthyAgents(healthy), [healthy]);
   const totalAgents = findings.length + healthy.length + pending.length + completed.length + snoozed.length;
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const prevFindingIds = useRef<Set<string>>(new Set());
   const [healthyCollapsed, toggleHealthy] = usePersistedCollapsed(HEALTHY_SECTION_COLLAPSED_KEY, false);
-  const [pendingCollapsed, togglePending] = usePersistedCollapsed(PENDING_SECTION_COLLAPSED_KEY, false);
+  const [pendingCollapsed, togglePending, expandPending] = usePersistedCollapsed(PENDING_SECTION_COLLAPSED_KEY, false);
   const [snoozedCollapsed, toggleSnoozed] = usePersistedCollapsed(SNOOZED_SECTION_COLLAPSED_KEY, true);
   const [completedCollapsed, toggleCompleted] = usePersistedCollapsed(COMPLETED_SECTION_COLLAPSED_KEY, true);
+  // The Pending group is where "waiting on you" tasks live (taskStatus
+  // 'pending' — e.g. an agent that signaled complete and needs the user's
+  // input). When it gains items, auto-expand so the thing blocking the user
+  // is never hidden inside a collapsed group; the user can still re-collapse
+  // afterwards. needs_input findings render in the always-visible findings
+  // list above, which is not collapsible, so this is the only group needing
+  // the treatment. (F19)
+  useAutoExpandOnItemGain(pending.length, expandPending);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const hasBottomSections = healthy.length > 0 || pending.length > 0 || snoozed.length > 0 || completed.length > 0;
+  const renderedSectionCollapsedStates = [
+    ...(healthy.length > 0 ? [healthyCollapsed] : []),
+    ...(pending.length > 0 ? [pendingCollapsed] : []),
+    ...(snoozed.length > 0 ? [snoozedCollapsed] : []),
+    ...(completed.length > 0 ? [completedCollapsed] : []),
+  ];
+  const allRenderedSectionsCollapsed = renderedSectionCollapsedStates.length > 0
+    && renderedSectionCollapsedStates.every(Boolean);
 
   // Single tick counter to refresh age badges across all cards (every 60s)
   const [, setAgeTick] = useState(0);
@@ -1235,10 +1520,27 @@ export function FindingsPanel({
     }
   }, [findings, isInitialLoad]);
 
+  useEffect(() => {
+    if (!selectedAgentId) return;
+    const timer = window.setTimeout(() => {
+      scrollAreaRef.current
+        ?.querySelector<HTMLElement>('[aria-current="true"]')
+        ?.scrollIntoView?.({ block: 'nearest' });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [selectedAgentId]);
+
   const findingDisplayItems = useMemo(
     () => buildFindingDisplayItems(findings),
     [findings],
   );
+  const sortedCompleted = useMemo(
+    () => [...completed].sort(compareCompletedAgents),
+    [completed],
+  );
+  const latestCompletedLabel = sortedCompleted[0]?.finishedAt
+    ? formatCompactDateTime(sortedCompleted[0].finishedAt)
+    : '';
 
   function handlePanelClick(e: React.MouseEvent) {
     if (isInitialLoad) setIsInitialLoad(false);
@@ -1249,12 +1551,32 @@ export function FindingsPanel({
     }
   }
 
+  function toggleAllSections() {
+    const nextCollapsed = !allRenderedSectionsCollapsed;
+    persistAllSectionsCollapsed(nextCollapsed);
+    if (healthyCollapsed !== nextCollapsed) toggleHealthy();
+    if (pendingCollapsed !== nextCollapsed) togglePending();
+    if (snoozedCollapsed !== nextCollapsed) toggleSnoozed();
+    if (completedCollapsed !== nextCollapsed) toggleCompleted();
+  }
+
   return (
     <div className="findings-panel kookr-tour-target-findings kookr-tour-target-layout" onClick={handlePanelClick}>
       <div className="findings-header">
-        <span>Supervisor Findings</span>
-        <span className={`findings-count${findings.length === 0 ? ' findings-count-empty' : ''}`}>
-          {findings.length} active
+        <span className="findings-header-title">Supervisor Findings</span>
+        <span className="findings-header-actions">
+          <button
+            type="button"
+            className="findings-collapse-all-button"
+            onClick={toggleAllSections}
+            disabled={!hasBottomSections}
+            aria-label={allRenderedSectionsCollapsed ? 'Expand all findings sections' : 'Collapse all findings sections'}
+          >
+            {allRenderedSectionsCollapsed ? 'Expand all' : 'Collapse all'}
+          </button>
+          <span className={`findings-count${findings.length === 0 ? ' findings-count-empty' : ''}`}>
+            {findings.length} active
+          </span>
         </span>
       </div>
       <div className="findings-scroll-area" ref={scrollAreaRef}>
@@ -1304,10 +1626,13 @@ export function FindingsPanel({
           <>
           {healthy.length > 0 && (
             <div className="healthy-section">
-              <div className="section-header" onClick={toggleHealthy} aria-expanded={!healthyCollapsed}>
-                <span className="section-chevron">{healthyCollapsed ? '▸' : '▾'}</span>
-                <span className="healthy-label">Healthy ({healthy.length})</span>
-              </div>
+              <SectionToggleButton
+                collapsed={healthyCollapsed}
+                label="Healthy"
+                count={healthy.length}
+                labelClassName="healthy-label"
+                onToggle={toggleHealthy}
+              />
               {!healthyCollapsed && (
                 <>
                   {Array.from(groups.entries()).map(([playbookId, agents]) => (
@@ -1317,6 +1642,7 @@ export function FindingsPanel({
                       agents={agents}
                       selectedAgentId={selectedAgentId}
                       send={send}
+                      onSchedulePlaybook={onSchedulePlaybook}
                     />
                   ))}
                   {standalone.map((agent) => (
@@ -1325,6 +1651,7 @@ export function FindingsPanel({
                       agent={agent}
                       selected={agent.agentId === selectedAgentId}
                       send={send}
+                      onSchedulePlaybook={onSchedulePlaybook}
                     />
                   ))}
                 </>
@@ -1333,26 +1660,33 @@ export function FindingsPanel({
           )}
           {pending.length > 0 && (
             <div className="pending-section">
-              <div className="section-header" onClick={togglePending} aria-expanded={!pendingCollapsed}>
-                <span className="section-chevron">{pendingCollapsed ? '▸' : '▾'}</span>
-                <span className="pending-label">Pending ({pending.length})</span>
-              </div>
+              <SectionToggleButton
+                collapsed={pendingCollapsed}
+                label="Pending"
+                count={pending.length}
+                labelClassName="pending-label"
+                onToggle={togglePending}
+              />
               {!pendingCollapsed && pending.map((agent) => (
                 <PendingRow
                   key={agent.agentId}
                   agent={agent}
                   selected={agent.agentId === selectedAgentId}
                   send={send}
+                  onSchedulePlaybook={onSchedulePlaybook}
                 />
               ))}
             </div>
           )}
           {snoozed.length > 0 && (
             <div className="snoozed-section">
-              <div className="section-header" onClick={toggleSnoozed} aria-expanded={!snoozedCollapsed}>
-                <span className="section-chevron">{snoozedCollapsed ? '▸' : '▾'}</span>
-                <span className="snoozed-label">Snoozed ({snoozed.length})</span>
-              </div>
+              <SectionToggleButton
+                collapsed={snoozedCollapsed}
+                label="Snoozed"
+                count={snoozed.length}
+                labelClassName="snoozed-label"
+                onToggle={toggleSnoozed}
+              />
               {!snoozedCollapsed && snoozed.map((agent) => (
                 <SnoozedRow
                   key={agent.agentId}
@@ -1365,22 +1699,35 @@ export function FindingsPanel({
           )}
           {completed.length > 0 && (
             <div className="completed-section">
-              <div className="section-header" onClick={toggleCompleted} aria-expanded={!completedCollapsed}>
-                <span className="section-chevron">{completedCollapsed ? '▸' : '▾'}</span>
-                <span className="completed-label">Completed ({completed.length})</span>
+              <div className="completed-section-header-row">
+                <SectionToggleButton
+                  collapsed={completedCollapsed}
+                  label="Completed"
+                  count={completed.length}
+                  labelClassName="completed-label"
+                  onToggle={toggleCompleted}
+                />
+                <span className="completed-sort-hint">
+                  Newest first{latestCompletedLabel ? ` · latest ${latestCompletedLabel}` : ''}
+                </span>
                 <ClearCompletedButton
                   finishedCount={clearCompletedFinishedCount}
                   terminatedCount={clearCompletedTerminatedCount}
+                  finishedTaskIds={clearCompletedFinishedTaskIds}
+                  terminatedTaskIds={clearCompletedTerminatedTaskIds}
                   projectId={clearCompletedProjectId}
-                  send={send}
+                  onQueueClearCompleted={onQueueClearCompleted}
                 />
               </div>
-              {!completedCollapsed && completed.map((agent) => (
+              {!completedCollapsed && sortedCompleted.map((agent) => (
                 <CompletedRow
                   key={agent.agentId}
                   agent={agent}
                   selected={agent.agentId === selectedAgentId}
                   send={send}
+                  pendingDeletion={Boolean(agent.taskId && pendingDeletionTaskIds.has(agent.taskId))}
+                  onQueueDeleteTask={onQueueDeleteTask}
+                  onSchedulePlaybook={onSchedulePlaybook}
                 />
               ))}
             </div>

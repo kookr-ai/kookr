@@ -7,13 +7,53 @@
  * `scripts/build-dtach.sh` first.
  */
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { LocalDtachBackend } from './local-dtach-backend.js';
+import { LocalDtachBackend, buildDtachSpawn } from './local-dtach-backend.js';
 import { killProcessTree } from './process-tree.js';
 import { SessionGoneError } from './terminal-backend.js';
+
+describe('buildDtachSpawn', () => {
+  const dtach = '/vendor/dtach/dtach';
+  const dtachArgs = ['-n', '/tmp/s.sock', '-r', 'winch', '-E', 'claude'];
+
+  it('wraps the dtach master in `setsid -f` on Linux so it detaches from Kookr', () => {
+    const { command, args } = buildDtachSpawn('linux', dtach, dtachArgs);
+    expect(command).toBe('setsid');
+    expect(args).toEqual(['-f', dtach, ...dtachArgs]);
+  });
+
+  it('spawns dtach directly on macOS, where setsid is absent', () => {
+    // dtach -n already daemonizes and the caller (createSession) passes
+    // detached:true (setsid(2) semantics), so no external `setsid` binary is
+    // needed. NOTE: the createSession wiring that forwards this argv into
+    // spawnChild(..., { detached: true }) is exercised end-to-end only by the
+    // integration tests below, which run on Linux CI — the macOS spawn branch
+    // itself is verified here at the argv level.
+    const { command, args } = buildDtachSpawn('darwin', dtach, dtachArgs);
+    expect(command).toBe(dtach);
+    expect(args).toEqual(dtachArgs);
+    expect(args).not.toContain('-f');
+  });
+
+  it('uses setsid on non-darwin platforms (darwin is the only exception)', () => {
+    // The backend's contract: every platform except darwin gets `setsid -f`.
+    // Lock that in so a future `=== 'linux'` narrowing doesn't silently drop
+    // the wrapper on other setsid-bearing platforms.
+    const { command } = buildDtachSpawn('freebsd', dtach, dtachArgs);
+    expect(command).toBe('setsid');
+  });
+});
 
 /**
  * Reap any dtach masters (and the agent/shell children they host) whose
@@ -98,6 +138,7 @@ const skipIfNoDtach = DTACH ? it : it.skip;
 const HAS_PROC = existsSync('/proc/self');
 // Tests that exercise the /proc-based pid resolution need both dtach and /proc.
 const skipIfNoProc = DTACH && HAS_PROC ? it : it.skip;
+const skipIfNoSetsidWrapper = process.platform === 'darwin' ? it.skip : it;
 
 describe('LocalDtachBackend', () => {
   let tmpDir: string;
@@ -162,6 +203,78 @@ describe('LocalDtachBackend', () => {
         args: ['-c', 'sleep 1'],
       }),
     ).rejects.toThrow(/too long/);
+  });
+
+  it('handles dtach master spawn errors as a per-session failure', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    const missingDtach = join(tmpDir, 'missing-dtach');
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: missingDtach,
+    });
+
+    const errors: unknown[] = [];
+    backend.onBackendError((err) => {
+      errors.push(err);
+    });
+
+    await expect(
+      backend.createSession({
+        id: 'spawn-error',
+        command: '/bin/sh',
+        args: ['-c', 'cat'],
+      }),
+    ).rejects.toThrow(/dtach master spawn failed.*not found or not executable/);
+
+    expect(errors).toContainEqual({
+      kind: 'dtach-unavailable',
+      binary: missingDtach,
+    });
+    expect(backend.getStats().lastError).toEqual(errors[0]);
+
+    const manifestPath = join(tmpDir, 'test', 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as {
+      entries: Array<{ sessionId: string }>;
+    };
+    expect(manifest.entries.find((e) => e.sessionId === 'spawn-error')).toBeUndefined();
+  });
+
+  skipIfNoSetsidWrapper('handles missing setsid as a per-session failure', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    const fakeDtach = join(tmpDir, 'fake-dtach');
+    writeFileSync(fakeDtach, '#!/bin/sh\nexit 0\n');
+    chmodSync(fakeDtach, 0o755);
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: fakeDtach,
+    });
+
+    const errors: unknown[] = [];
+    backend.onBackendError((err) => {
+      errors.push(err);
+    });
+
+    await expect(
+      backend.createSession({
+        id: 'setsid-error',
+        command: '/bin/sh',
+        args: ['-c', 'cat'],
+        env: { PATH: '' },
+      }),
+    ).rejects.toThrow(/dtach master spawn failed.*not found or not executable/);
+
+    expect(errors).toContainEqual({
+      kind: 'dtach-unavailable',
+      binary: 'setsid',
+    });
+
+    const manifestPath = join(tmpDir, 'test', 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as {
+      entries: Array<{ sessionId: string }>;
+    };
+    expect(manifest.entries.find((e) => e.sessionId === 'setsid-error')).toBeUndefined();
   });
 
   skipIfNoDtach(
@@ -491,6 +604,113 @@ describe('LocalDtachBackend', () => {
       backend.close();
     }
   });
+
+  it('write passes multi-byte UTF-8 to the pty byte-exact (no Latin-1 round trip)', async () => {
+    // Regression for the mojibake bug: the write path used
+    // `Buffer.from(data).toString('binary')` — a Latin-1 decode — before
+    // pty.write. node-pty re-encodes strings as UTF-8, so every multi-byte
+    // UTF-8 character was corrupted ("—" reached the agent as "â\x80\x94").
+    // The pty is faked here so the test asserts the exact payload handed to
+    // node-pty; the string case emulates node-pty's own UTF-8 string encode.
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH ?? 'dtach',
+    });
+
+    const ptyWrites: Array<string | Buffer> = [];
+    const fakePty = {
+      write: (data: string | Buffer) => {
+        ptyWrites.push(data);
+      },
+    };
+    const id = 'utf8-write';
+    const attached = (
+      backend as unknown as { attached: Map<string, Record<string, unknown>> }
+    ).attached;
+    attached.set(id, {
+      id,
+      sock: '/tmp/not-used.sock',
+      pty: fakePty,
+      ringHead: 0,
+      ringBuffer: Buffer.alloc(1024),
+      lastFlushedHead: -1,
+      dataSubscribers: new Set(),
+      writeMutex: Promise.resolve(),
+      pendingWriters: 0,
+      reattachWindow: [],
+      reattachCount: 0,
+      currentSize: null,
+    });
+
+    try {
+      const text = 'em dash — and accent é\r';
+      const expected = Array.from(new TextEncoder().encode(text));
+
+      await backend.write(id, new TextEncoder().encode(text));
+      await backend.writeSequence(id, [new TextEncoder().encode('café —'), Uint8Array.of(0x0d)]);
+
+      expect(ptyWrites).toHaveLength(3);
+      // Emulate what node-pty does with each payload: strings are encoded
+      // as UTF-8 (CustomWriteStream default), Buffers pass through verbatim.
+      const toPtyBytes = (p: string | Buffer): number[] =>
+        typeof p === 'string' ? Array.from(Buffer.from(p, 'utf-8')) : Array.from(p);
+      expect(toPtyBytes(ptyWrites[0]!)).toEqual(expected);
+      expect(toPtyBytes(ptyWrites[1]!)).toEqual(Array.from(new TextEncoder().encode('café —')));
+      expect(toPtyBytes(ptyWrites[2]!)).toEqual([0x0d]);
+    } finally {
+      backend.close();
+    }
+  });
+
+  skipIfNoDtach('round-trips multi-byte UTF-8 through write → tty echo byte-exact', async () => {
+    // End-to-end mojibake regression through a real dtach + pty: `cat` with
+    // default tty line discipline echoes stdin back, so the em-dash and the
+    // accented character must come back exactly as written. Pre-fix, the
+    // Latin-1 round trip in the write path corrupted the bytes before they
+    // ever reached the child.
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH!,
+    });
+
+    const id = 'utf8-roundtrip';
+    const MARKER = 'UTF8_OK — café é\n';
+
+    await backend.createSession({
+      id,
+      command: '/bin/sh',
+      args: ['-c', 'exec cat'],
+    });
+
+    try {
+      const chunks: Uint8Array[] = [];
+      backend.onData(id, (b) => {
+        chunks.push(b);
+      });
+
+      await backend.write(id, new TextEncoder().encode(MARKER));
+
+      const seen = (): string =>
+        new TextDecoder('utf-8', { fatal: false }).decode(Buffer.concat(chunks.map((c) => Buffer.from(c))));
+      const deadline = Date.now() + 3_000;
+      while (Date.now() < deadline && !seen().includes('UTF8_OK')) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+
+      const echoed = seen();
+      expect(echoed).toContain('UTF8_OK — café é');
+      // Assert byte-exactness, not just decoded similarity: the historical
+      // corruption produced "â" for "—", which a lenient decode
+      // would still surface as *some* string.
+      expect(echoed).not.toContain('â');
+    } finally {
+      await backend.killSession(id);
+    }
+  }, 15_000);
 
   skipIfNoDtach('persists ring buffer across a backend restart', async () => {
     // Regression guard for the "blank terminal after pnpm prod:restart" bug.

@@ -18,18 +18,47 @@ export interface PushAlertDeltaPayload {
   payload: RedactedPushPayload;
 }
 
+export const DEFAULT_PUSH_ALERT_OUTBOX_CAPACITY = 32;
+
+export interface PushAlertOutboxEnqueueResult {
+  pending: number;
+  droppedAlertId: string | null;
+}
+
+export interface PushAlertOutboxFlushResult {
+  attempted: number;
+  sent: number;
+  pending: number;
+}
+
+export interface PushAlertOutbox {
+  enqueue(payload: RedactedPushPayload): PushAlertOutboxEnqueueResult;
+  flush(
+    client: RemoteNodeClient | null,
+    opts?: { now?: () => Date; env?: Partial<Pick<NodeJS.ProcessEnv, 'KOOKR_PUSH_DISABLED'>> },
+  ): PushAlertOutboxFlushResult;
+  snapshot(): RedactedPushPayload[];
+}
+
 const TASK_LABEL_ALLOWLIST = /[^A-Za-z0-9 .,!?-]+/g;
 const MIN_SAFE_LABEL_LENGTH = 4;
 const MAX_TASK_LABEL_LENGTH = 64;
 
 const SECRET_PATTERNS: RegExp[] = [
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+  /\bsk-[A-Za-z0-9_-]{16,}\b/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
   /\bgithub_pat_[A-Za-z0-9_]{22,}\b/g,
   /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g,
+  /\bxoxb-[A-Za-z0-9-]{16,}\b/g,
+  /\bglpat-[A-Za-z0-9_-]{16,}\b/g,
+  /\bhf_[A-Za-z0-9]{16,}\b/g,
+  /\bnpm_[A-Za-z0-9]{16,}\b/g,
+  /\bpypi-[A-Za-z0-9_-]{16,}\b/g,
+  /\bdckr_pat_[A-Za-z0-9_-]{16,}\b/g,
+  /\bya29\.[A-Za-z0-9_-]+\b/g,
   /\b(?:Basic|Bearer)\s+[A-Za-z0-9+/=_-]{16,}\b/gi,
-  /\b[A-Fa-f0-9]{32,}\b/g,
-  /\b[A-Za-z0-9+/]{24,}={0,2}\b/g,
+  /\b(?:api[\s_-]?key|token|secret|password|credential|authorization|auth)\b\s*(?:[:=]|\s+)\s*["']?[A-Za-z0-9+/=_-]{16,}\b/gi,
 ];
 
 export function isPushDisabled(env: Partial<Pick<NodeJS.ProcessEnv, 'KOOKR_PUSH_DISABLED'>> = process.env): boolean {
@@ -110,6 +139,49 @@ export function publishPushAlertDelta(
     },
   };
   return client.publish(event);
+}
+
+export function createPushAlertOutbox(opts: { capacity?: number } = {}): PushAlertOutbox {
+  const capacity = Math.max(1, Math.trunc(opts.capacity ?? DEFAULT_PUSH_ALERT_OUTBOX_CAPACITY));
+  const pending = new Map<string, RedactedPushPayload>();
+
+  return {
+    enqueue(payload) {
+      if (pending.has(payload.alertId)) {
+        // Updating an existing key preserves Map insertion order, so retries
+        // keep the original FIFO replay position while refreshing the payload.
+        pending.set(payload.alertId, payload);
+        return { pending: pending.size, droppedAlertId: null };
+      }
+
+      let droppedAlertId: string | null = null;
+      if (pending.size >= capacity) {
+        const oldest = pending.keys().next().value as string | undefined;
+        if (oldest !== undefined) {
+          pending.delete(oldest);
+          droppedAlertId = oldest;
+        }
+      }
+      pending.set(payload.alertId, payload);
+      return { pending: pending.size, droppedAlertId };
+    },
+    flush(client, flushOpts = {}) {
+      let attempted = 0;
+      let sent = 0;
+      for (const payload of Array.from(pending.values())) {
+        attempted += 1;
+        // Stop at the first failed replay so later alerts do not jump ahead
+        // of an older one still waiting for a usable relay connection.
+        if (!publishPushAlertDelta(client, payload, flushOpts)) break;
+        pending.delete(payload.alertId);
+        sent += 1;
+      }
+      return { attempted, sent, pending: pending.size };
+    },
+    snapshot() {
+      return Array.from(pending.values());
+    },
+  };
 }
 
 export function isPushAlertDeltaPayload(value: unknown): value is PushAlertDeltaPayload {

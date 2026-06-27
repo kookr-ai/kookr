@@ -9,7 +9,9 @@
  */
 
 import type { DetectionStats } from './detection-stats.js';
+import type { HelperLlmDiagnosticsSnapshot } from './llm-types.js';
 import type { AnomalyType } from './types.js';
+import type { PersistenceHealthSnapshot } from '../shared/contracts/persistence-health.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -49,6 +51,10 @@ export interface DiagnosticInput {
   eventCounts: Record<string, number>;
   /** Last snapshot payload size in bytes. */
   lastSnapshotSizeBytes: number;
+  /** Aggregate diagnostics for Kookr's own helper-LLM calls. */
+  helperLlm: HelperLlmDiagnosticsSnapshot;
+  /** In-memory health for runtime persistence attempts. */
+  persistenceHealth?: PersistenceHealthSnapshot;
 }
 
 /** Output of the diagnostic function. */
@@ -57,6 +63,10 @@ export interface DiagnosticReport {
   timestamp: number;
   /** List of findings (empty = healthy). */
   findings: DiagnosticFinding[];
+  /** Diagnostics-only accounting for Kookr's own helper-LLM calls. */
+  helperLlm: HelperLlmDiagnosticsSnapshot;
+  /** In-memory health for runtime persistence attempts. */
+  persistenceHealth?: PersistenceHealthSnapshot;
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +130,7 @@ export function runDiagnostic(
 
   // --- snapshot-size: absolute check, always runs (not a rate) ---
   checkSnapshotSize(input, findings);
+  checkPersistenceHealth(input, findings);
 
   // --- Rate checks: skip if uptime < 5 min ---
   if (input.uptimeMs >= MIN_UPTIME_MS) {
@@ -133,7 +144,12 @@ export function runDiagnostic(
     }
   }
 
-  return { timestamp: now, findings };
+  return {
+    timestamp: now,
+    findings,
+    helperLlm: input.helperLlm,
+    ...(input.persistenceHealth ? { persistenceHealth: input.persistenceHealth } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +176,38 @@ function checkSnapshotSize(input: DiagnosticInput, findings: DiagnosticFinding[]
     threshold: severity === 'critical' ? SNAPSHOT_SIZE_CRITICAL : SNAPSHOT_SIZE_WARNING,
     scope: 'snapshot (system-wide)',
   });
+}
+
+function checkPersistenceHealth(input: DiagnosticInput, findings: DiagnosticFinding[]): void {
+  const snapshot = input.persistenceHealth;
+  if (!snapshot) return;
+
+  for (const target of Object.values(snapshot.targets)) {
+    if (target.consecutiveFailures <= 0 || !target.lastError) continue;
+    const severity: DiagnosticSeverity = target.lastError.hard || target.consecutiveFailures >= 3
+      ? 'critical'
+      : 'warning';
+    const code = target.lastError.code ? ` (${target.lastError.code})` : '';
+    findings.push({
+      checkId: 'persistence-health',
+      title: `${formatPersistenceTarget(target.target)} persistence has ${formatCount(target.consecutiveFailures, 'active failure')}`,
+      description:
+        `${formatPersistenceTarget(target.target)} persistence has failed ${formatCount(target.consecutiveFailures, 'consecutive time')}, ` +
+        `${formatCount(target.totalFailures, 'total failure')}. Last error${code}: ${target.lastError.message}`,
+      severity,
+      observed: target.consecutiveFailures,
+      threshold: 1,
+      scope: target.target,
+    });
+  }
+}
+
+function formatPersistenceTarget(target: string): string {
+  return target.replace(/_/g, '-');
+}
+
+function formatCount(count: number, singular: string): string {
+  return `${count} ${singular}${count === 1 ? '' : 's'}`;
 }
 
 function checkDetectionFireRate(

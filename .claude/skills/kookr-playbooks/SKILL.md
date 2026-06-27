@@ -256,4 +256,4 @@ Compute these from `{{repoFullName}}`:
 - `src/frontend/store/playbook-source-resolver.ts` — Resolves `tracked-projects` source to dropdown options
 - `src/frontend/components/FilterableSelect.tsx` — Searchable dropdown for large option lists
 - `src/frontend/components/PlaybookBrowser.tsx` — UI for browsing, project-context pre-fill
-- `src/frontend/components/LaunchDialog.tsx` — Tabbed dialog (Manual | Playbooks)
+- `src/frontend/components/LaunchTaskDialog.tsx` — Tabbed dialog (Manual | Playbooks)

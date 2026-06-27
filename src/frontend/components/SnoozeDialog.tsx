@@ -1,12 +1,14 @@
 import React, { useState, useRef, useEffect, useId } from 'react';
 import { track } from '../telemetry.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
+import { SNOOZE_UNTIL_NEXT_CHANGE_DURATION_MS } from '../../shared/contracts/messages.js';
 
 const PRESETS = [
   { key: '1', label: '5m', ms: 5 * 60 * 1000 },
   { key: '2', label: '1h', ms: 60 * 60 * 1000 },
   { key: '3', label: '12h', ms: 12 * 60 * 60 * 1000 },
   { key: '4', label: '24h', ms: 24 * 60 * 60 * 1000 },
+  { key: 'C', label: 'Until next change', ms: SNOOZE_UNTIL_NEXT_CHANGE_DURATION_MS },
 ] as const;
 
 interface Props {
@@ -43,12 +45,14 @@ export function SnoozeDialog({ agentId, agentName, onSnooze, onClose }: Props) {
 
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === 'm' || e.key === 'M') {
+        if (hasShortcutModifier(e)) return;
         e.preventDefault();
         setManual(true);
         return;
       }
-      const preset = PRESETS.find((p) => p.key === e.key);
+      const preset = PRESETS.find((p) => p.key.toLowerCase() === e.key.toLowerCase());
       if (preset) {
+        if (hasShortcutModifier(e)) return;
         e.preventDefault();
         track({ type: 'finding_snoozed', agentId, anomalyType: null, durationMs: preset.ms, method: 'shortcut' });
         onSnooze(preset.ms);
@@ -124,4 +128,8 @@ export function SnoozeDialog({ agentId, agentName, onSnooze, onClose }: Props) {
       </div>
     </div>
   );
+}
+
+function hasShortcutModifier(e: KeyboardEvent): boolean {
+  return e.ctrlKey || e.metaKey || e.altKey;
 }

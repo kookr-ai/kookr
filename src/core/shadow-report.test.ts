@@ -327,9 +327,70 @@ describe('parseShadowLogFromFile / generateReportFromFile', () => {
   });
 
   test('returns empty report when file does not exist', async () => {
-    const report = await generateReportFromFile('/tmp/definitely-not-a-real-shadow-log.jsonl');
-    expect(report.totalEntries).toBe(0);
-    expect(report.strategies).toHaveLength(0);
+    const dir = await mkdtemp(join(tmpdir(), 'shadow-report-missing-'));
+    try {
+      const report = await generateReportFromFile(join(dir, 'definitely-not-a-real-shadow-log.jsonl'));
+      expect(report.totalEntries).toBe(0);
+      expect(report.strategies).toHaveLength(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('reads rotated generations oldest-first before the current log', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'shadow-report-rotated-'));
+    try {
+      const path = join(dir, 'shadow-detection.jsonl');
+      await writeFile(
+        `${path}.2`,
+        JSON.stringify(hb('2026-03-28T12:00:00Z', 'a1', null, null)) + '\n',
+        'utf-8',
+      );
+      await writeFile(
+        `${path}.1`,
+        JSON.stringify(hb('2026-03-28T12:00:05Z', 'a1', 'needs_input', 'needs_input')) + '\n',
+        'utf-8',
+      );
+      await writeFile(
+        path,
+        JSON.stringify(hb('2026-03-28T12:00:10Z', 'a1', null, null)) + '\n',
+        'utf-8',
+      );
+
+      const { entries, errors } = await parseShadowLogFromFile(path);
+      expect(errors).toBe(0);
+      expect(entries.map((entry) => entry.timestamp)).toEqual([
+        '2026-03-28T12:00:00Z',
+        '2026-03-28T12:00:05Z',
+        '2026-03-28T12:00:10Z',
+      ]);
+
+      const report = await generateReportFromFile(path);
+      expect(report.totalEntries).toBe(3);
+      expect(report.observationWindow!.startMs).toBe(Date.parse('2026-03-28T12:00:00Z'));
+      expect(report.observationWindow!.endMs).toBe(Date.parse('2026-03-28T12:00:10Z'));
+      expect(report.strategies[0].realIntervals).toBe(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('uses rotated generations even when the current log is missing', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'shadow-report-rotated-only-'));
+    try {
+      const path = join(dir, 'shadow-detection.jsonl');
+      await writeFile(
+        `${path}.1`,
+        JSON.stringify(hb('2026-03-28T12:00:00Z', 'a1', null, null)) + '\n',
+        'utf-8',
+      );
+
+      const report = await generateReportFromFile(path);
+      expect(report.totalEntries).toBe(1);
+      expect(report.parseErrors).toBe(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

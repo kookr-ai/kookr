@@ -120,8 +120,8 @@ describe('DetailPanel permission quick actions', () => {
       return true;
     });
 
-    const input = container.querySelector<HTMLInputElement>('.response-row input');
-    expect(input).toBeInstanceOf(HTMLInputElement);
+    const input = container.querySelector<HTMLTextAreaElement>('.response-row textarea');
+    expect(input).toBeInstanceOf(HTMLTextAreaElement);
     act(() => {
       input!.dispatchEvent(new KeyboardEvent('keydown', { key: '1', bubbles: true }));
     });

@@ -65,6 +65,32 @@ const gatedNoDefault: Playbook = {
   scope: 'project',
 };
 
+const evolutionConfigGated: Playbook = {
+  id: 'evolution.md',
+  name: 'Evolution',
+  description: 'Has project-cwd validated stop parameters',
+  parameters: [
+    {
+      name: 'projectCwd',
+      description: 'Project cwd',
+      required: false,
+      default: '',
+    },
+    {
+      name: 'targetScore',
+      description: 'Stop score',
+      required: false,
+      default: '',
+      gatedBy: 'evolution-config',
+    },
+  ],
+  checklist: [],
+  tags: [],
+  body: 'Do the thing.',
+  sourceCwd: '/repo',
+  scope: 'project',
+};
+
 function mountWith(playbook: Playbook, capabilities: Record<string, 'available' | 'absent'>) {
   document.body.innerHTML = '';
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -162,5 +188,19 @@ describe('PlaybookBrowser capability-gated parameters', () => {
     const note = paramRow!.querySelector(`#${noteId}`);
     expect(note).toBeTruthy();
     expect(note!.classList.contains('playbook-param-gated-note')).toBe(true);
+  });
+
+  test('keeps project-cwd gated evolution parameters editable when the catalog probe is absent', async () => {
+    ({ container, root } = mountWith(evolutionConfigGated, { 'evolution-config': 'absent' }));
+    await flush();
+
+    container.querySelector<HTMLElement>('.playbook-card')!.click();
+    await flush();
+
+    const rows = [...container.querySelectorAll<HTMLElement>('.playbook-param-row')];
+    const targetRow = rows.find((row) => row.textContent?.includes('targetScore'));
+    expect(targetRow).toBeTruthy();
+    expect(targetRow!.querySelector('input')).toBeTruthy();
+    expect(targetRow!.querySelector('.playbook-param-gated-note')).toBeNull();
   });
 });

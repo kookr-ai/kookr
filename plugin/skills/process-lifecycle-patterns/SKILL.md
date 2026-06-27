@@ -2,7 +2,7 @@
 name: process-lifecycle-patterns
 description: Process lifecycle and graceful shutdown - signal handling, connection draining, health probes, resource cleanup ordering, worker management, zero-downtime deploys
 keywords: SIGTERM, SIGINT, graceful shutdown, connection draining, health check, liveness, readiness, startup probe, resource cleanup, PID 1, dumb-init, tini, zero-downtime, rolling update, process manager, worker process, uncaught exception, unhandled rejection, shutdown timeout
-related: error-handling-patterns, async-flow-control, resilience-patterns, docker-compose-patterns, service-manager
+related: error-handling-patterns, async-flow-control
 ---
 
 # Process Lifecycle Patterns
@@ -295,6 +295,6 @@ Before submitting process lifecycle code, verify:
 
 [[error-handling-patterns]] - Process-level error handling, unhandledRejection
 [[async-flow-control]] - SIGTERM drain, AbortController cancellation
-[[resilience-patterns]] - Circuit breakers, auto-healing, task recovery
-[[docker-compose-patterns]] - Container configuration, Docker best practices
-[[service-manager]] - Service lifecycle daemon patterns
+resilience-patterns - Circuit breakers, auto-healing, task recovery
+docker-compose-patterns - Container configuration, Docker best practices
+service-manager - Service lifecycle daemon patterns

@@ -13,7 +13,7 @@ import type { ProjectSidebarStore } from '../../core/project-sidebar-store.js';
 import { MAX_TRACKED_REPOS, type ProjectRepoHealth } from '../../core/project-summary.js';
 import type { SkillDiscoveryStateHolder } from '../../core/skill-tracked-repo-discovery.js';
 import type { TaskStore } from '../../core/tasks.js';
-import type { ServerMessage, SnapshotMessage } from '../../shared/contracts/messages.js';
+import type { DrainStatusSnapshot, ServerMessage, SnapshotMessage } from '../../shared/contracts/messages.js';
 import { buildCoordinatorSnapshotState, type CoordinatorAuditTailProvider } from '../coordinator/detectors.js';
 import type { CoordinatorSuppressionReader } from '../coordinator/suppression-store.js';
 import { AchievementWatcher, loadAchievements } from '../achievement-watcher.js';
@@ -27,8 +27,17 @@ import {
   type SweepEviction,
 } from '../viewer-connection-registry.js';
 import { ViewerAwareBroadcaster } from '../viewer-broadcaster.js';
+import type { SnapshotPayloadSizeObservation } from '../snapshot-payload-size-policy.js';
 import type { Scope } from '../viewer-data-policy.js';
 import type { IsActorAllowedTerminalSession } from '../terminal-scope.js';
+
+const SNAPSHOT_PAYLOAD_WARN_BYTES = 2 * 1024 * 1024;
+const SNAPSHOT_PAYLOAD_MAX_BYTES = 8 * 1024 * 1024;
+
+export const DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS = {
+  warnBytes: SNAPSHOT_PAYLOAD_WARN_BYTES,
+  maxBytes: SNAPSHOT_PAYLOAD_MAX_BYTES,
+} as const;
 
 export interface RealtimeServicesDeps {
   kookrDir: string;
@@ -47,6 +56,8 @@ export interface RealtimeServicesDeps {
   getRegistryActiveRepos: () => string[];
   ossAttemptStore: OssAttemptStore;
   getDefaultAgentType: () => AgentSelection;
+  bypassAllPermissions?: boolean;
+  getDrainStatus?: () => DrainStatusSnapshot;
   coordinatorAuditTailProvider?: CoordinatorAuditTailProvider;
   coordinatorSuppressions?: CoordinatorSuppressionReader;
   /**
@@ -71,6 +82,13 @@ export interface RealtimeServicesDeps {
    * rather than leaking the unfiltered `all` snapshot.
    */
   buildScopedSnapshot?: (scope: Scope) => SnapshotMessage;
+  /**
+   * Outbound snapshot payload guard (#832). Production uses conservative MiB
+   * defaults; tests can lower the thresholds to exercise warn/drop behavior.
+   */
+  snapshotPayloadWarnBytes?: number;
+  snapshotPayloadMaxBytes?: number;
+  observeSnapshotPayloadSize?: (observation: SnapshotPayloadSizeObservation) => void;
 }
 
 export interface RealtimeServices {
@@ -90,6 +108,8 @@ export interface RealtimeServices {
 export interface ProjectSummaryGitHubDeps {
   getRepoHealthSnapshot: () => ReadonlyMap<string, ProjectRepoHealth>;
   getTaskGithubReferences: (taskId: string) => GitHubReference[];
+  /** Bound to `GitHubStateStore.isRefOpen` — verified-open gate for tied counts. */
+  getGithubRefOpenState: (ref: GitHubReference) => boolean | undefined;
   setTrackedGithubRepos: (repos: string[]) => void;
 }
 
@@ -113,6 +133,11 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
           `[viewer-broadcaster] scoped snapshot for ${scope.kind} scope requested but no buildScopedSnapshot was wired`,
         );
       }),
+    snapshotPayloadSizePolicy: {
+      warnBytes: deps.snapshotPayloadWarnBytes ?? DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS.warnBytes,
+      maxBytes: deps.snapshotPayloadMaxBytes ?? DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS.maxBytes,
+      ...(deps.observeSnapshotPayloadSize ? { observe: deps.observeSnapshotPayloadSize } : {}),
+    },
   });
   let achievementWatcher: AchievementWatcher;
   let wsBroadcastCount = 0;
@@ -156,6 +181,8 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
             deps.coordinatorSuppressions ? { suppressions: deps.coordinatorSuppressions } : {},
         ),
         totalSpendUsd: deps.taskStore.getLifetimeSpendUsd(),
+        ...(deps.bypassAllPermissions ? { bypassAllPermissions: true } : {}),
+        ...(deps.getDrainStatus ? { drainStatus: deps.getDrainStatus() } : {}),
         achievements: achievementWatcher?.getUnlocked(),
         ...(achievementWatcher
           ? {
@@ -207,6 +234,7 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
         ? {
             repoHealthCache: projectSummaryGitHubDeps.getRepoHealthSnapshot(),
             getTaskGithubReferences: projectSummaryGitHubDeps.getTaskGithubReferences,
+            getGithubRefOpenState: projectSummaryGitHubDeps.getGithubRefOpenState,
           }
         : {}),
     });
