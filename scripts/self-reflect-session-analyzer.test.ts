@@ -259,7 +259,7 @@ describe("session analyzer repeated-instruction workflow filtering", () => {
     const reviewerPrompt = [
       "You are the correctness-specialist reviewer for a Kookr PR.",
       "",
-      "Repo checkout: /home/jean/git/kookr-issue-1046",
+      "Repo checkout: /path/to/repo",
       "Review the merge-base diff and report blocking correctness issues only.",
     ].join("\n");
     const analyses = repeatedAnalyses("reviewer", 3, reviewerPrompt);
