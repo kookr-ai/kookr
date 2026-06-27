@@ -1,6 +1,47 @@
 import { describe, test, expect, vi } from 'vitest';
-import { agentProviderPresentation, findingTypeLabel, findingWaitStartedAt, formatAge, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
-import type { AgentEvent, AgentState } from '../shared/protocol.js';
+import { agentProviderPresentation, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, healthyDotClass, healthyStatusLabel, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
+import type { AgentEvent, AgentState, GitHubPRState } from '../shared/protocol.js';
+
+function makeCompletedAgent(overrides: Partial<AgentState> = {}): AgentState {
+  return {
+    agentId: 'agent-1',
+    taskId: 'task-1',
+    taskName: 'Ship issue',
+    events: [],
+    anomaly: null,
+    cwd: '/tmp/kookr',
+    taskStatus: 'completed',
+    ...overrides,
+  };
+}
+
+function makePr(overrides: Partial<GitHubPRState> = {}): GitHubPRState {
+  const prNumber = 1151;
+  return {
+    ref: {
+      type: 'pr',
+      owner: 'kookr-ai',
+      repo: 'kookr',
+      number: prNumber,
+      url: `https://github.com/kookr-ai/kookr/pull/${prNumber}`,
+      detectedAt: new Date('2026-06-27T10:00:00.000Z'),
+      detectedFrom: 'test',
+      taskId: 'task-1',
+    },
+    title: 'Show next actions',
+    status: 'merged',
+    author: 'jeanibarz',
+    branch: 'feat/next-actions',
+    baseBranch: 'main',
+    reviewDecision: 'approved',
+    reviewers: [],
+    unresolvedThreads: [],
+    totalComments: 0,
+    checks: [],
+    lastFetchedAt: new Date('2026-06-27T10:05:00.000Z'),
+    ...overrides,
+  };
+}
 
 describe('healthyDotClass', () => {
   test('returns "running" for agent with no events', () => {
@@ -245,6 +286,50 @@ describe('turnStateClass', () => {
   test('unknown and undefined yield no class', () => {
     expect(turnStateClass('unknown')).toBe('');
     expect(turnStateClass(undefined)).toBe('');
+  });
+});
+
+describe('deriveTaskNextStepRecommendations', () => {
+  test('suggests merged PR and playbook follow-up actions for a completed playbook task', () => {
+    const recommendations = deriveTaskNextStepRecommendations(
+      makeCompletedAgent({
+        playbookId: 'oss-pr-lessons',
+        playbookParameterValues: { repo: 'kookr-ai/kookr' },
+      }),
+      [makePr()],
+    );
+
+    expect(recommendations.map((recommendation) => recommendation.id)).toEqual([
+      'merged-pr-kookr-ai-kookr-1151',
+      'continue-playbook-oss-pr-lessons',
+      'snapshot-reflect',
+    ]);
+    expect(recommendations[0]).toMatchObject({
+      title: 'PR #1151 merged',
+      actionLabel: 'Open PR #1151',
+      action: { type: 'open-pr', href: 'https://github.com/kookr-ai/kookr/pull/1151' },
+    });
+    expect(recommendations[1]).toMatchObject({
+      title: 'Continue the playbook',
+      actionLabel: 'Launch follow-up',
+      action: { type: 'relaunch' },
+    });
+  });
+
+  test('suggests snapshot reflection as a maintenance action after completion', () => {
+    const recommendations = deriveTaskNextStepRecommendations(makeCompletedAgent());
+
+    expect(recommendations).toEqual([{
+      id: 'snapshot-reflect',
+      title: 'Capture a task snapshot',
+      detail: 'Run snapshot reflection now to preserve what happened and surface reusable follow-up notes.',
+      actionLabel: 'Run snapshot',
+      action: { type: 'snapshot-reflect' },
+    }]);
+  });
+
+  test('does not suggest next steps for active tasks', () => {
+    expect(deriveTaskNextStepRecommendations(makeCompletedAgent({ taskStatus: 'inProgress' }))).toEqual([]);
   });
 });
 

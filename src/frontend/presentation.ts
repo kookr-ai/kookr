@@ -1,4 +1,5 @@
-import type { AgentEvent, AgentState, TokenUsage, AgentType, TurnState } from '../shared/protocol.js';
+import type { AgentEvent, TokenUsage, AgentType, TurnState, AgentState, GitHubPRState } from '../shared/protocol.js';
+import { isTerminalStatus } from '../shared/contracts/task-status.js';
 
 /**
  * A small palette of muted background/text color pairs for project badges.
@@ -10,6 +11,19 @@ interface AgentProviderPresentation {
   label: string;
   provider: string;
   iconPath: string;
+}
+
+export type NextStepAction =
+  | { type: 'open-pr'; href: string }
+  | { type: 'relaunch' }
+  | { type: 'snapshot-reflect' };
+
+export interface NextStepRecommendation {
+  id: string;
+  title: string;
+  detail: string;
+  actionLabel: string;
+  action: NextStepAction;
 }
 
 // Brand glyphs are sourced from Simple Icons (CC0-1.0) and render as
@@ -29,6 +43,55 @@ const AGENT_PROVIDER_PRESENTATION: Record<AgentType, AgentProviderPresentation> 
 
 export function agentProviderPresentation(agentType: AgentType): AgentProviderPresentation {
   return AGENT_PROVIDER_PRESENTATION[agentType];
+}
+
+export function deriveTaskNextStepRecommendations(
+  agent: AgentState,
+  prs: GitHubPRState[] = [],
+): NextStepRecommendation[] {
+  if (!agent.taskId || !agent.taskStatus || !isTerminalStatus(agent.taskStatus)) return [];
+
+  const recommendations: NextStepRecommendation[] = [];
+  const mergedPr = prs.find((pr) => pr.status === 'merged');
+  const completedOrMerged = agent.taskStatus === 'completed' || Boolean(mergedPr);
+
+  if (mergedPr) {
+    recommendations.push({
+      id: `merged-pr-${mergedPr.ref.owner}-${mergedPr.ref.repo}-${mergedPr.ref.number}`,
+      title: `PR #${mergedPr.ref.number} merged`,
+      detail: `Merged into ${mergedPr.baseBranch}. Open the PR if you need the merge record or follow-up context.`,
+      actionLabel: `Open PR #${mergedPr.ref.number}`,
+      action: { type: 'open-pr', href: mergedPr.ref.url },
+    });
+  }
+
+  if (completedOrMerged && agent.playbookId) {
+    recommendations.push({
+      id: `continue-playbook-${agent.playbookId}`,
+      title: 'Continue the playbook',
+      detail: 'Launch a follow-up run using this task\'s playbook and saved parameters.',
+      actionLabel: 'Launch follow-up',
+      action: { type: 'relaunch' },
+    });
+  } else if (completedOrMerged && agent.description) {
+    recommendations.push({
+      id: 'launch-follow-up-task',
+      title: 'Start a follow-up task',
+      detail: 'Open the launch dialog prefilled from this task instead of typing the next directive manually.',
+      actionLabel: 'Relaunch from task',
+      action: { type: 'relaunch' },
+    });
+  }
+
+  recommendations.push({
+    id: 'snapshot-reflect',
+    title: 'Capture a task snapshot',
+    detail: 'Run snapshot reflection now to preserve what happened and surface reusable follow-up notes.',
+    actionLabel: 'Run snapshot',
+    action: { type: 'snapshot-reflect' },
+  });
+
+  return recommendations;
 }
 
 export function worktreeHealthLabel(health: string | undefined, registryStale?: boolean): string {
