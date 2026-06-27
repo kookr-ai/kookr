@@ -1,4 +1,8 @@
 import type { CircuitBreakerSnapshot, CircuitBreakerState } from '../core/circuit-breaker.js';
+import {
+  ATTENTION_QUEUE_SUPPRESSION_REASONS,
+  type AttentionQueueSuppressionCounts,
+} from '../core/attention-queue.js';
 import type { RequestDurationMetricsSnapshot } from './request-duration-metrics.js';
 
 export const PROMETHEUS_CONTENT_TYPE = 'text/plain; version=0.0.4';
@@ -6,6 +10,7 @@ export const PROMETHEUS_CONTENT_TYPE = 'text/plain; version=0.0.4';
 export interface PrometheusExpositionSnapshot {
   requestDurations: RequestDurationMetricsSnapshot;
   circuitBreakers: CircuitBreakerSnapshot[];
+  attentionQueueSuppressions?: AttentionQueueSuppressionCounts;
 }
 
 export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapshot): string {
@@ -13,6 +18,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
 
   appendRequestDurationMetrics(lines, snapshot.requestDurations);
   appendCircuitBreakerMetrics(lines, snapshot.circuitBreakers);
+  appendAttentionQueueSuppressionMetrics(lines, snapshot.attentionQueueSuppressions);
 
   return `${lines.join('\n')}\n`;
 }
@@ -80,6 +86,19 @@ function appendCircuitBreakerMetrics(lines: string[], snapshots: CircuitBreakerS
   );
   for (const breaker of snapshots) {
     lines.push(metricLine('kookr_circuit_breaker_failures', { name: breaker.name }, breaker.failureCount));
+  }
+}
+
+function appendAttentionQueueSuppressionMetrics(
+  lines: string[],
+  counts: AttentionQueueSuppressionCounts = { queue_dedupe: 0, queue_snoozed: 0 },
+): void {
+  lines.push(
+    '# HELP kookr_attention_suppressed_total Total attention queue findings suppressed before admission, by queue suppression reason.',
+    '# TYPE kookr_attention_suppressed_total counter',
+  );
+  for (const reason of ATTENTION_QUEUE_SUPPRESSION_REASONS) {
+    lines.push(metricLine('kookr_attention_suppressed_total', { reason }, counts[reason]));
   }
 }
 

@@ -1,7 +1,28 @@
 import { describe, expect, test } from 'vitest';
 import type { CircuitBreakerSnapshot } from '../core/circuit-breaker.js';
+import { AttentionQueue } from '../core/attention-queue.js';
+import type { Anomaly } from '../core/types.js';
 import type { RequestDurationMetricsSnapshot } from './request-duration-metrics.js';
 import { renderPrometheusExposition } from './prometheus-exposition.js';
+
+const EMPTY_REQUEST_DURATIONS: RequestDurationMetricsSnapshot = {
+  schemaVersion: 'request-duration-metrics.v1',
+  maxRoutes: 128,
+  maxSamplesPerRoute: 256,
+  routeCount: 0,
+  droppedRouteCount: 0,
+  routes: [],
+};
+
+function makeAnomaly(agentId: string): Anomaly {
+  return {
+    agentId,
+    type: 'needs_input',
+    severity: 'info',
+    explanation: `needs_input for ${agentId}`,
+    detectedAt: new Date('2026-01-01T00:00:00Z'),
+  };
+}
 
 describe('renderPrometheusExposition', () => {
   test('renders request durations and circuit breakers in Prometheus text format', () => {
@@ -49,6 +70,44 @@ describe('renderPrometheusExposition', () => {
     expect(output).toContain('kookr_circuit_breaker_state{name="llm",state="open"} 1');
     expect(output).toContain('kookr_circuit_breaker_state{name="llm",state="half-open"} 0');
     expect(output).toContain('kookr_circuit_breaker_failures{name="llm"} 3');
+    expect(output).toContain('# TYPE kookr_attention_suppressed_total counter');
+    expect(output).toContain('kookr_attention_suppressed_total{reason="queue_dedupe"} 0');
+    expect(output).toContain('kookr_attention_suppressed_total{reason="queue_snoozed"} 0');
     expect(output.endsWith('\n')).toBe(true);
+  });
+
+  test('increments attention suppression counter for duplicate queue admissions', () => {
+    const queue = new AttentionQueue();
+
+    queue.enqueue('agent-1', makeAnomaly('agent-1'));
+    queue.enqueue('agent-1', makeAnomaly('agent-1'));
+
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      attentionQueueSuppressions: queue.getSuppressionCounts(),
+    });
+
+    expect(output).toContain('# TYPE kookr_attention_suppressed_total counter');
+    expect(output).toContain('kookr_attention_suppressed_total{reason="queue_dedupe"} 1');
+    expect(output).toContain('kookr_attention_suppressed_total{reason="queue_snoozed"} 0');
+  });
+
+  test('increments attention suppression counter for snoozed queue admissions', () => {
+    const queue = new AttentionQueue();
+
+    queue.enqueue('agent-1', makeAnomaly('agent-1'));
+    queue.snooze('agent-1', 60_000);
+    queue.enqueue('agent-1', makeAnomaly('agent-1'));
+
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      attentionQueueSuppressions: queue.getSuppressionCounts(),
+    });
+
+    expect(output).toContain('# TYPE kookr_attention_suppressed_total counter');
+    expect(output).toContain('kookr_attention_suppressed_total{reason="queue_dedupe"} 0');
+    expect(output).toContain('kookr_attention_suppressed_total{reason="queue_snoozed"} 1');
   });
 });
