@@ -186,7 +186,7 @@ describe('bash completion behavior', () => {
 
   it('completes signal kinds', async () => {
     await expect(completeBash(['kookr', 'signal', ''])).resolves.toEqual(
-      expect.arrayContaining(['completion-ready', '--note', '--task-id']),
+      expect.arrayContaining(['completion-ready', '--note', '--task-id', '--json']),
     );
   });
 
@@ -244,6 +244,12 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
   it('completes command subcommands', async () => {
     await expect(completeZsh(['kookr', 'command', ''], 3)).resolves.toEqual(['outcome']);
     await expect(completeZsh(['kookr', 'command', 'outcome', ''], 4)).resolves.toEqual([]);
+  });
+
+  it('completes signal kinds and flags', async () => {
+    await expect(completeZsh(['kookr', 'signal', ''], 3)).resolves.toEqual(
+      expect.arrayContaining(['completion-ready', '--note', '--task-id', '--json']),
+    );
   });
 
   it('completes maintenance subcommands and verb-specific flags', async () => {

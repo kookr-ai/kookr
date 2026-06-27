@@ -21,7 +21,7 @@ Usage:
   kookr push test <deviceId>    Send a relay push test.
   kookr completion bash|zsh     Print a shell completion script.
 
-Use --json with spawn, doctor, status, or ralph for one machine-readable output envelope.
+Use --json with spawn, doctor, status, signal, or ralph for one machine-readable output envelope.
 
 Compatibility aliases:
   kookr-spawn, kookr-status, and kookr-ralph still work for now, but are deprecated.

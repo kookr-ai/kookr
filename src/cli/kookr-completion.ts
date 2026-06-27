@@ -40,7 +40,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
   {
     name: 'signal',
     positionalValues: ['completion-ready'],
-    flags: ['--note', '--task-id', '-h', '--help'],
+    flags: ['--note', '--task-id', '--json', '-h', '--help'],
   },
   {
     name: 'doctor',
