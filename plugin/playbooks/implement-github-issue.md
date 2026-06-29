@@ -378,7 +378,8 @@ mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
 Check if the repo uses a `staging` branch:
 
 ```bash
-git branch -r | grep -q 'origin/staging' && echo "staging" || echo "main"
+BASE_BRANCH="$(git branch -r | grep -q 'origin/staging' && echo "staging" || echo "main")"
+echo "$BASE_BRANCH"
 ```
 
 Use the result as the PR base branch.
@@ -392,10 +393,11 @@ gh pr list --repo "$REPO" --state open --search "Closes #$TARGET OR closes #$TAR
 git branch --list "*$TARGET*"
 ```
 
-If a PR exists, fetch/check out its branch in an appropriate worktree and continue from there. Otherwise create a new worktree:
+If a PR exists, fetch/check out its branch in an appropriate worktree and continue from there. Otherwise fetch the PR base and create a new worktree from it:
 
 ```bash
-git worktree add ../kookr-<branch-name> -b <branch-name>
+git fetch origin "$BASE_BRANCH"
+git worktree add ../kookr-<branch-name> -b <branch-name> "origin/$BASE_BRANCH"
 ```
 
 Then `cd` into the new worktree directory and continue working from there.

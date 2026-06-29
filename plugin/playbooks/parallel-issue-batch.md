@@ -218,6 +218,7 @@ Resolve the local checkout:
 
    ```bash
    git -C "$LOCAL" remote -v
+   DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq '.defaultBranchRef.name')
    gh repo view "$REPO" --json defaultBranchRef,nameWithOwner
    ```
 
@@ -329,8 +330,10 @@ Implement issue #<N> in <owner/repo> end-to-end.
 
 Hard constraints:
 - Work from local checkout <LOCAL>.
-- Before tracked-file edits, create a fresh git worktree and feature branch:
-  `git worktree add ../<repo-name>-issue-<N>-<short-slug> -b <type>/issue-<N>-<short-slug> HEAD`
+- Before tracked-file edits, refresh the PR base and create a fresh git worktree
+  from it:
+  `git fetch origin <defaultBranchRef.name from Phase 1>`
+  `git worktree add ../<repo-name>-issue-<N>-<short-slug> -b <type>/issue-<N>-<short-slug> origin/<defaultBranchRef.name from Phase 1>`
 - Do not edit, commit, or push from the main checkout.
 - Keep write scope narrow. Expected files: <expected_files from selection matrix>.
 - Avoid these files unless absolutely required and explicitly justified: <forbidden_files>.
