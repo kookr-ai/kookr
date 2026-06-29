@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { applyWorktreeGuardrails } from './worktree-guardrails.js';
@@ -53,6 +53,50 @@ describe('applyWorktreeGuardrails', () => {
       expect(prompt).toContain('Do NOT commit to main');
     } finally {
       await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses a freshly fetched remote default branch as the worktree base when available', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'guardrails-'));
+    const remoteDir = await mkdtemp(join(tmpdir(), 'guardrails-origin-'));
+    try {
+      await initGitRepo(repoDir);
+      git(remoteDir, 'init', '--bare');
+      git(repoDir, 'checkout', '-b', 'trunk');
+      git(repoDir, 'remote', 'add', 'origin', remoteDir);
+      git(repoDir, 'push', '-u', 'origin', 'trunk');
+      git(repoDir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/trunk');
+
+      const prompt = await applyWorktreeGuardrails('Implement it.', repoDir);
+
+      expect(prompt).toContain("Refresh the remote base first: `git fetch origin 'trunk'`.");
+      expect(prompt).toContain(`git worktree add ../${basename(repoDir)}-<short-name> -b <feature-branch> 'origin/trunk'`);
+      expect(prompt).not.toContain('-b <feature-branch> HEAD');
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+      await rm(remoteDir, { recursive: true, force: true });
+    }
+  });
+
+  it('quotes remote branch names in shell snippets', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'guardrails-'));
+    const remoteDir = await mkdtemp(join(tmpdir(), 'guardrails-origin-'));
+    try {
+      await initGitRepo(repoDir);
+      git(remoteDir, 'init', '--bare');
+      git(repoDir, 'checkout', '-b', 'main;touch/tmp/kookr-pwn');
+      git(repoDir, 'remote', 'add', 'origin', remoteDir);
+      git(repoDir, 'push', '-u', 'origin', 'main;touch/tmp/kookr-pwn');
+      git(repoDir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main;touch/tmp/kookr-pwn');
+
+      const prompt = await applyWorktreeGuardrails('Implement it.', repoDir);
+
+      expect(prompt).toContain("git fetch origin 'main;touch/tmp/kookr-pwn'");
+      expect(prompt).toContain("'origin/main;touch/tmp/kookr-pwn'");
+      expect(prompt).not.toContain('git fetch origin main;touch/tmp/kookr-pwn');
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+      await rm(remoteDir, { recursive: true, force: true });
     }
   });
 

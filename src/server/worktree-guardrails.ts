@@ -62,10 +62,31 @@ function deliveryGateSentence(deliveryPolicy: DeliveryPolicy): string {
   return "After committing, don't end your turn silently — unless the task already told you to deliver, ask the user whether to push the branch and open a PR.";
 }
 
+async function resolveRemoteWorktreeBase(cwd: string): Promise<string | null> {
+  const originHead = await gitIn(cwd, 'symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD');
+  if (originHead?.startsWith('origin/')) return originHead;
+
+  for (const candidate of ['origin/main', 'origin/staging', 'origin/master']) {
+    const sha = await gitIn(cwd, 'rev-parse', '--verify', '--quiet', candidate);
+    if (sha) return candidate;
+  }
+
+  return null;
+}
+
+function remoteBranchName(baseRef: string): string | null {
+  return baseRef.startsWith('origin/') ? baseRef.slice('origin/'.length) : null;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 function buildGuidance(
   context: CheckoutContext,
   branchLabel: string,
   repoName: string,
+  worktreeBaseRef: string | null,
   deliveryPolicy: DeliveryPolicy,
 ): string {
   const branchPhrase = describeBranch(branchLabel);
@@ -75,13 +96,21 @@ function buildGuidance(
   const noCommitTarget = context.isWorktree
     ? 'Do NOT commit to main, in this worktree, or in the main checkout'
     : 'Do NOT commit to main or in this checkout';
-  return [
+  const baseRef = worktreeBaseRef ?? 'HEAD';
+  const remoteBranch = worktreeBaseRef ? remoteBranchName(worktreeBaseRef) : null;
+  const guidance = [
     `${here} ${noCommitTarget} — every Kookr task must make tracked-file changes in a fresh git worktree of its own, not in any pre-existing checkout (the main repo, the production runtime worktree, or any sibling worktree spawned for unrelated work).`,
-    `- Create one: \`git worktree add ../${repoName}-<short-name> -b <feature-branch> HEAD\``,
+  ];
+  if (remoteBranch) {
+    guidance.push(`- Refresh the remote base first: \`git fetch origin ${shellQuote(remoteBranch)}\`.`);
+  }
+  guidance.push(
+    `- Create one: \`git worktree add ../${repoName}-<short-name> -b <feature-branch> ${shellQuote(baseRef)}\``,
     `- Perform all tracked-file edits, commits, and pushes from that new worktree.`,
     `- If the task stays read-only, you may remain in the current checkout.`,
     `- ${deliveryGateSentence(deliveryPolicy)}`,
-  ].join('\n');
+  );
+  return guidance.join('\n');
 }
 
 export async function applyWorktreeGuardrails(
@@ -95,7 +124,8 @@ export async function applyWorktreeGuardrails(
   if (!context) return prompt;
 
   const branchLabel = await readBranchLabel(cwd);
+  const worktreeBaseRef = await resolveRemoteWorktreeBase(cwd);
   const repoName = basename(context.repoRoot) || 'repo';
-  const guidance = buildGuidance(context, branchLabel, repoName, deliveryPolicy);
+  const guidance = buildGuidance(context, branchLabel, repoName, worktreeBaseRef, deliveryPolicy);
   return `${guidance}\n\n${prompt}`;
 }
