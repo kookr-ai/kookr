@@ -387,6 +387,7 @@ export function App() {
     dashboardSelection,
     serverStartedAt,
     selectedAgentId,
+    selectedTaskId,
     selectAgent,
     nextBottleneck,
     nextTask,
@@ -422,6 +423,7 @@ export function App() {
     dashboardSelection: state.dashboardSelection,
     serverStartedAt: state.serverStartedAt,
     selectedAgentId: state.selectedAgentId,
+    selectedTaskId: state.selectedTaskId,
     selectAgent: state.selectAgent,
     nextBottleneck: state.nextBottleneck,
     nextTask: state.nextTask,
@@ -588,26 +590,32 @@ export function App() {
   const selectedProjectSummary = selectedProject
     ? projectSummaries.find((p) => p.project === selectedProject) ?? null
     : null;
-  const selectedAgent = agents.find((a) => a.agentId === selectedAgentId) ?? null;
+  const selectedAgent = selectedAgentId
+    ? agents.find((a) => (
+        a.agentId === selectedAgentId
+        && selectedTaskId === a.taskId
+      )) ?? agents.find((a) => a.agentId === selectedAgentId) ?? null
+    : null;
   useEffect(() => {
-    const selectedTaskId = selectedAgent?.taskId ?? null;
-    const selectedSessionId = selectedAgent?.agentId ?? null;
+    const effectiveSelectedTaskId = selectedAgent?.taskId ?? null;
+    const effectiveSelectedSessionId = selectedAgent?.agentId ?? null;
     if (
-      dashboardSelection.selectedTaskId === selectedTaskId
-      && dashboardSelection.selectedSessionId === selectedSessionId
+      dashboardSelection.selectedTaskId === effectiveSelectedTaskId
+      && dashboardSelection.selectedSessionId === effectiveSelectedSessionId
     ) {
       return;
     }
     send({
       type: 'selectionChanged',
-      selectedTaskId,
-      selectedSessionId,
+      selectedTaskId: effectiveSelectedTaskId,
+      selectedSessionId: effectiveSelectedSessionId,
     });
   }, [
     dashboardSelection.selectedSessionId,
     dashboardSelection.selectedTaskId,
     selectedAgent?.agentId,
     selectedAgent?.taskId,
+    selectedTaskId,
     send,
   ]);
   const selectedAgentShowsSplit = selectedAgent === null
@@ -756,8 +764,7 @@ export function App() {
         if (state.selectedAgentId) {
           const durationMs = 5 * 60 * 1000; // 5-minute default snooze
           track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.quick_snooze), action: 'quick_snooze', context: 'global' });
-          const selected = useKookrStore.getState().agents.find((agent) => agent.agentId === state.selectedAgentId);
-          send({ type: 'snooze', agentId: state.selectedAgentId, taskId: selected?.taskId, durationMs });
+          send({ type: 'snooze', agentId: state.selectedAgentId, taskId: selectedAgent?.taskId, durationMs });
         }
       }
       if (matchesShortcutAction(e, shortcutBindings, 'focus_reply')) {
@@ -792,8 +799,7 @@ export function App() {
         e.preventDefault();
         const state = useKookrStore.getState();
         if (state.selectedAgentId) {
-          const agent = state.agents.find(a => a.agentId === state.selectedAgentId);
-          if (agent?.taskId) {
+          if (selectedAgent?.taskId) {
             track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.cancel_task), action: 'cancel_task', context: 'global' });
             setConfirmAction('cancel');
           }
@@ -803,13 +809,12 @@ export function App() {
         e.preventDefault();
         const state = useKookrStore.getState();
         if (state.selectedAgentId) {
-          const agent = state.agents.find(a => a.agentId === state.selectedAgentId);
-          if (agent?.taskId) {
+          if (selectedAgent?.taskId) {
             track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.complete_task), action: 'complete_task', context: 'global' });
             setPendingComplete({
-              taskId: agent.taskId,
-              agentId: agent.agentId,
-              label: agent.taskName ?? agent.agentId,
+              taskId: selectedAgent.taskId,
+              agentId: selectedAgent.agentId,
+              label: selectedAgent.taskName ?? selectedAgent.agentId,
               method: 'shortcut',
             });
             setConfirmAction('complete');
@@ -927,7 +932,7 @@ export function App() {
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [nextBottleneck, nextTask, advanceEmptyEnter, previousTask, send, shortcutBindings, showBugReport, showShareViewer, showOperations, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel, wideDetailActive]);
+  }, [nextBottleneck, nextTask, advanceEmptyEnter, previousTask, send, shortcutBindings, showBugReport, showShareViewer, showOperations, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel, wideDetailActive, selectedAgent]);
 
   useEffect(() => {
     if (!selectedProject || !agentsHydrated || !projectSummariesHydrated) return;
@@ -1085,6 +1090,7 @@ export function App() {
       completed={completed}
       snoozed={snoozed}
       selectedAgentId={selectedAgentId}
+      selectedTaskId={selectedTaskId}
       send={send}
       clearCompletedFinishedCount={clearCompletedFinishedCount}
       clearCompletedTerminatedCount={clearCompletedTerminatedCount}
@@ -1203,6 +1209,7 @@ export function App() {
   }
   const commandFindings: CommandFindingItem[] = commandPaletteFindings.map((agent) => ({
     agentId: agent.agentId,
+    taskId: agent.taskId,
     label: agent.taskName ?? agent.agentId,
     severity: agent.anomaly?.severity ?? agent.effectiveAttentionSeverity ?? 'info',
     type: findingTypeLabel(agent),
@@ -1394,8 +1401,8 @@ export function App() {
           tasks={commandTasks}
           findings={commandFindings}
           projects={commandProjects}
-          onSelectTask={(agentId) => selectAgent(agentId)}
-          onSelectFinding={(agentId) => selectAgent(agentId)}
+          onSelectTask={(agentId, taskId) => selectAgent(agentId, taskId)}
+          onSelectFinding={(agentId, taskId) => selectAgent(agentId, taskId)}
           onSelectProject={(projectId) => selectProject(projectId)}
           onClose={() => setShowCommandPalette(false)}
         />

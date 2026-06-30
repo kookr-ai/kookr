@@ -35,6 +35,10 @@ function renderPanel(
   container: HTMLElement,
   lists: Partial<Pick<React.ComponentProps<typeof FindingsPanel>, 'healthy' | 'completed'>>,
   onSchedulePlaybook?: (p: SchedulePrefill) => void,
+  selection: { selectedAgentId: string | null; selectedTaskId: string | null } = {
+    selectedAgentId: null,
+    selectedTaskId: null,
+  },
 ): Root {
   const root = createRoot(container);
   act(() => {
@@ -44,7 +48,8 @@ function renderPanel(
       pending: [],
       completed: lists.completed ?? [],
       snoozed: [],
-      selectedAgentId: null,
+      selectedAgentId: selection.selectedAgentId,
+      selectedTaskId: selection.selectedTaskId,
       send: vi.fn() as (msg: ClientMessage) => void,
       clearCompletedFinishedCount: 0,
       clearCompletedTerminatedCount: 0,
@@ -127,7 +132,7 @@ describe('FindingsPanel schedule button', () => {
     // Positive control: clicking the row itself DOES select — proves selection is
     // reachable in this harness, so the negative assertion above isn't vacuous.
     act(() => { container.querySelector<HTMLElement>('.healthy-row')?.click(); });
-    expect(selectSpy).toHaveBeenCalledWith('a');
+    expect(selectSpy).toHaveBeenCalledWith('a', 't-a');
   });
 
   test('renders one button per grouped playbook even when expanded (header only)', () => {
@@ -145,5 +150,22 @@ describe('FindingsPanel schedule button', () => {
     act(() => { container.querySelector<HTMLElement>('.playbook-group-header')?.click(); });
     expect(container.querySelectorAll('.healthy-row').length).toBeGreaterThan(1);
     expect(scheduleButtons(container)).toHaveLength(1);
+  });
+
+  test('selects the clicked task when healthy rows share one session id', () => {
+    const selectSpy = vi.spyOn(useKookrStore.getState(), 'selectAgent');
+    root = renderPanel(container, {
+      healthy: [
+        agent({ agentId: 'shared-session', taskId: 'coordinator-task', taskName: 'Coordinator' }),
+        agent({ agentId: 'shared-session', taskId: 'completed-task', taskName: 'Completed' }),
+      ],
+    }, undefined, { selectedAgentId: 'shared-session', selectedTaskId: 'completed-task' });
+
+    const rows = Array.from(container.querySelectorAll<HTMLElement>('.healthy-row'));
+    expect(rows).toHaveLength(2);
+
+    act(() => { rows[0].click(); });
+
+    expect(selectSpy).toHaveBeenCalledWith('shared-session', 'coordinator-task');
   });
 });

@@ -67,14 +67,18 @@ function loadDetailPaneMode(): DetailPaneMode {
 }
 
 function activateNavigationSelection(
-  agents: AgentState[],
-  agentId: string,
+  agent: AgentState,
   visibleProjectIds: Set<string>,
-): { selectedAgentId: string; selectedAgentSource: 'manual'; selectedProject: string | null } {
-  const projectId = agents.find((agent) => agent.agentId === agentId)?.projectId ?? null;
+): { selectedAgentId: string; selectedTaskId: string | null; selectedAgentSource: 'manual'; selectedProject: string | null } {
+  const projectId = agent?.projectId ?? null;
   const selectedProject = projectId && visibleProjectIds.has(projectId) ? projectId : null;
   saveSelectedProject(selectedProject);
-  return { selectedAgentId: agentId, selectedAgentSource: 'manual', selectedProject };
+  return { selectedAgentId: agent.agentId, selectedTaskId: agent.taskId ?? null, selectedAgentSource: 'manual', selectedProject };
+}
+
+function matchesSelection(agent: AgentState, selectedAgentId: string | null, selectedTaskId: string | null): boolean {
+  if (agent.agentId !== selectedAgentId) return false;
+  return selectedTaskId ? agent.taskId === selectedTaskId : true;
 }
 
 export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): TriageNavigationSlice {
@@ -96,6 +100,7 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
 
   return {
     selectedAgentId: null,
+    selectedTaskId: null,
     alerts: [],
     relaunchTask: null,
     sentOverlay: null,
@@ -165,16 +170,30 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
       }));
     },
 
-    selectAgent: (agentId) => {
+    selectAgent: (agentId, taskId) => {
       // selectedAgentSource: 'manual' marks this selection as a user choice
       // (rather than an auto-advance landing) so the engagement guard fires.
       withSelectionTransitionSource({ source: 'selectAgent', reason: agentId ? 'manual_select' : 'manual_deselect' }, () => {
-        set({ selectedAgentId: agentId, selectedAgentSource: 'manual', respondAllAgentIds: null, leftPane: 'activity', narrowTab: 'activity' });
+        const selected = agentId
+          ? get().agents.find((agent) => (
+              agent.agentId === agentId
+              && (taskId === undefined || agent.taskId === taskId)
+            )) ?? get().agents.find((agent) => agent.agentId === agentId)
+          : null;
+        set({
+          selectedAgentId: agentId,
+          selectedTaskId: selected?.taskId ?? taskId ?? null,
+          selectedAgentSource: 'manual',
+          respondAllAgentIds: null,
+          leftPane: 'activity',
+          narrowTab: 'activity',
+        });
       });
     },
 
     nextBottleneck: () => {
-      const { agents, selectedAgentId, visibleProjectSummaries } = get();
+      const { selectedAgentId, selectedTaskId, visibleProjectSummaries } = get();
+      const agents = get().agents;
       const order = getPriorityOrderContext();
       const visibleProjectIds = new Set(visibleProjectSummaries.map((project) => project.project));
       const findings = agents
@@ -183,44 +202,45 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
 
       if (findings.length === 0) {
         withSelectionTransitionSource({ source: 'nextBottleneck', reason: 'no_active_findings' }, () => {
-          set({ selectedAgentId: null, selectedAgentSource: 'manual', shortcutsArmed: false });
+          set({ selectedAgentId: null, selectedTaskId: null, selectedAgentSource: 'manual', shortcutsArmed: false });
         });
         return;
       }
 
-      const currentIdx = findings.findIndex((agent) => agent.agentId === selectedAgentId);
+      const currentIdx = findings.findIndex((agent) => matchesSelection(agent, selectedAgentId, selectedTaskId));
       const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % findings.length : 0;
-      if (findings[nextIdx].agentId === selectedAgentId) {
+      if (matchesSelection(findings[nextIdx], selectedAgentId, selectedTaskId)) {
         withSelectionTransitionSource({ source: 'nextBottleneck', reason: 'only_current_finding' }, () => {
-          set({ selectedAgentId: null, selectedAgentSource: 'manual', shortcutsArmed: false });
+          set({ selectedAgentId: null, selectedTaskId: null, selectedAgentSource: 'manual', shortcutsArmed: false });
         });
         return;
       }
 
       withSelectionTransitionSource({ source: 'nextBottleneck', reason: 'cycle_active_findings' }, () => {
-        set({ ...activateNavigationSelection(agents, findings[nextIdx].agentId, visibleProjectIds), shortcutsArmed: false });
+        set({ ...activateNavigationSelection(findings[nextIdx], visibleProjectIds), shortcutsArmed: false });
       });
     },
 
     nextTask: () => {
-      const { agents, selectedAgentId, visibleProjectSummaries } = get();
+      const { selectedAgentId, selectedTaskId, visibleProjectSummaries } = get();
       const visibleProjectIds = new Set(visibleProjectSummaries.map((project) => project.project));
       const all = orderedRoutableAgents();
 
       if (all.length === 0) return;
 
-      const currentIdx = all.findIndex((agent) => agent.agentId === selectedAgentId);
+      const currentIdx = all.findIndex((agent) => matchesSelection(agent, selectedAgentId, selectedTaskId));
       const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % all.length : 0;
       withSelectionTransitionSource({ source: 'nextTask', reason: 'cycle_routable_tasks' }, () => {
-        set(activateNavigationSelection(agents, all[nextIdx].agentId, visibleProjectIds));
+        set(activateNavigationSelection(all[nextIdx], visibleProjectIds));
       });
     },
 
     selectNextTaskAfterCompletion: (completedAgentId, completedTaskId) => {
-      const { agents, selectedAgentId, visibleProjectSummaries } = get();
+      const { selectedAgentId, selectedTaskId, visibleProjectSummaries } = get();
       // If the user changed focus while the dialog was open, keep their newer
       // selection instead of advancing from the older completion target.
       if (selectedAgentId !== completedAgentId) return;
+      if (completedTaskId && selectedTaskId && selectedTaskId !== completedTaskId) return;
 
       const visibleProjectIds = new Set(visibleProjectSummaries.map((project) => project.project));
       const all = orderedRoutableAgents((agent) => (
@@ -231,6 +251,7 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
         withSelectionTransitionSource({ source: 'selectNextTaskAfterCompletion', reason: 'no_remaining_candidates' }, () => {
           set({
             selectedAgentId: null,
+            selectedTaskId: null,
             selectedAgentSource: 'manual',
             respondAllAgentIds: null,
             shortcutsArmed: false,
@@ -241,7 +262,7 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
 
       withSelectionTransitionSource({ source: 'selectNextTaskAfterCompletion', reason: 'completed_task_advance' }, () => {
         set({
-          ...activateNavigationSelection(agents, all[0].agentId, visibleProjectIds),
+          ...activateNavigationSelection(all[0], visibleProjectIds),
           respondAllAgentIds: null,
           shortcutsArmed: false,
         });
@@ -273,16 +294,16 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
     },
 
     previousTask: () => {
-      const { agents, selectedAgentId, visibleProjectSummaries } = get();
+      const { selectedAgentId, selectedTaskId, visibleProjectSummaries } = get();
       const visibleProjectIds = new Set(visibleProjectSummaries.map((project) => project.project));
       const all = orderedRoutableAgents();
 
       if (all.length === 0) return;
 
-      const currentIdx = all.findIndex((agent) => agent.agentId === selectedAgentId);
+      const currentIdx = all.findIndex((agent) => matchesSelection(agent, selectedAgentId, selectedTaskId));
       const prevIdx = currentIdx >= 0 ? (currentIdx - 1 + all.length) % all.length : all.length - 1;
       withSelectionTransitionSource({ source: 'previousTask', reason: 'cycle_routable_tasks' }, () => {
-        set(activateNavigationSelection(agents, all[prevIdx].agentId, visibleProjectIds));
+        set(activateNavigationSelection(all[prevIdx], visibleProjectIds));
       });
     },
 

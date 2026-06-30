@@ -37,6 +37,7 @@ export interface CommandTaskItem {
 export interface CommandFindingItem {
   /** Agent/finding to select when chosen. */
   agentId: string;
+  taskId?: string | null;
   label: string;
   severity: string;
   type: string;

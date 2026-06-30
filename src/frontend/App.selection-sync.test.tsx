@@ -148,4 +148,84 @@ describe('App dashboard selection sync', () => {
 
     expect(selectionChangedMessages()).toEqual([]);
   });
+
+  test('does not echo a server selection when multiple rows share the same session id', async () => {
+    useKookrStore.setState({
+      agents: [
+        makeAgent({
+          agentId: 'agent-1',
+          taskId: 'coordinator-task',
+          taskStatus: 'inProgress',
+          anomaly: { type: 'api_error', severity: 'warning', summary: 'rate limit' },
+        }),
+        makeAgent({
+          agentId: 'agent-1',
+          taskId: 'completed-task',
+          taskStatus: 'completed',
+        }),
+      ],
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+    await flush();
+    sendMock.mockClear();
+
+    await act(async () => {
+      useKookrStore.getState().handleDashboardSelection({
+        selectedTaskId: 'completed-task',
+        selectedSessionId: 'agent-1',
+        selectionVersion: 43,
+      });
+    });
+    await flush();
+
+    expect(selectionChangedMessages()).toEqual([]);
+  });
+
+  test('emits a local task switch when sibling rows share the same session id', async () => {
+    useKookrStore.setState({
+      agents: [
+        makeAgent({
+          agentId: 'agent-1',
+          taskId: 'coordinator-task',
+          taskStatus: 'inProgress',
+          anomaly: { type: 'api_error', severity: 'warning', summary: 'rate limit' },
+        }),
+        makeAgent({
+          agentId: 'agent-1',
+          taskId: 'completed-task',
+          taskStatus: 'completed',
+        }),
+      ],
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+    await flush();
+    sendMock.mockClear();
+
+    await act(async () => {
+      useKookrStore.getState().handleDashboardSelection({
+        selectedTaskId: 'completed-task',
+        selectedSessionId: 'agent-1',
+        selectionVersion: 43,
+      });
+    });
+    await flush();
+    sendMock.mockClear();
+
+    await act(async () => {
+      useKookrStore.getState().selectAgent('agent-1', 'coordinator-task');
+    });
+    await flush();
+
+    expect(selectionChangedMessages()).toEqual([{
+      type: 'selectionChanged',
+      selectedTaskId: 'coordinator-task',
+      selectedSessionId: 'agent-1',
+    }]);
+  });
 });

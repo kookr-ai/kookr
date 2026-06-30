@@ -63,6 +63,7 @@ interface Props {
   completed: AgentState[];
   snoozed: AgentState[];
   selectedAgentId: string | null;
+  selectedTaskId: string | null;
   send: (msg: ClientMessage) => void;
   /**
    * Counts used by the "Clear completed" confirm dialog. They must match the
@@ -88,6 +89,15 @@ interface Props {
    * per-row schedule button is simply not wired.
    */
   onSchedulePlaybook?: (prefill: SchedulePrefill) => void;
+}
+
+function isSelectedAgent(agent: AgentState, selectedAgentId: string | null, selectedTaskId: string | null): boolean {
+  if (agent.agentId !== selectedAgentId) return false;
+  return selectedTaskId ? agent.taskId === selectedTaskId : true;
+}
+
+function agentRowKey(agent: AgentState): string {
+  return `${agent.agentId}:${agent.taskId ?? ''}`;
 }
 
 /** Clock icon for the per-row "schedule this playbook" button. */
@@ -401,7 +411,7 @@ function SpeakTaskSummaryControl({ agent, selected }: { agent: AgentState; selec
         aria-label={buttonLabel}
         title={title}
         onClick={() => {
-          useKookrStore.getState().selectAgent(agent.agentId);
+          useKookrStore.getState().selectAgent(agent.agentId, agent.taskId);
           window.dispatchEvent(new CustomEvent(SPEAK_FINDING_STOP_OTHERS_EVENT, { detail: { agentId: agent.agentId } }));
           track({ type: 'shortcut_used', key: 'click', action: 'speak_agent', context: 'task_card' });
           speakAgent.speak();
@@ -467,13 +477,14 @@ type FindingDisplayItem =
 function visibleFindingAgents(
   agents: AgentState[],
   selectedAgentId: string | null,
+  selectedTaskId: string | null,
   showAll: boolean,
 ): AgentState[] {
   if (showAll || agents.length <= FINDING_GROUP_RENDER_LIMIT) return agents;
 
   const visible = agents.slice(0, FINDING_GROUP_RENDER_LIMIT);
-  if (selectedAgentId && !visible.some((agent) => agent.agentId === selectedAgentId)) {
-    const selected = agents.find((agent) => agent.agentId === selectedAgentId);
+  if (selectedAgentId && !visible.some((agent) => isSelectedAgent(agent, selectedAgentId, selectedTaskId))) {
+    const selected = agents.find((agent) => isSelectedAgent(agent, selectedAgentId, selectedTaskId));
     // Keep keyboard/current selection visible even when it falls outside the default flood cap.
     if (selected) return [...visible, selected];
   }
@@ -509,25 +520,25 @@ function FindingGroupRenderCap({
 
 function buildFindingDisplayItems(findings: AgentState[]): FindingDisplayItem[] {
   const byAgentId = new Map(findings.map((agent) => [agent.agentId, agent]));
-  const causalityIds = new Set<string>();
-  const rootRelatedByAgentId = new Map<string, AgentState[]>();
+  const causalityKeys = new Set<string>();
+  const rootRelatedByKey = new Map<string, AgentState[]>();
 
   for (const root of findings) {
     if (!root.anomaly?.likelyRootCause) continue;
     const related = (root.anomaly.relatedFindingIds ?? [])
       .map((id) => byAgentId.get(id))
-      .filter((agent): agent is AgentState => Boolean(agent) && agent.agentId !== root.agentId);
+      .filter((agent): agent is AgentState => Boolean(agent) && agentRowKey(agent) !== agentRowKey(root));
     if (related.length === 0) continue;
 
-    rootRelatedByAgentId.set(root.agentId, related);
-    causalityIds.add(root.agentId);
-    for (const agent of related) causalityIds.add(agent.agentId);
+    rootRelatedByKey.set(agentRowKey(root), related);
+    causalityKeys.add(agentRowKey(root));
+    for (const agent of related) causalityKeys.add(agentRowKey(agent));
   }
 
-  const { groups: duplicateGroups } = groupFindings(findings.filter((agent) => !causalityIds.has(agent.agentId)));
-  const duplicateGroupByAgentId = new Map<string, { type: string; agents: AgentState[] }>();
+  const { groups: duplicateGroups } = groupFindings(findings.filter((agent) => !causalityKeys.has(agentRowKey(agent))));
+  const duplicateGroupByKey = new Map<string, { type: string; agents: AgentState[] }>();
   for (const [type, agents] of duplicateGroups) {
-    for (const agent of agents) duplicateGroupByAgentId.set(agent.agentId, { type, agents });
+    for (const agent of agents) duplicateGroupByKey.set(agentRowKey(agent), { type, agents });
   }
 
   const items: FindingDisplayItem[] = [];
@@ -535,27 +546,28 @@ function buildFindingDisplayItems(findings: AgentState[]): FindingDisplayItem[] 
   const emittedDuplicateTypes = new Set<string>();
 
   for (const agent of findings) {
-    if (consumed.has(agent.agentId)) continue;
+    const key = agentRowKey(agent);
+    if (consumed.has(key)) continue;
 
-    const related = (rootRelatedByAgentId.get(agent.agentId) ?? [])
-      .filter((candidate) => !consumed.has(candidate.agentId));
+    const related = (rootRelatedByKey.get(key) ?? [])
+      .filter((candidate) => !consumed.has(agentRowKey(candidate)));
     if (related.length > 0) {
       items.push({ kind: 'rootCauseGroup', root: agent, related });
-      consumed.add(agent.agentId);
-      for (const relatedAgent of related) consumed.add(relatedAgent.agentId);
+      consumed.add(key);
+      for (const relatedAgent of related) consumed.add(agentRowKey(relatedAgent));
       continue;
     }
 
-    const duplicateGroup = duplicateGroupByAgentId.get(agent.agentId);
+    const duplicateGroup = duplicateGroupByKey.get(key);
     if (duplicateGroup && !emittedDuplicateTypes.has(duplicateGroup.type)) {
       items.push({ kind: 'duplicateGroup', type: duplicateGroup.type, agents: duplicateGroup.agents });
       emittedDuplicateTypes.add(duplicateGroup.type);
-      for (const groupedAgent of duplicateGroup.agents) consumed.add(groupedAgent.agentId);
+      for (const groupedAgent of duplicateGroup.agents) consumed.add(agentRowKey(groupedAgent));
       continue;
     }
 
     items.push({ kind: 'single', agent });
-    consumed.add(agent.agentId);
+    consumed.add(key);
   }
 
   return items;
@@ -633,7 +645,7 @@ const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
             // Fire immediately if selected (no layout shift risk).
             if (selected) {
               track({ type: 'agent_clicked', agentId: agent.agentId, source: 'finding_card', anomalyType: agent.anomaly?.type ?? null });
-              selectAgent(agent.agentId);
+              selectAgent(agent.agentId, agent.taskId);
             }
             return;
           }
@@ -642,7 +654,7 @@ const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
           // that moves the card, breaking the second click of the dblclick.
           clickTimer.current = setTimeout(() => {
             track({ type: 'agent_clicked', agentId: agent.agentId, source: 'finding_card', anomalyType: agent.anomaly?.type ?? null });
-            selectAgent(agent.agentId);
+            selectAgent(agent.agentId, agent.taskId);
             clickTimer.current = null;
           }, 200);
         }}
@@ -762,16 +774,17 @@ const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
   );
 });
 
-const RootCauseFindingGroup = React.memo(function RootCauseFindingGroup({ root, related, selectedAgentId, send }: {
+const RootCauseFindingGroup = React.memo(function RootCauseFindingGroup({ root, related, selectedAgentId, selectedTaskId, send }: {
   root: AgentState;
   related: AgentState[];
   selectedAgentId: string | null;
+  selectedTaskId: string | null;
   send: (msg: ClientMessage) => void;
 }): React.ReactElement {
   const [expanded, setExpanded] = useState(true);
   const [showAllRelated, setShowAllRelated] = useState(false);
-  const visibleRelated = visibleFindingAgents(related, selectedAgentId, showAllRelated);
-  const selectedInRelated = Boolean(selectedAgentId && related.some((agent) => agent.agentId === selectedAgentId));
+  const visibleRelated = visibleFindingAgents(related, selectedAgentId, selectedTaskId, showAllRelated);
+  const selectedInRelated = related.some((agent) => isSelectedAgent(agent, selectedAgentId, selectedTaskId));
 
   useEffect(() => {
     if (selectedInRelated) setExpanded(true);
@@ -782,7 +795,7 @@ const RootCauseFindingGroup = React.memo(function RootCauseFindingGroup({ root, 
       <div className="root-cause-root">
         <FindingCard
           agent={root}
-          selected={root.agentId === selectedAgentId}
+          selected={isSelectedAgent(root, selectedAgentId, selectedTaskId)}
           send={send}
         />
         <button
@@ -803,9 +816,9 @@ const RootCauseFindingGroup = React.memo(function RootCauseFindingGroup({ root, 
         <div className="root-cause-related">
           {visibleRelated.map((agent) => (
             <FindingCard
-              key={agent.agentId}
+              key={agentRowKey(agent)}
               agent={agent}
-              selected={agent.agentId === selectedAgentId}
+              selected={isSelectedAgent(agent, selectedAgentId, selectedTaskId)}
               send={send}
             />
           ))}
@@ -838,7 +851,7 @@ function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
   function handleReply(e: React.MouseEvent) {
     e.stopPropagation();
     track({ type: 'agent_clicked', agentId: agent.agentId, source: 'reply_button', anomalyType: null });
-    useKookrStore.getState().selectAgent(agent.agentId);
+    useKookrStore.getState().selectAgent(agent.agentId, agent.taskId);
     // Focus the response input after React re-renders
     requestAnimationFrame(() => {
       const input = document.querySelector('.response-area textarea') as HTMLTextAreaElement | null;
@@ -859,7 +872,7 @@ function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
         onClick={() => {
           track({ type: 'agent_clicked', agentId: agent.agentId, source: 'healthy_row', anomalyType: null });
           track({ type: 'healthy_agent_inspected', agentId: agent.agentId });
-          useKookrStore.getState().selectAgent(agent.agentId);
+          useKookrStore.getState().selectAgent(agent.agentId, agent.taskId);
         }}
       >
         <div className="healthy-row-top">
@@ -962,10 +975,11 @@ function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
   );
 }
 
-function PlaybookGroup({ playbookId, agents, selectedAgentId, send, onSchedulePlaybook }: {
+function PlaybookGroup({ playbookId, agents, selectedAgentId, selectedTaskId, send, onSchedulePlaybook }: {
   playbookId: string;
   agents: AgentState[];
   selectedAgentId: string | null;
+  selectedTaskId: string | null;
   send: (msg: ClientMessage) => void;
   onSchedulePlaybook?: (prefill: SchedulePrefill) => void;
 }) {
@@ -987,16 +1001,16 @@ function PlaybookGroup({ playbookId, agents, selectedAgentId, send, onSchedulePl
           already carries one for the shared playbook. */}
       {expanded && agents.map((agent) => (
         <HealthyRow
-          key={agent.agentId}
+          key={agentRowKey(agent)}
           agent={agent}
-          selected={agent.agentId === selectedAgentId}
+          selected={isSelectedAgent(agent, selectedAgentId, selectedTaskId)}
           send={send}
         />
       ))}
       {!expanded && (
         <HealthyRow
           agent={latest}
-          selected={latest.agentId === selectedAgentId}
+          selected={isSelectedAgent(latest, selectedAgentId, selectedTaskId)}
           send={send}
         />
       )}
@@ -1004,24 +1018,25 @@ function PlaybookGroup({ playbookId, agents, selectedAgentId, send, onSchedulePl
   );
 }
 
-const FindingGroup = React.memo(function FindingGroup({ type, agents, selectedAgentId, send }: {
+const FindingGroup = React.memo(function FindingGroup({ type, agents, selectedAgentId, selectedTaskId, send }: {
   type: string;
   agents: AgentState[];
   selectedAgentId: string | null;
+  selectedTaskId: string | null;
   send: (msg: ClientMessage) => void;
 }): React.ReactElement {
   const [expanded, setExpanded] = useState(false);
   const [showAllAgents, setShowAllAgents] = useState(false);
   const setRespondAllAgentIds = useKookrStore((s) => s.setRespondAllAgentIds);
   const selectAgent = useKookrStore((s) => s.selectAgent);
-  const selectedInGroup = Boolean(selectedAgentId && agents.some((agent) => agent.agentId === selectedAgentId));
+  const selectedInGroup = agents.some((agent) => isSelectedAgent(agent, selectedAgentId, selectedTaskId));
   // A `needs_input` group can mix completed turns and explicit AskUserQuestion
   // waits. The header should only read as a completed turn when every member
   // is one — otherwise pick a non-completed member so it stays "Needs Input".
   // See issue #358.
   const headerAgent = agents.find((a) => a.turnState !== 'completed_turn') ?? agents[0];
   const cls = headerAgent ? severityClass(headerAgent) : '';
-  const visibleAgents = visibleFindingAgents(agents, selectedAgentId, showAllAgents);
+  const visibleAgents = visibleFindingAgents(agents, selectedAgentId, selectedTaskId, showAllAgents);
 
   useEffect(() => {
     if (selectedInGroup) setExpanded(true);
@@ -1032,7 +1047,7 @@ const FindingGroup = React.memo(function FindingGroup({ type, agents, selectedAg
     const agentIds = agents.map(a => a.agentId);
     setRespondAllAgentIds(agentIds);
     // Select the first agent so the detail panel has context
-    selectAgent(agents[0].agentId);
+    selectAgent(agents[0].agentId, agents[0].taskId);
     // Re-set respondAllAgentIds since selectAgent clears it
     useKookrStore.getState().setRespondAllAgentIds(agentIds);
     trackClick('respond_all');
@@ -1069,9 +1084,9 @@ const FindingGroup = React.memo(function FindingGroup({ type, agents, selectedAg
         <>
           {visibleAgents.map((agent) => (
             <FindingCard
-              key={agent.agentId}
+              key={agentRowKey(agent)}
               agent={agent}
-              selected={agent.agentId === selectedAgentId}
+              selected={isSelectedAgent(agent, selectedAgentId, selectedTaskId)}
               send={send}
             />
           ))}
@@ -1115,7 +1130,7 @@ function PendingRow({ agent, selected, send, onSchedulePlaybook }: {
         aria-current={selected ? 'true' : undefined}
         onClick={() => {
           track({ type: 'agent_clicked', agentId: agent.agentId, source: 'pending_row', anomalyType: null });
-          useKookrStore.getState().selectAgent(agent.agentId);
+          useKookrStore.getState().selectAgent(agent.agentId, agent.taskId);
         }}
       >
         <div className="pending-row-top">
@@ -1172,7 +1187,7 @@ function SnoozedRow({ agent, selected, send }: {
         aria-current={selected ? 'true' : undefined}
         onClick={() => {
           track({ type: 'agent_clicked', agentId: agent.agentId, source: 'snoozed_row', anomalyType: agent.anomaly?.type ?? null });
-          useKookrStore.getState().selectAgent(agent.agentId);
+          useKookrStore.getState().selectAgent(agent.agentId, agent.taskId);
         }}
       >
         <div className="snoozed-row-top">
@@ -1328,7 +1343,7 @@ function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDeleteTas
         onClick={() => {
           if (pendingDeletion) return;
           track({ type: 'agent_clicked', agentId: agent.agentId, source: 'completed_row', anomalyType: null });
-          useKookrStore.getState().selectAgent(agent.agentId);
+          useKookrStore.getState().selectAgent(agent.agentId, agent.taskId);
         }}
       >
         <div className="completed-row-top">
@@ -1460,6 +1475,7 @@ export function FindingsPanel({
   completed,
   snoozed,
   selectedAgentId,
+  selectedTaskId,
   send,
   clearCompletedFinishedCount,
   clearCompletedTerminatedCount,
@@ -1589,10 +1605,11 @@ export function FindingsPanel({
           if (item.kind === 'rootCauseGroup') {
             return (
               <RootCauseFindingGroup
-                key={`root-cause-${item.root.agentId}`}
+                key={`root-cause-${agentRowKey(item.root)}`}
                 root={item.root}
                 related={item.related}
                 selectedAgentId={selectedAgentId}
+                selectedTaskId={selectedTaskId}
                 send={send}
               />
             );
@@ -1604,15 +1621,16 @@ export function FindingsPanel({
                 type={item.type}
                 agents={item.agents}
                 selectedAgentId={selectedAgentId}
+                selectedTaskId={selectedTaskId}
                 send={send}
               />
             );
           }
           return (
             <FindingCard
-              key={item.agent.agentId}
+              key={agentRowKey(item.agent)}
               agent={item.agent}
-              selected={item.agent.agentId === selectedAgentId}
+              selected={isSelectedAgent(item.agent, selectedAgentId, selectedTaskId)}
               send={send}
             />
           );
@@ -1641,15 +1659,16 @@ export function FindingsPanel({
                       playbookId={playbookId}
                       agents={agents}
                       selectedAgentId={selectedAgentId}
+                      selectedTaskId={selectedTaskId}
                       send={send}
                       onSchedulePlaybook={onSchedulePlaybook}
                     />
                   ))}
                   {standalone.map((agent) => (
                     <HealthyRow
-                      key={agent.agentId}
+                      key={agentRowKey(agent)}
                       agent={agent}
-                      selected={agent.agentId === selectedAgentId}
+                      selected={isSelectedAgent(agent, selectedAgentId, selectedTaskId)}
                       send={send}
                       onSchedulePlaybook={onSchedulePlaybook}
                     />
@@ -1669,9 +1688,9 @@ export function FindingsPanel({
               />
               {!pendingCollapsed && pending.map((agent) => (
                 <PendingRow
-                  key={agent.agentId}
+                  key={agentRowKey(agent)}
                   agent={agent}
-                  selected={agent.agentId === selectedAgentId}
+                  selected={isSelectedAgent(agent, selectedAgentId, selectedTaskId)}
                   send={send}
                   onSchedulePlaybook={onSchedulePlaybook}
                 />
@@ -1689,9 +1708,9 @@ export function FindingsPanel({
               />
               {!snoozedCollapsed && snoozed.map((agent) => (
                 <SnoozedRow
-                  key={agent.agentId}
+                  key={agentRowKey(agent)}
                   agent={agent}
-                  selected={agent.agentId === selectedAgentId}
+                  selected={isSelectedAgent(agent, selectedAgentId, selectedTaskId)}
                   send={send}
                 />
               ))}
@@ -1721,9 +1740,9 @@ export function FindingsPanel({
               </div>
               {!completedCollapsed && sortedCompleted.map((agent) => (
                 <CompletedRow
-                  key={agent.agentId}
+                  key={agentRowKey(agent)}
                   agent={agent}
-                  selected={agent.agentId === selectedAgentId}
+                  selected={isSelectedAgent(agent, selectedAgentId, selectedTaskId)}
                   send={send}
                   pendingDeletion={Boolean(agent.taskId && pendingDeletionTaskIds.has(agent.taskId))}
                   onQueueDeleteTask={onQueueDeleteTask}

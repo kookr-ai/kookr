@@ -705,6 +705,31 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().selectedAgentId).toBe('agent-terminated');
   });
 
+  test('handleUpdate applies task-scoped updates only to the matching sibling row', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'shared-session', taskId: 'task-a', taskName: 'Task A', taskStatus: 'inProgress', events: [], anomaly: null },
+      { agentId: 'shared-session', taskId: 'task-b', taskName: 'Task B', taskStatus: 'inProgress', events: [], anomaly: null },
+    ]);
+
+    store.getState().handleUpdate('shared-session', {
+      agentId: 'shared-session',
+      taskId: 'task-b',
+      taskName: 'Task B updated',
+      taskStatus: 'completed',
+      events: [],
+      anomaly: null,
+    });
+
+    expect(store.getState().agents.find((agent) => agent.taskId === 'task-a')).toMatchObject({
+      taskName: 'Task A',
+      taskStatus: 'inProgress',
+    });
+    expect(store.getState().agents.find((agent) => agent.taskId === 'task-b')).toMatchObject({
+      taskName: 'Task B updated',
+      taskStatus: 'completed',
+    });
+  });
+
   test('handleSnapshot clears selection when selected task disappears after clear completed', () => {
     store.getState().handleSnapshot([
       {
@@ -720,6 +745,35 @@ describe('Kookr Zustand Store', () => {
     store.getState().handleSnapshot([]);
 
     expect(store.getState().selectedAgentId).toBeNull();
+  });
+
+  test('handleSnapshot clears selection when selected sibling task disappears', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'shared-session', taskId: 'task-a', taskStatus: 'inProgress', events: [], anomaly: null },
+      { agentId: 'shared-session', taskId: 'task-b', taskStatus: 'inProgress', events: [], anomaly: null },
+    ]);
+    store.getState().selectAgent('shared-session', 'task-a');
+
+    store.getState().handleSnapshot([
+      { agentId: 'shared-session', taskId: 'task-b', taskStatus: 'inProgress', events: [], anomaly: null },
+    ]);
+
+    expect(store.getState().selectedAgentId).toBeNull();
+    expect(store.getState().selectedTaskId).toBeNull();
+  });
+
+  test('handleSnapshot does not merge sibling task activity by session id', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'shared-session', taskId: 'task-a', taskStatus: 'inProgress', events: [{ type: 'output', text: 'task a' }], anomaly: null },
+    ]);
+
+    store.getState().handleSnapshot([
+      { agentId: 'shared-session', taskId: 'task-b', taskStatus: 'inProgress', events: [], anomaly: null },
+    ]);
+
+    expect(store.getState().agents).toHaveLength(1);
+    expect(store.getState().agents[0].taskId).toBe('task-b');
+    expect(store.getState().agents[0].events).toEqual([]);
   });
 
   test('handleSnapshot preserves explicit completed-task selection while it still exists', () => {
@@ -1488,6 +1542,22 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().selectedAgentId).toBe('healthy-1');
   });
 
+  test('nextTask and previousTask navigate sibling rows with the same session id', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'shared-session', taskId: 'task-a', events: [], anomaly: null, taskStatus: 'inProgress' },
+      { agentId: 'shared-session', taskId: 'task-b', events: [], anomaly: null, taskStatus: 'inProgress' },
+    ]);
+    store.getState().selectAgent('shared-session', 'task-a');
+
+    store.getState().nextTask();
+    expect(store.getState().selectedAgentId).toBe('shared-session');
+    expect(store.getState().selectedTaskId).toBe('task-b');
+
+    store.getState().previousTask();
+    expect(store.getState().selectedAgentId).toBe('shared-session');
+    expect(store.getState().selectedTaskId).toBe('task-a');
+  });
+
   test('nextTask from a completed task advances to the first active candidate', () => {
     store.getState().handleSnapshot([
       { agentId: 'completed-1', events: [], anomaly: null, taskStatus: 'completed' },
@@ -1548,6 +1618,33 @@ describe('Kookr Zustand Store', () => {
     store.getState().selectNextTaskAfterCompletion('completed-session-1', 'task-done');
 
     expect(store.getState().selectedAgentId).toBe('healthy-1');
+  });
+
+  test('selectNextTaskAfterCompletion advances to a sibling row with a different task id', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'shared-session', taskId: 'task-done', events: [], anomaly: null, taskStatus: 'inProgress' },
+      { agentId: 'shared-session', taskId: 'task-next', events: [], anomaly: null, taskStatus: 'inProgress' },
+    ]);
+    store.getState().selectAgent('shared-session', 'task-done');
+
+    store.getState().selectNextTaskAfterCompletion('shared-session', 'task-done');
+
+    expect(store.getState().selectedAgentId).toBe('shared-session');
+    expect(store.getState().selectedTaskId).toBe('task-next');
+  });
+
+  test('selectNextTaskAfterCompletion ignores stale completion when focus moved to a sibling task', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'shared-session', taskId: 'task-done', events: [], anomaly: null, taskStatus: 'inProgress' },
+      { agentId: 'shared-session', taskId: 'task-next', events: [], anomaly: null, taskStatus: 'inProgress' },
+      { agentId: 'healthy-1', taskId: 'task-healthy', events: [], anomaly: null, taskStatus: 'inProgress' },
+    ]);
+    store.getState().selectAgent('shared-session', 'task-next');
+
+    store.getState().selectNextTaskAfterCompletion('shared-session', 'task-done');
+
+    expect(store.getState().selectedAgentId).toBe('shared-session');
+    expect(store.getState().selectedTaskId).toBe('task-next');
   });
 
   test('previousTask skips tasks in terminal statuses', () => {

@@ -107,7 +107,7 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
         if (!project) {
           // Deselecting project — clear any previously auto-selected finding.
           // Source is 'manual' since this only fires on explicit deselect.
-          set({ selectedAgentId: null, selectedAgentSource: 'manual' });
+          set({ selectedAgentId: null, selectedTaskId: null, selectedAgentSource: 'manual' });
           return;
         }
 
@@ -138,7 +138,7 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
           .filter(isActiveFinding)
           .sort((left, right) => compareRoutableAgents(left, right, order));
         if (findings.length > 0) {
-          selectAgent(findings[0].agentId);
+          selectAgent(findings[0].agentId, findings[0].taskId);
           return;
         }
 
@@ -146,7 +146,7 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
           .filter(isHealthyRunning)
           .sort((left, right) => compareRoutableAgents(left, right, { ...order, includeSeverity: false }))[0];
         if (healthy) {
-          selectAgent(healthy.agentId);
+          selectAgent(healthy.agentId, healthy.taskId);
           return;
         }
 

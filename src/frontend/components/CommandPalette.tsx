@@ -19,8 +19,8 @@ interface CommandPaletteProps {
   tasks: CommandTaskItem[];
   findings: CommandFindingItem[];
   projects: CommandProjectItem[];
-  onSelectTask: (agentId: string) => void;
-  onSelectFinding: (agentId: string) => void;
+  onSelectTask: (agentId: string, taskId: string) => void;
+  onSelectFinding: (agentId: string, taskId?: string | null) => void;
   onSelectProject: (projectId: string) => void;
   onClose: () => void;
 }
@@ -126,9 +126,9 @@ export function CommandPalette({
     } else {
       onClose();
       if (item.kind === 'task') {
-        onSelectTask(item.task.agentId);
+        onSelectTask(item.task.agentId, item.task.taskId);
       } else if (item.kind === 'finding') {
-        onSelectFinding(item.finding.agentId);
+        onSelectFinding(item.finding.agentId, item.finding.taskId);
       } else {
         onSelectProject(item.project.projectId);
       }

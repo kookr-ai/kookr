@@ -196,6 +196,7 @@ export interface TransportSessionSlice {
 
 export interface TriageNavigationSlice {
   selectedAgentId: string | null;
+  selectedTaskId: string | null;
   alerts: Alert[];
   relaunchTask: RelaunchTask | null;
   sentOverlay: SentOverlay | null;
@@ -213,7 +214,7 @@ export interface TriageNavigationSlice {
   handleSuggestion: (agentId: string, suggestions: string[], quickActions: QuickAction[]) => void;
   clearSuggestion: (agentId: string) => void;
   handleGitHubUpdate: (taskId: string, prs: GitHubPRState[], issues: GitHubIssueState[], changes: GitHubStateChange[]) => void;
-  selectAgent: (agentId: string | null) => void;
+  selectAgent: (agentId: string | null, taskId?: string | null) => void;
   nextBottleneck: () => void;
   nextTask: () => void;
   selectNextTaskAfterCompletion: (completedAgentId: string, completedTaskId: string | null) => void;
