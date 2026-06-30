@@ -33,17 +33,22 @@ function nextActionableFindingId(agents: AgentState[], excludingAgentId: string)
 
 function selectedAgentUpdateAfterServerState(
   selectedAgentId: string | null,
+  selectedTaskId: string | null,
   previousAgents: AgentState[],
   nextAgents: AgentState[],
-): { selectedAgentId?: string | null; selectedAgentSource?: 'manual'; respondAllAgentIds?: null; leftPane?: 'activity'; narrowTab?: 'activity'; shortcutsArmed?: false } {
+): { selectedAgentId?: string | null; selectedTaskId?: string | null; selectedAgentSource?: 'manual'; respondAllAgentIds?: null; leftPane?: 'activity'; narrowTab?: 'activity'; shortcutsArmed?: false } {
   if (!selectedAgentId) return {};
 
-  const previousSelected = previousAgents.find((agent) => agent.agentId === selectedAgentId);
-  const nextSelected = nextAgents.find((agent) => agent.agentId === selectedAgentId);
+  const previousSelected = selectedTaskId
+    ? previousAgents.find((agent) => agent.agentId === selectedAgentId && agent.taskId === selectedTaskId)
+    : previousAgents.find((agent) => agent.agentId === selectedAgentId);
+  const nextSelected = selectedTaskId
+    ? nextAgents.find((agent) => agent.agentId === selectedAgentId && agent.taskId === selectedTaskId)
+    : nextAgents.find((agent) => agent.agentId === selectedAgentId);
   if (!nextSelected) {
     // Server evicted the agent. Tag as 'manual' so the engagement guard isn't
     // confused into thinking the (now null) selection is an auto-advance landing.
-    return { selectedAgentId: null, selectedAgentSource: 'manual', respondAllAgentIds: null };
+    return { selectedAgentId: null, selectedTaskId: null, selectedAgentSource: 'manual', respondAllAgentIds: null };
   }
 
   if (
@@ -51,8 +56,11 @@ function selectedAgentUpdateAfterServerState(
     && !isUserDismissedTaskStatus(previousSelected.taskStatus)
     && isUserDismissedTaskStatus(nextSelected.taskStatus)
   ) {
+    const nextAgentId = nextActionableFindingId(nextAgents, selectedAgentId);
+    const nextAgent = nextAgentId ? nextAgents.find((agent) => agent.agentId === nextAgentId) : null;
     return {
-      selectedAgentId: nextActionableFindingId(nextAgents, selectedAgentId),
+      selectedAgentId: nextAgentId,
+      selectedTaskId: nextAgent?.taskId ?? null,
       selectedAgentSource: 'manual',
       respondAllAgentIds: null,
       leftPane: 'activity',
@@ -71,6 +79,7 @@ function selectedAgentRestoreAfterFirstSnapshot(
 ): {
   update: {
     selectedAgentId?: string | null;
+    selectedTaskId?: string | null;
     selectedAgentSource?: 'manual';
     respondAllAgentIds?: null;
     leftPane?: 'activity';
@@ -99,6 +108,7 @@ function selectedAgentRestoreAfterFirstSnapshot(
     return {
       update: {
         selectedAgentId: null,
+        selectedTaskId: null,
         selectedAgentSource: 'manual',
         respondAllAgentIds: null,
       },
@@ -109,6 +119,7 @@ function selectedAgentRestoreAfterFirstSnapshot(
   return {
     update: {
       selectedAgentId: restored.agentId,
+      selectedTaskId: restored.taskId ?? null,
       selectedAgentSource: 'manual',
       respondAllAgentIds: null,
       leftPane: 'activity',
@@ -153,15 +164,21 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
       let restoreMissed = false;
       withSelectionTransitionSource({ source: 'selectedAgentUpdateAfterServerState', reason: 'snapshot_reconcile' }, () => {
         set((prev) => {
+          const previousByKey = new Map(prev.agents.map((agent) => [`${agent.agentId}:${agent.taskId ?? ''}`, agent]));
           const previousById = new Map(prev.agents.map((agent) => [agent.agentId, agent]));
-          const mergedAgents = agents.map((agent) => mergeActivityAgent(previousById.get(agent.agentId), agent));
+          const mergedAgents = agents.map((agent) => (
+            mergeActivityAgent(
+              previousByKey.get(`${agent.agentId}:${agent.taskId ?? ''}`) ?? (!agent.taskId ? previousById.get(agent.agentId) : undefined),
+              agent,
+            )
+          ));
           const descriptorSttUrl = firstReadyKookrSTTEndpoint(speechCapabilities);
           const nextSttUrl = sttEnabled && sttUrl ? sttUrl : descriptorSttUrl;
           const restoredSelection = selectedAgentRestoreAfterFirstSnapshot(prev.agentsHydrated, prev.selectedAgentId, mergedAgents);
           restoreMissed = restoredSelection.missed;
           return {
             agents: mergedAgents,
-            ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.agents, mergedAgents),
+            ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.selectedTaskId, prev.agents, mergedAgents),
             ...restoredSelection.update,
             agentsHydrated: true,
             ...(serverCwd !== undefined ? { serverCwd } : {}),
@@ -192,11 +209,13 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
       withSelectionTransitionSource({ source: 'selectedAgentUpdateAfterServerState', reason: 'agent_update_reconcile' }, () => {
         set((prev) => {
           const agents = prev.agents.map((agent) => (
-            agent.agentId === agentId ? mergeActivityAgent(agent, state) : agent
+            agent.agentId === agentId && (!state.taskId || agent.taskId === state.taskId)
+              ? mergeActivityAgent(agent, state)
+              : agent
           ));
           return {
             agents,
-            ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.agents, agents),
+            ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.selectedTaskId, prev.agents, agents),
           };
         });
       });
@@ -221,7 +240,11 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
         set({
           dashboardSelection: selection,
           ...(selection.selectedSessionId !== undefined
-            ? { selectedAgentId: selection.selectedSessionId, selectedAgentSource: 'manual' as const }
+            ? {
+                selectedAgentId: selection.selectedSessionId,
+                selectedTaskId: selection.selectedTaskId,
+                selectedAgentSource: 'manual' as const,
+              }
             : {}),
         });
       });

@@ -29,6 +29,7 @@ const tasks: CommandTaskItem[] = [
 const findings: CommandFindingItem[] = [
   {
     agentId: 'finding-agent',
+    taskId: 'finding-task',
     label: 'Investigate launch failure',
     severity: 'critical',
     type: 'API Error',
@@ -160,22 +161,22 @@ describe('CommandPalette', () => {
     expect(runDiagnostics).toHaveBeenCalledTimes(1);
   });
 
-  test('selecting a task calls onSelectTask with its agentId', () => {
+  test('selecting a task calls onSelectTask with its agentId and taskId', () => {
     const { onSelectTask } = render();
     const input = container.querySelector<HTMLInputElement>('[data-testid="command-palette-input"]')!;
     act(() => setInputValue(input, 'telegram'));
     const taskRow = container.querySelector<HTMLButtonElement>('[data-testid="command-palette-task"]')!;
     act(() => taskRow.click());
-    expect(onSelectTask).toHaveBeenCalledWith('a1');
+    expect(onSelectTask).toHaveBeenCalledWith('a1', 't1');
   });
 
-  test('selecting a finding calls onSelectFinding with its agentId', () => {
+  test('selecting a finding calls onSelectFinding with its agentId and taskId', () => {
     const { onSelectFinding } = render();
     const input = container.querySelector<HTMLInputElement>('[data-testid="command-palette-input"]')!;
     act(() => setInputValue(input, 'api error'));
     const findingRow = container.querySelector<HTMLButtonElement>('[data-testid="command-palette-finding"]')!;
     act(() => findingRow.click());
-    expect(onSelectFinding).toHaveBeenCalledWith('finding-agent');
+    expect(onSelectFinding).toHaveBeenCalledWith('finding-agent', 'finding-task');
   });
 
   test('selecting a project calls onSelectProject with its project id', () => {

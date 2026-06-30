@@ -41,15 +41,9 @@ export type {
 };
 
 function persistSelectedTaskChange(before: KookrStore, after: KookrStore): void {
-  const beforeSelectedTaskId = before.selectedAgentId
-    ? before.agents.find((agent) => agent.agentId === before.selectedAgentId)?.taskId ?? null
-    : null;
-  const afterSelectedTaskId = after.selectedAgentId
-    ? after.agents.find((agent) => agent.agentId === after.selectedAgentId)?.taskId ?? null
-    : null;
   if (
     before.selectedAgentId === after.selectedAgentId
-    && beforeSelectedTaskId === afterSelectedTaskId
+    && before.selectedTaskId === after.selectedTaskId
   ) {
     return;
   }
@@ -59,7 +53,7 @@ function persistSelectedTaskChange(before: KookrStore, after: KookrStore): void 
     return;
   }
 
-  saveSelectedTask(afterSelectedTaskId, after.selectedAgentId);
+  saveSelectedTask(after.selectedTaskId, after.selectedAgentId);
 }
 
 function createKookrStoreState(

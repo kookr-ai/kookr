@@ -180,7 +180,14 @@ function selectedIdentity(state: KookrStore): {
   sessionId: string | null;
 } {
   const agent = state.selectedAgentId
-    ? state.agents.find((candidate) => candidate.agentId === state.selectedAgentId) ?? null
+    ? (
+        state.selectedTaskId
+          ? state.agents.find((candidate) => (
+              candidate.agentId === state.selectedAgentId
+              && candidate.taskId === state.selectedTaskId
+            ))
+          : undefined
+      ) ?? state.agents.find((candidate) => candidate.agentId === state.selectedAgentId) ?? null
     : null;
   return {
     agent,
