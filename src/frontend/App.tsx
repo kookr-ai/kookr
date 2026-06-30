@@ -384,6 +384,7 @@ export function App() {
     agents,
     agentsHydrated,
     buildInfo,
+    dashboardSelection,
     serverStartedAt,
     selectedAgentId,
     selectAgent,
@@ -418,6 +419,7 @@ export function App() {
     agents: state.agents,
     agentsHydrated: state.agentsHydrated,
     buildInfo: state.buildInfo,
+    dashboardSelection: state.dashboardSelection,
     serverStartedAt: state.serverStartedAt,
     selectedAgentId: state.selectedAgentId,
     selectAgent: state.selectAgent,
@@ -588,12 +590,26 @@ export function App() {
     : null;
   const selectedAgent = agents.find((a) => a.agentId === selectedAgentId) ?? null;
   useEffect(() => {
+    const selectedTaskId = selectedAgent?.taskId ?? null;
+    const selectedSessionId = selectedAgent?.agentId ?? null;
+    if (
+      dashboardSelection.selectedTaskId === selectedTaskId
+      && dashboardSelection.selectedSessionId === selectedSessionId
+    ) {
+      return;
+    }
     send({
       type: 'selectionChanged',
-      selectedTaskId: selectedAgent?.taskId ?? null,
-      selectedSessionId: selectedAgent?.agentId ?? null,
+      selectedTaskId,
+      selectedSessionId,
     });
-  }, [selectedAgent?.agentId, selectedAgent?.taskId, send]);
+  }, [
+    dashboardSelection.selectedSessionId,
+    dashboardSelection.selectedTaskId,
+    selectedAgent?.agentId,
+    selectedAgent?.taskId,
+    send,
+  ]);
   const selectedAgentShowsSplit = selectedAgent === null
     || !(selectedAgent.taskStatus !== undefined && isTerminalStatus(selectedAgent.taskStatus) && selectedAgent.completionDigest);
   const terminalFocusActive = terminalFocusMode && wideDetailActive && selectedAgentShowsSplit;
