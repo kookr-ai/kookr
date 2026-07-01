@@ -317,7 +317,7 @@ export class TaskLifecycleCommands {
     return { outcome: 'completed', task };
   }
 
-  async requestTaskSnapshotReflect(taskId: string): Promise<TaskLifecycleCommandResult> {
+  async requestTaskSnapshotReflect(taskId: string, hint?: string): Promise<TaskLifecycleCommandResult> {
     if (
       !this.deps.taskSnapshotDir ||
       !this.deps.hooksDir ||
@@ -346,11 +346,16 @@ export class TaskLifecycleCommands {
     );
     const agentId = task.sessions[0]?.tmuxSession ?? '';
 
+    // Free-text hint the user typed when clicking Reflect (e.g. "liked being
+    // asked for e2e tests"). Optional; blank input reflects with no hint.
+    const normalizedHint = hint?.trim() || undefined;
+
     await this.deps.interactionLog?.append({
       type: 'task_reflect_requested',
       taskId,
       agentId,
       mode: 'snapshot',
+      ...(normalizedHint ? { hint: normalizedHint } : {}),
       timestamp: nowISO(),
     });
 
@@ -362,6 +367,7 @@ export class TaskLifecycleCommands {
         readInteractionLog: this.deps.readInteractionLogSnapshot,
         agentStates,
         sessionEvents,
+        userHint: normalizedHint,
       });
       bundlePath = result.bundlePath;
     } catch (err) {

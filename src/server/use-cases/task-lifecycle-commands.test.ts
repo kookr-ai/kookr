@@ -311,3 +311,51 @@ describe('TaskLifecycleCommands.clearFinishedTasks', () => {
     expect(taskStore.getTask(completed.id)?.status).toBe('completed');
   });
 });
+
+describe('TaskLifecycleCommands.requestTaskSnapshotReflect', () => {
+  async function makeSnapshotDeps(taskStore: TaskStore) {
+    const dir = await mkdtemp(join(tmpdir(), 'snapshot-reflect-'));
+    const interactionLog = { append: vi.fn(async () => undefined) } as never;
+    const { deps } = makeDeps(taskStore, {
+      interactionLog,
+      taskSnapshotDir: join(dir, 'snapshots'),
+      hooksDir: join(dir, 'hooks'),
+      reflectWorktreesDir: join(dir, 'reflect'),
+      readInteractionLogSnapshot: async () => [],
+      // Non-git cwd → requestTaskReflect bails cleanly before any worktree work;
+      // the interaction-log append we assert on happens earlier regardless.
+      launchTask: vi.fn(async () => ({ task: {} as never, queued: false })),
+    });
+    return { deps, interactionLog, dir };
+  }
+
+  test('records the trimmed hint in the interaction log', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Reflect target', '/repo');
+    addSession(taskStore, task.id);
+    const { deps, interactionLog, dir } = await makeSnapshotDeps(taskStore);
+    try {
+      await new TaskLifecycleCommands(deps).requestTaskSnapshotReflect(task.id, '  liked the e2e tests  ');
+      expect(interactionLog.append).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'task_reflect_requested', hint: 'liked the e2e tests' }),
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('omits the hint when it is blank or absent', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Reflect target', '/repo');
+    addSession(taskStore, task.id);
+    const { deps, interactionLog, dir } = await makeSnapshotDeps(taskStore);
+    try {
+      await new TaskLifecycleCommands(deps).requestTaskSnapshotReflect(task.id, '   ');
+      const appended = (interactionLog.append as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(appended.type).toBe('task_reflect_requested');
+      expect(appended).not.toHaveProperty('hint');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

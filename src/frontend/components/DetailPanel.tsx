@@ -817,7 +817,12 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
   function handleReflect() {
     if (!agent?.taskId) return;
     trackClick('task_snapshot_reflect');
-    send({ type: 'requestTaskSnapshotReflect', taskId: agent.taskId });
+    // Optional steering hint: why the user is reflecting (e.g. "liked being
+    // asked for e2e tests"). Blank or cancelled input reflects with no hint,
+    // preserving the previous one-click behavior.
+    const raw = prompt('Why are you reflecting? Add an optional hint to steer the analysis (leave blank to skip):');
+    const hint = raw?.trim();
+    send({ type: 'requestTaskSnapshotReflect', taskId: agent.taskId, ...(hint ? { hint } : {}) });
   }
 
   function handleCancel() {

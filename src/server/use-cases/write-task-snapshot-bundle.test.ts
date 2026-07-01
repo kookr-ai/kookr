@@ -84,4 +84,51 @@ describe('writeTaskSnapshotBundle', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test('persists the optional user hint into bundle.json when provided', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'task-snapshot-bundle-'));
+    const snapshotDir = join(dir, 'snapshots');
+    const hooksDir = join(dir, 'hooks');
+    await mkdir(hooksDir);
+
+    try {
+      const result = await writeTaskSnapshotBundle(makeTask(), {
+        taskSnapshotDir: snapshotDir,
+        hooksDir,
+        readInteractionLog: async () => [],
+        agentStates: [],
+        sessionEvents: {},
+        userHint: 'liked being asked for e2e tests',
+      });
+
+      const bundle = JSON.parse(await readFile(join(result.bundlePath, 'bundle.json'), 'utf-8')) as {
+        userHint?: string;
+      };
+      expect(bundle.userHint).toBe('liked being asked for e2e tests');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('omits userHint from bundle.json when not provided', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'task-snapshot-bundle-'));
+    const snapshotDir = join(dir, 'snapshots');
+    const hooksDir = join(dir, 'hooks');
+    await mkdir(hooksDir);
+
+    try {
+      const result = await writeTaskSnapshotBundle(makeTask(), {
+        taskSnapshotDir: snapshotDir,
+        hooksDir,
+        readInteractionLog: async () => [],
+        agentStates: [],
+        sessionEvents: {},
+      });
+
+      const bundle = JSON.parse(await readFile(join(result.bundlePath, 'bundle.json'), 'utf-8')) as Record<string, unknown>;
+      expect(bundle).not.toHaveProperty('userHint');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

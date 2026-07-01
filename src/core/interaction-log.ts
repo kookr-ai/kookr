@@ -24,7 +24,7 @@ export type InteractionEvent =
   | { type: 'task_terminated'; taskId: string; agentId: string; reason: 'sessions_died'; durationMs: number; timestamp: string }
   | { type: 'task_cancelled'; taskId: string; agentId: string; reason: 'user_cancelled'; durationMs: number; timestamp: string }
   | { type: 'reflect_triggered'; timestamp: string }
-  | { type: 'task_reflect_requested'; taskId: string; agentId: string; mode: 'snapshot'; timestamp: string }
+  | { type: 'task_reflect_requested'; taskId: string; agentId: string; mode: 'snapshot'; hint?: string; timestamp: string }
   | { type: 'worktree_cleaned'; taskId: string; worktreePath: string; branch: string | undefined; timestamp: string }
   | { type: 'worktree_kept'; taskId: string; worktreePath: string; branch: string | undefined; reason: string; timestamp: string }
   | { type: 'worktree_skipped'; taskId: string; worktreePath: string; reason: 'protected' | 'shared' | 'task reopened' | 'not found'; timestamp: string }
