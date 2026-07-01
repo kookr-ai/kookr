@@ -62,6 +62,64 @@ symlinks back to — run `pnpm install` there). It is fail-open: a missing
 dependency, an unreachable judge, a malformed response, or any crash
 degrades to "inject nothing" — the turn always proceeds.
 
+## PR checklist gate (`pr-workflow-gate.sh`, opt-in)
+
+The `pr-workflow-gate.sh` hook also runs a second, **independent** gate (P3 of
+`docs/rfc/rfc-pr-checklist-contract.md`): before `gh pr create`, it
+machine-verifies the anti-drift checklist markers in the PR body against the
+actual diff, via the shared engine:
+
+```
+kookr pr-checklist verify --from-command "<the raw gh pr create …>" --run-commands none
+```
+
+The engine is deterministic (no AI): for each `<!-- kookr:check:id -->` (or
+legacy `<!-- pr:id -->`) box it proves a fact about the diff — a checked box
+whose mapped file is not in the diff fails; a struck box (`~~…~~ reason`) is
+waived; a blank box fails. It never executes repo commands (`--run-commands
+none`; `ci` is reserved for P4).
+
+**OFF by default.** Like `kb-context-inject.sh`, the gate is inert until you
+opt in, in either of two ways:
+
+```bash
+# (a) per-session / per-shell env opt-in
+export KOOKR_PR_CHECKLIST=1
+
+# (b) a persistent per-repo scope list (owner/repo, case-insensitive)
+printf '["kookr-ai/kookr","your-org/your-repo"]\n' > ~/.kookr/pr-checklist-repos.json
+```
+
+`KOOKR_PR_CHECKLIST=0` is a **kill-switch** — it force-disables the gate even
+when a repo is in the scope list. When the gate is off it exits *before*
+spawning Node, so it adds no latency to `gh pr create` on non-adopting repos.
+
+**Authority: CI is the gate of record; this local gate is advisory-grade.**
+It exists to catch drift *before* you open the PR, not to replace the required
+CI check (P2). Its fail model reflects that:
+
+- **Fail-closed** (blocks `gh pr create`) on a real verification failure or a
+  repo-input error (engine exit `2`). Fix the items or strike the N/A boxes,
+  then retry.
+- **Fail-open** (allows, but never silently) only on kookr-internal faults —
+  `kookr` not on `PATH`, an unresolvable session cwd, or engine exit `70`. Each
+  fail-open prints `checklist gate degraded (<reason>) — CI is authoritative`
+  to stderr **and** appends a JSON line to `~/.kookr/pr-checklist-degrade.log`.
+- **Attest-unverified** when the body isn't statically knowable (`--fill`,
+  `--body-file -`, or a `$(…)` body): attestation is skipped locally with a
+  printed note and CI stays authoritative — never a silent pass.
+
+Check whether the gate has been quietly failing open:
+
+```bash
+kookr pr-checklist doctor          # human summary of recent fail-open events
+kookr pr-checklist doctor --json   # { status, total, last24h, last7d, recent }
+```
+
+`status` is `warn` when any fail-open occurred in the last 7 days — a signal
+that the local gate isn't actually enforcing and you should rely on CI and fix
+the underlying cause (usually `kookr` missing from the agent's `PATH`).
+
 ## Fast path: repo pre-push hook only
 
 ```bash
@@ -82,7 +140,7 @@ If you use Claude Code (or Codex CLI) to work on this repo, there is a larger ho
 
 | Hook | Event / Matcher | Purpose | Source |
 |------|-----------------|---------|--------|
-| `pr-workflow-gate.sh` | `PreToolUse` / `Bash(gh pr create*)` | Blocks `gh pr create` until the `pre-pr-review` skill has created a state file proving pre-PR checks ran | **In this repo at `hooks/pr-workflow-gate.sh`** |
+| `pr-workflow-gate.sh` | `PreToolUse` / `Bash(gh pr create*)` | Blocks `gh pr create` until the `pre-pr-review` skill has created a state file proving pre-PR checks ran. Also runs an **opt-in PR checklist gate** (default OFF — see below) that machine-verifies the PR body's anti-drift checklist against the diff | **In this repo at `hooks/pr-workflow-gate.sh`** |
 | `oss-contribution-gate.sh` | `PreToolUse` / `Bash` | Rate-limits external OSS PRs (default 1/day/repo) and enforces the blocked-repo list (`~/.kookr/rate-limits.json`) | **In this repo at `hooks/oss-contribution-gate.sh`** |
 | `oss-contribution-gate-posttool.sh` | `PostToolUse` / `Bash(gh pr create*)` | Captures successfully-created PRs into `~/.kookr/oss-attempts.json` via Kookr's HTTP API | **In this repo at `scripts/oss-contribution-gate-posttool.sh`** |
 | `oss-stale-scout-gate.sh` | `PreToolUse` / `Bash(gh pr create*)` | Blocks `gh pr create` when the PR body references an already-closed upstream issue (any of the 9 GitHub closing keywords + cross-repo refs + URL form) | **In this repo at `hooks/oss-stale-scout-gate.sh`** |

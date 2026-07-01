@@ -6,8 +6,16 @@
 # The pre-pr-review skill creates a state file after all checks pass.
 # This hook checks for that file and blocks if missing.
 #
-# Design: fail-open on any error. A crash degrades to no quality gate.
-# See: docs/rfc/rfc-pr-workflow-hooks.md
+# It ALSO runs an independent, opt-in "PR checklist gate" (P3,
+# rfc-pr-checklist-contract): when enabled (KOOKR_PR_CHECKLIST=1 and/or a
+# ~/.kookr/pr-checklist-repos.json scope list), it machine-verifies the PR
+# body's anti-drift checklist against the diff via `kookr pr-checklist verify`.
+# That gate is default-OFF and fails CLOSED on a real verification failure but
+# OPEN (logged) on kookr-internal faults — see the block below.
+#
+# Design: the pre-PR-review gate fails open on any error (a crash degrades to no
+# quality gate). See: docs/rfc/rfc-pr-workflow-hooks.md and
+# docs/rfc/rfc-pr-checklist-contract.md.
 
 set -euo pipefail
 
@@ -126,6 +134,125 @@ fi
 # Otherwise the scope check is inconclusive and we fall through to the
 # existing state-file / bypass-file gate — preserving "gate everything" as
 # the safe default.
+
+# ===========================================================================
+# PR checklist gate (P3 — rfc-pr-checklist-contract). Opt-in, default OFF.
+# Machine-verifies the anti-drift checklist markers in the PR body against the
+# diff via the shared `kookr pr-checklist` engine. INDEPENDENT of the pre-PR
+# review state gate below (its own scope list: pr-checklist-repos.json).
+#
+# Fail model (S2/S7): fail-CLOSED (deny) on a real verification failure or
+# repo-input error (exit 2); fail-OPEN (allow) only on kookr-internal faults
+# (missing binary / exit 70 / a bad invocation), always with a visible in-band
+# line AND a JSONL degrade record so `kookr pr-checklist doctor` can surface a
+# silent long-term fail-open. Every command is if/||-guarded so a stray
+# non-zero can't abort the hook via `set -e` mid-gate. (The functions below
+# don't inherit the `trap … ERR fail_open` — no `set -E`/errtrace — so an
+# unguarded failure would `set -e`-exit nonzero rather than silently allow;
+# we guard anyway so exit codes are handled explicitly and intentionally.)
+# ===========================================================================
+checklist_fail_open() {
+  local reason="$1"
+  # In-band, visible — never a silent degrade (failure-critic M4).
+  echo "kookr pr-checklist: checklist gate degraded (${reason}) — CI is authoritative" >&2
+  # Append a JSONL degrade record for `kookr pr-checklist doctor`.
+  local ts
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || ts="unknown"
+  printf '%s' "$reason" \
+    | jq -Rc --arg ts "$ts" '{at:$ts,event:"fail-open",reason:.}' \
+      >> "$HOME/.kookr/pr-checklist-degrade.log" 2>/dev/null || true
+}
+
+checklist_deny() {
+  local findings="$1"
+  local reason
+  reason="PR checklist verification failed — the anti-drift checklist in the PR body does not match the diff. Fix the items, or strike genuinely-N/A boxes with a one-line reason, then retry gh pr create. Details:
+${findings}"
+  # Fail CLOSED: if jq can't render the reason for any reason, emit a STATIC
+  # deny instead — this path must never degrade to an empty stdout / allow
+  # (failure-critic: `|| true` here would be a fail-open on a fail-closed path).
+  if ! jq -n --arg r "$reason" '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: $r
+    }
+  }' 2>/dev/null; then
+    printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"PR checklist verification failed and the gate could not render the details. Fix the checklist, or strike genuinely-N/A boxes with a reason, then retry gh pr create."}}'
+  fi
+  exit 0
+}
+
+pr_checklist_gate() {
+  # --- Bash-side fast-exit BEFORE spawning Node (S3). ---
+  # Kill-switch first: KOOKR_PR_CHECKLIST=0 force-disables regardless of scope.
+  if [ "${KOOKR_PR_CHECKLIST:-}" = "0" ]; then
+    return 0
+  fi
+  # Enabled iff env opt-in OR the repo is listed in the checklist scope file.
+  local enabled=0
+  if [ "${KOOKR_PR_CHECKLIST:-}" = "1" ]; then
+    enabled=1
+  fi
+  local cl_scope_file="$HOME/.kookr/pr-checklist-repos.json"
+  if [ "$enabled" -eq 0 ] && [ -n "$OWNER_REPO" ] && [ -f "$cl_scope_file" ]; then
+    local cl_key cl_in
+    cl_key=$(printf '%s' "$OWNER_REPO" | tr '[:upper:]' '[:lower:]')
+    cl_in=$(
+      jq --arg k "$cl_key" -r '
+        if type == "array" and all(.[]; type == "string")
+        then (if ([.[] | ascii_downcase] | index($k)) != null then "in" else "out" end)
+        else "out" end
+      ' "$cl_scope_file" 2>/dev/null
+    ) || cl_in="out"
+    if [ "$cl_in" = "in" ]; then
+      enabled=1
+    fi
+  fi
+  if [ "$enabled" -ne 1 ]; then
+    return 0
+  fi
+
+  # --- Binary guard: no kookr on PATH → fail-OPEN with a degrade record. ---
+  if ! command -v kookr >/dev/null 2>&1; then
+    checklist_fail_open "kookr binary not on PATH"
+    return 0
+  fi
+
+  # --- Resolve the repo dir to verify (the session cwd from the payload). ---
+  local cl_cwd
+  cl_cwd=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) || cl_cwd=""
+  if [ -z "$cl_cwd" ] || [ ! -d "$cl_cwd" ]; then
+    checklist_fail_open "session cwd unavailable — cannot resolve the diff"
+    return 0
+  fi
+
+  # --- Run the engine. `… || cl_rc=$?` keeps a legitimate non-zero from
+  #     aborting the hook via set -e — we branch on the code below, never
+  #     let a bare non-zero decide (delivery-critic silent-fail-open bug). ---
+  local cl_out cl_rc=0
+  cl_out=$(cd "$cl_cwd" && kookr pr-checklist verify \
+      --from-command "$COMMAND" --run-commands none 2>&1) || cl_rc=$?
+
+  case "$cl_rc" in
+    0)
+      # Pass, or attest-unverified (the CLI already printed the degrade note).
+      return 0
+      ;;
+    2)
+      # Verification failure or repo-input error → fail CLOSED (deny).
+      checklist_deny "$cl_out"
+      ;;
+    *)
+      # 64 (bad invocation) / 70 (internal) / anything else → fail OPEN.
+      checklist_fail_open "kookr pr-checklist exited ${cl_rc}"
+      return 0
+      ;;
+  esac
+}
+
+pr_checklist_gate
+
 SCOPE_LIST_FILE="$HOME/.kookr/pr-gated-repos.json"
 if [ -n "$OWNER_REPO" ] && [ -f "$SCOPE_LIST_FILE" ]; then
   OWNER_REPO_LC=$(printf '%s' "$OWNER_REPO" | tr '[:upper:]' '[:lower:]')
