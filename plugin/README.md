@@ -32,7 +32,7 @@ sessions can also see it when the plugin is installed or synced locally.
 
 **OSS contribution:** `oss-fork-manager`, `oss-pr-{critic,distill,plan,threshold}`, `pr-review-triage`, `pr-contribution-excellence` (bundled with per-repo distilled patterns under `repo/`), `find-best-reviewers`, `rust-lang-rust-{tests,pre-push}`.
 
-**Reviewer specialists (`plugin/reviewer-specialists/`):** narrow prompt templates (`conventions-specialist`, `correctness-specialist`, `deadcode-specialist`, `test-specialist`, `a11y-specialist`) consumed by the bundled `pre-pr-review` skill.
+**Reviewer specialists (`plugin/reviewer-specialists/`):** narrow prompt templates (`conventions-specialist`, `correctness-specialist`, `deadcode-specialist`, `test-specialist`, `docs-drift-specialist`, `a11y-specialist`) consumed by the bundled `pre-pr-review` skill.
 
 **OSS contribution hooks (not in the marketplace plugin):** the PreToolUse / PostToolUse hooks (`pr-workflow-gate`, `oss-stale-scout-gate`, `oss-contribution-gate`, `oss-contribution-gate-posttool`) live in the Kookr repo's `hooks/` and `scripts/` dirs, not under `plugin/`, because they require explicit user-global hook installation and support runtimes where plugin hooks are not injected. Clone the Kookr repo and run the install scripts (see next section) to wire them.
 

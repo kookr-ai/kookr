@@ -7,7 +7,7 @@ related: pre-push, pr-lifecycle, git-commit-discipline, testing-patterns, pr-rev
 
 # Pre-PR Review
 
-> **Requires:** the four reviewer specialists at `plugin/reviewer-specialists/` (bundled with the `kookr-toolkit` plugin since 0.5 — see `docs/hooks-setup.md`). If the directory is missing (e.g. plugin not installed), stop and report the missing dependency rather than fabricating review output. The repo-level checks (build, tsc, tests) below still run.
+> **Requires:** the reviewer specialists at `plugin/reviewer-specialists/` (bundled with the `kookr-toolkit` plugin since 0.5 — see `docs/hooks-setup.md`). If the directory is missing (e.g. plugin not installed), stop and report the missing dependency rather than fabricating review output. The repo-level checks (build, tsc, tests) below still run.
 
 Run this checklist before creating a pull request. When Kookr is installed via `scripts/install-hooks.sh`, the `pr-workflow-gate` hook enforces this skill before every `gh pr create` in *any* repo on your machine.
 
@@ -184,7 +184,10 @@ Narrow prompt templates for PR-level review. Use for all non-trivial PRs:
 - **correctness-specialist** — logic bugs, edge cases, data flow, security
 - **deadcode-specialist** — unused code introduced or orphaned by the PR
 - **test-specialist** — test quality, tautologies, missing coverage
+- **docs-drift-specialist** — whether the code change leaves documentation stale (requirements, MBSE/system-models, ADRs, architecture, user-facing docs, API contracts); emits the concrete doc edit to prevent drift
 - **a11y-specialist** — ARIA validity, accessible names, keyboard semantics (UI-component diffs only)
+
+The **docs-drift-specialist** runs on every non-trivial PR — not only doc-touching ones — because the drift it catches is exactly the doc the author *forgot* to update. It is especially load-bearing when the repo carries a requirements spec (`docs/requirements.md`) or MBSE/system-model docs (`docs/system-models/**`, `docs/adr/**`), where a silent code change can falsify a `SHALL` requirement's Evidence line or a documented state machine.
 
 Each specialist expects:
 - `{repoDir}` — path to the full repo checkout (the worktree)
@@ -203,7 +206,8 @@ Use when the change touches module boundaries, imports, or public APIs:
 
 | Change type | Which reviewers |
 |---|---|
-| Any non-trivial code change | conventions / correctness / deadcode / test specialists (Layer 1) |
+| Any non-trivial code change | conventions / correctness / deadcode / test / docs-drift specialists (Layer 1) |
+| Change touches behavior cited by a requirement, ADR, or system-model doc | docs-drift-specialist is mandatory (blocking findings expected) |
 | UI-component change (`.tsx` / `.jsx` / `.vue` / `.svelte` touching `aria-*`, `role=`, semantic HTML, or spreading props onto HTML elements) | + a11y-specialist |
 | Module boundary / import refactor | + dependency-graph-analyzer, module-interface-auditor |
 | New public API / API changes | + api-surface-auditor, module-interface-auditor |
@@ -300,6 +304,7 @@ Before you conclude this skill, report the checklist result explicitly:
 - diff review: done
 - portability check: clean / flagged (with reason or fix) / skipped
 - reviewer specialists: run / skipped, with reason
+- docs-drift: no drift / drift found (list stale docs + suggested edits) / skipped with reason — call out any requirement or system-model doc left stale
 - OSS base-branch policy (external PRs only): matched / failed / skipped with reason
 - gate file: created / not created
 
