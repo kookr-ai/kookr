@@ -23,13 +23,27 @@ parameters:
     description: GitHub username to assign new issues to (leave blank to skip assignment)
     required: false
     default: ""
+  - name: maxIssues
+    description: Maximum number of GitHub issues to create from the top findings. This is a cap, not a target — creating fewer is fine (and expected) when fewer findings clear the quality bar. Choose "Report only" to skip issue creation entirely.
+    required: false
+    default: "5"
+    type: select
+    options:
+      - label: "Report only — don't create issues"
+        value: "0"
+      - label: "Up to 3 (focused)"
+        value: "3"
+      - label: "Up to 5 (recommended)"
+        value: "5"
+      - label: "Up to 8 (thorough)"
+        value: "8"
 checklist:
   - Ran architecture smell scan on all source modules
   - Ran dependency graph analysis for layering violations and cycles
   - Ran module interface audit for leaky/wide/mixed-level exports
   - Produced unified findings report with cross-agent correlations
   - Prioritized findings by impact and effort
-  - Created GitHub issues for top 3-5 actionable findings
+  - Created GitHub issues for the top findings, capped at the selected maximum (or skipped when set to Report only)
 ---
 
 ## Objective
@@ -84,11 +98,15 @@ Produce a **unified findings report** at `{{reportPath}}` with:
 
 ## Phase 3 — Create Issues
 
-For the **top 3-5 actionable findings**, create GitHub issues in the current repo:
+If `{{maxIssues}}` is `0`, skip this phase entirely: deliver the report only and note in the summary that issue creation was disabled by the run parameter.
+
+Otherwise, for the top actionable findings — **at most `{{maxIssues}}`** — create GitHub issues in the current repo:
 - Title: `arch: [brief description of the smell/violation]`
 - Body: evidence, impact, suggested approach
 - Label: `{{issueLabel}}` (create if it doesn't exist)
 - Assignee: `{{issueAssignee}}` (skip assignment if this is empty)
+
+`{{maxIssues}}` is a ceiling, not a quota. Create fewer if fewer findings clear the bar — never split, pad, or promote a minor/watch-list finding just to reach the number. Any findings above the cap stay in the report's watch-list section.
 
 Skip creating issues for:
 - Minor findings (cosmetic naming, low-severity smells)
