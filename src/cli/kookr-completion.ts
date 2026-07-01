@@ -72,6 +72,11 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     flags: [...MAINTENANCE_PRUNE_FLAGS, ...MAINTENANCE_BACKUP_FLAGS],
   },
   {
+    name: 'pr-checklist',
+    subcommands: ['verify'],
+    flags: ['--pr-body', '--base', '--json', '--explain', '-h', '--help'],
+  },
+  {
     name: 'push',
     subcommands: ['test'],
   },

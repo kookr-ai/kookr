@@ -18,6 +18,7 @@ Usage:
   kookr drain|resume [OPTIONS]  Control operator drain mode.
   kookr maintenance prune [OPTIONS]   Prune aged completed-task data-dir artifacts.
   kookr maintenance backup [OPTIONS]  Create a crash-consistent data-dir backup tarball.
+  kookr pr-checklist verify [OPTIONS] Verify a repo's anti-drift PR checklist against the diff.
   kookr push test <deviceId>    Send a relay push test.
   kookr completion bash|zsh     Print a shell completion script.
 
@@ -105,6 +106,11 @@ async function main({
     return exit(process.exitCode ?? 0);
   }
 
+  if (command === 'pr-checklist') {
+    await runPrChecklistCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
+  }
+
   if (command !== undefined) {
     err.error(`[kookr] Unknown command: ${command}`);
     err.error('Run `kookr --help` for usage.');
@@ -173,6 +179,20 @@ async function runDoctorCommand(argv, { env = process.env, out = console, err = 
   }
   const mod = await import(pathToFileURL(entry).href);
   process.exitCode = await mod.runDoctorCli(argv, { env, out, cwd: process.cwd() });
+}
+
+async function runPrChecklistCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-pr-checklist.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-pr-checklist.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] PR checklist module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exit(1);
+  }
+  const mod = await import(pathToFileURL(entry).href);
+  process.exitCode = await mod.runPrChecklistCli(argv, { env, out, err, cwd: process.cwd() });
 }
 
 async function loadCompletionModule() {
