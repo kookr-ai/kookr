@@ -26,7 +26,7 @@ function extractCliDispatcherCommands(source: string): string[] {
 function extractCliHelpCommands(helpText: string): string[] {
   const commands = new Set<string>();
 
-  for (const match of helpText.matchAll(/^\s+kookr\s+([a-z|]+)(?:\s+([a-z][a-z-]*))?/gm)) {
+  for (const match of helpText.matchAll(/^\s+kookr\s+([a-z|-]+)(?:\s+([a-z][a-z-]*))?/gm)) {
     for (const command of match[1].split('|')) {
       if (command === '') continue;
       if (command === 'command' && match[2]) {

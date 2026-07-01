@@ -82,7 +82,7 @@ function makeDeps() {
 
 function publicCommandsFromHelp(): string[] {
   const commands = new Set<string>();
-  for (const match of HELP_TEXT.matchAll(/^\s+kookr\s+([a-z|]+)/gm)) {
+  for (const match of HELP_TEXT.matchAll(/^\s+kookr\s+([a-z|-]+)/gm)) {
     for (const command of match[1].split('|')) {
       if (command !== '') commands.add(command);
     }
@@ -92,7 +92,7 @@ function publicCommandsFromHelp(): string[] {
 
 function publicSubcommandsFromHelp(): Map<string, string[]> {
   const subcommands = new Map<string, Set<string>>();
-  for (const match of HELP_TEXT.matchAll(/^\s+kookr\s+([a-z]+)\s+([a-z|]+)/gm)) {
+  for (const match of HELP_TEXT.matchAll(/^\s+kookr\s+([a-z-]+)\s+([a-z|]+)/gm)) {
     const [, command, subcommandsText] = match;
     if (command === undefined || subcommandsText === undefined) continue;
     const values = subcommands.get(command) ?? new Set<string>();
@@ -121,7 +121,7 @@ describe('renderCompletion', () => {
   it('renders a bash completion with root commands, subcommands, and flags', () => {
     const script = renderCompletion('bash');
     expect(script).toContain('complete -F _kookr kookr');
-    expect(script).toContain('spawn signal doctor status command ralph drain resume maintenance push completion');
+    expect(script).toContain('spawn signal doctor status command ralph drain resume maintenance pr-checklist push completion');
     expect(script).toContain('compgen -W "outcome"');
     expect(script).toContain('status pause resume cancel');
     expect(script).toContain('--prompt-file');
@@ -138,7 +138,7 @@ describe('renderCompletion', () => {
   it('renders a zsh completion with root commands, subcommands, and flags', () => {
     const script = renderCompletion('zsh');
     expect(script).toContain('#compdef kookr');
-    expect(script).toContain('root_commands=(spawn signal doctor status command ralph drain resume maintenance push completion)');
+    expect(script).toContain('root_commands=(spawn signal doctor status command ralph drain resume maintenance pr-checklist push completion)');
     expect(script).toContain('compadd outcome');
     expect(script).toContain('compadd -- status pause resume cancel');
     expect(script).toContain('compadd claude-code codex-cli');
