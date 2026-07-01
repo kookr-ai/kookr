@@ -159,6 +159,7 @@ const ClientMessageSchemaImpl = z.union([
   z.object({
     type: z.literal('requestTaskSnapshotReflect'),
     taskId: z.string(),
+    hint: z.string().optional(),
   }),
   z.object({
     type: z.literal('relaunch'),

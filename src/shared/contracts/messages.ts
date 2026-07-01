@@ -318,7 +318,7 @@ export type ClientMessage =
   | { type: 'completeTask'; taskId: string; feedback?: TaskCompletionFeedback; requestReflect?: boolean }
   | { type: 'setTaskFeedback'; taskId: string; feedback: TaskCompletionFeedback }
   | { type: 'requestTaskReflect'; taskId: string; direction: 'up' | 'down' }
-  | { type: 'requestTaskSnapshotReflect'; taskId: string }
+  | { type: 'requestTaskSnapshotReflect'; taskId: string; hint?: string }
   | { type: 'relaunch'; taskId: string; prompt: string; agentType?: AgentSelection; dependencies?: LaunchDependency[] }
   | { type: 'cancelTask'; taskId: string }
   | { type: 'reopenTask'; taskId: string }

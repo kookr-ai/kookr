@@ -395,7 +395,7 @@ const clientMessageRoundTripCases = [
   }),
   clientMessageCase({ type: 'setTaskFeedback', taskId: 'task-1', feedback: { rating: 'up', note: 'done' } }),
   clientMessageCase({ type: 'requestTaskReflect', taskId: 'task-1', direction: 'up' }),
-  clientMessageCase({ type: 'requestTaskSnapshotReflect', taskId: 'task-1' }),
+  clientMessageCase({ type: 'requestTaskSnapshotReflect', taskId: 'task-1', hint: 'liked being asked for e2e tests' }),
   clientMessageCase({ type: 'relaunch', taskId: 'task-1', prompt: 'try again', agentType: 'codex-cli', dependencies: ['kb'] }),
   clientMessageCase({ type: 'cancelTask', taskId: 'task-1' }),
   clientMessageCase({ type: 'reopenTask', taskId: 'task-1' }),

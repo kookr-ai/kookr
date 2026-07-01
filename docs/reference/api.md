@@ -351,7 +351,7 @@ delta sequence number.
 | `completeTask` | Mark a task complete, optionally with feedback or reflection request. | `taskId`, optional `feedback`, `requestReflect` |
 | `setTaskFeedback` | Save feedback for an existing task. | `taskId`, `feedback` |
 | `requestTaskReflect` | Start task reflection from thumbs-up/down feedback. | `taskId`, `direction` |
-| `requestTaskSnapshotReflect` | Start an anytime task snapshot reflection. | `taskId` |
+| `requestTaskSnapshotReflect` | Start an anytime task snapshot reflection, with an optional free-text hint to steer the analysis. | `taskId`, optional `hint` |
 | `relaunch` | Relaunch an existing task with a new prompt. | `taskId`, `prompt`, optional `agentType`, `dependencies` |
 | `cancelTask` | Cancel a task and terminate its session. | `taskId` |
 | `reopenTask` | Reopen a terminal task. | `taskId` |

@@ -218,7 +218,7 @@ export class LifecycleHandler {
       }
 
       case 'requestTaskSnapshotReflect': {
-        assertCommandSucceeded(await this.commands.requestTaskSnapshotReflect(msg.taskId));
+        assertCommandSucceeded(await this.commands.requestTaskSnapshotReflect(msg.taskId, msg.hint));
         return { duplicate: false };
       }
 

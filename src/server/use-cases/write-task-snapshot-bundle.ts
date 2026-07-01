@@ -20,6 +20,8 @@ export interface WriteTaskSnapshotBundleDeps {
   agentStates: AgentState[];
   /** Raw monitor events keyed by session id. */
   sessionEvents: TaskSnapshotSessionEvents;
+  /** Optional free-text hint from the user explaining why they reflected. */
+  userHint?: string;
 }
 
 export interface WriteTaskSnapshotBundleResult {
@@ -83,6 +85,7 @@ export async function writeTaskSnapshotBundle(
     taskPrompt: task.prompt,
     cwd: task.cwd,
     ...(task.criteria !== undefined ? { criteria: task.criteria } : {}),
+    ...(deps.userHint ? { userHint: deps.userHint } : {}),
     ...(task.completionDigest ? { completionDigest: { bullets: task.completionDigest.bullets } } : {}),
     sessions,
     agentStates: deps.agentStates,

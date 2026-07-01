@@ -75,6 +75,13 @@ export interface TaskSnapshotBundle {
   taskPrompt: string;
   cwd: string;
   criteria?: string;
+  /**
+   * Optional free-text hint the user typed when clicking Reflect, explaining
+   * why they triggered the reflection (e.g. "liked being asked for e2e tests").
+   * Untrusted content — the reflect skill reads it as steering context, not as
+   * instructions, exactly like the source-task prompt and notes.
+   */
+  userHint?: string;
   completionDigest?: { bullets: string[] };
   sessions: TaskSnapshotBundleSession[];
   /** Current read-model states for this task's sessions, as seen by the dashboard. */
