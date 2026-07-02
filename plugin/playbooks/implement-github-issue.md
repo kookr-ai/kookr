@@ -5,9 +5,10 @@ repo-tags: [github]
 tags: [workflow, loopable]
 dependencies: [kb]
 deliveryPreAuthorized: true
-# Auto-complete the task as soon as the agent runs `kookr signal completion-ready`,
-# instead of leaving it open for manual review. Self-continuation successors inherit
-# this automatically (server-side, via parentTaskId). See docs/reference/auto-close-on-signal.md.
+# Auto-complete the task after its `completion_ready` signal has been pending for
+# the one-hour grace period, instead of leaving it open indefinitely for manual
+# review. Self-continuation successors inherit this automatically (server-side,
+# via parentTaskId). See docs/reference/auto-close-on-signal.md.
 autoCloseOnSignal: true
 parameters:
   - name: issueSelector
@@ -516,12 +517,12 @@ If no further action is possible because external review/checks are pending, lea
 
 If `{{selfContinuation}}` is `true` and you are NOT running in Ralph loop mode, after the PR for this target is merged use the `self-continuation-task` skill to spawn a fresh Kookr task that re-runs this playbook for the next batch, forwarding the same parameter values (repo, selector, merge policy, and these toggles). This chains batches without the built-in loop. In Ralph loop mode, do nothing extra — the loop already advances to the next target.
 
-**Ending a self-continuation chain without a successor (make the stop legible).** The successor spawn above is merge-gated: if you deliberately leave the PR open (e.g. an analysis PR feeding a human go/no-go) and/or every remaining candidate is operator-gated or hard-blocked, then spawning no successor is correct — but the autoCloseOnSignal completion that follows surfaces only as a terminated task with no rationale, indistinguishable from a crash. Before you signal completion-ready in that case:
+**Ending a self-continuation chain without a successor (make the stop legible).** The successor spawn above is merge-gated: if you deliberately leave the PR open (e.g. an analysis PR feeding a human go/no-go) and/or every remaining candidate is operator-gated or hard-blocked, then spawning no successor is correct — but the delayed autoCloseOnSignal completion that follows surfaces only as a terminated task with no rationale, indistinguishable from a crash. Before you signal completion-ready in that case:
 
 1. If `{{mergeAfterImplementation}}` is `true` but you chose **not** to merge, still run the Phase 8 mergeability check (`gh pr view --json state,mergeStateStatus,reviewDecision,statusCheckRollup`) and record one line stating why merge is deferred (gate name, blocking issue, pending review). A deferred merge must be a recorded decision, not a silently skipped step.
 2. Post one concise, task-visible note (a PR comment and/or your final answer) that says the chain is intentionally paused, *why* (which gate or blocked issues), and *what unblocks it*. A memory or PR-body mention alone is not enough — the operator reads the task surface, not your memory files.
 
-**Releasing this task's slot (standard / self-continuation launches only).** This playbook sets `autoCloseOnSignal: true`, so once your work for this task is genuinely finished — the PR is open/merged and (for a chain) the successor task has been spawned — run `kookr signal completion-ready` to auto-complete *this* task and free its active slot. The successor you spawned inherits `autoCloseOnSignal` automatically (server-side, via `parentTaskId`), so the whole chain keeps releasing slots without piling up open tasks. Do NOT signal completion-ready while work remains — it closes the task immediately. In Ralph loop mode, ignore this: the loop owns the task lifecycle and writes a verdict instead (Phase 9).
+**Releasing this task's slot (standard / self-continuation launches only).** This playbook sets `autoCloseOnSignal: true`, so once your work for this task is genuinely finished — the PR is open/merged and (for a chain) the successor task has been spawned — run `kookr signal completion-ready` to schedule delayed auto-completion for *this* task after the one-hour grace period. The successor you spawned inherits `autoCloseOnSignal` automatically (server-side, via `parentTaskId`), so the whole chain keeps releasing slots without piling up open tasks. Do NOT signal completion-ready while work remains — after the grace period it closes the task without another prompt. In Ralph loop mode, ignore this: the loop owns the task lifecycle and writes a verdict instead (Phase 9).
 
 ## Phase 8.5: Post-task KB lesson decision
 

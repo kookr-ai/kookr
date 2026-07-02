@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
+  autoCloseStaleCompletionReadyTasks,
   clearAllTimers,
   findFirstActiveSession,
   restoreExpiredSnoozes,
@@ -178,6 +179,122 @@ describe('runBudgetCheck', () => {
     expect(runBudgetCheck(task, 11, checker, enqueue)).toBe(true);
     expect(enqueue).toHaveBeenCalledTimes(2);
     expect(enqueue.mock.calls[1][1].severity).toBe('critical');
+  });
+});
+
+describe('autoCloseStaleCompletionReadyTasks', () => {
+  function startTask(taskStore: TaskStore, id: string): void {
+    taskStore.addSession(id, {
+      tmuxSession: `kookr-${id}`,
+      agentType: 'claude-code',
+      cwd: '/tmp',
+      createdAt: new Date('2026-06-21T00:00:00.000Z'),
+    });
+  }
+
+  function lifecycleDeps(taskStore: TaskStore, issueClaimRegistry?: { safeReleaseAllFor: ReturnType<typeof vi.fn> }) {
+    return {
+      adapter: { stop: vi.fn(async () => undefined) },
+      monitor: { unregisterAgent: vi.fn(), getAgentEvents: vi.fn(() => []) },
+      taskStore,
+      queue: new AttentionQueue(),
+      hookWatcher: { stop: vi.fn() },
+      watchdog: { unregisterAgent: vi.fn() },
+      ...(issueClaimRegistry ? { issueClaimRegistry } : {}),
+    };
+  }
+
+  test('completes opted-in completion-ready tasks after the one-hour threshold', async () => {
+    const taskStore = new TaskStore();
+    const eligible = taskStore.createTask({ prompt: 'Eligible', cwd: '/tmp', autoCloseOnSignal: true });
+    const fresh = taskStore.createTask({ prompt: 'Fresh', cwd: '/tmp', autoCloseOnSignal: true });
+    const manual = taskStore.createTask({ prompt: 'Manual', cwd: '/tmp' });
+    for (const task of [eligible, fresh, manual]) startTask(taskStore, task.id);
+
+    taskStore.setPendingSignal(eligible.id, { kind: 'completion_ready', raisedAt: '2026-06-21T00:00:00.000Z' });
+    taskStore.setPendingSignal(fresh.id, { kind: 'completion_ready', raisedAt: '2026-06-21T00:30:00.000Z' });
+    taskStore.setPendingSignal(manual.id, { kind: 'completion_ready', raisedAt: '2026-06-21T00:00:00.000Z' });
+
+    const result = await autoCloseStaleCompletionReadyTasks({
+      taskStore,
+      lifecycleDeps: lifecycleDeps(taskStore),
+    }, {
+      now: new Date('2026-06-21T01:00:00.000Z'),
+    });
+
+    expect(result).toEqual({ closedTaskIds: [eligible.id] });
+    expect(taskStore.getTask(eligible.id)?.status).toBe('completed');
+    expect(taskStore.getPendingSignal(eligible.id)).toBeUndefined();
+    expect(taskStore.getTask(fresh.id)?.status).toBe('inProgress');
+    expect(taskStore.getTask(manual.id)?.status).toBe('inProgress');
+  });
+
+  test('leaves active Ralph loops for the Ralph lifecycle path', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'Loop', cwd: '/tmp', autoCloseOnSignal: true });
+    startTask(taskStore, task.id);
+    taskStore.getTaskForMutation(task.id)!.ralphLoop = {
+      prompt: 'Loop',
+      iterationCap: 3,
+      currentIteration: 1,
+      status: 'running',
+      lastIterationStartedAt: Date.parse('2026-06-21T00:00:00.000Z'),
+      cumulativeIterations: 1,
+    };
+    taskStore.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-21T00:00:00.000Z' });
+
+    const result = await autoCloseStaleCompletionReadyTasks({
+      taskStore,
+      lifecycleDeps: lifecycleDeps(taskStore),
+    }, {
+      now: new Date('2026-06-21T02:00:00.000Z'),
+    });
+
+    expect(result.closedTaskIds).toEqual([]);
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+    expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+  });
+
+  test('does not auto-close a later run from a pre-start completion-ready signal', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'Manual review', cwd: '/tmp', autoCloseOnSignal: true });
+    taskStore.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-21T00:00:00.000Z' });
+    taskStore.addSession(task.id, {
+      tmuxSession: `kookr-${task.id}`,
+      agentType: 'claude-code',
+      cwd: '/tmp',
+      createdAt: new Date('2026-06-21T00:30:00.000Z'),
+    });
+
+    const result = await autoCloseStaleCompletionReadyTasks({
+      taskStore,
+      lifecycleDeps: lifecycleDeps(taskStore),
+    }, {
+      now: new Date('2026-06-21T02:00:00.000Z'),
+    });
+
+    expect(result.closedTaskIds).toEqual([]);
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+    expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+  });
+
+  test('releases issue claims through the normal completion lifecycle', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'Eligible', cwd: '/tmp', autoCloseOnSignal: true });
+    startTask(taskStore, task.id);
+    taskStore.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-21T00:00:00.000Z' });
+    const safeReleaseAllFor = vi.fn(() => []);
+
+    const result = await autoCloseStaleCompletionReadyTasks({
+      taskStore,
+      lifecycleDeps: lifecycleDeps(taskStore, { safeReleaseAllFor }),
+    }, {
+      now: new Date('2026-06-21T01:00:00.000Z'),
+    });
+
+    expect(result.closedTaskIds).toEqual([task.id]);
+    expect(taskStore.getTask(task.id)?.status).toBe('completed');
+    expect(safeReleaseAllFor).toHaveBeenCalledWith(task.id, 'released');
   });
 });
 

@@ -61,6 +61,7 @@ function mockRouteLaunchTask(taskStore: TaskStore) {
     const task = taskStore.createTask({
       prompt: opts.prompt,
       cwd: opts.cwd,
+      autoCloseOnSignal: opts.autoCloseOnSignal,
       playbookParameterValues: opts.playbookParameterValues,
     });
     if (opts.name) task.name = opts.name;
@@ -129,9 +130,9 @@ describe('GET /api/tasks/completion-ready/stale', () => {
         createdAt: new Date('2026-06-20T00:00:00.000Z'),
       });
     }
-    taskStore.setPendingSignal(stale.id, { kind: 'completion_ready', raisedAt: '2026-06-19T00:00:00.000Z' });
+    taskStore.setPendingSignal(stale.id, { kind: 'completion_ready', raisedAt: '2026-06-20T00:30:00.000Z' });
     taskStore.setPendingSignal(fresh.id, { kind: 'completion_ready', raisedAt: new Date().toISOString() });
-    taskStore.setPendingSignal(autoCloseEligible.id, { kind: 'completion_ready', raisedAt: '2026-06-19T01:00:00.000Z' });
+    taskStore.setPendingSignal(autoCloseEligible.id, { kind: 'completion_ready', raisedAt: '2026-06-20T01:00:00.000Z' });
 
     const app = mkApp(mkLoopDeps(taskStore));
     const res = await app.request('/api/tasks/completion-ready/stale?thresholdMs=3600000');
@@ -144,12 +145,12 @@ describe('GET /api/tasks/completion-ready/stale', () => {
       count: 2,
       tasks: [{
         task: expect.objectContaining({ id: stale.id, taskId: stale.id, status: 'inProgress' }),
-        signal: { kind: 'completion_ready', raisedAt: '2026-06-19T00:00:00.000Z' },
+        signal: { kind: 'completion_ready', raisedAt: '2026-06-20T00:30:00.000Z' },
         canAutoClose: false,
         manualActionRequiredReason: 'auto_close_not_enabled',
       }, {
         task: expect.objectContaining({ id: autoCloseEligible.id, taskId: autoCloseEligible.id, status: 'inProgress' }),
-        signal: { kind: 'completion_ready', raisedAt: '2026-06-19T01:00:00.000Z' },
+        signal: { kind: 'completion_ready', raisedAt: '2026-06-20T01:00:00.000Z' },
         canAutoClose: true,
       }],
     });
@@ -490,6 +491,24 @@ describe('POST /api/tasks error paths', () => {
     expect(launchTask).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       prompt,
       cwd: '/cwd',
+    }));
+  });
+
+  test('persists autoCloseOnSignal when creating a task', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd', autoCloseOnSignal: true }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.autoCloseOnSignal).toBe(true);
+    expect(launchTask).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      autoCloseOnSignal: true,
     }));
   });
 
@@ -1114,7 +1133,7 @@ describe('POST /api/tasks/:id/signal', () => {
       return task.id;
     }
 
-    test('auto-completes an opted-in task on completion_ready', async () => {
+    test('schedules an opted-in task for delayed auto-close on completion_ready', async () => {
       const taskStore = new TaskStore();
       const id = startActiveTask(taskStore, { autoCloseOnSignal: true });
       const res = await mkApp(mkAutoCloseDeps(taskStore)).request(`/api/tasks/${id}/signal`, {
@@ -1126,15 +1145,42 @@ describe('POST /api/tasks/:id/signal', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.ok).toBe(true);
-      expect(body.autoClosed).toBe(true);
-      expect(body.outcome).toBe('completed');
-      expect(taskStore.getTask(id)!.status).toBe('completed');
+      expect(body.autoClosed).toBe(false);
+      expect(body.autoCloseScheduled).toBe(true);
+      expect(body.autoCloseAfterMs).toBe(DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS);
+      expect(body).not.toHaveProperty('outcome');
+      expect(taskStore.getTask(id)!.status).toBe('inProgress');
+      expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
+    });
+
+    test('does not advertise delayed auto-close for an active Ralph-loop task', async () => {
+      const taskStore = new TaskStore();
+      const id = startActiveTask(taskStore, { autoCloseOnSignal: true });
+      taskStore.getTaskForMutation(id)!.ralphLoop = {
+        status: 'running',
+        iteration: 1,
+      } as never;
+
+      const res = await mkApp(mkAutoCloseDeps(taskStore)).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ok).toBe(true);
+      expect(body.autoClosed).toBe(false);
+      expect(body).not.toHaveProperty('autoCloseScheduled');
+      expect(body).not.toHaveProperty('autoCloseAfterMs');
+      expect(taskStore.getTask(id)!.status).toBe('inProgress');
+      expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
     });
 
     test('falls back to recording the signal when the opted-in task is not in progress', async () => {
       const taskStore = new TaskStore();
-      // Opted in, but never started (status 'open', no session) — completeTask
-      // cannot transition it, so the signal must still surface for manual review.
+      // Opted in, but never started (status 'open', no session) — the signal
+      // still surfaces for manual review, but is not scheduled for auto-close.
       const task = taskStore.createTask({ prompt: 'Ship it', cwd: '/repo', autoCloseOnSignal: true });
       expect(taskStore.getTask(task.id)!.status).toBe('open');
 
@@ -1148,6 +1194,7 @@ describe('POST /api/tasks/:id/signal', () => {
       const body = await res.json();
       expect(body.ok).toBe(true);
       expect(body.autoClosed).toBe(false);
+      expect(body).not.toHaveProperty('autoCloseScheduled');
       expect(taskStore.getTask(task.id)!.status).toBe('open');
       expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
     });
@@ -1170,7 +1217,7 @@ describe('POST /api/tasks/:id/signal', () => {
       expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
     });
 
-    test('auto-completes an opted-in task with the default ask-first launch stamp', async () => {
+    test('schedules an opted-in task with the default ask-first launch stamp', async () => {
       const taskStore = new TaskStore();
       const task = taskStore.createTask({
         prompt: 'Ship it',
@@ -1193,9 +1240,10 @@ describe('POST /api/tasks/:id/signal', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.autoClosed).toBe(true);
-      expect(body.outcome).toBe('completed');
-      expect(taskStore.getTask(task.id)!.status).toBe('completed');
+      expect(body.autoClosed).toBe(false);
+      expect(body.autoCloseScheduled).toBe(true);
+      expect(body.autoCloseAfterMs).toBe(DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS);
+      expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
     });
   });
 });

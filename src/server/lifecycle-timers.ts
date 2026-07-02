@@ -18,12 +18,16 @@ import type { SessionInfo } from '../core/session-read-model.js';
 import { reconcile } from './reconciliation.js';
 import type { WorktreeRegistry } from '../adapters/git-worktree-registry.js';
 import { saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
-import { cleanupSessionResources, promotePendingTasks, type LifecycleDeps, type AgentLifecycleDeps } from './agent-lifecycle.js';
+import { cleanupSessionResources, completeTask, promotePendingTasks, type LifecycleDeps, type AgentLifecycleDeps } from './agent-lifecycle.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import { getDetectionStats, type DetectionStats } from '../core/detection-stats.js';
 import type { UserInputDeliverySnapshot } from '../shared/contracts/user-input-delivery.js';
 import type { PersistenceHealthRecorder } from '../core/persistence-health.js';
 import type { TaskStateSaveSchedulerLike } from './task-state-save-scheduler.js';
+import {
+  DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
+  listStaleCompletionReadyTasks,
+} from '../core/completion-ready-cleanup.js';
 
 export interface TimerDeps {
   monitor: Monitor;
@@ -159,6 +163,50 @@ export function runProgressBudgetBurnDiagnosticSample(
     usage,
     events: getAgentEvents(activeSession.tmuxSession),
   }) !== null;
+}
+
+export interface AutoCloseStaleCompletionReadyDeps {
+  taskStore: TaskStore;
+  lifecycleDeps?: LifecycleDeps;
+}
+
+export interface AutoCloseStaleCompletionReadyResult {
+  closedTaskIds: string[];
+}
+
+export async function autoCloseStaleCompletionReadyTasks(
+  deps: AutoCloseStaleCompletionReadyDeps,
+  opts: { now?: Date; thresholdMs?: number } = {},
+): Promise<AutoCloseStaleCompletionReadyResult> {
+  const closedTaskIds: string[] = [];
+  const lifecycleDeps = deps.lifecycleDeps;
+  if (!lifecycleDeps) return { closedTaskIds };
+
+  const entries = listStaleCompletionReadyTasks(deps.taskStore.listTasks(), {
+    now: opts.now,
+    thresholdMs: opts.thresholdMs ?? DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
+  }).filter((entry) => entry.canAutoClose && !isActiveRalphLoop(entry.task));
+
+  for (const entry of entries) {
+    const taskId = entry.task.id;
+    try {
+      await completeTask(taskId, lifecycleDeps);
+      deps.taskStore.clearPendingSignal(taskId);
+      closedTaskIds.push(taskId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[completion-ready] auto-close failed for task ${taskId}: ${message}`);
+      if (deps.taskStore.getTask(taskId)?.status === 'completed') {
+        deps.taskStore.clearPendingSignal(taskId);
+      }
+    }
+  }
+
+  return { closedTaskIds };
+}
+
+function isActiveRalphLoop(task: Task): boolean {
+  return task.ralphLoop?.status === 'running' || task.ralphLoop?.status === 'paused';
 }
 
 export function restoreExpiredSnoozes(queue: AttentionQueue, taskStore: TaskStore): boolean {
@@ -372,6 +420,9 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     adapter, monitor, taskStore, hookWatcher, watchdog, shadowRegistry, tokenTracker,
     queue,
     suppressionTracker: deps.suppressionTracker,
+    ...(deps.agentLifecycleDeps?.issueClaimRegistry
+      ? { issueClaimRegistry: deps.agentLifecycleDeps.issueClaimRegistry }
+      : {}),
   };
 
   const livenessInterval = setInterval(async () => {
@@ -384,6 +435,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         await deps.worktreeRegistry.refresh(deps.worktreeRegistryRepoPath);
       }
       const result = await reconcile(taskStore, terminalBackend, deps.worktreeRegistry);
+      const autoCloseResult = await autoCloseStaleCompletionReadyTasks({ taskStore, lifecycleDeps });
 
       // Release issue-ownership claims for reconcile-driven terminal
       // transitions. reconcile() calls the RAW TaskStore methods, bypassing
@@ -416,6 +468,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         || result.worktreesMissing.length > 0
         || result.worktreesStale.length > 0
         || result.worktreesChanged.length > 0
+        || autoCloseResult.closedTaskIds.length > 0
       ) {
         // Promote pending tasks when slots open from auto-transitioned sessions
         // (completed via backfill, or terminated via the new dead-session path).
