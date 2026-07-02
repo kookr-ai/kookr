@@ -127,12 +127,12 @@ The system SHOULD detect when an agent is repeating the same action without mean
 The system SHOULD detect when an agent keeps hitting the same error without changing approach.
 
 **Acceptance criteria:**
-- Same error message repeated ≥ threshold (default: 3) times triggers `repeated_error` anomaly
-- Different error messages do not trigger the anomaly
-- Anomaly includes the repeated error message and count
+- Same normalized error fingerprint repeated ≥ threshold (default: 3) times triggers `repeated_error` anomaly
+- Different normalized error templates do not trigger the anomaly
+- Anomaly explanation includes the latest raw repeated error message and the anomaly includes the count
 - **Stop event suppression:** When the last event is `stop`, repeated_error detection is suppressed
 
-**Evidence:** `src/core/anomaly-detector.ts` (repeated_error detection, threshold = 3, stop suppression), `src/core/anomaly-detector.test.ts` ("3 identical errors produce repeated_error", "different errors produce no anomaly", "stop after repeated errors → needs_input not repeated_error").
+**Evidence:** `src/core/anomaly-detector.ts` (repeated_error fingerprinting, threshold = 3, stop suppression), `src/core/anomaly-detector.test.ts` ("same error 3 times produces repeated_error", "near-identical errors with volatile tokens produce repeated_error", "different normalized error templates produce no anomaly", "stop after repeated errors → needs_input not repeated_error").
 
 ### R2.4: Detect Permission Blocks [F2.4] — SHOULD — `done`
 
