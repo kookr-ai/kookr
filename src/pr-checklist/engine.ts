@@ -15,6 +15,7 @@ import {
   isSourceFile,
   parseChecklist,
 } from './checklist.js';
+import { parseChecklistConfig } from './config.js';
 import { ChecklistInputError } from './errors.js';
 import { collectDiffFacts, execGit, type GitRunner } from './git.js';
 import type { DiffFacts, VerifyReport } from './types.js';
@@ -23,6 +24,7 @@ export const MAX_BODY_BYTES = 1024 * 1024;
 export const MAX_ENV_FILE_BYTES = 256 * 1024;
 export const MAX_TEST_FILE_BYTES = 512 * 1024;
 export const MAX_TEST_CORPUS_BYTES = 16 * 1024 * 1024;
+export const MAX_CONFIG_BYTES = 64 * 1024;
 
 export interface VerifyInput {
   /** PR body text, or null when unavailable (attestation rules then skip). */
@@ -32,6 +34,10 @@ export interface VerifyInput {
   testCorpus: string;
   /** The repo's PR-template text, or '' when it ships none (presence rule then no-ops). */
   templateText: string;
+  /** Rule ids the repo disabled via .kookr/pr-checklist.json (P4a). Only removes checks. */
+  disabled?: ReadonlySet<string>;
+  /** Non-fatal notes from parsing the repo config, surfaced in the report. */
+  configNotes?: readonly string[];
 }
 
 /** Pure: evaluate attestation + structural rules and aggregate. */
@@ -51,10 +57,23 @@ export function verifyChecklist(input: VerifyInput): VerifyReport {
 
   const structural = evaluateStructural(input.facts, input.envFileText, input.testCorpus, attest.waived);
 
-  const results = [...presence, ...attest.results, ...structural];
+  const allResults = [...presence, ...attest.results, ...structural];
+
+  // P4a: drop results for rules the repo disabled in .kookr/pr-checklist.json.
+  // This can only REMOVE checks, never add a fail — a repo relaxing its own gate.
+  const disabled = input.disabled ?? EMPTY_DISABLED;
+  const results = disabled.size === 0 ? allResults : allResults.filter((r) => !disabled.has(r.id));
+  if (disabled.size > 0) {
+    const droppedIds = new Set(allResults.filter((r) => disabled.has(r.id)).map((r) => r.id));
+    for (const id of droppedIds) notes.push(`rule "${id}" disabled by .kookr/pr-checklist.json`);
+  }
+  if (input.configNotes && input.configNotes.length > 0) notes.push(...input.configNotes);
+
   const ok = !results.some((r) => r.status === 'fail');
   return { ok, bodyChecked, results, notes };
 }
+
+const EMPTY_DISABLED: ReadonlySet<string> = new Set();
 
 export interface CollectDeps {
   cwd: string;
@@ -83,7 +102,20 @@ export async function collectAndVerify(deps: CollectDeps): Promise<VerifyReport>
   // base is unresolved).
   const templateText = deps.body !== null ? await readTemplate(runner, read, deps.cwd) : '';
 
-  return verifyChecklist({ body: deps.body, facts, envFileText, testCorpus, templateText });
+  // P4a: per-repo declarative rule config. Read unconditionally (cheap; a repo
+  // may disable a structural rule that would otherwise fire on this very diff).
+  const configText = await readTracked(runner, read, deps.cwd, '.kookr/pr-checklist.json', MAX_CONFIG_BYTES);
+  const config = parseChecklistConfig(configText);
+
+  return verifyChecklist({
+    body: deps.body,
+    facts,
+    envFileText,
+    testCorpus,
+    templateText,
+    disabled: config.disable,
+    configNotes: config.notes,
+  });
 }
 
 /**

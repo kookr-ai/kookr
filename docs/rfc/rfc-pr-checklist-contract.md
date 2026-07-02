@@ -130,11 +130,14 @@ A repo opts in by adding **machine-readable markers** to its PR template
 - [ ] <!-- kookr:check:mbse --> Architecture docs refreshed if a subsystem changed.
 ```
 
-In v1 there is **no config file**. Marker ids map to built-in rules (§3). The
-optional `.kookr/pr-checklist.yaml` (repo-defined rules, including `command`)
-arrives at P4 with its own security review; its rule-merge precedence is defined
-there as **per-marker whole-rule replacement** (a repo rule for id `X` replaces
-the built-in for `X`; unknown ids fall back to `attest`), with the resolved set
+In v1 there is **no config file**. Marker ids map to built-in rules (§3).
+**P4a** adds one narrow, safe config: `.kookr/pr-checklist.json` with a single
+`disable` key, letting a repo opt its own gate out of named built-in rules
+(declarative-only, no execution — see §"Phased delivery" P4a). The fuller
+`.kookr/pr-checklist.yaml` (repo-defined rules, including `command`) arrives at
+P4 with its own security review; its rule-merge precedence is defined there as
+**per-marker whole-rule replacement** (a repo rule for id `X` replaces the
+built-in for `X`; unknown ids fall back to `attest`), with the resolved set
 inspectable via `kookr pr-checklist verify --explain`.
 
 ### 2. Rule types
@@ -261,10 +264,25 @@ reversible, and does not start until the prior phase has baked.
   env/scope gate (S3), attest + changed-when only, `--run-commands none`, the
   `if !`-guarded call, kill-switch + `doctor`. Canary on lucy + author repos
   before considering default-on. Satisfies R1.
+- **P4a — `.kookr/pr-checklist.json`, disable-only (SHIPPED).** The minimal,
+  safe slice of P4, carved out ahead of the risky remainder. A repo declares
+  `{ "disable": ["env", ...] }` to opt its own gate out of named built-in rules.
+  It is **JSON, not YAML** (no parser-bomb surface) and **declarative-only** —
+  the config can only ever *remove* checks, never add a rule, redirect a source,
+  or execute anything. So it cannot be an execution or exfiltration vector: worst
+  case a repo weakens its own gate, and CI stays authoritative. That property is
+  why it needs none of the S1/S5 command-execution review below. Motivating case:
+  `knowledge-base-mcp-server` documents 100+ config vars in typed config modules /
+  a reference doc, not a flat `.env.example`, so the built-in `env` rule is a
+  structural mismatch — `{ "disable": ["env"] }` resolves it without a brittle
+  125-var `.env.example`. Malformed config degrades to "no config" with a note,
+  never a hard fail (a broken config must not fail-close the gate). Rule redirect
+  (`env.source: <path>`) and the `--explain` resolved-set view are deferred to
+  full P4; today, disabled rules are surfaced as report notes.
 - **P4 — `.kookr/pr-checklist.yaml` + `command` rules + CI generator.** Highest
   risk (repo-controlled execution, generated CI files in consumer repos). Its own
   review cycle; must pass S1/S5 with fork-PR exfil and hostile-YAML fixtures.
-  Satisfies R3.
+  Builds on P4a's config file (adding YAML + the executing rule types). Satisfies R3.
 - **P5 — GitLab.** `glab` adapter + `.gitlab/merge_request_templates/` discovery +
   `.gitlab-ci.yml` generator + first non-JS language profile. Satisfies R7.
 

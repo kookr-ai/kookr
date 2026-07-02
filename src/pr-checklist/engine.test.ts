@@ -79,6 +79,57 @@ describe('verifyChecklist (pure)', () => {
     expect(report.results.some((r) => r.id === 'pr-template')).toBe(false);
     expect(report.ok).toBe(true);
   });
+
+  it('P4a: a disabled rule id drops its results and turns a fail into a pass (repo relaxing its own gate)', () => {
+    const base = {
+      body: null,
+      facts: facts({ addedSourceLines: ['x = process.env.NEW'], addedFiles: ['src/orphan.ts'] }),
+      envFileText: '',
+      testCorpus: '',
+      templateText: '',
+    };
+    // Without config: env (+ new-tests) fail.
+    const before = verifyChecklist(base);
+    expect(before.ok).toBe(false);
+    expect(before.results.some((r) => r.id === 'env' && r.status === 'fail')).toBe(true);
+
+    // Disabling env drops the env result; new-tests still fails.
+    const partial = verifyChecklist({ ...base, disabled: new Set(['env']) });
+    expect(partial.results.some((r) => r.id === 'env')).toBe(false);
+    expect(partial.results.some((r) => r.id === 'new-tests' && r.status === 'fail')).toBe(true);
+    expect(partial.ok).toBe(false);
+    expect(partial.notes.join(' ')).toMatch(/rule "env" disabled/);
+
+    // Disabling both → clean pass.
+    const both = verifyChecklist({ ...base, disabled: new Set(['env', 'new-tests']) });
+    expect(both.ok).toBe(true);
+    expect(both.results.some((r) => r.id === 'env' || r.id === 'new-tests')).toBe(false);
+  });
+
+  it('P4a: disabling a rule that never fired adds no spurious note', () => {
+    const report = verifyChecklist({
+      body: null,
+      facts: facts({ changedPaths: ['README.md'] }),
+      envFileText: '',
+      testCorpus: '',
+      templateText: '',
+      disabled: new Set(['env']),
+    });
+    expect(report.notes.join(' ')).not.toMatch(/disabled/);
+    expect(report.ok).toBe(true);
+  });
+
+  it('P4a: config parse notes surface in the report', () => {
+    const report = verifyChecklist({
+      body: null,
+      facts: facts(),
+      envFileText: '',
+      testCorpus: '',
+      templateText: '',
+      configNotes: ['.kookr/pr-checklist.json: unknown key "command" ignored'],
+    });
+    expect(report.notes.join(' ')).toMatch(/unknown key "command"/);
+  });
 });
 
 // A fake git runner keyed on the argv it receives.
@@ -161,6 +212,27 @@ describe('collectAndVerify (with injected git + fs)', () => {
       gitRunner: git,
     });
     expect(report.results.some((r) => r.id === 'pr-template')).toBe(false);
+    expect(report.ok).toBe(true);
+  });
+
+  it('P4a: reads .kookr/pr-checklist.json and honors { disable: ["env"] } end-to-end', async () => {
+    const git = fakeGit({
+      'merge-base origin/main HEAD': { stdout: base },
+      [`diff --name-status ${range}`]: { stdout: 'M\tsrc/config.ts' },
+      [`diff --unified=0 ${range}`]: { stdout: '+++ b/src/config.ts\n+const k = process.env.KB_BRAND_NEW' },
+      'ls-files -- .env.example': { stdout: '' }, // no env file → env rule would fail...
+      'ls-files -- .kookr/pr-checklist.json': { stdout: '.kookr/pr-checklist.json' },
+    });
+    const report = await collectAndVerify({
+      cwd: '/repo',
+      base: 'main',
+      body: null,
+      gitRunner: git,
+      readFileText: async (p) => (p.endsWith('.kookr/pr-checklist.json') ? '{ "disable": ["env"] }' : ''),
+    });
+    // ...but the repo disabled it, so no env fail and the note explains why.
+    expect(report.results.some((r) => r.id === 'env')).toBe(false);
+    expect(report.notes.join(' ')).toMatch(/rule "env" disabled/);
     expect(report.ok).toBe(true);
   });
 });
