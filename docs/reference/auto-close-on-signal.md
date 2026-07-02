@@ -7,7 +7,7 @@ until a human reviews it and clicks **Complete**.
 ## Why it exists
 
 Kookr caps the number of concurrently running tasks (`MAX_ACTIVE_TASKS`, default
-`10`). A task counts against that cap for as long as it is `inProgress` — which
+`10`). A task counts against that cap while its launch is in flight (a short-lived reservation) and for as long as it is `inProgress` — which
 includes the window *after* the agent has finished its work but before anyone has
 manually completed it. In automated, long-running workflows (self-continuation
 chains, batch issue implementation), finished-but-unreviewed tasks accumulate and

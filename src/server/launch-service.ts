@@ -403,6 +403,10 @@ export async function launchTask(
         }
       : undefined;
 
+  // #700 defense-in-depth: reserve the just-created task for this launch so a
+  // concurrent promoter can never race it, and so getActiveCount counts the
+  // in-flight launch against the cap (audit item 1, second launch site).
+  taskStore.beginLaunch(task.id);
   try {
     await adapterRegistry.get(agentType).launch(task.id, promptWithLaunchNote(task), opts.cwd, undefined, adapterOpts);
     if (bypassAllPermissions) {
@@ -427,6 +431,7 @@ export async function launchTask(
     // Clean up the task record so dedup doesn't block future retries. The
     // round-robin cursor was not advanced yet, so a failed launch leaves the
     // rotation untouched.
+    taskStore.endLaunch(task.id);
     taskStore.deleteTask(task.id);
     throw err;
   }
