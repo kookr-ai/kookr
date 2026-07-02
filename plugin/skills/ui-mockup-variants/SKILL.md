@@ -86,8 +86,13 @@ Write **one** self-contained HTML file at the repo root, e.g.
   informative"*, *"most minimal"*, *"closest to current"*).
 
 This file is a **throwaway preview artifact** — leave it untracked; do not commit
-it. Report its absolute path and tell the user how to open it (`file://…`, or via
-the running dev server).
+it. **Serve it, don't just hand back a `file://` path.** Start a lightweight local
+static server at the repo root (e.g. `python3 -m http.server <port>`, or the
+project's dev server) and give the user a `http://localhost:<port>/<feature>-mockups.html`
+URL — because the browser often runs on a *different host than the repo* (WSL2, SSH,
+containers, remote dev), where a `file://` path to a repo-local file simply won't
+open. Fall back to a `file://` path only when a server genuinely isn't practical,
+and say so. Either way, also report the file's absolute path.
 
 ### Rendered screenshots (if chosen)
 Launch the app the way the project documents (its `run`/dev workflow or the dev
