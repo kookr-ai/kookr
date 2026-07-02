@@ -256,6 +256,31 @@ Agents run in managed dtach sessions (see [ADR-014](adr/014-local-dtach-backend.
 
 The split exists so that silent session deaths — WSL glitches, OOM kills, the dtach attach child being reaped out from under the backend — cannot propagate through a single "Clear completed" click and permanently delete work the user never saw. The Stop-hook signal was considered as a "user acknowledgement" proxy and rejected as unreliable.
 
+### Issue-ownership claims (`KOOKR_ISSUE_CLAIMS`)
+
+RFC `rfc-issue-ownership-lock` (PR 1a). An in-process `IssueClaimRegistry`
+(`src/core/issue-claim-registry.ts`, modeled on `WorktreeLeaseService`) holds
+an in-memory map — the live authority — of which task owns which GitHub issue,
+keyed `(canonical repo, issue number)`. `Task.issueClaim` is the durable
+projection, written only via `TaskStore.setIssueClaim`/`clearIssueClaim`
+(single-writer, guard-tested), rebuilt into the map at boot before the HTTP
+listener serves.
+
+- **Claim**: `kookr issue claim <n>` → `POST /api/issue-claims` (repo resolved
+  from the caller's cwd, fork-aware via `resolve-claim-repo.ts`). The registry's
+  `claim()` is fully synchronous — atomic in the single server process. Losers
+  get a structured 409/exit-6 owner block (task, session, status, `doing`).
+- **Release**: automatic on terminal transitions (the three `agent-lifecycle`
+  wrappers) and additively at both `reconcile()` call sites for dead-session
+  tasks; holder-checked; every decision lands in the append-only audit log
+  `~/.kookr/issue-claims-audit.jsonl` (single-author sink).
+- **Flag**: `KOOKR_ISSUE_CLAIMS` (read at startup; restart to change; boot log
+  prints the resolved value). Off = registry not constructed, routes absent
+  (404 → clients proceed as pre-lock), release calls no-op.
+- **Single-writer assertion**: boot takes a pid lock (`server.pid`) on the data
+  dir so a second server process fails loudly instead of silently interleaving
+  writes (R27).
+
 ### `tasks.json` snapshots
 
 The task-persistence layer writes two kinds of on-disk snapshot alongside `tasks.json`:

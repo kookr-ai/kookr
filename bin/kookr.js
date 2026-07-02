@@ -12,6 +12,7 @@ Usage:
   kookr spawn [OPTIONS] [PROMPT...]    Create a task from the current shell.
   kookr doctor --json           Run machine-readable launch preflight checks.
   kookr signal <kind> [OPTIONS]  Raise an agent → user signal for the current task.
+  kookr issue <verb> [OPTIONS]   Claim/release/inspect issue ownership.
   kookr status [--json]         Print a read-only server snapshot.
   kookr command outcome [commandId] Inspect local/remote command outcomes as JSONL.
   kookr ralph <command> <taskId> [--json] Inspect or control a Ralph loop.
@@ -65,6 +66,11 @@ async function main({
   if (command === 'signal') {
     const { main: runSignalCli } = await import('./kookr-signal.js');
     return runSignalCli({ argv: rest, env, out, err, exit });
+  }
+
+  if (command === 'issue') {
+    const { main: runIssueCli } = await import('./kookr-issue.js');
+    return runIssueCli({ argv: rest, env, out, err, exit });
   }
 
   if (command === 'status') {

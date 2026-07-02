@@ -129,6 +129,16 @@ current iteration (`"outcome": "partial_ralph_completion"`). Completion failures
 never fail the signal call — the response carries `"autoClosed": false` and the
 signal remains recorded for manual review.
 
+## Issue Claims
+
+Present only when the server was started with `KOOKR_ISSUE_CLAIMS` enabled; with the flag off all three routes return `404` and clients proceed as pre-lock (RFC `rfc-issue-ownership-lock`).
+
+| Endpoint | Description |
+| --- | --- |
+| `POST /api/issue-claims` | Atomically claim an issue for a task (`{repo, number, taskId, sessionId?, force?}`); `409` with a decorated owner block when held |
+| `GET /api/issue-claims?repo=&number=` | List claims (one when `number` given) with `doing`/`lastActivityAt`/`ageMs` |
+| `DELETE /api/issue-claims` | Holder-checked release (`{repo, number, taskId}` in the JSON body); `403` if not owner |
+
 ## Supervisor Surface
 
 | Endpoint | Description |

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_AGENT_TYPE, type AgentType } from './agent-types.js';
 import type { CompletionDigest } from './completion-digest.js';
+import type { IssueClaim } from './issue-claim-types.js';
 import type { CriteriaCompletionVerdict } from '../shared/contracts/completion-digest.js';
 import type { PendingAgentSignal } from '../shared/contracts/agent-signal.js';
 import type {
@@ -601,6 +602,30 @@ export class TaskStore {
     const task = this.tasks.get(taskId);
     if (!task) return;
     task.projectId = projectId;
+    task.updatedAt = new Date();
+  }
+
+  /**
+   * Set the issue-ownership claim projection on a task (RFC:
+   * rfc-issue-ownership-lock R3). Sole legitimate caller is
+   * IssueClaimRegistry — enforced by a call-site guard test; do NOT call
+   * this from anywhere else.
+   */
+  setIssueClaim(taskId: string, claim: IssueClaim): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    task.issueClaim = structuredClone(claim);
+    task.updatedAt = new Date();
+  }
+
+  /**
+   * Clear the issue-ownership claim projection (RFC R3). Sole legitimate
+   * caller is IssueClaimRegistry — see setIssueClaim.
+   */
+  clearIssueClaim(taskId: string): void {
+    const task = this.tasks.get(taskId);
+    if (!task?.issueClaim) return;
+    delete task.issueClaim;
     task.updatedAt = new Date();
   }
 

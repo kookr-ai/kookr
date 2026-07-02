@@ -1219,3 +1219,48 @@ describe('reflect worktree cleanup on terminal transition', () => {
     expect(mockRemoveReflectWorktree).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue-claim release wiring (RFC rfc-issue-ownership-lock R8/R9b)
+// ---------------------------------------------------------------------------
+
+describe('issue-claim release on terminal transitions', () => {
+  function makeClaimDeps(task: ReturnType<typeof makeTask>) {
+    const safeReleaseAllFor = vi.fn(() => [] as Array<{ repo: string; number: number }>);
+    const deps = makeLifecycleDeps({ issueClaimRegistry: { safeReleaseAllFor } });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+    return { deps, safeReleaseAllFor };
+  }
+
+  beforeEach(() => {
+    mockCleanupTaskWorktrees.mockReset().mockResolvedValue(undefined);
+  });
+
+  test('completeTask releases claims with reason "released"', async () => {
+    const task = makeTask({ id: 'task-claim-1', status: 'inProgress', sessions: [] });
+    const { deps, safeReleaseAllFor } = makeClaimDeps(task);
+    await completeTask('task-claim-1', deps);
+    expect(safeReleaseAllFor).toHaveBeenCalledWith('task-claim-1', 'released');
+  });
+
+  test('cancelTask releases claims with reason "released"', async () => {
+    const task = makeTask({ id: 'task-claim-2', status: 'inProgress', sessions: [] });
+    const { deps, safeReleaseAllFor } = makeClaimDeps(task);
+    await cancelTask('task-claim-2', deps);
+    expect(safeReleaseAllFor).toHaveBeenCalledWith('task-claim-2', 'released');
+  });
+
+  test('terminateTask releases claims with reason "dead_reclaim" (confirmed-dead, R12)', async () => {
+    const task = makeTask({ id: 'task-claim-3', status: 'inProgress', sessions: [] });
+    const { deps, safeReleaseAllFor } = makeClaimDeps(task);
+    await terminateTask('task-claim-3', deps);
+    expect(safeReleaseAllFor).toHaveBeenCalledWith('task-claim-3', 'dead_reclaim');
+  });
+
+  test('wrappers tolerate an absent registry (flag off)', async () => {
+    const task = makeTask({ id: 'task-claim-4', status: 'inProgress', sessions: [] });
+    const deps = makeLifecycleDeps();
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+    await expect(completeTask('task-claim-4', deps)).resolves.toBeUndefined();
+  });
+});

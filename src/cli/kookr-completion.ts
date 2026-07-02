@@ -43,6 +43,11 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     flags: ['--note', '--task-id', '--json', '-h', '--help'],
   },
   {
+    name: 'issue',
+    subcommands: ['list', 'claim', 'release', 'owner'],
+    flags: ['--repo', '--force', '--task-id', '--json', '-h', '--help'],
+  },
+  {
     name: 'doctor',
     flags: ['--json', '-h', '--help'],
   },

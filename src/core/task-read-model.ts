@@ -1,4 +1,5 @@
 import type { CompletionDigest } from './completion-digest.js';
+import type { IssueClaim } from './issue-claim-types.js';
 import type { PendingAgentSignal } from '../shared/contracts/agent-signal.js';
 import type { AgentType } from './agent-types.js';
 import type { SessionInfo } from './session-read-model.js';
@@ -124,6 +125,13 @@ export interface Task {
   blocked_by?: TaskDependencyEdge[];
   /** Normalized project identifier (e.g. "github.com/owner/repo" or "local/dirname"). */
   projectId?: string;
+  /**
+   * Durable projection of this task's issue-ownership claim (RFC:
+   * rfc-issue-ownership-lock). The live authority is IssueClaimRegistry's
+   * in-memory map; this field is written ONLY via TaskStore.setIssueClaim /
+   * clearIssueClaim, and only by the registry (RFC R3).
+   */
+  issueClaim?: IssueClaim;
   /** Operator-declared launch intent metadata, used by coordinator detectors. */
   metadata?: TaskMetadata;
   /** User-declared task priority. Omitted means normal priority. */

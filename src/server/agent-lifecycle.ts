@@ -40,6 +40,18 @@ export interface AgentLifecycleDeps {
    */
   projectConfigStore?: ProjectConfigStore;
   terminalInputCoordinator?: Pick<TerminalInputCoordinator, 'registerSession'>;
+  /**
+   * Issue-claim registry (RFC rfc-issue-ownership-lock). Carried here so the
+   * reconcile call sites (lifecycle-timers) can release claims for
+   * reconcile-driven terminal transitions (R9). Absent when
+   * KOOKR_ISSUE_CLAIMS is off.
+   */
+  issueClaimRegistry?: {
+    safeReleaseAllFor(
+      taskId: string,
+      reason?: 'released' | 'dead_reclaim' | 'orphan_reclaim',
+    ): Array<{ repo: string; number: number }>;
+  };
 }
 
 /**
@@ -188,6 +200,17 @@ export interface LifecycleDeps {
   leaseService?: { release(worktreePath: string, ownerId: string): boolean };
   /** Workspace attempt repository — records cleanup attempts (Phase 1b). */
   attemptRepository?: import('../core/workspace-attempt-repository.js').WorkspaceAttemptRepository;
+  /**
+   * Issue-claim registry — releases issue-ownership claims on terminal
+   * transitions (RFC rfc-issue-ownership-lock R8/R9b). Absent when
+   * KOOKR_ISSUE_CLAIMS is off; safeReleaseAllFor never throws.
+   */
+  issueClaimRegistry?: {
+    safeReleaseAllFor(
+      taskId: string,
+      reason?: 'released' | 'dead_reclaim' | 'orphan_reclaim',
+    ): Array<{ repo: string; number: number }>;
+  };
 }
 
 function unregisterTranscript(tmuxName: string, deps: LifecycleDeps): void {
@@ -339,6 +362,8 @@ export async function completeTask(
 
   // Release worktree leases for this task
   releaseTaskLeases(task, taskId, deps);
+  // Release issue-ownership claims (RFC R8; safeReleaseAllFor never throws, R9b)
+  deps.issueClaimRegistry?.safeReleaseAllFor(taskId, 'released');
 
   // Fire-and-forget worktree cleanup — does not block the caller
   cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});
@@ -375,6 +400,8 @@ export async function terminateTask(
 
   // Release worktree leases for this task
   releaseTaskLeases(task, taskId, deps);
+  // Release issue-ownership claims — dead sessions = confirmed-dead reclaim (RFC R9/R12)
+  deps.issueClaimRegistry?.safeReleaseAllFor(taskId, 'dead_reclaim');
 
   // Fire-and-forget worktree cleanup — does not block the caller
   cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});
@@ -397,6 +424,8 @@ export async function cancelTask(
 
   // Release worktree leases for this task
   releaseTaskLeases(task, taskId, deps);
+  // Release issue-ownership claims (RFC R8; safeReleaseAllFor never throws, R9b)
+  deps.issueClaimRegistry?.safeReleaseAllFor(taskId, 'released');
 
   deps.taskStore.cancelTask(taskId);
 

@@ -206,6 +206,13 @@ export interface DeployRouteDeps {
 }
 
 export interface RouteDeps {
+  /**
+   * Issue-ownership claim route deps (RFC rfc-issue-ownership-lock).
+   * Absent when KOOKR_ISSUE_CLAIMS is off — the routes are then not
+   * registered, so clients get the same 404-as-pre-lock behavior as an
+   * old server (R7/R26).
+   */
+  issueClaims?: import('./issue-claim-routes.js').IssueClaimRouteDeps;
   taskStore: TaskStore;
   monitor: Monitor;
   queue: AttentionQueue;
