@@ -21,6 +21,7 @@ describe('verifyChecklist (pure)', () => {
       facts: facts({ addedSourceLines: ['x = process.env.NEW'] }),
       envFileText: '',
       testCorpus: '',
+      templateText: '',
     });
     expect(report.bodyChecked).toBe(false);
     expect(report.ok).toBe(false);
@@ -29,14 +30,54 @@ describe('verifyChecklist (pure)', () => {
 
   it('passes when every marked box is waived and no structural fault exists', () => {
     const body = ['- [ ] ~~<!-- kookr:check:mbse -->~~ — N/A', '- [x] <!-- kookr:check:readme --> done'].join('\n');
-    const report = verifyChecklist({ body, facts: facts({ changedPaths: ['README.md'] }), envFileText: '', testCorpus: '' });
+    const report = verifyChecklist({ body, facts: facts({ changedPaths: ['README.md'] }), envFileText: '', testCorpus: '', templateText: '' });
     expect(report.ok).toBe(true);
   });
 
   it('fails a checked box whose evidence is absent from the diff', () => {
     const body = '- [x] <!-- kookr:check:mbse --> refreshed';
-    const report = verifyChecklist({ body, facts: facts({ changedPaths: ['src/x.ts'] }), envFileText: '', testCorpus: '' });
+    const report = verifyChecklist({ body, facts: facts({ changedPaths: ['src/x.ts'] }), envFileText: '', testCorpus: '', templateText: '' });
     expect(report.ok).toBe(false);
+  });
+
+  it('fails when an inline body drops the template checklist entirely (the #835 bypass)', () => {
+    const template = ['- [ ] <!-- kookr:check:readme --> README', '- [ ] <!-- kookr:check:tests --> tests'].join('\n');
+    const report = verifyChecklist({
+      body: 'Summary only — no checklist markers at all.',
+      facts: facts({ changedPaths: ['src/x.ts'] }),
+      envFileText: '',
+      testCorpus: '',
+      templateText: template,
+    });
+    const presence = report.results.find((r) => r.id === 'pr-template');
+    expect(presence?.status).toBe('fail');
+    expect(presence?.summary).toMatch(/readme/);
+    expect(presence?.summary).toMatch(/tests/);
+    expect(report.ok).toBe(false);
+  });
+
+  it('passes template presence when the body reproduces every template marker (struck counts as present)', () => {
+    const template = ['- [ ] <!-- kookr:check:readme --> README', '- [ ] <!-- kookr:check:mbse --> arch'].join('\n');
+    const body = [
+      '- [x] <!-- kookr:check:readme --> done',
+      '- [ ] ~~<!-- kookr:check:mbse -->~~ — N/A',
+    ].join('\n');
+    const report = verifyChecklist({
+      body,
+      facts: facts({ changedPaths: ['README.md'] }),
+      envFileText: '',
+      testCorpus: '',
+      templateText: template,
+    });
+    expect(report.results.some((r) => r.id === 'pr-template')).toBe(false);
+    expect(report.ok).toBe(true);
+  });
+
+  it('does not enforce presence when no body was provided (CI stays authoritative)', () => {
+    const template = '- [ ] <!-- kookr:check:readme --> README';
+    const report = verifyChecklist({ body: null, facts: facts(), envFileText: '', testCorpus: '', templateText: template });
+    expect(report.results.some((r) => r.id === 'pr-template')).toBe(false);
+    expect(report.ok).toBe(true);
   });
 });
 
@@ -85,6 +126,41 @@ describe('collectAndVerify (with injected git + fs)', () => {
       [`diff --unified=0 ${range}`]: { stdout: '+++ b/README.md\n+docs' },
     });
     const report = await collectAndVerify({ cwd: '/repo', base: 'main', body: null, gitRunner: git });
+    expect(report.ok).toBe(true);
+  });
+
+  it('reads the repo PR template and fails an inline body that dropped it (end-to-end)', async () => {
+    const git = fakeGit({
+      'merge-base origin/main HEAD': { stdout: base },
+      [`diff --name-status ${range}`]: { stdout: 'M\tsrc/x.ts' },
+      [`diff --unified=0 ${range}`]: { stdout: '+++ b/src/x.ts\n+const y = 1' },
+      'ls-files -- .github/PULL_REQUEST_TEMPLATE.md': { stdout: '.github/PULL_REQUEST_TEMPLATE.md' },
+    });
+    const report = await collectAndVerify({
+      cwd: '/repo',
+      base: 'main',
+      body: 'Just a summary, no checklist.',
+      gitRunner: git,
+      readFileText: async () => '- [ ] <!-- kookr:check:readme --> README\n- [ ] <!-- kookr:check:tests --> tests\n',
+    });
+    expect(report.results.find((r) => r.id === 'pr-template')?.status).toBe('fail');
+    expect(report.ok).toBe(false);
+  });
+
+  it('no-ops the presence rule when the repo ships no PR template', async () => {
+    const git = fakeGit({
+      'merge-base origin/main HEAD': { stdout: base },
+      [`diff --name-status ${range}`]: { stdout: 'M\tREADME.md' },
+      [`diff --unified=0 ${range}`]: { stdout: '+++ b/README.md\n+docs' },
+      // no ls-files entry for any template path → readTracked returns ''
+    });
+    const report = await collectAndVerify({
+      cwd: '/repo',
+      base: 'main',
+      body: 'Summary with no markers.',
+      gitRunner: git,
+    });
+    expect(report.results.some((r) => r.id === 'pr-template')).toBe(false);
     expect(report.ok).toBe(true);
   });
 });
