@@ -45,6 +45,7 @@ import type { ApiAuthConfig } from '../auth.js';
 import type { ViewerGrantStore } from '../../core/viewer-grants.js';
 import type { ViewerConnectionRegistry } from '../viewer-connection-registry.js';
 import type { CollaborationAuditLog } from '../collaboration-audit-log.js';
+import type { AuditSinkMetricsSnapshot } from '../prometheus-exposition.js';
 import type { SessionAuthConfig } from '../auth-session.js';
 import { bodyLimit } from 'hono/body-limit';
 import type { MiddlewareHandler } from 'hono';
@@ -334,6 +335,10 @@ export interface RouteDeps {
   /** Local-owner diagnostics for the private-network collaboration listener. */
   collaborationDiagnostics?: {
     get: () => Promise<CollaborationDiagnostics>;
+  };
+  /** Audit sinks surfaced on `/metrics`; intentionally omits raw last-failure reasons. */
+  auditSinks?: {
+    getAllSnapshots: () => AuditSinkMetricsSnapshot[];
   };
   /** Phase B runtime relay connection manager. */
   relayConnection?: RelayConnectionManager;

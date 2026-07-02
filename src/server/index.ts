@@ -1073,6 +1073,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         });
       },
     },
+    auditSinks: {
+      getAllSnapshots: () => {
+        const status = privateNetworkAuditLog.status();
+        return [{
+          sink: 'private_network_collaboration',
+          writable: status.writable,
+          appendFailureCount: status.appendFailureCount,
+        }];
+      },
+    },
     shadowRegistry, httpPushTracker, hookIngestion, activityLedger, launchServiceDeps, sttUrl,
     ttsUrl, ttsVoice: config.ttsVoice, speakFindingEnabled: config.speakFindingEnabled,
     projectConfigStore, projectSidebarStore, circuitBreakerRegistry,

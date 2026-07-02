@@ -73,6 +73,8 @@ describe('renderPrometheusExposition', () => {
     expect(output).toContain('# TYPE kookr_attention_suppressed_total counter');
     expect(output).toContain('kookr_attention_suppressed_total{reason="queue_dedupe"} 0');
     expect(output).toContain('kookr_attention_suppressed_total{reason="queue_snoozed"} 0');
+    expect(output).toContain('# TYPE kookr_audit_sink_writable gauge');
+    expect(output).toContain('# TYPE kookr_audit_append_failures_total counter');
     expect(output.endsWith('\n')).toBe(true);
   });
 
@@ -109,5 +111,31 @@ describe('renderPrometheusExposition', () => {
     expect(output).toContain('# TYPE kookr_attention_suppressed_total counter');
     expect(output).toContain('kookr_attention_suppressed_total{reason="queue_dedupe"} 0');
     expect(output).toContain('kookr_attention_suppressed_total{reason="queue_snoozed"} 1');
+  });
+
+  test('renders audit sink writable gauge and append failure counter without failure reasons', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      auditSinks: [{
+        sink: 'private_network_collaboration',
+        writable: false,
+        appendFailureCount: 7,
+      }, {
+        sink: 'healthy_sink',
+        writable: true,
+        appendFailureCount: 0,
+      }],
+    });
+
+    expect(output).toContain('# HELP kookr_audit_sink_writable Current audit sink write health. 1 means writable, 0 means the last append failed.');
+    expect(output).toContain('# TYPE kookr_audit_sink_writable gauge');
+    expect(output).toContain('kookr_audit_sink_writable{sink="private_network_collaboration"} 0');
+    expect(output).toContain('kookr_audit_sink_writable{sink="healthy_sink"} 1');
+    expect(output).toContain('# HELP kookr_audit_append_failures_total Total failed audit append attempts by sink.');
+    expect(output).toContain('# TYPE kookr_audit_append_failures_total counter');
+    expect(output).toContain('kookr_audit_append_failures_total{sink="private_network_collaboration"} 7');
+    expect(output).toContain('kookr_audit_append_failures_total{sink="healthy_sink"} 0');
+    expect(output).not.toContain('lastFailure');
   });
 });

@@ -11,6 +11,13 @@ export interface PrometheusExpositionSnapshot {
   requestDurations: RequestDurationMetricsSnapshot;
   circuitBreakers: CircuitBreakerSnapshot[];
   attentionQueueSuppressions?: AttentionQueueSuppressionCounts;
+  auditSinks?: AuditSinkMetricsSnapshot[];
+}
+
+export interface AuditSinkMetricsSnapshot {
+  sink: string;
+  writable: boolean;
+  appendFailureCount: number;
 }
 
 export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapshot): string {
@@ -19,6 +26,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendRequestDurationMetrics(lines, snapshot.requestDurations);
   appendCircuitBreakerMetrics(lines, snapshot.circuitBreakers);
   appendAttentionQueueSuppressionMetrics(lines, snapshot.attentionQueueSuppressions);
+  appendAuditSinkMetrics(lines, snapshot.auditSinks ?? []);
 
   return `${lines.join('\n')}\n`;
 }
@@ -99,6 +107,24 @@ function appendAttentionQueueSuppressionMetrics(
   );
   for (const reason of ATTENTION_QUEUE_SUPPRESSION_REASONS) {
     lines.push(metricLine('kookr_attention_suppressed_total', { reason }, counts[reason]));
+  }
+}
+
+function appendAuditSinkMetrics(lines: string[], snapshots: AuditSinkMetricsSnapshot[]): void {
+  lines.push(
+    '# HELP kookr_audit_sink_writable Current audit sink write health. 1 means writable, 0 means the last append failed.',
+    '# TYPE kookr_audit_sink_writable gauge',
+  );
+  for (const sink of snapshots) {
+    lines.push(metricLine('kookr_audit_sink_writable', { sink: sink.sink }, sink.writable ? 1 : 0));
+  }
+
+  lines.push(
+    '# HELP kookr_audit_append_failures_total Total failed audit append attempts by sink.',
+    '# TYPE kookr_audit_append_failures_total counter',
+  );
+  for (const sink of snapshots) {
+    lines.push(metricLine('kookr_audit_append_failures_total', { sink: sink.sink }, sink.appendFailureCount));
   }
 }
 

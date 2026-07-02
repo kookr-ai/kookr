@@ -14,6 +14,7 @@ import {
 export interface CollaborationAuditStatus {
   configured: boolean;
   writable: boolean;
+  appendFailureCount: number;
   lastFailure?: CollaborationAuditFailure;
 }
 
@@ -37,6 +38,7 @@ export class CollaborationAuditLog {
   private readonly idGenerator: () => string;
   private readonly ownerNodeId: () => string;
   private lastFailure: CollaborationAuditFailure | undefined;
+  private appendFailureCount = 0;
 
   constructor(opts: {
     kookrDir?: string;
@@ -58,6 +60,7 @@ export class CollaborationAuditLog {
     return {
       configured: Boolean(this.filePath),
       writable: !this.lastFailure,
+      appendFailureCount: this.appendFailureCount,
       ...(this.lastFailure ? { lastFailure: this.lastFailure } : {}),
     };
   }
@@ -88,6 +91,7 @@ export class CollaborationAuditLog {
       this.lastFailure = undefined;
       return true;
     } catch (err) {
+      this.appendFailureCount += 1;
       this.lastFailure = {
         at: this.now().toISOString(),
         reason: err instanceof Error ? err.message : String(err),

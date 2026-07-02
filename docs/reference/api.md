@@ -9,6 +9,24 @@ Kookr exposes local HTTP and WebSocket endpoints from the Hono server. In develo
 | `GET /api/health` | Server status, agent count, build info, and launch dependency degradation summary |
 | `GET /api/health/stt` | Bundled speech-to-text container health |
 | `GET /api/startup-summary` | Crash-recovery startup summary fetched once on UI mount |
+| `GET /metrics` | Prometheus text exposition for request durations, circuit breakers, attention-queue suppressions, and audit-sink health |
+
+### `GET /metrics`
+
+Returns Prometheus text format (`text/plain; version=0.0.4`). On loopback
+servers it is unauthenticated; when non-loopback API auth is required it accepts
+owner credentials only and rejects viewer credentials.
+
+The collaboration audit sink is exported as:
+
+- `kookr_audit_sink_writable{sink="private_network_collaboration"}`: gauge, `1`
+  when the last append succeeded or no append has failed, `0` after the most
+  recent append failed.
+- `kookr_audit_append_failures_total{sink="private_network_collaboration"}`:
+  monotonic counter of failed audit append attempts.
+
+Prometheus metrics intentionally do not include raw audit failure reasons. Use
+`GET /api/collaboration/diagnostics` for the current bounded failure detail.
 
 ## Tasks And Agents
 
@@ -204,6 +222,22 @@ Responses:
 `dispatched` is a delivery outcome, not a durable-write acknowledgement. For
 activity diagnostics and malformed/deduplicated counts, use
 `GET /api/tasks/:taskId/activity-diagnostics`.
+
+## Collaboration
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/collaboration/diagnostics` | Private-network collaboration diagnostics, including listener state, trust/share counts, and audit-sink health |
+
+### `GET /api/collaboration/diagnostics`
+
+The `audit` object contains:
+
+- `configured`: whether a collaboration audit sink path is configured.
+- `writable`: whether the sink is currently writable, derived from the most
+  recent append outcome.
+- `appendFailureCount`: cumulative failed append attempts since server start.
+- `lastFailure`: optional `{at, reason}` for the latest failed append.
 
 ## Projects
 
