@@ -26,6 +26,8 @@ import type { RemotePolicyCache } from '../remote/policy-cache.js';
 import type { PushAlertOutbox } from '../remote/push.js';
 import type { SessionStreamPublisher } from '../remote/session-stream-publisher.js';
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
 interface RemoteRelayRuntimeDeps {
   kookrDir: string;
   serverCwd: string;
@@ -43,6 +45,11 @@ interface RemoteRelayRuntimeDeps {
   bypassAllPermissions?: boolean;
   remoteLaunchBroker?: RemoteLaunchBroker;
   markDone: (taskId: string) => Promise<void>;
+}
+
+export interface RemoteCommandAuditArchiveRetentionConfig {
+  maxArchiveCount?: number;
+  maxArchiveAgeMs?: number;
 }
 
 export interface RemoteRelayRuntime {
@@ -86,6 +93,34 @@ export async function publishPermissionBlockedPushAlert(opts: {
   });
   if (!sent) opts.outbox.enqueue(payload);
   return sent;
+}
+
+export function readRemoteCommandAuditArchiveRetentionConfig(
+  env: Partial<Pick<NodeJS.ProcessEnv,
+    'KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_COUNT'
+    | 'KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_AGE_DAYS'
+  >> = process.env,
+): RemoteCommandAuditArchiveRetentionConfig {
+  const maxArchiveCount = parseNonNegativeInt(env.KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_COUNT);
+  const maxArchiveAgeDays = parseNonNegativeNumber(env.KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_AGE_DAYS);
+  return {
+    ...(maxArchiveCount !== undefined ? { maxArchiveCount } : {}),
+    ...(maxArchiveAgeDays !== undefined ? { maxArchiveAgeMs: maxArchiveAgeDays * MS_PER_DAY } : {}),
+  };
+}
+
+function parseNonNegativeInt(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+  return Math.floor(parsed);
+}
+
+function parseNonNegativeNumber(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+  return parsed;
 }
 
 export async function createRemoteRelayRuntime(deps: RemoteRelayRuntimeDeps): Promise<RemoteRelayRuntime> {
@@ -275,6 +310,7 @@ export async function createRemoteRelayRuntime(deps: RemoteRelayRuntimeDeps): Pr
       kookrDir: deps.kookrDir,
       nodeId: nodeClient.status.nodeId,
       nodeEpoch: nodeClient.status.nodeEpoch,
+      ...readRemoteCommandAuditArchiveRetentionConfig(),
     });
     let leaseRevision = 0;
     controllerLeaseManager = new ControllerLeaseManager({

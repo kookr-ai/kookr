@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -6,6 +6,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { executeWithPipeline } from '../command-pipeline.js';
 import { CommandJournal, type CommandEnvelope } from '../command-journal.js';
 import { asActorId, asClientId, asCommandId, asGrantId, asIdempotencyKey, asNodeEpoch, asNodeId, asSessionEpoch, asSessionId } from '../ids.js';
+
+const AUDIT_ARCHIVE_RE = /^audit\..+\.jsonl$/;
 
 function command(overrides: Partial<CommandEnvelope> = {}): CommandEnvelope {
   return {
@@ -22,6 +24,41 @@ function command(overrides: Partial<CommandEnvelope> = {}): CommandEnvelope {
     payload: { presetId: 'continue' },
     ...overrides,
   };
+}
+
+async function archiveNames(dir: string): Promise<string[]> {
+  return (await readdir(dir)).filter((entry) => AUDIT_ARCHIVE_RE.test(entry)).sort();
+}
+
+async function writeCommandArchive(dir: string, name: string, mtime: Date): Promise<void> {
+  const row = {
+    ...command({ commandId: asCommandId(`cmd-${name}`) }),
+    type: 'command.intent',
+    timestamp: mtime.toISOString(),
+  };
+  const path = join(dir, name);
+  await writeFile(path, `${JSON.stringify(row)}\n`, 'utf8');
+  await utimes(path, mtime, mtime);
+}
+
+async function writeTaskLifecycleArchive(dir: string, name: string, mtime: Date): Promise<void> {
+  const path = join(dir, name);
+  const commandRow = {
+    ...command({ commandId: asCommandId(`cmd-${name}`) }),
+    type: 'command.intent',
+    timestamp: mtime.toISOString(),
+  };
+  const taskRow = {
+    type: 'task.deleteTask',
+    timestamp: mtime.toISOString(),
+    actor: { source: 'api' },
+    scope: { kind: 'all' },
+    count: 1,
+    deletedTaskIds: ['task-1'],
+    outcome: 'deleted',
+  };
+  await writeFile(path, `${JSON.stringify(commandRow)}\n${JSON.stringify(taskRow)}\n`, 'utf8');
+  await utimes(path, mtime, mtime);
 }
 
 describe('CommandJournal and pipeline', () => {
@@ -139,7 +176,7 @@ describe('CommandJournal and pipeline', () => {
     expect(activeAudit).toBe('');
     const archives = await readdir(dir);
     const archivedAudit = (await Promise.all(
-      archives.filter((entry) => /^audit\..+\.jsonl$/.test(entry))
+      archives.filter((entry) => AUDIT_ARCHIVE_RE.test(entry))
         .map((entry) => readFile(join(dir, entry), 'utf8')),
     )).join('\n');
     expect(archivedAudit).toContain('"type":"command.intent"');
@@ -162,6 +199,116 @@ describe('CommandJournal and pipeline', () => {
       outcome: 'accepted',
       result: { ok: true },
     });
+  });
+
+  it('prunes oldest rotated audit archives by count after compaction', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-command-archive-count-'));
+    await writeCommandArchive(dir, 'audit.2025-01-01T00-00-00.000Z.1.1.jsonl', new Date('2025-01-01T00:00:00.000Z'));
+    await writeCommandArchive(dir, 'audit.2025-01-02T00-00-00.000Z.1.2.jsonl', new Date('2025-01-02T00:00:00.000Z'));
+    await writeCommandArchive(dir, 'audit.2025-01-03T00-00-00.000Z.1.3.jsonl', new Date('2025-01-03T00:00:00.000Z'));
+
+    const first = await CommandJournal.open({
+      kookrDir: dir,
+      nodeId: asNodeId('node-1'),
+      nodeEpoch: asNodeEpoch('1'),
+      now: () => new Date('2026-01-01T00:00:00.000Z'),
+      compactAfterBytes: 1,
+      maxArchiveCount: 2,
+    });
+    const request = command({
+      commandId: asCommandId('cmd-pruned-count'),
+      idempotencyKey: asIdempotencyKey('idem-pruned-count'),
+    });
+    await first.appendIntent(request);
+    await first.appendResult(request, {
+      commandId: request.commandId,
+      action: request.action,
+      outcome: 'accepted',
+      result: { ok: true },
+    });
+
+    const archives = await archiveNames(dir);
+    expect(archives).toHaveLength(2);
+    expect(archives.every((entry) => entry.startsWith('audit.2026-01-01T00-00-00.000Z.'))).toBe(true);
+    await expect(stat(CommandJournal.auditPathFor(dir))).resolves.toBeDefined();
+    await expect(stat(CommandJournal.snapshotPathFor(dir))).resolves.toBeDefined();
+
+    const restarted = await CommandJournal.open({
+      kookrDir: dir,
+      nodeId: asNodeId('node-1'),
+      nodeEpoch: asNodeEpoch('1'),
+      compactAfterBytes: Number.MAX_SAFE_INTEGER,
+    });
+    expect(restarted.outcome(asCommandId('cmd-pruned-count'))).toMatchObject({
+      outcome: 'accepted',
+      result: { ok: true },
+    });
+  });
+
+  it('prunes rotated audit archives by age without deleting the current rotation', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-command-archive-age-'));
+    const activeAuditMtime = new Date('2025-01-01T00:00:00.000Z');
+    await writeCommandArchive(dir, 'audit.2025-01-01T00-00-00.000Z.1.1.jsonl', new Date('2025-01-01T00:00:00.000Z'));
+    await writeCommandArchive(dir, 'audit.2025-01-09T00-00-00.000Z.1.2.jsonl', new Date('2025-01-09T00:00:00.000Z'));
+    await writeFile(CommandJournal.auditPathFor(dir), '', 'utf8');
+    await utimes(CommandJournal.auditPathFor(dir), activeAuditMtime, activeAuditMtime);
+
+    const journal = await CommandJournal.open({
+      kookrDir: dir,
+      nodeId: asNodeId('node-1'),
+      nodeEpoch: asNodeEpoch('1'),
+      now: () => new Date('2025-01-10T00:00:00.000Z'),
+      compactAfterBytes: 1,
+      maxArchiveAgeMs: 2 * 24 * 60 * 60 * 1000,
+    });
+    await journal.appendIntent(command({ commandId: asCommandId('cmd-pruned-age') }));
+
+    const archives = await archiveNames(dir);
+    expect(archives).not.toContain('audit.2025-01-01T00-00-00.000Z.1.1.jsonl');
+    expect(archives).toContain('audit.2025-01-09T00-00-00.000Z.1.2.jsonl');
+    expect(archives.some((entry) => entry.startsWith('audit.2025-01-10T00-00-00.000Z.'))).toBe(true);
+  });
+
+  it('leaves rotated audit archives unbounded when retention options are unset', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-command-archive-disabled-'));
+    await writeCommandArchive(dir, 'audit.2025-01-01T00-00-00.000Z.1.1.jsonl', new Date('2025-01-01T00:00:00.000Z'));
+    await writeCommandArchive(dir, 'audit.2025-01-02T00-00-00.000Z.1.2.jsonl', new Date('2025-01-02T00:00:00.000Z'));
+
+    const journal = await CommandJournal.open({
+      kookrDir: dir,
+      nodeId: asNodeId('node-1'),
+      nodeEpoch: asNodeEpoch('1'),
+      now: () => new Date('2025-01-10T00:00:00.000Z'),
+      compactAfterBytes: 1,
+    });
+    await journal.appendIntent(command({ commandId: asCommandId('cmd-retention-disabled') }));
+
+    const archives = await archiveNames(dir);
+    expect(archives).toHaveLength(3);
+    expect(archives).toContain('audit.2025-01-01T00-00-00.000Z.1.1.jsonl');
+    expect(archives).toContain('audit.2025-01-02T00-00-00.000Z.1.2.jsonl');
+  });
+
+  it('does not prune mixed audit archives containing task lifecycle rows', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-command-archive-mixed-'));
+    await writeCommandArchive(dir, 'audit.2025-01-01T00-00-00.000Z.1.1.jsonl', new Date('2025-01-01T00:00:00.000Z'));
+    await writeTaskLifecycleArchive(dir, 'audit.2025-01-02T00-00-00.000Z.1.2.jsonl', new Date('2025-01-02T00:00:00.000Z'));
+
+    const journal = await CommandJournal.open({
+      kookrDir: dir,
+      nodeId: asNodeId('node-1'),
+      nodeEpoch: asNodeEpoch('1'),
+      now: () => new Date('2025-01-10T00:00:00.000Z'),
+      compactAfterBytes: 1,
+      maxArchiveCount: 0,
+      maxArchiveAgeMs: 0,
+    });
+    await journal.appendIntent(command({ commandId: asCommandId('cmd-protected-mixed') }));
+
+    const archives = await archiveNames(dir);
+    expect(archives).not.toContain('audit.2025-01-01T00-00-00.000Z.1.1.jsonl');
+    expect(archives).toContain('audit.2025-01-02T00-00-00.000Z.1.2.jsonl');
+    expect(archives.some((entry) => entry.startsWith('audit.2025-01-10T00-00-00.000Z.'))).toBe(true);
   });
 
   it('restores compacted grant tombstones from the snapshot', async () => {

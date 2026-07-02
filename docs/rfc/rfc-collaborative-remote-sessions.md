@@ -1290,12 +1290,20 @@ so historical pushes are traceable. Push payloads carry: `nodeDisplayName`
 the user unlocks the device. Operators can disable push entirely with
 `KOOKR_PUSH_DISABLED=true`.
 
-The desktop node writes an append-only audit log following the write-ahead
-pattern in "Coordination primitives" for every invite, accept, revoke,
-connect, terminal attach, remote command, permission decision, and admin
-change. Payloads are redacted before audit/storage, not just before UI
-display. Local audit retention defaults to 90 days with daily rotation; the
-operator can configure longer retention via `KOOKR_AUDIT_RETENTION_DAYS`.
+The desktop node writes local audit logs following the write-ahead pattern in
+"Coordination primitives" for every invite, accept, revoke, connect, terminal
+attach, remote command, permission decision, and admin change. Payloads are
+redacted before audit/storage, not just before UI display. The remote-command
+journal writes intent/result rows to `<KOOKR_DATA_DIR>/audit.jsonl`. When the
+journal compacts, it writes `audit.snapshot.json`, rotates the covered active
+audit into `audit.<timestamp>.<pid>.<counter>.jsonl`, and starts a new active
+audit tail. Rotated command-audit archive pruning is opt-in via
+`KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_COUNT` and
+`KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_AGE_DAYS`; leaving both unset preserves
+existing unbounded archive retention for forensics. Because `audit.*.jsonl`
+can share a namespace with other local audit rows, pruning only deletes
+command-only archive segments; any segment containing task lifecycle or other
+non-command audit rows is preserved.
 
 Audit records are written for both allowed and denied attempts. They include
 `auditId`, `requestId`, `commandId`, `actorId`, `clientId`, `nodeId`,
@@ -1419,7 +1427,8 @@ Local node persists:
 - tasks and sessions (`tasks.json`);
 - hook files and transcripts;
 - local interaction log;
-- local remote-command audit log (90-day default rotation);
+- local remote-command audit log (`audit.jsonl` plus snapshot-backed rotated
+  archive segments with opt-in count/age pruning);
 - idempotency cache (24h or until session-epoch change);
 - share-policy cache (replicated from relay via PolicySync);
 - dtach socket lifecycle;
@@ -1461,10 +1470,10 @@ are ephemeral mirrors keyed by node epoch and session epoch.
 The "append-only command/event log" described as the collaboration
 boundary lives on the **node**, not the relay. Specifically:
 
-- **Node write-ahead audit log** (`~/.kookr/audit.jsonl`, rotated daily,
-  90-day default retention): canonical record of every authorized
-  command's intent and result rows. This is the source of truth for
-  forensic queries via `kookr command outcome`.
+- **Node write-ahead audit log** (`~/.kookr/audit.jsonl`, compacted into
+  `audit.snapshot.json` plus rotated `audit.*.jsonl` archive segments):
+  canonical record of every authorized command's intent and result rows. This
+  is the source of truth for forensic queries via `kookr command outcome`.
 - **Relay metadata audit log**: a separate, narrower record of what the
   relay observed and forwarded. Used for cross-machine reconciliation
   when the node's audit is unavailable (disk loss, panic-mode reconnect
@@ -1508,9 +1517,9 @@ surface:
 **Operator CLI surfaces.**
 
 - `kookr command outcome <commandId>`: query the local node's audit log
-  directly without a relay round-trip. Returns the full intent + result
-  rows. Accepts `--since` for bulk queries. Essential for post-incident
-  forensics when the relay is down.
+  directly without a relay round-trip. Returns the command's intent/result
+  outcome from the current journal snapshot and active audit tail. Essential
+  for post-incident forensics when the relay is down.
 - `kookr relay status`: prints the local node's view of relay
   connectivity, last `policy.delta.ack`, current backoff, active feature
   set, and `nodeMode`.
@@ -1550,11 +1559,16 @@ is visible immediately.
 rates (a few per minute) the 24h TTL is the binding constraint, not the
 cap; the cap exists only to bound memory in pathological cases.
 
-**Audit log rotation.** The node uses size-and-time-based rotation:
-daily roll, max 50MB per file. Rotated files remain queryable by
-`kookr command outcome --since`. The relay's metadata audit retention
-policy is configurable; the implementation chooses the storage backend
-and partition strategy.
+**Audit log rotation.** The node command journal uses size-triggered
+compaction. It writes a snapshot, rotates the covered active audit into an
+`audit.*.jsonl` segment, and starts a new active audit tail. Rotated segment
+pruning is opt-in via count and age env vars; by default the node preserves
+rotated command-audit archives for forensics. Because `audit.*.jsonl` can share
+a namespace with other local audit rows, pruning only deletes command-only
+archive segments; any segment containing task lifecycle or other non-command
+audit rows is preserved. The relay's metadata audit retention policy is
+configurable; the implementation chooses the storage backend and partition
+strategy.
 
 **Local dashboard relay indicator.** The TopBar surfaces three relay
 states: connected-and-synced, connected-but-lagging-or-panic, and
@@ -1609,7 +1623,7 @@ are distinguishable and that the indicator's reason is operator-visible.
 | Session epoch bump | Node emits a single `session.epoch-changed` event listing invalidated resources (leases, permission requests, idempotency keys). Clients flush stale state in one round-trip. Commands stamped with old `sessionEpoch` rejected with `error.staleSessionEpoch`. |
 | Handshake version downgrade | Relay responds `relay.hello { outcome: 'downgraded', acceptedVersion }`. Node operates at the lower version with the feature intersection. WARN log lists dropped features. |
 | Policy version drift, command in flight when revoke fires | Freshness-wins: node rejects in-flight command with `error.grantRevoked` even though command was authorized at issue. Relay propagates revocation to clients. |
-| Command outcome unknown (intent-only) | `command.getOutcome` returns `unknown-intent-only`; client surfaces ambiguity to operator rather than retrying. Forensic reconciliation via `kookr command outcome --since`. |
+| Command outcome unknown (intent-only) | `command.getOutcome` returns `unknown-intent-only`; client surfaces ambiguity to operator rather than retrying. Forensic reconciliation uses `kookr command outcome <commandId>` plus local audit archives when needed. |
 | Command outcome unknown (never seen) | `command.getOutcome` returns `unknown-never-seen`; client may safely retry with same `idempotencyKey`. |
 | Panic mode entered | Local cache wiped, in-flight permissions resolve as `cancelled-by-panic`, leases revoked. On `kookr panic clear`, handshake triggers full PolicySync. |
 
@@ -2067,8 +2081,8 @@ is genuinely Phase-5-only.
   status`, `kookr panic`/`panic clear`, `kookr push test`),
   structured-log correlation contract, metric categories per phase,
   idempotency-cache bounds (100k hard cap, LRU eviction), audit log
-  rotation mechanism (daily roll, 50MB cap, queryable via
-  `--since`), local dashboard relay indicator state machine, and a
+  rotation mechanism (snapshot-backed size compaction with opt-in
+  archive pruning), local dashboard relay indicator state machine, and a
   high-level panic-recovery runbook.
 - Round 3 module-interface review 2026-05-13: split the proposed
   `protocol.ts` into `handshake.ts`, `control-events.ts`,

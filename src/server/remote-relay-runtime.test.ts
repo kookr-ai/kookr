@@ -149,6 +149,74 @@ describe('remote relay push alert replay', () => {
     return await import('./remote-relay-runtime.js');
   }
 
+  it('parses remote command audit archive retention env vars', async () => {
+    const { readRemoteCommandAuditArchiveRetentionConfig } = await importRuntime();
+
+    expect(readRemoteCommandAuditArchiveRetentionConfig({
+      KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_COUNT: '5.9',
+      KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_AGE_DAYS: '1.5',
+    })).toEqual({
+      maxArchiveCount: 5,
+      maxArchiveAgeMs: 129_600_000,
+    });
+
+    expect(readRemoteCommandAuditArchiveRetentionConfig({
+      KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_COUNT: '-1',
+      KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_AGE_DAYS: 'not-a-number',
+    })).toEqual({});
+  });
+
+  it('passes remote command audit archive retention config to the command journal', async () => {
+    const previousCount = process.env.KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_COUNT;
+    const previousAgeDays = process.env.KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_AGE_DAYS;
+    process.env.KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_COUNT = '7';
+    process.env.KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_AGE_DAYS = '3';
+
+    try {
+      const { createRemoteRelayRuntime } = await importRuntime();
+      const { CommandJournal } = await import('../remote/command-journal.js');
+      const { store } = makeTaskStore();
+      const client = makeClient();
+      relayRuntimeMocks.remoteNodeClient = client;
+
+      await createRemoteRelayRuntime({
+        kookrDir: '/tmp/kookr-test',
+        serverCwd: '/tmp/project',
+        serverStartedAt: '2026-05-15T00:00:00.000Z',
+        buildInfo: { version: 'test', commit: 'test', date: '2026-05-15T00:00:00.000Z' } as BuildInfo,
+        terminalBackend: { getStats: () => ({}) } as TerminalBackend,
+        taskStore: store,
+        queue: {} as AttentionQueue,
+        monitor: {} as Monitor,
+        adapter: {} as AgentAdapter,
+        watchdog: {} as Watchdog,
+        interactionLog: {} as DeferredInteractionLogWriter,
+        abortPendingSuggestion: vi.fn(),
+        markDone: vi.fn(async () => undefined),
+      });
+
+      expect(relayRuntimeMocks.relayStartRuntime).toBeTypeOf('function');
+      await relayRuntimeMocks.relayStartRuntime!({
+        relayUrl: 'http://127.0.0.1:9',
+        relayToken: 'token',
+        nodeId: 'node-a',
+      });
+
+      expect(CommandJournal.open).toHaveBeenCalledWith(expect.objectContaining({
+        kookrDir: '/tmp/kookr-test',
+        nodeId: 'node-a',
+        nodeEpoch: '7',
+        maxArchiveCount: 7,
+        maxArchiveAgeMs: 259_200_000,
+      }));
+    } finally {
+      if (previousCount === undefined) delete process.env.KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_COUNT;
+      else process.env.KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_COUNT = previousCount;
+      if (previousAgeDays === undefined) delete process.env.KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_AGE_DAYS;
+      else process.env.KOOKR_REMOTE_COMMAND_AUDIT_MAX_ARCHIVE_AGE_DAYS = previousAgeDays;
+    }
+  });
+
   it('enqueues a permission push alert while the relay is reconnecting and replays it once connected', async () => {
     const { publishPermissionBlockedPushAlert } = await importRuntime();
     const { store, taskId } = makeTaskStore();
