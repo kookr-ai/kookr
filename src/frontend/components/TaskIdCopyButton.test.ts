@@ -75,6 +75,30 @@ describe('TaskIdCopyButton', () => {
     expect(onParentClick).not.toHaveBeenCalled();
   });
 
+  test('icon-only mode copies without showing the id text', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    const root0 = createRoot(container);
+    act(() => {
+      root0.render(React.createElement(TaskIdCopyButton, { taskId: TASK_ID, iconOnly: true }));
+    });
+    root = root0;
+
+    const button = container.querySelector('button') as HTMLButtonElement;
+    // No id characters are shown; the id is available via aria-label instead.
+    expect(button.textContent).not.toContain('a1d9db01');
+    expect(button.getAttribute('aria-label')).toBe(`Copy task ID ${TASK_ID}`);
+    expect(button.className).toContain('btn-icon');
+    expect(button.querySelector('svg')).toBeTruthy();
+
+    await act(async () => {
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(writeText).toHaveBeenCalledWith(TASK_ID);
+  });
+
   test('falls back to document copy when clipboard access is unavailable', async () => {
     vi.stubGlobal('navigator', {});
     const execCommand = vi.fn().mockReturnValue(true);

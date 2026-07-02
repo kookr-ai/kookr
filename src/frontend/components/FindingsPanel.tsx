@@ -878,6 +878,10 @@ function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
   const projectLabelText = agentProjectLabel(agent);
   const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
   const showProjectBadge = !selectedProject || agent.projectId !== selectedProject;
+  // Both live-updating values; render each (with its leading separator) only
+  // when it has content, so a row without token usage never trails a stray "·".
+  const durText = healthyStatusLabel(agent.events, agent.startedAt);
+  const costText = agent.tokenUsage ? formatTokenUsage(agent.tokenUsage) : '';
 
   function handleReply(e: React.MouseEvent) {
     e.stopPropagation();
@@ -917,7 +921,6 @@ function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
         <div className="healthy-row-info">
           <div className="healthy-row-meta">
             <AgentProviderMark agent={agent} state={healthyDotClass(agent.events)} />
-            <TaskIdCopyButton taskId={agent.taskId} compact />
             {showProjectBadge && projectLabelText && (
               <span className={`project-badge color-${colorIdx}`} title={agent.cwd}>
                 {projectLabelText}
@@ -930,16 +933,21 @@ function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
             )}
             <PriorityBadge agent={agent} />
             <ChildRollupPill agent={agent} />
-            <span className="healthy-row-sep" aria-hidden="true">·</span>
-            <span className="healthy-row-dur">{healthyStatusLabel(agent.events, agent.startedAt)}</span>
-            {agent.tokenUsage && (
+            {durText && (
               <>
                 <span className="healthy-row-sep" aria-hidden="true">·</span>
-                <span className="healthy-row-cost">{formatTokenUsage(agent.tokenUsage)}</span>
+                <span className="healthy-row-dur">{durText}</span>
+              </>
+            )}
+            {costText && (
+              <>
+                <span className="healthy-row-sep" aria-hidden="true">·</span>
+                <span className="healthy-row-cost">{costText}</span>
               </>
             )}
           </div>
           <div className="healthy-row-controls">
+            <TaskIdCopyButton taskId={agent.taskId} iconOnly />
             <SpeakTaskSummaryControl agent={agent} selected={selected} />
             <TaskPriorityButton agent={agent} send={send} variant="icon" />
             <button
