@@ -49,6 +49,13 @@ describe('agent-launch-context', () => {
     const repoDir = makeTempDir();
     mkdirSync(join(repoDir, '.git'));
 
+    // Hermetic env: production forwards CLAUDE_CODE_DISABLE_AUTO_MEMORY from
+    // process.env when set (see the dedicated forward/omit tests below). This
+    // exact-env assertion covers the default (unset) case, so clear any value
+    // inherited from the ambient shell — e.g. when the suite runs inside a
+    // Claude Code session, which sets it.
+    vi.stubEnv('CLAUDE_CODE_DISABLE_AUTO_MEMORY', undefined);
+
     const context = await buildAgentLaunchContext({
       taskStore,
       taskId: child.id,

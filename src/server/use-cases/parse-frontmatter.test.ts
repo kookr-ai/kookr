@@ -21,10 +21,16 @@ const PARSER = join(__dirname, '..', '..', '..', 'plugin', 'hooks', 'parse-front
 const PARSER_ARGS = ['--import', 'tsx', PARSER] as const;
 
 function runHook(input: object, env: Record<string, string> = {}): { exitCode: number; stderr: string } {
+  const childEnv: Record<string, string | undefined> = { ...process.env, ...env, HOME: env.HOME ?? '/home/test' };
+  // The frontmatter-type gate only runs when auto-memory isn't globally
+  // disabled; a set CLAUDE_CODE_DISABLE_AUTO_MEMORY short-circuits it to a
+  // blanket block. Don't inherit that from the ambient shell (it is set when
+  // the suite runs inside a Claude Code session) unless a test opts in via env.
+  if (!('CLAUDE_CODE_DISABLE_AUTO_MEMORY' in env)) delete childEnv.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
   const result = spawnSync(process.execPath, PARSER_ARGS, {
     input: JSON.stringify(input),
     encoding: 'utf-8',
-    env: { ...process.env, ...env, HOME: env.HOME ?? '/home/test' },
+    env: childEnv,
   });
   return { exitCode: result.status ?? -1, stderr: result.stderr };
 }
