@@ -135,11 +135,45 @@ describe('Anomaly Detector', () => {
       expect(anomaly!.count).toBe(3);
     });
 
+    test('near-identical errors with volatile tokens produce repeated_error', () => {
+      const events: AgentEvent[] = [
+        makeError(
+          's1',
+          'Tool failed at /tmp/kookr-alpha/src/index.ts:42 requestId=4d6f0e1c-7a6a-4ed9-a317-c78b29f3a571 timestamp=2026-07-02T21:10:11Z',
+        ),
+        makeError(
+          's1',
+          'Tool failed at /var/folders/kookr-beta/src/index.ts:87 requestId=81f05a31-78c4-4a89-a97f-91e6216dcf23 timestamp=2026-07-02T21:10:13Z',
+        ),
+        makeError(
+          's1',
+          'Tool failed at /opt/kookr-gamma/src/index.ts:103 requestId=720089b5-f8bc-4222-b4fb-61e4a86efa34 timestamp=2026-07-02T21:10:15Z',
+        ),
+      ];
+
+      const anomaly = detectAnomalies(events, agentId, { repeatedErrorThreshold: 3 });
+      expect(anomaly).not.toBeNull();
+      expect(anomaly!.type).toBe('repeated_error');
+      expect(anomaly!.count).toBe(3);
+      expect(anomaly!.explanation).toContain('/opt/kookr-gamma/src/index.ts:103');
+    });
+
     test('different errors produce no anomaly', () => {
       const events: AgentEvent[] = [
         makeError('s1', 'Error A'),
         makeError('s1', 'Error B'),
         makeError('s1', 'Error C'),
+      ];
+
+      const anomaly = detectAnomalies(events, agentId, { repeatedErrorThreshold: 3 });
+      expect(anomaly).toBeNull();
+    });
+
+    test('different normalized error templates produce no anomaly', () => {
+      const events: AgentEvent[] = [
+        makeError('s1', 'Permission denied reading /tmp/kookr-run-1827/input.txt'),
+        makeError('s1', 'Connection refused opening /tmp/kookr-run-2914/socket'),
+        makeError('s1', 'Schema validation failed in /tmp/kookr-run-3088/config.json'),
       ];
 
       const anomaly = detectAnomalies(events, agentId, { repeatedErrorThreshold: 3 });

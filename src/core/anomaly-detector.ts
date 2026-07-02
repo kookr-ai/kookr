@@ -197,6 +197,26 @@ function detectPermissionBlocked(events: AgentEvent[], agentId: string): Anomaly
   };
 }
 
+function repeatedErrorFingerprint(message: string): string {
+  // Strip volatile tokens from recurring tool/API failures while keeping the
+  // semantic error text intact: timestamps, request IDs, paths, and counters.
+  return message
+    .normalize('NFKC')
+    .replace(/\b\d{4}-\d{2}-\d{2}[T ][0-2]\d:[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-][0-2]\d:?[0-5]\d)?\b/g, '<timestamp>')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi, '<uuid>')
+    .replace(/\b0x[0-9a-f]+\b/gi, '<hex>')
+    .replace(/\b[0-9a-f]{12,}\b/gi, '<hex>')
+    .replace(/\b[A-Za-z]:\\(?:[^\s"'<>|]+\\)+[^\s"'<>|]+/g, '<path>')
+    .replace(/(?:^|[\s([{"'=])\/(?:[^\s"'<>:),\]}]+\/)+[^\s"'<>:),\]}]+/g, (match) => {
+      const prefix = match[0] === '/' ? '' : match[0];
+      return `${prefix}<path>`;
+    })
+    .replace(/\b\d+\b/g, '<num>')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
 function detectRepeatedError(
   events: AgentEvent[],
   agentId: string,
@@ -207,11 +227,12 @@ function detectRepeatedError(
   >;
   if (errors.length < threshold) return null;
 
-  // Count occurrences of each error message
+  // Count on a stable key so request IDs, paths, and timestamps do not hide loops.
   const counts = new Map<string, number>();
   for (const err of errors) {
-    const count = (counts.get(err.message) ?? 0) + 1;
-    counts.set(err.message, count);
+    const fingerprint = repeatedErrorFingerprint(err.message);
+    const count = (counts.get(fingerprint) ?? 0) + 1;
+    counts.set(fingerprint, count);
     if (count >= threshold) {
       return {
         agentId,

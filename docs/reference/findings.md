@@ -92,8 +92,11 @@ approach.
 **Severity.** `warning`.
 
 **Trigger.** Detected in `src/core/anomaly-detector.ts` (`detectRepeatedError`):
-the same `error` event message recurs at least `repeatedErrorThreshold` times
-(default `3`) within the detection window (`windowSize`, default `50` events).
+the same normalized fingerprint of an `error` event message recurs at least
+`repeatedErrorThreshold` times (default `3`) within the detection window
+(`windowSize`, default `50` events). The fingerprint ignores volatile
+timestamps, UUIDs, hex IDs, filesystem paths, standalone numbers,
+whitespace/case, and Unicode normalization differences.
 
 **Recommended response.** Read the repeated error, then send a hint that
 unblocks the loop (a corrected command, a missing dependency, an alternative
