@@ -64,6 +64,14 @@ export type { RemoteShareDeps } from '../remote-share-deps.js';
 export interface TaskRouteDeps {
   taskStore: TaskStore;
   monitor: Monitor;
+  /**
+   * Releases issue-ownership claims on REST-driven terminal transitions
+   * (RFC rfc-issue-ownership-lock R8). Regression: the field-by-field
+   * getLifecycleDeps() below silently dropped claim release on
+   * POST /api/tasks/:id/complete — caught by PR-1a dogfooding (the orphan
+   * backstop absorbed it, but R8 must fire on every terminal path).
+   */
+  issueClaimRegistry?: import('../agent-lifecycle.js').LifecycleDeps['issueClaimRegistry'];
   queue?: AttentionQueue;
   adapter: AgentAdapter;
   hookWatcher: HookFileWatcher;
@@ -213,6 +221,8 @@ export interface RouteDeps {
    * old server (R7/R26).
    */
   issueClaims?: import('./issue-claim-routes.js').IssueClaimRouteDeps;
+  /** Threaded to TaskRouteDeps so REST terminal transitions release claims (R8). */
+  issueClaimRegistry?: import('../agent-lifecycle.js').LifecycleDeps['issueClaimRegistry'];
   taskStore: TaskStore;
   monitor: Monitor;
   queue: AttentionQueue;
