@@ -31,8 +31,8 @@ Prefer a bounded, recent sample over a broad transcript dump:
 
 - Claude Code: inspect recent `~/.claude` project/session data, stats cache, and
   history where available.
-- Codex CLI: inspect recent `~/.codex/sessions` and `~/.codex/history` where
-  available.
+- Codex CLI: inspect recent `~/.codex/sessions` and `~/.codex/history.jsonl`
+  where available.
 - If the user requests subagents, split the sample into batches and ask each
   subagent for repeated patterns, not exhaustive summaries.
 
@@ -95,8 +95,11 @@ After the user says to proceed:
 2. If tracked files will change, follow the repository's worktree and branch
    rules before editing.
 3. Keep the first implementation narrow and testable.
-4. If editing plugin-distributed skills, bump the plugin manifest version when
-   the repository requires it.
+4. If editing bundled plugin content under `plugin/**` except
+   `plugin/.claude-plugin/plugin.json` itself, bump
+   `plugin/.claude-plugin/plugin.json#version`. Some repositories enforce this
+   for skills, agents, hooks, playbooks, reviewer specialists, README files, and
+   other distributed plugin content.
 5. Run the focused validation for the changed surface.
 6. Commit and follow the repository's push/PR workflow.
 
