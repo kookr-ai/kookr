@@ -260,14 +260,14 @@ exit 0
 ### What the agent experiences
 
 ```
-Agent: Bash("gh pr create --title 'Fix widget' --body-file .tmp/pr-body.md")
+Agent: Bash("gh pr create --title 'Fix widget' --body '...'")
   → ❌ BLOCKED: "Pre-PR review required. Run /pre-pr-review first..."
 
 Agent: Skill("pre-pr-review")          # runs typecheck, tests, diff review
   → ✅ All checks passed
   → touch /tmp/.pr-gate-fix-widget-pre-done
 
-Agent: Bash("gh pr create --title 'Fix widget' --body-file .tmp/pr-body.md")
+Agent: Bash("gh pr create --title 'Fix widget' --body '...'")
   → ✅ PR created: https://github.com/org/repo/pull/42
   → "PR created. Now: verify checklist, wait for CI, check bot comments..."
   → rm /tmp/.pr-gate-fix-widget-pre-done

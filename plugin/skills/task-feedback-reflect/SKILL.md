@@ -115,21 +115,8 @@ git -C <cwd> commit -m "<type>(reflect): <one-line summary>" \
   -m "Reflection on source task <taskId> (<up|down>): <what changed and why>." \
   -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 git -C <cwd> push -u origin HEAD
-mkdir -p .tmp
-if [ -f .github/PULL_REQUEST_TEMPLATE.md ]; then
-  cp .github/PULL_REQUEST_TEMPLATE.md .tmp/pr-body.md
-elif [ -f .github/pull_request_template.md ]; then
-  cp .github/pull_request_template.md .tmp/pr-body.md
-else
-  printf '%s\n' "Reflection remediation for source task <taskId> (<up|down>). <what/why>" > .tmp/pr-body.md
-fi
-```
-
-Edit `.tmp/pr-body.md` with the reflection remediation summary and work every marked checklist row. Then create the PR in a separate command:
-
-```bash
-gh pr create --title "<one-line summary>" --body-file .tmp/pr-body.md
-rm -f .tmp/pr-body.md
+gh pr create --fill --title "<one-line summary>" \
+  --body "Reflection remediation for source task <taskId> (<up|down>). <what/why>"
 ```
 Pick a Conventional-Commit `<type>` matching the surface — `docs` for skill/CLAUDE.md prose, `fix`/`feat`/`chore` otherwise. Capture the PR URL for the report.
 

@@ -163,25 +163,14 @@ FORK_OWNER="$(gh api user --jq .login)"
 BRANCH_NAME="{branch}"
 DEFAULT="{{defaultBranch}}"
 
-mkdir -p .tmp
-if [ -f .github/PULL_REQUEST_TEMPLATE.md ]; then
-  cp .github/PULL_REQUEST_TEMPLATE.md .tmp/pr-body.md
-elif [ -f .github/pull_request_template.md ]; then
-  cp .github/pull_request_template.md .tmp/pr-body.md
-else
-  printf '%s\n' "{PR body following repo's template from recon report}" > .tmp/pr-body.md
-fi
-```
-
-Edit `.tmp/pr-body.md` with the final upstream PR body and work every marked checklist row. Then create the PR in a separate command:
-
-```bash
 gh pr create -R "${UPSTREAM}" \
   --head "${FORK_OWNER}:${BRANCH_NAME}" \
   --base "${DEFAULT}" \
   --title "{title}" \
-  --body-file .tmp/pr-body.md
-rm -f .tmp/pr-body.md
+  --body "$(cat <<'EOF'
+{PR body following repo's template from recon report}
+EOF
+)"
 ```
 
 ### Record PR in Contributions

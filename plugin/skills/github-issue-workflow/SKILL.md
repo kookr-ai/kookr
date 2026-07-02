@@ -65,13 +65,7 @@ Follow the issue's implementation plan:
 ### 5. Create PR into staging
 
 ```bash
-mkdir -p .tmp
-if [ -f .github/PULL_REQUEST_TEMPLATE.md ]; then
-  cp .github/PULL_REQUEST_TEMPLATE.md .tmp/pr-body.md
-elif [ -f .github/pull_request_template.md ]; then
-  cp .github/pull_request_template.md .tmp/pr-body.md
-else
-  cat > .tmp/pr-body.md <<'EOF'
+gh pr create --base staging --title "feat: short description" --body "$(cat <<'EOF'
 ## Summary
 - What was done
 
@@ -83,14 +77,7 @@ Closes #N
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
-fi
-```
-
-Edit `.tmp/pr-body.md` with the final summary/test evidence and work every marked checklist row. Then create the PR in a separate command:
-
-```bash
-gh pr create --base staging --title "feat: short description" --body-file .tmp/pr-body.md
-rm -f .tmp/pr-body.md
+)"
 ```
 
 ### 6. Update a PR description

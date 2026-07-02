@@ -251,32 +251,17 @@ The subagent (`Agent(subagent_type: "oss-issue-scout", ...)`) is the preferred p
 1. Run pre-PR review (use skill `pre-pr-review` — adapted for this repo's commands)
 2. Load PR template from recon report
 3. Load patterns for description best practices
-4. Build a repo-local PR body file from the upstream template when present, then edit it with the final summary, verification, and checklist decisions. Do not pass `--body` inline; use `--body-file` so template/checklist gates can inspect the exact body.
-5. Create PR targeting upstream:
-   ```bash
-   if [ -f .github/PULL_REQUEST_TEMPLATE.md ]; then
-     mkdir -p .tmp
-     cp .github/PULL_REQUEST_TEMPLATE.md .tmp/pr-body.md
-   elif [ -f .github/pull_request_template.md ]; then
-     mkdir -p .tmp
-     cp .github/pull_request_template.md .tmp/pr-body.md
-   else
-     mkdir -p .tmp
-     printf '%s\n' "{body following repo's PR template}" > .tmp/pr-body.md
-   fi
-   ```
-   Edit `.tmp/pr-body.md` before creating the PR. Run the create command separately after the file already exists:
+4. Create PR targeting upstream:
    ```bash
    gh pr create -R {{repoFullName}} \
      --head "$(gh api user --jq .login):${BRANCH}" \
      --base ${DEFAULT} \
      --title "{type}: {description}" \
-     --body-file .tmp/pr-body.md
-   rm -f .tmp/pr-body.md
+     --body "{body following repo's PR template}"
    ```
-6. Monitor CI: `gh pr checks {number} -R {{repoFullName}}`
-7. Handle CLA if prompted
-8. Update fork-state.json with PR details
+5. Monitor CI: `gh pr checks {number} -R {{repoFullName}}`
+6. Handle CLA if prompted
+7. Update fork-state.json with PR details
 
 ## Post-Submission
 
