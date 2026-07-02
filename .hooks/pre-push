@@ -274,6 +274,17 @@ else
   fi
 fi
 
+if [ -f .github/PULL_REQUEST_TEMPLATE.md ] || [ -f .github/pull_request_template.md ]; then
+  echo ""
+  echo "[pre-push] Opening a PR? Build the body from the PR template and work every marked checklist row:"
+  echo "  mkdir -p .tmp"
+  echo "  cp .github/pull_request_template.md .tmp/pr-body.md   # or .github/PULL_REQUEST_TEMPLATE.md if present"
+  echo "  # edit .tmp/pr-body.md, then run gh pr create in a separate command after the file exists"
+  echo "  gh pr create --base main --head <branch> --title \"...\" --body-file .tmp/pr-body.md"
+  echo "  Do NOT pass --body inline: it skips the template and the pr-checklist CI verifies the blank/missing boxes."
+  echo ""
+fi
+
 # --- kookr-toolkit plugin hygiene + version bump enforcement ---
 # The kookr-toolkit plugin ships together with Kookr, so plugin playbooks MAY
 # couple to the Kookr runtime (KOOKR_* env vars, the issue-claim API, Ralph

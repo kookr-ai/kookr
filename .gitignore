@@ -169,6 +169,7 @@ vendor/
 # Each branch writes its own .review-state/<key>.json before push;
 # never commit these.
 .review-state/
+.tmp/
 
 # Local-only opt-in marker for plugin/hooks/placement-gate.sh strict mode.
 .kookr-placement-gate-strict

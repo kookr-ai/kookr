@@ -1,0 +1,50 @@
+name: PR checklist
+
+# Machine-verifies the anti-drift checklist in the PR description against the
+# actual diff. The verifier is checked out from the PR base SHA so a pull
+# request cannot silently weaken its own checklist gate.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+concurrency:
+  group: pr-checklist-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  TSX_VERSION: 4.22.4
+
+jobs:
+  checklist:
+    name: Anti-drift checklist
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Checkout verifier from base
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .kookr-engine
+          persist-credentials: false
+
+      - name: Verify checklist against diff
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          git fetch --no-tags origin "${{ github.base_ref }}"
+          printf '%s' "$PR_BODY" | npx --yes "tsx@${TSX_VERSION}" \
+            .kookr-engine/bin/kookr.js pr-checklist verify \
+            --base "${{ github.base_ref }}" \
+            --pr-body -

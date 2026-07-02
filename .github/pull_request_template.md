@@ -1,3 +1,14 @@
+<!--
+Fill the summary and test plan, then work every marked checklist row below.
+
+The `<!-- kookr:check:id -->` markers are verified by the PR checklist CI
+against the actual diff. A CHECKED box is an assertion that the mapped evidence
+is present in this PR; a STRUCK box with a one-line reason is an explicit waiver;
+a blank marked box fails the check. When using `gh pr create`, build the body
+from this template and pass it with `--body-file`; inline `--body` skips the
+template.
+-->
+
 ## Summary
 
 
