@@ -52,6 +52,9 @@ does not try to evaluate variables, interpreter-internal writes, `dd of=`, or
 Codex `apply_patch`. The push-time `hooks/skill-placement-gate.sh` remains the
 cross-runtime final catch-net for the Kookr repo.
 
-As of PoC 008, Claude Code loads plugin hooks via `--plugin-dir`; Kookr's Codex
-fork discovers plugin skills through `--plugin-dir` but does not yet load plugin
-hooks from that path.
+Claude Code loads plugin hooks via `--plugin-dir`, and Kookr's Codex fork now
+loads both plugin skills and plugin hooks from that path. (Earlier revisions
+noted the Codex fork loaded skills but not hooks; that gap is closed.) The
+OSS-extension enforcement hooks nonetheless keep a user-global install (see
+`docs/hooks-setup.md`) so they also fire for non-agent `gh pr create` — a plain
+terminal or CI context, where no plugin is loaded at all.

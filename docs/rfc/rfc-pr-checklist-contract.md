@@ -38,9 +38,12 @@ Each requirement is tagged with the phase (§ "Phased delivery") that first
 satisfies it. Nothing is cut; risk is sequenced.
 
 - **R1 — Cross-runtime** (P3). Verification fires for every kookr agent that can
-  open a PR (Claude Code, Codex CLI). This forces the *local pre-PR* trigger to
-  stay in the user-global hook layer, not `plugin/hooks/` (Codex does not inject
-  plugin hooks). v1 satisfies "cross-runtime" via **CI**, which is
+  open a PR (Claude Code, Codex CLI). This keeps the *local pre-PR* trigger in
+  the user-global hook layer, not `plugin/hooks/`, so it also fires for non-agent
+  `gh pr create` (plain terminal, CI) where no plugin loads. (This revision
+  originally cited "Codex does not inject plugin hooks"; the Codex fork now loads
+  plugin hooks via `--plugin-dir`, so that is no longer the reason — non-agent
+  coverage is.) v1 satisfies "cross-runtime" via **CI**, which is
   runtime-independent; the local hook comes in P3.
 - **R2 — Cross-repo, toolchain-agnostic** (P1). A repo with no local toolchain
   still gets meaningful verification; the engine runs on kookr's own runtime.
