@@ -138,7 +138,7 @@ describe('snapshot projection', () => {
     expect(snapshot.find((state) => state.taskId === task.id)?.latestCompletionSignal).toBeUndefined();
   });
 
-  it('uses task name or truncated display prompt for live task labels', () => {
+  it('uses the task name, else the full single-line prompt (client truncates) for live labels', () => {
     const taskStore = new TaskStore();
     const named = createTaskForMutation(taskStore, 'Fix auth token refresh in the login flow', '/cwd');
     taskStore.renameTask(named.id, 'Auth fix');
@@ -148,6 +148,9 @@ describe('snapshot projection', () => {
       cwd: '/cwd',
       createdAt: new Date(),
     });
+    // A realistic long prompt (~130 chars) is now sent in full, single-line and
+    // WITHOUT a baked "..." — the card truncates to the available width, so the
+    // visible ellipsis is CSS-driven and grows/shrinks as the panel resizes.
     const longPrompt = 'Refactor the authentication middleware to support OAuth2 with PKCE flow and add comprehensive integration tests for all edge cases';
     const long = createTaskForMutation(taskStore, longPrompt, '/cwd');
     taskStore.addSession(long.id, {
@@ -156,13 +159,29 @@ describe('snapshot projection', () => {
       cwd: '/cwd',
       createdAt: new Date(),
     });
+    // Only a pathologically long prompt is capped — a payload safety valve, not
+    // a display choice — collapsed to one line with a single-char ellipsis.
+    const hugePrompt = `Implement the feature end to end.\n${'detail '.repeat(80)}`;
+    const huge = createTaskForMutation(taskStore, hugePrompt, '/cwd');
+    taskStore.addSession(huge.id, {
+      tmuxSession: 'agent-huge',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
 
-    const snapshot = project(taskStore, [liveAgent('agent-named'), liveAgent('agent-long')]);
+    const snapshot = project(taskStore, [liveAgent('agent-named'), liveAgent('agent-long'), liveAgent('agent-huge')]);
 
     expect(snapshot.find((state) => state.agentId === 'agent-named')?.taskName).toBe('Auth fix');
+
     const longName = snapshot.find((state) => state.agentId === 'agent-long')?.taskName;
-    expect(longName!.length).toBeLessThanOrEqual(63);
-    expect(longName).toMatch(/\.\.\.$/);
+    expect(longName).toBe(longPrompt);
+    expect(longName).not.toMatch(/\.\.\.$/);
+
+    const hugeName = snapshot.find((state) => state.agentId === 'agent-huge')?.taskName;
+    expect(hugeName).not.toContain('\n');
+    expect(hugeName!.length).toBeLessThanOrEqual(201);
+    expect(hugeName!.endsWith('…')).toBe(true);
   });
 
   it('strips launch guardrail preambles from live, pending, and terminal task descriptions', () => {
