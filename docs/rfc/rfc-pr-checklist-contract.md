@@ -136,6 +136,18 @@ inspectable via `kookr pr-checklist verify --explain`.
 
 ### 2. Rule types
 
+- **`presence`** (v1, implicit — runs before any per-box rule) — every marker id
+  the repo's PR template declares must appear in the PR body. GitHub only injects
+  `.github/PULL_REQUEST_TEMPLATE.md` in the web UI (or when `gh pr create` runs
+  with **no** `--body`); an inline `--body` silently drops the whole checklist and
+  the `attest` rules below then pass *vacuously* — there is nothing to verify. A
+  template id absent from the body ⇒ fail, naming the missing ids and pointing at
+  `gh pr create --body-file`. No-op when the repo ships no marked template, or when
+  no body was provided (CI stays authoritative). The `.github/PULL_REQUEST_TEMPLATE/`
+  multi-template *directory* layout is skipped (which template applies is not
+  statically knowable from the command). This closes the exact bypass that forced
+  the per-repo non-blocking `pre-push` reminder in lucy PR #835 — here it is a
+  blocking, cross-runtime, cross-repo rule in the shared engine.
 - **`attest`** (v1) — the box must be checked, or struck with a reason
   (`~~item~~ — reason`). Blank marked box ⇒ fail; checked box whose mapped path is
   absent from the diff ⇒ fail ("ticked but not touched"); struck ⇒ waived, reason

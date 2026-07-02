@@ -126,6 +126,42 @@ export function evaluateAttestation(
   return { results, waived, notes };
 }
 
+/**
+ * Enforce that a PR body reproduces the checklist the repo's PR template
+ * declares. GitHub only injects `.github/PULL_REQUEST_TEMPLATE.md` in the web
+ * UI (or when `gh pr create` runs with NO `--body`); an agent that builds the
+ * body inline with `--body` silently drops the whole checklist. The per-box
+ * attestation rules then have nothing to verify and pass vacuously — so this
+ * is the rule that actually keeps the anti-drift checklist from being bypassed
+ * (the exact hole that forced the per-repo reminder in lucy PR #835).
+ *
+ * A template marker id absent from the body is a fail. Ids the body carries in
+ * any state — checked, blank, or struck — count as present here; whether a
+ * present box is *honest* is `evaluateAttestation`'s job, not this rule's.
+ *
+ * No-op when the repo ships no template (or a template with no markers), or
+ * when no body was provided (the caller then leaves CI authoritative). Pure;
+ * returns only ids/counts, never body/template *content* (S6).
+ */
+export function evaluateTemplatePresence(templateText: string, bodyRows: ChecklistRow[]): CheckResult[] {
+  const templateIds = new Set(parseChecklist(templateText).map((r) => r.id));
+  if (templateIds.size === 0) return [];
+  const present = new Set(bodyRows.map((r) => r.id));
+  const missing = [...templateIds].filter((id) => !present.has(id));
+  if (missing.length === 0) return [];
+  return [
+    {
+      id: 'pr-template',
+      status: 'fail',
+      summary:
+        `PR body omits ${missing.length} of ${templateIds.size} template checklist item(s) ` +
+        `(${missing.join(', ')}) — the body was not built from the repo's PR template. ` +
+        `Copy .github/PULL_REQUEST_TEMPLATE.md, work each box, and pass it via ` +
+        `\`gh pr create --body-file <file>\`; do not inline \`--body\` (it skips the template).`,
+    },
+  ];
+}
+
 /** Parse `FOO=` keys from a .env-style file's text. Pure. */
 export function parseEnvKeys(text: string): string[] {
   const keys: string[] = [];

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   evaluateAttestation,
   evaluateStructural,
+  evaluateTemplatePresence,
   findMissingEnv,
   findUntested,
   isSourceFile,
@@ -136,5 +137,35 @@ describe('evaluateStructural', () => {
     const f = facts({ addedFiles: ['src/orphan.ts'] });
     expect(evaluateStructural(f, '', 'nothing here', new Set())[0]).toMatchObject({ id: 'new-tests', status: 'fail' });
     expect(evaluateStructural(f, '', 'nothing here', new Set(['new-tests']))).toHaveLength(0);
+  });
+});
+
+describe('evaluateTemplatePresence', () => {
+  const template = ['- [ ] <!-- kookr:check:readme --> README', '- [ ] <!-- pr:tests --> tests'].join('\n');
+
+  it('no-ops when the repo ships no template (or one with no markers)', () => {
+    expect(evaluateTemplatePresence('', parseChecklist('- [x] <!-- pr:readme --> x'))).toHaveLength(0);
+    expect(evaluateTemplatePresence('# Just prose, no markers', [])).toHaveLength(0);
+  });
+
+  it('fails, listing every template id the body omits', () => {
+    const results = evaluateTemplatePresence(template, parseChecklist('Summary only, no checklist.'));
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ id: 'pr-template', status: 'fail' });
+    expect(results[0].summary).toMatch(/readme/);
+    expect(results[0].summary).toMatch(/tests/);
+    expect(results[0].summary).toMatch(/2 of 2/);
+  });
+
+  it('passes when the body reproduces every marker regardless of checked/struck state', () => {
+    const body = ['- [x] <!-- pr:readme --> done', '- [ ] ~~<!-- pr:tests -->~~ — N/A'].join('\n');
+    expect(evaluateTemplatePresence(template, parseChecklist(body))).toHaveLength(0);
+  });
+
+  it('fails when only some template markers are present', () => {
+    const results = evaluateTemplatePresence(template, parseChecklist('- [x] <!-- pr:readme --> done'));
+    expect(results[0].status).toBe('fail');
+    expect(results[0].summary).toMatch(/tests/);
+    expect(results[0].summary).not.toMatch(/readme/); // readme is present, only the missing one is listed
   });
 });
