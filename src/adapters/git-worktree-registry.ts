@@ -90,11 +90,6 @@ export class WorktreeRegistry {
       const output = await this.runGit(repoPath, ['worktree', 'list', '--porcelain']);
       const entries = parseGitWorktreeList(output);
 
-      // `git worktree list --porcelain` carries prunable markers in modern git.
-      // The dry-run is still executed as an explicit authoritative probe; its
-      // output format is advisory and intentionally not parsed here.
-      await this.runGit(repoPath, ['worktree', 'prune', '--dry-run']).catch(() => '');
-
       this.entriesByPath = new Map(entries.map((entry) => [normalizePath(entry.path), entry]));
       this.entriesByBranch = new Map(
         entries.flatMap((entry) => entry.branch ? [[entry.branch, entry] as const] : []),
