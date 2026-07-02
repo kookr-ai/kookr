@@ -307,6 +307,9 @@ admission/suppression and outbound generic webhook delivery. Browser desktop
 notifications, hosted relay/web-push outcomes, and Telegram inbound audit are
 out of scope until those channels report server-visible outcomes.
 
+For the outbound webhook retry, redirect, permanent-failure, and duplicate
+suppression contract, see [Outbound Finding Webhooks](../configuration.md#outbound-finding-webhooks).
+
 ## Coordinator detector concepts
 
 Coordinator detector concepts are not `AnomalyType` values and do not participate
