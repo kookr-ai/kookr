@@ -22,7 +22,7 @@ After installation, the toolkit is available in every Claude Code session on you
 
 **Code patterns:** `typescript-type-safety`, `error-handling-patterns`, `async-flow-control`, `dependency-injection-patterns`, `domain-driven-design`, `monorepo-architecture`, `requirements-engineering`, `state-machine-workflow-patterns`, `process-lifecycle-patterns`, `realtime-state-sync`, `event-driven-messaging-patterns`, `logging-design-patterns`, `shell-subprocess-safety`, `safe-refactoring`, `testing-patterns`, `playwright-e2e-patterns`, `websocket-dashboard`.
 
-**Workflow:** `git-commit-discipline`, `tdd-workflow`, `token-efficiency`, `claude-code-metrics-analysis`, `hook-driven-workflow-enforcement`, `e2e-agent-testing`, `github-issue-workflow`, `github-trending-repos`, `ui-mockup-variants` (offer design mockup variants before implementing any UI change).
+**Workflow:** `git-commit-discipline`, `tdd-workflow`, `token-efficiency`, `agent-efficiency-retrofit`, `claude-code-metrics-analysis`, `hook-driven-workflow-enforcement`, `e2e-agent-testing`, `github-issue-workflow`, `github-trending-repos`, `ui-mockup-variants` (offer design mockup variants before implementing any UI change).
 
 **Kookr operations:** Kookr-specific skills that are useful from any working
 directory, such as task spawning, task supervision, and CLI/API workflows. These
@@ -84,7 +84,7 @@ working in other repositories.
 
 ## Versioning
 
-`plugin.json#version` is bumped on every PR that changes `plugin/skills/**` or `plugin/agents/**`. Without a version bump, installed-plugin users would not receive updates. The repo's pre-push hook enforces the bump.
+`plugin.json#version` is bumped on every PR that changes bundled plugin content under `plugin/**` except `plugin/.claude-plugin/plugin.json` itself (skills, agents, hooks, playbooks, reviewer specialists, README, etc.). Without a version bump, installed-plugin users would not receive updates. The repo's pre-push hook enforces the bump.
 
 ## License
 
