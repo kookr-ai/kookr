@@ -54,6 +54,23 @@ describe('metrics routes', () => {
     expect(body).toContain('kookr_attention_suppressed_total{reason="queue_snoozed"} 0');
   });
 
+  test('serves live audit sink health metrics', async () => {
+    const res = await mkApp({
+      auditSinks: {
+        getAllSnapshots: () => [{
+          sink: 'private_network_collaboration',
+          writable: false,
+          appendFailureCount: 2,
+        }],
+      },
+    }).request('/metrics');
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('kookr_audit_sink_writable{sink="private_network_collaboration"} 0');
+    expect(body).toContain('kookr_audit_append_failures_total{sink="private_network_collaboration"} 2');
+  });
+
   test('requires an owner credential when non-loopback API auth is required', async () => {
     const app = mkApp({ apiAuth: { required: true, token: 'owner-token' } });
 

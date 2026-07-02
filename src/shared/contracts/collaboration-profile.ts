@@ -92,6 +92,7 @@ export interface CollaborationDiagnostics {
   audit: {
     configured: boolean;
     writable: boolean;
+    appendFailureCount: number;
     lastFailure?: { at: string; reason: string };
   };
   lastAuthFailure?: CollaborationAuthFailureDiagnostic;
