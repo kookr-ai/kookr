@@ -1,5 +1,5 @@
-import { appendFile, mkdir, open, readFile, rename, stat, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { appendFile, mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 
 import type {
   ActorId,
@@ -93,10 +93,18 @@ interface CommandJournalSnapshot {
   tombstones: GrantId[];
 }
 
+interface CommandArchiveRetentionOptions {
+  /** Maximum rotated audit segments to keep. Undefined disables count pruning. */
+  maxArchiveCount?: number;
+  /** Maximum age for rotated audit segments. Undefined disables age pruning. */
+  maxArchiveAgeMs?: number;
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_IDEMPOTENCY_ENTRIES = 100_000;
 const DEFAULT_COMPACT_AFTER_BYTES = 8 * 1024 * 1024;
 const MAX_COMMAND_STATE_ENTRIES = MAX_IDEMPOTENCY_ENTRIES;
+const AUDIT_ARCHIVE_RE = /^audit\..+\.jsonl$/;
 
 function tupleKey(tuple: IdempotencyTuple): string {
   return [
@@ -113,7 +121,10 @@ function isAuditRow(value: unknown): value is CommandAuditRow {
   const row = value as Partial<CommandAuditRow>;
   return typeof value === 'object'
     && value !== null
-    && typeof row.type === 'string'
+    && (row.type === 'command.intent'
+      || row.type === 'command.result'
+      || row.type === 'command.pre-audit-reject'
+      || row.type === 'grant.revoke')
     && typeof row.timestamp === 'string';
 }
 
@@ -138,6 +149,16 @@ function isSnapshot(value: unknown): value is CommandJournalSnapshot {
     && snapshot.tombstones.every((grantId) => typeof grantId === 'string');
 }
 
+function normalizeNonNegativeInteger(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value)) return undefined;
+  return Math.max(0, Math.floor(value));
+}
+
+function normalizeNonNegativeNumber(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value)) return undefined;
+  return Math.max(0, value);
+}
+
 export class CommandJournal {
   private readonly intents = new Map<CommandId, CommandAuditRow & { type: 'command.intent' }>();
   private readonly results = new Map<CommandId, CommandResult>();
@@ -154,6 +175,7 @@ export class CommandJournal {
     private readonly nodeEpoch: NodeEpoch,
     private readonly now: () => Date,
     private readonly compactAfterBytes: number,
+    private readonly archiveRetention: CommandArchiveRetentionOptions,
   ) {}
 
   static auditPathFor(kookrDir: string): string {
@@ -170,6 +192,8 @@ export class CommandJournal {
     nodeEpoch: NodeEpoch;
     now?: () => Date;
     compactAfterBytes?: number;
+    maxArchiveCount?: number;
+    maxArchiveAgeMs?: number;
   }): Promise<CommandJournal> {
     const journal = new CommandJournal(
       CommandJournal.auditPathFor(opts.kookrDir),
@@ -178,6 +202,10 @@ export class CommandJournal {
       opts.nodeEpoch,
       opts.now ?? (() => new Date()),
       opts.compactAfterBytes ?? DEFAULT_COMPACT_AFTER_BYTES,
+      {
+        maxArchiveCount: normalizeNonNegativeInteger(opts.maxArchiveCount),
+        maxArchiveAgeMs: normalizeNonNegativeNumber(opts.maxArchiveAgeMs),
+      },
     );
     await journal.load();
     return journal;
@@ -484,15 +512,105 @@ export class CommandJournal {
     // audit and start a new empty tail. The snapshot offset is zero because it
     // applies to the newly-created active audit, not the archived segment.
     await this.writeSnapshot(0);
-    await rename(this.auditPath, this.nextArchivePath());
+    const archivePath = this.nextArchivePath();
+    await rename(this.auditPath, archivePath);
     await writeFile(this.auditPath, '', 'utf8');
     this.lastCompactedAuditSize = 0;
+    await this.pruneArchives(archivePath);
   }
 
   private nextArchivePath(): string {
     const stamp = this.now().toISOString().replace(/[^0-9A-Za-z.-]/g, '-');
     this.archiveCounter += 1;
     return join(dirname(this.auditPath), `audit.${stamp}.${process.pid}.${this.archiveCounter}.jsonl`);
+  }
+
+  private async pruneArchives(protectedArchivePath: string): Promise<void> {
+    const maxArchiveCount = this.archiveRetention.maxArchiveCount;
+    const maxArchiveAgeMs = this.archiveRetention.maxArchiveAgeMs;
+    if (maxArchiveCount === undefined && maxArchiveAgeMs === undefined) return;
+
+    const dir = dirname(this.auditPath);
+    let entries: string[];
+    try {
+      entries = await readdir(dir);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw err;
+    }
+
+    const protectedArchiveName = basename(protectedArchivePath);
+    const archives = (await Promise.all(
+      entries
+        .filter((entry) => AUDIT_ARCHIVE_RE.test(entry))
+        .map(async (entry) => {
+          const path = join(dir, entry);
+          try {
+            const info = await stat(path);
+            const prunable = await this.archiveContainsOnlyCommandAuditRows(path);
+            return { name: entry, path, mtimeMs: info.mtimeMs, prunable };
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+            throw err;
+          }
+        }),
+    )).filter((entry): entry is { name: string; path: string; mtimeMs: number; prunable: boolean } => entry !== null)
+      .sort((a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name));
+
+    const prunableArchives = archives.filter((archive) => archive.prunable);
+    const removable = new Set<string>();
+    const protectedArchive = prunableArchives.find((entry) => entry.name === protectedArchiveName);
+    const nowMs = this.now().getTime();
+
+    if (maxArchiveAgeMs !== undefined) {
+      for (const archive of prunableArchives) {
+        if (archive.name === protectedArchiveName) continue;
+        if (nowMs - archive.mtimeMs > maxArchiveAgeMs) removable.add(archive.path);
+      }
+    }
+
+    if (maxArchiveCount !== undefined && prunableArchives.length > maxArchiveCount) {
+      const keep = new Set(
+        (maxArchiveCount === 0 ? [] : prunableArchives.slice(-maxArchiveCount))
+          .map((archive) => archive.path),
+      );
+      if (protectedArchive) keep.add(protectedArchive.path);
+      for (const archive of prunableArchives) {
+        if (!keep.has(archive.path)) removable.add(archive.path);
+      }
+    }
+
+    for (const archivePath of removable) {
+      try {
+        await unlink(archivePath);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+    }
+  }
+
+  private async archiveContainsOnlyCommandAuditRows(archivePath: string): Promise<boolean> {
+    let sawRow = false;
+    let raw: string;
+    try {
+      raw = await readFile(archivePath, 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw err;
+    }
+
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line) as unknown;
+      } catch {
+        return false;
+      }
+      if (!isAuditRow(parsed)) return false;
+      sawRow = true;
+    }
+    return sawRow;
   }
 
   private async writeSnapshot(activeAuditSizeBytes: number): Promise<void> {
