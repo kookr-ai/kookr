@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { HELP_TEXT } from '../../bin/kookr.js';
 
-const HELP_COMMANDS = new Set(['-h', '--help', 'help']);
+const ROOT_NON_DISPATCH_TOKENS = new Set(['-h', '--help', 'help', '-v', '--version']);
 
 function extractCliDispatcherCommands(source: string): string[] {
   const commands = new Set<string>();
@@ -15,7 +15,7 @@ function extractCliDispatcherCommands(source: string): string[] {
     const firstRestArg = condition.match(/rest\[0\]\s*===\s*'([^']+)'/)?.[1];
 
     for (const command of commandMatches) {
-      if (HELP_COMMANDS.has(command)) continue;
+      if (ROOT_NON_DISPATCH_TOKENS.has(command)) continue;
       commands.add(command === 'command' && firstRestArg ? `${command} ${firstRestArg}` : command);
     }
   }
@@ -44,6 +44,7 @@ describe('CLI dispatcher help coverage', () => {
   it('parses routed root commands and command subcommands from dispatcher source', () => {
     const source = [
       "if (command === '-h' || command === '--help' || command === 'help') {}",
+      "if (command === '-v' || command === '--version') {}",
       "if (command === 'spawn') {}",
       "if (command === 'command' && rest[0] === 'outcome') {}",
       "if (command === 'drain' || command === 'resume') {}",

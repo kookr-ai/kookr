@@ -3,7 +3,7 @@
 // know about dist/server/start.js. See docs/roadmap.md Phase 2.
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 
 const HELP_TEXT = `kookr - local AI agent supervisor.
 
@@ -22,6 +22,10 @@ Usage:
   kookr pr-checklist verify [OPTIONS] Verify a repo's anti-drift PR checklist against the diff.
   kookr push test <deviceId>    Send a relay push test.
   kookr completion bash|zsh     Print a shell completion script.
+
+Options:
+  -v, --version                 Print the installed Kookr version.
+  -h, --help                    Show this help.
 
 Use --json with spawn, doctor, status, signal, or ralph for one machine-readable output envelope.
 
@@ -50,6 +54,11 @@ async function main({
 
   if (command === '-h' || command === '--help' || command === 'help') {
     out.log(HELP_TEXT);
+    return exit(0);
+  }
+
+  if (command === '-v' || command === '--version') {
+    out.log(readPackageVersion());
     return exit(0);
   }
 
@@ -137,6 +146,16 @@ async function startServer({ err = console, exit = process.exit } = {}) {
   }
 
   await import(entry);
+}
+
+function readPackageVersion() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const packageJsonPath = join(here, '..', 'package.json');
+  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
+  if (typeof packageJson.version !== 'string' || packageJson.version.trim() === '') {
+    throw new Error('package.json version is missing');
+  }
+  return packageJson.version;
 }
 
 async function runMaintenanceCommand(argv) {

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
+import packageJson from '../../package.json' with { type: 'json' };
 import { HELP_TEXT, main } from '../../bin/kookr.js';
 import {
   getRootCompletionCommands,
@@ -122,6 +123,7 @@ describe('renderCompletion', () => {
     const script = renderCompletion('bash');
     expect(script).toContain('complete -F _kookr kookr');
     expect(script).toContain('spawn signal issue doctor status command ralph drain resume maintenance pr-checklist push completion');
+    expect(script).toContain('compgen -W "spawn signal issue doctor status command ralph drain resume maintenance pr-checklist push completion -h --help -v --version"');
     expect(script).toContain('compgen -W "outcome"');
     expect(script).toContain('status pause resume cancel');
     expect(script).toContain('--prompt-file');
@@ -139,6 +141,7 @@ describe('renderCompletion', () => {
     const script = renderCompletion('zsh');
     expect(script).toContain('#compdef kookr');
     expect(script).toContain('root_commands=(spawn signal issue doctor status command ralph drain resume maintenance pr-checklist push completion)');
+    expect(script).toContain('compadd -- $root_commands -h --help -v --version');
     expect(script).toContain('compadd outcome');
     expect(script).toContain('compadd -- status pause resume cancel');
     expect(script).toContain('compadd claude-code codex-cli');
@@ -155,7 +158,7 @@ describe('renderCompletion', () => {
 describe('bash completion behavior', () => {
   it('completes root commands', async () => {
     await expect(completeBash(['kookr', ''])).resolves.toEqual(
-      expect.arrayContaining(['spawn', 'status', 'ralph', 'completion']),
+      expect.arrayContaining(['spawn', 'status', 'ralph', 'completion', '-v', '--version']),
     );
   });
 
@@ -229,7 +232,7 @@ describe('bash completion behavior', () => {
 describe.skipIf(!hasZsh)('zsh completion behavior', () => {
   it('completes root commands', async () => {
     await expect(completeZsh(['kookr', ''], 2)).resolves.toEqual(
-      expect.arrayContaining(['spawn', 'status', 'ralph', 'completion']),
+      expect.arrayContaining(['spawn', 'status', 'ralph', 'completion', '-v', '--version']),
     );
   });
 
@@ -305,6 +308,24 @@ describe('runCompletionCli', () => {
     await runCompletionCli({ argv, out: deps.out, err: deps.err, exit: deps.exit });
     expect(deps.codes).toEqual([2]);
     expect(deps.errors.join('\n')).toContain('Usage: kookr completion <bash|zsh>');
+  });
+});
+
+describe('kookr dispatcher root version flags', () => {
+  it.each([['--version'], ['-v']])('prints package version for %s', async (flag) => {
+    const deps = makeDeps();
+    await main({ argv: [flag], env: {}, out: deps.out, err: deps.err, exit: deps.exit });
+    expect(deps.codes).toEqual([0]);
+    expect(deps.errors).toEqual([]);
+    expect(deps.logs).toEqual([packageJson.version]);
+  });
+
+  it('prints package version through bin/kookr.js', async () => {
+    const { stdout, stderr } = await execFileAsync(process.execPath, ['bin/kookr.js', '--version'], {
+      cwd: process.cwd(),
+    });
+    expect(stderr).toBe('');
+    expect(stdout.trim()).toBe(packageJson.version);
   });
 });
 
