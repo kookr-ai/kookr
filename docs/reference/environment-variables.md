@@ -184,6 +184,16 @@ local configuration; do not store shared secrets in checked-in `.env` files.
 | `KOOKR_WEBHOOK_MIN_SEVERITY` | `info` | `info`, `warning`, `critical` | Sends only findings at or above the configured severity. Invalid values fall back to `info` with a warning. |
 | `KOOKR_WEBHOOK_SECRET` | unset | Secret string, or comma-separated secrets for rotation | Adds `X-Kookr-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret, t + "." + body)>` to outbound finding webhook POSTs. Kookr signs with the first configured secret; receivers should verify against any accepted secret during rotation. |
 
+Delivery behavior is part of the receiver contract. Kookr uses
+`DEFAULT_MAX_ATTEMPTS` and `DEFAULT_INITIAL_RETRY_DELAY_MS` for 3 attempts with
+1s, then 2s, exponential backoff. Network errors, 3xx responses, and 5xx
+responses retry until the attempt budget is exhausted. Any 4xx response is
+permanent and stops retrying immediately. Redirects are not followed
+(`redirect: 'manual'`), so the redirect response itself is evaluated by that
+same retry logic. Duplicate deliveries are suppressed by `agentId:fingerprint`
+until the finding resolves; receivers should still make `fingerprint`
+idempotent on their side.
+
 ## Relay
 
 Hosted relay is inert until the operational gate is explicitly enabled; see

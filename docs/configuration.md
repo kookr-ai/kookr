@@ -182,7 +182,8 @@ KOOKR_WEBHOOK_SECRET=change-me
 
 `KOOKR_WEBHOOK_MIN_SEVERITY` is optional and accepts `info`, `warning`, or `critical`.
 Repeated re-enqueues of the same finding fingerprint are deduplicated until the
-finding resolves.
+finding resolves; see [Delivery behavior](#delivery-behavior) for the full
+receiver contract.
 
 Per-project routing can override whether the outbound finding webhook fires and
 the minimum severity for that project:
@@ -201,6 +202,27 @@ If a project omits `webhook`, Kookr falls back to `KOOKR_WEBHOOK_MIN_SEVERITY`.
 If `webhook.enabled` is `false`, findings for that project are not posted. The
 webhook receiver URL and signing secret remain env-only; project settings store
 only `enabled` and `minSeverity`.
+
+### Delivery behavior
+
+Kookr posts each new finding with the retry defaults from
+`DEFAULT_MAX_ATTEMPTS` and `DEFAULT_INITIAL_RETRY_DELAY_MS`: 3 attempts with
+exponential backoff starting at 1 second, then 2 seconds before the final
+attempt. Network errors and non-2xx responses outside the 4xx range are retried
+until the attempt budget is exhausted.
+
+Any 4xx response from the receiver is treated as permanent for that finding
+delivery and stops retrying immediately. Kookr sends the request with
+`redirect: 'manual'`, so receiver redirects are not followed. A 3xx response is
+evaluated as the response Kookr received and is retried according to the same
+non-4xx failure path.
+
+Duplicate suppression is keyed by `agentId:fingerprint`. Once a finding reaches
+the webhook delivery path, later re-enqueues with the same key are suppressed
+until the finding resolves and Kookr clears that fingerprint. Receivers should
+still treat repeated `fingerprint` values as idempotent no-ops, because
+operator restarts or future delivery implementations may replay the same logical
+finding.
 
 Delivery decisions are visible through the owner diagnostics endpoint:
 
