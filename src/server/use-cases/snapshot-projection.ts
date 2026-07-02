@@ -120,7 +120,7 @@ export function buildSnapshotProjection(deps: {
 function enrichLiveState(state: AgentState, meta: SessionSnapshotMeta): void {
   const task = meta.task;
   state.taskId = meta.taskId;
-  state.taskName = meta.name ?? truncatePrompt(meta.displayPrompt, 60);
+  state.taskName = meta.name ?? promptTitle(meta.displayPrompt);
   state.description = meta.displayPrompt;
   state.cwd = meta.cwd;
   state.agentType = meta.agentType;
@@ -166,7 +166,7 @@ function buildPendingTaskEntry(task: Task): AgentState {
     anomaly: null,
     lastEventSeq: 0,
     taskId: task.id,
-    taskName: task.name ?? truncatePrompt(displayPrompt, 60),
+    taskName: task.name ?? promptTitle(displayPrompt),
     taskStatus: 'pending',
     parentTaskId: task.parentTaskId,
     childTaskIds: task.childTaskIds,
@@ -197,7 +197,7 @@ function buildTerminalTaskEntry(task: Task): AgentState {
     anomaly: null,
     lastEventSeq: 0,
     taskId: task.id,
-    taskName: task.name ?? truncatePrompt(displayPrompt, 60),
+    taskName: task.name ?? promptTitle(displayPrompt),
     taskStatus: task.status,
     parentTaskId: task.parentTaskId,
     childTaskIds: task.childTaskIds,
@@ -241,12 +241,21 @@ function terminalFinishedAt(task: Task, lastSession: Task['sessions'][number] | 
   return task.updatedAt.toISOString();
 }
 
-/** Truncate a prompt to maxLen chars at a word boundary, adding "..." if truncated. */
-function truncatePrompt(prompt: string, maxLen: number): string {
-  if (prompt.length <= maxLen) return prompt;
-  const truncated = prompt.slice(0, maxLen);
-  const lastSpace = truncated.lastIndexOf(' ');
-  return (lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated) + '...';
+/**
+ * Build a single-line display title from a prompt for tasks that have no
+ * explicit (LLM-generated) name yet. Collapses whitespace to one clean line and
+ * caps length only as a payload safety valve — the client truncates the title
+ * to the available card width, so the cap is deliberately larger than any panel
+ * can show. That keeps the visible ellipsis CSS-driven (and therefore dynamic
+ * as the panel resizes) instead of baking a fixed "..." into the string, which
+ * a widened card could never expand past. See the finding/healthy card titles.
+ */
+function promptTitle(prompt: string, maxLen = 200): string {
+  const collapsed = prompt.replace(/\s+/g, ' ').trim();
+  if (collapsed.length <= maxLen) return collapsed;
+  const cut = collapsed.slice(0, maxLen);
+  const lastSpace = cut.lastIndexOf(' ');
+  return (lastSpace > 0 ? cut.slice(0, lastSpace) : cut) + '…';
 }
 
 function annotateFindingCausality(states: AgentState[]): void {

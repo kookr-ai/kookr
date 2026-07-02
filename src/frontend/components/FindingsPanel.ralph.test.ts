@@ -224,24 +224,29 @@ describe('FindingsPanel Ralph controls', () => {
     expect(completedBadge?.textContent).toContain('2/5');
   });
 
-  test('healthy rows reserve a dedicated row for the task name', () => {
+  test('healthy rows give the task name its own full-width line', () => {
     root = renderPanel(container, agentWithRalph('running', {
       taskName: 'A very long Ralph-controlled task name that still needs visible room',
       gitBranch: 'feature/long-running-ralph-loop-controls',
     }));
 
-    const statusRow = container.querySelector('.healthy-row-status');
-    expect(statusRow?.querySelector('.branch-label')?.textContent).toContain('feature/');
-    expect(statusRow?.querySelector('.healthy-row-name')).toBeNull();
+    const row = container.querySelector('.healthy-row');
+    // Title Lead: the name is a direct, full-width line of the row — it does not
+    // share a line with badges, controls, or the branch.
+    const name = row?.querySelector(':scope > .healthy-row-name');
+    expect(name?.textContent).toContain('A very long Ralph-controlled task name');
+    expect(name?.querySelector('[data-testid="reply-button"]')).toBeNull();
+    expect(name?.querySelector('.ralph-loop-controls')).toBeNull();
 
-    const titleRow = container.querySelector('.healthy-row-title-line');
-    expect(titleRow?.querySelector('.healthy-row-name')?.textContent).toContain('A very long Ralph-controlled task name');
-    expect(titleRow?.querySelector('[data-testid="reply-button"]')).toBeNull();
-    expect(titleRow?.querySelector('.ralph-loop-controls')).toBeNull();
+    // Branch / worktree is intentionally no longer rendered on the card — it now
+    // lives only in the detail panel.
+    expect(row?.querySelector('.branch-label')).toBeNull();
 
-    const footer = container.querySelector('.healthy-row-footer');
-    expect(footer?.querySelector('[data-testid="reply-button"]')?.textContent).toBe('Reply');
-    expect(footer?.querySelector('.healthy-row-controls .ralph-loop-controls')).toBeTruthy();
+    // The action rail (reply + Ralph controls) lives in the info row below the
+    // name. Reply is icon-only now, so assert on its data-testid, not its text.
+    const info = row?.querySelector(':scope > .healthy-row-info');
+    expect(info?.querySelector('[data-testid="reply-button"]')).toBeTruthy();
+    expect(info?.querySelector('.healthy-row-controls .ralph-loop-controls')).toBeTruthy();
   });
 
   test('Ralph tasks appear in their normal section without a dedicated overview', () => {
