@@ -1,4 +1,5 @@
-import React, { useEffect, useId } from 'react';
+import React, { useEffect, useId, useRef } from 'react';
+import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 
 interface Props {
@@ -25,6 +26,11 @@ interface Props {
   suppressEnterToConfirm?: boolean;
 }
 
+function isNativeEnterTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(target.closest('button, a[href], input, select, textarea, [contenteditable="true"]'));
+}
+
 export function ConfirmDialog({
   title,
   message,
@@ -37,12 +43,15 @@ export function ConfirmDialog({
   suppressEnterToConfirm,
 }: Props) {
   const titleId = useId();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const cancelButtonRef = useRef<HTMLButtonElement>(null);
   useEscapeToClose(onClose);
+  useDialogFocus({ dialogRef, initialFocusRef: cancelButtonRef });
 
   useEffect(() => {
     if (suppressEnterToConfirm) return;
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Enter') {
+      if (e.key === 'Enter' && !isNativeEnterTarget(e.target)) {
         e.preventDefault();
         e.stopPropagation();
         onConfirm();
@@ -64,6 +73,7 @@ export function ConfirmDialog({
   return (
     <div className="dialog-overlay" onClick={handleOverlayClick}>
       <div
+        ref={dialogRef}
         className="confirm-dialog"
         role="dialog"
         aria-modal="true"
@@ -75,11 +85,11 @@ export function ConfirmDialog({
         {children && <div className="confirm-dialog-extra">{children}</div>}
         {footer && <div className="confirm-dialog-footer">{footer}</div>}
         <div className="confirm-dialog-actions">
-          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button ref={cancelButtonRef} className="btn-secondary" onClick={onClose}>Cancel</button>
           <button className={confirmClass ?? 'btn-primary'} onClick={onConfirm}>{confirmLabel}</button>
         </div>
         <div className="confirm-dialog-hint">
-          {suppressEnterToConfirm ? <><kbd>Esc</kbd> cancel</> : <><kbd>Enter</kbd> confirm · <kbd>Esc</kbd> cancel</>}
+          <kbd>Esc</kbd> cancel
         </div>
       </div>
     </div>
