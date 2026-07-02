@@ -21,6 +21,12 @@ function subjectMatches(grantSubject: ShareSubject, subject: ShareSubject): bool
   }
 }
 
+function isExpired(expiresAt: string | undefined, nowMs: number): boolean {
+  if (expiresAt === undefined) return false;
+  const expiresAtMs = Date.parse(expiresAt);
+  return !Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs;
+}
+
 export function evaluateGrant(
   cache: RemotePolicyCache,
   subject: ShareSubject,
@@ -38,11 +44,12 @@ export function evaluateGrant(
   let sawSubject = false;
   let sawExpired = false;
   let sawWrongAction = false;
+  const nowMs = now.getTime();
   for (const grant of snapshot.grants) {
     if (cache.hasTombstone(grant.grantId)) return { allowed: false, reason: 'revoked' };
     if (!subjectMatches(grant.subject, subject)) continue;
     sawSubject = true;
-    if (grant.expiresAt && Date.parse(grant.expiresAt) <= now.getTime()) {
+    if (isExpired(grant.expiresAt, nowMs)) {
       sawExpired = true;
       continue;
     }
@@ -69,7 +76,7 @@ export function evaluateGrantById(
   const grant = cache.get(grantId);
   if (!grant) return { allowed: false, reason: 'missing' };
   if (!subjectMatches(grant.subject, subject)) return { allowed: false, reason: 'wrong-subject' };
-  if (grant.expiresAt && Date.parse(grant.expiresAt) <= now.getTime()) {
+  if (isExpired(grant.expiresAt, now.getTime())) {
     return { allowed: false, reason: 'expired' };
   }
   if (!grant.grants.some((grantAction) => grantAction === action || grantAction === 'admin')) {

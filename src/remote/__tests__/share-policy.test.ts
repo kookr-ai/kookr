@@ -42,6 +42,65 @@ describe('evaluateGrant', () => {
     )).toMatchObject({ allowed: false, reason: 'wrong-action' });
   });
 
+  it('fails closed when a matching grant has a malformed expiresAt timestamp', () => {
+    const cache = new RemotePolicyCache();
+    cache.upsert({
+      grantId: asGrantId('grant-malformed-expiry'),
+      policyVersion: asPolicyVersion(1),
+      subject: { kind: 'session', nodeId: asNodeId('node-1'), sessionId: 'session-1' },
+      grants: ['terminalInput'],
+      expiresAt: 'not-a-date',
+    });
+    cache.upsert({
+      grantId: asGrantId('grant-empty-expiry'),
+      policyVersion: asPolicyVersion(1),
+      subject: { kind: 'session', nodeId: asNodeId('node-1'), sessionId: 'session-1' },
+      grants: ['view'],
+      expiresAt: '',
+    });
+
+    const subject = { kind: 'session' as const, nodeId: asNodeId('node-1'), sessionId: 'session-1' };
+
+    expect(evaluateGrant(
+      cache,
+      subject,
+      'terminalInput',
+      new Date('2026-05-15T19:00:00.000Z'),
+    )).toMatchObject({ allowed: false, reason: 'expired' });
+    expect(evaluateGrantById(
+      cache,
+      asGrantId('grant-malformed-expiry'),
+      subject,
+      'terminalInput',
+      new Date('2026-05-15T19:00:00.000Z'),
+    )).toMatchObject({ allowed: false, reason: 'expired' });
+    expect(evaluateGrantById(
+      cache,
+      asGrantId('grant-empty-expiry'),
+      subject,
+      'view',
+      new Date('2026-05-15T19:00:00.000Z'),
+    )).toMatchObject({ allowed: false, reason: 'expired' });
+  });
+
+  it('denies grants with a valid past expiresAt timestamp', () => {
+    const cache = new RemotePolicyCache();
+    cache.upsert({
+      grantId: asGrantId('grant-expired'),
+      policyVersion: asPolicyVersion(1),
+      subject: { kind: 'session', nodeId: asNodeId('node-1'), sessionId: 'session-1' },
+      grants: ['terminalInput'],
+      expiresAt: '2026-05-15T18:00:00.000Z',
+    });
+
+    expect(evaluateGrant(
+      cache,
+      { kind: 'session', nodeId: asNodeId('node-1'), sessionId: 'session-1' },
+      'terminalInput',
+      new Date('2026-05-15T19:00:00.000Z'),
+    )).toMatchObject({ allowed: false, reason: 'expired' });
+  });
+
   it('reports revoked when a stale snapshot attempts to retain a revoked grant row', () => {
     const cache = {
       snapshot: () => ({
