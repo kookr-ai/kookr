@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { FindingsPanel } from './FindingsPanel.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
+import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound.js';
 import type { AgentState } from '../../shared/protocol.js';
 
 type FakeBufferSource = {
@@ -117,6 +118,8 @@ describe('FindingsPanel speak agent control', () => {
     fakeAudioEvents.length = 0;
     fakeAudioContextInitialState = 'running';
     syncGlobalStore();
+    window.localStorage.clear();
+    __resetSoundPreferenceForTests();
     useKookrStore.setState({ ttsUrl: 'http://127.0.0.1:8004' });
     vi.spyOn(performance, 'now')
       .mockReturnValueOnce(10)
@@ -159,6 +162,8 @@ describe('FindingsPanel speak agent control', () => {
     container.remove();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    window.localStorage.clear();
+    __resetSoundPreferenceForTests();
     document.body.innerHTML = '';
   });
 
@@ -209,6 +214,63 @@ describe('FindingsPanel speak agent control', () => {
     expect(fakeSources[0].start).toHaveBeenCalledOnce();
     expect(container.querySelector<HTMLButtonElement>('[data-testid="speak-button"]')?.getAttribute('aria-label'))
       .toBe('Stop spoken task summary for Some task');
+  });
+
+  test('clicking a suppressed speak button clears it back to idle', async () => {
+    setSoundEnabled(false);
+    root = renderPanel(container, [makeFinding()], 'agent-1');
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="speak-button"]')!.click();
+      await Promise.resolve();
+    });
+
+    const taskFetchCount = () => fetchMock.mock.calls
+      .filter(([input]) => String(input).includes('/api/tasks/')).length;
+    expect(taskFetchCount()).toBe(0);
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="speak-button"]')?.getAttribute('aria-label'))
+      .toBe('Audio suppressed for Some task by sound or Do Not Disturb settings; press to reset');
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="speak-button"]')!.click();
+      await Promise.resolve();
+    });
+
+    expect(taskFetchCount()).toBe(0);
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="speak-button"]')?.getAttribute('aria-label'))
+      .toBe('Speak task summary for Some task');
+  });
+
+  test('suppressed speak buttons do not clear other suppressed task cards', async () => {
+    setSoundEnabled(false);
+    root = renderPanel(container, [
+      makeFinding({ agentId: 'agent-1', taskName: 'First task' }),
+      makeFinding({ agentId: 'agent-2', taskId: 'task-2', taskName: 'Second task' }),
+    ], 'agent-1');
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-agent-id="agent-1"]')!.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-agent-id="agent-2"]')!.click();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector<HTMLButtonElement>('[data-agent-id="agent-1"]')?.getAttribute('aria-label'))
+      .toBe('Audio suppressed for First task by sound or Do Not Disturb settings; press to reset');
+    expect(container.querySelector<HTMLButtonElement>('[data-agent-id="agent-2"]')?.getAttribute('aria-label'))
+      .toBe('Audio suppressed for Second task by sound or Do Not Disturb settings; press to reset');
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-agent-id="agent-1"]')!.click();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector<HTMLButtonElement>('[data-agent-id="agent-1"]')?.getAttribute('aria-label'))
+      .toBe('Speak task summary for First task');
+    expect(container.querySelector<HTMLButtonElement>('[data-agent-id="agent-2"]')?.getAttribute('aria-label'))
+      .toBe('Audio suppressed for Second task by sound or Do Not Disturb settings; press to reset');
   });
 
   test('healthy no-anomaly task row can speak task summary', async () => {

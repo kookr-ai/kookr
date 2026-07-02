@@ -355,8 +355,8 @@ function speakTaskSummaryLabel(status: SpeakStatus, agentLabel: string, errorRea
       return `Stop spoken task summary for ${agentLabel}`;
     case 'suppressed':
       return errorReason === 'audio-context-suspended'
-        ? `Audio suppressed for ${agentLabel}; bring this tab to the foreground and press again`
-        : `Audio suppressed for ${agentLabel} by sound or Do Not Disturb settings`;
+        ? `Audio suppressed for ${agentLabel}; bring this tab to the foreground and press to reset`
+        : `Audio suppressed for ${agentLabel} by sound or Do Not Disturb settings; press to reset`;
     case 'error':
       return `Speak task summary for ${agentLabel} failed (${errorReason ?? 'unknown'}); press to retry`;
     case 'idle':
@@ -384,14 +384,14 @@ function SpeakTaskSummaryControl({ agent, selected }: { agent: AgentState; selec
   useEffect(() => {
     function handleStopOthers(event: Event) {
       const detail = (event as CustomEvent<{ agentId?: string }>).detail;
-      if (detail?.agentId !== agent.agentId) {
+      if (detail?.agentId !== agent.agentId && (status === 'generating' || status === 'playing')) {
         speakAgent.stop();
       }
     }
 
     window.addEventListener(SPEAK_FINDING_STOP_OTHERS_EVENT, handleStopOthers);
     return () => window.removeEventListener(SPEAK_FINDING_STOP_OTHERS_EVENT, handleStopOthers);
-  }, [agent.agentId, speakAgent.stop]);
+  }, [agent.agentId, status, speakAgent.stop]);
 
   if ((!agent.taskId && !agent.anomaly) || !ttsAvailable) return null;
 
@@ -400,6 +400,7 @@ function SpeakTaskSummaryControl({ agent, selected }: { agent: AgentState; selec
   const buttonLabel = speakTaskSummaryLabel(status, agentLabel, speakAgent.state.errorReason);
   const title = timingTitle ? `${buttonLabel}\n\n${timingTitle}` : buttonLabel;
   const inFlight = status === 'generating' || status === 'playing';
+  const suppressed = status === 'suppressed';
 
   return (
     <span className="finding-speech-control" onClick={(e) => e.stopPropagation()}>
@@ -412,8 +413,16 @@ function SpeakTaskSummaryControl({ agent, selected }: { agent: AgentState; selec
         title={title}
         onClick={() => {
           useKookrStore.getState().selectAgent(agent.agentId, agent.taskId);
-          window.dispatchEvent(new CustomEvent(SPEAK_FINDING_STOP_OTHERS_EVENT, { detail: { agentId: agent.agentId } }));
           track({ type: 'shortcut_used', key: 'click', action: 'speak_agent', context: 'task_card' });
+          if (inFlight) {
+            speakAgent.speak();
+            return;
+          }
+          if (suppressed) {
+            speakAgent.stop();
+            return;
+          }
+          window.dispatchEvent(new CustomEvent(SPEAK_FINDING_STOP_OTHERS_EVENT, { detail: { agentId: agent.agentId } }));
           speakAgent.speak();
         }}
       >
