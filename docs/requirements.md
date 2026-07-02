@@ -39,14 +39,14 @@ The system SHOULD display each agent's current activity: tool calls, files being
 The system SHOULD display agent metadata: display name, agent type, working directory, session duration.
 
 **Acceptance criteria:**
-- Display name derived from task prompt (first ~60 chars, truncated at word boundary) shown in finding cards, healthy rows, detail header, and response placeholder — falling back to `agentId` when no task is linked
+- Display name derived from task prompt (collapsed to a single line and sent in full up to a 200-char payload cap; the finding card / healthy row truncates it to the available width via CSS ellipsis) shown in finding cards, healthy rows, detail header, and response placeholder — falling back to `agentId` when no task is linked
 - Working directory shown in detail header (provided at launch)
 - Agent type shown in detail header (Claude Code for V1)
 - Session duration shown in finding card header (`Xm`), detail header, healthy rows, and status bar — computed from session `createdAt` relative to now
 - `AgentState` carries `taskName`, `cwd`, `agentType`, and `startedAt` fields populated from the task store via `Monitor.getSnapshot()`
 - Healthy agent rows show a status dot: green for running agents, grey for completed agents (last event is `stop` with no anomaly)
 
-**Evidence:** Task store (`src/core/tasks.ts`) holds `cwd`, `agentType`, `createdAt`. Frontend components render metadata in FindingsPanel and DetailPanel.
+**Evidence:** Task store (`src/core/tasks.ts`) holds `cwd`, `agentType`, `createdAt`. The display name is projected in `src/server/use-cases/snapshot-projection.ts` (`promptTitle`, single-line, 200-char cap). Frontend components render metadata in FindingsPanel and DetailPanel.
 
 ### R1.4: Auto-discover Running Agents [F1.1] — MAY — `deferred`
 

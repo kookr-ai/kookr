@@ -6,6 +6,7 @@ import {
   clampBottomSectionsHeight,
   loadBottomSectionsHeight,
   saveBottomSectionsHeight,
+  clearBottomSectionsHeight,
 } from '../store/bottom-sections-height-prefs.js';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 import { track, trackClick } from '../telemetry.js';
@@ -128,6 +129,7 @@ function ReplyIcon(): React.ReactElement {
     </svg>
   );
 }
+
 function SnoozeIcon(): React.ReactElement {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -135,6 +137,7 @@ function SnoozeIcon(): React.ReactElement {
     </svg>
   );
 }
+
 function MissedIcon(): React.ReactElement {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -143,6 +146,7 @@ function MissedIcon(): React.ReactElement {
     </svg>
   );
 }
+
 function PriorityIcon(): React.ReactElement {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -911,10 +915,11 @@ function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
         }}
       >
         {/* Title Lead: the task name owns its own full-width line; the info row
-            below leads with stable-width fields (avatar, click-to-copy id,
-            project) so the live-updating duration/cost that trail never shove
-            the copy-id or the right-pinned action rail as their widths change.
-            The branch/worktree lives in the detail panel, not the card. */}
+            below leads with stable-width fields (avatar, project) so the
+            live-updating duration/cost that trail never shove them or the
+            right-pinned action rail as their widths change. The click-to-copy id
+            sits (icon-only) in that rail; the branch/worktree lives in the detail
+            panel, not the card. */}
         <div className="healthy-row-name" title={agent.taskName ?? agent.agentId}>
           {agent.taskName ?? agent.agentId}
         </div>
@@ -1514,26 +1519,37 @@ function SectionToggleButton({
  * the live panel height (keeping the findings list usable) and, on release,
  * persisted so it survives reloads. Mirrors the findings-panel width resizer.
  */
+// Headroom kept above the bottom sections for the findings header + at least a
+// couple of findings, so neither the drag nor a persisted height can grow the
+// bottom area to the point of hiding the list it sits below.
+const BOTTOM_SECTIONS_RESERVED_ABOVE_PX = 160;
+
+/** Live upper bound for the bottom-sections height, given the current panel size. */
+function maxBottomSectionsHeightFor(panel: HTMLElement | null): number {
+  if (!panel) return MAX_BOTTOM_SECTIONS_HEIGHT;
+  return Math.max(
+    MIN_BOTTOM_SECTIONS_HEIGHT,
+    panel.getBoundingClientRect().height - BOTTOM_SECTIONS_RESERVED_ABOVE_PX,
+  );
+}
+
 function BottomSectionsResizer({
   panelRef,
   getHeight,
   onResize,
   onCommit,
+  onReset,
 }: {
   panelRef: React.RefObject<HTMLDivElement | null>;
   getHeight: () => number;
   onResize: (height: number) => void;
   onCommit: (height: number) => void;
+  /** Double-click / Escape: drop the explicit height and revert to the CSS default. */
+  onReset: () => void;
 }): React.ReactElement {
   const dragCleanup = useRef<(() => void) | null>(null);
 
-  const maxAvailable = useCallback((): number => {
-    const panel = panelRef.current;
-    if (!panel) return MAX_BOTTOM_SECTIONS_HEIGHT;
-    // Reserve headroom for the findings header + at least a couple of findings
-    // above, so the divider can never swallow the list it sits below.
-    return Math.max(MIN_BOTTOM_SECTIONS_HEIGHT, panel.getBoundingClientRect().height - 160);
-  }, [panelRef]);
+  const maxAvailable = useCallback((): number => maxBottomSectionsHeightFor(panelRef.current), [panelRef]);
 
   // Tear down any in-flight drag on unmount (e.g. the sections empty out while
   // the user is dragging), so window listeners never leak.
@@ -1572,6 +1588,7 @@ function BottomSectionsResizer({
       case 'ArrowDown': next = getHeight() - step; break;
       case 'Home': next = MIN_BOTTOM_SECTIONS_HEIGHT; break;
       case 'End': next = maxAvailable(); break;
+      case 'Escape': event.preventDefault(); onReset(); return;
       default: return;
     }
     event.preventDefault();
@@ -1587,8 +1604,13 @@ function BottomSectionsResizer({
       role="separator"
       tabIndex={0}
       aria-orientation="horizontal"
-      aria-label="Resize the healthy and completed task sections"
+      aria-label="Resize the healthy and completed task sections (double-click to reset)"
+      aria-valuenow={Math.round(getHeight())}
+      aria-valuemin={MIN_BOTTOM_SECTIONS_HEIGHT}
+      aria-valuemax={Math.round(maxAvailable())}
+      title="Drag to resize · double-click to reset"
       onPointerDown={beginDrag}
+      onDoubleClick={(e) => { e.preventDefault(); onReset(); }}
       onKeyDown={handleKeyDown}
     >
       <span className="bottom-sections-grip" aria-hidden="true" />
@@ -1632,6 +1654,31 @@ export function FindingsPanel({
   const commitBottomHeight = useCallback((height: number) => {
     setBottomSectionsHeight(height);
     saveBottomSectionsHeight(height);
+  }, []);
+  const resetBottomHeight = useCallback(() => {
+    setBottomSectionsHeight(null);
+    clearBottomSectionsHeight();
+  }, []);
+  // Re-clamp the explicit height to the live panel size on mount and whenever the
+  // panel resizes (window shrink, detail pane opening, etc.). A height persisted
+  // on a tall window must not survive onto a short one and collapse the findings
+  // list — the interactive drag guards this, but the mount/apply path otherwise
+  // would not. Mirrors the findings-panel width resizer's ResizeObserver.
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel || typeof ResizeObserver === 'undefined') return;
+    const reclamp = () => {
+      const liveMax = maxBottomSectionsHeightFor(panel);
+      setBottomSectionsHeight((current) => {
+        if (current == null) return current;
+        const clamped = clampBottomSectionsHeight(current, liveMax);
+        return clamped === current ? current : clamped;
+      });
+    };
+    reclamp();
+    const observer = new ResizeObserver(reclamp);
+    observer.observe(panel);
+    return () => observer.disconnect();
   }, []);
   const [healthyCollapsed, toggleHealthy] = usePersistedCollapsed(HEALTHY_SECTION_COLLAPSED_KEY, false);
   const [pendingCollapsed, togglePending, expandPending] = usePersistedCollapsed(PENDING_SECTION_COLLAPSED_KEY, false);
@@ -1784,13 +1831,17 @@ export function FindingsPanel({
           getHeight={currentBottomHeight}
           onResize={setBottomSectionsHeight}
           onCommit={commitBottomHeight}
+          onReset={resetBottomHeight}
         />
       )}
       <div
         ref={bottomSectionsRef}
-        className={`bottom-sections${hasBottomSections ? '' : ' bottom-sections-reserved'}${bottomSectionsHeight != null ? ' bottom-sections-resized' : ''}`}
+        className={`bottom-sections${hasBottomSections ? '' : ' bottom-sections-reserved'}${hasBottomSections && bottomSectionsHeight != null ? ' bottom-sections-resized' : ''}`}
         aria-hidden={hasBottomSections ? undefined : true}
-        style={bottomSectionsHeight != null ? { height: `${bottomSectionsHeight}px`, maxHeight: 'none' } : undefined}
+        // The explicit height applies only while there are sections to size; an
+        // empty reserved placeholder stays at its thin default, not the last
+        // dragged height.
+        style={hasBottomSections && bottomSectionsHeight != null ? { height: `${bottomSectionsHeight}px`, maxHeight: 'none' } : undefined}
       >
         {hasBottomSections && (
           <>
