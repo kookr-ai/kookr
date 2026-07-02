@@ -1,5 +1,12 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useKookrStore } from '../store/useStore.js';
+import {
+  MIN_BOTTOM_SECTIONS_HEIGHT,
+  MAX_BOTTOM_SECTIONS_HEIGHT,
+  clampBottomSectionsHeight,
+  loadBottomSectionsHeight,
+  saveBottomSectionsHeight,
+} from '../store/bottom-sections-height-prefs.js';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 import { track, trackClick } from '../telemetry.js';
 import {
@@ -13,7 +20,6 @@ import {
   formatTokenUsage,
   projectLabel,
   projectColor,
-  formatBranch,
   worktreeHealthLabel,
   worktreeHealthTitle,
   turnStateLabel,
@@ -106,6 +112,41 @@ function ScheduleIcon(): React.ReactElement {
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <circle cx="12" cy="12" r="9" />
       <polyline points="12 7 12 12 15 14" />
+    </svg>
+  );
+}
+
+// Compact glyph icons for the healthy-row action rail. Keeping the healthy
+// controls icon-only lets the row collapse to two lines (title + info) without
+// the action labels forcing a wrap — the labels live in each button's
+// aria-label / title so they stay discoverable and accessible.
+function ReplyIcon(): React.ReactElement {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="9 17 4 12 9 7" />
+      <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
+    </svg>
+  );
+}
+function SnoozeIcon(): React.ReactElement {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+    </svg>
+  );
+}
+function MissedIcon(): React.ReactElement {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z" />
+      <line x1="4" y1="22" x2="4" y2="15" />
+    </svg>
+  );
+}
+function PriorityIcon(): React.ReactElement {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="18 15 12 9 6 15" />
     </svg>
   );
 }
@@ -326,15 +367,19 @@ function PriorityBadge({ agent }: { agent: AgentState }): React.ReactElement | n
   );
 }
 
-function TaskPriorityButton({ agent, send }: {
+function TaskPriorityButton({ agent, send, variant = 'text' }: {
   agent: AgentState;
   send: (msg: ClientMessage) => void;
+  /** `icon` renders a compact glyph for the healthy-row rail; `text` keeps the
+   *  labeled button used in the roomier finding-card action row. */
+  variant?: 'text' | 'icon';
 }): React.ReactElement | null {
   if (!agent.taskId) return null;
   const high = agent.priority === 'high';
+  const isIcon = variant === 'icon';
   return (
     <button
-      className={`btn-xs task-priority-button${high ? ' active' : ''}`}
+      className={`btn-xs task-priority-button${high ? ' active' : ''}${isIcon ? ' btn-icon' : ''}`}
       onClick={(e) => {
         e.stopPropagation();
         send({ type: 'setTaskPriority', taskId: agent.taskId!, priority: high ? 'normal' : 'high' });
@@ -342,7 +387,7 @@ function TaskPriorityButton({ agent, send }: {
       title={high ? 'Mark task as normal priority' : 'Mark task as high priority'}
       aria-label={high ? `Mark ${agent.taskName ?? agent.agentId} normal priority` : `Mark ${agent.taskName ?? agent.agentId} high priority`}
     >
-      {high ? 'Normal' : 'Priority'}
+      {isIcon ? <PriorityIcon /> : (high ? 'Normal' : 'Priority')}
     </button>
   );
 }
@@ -700,23 +745,9 @@ const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
               {worktreeHealthLabel(agent.worktreeHealth, agent.worktreeRegistryStale)}
             </span>
           )}
-          {agent.gitBranch && (
-            <>
-              {agent.cwd && <span className="finding-context-sep">{'·'}</span>}
-              <span className="branch-label" title={agent.gitIsWorktree ? `Worktree: ${agent.cwd}` : agent.gitBranch}>
-                <span className="branch-icon">{'⎇'}</span>{formatBranch(agent.gitBranch)}
-                {agent.gitIsWorktree && <span className="worktree-indicator" title="Git worktree">{'🌳'}</span>}
-              </span>
-            </>
-          )}
-          {!agent.gitBranch && agent.gitCommit && (
-            <>
-              {agent.cwd && <span className="finding-context-sep">{'·'}</span>}
-              <span className="branch-label detached" title="Detached HEAD">
-                <span className="branch-icon">{'⎇'}</span>({agent.gitCommit})
-              </span>
-            </>
-          )}
+          {/* Branch / worktree is intentionally omitted here — it's detail-panel
+              context, too granular for the card. See the detail panel's
+              `.detail-branch` row. */}
         </div>
         {agent.ralphLoop && (
           <div className="finding-loop-row" onClick={(e) => e.stopPropagation()}>
@@ -875,76 +906,75 @@ function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
           useKookrStore.getState().selectAgent(agent.agentId, agent.taskId);
         }}
       >
-        <div className="healthy-row-top">
-          <AgentProviderMark agent={agent} state={healthyDotClass(agent.events)} />
-          <div className="healthy-row-body">
-            <div className="healthy-row-status">
-              {showProjectBadge && projectLabelText && (
-                <span className={`project-badge color-${colorIdx}`} title={agent.cwd}>
-                  {projectLabelText}
-                </span>
-              )}
-              {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
-                <span className={`worktree-health worktree-health--${agent.worktreeHealth}`} title={worktreeHealthTitle(agent.worktreeHealth, agent.worktreeRegistryStale)}>
-                  {worktreeHealthLabel(agent.worktreeHealth, agent.worktreeRegistryStale)}
-                </span>
-              )}
-              {agent.gitBranch && (
-                <span className="branch-label" title={agent.gitIsWorktree ? `Worktree: ${agent.cwd}` : agent.gitBranch}>
-                  <span className="branch-icon">{'⎇'}</span>{formatBranch(agent.gitBranch, 20)}
-                </span>
-              )}
-            </div>
-            <div className="healthy-row-title-line">
-              <span className="healthy-row-name" title={agent.taskName ?? agent.agentId}>
-                {agent.taskName ?? agent.agentId}
+        {/* Title Lead: the task name owns its own full-width line; the info row
+            below leads with stable-width fields (avatar, click-to-copy id,
+            project) so the live-updating duration/cost that trail never shove
+            the copy-id or the right-pinned action rail as their widths change.
+            The branch/worktree lives in the detail panel, not the card. */}
+        <div className="healthy-row-name" title={agent.taskName ?? agent.agentId}>
+          {agent.taskName ?? agent.agentId}
+        </div>
+        <div className="healthy-row-info">
+          <div className="healthy-row-meta">
+            <AgentProviderMark agent={agent} state={healthyDotClass(agent.events)} />
+            <TaskIdCopyButton taskId={agent.taskId} compact />
+            {showProjectBadge && projectLabelText && (
+              <span className={`project-badge color-${colorIdx}`} title={agent.cwd}>
+                {projectLabelText}
               </span>
-              <PriorityBadge agent={agent} />
-              <ChildRollupPill agent={agent} />
-              <TaskIdCopyButton taskId={agent.taskId} compact />
-            </div>
-            <div className="healthy-row-footer">
-              <div className="healthy-row-meta">
-                {formatTokenUsage(agent.tokenUsage)}
-                {agent.tokenUsage ? ' · ' : ''}
-                {healthyStatusLabel(agent.events, agent.startedAt)}
-              </div>
-              <div className="healthy-row-controls">
-                <SpeakTaskSummaryControl agent={agent} selected={selected} />
-                <TaskPriorityButton agent={agent} send={send} />
-                <button
-                  className="btn-reply"
-                  data-testid="reply-button"
-                  onClick={handleReply}
-                  title={`Send message to ${agent.taskName ?? agent.agentId}`}
-                >
-                  Reply
-                </button>
-                <button
-                  className="btn-reply"
-                  onClick={(e) => { e.stopPropagation(); setShowSnooze(true); }}
-                  title={`Snooze ${agent.taskName ?? agent.agentId}`}
-                >
-                  Snooze
-                </button>
-                <button
-                  className="btn-xs btn-fn"
-                  onClick={(e) => { e.stopPropagation(); setShowFlagMissed(true); }}
-                  title="Report that Kookr missed a real issue on this agent"
-                  aria-label={`Missed a real issue — report for ${agent.taskName ?? agent.agentId}`}
-                >
-                  Missed a real issue
-                </button>
-                <RalphLoopControls agent={agent} />
-                {agent.ralphLoop && agent.ralphLoop.status !== 'running' && agent.ralphLoop.status !== 'paused' && (
-                  <RalphLoopBadge agent={agent} />
-                )}
-                <SchedulePlaybookButton agent={agent} onSchedule={onSchedulePlaybook} />
-              </div>
-            </div>
-            <CoordinatorTaskChipView chip={coordinatorChip} agent={agent} send={send} />
+            )}
+            {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
+              <span className={`worktree-health worktree-health--${agent.worktreeHealth}`} title={worktreeHealthTitle(agent.worktreeHealth, agent.worktreeRegistryStale)}>
+                {worktreeHealthLabel(agent.worktreeHealth, agent.worktreeRegistryStale)}
+              </span>
+            )}
+            <PriorityBadge agent={agent} />
+            <ChildRollupPill agent={agent} />
+            <span className="healthy-row-sep" aria-hidden="true">·</span>
+            <span className="healthy-row-dur">{healthyStatusLabel(agent.events, agent.startedAt)}</span>
+            {agent.tokenUsage && (
+              <>
+                <span className="healthy-row-sep" aria-hidden="true">·</span>
+                <span className="healthy-row-cost">{formatTokenUsage(agent.tokenUsage)}</span>
+              </>
+            )}
+          </div>
+          <div className="healthy-row-controls">
+            <SpeakTaskSummaryControl agent={agent} selected={selected} />
+            <TaskPriorityButton agent={agent} send={send} variant="icon" />
+            <button
+              className="btn-reply btn-icon"
+              data-testid="reply-button"
+              onClick={handleReply}
+              title={`Send message to ${agent.taskName ?? agent.agentId}`}
+              aria-label={`Send message to ${agent.taskName ?? agent.agentId}`}
+            >
+              <ReplyIcon />
+            </button>
+            <button
+              className="btn-icon btn-snooze"
+              onClick={(e) => { e.stopPropagation(); setShowSnooze(true); }}
+              title={`Snooze ${agent.taskName ?? agent.agentId}`}
+              aria-label={`Snooze ${agent.taskName ?? agent.agentId}`}
+            >
+              <SnoozeIcon />
+            </button>
+            <button
+              className="btn-icon btn-fn"
+              onClick={(e) => { e.stopPropagation(); setShowFlagMissed(true); }}
+              title="Report that Kookr missed a real issue on this agent"
+              aria-label={`Missed a real issue — report for ${agent.taskName ?? agent.agentId}`}
+            >
+              <MissedIcon />
+            </button>
+            <RalphLoopControls agent={agent} />
+            {agent.ralphLoop && agent.ralphLoop.status !== 'running' && agent.ralphLoop.status !== 'paused' && (
+              <RalphLoopBadge agent={agent} />
+            )}
+            <SchedulePlaybookButton agent={agent} onSchedule={onSchedulePlaybook} />
           </div>
         </div>
+        <CoordinatorTaskChipView chip={coordinatorChip} agent={agent} send={send} />
         {showSnooze && (
           <SnoozeDialog
             agentId={agent.agentId}
@@ -1468,6 +1498,96 @@ function SectionToggleButton({
   );
 }
 
+/**
+ * Drag handle that sets the height of the `.bottom-sections` scroll box so the
+ * user can grow the Healthy/Pending/Completed area (to see more at once) or
+ * shrink it (to give the findings list more room), replacing the old fixed
+ * `max-height: 30%` cap. Dragging up grows the area; the height is clamped to
+ * the live panel height (keeping the findings list usable) and, on release,
+ * persisted so it survives reloads. Mirrors the findings-panel width resizer.
+ */
+function BottomSectionsResizer({
+  panelRef,
+  getHeight,
+  onResize,
+  onCommit,
+}: {
+  panelRef: React.RefObject<HTMLDivElement | null>;
+  getHeight: () => number;
+  onResize: (height: number) => void;
+  onCommit: (height: number) => void;
+}): React.ReactElement {
+  const dragCleanup = useRef<(() => void) | null>(null);
+
+  const maxAvailable = useCallback((): number => {
+    const panel = panelRef.current;
+    if (!panel) return MAX_BOTTOM_SECTIONS_HEIGHT;
+    // Reserve headroom for the findings header + at least a couple of findings
+    // above, so the divider can never swallow the list it sits below.
+    return Math.max(MIN_BOTTOM_SECTIONS_HEIGHT, panel.getBoundingClientRect().height - 160);
+  }, [panelRef]);
+
+  // Tear down any in-flight drag on unmount (e.g. the sections empty out while
+  // the user is dragging), so window listeners never leak.
+  useEffect(() => () => dragCleanup.current?.(), []);
+
+  const beginDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = getHeight();
+    // The handle sits above the bottom sections, so dragging it UP (smaller y)
+    // should grow them.
+    const computeNext = (clientY: number) =>
+      clampBottomSectionsHeight(startHeight + (startY - clientY), maxAvailable());
+    const handleMove = (moveEvent: PointerEvent) => onResize(computeNext(moveEvent.clientY));
+    const teardown = () => {
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+      dragCleanup.current = null;
+    };
+    function handleUp(upEvent: PointerEvent) {
+      const next = computeNext(upEvent.clientY);
+      teardown();
+      onCommit(next);
+    }
+    dragCleanup.current = teardown;
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = event.shiftKey ? 48 : 16;
+    let next: number;
+    switch (event.key) {
+      case 'ArrowUp': next = getHeight() + step; break;
+      case 'ArrowDown': next = getHeight() - step; break;
+      case 'Home': next = MIN_BOTTOM_SECTIONS_HEIGHT; break;
+      case 'End': next = maxAvailable(); break;
+      default: return;
+    }
+    event.preventDefault();
+    const clamped = clampBottomSectionsHeight(next, maxAvailable());
+    onResize(clamped);
+    onCommit(clamped);
+  };
+
+  return (
+    <div
+      className="bottom-sections-resizer"
+      data-testid="bottom-sections-resizer"
+      role="separator"
+      tabIndex={0}
+      aria-orientation="horizontal"
+      aria-label="Resize the healthy and completed task sections"
+      onPointerDown={beginDrag}
+      onKeyDown={handleKeyDown}
+    >
+      <span className="bottom-sections-grip" aria-hidden="true" />
+    </div>
+  );
+}
+
 export function FindingsPanel({
   findings,
   healthy,
@@ -1490,7 +1610,21 @@ export function FindingsPanel({
   const { standalone, groups } = useMemo(() => groupHealthyAgents(healthy), [healthy]);
   const totalAgents = findings.length + healthy.length + pending.length + completed.length + snoozed.length;
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const bottomSectionsRef = useRef<HTMLDivElement>(null);
   const prevFindingIds = useRef<Set<string>>(new Set());
+  // User-set height of the bottom sections (Healthy/Pending/Snoozed/Completed).
+  // `null` means "use the CSS default"; a number is an explicit, persisted px
+  // height set via the drag handle.
+  const [bottomSectionsHeight, setBottomSectionsHeight] = useState<number | null>(() => loadBottomSectionsHeight());
+  const currentBottomHeight = useCallback(
+    () => bottomSectionsHeight ?? bottomSectionsRef.current?.getBoundingClientRect().height ?? MIN_BOTTOM_SECTIONS_HEIGHT,
+    [bottomSectionsHeight],
+  );
+  const commitBottomHeight = useCallback((height: number) => {
+    setBottomSectionsHeight(height);
+    saveBottomSectionsHeight(height);
+  }, []);
   const [healthyCollapsed, toggleHealthy] = usePersistedCollapsed(HEALTHY_SECTION_COLLAPSED_KEY, false);
   const [pendingCollapsed, togglePending, expandPending] = usePersistedCollapsed(PENDING_SECTION_COLLAPSED_KEY, false);
   const [snoozedCollapsed, toggleSnoozed] = usePersistedCollapsed(SNOOZED_SECTION_COLLAPSED_KEY, true);
@@ -1577,7 +1711,7 @@ export function FindingsPanel({
   }
 
   return (
-    <div className="findings-panel kookr-tour-target-findings kookr-tour-target-layout" onClick={handlePanelClick}>
+    <div ref={panelRef} className="findings-panel kookr-tour-target-findings kookr-tour-target-layout" onClick={handlePanelClick}>
       <div className="findings-header">
         <span className="findings-header-title">Supervisor Findings</span>
         <span className="findings-header-actions">
@@ -1636,9 +1770,19 @@ export function FindingsPanel({
           );
         })}
       </div>
+      {hasBottomSections && (
+        <BottomSectionsResizer
+          panelRef={panelRef}
+          getHeight={currentBottomHeight}
+          onResize={setBottomSectionsHeight}
+          onCommit={commitBottomHeight}
+        />
+      )}
       <div
-        className={`bottom-sections${hasBottomSections ? '' : ' bottom-sections-reserved'}`}
+        ref={bottomSectionsRef}
+        className={`bottom-sections${hasBottomSections ? '' : ' bottom-sections-reserved'}${bottomSectionsHeight != null ? ' bottom-sections-resized' : ''}`}
         aria-hidden={hasBottomSections ? undefined : true}
+        style={bottomSectionsHeight != null ? { height: `${bottomSectionsHeight}px`, maxHeight: 'none' } : undefined}
       >
         {hasBottomSections && (
           <>
