@@ -64,6 +64,7 @@ export class ControllerLeaseManager {
   private readonly now: () => number;
   private readonly setTimer: (cb: () => void, ms: number) => ReturnType<typeof setTimeout>;
   private readonly clearTimer: (timer: ReturnType<typeof setTimeout>) => void;
+  private sweepTimer?: ReturnType<typeof setTimeout>;
 
   constructor(private readonly opts: ControllerLeaseManagerOptions) {
     this.heartbeatIntervalMs = opts.heartbeatIntervalMs ?? 15_000;
@@ -91,6 +92,7 @@ export class ControllerLeaseManager {
       ) {
         current.updatedAtMs = this.now();
         current.heartbeatMisses = 0;
+        this.scheduleSweep();
         return { ok: true, lease: current };
       }
       return { ok: false, reason: 'error.leaseMismatch' };
@@ -109,6 +111,7 @@ export class ControllerLeaseManager {
     };
     record.lease = lease;
     this.cancelPresumedLost(record);
+    this.scheduleSweep();
     this.emit(lease, previous, 'held-remote');
     return { ok: true, lease };
   }
@@ -156,6 +159,7 @@ export class ControllerLeaseManager {
       return { ok: false, reason: 'error.leaseMismatch' };
     }
     lease.updatedAtMs = this.now();
+    this.scheduleSweep();
     return { ok: true, lease };
   }
 
@@ -178,6 +182,7 @@ export class ControllerLeaseManager {
       lease.state = 'held-remote';
       this.emit(lease, previous, 'held-remote');
     }
+    if (lease.state === 'held-remote') this.scheduleSweep();
     return { ok: true, lease };
   }
 
@@ -238,6 +243,7 @@ export class ControllerLeaseManager {
   }
 
   dispose(): void {
+    this.cancelSweep();
     for (const record of this.sessions.values()) this.cancelPresumedLost(record);
   }
 
@@ -267,6 +273,47 @@ export class ControllerLeaseManager {
     if (!record.presumedLostTimer) return;
     this.clearTimer(record.presumedLostTimer);
     record.presumedLostTimer = undefined;
+  }
+
+  private scheduleSweep(): void {
+    if (this.sweepTimer) return;
+    const delayMs = this.nextSweepDelayMs();
+    if (delayMs === null) return;
+    this.sweepTimer = this.setTimer(() => this.sweepStaleRemoteLeases(), delayMs);
+  }
+
+  private cancelSweep(): void {
+    if (!this.sweepTimer) return;
+    this.clearTimer(this.sweepTimer);
+    this.sweepTimer = undefined;
+  }
+
+  private sweepStaleRemoteLeases(): void {
+    this.sweepTimer = undefined;
+    const now = this.now();
+    for (const record of this.sessions.values()) {
+      const lease = record.lease;
+      if (!lease || lease.state !== 'held-remote') continue;
+      if (now - lease.updatedAtMs >= this.presumedLostDelayMs) {
+        this.revoke(lease.sessionId, 'heartbeat-timeout');
+      }
+    }
+    this.scheduleSweep();
+  }
+
+  private nextSweepDelayMs(): number | null {
+    let nextDelayMs: number | null = null;
+    const now = this.now();
+    for (const record of this.sessions.values()) {
+      const lease = record.lease;
+      if (lease?.state !== 'held-remote') continue;
+      const delayMs = Math.max(0, Math.min(
+        this.heartbeatIntervalMs,
+        lease.updatedAtMs + this.presumedLostDelayMs - now,
+      ));
+      nextDelayMs = nextDelayMs === null ? delayMs : Math.min(nextDelayMs, delayMs);
+    }
+    return nextDelayMs;
   }
 
   private emit(
