@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from 'vitest';
+import { describe, test, expect, beforeEach, vi } from 'vitest';
 import { TaskStore, InvalidTransitionError, isTerminalStatus, isActiveStatus, type Task } from './tasks.js';
 import type { TaskStatus } from './types.js';
 
@@ -1491,5 +1491,185 @@ describe('TaskStore pending agent signal', () => {
     expect(store.setPendingSignal('missing', { kind: 'completion_ready', raisedAt: 'x' })).toBe(false);
     expect(store.clearPendingSignal('missing')).toBe(false);
     expect(store.getPendingSignal('missing')).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Launch reservations (#700 fix — issue-700-multi-session-attach-audit)
+// ---------------------------------------------------------------------------
+
+describe('launch reservations (#700)', () => {
+  test('beginLaunch is a CAS: second reserve on the same task fails', () => {
+    const store = new TaskStore();
+    const task = store.createTask('t', '/repo');
+    store.pendTask(task.id);
+    expect(store.beginLaunch(task.id)).toBe(true);
+    expect(store.beginLaunch(task.id)).toBe(false);
+  });
+
+  test('endLaunch frees the reservation', () => {
+    const store = new TaskStore();
+    const task = store.createTask('t', '/repo');
+    store.pendTask(task.id);
+    expect(store.beginLaunch(task.id)).toBe(true);
+    store.endLaunch(task.id);
+    expect(store.beginLaunch(task.id)).toBe(true);
+  });
+
+  test('refuses to reserve inProgress, terminal, or missing tasks', () => {
+    const store = new TaskStore();
+    const running = store.createTask('r', '/repo');
+    store.startTask(running.id);
+    expect(store.beginLaunch(running.id)).toBe(false);
+    const done = store.createTask('d', '/repo');
+    store.startTask(done.id);
+    store.completeTask(done.id);
+    expect(store.beginLaunch(done.id)).toBe(false);
+    expect(store.beginLaunch('nope')).toBe(false);
+  });
+
+  test('a stale reservation expires and can be taken over (self-healing)', () => {
+    vi.useFakeTimers();
+    try {
+      const store = new TaskStore();
+      const task = store.createTask('t', '/repo');
+      store.pendTask(task.id);
+      expect(store.beginLaunch(task.id)).toBe(true);
+      vi.advanceTimersByTime(10 * 60 * 1000 + 1); // past LAUNCH_RESERVATION_TTL_MS
+      expect(store.beginLaunch(task.id)).toBe(true); // wedged launch lost its hold
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('getNextPending skips reserved tasks; getActiveCount counts them', () => {
+    const store = new TaskStore();
+    const first = store.createTask('first', '/repo');
+    const second = store.createTask('second', '/repo');
+    store.pendTask(first.id);
+    store.pendTask(second.id);
+
+    expect(store.getActiveCount()).toBe(0);
+    expect(store.getNextPending()?.id).toBe(first.id);
+
+    expect(store.beginLaunch(first.id)).toBe(true);
+    expect(store.getNextPending()?.id).toBe(second.id); // skips the reserved one
+    expect(store.getActiveCount()).toBe(1); // the in-flight launch holds a slot
+
+    store.endLaunch(first.id);
+    expect(store.getNextPending()?.id).toBe(first.id);
+    expect(store.getActiveCount()).toBe(0);
+  });
+
+  test('addSession consumes the reservation (no double slot for launched tasks)', () => {
+    const store = new TaskStore();
+    const task = store.createTask('t', '/repo');
+    store.pendTask(task.id);
+    store.beginLaunch(task.id);
+    store.addSession(task.id, {
+      tmuxSession: 'kookr-x',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+    expect(store.getTask(task.id)!.status).toBe('inProgress');
+    expect(store.getActiveCount()).toBe(1); // counted once, as inProgress
+    // Pin the consumption itself: once inProgress, a lingering reservation is
+    // invisible to getActiveCount/getNextPending, so assert the private map
+    // directly (mutation guard for the addSession delete).
+    const reservations = (store as unknown as { launchReservations: Map<string, number> }).launchReservations;
+    expect(reservations.has(task.id)).toBe(false);
+  });
+
+  test('addSession loudly logs a duplicate not-known-dead session (detection funnel)', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const store = new TaskStore();
+      const task = store.createTask('t', '/repo');
+      const mkSession = (name: string) => ({
+        tmuxSession: name,
+        agentType: 'claude-code' as const,
+        cwd: '/repo',
+        createdAt: new Date(),
+      });
+      store.addSession(task.id, mkSession('kookr-a'));
+      expect(errorSpy).not.toHaveBeenCalled(); // first attach is clean
+
+      store.addSession(task.id, mkSession('kookr-b'));
+      expect(errorSpy).toHaveBeenCalledTimes(1); // second live attach is loud
+      expect(String(errorSpy.mock.calls[0]?.[0])).toContain('duplicate-session attach');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('addSession on a Ralph task stays quiet (iteration relaunch is by design)', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const store = new TaskStore();
+      const task = store.createTask('ralph', '/repo');
+      // Mark the task as a Ralph loop the way runtime state does.
+      const raw = (store as unknown as { tasks: Map<string, { ralphLoop?: object }> }).tasks.get(task.id)!;
+      raw.ralphLoop = { status: 'running' };
+      const mk = (name: string) => ({
+        tmuxSession: name, agentType: 'claude-code' as const, cwd: '/repo', createdAt: new Date(),
+      });
+      store.addSession(task.id, mk('kookr-iter-1'));
+      store.addSession(task.id, mk('kookr-iter-2')); // iteration relaunch
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('addSession ignores crash-recovered siblings in the duplicate check', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const store = new TaskStore();
+      const task = store.createTask('t', '/repo');
+      store.addSession(task.id, {
+        tmuxSession: 'kookr-recovered-prior',
+        agentType: 'claude-code',
+        cwd: '/repo',
+        createdAt: new Date(),
+        crashRecovered: true,
+      });
+      errorSpy.mockClear();
+      store.addSession(task.id, {
+        tmuxSession: 'kookr-next',
+        agentType: 'claude-code',
+        cwd: '/repo',
+        createdAt: new Date(),
+      });
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('addSession over dead sessions stays quiet (crash-recovery re-attach)', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const store = new TaskStore();
+      const task = store.createTask('t', '/repo');
+      store.addSession(task.id, {
+        tmuxSession: 'kookr-dead',
+        agentType: 'claude-code',
+        cwd: '/repo',
+        createdAt: new Date(),
+      });
+      store.updateSession(task.id, 'kookr-dead', { lastStatus: 'completed' });
+      errorSpy.mockClear();
+
+      store.addSession(task.id, {
+        tmuxSession: 'kookr-recovered',
+        agentType: 'claude-code',
+        cwd: '/repo',
+        createdAt: new Date(),
+      });
+      expect(errorSpy).not.toHaveBeenCalled(); // dead siblings are legitimate to attach over
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

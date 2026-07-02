@@ -1374,3 +1374,44 @@ describe('launchTask cwd validation (RFC F12)', () => {
     expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// #700: launch reservation at the fresh-launch site
+// ---------------------------------------------------------------------------
+
+describe('launchTask launch reservation (#700)', () => {
+  it('an in-flight fresh launch occupies a concurrency slot', async () => {
+    const taskStore = new TaskStore();
+    const deps = makeDeps(taskStore);
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => { openGate = resolve; });
+    const adapter = deps.adapterRegistry.get('claude-code');
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      await gate; // park mid-launch, like a real adapter spawning a session
+      return 'tmux-claude';
+    });
+
+    const pendingLaunch = launchTask(deps, { prompt: 'hold the slot', cwd: '/tmp' });
+    // launchTask does async pre-work (dedupe canonicalization, git probes)
+    // before reserving — poll until the mid-await reservation shows in the
+    // cap accounting (the audit's second over-launch bug: inProgress-only
+    // counting would keep this 0 for the whole launch).
+    await vi.waitFor(() => {
+      expect(taskStore.getActiveCount()).toBe(1);
+    });
+
+    openGate();
+    await pendingLaunch;
+  });
+
+  it('a failed fresh launch releases its reservation with the task', async () => {
+    const taskStore = new TaskStore();
+    const deps = makeDeps(taskStore);
+    const adapter = deps.adapterRegistry.get('claude-code');
+    (adapter.launch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'));
+
+    await expect(launchTask(deps, { prompt: 'will fail', cwd: '/tmp' })).rejects.toThrow('boom');
+    expect(taskStore.getActiveCount()).toBe(0); // no leaked slot
+    expect(taskStore.getNextPending()).toBeUndefined();
+  });
+});

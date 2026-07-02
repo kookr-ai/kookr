@@ -97,8 +97,26 @@ function cloneTask(task: Task): Task {
   return structuredClone(task) as Task;
 }
 
+/**
+ * How long an in-flight launch reservation stays authoritative. A launch that
+ * hangs past this without attaching a session or failing loses its
+ * reservation, so a wedged adapter cannot strand a pending task forever
+ * (self-healing, mirrors WorktreeLeaseService's stale-overwrite).
+ */
+const LAUNCH_RESERVATION_TTL_MS = 10 * 60 * 1000;
+
 export class TaskStore {
   private tasks = new Map<string, Task>();
+  /**
+   * In-flight launch reservations: taskId → reservedAt (epoch ms). The #700
+   * fix (docs/reports/issue-700-multi-session-attach-audit.md): concurrent
+   * promotePendingTasks invocations could all pick the same pending task
+   * because its status only flips to inProgress when the adapter calls
+   * addSession, seconds after the pick. beginLaunch() is the synchronous CAS
+   * that closes that pick-to-launch window. Deliberately NOT persisted — a
+   * reservation is meaningless across a restart (the launching process died).
+   */
+  private launchReservations = new Map<string, number>();
   /**
    * Typed task-relation graph (issue #599). Keyed by
    * {@link taskRelationKey}`(source, target, type)` so dedup is a single map
@@ -325,6 +343,7 @@ export class TaskStore {
   deleteTask(id: string): void {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
+    this.launchReservations.delete(id);
     // Unlink from parent
     if (task.parentTaskId) {
       const parent = this.tasks.get(task.parentTaskId);
@@ -342,20 +361,58 @@ export class TaskStore {
     }
   }
 
-  /** Count tasks that are actively running (inProgress with live sessions). */
+  /**
+   * Synchronous launch-reservation CAS (#700 fix). Returns true when the
+   * caller now exclusively owns the right to launch this task; false when the
+   * task is missing, not launchable (already inProgress/terminal), or another
+   * launcher holds a fresh reservation. No await may sit between a
+   * getNextPending() pick and this call — Node's single thread then makes the
+   * pick-and-reserve atomic.
+   */
+  beginLaunch(taskId: string): boolean {
+    const task = this.tasks.get(taskId);
+    if (!task) return false;
+    if (task.status !== 'open' && task.status !== 'pending') return false;
+    if (this.hasFreshLaunchReservation(taskId)) return false;
+    this.launchReservations.set(taskId, Date.now());
+    return true;
+  }
+
+  /** Release a launch reservation (launch failed or was abandoned). */
+  endLaunch(taskId: string): void {
+    this.launchReservations.delete(taskId);
+  }
+
+  private hasFreshLaunchReservation(taskId: string): boolean {
+    const reservedAt = this.launchReservations.get(taskId);
+    if (reservedAt === undefined) return false;
+    if (Date.now() - reservedAt >= LAUNCH_RESERVATION_TTL_MS) {
+      this.launchReservations.delete(taskId);
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Count tasks that occupy a concurrency slot: inProgress, plus tasks with a
+   * fresh in-flight launch reservation. Counting reservations closes the
+   * second half of the #700 race — the old inProgress-only count let the
+   * promotion loop over-launch past the cap while launches were mid-await.
+   */
   getActiveCount(): number {
     let count = 0;
     for (const task of this.tasks.values()) {
       if (task.status === 'inProgress') count++;
+      else if ((task.status === 'open' || task.status === 'pending') && this.hasFreshLaunchReservation(task.id)) count++;
     }
     return count;
   }
 
-  /** Get the oldest pending task (FIFO queue order). */
+  /** Get the oldest pending task (FIFO queue order), skipping tasks already reserved for launch. */
   getNextPending(): Task | undefined {
     let oldest: Task | undefined;
     for (const task of this.tasks.values()) {
-      if (task.status === 'pending') {
+      if (task.status === 'pending' && !this.hasFreshLaunchReservation(task.id)) {
         if (!oldest || task.createdAt < oldest.createdAt) {
           oldest = task;
         }
@@ -416,6 +473,29 @@ export class TaskStore {
     const task = this.tasks.get(taskId);
     if (!task) {
       throw new Error(`Task not found: ${taskId}`);
+    }
+    // The launch this reservation guarded has landed.
+    this.launchReservations.delete(taskId);
+    // Detection funnel (#700 audit item 2): every attach path crosses here.
+    // A second not-known-dead session cannot be *prevented* at this point
+    // (the process already exists — prevention is beginLaunch upstream), but
+    // it must be a loud, attributable event instead of a supervisor
+    // discovery. Exclusions, matching the other live-session predicates in
+    // the codebase: crash-recovered siblings (reconcile stamped the dead
+    // ones; the recovered marker itself is a legit re-attach), and Ralph
+    // tasks entirely — a Ralph iteration relaunch attaches a fresh session
+    // while the prior iteration's record keeps lastStatus undefined, so the
+    // filter would false-positive on every iteration ≥ 2 and drown the
+    // signal (Ralph's own liveness probe guards its duplicates).
+    const liveSiblings = task.sessions.filter(
+      (s) => s.lastStatus !== 'completed' && s.lastStatus !== 'aborted' && !s.crashRecovered,
+    );
+    if (liveSiblings.length > 0 && !task.ralphLoop) {
+      console.error(
+        `[tasks] duplicate-session attach on ${taskId}: new session ${session.tmuxSession} joins `
+        + `${liveSiblings.length} not-known-dead session(s) (${liveSiblings.map((s) => s.tmuxSession).join(', ')}) `
+        + '— see docs/reports/issue-700-multi-session-attach-audit.md',
+      );
     }
     task.sessions.push(structuredClone(session) as SessionInfo);
     task.updatedAt = new Date();

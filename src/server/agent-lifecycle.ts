@@ -482,6 +482,14 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
     }
     seen.add(pending.id);
 
+    // #700 fix: synchronous pick-to-launch reservation. Concurrent
+    // promotePendingTasks invocations (5s liveness tick + completion-triggered
+    // promotions) all passed getNextPending for the SAME task because its
+    // status only flips when the adapter attaches a session, seconds later.
+    // beginLaunch is a synchronous CAS — exactly one promoter wins; losers
+    // skip (the task no longer shows in getNextPending while reserved).
+    if (!taskStore.beginLaunch(pending.id)) continue;
+
     try {
       const adapter = adapterRegistry.get(pending.agentType);
       const launchPrompt = pending.launchNote ? `${pending.launchNote}\n\n${pending.prompt}` : pending.prompt;
@@ -512,6 +520,10 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       // If launch fails, cancel the task rather than leaving it pending forever
       console.error(`[promotion] Failed to launch pending task ${pending.id}:`, err);
       taskStore.cancelTask(pending.id);
+    } finally {
+      // Success: addSession already consumed the reservation (task is
+      // inProgress). Failure: release so the record isn't left reserved.
+      taskStore.endLaunch(pending.id);
     }
   }
 

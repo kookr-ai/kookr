@@ -217,6 +217,15 @@ Delegates to the injected `launcher` = `launchTask` (`schedule-runner.ts:200-207
 
 ## 4. Recommendation per RFC R18
 
+> **Status (2026-07-02): implemented** (RFC PR 1c). Item 1 landed as the in-flight-flag
+> variant (`TaskStore.beginLaunch`/`endLaunch`, in-memory map + 10-minute TTL, not a
+> persisted `launching` status) at both launch sites; `getNextPending` skips reserved
+> tasks and `getActiveCount` counts fresh reservations. Item 2 landed as detect-and-log
+> in `addSession` (attach-flagged, not refuse), with re-attach allowed when prior
+> sessions have lastStatus completed/aborted (no async `isAlive` probe — an await would
+> widen the race). The secondary 5s-tick overlap guard ("also worth fixing") was not
+> included — the reservation makes overlapping promoters harmless.
+
 **Where the guard sits.** The duplication happens in the **pick-to-launch window**, before
 any session exists. The chokepoint is the transition "this pending task is now being
 launched", and it must be **synchronous** (no `await` between reading the task's status and

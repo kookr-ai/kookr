@@ -771,6 +771,8 @@ function makePromotionDeps(overrides: Partial<PromotionDeps> = {}): PromotionDep
       getActiveCount: vi.fn().mockReturnValue(0),
       getNextPending: vi.fn().mockReturnValue(undefined),
       cancelTask: vi.fn(),
+      beginLaunch: vi.fn().mockReturnValue(true),
+      endLaunch: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
       setLaunchPermissionPosture: vi.fn(),
     } as any,
@@ -829,6 +831,8 @@ describe('promotePendingTasks', () => {
         .mockReturnValueOnce(undefined),
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
+      beginLaunch: vi.fn().mockReturnValue(true),
+      endLaunch: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
       setLaunchPermissionPosture: vi.fn(),
     };
@@ -864,6 +868,8 @@ describe('promotePendingTasks', () => {
         .mockReturnValueOnce(undefined),
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
+      beginLaunch: vi.fn().mockReturnValue(true),
+      endLaunch: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
       setLaunchPermissionPosture: vi.fn(),
     };
@@ -903,6 +909,8 @@ describe('promotePendingTasks', () => {
       getNextPending: vi.fn().mockReturnValue(stuckTask), // always returns same task
       getTask: vi.fn().mockReturnValue(stuckTask),
       cancelTask: vi.fn(),
+      beginLaunch: vi.fn().mockReturnValue(true),
+      endLaunch: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
       setLaunchPermissionPosture: vi.fn(),
     };
@@ -939,6 +947,8 @@ describe('promotePendingTasks', () => {
         .mockReturnValueOnce(undefined),
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
+      beginLaunch: vi.fn().mockReturnValue(true),
+      endLaunch: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
     };
     const deps = makePromotionDeps({
@@ -954,6 +964,8 @@ describe('promotePendingTasks', () => {
 
     expect(result).toBe(0);
     expect(mockTaskStore.cancelTask).toHaveBeenCalledWith('fail-1');
+    // Mutation guard: deleting the promote-loop's finally{endLaunch} must fail here.
+    expect(mockTaskStore.endLaunch).toHaveBeenCalledWith('fail-1');
     expect(consoleErrorSpy).toHaveBeenCalledWith(
       expect.stringContaining('Failed to launch pending task fail-1'),
       expect.any(Error),
@@ -1262,5 +1274,137 @@ describe('issue-claim release on terminal transitions', () => {
     const deps = makeLifecycleDeps();
     (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
     await expect(completeTask('task-claim-4', deps)).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #700 regression: concurrent promoters must not double-launch one pending task
+// (docs/reports/issue-700-multi-session-attach-audit.md)
+// ---------------------------------------------------------------------------
+
+describe('promotePendingTasks launch reservation (#700)', () => {
+  beforeEach(() => {
+    // registerNewAgent fire-and-forgets getProjectId(cwd).then(...) — the
+    // module mock must return a promise or the promotion catch swallows a
+    // TypeError and cancels the task.
+    mockGetProjectId.mockReset().mockResolvedValue('github.com/kookr-ai/kookr');
+  });
+
+  function slowAdapter(taskStore: TaskStore, launchedIds: string[], gate: Promise<void>): AgentAdapter {
+    let counter = 0;
+    return {
+      agentType: 'claude-code',
+      launch: vi.fn(async (taskId: string, _prompt: string, cwd: string) => {
+        launchedIds.push(taskId);
+        await gate; // hold the launch mid-await, like a real adapter spawning a session
+        const tmuxName = `kookr-race-${++counter}`;
+        taskStore.addSession(taskId, {
+          tmuxSession: tmuxName,
+          agentType: 'claude-code',
+          cwd,
+          createdAt: new Date(),
+        });
+        return tmuxName;
+      }),
+      sendInput: vi.fn(),
+      sendKeystroke: vi.fn(),
+      stop: vi.fn(),
+      captureDisplay: vi.fn(),
+      onEvent: vi.fn(),
+      onRefreshNeeded: vi.fn(),
+      injectHookEvent: vi.fn(),
+      getEffectiveHookSettings: vi.fn(() => undefined),
+    };
+  }
+
+  test('two concurrent promoters, one pending task → exactly one launch', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('implement issue #700', '/repo');
+    taskStore.pendTask(task.id);
+
+    const launchedIds: string[] = [];
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => { openGate = resolve; });
+    const adapter = slowAdapter(taskStore, launchedIds, gate);
+
+    const lifecycleDeps = makeDeps({ taskStore });
+    (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);
+    const deps = makePromotionDeps({
+      taskStore,
+      adapterRegistry: createAdapterRegistry(adapter),
+      lifecycleDeps,
+    });
+
+    // Both promoters run concurrently: the 5s liveness tick + a
+    // completion-triggered promotion, exactly the #700 topology. Each picks
+    // while the other's launch is parked mid-await on the gate.
+    const race = Promise.all([promotePendingTasks(deps), promotePendingTasks(deps)]);
+    // Let both promoters reach their pick/reserve before releasing launches.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    openGate();
+    const [a, b] = await race;
+
+    expect(launchedIds).toEqual([task.id]); // ONE launch, not two
+    expect(a + b).toBe(1);
+    expect(taskStore.getTask(task.id)!.sessions).toHaveLength(1);
+    expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
+  });
+
+  test('reservation holds the concurrency slot while a launch is mid-await', async () => {
+    const taskStore = new TaskStore();
+    const first = taskStore.createTask('first pending', '/repo');
+    const second = taskStore.createTask('second pending', '/repo');
+    taskStore.pendTask(first.id);
+    taskStore.pendTask(second.id);
+
+    const launchedIds: string[] = [];
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => { openGate = resolve; });
+    const adapter = slowAdapter(taskStore, launchedIds, gate);
+
+    const lifecycleDeps = makeDeps({ taskStore });
+    (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);
+    const deps = makePromotionDeps({
+      taskStore,
+      adapterRegistry: createAdapterRegistry(adapter),
+      lifecycleDeps,
+      getMaxActiveTasks: () => 1, // cap 1: the in-flight launch must consume the slot
+    });
+
+    const race = Promise.all([promotePendingTasks(deps), promotePendingTasks(deps)]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    openGate();
+    await race;
+
+    // Cap is 1: only the first task may launch this sweep, even though the
+    // old inProgress-only getActiveCount would have let the second promoter
+    // over-launch while the first launch was mid-await.
+    expect(launchedIds).toEqual([first.id]);
+    expect(taskStore.getTask(second.id)!.status).toBe('pending');
+  });
+
+  test('failed launch releases the reservation so the task is not stranded', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('will fail', '/repo');
+    taskStore.pendTask(task.id);
+
+    const adapter = {
+      agentType: 'claude-code',
+      launch: vi.fn().mockRejectedValue(new Error('boom')),
+      sendInput: vi.fn(), sendKeystroke: vi.fn(), stop: vi.fn(), captureDisplay: vi.fn(),
+      onEvent: vi.fn(), onRefreshNeeded: vi.fn(), injectHookEvent: vi.fn(),
+      getEffectiveHookSettings: vi.fn(() => undefined),
+    } as unknown as AgentAdapter;
+
+    const lifecycleDeps = makeDeps({ taskStore });
+    (lifecycleDeps.monitor.getSnapshot as any) = vi.fn().mockReturnValue([]);
+    const deps = makePromotionDeps({ taskStore, adapterRegistry: createAdapterRegistry(adapter), lifecycleDeps });
+
+    await promotePendingTasks(deps);
+
+    // Launch failed → task cancelled (existing behavior) and the reservation
+    // no longer occupies a slot.
+    expect(taskStore.getTask(task.id)!.status).toBe('cancelled');
+    expect(taskStore.getActiveCount()).toBe(0);
   });
 });

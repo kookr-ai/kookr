@@ -1,6 +1,6 @@
 # RFC: Issue-Ownership Lock — an Atomic Claim Registry for GitHub Issues
 
-**Status:** Accepted (v4; PR 1a — mechanism + manual CLI + audit — implemented; 1b/1c pending soak. See Implementation note.)
+**Status:** Accepted (v4; PR 1a — mechanism + manual CLI + audit — implemented; PR 1c — launch reservation — implemented (Implementation note item 7); 1b pending 1a soak.)
 **Date:** 2026-07-02
 **Author:** Jean Ibarz (with Claude Opus 4.8)
 **Implementation branch:** `rfc/issue-ownership-lock`
@@ -17,6 +17,7 @@ Deviations from the design as landed in PR 1a:
 4. **CLI grew `--task-id`** (default `KOOKR_TASK_ID`), not in the §5 verb sketch. `ClaimDecision`'s `exhausted` variant and `resolve-claim-repo`'s `fork_needs_repo` code are forward declarations consumed by PR 1b.
 5. **No-flag fork detection is deferred with the backfill.** R19's "fork + no `--repo` fails closed (exit 2)" requires fork *detection*, which needs the same gh lookup as auto-upstream — so in PR 1a the no-flag path accepts the cwd origin as-is even when it is a fork. Instrumented playbooks always pass `--repo` (auto-populated), so the exposure is ad-hoc CLI use from a fork checkout; the detection lands with the gh-backed fast-follow.
 6. **R18 audit outcome:** the #700 attach-path audit (docs/reports/issue-700-multi-session-attach-audit.md) found the root cause is concurrent `promotePendingTasks` invocations — the async-probe guard alone would NOT have prevented it. Per R18's fallback, PR 1c is therefore a `pending→launching` reservation design decision, not the attach-site guard as sketched.
+7. **PR 1c as landed (launch reservation).** Shipped before 1b — it is independent of the claims flag. Shape: an in-memory, non-persisted reservation map in `TaskStore` (`beginLaunch`/`endLaunch`, 10-minute TTL mirroring `WorktreeLeaseService` stale-overwrite) — **not** a new persisted `TaskStatus`. Consumed synchronously at both launch sites (`promotePendingTasks` immediately after `getNextPending`; `launchTask` before `adapter.launch`); `getNextPending` skips reserved tasks and `getActiveCount` counts fresh reservations against the cap (closing the audit's second over-launch bug). The `addSession` funnel detects-and-logs duplicate attaches (attach-flagged, not refuse); legit re-attach is allowed via a `lastStatus` completed/aborted filter rather than the audit's async `isAlive` probe (an await there would widen the race). The audit's secondary 5s-tick overlap guard was not included — the reservation makes overlapping promoters harmless.
 
 ## Problem
 
