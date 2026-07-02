@@ -432,10 +432,18 @@ Fix any failures before proceeding.
 
 ## Phase 7: Create or Update Pull Request
 
-Create a PR targeting the appropriate base branch, or update the existing PR with new evidence:
+Create a PR targeting the appropriate base branch, or update the existing PR with new evidence. First build the PR body from the repository's template when it exists, then edit the body file with the final summary, verification evidence, and closing keyword before creating the PR. Do not pass `--body` inline; it skips GitHub's template injection and bypasses marked checklist rows until CI rejects the PR.
 
 ```bash
-gh pr create --base <base-branch> --title "<type>: <short description>" --body "$(cat <<'EOF'
+if [ -f .github/PULL_REQUEST_TEMPLATE.md ]; then
+  mkdir -p .tmp
+  cp .github/PULL_REQUEST_TEMPLATE.md .tmp/pr-body.md
+elif [ -f .github/pull_request_template.md ]; then
+  mkdir -p .tmp
+  cp .github/pull_request_template.md .tmp/pr-body.md
+else
+  mkdir -p .tmp
+  cat > .tmp/pr-body.md <<'EOF'
 ## Summary
 - <1-3 bullet points describing what was done>
 
@@ -448,7 +456,14 @@ Closes #<TARGET>
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
-)"
+fi
+```
+
+Edit `.tmp/pr-body.md` before creating the PR: fill Summary/Test plan, tick or strike every marked checklist row, and keep `Closes #<TARGET>`. Run `gh pr create` in a separate shell command after the file already exists so local hooks can verify it:
+
+```bash
+gh pr create --base <base-branch> --title "<type>: <short description>" --body-file .tmp/pr-body.md
+rm -f .tmp/pr-body.md
 ```
 
 Title conventions:

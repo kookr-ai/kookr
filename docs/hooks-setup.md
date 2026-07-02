@@ -79,6 +79,12 @@ whose mapped file is not in the diff fails; a struck box (`~~…~~ reason`) is
 waived; a blank box fails. It never executes repo commands (`--run-commands
 none`; `ci` is reserved for P4).
 
+The Kookr repository dogfoods the authoritative CI backstop in
+`.github/workflows/pr-checklist.yml`. That workflow verifies the final PR body
+against the diff using the engine checked out from the PR's base SHA, so a PR
+cannot silently weaken its own checklist verifier. The local Claude hook below
+remains an opt-in early warning layer.
+
 **OFF by default.** Like `kb-context-inject.sh`, the gate is inert until you
 opt in, in either of two ways:
 

@@ -78,11 +78,15 @@ cat ~/.claude/<repoSlug>-pr-lessons/patterns.md 2>/dev/null
 
 Create PR:
 ```bash
-gh pr create -R {{repoFullName}} \
-  --head "$(gh api user --jq .login):fix/{upstream_number}-{slug}" \
-  --base <defaultBranch> \
-  --title "fix: {description}" \
-  --body "$(cat <<'EOF'
+if [ -f .github/PULL_REQUEST_TEMPLATE.md ]; then
+  mkdir -p .tmp
+  cp .github/PULL_REQUEST_TEMPLATE.md .tmp/pr-body.md
+elif [ -f .github/pull_request_template.md ]; then
+  mkdir -p .tmp
+  cp .github/pull_request_template.md .tmp/pr-body.md
+else
+  mkdir -p .tmp
+  cat > .tmp/pr-body.md <<'EOF'
 ## Summary
 {Bug description and fix}
 
@@ -97,7 +101,18 @@ Fixes #{upstream_number}
 ## Testing
 {Tests added/modified}
 EOF
-)"
+fi
+```
+
+Edit `.tmp/pr-body.md` to follow the upstream template and include final verification. Tick or strike every marked checklist row if present. Run `gh pr create` in a separate shell command after the file already exists:
+
+```bash
+gh pr create -R {{repoFullName}} \
+  --head "$(gh api user --jq .login):fix/{upstream_number}-{slug}" \
+  --base <defaultBranch> \
+  --title "fix: {description}" \
+  --body-file .tmp/pr-body.md
+rm -f .tmp/pr-body.md
 ```
 
 Update triage issue:

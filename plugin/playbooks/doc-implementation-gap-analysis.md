@@ -132,7 +132,15 @@ Then **ask the user**:
 The PR contains the actual doc/code fixes — NOT a report.
 
 ```bash
-gh pr create --title "{{prTitle}}" --body "$(cat <<'EOF'
+if [ -f .github/PULL_REQUEST_TEMPLATE.md ]; then
+  mkdir -p .tmp
+  cp .github/PULL_REQUEST_TEMPLATE.md .tmp/pr-body.md
+elif [ -f .github/pull_request_template.md ]; then
+  mkdir -p .tmp
+  cp .github/pull_request_template.md .tmp/pr-body.md
+else
+  mkdir -p .tmp
+  cat > .tmp/pr-body.md <<'EOF'
 ## Summary
 
 Fixes misalignments between design docs and current implementation based on gap analysis.
@@ -143,7 +151,14 @@ Fixes misalignments between design docs and current implementation based on gap 
 ### Gaps deferred
 - {any gaps the user chose to skip, for future reference}
 EOF
-)"
+fi
+```
+
+Edit `.tmp/pr-body.md` with the exact fixes/deferred gaps and work every marked checklist row before creating the PR. Run `gh pr create` in a separate shell command after the file already exists:
+
+```bash
+gh pr create --title "{{prTitle}}" --body-file .tmp/pr-body.md
+rm -f .tmp/pr-body.md
 ```
 
 ## Idempotency Rules
