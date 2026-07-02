@@ -33,13 +33,16 @@ describe('git worktree registry', () => {
   });
 
   test('indexes refreshed worktrees by path and branch', async () => {
+    const calls: string[][] = [];
     const registry = new WorktreeRegistry(async (_repoPath, args) => {
+      calls.push(args);
       if (args.join(' ') === 'worktree list --porcelain') return porcelain;
       return '';
     });
 
     await registry.refresh('/repo');
 
+    expect(calls).toEqual([['worktree', 'list', '--porcelain']]);
     expect(registry.byPath('/repo-feature')?.head).toBe('2222222222222222222222222222222222222222');
     expect(registry.byBranch('feat/work')?.path).toBe('/repo-feature');
     expect(registry.byPath('/repo-missing')?.isPrunable).toBe(true);
