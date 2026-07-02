@@ -1,4 +1,5 @@
 export const COMPLETION_SHELLS = ['bash', 'zsh'] as const;
+const ROOT_FLAGS = ['-h', '--help', '-v', '--version'] as const;
 const MAINTENANCE_PRUNE_FLAGS = ['--dry-run', '--max-age-days', '--dir', '--json'] as const;
 const MAINTENANCE_BACKUP_FLAGS = ['--dir', '--out', '--json'] as const;
 
@@ -143,6 +144,7 @@ function isCompletionShell(value: string | undefined): value is CompletionShell 
 
 function renderBashCompletion(): string {
   const rootWords = shellWords(getRootCompletionCommands());
+  const rootFlags = shellWords(ROOT_FLAGS);
   const shells = subcommandsFor('completion');
   const agentValues = flagValuesFor('spawn', '--agent');
   const dedupeValues = flagValuesFor('spawn', '--dedupe');
@@ -204,7 +206,7 @@ _kookr()
 
   case "\${COMP_CWORD}" in
     1)
-      COMPREPLY=( $(compgen -W "${rootWords} -h --help" -- "\${cur}") )
+      COMPREPLY=( $(compgen -W "${rootWords} ${rootFlags}" -- "\${cur}") )
       return 0
       ;;
   esac
@@ -280,6 +282,7 @@ complete -F _kookr kookr`;
 
 function renderZshCompletion(): string {
   const rootWords = shellWords(getRootCompletionCommands());
+  const rootFlags = shellWords(ROOT_FLAGS);
   const shells = subcommandsFor('completion');
   const agentValues = flagValuesFor('spawn', '--agent');
   const dedupeValues = flagValuesFor('spawn', '--dedupe');
@@ -311,7 +314,7 @@ _kookr()
   completion_shells=(${shells})
 
   if (( CURRENT == 2 )); then
-    compadd -- $root_commands -h --help
+    compadd -- $root_commands ${rootFlags}
     return
   fi
 

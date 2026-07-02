@@ -13,6 +13,22 @@ If you linked Kookr before these commands existed, run `pnpm link --global` agai
 
 The standalone aliases `kookr-spawn`, `kookr-status`, and `kookr-ralph` still work for compatibility, but they are deprecated. Prefer the `kookr <subcommand>` forms below.
 
+## Top-Level Flags
+
+Print the installed package version:
+
+```bash
+kookr --version
+kookr -v
+```
+
+Print root command help:
+
+```bash
+kookr --help
+kookr -h
+```
+
 ## Shell Completion
 
 Print a static shell completion script:
