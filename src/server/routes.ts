@@ -88,6 +88,10 @@ export function createRoutes(deps: RouteDeps): Hono {
   // fallback, silently diverging the suppression view across the two surfaces.
   const sharedDeps: RouteDeps = {
     ...deps,
+    // REST-driven terminal transitions must release issue claims (RFC R8);
+    // task-routes builds its LifecycleDeps field-by-field, so the registry
+    // must be threaded explicitly (dogfood regression, see TaskRouteDeps).
+    ...(deps.issueClaims ? { issueClaimRegistry: deps.issueClaims.registry } : {}),
     requestDurationMetrics,
     coordinatorSuppressions:
       deps.coordinatorSuppressions ?? new CoordinatorSuppressionStore(deps.kookrDir ?? deps.serverCwd),

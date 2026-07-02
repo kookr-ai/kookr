@@ -50,6 +50,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       taskStore,
       hookWatcher,
       watchdog,
+      ...(deps.issueClaimRegistry ? { issueClaimRegistry: deps.issueClaimRegistry } : {}),
       shadowRegistry: deps.shadowRegistry,
       suppressionTracker: deps.suppressionTracker,
       tokenTracker: deps.tokenTracker,

@@ -692,6 +692,25 @@ describe('POST /api/tasks/:id/complete (issue #691)', () => {
     });
   }
 
+  test('REST complete releases issue-ownership claims (RFC R8 — dogfood regression)', async () => {
+    // Regression: task-routes builds getLifecycleDeps() field-by-field and
+    // silently dropped issueClaimRegistry — REST-driven completion left the
+    // claim to the orphan backstop instead of releasing it (found dogfooding
+    // PR 1a: completed task kept its issueClaim; audit showed orphan_reclaim,
+    // not released).
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Implement issue #1215', '/repo');
+    addLiveSession(taskStore, task.id);
+
+    const { deps } = mkCompleteDeps(taskStore);
+    const safeReleaseAllFor = vi.fn(() => [] as Array<{ repo: string; number: number }>);
+    (deps as { issueClaimRegistry?: unknown }).issueClaimRegistry = { safeReleaseAllFor };
+
+    const res = await mkApp(deps).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(safeReleaseAllFor).toHaveBeenCalledWith(task.id, 'released');
+  });
+
   test('marks an in-progress task completed and tears down its live session', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask('Shipped the PR', '/repo');
