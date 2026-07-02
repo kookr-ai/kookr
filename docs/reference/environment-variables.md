@@ -66,6 +66,7 @@ not user configuration knobs.
 | `KOOKR_PARENT_TASK_ID` | Injected only for child tasks | Task id string | Identifies the parent task for nested agent work. |
 | `KOOKR_API_BASE_URL` | `http://127.0.0.1:<server port>` when known | HTTP URL | Lets agents and CLIs call back to the active Kookr instance. |
 | `KOOKR_GIT_COMMON_DIR` | Injected when cwd is a Git worktree | Absolute path | Points at the shared Git common directory for worktree-aware workflows. |
+| `KOOKR_AGENT_ID` | Not injected yet (reserved) | Session id string | Optional session-id hint read by `kookr issue claim` to stamp the claiming session (RFC rfc-issue-ownership-lock). Harmless when unset; adapters may inject it in a later phase. |
 
 ## CLI Tools
 
@@ -73,6 +74,7 @@ not user configuration knobs.
 | --- | --- | --- | --- |
 | `KOOKR_API_BASE_URL` | Auto-detect 4800/4801 when unset | HTTP URL | `kookr spawn` and `kookr ralph` use this URL directly and skip port probing. |
 | `KOOKR_PORT` | Auto-detect 4800/4801 for CLI tools | Integer port, 1-65535 | Forces `kookr status`, `kookr spawn`, or `kookr ralph` to talk to one local instance. |
+| `KOOKR_ISSUE_CLAIMS` | `off` | `1`/`true`/`on` to enable | Feature flag for the issue-ownership claim registry (RFC rfc-issue-ownership-lock). Read once at startup — restart to change; the boot log prints the resolved value. Off: no registry, claim routes 404 (clients proceed as pre-lock), release calls no-op. |
 | `KOOKR_SPAWN_MAX_PROMPT_BYTES` | `1048576` | Positive integer bytes | Maximum prompt size accepted from `kookr spawn` stdin or `--prompt-file`. |
 | `KOOKR_SPAWN_CONNECT_RETRIES` | `3` | Integer `1` through `10` | Number of `kookr spawn` connectivity sweeps before reporting no server. |
 

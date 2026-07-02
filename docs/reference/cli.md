@@ -175,6 +175,21 @@ Exit behavior:
 - `4` when the server rejects the signal, for example because the task id is
   unknown or terminal.
 
+## `kookr issue`
+
+Claim, release, or inspect GitHub-issue ownership (RFC `rfc-issue-ownership-lock`; the server side is flag-gated behind `KOOKR_ISSUE_CLAIMS`).
+
+```bash
+kookr issue claim <number> [--repo <owner/repo>] [--force] [--json]
+kookr issue release <number> [--repo <owner/repo>] [--json]
+kookr issue owner <number> [--repo <owner/repo>] [--json]
+kookr issue list [--json]
+```
+
+`--repo` is optional; the server resolves the issue's home repo from the caller's cwd (fork-aware — a fork checkout with no `--repo` fails closed). `--task-id` sets the claiming task id (default `KOOKR_TASK_ID`; required for claim/release). `--force` is an operator override that takes over a held claim. `KOOKR_AGENT_ID`, when set, is sent as the claiming session id.
+
+Exit codes (specific to `kookr issue`): `0` you own it — also returned when the server does not support issue claims yet (HTTP 404: proceed as pre-lock); `2` user error; `3` no server reachable (fail closed — do not start work on the issue); `4` server rejected the request (unknown/terminal task, release by a non-owner); `6` claim held by another live task — pick a different issue, or `--force` as an operator.
+
 ## Server Discovery
 
 `kookr spawn` and `kookr signal` discover the active Kookr instance with this precedence:

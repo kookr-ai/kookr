@@ -42,6 +42,11 @@ import {
 import { createOperationalAlertEvaluator } from './operational-alert-rules.js';
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
 import { TaskStateSaveScheduler } from './task-state-save-scheduler.js';
+import { createIssueClaimServices, createUpstreamOfResolver, isIssueClaimsEnabled, type IssueClaimServices } from './issue-claim-wiring.js';
+import { decorateClaim } from './issue-claim-decorator.js';
+import { resolveClaimRepo } from './use-cases/resolve-claim-repo.js';
+import { getProjectId } from '../core/project-identity.js';
+import { acquireSingleWriterLock } from './single-writer-lock.js';
 import {
   getOperationalAlertConfig,
   resetOperationalAlertConfig,
@@ -245,6 +250,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     lifecycleSignal,
   } = config;
   const apiAuth: ApiAuthConfig = config.apiAuth ?? { required: false };
+
+  // R27 (rfc-issue-ownership-lock): assert exactly one server process owns
+  // this data dir BEFORE any boot-time task mutation (reconcile, claim
+  // rebuild) touches it — the port bind only enforces exclusivity later.
+  const releaseSingleWriterLock = acquireSingleWriterLock(kookrDir);
 
   const coreStores = await createCoreStores({ kookrDir, hooksDir, settingsDir, frontendDir });
   const coordinatorSuppressions = new CoordinatorSuppressionStore(kookrDir);
@@ -566,6 +576,23 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }
   }
 
+  // Issue-ownership claim registry (RFC rfc-issue-ownership-lock, PR 1a).
+  // Constructed and rebuilt BEFORE the boot reconcile and the HTTP listener,
+  // so no claim ever runs against an unpopulated map and the boot release
+  // below is holder-checked against real state (§8 boot-ordering invariant).
+  const issueClaimsEnabled = isIssueClaimsEnabled();
+  console.log(`[issue-claims] KOOKR_ISSUE_CLAIMS=${issueClaimsEnabled ? 'on' : 'off'}`);
+  const issueClaimServices: IssueClaimServices | undefined = issueClaimsEnabled
+    ? createIssueClaimServices({ taskStore, kookrDir })
+    : undefined;
+  if (issueClaimServices) {
+    const rebuilt = issueClaimServices.registry.rebuildFromTasks();
+    console.log(
+      `[issue-claims] ${rebuilt.owners} owner(s) rebuilt from ${rebuilt.activeTasks} task(s)`
+      + ` (${rebuilt.ignoredTerminalFields} terminal field(s) ignored)`,
+    );
+  }
+
   // Reconcile with live backend sessions
   const reconcileResult = await reconcile(taskStore, terminalBackend, worktreeRegistry);
   if (reconcileResult.resumed.length > 0) {
@@ -576,6 +603,21 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   }
   if (reconcileResult.orphans.length > 0) {
     console.warn(`Orphan sessions (not in tasks): ${reconcileResult.orphans.join(', ')}`);
+  }
+  if (issueClaimServices) {
+    // Additive reconcile release (R9): reconcile() calls the raw TaskStore
+    // terminal methods, bypassing the agent-lifecycle wrappers, so claims for
+    // boot-detected dead tasks free up here.
+    let bootClaimsReleased = 0;
+    for (const id of reconcileResult.tasksCompleted) {
+      bootClaimsReleased += issueClaimServices.registry.safeReleaseAllFor(id, 'released').length;
+    }
+    for (const id of reconcileResult.tasksTerminated) {
+      bootClaimsReleased += issueClaimServices.registry.safeReleaseAllFor(id, 'dead_reclaim').length;
+    }
+    if (bootClaimsReleased > 0) {
+      console.log(`[issue-claims] boot reconcile released ${bootClaimsReleased} claim(s)`);
+    }
   }
   for (const task of taskStore.getAllTasks()) {
     for (const session of task.sessions) {
@@ -727,6 +769,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     monitor, watchdog, hookWatcher, interactionLog, githubScanner, autoNameTask, taskStore,
     projectConfigStore,
     terminalInputCoordinator,
+    ...(issueClaimServices ? { issueClaimRegistry: issueClaimServices.registry } : {}),
   };
 
   // Launch service deps — shared by WS handler, REST routes, and the Ralph
@@ -971,7 +1014,29 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }),
   });
 
+  const upstreamOf = createUpstreamOfResolver();
   const app = createRoutes({
+    ...(issueClaimServices ? {
+      issueClaims: {
+        enabled: true,
+        registry: issueClaimServices.registry,
+        decorate: (record) => decorateClaim(record, {
+          getAgentEvents: (sessionId) => monitor.getAgentEvents(sessionId),
+        }),
+        resolveRepo: (input) => resolveClaimRepo(
+          {
+            cwd: input.cwd ?? serverCwd,
+            ...(input.repoFlag !== undefined ? { repoFlag: input.repoFlag } : {}),
+          },
+          { getProjectId, activeProjectIds: () => taskStore.getProjectIds(), upstreamOf },
+        ),
+        // R5: force — the claim setters don't mark the scheduler dirty, and a
+        // non-forced flush() early-returns when clean, silently voiding the
+        // crash-durability guarantee the RFC requires on grant/release.
+        flushTasks: () => taskStateSaveScheduler.flush('flush', { force: true }),
+        getTaskStatus: (taskId) => taskStore.getTask(taskId)?.status,
+      },
+    } : {}),
     taskStore, monitor, queue, adapter, hookWatcher, watchdog,
     interactionLog,
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
@@ -1165,7 +1230,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     taskStore, queue, monitor, adapter, adapterRegistry,
     interactionLog, telemetryLog, buildInfo, serverStartedAt,
     serverCwd, sttUrl, ttsUrl, abortPendingSuggestion,
-    lifecycleExtras: { hookWatcher, watchdog, shadowRegistry, tokenTracker },
+    lifecycleExtras: {
+      hookWatcher, watchdog, shadowRegistry, tokenTracker,
+      ...(issueClaimServices ? { issueClaimRegistry: issueClaimServices.registry } : {}),
+    },
     agentLifecycleDeps: lifecycleDeps, broadcastToAll,
     broadcastProjectSummaries,
     launchTask: (opts, serverOpts) => launchTask(launchServiceDeps, opts, serverOpts),
@@ -1396,6 +1464,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalBackend.close?.();
 
     await closeHttpRuntime();
+
+    // Release the R27 single-writer pid lock last, after all writes are done.
+    releaseSingleWriterLock();
   }
 
   // Non-blocking startup refresh of the OSS attempts view.

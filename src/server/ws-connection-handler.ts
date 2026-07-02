@@ -93,6 +93,8 @@ export interface WsConnectionDeps {
     watchdog: { unregisterAgent(agentId: string): void; recordInputReceived?(agentId: string): void };
     shadowRegistry?: { unregisterAgent(agentId: string): void };
     tokenTracker?: { unregister(transcriptPath: string): void };
+    /** Releases issue-ownership claims on terminal transitions (RFC R8). */
+    issueClaimRegistry?: import('./agent-lifecycle.js').LifecycleDeps['issueClaimRegistry'];
   };
   agentLifecycleDeps: AgentLifecycleDeps;
   broadcastToAll: (msg: ServerMessage) => void;

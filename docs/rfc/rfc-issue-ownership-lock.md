@@ -1,11 +1,22 @@
 # RFC: Issue-Ownership Lock — an Atomic Claim Registry for GitHub Issues
 
-**Status:** Draft (v4 — post round-4 panel: socratic, operability, design-minimalist, ambition-amplifier; consolidated. Ready for user review)
+**Status:** Accepted (v4; PR 1a — mechanism + manual CLI + audit — implemented; 1b/1c pending soak. See Implementation note.)
 **Date:** 2026-07-02
 **Author:** Jean Ibarz (with Claude Opus 4.8)
 **Implementation branch:** `rfc/issue-ownership-lock`
 
 ---
+
+## Implementation note (PR 1a)
+
+Deviations from the design as landed in PR 1a:
+
+1. **DELETE shape.** `DELETE /api/issue-claims` takes `{repo, number, taskId}` in the JSON body rather than the sketch's `/:repo/:number` path params — canonical repo ids contain `/` and do not segment cleanly as path params. Holder-check semantics (200/403) unchanged.
+2. **`claimsReleased` is a log line, not a `ReconciliationResult` field.** `reconciliation.ts` is untouched; the additive release at both reconcile call sites counts locally and logs `[issue-claims] … released N claim(s)`. The field can be added when a programmatic consumer needs it.
+3. **Boot log.** PR 1a logs the resolved flag value and `N owner(s) rebuilt from M task(s) (K terminal field(s) ignored)`. The R23 `K unprotected: <task ids>` line depends on the boot-backfill scan and ships with it in PR 1b.
+4. **CLI grew `--task-id`** (default `KOOKR_TASK_ID`), not in the §5 verb sketch. `ClaimDecision`'s `exhausted` variant and `resolve-claim-repo`'s `fork_needs_repo` code are forward declarations consumed by PR 1b.
+5. **No-flag fork detection is deferred with the backfill.** R19's "fork + no `--repo` fails closed (exit 2)" requires fork *detection*, which needs the same gh lookup as auto-upstream — so in PR 1a the no-flag path accepts the cwd origin as-is even when it is a fork. Instrumented playbooks always pass `--repo` (auto-populated), so the exposure is ad-hoc CLI use from a fork checkout; the detection lands with the gh-backed fast-follow.
+6. **R18 audit outcome:** the #700 attach-path audit (docs/reports/issue-700-multi-session-attach-audit.md) found the root cause is concurrent `promotePendingTasks` invocations — the async-probe guard alone would NOT have prevented it. Per R18's fallback, PR 1c is therefore a `pending→launching` reservation design decision, not the attach-site guard as sketched.
 
 ## Problem
 

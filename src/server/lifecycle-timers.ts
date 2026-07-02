@@ -385,6 +385,25 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       }
       const result = await reconcile(taskStore, terminalBackend, deps.worktreeRegistry);
 
+      // Release issue-ownership claims for reconcile-driven terminal
+      // transitions. reconcile() calls the RAW TaskStore methods, bypassing
+      // the agent-lifecycle wrappers, so this additive call is where claims
+      // free up on the dead-session path (RFC rfc-issue-ownership-lock R9;
+      // safeReleaseAllFor never throws, R9b).
+      const claimRegistry = deps.agentLifecycleDeps?.issueClaimRegistry;
+      if (claimRegistry) {
+        let claimsReleased = 0;
+        for (const id of result.tasksCompleted) {
+          claimsReleased += claimRegistry.safeReleaseAllFor(id, 'released').length;
+        }
+        for (const id of result.tasksTerminated) {
+          claimsReleased += claimRegistry.safeReleaseAllFor(id, 'dead_reclaim').length;
+        }
+        if (claimsReleased > 0) {
+          console.log(`[issue-claims] reconcile released ${claimsReleased} claim(s)`);
+        }
+      }
+
       // Clean up resources for dead sessions via centralized lifecycle
       for (const tmuxName of result.markedCompleted) {
         await cleanupSessionResources(tmuxName, lifecycleDeps);
