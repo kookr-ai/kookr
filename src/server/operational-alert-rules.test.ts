@@ -70,6 +70,8 @@ function breakerSnapshot(overrides: {
     state: overrides.state,
     failureCount: overrides.state === 'open' ? 5 : 0,
     successCount: 0,
+    rejectedCalls: 0,
+    tripCount: overrides.state === 'open' ? 1 : 0,
     lastFailureTime: overrides.state === 'open' ? overrides.lastStateChange : null,
     lastStateChange: overrides.lastStateChange,
     resetTimeoutMs: 30_000,

@@ -47,6 +47,8 @@ describe('renderPrometheusExposition', () => {
       state: 'open',
       failureCount: 3,
       successCount: 0,
+      rejectedCalls: 4,
+      tripCount: 2,
       lastFailureTime: 123,
       lastStateChange: 456,
       resetTimeoutMs: 30_000,
@@ -70,6 +72,10 @@ describe('renderPrometheusExposition', () => {
     expect(output).toContain('kookr_circuit_breaker_state{name="llm",state="open"} 1');
     expect(output).toContain('kookr_circuit_breaker_state{name="llm",state="half-open"} 0');
     expect(output).toContain('kookr_circuit_breaker_failures{name="llm"} 3');
+    expect(output).toContain('# TYPE kookr_circuit_breaker_rejected_total counter');
+    expect(output).toContain('kookr_circuit_breaker_rejected_total{name="llm"} 4');
+    expect(output).toContain('# TYPE kookr_circuit_breaker_trips_total counter');
+    expect(output).toContain('kookr_circuit_breaker_trips_total{name="llm"} 2');
     expect(output).toContain('# TYPE kookr_attention_suppressed_total counter');
     expect(output).toContain('kookr_attention_suppressed_total{reason="queue_dedupe"} 0');
     expect(output).toContain('kookr_attention_suppressed_total{reason="queue_snoozed"} 0');

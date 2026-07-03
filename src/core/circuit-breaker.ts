@@ -27,6 +27,8 @@ export interface CircuitBreakerSnapshot {
   state: CircuitBreakerState;
   failureCount: number;
   successCount: number;
+  rejectedCalls: number;
+  tripCount: number;
   lastFailureTime: number | null;
   lastStateChange: number;
   resetTimeoutMs: number;
@@ -52,6 +54,8 @@ export class CircuitBreaker {
   /** Timestamps of recent failures (used for sliding window). */
   private failureTimestamps: number[] = [];
   private halfOpenSuccesses = 0;
+  private rejectedCalls = 0;
+  private tripCount = 0;
   private lastFailureTime: number | null = null;
   private lastStateChange: number;
 
@@ -82,6 +86,8 @@ export class CircuitBreaker {
       state: this.state,
       failureCount: this.recentFailureCount(),
       successCount: this.halfOpenSuccesses,
+      rejectedCalls: this.rejectedCalls,
+      tripCount: this.tripCount,
       lastFailureTime: this.lastFailureTime,
       lastStateChange: this.lastStateChange,
       resetTimeoutMs: this.resetTimeoutMs,
@@ -94,6 +100,7 @@ export class CircuitBreaker {
    */
   async call<T>(fn: () => Promise<T>): Promise<T> {
     if (this.state === 'open') {
+      this.rejectedCalls++;
       throw new CircuitBreakerOpenError(this.name);
     }
 
@@ -135,6 +142,11 @@ export class CircuitBreaker {
         this.transition('open');
       }
     }
+  }
+
+  /** Record work explicitly rejected after a caller observed the breaker open. */
+  recordRejectedCall(): void {
+    this.rejectedCalls++;
   }
 
   /** Manually rearm (close) the breaker — used from the dashboard. */
@@ -179,6 +191,7 @@ export class CircuitBreaker {
     this.lastStateChange = Date.now();
 
     if (newState === 'open') {
+      this.tripCount++;
       // Schedule auto-transition to half-open after cooldown
       this.resetTimer = setTimeout(() => {
         this.resetTimer = null;

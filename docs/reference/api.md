@@ -17,6 +17,17 @@ Returns Prometheus text format (`text/plain; version=0.0.4`). On loopback
 servers it is unauthenticated; when non-loopback API auth is required it accepts
 owner credentials only and rejects viewer credentials.
 
+Circuit breakers are exported as:
+
+- `kookr_circuit_breaker_state{name,state}`: gauge, `1` for the active state
+  and `0` for inactive states.
+- `kookr_circuit_breaker_failures{name}`: gauge of the current recent failure
+  count.
+- `kookr_circuit_breaker_rejected_total{name}`: counter of calls rejected while
+  the breaker was open.
+- `kookr_circuit_breaker_trips_total{name}`: counter of transitions into the
+  open state.
+
 The collaboration audit sink is exported as:
 
 - `kookr_audit_sink_writable{sink="private_network_collaboration"}`: gauge, `1`
