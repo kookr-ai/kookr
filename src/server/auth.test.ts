@@ -47,10 +47,35 @@ describe('resolveApiAuth', () => {
   });
 
   test('non-loopback bind with KOOKR_API_TOKEN enforces the provided token', () => {
-    const res = resolveApiAuth({ host: '0.0.0.0', env: { KOOKR_API_TOKEN: '  secret-token  ' } });
+    const token = 'a'.repeat(24);
+    const res = resolveApiAuth({ host: '0.0.0.0', env: { KOOKR_API_TOKEN: `  ${token}  ` } });
     expect(res.kind).toBe('token-provided');
     if (res.kind !== 'token-provided') throw new Error('unreachable');
-    expect(res.config).toEqual({ required: true, token: 'secret-token', originGateDisabled: false });
+    expect(res.config).toEqual({ required: true, token, originGateDisabled: false });
+    expect(res.weakTokenAllowed).toBeUndefined();
+  });
+
+  test('non-loopback bind rejects a weak KOOKR_API_TOKEN by default', () => {
+    const res = resolveApiAuth({ host: '0.0.0.0', env: { KOOKR_API_TOKEN: 'a'.repeat(23) } });
+    expect(res.kind).toBe('fail-closed');
+    expect(res.kind === 'fail-closed' && res.reason).toContain('KOOKR_API_TOKEN is too short');
+  });
+
+  test('KOOKR_ALLOW_WEAK_API_TOKEN explicitly allows a weak non-loopback token', () => {
+    const res = resolveApiAuth({
+      host: '0.0.0.0',
+      env: { KOOKR_API_TOKEN: 'short', KOOKR_ALLOW_WEAK_API_TOKEN: 'true' },
+    });
+    expect(res.kind).toBe('token-provided');
+    if (res.kind !== 'token-provided') throw new Error('unreachable');
+    expect(res.config).toEqual({ required: true, token: 'short', originGateDisabled: false });
+    expect(res.weakTokenAllowed).toBe(true);
+  });
+
+  test('loopback bind ignores a weak KOOKR_API_TOKEN and stays token-free', () => {
+    const res = resolveApiAuth({ host: '127.0.0.1', env: { KOOKR_API_TOKEN: 'short' } });
+    expect(res.kind).toBe('loopback');
+    expect(res.kind === 'loopback' && res.config).toEqual({ required: false, originGateDisabled: false });
   });
 
   test('non-loopback bind with the opt-out auto-generates and enforces a token', () => {

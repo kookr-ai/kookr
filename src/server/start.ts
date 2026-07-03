@@ -81,8 +81,8 @@ function resolveDtachBinaryOrExit(): string {
 /**
  * Issue #708: resolve the API-token auth posture from the bind host + env,
  * print the operator-facing summary, and fail-closed (exit 1) when a
- * non-loopback bind has neither a token nor the explicit opt-out. Returns the
- * `ApiAuthConfig` to thread into the server.
+ * non-loopback bind is missing a usable token. Returns the `ApiAuthConfig` to
+ * thread into the server.
  */
 function resolveApiAuthOrExit(host: string): ApiAuthConfig {
   const resolution = resolveApiAuth({ host, env: process.env });
@@ -90,6 +90,12 @@ function resolveApiAuthOrExit(host: string): ApiAuthConfig {
     case 'loopback':
       return resolution.config;
     case 'token-provided':
+      if (resolution.weakTokenAllowed) {
+        console.warn(
+          `[auth] WARNING: Non-loopback bind (KOOKR_HOST=${host}) is accepting a weak KOOKR_API_TOKEN because ` +
+            'KOOKR_ALLOW_WEAK_API_TOKEN=true is set.',
+        );
+      }
       console.log(`[auth] Non-loopback bind (KOOKR_HOST=${host}); API token auth ENABLED (KOOKR_API_TOKEN).`);
       return resolution.config;
     case 'token-generated':
