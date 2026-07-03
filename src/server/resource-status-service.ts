@@ -2,6 +2,10 @@ import type { ServerMessage, SystemResourceStatus } from '../shared/contracts/me
 import type { CircuitBreakerSnapshot } from '../shared/contracts/circuit-breaker.js';
 import { RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
 
+type AlertMessage = Extract<ServerMessage, { type: 'alert' }>;
+
+const DEFAULT_OPERATIONAL_ALERT_HISTORY_LIMIT = 100;
+
 export interface ResourceStatusSampler {
   start(): void;
   stop(): void;
@@ -25,11 +29,31 @@ export interface ResourceStatusServiceDeps {
   /** Optional provider for dependency breaker snapshots sampled with each resource tick. */
   getCircuitBreakerSnapshots?: () => CircuitBreakerSnapshot[];
   intervalMs?: number;
+  operationalAlertHistoryLimit?: number;
   nowMs?: () => number;
   nowIso?: () => string;
   logger?: Pick<typeof console, 'warn'>;
   setTimeoutFn?: typeof setTimeout;
   clearTimeoutFn?: typeof clearTimeout;
+}
+
+export interface OperationalAlertHistoryEntry {
+  id: number;
+  key: string;
+  metric: string;
+  firstFiredAt: string | null;
+  lastFiredAt: string | null;
+  recoveredAt: string | null;
+  active: boolean;
+  fireCount: number;
+  alert: AlertMessage;
+  recoveryAlert: AlertMessage | null;
+}
+
+export interface OperationalAlertHistorySnapshot {
+  generatedAt: string;
+  limit: number;
+  alerts: OperationalAlertHistoryEntry[];
 }
 
 export class ResourceStatusService {
@@ -38,6 +62,7 @@ export class ResourceStatusService {
   private readonly alertEvaluator: ResourceAlertEvaluator | null;
   private readonly getCircuitBreakerSnapshots: (() => CircuitBreakerSnapshot[]) | null;
   private readonly intervalMs: number;
+  private readonly operationalAlertHistoryLimit: number;
   private readonly nowMs: () => number;
   private readonly nowIso: () => string;
   private readonly logger: Pick<typeof console, 'warn'>;
@@ -46,6 +71,9 @@ export class ResourceStatusService {
   private timeout: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private latest: SystemResourceStatus | null = null;
+  private nextAlertHistoryId = 1;
+  private readonly operationalAlertHistory: OperationalAlertHistoryEntry[] = [];
+  private readonly activeOperationalAlerts = new Map<string, OperationalAlertHistoryEntry>();
   private samplerErrorLogged = false;
   private alertEvaluatorErrorLogged = false;
 
@@ -55,6 +83,7 @@ export class ResourceStatusService {
     this.alertEvaluator = deps.alertEvaluator ?? null;
     this.getCircuitBreakerSnapshots = deps.getCircuitBreakerSnapshots ?? null;
     this.intervalMs = deps.intervalMs ?? RESOURCE_STATUS_INTERVAL_MS;
+    this.operationalAlertHistoryLimit = normalizeHistoryLimit(deps.operationalAlertHistoryLimit);
     this.nowMs = deps.nowMs ?? (() => Date.now());
     this.nowIso = deps.nowIso ?? (() => new Date().toISOString());
     this.logger = deps.logger ?? console;
@@ -83,6 +112,14 @@ export class ResourceStatusService {
     return this.latest;
   }
 
+  getOperationalAlertHistory(): OperationalAlertHistorySnapshot {
+    return {
+      generatedAt: this.nowIso(),
+      limit: this.operationalAlertHistoryLimit,
+      alerts: this.operationalAlertHistory.map((entry) => ({ ...entry })),
+    };
+  }
+
   private tick(expectedAtMs: number | null): void {
     if (!this.running) return;
 
@@ -96,12 +133,77 @@ export class ResourceStatusService {
       // summary text is self-describing (it says "Recovered" on clear).
       if (alert.type === 'alert') {
         this.logger.warn('[ops-alerts]', alert.summary);
+        this.recordOperationalAlert(alert);
       }
       this.broadcastToAll(alert);
     }
 
     const nextExpectedAtMs = this.nowMs() + this.intervalMs;
     this.timeout = this.setTimeoutFn(() => this.tick(nextExpectedAtMs), this.intervalMs);
+  }
+
+  private recordOperationalAlert(alert: AlertMessage): void {
+    const metadata = alert.operationalAlert;
+    // Generic dashboard alerts share the same message type but are not
+    // operational rule events, so they are intentionally excluded here.
+    if (!metadata) return;
+
+    const occurredAt = this.nowIso();
+    if (metadata.state === 'fired') {
+      const active = this.activeOperationalAlerts.get(metadata.key);
+      if (active) {
+        active.lastFiredAt = occurredAt;
+        active.fireCount += 1;
+        active.alert = alert;
+        return;
+      }
+
+      const entry: OperationalAlertHistoryEntry = {
+        id: this.nextAlertHistoryId++,
+        key: metadata.key,
+        metric: metadata.metric,
+        firstFiredAt: occurredAt,
+        lastFiredAt: occurredAt,
+        recoveredAt: null,
+        active: true,
+        fireCount: 1,
+        alert,
+        recoveryAlert: null,
+      };
+      this.pushAlertHistoryEntry(entry);
+      this.activeOperationalAlerts.set(metadata.key, entry);
+      return;
+    }
+
+    const active = this.activeOperationalAlerts.get(metadata.key);
+    if (active) {
+      active.recoveredAt = occurredAt;
+      active.active = false;
+      active.recoveryAlert = alert;
+      this.activeOperationalAlerts.delete(metadata.key);
+      return;
+    }
+
+    this.pushAlertHistoryEntry({
+      id: this.nextAlertHistoryId++,
+      key: metadata.key,
+      metric: metadata.metric,
+      firstFiredAt: null,
+      lastFiredAt: null,
+      recoveredAt: occurredAt,
+      active: false,
+      fireCount: 0,
+      alert,
+      recoveryAlert: alert,
+    });
+  }
+
+  private pushAlertHistoryEntry(entry: OperationalAlertHistoryEntry): void {
+    this.operationalAlertHistory.push(entry);
+    while (this.operationalAlertHistory.length > this.operationalAlertHistoryLimit) {
+      const evicted = this.operationalAlertHistory.shift();
+      if (evicted?.active) this.activeOperationalAlerts.delete(evicted.key);
+    }
   }
 
   private evaluateAlerts(status: SystemResourceStatus): ServerMessage[] {
@@ -138,6 +240,12 @@ export class ResourceStatusService {
     if (circuitBreakers.length === 0) return status;
     return { ...status, circuitBreakers };
   }
+}
+
+function normalizeHistoryLimit(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_OPERATIONAL_ALERT_HISTORY_LIMIT;
+  if (!Number.isFinite(value)) return DEFAULT_OPERATIONAL_ALERT_HISTORY_LIMIT;
+  return Math.max(1, Math.trunc(value));
 }
 
 export function createUnavailableResourceStatus(sampledAt: string): SystemResourceStatus {

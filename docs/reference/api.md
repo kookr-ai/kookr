@@ -326,6 +326,7 @@ agent launches at the agent CLI's own default with no effort flag passed
 `POST /api/tasks` (or `kookr-spawn --effort`) overrides this default for one
 launch. Resolution order: per-task override → per-agent-type setting → unset.
 | `GET /api/circuit-breakers` | Snapshots of wrapped-dependency breakers |
+| `GET /api/admin/operational-alerts` | Recent operational-alert fire/recovery history for admin introspection |
 | `GET /api/diagnostics/launch-dependencies` | Aggregates degraded launch dependencies by dependency and category, including affected task IDs and last occurrence times |
 | `GET /api/diagnostic` | Latest self-diagnostic report and last error |
 | `POST /api/diagnostic/run` | Trigger a self-diagnostic run |
@@ -335,6 +336,37 @@ launch. Resolution order: per-task override → per-agent-type setting → unset
 | `GET /api/deploy/status` | Production-update job status plus user-global toolkit symlink freshness |
 | `POST /api/deploy/trigger` | Trigger a `pnpm prod:update` job |
 | `POST /api/deploy/toolkit-refresh` | Reinstall user-global Kookr hooks/toolkit symlinks from the production worktree |
+
+### Operational alert history
+
+`GET /api/admin/operational-alerts` uses the same admin authorization gate as
+the other `/api/admin/*` routes: loopback requests are trusted, or callers can
+send `x-kookr-admin-token` matching `KOOKR_ADMIN_TOKEN`. Unauthorized requests
+return `403 {"error":"admin-forbidden"}`.
+
+The response is an in-memory ring buffer of recent operational alert fire and
+recovery events:
+
+```json
+{
+  "generatedAt": "2026-05-13T00:02:00.000Z",
+  "limit": 100,
+  "alerts": [
+    {
+      "id": 1,
+      "key": "resource:cpu",
+      "metric": "cpu",
+      "firstFiredAt": "2026-05-13T00:00:00.000Z",
+      "lastFiredAt": "2026-05-13T00:00:00.000Z",
+      "recoveredAt": "2026-05-13T00:01:00.000Z",
+      "active": false,
+      "fireCount": 1,
+      "alert": { "type": "alert", "severity": "warning" },
+      "recoveryAlert": { "type": "alert", "severity": "info" }
+    }
+  ]
+}
+```
 
 ## WebSocket
 
@@ -371,7 +403,7 @@ delta sequence number.
 | --- | --- | --- |
 | `snapshot` | Full dashboard baseline on connect and after broad state changes. | `agents`, `serverCwd`, optional build/speech/achievement/task relation fields |
 | `update` | Refresh one agent's current state. | `agentId`, `state` |
-| `alert` | Surface an anomaly, validation error, or handler error. | `agentId`, `summary`, `details`, `severity` |
+| `alert` | Surface an anomaly, validation error, or handler error. | `agentId`, `summary`, `details`, `severity`, optional `operationalAlert` `{ key, metric, state }` for operational alert fire/recovery events |
 | `githubUpdate` | Push GitHub PR/issue state for one task. | `taskId`, `prs`, `issues`, `changes` |
 | `playbooks` | Return playbook discovery results for a cwd. | `cwd`, `playbooks`, optional `capabilities` |
 | `suggestion` | Suggest operator replies or quick actions for an agent. | `agentId`, `suggestionId`, `suggestions`, `quickActions` |

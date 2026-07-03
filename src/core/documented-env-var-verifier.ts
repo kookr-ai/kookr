@@ -76,7 +76,6 @@ const SELF_FILES = new Set(['documented-env-var-verifier.ts', 'documented-env-va
  */
 export const INTERNAL_ENV_VARS: ReadonlySet<string> = new Set([
   // Internal / diagnostic / test-harness toggles.
-  'KOOKR_ADMIN_TOKEN',
   'KOOKR_BUILD_VERSION',
   'KOOKR_DEBUG',
   'KOOKR_DIR',

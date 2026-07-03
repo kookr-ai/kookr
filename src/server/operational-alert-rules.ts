@@ -397,6 +397,11 @@ function buildBreachAlert(
       `Sustained operational alert: ${rule.metric} at ${formatValue(rule, value)} ` +
       `for ${sustainSamples} consecutive samples (threshold ${rule.threshold}${rule.unit}).`,
     severity,
+    operationalAlert: {
+      key: `resource:${rule.metric}`,
+      metric: rule.metric,
+      state: 'fired',
+    },
   };
 }
 
@@ -411,6 +416,11 @@ function buildRecoveryAlert(
     summary: `Recovered ${rule.label}: ${formatValue(rule, value)} (below threshold ${rule.threshold}${rule.unit})`,
     details: `Operational alert cleared: ${rule.metric} back below threshold (${rule.threshold}${rule.unit}).`,
     severity,
+    operationalAlert: {
+      key: `resource:${rule.metric}`,
+      metric: rule.metric,
+      state: 'recovered',
+    },
   };
 }
 
@@ -434,6 +444,11 @@ function buildDataDirectoryDiskBreachAlert(args: {
       `${args.sustainSamples} consecutive samples (threshold ${formatDiskThresholds(args.percentThreshold, args.bytesThreshold)}). ` +
       'Run `kookr maintenance prune --dry-run --dir <dataDir>` to inspect conservative cleanup candidates.',
     severity,
+    operationalAlert: {
+      key: 'resource:data_directory_disk_free',
+      metric: 'data_directory_disk_free',
+      state: 'fired',
+    },
   };
 }
 
@@ -454,6 +469,11 @@ function buildDataDirectoryDiskRecoveryAlert(args: {
       `Operational alert cleared: filesystem containing ${location} is back above ` +
       `the enabled low-space threshold(s) (${formatDiskThresholds(args.percentThreshold, args.bytesThreshold)}).`,
     severity,
+    operationalAlert: {
+      key: 'resource:data_directory_disk_free',
+      metric: 'data_directory_disk_free',
+      state: 'recovered',
+    },
   };
 }
 
@@ -494,6 +514,11 @@ function buildPersistenceBreachAlert(
       `${formatCount(sustainSamples, 'consecutive failure')}, with ENOSPC/EACCES/EROFS/EDQUOT firing immediately. ` +
       `Last error${code}: ${target.lastError?.message ?? 'unknown'}`,
     severity,
+    operationalAlert: {
+      key: `persistence:${target.target}`,
+      metric: `persistence:${target.target}`,
+      state: 'fired',
+    },
   };
 }
 
@@ -514,6 +539,11 @@ function buildPersistenceRecoveryAlert(
       `${label} persistence recovered after ${formatCount(target.totalFailures, 'total failure')}. ` +
       `Last successful save: ${target.lastSuccessAt ?? 'unknown'}.`,
     severity,
+    operationalAlert: {
+      key: `persistence:${target.target}`,
+      metric: `persistence:${target.target}`,
+      state: 'recovered',
+    },
   };
 }
 
@@ -532,6 +562,11 @@ function buildCircuitBreakerOpenAlert(
       `${formatDuration(openForMs)} (threshold ${formatDuration(thresholdMs)}). ` +
       `Calls protected by this breaker are degraded until it recovers or is manually rearmed.`,
     severity,
+    operationalAlert: {
+      key: `circuit_breaker:${snapshot.name}`,
+      metric: 'circuit_breaker_open',
+      state: 'fired',
+    },
   };
 }
 
@@ -548,6 +583,11 @@ function buildCircuitBreakerRecoveryAlert(
       `Operational alert cleared: circuit breaker "${snapshot.name}" is no longer OPEN ` +
       `(open-duration threshold ${formatDuration(thresholdMs)}).`,
     severity,
+    operationalAlert: {
+      key: `circuit_breaker:${snapshot.name}`,
+      metric: 'circuit_breaker_open',
+      state: 'recovered',
+    },
   };
 }
 

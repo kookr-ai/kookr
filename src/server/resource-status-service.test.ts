@@ -141,6 +141,125 @@ describe('ResourceStatusService', () => {
     }
   });
 
+  test('retains operational alert fire and recovery events in a bounded history', () => {
+    vi.useFakeTimers();
+    try {
+      const alert: ServerMessage = {
+        type: 'alert',
+        agentId: 'system',
+        summary: 'High host CPU usage',
+        details: 'sustained',
+        severity: 'warning',
+        operationalAlert: { key: 'resource:cpu', metric: 'cpu', state: 'fired' },
+      };
+      const recovery: ServerMessage = {
+        type: 'alert',
+        agentId: 'system',
+        summary: 'Recovered host CPU usage',
+        details: 'cleared',
+        severity: 'info',
+        operationalAlert: { key: 'resource:cpu', metric: 'cpu', state: 'recovered' },
+      };
+      const nowIso = vi
+        .fn()
+        .mockReturnValueOnce('2026-05-13T00:00:00.000Z')
+        .mockReturnValueOnce('2026-05-13T00:01:00.000Z')
+        .mockReturnValue('2026-05-13T00:02:00.000Z');
+      let calls = 0;
+      const service = new ResourceStatusService({
+        sampler: { start: vi.fn(), stop: vi.fn(), sample: vi.fn(() => status()) },
+        broadcastToAll: vi.fn(),
+        alertEvaluator: {
+          evaluate: () => {
+            calls += 1;
+            if (calls === 1) return [alert];
+            if (calls === 2) return [recovery];
+            return [];
+          },
+        },
+        nowIso,
+        nowMs: () => 1_000,
+        intervalMs: 2_000,
+      });
+
+      service.start();
+      vi.advanceTimersByTime(2_000);
+
+      expect(service.getOperationalAlertHistory()).toEqual({
+        generatedAt: '2026-05-13T00:02:00.000Z',
+        limit: 100,
+        alerts: [{
+          id: 1,
+          key: 'resource:cpu',
+          metric: 'cpu',
+          firstFiredAt: '2026-05-13T00:00:00.000Z',
+          lastFiredAt: '2026-05-13T00:00:00.000Z',
+          recoveredAt: '2026-05-13T00:01:00.000Z',
+          active: false,
+          fireCount: 1,
+          alert,
+          recoveryAlert: recovery,
+        }],
+      });
+
+      service.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('bounds operational alert history to the configured limit', () => {
+    vi.useFakeTimers();
+    try {
+      const alerts: ServerMessage[] = [
+        {
+          type: 'alert',
+          agentId: 'system',
+          summary: 'one',
+          details: 'one',
+          severity: 'warning',
+          operationalAlert: { key: 'one', metric: 'one', state: 'fired' },
+        },
+        {
+          type: 'alert',
+          agentId: 'system',
+          summary: 'two',
+          details: 'two',
+          severity: 'warning',
+          operationalAlert: { key: 'two', metric: 'two', state: 'fired' },
+        },
+        {
+          type: 'alert',
+          agentId: 'system',
+          summary: 'three',
+          details: 'three',
+          severity: 'warning',
+          operationalAlert: { key: 'three', metric: 'three', state: 'fired' },
+        },
+      ];
+      let calls = 0;
+      const service = new ResourceStatusService({
+        sampler: { start: vi.fn(), stop: vi.fn(), sample: vi.fn(() => status()) },
+        broadcastToAll: vi.fn(),
+        alertEvaluator: { evaluate: () => (calls < alerts.length ? [alerts[calls++]] : []) },
+        nowIso: () => `2026-05-13T00:00:0${calls}.000Z`,
+        nowMs: () => 1_000,
+        intervalMs: 2_000,
+        operationalAlertHistoryLimit: 2,
+      });
+
+      service.start();
+      vi.advanceTimersByTime(4_000);
+
+      expect(service.getOperationalAlertHistory().alerts.map((entry) => entry.key)).toEqual(['two', 'three']);
+      expect(service.getOperationalAlertHistory().limit).toBe(2);
+
+      service.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('attaches circuit breaker snapshots to the sampled status before broadcast and alert evaluation', () => {
     vi.useFakeTimers();
     try {

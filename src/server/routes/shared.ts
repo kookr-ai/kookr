@@ -41,6 +41,7 @@ import type { FindingEvidenceReviewSampler } from '../finding-evidence-review-sa
 import type { CollaborationDiagnostics } from '../../shared/contracts/collaboration-profile.js';
 import type { CoordinatorSuppressionRegistry } from '../coordinator/suppression-store.js';
 import type { DrainController } from '../drain-state.js';
+import type { OperationalAlertHistorySnapshot } from '../resource-status-service.js';
 import type { ApiAuthConfig } from '../auth.js';
 import type { ViewerGrantStore } from '../../core/viewer-grants.js';
 import type { ViewerConnectionRegistry } from '../viewer-connection-registry.js';
@@ -352,6 +353,8 @@ export interface RouteDeps {
   coordinatorSuppressions?: CoordinatorSuppressionRegistry;
   /** Operator drain / resume state (issue #659). Absent disables the admin drain routes. */
   drainController?: DrainController;
+  /** Recent operational-alert fire/recovery history for admin introspection. */
+  getOperationalAlertHistory?: () => OperationalAlertHistorySnapshot;
   /** Optional snapshot enrichers used by admin-triggered drain/resume broadcasts. */
   terminalInputCoordinator?: TerminalInputCoordinator;
   userInputDeliveries?: UserInputDeliveryService;
