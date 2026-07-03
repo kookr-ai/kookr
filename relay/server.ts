@@ -162,6 +162,7 @@ export interface RelayServerOptions {
   pushDisabled?: boolean;
   pushSender?: PushSender;
   pushSubject?: string;
+  pushDeliveryObserver?: (outcomes: PushDeliveryOutcome[], source: string) => void;
   streamBackpressureBytes?: number;
   stateDbPath?: string | null;
   stateStore?: Pick<
@@ -1691,13 +1692,13 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     const taskId = invitation.subject.kind === 'task' ? invitation.subject.taskId : invitation.invitationId;
     const taskLabel = invitation.redactedShareLabel ?? defaultRedactedShareLabel(invitation.shareId);
     for (const deviceId of devices) {
-      void pushFanout.sendToDevice(deviceId, makeRedactedPushPayload({
+      observePushDelivery('approval-update', pushFanout.sendToDevice(deviceId, makeRedactedPushPayload({
         nodeDisplayName: node?.displayName,
         taskId,
         taskLabel,
         alertKind: 'approval-updated',
         alertId: `approval-${invitation.invitationId}-${requestId}-${resolution}`,
-      }));
+      })));
     }
   };
 
@@ -3083,7 +3084,7 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     replay.set(event.nodeId, events.slice(-100));
 
     if (isPushAlertDeltaPayload(event.payload)) {
-      void pushFanout.sendToNode(event.nodeId, event.payload.payload);
+      observePushDelivery('node-alert', pushFanout.sendToNode(event.nodeId, event.payload.payload));
     }
 
     const subscribed = subscribers.get(event.nodeId);
@@ -3883,6 +3884,34 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
       alertKind: 'blocked',
       alertId: `test-${Date.now()}`,
     }));
+  }
+
+  function observePushDelivery(
+    source: string,
+    delivery: Promise<PushDeliveryOutcome | PushDeliveryOutcome[]>,
+  ): void {
+    delivery.then((result) => {
+      const outcomes = Array.isArray(result) ? result : [result];
+      opts.pushDeliveryObserver?.(outcomes, source);
+      for (const outcome of outcomes) {
+        if (outcome.result !== 'failed') continue;
+        console.warn(JSON.stringify({
+          type: 'relay.push-delivery',
+          source,
+          deviceId: outcome.deviceId,
+          result: outcome.result,
+          ...(outcome.statusCode ? { statusCode: outcome.statusCode } : {}),
+          ...(outcome.error ? { error: outcome.error } : {}),
+        }));
+      }
+    }).catch((err: unknown) => {
+      console.warn(JSON.stringify({
+        type: 'relay.push-delivery',
+        source,
+        result: 'error',
+        error: err instanceof Error ? err.message : String(err),
+      }));
+    });
   }
 }
 

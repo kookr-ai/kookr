@@ -21,6 +21,14 @@ const SUBSCRIPTION = {
   },
 };
 
+const PUSH_PAYLOAD: RedactedPushPayload = {
+  redactor: 'redactor.v1',
+  nodeDisplayName: 'Kookr',
+  taskShortLabel: 'Task abcdef01',
+  alertKind: 'permission-requested',
+  alertId: 'alert-a',
+};
+
 function endpointWithLength(length: number): string {
   const prefix = 'https://push.example.com/';
   return `${prefix}${'a'.repeat(length - prefix.length)}`;
@@ -378,6 +386,125 @@ describe('relay Web Push', () => {
       alertId: 'alert-a',
     })).resolves.toMatchObject({ deviceId: 'device-a', result: 'sent' });
     expect(sender).toHaveBeenCalledOnce();
+  });
+
+  it('retries transient push service failures before returning sent', async () => {
+    const subscriptions = createPushSubscriptionStore();
+    const vapidKeys = createVapidKeyStore();
+    const sender = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('push service unavailable'), { statusCode: 503 }))
+      .mockResolvedValueOnce(undefined);
+    const sleep = vi.fn(async (_ms: number) => {});
+    subscriptions.upsert({
+      deviceId: 'device-a',
+      nodeId: 'node-a' as ReturnType<typeof makeNodeHello>['nodeId'],
+      subscription: SUBSCRIPTION,
+      vapidKeyVersion: vapidKeys.current().version,
+    });
+    const fanout = createPushFanout({
+      subscriptions,
+      vapidKeys,
+      sender,
+      sleep,
+    });
+
+    await expect(fanout.sendToDevice('device-a', PUSH_PAYLOAD)).resolves.toEqual({
+      deviceId: 'device-a',
+      result: 'sent',
+    });
+    expect(sender).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(1_000);
+  });
+
+  it('honors Retry-After for rate-limited push delivery retries', async () => {
+    const subscriptions = createPushSubscriptionStore();
+    const vapidKeys = createVapidKeyStore();
+    const sender = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('rate limited'), {
+        statusCode: 429,
+        headers: { 'retry-after': '2' },
+      }))
+      .mockResolvedValueOnce(undefined);
+    const sleep = vi.fn(async (_ms: number) => {});
+    subscriptions.upsert({
+      deviceId: 'device-a',
+      nodeId: 'node-a' as ReturnType<typeof makeNodeHello>['nodeId'],
+      subscription: SUBSCRIPTION,
+      vapidKeyVersion: vapidKeys.current().version,
+    });
+    const fanout = createPushFanout({
+      subscriptions,
+      vapidKeys,
+      sender,
+      sleep,
+    });
+
+    await expect(fanout.sendToDevice('device-a', PUSH_PAYLOAD)).resolves.toMatchObject({
+      deviceId: 'device-a',
+      result: 'sent',
+    });
+    expect(sender).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(2_000);
+  });
+
+  it('bounds retry attempts for persistent transient push failures', async () => {
+    const subscriptions = createPushSubscriptionStore();
+    const vapidKeys = createVapidKeyStore();
+    const sender = vi.fn()
+      .mockRejectedValue(Object.assign(new Error('push service unavailable'), { statusCode: 503 }));
+    const sleep = vi.fn(async (_ms: number) => {});
+    subscriptions.upsert({
+      deviceId: 'device-a',
+      nodeId: 'node-a' as ReturnType<typeof makeNodeHello>['nodeId'],
+      subscription: SUBSCRIPTION,
+      vapidKeyVersion: vapidKeys.current().version,
+    });
+    const fanout = createPushFanout({
+      subscriptions,
+      vapidKeys,
+      sender,
+      sleep,
+      maxAttempts: 2,
+    });
+
+    await expect(fanout.sendToDevice('device-a', PUSH_PAYLOAD)).resolves.toMatchObject({
+      deviceId: 'device-a',
+      result: 'failed',
+      statusCode: 503,
+      error: 'push service unavailable',
+    });
+    expect(sender).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(subscriptions.byDevice('device-a')).toBeDefined();
+  });
+
+  it('drops gone subscriptions without retrying', async () => {
+    const subscriptions = createPushSubscriptionStore();
+    const vapidKeys = createVapidKeyStore();
+    const sender = vi.fn()
+      .mockRejectedValue(Object.assign(new Error('subscription expired'), { statusCode: 410 }));
+    const sleep = vi.fn(async (_ms: number) => {});
+    subscriptions.upsert({
+      deviceId: 'device-a',
+      nodeId: 'node-a' as ReturnType<typeof makeNodeHello>['nodeId'],
+      subscription: SUBSCRIPTION,
+      vapidKeyVersion: vapidKeys.current().version,
+    });
+    const fanout = createPushFanout({
+      subscriptions,
+      vapidKeys,
+      sender,
+      sleep,
+    });
+
+    await expect(fanout.sendToDevice('device-a', PUSH_PAYLOAD)).resolves.toMatchObject({
+      deviceId: 'device-a',
+      result: 'gone',
+      statusCode: 410,
+    });
+    expect(sender).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+    expect(subscriptions.byDevice('device-a')).toBeUndefined();
   });
 
   it('replays cached task projections to reconnecting relay clients', async () => {
