@@ -76,6 +76,37 @@ Check for:
 - **Secrets** — API keys, tokens, passwords, connection strings in the diff
 - **Unrelated changes** — formatting-only changes, unrelated refactors mixed in
 
+### 4a. Scope Guard
+
+Before opening the PR, compare the actual diff to the assigned issue or task scope. This is an agent self-check: catch unrelated reversions/deletions here instead of making the operator discover them during review.
+
+First, write down the expected scope from the issue body, task prompt, or implementation plan:
+
+- PR goal in one sentence
+- Expected files or directories, if the issue declared them
+- Explicitly expected deletions, if any
+
+If the issue does not declare file scope, derive a conservative expected scope from the smallest implementation plan that satisfies the issue. Do not use "no scope was declared" as permission to keep unrelated edits.
+
+Then inspect the changed paths and deletions against that scope:
+
+```bash
+BASE_REF=${BASE_REF:-origin/main}  # set to the intended PR base when it is not origin/main
+git diff --name-status "$BASE_REF"...HEAD
+git diff --summary "$BASE_REF"...HEAD
+git diff --diff-filter=D --name-only "$BASE_REF"...HEAD
+```
+
+Treat these as blocking scope findings until fixed or explicitly justified in the PR body:
+
+- Files or directories that do not directly serve the PR goal
+- Deleted files outside the issue's stated scope
+- Large deletions or rewrites when the issue asked for a narrow additive change
+- Reversions of existing behavior that are not named in the issue
+- Formatting-only churn in unrelated files
+
+If the scope check finds unrelated changes, remove them from the branch before creating the PR. If a suspicious deletion or reversion is intentional, document why it is required for this issue in the PR description.
+
 ### 4b. Portability Check
 
 Scan **changed lines only** (not the full repo) for user-specific absolute paths in scripts, docs, skills, agent definitions, and PR-template content. Replace with portable equivalents where practical.
@@ -302,6 +333,7 @@ Before you conclude this skill, report the checklist result explicitly:
 - tests: passed / failed / skipped (with reason)
 - bug reproduction (fix PRs only): reproduced / verified / skipped with reason
 - diff review: done
+- scope guard: clean / flagged (with fix or PR-body justification)
 - portability check: clean / flagged (with reason or fix) / skipped
 - reviewer specialists: run / skipped, with reason
 - docs-drift: no drift / drift found (list stale docs + suggested edits) / skipped with reason — call out any requirement or system-model doc left stale
