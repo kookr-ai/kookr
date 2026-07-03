@@ -90,6 +90,8 @@ export const API_TOKEN_HEADER = 'x-kookr-api-token';
  */
 export const SESSION_COOKIE_NAME = 'kookr_session';
 
+export const MIN_OPERATOR_API_TOKEN_LENGTH = 24;
+
 /**
  * Classify a bind host as loopback. Mirrors the loopback set used by the admin
  * route gate (`src/server/routes/admin-routes.ts`) and additionally treats the
@@ -151,13 +153,13 @@ export interface ApiAuthConfig {
  * and, for `fail-closed`, a refusal to start.
  *
  * Precedence for a non-loopback bind:
- *  1. `KOOKR_API_TOKEN` set (non-empty)        → enforce that token.
+ *  1. `KOOKR_API_TOKEN` set (non-empty)        → enforce that token when it is strong enough.
  *  2. else `KOOKR_ALLOW_NON_LOOPBACK=true`     → auto-generate + enforce a token.
  *  3. else                                     → fail-closed; refuse to start.
  */
 export type ApiAuthResolution =
   | { kind: 'loopback'; config: ApiAuthConfig }
-  | { kind: 'token-provided'; config: ApiAuthConfig }
+  | { kind: 'token-provided'; config: ApiAuthConfig; weakTokenAllowed?: true }
   | { kind: 'token-generated'; config: ApiAuthConfig; token: string }
   | { kind: 'fail-closed'; reason: string };
 
@@ -181,6 +183,23 @@ export function resolveApiAuth(opts: ResolveApiAuthOptions): ApiAuthResolution {
 
   const providedToken = env.KOOKR_API_TOKEN?.trim();
   if (providedToken) {
+    if (providedToken.length < MIN_OPERATOR_API_TOKEN_LENGTH) {
+      const allowWeakApiToken = env.KOOKR_ALLOW_WEAK_API_TOKEN?.trim().toLowerCase() === 'true';
+      if (!allowWeakApiToken) {
+        return {
+          kind: 'fail-closed',
+          reason:
+            `Refusing to start: KOOKR_HOST=${host ?? '(unset)'} is a non-loopback bind but KOOKR_API_TOKEN is too short. ` +
+            `Use at least ${MIN_OPERATOR_API_TOKEN_LENGTH} characters, or set KOOKR_ALLOW_WEAK_API_TOKEN=true to accept ` +
+            'the weak token for this run. A short token can be brute-forced by anyone who can reach the port.',
+        };
+      }
+      return {
+        kind: 'token-provided',
+        config: { required: true, token: providedToken, originGateDisabled },
+        weakTokenAllowed: true,
+      };
+    }
     return { kind: 'token-provided', config: { required: true, token: providedToken, originGateDisabled } };
   }
 

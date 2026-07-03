@@ -53,9 +53,13 @@ Kookr will refuse to run a non-loopback bind that has no credential, unless you
 provide or auto-generate one:
 
 - Set `KOOKR_API_TOKEN=<secret>` to pin a stable token (used by the `kookr` CLIs
-  as `Authorization: Bearer <token>`), **or**
+  as `Authorization: Bearer <token>`; use at least 24 characters), **or**
 - Set `KOOKR_ALLOW_NON_LOOPBACK=true` to have Kookr auto-generate a token for the
   run and print it at startup.
+
+For a temporary compatibility window with an existing short token, set
+`KOOKR_ALLOW_WEAK_API_TOKEN=true`; Kookr logs a warning and still enforces that
+provided token.
 
 The browser dashboard does **not** use the bearer token directly — it exchanges
 a one-time link token for an `HttpOnly` session cookie (Step 2). The bearer
@@ -208,8 +212,9 @@ points:
 | Variable | Purpose |
 | --- | --- |
 | `KOOKR_HOST` | Bind address. Non-loopback activates the auth gate and the share feature. |
-| `KOOKR_API_TOKEN` | Bearer token for CLI/automation clients on a non-loopback bind. Browsers use the session cookie instead. |
+| `KOOKR_API_TOKEN` | Bearer token for CLI/automation clients on a non-loopback bind. Must be at least 24 characters unless explicitly overridden. Browsers use the session cookie instead. |
 | `KOOKR_ALLOW_NON_LOOPBACK` | `true` auto-generates an API token (printed at startup) instead of refusing to start. |
+| `KOOKR_ALLOW_WEAK_API_TOKEN` | `true` temporarily accepts an operator-provided token shorter than 24 characters on a non-loopback bind. |
 | `KOOKR_TRUSTED_TUNNEL` | `true` permits a non-`Secure` session cookie over plain HTTP on a non-loopback bind. Trusted, not validated — never on a public bind. |
 | `KOOKR_PORT` | HTTP/WebSocket port (default `4800`). |
 
