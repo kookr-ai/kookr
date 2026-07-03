@@ -1,29 +1,23 @@
 import { describe, test, expect } from 'vitest';
 import { buildInteractionSlice } from './feedback-bundle.js';
-import type { Task } from './tasks.js';
 import type { InteractionEvent } from './interaction-log.js';
+import { aSession, aTask } from './__fixtures__/task-builders.js';
 
-function makeTask(id: string, sessionIds: string[]): Task {
-  return {
-    id,
-    prompt: 'do the thing',
-    cwd: '/tmp/repo',
-    agentType: 'claude-code',
-    status: 'completed',
-    sessions: sessionIds.map((tmuxSession) => ({
-      tmuxSession,
-      agentType: 'claude-code',
-      cwd: '/tmp/repo',
-      createdAt: new Date(),
-    })),
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  };
+function sessions(sessionIds: string[]) {
+  return sessionIds.map((tmuxSession) => aSession({ tmuxSession, cwd: '/tmp/repo', createdAt: new Date() }));
 }
 
 describe('buildInteractionSlice', () => {
   test('returns events keyed by any of the task session names', () => {
-    const task = makeTask('t1', ['sess-a', 'sess-b']);
+    const task = aTask({
+      id: 't1',
+      prompt: 'do the thing',
+      cwd: '/tmp/repo',
+      status: 'completed',
+      sessions: sessions(['sess-a', 'sess-b']),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
     const events: InteractionEvent[] = [
       { type: 'user_input', agentId: 'sess-a', content: 'hi', timestamp: '2026-01-01T00:00:00Z' },
       { type: 'user_input', agentId: 'sess-b', content: 'hi b', timestamp: '2026-01-01T00:00:01Z' },
@@ -35,7 +29,15 @@ describe('buildInteractionSlice', () => {
   });
 
   test('includes events that carry taskId directly', () => {
-    const task = makeTask('t1', ['sess-a']);
+    const task = aTask({
+      id: 't1',
+      prompt: 'do the thing',
+      cwd: '/tmp/repo',
+      status: 'completed',
+      sessions: sessions(['sess-a']),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
     const events: InteractionEvent[] = [
       { type: 'task_completed', taskId: 't1', agentId: 'sess-a', reason: 'user_marked', durationMs: 1000, timestamp: '2026-01-01T00:00:00Z' },
       { type: 'task_completed', taskId: 'other', agentId: 'other-sess', reason: 'user_marked', durationMs: 1000, timestamp: '2026-01-01T00:00:01Z' },
@@ -47,7 +49,15 @@ describe('buildInteractionSlice', () => {
   });
 
   test('handles multi-session tasks (crash-recovery relaunches)', () => {
-    const task = makeTask('t1', ['sess-1', 'sess-2', 'sess-3']);
+    const task = aTask({
+      id: 't1',
+      prompt: 'do the thing',
+      cwd: '/tmp/repo',
+      status: 'completed',
+      sessions: sessions(['sess-1', 'sess-2', 'sess-3']),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
     const events: InteractionEvent[] = [
       { type: 'agent_launched', agentId: 'sess-1', taskPrompt: 'p', timestamp: '2026-01-01T00:00:00Z' },
       { type: 'agent_launched', agentId: 'sess-2', taskPrompt: 'p', timestamp: '2026-01-01T00:01:00Z' },
@@ -59,7 +69,15 @@ describe('buildInteractionSlice', () => {
   });
 
   test('returns empty slice when no events match', () => {
-    const task = makeTask('t1', ['sess-x']);
+    const task = aTask({
+      id: 't1',
+      prompt: 'do the thing',
+      cwd: '/tmp/repo',
+      status: 'completed',
+      sessions: sessions(['sess-x']),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
     const events: InteractionEvent[] = [
       { type: 'user_input', agentId: 'sess-y', content: 'noise', timestamp: '2026-01-01T00:00:00Z' },
     ];
