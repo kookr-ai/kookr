@@ -51,10 +51,10 @@ times — template ambiguity multiplies by batch fan-out.
 
 ## Requirements
 
-- **R1** — A playbook can declare delivery (push + open PR) pre-authorized;
-  tasks launched from it neither pause nor ask before pushing and opening the
-  PR. The declaration changes the **server-appended gate**, not just playbook
-  prose.
+- **R1** — A playbook can declare delivery pre-authorized; tasks launched from
+  it complete the delivery cycle without repeated prompts: commit verified
+  work, push the branch, open or update the PR, and report the PR URL. The
+  declaration changes the **server-appended gate**, not just playbook prose.
 - **R2** — Pre-authorization is auditable: the task record carries a
   structured marker of the authorization mode it was launched with.
 - **R3** — Pre-authorization is not unconditional: the agent retains an
@@ -122,10 +122,12 @@ playbook-internal policy. The guardrail builder **swaps the gate sentence**:
 - default (absent/false) — current text: "…ask the user whether to push the
   branch and open a PR."
 - pre-authorized — replacement: "Delivery is pre-authorized for this task:
-  when your work is committed and verified, push the branch and open the PR
-  without asking — the PR is the review gate. If the work does **not**
-  actually satisfy the task, do NOT open a PR; stop and report what's wrong
-  instead."
+  when your work is committed and verified, finish the full delivery cycle
+  without asking again — commit, push the branch, open or update the PR, and
+  report the PR URL. If you show a diff or plan and the user approves it, treat
+  that as approval to continue through the full delivery cycle. The PR is the
+  review gate. If the work does **not** actually satisfy the task, do NOT open
+  a PR; stop and report what's wrong instead."
 
 This is the decisive difference from prompt-only approaches: the conflicting
 server-appended instruction is *removed*, not argued with. (Round-1 review

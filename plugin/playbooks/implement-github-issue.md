@@ -101,6 +101,8 @@ Implement GitHub issues end-to-end. In standard launch mode, handle the specifie
 
 If you face a design choice the issue does not settle, pick the smallest implementation that satisfies the issue, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
 
+This playbook is delivery-pre-authorized. Once the issue is trusted and implementable, complete the delivery cycle end-to-end without pausing after each stage: implement, verify, commit, run the repo pre-push workflow, push, create or update the PR, report the PR URL, and merge when `{{mergeAfterImplementation}}` allows it. If you show a diff or plan and receive approval, treat that as approval to finish the full cycle. Ask at most once only when the delivery policy is genuinely ambiguous or a required safety gate blocks automation.
+
 ## Optional run modes
 
 Three independent toggles, all default off, add extra autonomy. The launch form remembers your last choice per playbook+project, so set them once and they persist across runs.
@@ -431,9 +433,11 @@ Run the project's standard verification commands:
 
 Fix any failures before proceeding.
 
+Before pushing or creating a PR, run the repo delivery pre-push workflow (`kookr-pre-push` when available). For Kookr itself, this includes the mandatory focused checks for changed files plus `pnpm build:server`, `pnpm check:e2e`, and `pnpm test`, reviewer specialists for non-trivial changes, and the SHA-bound `.review-state/<branch-key>.json` marker. Do not stop after verification to ask whether to push when this playbook already pre-authorized delivery.
+
 ## Phase 7: Create or Update Pull Request
 
-Create a PR targeting the appropriate base branch, or update the existing PR with new evidence:
+Commit and push the verified branch, then create a PR targeting the appropriate base branch, or update the existing PR with new evidence:
 
 ```bash
 gh pr create --base <base-branch> --title "<type>: <short description>" --body "$(cat <<'EOF'
@@ -471,6 +475,8 @@ fi
 gh api repos/<owner>/<repo>/pulls/<PR_NUMBER> -X PATCH -f "assignees[]=$ASSIGNEE"
 ```
 
+After the PR exists, run the repo post-push workflow (`kookr-post-push` when available): verify mergeability, checklist/body freshness, CI, and early feedback. Keep driving those gates until the PR is healthy or a real blocker remains.
+
 ## Phase 8: Merge Policy and Claim Release
 
 If `{{mergeAfterImplementation}}` is `false`:
@@ -489,7 +495,13 @@ If `{{mergeAfterImplementation}}` is `true`:
    ```
 
 2. Do not bypass branch protection, required reviews, failing checks, or maintainer policy. Exception: if `{{ignoreBudgetCiFailures}}` is `true`, a check that failed solely because CI budget/quota was unavailable (it never ran) does not count as a failing check — treat it as non-blocking. Genuine test/lint/type/build failures still block regardless of this toggle.
-3. If the PR is mergeable now, merge using the repository's expected method:
+3. If the PR is mergeable now, merge using the repository's expected method. In `kookr-ai/kookr`, prefer the repository merge wrapper:
+
+   ```bash
+   pnpm merge <PR_NUMBER> --repo "$REPO"
+   ```
+
+   For other repositories, use the repository's expected merge command, for example:
 
    ```bash
    gh pr merge <PR_NUMBER> --repo "$REPO" --squash --delete-branch
