@@ -47,7 +47,7 @@ The excluded playbook is already state-oriented in the current tree: it names Gi
 
 ## Non-loop Conversation Resume Surface
 
-`src/server/crash-recovery.ts` can relaunch a crashed Claude Code session with `--resume <id> --fork-session`, continuing the prior conversation when a transcript exists. That path is intentionally crash recovery for an individual interactive task, not an autonomous loop selector. It also has guards for spawned tasks that finished cleanly so self-continuation chains are not re-run from transcript context.
+`src/server/crash-recovery.ts` can relaunch a crashed Claude Code session with `--resume <id> --fork-session`, continuing the prior conversation when a provider session id is persisted; a stale cached transcript path falls back to session-id-only resume instead of a fresh launch. That path is intentionally crash recovery for an individual interactive task, not an autonomous loop selector. It also has guards for spawned tasks that finished cleanly so self-continuation chains are not re-run from transcript context.
 
 Because #1088 targets autonomous loops that recover queue/progress state from conversation, this crash-recovery surface is not part of the migration list.
 

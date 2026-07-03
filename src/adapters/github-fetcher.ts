@@ -17,6 +17,8 @@ import { isSafePullRequestUrl, projectRepoUrl } from '../core/project-identity.j
 
 const execFile = promisify(execFileCb);
 const DEFAULT_RATE_LIMIT_RETRY_AFTER_MS = 60_000;
+const DEFAULT_GH_MAX_ATTEMPTS = 3;
+const DEFAULT_GH_RETRY_DELAYS_MS = [1_000, 3_000];
 
 /**
  * Fetches GitHub PR and issue state using the `gh` CLI.
@@ -26,7 +28,7 @@ const DEFAULT_RATE_LIMIT_RETRY_AFTER_MS = 60_000;
 /** Check if `gh` CLI is available and authenticated. */
 export async function isGhAvailable(): Promise<boolean> {
   try {
-    await execFile('gh', ['auth', 'status'], {
+    await execGh(['auth', 'status'], {
       timeout: 5000,
     });
     return true;
@@ -42,7 +44,7 @@ export async function isGhAvailable(): Promise<boolean> {
  */
 export async function getGhUserLogin(): Promise<string | null> {
   try {
-    const { stdout } = await execFile('gh', ['api', 'user', '--jq', '.login'], {
+    const { stdout } = await execGh(['api', 'user', '--jq', '.login'], {
       timeout: 5000,
     });
     const login = stdout.trim();
@@ -78,7 +80,7 @@ export async function inferOwnerRepo(cwd: string): Promise<{ owner: string; repo
 /** Fetch PR summary via gh pr view. */
 export async function fetchPRState(ref: GitHubReference): Promise<GitHubPRState | null> {
   try {
-    const { stdout: json } = await execFile('gh', [
+    const { stdout: json } = await execGh([
       'pr', 'view', String(ref.number),
       '--repo', `${ref.owner}/${ref.repo}`,
       '--json', 'title,state,author,headRefName,baseRefName,reviewDecision,isDraft,comments,mergeable',
@@ -199,7 +201,7 @@ export async function fetchStates(refs: GitHubReference[]): Promise<GitHubFetchB
   for (const group of groupRefsByRepo(refs)) {
     try {
       const query = buildRepoStateBatchQuery(group.refs);
-      const { stdout } = await execFile('gh', [
+      const { stdout } = await execGh([
         'api', 'graphql', '--include',
         '-f', `query=${query}`,
         '-F', `owner=${group.owner}`,
@@ -491,7 +493,7 @@ function mapStatusContextConclusion(state: string): GitHubCheck['conclusion'] {
 /** Fetch PR CI checks. */
 async function fetchPRChecks(ref: GitHubReference): Promise<GitHubCheck[]> {
   try {
-    const { stdout: json } = await execFile('gh', [
+    const { stdout: json } = await execGh([
       'pr', 'checks', String(ref.number),
       '--repo', `${ref.owner}/${ref.repo}`,
       '--json', 'name,state,conclusion',
@@ -565,7 +567,7 @@ async function fetchPRReviewThreads(ref: GitHubReference): Promise<{
   }
 }`;
 
-    const { stdout: json } = await execFile('gh', [
+    const { stdout: json } = await execGh([
       'api', 'graphql',
       '-f', `query=${query}`,
       '-F', `owner=${ref.owner}`,
@@ -627,7 +629,7 @@ function mapReviewState(state: string): GitHubReviewer['state'] {
 /** Fetch issue summary. */
 export async function fetchIssueState(ref: GitHubReference): Promise<GitHubIssueState | null> {
   try {
-    const { stdout: json } = await execFile('gh', [
+    const { stdout: json } = await execGh([
       'issue', 'view', String(ref.number),
       '--repo', `${ref.owner}/${ref.repo}`,
       '--json', 'title,state,author,labels,comments',
@@ -825,12 +827,42 @@ function splitGhApiOutput(stdout: string): { headers: string; body: string } {
   return { headers: '', body: stdout };
 }
 
+async function execGh(
+  args: string[],
+  options: { timeout: number },
+): Promise<{ stdout: string; stderr: string }> {
+  return withGhRetry(args, () => execFile('gh', args, options));
+}
+
 /**
  * Spawn `gh` with the given args and pipe `stdinData` into its stdin. Returns
  * stdout. Avoids ARG_MAX issues at large query sizes. Rejects on non-zero exit
  * or timeout.
  */
-function spawnGhWithStdin(args: string[], stdinData: string, timeoutMs: number): Promise<string> {
+async function spawnGhWithStdin(args: string[], stdinData: string, timeoutMs: number): Promise<string> {
+  return withGhRetry(args, () => spawnGhWithStdinOnce(args, stdinData, timeoutMs));
+}
+
+async function withGhRetry<T>(args: string[], operation: () => Promise<T>): Promise<T> {
+  let attempt = 1;
+  for (;;) {
+    try {
+      return await operation();
+    } catch (err) {
+      if (attempt >= DEFAULT_GH_MAX_ATTEMPTS || !isTransientGhError(err)) throw err;
+      console.warn('[github] transient gh CLI failure; retrying', {
+        args,
+        attempt,
+        maxAttempts: DEFAULT_GH_MAX_ATTEMPTS,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      await delay(DEFAULT_GH_RETRY_DELAYS_MS[attempt - 1] ?? DEFAULT_GH_RETRY_DELAYS_MS[DEFAULT_GH_RETRY_DELAYS_MS.length - 1]!);
+      attempt++;
+    }
+  }
+}
+
+function spawnGhWithStdinOnce(args: string[], stdinData: string, timeoutMs: number): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const child = spawn('gh', args, { stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
@@ -858,6 +890,29 @@ function spawnGhWithStdin(args: string[], stdinData: string, timeoutMs: number):
     child.stdin.write(stdinData);
     child.stdin.end();
   });
+}
+
+function isTransientGhError(err: unknown): boolean {
+  if (classifyGitHubRateLimit(err)) return false;
+  const error = err as { code?: unknown; killed?: unknown; signal?: unknown; message?: unknown; stderr?: unknown } | null;
+  const code = typeof error?.code === 'string' ? error.code : '';
+  const signal = typeof error?.signal === 'string' ? error.signal : '';
+  const message = [
+    typeof error?.message === 'string' ? error.message : '',
+    typeof error?.stderr === 'string' ? error.stderr : '',
+  ].join('\n');
+  return code === 'ETIMEDOUT'
+    || code === 'ECONNRESET'
+    || code === 'ECONNREFUSED'
+    || code === 'EAI_AGAIN'
+    || code === 'ENOTFOUND'
+    || (error?.killed === true && signal === 'SIGTERM')
+    || /timed out|timeout|network|connection reset|connection refused|TLS|HTTP 5\d\d|stream error/i.test(message);
+}
+
+function delay(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 interface GhRepoHealthNode {

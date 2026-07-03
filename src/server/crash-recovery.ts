@@ -253,10 +253,10 @@ export async function recoverCrashedSessions(
  * with a `fallbackReason` when resume is not applicable, so the caller can
  * surface the reason on the recovery entry.
  *
- * Performs the transcript-existence pre-flight here (rather than only in the
- * adapter) so the recovery entry's `mode` and `fallbackReason` reflect what
- * actually launched. The adapter does its own pre-flight too as defense in
- * depth.
+ * Performs a best-effort transcript-existence pre-flight here. A stale
+ * transcript path must not force a fresh launch when the provider session id is
+ * still known: Claude Code can validate the id itself, and preserving the
+ * conversation is more important than trusting Kookr's cached path.
  */
 async function buildResumeContext(
   _task: Task,
@@ -266,7 +266,10 @@ async function buildResumeContext(
     return { resumeContext: undefined, fallbackReason: 'no claudeSessionId persisted' };
   }
   if (session.transcriptPath && !(await fileExists(session.transcriptPath))) {
-    return { resumeContext: undefined, fallbackReason: 'transcript file missing' };
+    return {
+      resumeContext: { sessionId: session.claudeSessionId },
+      fallbackReason: undefined,
+    };
   }
   return {
     resumeContext: {

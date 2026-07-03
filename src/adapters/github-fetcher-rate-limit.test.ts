@@ -88,6 +88,31 @@ function mockGhSpawnFailure(stdout: string, stderr: string): void {
   });
 }
 
+function mockGhSpawnOnce(result: { stdout?: string; stderr?: string; code: number }): void {
+  childProcessMocks.spawn.mockImplementationOnce(() => {
+    const child = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+      stdin: { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> };
+      kill: ReturnType<typeof vi.fn>;
+    };
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = {
+      write: vi.fn(),
+      end: vi.fn(() => {
+        queueMicrotask(() => {
+          if (result.stdout) child.stdout.emit('data', Buffer.from(result.stdout));
+          if (result.stderr) child.stderr.emit('data', Buffer.from(result.stderr));
+          child.emit('close', result.code);
+        });
+      }),
+    };
+    child.kill = vi.fn();
+    return child;
+  });
+}
+
 function includeResponse(headers: string, body: unknown): string {
   return `${headers.trim()}\n\n${JSON.stringify(body)}`;
 }
@@ -120,6 +145,52 @@ describe('github-fetcher rate-limit handoff', () => {
         message: 'RATE_LIMITED: API rate limit exceeded. Retry-After: 90',
       },
     });
+  });
+
+  it('retries transient gh exec failures before returning batched state', async () => {
+    vi.useFakeTimers();
+    childProcessMocks.execFilePromisified
+      .mockRejectedValueOnce(new Error('HTTP 500: Internal Server Error'))
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          data: {
+            repository: {
+              issue_7: {
+                title: 'Recovered issue',
+                state: 'OPEN',
+                author: { login: 'alice' },
+                labels: { nodes: [] },
+                comments: { totalCount: 0 },
+              },
+            },
+          },
+        }),
+        stderr: '',
+      });
+
+    const resultPromise = fetchStates([ref('issue', 7)]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    const result = await resultPromise;
+
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0].title).toBe('Recovered issue');
+    expect(childProcessMocks.execFilePromisified).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry gh exec failures that are rate limits', async () => {
+    const err = Object.assign(new Error('You have exceeded a secondary rate limit. Retry-After: 45'), {
+      stderr: 'You have exceeded a secondary rate limit. Retry-After: 45',
+    });
+    childProcessMocks.execFilePromisified.mockRejectedValue(err);
+
+    const result = await fetchStates([ref('issue', 7)]);
+
+    expect(result.rateLimit).toEqual({
+      kind: 'rate-limited',
+      retryAfterMs: 45_000,
+      message: 'You have exceeded a secondary rate limit. Retry-After: 45',
+    });
+    expect(childProcessMocks.execFilePromisified).toHaveBeenCalledTimes(1);
   });
 
   it('stops batched state fetching after the first rate-limited repo group', async () => {
@@ -264,6 +335,36 @@ x-ratelimit-reset: ${Date.parse('2026-06-18T00:07:00.000Z') / 1000}
       retryAfterMs: 75_000,
       message: 'RATE_LIMITED: API rate limit exceeded. Retry-After: 75',
     });
+  });
+
+  it('retries transient gh spawn failures before returning repo health', async () => {
+    vi.useFakeTimers();
+    mockGhSpawnOnce({ code: 1, stderr: 'HTTP 500: Internal Server Error' });
+    mockGhSpawnOnce({
+      code: 0,
+      stdout: JSON.stringify({
+        data: {
+          r0: {
+            nameWithOwner: 'acme/app',
+            openIssues: { totalCount: 4 },
+            openPRs: { totalCount: 1 },
+          },
+          s0: { nodes: [] },
+        },
+      }),
+    });
+
+    const resultPromise = fetchBatchRepoHealth([
+      { projectId: 'github.com/acme/app', owner: 'acme', repo: 'app' },
+    ], 'alice');
+    await vi.advanceTimersByTimeAsync(1_000);
+    const result = await resultPromise;
+
+    expect(result && result instanceof Map ? result.get('github.com/acme/app') : null).toMatchObject({
+      openIssues: 4,
+      openPullRequests: 1,
+    });
+    expect(childProcessMocks.spawn).toHaveBeenCalledTimes(2);
   });
 
   it('uses included repo-health response headers for primary-rate-limit reset time', async () => {
