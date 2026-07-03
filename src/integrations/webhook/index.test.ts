@@ -1,10 +1,13 @@
 import { createHmac } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
 import { TaskStore } from '../../core/tasks.js';
 import { DeliveryTraceBuffer } from '../../core/delivery-trace.js';
 import type { Anomaly } from '../../core/types.js';
 import {
   type WebhookConfig,
+  WEBHOOK_PAYLOAD_SCHEMA_VERSION,
   WebhookNotifier,
   buildDashboardBaseUrl,
   readWebhookConfigFromEnv,
@@ -408,5 +411,32 @@ describe('webhook notifier', () => {
       enabled: false,
       minSeverity: 'critical',
     });
+  });
+});
+
+describe('payload body schema documentation', () => {
+  test('documents the current schemaVersion constant in configuration.md', () => {
+    const doc = readFileSync(join(process.cwd(), 'docs', 'configuration.md'), 'utf8');
+    // Guards against the documented wire contract drifting from the source
+    // constant when WEBHOOK_PAYLOAD_SCHEMA_VERSION is bumped.
+    expect(doc).toContain(WEBHOOK_PAYLOAD_SCHEMA_VERSION);
+    expect(doc).toContain('### Payload body schema');
+  });
+
+  test('documents every WebhookFindingPayload field', () => {
+    const doc = readFileSync(join(process.cwd(), 'docs', 'configuration.md'), 'utf8');
+    // Every field of WebhookFindingPayload (top-level, finding, task) must
+    // appear as a `field` cell in the doc tables. TS interfaces are erased at
+    // runtime, so this list is maintained by hand: extend it when a field is
+    // added to WebhookFindingPayload in ./index.ts. It catches a field renamed
+    // or dropped from the doc, not one newly added to the interface.
+    const documentedFields = [
+      'schemaVersion', 'event', 'fingerprint', 'sentAt', 'dashboardUrl', 'finding', 'task',
+      'agentId', 'type', 'severity', 'explanation', 'detectedAt', 'count', 'subType', 'confidence', 'eventId',
+      'id', 'name', 'prompt', 'cwd', 'status',
+    ];
+    for (const field of documentedFields) {
+      expect(doc, `field \`${field}\` is missing from docs/configuration.md`).toContain(`\`${field}\``);
+    }
   });
 });

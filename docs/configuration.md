@@ -203,6 +203,80 @@ If `webhook.enabled` is `false`, findings for that project are not posted. The
 webhook receiver URL and signing secret remain env-only; project settings store
 only `enabled` and `minSeverity`.
 
+### Payload body schema
+
+Each POST body is a single JSON object versioned by `schemaVersion`. The current
+version string is `kookr.finding.webhook.v1` (the source of truth is
+`WEBHOOK_PAYLOAD_SCHEMA_VERSION` and `WebhookFindingPayload` in
+[`src/integrations/webhook/index.ts`](../src/integrations/webhook/index.ts)).
+Receivers should switch on `schemaVersion` and `event`, ignore unknown fields
+for forward compatibility, and treat every optional field as possibly absent.
+
+Top-level fields:
+
+| Field | Type | Always present | Meaning |
+| --- | --- | --- | --- |
+| `schemaVersion` | string | yes | Payload contract version. Currently the literal `kookr.finding.webhook.v1`. |
+| `event` | string | yes | Event discriminator. Currently the literal `finding.admitted` (a finding entered the active attention queue). |
+| `fingerprint` | string | yes | Stable dedupe key for this finding. Repeated values are the same logical finding; treat delivery as an idempotent no-op. |
+| `sentAt` | string | yes | ISO 8601 timestamp of when Kookr sent this POST. |
+| `dashboardUrl` | string | no | Absolute link to the finding in the dashboard. Present only when a dashboard base URL is configured. |
+| `finding` | object | yes | The finding details (see below). |
+| `task` | object | no | The originating task (see below). Present only when the finding maps to a known task. |
+
+`finding` object:
+
+| Field | Type | Always present | Meaning |
+| --- | --- | --- | --- |
+| `agentId` | string | yes | Session/agent identifier the finding was raised for. |
+| `type` | string | yes | Anomaly type (see [Findings Reference](reference/findings.md)), e.g. `needs_input`, `stale_agent`. |
+| `severity` | string | yes | One of `info`, `warning`, `critical`. |
+| `explanation` | string | yes | Human-readable, per-instance explanation of the finding. |
+| `detectedAt` | string | yes | ISO 8601 timestamp of when the anomaly was detected. |
+| `count` | number | no | Occurrence count for repeated anomalies, when applicable. |
+| `subType` | string | no | Finer classification for some types, e.g. `stop` or `ask_user_question`. |
+| `confidence` | string | no | Detection confidence: `high`, `medium`, or `low`. |
+| `eventId` | string | no | Correlation id, matching the `correlationId` accepted by the delivery-trace endpoint. |
+
+`task` object:
+
+| Field | Type | Always present | Meaning |
+| --- | --- | --- | --- |
+| `id` | string | yes | Task identifier. |
+| `name` | string | no | Human-friendly task name, when set. |
+| `prompt` | string | yes | The task's prompt text. |
+| `cwd` | string | yes | Working directory the task runs in. |
+| `status` | string | yes | Task status: one of `open`, `pending`, `inProgress`, `completed`, `terminated`, `cancelled`. |
+
+Example body:
+
+```json
+{
+  "schemaVersion": "kookr.finding.webhook.v1",
+  "event": "finding.admitted",
+  "fingerprint": "sess-42:needs_input:abc123",
+  "sentAt": "2026-01-15T09:24:31.000Z",
+  "dashboardUrl": "http://127.0.0.1:4801/#/agent/sess-42",
+  "finding": {
+    "agentId": "sess-42",
+    "type": "needs_input",
+    "severity": "warning",
+    "explanation": "Agent is asking a question and waiting for a reply.",
+    "detectedAt": "2026-01-15T09:24:30.000Z",
+    "subType": "ask_user_question",
+    "confidence": "high",
+    "eventId": "evt-7f3c"
+  },
+  "task": {
+    "id": "task-99",
+    "name": "Refactor auth module",
+    "prompt": "Refactor the auth module to use the new token store.",
+    "cwd": "/path/to/project",
+    "status": "inProgress"
+  }
+}
+```
+
 ### Delivery behavior
 
 Kookr posts each new finding with the retry defaults from
