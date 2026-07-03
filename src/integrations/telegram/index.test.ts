@@ -523,18 +523,106 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
     fake.queueUpdates([makeCallback({ update_id: 2, userId: ALLOWED_USER_ID, data: cbData, messageId: 1 })]);
     await sleep(200);
     // Credential-shaped prompt — the integration must replace the body with the redaction sentinel.
-    handle!.onPermissionBlocked('t-test-123', 'Bash(curl -H "Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz0123456789")');
+    handle!.onPermissionBlocked('t-test-123', 'Bash(curl "https://example.invalid/?api_key=fake-test-value")');
     await sleep(50);
     const alertMessages = fake.outbound.sendMessage.filter((m) => /blocked/.test(m.text));
     expect(alertMessages.length).toBeGreaterThan(0);
     expect(alertMessages[0].text).toMatch(/redacted/);
-    expect(alertMessages[0].text).not.toMatch(/ghp_abcdefghijklmnopqrstuvwxyz0123456789/);
+    expect(alertMessages[0].text).not.toMatch(/fake-test-value/);
   });
 
   it('block-alert (R16) silently skips for non-remote tasks', async () => {
     handle = await startTelegramTrigger(makeDeps());
     // Fire a permission-blocked event for a task we never spawned.
     handle.onPermissionBlocked('t-not-remote', 'something');
+    await sleep(50);
+    expect(fake.outbound.sendMessage).toHaveLength(0);
+  });
+
+  it('task outcome sends a Telegram message for a remote-spawned task', async () => {
+    fake.queueUpdates([makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: 'fix it' })]);
+    handle = await startTelegramTrigger(makeDeps());
+    await waitFor(() => expect(fake.outbound.sendMessage.length).toBeGreaterThan(0));
+    const sent = fake.outbound.sendMessage[fake.outbound.sendMessage.length - 1] as any;
+    const cbData = sent.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data as string;
+    fake.queueUpdates([makeCallback({ update_id: 2, userId: ALLOWED_USER_ID, data: cbData, messageId: 1 })]);
+    await waitFor(() => expect(fake.outbound.editMessageText.some((m) => /Spawned: t-test-123/.test(m.text))).toBe(true));
+
+    handle!.onTaskOutcome('t-test-123', { kind: 'completed' });
+    await waitFor(() => {
+      const outcomeMessages = fake.outbound.sendMessage.filter((m) => /completed/.test(m.text));
+      expect(outcomeMessages).toHaveLength(1);
+      expect(outcomeMessages[0].chat_id).toBe(ALLOWED_USER_ID);
+      expect(outcomeMessages[0].text).toMatch(/http:\/\/localhost:4800\/\?task=t-test-123/);
+    });
+  });
+
+  it('task outcome formats failed messages for remote-spawned tasks', async () => {
+    launchTaskMock.mockImplementation(async (_opts: LaunchOpts) => ({
+      task: { id: 't-failed-123' },
+      queued: false,
+    } as unknown as LaunchResult));
+    fake.queueUpdates([makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: 'fix it' })]);
+    handle = await startTelegramTrigger(makeDeps());
+    await waitFor(() => expect(fake.outbound.sendMessage.length).toBeGreaterThan(0));
+    const sent = fake.outbound.sendMessage[fake.outbound.sendMessage.length - 1] as any;
+    const cbData = sent.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data as string;
+    fake.queueUpdates([makeCallback({ update_id: 2, userId: ALLOWED_USER_ID, data: cbData, messageId: 1 })]);
+    await waitFor(() => expect(fake.outbound.editMessageText.some((m) => /Spawned: t-failed-123/.test(m.text))).toBe(true));
+
+    handle!.onTaskOutcome('t-failed-123', { kind: 'failed' });
+    await waitFor(() => {
+      expect(fake.outbound.sendMessage.some((m) => m.chat_id === ALLOWED_USER_ID && /Task t-failed-123 failed/.test(m.text))).toBe(true);
+    });
+  });
+
+  it('task outcome formats cancelled messages for remote-spawned tasks', async () => {
+    launchTaskMock.mockImplementation(async (_opts: LaunchOpts) => ({
+      task: { id: 't-cancelled-123' },
+      queued: false,
+    } as unknown as LaunchResult));
+    fake.queueUpdates([makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: 'fix it' })]);
+    handle = await startTelegramTrigger(makeDeps());
+    await waitFor(() => expect(fake.outbound.sendMessage.length).toBeGreaterThan(0));
+    const sent = fake.outbound.sendMessage[fake.outbound.sendMessage.length - 1] as any;
+    const cbData = sent.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data as string;
+    fake.queueUpdates([makeCallback({ update_id: 2, userId: ALLOWED_USER_ID, data: cbData, messageId: 1 })]);
+    await waitFor(() => expect(fake.outbound.editMessageText.some((m) => /Spawned: t-cancelled-123/.test(m.text))).toBe(true));
+
+    handle!.onTaskOutcome('t-cancelled-123', { kind: 'cancelled' });
+    await waitFor(() => {
+      expect(fake.outbound.sendMessage.some((m) => m.chat_id === ALLOWED_USER_ID && /Task t-cancelled-123 was cancelled/.test(m.text))).toBe(true);
+    });
+  });
+
+  it('task outcome redacts completion-ready notes and dedupes later terminal outcomes', async () => {
+    fake.queueUpdates([makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: 'fix it' })]);
+    handle = await startTelegramTrigger(makeDeps());
+    await waitFor(() => expect(fake.outbound.sendMessage.length).toBeGreaterThan(0));
+    const sent = fake.outbound.sendMessage[fake.outbound.sendMessage.length - 1] as any;
+    const cbData = sent.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data as string;
+    fake.queueUpdates([makeCallback({ update_id: 2, userId: ALLOWED_USER_ID, data: cbData, messageId: 1 })]);
+    await sleep(200);
+
+    handle!.onTaskOutcome('t-test-123', {
+      kind: 'completion_ready',
+      note: 'opened PR with api_key=fake-test-value',
+    });
+    await waitFor(() => {
+      const readyMessages = fake.outbound.sendMessage.filter((m) => /ready for completion/.test(m.text));
+      expect(readyMessages).toHaveLength(1);
+      expect(readyMessages[0].text).toMatch(/redacted/);
+      expect(readyMessages[0].text).not.toMatch(/fake-test-value/);
+    });
+
+    handle!.onTaskOutcome('t-test-123', { kind: 'completed' });
+    await sleep(50);
+    expect(fake.outbound.sendMessage.filter((m) => /completed/.test(m.text))).toHaveLength(0);
+  });
+
+  it('task outcome silently skips for non-remote tasks', async () => {
+    handle = await startTelegramTrigger(makeDeps());
+    handle.onTaskOutcome('t-not-remote', { kind: 'completed' });
     await sleep(50);
     expect(fake.outbound.sendMessage).toHaveLength(0);
   });

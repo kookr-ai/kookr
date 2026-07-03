@@ -75,10 +75,12 @@ describe('startRemoteChatTrigger', () => {
 
   test('starts Telegram with parsed environment and exposes permission callback', async () => {
     const onPermissionBlocked = vi.fn();
+    const onTaskOutcome = vi.fn();
     const launchTask = vi.fn();
     const startTelegramTrigger = vi.fn(async () => ({
       stop: vi.fn(),
       onPermissionBlocked,
+      onTaskOutcome,
     }));
     const probeWhisperReachability = vi.fn(async () => ({ ok: true as const, modelCount: 2 }));
     const logs: string[] = [];
@@ -108,6 +110,7 @@ describe('startRemoteChatTrigger', () => {
 
     expect(result.handle).not.toBeNull();
     expect(result.onPermissionBlocked).toBe(onPermissionBlocked);
+    expect(result.onTaskOutcome).toBe(onTaskOutcome);
     expect(startTelegramTrigger).toHaveBeenCalledWith(expect.objectContaining({
       token: 'token',
       allowedUserIds: new Set([101, 202]),
@@ -139,6 +142,7 @@ describe('startRemoteChatTrigger', () => {
     const startTelegramTrigger = vi.fn(async () => ({
       stop: vi.fn(),
       onPermissionBlocked: vi.fn(),
+      onTaskOutcome: vi.fn(),
     }));
 
     await startRemoteChatTrigger({
@@ -172,6 +176,7 @@ describe('startRemoteChatTrigger', () => {
     const startTelegramTrigger = vi.fn(async () => ({
       stop: vi.fn(),
       onPermissionBlocked: vi.fn(),
+      onTaskOutcome: vi.fn(),
     }));
 
     await startRemoteChatTrigger({
@@ -204,6 +209,7 @@ describe('startRemoteChatTrigger', () => {
     const startTelegramTrigger = vi.fn(async () => ({
       stop: vi.fn(),
       onPermissionBlocked: vi.fn(),
+      onTaskOutcome: vi.fn(),
     }));
 
     await startRemoteChatTrigger({

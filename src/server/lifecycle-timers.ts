@@ -423,6 +423,9 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     ...(deps.agentLifecycleDeps?.issueClaimRegistry
       ? { issueClaimRegistry: deps.agentLifecycleDeps.issueClaimRegistry }
       : {}),
+    ...(deps.agentLifecycleDeps?.onTaskOutcome
+      ? { onTaskOutcome: deps.agentLifecycleDeps.onTaskOutcome }
+      : {}),
   };
 
   const livenessInterval = setInterval(async () => {
@@ -453,6 +456,23 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         }
         if (claimsReleased > 0) {
           console.log(`[issue-claims] reconcile released ${claimsReleased} claim(s)`);
+        }
+      }
+      const onTaskOutcome = deps.agentLifecycleDeps?.onTaskOutcome;
+      if (onTaskOutcome) {
+        for (const id of result.tasksCompleted) {
+          try {
+            onTaskOutcome(id, { kind: 'completed' });
+          } catch (err) {
+            console.warn('[liveness] onTaskOutcome threw:', err);
+          }
+        }
+        for (const id of result.tasksTerminated) {
+          try {
+            onTaskOutcome(id, { kind: 'failed' });
+          } catch (err) {
+            console.warn('[liveness] onTaskOutcome threw:', err);
+          }
         }
       }
 

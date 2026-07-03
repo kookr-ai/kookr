@@ -39,6 +39,7 @@ export type AuditEvent =
   | { kind: 'spawned'; taskId: string; chatId: number; dryRun: boolean }
   | { kind: 'spawn_failed'; reason: string }
   | { kind: 'block_alert_sent'; taskId: string; chatId: number }
+  | { kind: 'task_outcome_sent'; taskId: string; chatId: number; outcome: 'completion_ready' | 'completed' | 'failed' | 'cancelled' }
   | { kind: 'handle_failed'; updateId: number; err: string }
   | { kind: 'offset_persist_failed'; err: string }
   | { kind: 'loop_died'; err: string }

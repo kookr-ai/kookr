@@ -20,6 +20,7 @@ import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import { removeReflectWorktree } from './use-cases/request-task-reflect.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { evaluateCriteriaVerdict } from '../core/criteria-verdict.js';
+import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
 
 // ---------------------------------------------------------------------------
 // Post-launch registration (used by WS handler and REST routes)
@@ -52,6 +53,11 @@ export interface AgentLifecycleDeps {
       reason?: 'released' | 'dead_reclaim' | 'orphan_reclaim',
     ): Array<{ repo: string; number: number }>;
   };
+  /**
+   * Optional remote-chat back-channel for terminal task outcomes. Implementers
+   * must isolate their own failures so lifecycle transitions cannot be blocked.
+   */
+  onTaskOutcome?: (taskId: string, outcome: TelegramTaskOutcome) => void;
 }
 
 /**
@@ -211,6 +217,11 @@ export interface LifecycleDeps {
       reason?: 'released' | 'dead_reclaim' | 'orphan_reclaim',
     ): Array<{ repo: string; number: number }>;
   };
+  /**
+   * Optional remote-chat back-channel for terminal task outcomes. Implementers
+   * must isolate their own failures so lifecycle transitions cannot be blocked.
+   */
+  onTaskOutcome?: (taskId: string, outcome: TelegramTaskOutcome) => void;
 }
 
 function unregisterTranscript(tmuxName: string, deps: LifecycleDeps): void {
@@ -333,6 +344,14 @@ function scheduleNoEventCriteriaVerdict(task: Task, events: AgentEvent[], deps: 
   });
 }
 
+function notifyTaskOutcome(deps: LifecycleDeps, taskId: string, outcome: TelegramTaskOutcome): void {
+  try {
+    deps.onTaskOutcome?.(taskId, outcome);
+  } catch (err) {
+    console.warn('[lifecycle] onTaskOutcome threw:', err);
+  }
+}
+
 /**
  * Complete a task: mark completed immediately, then stop active sessions in
  * the background so a slow terminal shutdown does not block the dashboard.
@@ -364,6 +383,7 @@ export async function completeTask(
   releaseTaskLeases(task, taskId, deps);
   // Release issue-ownership claims (RFC R8; safeReleaseAllFor never throws, R9b)
   deps.issueClaimRegistry?.safeReleaseAllFor(taskId, 'released');
+  notifyTaskOutcome(deps, taskId, { kind: 'completed' });
 
   // Fire-and-forget worktree cleanup — does not block the caller
   cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});
@@ -402,6 +422,7 @@ export async function terminateTask(
   releaseTaskLeases(task, taskId, deps);
   // Release issue-ownership claims — dead sessions = confirmed-dead reclaim (RFC R9/R12)
   deps.issueClaimRegistry?.safeReleaseAllFor(taskId, 'dead_reclaim');
+  notifyTaskOutcome(deps, taskId, { kind: 'failed' });
 
   // Fire-and-forget worktree cleanup — does not block the caller
   cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});
@@ -428,6 +449,7 @@ export async function cancelTask(
   deps.issueClaimRegistry?.safeReleaseAllFor(taskId, 'released');
 
   deps.taskStore.cancelTask(taskId);
+  notifyTaskOutcome(deps, taskId, { kind: 'cancelled' });
 
   await deps.interactionLog?.append({
     type: 'task_cancelled',

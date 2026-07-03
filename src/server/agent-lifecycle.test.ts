@@ -597,6 +597,31 @@ describe('completeTask', () => {
     await completeTask('task-42', deps);
     expect(deps.taskStore.completeTask).toHaveBeenCalledWith('task-42');
   });
+
+  test('notifies task outcome as completed', async () => {
+    const task = makeTask({ id: 'task-42' });
+    const onTaskOutcome = vi.fn();
+    const deps = makeLifecycleDeps({ onTaskOutcome });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await completeTask('task-42', deps);
+
+    expect(onTaskOutcome).toHaveBeenCalledWith('task-42', { kind: 'completed' });
+  });
+
+  test('swallows task outcome callback errors on completion', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const task = makeTask({ id: 'task-42' });
+    const deps = makeLifecycleDeps({
+      onTaskOutcome: vi.fn(() => { throw new Error('telegram down'); }),
+    });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await expect(completeTask('task-42', deps)).resolves.toBeUndefined();
+    expect(deps.taskStore.completeTask).toHaveBeenCalledWith('task-42');
+
+    warn.mockRestore();
+  });
 });
 
 describe('cancelTask', () => {
@@ -686,6 +711,17 @@ describe('cancelTask', () => {
     expect(mockRelease).toHaveBeenCalledWith('/worktree/a', 'task-42');
     expect(mockRelease).toHaveBeenCalledTimes(1);
   });
+
+  test('notifies task outcome as cancelled', async () => {
+    const task = makeTask({ id: 'task-42' });
+    const onTaskOutcome = vi.fn();
+    const deps = makeLifecycleDeps({ onTaskOutcome });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await cancelTask('task-42', deps);
+
+    expect(onTaskOutcome).toHaveBeenCalledWith('task-42', { kind: 'cancelled' });
+  });
 });
 
 describe('terminateTask', () => {
@@ -754,6 +790,21 @@ describe('terminateTask', () => {
     await terminateTask('task-99', deps);
 
     expect(mockRelease).toHaveBeenCalledWith('/worktree/a', 'task-99');
+  });
+
+  test('notifies task outcome as failed', async () => {
+    const task = makeTask({
+      id: 'task-99',
+      status: 'inProgress',
+      sessions: [{ tmuxSession: 'kookr-s1', lastStatus: 'inProgress' }] as any,
+    });
+    const onTaskOutcome = vi.fn();
+    const deps = makeLifecycleDeps({ onTaskOutcome });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await terminateTask('task-99', deps);
+
+    expect(onTaskOutcome).toHaveBeenCalledWith('task-99', { kind: 'failed' });
   });
 });
 

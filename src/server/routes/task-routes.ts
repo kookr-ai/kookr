@@ -51,6 +51,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       hookWatcher,
       watchdog,
       ...(deps.issueClaimRegistry ? { issueClaimRegistry: deps.issueClaimRegistry } : {}),
+      ...(deps.onTaskOutcome ? { onTaskOutcome: deps.onTaskOutcome } : {}),
       shadowRegistry: deps.shadowRegistry,
       suppressionTracker: deps.suppressionTracker,
       tokenTracker: deps.tokenTracker,
@@ -392,6 +393,13 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       ...(note ? { note } : {}),
     };
     taskStore.setPendingSignal(id, signal);
+    if (signal.kind === 'completion_ready') {
+      try {
+        deps.onTaskOutcome?.(id, { kind: 'completion_ready', ...(signal.note ? { note: signal.note } : {}) });
+      } catch (err) {
+        console.warn('[task-routes] onTaskOutcome threw:', err);
+      }
+    }
 
     // Auto-close opt-in (per-task `autoCloseOnSignal`, set at launch or inherited
     // from the parent). Explicit auto-close now gives operators a one-hour
