@@ -1142,12 +1142,14 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
             {!rightOnlyMode && <div className="detail-tabs-narrow">
               <button
                 className={`detail-tab ${narrowTab === 'activity' ? 'active' : ''}`}
+                aria-pressed={narrowTab === 'activity'}
                 onClick={() => { track({ type: 'tab_switched', from: narrowTab, to: 'activity' }); setNarrowTab('activity'); setLeftPane('activity'); }}
               >
                 Activity
               </button>
               <button
                 className={`detail-tab ${narrowTab === 'terminal' ? 'active' : ''}`}
+                aria-pressed={narrowTab === 'terminal'}
                 onClick={() => { track({ type: 'tab_switched', from: narrowTab, to: 'terminal' }); setNarrowTab('terminal'); }}
               >
                 Terminal
@@ -1155,6 +1157,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
               {ghCount > 0 && (
                 <button
                   className={`detail-tab ${narrowTab === 'github' ? 'active' : ''}`}
+                  aria-pressed={narrowTab === 'github'}
                   onClick={() => { track({ type: 'tab_switched', from: narrowTab, to: 'github' }); setNarrowTab('github'); setLeftPane('github'); }}
                 >
                   GitHub ({ghCount})

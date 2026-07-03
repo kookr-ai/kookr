@@ -157,6 +157,55 @@ describe('DetailPanel dense metadata', () => {
     expect(container.querySelector('[data-testid="task-dependencies"]')).toBeNull();
   });
 
+  test('narrow detail tabs expose the active pane with aria-pressed', () => {
+    useKookrStore.getState().handleGitHubUpdate('task-1', [], [
+      {
+        ref: {
+          type: 'issue',
+          owner: 'kookr-ai',
+          repo: 'kookr',
+          number: 1257,
+          url: 'https://github.com/kookr-ai/kookr/issues/1257',
+          detectedAt: new Date('2026-07-03T00:00:00.000Z'),
+          detectedFrom: 'test',
+          taskId: 'task-1',
+        },
+        title: 'Narrow tab accessibility',
+        status: 'open',
+        author: 'jeanibarz',
+        labels: [],
+        commentCount: 0,
+        lastFetchedAt: new Date('2026-07-03T00:00:00.000Z'),
+      },
+    ], []);
+    root = renderDetailPanel(container, makeAgent());
+
+    const tabs = [...container.querySelectorAll<HTMLButtonElement>('.detail-tabs-narrow .detail-tab')];
+    const activity = tabs.find((tab) => tab.textContent === 'Activity');
+    const terminal = tabs.find((tab) => tab.textContent === 'Terminal');
+    const github = tabs.find((tab) => tab.textContent === 'GitHub (1)');
+
+    expect(activity?.getAttribute('aria-pressed')).toBe('true');
+    expect(terminal?.getAttribute('aria-pressed')).toBe('false');
+    expect(github?.getAttribute('aria-pressed')).toBe('false');
+
+    act(() => {
+      terminal?.click();
+    });
+
+    expect(activity?.getAttribute('aria-pressed')).toBe('false');
+    expect(terminal?.getAttribute('aria-pressed')).toBe('true');
+    expect(github?.getAttribute('aria-pressed')).toBe('false');
+
+    act(() => {
+      github?.click();
+    });
+
+    expect(activity?.getAttribute('aria-pressed')).toBe('false');
+    expect(terminal?.getAttribute('aria-pressed')).toBe('false');
+    expect(github?.getAttribute('aria-pressed')).toBe('true');
+  });
+
   test('left-only detail pane mode hides terminal chrome and keeps a restore control visible', () => {
     useKookrStore.getState().setDetailPaneMode('left');
     root = renderDetailPanel(container, makeAgent());
