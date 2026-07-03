@@ -16,6 +16,7 @@
 import { appendFile, chmod, mkdir, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { AgentType } from '../../core/agent-types.js';
+import { redactCredentials } from './redact.js';
 
 export type AuditEvent =
   | { kind: 'start'; allowedUserCount: number; allowedProjectCount: number; dryRun: boolean }
@@ -68,6 +69,10 @@ export interface AuditWriter {
   close(): Promise<void>;
 }
 
+function redactAuditValue(_key: string, value: unknown): unknown {
+  return typeof value === 'string' ? redactCredentials(value) : value;
+}
+
 export async function createAuditWriter(path: string): Promise<AuditWriter> {
   await mkdir(dirname(path), { recursive: true });
 
@@ -86,7 +91,7 @@ export async function createAuditWriter(path: string): Promise<AuditWriter> {
   let closed = false;
   const writer = ((event: AuditEvent) => {
     if (closed) return;
-    const line = JSON.stringify({ ts: new Date().toISOString(), ...event }) + '\n';
+    const line = JSON.stringify({ ts: new Date().toISOString(), ...event }, redactAuditValue) + '\n';
     // mode 0600 applied on file creation; existing file keeps its mode (already enforced above).
     writeTail = writeTail.then(() => appendFile(path, line, { mode: 0o600 })).catch((err) => {
       // Last-resort: write to stderr; never throw to caller.
