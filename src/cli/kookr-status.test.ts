@@ -6,8 +6,11 @@ import {
   formatCost,
   isActiveFinding,
   summarize,
+  hasFindingsAtOrAbove,
+  highestKnownSeverity,
   renderReport,
   parsePortEnv,
+  parseStatusArgs,
   resolvePort,
   apiAuthHeaders,
   main,
@@ -224,6 +227,77 @@ describe('kookr-status summarize', () => {
   });
 });
 
+describe('kookr-status fail-on severity gate', () => {
+  const summary = summarize([
+    {
+      agentId: 'critical',
+      taskName: 'critical task',
+      taskStatus: 'inProgress',
+      anomaly: { type: 'permission_blocked', severity: 'critical', explanation: 'blocked' },
+    },
+    {
+      agentId: 'warning',
+      taskName: 'warning task',
+      taskStatus: 'inProgress',
+      anomaly: { type: 'stale_agent', severity: 'warning', explanation: 'idle' },
+    },
+  ]);
+
+  it('parses --fail-on in split and equals forms', () => {
+    expect(parseStatusArgs(['--fail-on', 'warning'])).toMatchObject({
+      help: false,
+      json: false,
+      failOn: 'warning',
+    });
+    expect(parseStatusArgs(['--fail-on=critical', '--json'])).toMatchObject({
+      json: true,
+      failOn: 'critical',
+    });
+  });
+
+  it('rejects invalid or missing --fail-on values', () => {
+    expect(parseStatusArgs(['--fail-on', 'fatal']).error).toContain('Invalid --fail-on value');
+    expect(parseStatusArgs(['--fail-on']).error).toContain('--fail-on requires');
+  });
+
+  it('matches findings at or above the requested severity', () => {
+    expect(hasFindingsAtOrAbove(summary, 'critical')).toBe(true);
+    expect(hasFindingsAtOrAbove(summary, 'warning')).toBe(true);
+    expect(hasFindingsAtOrAbove(summary, 'info')).toBe(true);
+    expect(hasFindingsAtOrAbove(summary, 'none')).toBe(false);
+    expect(highestKnownSeverity(summary)).toBe('critical');
+  });
+
+  it('does not fail a stricter threshold than the active findings', () => {
+    const warningOnly = summarize([
+      {
+        agentId: 'warning',
+        taskName: 'warning task',
+        taskStatus: 'inProgress',
+        anomaly: { type: 'stale_agent', severity: 'warning', explanation: 'idle' },
+      },
+    ]);
+    expect(hasFindingsAtOrAbove(warningOnly, 'critical')).toBe(false);
+    expect(hasFindingsAtOrAbove(warningOnly, 'warning')).toBe(true);
+    expect(highestKnownSeverity(warningOnly)).toBe('warning');
+  });
+
+  it('fails only the info threshold for info-only findings', () => {
+    const infoOnly = summarize([
+      {
+        agentId: 'info',
+        taskName: 'info task',
+        taskStatus: 'inProgress',
+        anomaly: { type: 'needs_input', severity: 'info', explanation: 'ready' },
+      },
+    ]);
+    expect(hasFindingsAtOrAbove(infoOnly, 'critical')).toBe(false);
+    expect(hasFindingsAtOrAbove(infoOnly, 'warning')).toBe(false);
+    expect(hasFindingsAtOrAbove(infoOnly, 'info')).toBe(true);
+    expect(highestKnownSeverity(infoOnly)).toBe('info');
+  });
+});
+
 describe('kookr-status isActiveFinding', () => {
   it('matches dashboard semantics for snoozed findings', () => {
     expect(isActiveFinding({
@@ -405,6 +479,25 @@ describe('kookr-status main (integration-style)', () => {
     };
   }
 
+  function mockSuccessfulFetch(snapshotBody: unknown[]) {
+    const healthBody = {
+      status: 'ok',
+      serverStartedAt: new Date(Date.now() - 60_000).toISOString(),
+      build: { version: 'dev' },
+    };
+    globalThis.fetch = vi.fn(async (url: string | URL) => {
+      const href = typeof url === 'string' ? url : url.href;
+      if (href.endsWith('/api/health')) {
+        return new Response(JSON.stringify(healthBody), { status: 200 });
+      }
+      if (href.endsWith('/api/snapshot')) {
+        return new Response(JSON.stringify(snapshotBody), { status: 200 });
+      }
+      throw new Error(`unexpected ${href}`);
+    }) as typeof fetch;
+    return healthBody;
+  }
+
   it('errors out cleanly when KOOKR_PORT is not a valid integer', async () => {
     const deps = makeDeps({ KOOKR_PORT: 'abc' });
     await main(deps);
@@ -476,11 +569,6 @@ describe('kookr-status main (integration-style)', () => {
   });
 
   it('prints a report on the happy path', async () => {
-    const healthBody = {
-      status: 'ok',
-      serverStartedAt: new Date(Date.now() - 60_000).toISOString(),
-      build: { version: 'dev' },
-    };
     const snapshotBody = [
       {
         agentId: 'a1',
@@ -490,16 +578,7 @@ describe('kookr-status main (integration-style)', () => {
         anomaly: null,
       },
     ];
-    globalThis.fetch = vi.fn(async (url: string | URL) => {
-      const href = typeof url === 'string' ? url : url.href;
-      if (href.endsWith('/api/health')) {
-        return new Response(JSON.stringify(healthBody), { status: 200 });
-      }
-      if (href.endsWith('/api/snapshot')) {
-        return new Response(JSON.stringify(snapshotBody), { status: 200 });
-      }
-      throw new Error(`unexpected ${href}`);
-    }) as typeof fetch;
+    mockSuccessfulFetch(snapshotBody);
 
     const deps = makeDeps({ KOOKR_PORT: '4800' });
     await main(deps);
@@ -514,11 +593,6 @@ describe('kookr-status main (integration-style)', () => {
   });
 
   it('prints a JSON envelope with snapshot details on the happy path', async () => {
-    const healthBody = {
-      status: 'ok',
-      serverStartedAt: new Date(Date.now() - 60_000).toISOString(),
-      build: { version: 'dev' },
-    };
     const snapshotBody = [
       {
         agentId: 'a1',
@@ -528,16 +602,7 @@ describe('kookr-status main (integration-style)', () => {
         anomaly: null,
       },
     ];
-    globalThis.fetch = vi.fn(async (url: string | URL) => {
-      const href = typeof url === 'string' ? url : url.href;
-      if (href.endsWith('/api/health')) {
-        return new Response(JSON.stringify(healthBody), { status: 200 });
-      }
-      if (href.endsWith('/api/snapshot')) {
-        return new Response(JSON.stringify(snapshotBody), { status: 200 });
-      }
-      throw new Error(`unexpected ${href}`);
-    }) as typeof fetch;
+    const healthBody = mockSuccessfulFetch(snapshotBody);
 
     const deps = makeDeps({ KOOKR_PORT: '4800' });
     await main({ ...deps, argv: ['--json'] });
@@ -555,6 +620,84 @@ describe('kookr-status main (integration-style)', () => {
         summary: {
           statusCounts: { inProgress: 1 },
           totalCost: 0.5,
+        },
+      },
+    });
+    expect(envelope.details.failOn).toBeUndefined();
+    expect(envelope.details.highestSeverity).toBeUndefined();
+  });
+
+  it('keeps default status exit behavior at zero even with active findings', async () => {
+    mockSuccessfulFetch([
+      {
+        agentId: 'a1',
+        taskName: 't1',
+        taskStatus: 'inProgress',
+        anomaly: { type: 'stale_agent', severity: 'critical', explanation: 'idle' },
+      },
+    ]);
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main(deps);
+    expect(deps.exits).toEqual([]);
+    expect(deps.logs[0]).toContain('Findings (1: 1 critical)');
+  });
+
+  it('exits 5 when --fail-on threshold is met', async () => {
+    mockSuccessfulFetch([
+      {
+        agentId: 'a1',
+        taskName: 't1',
+        taskStatus: 'inProgress',
+        anomaly: { type: 'stale_agent', severity: 'warning', explanation: 'idle' },
+      },
+    ]);
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--fail-on', 'warning'] });
+    expect(deps.exits).toEqual([5]);
+    expect(deps.logs[0]).toContain('Findings (1: 1 warning)');
+  });
+
+  it('does not exit non-zero when --fail-on threshold is not met', async () => {
+    mockSuccessfulFetch([
+      {
+        agentId: 'a1',
+        taskName: 't1',
+        taskStatus: 'inProgress',
+        anomaly: { type: 'stale_agent', severity: 'warning', explanation: 'idle' },
+      },
+    ]);
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--fail-on=critical'] });
+    expect(deps.exits).toEqual([]);
+    expect(deps.logs[0]).toContain('Findings (1: 1 warning)');
+  });
+
+  it('prints a JSON failure envelope when --fail-on threshold is met', async () => {
+    mockSuccessfulFetch([
+      {
+        agentId: 'a1',
+        taskName: 't1',
+        taskStatus: 'inProgress',
+        anomaly: { type: 'permission_blocked', severity: 'critical', explanation: 'blocked' },
+      },
+    ]);
+
+    const deps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...deps, argv: ['--json', '--fail-on=critical'] });
+    const envelope = parseSingleJsonLog(deps.logs);
+    expect(deps.exits).toEqual([5]);
+    expect(deps.errors).toEqual([]);
+    expect(envelope).toMatchObject({
+      ok: false,
+      code: 'FINDINGS_PRESENT',
+      details: {
+        failOn: 'critical',
+        highestSeverity: 'critical',
+        summary: {
+          severityCounts: { critical: 1, warning: 0, info: 0 },
         },
       },
     });

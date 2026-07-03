@@ -131,6 +131,7 @@ describe('renderCompletion', () => {
     expect(script).toContain('compgen -W "none minimal low medium high xhigh max"');
     expect(script).toContain('compgen -W "warn block skip"');
     expect(script).toContain('--dedupe=warn');
+    expect(script).toContain('--fail-on=critical');
     expect(script).toContain('--dry-run');
     expect(script).toContain('completion-ready');
     expect(script).toContain('bash zsh');
@@ -148,6 +149,7 @@ describe('renderCompletion', () => {
     expect(script).toContain('compadd none minimal low medium high xhigh max');
     expect(script).toContain('compadd warn block skip');
     expect(script).toContain('compadd -- --dedupe=warn --dedupe=block --dedupe=skip');
+    expect(script).toContain('compadd -- --fail-on=critical --fail-on=warning --fail-on=info --fail-on=none');
     expect(script).toContain('--json');
     expect(script).toContain('--task-id');
     expect(script).toContain('--max-age-days');
@@ -197,6 +199,27 @@ describe('bash completion behavior', () => {
     await expect(completeBash(['kookr', 'doctor', ''])).resolves.toEqual(['--json', '-h', '--help']);
   });
 
+  it('completes status flags and fail-on values', async () => {
+    await expect(completeBash(['kookr', 'status', ''])).resolves.toEqual([
+      '--json',
+      '--fail-on',
+      '-h',
+      '--help',
+    ]);
+    await expect(completeBash(['kookr', 'status', '--fail-on', ''])).resolves.toEqual([
+      'critical',
+      'warning',
+      'info',
+      'none',
+    ]);
+    await expect(completeBash(['kookr', 'status', '--fail-on='])).resolves.toEqual([
+      '--fail-on=critical',
+      '--fail-on=warning',
+      '--fail-on=info',
+      '--fail-on=none',
+    ]);
+  });
+
   it('completes command subcommands', async () => {
     await expect(completeBash(['kookr', 'command', ''])).resolves.toEqual(['outcome']);
     await expect(completeBash(['kookr', 'command', 'outcome', ''])).resolves.toEqual([]);
@@ -242,6 +265,27 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
 
   it('completes doctor flags', async () => {
     await expect(completeZsh(['kookr', 'doctor', ''], 3)).resolves.toEqual(['--json', '-h', '--help']);
+  });
+
+  it('completes status flags and fail-on values', async () => {
+    await expect(completeZsh(['kookr', 'status', ''], 3)).resolves.toEqual([
+      '--json',
+      '--fail-on',
+      '-h',
+      '--help',
+    ]);
+    await expect(completeZsh(['kookr', 'status', '--fail-on', ''], 4)).resolves.toEqual([
+      'critical',
+      'warning',
+      'info',
+      'none',
+    ]);
+    await expect(completeZsh(['kookr', 'status', '--fail-on='], 3)).resolves.toEqual([
+      '--fail-on=critical',
+      '--fail-on=warning',
+      '--fail-on=info',
+      '--fail-on=none',
+    ]);
   });
 
   it('completes command subcommands', async () => {

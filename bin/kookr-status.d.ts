@@ -3,6 +3,7 @@
 // ESM JavaScript (no build step, no deps) — see bin/kookr-status.js.
 
 export type Severity = 'critical' | 'warning' | 'info';
+export type FailOnSeverity = Severity | 'none';
 
 export interface Finding {
   agentId: string;
@@ -62,7 +63,15 @@ export function formatUptime(ms: number): string;
 export function formatCost(usd: number): string;
 export function isActiveFinding(agent: AgentLike): boolean;
 export function summarize(agents: AgentLike[]): Summary;
+export function hasFindingsAtOrAbove(summary: Summary, failOn: FailOnSeverity): boolean;
+export function highestKnownSeverity(summary: Summary): Severity | null;
 export function renderReport(args: RenderReportArgs): string;
+export function parseStatusArgs(argv: string[]): {
+  help: boolean;
+  json: boolean;
+  failOn: FailOnSeverity;
+  error?: string;
+};
 export function parsePortEnv(
   raw: string | undefined,
 ): { kind: 'unset' } | { kind: 'valid'; port: number } | { kind: 'invalid'; raw: string };
