@@ -437,6 +437,31 @@ describe('inspectCleanupCandidates', () => {
     expect(result[0].recoveryGuidance).toContain('Configure a repo profile');
   });
 
+  it('uses origin default branch to classify unprofiled external repos', async () => {
+    const unknownResolver = new RepoPolicyResolver();
+
+    mockGitArgs([
+      { match: (a) => a.includes('worktree') && a.includes('list'), stdout: SINGLE_WT },
+      { match: (a) => a.includes('remote') && a.includes('get-url') && a.includes('origin'), stdout: 'https://github.com/unknown/repo.git' },
+      { match: (a) => a.includes('symbolic-ref'), stdout: 'refs/remotes/origin/main' },
+      { match: (a) => a.includes('rev-parse') && a[a.length - 1] === 'origin/main', stdout: 'abc123' },
+      { match: (a) => a.includes('status') && a.includes('--porcelain'), stdout: '' },
+      { match: (a) => a.includes('merge-base') && a.includes('--is-ancestor'), stdout: '' },
+    ]);
+
+    const result = await inspectCleanupCandidates('/repo', 'github.com/unknown/repo', {
+      policyResolver: unknownResolver, leaseService,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual(expect.objectContaining({
+      classification: 'merged',
+      reasonCode: 'ancestor_of_baseline',
+      baselineRef: 'origin/main',
+      baselineSha: 'abc123',
+    }));
+  });
+
   // --- Multiple candidates ---
 
   it('classifies multiple candidates differently', async () => {

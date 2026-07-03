@@ -54,10 +54,9 @@ export class RepoPolicyResolver {
    *
    * Resolution order:
    * 1. Repo profile baseline, if configured
-   * 2. Known local default branch for first-party/local repos
+   * 2. Git default branch for any repo with a resolvable origin/HEAD or common
+   *    main/master ref
    * 3. Otherwise unknown (fail-closed)
-   *
-   * For fork-based external repos, origin/HEAD is NOT assumed authoritative.
    */
   async resolveBaseline(projectId: string, repoPath: string): Promise<BaselineResolution> {
     const policy = this.getPolicy(projectId);
@@ -79,19 +78,19 @@ export class RepoPolicyResolver {
       return { policy: 'unknown_policy', checkedAt };
     }
 
-    // 2. Known default branch (for server project and local projects)
-    if (policy === 'known_policy') {
-      const defaultBranch = await resolveDefaultBranch(repoPath);
-      if (defaultBranch) {
-        const sha = await gitIn(repoPath, 'rev-parse', defaultBranch);
-        if (sha) {
-          return {
-            policy,
-            baselineRef: defaultBranch,
-            baselineSha: sha,
-            checkedAt,
-          };
-        }
+    // 2. Default branch from git metadata. The repo policy remains unchanged:
+    // an unprofiled github.com/* project can still be "unknown_policy", but a
+    // resolved read-only baseline lets cleanup classify safely merged branches.
+    const defaultBranch = await resolveDefaultBranch(repoPath, { allowLocalFallback: policy === 'known_policy' });
+    if (defaultBranch) {
+      const sha = await gitIn(repoPath, 'rev-parse', defaultBranch);
+      if (sha) {
+        return {
+          policy,
+          baselineRef: defaultBranch,
+          baselineSha: sha,
+          checkedAt,
+        };
       }
     }
 
@@ -105,8 +104,15 @@ export class RepoPolicyResolver {
   }
 }
 
-/** Resolve the default branch from origin/HEAD, remote common names, or local common names. */
-async function resolveDefaultBranch(repoPath: string): Promise<string | null> {
+interface ResolveDefaultBranchOptions {
+  allowLocalFallback: boolean;
+}
+
+/** Resolve the default branch from origin/HEAD, remote common names, or optionally local common names. */
+async function resolveDefaultBranch(
+  repoPath: string,
+  opts: ResolveDefaultBranchOptions,
+): Promise<string | null> {
   // Try symbolic ref first. Use the remote-tracking ref as the cleanup
   // baseline so a freshly fetched GitHub merge is visible even when the local
   // main/master branch has not been advanced.
@@ -117,9 +123,14 @@ async function resolveDefaultBranch(repoPath: string): Promise<string | null> {
     if (branchName) return `origin/${branchName}`;
   }
 
-  // Prefer remote-tracking defaults when origin/HEAD is missing. Then fall
-  // back to local branches for repos without a remote.
-  for (const name of ['origin/main', 'origin/master', 'main', 'master']) {
+  // Prefer remote-tracking defaults when origin/HEAD is missing. For known
+  // local/server projects only, fall back to local branches for repos without
+  // a remote. Unprofiled external repos must not classify against local main.
+  const names = opts.allowLocalFallback
+    ? ['origin/main', 'origin/master', 'main', 'master']
+    : ['origin/main', 'origin/master'];
+
+  for (const name of names) {
     const result = await gitIn(repoPath, 'rev-parse', '--verify', name);
     if (result) return name;
   }

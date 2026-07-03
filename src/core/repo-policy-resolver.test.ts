@@ -132,6 +132,47 @@ describe('RepoPolicyResolver', () => {
       expect(result.baselineRef).toBeUndefined();
     });
 
+    it('resolves the remote default branch for unconfigured external repos', async () => {
+      const resolver = new RepoPolicyResolver();
+
+      let callCount = 0;
+      mockExecFile.mockImplementation((_cmd, _args: any, _opts, cb: any) => {
+        callCount++;
+        if (callCount === 1) {
+          // symbolic-ref returns the remote default branch.
+          cb(null, { stdout: 'refs/remotes/origin/main\n' }, '');
+        } else {
+          // rev-parse resolves that remote-tracking ref to a SHA.
+          cb(null, { stdout: 'external-main-sha\n' }, '');
+        }
+      });
+
+      const result = await resolver.resolveBaseline('github.com/unknown/repo', '/repo');
+      expect(result.policy).toBe('unknown_policy');
+      expect(result.baselineRef).toBe('origin/main');
+      expect(result.baselineSha).toBe('external-main-sha');
+    });
+
+    it('does not fall back to local branches for unconfigured external repos', async () => {
+      const resolver = new RepoPolicyResolver();
+
+      let callCount = 0;
+      mockExecFile.mockImplementation((_cmd, _args: any, _opts, cb: any) => {
+        callCount++;
+        if (callCount <= 3) {
+          // symbolic-ref, origin/main, and origin/master fail.
+          cb(new Error('not found'), { stdout: '' }, '');
+        } else {
+          throw new Error('unexpected local branch fallback');
+        }
+      });
+
+      const result = await resolver.resolveBaseline('github.com/unknown/repo', '/repo');
+      expect(result.policy).toBe('unknown_policy');
+      expect(result.baselineRef).toBeUndefined();
+      expect(mockExecFile).toHaveBeenCalledTimes(3);
+    });
+
     it('resolves the remote default branch for known local repos', async () => {
       const resolver = new RepoPolicyResolver({
         serverProjectId: 'local/myproject',
