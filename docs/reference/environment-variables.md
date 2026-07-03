@@ -196,6 +196,10 @@ same retry logic. Duplicate deliveries are suppressed by `agentId:fingerprint`
 until the finding resolves; receivers should still make `fingerprint`
 idempotent on their side.
 
+The JSON body a receiver must parse — the `kookr.finding.webhook.v1` field
+contract with an example — is documented in
+[Payload body schema](../configuration.md#payload-body-schema).
+
 ## Relay
 
 Hosted relay is inert until the operational gate is explicitly enabled; see
