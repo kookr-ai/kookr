@@ -12,6 +12,14 @@ function readKinds(path: string): string[] {
     .map((line) => (JSON.parse(line) as { kind: string }).kind);
 }
 
+function readEvents(path: string): unknown[] {
+  if (!existsSync(path)) return [];
+  return readFileSync(path, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as unknown);
+}
+
 describe('createAuditWriter', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -72,6 +80,68 @@ describe('createAuditWriter', () => {
       await audit.flush();
 
       expect(readKinds(path)).toEqual(['start']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('redacts credential-shaped inbound message text before writing to disk', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'kookr-tg-audit-'));
+    const path = join(tmp, 'telegram', 'audit.jsonl');
+    const bearerToken = 'fake-test-bearer';
+    const text = `please run with Authorization: Bearer ${bearerToken}`;
+    try {
+      const audit = await createAuditWriter(path);
+      audit({
+        kind: 'message_received',
+        sender: 42,
+        text,
+        len: text.length,
+      });
+      await audit.flush();
+
+      const raw = readFileSync(path, 'utf8');
+      expect(raw).not.toContain(bearerToken);
+      const [event] = readEvents(path) as Array<{ text: string; len: number }>;
+      expect(event.text).toBe('<prompt redacted; view in dashboard>');
+      expect(event.len).toBe(text.length);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('redacts credential-shaped error strings before writing to disk', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'kookr-tg-audit-'));
+    const path = join(tmp, 'telegram', 'audit.jsonl');
+    try {
+      const audit = await createAuditWriter(path);
+      audit({ kind: 'spawn_failed', reason: 'launch failed with token=fake-test-value' });
+      audit({ kind: 'transcription_failed', err: 'whisper rejected api_key=fake-audit-key' });
+      await audit.flush();
+
+      const raw = readFileSync(path, 'utf8');
+      expect(raw).not.toContain('fake-test-value');
+      expect(raw).not.toContain('fake-audit-key');
+      const events = readEvents(path) as Array<{ reason?: string; err?: string }>;
+      expect(events[0]?.reason).toBe('<prompt redacted; view in dashboard>');
+      expect(events[1]?.err).toBe('<prompt redacted; view in dashboard>');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('redacts credential-shaped callback data before writing to disk', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'kookr-tg-audit-'));
+    const path = join(tmp, 'telegram', 'audit.jsonl');
+    try {
+      const audit = await createAuditWriter(path);
+      audit({ kind: 'callback_invalid', data: '{"token":"fake-test-value"}' });
+      await audit.flush();
+
+      const raw = readFileSync(path, 'utf8');
+      expect(raw).not.toContain('fake-test-value');
+      const [event] = readEvents(path) as Array<{ data: string }>;
+      expect(event.data).toBe('<prompt redacted; view in dashboard>');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

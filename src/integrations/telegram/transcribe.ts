@@ -48,18 +48,6 @@ export class TranscriptionError extends Error {
 }
 
 /**
- * Conservative credential-shape detector for block-alert texts before they
- * leave Kookr for Telegram. If any pattern matches, the entire body is
- * replaced with a sentinel; the user views the full prompt in the dashboard.
- * False positives are acceptable; false negatives are not.
- */
-export function redactCredentials(text: string): string {
-  const patterns = /(BEGIN [A-Z ]*PRIVATE KEY|password|token|secret|api[_-]?key|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|Bearer\s+\S+)/i;
-  if (!patterns.test(text)) return text;
-  return '<prompt redacted; view in dashboard>';
-}
-
-/**
  * 4xx statuses that genuinely mean "this specific recording was rejected" —
  * the payload-rejected bucket. Other 4xx (429 rate limit, 408 timeout,
  * 401/403 auth, 407 proxy auth) are infrastructure problems where the OGG
@@ -74,8 +62,8 @@ const PAYLOAD_REJECTED_STATUSES = new Set([
 
 /**
  * Classify an audio-pipeline error into one of four user-facing replies. The
- * audit log keeps the raw `err` either way — this is purely about telling the
- * user whether to retry now, re-record, or give up.
+ * audit log records the error string for diagnosis, with credential-shaped
+ * content redacted by the audit writer before disk append.
  */
 export function classifyVoiceError(err: unknown): string {
   // TranscriptionError.status can be null (transport failure) — skip the

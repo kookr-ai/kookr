@@ -6,7 +6,7 @@
  * the load-bearing concern (round-3 V13).
  */
 import { describe, it, expect } from 'vitest';
-import { redactCredentials } from './transcribe.js';
+import { redactCredentials } from './redact.js';
 
 describe('redactCredentials', () => {
   it('passes through plain bash commands unchanged', () => {
@@ -36,6 +36,11 @@ describe('redactCredentials', () => {
     expect(redactCredentials('Bash(curl ghp_abcdefghijklmnopqrstuvwxyz0123456789)')).toMatch(/redacted/);
     expect(redactCredentials('export GH=gho_abcdefghijklmnopqrstuvwxyz0123456789')).toMatch(/redacted/);
     expect(redactCredentials('ghs_abcdefghijklmnopqrstuvwxyz0123456789')).toMatch(/redacted/);
+  });
+
+  it('redacts OpenAI-style key prefixes', () => {
+    expect(redactCredentials(`curl -H "Authorization: ${'sk-' + 'a'.repeat(24)}"`)).toMatch(/redacted/);
+    expect(redactCredentials(`OPENAI_API_KEY=${'sk-proj-' + 'b'.repeat(24)}`)).toMatch(/redacted/);
   });
 
   it('redacts Bearer-style auth headers', () => {

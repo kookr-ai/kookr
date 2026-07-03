@@ -20,8 +20,9 @@ import {
 } from './api-client.js';
 import { audioDropDecision, extractAudioAttachment, filenameFromFilePath, MAX_AUDIO_BYTES } from './audio.js';
 import { parseTaskCommand } from './parse-task.js';
+import { redactCredentials } from './redact.js';
 import { rephrase } from './rephrase.js';
-import { classifyVoiceError, redactCredentials, transcribeVoice as defaultTranscribeVoice } from './transcribe.js';
+import { classifyVoiceError, transcribeVoice as defaultTranscribeVoice } from './transcribe.js';
 import { TaskSpecBypassSchema, type ProjectInfo, type ValidatedTaskSpec } from './types.js';
 import {
   acquireLockOrFail,

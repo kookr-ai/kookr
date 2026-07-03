@@ -52,7 +52,7 @@ Cut. There is one user, one stated channel (Telegram), and zero evidence that a 
 ### Operational
 
 12. **R12.** Plugin failure does not crash Kookr. The long-poll loop has an outer `try { ... } catch (e) { logAndBackoff(); }` boundary; any unhandled rejection inside `handleUpdate` is caught at that boundary, never escapes. (Revised from v1 R9 — `void this.pollLoop()` was found to crash on modern Node defaults.)
-13. **R13.** Append-only audit log at `<KOOKR_DATA_DIR>/telegram/audit.jsonl` records every inbound message (full text), every spec-validation result, and every spawn. **No HMAC chain.** (v2 proposed optional HMAC; v3 cuts it — round-2 minimalist + ambition agreed: an attacker with shell access who can rewrite the audit log can also rewrite the HMAC key sitting next to it. HMAC integrity is theater here. Standard fs permissions, mode 0600, are the right control.)
+13. **R13.** Append-only audit log at `<KOOKR_DATA_DIR>/telegram/audit.jsonl` records every inbound message with credential-shaped string fields redacted before disk append, every spec-validation result, and every spawn. **No HMAC chain.** (v2 proposed optional HMAC; v3 cuts it — round-2 minimalist + ambition agreed: an attacker with shell access who can rewrite the audit log can also rewrite the HMAC key sitting next to it. HMAC integrity is theater here. Standard fs permissions, mode 0600, are the right control.)
 14. **R14.** Panic switch: `KOOKR_REMOTE_CHAT_DISABLED=1` in `.env` plus `pnpm prod:restart` produces a Kookr instance with zero remote-chat surface. No code change needed; check is at boot.
 
 ### Use case + mitigations (new in v3)
@@ -429,9 +429,9 @@ This is the most important v4 design change vs v3.
 
 **Problems solved:** R13
 
-Append-only JSONL at `<KOOKR_DATA_DIR>/telegram/audit.jsonl`. Full text. **No HMAC chain. No rotation.** (Round-2 minimalist + ambition agreed: HMAC integrity is theater when the key sits next to the log on the same fs; rotation is premature for ~1KB/day expected volume; revisit if dogfooding shows real growth.)
+Append-only JSONL at `<KOOKR_DATA_DIR>/telegram/audit.jsonl`. Credential-redacted text. **No HMAC chain. No rotation.** (Round-2 minimalist + ambition agreed: HMAC integrity is theater when the key sits next to the log on the same fs; rotation is premature for ~1KB/day expected volume; revisit if dogfooding shows real growth.)
 
-The integration's audit writer is a 10-line `fs.appendFile` helper with `mkdir -p` on first write — not a separate module, inlined into `index.ts` (round-2 minimalist). The "reuses existing utility" claim from v2 was incorrect (round-2 boundary critic): no shared JSONL utility exists; existing inline-append patterns at `interaction-log.ts:77-88` and similar callers are the model.
+The integration's audit writer lives in `src/integrations/telegram/audit.ts`: it appends JSONL with a credential-redacting serializer and creates the parent directory before the first write. The "reuses existing utility" claim from v2 was incorrect (round-2 boundary critic): no shared JSONL utility exists; existing inline-append patterns at `interaction-log.ts:77-88` and similar callers are the model.
 
 ```jsonl
 {"ts":"2026-05-04T10:14:22Z","kind":"message_received","sender":1234567,"text":"fix sweep button","len":15}
@@ -442,9 +442,9 @@ The integration's audit writer is a 10-line `fs.appendFile` helper with `mkdir -
 {"ts":"2026-05-04T10:32:11Z","kind":"task_blocked_alert_sent","taskId":"t-abc123","prompt":"Approve git push to origin?"}
 ```
 
-**File mode enforcement (round-3 V19 fix):** the audit writer opens the file with `fs.open(path, 'a', 0o600)` — the mode arg ensures **creation** is 0600 even if it doesn't yet exist. On every write, the writer also stat-checks the mode and re-chmods if drift is detected (cheap, run once per startup). v3's "file mode 0600" claim glossed over the fact that `fs.appendFile` doesn't set mode on existing files.
+**File mode enforcement (round-3 V19 fix):** the audit writer appends with file creation mode `0o600`; on startup, it also stat-checks the mode and re-chmods if drift is detected. v3's "file mode 0600" claim glossed over the fact that `fs.appendFile` doesn't set mode on existing files.
 
-**Privacy on first-use:** the onboarding doc reminds the user not to send credentials over Telegram. The audit log is forensic, not redacted.
+**Privacy on first-use:** the onboarding doc reminds the user not to send credentials over Telegram. The audit log is forensic but credential-redacted; users should still avoid sending credentials over Telegram.
 
 ### 6. No REST API or dashboard panel in V1
 
@@ -527,7 +527,7 @@ The `event-pipeline.ts` patch is small: when the existing logic detects a `permi
                   │  │  rephrase() → Zod validate        │  │  R10
                   │  │  Inline-keyboard confirmation    │  │
                   │  │    (single dedup: pending/<hash>)│  │
-                  │  │  Audit JSONL (full text, no MAC) │  │  R13
+                  │  │  Audit JSONL (redacted, no MAC)  │  │  R13
                   │  │  Block-alert listener            │  │  R16
                   │  │  Dry-run mode flag               │  │  R17
                   │  └─────────────────────────────────┘  │
@@ -737,7 +737,7 @@ Realistic estimate per round-2 delivery, including: adapter test surface, fake T
 5. `src/integrations/telegram/safety.ts` — token bucket + rolling 24h cap (cap-at-spawn-time; round-2 N9) + flock-based lockfile (round-2 N11) + atomic `pending/<hash>.json` consume (round-2 boundary fix).
 6. `src/integrations/telegram/rephrase.ts` — wraps `createLlmClient()`; `/task` bypass path.
 7. `src/integrations/telegram/api-client.ts` — `getUpdates`, `sendMessage`, `answerCallbackQuery`. Honor 429 `retry_after`.
-8. `src/integrations/telegram/index.ts` — orchestrate; block-alert listener subscribes to `taskStore`'s permission-prompt event; dry-run gate; inline 10-line audit appender.
+8. `src/integrations/telegram/index.ts` — orchestrate; block-alert listener subscribes to `taskStore`'s permission-prompt event; dry-run gate; write credential-redacted audit events through `src/integrations/telegram/audit.ts`.
 9. Wire into `src/server/index.ts` bootstrap with `KOOKR_DATA_DIR` resolution.
 
 **Test infrastructure:**
@@ -843,7 +843,7 @@ Five subagents reviewed v1 in parallel: boundary-critic, failure-mode-analyst, d
 - **F1/F31 — group-chat info leak.** R11: drop on `chat.type !== 'private'`.
 - **F33 — dynamic-import code-execution surface.** Cut entirely; no manifest module field, no `import()` from config.
 - **F23 — audit log retroactive tamper.** Optional HMAC chain (Open Q1, leaning V1).
-- **F22 / Edge case 6 — hash-only audit is incoherent.** Switched to full text. v1's privacy claim contradicted itself.
+- **F22 / Edge case 6 — hash-only audit is incoherent.** Switched to credential-redacted text. v1's privacy claim contradicted itself.
 
 ### From boundary-critic (cleaner seams)
 
