@@ -9,6 +9,7 @@ import { registerTerminalSend } from '../terminal-send.js';
 import { isMultilinePaste, buildPasteFrame } from '../terminal-paste.js';
 import { createReconnectingSocket, type ReconnectingSocket } from '../reconnecting-socket.js';
 import { track } from '../telemetry.js';
+import { installTerminalRenderer } from '../terminal-renderer.js';
 import {
   DEFAULT_TERMINAL_FONT_SIZE,
   usePersistedTerminalFontSize,
@@ -483,6 +484,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit, onOpenFile }: 
     });
 
     terminal.open(containerRef.current);
+    const renderer = installTerminalRenderer(terminal);
     fitAddon.fit();
 
     terminalRef.current = terminal;
@@ -620,6 +622,7 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit, onOpenFile }: 
       resizeObserver.disconnect();
       searchResultDisposable.dispose();
       scrollDisposable.dispose();
+      renderer.dispose();
       clearJumpLatestTimer();
       fileLinkDisposable.dispose();
       terminal.dispose();

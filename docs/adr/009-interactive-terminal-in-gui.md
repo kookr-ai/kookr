@@ -121,7 +121,7 @@ The implementation preserves all ADR-007 guarantees: tmux manages sessions, sess
 
 If accepted:
 
-1. **Dependencies:** `node-pty`, `@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`
+1. **Dependencies:** `node-pty`, `@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`, `@xterm/addon-webgl`
 2. **New WebSocket endpoint:** `ws://host:port/ws/terminal/:tmuxName` — one per active terminal view
 3. **PTY lifecycle:** Spawn on WebSocket connect, kill on disconnect. If browser tab closes, PTY dies but tmux session continues.
 4. **Resize protocol:** Browser sends `{ type: 'resize', cols, rows }` messages. Server calls `pty.resize(cols, rows)`.
