@@ -390,20 +390,24 @@ export class ScheduleStore {
   }
 
   async persist(): Promise<void> {
-    this.persistChain = this.persistChain.then(async () => {
-      const data = JSON.stringify(this.list(), null, 2);
-      const tmpPath = join(dirname(this.filePath), `.schedules-${randomUUID()}.tmp`);
-      await mkdir(dirname(this.filePath), { recursive: true });
-      const fh = await open(tmpPath, 'w');
-      try {
-        await fh.writeFile(data, 'utf-8');
-        await fh.sync();
-      } finally {
-        await fh.close();
-      }
-      await rename(tmpPath, this.filePath);
-    });
-    return this.persistChain;
+    const write = this.persistChain.then(() => this.writeSchedules());
+    // Keep the internal tail usable after a failed write, while callers still observe this write's rejection.
+    this.persistChain = write.catch(() => {});
+    return write;
+  }
+
+  private async writeSchedules(): Promise<void> {
+    const data = JSON.stringify(this.list(), null, 2);
+    const tmpPath = join(dirname(this.filePath), `.schedules-${randomUUID()}.tmp`);
+    await mkdir(dirname(this.filePath), { recursive: true });
+    const fh = await open(tmpPath, 'w');
+    try {
+      await fh.writeFile(data, 'utf-8');
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
+    await rename(tmpPath, this.filePath);
   }
 
   private bumpRevision(): void {
