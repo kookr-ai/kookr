@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { installTerminalRenderer } from './terminal-renderer.js';
 
 function fakeDocumentWithWebgl2(enabled: boolean): Pick<Document, 'createElement'> {
@@ -28,6 +28,70 @@ function fakeWebglAddon() {
 }
 
 describe('installTerminalRenderer', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test('keeps the DOM renderer in WebDriver-controlled browsers', () => {
+    const terminal = {
+      rows: 24,
+      loadAddon: vi.fn(),
+      refresh: vi.fn(),
+    };
+    const webgl = fakeWebglAddon();
+
+    const installed = installTerminalRenderer(terminal, {
+      document: fakeDocumentWithWebgl2(true),
+      navigator: { webdriver: true },
+      createWebglAddon: () => webgl.addon,
+    });
+
+    expect(installed.renderer).toBe('dom');
+    expect(terminal.loadAddon).not.toHaveBeenCalled();
+    expect(webgl.addon.onContextLoss).not.toHaveBeenCalled();
+  });
+
+  test('keeps the DOM renderer in headless Chromium', () => {
+    const terminal = {
+      rows: 24,
+      loadAddon: vi.fn(),
+      refresh: vi.fn(),
+    };
+    const webgl = fakeWebglAddon();
+
+    const installed = installTerminalRenderer(terminal, {
+      document: fakeDocumentWithWebgl2(true),
+      navigator: { userAgent: 'Mozilla/5.0 HeadlessChrome/120.0.0.0', webdriver: false },
+      createWebglAddon: () => webgl.addon,
+    });
+
+    expect(installed.renderer).toBe('dom');
+    expect(terminal.loadAddon).not.toHaveBeenCalled();
+    expect(webgl.addon.onContextLoss).not.toHaveBeenCalled();
+  });
+
+  test('uses the global navigator for headless Chromium fallback', () => {
+    const terminal = {
+      rows: 24,
+      loadAddon: vi.fn(),
+      refresh: vi.fn(),
+    };
+    const webgl = fakeWebglAddon();
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 HeadlessChrome/120.0.0.0',
+      webdriver: false,
+    });
+
+    const installed = installTerminalRenderer(terminal, {
+      document: fakeDocumentWithWebgl2(true),
+      createWebglAddon: () => webgl.addon,
+    });
+
+    expect(installed.renderer).toBe('dom');
+    expect(terminal.loadAddon).not.toHaveBeenCalled();
+    expect(webgl.addon.onContextLoss).not.toHaveBeenCalled();
+  });
+
   test('keeps the DOM renderer when WebGL2 is unavailable', () => {
     const terminal = {
       rows: 24,

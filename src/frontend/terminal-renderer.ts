@@ -9,6 +9,7 @@ interface WebglRendererAddon extends ITerminalAddon {
 
 interface InstallTerminalRendererOptions {
   document?: Pick<Document, 'createElement'>;
+  navigator?: Partial<Pick<Navigator, 'userAgent' | 'webdriver'>>;
   createWebglAddon?: () => WebglRendererAddon;
 }
 
@@ -31,8 +32,13 @@ export function installTerminalRenderer(
   options: InstallTerminalRendererOptions = {},
 ): InstalledTerminalRenderer {
   const documentLike = options.document ?? globalThis.document;
-  // Headless browsers and older GPU stacks should keep xterm's default DOM
-  // renderer instead of touching WebGL APIs that may be absent or unstable.
+  const navigatorLike = options.navigator ?? globalThis.navigator;
+  // WebDriver-controlled browsers and older GPU stacks should keep xterm's
+  // default DOM renderer so E2E can inspect terminal text and flaky WebGL
+  // stacks never block terminal startup.
+  if (navigatorLike?.webdriver || navigatorLike?.userAgent?.includes('HeadlessChrome')) {
+    return { renderer: 'dom', dispose() {} };
+  }
   if (!options.document && typeof globalThis.WebGL2RenderingContext === 'undefined') {
     return { renderer: 'dom', dispose() {} };
   }
