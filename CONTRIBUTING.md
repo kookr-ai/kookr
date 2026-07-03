@@ -16,12 +16,25 @@ pnpm dev         # backend on :4801 + Vite frontend on :5173
 
 If anything fails, run `pnpm run doctor` — it diagnoses Node/pnpm versions, build tools, the dtach binary, GPU availability, and port conflicts, then prints copy-pasteable fix commands.
 
-## Verification matrix
+## Verification
 
-Before opening a PR, run the same commands the pre-push hook will run:
+Before opening a PR, run the same local verification lanes the pre-push hook
+will run:
+
+```bash
+pnpm verify
+```
+
+`pnpm verify` runs the server type-check, E2E type-check, validators, and Vitest
+suite in pre-push order. The push hook still enforces push-specific checks such
+as reviewer-specialist markers, docs-only lane skipping, shell portability for
+changed shell/subprocess files, and plugin packaging rules.
+
+For narrower inner-loop checks, use the individual commands:
 
 | Command | What it checks |
 |---|---|
+| `pnpm verify` | Full local pre-push verification lanes in order |
 | `pnpm test` | Unit + integration tests (Vitest) |
 | `pnpm test:changed` | Fast inner-loop Vitest run for tests affected by local changes |
 | `pnpm test:hooks` | Bash hook tests under `.claude/hooks-tests/` |
