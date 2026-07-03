@@ -11172,6 +11172,39 @@ button.act-tool-entry:focus-visible {
   cursor: not-allowed;
 }
 
+/* Probably-safe bulk reclaim (RFC sweep-worktree-ux PR 3) */
+.sweep-report-row-select {
+  margin-right: 8px;
+  cursor: pointer;
+}
+.sweep-report-bulk-actions {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
+}
+.sweep-report-bulk-btn {
+  padding: 5px 14px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: var(--accent, #3b82f6);
+  color: white;
+  font-size: 12px;
+  cursor: pointer;
+}
+.sweep-report-bulk-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.sweep-confirm-warning {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--warning, #d6a824);
+  background: color-mix(in srgb, var(--warning, #d6a824) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning, #d6a824) 40%, transparent);
+}
+
 /* --- Auto-Advance "FOLLOW" pill (TopBar) --- */
 .follow-pill-wrapper {
   position: relative;

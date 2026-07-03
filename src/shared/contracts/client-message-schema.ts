@@ -239,6 +239,15 @@ const ClientMessageSchemaImpl = z.union([
   }),
   z.object({ type: z.literal('workspace:sweep') }),
   z.object({ type: z.literal('workspace:requestSweepReport'), runId: z.string() }),
+  z.object({
+    type: z.literal('workspace:bulkRemoveProbablySafe'),
+    rows: z.array(z.object({
+      projectId: z.string(),
+      worktreePath: z.string(),
+      branch: z.string(),
+      fingerprint: z.string().optional(),
+    })),
+  }),
 ]);
 
 export const ClientMessageSchema = ClientMessageSchemaImpl as unknown as z.ZodType<ClientMessage>;

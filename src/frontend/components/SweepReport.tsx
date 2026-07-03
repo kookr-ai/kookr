@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type { ClientMessage, SweepReportBucketSummary, SweepReportRow } from '../../shared/protocol.js';
 import { ClassificationBadge } from './cleanup-classification-badge.js';
@@ -9,6 +9,13 @@ interface Props {
 }
 
 type SortMode = 'default' | 'footprint-desc';
+
+/**
+ * Kill-switch for the Probably-safe bulk reclaim (RFC PR 3, the RFC's one
+ * destructive-adjacent surface). Set to `false` to pull the bulk action — its
+ * checkboxes, button, and confirm — without disturbing the read-only report.
+ */
+const BULK_REMOVE_ENABLED = true;
 
 function shortProjectLabel(projectId: string): string {
   const parts = projectId.split('/').filter(Boolean);
@@ -75,10 +82,34 @@ export function SweepReport({ send }: Props) {
   const workspaceCleanupDetail = useKookrStore((s) => s.workspaceCleanupDetail);
   const openSweepReport = useKookrStore((s) => s.openSweepReport);
   const closeSweepReport = useKookrStore((s) => s.closeSweepReport);
+  const bulkRemoveRunning = useKookrStore((s) => s.bulkRemoveRunning);
+  const startBulkRemove = useKookrStore((s) => s.startBulkRemove);
 
   const [sortMode, setSortMode] = useState<SortMode>('default');
   const [pending, setPending] = useState<{ projectId: string; worktreePath: string } | null>(null);
   const [dismissedRunId, setDismissedRunId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [confirmingBulk, setConfirmingBulk] = useState(false);
+  const lastInitRunId = useRef<string | null>(null);
+
+  // Pre-select Probably-safe rows once per report. Rows carrying sensitive
+  // gitignored files are intentionally NOT pre-selected (RFC PR 3). Guarded by
+  // a runId ref so the selection is not reset when rows drop out live during a
+  // bulk run.
+  useEffect(() => {
+    if (!sweepReport) {
+      lastInitRunId.current = null;
+      setSelected(new Set());
+      return;
+    }
+    if (lastInitRunId.current === sweepReport.runId) return;
+    lastInitRunId.current = sweepReport.runId;
+    setSelected(new Set(
+      sweepReport.rows
+        .filter((r) => r.bucket === 'probably_safe' && !r.hasSensitiveIgnored)
+        .map((r) => r.worktreePath),
+    ));
+  }, [sweepReport]);
 
   // Two-step diagnostic: request a fresh detail (with fingerprint) first,
   // then fire the diagnostic once that detail lands for the pending row.
@@ -141,18 +172,61 @@ export function SweepReport({ send }: Props) {
   if (!sweepReport) return null;
 
   const now = Date.now();
+  const report = sweepReport;
 
   function handleRunDiagnostic(row: SweepReportRow) {
     setPending({ projectId: row.projectId, worktreePath: row.worktreePath });
     send({ type: 'workspace:getCleanupDetail', projectId: row.projectId, worktreePath: row.worktreePath });
   }
 
-  function renderRow(row: SweepReportRow, showDiagnostic: boolean) {
+  function toggleSelected(worktreePath: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(worktreePath)) next.delete(worktreePath);
+      else next.add(worktreePath);
+      return next;
+    });
+  }
+
+  // Selected rows resolved against the CURRENT report so paths already removed
+  // this run never leak into the next bulk send.
+  const selectedProbablySafe = report.rows.filter(
+    (r) => r.bucket === 'probably_safe' && selected.has(r.worktreePath),
+  );
+  const selectedCount = selectedProbablySafe.length;
+  const sensitiveSelectedCount = selectedProbablySafe.filter((r) => r.hasSensitiveIgnored).length;
+
+  function triggerBulkRemove() {
+    const rows = selectedProbablySafe.map((r) => ({
+      projectId: r.projectId,
+      worktreePath: r.worktreePath,
+      branch: r.branch,
+      fingerprint: r.fingerprint,
+    }));
+    setConfirmingBulk(false);
+    if (rows.length === 0) return;
+    startBulkRemove();
+    send({ type: 'workspace:bulkRemoveProbablySafe', rows });
+  }
+
+  function renderRow(row: SweepReportRow, showDiagnostic: boolean, selectable = false) {
     const isRemovalFailed = row.bucket === 'removal_failed';
     const isPending = pending?.worktreePath === row.worktreePath;
+    const showCheckbox = selectable && BULK_REMOVE_ENABLED;
     return (
       <li key={`${row.projectId}:${row.worktreePath}`} className="sweep-report-row" data-testid="sweep-report-row">
         <div className="sweep-report-row-main">
+          {showCheckbox && (
+            <input
+              type="checkbox"
+              className="sweep-report-row-select"
+              data-testid="sweep-report-row-select"
+              checked={selected.has(row.worktreePath)}
+              disabled={bulkRemoveRunning}
+              onChange={() => toggleSelected(row.worktreePath)}
+              aria-label={`Select ${row.branch} for bulk path removal`}
+            />
+          )}
           <span className="sweep-report-row-project">{shortProjectLabel(row.projectId)}</span>
           <span className="sweep-report-row-branch">{row.branch}</span>
           <ClassificationBadge classification={row.classification} />
@@ -253,8 +327,23 @@ export function SweepReport({ send }: Props) {
           <span className="sweep-report-footprint-label">{footprintLabel(probablySafeSummary)}</span>
         </div>
         <ul className="sweep-report-row-list">
-          {probablySafeRows.map((row) => renderRow(row, false))}
+          {probablySafeRows.map((row) => renderRow(row, false, true))}
         </ul>
+        {BULK_REMOVE_ENABLED && probablySafeRows.length > 0 && (
+          <div className="sweep-report-bulk-actions" data-testid="sweep-report-bulk-actions">
+            <button
+              type="button"
+              className="sweep-report-bulk-btn"
+              data-testid="sweep-report-bulk-remove"
+              disabled={selectedCount === 0 || bulkRemoveRunning}
+              onClick={() => setConfirmingBulk(true)}
+            >
+              {bulkRemoveRunning
+                ? 'Removing…'
+                : `Remove ${selectedCount} path(s), keep branch(es)`}
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="sweep-report-section">
@@ -272,6 +361,54 @@ export function SweepReport({ send }: Props) {
           {blockedSummary.count} blocked (busy / protected / checked out elsewhere / unknown)
         </div>
       </div>
+
+      {confirmingBulk && (
+        <div
+          className="sweep-confirm-backdrop"
+          data-testid="sweep-report-bulk-confirm"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="sweep-confirm-dialog">
+            <h3 className="sweep-confirm-title">Remove {selectedCount} worktree path(s)</h3>
+            <p>
+              Kookr will delete the working directory of each selected worktree and{' '}
+              <strong>keep its branch and commits</strong>. Everything in those directories that is
+              not committed is deleted — including gitignored files (<code>.env</code>, local
+              databases, build output).
+            </p>
+            {sensitiveSelectedCount > 0 && (
+              <p className="sweep-confirm-warning" data-testid="sweep-report-bulk-sensitive-warning">
+                ⚠ {sensitiveSelectedCount} selected worktree(s) hold gitignored files that are{' '}
+                <strong>not</strong> just regenerable build output. Those files will be permanently
+                deleted.
+              </p>
+            )}
+            <p className="sweep-confirm-hint">
+              Branches and their commits stay reachable in each repo — only the working directories
+              are removed.
+            </p>
+            <div className="sweep-confirm-actions">
+              <button
+                type="button"
+                className="sweep-confirm-cancel"
+                data-testid="sweep-report-bulk-cancel"
+                onClick={() => setConfirmingBulk(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="sweep-confirm-go"
+                data-testid="sweep-report-bulk-confirm-go"
+                onClick={triggerBulkRemove}
+              >
+                Remove {selectedCount} path(s)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

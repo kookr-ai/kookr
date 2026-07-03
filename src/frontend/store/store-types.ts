@@ -28,6 +28,7 @@ import type {
   SkillDiscoveryStateSnapshot,
   ServerMessage,
   SweepReport,
+  WorkspaceBulkRemoveProgressMessage,
   WorkspaceSweepProgressMessage,
   WorkspaceSweepProgressSnapshot,
   TaskRelation,
@@ -101,6 +102,19 @@ export interface AchievementToast {
 
 export interface SweepProgressState extends WorkspaceSweepProgressSnapshot {
   projectStatuses: Record<string, WorkspaceSweepProgressMessage['status']>;
+}
+
+/** Live cursor for a Probably-safe bulk reclaim (RFC PR 3). */
+export interface BulkRemoveProgressState {
+  runId: string;
+  index: number;
+  total: number;
+  projectId: string;
+  worktreePath: string;
+  status: WorkspaceBulkRemoveProgressMessage['status'];
+  /** Accumulated per-row outcome counts derived client-side. */
+  done: number;
+  skipped: number;
 }
 
 export interface TransportSessionSlice {
@@ -362,6 +376,10 @@ export interface WorkspaceSlice {
    * from the ledger even when the live `sweepReport` was lost.
    */
   lastSweepRunId: string | null;
+  /** True while a Probably-safe bulk reclaim is running (RFC PR 3). */
+  bulkRemoveRunning: boolean;
+  /** Live cursor for the current bulk reclaim. */
+  bulkRemoveProgress: BulkRemoveProgressState | null;
 
   handleWorkspaceView: (
     view: WorkspaceView,
@@ -398,6 +416,14 @@ export interface WorkspaceSlice {
   /** Open / close the re-openable Sweep Report panel. */
   openSweepReport: () => void;
   closeSweepReport: () => void;
+  /** Optimistically mark a bulk reclaim as started when the client sends it. */
+  startBulkRemove: () => void;
+  /**
+   * Fold a `workspaceBulkRemoveProgress` broadcast into the cursor. A `done`
+   * row is dropped from the in-memory report (and its bucket recount) so the
+   * Probably-safe list shrinks live; the run ends when the last row settles.
+   */
+  handleBulkRemoveProgress: (msg: WorkspaceBulkRemoveProgressMessage) => void;
 }
 
 export interface OssAttemptsSlice {

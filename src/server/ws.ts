@@ -472,6 +472,10 @@ export class MessageRouter {
       case 'workspace:requestSweepReport':
         this.sweepHandler.handleReportRequest(msg.runId);
         return;
+
+      case 'workspace:bulkRemoveProbablySafe':
+        await this.sweepHandler.handleBulkRemove(msg.rows);
+        return;
     }
   }
 

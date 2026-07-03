@@ -274,6 +274,9 @@ export function useWebSocket() {
             case 'workspaceSweepProgress':
               store.handleSweepProgress(msg);
               break;
+            case 'workspaceBulkRemoveProgress':
+              store.handleBulkRemoveProgress(msg);
+              break;
             case 'workspaceSweepComplete':
               store.handleSweepComplete({
                 runId: msg.runId,
