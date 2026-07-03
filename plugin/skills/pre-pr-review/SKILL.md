@@ -107,6 +107,8 @@ Treat these as blocking scope findings until fixed or explicitly justified in th
 
 If the scope check finds unrelated changes, remove them from the branch before creating the PR. If a suspicious deletion or reversion is intentional, document why it is required for this issue in the PR description.
 
+**Completing scope is not widening scope.** A narrow `Expected files ONLY` allow-list plus a "stop rather than widen scope" instruction can collide with the mandatory gates below — most often the docs-drift check (§8), which blocks the PR on a system-model / requirement / ADR doc that *your own diff just made stale*. Updating a doc or artifact that your change falsified **directly serves the PR goal** (shipping the change without drift), so it is *in* scope even when the task's file list did not enumerate it. Make the edit, note it in the PR body ("updated `<doc>` — kept in sync with this change"), and continue — do **not** stop to ask permission for it. Only stop and report the blocker when the required file is *explicitly forbidden* (e.g. named in a do-not-touch list because another task owns it) or when the gate demands *unrelated new work* rather than syncing an artifact your diff already invalidated.
+
 ### 4b. Portability Check
 
 Scan **changed lines only** (not the full repo) for user-specific absolute paths in scripts, docs, skills, agent definitions, and PR-template content. Replace with portable equivalents where practical.
