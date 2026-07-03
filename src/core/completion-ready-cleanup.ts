@@ -1,6 +1,6 @@
 import type { Task } from './task-read-model.js';
 
-export const DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+export const DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS = 60 * 60 * 1000;
 
 export type CompletionReadyManualActionReason =
   | 'auto_close_not_enabled'
@@ -44,6 +44,14 @@ export function listStaleCompletionReadyTasks(
     // Persisted task stores can outlive older/invalid signal payloads; skip
     // malformed timestamps rather than surfacing a cleanup row with bogus age.
     if (!Number.isFinite(raisedAtMs)) continue;
+
+    const liveSessionStarts = task.sessions
+      .filter((session) => session.lastStatus !== 'completed' && session.lastStatus !== 'aborted')
+      .map((session) => session.createdAt.getTime());
+    const latestLiveSessionStartedAtMs = Math.max(...liveSessionStarts);
+    // Signals recorded before a task has a live session are manual-review
+    // breadcrumbs. Do not let a pre-start signal auto-close a later run.
+    if (!Number.isFinite(latestLiveSessionStartedAtMs) || raisedAtMs < latestLiveSessionStartedAtMs) continue;
 
     // Future timestamps can happen after clock skew or manual state edits. Keep
     // the row hidden until local time catches up.

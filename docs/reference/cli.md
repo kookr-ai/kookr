@@ -108,7 +108,7 @@ kookr spawn --auto-close-on-signal "implement issue #42 then signal completion-r
 kookr spawn --no-auto-close-on-signal "..."   # opt out of an inherited policy
 ```
 
-With `--auto-close-on-signal`, the task auto-completes the moment its agent runs `kookr signal completion-ready`, instead of waiting for manual review — freeing an active slot so queued tasks can run. If the flag is omitted, the new task **inherits the policy of its parent task** (the `parentTaskId` linkage, which `kookr spawn` sets from `KOOKR_TASK_ID` by default). That makes the policy propagate automatically down a self-continuation chain. Pass `--no-auto-close-on-signal` to opt a successor out of an inherited policy. See [auto-close-on-signal](./auto-close-on-signal.md).
+With `--auto-close-on-signal`, the task auto-completes after its `kookr signal completion-ready` signal has been pending for one hour, instead of waiting indefinitely for manual review — freeing an active slot so queued tasks can run. If the flag is omitted, the new task **inherits the policy of its parent task** (the `parentTaskId` linkage, which `kookr spawn` sets from `KOOKR_TASK_ID` by default). That makes the policy propagate automatically down a self-continuation chain. Pass `--no-auto-close-on-signal` to opt a successor out of an inherited policy. See [auto-close-on-signal](./auto-close-on-signal.md).
 
 ## Hook-Safe Prompts
 
@@ -154,9 +154,10 @@ by itself; the user still decides what to do in the dashboard.
 
 **Exception — auto-close.** If the task was launched with the `autoCloseOnSignal`
 policy (via `kookr spawn --auto-close-on-signal`, an `autoCloseOnSignal: true`
-playbook, or inherited from a parent task), a `completion-ready` signal completes
-the task immediately and frees its active slot. Only signal when work is truly
-finished — under auto-close the task closes right away. See
+playbook, or inherited from a parent task), a `completion-ready` signal starts a
+one-hour auto-close grace period. If the task is still in progress after that,
+Kookr completes it and frees its active slot. Only signal when work is truly
+finished — under auto-close the task can close later without another prompt. See
 [auto-close-on-signal](./auto-close-on-signal.md).
 
 Kinds:

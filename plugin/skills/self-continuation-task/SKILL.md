@@ -143,8 +143,8 @@ launching its successor. Two mechanisms cooperate here:
   been spawned — run `kookr signal completion-ready` (optionally
   `--note "..."`). This is the agent telling Kookr "this task is finished."
 - **Auto-close.** If the task was launched with `autoCloseOnSignal` enabled,
-  that signal completes the task immediately instead of waiting for a human to
-  review and click Complete — freeing the active slot at once.
+  that signal schedules completion after the one-hour grace period instead of
+  waiting indefinitely for a human to review and click Complete.
 
 **Inheritance is automatic and server-side.** A task launched with
 `autoCloseOnSignal` set propagates it to any successor spawned with its task id
@@ -155,9 +155,10 @@ skill relies on. To opt a successor out of an inherited policy, launch it with
 `kookr spawn --no-auto-close-on-signal`.
 
 Only signal completion-ready when work is truly finished: under `autoCloseOnSignal`
-it closes the task right away, so signalling mid-work would abort it. If a task
-is NOT auto-close enabled, the signal is harmless — it just surfaces a banner for
-manual review. See docs/reference/auto-close-on-signal.md for the full model.
+it closes the task after the grace period without another prompt, so signalling
+mid-work would still abort it later. If a task is NOT auto-close enabled, the
+signal is harmless — it just surfaces a banner for manual review. See
+docs/reference/auto-close-on-signal.md for the full model.
 
 ## Successor Prompt Template
 

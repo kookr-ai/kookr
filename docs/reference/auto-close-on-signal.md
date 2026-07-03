@@ -1,8 +1,8 @@
 # Auto-Close on Completion Signal
 
 `autoCloseOnSignal` is a per-task policy that makes a task **complete itself**
-the moment its agent raises a `completion_ready` signal — instead of staying open
-until a human reviews it and clicks **Complete**.
+after its agent's `completion_ready` signal has been pending for one hour —
+instead of staying open indefinitely until a human clicks **Complete**.
 
 ## Why it exists
 
@@ -14,8 +14,9 @@ chains, batch issue implementation), finished-but-unreviewed tasks accumulate an
 eventually fill every slot, so newly launched tasks are queued (`pending`) and
 the chain stalls.
 
-`autoCloseOnSignal` removes the human step from that path: the agent declares
-"done," and Kookr immediately completes the task and promotes the next queued one.
+`autoCloseOnSignal` bounds that human-review window: the agent declares "done,"
+Kookr keeps the signal visible for one hour, then completes the task and
+promotes the next queued one if nobody acted first.
 
 ## The completion signal
 
@@ -29,14 +30,15 @@ kookr signal completion-ready --note "PR #123 merged"
 - **Without** `autoCloseOnSignal`: the signal only *surfaces* — the dashboard
   shows a banner and emphasizes the **Complete** button. The task stays open; the
   user decides. This is the default, unchanged behavior.
-- **With** `autoCloseOnSignal`: the same signal **completes the task
-  immediately**, runs the normal completion lifecycle (stops sessions, cleans up
-  worktrees, generates the completion digest), and promotes the next pending task.
+- **With** `autoCloseOnSignal`: the same signal starts a **one-hour auto-close
+  grace period**. If the task is still in progress after that hour, Kookr runs
+  the normal completion lifecycle (stops sessions, cleans up worktrees,
+  generates the completion digest), and promotes the next pending task.
 
 > **Signal only when work is truly finished.** Under `autoCloseOnSignal` the
-> signal closes the task right away, so signalling mid-work aborts it. The Stop
-> nudge hook already reminds agents to signal only when the task is fully
-> complete.
+> signal starts the close timer, so signalling mid-work can still close the task
+> later if nobody intervenes. The Stop nudge hook already reminds agents to
+> signal only when the task is fully complete.
 
 ## Enabling it
 
@@ -124,10 +126,9 @@ P (no flag, no parent)            → false
 ## Behavior details
 
 - **Ralph loops.** A `completion_ready` signal on a task with an active Ralph loop
-  ends the **current iteration** (the loop owns the task-level lifecycle and
-  decides whether to continue) rather than completing the whole task. This matches
-  the existing manual-complete semantics for Ralph tasks. Ralph playbooks should
-  write a Phase 9 verdict, not rely on the signal.
+  is not swept by delayed auto-close; the signal stays visible for the
+  Ralph-aware lifecycle path. Ralph playbooks should write a Phase 9 verdict,
+  not rely on the signal.
 - **Not yet in progress.** If a task somehow signals before it is `inProgress`,
   auto-close is skipped; the signal is still recorded so the manual-review banner
   appears as a fallback.

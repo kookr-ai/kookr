@@ -48,7 +48,7 @@ discovery, precedence, and plugin portability rules.
 | `tags` | list of strings | no | `[]` | Display and behavior tags. `loopable` enables bounded loop metadata and defaults. |
 | `loop` | mapping | no | absent | Optional loop settings for playbooks tagged `loopable`. Invalid loop metadata is recorded as `loopValidationError`; standard launch metadata still parses. |
 | `deliveryPreAuthorized` | boolean | no | absent | Server policy flag used by delivery playbooks. Only `true` and `false` are recognized. |
-| `autoCloseOnSignal` | boolean | no | absent | When `true`, tasks launched from this playbook auto-complete the moment their agent runs `kookr signal completion-ready`, instead of waiting for manual review. Successors spawned via `parentTaskId` inherit it automatically. Only `true` and `false` are recognized. See [auto-close-on-signal](./auto-close-on-signal.md). |
+| `autoCloseOnSignal` | boolean | no | absent | When `true`, tasks launched from this playbook auto-complete after their agent's `completion_ready` signal has been pending for the one-hour grace period, instead of waiting indefinitely for manual review. Successors spawned via `parentTaskId` inherit it automatically. Only `true` and `false` are recognized. See [auto-close-on-signal](./auto-close-on-signal.md). |
 | `cwd` | string | no | launch dialog cwd | Target working directory override for launched tasks. |
 | `dependencies` | list of launch dependency strings | no | `[]` | External capabilities the playbook requires before launch. Unsupported values are parse errors. Currently supported: `kb`. |
 | `repo-tags` | list of strings | no | `[]` | Plugin-tier visibility filter. Ignored for project and user playbooks. |

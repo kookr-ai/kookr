@@ -55,9 +55,9 @@ describe('listStaleCompletionReadyTasks', () => {
     store.completeTask(completed.id);
 
     store.setPendingSignal(fresh.id, { kind: 'completion_ready', raisedAt: '2026-06-20T23:30:00.000Z' });
-    store.setPendingSignal(stale.id, { kind: 'completion_ready', raisedAt: '2026-06-19T23:00:00.000Z' });
-    store.setPendingSignal(older.id, { kind: 'completion_ready', raisedAt: '2026-06-19T22:00:00.000Z' });
-    store.setPendingSignal(completed.id, { kind: 'completion_ready', raisedAt: '2026-06-19T21:00:00.000Z' });
+    store.setPendingSignal(stale.id, { kind: 'completion_ready', raisedAt: '2026-06-20T01:00:00.000Z' });
+    store.setPendingSignal(older.id, { kind: 'completion_ready', raisedAt: '2026-06-20T00:30:00.000Z' });
+    store.setPendingSignal(completed.id, { kind: 'completion_ready', raisedAt: '2026-06-20T00:15:00.000Z' });
 
     const entries = listStaleCompletionReadyTasks(store.listTasks(), {
       now: new Date('2026-06-21T00:00:00.000Z'),
@@ -68,12 +68,12 @@ describe('listStaleCompletionReadyTasks', () => {
     expect(entries[0]).toMatchObject({
       canAutoClose: false,
       manualActionRequiredReason: 'delivery_authorization_required',
-      ageMs: 26 * 60 * 60 * 1000,
+      ageMs: 23.5 * 60 * 60 * 1000,
     });
     expect(entries[1]).toMatchObject({
       canAutoClose: false,
       manualActionRequiredReason: 'auto_close_not_enabled',
-      ageMs: 25 * 60 * 60 * 1000,
+      ageMs: 23 * 60 * 60 * 1000,
     });
   });
 

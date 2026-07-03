@@ -394,50 +394,31 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     taskStore.setPendingSignal(id, signal);
 
     // Auto-close opt-in (per-task `autoCloseOnSignal`, set at launch or inherited
-    // from the parent). Explicit auto-close means a `completion_ready` signal
-    // completes the task immediately instead of waiting for manual review,
-    // freeing an active slot and promoting the next pending task. Without that
-    // opt-in, ask-first delivery tasks keep the signal surfaced for operator
-    // review. completeTask clears the pending signal it just set.
-    // For an active Ralph loop this ends the current iteration (outcome
-    // 'partial_ralph_completion'); the loop decides whether to continue.
+    // from the parent). Explicit auto-close now gives operators a one-hour
+    // review window: the signal is recorded here, then the lifecycle timer
+    // completes stale eligible tasks. Without that opt-in, ask-first delivery
+    // tasks keep the signal surfaced for manual review.
     // See docs/reference/auto-close-on-signal.md.
     const closePolicy = classifyCompletionReadyClosePolicy(task);
-    if (body.kind === 'completion_ready' && closePolicy.canAutoClose) {
-      try {
-        const result = await lifecycleCommands.completeTask(id);
-        broadcastSnapshotWithCoordinator();
-        // `autoClosed` reflects whether the task actually reached a terminal
-        // state (and thus freed its slot). An active Ralph loop only ends the
-        // current iteration and stays inProgress, so it is NOT a close — report
-        // it truthfully as autoClosed:false with the outcome, so an automation
-        // reading the boolean isn't misled into assuming a slot was released.
-        return c.json({
-          ok: true,
-          signal,
-          truncated,
-          autoClosed: result.outcome === 'completed',
-          outcome: result.outcome,
-        });
-      } catch (err) {
-        // Never fail the agent's signal call on a completion error — the signal
-        // is recorded and the user can complete manually.
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`[signal] auto-close failed for task ${id}: ${message}`);
-        broadcastSnapshotWithCoordinator();
-        return c.json({ ok: true, signal, truncated, autoClosed: false, error: message });
-      }
-    }
+    const autoCloseScheduled =
+      body.kind === 'completion_ready' &&
+      closePolicy.canAutoClose &&
+      task.status === 'inProgress' &&
+      !isActiveRalphLoop(task);
 
     broadcastSnapshotWithCoordinator();
     return c.json({
       ok: true,
       signal,
       truncated,
-      ...(!closePolicy.canAutoClose ? {
-        autoClosed: false,
-        manualActionRequiredReason: closePolicy.manualActionRequiredReason,
+      autoClosed: false,
+      ...(autoCloseScheduled ? {
+        autoCloseScheduled: true,
+        autoCloseAfterMs: DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
       } : {}),
+      ...(!autoCloseScheduled && !closePolicy.canAutoClose
+        ? { manualActionRequiredReason: closePolicy.manualActionRequiredReason }
+        : {}),
     });
   });
 
@@ -462,6 +443,10 @@ function normalizeSignalNote(raw: string): { note?: string; truncated: boolean }
     note: truncateAtWordBoundary(redacted, MAX_AGENT_SIGNAL_NOTE_LENGTH),
     truncated: true,
   };
+}
+
+function isActiveRalphLoop(task: Pick<Task, 'ralphLoop'>): boolean {
+  return task.ralphLoop?.status === 'running' || task.ralphLoop?.status === 'paused';
 }
 
 function truncateAtWordBoundary(text: string, maxLength: number): string {

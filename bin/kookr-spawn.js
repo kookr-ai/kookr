@@ -67,8 +67,8 @@ Options:
       --parent-task-id <uuid>  Override the parent task linkage explicitly.
       --no-parent-task     Launch detached, ignoring KOOKR_TASK_ID.
       --auto-close-on-signal
-                           Auto-complete on "kookr signal completion-ready"
-                           (frees an active slot).
+                           Auto-complete one hour after
+                           "kookr signal completion-ready" (frees a slot).
       --no-auto-close-on-signal
                            Opt this task out, overriding any inherited policy.
   -f, --prompt-file <path> Read prompt from a file (hook-safe).
@@ -83,11 +83,11 @@ Parent-task linking:
 
 Auto-close on completion signal:
   When --auto-close-on-signal is set (or inherited from the parent task), the
-  spawned task auto-completes the moment its agent runs
-  "kookr signal completion-ready", instead of waiting for manual review. If the
-  flag is omitted, the new task inherits the parent's policy — so it propagates
-  automatically down a self-continuation chain. Pass --no-auto-close-on-signal
-  to opt a successor out of an inherited policy.
+  spawned task auto-completes after its "kookr signal completion-ready" signal
+  has been pending for one hour, instead of waiting indefinitely for manual
+  review. If the flag is omitted, the new task inherits the parent's policy —
+  so it propagates automatically down a self-continuation chain. Pass
+  --no-auto-close-on-signal to opt a successor out of an inherited policy.
 
 Environment:
   KOOKR_API_BASE_URL              Base URL of a running Kookr server

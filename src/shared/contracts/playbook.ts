@@ -84,8 +84,9 @@ export interface Playbook {
   deliveryPreAuthorized?: boolean;
   /**
    * Server-consumed policy flag: when true, tasks launched from this playbook
-   * auto-complete on a `completion_ready` signal instead of waiting for manual
-   * review. Successors spawned via parentTaskId inherit it automatically.
+   * auto-complete after a `completion_ready` signal has been pending for the
+   * grace period instead of waiting indefinitely for manual review. Successors
+   * spawned via parentTaskId inherit it automatically.
    * See docs/reference/auto-close-on-signal.md.
    */
   autoCloseOnSignal?: boolean;

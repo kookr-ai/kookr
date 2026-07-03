@@ -34,9 +34,10 @@ Prometheus metrics intentionally do not include raw audit failure reasons. Use
 | --- | --- |
 | `GET /api/tasks` | All tasks with sessions |
 | `GET /api/tasks/:id` | A single task by id (404 with `{"error": "Task not found"}` for unknown ids) |
+| `GET /api/tasks/completion-ready/stale` | List stale `completion_ready` signals and whether each can be auto-closed |
 | `POST /api/tasks` | Create and launch a new task |
 | `POST /api/tasks/:id/complete` | Mark a finished task `completed` (non-destructive) and tear down its idle session |
-| `POST /api/tasks/:id/signal` | Raise an agent → user signal (e.g. `completion_ready`); auto-completes the task when it opted into `autoCloseOnSignal` |
+| `POST /api/tasks/:id/signal` | Raise an agent → user signal (e.g. `completion_ready`); schedules delayed auto-completion when the task opted into `autoCloseOnSignal` |
 | `DELETE /api/tasks/:id` | Stop and remove a task |
 | `POST /api/agents/:id/message` | Send a message or hint to a running agent |
 | `GET /api/agents/:agentId/edit-events/:toolUseId` | Fetch a recorded Edit/Write tool event for diff display |
@@ -56,8 +57,8 @@ remains for backwards compatibility.
 `agentType`, `effort`, `disableDedup`, `metadata`, `dependencies`, and
 `autoCloseOnSignal`.
 
-`autoCloseOnSignal` (optional, boolean) opts the task into auto-completion when
-its agent raises a `completion_ready` signal (see
+`autoCloseOnSignal` (optional, boolean) opts the task into auto-completion after
+its agent's `completion_ready` signal has been pending for one hour (see
 [`POST /api/tasks/:id/signal`](#post-apitasksidsignal) and the
 [Auto-Close on Completion Signal](./auto-close-on-signal.md) reference). A
 non-boolean value returns `400`. When omitted, the task **inherits the policy of
@@ -139,13 +140,30 @@ secrets are best-effort redacted and over-limit notes are visibly truncated).
 **Auto-close.** When the task opted into the policy (`autoCloseOnSignal` — set at
 launch or inherited from its parent; see
 [Auto-Close on Completion Signal](./auto-close-on-signal.md)), a `completion_ready`
-signal completes the task immediately through the same lifecycle as
+signal starts a one-hour auto-close grace period. The response includes
+`"autoClosed": false`, `"autoCloseScheduled": true`, and `"autoCloseAfterMs"` for
+active non-Ralph tasks whose policy allows delayed close. When the signal becomes
+stale, the lifecycle timer completes the task through the same lifecycle as
 `POST /api/tasks/:id/complete`, freeing an active slot and promoting the next
-pending task. The response then includes `"autoClosed": true` and the
-completion `"outcome"`. For a task with an active Ralph loop the signal ends the
-current iteration (`"outcome": "partial_ralph_completion"`). Completion failures
-never fail the signal call — the response carries `"autoClosed": false` and the
-signal remains recorded for manual review.
+pending task. Active Ralph loops are not swept by delayed auto-close; their
+signals remain recorded for the Ralph-aware lifecycle path. Completion failures
+do not fail the signal call — the signal remains recorded for manual review.
+
+### `GET /api/tasks/completion-ready/stale`
+
+Lists active tasks whose `completion_ready` signal is older than the configured
+threshold. The endpoint is used by operators and cleanup tooling to distinguish
+signals that can be auto-closed from signals that still require manual action.
+
+Query parameters:
+
+- `thresholdMs` (optional): minimum signal age in milliseconds. Defaults to one
+  hour.
+
+Success returns `200` with schema
+`{"schema":"stale-completion-ready-tasks.v1","count":<number>,"tasks":[...]}`.
+Each entry includes the task, the stored signal, `ageMs`, `canAutoClose`, and,
+when `canAutoClose` is false, `manualActionRequiredReason`.
 
 ## Issue Claims
 
