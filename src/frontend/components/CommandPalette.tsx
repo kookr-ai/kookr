@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import {
@@ -57,6 +57,8 @@ export function CommandPalette({
   const dialogRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const paletteId = useId();
+  const listId = `${paletteId}-listbox`;
 
   useEscapeToClose(onClose);
   useDialogFocus({ dialogRef, initialFocusRef: inputRef });
@@ -155,6 +157,9 @@ export function CommandPalette({
     active?.scrollIntoView?.({ block: 'nearest' });
   }, [selectedIndex]);
 
+  const selectedRow = rows.find((row) => row.kind === 'item' && row.index === selectedIndex);
+  const activeDescendant = selectedRow ? getCommandRowId(listId, selectedRow.key) : undefined;
+
   return (
     <div className="dialog-overlay" onClick={onClose}>
       <div
@@ -171,6 +176,10 @@ export function CommandPalette({
             ref={inputRef}
             className="cmd-input"
             type="text"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls={listId}
+            aria-activedescendant={activeDescendant}
             value={query}
             placeholder="Search actions, tasks, findings, projects…"
             aria-label="Search actions, tasks, findings, and projects"
@@ -179,9 +188,18 @@ export function CommandPalette({
             onKeyDown={handleKeyDown}
           />
         </div>
-        <div className="cmd-body" ref={listRef} data-testid="command-palette-list">
+        <div
+          className="cmd-body"
+          ref={listRef}
+          id={listId}
+          role="listbox"
+          aria-label="Command palette results"
+          data-testid="command-palette-list"
+        >
           {selectable.length === 0 ? (
-            <p className="cmd-empty">No matches for “{query.trim()}”.</p>
+            <div className="cmd-empty" role="option" aria-disabled="true" aria-selected="false">
+              No matches for “{query.trim()}”.
+            </div>
           ) : (
             rows.map((row) =>
               row.kind === 'header' ? (
@@ -191,6 +209,7 @@ export function CommandPalette({
               ) : (
                 <CommandRow
                   key={row.key}
+                  id={getCommandRowId(listId, row.key)}
                   item={row.item}
                   selected={row.index === selectedIndex}
                   onHover={() => setSelectedIndex(row.index)}
@@ -211,18 +230,28 @@ export function CommandPalette({
 }
 
 interface CommandRowProps {
+  id: string;
   item: SelectableItem;
   selected: boolean;
   onHover: () => void;
   onRun: () => void;
 }
 
-function CommandRow({ item, selected, onHover, onRun }: CommandRowProps): React.ReactElement {
+function getCommandRowId(listId: string, rowKey: string): string {
+  return `${listId}-${rowKey}`;
+}
+
+function CommandRow({ id, item, selected, onHover, onRun }: CommandRowProps): React.ReactElement {
   if (item.kind === 'action') {
     const { action } = item;
     return (
       <button
+        id={id}
         type="button"
+        role="option"
+        tabIndex={-1}
+        aria-selected={selected}
+        aria-label={`Action: ${action.label}`}
         className={`cmd-row${selected ? ' sel' : ''}`}
         data-testid="command-palette-action"
         data-action-id={action.id}
@@ -243,7 +272,12 @@ function CommandRow({ item, selected, onHover, onRun }: CommandRowProps): React.
     const { task } = item;
     return (
       <button
+        id={id}
         type="button"
+        role="option"
+        tabIndex={-1}
+        aria-selected={selected}
+        aria-label={`Task: ${task.label}`}
         className={`cmd-row${selected ? ' sel' : ''}`}
         data-testid="command-palette-task"
         data-task-id={task.taskId}
@@ -262,7 +296,12 @@ function CommandRow({ item, selected, onHover, onRun }: CommandRowProps): React.
     const { finding } = item;
     return (
       <button
+        id={id}
         type="button"
+        role="option"
+        tabIndex={-1}
+        aria-selected={selected}
+        aria-label={`Finding: ${finding.label}`}
         className={`cmd-row${selected ? ' sel' : ''}`}
         data-testid="command-palette-finding"
         data-agent-id={finding.agentId}
@@ -284,7 +323,12 @@ function CommandRow({ item, selected, onHover, onRun }: CommandRowProps): React.
   ].filter((value): value is string => Boolean(value)).join(' · ');
   return (
     <button
+      id={id}
       type="button"
+      role="option"
+      tabIndex={-1}
+      aria-selected={selected}
+      aria-label={`Project: ${project.label}`}
       className={`cmd-row${selected ? ' sel' : ''}`}
       data-testid="command-palette-project"
       data-project-id={project.projectId}
