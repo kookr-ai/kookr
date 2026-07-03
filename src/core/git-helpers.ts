@@ -12,10 +12,14 @@ const execFileAsync = promisify(execFileCb);
 
 export const DEFAULT_GIT_TIMEOUT_MS = 30_000;
 export const DEFAULT_GIT_MAX_BUFFER = 8 * 1024 * 1024;
+export const DEFAULT_GIT_MAX_ATTEMPTS = 3;
+const DEFAULT_GIT_RETRY_DELAYS_MS = [1_000, 3_000];
 
 export interface GitRunOptions {
   timeoutMs?: number;
   maxBuffer?: number;
+  maxAttempts?: number;
+  retryDelayMs?: (attempt: number) => number;
 }
 
 export type GitRunResult =
@@ -39,27 +43,38 @@ export async function runGitIn(
 ): Promise<GitRunResult> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS;
   const maxBuffer = options.maxBuffer ?? DEFAULT_GIT_MAX_BUFFER;
-  try {
-    // Strip GIT_DIR/GIT_WORK_TREE so the cwd is authoritative.
-    // These vars leak from git hooks (e.g. pre-push) and override --work-tree/cwd.
-    const env = { ...process.env };
-    delete env.GIT_DIR;
-    delete env.GIT_WORK_TREE;
-    const { stdout } = await execFileAsync('git', args, { cwd, env, timeout: timeoutMs, maxBuffer });
-    return { kind: 'ok', stdout: stdout.trim() };
-  } catch (err) {
-    const kind = classifyGitError(err);
-    if (kind !== 'failed') {
-      console.warn('[git-helpers] git subprocess guard tripped', {
-        kind,
-        cwd,
-        args,
-        timeoutMs,
-        maxBuffer,
-      });
+  const maxAttempts = Math.max(1, options.maxAttempts ?? DEFAULT_GIT_MAX_ATTEMPTS);
+  let lastKind: GitFailureKind = 'failed';
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      // Strip GIT_DIR/GIT_WORK_TREE so the cwd is authoritative.
+      // These vars leak from git hooks (e.g. pre-push) and override --work-tree/cwd.
+      const env = { ...process.env };
+      delete env.GIT_DIR;
+      delete env.GIT_WORK_TREE;
+      const { stdout } = await execFileAsync('git', args, { cwd, env, timeout: timeoutMs, maxBuffer });
+      return { kind: 'ok', stdout: stdout.trim() };
+    } catch (err) {
+      const kind = classifyGitError(err);
+      lastKind = kind;
+      if (kind !== 'failed') {
+        console.warn('[git-helpers] git subprocess guard tripped', {
+          kind,
+          cwd,
+          args,
+          timeoutMs,
+          maxBuffer,
+          attempt,
+          maxAttempts,
+        });
+      }
+      if (attempt >= maxAttempts || !shouldRetryGitFailure(args, kind, err)) {
+        return { kind };
+      }
+      await delay(retryDelayMs(options, attempt));
     }
-    return { kind };
   }
+  return { kind: lastKind };
 }
 
 export function classifyGitError(err: unknown): GitFailureKind {
@@ -74,4 +89,39 @@ export function classifyGitError(err: unknown): GitFailureKind {
     return 'max_buffer_exceeded';
   }
   return 'failed';
+}
+
+function shouldRetryGitFailure(args: string[], kind: GitFailureKind, err: unknown): boolean {
+  if (!isRetryableGitCommand(args)) return false;
+  if (kind === 'timed_out') return true;
+  return kind === 'failed' && isTransientGitError(err);
+}
+
+function isRetryableGitCommand(args: string[]): boolean {
+  const op = args.find((arg) => !arg.startsWith('-'));
+  return op === 'fetch' || op === 'ls-remote';
+}
+
+function isTransientGitError(err: unknown): boolean {
+  const error = err as { code?: unknown; message?: unknown; stderr?: unknown } | null;
+  const code = typeof error?.code === 'string' ? error.code : '';
+  const message = [
+    typeof error?.message === 'string' ? error.message : '',
+    typeof error?.stderr === 'string' ? error.stderr : '',
+  ].join('\n');
+  return code === 'ECONNRESET'
+    || code === 'ECONNREFUSED'
+    || code === 'EAI_AGAIN'
+    || code === 'ENOTFOUND'
+    || /remote end hung up|connection reset|connection refused|could not resolve host|network is unreachable|TLS|HTTP 5\d\d/i.test(message);
+}
+
+function retryDelayMs(options: GitRunOptions, attempt: number): number {
+  if (options.retryDelayMs) return Math.max(0, options.retryDelayMs(attempt));
+  return DEFAULT_GIT_RETRY_DELAYS_MS[attempt - 1] ?? DEFAULT_GIT_RETRY_DELAYS_MS[DEFAULT_GIT_RETRY_DELAYS_MS.length - 1]!;
+}
+
+function delay(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

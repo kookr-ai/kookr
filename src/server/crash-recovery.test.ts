@@ -555,7 +555,7 @@ describe('Crash Recovery', () => {
     expect(newSession.resumedFromCrash).toBeUndefined();
   });
 
-  test('fresh fallback: transcript file is missing on disk', async () => {
+  test('resume mode: stale transcript path falls back to session-id-only resume', async () => {
     const cwd = join(tempDir, 'project-missing-transcript');
     const transcriptPath = join(tempDir, 'transcripts', 'gone.jsonl');
     // Intentionally do NOT create the transcript file
@@ -571,9 +571,9 @@ describe('Crash Recovery', () => {
     const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
 
     expect(result.relaunched).toHaveLength(1);
-    expect(result.relaunched[0].mode).toBe('fresh');
-    expect(result.relaunched[0].fallbackReason).toBe('transcript file missing');
-    expect(launchSpy.mock.calls[0][3]).toBeUndefined();
+    expect(result.relaunched[0].mode).toBe('resumed');
+    expect(result.relaunched[0].fallbackReason).toBeUndefined();
+    expect(launchSpy.mock.calls[0][3]).toEqual({ sessionId: 'session-gone' });
   });
 
   test('codex sessions always get fresh launch even when claudeSessionId is set', async () => {
