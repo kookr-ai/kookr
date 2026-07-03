@@ -435,6 +435,14 @@ Fix any failures before proceeding.
 
 Before pushing or creating a PR, run the repo delivery pre-push workflow (`kookr-pre-push` when available). For Kookr itself, this includes the mandatory focused checks for changed files plus `pnpm build:server`, `pnpm check:e2e`, and `pnpm test`, reviewer specialists for non-trivial changes, and the SHA-bound `.review-state/<branch-key>.json` marker. Do not stop after verification to ask whether to push when this playbook already pre-authorized delivery.
 
+### Resolving conflicts when you sync the base branch into the PR
+
+Updating a stale PR often means merging the base branch back in (`git merge --no-edit origin/<base>`), which can conflict. The practice that keeps the PR intact:
+
+- **Inspect both sides before resolving.** For each conflicting file, read the hunks and compare the two versions — `git diff --ours -- <file>` and `git diff --theirs -- <file>` — so you know what *each* branch intended. (In a `git merge origin/<base>`, `--ours` is your PR branch and `--theirs` is the incoming base.)
+- **Keep the changes both branches intended.** Most conflicts are additive on both sides — the base added something and your PR added something else. Resolve by integrating both sets of changes, so your PR keeps its own contribution while adopting the base's. Watch append-style files especially (`.env.example`, changelogs, index/registry docs, import lists): adjacent additions there are usually *different concepts* that must coexist, not a pick-one choice.
+- **Confirm your own work survived.** After resolving, re-verify: no conflict markers remain (`git diff --check` and a `<<<<<<<`/`=======`/`>>>>>>>` grep), your PR's new symbols/env vars/tests are still present, and the standard checks above still pass. Then stage and commit the merge.
+
 ## Phase 7: Create or Update Pull Request
 
 Commit and push the verified branch, then create a PR targeting the appropriate base branch, or update the existing PR with new evidence:
