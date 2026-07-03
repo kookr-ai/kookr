@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { CodexRolloutScanner, type DiscoveryOutcome } from '../adapters/codex-rollout-scanner.js';
 import { createOpenRouterLlmClientFromEnv } from '../adapters/llm/openrouter-client.js';
 import { createRequestyLlmClientFromEnv } from '../adapters/llm/requesty-client.js';
+import { createBasetenLlmClientFromEnv } from '../adapters/llm/baseten-client.js';
 import { generateCompletionDigest, type CompletionDigest, type CompletionTokenUsage } from '../core/completion-digest.js';
 import { evaluateCriteriaVerdict } from '../core/criteria-verdict.js';
 import { createLlmClient } from '../adapters/llm/factory.js';
@@ -79,6 +80,7 @@ async function resolveCriteriaVerdictLlmClient(deps: CompletionMetadataDeps): Pr
   criteriaVerdictLlmClientPromise ??= createLlmClient({
     buildOpenRouter: createOpenRouterLlmClientFromEnv,
     buildRequesty: createRequestyLlmClientFromEnv,
+    buildBaseten: createBasetenLlmClientFromEnv,
   });
   return criteriaVerdictLlmClientPromise;
 }

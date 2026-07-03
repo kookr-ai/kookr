@@ -23,6 +23,7 @@ import { Watchdog } from '../../core/watchdog.js';
 import { WorktreeRegistry } from '../../adapters/git-worktree-registry.js';
 import { createOpenRouterLlmClientFromEnv } from '../../adapters/llm/openrouter-client.js';
 import { createRequestyLlmClientFromEnv } from '../../adapters/llm/requesty-client.js';
+import { createBasetenLlmClientFromEnv } from '../../adapters/llm/baseten-client.js';
 import { CombinedShadowStrategy } from '../../core/combined-shadow-strategy.js';
 import { HttpPushTracker } from '../../core/http-push-tracker.js';
 import { PaneSemanticsStrategy } from '../../core/pane-patterns.js';
@@ -164,6 +165,7 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
   const rawLlmClient: LlmClient | null = await createLlmClient({
     buildOpenRouter: createOpenRouterLlmClientFromEnv,
     buildRequesty: createRequestyLlmClientFromEnv,
+    buildBaseten: createBasetenLlmClientFromEnv,
   });
   const llmClient = rawLlmClient ? new CircuitBreakerLlmClient(rawLlmClient, llmBreaker) : null;
   if (rawLlmClient) {
