@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ScheduleStore, ScheduleValidationError, scheduleResolutionSignature } from './schedule.js';
@@ -324,6 +324,36 @@ describe('ScheduleStore', () => {
     expect(reloaded.list()[0].remainingTriggers).toBe(0);
     expect(reloaded.list()[0].stopReason).toBe('trigger_limit_reached');
     expect(reloaded.list()[0].exhaustedAt).toBe('2026-01-01T00:05:00.000Z');
+  });
+
+  it('re-arms the persist chain after a failed write while surfacing the failure', async () => {
+    const blockedDir = join(dir, 'blocked');
+    await writeFile(blockedDir, 'not a directory', 'utf-8');
+    const flakyStore = new ScheduleStore(blockedDir);
+
+    flakyStore.create({
+      name: 'First',
+      cron: '0 0 * * *',
+      playbook: { path: 'a.md', parameters: {} },
+      cwd: '/tmp',
+    });
+
+    await expect(flakyStore.persist()).rejects.toThrow();
+
+    await rm(blockedDir, { force: true });
+    await mkdir(blockedDir);
+
+    flakyStore.create({
+      name: 'Second',
+      cron: '0 6 * * *',
+      playbook: { path: 'b.md', parameters: {} },
+      cwd: '/tmp',
+    });
+
+    await expect(flakyStore.persist()).resolves.toBeUndefined();
+
+    const persisted = JSON.parse(await readFile(join(blockedDir, 'schedules.json'), 'utf-8'));
+    expect(persisted.map((schedule: { name: string }) => schedule.name)).toEqual(['First', 'Second']);
   });
 
   it('listWithComputed includes nextRunAt and cronDescription', () => {
