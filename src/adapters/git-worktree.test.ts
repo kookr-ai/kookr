@@ -23,7 +23,7 @@ import {
   cleanupTaskWorktrees,
 } from './git-worktree.js';
 import { DEFAULT_GIT_MAX_BUFFER, DEFAULT_GIT_TIMEOUT_MS } from '../core/git-helpers.js';
-import { TaskStore, type Task } from '../core/tasks.js';
+import { TaskStore } from '../core/tasks.js';
 import type { InteractionLogWriter } from '../core/interaction-log.js';
 import type { InteractionEvent } from '../core/interaction-log.js';
 
@@ -54,19 +54,6 @@ function mockGitResponses(handlers: Record<string, string | 'error'>) {
     // Default: empty success
     cb(null, { stdout: '', stderr: '' });
   });
-}
-
-function makeTask(overrides: Partial<Task> = {}): Task {
-  return {
-    id: 'task-1',
-    prompt: 'test',
-    cwd: '/test',
-    status: 'completed',
-    sessions: [],
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    ...overrides,
-  };
 }
 
 /** Create a fake interaction log that captures events in memory. */

@@ -4,9 +4,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { clampScanStart, loadHistoricalTasks } from './load-historical-tasks.js';
 import type { Task } from '../../core/tasks.js';
+import { aSnapshot, aTask } from '../../core/__fixtures__/task-builders.js';
+import { saveTasks } from '../../core/task-persistence.js';
 
-function makeTask(overrides: Partial<Task> & { id: string }): Task {
-  return {
+function historicalTask(overrides: Partial<Task> & { id: string }): Task {
+  return aTask({
     id: overrides.id,
     prompt: overrides.prompt ?? `task ${overrides.id}`,
     cwd: overrides.cwd ?? '/cwd',
@@ -16,11 +18,11 @@ function makeTask(overrides: Partial<Task> & { id: string }): Task {
     createdAt: overrides.createdAt ?? new Date('2026-05-01T00:00:00Z'),
     updatedAt: overrides.updatedAt ?? new Date('2026-05-01T00:00:00Z'),
     ...overrides,
-  } as Task;
+  });
 }
 
 function writeSnapshot(path: string, tasks: Task[], mtimeMs: number): void {
-  writeFileSync(path, JSON.stringify({ version: 2, lifetimeSpendUsd: 0, tasks }));
+  writeFileSync(path, JSON.stringify(aSnapshot({ tasks })));
   const seconds = mtimeMs / 1000;
   utimesSync(path, seconds, seconds);
 }
@@ -39,33 +41,43 @@ describe('loadHistoricalTasks', () => {
   });
 
   test('no snapshots: returns liveTasks unchanged', async () => {
-    const live = [makeTask({ id: 'L1' })];
+    const live = [historicalTask({ id: 'L1' })];
     const result = await loadHistoricalTasks(live, tasksFile);
     expect(result).toEqual(live);
   });
 
   test('directory does not exist: returns liveTasks (no throw)', async () => {
-    const result = await loadHistoricalTasks([makeTask({ id: 'L1' })], '/nonexistent/dir/tasks.json');
+    const result = await loadHistoricalTasks([historicalTask({ id: 'L1' })], '/nonexistent/dir/tasks.json');
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe('L1');
   });
 
   test('snapshot adds historical tasks not in live store', async () => {
-    const live = [makeTask({ id: 'L1' })];
+    const live = [historicalTask({ id: 'L1' })];
     writeSnapshot(
       join(tempDir, 'tasks.json.daily.20260507'),
-      [makeTask({ id: 'H1' }), makeTask({ id: 'H2' })],
+      [historicalTask({ id: 'H1' }), historicalTask({ id: 'H2' })],
       Date.parse('2026-05-07T12:00:00Z'),
     );
     const result = await loadHistoricalTasks(live, tasksFile);
     expect(result.map(t => t.id).sort()).toEqual(['H1', 'H2', 'L1']);
   });
 
+  test('reads snapshots written by the real task persistence writer', async () => {
+    const snapshotPath = join(tempDir, 'tasks.json.daily.20260508');
+    await saveTasks([historicalTask({ id: 'persisted' })], snapshotPath, 3.25);
+    const seconds = Date.parse('2026-05-08T12:00:00Z') / 1000;
+    utimesSync(snapshotPath, seconds, seconds);
+
+    const result = await loadHistoricalTasks([], tasksFile);
+    expect(result.map(t => t.id)).toEqual(['persisted']);
+  });
+
   test('live wins on id collision (snapshot copy is dropped)', async () => {
-    const live = [makeTask({ id: 'X', prompt: 'live-version', status: 'inProgress' })];
+    const live = [historicalTask({ id: 'X', prompt: 'live-version', status: 'inProgress' })];
     writeSnapshot(
       join(tempDir, 'tasks.json.daily.20260507'),
-      [makeTask({ id: 'X', prompt: 'snapshot-version', status: 'completed' })],
+      [historicalTask({ id: 'X', prompt: 'snapshot-version', status: 'completed' })],
       Date.parse('2026-05-07T12:00:00Z'),
     );
     const result = await loadHistoricalTasks(live, tasksFile);
@@ -80,12 +92,12 @@ describe('loadHistoricalTasks', () => {
     const laterMs = Date.parse('2026-05-07T00:00:00Z');
     writeSnapshot(
       join(tempDir, 'tasks.json.daily.20260505'),
-      [makeTask({ id: 'Y', completionFeedback: undefined })],
+      [historicalTask({ id: 'Y', completionFeedback: undefined })],
       earlierMs,
     );
     writeSnapshot(
       join(tempDir, 'tasks.json.daily.20260507'),
-      [makeTask({ id: 'Y', completionFeedback: { rating: 'up', recordedAt: '2026-05-07T01:00:00.000Z' } })],
+      [historicalTask({ id: 'Y', completionFeedback: { rating: 'up', recordedAt: '2026-05-07T01:00:00.000Z' } })],
       laterMs,
     );
     const result = await loadHistoricalTasks([], tasksFile);
@@ -103,7 +115,7 @@ describe('loadHistoricalTasks', () => {
     const t3 = Date.parse('2026-05-07T00:01:00Z');
     writeSnapshot(
       join(tempDir, 'tasks.json.predelete.20260506T173302'),
-      [makeTask({ id: 'Z', agentType: 'codex-cli', status: 'completed' })],
+      [historicalTask({ id: 'Z', agentType: 'codex-cli', status: 'completed' })],
       t1,
     );
     writeSnapshot(
@@ -122,7 +134,7 @@ describe('loadHistoricalTasks', () => {
     writeFileSync(join(tempDir, 'tasks.json.daily.20260505'), 'not json!!!');
     writeSnapshot(
       join(tempDir, 'tasks.json.daily.20260507'),
-      [makeTask({ id: 'OK1' })],
+      [historicalTask({ id: 'OK1' })],
       Date.parse('2026-05-07T00:00:00Z'),
     );
     const result = await loadHistoricalTasks([], tasksFile);
@@ -139,7 +151,7 @@ describe('loadHistoricalTasks', () => {
     writeFileSync(join(tempDir, 'tasks.json.tmp-deadbeef'), 'in-flight write');
     writeSnapshot(
       join(tempDir, 'tasks.json.daily.20260507'),
-      [makeTask({ id: 'OK' })],
+      [historicalTask({ id: 'OK' })],
       Date.parse('2026-05-07T00:00:00Z'),
     );
     const result = await loadHistoricalTasks([], tasksFile);
@@ -152,27 +164,27 @@ describe('loadHistoricalTasks', () => {
     // handle the full retention upper bound on a long-running install.
     const live: Task[] = [];
     for (let i = 0; i < 100_000; i++) {
-      live.push(makeTask({ id: `T${i}`, createdAt: new Date(2026, 0, 1 + (i % 28)) }));
+      live.push(historicalTask({ id: `T${i}`, createdAt: new Date(2026, 0, 1 + (i % 28)) }));
     }
     const result = await loadHistoricalTasks(live, tasksFile);
     expect(result).toHaveLength(100_000);
   });
 
   test('mixed daily + predelete: ordered by mtime, live wins, snapshot tail-merges', async () => {
-    const live = [makeTask({ id: 'L', prompt: 'live' })];
+    const live = [historicalTask({ id: 'L', prompt: 'live' })];
     writeSnapshot(
       join(tempDir, 'tasks.json.daily.20260505'),
-      [makeTask({ id: 'L', prompt: 'old-live' }), makeTask({ id: 'A' })],
+      [historicalTask({ id: 'L', prompt: 'old-live' }), historicalTask({ id: 'A' })],
       Date.parse('2026-05-05T00:00:00Z'),
     );
     writeSnapshot(
       join(tempDir, 'tasks.json.predelete.20260506T120000'),
-      [makeTask({ id: 'A', prompt: 'A-newer' }), makeTask({ id: 'B' })],
+      [historicalTask({ id: 'A', prompt: 'A-newer' }), historicalTask({ id: 'B' })],
       Date.parse('2026-05-06T12:00:00Z'),
     );
     writeSnapshot(
       join(tempDir, 'tasks.json.daily.20260507'),
-      [makeTask({ id: 'C' })],
+      [historicalTask({ id: 'C' })],
       Date.parse('2026-05-07T00:00:00Z'),
     );
     const result = await loadHistoricalTasks(live, tasksFile);
@@ -195,14 +207,14 @@ describe('clampScanStart', () => {
 
   test('window=all (start=0) with recent earliest task: clamps to earliest - 7d', () => {
     const earliest = Date.parse('2026-05-01T00:00:00Z');
-    const tasks = [makeTask({ id: 'T', createdAt: new Date(earliest) })];
+    const tasks = [historicalTask({ id: 'T', createdAt: new Date(earliest) })];
     const result = clampScanStart(0, windowEndMs, tasks);
     expect(result).toBe(earliest - sevenDays);
   });
 
   test('windowStartMs more recent than (earliest - 7d): windowStartMs wins', () => {
     const earliest = Date.parse('2026-04-01T00:00:00Z');
-    const tasks = [makeTask({ id: 'T', createdAt: new Date(earliest) })];
+    const tasks = [historicalTask({ id: 'T', createdAt: new Date(earliest) })];
     // user requested 24h, earliest task is 37 days ago — keep the user's window.
     const windowStartMs = windowEndMs - oneDay;
     expect(clampScanStart(windowStartMs, windowEndMs, tasks)).toBe(windowStartMs);
@@ -214,7 +226,7 @@ describe('clampScanStart', () => {
     // collectPaths cursor and silently return [] — producing a $0 Codex
     // aggregate with zero diagnostic.
     const futureMs = windowEndMs + 30 * oneDay;
-    const tasks = [makeTask({ id: 'T', createdAt: new Date(futureMs) })];
+    const tasks = [historicalTask({ id: 'T', createdAt: new Date(futureMs) })];
     const windowStartMs = windowEndMs - 30 * oneDay;
     const result = clampScanStart(windowStartMs, windowEndMs, tasks);
     expect(result).toBeLessThan(windowEndMs);
@@ -223,8 +235,8 @@ describe('clampScanStart', () => {
 
   test('non-finite createdAt is skipped without crashing', () => {
     const tasks = [
-      makeTask({ id: 'A', createdAt: new Date('not-a-date') }),  // NaN
-      makeTask({ id: 'B', createdAt: new Date('2026-04-01T00:00:00Z') }),
+      historicalTask({ id: 'A', createdAt: new Date('not-a-date') }),  // NaN
+      historicalTask({ id: 'B', createdAt: new Date('2026-04-01T00:00:00Z') }),
     ];
     const result = clampScanStart(0, windowEndMs, tasks);
     expect(result).toBe(Date.parse('2026-04-01T00:00:00Z') - sevenDays);
@@ -232,8 +244,8 @@ describe('clampScanStart', () => {
 
   test('all-NaN createdAts: falls back to windowStartMs', () => {
     const tasks = [
-      makeTask({ id: 'A', createdAt: new Date('bad') }),
-      makeTask({ id: 'B', createdAt: new Date('also-bad') }),
+      historicalTask({ id: 'A', createdAt: new Date('bad') }),
+      historicalTask({ id: 'B', createdAt: new Date('also-bad') }),
     ];
     expect(clampScanStart(123, windowEndMs, tasks)).toBe(123);
   });
@@ -246,7 +258,7 @@ describe('clampScanStart', () => {
     for (let i = 0; i < 50_000; i++) {
       // Most are in May; one is in January.
       const day = i === 7 ? new Date(earliest) : new Date(2026, 4, 1 + (i % 28));
-      tasks.push(makeTask({ id: `T${i}`, createdAt: day }));
+      tasks.push(historicalTask({ id: `T${i}`, createdAt: day }));
     }
     expect(clampScanStart(0, windowEndMs, tasks)).toBe(earliest - sevenDays);
   });

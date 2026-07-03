@@ -16,6 +16,7 @@ import { AttentionQueue } from '../core/attention-queue.js';
 import type { Anomaly } from '../core/types.js';
 import type { ProgressBudgetBurnDiagnostics } from '../core/progress-budget-burn-diagnostics.js';
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
+import { aSession, aTask } from '../core/__fixtures__/task-builders.js';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -32,33 +33,23 @@ function makeAnomaly(agentId: string): Anomaly {
   };
 }
 
-function makeTask(overrides: Partial<Task> = {}): Task {
-  return {
-    id: 'task-1',
+function timerTask(overrides: Partial<Task> = {}): Task {
+  const createdAt = new Date('2026-04-15T00:00:00Z');
+  return aTask({
     prompt: 'do something',
     cwd: '/tmp',
-    agentType: 'claude-code',
-    status: 'inProgress',
-    createdAt: new Date('2026-04-15T00:00:00Z'),
-    updatedAt: new Date('2026-04-15T00:00:00Z'),
-    sessions: [
-      {
-        tmuxSession: 'agent-1',
-        agentType: 'claude-code',
-        cwd: '/tmp',
-        createdAt: new Date('2026-04-15T00:00:00Z'),
-        lastStatus: 'running',
-      },
-    ],
+    createdAt,
+    updatedAt: createdAt,
+    sessions: [aSession({ tmuxSession: 'agent-1', cwd: '/tmp', createdAt, lastStatus: 'running' })],
     ...overrides,
-  };
+  });
 }
 
 describe('runBudgetCheck', () => {
   test('enqueues a budget_exceeded anomaly on the first active session', () => {
     const checker = new BudgetChecker(5);
     const enqueue = vi.fn();
-    const task = makeTask();
+    const task = timerTask();
 
     const fired = runBudgetCheck(task, 5, checker, enqueue);
 
@@ -73,27 +64,27 @@ describe('runBudgetCheck', () => {
   test('does nothing when cost is below threshold', () => {
     const checker = new BudgetChecker(5);
     const enqueue = vi.fn();
-    expect(runBudgetCheck(makeTask(), 4.99, checker, enqueue)).toBe(false);
+    expect(runBudgetCheck(timerTask(), 4.99, checker, enqueue)).toBe(false);
     expect(enqueue).not.toHaveBeenCalled();
   });
 
   test('does nothing when budget checker is undefined', () => {
     const enqueue = vi.fn();
-    expect(runBudgetCheck(makeTask(), 100, undefined, enqueue)).toBe(false);
+    expect(runBudgetCheck(timerTask(), 100, undefined, enqueue)).toBe(false);
     expect(enqueue).not.toHaveBeenCalled();
   });
 
   test('does nothing when threshold is disabled (<= 0)', () => {
     const checker = new BudgetChecker(0);
     const enqueue = vi.fn();
-    expect(runBudgetCheck(makeTask(), 100, checker, enqueue)).toBe(false);
+    expect(runBudgetCheck(timerTask(), 100, checker, enqueue)).toBe(false);
     expect(enqueue).not.toHaveBeenCalled();
   });
 
   test('does nothing when all sessions are completed or aborted', () => {
     const checker = new BudgetChecker(5);
     const enqueue = vi.fn();
-    const task = makeTask({
+    const task = timerTask({
       sessions: [
         { tmuxSession: 'agent-1', agentType: 'claude-code', cwd: '/tmp', createdAt: new Date(), lastStatus: 'completed' },
         { tmuxSession: 'agent-2', agentType: 'claude-code', cwd: '/tmp', createdAt: new Date(), lastStatus: 'aborted' },
@@ -106,7 +97,7 @@ describe('runBudgetCheck', () => {
   test('skips completed sessions and targets the first running one', () => {
     const checker = new BudgetChecker(5);
     const enqueue = vi.fn();
-    const task = makeTask({
+    const task = timerTask({
       sessions: [
         { tmuxSession: 'agent-dead', agentType: 'claude-code', cwd: '/tmp', createdAt: new Date(), lastStatus: 'completed' },
         { tmuxSession: 'agent-live', agentType: 'claude-code', cwd: '/tmp', createdAt: new Date(), lastStatus: 'running' },
@@ -118,7 +109,7 @@ describe('runBudgetCheck', () => {
   });
 
   test('uses the shared active-session selection helper', () => {
-    const task = makeTask({
+    const task = timerTask({
       sessions: [
         { tmuxSession: 'agent-dead', agentType: 'claude-code', cwd: '/tmp', createdAt: new Date(), lastStatus: 'completed' },
         { tmuxSession: 'agent-live', agentType: 'claude-code', cwd: '/tmp', createdAt: new Date(), lastStatus: 'running' },
@@ -129,7 +120,7 @@ describe('runBudgetCheck', () => {
   });
 
   test('samples progress-aware budget diagnostics with events from the selected live session', () => {
-    const task = makeTask({
+    const task = timerTask({
       sessions: [
         { tmuxSession: 'agent-dead', agentType: 'claude-code', cwd: '/tmp', createdAt: new Date(), lastStatus: 'completed' },
         { tmuxSession: 'agent-live', agentType: 'claude-code', cwd: '/tmp', createdAt: new Date(), lastStatus: 'running' },
@@ -160,7 +151,7 @@ describe('runBudgetCheck', () => {
   test('does not re-fire on the next tick after warning already enqueued', () => {
     const checker = new BudgetChecker(5);
     const enqueue = vi.fn();
-    const task = makeTask();
+    const task = timerTask();
 
     expect(runBudgetCheck(task, 5, checker, enqueue)).toBe(true);
     // Cost climbs but stays below 2x threshold — no new anomaly.
@@ -171,7 +162,7 @@ describe('runBudgetCheck', () => {
   test('fires critical on second crossing at 2x threshold', () => {
     const checker = new BudgetChecker(5);
     const enqueue = vi.fn();
-    const task = makeTask();
+    const task = timerTask();
 
     expect(runBudgetCheck(task, 6, checker, enqueue)).toBe(true);
     expect(enqueue.mock.calls[0][1].severity).toBe('warning');

@@ -8,20 +8,7 @@ import {
 } from './progress-budget-burn-diagnostics.js';
 import type { AgentEvent, TokenUsage } from './types.js';
 import type { Task } from './tasks.js';
-
-function makeTask(overrides: Partial<Task> = {}): Task {
-  return {
-    id: 'task-1',
-    prompt: 'do work',
-    cwd: '/tmp',
-    agentType: 'claude-code',
-    status: 'inProgress',
-    createdAt: new Date('2026-05-19T00:00:00Z'),
-    updatedAt: new Date('2026-05-19T00:00:00Z'),
-    sessions: [],
-    ...overrides,
-  };
-}
+import { aTask } from './__fixtures__/task-builders.js';
 
 function usage(overrides: Partial<TokenUsage> = {}): TokenUsage {
   return {
@@ -51,7 +38,7 @@ function input(
 describe('evaluateProgressBudgetBurn', () => {
   test('returns null until cost or token delta crosses the diagnostic threshold', () => {
     const record = evaluateProgressBudgetBurn(
-      input(makeTask(), usage({ costUsd: 0.01, outputTokens: 10 })),
+      input(aTask(), usage({ costUsd: 0.01, outputTokens: 10 })),
       { taskStatus: 'inProgress', costUsd: 0, tokens: 0, eventCount: 0 },
       DEFAULT_PROGRESS_BUDGET_BURN_DIAGNOSTIC_CONFIG,
     );
@@ -61,7 +48,7 @@ describe('evaluateProgressBudgetBurn', () => {
 
   test('flags a high-confidence candidate when spend rises with no new agent events', () => {
     const record = evaluateProgressBudgetBurn(
-      input(makeTask(), usage({ costUsd: 0.25, cacheReadTokens: 25_000 })),
+      input(aTask(), usage({ costUsd: 0.25, cacheReadTokens: 25_000 })),
       { taskStatus: 'inProgress', costUsd: 0, tokens: 0, eventCount: 0 },
       DEFAULT_PROGRESS_BUDGET_BURN_DIAGNOSTIC_CONFIG,
     );
@@ -92,7 +79,7 @@ describe('evaluateProgressBudgetBurn', () => {
       { type: 'tool_result', sessionId: 'agent-1', toolName: 'Bash', eventSeq: 1 },
     ];
     const record = evaluateProgressBudgetBurn(
-      input(makeTask(), usage({ costUsd: 0.25, cacheReadTokens: 25_000 }), events),
+      input(aTask(), usage({ costUsd: 0.25, cacheReadTokens: 25_000 }), events),
       { taskStatus: 'inProgress', costUsd: 0, tokens: 0, eventCount: 0 },
       DEFAULT_PROGRESS_BUDGET_BURN_DIAGNOSTIC_CONFIG,
     );
@@ -109,7 +96,7 @@ describe('evaluateProgressBudgetBurn', () => {
       { type: 'error', sessionId: 'agent-1', message: 'same error', eventSeq: 3 },
     ];
     const record = evaluateProgressBudgetBurn(
-      input(makeTask(), usage({ costUsd: 0.25, cacheReadTokens: 25_000 }), events),
+      input(aTask(), usage({ costUsd: 0.25, cacheReadTokens: 25_000 }), events),
       { taskStatus: 'inProgress', costUsd: 0, tokens: 0, eventCount: 0 },
       DEFAULT_PROGRESS_BUDGET_BURN_DIAGNOSTIC_CONFIG,
     );
@@ -127,7 +114,7 @@ describe('evaluateProgressBudgetBurn', () => {
       { type: 'permission_request', sessionId: 'agent-1', toolName: 'Bash', eventSeq: 1 },
     ];
     const record = evaluateProgressBudgetBurn(
-      input(makeTask(), usage({ costUsd: 0.25, cacheReadTokens: 25_000 }), events),
+      input(aTask(), usage({ costUsd: 0.25, cacheReadTokens: 25_000 }), events),
       { taskStatus: 'inProgress', costUsd: 0, tokens: 0, eventCount: 0 },
       DEFAULT_PROGRESS_BUDGET_BURN_DIAGNOSTIC_CONFIG,
     );
@@ -142,7 +129,7 @@ describe('evaluateProgressBudgetBurn', () => {
 
   test('keeps samples healthy when task status changes during the spend window', () => {
     const record = evaluateProgressBudgetBurn(
-      input(makeTask({ status: 'completed' }), usage({ costUsd: 0.25, cacheReadTokens: 25_000 })),
+      input(aTask({ status: 'completed' }), usage({ costUsd: 0.25, cacheReadTokens: 25_000 })),
       { taskStatus: 'inProgress', costUsd: 0, tokens: 0, eventCount: 0 },
       DEFAULT_PROGRESS_BUDGET_BURN_DIAGNOSTIC_CONFIG,
     );
@@ -156,7 +143,7 @@ describe('evaluateProgressBudgetBurn', () => {
       { type: 'stop', sessionId: 'agent-1', lastMessage: 'Done', eventSeq: 1 },
     ];
     const record = evaluateProgressBudgetBurn(
-      input(makeTask(), usage({ costUsd: 0.25, cacheReadTokens: 25_000 }), events),
+      input(aTask(), usage({ costUsd: 0.25, cacheReadTokens: 25_000 }), events),
       { taskStatus: 'inProgress', costUsd: 0, tokens: 0, eventCount: 0 },
       DEFAULT_PROGRESS_BUDGET_BURN_DIAGNOSTIC_CONFIG,
     );
@@ -170,7 +157,7 @@ describe('ProgressBudgetBurnDiagnostics', () => {
   test('is stateful and appends only threshold-crossing diagnostic samples', () => {
     const append = vi.fn<(record: ProgressBudgetBurnDiagnosticRecord) => void>();
     const diagnostics = new ProgressBudgetBurnDiagnostics({}, { append });
-    const task = makeTask();
+    const task = aTask();
 
     expect(diagnostics.sample(input(task, usage({ costUsd: 0 })))).toBeNull();
     expect(diagnostics.sample(input(task, usage({ costUsd: 0.01 })))).toBeNull();

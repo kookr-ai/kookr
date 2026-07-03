@@ -2,25 +2,26 @@ import { describe, expect, test } from 'vitest';
 import { buildOutcomeLedger } from './outcome-ledger.js';
 import type { Task } from './tasks.js';
 import type { TokenUsage } from './usage-types.js';
+import { aSession, aTask } from './__fixtures__/task-builders.js';
 
 const NOW = new Date('2026-06-20T12:00:00.000Z').getTime();
 const HOUR = 60 * 60 * 1000;
 
-function task(overrides: Partial<Task> & { id: string }): Task {
+function ledgerTask(overrides: Partial<Task> & { id: string }): Task {
   const createdAt = overrides.createdAt ?? new Date(NOW - HOUR);
   const updatedAt = overrides.updatedAt ?? new Date(toMs(createdAt) + 10 * 60 * 1000);
-  return {
+  return aTask({
     id: overrides.id,
     prompt: overrides.prompt ?? `Task ${overrides.id}`,
     cwd: overrides.cwd ?? '/repo',
     agentType: overrides.agentType ?? 'claude-code',
     status: overrides.status ?? 'completed',
-    sessions: overrides.sessions ?? [{
+    sessions: overrides.sessions ?? [aSession({
       tmuxSession: `session-${overrides.id}`,
       agentType: overrides.agentType ?? 'claude-code',
       cwd: '/repo',
       createdAt: new Date(toMs(createdAt)),
-    }],
+    })],
     createdAt,
     updatedAt,
     finishedAt: overrides.finishedAt ?? updatedAt,
@@ -28,7 +29,7 @@ function task(overrides: Partial<Task> & { id: string }): Task {
     completionFeedback: overrides.completionFeedback,
     tokenUsage: overrides.tokenUsage,
     ...overrides,
-  } as Task;
+  });
 }
 
 function usage(overrides: Partial<TokenUsage> = {}): TokenUsage {
@@ -63,7 +64,7 @@ function ledger(tasks: Task[], liveUsage?: Map<string, TokenUsage>) {
 describe('buildOutcomeLedger', () => {
   test('summarizes clean completed tasks as ready by agent', () => {
     const tasks = [
-      task({
+      ledgerTask({
         id: 'claude-1',
         agentType: 'claude-code',
         tokenUsage: usage({ costUsd: 0.20, inputTokens: 200, outputTokens: 40 }),
@@ -71,7 +72,7 @@ describe('buildOutcomeLedger', () => {
         completionFeedback: { rating: 'up' },
         finishedAt: new Date(NOW - HOUR + 10 * 60 * 1000),
       }),
-      task({
+      ledgerTask({
         id: 'codex-1',
         agentType: 'codex-cli',
         tokenUsage: usage({ costUsd: 0.30, inputTokens: 300, outputTokens: 60 }),
@@ -103,8 +104,8 @@ describe('buildOutcomeLedger', () => {
   });
 
   test('keeps missing cost distinct from zero cost', () => {
-    const missing = task({ id: 'missing-cost' });
-    const zero = task({ id: 'zero-cost', tokenUsage: usage({ costUsd: 0 }) });
+    const missing = ledgerTask({ id: 'missing-cost' });
+    const zero = ledgerTask({ id: 'zero-cost', tokenUsage: usage({ costUsd: 0 }) });
     const response = ledger([missing, zero]);
 
     expect(response.quality.missingCostTasks).toBe(1);
@@ -116,7 +117,7 @@ describe('buildOutcomeLedger', () => {
   });
 
   test('blocks conclusions when terminal task timestamps are invalid', () => {
-    const invalid = task({
+    const invalid = ledgerTask({
       id: 'invalid',
       createdAt: new Date('2026-06-20T12:00:00.000Z'),
       updatedAt: new Date('2026-06-20T11:00:00.000Z'),
@@ -136,10 +137,10 @@ describe('buildOutcomeLedger', () => {
 
   test('flags extreme duration before trusting duration conclusions', () => {
     const tasks = [
-      task({ id: 'a', tokenUsage: usage(), completionDigest: verifiedDigest(), finishedAt: new Date(NOW - HOUR + 5 * 60 * 1000) }),
-      task({ id: 'b', tokenUsage: usage(), completionDigest: verifiedDigest(), finishedAt: new Date(NOW - HOUR + 6 * 60 * 1000) }),
-      task({ id: 'c', tokenUsage: usage(), completionDigest: verifiedDigest(), finishedAt: new Date(NOW - HOUR + 7 * 60 * 1000) }),
-      task({ id: 'extreme', tokenUsage: usage(), completionDigest: verifiedDigest(), finishedAt: new Date(NOW - HOUR + 30 * HOUR) }),
+      ledgerTask({ id: 'a', tokenUsage: usage(), completionDigest: verifiedDigest(), finishedAt: new Date(NOW - HOUR + 5 * 60 * 1000) }),
+      ledgerTask({ id: 'b', tokenUsage: usage(), completionDigest: verifiedDigest(), finishedAt: new Date(NOW - HOUR + 6 * 60 * 1000) }),
+      ledgerTask({ id: 'c', tokenUsage: usage(), completionDigest: verifiedDigest(), finishedAt: new Date(NOW - HOUR + 7 * 60 * 1000) }),
+      ledgerTask({ id: 'extreme', tokenUsage: usage(), completionDigest: verifiedDigest(), finishedAt: new Date(NOW - HOUR + 30 * HOUR) }),
     ];
     const response = ledger(tasks);
 
@@ -152,7 +153,7 @@ describe('buildOutcomeLedger', () => {
   });
 
   test('uses current interaction log events when available', () => {
-    const source = task({ id: 'source', tokenUsage: usage() });
+    const source = ledgerTask({ id: 'source', tokenUsage: usage() });
     const response = buildOutcomeLedger({
       tasks: [source],
       window: '7d',
@@ -169,13 +170,13 @@ describe('buildOutcomeLedger', () => {
   });
 
   test('redacts historical labels and leaves historical interventions unknown', () => {
-    const live = task({
+    const live = ledgerTask({
       id: 'live-task',
       prompt: 'Visible live prompt',
       tokenUsage: usage(),
       completionDigest: verifiedDigest(),
     });
-    const historical = task({
+    const historical = ledgerTask({
       id: 'historical-secret-task',
       prompt: 'Secret swept prompt',
       tokenUsage: usage(),

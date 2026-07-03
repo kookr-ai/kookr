@@ -3,27 +3,28 @@ import type { AgentEvent } from '../core/types.js';
 import type { Task } from '../core/tasks.js';
 import { buildTaskCompletionMetadata } from './completion-metadata.js';
 import type { CodexRolloutMeta, ScanResult } from '../adapters/codex-rollout-scanner.js';
+import { aSession, aTask } from '../core/__fixtures__/task-builders.js';
 
-function task(overrides: Partial<Task> = {}): Task {
+function metadataTask(overrides: Partial<Task> = {}): Task {
   const createdAt = new Date('2026-05-09T10:00:00.000Z');
-  return {
+  return aTask({
     id: 'task-1',
     prompt: 'Populate completion metadata',
     cwd: '/repo',
     agentType: 'codex-cli',
     status: 'inProgress',
-    sessions: [{
+    sessions: [aSession({
       tmuxSession: 'kookr-1',
       agentType: 'codex-cli',
       cwd: '/repo',
       createdAt,
       gitBranch: 'feat-issue-223-completion-metadata',
       gitCommit: 'head-sha',
-    }],
+    })],
     createdAt,
     updatedAt: createdAt,
     ...overrides,
-  };
+  });
 }
 
 function rollout(overrides: Partial<CodexRolloutMeta> = {}): CodexRolloutMeta {
@@ -100,7 +101,7 @@ describe('buildTaskCompletionMetadata', () => {
     };
 
     const metadata = await buildTaskCompletionMetadata(
-      task(),
+      metadataTask(),
       [toolUse('pnpm test'), toolResult('Tests  5 passed (3)')],
       { runCommand, scanner, now: () => Date.parse('2026-05-09T10:10:00.000Z') },
     );
@@ -137,7 +138,7 @@ describe('buildTaskCompletionMetadata', () => {
     };
 
     const metadata = await buildTaskCompletionMetadata(
-      task({
+      metadataTask({
         agentType: 'claude-code',
         criteria: '- Run tests\n- Open PR',
       }),
@@ -163,7 +164,7 @@ describe('buildTaskCompletionMetadata', () => {
 
   test('attaches unknown advisory criteria verdicts when the helper LLM fails', async () => {
     const metadata = await buildTaskCompletionMetadata(
-      task({
+      metadataTask({
         agentType: 'claude-code',
         criteria: 'Run tests',
       }),
@@ -216,7 +217,7 @@ describe('buildTaskCompletionMetadata', () => {
       }),
     };
 
-    const metadata = await buildTaskCompletionMetadata(task(), [], {
+    const metadata = await buildTaskCompletionMetadata(metadataTask(), [], {
       runCommand: async () => '',
       scanner,
     });

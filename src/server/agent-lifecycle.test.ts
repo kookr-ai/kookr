@@ -16,6 +16,7 @@ import {
 } from './agent-lifecycle.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
+import { aSession, aTask } from '../core/__fixtures__/task-builders.js';
 
 // Mock MAX_ACTIVE_TASKS to 2 for concurrency tests
 vi.mock('./config.js', () => ({ MAX_ACTIVE_TASKS: 2 }));
@@ -45,18 +46,20 @@ vi.mock('../core/interaction-log.js', () => ({
   nowISO: () => '2026-03-31T00:00:00.000Z',
 }));
 
-function makeTask(overrides: Partial<Task> = {}): Task {
-  return {
-    id: 'task-1',
+function lifecycleTask(overrides: Partial<Task> = {}): Task {
+  return aTask({
     prompt: 'Fix the bug in auth',
     cwd: '/workspace/project',
-    agentType: 'claude-code',
-    status: 'inProgress',
-    sessions: [{ tmuxSession: 'kookr-abc123', lastStatus: 'inProgress' }],
+    sessions: [aSession({
+      tmuxSession: 'kookr-abc123',
+      cwd: '/workspace/project',
+      createdAt: new Date(),
+      lastStatus: 'inProgress',
+    })],
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
-  } as Task;
+  });
 }
 
 function makeDeps(overrides: Partial<AgentLifecycleDeps> = {}): AgentLifecycleDeps {
@@ -81,7 +84,7 @@ describe('registerNewAgent', () => {
   });
 
   test('registers all sessions with monitor', async () => {
-    const task = makeTask({
+    const task = lifecycleTask({
       sessions: [
         { tmuxSession: 'kookr-a', lastStatus: 'inProgress' },
         { tmuxSession: 'kookr-b', lastStatus: 'inProgress' },
@@ -96,7 +99,7 @@ describe('registerNewAgent', () => {
   });
 
   test('registers all sessions with watchdog', async () => {
-    const task = makeTask();
+    const task = lifecycleTask();
     const deps = makeDeps();
 
     await registerNewAgent(task, deps);
@@ -107,7 +110,7 @@ describe('registerNewAgent', () => {
   test('starts hook watcher for sessions not already watched', async () => {
     const deps = makeDeps();
 
-    await registerNewAgent(makeTask(), deps);
+    await registerNewAgent(lifecycleTask(), deps);
 
     expect(deps.hookWatcher.isWatching).toHaveBeenCalledWith('kookr-abc123');
     expect(deps.hookWatcher.watch).toHaveBeenCalledWith('kookr-abc123', { replayExisting: true });
@@ -118,7 +121,7 @@ describe('registerNewAgent', () => {
       hookWatcher: { isWatching: vi.fn().mockReturnValue(true), watch: vi.fn() } as any,
     });
 
-    await registerNewAgent(makeTask(), deps);
+    await registerNewAgent(lifecycleTask(), deps);
 
     expect(deps.hookWatcher.watch).not.toHaveBeenCalled();
   });
@@ -126,7 +129,7 @@ describe('registerNewAgent', () => {
   test('logs agent_launched to interaction log', async () => {
     const deps = makeDeps();
 
-    await registerNewAgent(makeTask(), deps);
+    await registerNewAgent(lifecycleTask(), deps);
 
     expect(deps.interactionLog!.append).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -140,7 +143,7 @@ describe('registerNewAgent', () => {
   test('works without interactionLog (optional dep)', async () => {
     const deps = makeDeps({ interactionLog: undefined });
 
-    await registerNewAgent(makeTask(), deps);
+    await registerNewAgent(lifecycleTask(), deps);
 
     // Core registrations still happen even without interaction log
     expect(deps.monitor.registerAgent).toHaveBeenCalledWith('kookr-abc123');
@@ -155,7 +158,7 @@ describe('registerNewAgent', () => {
       } as any,
     });
 
-    await registerNewAgent(makeTask(), deps);
+    await registerNewAgent(lifecycleTask(), deps);
 
     expect(deps.githubScanner.processTaskPrompt).toHaveBeenCalledWith('task-1');
   });
@@ -163,7 +166,7 @@ describe('registerNewAgent', () => {
   test('skips GitHub scan when scanner is inactive', async () => {
     const deps = makeDeps();
 
-    await registerNewAgent(makeTask(), deps);
+    await registerNewAgent(lifecycleTask(), deps);
 
     expect(deps.githubScanner.processTaskPrompt).not.toHaveBeenCalled();
   });
@@ -171,14 +174,14 @@ describe('registerNewAgent', () => {
   test('auto-names task when task has no name', async () => {
     const deps = makeDeps();
 
-    await registerNewAgent(makeTask(), deps);
+    await registerNewAgent(lifecycleTask(), deps);
 
     expect(deps.autoNameTask).toHaveBeenCalledWith('task-1', 'Fix the bug in auth', '/workspace/project', undefined);
   });
 
   test('passes criteria to autoNameTask', async () => {
     const deps = makeDeps();
-    const task = makeTask({ criteria: 'Must pass all tests' });
+    const task = lifecycleTask({ criteria: 'Must pass all tests' });
 
     await registerNewAgent(task, deps);
 
@@ -187,7 +190,7 @@ describe('registerNewAgent', () => {
 
   test('skips auto-naming when task already has a name (e.g., playbooks)', async () => {
     const deps = makeDeps();
-    const task = makeTask({ name: 'My Playbook' });
+    const task = lifecycleTask({ name: 'My Playbook' });
 
     await registerNewAgent(task, deps);
 
@@ -201,7 +204,7 @@ describe('registerNewAgent', () => {
     });
     mockGetProjectId.mockResolvedValue('kookr-abc');
 
-    const task = makeTask({ projectId: undefined });
+    const task = lifecycleTask({ projectId: undefined });
     await registerNewAgent(task, deps);
 
     // getProjectId is fire-and-forget — wait for it to settle
@@ -217,7 +220,7 @@ describe('registerNewAgent', () => {
     });
     mockGetProjectId.mockRejectedValue(new Error('git not found'));
 
-    const task = makeTask({ projectId: undefined });
+    const task = lifecycleTask({ projectId: undefined });
     await registerNewAgent(task, deps);
 
     // Wait for the rejected promise to settle — setProjectId should NOT be called
@@ -231,7 +234,7 @@ describe('registerNewAgent', () => {
 
   test('uses task.id as agentId fallback when no sessions', async () => {
     const deps = makeDeps();
-    const task = makeTask({ sessions: [] as any });
+    const task = lifecycleTask({ sessions: [] as any });
 
     await registerNewAgent(task, deps);
 
@@ -251,7 +254,7 @@ describe('registerNewAgent', () => {
     mockGetProjectId.mockResolvedValue('github.com/org/repo');
     mockDeriveCanonicalPath.mockReturnValue('/canonical/repo');
 
-    const task = makeTask({ projectId: undefined, cwd: '/canonical/repo-prod' });
+    const task = lifecycleTask({ projectId: undefined, cwd: '/canonical/repo-prod' });
     await registerNewAgent(task, deps);
 
     await vi.waitFor(() => {
@@ -275,7 +278,7 @@ describe('registerNewAgent', () => {
     mockGetProjectId.mockResolvedValue('github.com/org/repo');
     mockDeriveCanonicalPath.mockReturnValue(null);
 
-    const task = makeTask({ projectId: undefined, cwd: '/missing' });
+    const task = lifecycleTask({ projectId: undefined, cwd: '/missing' });
     await registerNewAgent(task, deps);
 
     // Wait for the projectId resolution to complete so the canonical-path
@@ -292,7 +295,7 @@ describe('registerNewAgent', () => {
     });
     mockGetProjectId.mockResolvedValue('github.com/org/repo');
 
-    const task = makeTask({ projectId: undefined });
+    const task = lifecycleTask({ projectId: undefined });
     await registerNewAgent(task, deps);
 
     await vi.waitFor(() => {
@@ -425,7 +428,7 @@ describe('completeTask', () => {
   });
 
   test('stops active sessions and marks task completed', async () => {
-    const task = makeTask({
+    const task = lifecycleTask({
       id: 'task-42',
       status: 'inProgress',
       sessions: [
@@ -444,7 +447,7 @@ describe('completeTask', () => {
   });
 
   test('does not wait for terminal stop before marking task completed', async () => {
-    const task = makeTask({
+    const task = lifecycleTask({
       id: 'task-42',
       status: 'inProgress',
       sessions: [
@@ -474,7 +477,7 @@ describe('completeTask', () => {
   });
 
   test('records unknown criteria verdict when no completion event window exists', async () => {
-    const task = makeTask({
+    const task = lifecycleTask({
       id: 'task-42',
       criteria: 'Open a PR',
       sessions: [
@@ -503,7 +506,7 @@ describe('completeTask', () => {
   });
 
   test('skips cleanup for sessions already in terminal state (completed/aborted)', async () => {
-    const task = makeTask({
+    const task = lifecycleTask({
       id: 'task-42',
       status: 'inProgress',
       sessions: [
@@ -524,7 +527,7 @@ describe('completeTask', () => {
   });
 
   test('logs task_completed to interaction log', async () => {
-    const task = makeTask({ id: 'task-42', sessions: [{ tmuxSession: 'kookr-s1', lastStatus: 'inProgress' }] as any });
+    const task = lifecycleTask({ id: 'task-42', sessions: [{ tmuxSession: 'kookr-s1', lastStatus: 'inProgress' }] as any });
     const deps = makeLifecycleDeps();
     (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
 
@@ -541,7 +544,7 @@ describe('completeTask', () => {
   });
 
   test('marks completed sessions with missing worktrees as cleaned_up', async () => {
-    const task = makeTask({
+    const task = lifecycleTask({
       id: 'task-42',
       status: 'inProgress',
       sessions: [
@@ -561,7 +564,7 @@ describe('completeTask', () => {
   });
 
   test('releases worktree leases on completion', async () => {
-    const task = makeTask({
+    const task = lifecycleTask({
       id: 'task-42',
       status: 'inProgress',
       sessions: [
@@ -585,7 +588,7 @@ describe('completeTask', () => {
   });
 
   test('completeTask works without leaseService (backward compatible)', async () => {
-    const task = makeTask({
+    const task = lifecycleTask({
       id: 'task-42',
       status: 'inProgress',
       sessions: [{ tmuxSession: 'kookr-s1', lastStatus: 'inProgress', cwd: '/wt', gitIsWorktree: true }] as any,
@@ -599,7 +602,7 @@ describe('completeTask', () => {
   });
 
   test('notifies task outcome as completed', async () => {
-    const task = makeTask({ id: 'task-42' });
+    const task = lifecycleTask({ id: 'task-42' });
     const onTaskOutcome = vi.fn();
     const deps = makeLifecycleDeps({ onTaskOutcome });
     (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
@@ -611,7 +614,7 @@ describe('completeTask', () => {
 
   test('swallows task outcome callback errors on completion', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const task = makeTask({ id: 'task-42' });
+    const task = lifecycleTask({ id: 'task-42' });
     const deps = makeLifecycleDeps({
       onTaskOutcome: vi.fn(() => { throw new Error('telegram down'); }),
     });
@@ -637,7 +640,7 @@ describe('cancelTask', () => {
   });
 
   test('stops active sessions and marks task cancelled', async () => {
-    const task = makeTask({
+    const task = lifecycleTask({
       id: 'task-42',
       status: 'inProgress',
       sessions: [
@@ -655,7 +658,7 @@ describe('cancelTask', () => {
   });
 
   test('skips cleanup for sessions already in terminal state', async () => {
-    const task = makeTask({
+    const task = lifecycleTask({
       id: 'task-42',
       status: 'inProgress',
       sessions: [
@@ -675,7 +678,7 @@ describe('cancelTask', () => {
   });
 
   test('logs task_cancelled to interaction log', async () => {
-    const task = makeTask({ id: 'task-42', sessions: [{ tmuxSession: 'kookr-s1', lastStatus: 'inProgress' }] as any });
+    const task = lifecycleTask({ id: 'task-42', sessions: [{ tmuxSession: 'kookr-s1', lastStatus: 'inProgress' }] as any });
     const deps = makeLifecycleDeps();
     (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
 
@@ -692,7 +695,7 @@ describe('cancelTask', () => {
   });
 
   test('releases worktree leases on cancellation', async () => {
-    const task = makeTask({
+    const task = lifecycleTask({
       id: 'task-42',
       status: 'inProgress',
       sessions: [
@@ -713,7 +716,7 @@ describe('cancelTask', () => {
   });
 
   test('notifies task outcome as cancelled', async () => {
-    const task = makeTask({ id: 'task-42' });
+    const task = lifecycleTask({ id: 'task-42' });
     const onTaskOutcome = vi.fn();
     const deps = makeLifecycleDeps({ onTaskOutcome });
     (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
@@ -737,7 +740,7 @@ describe('terminateTask', () => {
   });
 
   test('stops active sessions and marks task terminated', async () => {
-    const task = makeTask({
+    const task = lifecycleTask({
       id: 'task-99',
       status: 'inProgress',
       sessions: [
@@ -756,7 +759,7 @@ describe('terminateTask', () => {
   });
 
   test('logs task_terminated with sessions_died reason', async () => {
-    const task = makeTask({
+    const task = lifecycleTask({
       id: 'task-99',
       sessions: [{ tmuxSession: 'kookr-s1', lastStatus: 'inProgress' }] as any,
     });
@@ -776,7 +779,7 @@ describe('terminateTask', () => {
   });
 
   test('releases worktree leases on termination', async () => {
-    const task = makeTask({
+    const task = lifecycleTask({
       id: 'task-99',
       status: 'inProgress',
       sessions: [
@@ -793,7 +796,7 @@ describe('terminateTask', () => {
   });
 
   test('notifies task outcome as failed', async () => {
-    const task = makeTask({
+    const task = lifecycleTask({
       id: 'task-99',
       status: 'inProgress',
       sessions: [{ tmuxSession: 'kookr-s1', lastStatus: 'inProgress' }] as any,
@@ -872,7 +875,7 @@ describe('promotePendingTasks', () => {
   });
 
   test('launches pending task and returns promoted count', async () => {
-    const pendingTask = makeTask({ id: 'pending-1', status: 'pending' });
+    const pendingTask = lifecycleTask({ id: 'pending-1', status: 'pending' });
     const mockTaskStore = {
       getActiveCount: vi.fn()
         .mockReturnValueOnce(0)   // first check: below limit
@@ -905,7 +908,7 @@ describe('promotePendingTasks', () => {
   });
 
   test('passes stored advisory launch note when promoting a pending task', async () => {
-    const pendingTask = makeTask({
+    const pendingTask = lifecycleTask({
       id: 'pending-1',
       status: 'pending',
       launchNote: '[Kookr launch warning] KB unavailable.',
@@ -953,7 +956,7 @@ describe('promotePendingTasks', () => {
 
   test('seen set prevents infinite loop when task stays pending after launch', async () => {
     // Simulate a task that stays pending even after launch attempt
-    const stuckTask = makeTask({ id: 'stuck-1', status: 'pending' });
+    const stuckTask = lifecycleTask({ id: 'stuck-1', status: 'pending' });
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const mockTaskStore = {
       getActiveCount: vi.fn().mockReturnValue(0), // always below limit
@@ -987,7 +990,7 @@ describe('promotePendingTasks', () => {
   });
 
   test('launch failure cancels the task instead of crashing', async () => {
-    const pendingTask = makeTask({ id: 'fail-1', status: 'pending' });
+    const pendingTask = lifecycleTask({ id: 'fail-1', status: 'pending' });
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const mockTaskStore = {
       getActiveCount: vi.fn()
@@ -1228,7 +1231,7 @@ describe('reflect worktree cleanup on terminal transition', () => {
   }
 
   function reflectTask(id: string): Task {
-    return makeTask({
+    return lifecycleTask({
       id,
       status: 'inProgress',
       sessions: [{ tmuxSession: `kookr-${id}`, lastStatus: 'inProgress' }] as any,
@@ -1257,7 +1260,7 @@ describe('reflect worktree cleanup on terminal transition', () => {
   });
 
   test('non-reflect task does not trigger reflect-worktree removal', async () => {
-    const task = makeTask({
+    const task = lifecycleTask({
       id: 'plain',
       status: 'inProgress',
       sessions: [{ tmuxSession: 'kookr-plain', lastStatus: 'inProgress' }] as any,
@@ -1267,7 +1270,7 @@ describe('reflect worktree cleanup on terminal transition', () => {
   });
 
   test('legacy reflect task without a stored worktreePath is not removed (falls back to sweep)', async () => {
-    const task = makeTask({
+    const task = lifecycleTask({
       id: 'legacy',
       status: 'inProgress',
       sessions: [{ tmuxSession: 'kookr-legacy', lastStatus: 'inProgress' }] as any,
@@ -1288,7 +1291,7 @@ describe('reflect worktree cleanup on terminal transition', () => {
 // ---------------------------------------------------------------------------
 
 describe('issue-claim release on terminal transitions', () => {
-  function makeClaimDeps(task: ReturnType<typeof makeTask>) {
+  function makeClaimDeps(task: Task) {
     const safeReleaseAllFor = vi.fn(() => [] as Array<{ repo: string; number: number }>);
     const deps = makeLifecycleDeps({ issueClaimRegistry: { safeReleaseAllFor } });
     (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
@@ -1300,28 +1303,28 @@ describe('issue-claim release on terminal transitions', () => {
   });
 
   test('completeTask releases claims with reason "released"', async () => {
-    const task = makeTask({ id: 'task-claim-1', status: 'inProgress', sessions: [] });
+    const task = lifecycleTask({ id: 'task-claim-1', status: 'inProgress', sessions: [] });
     const { deps, safeReleaseAllFor } = makeClaimDeps(task);
     await completeTask('task-claim-1', deps);
     expect(safeReleaseAllFor).toHaveBeenCalledWith('task-claim-1', 'released');
   });
 
   test('cancelTask releases claims with reason "released"', async () => {
-    const task = makeTask({ id: 'task-claim-2', status: 'inProgress', sessions: [] });
+    const task = lifecycleTask({ id: 'task-claim-2', status: 'inProgress', sessions: [] });
     const { deps, safeReleaseAllFor } = makeClaimDeps(task);
     await cancelTask('task-claim-2', deps);
     expect(safeReleaseAllFor).toHaveBeenCalledWith('task-claim-2', 'released');
   });
 
   test('terminateTask releases claims with reason "dead_reclaim" (confirmed-dead, R12)', async () => {
-    const task = makeTask({ id: 'task-claim-3', status: 'inProgress', sessions: [] });
+    const task = lifecycleTask({ id: 'task-claim-3', status: 'inProgress', sessions: [] });
     const { deps, safeReleaseAllFor } = makeClaimDeps(task);
     await terminateTask('task-claim-3', deps);
     expect(safeReleaseAllFor).toHaveBeenCalledWith('task-claim-3', 'dead_reclaim');
   });
 
   test('wrappers tolerate an absent registry (flag off)', async () => {
-    const task = makeTask({ id: 'task-claim-4', status: 'inProgress', sessions: [] });
+    const task = lifecycleTask({ id: 'task-claim-4', status: 'inProgress', sessions: [] });
     const deps = makeLifecycleDeps();
     (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
     await expect(completeTask('task-claim-4', deps)).resolves.toBeUndefined();

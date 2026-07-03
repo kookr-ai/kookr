@@ -3,28 +3,23 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { writeTaskSnapshotBundle } from './write-task-snapshot-bundle.js';
-import type { Task } from '../../core/tasks.js';
 import type { InteractionEvent } from '../../core/interaction-log.js';
+import { aSession, aTask } from '../../core/__fixtures__/task-builders.js';
 
-function makeTask(): Task {
-  return {
-    id: 'task-1',
-    name: 'Reflect target',
-    prompt: 'Fix the thing',
+const reflectTargetTask = aTask({
+  id: 'task-1',
+  name: 'Reflect target',
+  prompt: 'Fix the thing',
+  cwd: '/tmp/project',
+  criteria: 'tests pass',
+  sessions: [aSession({
+    tmuxSession: 'sess-1',
     cwd: '/tmp/project',
-    criteria: 'tests pass',
-    agentType: 'claude-code',
-    status: 'inProgress',
-    sessions: [{
-      tmuxSession: 'sess-1',
-      agentType: 'claude-code',
-      cwd: '/tmp/project',
-      createdAt: new Date('2026-01-01T00:00:00.000Z'),
-    }],
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
-    updatedAt: new Date('2026-01-01T00:00:00.000Z'),
-  };
-}
+  })],
+  createdAt: new Date('2026-01-01T00:00:00.000Z'),
+  updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+});
 
 describe('writeTaskSnapshotBundle', () => {
   test('writes an immutable snapshot bundle for task reflection', async () => {
@@ -40,7 +35,7 @@ describe('writeTaskSnapshotBundle', () => {
     ];
 
     try {
-      const result = await writeTaskSnapshotBundle(makeTask(), {
+      const result = await writeTaskSnapshotBundle(reflectTargetTask, {
         taskSnapshotDir: snapshotDir,
         hooksDir,
         readInteractionLog: async () => events,
@@ -92,7 +87,7 @@ describe('writeTaskSnapshotBundle', () => {
     await mkdir(hooksDir);
 
     try {
-      const result = await writeTaskSnapshotBundle(makeTask(), {
+      const result = await writeTaskSnapshotBundle(reflectTargetTask, {
         taskSnapshotDir: snapshotDir,
         hooksDir,
         readInteractionLog: async () => [],
@@ -117,7 +112,7 @@ describe('writeTaskSnapshotBundle', () => {
     await mkdir(hooksDir);
 
     try {
-      const result = await writeTaskSnapshotBundle(makeTask(), {
+      const result = await writeTaskSnapshotBundle(reflectTargetTask, {
         taskSnapshotDir: snapshotDir,
         hooksDir,
         readInteractionLog: async () => [],
