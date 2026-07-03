@@ -161,6 +161,62 @@ describe('CommandPalette', () => {
     expect(runDiagnostics).toHaveBeenCalledTimes(1);
   });
 
+  test('announces the visually selected row with combobox active descendant semantics', () => {
+    render();
+    const input = container.querySelector<HTMLInputElement>('[data-testid="command-palette-input"]')!;
+    const list = container.querySelector<HTMLElement>('[data-testid="command-palette-list"]')!;
+
+    expect(input.getAttribute('role')).toBe('combobox');
+    expect(input.getAttribute('aria-expanded')).toBe('true');
+    expect(list.id).not.toBe('');
+    expect(input.getAttribute('aria-controls')).toBe(list.id);
+    expect(list.getAttribute('role')).toBe('listbox');
+
+    const initialActiveId = input.getAttribute('aria-activedescendant');
+    const initialActiveRow = initialActiveId ? document.getElementById(initialActiveId) : null;
+    expect(initialActiveRow).not.toBeNull();
+    expect(initialActiveRow).toBe(container.querySelector('.cmd-row.sel'));
+    expect(initialActiveRow?.getAttribute('role')).toBe('option');
+    expect(initialActiveRow?.getAttribute('tabindex')).toBe('-1');
+    expect(initialActiveRow?.getAttribute('aria-selected')).toBe('true');
+    expect(initialActiveRow?.getAttribute('aria-label')).toBe('Action: Diagnostics');
+
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    });
+
+    const nextActiveId = input.getAttribute('aria-activedescendant');
+    const nextActiveRow = nextActiveId ? document.getElementById(nextActiveId) : null;
+    expect(nextActiveId).not.toBe(initialActiveId);
+    expect(nextActiveRow).toBe(container.querySelector('.cmd-row.sel'));
+    expect(nextActiveRow?.getAttribute('aria-selected')).toBe('true');
+    expect(nextActiveRow?.getAttribute('aria-label')).toBe('Action: Schedules');
+    expect(initialActiveRow?.getAttribute('aria-selected')).toBe('false');
+
+    act(() => setInputValue(input, 'telegram'));
+
+    const filteredActiveId = input.getAttribute('aria-activedescendant');
+    const filteredActiveRow = filteredActiveId ? document.getElementById(filteredActiveId) : null;
+    expect(filteredActiveRow).toBe(container.querySelector('.cmd-row.sel'));
+    expect(filteredActiveRow?.getAttribute('data-testid')).toBe('command-palette-task');
+    expect(filteredActiveRow?.getAttribute('aria-label')).toBe('Task: Fix telegram STT');
+  });
+
+  test('keeps empty results valid for the listbox contract', () => {
+    render();
+    const input = container.querySelector<HTMLInputElement>('[data-testid="command-palette-input"]')!;
+
+    act(() => setInputValue(input, 'no matching command'));
+
+    const list = container.querySelector<HTMLElement>('[data-testid="command-palette-list"]')!;
+    const emptyOption = list.querySelector<HTMLElement>('[role="option"]')!;
+    expect(input.getAttribute('aria-activedescendant')).toBeNull();
+    expect(emptyOption).not.toBeNull();
+    expect(emptyOption.className).toBe('cmd-empty');
+    expect(emptyOption.getAttribute('aria-disabled')).toBe('true');
+    expect(emptyOption.getAttribute('aria-selected')).toBe('false');
+  });
+
   test('selecting a task calls onSelectTask with its agentId and taskId', () => {
     const { onSelectTask } = render();
     const input = container.querySelector<HTMLInputElement>('[data-testid="command-palette-input"]')!;
