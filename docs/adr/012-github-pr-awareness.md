@@ -408,6 +408,8 @@ interface GitHubScannerConfig {
   useHaikuExtraction: boolean;         // default: false (Phase 1: regex only)
   maxPRsPerTask: number;               // default: 10
   maxIssuesPerTask: number;            // default: 20
+  maxScannedPromptCacheEntries: number; // default: 5_000
+  maxOwnerRepoCacheEntries: number;    // default: 1_000
 }
 ```
 
@@ -429,7 +431,7 @@ If `gh` is unavailable, the entire GitHub awareness feature is silently disabled
 For bare references like `#123`, the scanner needs to know the owner/repo. Strategy:
 1. Check the task's `cwd` for a git remote: `git -C {cwd} remote get-url origin`
 2. Parse the remote URL to extract owner/repo
-3. Cache per-cwd (git remotes rarely change)
+3. Cache recent per-cwd lookups in a bounded cache; default max owner/repo cache entries: 1,000
 4. Full URLs (`github.com/owner/repo/pull/42`) are self-contained — no inference needed
 
 ### Testing Strategy

@@ -324,6 +324,75 @@ describe('GitHubScannerService', () => {
       expect(fetcher.inferOwnerRepo).toHaveBeenCalledTimes(1);
     });
 
+    it('bounds prompt-scan and cwd owner/repo caches', async () => {
+      const fetcher = createMockFetcher(true);
+      (fetcher.inferOwnerRepo as ReturnType<typeof vi.fn>).mockImplementation(async () => ({ owner: 'acme', repo: 'app' }));
+      const tasks = [
+        taskStore.createTask({ prompt: 'fix issue #1', cwd: '/tmp/kookr-cache-1' }),
+        taskStore.createTask({ prompt: 'fix issue #2', cwd: '/tmp/kookr-cache-2' }),
+        taskStore.createTask({ prompt: 'fix issue #3', cwd: '/tmp/kookr-cache-3' }),
+      ];
+
+      scanner = new GitHubScannerService({
+        taskStore, stateStore,
+        fetcher,
+        config: {
+          ...DEFAULT_GITHUB_SCANNER_CONFIG,
+          maxScannedPromptCacheEntries: 2,
+          maxOwnerRepoCacheEntries: 2,
+        },
+        onChanges,
+      });
+      await scanner.start();
+
+      for (const task of tasks) {
+        await scanner.processTaskPrompt(task.id);
+      }
+      expect(fetcher.inferOwnerRepo).toHaveBeenCalledTimes(3);
+
+      await scanner.processTaskPrompt(tasks[2].id);
+      expect(fetcher.inferOwnerRepo).toHaveBeenCalledTimes(3);
+
+      await scanner.processTaskPrompt(tasks[0].id);
+      expect(fetcher.inferOwnerRepo).toHaveBeenCalledTimes(4);
+    });
+
+    it('trims existing scanner caches when reconfigured to a lower cap', async () => {
+      const fetcher = createMockFetcher(true);
+      (fetcher.inferOwnerRepo as ReturnType<typeof vi.fn>).mockImplementation(async () => ({ owner: 'acme', repo: 'app' }));
+      const tasks = [
+        taskStore.createTask({ prompt: 'fix issue #1', cwd: '/tmp/kookr-cache-1' }),
+        taskStore.createTask({ prompt: 'fix issue #2', cwd: '/tmp/kookr-cache-2' }),
+        taskStore.createTask({ prompt: 'fix issue #3', cwd: '/tmp/kookr-cache-3' }),
+      ];
+
+      scanner = new GitHubScannerService({
+        taskStore, stateStore,
+        fetcher,
+        config: {
+          ...DEFAULT_GITHUB_SCANNER_CONFIG,
+          maxScannedPromptCacheEntries: 3,
+          maxOwnerRepoCacheEntries: 3,
+        },
+        onChanges,
+      });
+      await scanner.start();
+
+      for (const task of tasks) {
+        await scanner.processTaskPrompt(task.id);
+      }
+      scanner.reconfigure({
+        maxScannedPromptCacheEntries: 1,
+        maxOwnerRepoCacheEntries: 1,
+      });
+
+      await scanner.processTaskPrompt(tasks[2].id);
+      expect(fetcher.inferOwnerRepo).toHaveBeenCalledTimes(3);
+
+      await scanner.processTaskPrompt(tasks[0].id);
+      expect(fetcher.inferOwnerRepo).toHaveBeenCalledTimes(4);
+    });
+
     it('is a no-op when gh is not available', async () => {
       const fetcher = createMockFetcher(false);
       const task = taskStore.createTask({ prompt: 'fix issue #42', cwd: '/tmp' });

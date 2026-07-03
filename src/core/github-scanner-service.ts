@@ -169,11 +169,14 @@ export class GitHubScannerService {
 
   /**
    * Reconfigure the scanner with new settings.
-   * Preserves ownerRepoCache, scannedPrompts, and stateStore.
+   * Preserves ownerRepoCache, scannedPrompts, and stateStore, while trimming
+   * scanner caches to any newly configured limits.
    * Restarts intervals if currently running.
    */
   reconfigure(partial: Partial<GitHubScannerConfig>): void {
     this.config = { ...this.config, ...partial };
+    trimMapToLimit(this.ownerRepoCache, this.cacheLimit(this.config.maxOwnerRepoCacheEntries));
+    trimSetToLimit(this.scannedPrompts, this.cacheLimit(this.config.maxScannedPromptCacheEntries));
     // If running, restart intervals with new config
     if (this.scanInterval || this.fetchInterval) {
       this.stop();
@@ -250,11 +253,16 @@ export class GitHubScannerService {
    */
   async processTaskPrompt(taskId: string): Promise<void> {
     if (!this.ghAvailable) return;
-    if (this.scannedPrompts.has(taskId)) return;
-    this.scannedPrompts.add(taskId);
+    if (this.scannedPrompts.has(taskId)) {
+      this.scannedPrompts.delete(taskId);
+      this.scannedPrompts.add(taskId);
+      return;
+    }
 
     const task = this.taskStore.getTask(taskId);
     if (!task) return;
+    this.scannedPrompts.add(taskId);
+    trimSetToLimit(this.scannedPrompts, this.cacheLimit(this.config.maxScannedPromptCacheEntries));
 
     const ownerRepo = await this.resolveOwnerRepoFromCwd(task.cwd);
     const refs = extractRefsFromPrompt(task.prompt);
@@ -498,12 +506,21 @@ export class GitHubScannerService {
   /** Resolve owner/repo from a working directory path. */
   private async resolveOwnerRepoFromCwd(cwd: string): Promise<{ owner: string; repo: string } | null> {
     if (this.ownerRepoCache.has(cwd)) {
-      return this.ownerRepoCache.get(cwd) ?? null;
+      const cached = this.ownerRepoCache.get(cwd) ?? null;
+      this.ownerRepoCache.delete(cwd);
+      this.ownerRepoCache.set(cwd, cached);
+      return cached;
     }
 
     const result = await this.fetcher.inferOwnerRepo(cwd);
     this.ownerRepoCache.set(cwd, result);
+    trimMapToLimit(this.ownerRepoCache, this.cacheLimit(this.config.maxOwnerRepoCacheEntries));
     return result;
+  }
+
+  private cacheLimit(value: number): number {
+    if (!Number.isFinite(value) || value < 1) return 1;
+    return Math.floor(value);
   }
 }
 
@@ -524,4 +541,20 @@ function dedupeRefs(refs: GitHubReference[]): GitHubReference[] {
     unique.push(ref);
   }
   return unique;
+}
+
+function trimMapToLimit<K, V>(map: Map<K, V>, limit: number): void {
+  while (map.size > limit) {
+    const oldest = map.keys().next();
+    if (oldest.done) return;
+    map.delete(oldest.value);
+  }
+}
+
+function trimSetToLimit<T>(set: Set<T>, limit: number): void {
+  while (set.size > limit) {
+    const oldest = set.values().next();
+    if (oldest.done) return;
+    set.delete(oldest.value);
+  }
 }

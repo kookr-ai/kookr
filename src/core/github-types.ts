@@ -120,6 +120,8 @@ export interface GitHubScannerConfig {
   useHaikuExtraction: boolean;
   maxPRsPerTask: number;
   maxIssuesPerTask: number;
+  maxScannedPromptCacheEntries: number;
+  maxOwnerRepoCacheEntries: number;
 }
 
 export const DEFAULT_GITHUB_SCANNER_CONFIG: GitHubScannerConfig = {
@@ -129,6 +131,8 @@ export const DEFAULT_GITHUB_SCANNER_CONFIG: GitHubScannerConfig = {
   useHaikuExtraction: false,             // Phase 1: regex only
   maxPRsPerTask: 10,
   maxIssuesPerTask: 20,
+  maxScannedPromptCacheEntries: 5_000,
+  maxOwnerRepoCacheEntries: 1_000,
 };
 
 // --- Aggregate state per task (for API/WebSocket) ---
