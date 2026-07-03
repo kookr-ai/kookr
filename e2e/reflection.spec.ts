@@ -44,25 +44,25 @@ async function injectSessionStart(request: APIRequestContext, tmuxName: string) 
   });
 }
 
-async function injectStopEvent(request: APIRequestContext, tmuxName: string) {
+async function injectStopEvent(request: APIRequestContext, tmuxName: string, message = 'I need your help.') {
   await injectEvent(request, tmuxName, {
     session_id: `sess-${Date.now()}`,
     transcript_path: '/tmp/transcript.jsonl',
     cwd: '/test/project',
     hook_event_name: 'Stop',
     stop_hook_active: true,
-    last_assistant_message: 'I need your help.',
+    last_assistant_message: message,
   });
 }
 
-async function injectPermissionEvent(request: APIRequestContext, tmuxName: string) {
+async function injectPermissionEvent(request: APIRequestContext, tmuxName: string, command = 'npm test') {
   await injectEvent(request, tmuxName, {
     session_id: `sess-${Date.now()}`,
     transcript_path: '/tmp/transcript.jsonl',
     cwd: '/test/project',
     hook_event_name: 'PermissionRequest',
     tool_name: 'Bash',
-    tool_input: { command: 'npm test' },
+    tool_input: { command },
   });
 }
 
@@ -206,15 +206,15 @@ test.describe('Session Reflection — API', () => {
   });
 
   test('reflect API detects skipped findings', async ({ page, request }) => {
-    // Launch agents — use mixed anomaly types to avoid finding grouping (≥3 same type)
+    // Launch agents with distinct prompt text to avoid finding grouping.
     for (let i = 0; i < 4; i++) {
       await launchViaUI(page, `Task ${i}`, `/test/p${i}`);
       const tmux = await getLatestTmuxName(request);
       await injectSessionStart(request, tmux);
       if (i % 2 === 0) {
-        await injectStopEvent(request, tmux);
+        await injectStopEvent(request, tmux, `I need your help for reflection task ${i}.`);
       } else {
-        await injectPermissionEvent(request, tmux);
+        await injectPermissionEvent(request, tmux, `npm test reflection-${i}`);
       }
       await expect(page.locator('.finding-card')).toHaveCount(i + 1, { timeout: 10000 });
     }

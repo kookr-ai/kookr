@@ -37,14 +37,14 @@ async function injectEvent(
   });
 }
 
-async function injectPermissionEvent(request: APIRequestContext, tmuxName: string) {
+async function injectPermissionEvent(request: APIRequestContext, tmuxName: string, command = 'npm install') {
   await injectEvent(request, tmuxName, {
     session_id: `sess-${Date.now()}`,
     transcript_path: '/tmp/transcript.jsonl',
     cwd: '/test/project',
     hook_event_name: 'PermissionRequest',
     tool_name: 'Bash',
-    tool_input: { command: 'npm install' },
+    tool_input: { command },
     permission_mode: 'default',
   });
 }
@@ -142,7 +142,7 @@ test.describe('Finding Groups — duplicate anomaly grouping', () => {
     for (let i = 1; i <= 2; i++) {
       await launchViaUI(page, `Permission task ${i}`, '/test/project');
       const tmux = await getLatestUnseenTmuxName(request, seen);
-      await injectPermissionEvent(request, tmux);
+      await injectPermissionEvent(request, tmux, `npm install ${i}`);
       seen.add(tmux);
     }
     await launchViaUI(page, 'Input task', '/test/project');

@@ -359,6 +359,19 @@ The system SHOULD display a brief confirmation overlay after sending a response.
 
 **Evidence:** `src/frontend/store/useStore.ts` (sentOverlay state), `src/frontend/components/SentOverlay.tsx` (overlay component), `src/frontend/components/DetailPanel.tsx` (triggers overlay on send).
 
+### R3.9: Batch Respond to Identical Pending Prompts — SHOULD — `done`
+
+The system SHOULD reduce approval-gate load by grouping agents waiting on the same unresolved prompt.
+
+**Acceptance criteria:**
+- Identical pending prompts are grouped only when at least two active findings share the same normalized pending prompt
+- Completed-turn findings are excluded from blind batch approval
+- `AskUserQuestion`, permission request, transcript prompt, and anomaly explanation fallbacks are fingerprinted deterministically
+- Policy-covered low-risk prompts may expose one-click "Approve matching"; merge, scope, delete/remove, destructive, permission, credential, and secret prompts remain manual
+- Non-auto-approved identical groups expose "Reply to matching", selecting only that matching subset for a shared response
+
+**Evidence:** `src/frontend/group-findings.ts`, `src/frontend/components/FindingsPanel.tsx`, `src/frontend/group-findings.test.ts`, `src/frontend/components/FindingsPanel.performance.test.tsx`.
+
 ---
 
 ## R4: Agent Lifecycle
@@ -1016,6 +1029,7 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R3.6 | F3.6 | SHALL | done | attention-queue, ws, loop.test |
 | R3.7 | F3.7 | SHALL | done | attention-queue, ws, loop.test |
 | R3.8 | — | SHOULD | done | useStore, SentOverlay, DetailPanel |
+| R3.9 | — | SHOULD | done | group-findings, FindingsPanel |
 | R4.1 | F4.1 | SHALL | done | LaunchTaskDialog, ws, claude-code-adapter, local-dtach-backend |
 | R4.2 | F4.2 | SHOULD | done | claude-code-adapter, local-dtach-backend, ws, DetailPanel |
 | R4.3 | F4.3 | SHOULD | done | tasks (relaunch), ws (relaunch handler), LaunchTaskDialog |

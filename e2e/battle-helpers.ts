@@ -98,14 +98,19 @@ export async function injectStopEvent(request: APIRequestContext, tmuxName: stri
   });
 }
 
-export async function injectPermissionEvent(request: APIRequestContext, tmuxName: string, toolName?: string) {
+export async function injectPermissionEvent(
+  request: APIRequestContext,
+  tmuxName: string,
+  toolName?: string,
+  command = 'npm install',
+) {
   await injectEvent(request, tmuxName, {
     session_id: testSessionIdForTmux(tmuxName),
     transcript_path: '/tmp/transcript.jsonl',
     cwd: '/test/project',
     hook_event_name: 'PermissionRequest',
     tool_name: toolName ?? 'Bash',
-    tool_input: { command: 'npm install' },
+    tool_input: { command },
     permission_mode: 'default',
   });
 }

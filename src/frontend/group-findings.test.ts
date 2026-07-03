@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { groupFindings, groupLabel } from './group-findings.js';
+import { groupFindings, groupIdenticalPendingPrompts, groupLabel } from './group-findings.js';
 import type { AgentState } from '../shared/protocol.js';
 
 function makeAgent(id: string, anomalyType: string): AgentState {
@@ -13,6 +13,19 @@ function makeAgent(id: string, anomalyType: string): AgentState {
       explanation: `test ${anomalyType}`,
       detectedAt: new Date(),
     },
+  };
+}
+
+function withAskUserQuestion(agent: AgentState, question: string, choices = ['Yes', 'No']): AgentState {
+  return {
+    ...agent,
+    turnState: 'waiting_for_input',
+    events: [{
+      type: 'tool_use',
+      sessionId: agent.agentId,
+      toolName: 'AskUserQuestion',
+      toolInput: { question, choices },
+    }],
   };
 }
 
@@ -91,5 +104,92 @@ describe('groupLabel', () => {
 
   test('returns type string for unknown types', () => {
     expect(groupLabel('unknown_type')).toBe('unknown_type');
+  });
+});
+
+describe('groupIdenticalPendingPrompts', () => {
+  test('groups agents waiting on the exact same AskUserQuestion prompt', () => {
+    const first = withAskUserQuestion(makeAgent('a1', 'needs_input'), 'Open the PR when checks are green?');
+    const second = withAskUserQuestion(makeAgent('a2', 'needs_input'), 'Open the PR when checks are green?');
+    const third = withAskUserQuestion(makeAgent('a3', 'needs_input'), 'Merge the PR now?');
+
+    const groups = groupIdenticalPendingPrompts([first, second, third]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].agents.map((agent) => agent.agentId)).toEqual(['a1', 'a2']);
+    expect(groups[0].prompt).toContain('Open the PR when checks are green?');
+    expect(groups[0].approvalResponse).toBe('yes');
+  });
+
+  test('does not batch completed-turn review findings', () => {
+    const first = withAskUserQuestion(makeAgent('a1', 'needs_input'), 'Proceed?');
+    const second = withAskUserQuestion(makeAgent('a2', 'needs_input'), 'Proceed?');
+
+    const groups = groupIdenticalPendingPrompts([
+      { ...first, turnState: 'completed_turn' },
+      { ...second, turnState: 'completed_turn' },
+    ]);
+
+    expect(groups).toEqual([]);
+  });
+
+  test('keeps merge prompts out of policy-covered one-click approval', () => {
+    const first = withAskUserQuestion(makeAgent('a1', 'needs_input'), 'Merge the PR now?');
+    const second = withAskUserQuestion(makeAgent('a2', 'needs_input'), 'Merge the PR now?');
+
+    const groups = groupIdenticalPendingPrompts([first, second]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].approvalResponse).toBeUndefined();
+  });
+
+  test('keeps scope-change prompts out of policy-covered one-click approval', () => {
+    const first = withAskUserQuestion(makeAgent('a1', 'needs_input'), 'Expand scope to include cleanup?');
+    const second = withAskUserQuestion(makeAgent('a2', 'needs_input'), 'Expand scope to include cleanup?');
+
+    const groups = groupIdenticalPendingPrompts([first, second]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].approvalResponse).toBeUndefined();
+  });
+
+  test('keeps early or negated PR prompts out of policy-covered one-click approval', () => {
+    const prompts = [
+      'Should I open the PR before checks are green?',
+      'Open the PR even though checks are not green?',
+      'Open the PR without waiting for checks to pass?',
+      'Open the PR once tests pass even if lint fails?',
+    ];
+
+    for (const [index, prompt] of prompts.entries()) {
+      const first = withAskUserQuestion(makeAgent(`a${index}-1`, 'needs_input'), prompt);
+      const second = withAskUserQuestion(makeAgent(`a${index}-2`, 'needs_input'), prompt);
+
+      const groups = groupIdenticalPendingPrompts([first, second]);
+
+      expect(groups).toHaveLength(1);
+      expect(groups[0].approvalResponse).toBeUndefined();
+    }
+  });
+
+  test('fingerprints object-shaped transcript context excerpts', () => {
+    const first = makeAgent('a1', 'needs_input');
+    const second = makeAgent('a2', 'needs_input');
+    first.anomaly!.transcriptContext = { lastAssistantMessage: { excerpt: 'Waiting on the same prompt' } } as any;
+    second.anomaly!.transcriptContext = { lastAssistantMessage: { excerpt: 'Waiting on the same prompt' } } as any;
+
+    const groups = groupIdenticalPendingPrompts([first, second]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].prompt).toBe('Waiting on the same prompt');
+  });
+
+  test('ignores findings without string fallback text', () => {
+    const first = makeAgent('a1', 'needs_input');
+    const second = makeAgent('a2', 'needs_input');
+    first.anomaly!.explanation = undefined as any;
+    second.anomaly!.explanation = undefined as any;
+
+    expect(groupIdenticalPendingPrompts([first, second])).toEqual([]);
   });
 });
