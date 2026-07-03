@@ -317,6 +317,24 @@ The `audit` object contains:
 | --- | --- |
 | `GET /api/settings` | Get user and project settings |
 | `PUT /api/settings` | Update settings |
+| `GET /api/circuit-breakers` | Snapshots of wrapped-dependency breakers |
+| `GET /api/admin/log-level` | Current runtime log level and TTL override state |
+| `POST /api/admin/log-level` | Change the running server's log level, optionally with an auto-revert TTL |
+| `GET /api/admin/operational-alert-config` | Current runtime operational alert thresholds and boot defaults |
+| `POST /api/admin/operational-alert-config` | Update operational alert thresholds for the running process |
+| `GET /api/admin/operational-alerts` | Recent operational alert fire/recovery history for admin introspection |
+| `GET /api/admin/drain` | Current drain/resume state and running-task count |
+| `POST /api/admin/drain` | Enter drain mode, refusing new task launches while running agents continue |
+| `POST /api/admin/resume` | Leave drain mode and accept new task launches |
+| `GET /api/diagnostics/launch-dependencies` | Aggregates degraded launch dependencies by dependency and category, including affected task IDs and last occurrence times |
+| `GET /api/diagnostic` | Latest self-diagnostic report and last error |
+| `POST /api/diagnostic/run` | Trigger a self-diagnostic run |
+| `GET /api/oss-attempts` | OSS contribution-attempt store snapshot |
+| `POST /api/oss-attempts/refresh` | Refresh PR and issue state for tracked OSS attempts |
+| `POST /api/oss-attempts/events` | Record an OSS attempt event, used by hooks |
+| `GET /api/deploy/status` | Production-update job status plus user-global toolkit symlink freshness |
+| `POST /api/deploy/trigger` | Trigger a `pnpm prod:update` job |
+| `POST /api/deploy/toolkit-refresh` | Reinstall user-global Kookr hooks/toolkit symlinks from the production worktree |
 
 ### Reasoning effort
 
@@ -337,24 +355,99 @@ agent launches at the agent CLI's own default with no effort flag passed
 (identical to behavior before this setting existed). A per-task `effort` on
 `POST /api/tasks` (or `kookr-spawn --effort`) overrides this default for one
 launch. Resolution order: per-task override → per-agent-type setting → unset.
-| `GET /api/circuit-breakers` | Snapshots of wrapped-dependency breakers |
-| `GET /api/admin/operational-alerts` | Recent operational-alert fire/recovery history for admin introspection |
-| `GET /api/diagnostics/launch-dependencies` | Aggregates degraded launch dependencies by dependency and category, including affected task IDs and last occurrence times |
-| `GET /api/diagnostic` | Latest self-diagnostic report and last error |
-| `POST /api/diagnostic/run` | Trigger a self-diagnostic run |
-| `GET /api/oss-attempts` | OSS contribution-attempt store snapshot |
-| `POST /api/oss-attempts/refresh` | Refresh PR and issue state for tracked OSS attempts |
-| `POST /api/oss-attempts/events` | Record an OSS attempt event, used by hooks |
-| `GET /api/deploy/status` | Production-update job status plus user-global toolkit symlink freshness |
-| `POST /api/deploy/trigger` | Trigger a `pnpm prod:update` job |
-| `POST /api/deploy/toolkit-refresh` | Reinstall user-global Kookr hooks/toolkit symlinks from the production worktree |
 
-### Operational alert history
+### Admin / runtime control
 
-`GET /api/admin/operational-alerts` uses the same admin authorization gate as
-the other `/api/admin/*` routes: loopback requests are trusted, or callers can
-send `x-kookr-admin-token` matching `KOOKR_ADMIN_TOKEN`. Unauthorized requests
-return `403 {"error":"admin-forbidden"}`.
+`/api/admin/*` routes tune and inspect a running Kookr server without a restart.
+Loopback requests are trusted. Non-loopback callers must pass the normal owner
+API authentication for the server and also send `x-kookr-admin-token: <token>`
+matching `KOOKR_ADMIN_TOKEN`. Requests that reach an admin route without the
+admin token return `403 {"error":"admin-forbidden"}`.
+
+#### `GET /api/admin/log-level` and `POST /api/admin/log-level`
+
+`GET /api/admin/log-level` returns:
+
+```json
+{
+  "level": "info",
+  "default": "info",
+  "ttlExpiresAt": null
+}
+```
+
+`level` is the active runtime level. `default` is the level seeded at boot from
+`KOOKR_DEBUG`. `ttlExpiresAt` is an ISO timestamp when a TTL override is active,
+or `null` when the current level is sticky.
+
+`POST /api/admin/log-level` accepts:
+
+```json
+{ "level": "debug", "ttlSeconds": 300 }
+```
+
+Valid levels are `error`, `warn`, `info`, and `debug`. `ttlSeconds` is optional:
+omit it for a sticky runtime change, or pass a positive number of seconds to
+auto-revert to `default`. Sub-second and non-positive TTLs are rejected, and TTLs
+longer than 24 hours are capped at 24 hours. Success returns the same shape as
+`GET`; invalid JSON returns `400 {"error":"invalid-json"}`, and validation
+failures return `400` with `error` (`invalid-level` or `invalid-ttl`) and
+`validLevels`.
+
+Example:
+
+```bash
+curl -fsS -X POST http://127.0.0.1:4800/api/admin/log-level \
+  -H 'content-type: application/json' \
+  --data '{"level":"debug","ttlSeconds":300}'
+```
+
+#### `GET /api/admin/operational-alert-config` and `POST /api/admin/operational-alert-config`
+
+`GET /api/admin/operational-alert-config` returns the live thresholds and the
+boot defaults seeded from `KOOKR_ALERT_*` environment variables:
+
+```json
+{
+  "config": {
+    "cpuPercent": 0,
+    "memoryPercent": 0,
+    "eventLoopDelayMs": 0,
+    "dataDirectoryFreePercent": 5,
+    "dataDirectoryFreeBytes": 2147483648,
+    "circuitBreakerOpenMs": 30000,
+    "sustainSamples": 3
+  },
+  "default": {
+    "cpuPercent": 0,
+    "memoryPercent": 0,
+    "eventLoopDelayMs": 0,
+    "dataDirectoryFreePercent": 5,
+    "dataDirectoryFreeBytes": 2147483648,
+    "circuitBreakerOpenMs": 30000,
+    "sustainSamples": 3
+  }
+}
+```
+
+`POST /api/admin/operational-alert-config` accepts a partial object with one or
+more known fields: `cpuPercent`, `memoryPercent`, `eventLoopDelayMs`,
+`dataDirectoryFreePercent`, `dataDirectoryFreeBytes`, `circuitBreakerOpenMs`,
+and `sustainSamples`. Threshold fields must be finite numbers greater than or
+equal to zero. `sustainSamples` must be an integer greater than or equal to one.
+Unknown fields are ignored, but at least one known field must be present.
+Success returns the same shape as `GET`; validation failures return `400` with
+`error`, `field` when applicable, and `validFields`.
+
+Example:
+
+```bash
+curl -fsS -X POST http://127.0.0.1:4800/api/admin/operational-alert-config \
+  -H 'content-type: application/json' \
+  --data '{"cpuPercent":90,"sustainSamples":2}'
+```
+
+#### `GET /api/admin/operational-alerts`
 
 The response is an in-memory ring buffer of recent operational alert fire and
 recovery events:
@@ -377,6 +470,34 @@ recovery events:
       "recoveryAlert": { "type": "alert", "severity": "info" }
     }
   ]
+}
+```
+
+#### `GET /api/admin/drain`, `POST /api/admin/drain`, and `POST /api/admin/resume`
+
+`GET /api/admin/drain` returns whether the server accepts new launches and how
+many tasks are currently running:
+
+```json
+{
+  "accepting": true,
+  "draining": false,
+  "runningTasks": 0
+}
+```
+
+`POST /api/admin/drain` enters drain mode. New task launches are refused, but
+running agents continue. `POST /api/admin/resume` leaves drain mode and accepts
+launches again. Both POST routes return the drain state plus `changed`, which is
+`false` for idempotent no-op calls:
+
+```json
+{
+  "accepting": false,
+  "draining": true,
+  "since": "2026-05-13T00:00:00.000Z",
+  "runningTasks": 2,
+  "changed": true
 }
 ```
 
