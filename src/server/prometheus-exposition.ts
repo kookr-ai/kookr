@@ -98,6 +98,22 @@ function appendCircuitBreakerMetrics(lines: string[], snapshots: CircuitBreakerS
   for (const breaker of snapshots) {
     lines.push(metricLine('kookr_circuit_breaker_failures', { name: breaker.name }, breaker.failureCount));
   }
+
+  lines.push(
+    '# HELP kookr_circuit_breaker_rejected_total Total calls rejected while a circuit breaker was open.',
+    '# TYPE kookr_circuit_breaker_rejected_total counter',
+  );
+  for (const breaker of snapshots) {
+    lines.push(metricLine('kookr_circuit_breaker_rejected_total', { name: breaker.name }, breaker.rejectedCalls));
+  }
+
+  lines.push(
+    '# HELP kookr_circuit_breaker_trips_total Total transitions into the open state by circuit breaker.',
+    '# TYPE kookr_circuit_breaker_trips_total counter',
+  );
+  for (const breaker of snapshots) {
+    lines.push(metricLine('kookr_circuit_breaker_trips_total', { name: breaker.name }, breaker.tripCount));
+  }
 }
 
 function appendAttentionQueueSuppressionMetrics(

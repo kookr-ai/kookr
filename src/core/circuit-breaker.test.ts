@@ -17,7 +17,11 @@ describe('CircuitBreaker', () => {
   test('starts in closed state', () => {
     const cb = new CircuitBreaker({ name: 'test' });
     expect(cb.getState()).toBe('closed');
-    expect(cb.getSnapshot().state).toBe('closed');
+    expect(cb.getSnapshot()).toMatchObject({
+      state: 'closed',
+      rejectedCalls: 0,
+      tripCount: 0,
+    });
     cb.dispose();
   });
 
@@ -42,6 +46,7 @@ describe('CircuitBreaker', () => {
       await cb.call(async () => { throw new Error('fail'); }).catch(() => {});
     }
     expect(cb.getState()).toBe('open');
+    expect(cb.getSnapshot().tripCount).toBe(1);
     cb.dispose();
   });
 
@@ -52,6 +57,10 @@ describe('CircuitBreaker', () => {
 
     await expect(cb.call(async () => 'ok')).rejects.toBeInstanceOf(CircuitBreakerOpenError);
     await expect(cb.call(async () => 'ok')).rejects.toHaveProperty('breakerName', 'test');
+    expect(cb.getSnapshot()).toMatchObject({
+      rejectedCalls: 2,
+      tripCount: 1,
+    });
     cb.dispose();
   });
 
@@ -96,6 +105,7 @@ describe('CircuitBreaker', () => {
 
     await cb.call(async () => { throw new Error('fail again'); }).catch(() => {});
     expect(cb.getState()).toBe('open');
+    expect(cb.getSnapshot().tripCount).toBe(2);
     cb.dispose();
   });
 
@@ -128,10 +138,40 @@ describe('CircuitBreaker', () => {
 
     cb.rearm();
     expect(cb.getState()).toBe('closed');
+    expect(cb.getSnapshot().tripCount).toBe(1);
 
     // Should accept calls again
     const result = await cb.call(async () => 'ok');
     expect(result).toBe('ok');
+    cb.dispose();
+  });
+
+  test('keeps rejected and trip counters monotonic across rearm', async () => {
+    const cb = new CircuitBreaker({ name: 'test', failureThreshold: 1 });
+
+    await cb.call(async () => { throw new Error('fail'); }).catch(() => {});
+    await expect(cb.call(async () => 'first rejected')).rejects.toBeInstanceOf(CircuitBreakerOpenError);
+    cb.rearm();
+    await cb.call(async () => { throw new Error('fail again'); }).catch(() => {});
+    await expect(cb.call(async () => 'second rejected')).rejects.toBeInstanceOf(CircuitBreakerOpenError);
+
+    expect(cb.getSnapshot()).toMatchObject({
+      rejectedCalls: 2,
+      tripCount: 2,
+    });
+    cb.dispose();
+  });
+
+  test('records explicit rejected calls for manual open-state guards', async () => {
+    const cb = new CircuitBreaker({ name: 'test', failureThreshold: 1 });
+
+    await cb.call(async () => { throw new Error('fail'); }).catch(() => {});
+    cb.recordRejectedCall();
+
+    expect(cb.getSnapshot()).toMatchObject({
+      rejectedCalls: 1,
+      tripCount: 1,
+    });
     cb.dispose();
   });
 

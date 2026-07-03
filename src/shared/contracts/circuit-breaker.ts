@@ -5,6 +5,8 @@ export interface CircuitBreakerSnapshot {
   state: CircuitBreakerState;
   failureCount: number;
   successCount: number;
+  rejectedCalls: number;
+  tripCount: number;
   lastFailureTime: number | null;
   lastStateChange: number;
   resetTimeoutMs: number;

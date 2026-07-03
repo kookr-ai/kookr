@@ -65,6 +65,8 @@ breaker changes state.
     "state": "closed",
     "failureCount": 0,
     "successCount": 0,
+    "rejectedCalls": 0,
+    "tripCount": 0,
     "lastFailureTime": null,
     "lastStateChange": 1710000000000,
     "resetTimeoutMs": 30000
@@ -84,6 +86,10 @@ The same snapshot shape is used in the server-to-client WebSocket message:
 The server sends `circuitBreakerStatus` on WebSocket connect when breakers are
 registered, and broadcasts a fresh full breaker list whenever any registered
 breaker changes state.
+
+`rejectedCalls` and `tripCount` are process-local monotonic counters. They do
+not reset when a breaker re-arms; `rejectedCalls` increments for calls shed while
+the breaker is open, and `tripCount` increments for each transition into open.
 
 ## Manual Rearm
 

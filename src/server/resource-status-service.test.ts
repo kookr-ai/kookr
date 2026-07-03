@@ -270,6 +270,8 @@ describe('ResourceStatusService', () => {
         state: 'open',
         failureCount: 5,
         successCount: 0,
+        rejectedCalls: 2,
+        tripCount: 1,
         lastFailureTime: 1_000,
         lastStateChange: 1_000,
         resetTimeoutMs: 30_000,

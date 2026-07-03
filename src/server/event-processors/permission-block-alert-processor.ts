@@ -69,6 +69,7 @@ export function createPermissionBlockAlertProcessor({
         ? `${permEvent.toolName}(${formatToolInput(permEvent.toolInput)})`
         : 'permission required';
       if (permissionAlertBreaker.getState() === 'open') {
+        permissionAlertBreaker.recordRejectedCall();
         console.warn('[permission-block-alert-processor] permission-alert breaker open; skipped onPermissionBlocked');
         return;
       }

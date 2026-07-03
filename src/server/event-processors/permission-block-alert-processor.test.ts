@@ -99,6 +99,7 @@ describe('PermissionBlockAlertProcessor', () => {
     });
 
     expect(onPermissionBlocked).toHaveBeenCalledTimes(2);
+    expect(permissionAlertBreaker.getSnapshot().rejectedCalls).toBe(1);
     expect(warn).toHaveBeenCalledWith(
       '[permission-block-alert-processor] onPermissionBlocked threw:',
       expect.any(Error),
