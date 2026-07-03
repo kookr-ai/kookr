@@ -472,6 +472,7 @@ const clientMessageRoundTripCases = [
     reviewFingerprint: 'fingerprint-1',
   }),
   clientMessageCase({ type: 'workspace:sweep' }),
+  clientMessageCase({ type: 'workspace:requestSweepReport', runId: 'run-1' }),
 ] as const;
 
 const coveredClientMessageTypes = clientMessageRoundTripCases.map((message) => message.type);

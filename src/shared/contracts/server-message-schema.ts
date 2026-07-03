@@ -102,6 +102,7 @@ const snapshotMessage = z.object({
   workspaceEnabled: z.boolean().optional(),
   sweepRunning: z.boolean().optional(),
   sweepProgress: workspaceSweepProgressSnapshot.optional(),
+  lastSweepRunId: z.string().optional(),
   drainStatus: z.object({
     accepting: z.boolean(),
     draining: z.boolean(),
@@ -304,6 +305,50 @@ const crossProjectSweepProjectResult = z.union([
   }),
 ]);
 
+const sweepReportBucket = z.enum([
+  'removed',
+  'removal_failed',
+  'probably_safe',
+  'needs_call',
+  'blocked',
+]);
+
+const sweepReportRow = z.object({
+  projectId: z.string(),
+  worktreePath: z.string(),
+  branch: z.string(),
+  classification: z.string(),
+  reasonCode: z.string(),
+  bucket: sweepReportBucket,
+  footprintBytes: z.number().nullable(),
+  lastTouchedMs: z.number().nullable(),
+  reason: z.string(),
+  disposition: z.string().optional(),
+  hasSensitiveIgnored: z.boolean().optional(),
+  ignoredSample: z.array(z.string()).optional(),
+  fingerprint: z.string().optional(),
+});
+
+const sweepReportBucketSummary = z.object({
+  count: z.number(),
+  footprintBytesUpperBound: z.number(),
+  unknownFootprintCount: z.number(),
+});
+
+const sweepReport = z.object({
+  runId: z.string(),
+  generatedAt: z.string(),
+  thresholdDays: z.number(),
+  rows: z.array(sweepReportRow),
+  buckets: z.record(sweepReportBucket, sweepReportBucketSummary),
+  notAnalyzed: z.array(z.object({
+    projectId: z.string(),
+    code: z.enum(['timeout', 'error']),
+    notAnalyzedCount: z.number(),
+  })),
+  reconstructedFromLedger: z.boolean().optional(),
+});
+
 const workspaceSweepProgressMessage = workspaceSweepProgressSnapshot.extend({
   type: z.literal('workspaceSweepProgress'),
   result: crossProjectSweepProjectResult.optional(),
@@ -315,12 +360,19 @@ const workspaceSweepCompleteMessage = z.object({
   startedAt: z.string(),
   finishedAt: z.string(),
   projects: z.array(crossProjectSweepProjectResult),
+  report: sweepReport.optional(),
 });
 
 const workspaceSweepBusyMessage = z.object({
   type: z.literal('workspaceSweepBusy'),
   holderPid: z.number(),
   heldSince: z.string(),
+});
+
+const workspaceSweepReportMessage = z.object({
+  type: z.literal('workspaceSweepReport'),
+  runId: z.string(),
+  report: sweepReport.optional(),
 });
 
 const diagnosticReportMessage = z.object({
@@ -368,6 +420,7 @@ const ServerMessageSchemaImpl = z.union([
   workspaceSweepProgressMessage,
   workspaceSweepCompleteMessage,
   workspaceSweepBusyMessage,
+  workspaceSweepReportMessage,
   diagnosticReportMessage,
   ossAttemptsMessage,
 ]);

@@ -10988,6 +10988,190 @@ button.act-tool-entry:focus-visible {
   border-color: transparent;
 }
 
+/* Sweep Report (disk-aware diagnosis, RFC sweep-worktree-ux PR 2) */
+.sweep-report-reopen {
+  margin: 8px 12px 0;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  background: var(--bg-panel);
+}
+.sweep-report-reopen-btn {
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border-dim);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.sweep-report-reopen-dismiss {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.sweep-report-panel {
+  margin: 8px 12px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.18);
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.sweep-report-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.sweep-report-title {
+  font-size: 14px;
+  font-weight: 650;
+  margin: 0;
+}
+.sweep-report-reconstructed-note {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+.sweep-report-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.sweep-report-sort-toggle {
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border-dim);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.sweep-report-close-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+.sweep-report-not-analyzed {
+  margin: 10px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--color-error, #f44336);
+  border-radius: 6px;
+  background: rgba(244, 67, 54, 0.08);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.sweep-report-not-analyzed-row + .sweep-report-not-analyzed-row {
+  margin-top: 4px;
+}
+.sweep-report-section {
+  margin-top: 12px;
+}
+.sweep-report-section-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-dim);
+}
+.sweep-report-footprint-label {
+  font-weight: 400;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.sweep-report-section-blocked .sweep-report-section-header {
+  color: var(--text-muted);
+  font-weight: 500;
+  border-bottom: none;
+}
+.sweep-report-row-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sweep-report-row {
+  padding: 6px 8px;
+  border: 1px solid var(--border-dim);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.12);
+}
+.sweep-report-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sweep-report-row-project {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.sweep-report-row-branch {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-bright);
+}
+.sweep-report-removal-failed-tag {
+  font-size: 10px;
+  padding: 2px 6px;
+  border: 1px solid var(--color-error, #f44336);
+  border-radius: 4px;
+  color: var(--color-error, #f44336);
+  white-space: nowrap;
+}
+.sweep-report-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  flex-wrap: wrap;
+}
+.sweep-report-row-reason {
+  color: var(--text-secondary);
+}
+.sweep-report-sensitive-warning {
+  margin-top: 4px;
+  color: var(--warning, #d6a824);
+  font-size: 11.5px;
+}
+.sweep-report-diagnostic-btn {
+  margin-top: 6px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border-dim);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.sweep-report-diagnostic-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* --- Auto-Advance "FOLLOW" pill (TopBar) --- */
 .follow-pill-wrapper {
   position: relative;

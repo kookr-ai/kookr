@@ -238,6 +238,7 @@ const ClientMessageSchemaImpl = z.union([
     reviewFingerprint: z.string(),
   }),
   z.object({ type: z.literal('workspace:sweep') }),
+  z.object({ type: z.literal('workspace:requestSweepReport'), runId: z.string() }),
 ]);
 
 export const ClientMessageSchema = ClientMessageSchemaImpl as unknown as z.ZodType<ClientMessage>;

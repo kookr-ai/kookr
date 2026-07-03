@@ -159,3 +159,102 @@ export interface WorkspaceView {
   recentAttempts: WorkspaceAttemptRecord[];
   activeLeases: WorktreeLease[];
 }
+
+// --- Sweep Report (disk-aware diagnosis, RFC sweep-worktree-ux PR 2) ---
+
+/**
+ * Which of the four report buckets a worktree row belongs to. Buckets cover
+ * all ten {@link CleanupClassification} values plus the two removal outcomes.
+ *
+ * - `removed` — sweep reclaimed the path (any removed-disposition summary).
+ * - `removal_failed` — the `git worktree remove` itself failed; still on disk.
+ * - `probably_safe` — clean `unique_commits`, stale (>threshold). Path removal
+ *   keeps the branch and all commits. Pre-selected for PR 3 bulk remove unless
+ *   `hasSensitiveIgnored`.
+ * - `needs_call` — dirty, generated_only, clean-but-recent, non-prunable stale.
+ * - `blocked` — busy / protected / checked_out_elsewhere / unknown; collapsed
+ *   to a count, non-actionable.
+ */
+export type SweepReportBucket =
+  | 'removed'
+  | 'removal_failed'
+  | 'probably_safe'
+  | 'needs_call'
+  | 'blocked';
+
+export interface SweepReportRow {
+  projectId: string;
+  worktreePath: string;
+  branch: string;
+  classification: CleanupClassification;
+  reasonCode: string;
+  bucket: SweepReportBucket;
+  /**
+   * On-disk footprint (upper bound) in bytes from `du -sk`. `null` means the
+   * measurement failed or timed out ("size unknown"); the row stays actionable.
+   * Labeled an upper bound because `du` counts hardlinked/CAS package-store
+   * content at full size — per-worktree sizes sharing a store must NOT be
+   * summed as additive freed disk.
+   */
+  footprintBytes: number | null;
+  /**
+   * Git-index mtime (ms since epoch) — the "last touched" staleness signal
+   * (`.git/worktrees/<id>/index`). `null` when unreadable; a missing or
+   * future-dated value forces the row to `needs_call` (fail safe).
+   */
+  lastTouchedMs: number | null;
+  /** One-line plain-language reason shown in the row. */
+  reason: string;
+  /** Removal disposition for `removed` / `removal_failed` rows. */
+  disposition?: AttemptDisposition;
+  /**
+   * Probably-safe only: worktree holds gitignored files NOT matched by the
+   * known-regenerable allowlist (e.g. `.env`, a local dev DB). Such rows get
+   * the strongest confirm wording and are not pre-selected in PR 3's bulk.
+   */
+  hasSensitiveIgnored?: boolean;
+  /** Probably-safe only: sample of sensitive gitignored paths. */
+  ignoredSample?: string[];
+  /**
+   * Probably-safe only: optimistic-concurrency fingerprint captured at report
+   * time via `hydrateCleanupCandidateDetail`. Optional so a PR 3 revert needs
+   * no PR 2 shape change; PR 3's bulk carries it back for re-validation.
+   */
+  fingerprint?: string;
+}
+
+export interface SweepReportBucketSummary {
+  count: number;
+  /** Sum of KNOWN footprints only (upper bound); null-footprint rows excluded. */
+  footprintBytesUpperBound: number;
+  /** Rows whose footprint is unknown (`du` failed) — so the headline is not silently understated. */
+  unknownFootprintCount: number;
+}
+
+/**
+ * A project whose classification timed out (or errored) before it could be
+ * analyzed. `notAnalyzedCount` is the cheap `git worktree list` count captured
+ * BEFORE the timeout guard, so the loud banner shows a real N.
+ */
+export interface SweepReportNotAnalyzed {
+  projectId: string;
+  code: 'timeout' | 'error';
+  notAnalyzedCount: number;
+}
+
+export interface SweepReport {
+  runId: string;
+  generatedAt: string;
+  /** Staleness threshold in days used to bucket probably-safe (default 14). */
+  thresholdDays: number;
+  rows: SweepReportRow[];
+  buckets: Record<SweepReportBucket, SweepReportBucketSummary>;
+  /** Projects that could not be analyzed — loud "not analyzed — N worktrees" banner. */
+  notAnalyzed: SweepReportNotAnalyzed[];
+  /**
+   * True when this report was reconstructed from the attempt ledger on
+   * reconnect (Removed / removal-failed buckets only; live buckets are not
+   * persisted). Lets the UI note the report is a partial post-hoc view.
+   */
+  reconstructedFromLedger?: boolean;
+}

@@ -156,6 +156,22 @@ export class WorkspaceAttemptRepository {
     return result.slice(0, limit);
   }
 
+  /**
+   * List every attempt stamped with a given sweep runId, ordered by startedAt
+   * ascending. Backs the reconnect-after-completion reconstruction of a sweep's
+   * Removed manifest from durable state (no server-side report retention).
+   */
+  listBySweepRunId(sweepRunId: string): WorkspaceAttemptRecord[] {
+    const result: WorkspaceAttemptRecord[] = [];
+    for (const record of this.attempts.values()) {
+      if (record.sweepRunId === sweepRunId) {
+        result.push(record);
+      }
+    }
+    result.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+    return result;
+  }
+
   private load(): void {
     if (!this.filePath || !existsSync(this.filePath)) return;
 

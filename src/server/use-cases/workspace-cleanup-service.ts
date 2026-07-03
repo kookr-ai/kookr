@@ -66,6 +66,18 @@ export interface WorkspaceBulkCleanupInput {
 
 export interface WorkspaceBulkCleanupResult {
   summaries: CleanupResultSummary[];
+  /**
+   * Candidates the sweep attempted to remove (merged / patch_equivalent). Used
+   * by the disk-aware report to source the "removal failed — still on disk"
+   * rows as `safeCandidates − summaries`. Free — `inspectCleanupCandidates`
+   * already classifies every worktree.
+   */
+  safeCandidates: CleanupCandidateAssessment[];
+  /**
+   * Every other classified candidate the sweep did NOT attempt to remove — the
+   * diagnosis surface (probably-safe / needs-your-call / blocked buckets).
+   */
+  nonRemoved: CleanupCandidateAssessment[];
 }
 
 export async function cleanupSafeWorkspaceCandidates(
@@ -82,6 +94,9 @@ export async function cleanupSafeWorkspaceCandidates(
 
   const safeCandidates = candidates.filter((candidate) => (
     !!candidate.worktreePath && filter(candidate)
+  ));
+  const nonRemoved = candidates.filter((candidate) => (
+    !!candidate.worktreePath && !filter(candidate)
   ));
 
   const summaries: CleanupResultSummary[] = [];
@@ -105,7 +120,7 @@ export async function cleanupSafeWorkspaceCandidates(
     }
   }
 
-  return { summaries };
+  return { summaries, safeCandidates, nonRemoved };
 }
 
 export async function cleanupWorkspaceCandidate(

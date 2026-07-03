@@ -28,6 +28,15 @@ import type {
   CleanupResultSummary,
   CleanupCandidateDetail,
   CleanupDiagnosticLaunch,
+  SweepReport,
+} from './workspace.js';
+
+export type { SweepReport };
+export type {
+  SweepReportRow,
+  SweepReportBucket,
+  SweepReportBucketSummary,
+  SweepReportNotAnalyzed,
 } from './workspace.js';
 
 // Re-export store types through the shared contract layer so the frontend
@@ -204,6 +213,13 @@ export type SnapshotMessage = {
   sweepRunning?: boolean;
   /** Live cross-project sweep cursor for reconnecting clients. */
   sweepProgress?: WorkspaceSweepProgressSnapshot;
+  /**
+   * runId of the most recently completed sweep on this server (in-memory
+   * pointer, not report retention). Lets a freshly-loaded client offer to
+   * reconstruct the last sweep's Removed manifest from the durable ledger via
+   * `workspace:requestSweepReport`.
+   */
+  lastSweepRunId?: string;
   /** Operator drain mode: while draining, new launches and schedule fires are paused. */
   drainStatus?: DrainStatusSnapshot;
   /**
@@ -319,8 +335,25 @@ export type ServerMessage =
       startedAt: string;
       finishedAt: string;
       projects: Array<CrossProjectSweepProjectResult>;
+      /**
+       * Disk-aware diagnosis report (RFC sweep-worktree-ux PR 2). Optional and
+       * broadcast to all clients; an older client that ignores it silently
+       * degrades to the completion toast.
+       */
+      report?: SweepReport;
     }
   | { type: 'workspaceSweepBusy'; holderPid: number; heldSince: string }
+  | {
+      /**
+       * Response to `workspace:requestSweepReport`: the Removed / removal-failed
+       * manifest reconstructed from the durable attempt ledger for a runId
+       * (reconnect-after-completion). `report` is absent when the runId is
+       * unknown to the ledger.
+       */
+      type: 'workspaceSweepReport';
+      runId: string;
+      report?: SweepReport;
+    }
   | { type: 'diagnosticReport'; report: DiagnosticReport }
   | {
       type: 'ossAttempts';
@@ -402,7 +435,8 @@ export type ClientMessage =
     }
   | { type: 'workspace:bulkSafeCleanup'; projectId: string }
   | { type: 'workspace:runCleanupDiagnostic'; projectId: string; worktreePath: string; reviewFingerprint: string }
-  | { type: 'workspace:sweep' };
+  | { type: 'workspace:sweep' }
+  | { type: 'workspace:requestSweepReport'; runId: string };
 
 export const SERVER_MESSAGE_TYPES = [
   'snapshot',
@@ -428,6 +462,7 @@ export const SERVER_MESSAGE_TYPES = [
   'workspaceSweepProgress',
   'workspaceSweepComplete',
   'workspaceSweepBusy',
+  'workspaceSweepReport',
   'diagnosticReport',
   'ossAttempts',
 ] as const satisfies readonly ServerMessage['type'][];
@@ -476,6 +511,7 @@ export const CLIENT_MESSAGE_TYPES = [
   'workspace:bulkSafeCleanup',
   'workspace:runCleanupDiagnostic',
   'workspace:sweep',
+  'workspace:requestSweepReport',
 ] as const satisfies readonly ClientMessage['type'][];
 
 type _MissingServerMessageType = Exclude<ServerMessage['type'], (typeof SERVER_MESSAGE_TYPES)[number]>;
