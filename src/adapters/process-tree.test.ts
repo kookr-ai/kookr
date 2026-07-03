@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { collectProcessTree, killProcessTree } from './process-tree.js';
+import { collectProcessTree, killProcessTree, readProcessStartTimeMs } from './process-tree.js';
 
 const HAS_PROC = existsSync('/proc/self');
 const onLinux = HAS_PROC ? it : it.skip;
@@ -67,6 +67,40 @@ describe('collectProcessTree', () => {
   it('rejects non-positive roots', () => {
     expect(collectProcessTree(0)).toEqual([]);
     expect(collectProcessTree(-5)).toEqual([]);
+  });
+});
+
+describe('readProcessStartTimeMs', () => {
+  onLinux('returns a plausible past wall-clock start time for our own pid', () => {
+    const startMs = readProcessStartTimeMs(process.pid);
+    expect(startMs).not.toBeNull();
+    // A live process must have started at or before now, and after the epoch.
+    expect(startMs!).toBeGreaterThan(0);
+    expect(startMs!).toBeLessThanOrEqual(Date.now() + 1_000);
+  });
+
+  onLinux('orders a later-spawned child after our own start time', async () => {
+    const ours = readProcessStartTimeMs(process.pid);
+    const child = spawn('sleep', ['30'], { stdio: 'ignore' });
+    try {
+      await waitFor(() => readProcessStartTimeMs(child.pid!) !== null);
+      const childStart = readProcessStartTimeMs(child.pid!);
+      expect(childStart).not.toBeNull();
+      // The child was spawned after this process, so its start time is >= ours
+      // (coarse btime resolution means it may land in the same clock tick).
+      expect(childStart!).toBeGreaterThanOrEqual(ours!);
+    } finally {
+      await killProcessTree(child.pid!, { graceMs: 500 });
+    }
+  });
+
+  it('returns null for a pid that does not exist', () => {
+    expect(readProcessStartTimeMs(2_147_483_600)).toBeNull();
+  });
+
+  it('rejects non-positive pids', () => {
+    expect(readProcessStartTimeMs(0)).toBeNull();
+    expect(readProcessStartTimeMs(-1)).toBeNull();
   });
 });
 

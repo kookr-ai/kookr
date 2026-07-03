@@ -5,8 +5,10 @@ import { join } from 'node:path';
 
 import {
   enumerateSweepProjects,
+  isSweepInProgress,
   runCrossProjectSweep,
   type CrossProjectSweepDeps,
+  type ProcessProbe,
   type SweepProgressEvent,
 } from './cross-project-cleanup-sweep.js';
 import { canSweepRemove } from '../../core/workspace-cleanup-policy.js';
@@ -428,5 +430,145 @@ describe('runCrossProjectSweep', () => {
     await runCrossProjectSweep(deps);
     expect(observedLock?.pid).toBe(process.pid);
     expect(observedLock?.startedAt).toMatch(/T.*Z$/);
+  });
+
+  // ---- PID-recycle guard (#1287) ----
+
+  const RECYCLED_PID = 4242; // arbitrary — the probe controls liveness/start-time.
+
+  function writeLock(startedAt: string): void {
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(
+      join(lockDir, 'sweep.lock'),
+      JSON.stringify({ pid: RECYCLED_PID, startedAt }),
+    );
+  }
+
+  it('does NOT reclaim a live PID that started before the lock (genuine holder)', async () => {
+    const lockStart = new Date('2026-07-04T12:00:00.000Z');
+    writeLock(lockStart.toISOString());
+    // Holder process started a minute BEFORE it wrote the lock — the original.
+    deps.processProbe = {
+      isAlive: () => true,
+      startTimeMs: () => lockStart.getTime() - 60_000,
+    };
+
+    const outcome = await runCrossProjectSweep(deps);
+    expect(outcome.kind).toBe('busy');
+    if (outcome.kind === 'busy') expect(outcome.holderPid).toBe(RECYCLED_PID);
+    expect(existsSync(join(lockDir, 'sweep.lock'))).toBe(true);
+  });
+
+  it('reclaims a lock whose live PID started after the lock (recycled PID)', async () => {
+    const lockStart = new Date('2026-07-04T12:00:00.000Z');
+    writeLock(lockStart.toISOString());
+    // A different process reused the dead holder's PID — it started well AFTER.
+    deps.processProbe = {
+      isAlive: () => true,
+      startTimeMs: () => lockStart.getTime() + 5 * 60_000,
+    };
+
+    const outcome = await runCrossProjectSweep(deps);
+    expect(outcome.kind).toBe('completed');
+    // The stale lock was reclaimed, the sweep ran, and released its own lock.
+    expect(existsSync(join(lockDir, 'sweep.lock'))).toBe(false);
+  });
+
+  it('treats a same-second start/lock boundary as held (never double-sweep)', async () => {
+    const lockStart = new Date('2026-07-04T12:00:00.000Z');
+    writeLock(lockStart.toISOString());
+    // Within the coarse start-time resolution — must resolve to "held".
+    deps.processProbe = {
+      isAlive: () => true,
+      startTimeMs: () => lockStart.getTime() + 500,
+    };
+
+    const outcome = await runCrossProjectSweep(deps);
+    expect(outcome.kind).toBe('busy');
+    expect(existsSync(join(lockDir, 'sweep.lock'))).toBe(true);
+  });
+
+  it('HOLDS a live PID with unreadable start time even past the mtime TTL', async () => {
+    // A live PID is authoritative: an unreadable start time must NOT let the
+    // mtime TTL reclaim it, or a legitimately slow sweep could be double-run.
+    const lockPath = join(lockDir, 'sweep.lock');
+    writeLock(new Date('2026-07-04T12:00:00.000Z').toISOString());
+    const ancient = Date.now() / 1000 - 3600; // 1 hour ago — well past the TTL.
+    require('node:fs').utimesSync(lockPath, ancient, ancient);
+    deps.processProbe = { isAlive: () => true, startTimeMs: () => null };
+
+    const outcome = await runCrossProjectSweep(deps);
+    expect(outcome.kind).toBe('busy');
+    expect(existsSync(lockPath)).toBe(true);
+  });
+
+  it('reclaims a MALFORMED lock (no pid) once its mtime exceeds the TTL', async () => {
+    // The mtime TTL is the last-resort path for locks with no readable pid.
+    const lockPath = join(lockDir, 'sweep.lock');
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(lockPath, JSON.stringify({ startedAt: new Date().toISOString() }));
+    const ancient = Date.now() / 1000 - 3600;
+    require('node:fs').utimesSync(lockPath, ancient, ancient);
+
+    const outcome = await runCrossProjectSweep(deps);
+    expect(outcome.kind).toBe('completed');
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it('holds a MALFORMED lock (no pid) whose mtime is within the TTL', async () => {
+    const lockPath = join(lockDir, 'sweep.lock');
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(lockPath, JSON.stringify({ startedAt: new Date().toISOString() }));
+
+    const outcome = await runCrossProjectSweep(deps);
+    expect(outcome.kind).toBe('busy');
+    expect(existsSync(lockPath)).toBe(true);
+  });
+});
+
+describe('isSweepInProgress PID-recycle guard', () => {
+  let lockDir: string;
+
+  beforeEach(() => {
+    lockDir = mkdtempSync(join(tmpdir(), 'sweep-inprogress-'));
+  });
+  afterEach(() => {
+    rmSync(lockDir, { recursive: true, force: true });
+  });
+
+  function writeLock(pid: number, startedAt: string): void {
+    writeFileSync(join(lockDir, 'sweep.lock'), JSON.stringify({ pid, startedAt }));
+  }
+
+  it('reports not-running when the live PID is a recycled one', () => {
+    const lockStart = new Date('2026-07-04T12:00:00.000Z');
+    writeLock(4242, lockStart.toISOString());
+    const probe: ProcessProbe = {
+      isAlive: () => true,
+      startTimeMs: () => lockStart.getTime() + 5 * 60_000,
+    };
+    expect(isSweepInProgress(lockDir, probe)).toBe(false);
+  });
+
+  it('reports running for the genuine live holder', () => {
+    const lockStart = new Date('2026-07-04T12:00:00.000Z');
+    writeLock(4242, lockStart.toISOString());
+    const probe: ProcessProbe = {
+      isAlive: () => true,
+      startTimeMs: () => lockStart.getTime() - 60_000,
+    };
+    expect(isSweepInProgress(lockDir, probe)).toBe(true);
+  });
+
+  it('reports running when the start time is unknown (conservative)', () => {
+    writeLock(4242, new Date().toISOString());
+    const probe: ProcessProbe = { isAlive: () => true, startTimeMs: () => null };
+    expect(isSweepInProgress(lockDir, probe)).toBe(true);
+  });
+
+  it('reports not-running when the PID is dead', () => {
+    writeLock(4242, new Date().toISOString());
+    const probe: ProcessProbe = { isAlive: () => false, startTimeMs: () => null };
+    expect(isSweepInProgress(lockDir, probe)).toBe(false);
   });
 });
