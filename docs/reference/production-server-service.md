@@ -90,6 +90,13 @@ command and waits for `/api/health`.
 unavailable, the script falls back to the existing pid-file and port-kill
 restart flow.
 
+For short-lived runtime tuning without a restart, use the admin runtime-control
+API documented in [API Reference](api.md#admin--runtime-control). It covers
+temporary log-level changes with TTL auto-revert, operational alert threshold
+updates, operational alert history, and drain/resume. Loopback requests are
+trusted; non-loopback callers must pass normal owner API authentication and
+provide `x-kookr-admin-token` matching `KOOKR_ADMIN_TOKEN`.
+
 To return to script-managed operation:
 
 ```bash
