@@ -174,6 +174,31 @@ When reporting to the user between sweeps, use a compact status table:
 
 End with a clear "next wake at HH:MM" line.
 
+### Batch / multi-issue milestone reports
+
+When you supervise a **pool** of issues (e.g. a parallel-issue-batch parent driving many children), the per-task table above is not enough — the user wants to see the *whole pool* at a glance. At each milestone (a wave completes, a PR merges, a new wave spawns), report progress in this shape:
+
+1. **A per-issue table** keyed by issue, with an emoji status column, PR number, and a one-line note. Emoji make merged/in-flight/blocked scannable at a glance:
+
+   | Issue | PR | State |
+   |---|---|---|
+   | #996 delivery target | #1047 | ✅ merged |
+   | #1001 estimate drift | #1051 | ✅ merged (parent-merged after child over-caution) |
+   | #997 conflict review queue | — | 🔨 implementing (owns `index.js`, `detection.md`) |
+
+   Suggested glyphs: ✅ merged / done · 🔨 implementing / in-flight · ⏳ blocked-waiting · ⚠️ blocker recorded.
+
+2. **A pool rollup** — one sentence stating coverage against the target, e.g. *"6 of the 10-issue pool now in-flight or done."*
+
+3. **A remaining-pool list, each item annotated with WHY it hasn't started** — usually the specific shared/hub file it is waiting to be freed:
+
+   - #995 mission board → blocked on `control-room.js` (owned by #1002)
+   - #999 handoff packets → blocked on `control-room.js` (owned by #1002)
+
+4. **Operational learnings** worth carrying into the next wave (e.g. "`main` has no required checks; CI `format:check` fails on pre-existing drift #1038, so children verify locally and merge past it").
+
+The value is that the user never has to reconstruct pool state from scattered child terminals: one message shows what's done, what's running, what's queued, and the exact reason each queued item is waiting. Prefer this over dumping raw child output.
+
 ## Anti-patterns to avoid
 
 - **Sending commands to your own tmux** — check the `a682c4c0`-style id of your supervisor task before every send.
