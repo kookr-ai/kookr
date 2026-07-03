@@ -95,6 +95,8 @@ export interface WsConnectionDeps {
     tokenTracker?: { unregister(transcriptPath: string): void };
     /** Releases issue-ownership claims on terminal transitions (RFC R8). */
     issueClaimRegistry?: import('./agent-lifecycle.js').LifecycleDeps['issueClaimRegistry'];
+    /** Optional remote-chat back-channel for terminal task outcomes. */
+    onTaskOutcome?: import('./agent-lifecycle.js').LifecycleDeps['onTaskOutcome'];
   };
   agentLifecycleDeps: AgentLifecycleDeps;
   broadcastToAll: (msg: ServerMessage) => void;

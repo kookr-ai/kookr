@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WebSocket } from 'ws';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
-import { createKookrServerInternal } from './index.js';
+import { createKookrServerInternal, notifyBootReconciledTaskOutcomes } from './index.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
 import type { ResourceStatusSampler } from './resource-status-service.js';
 import type { SystemResourceStatus } from '../shared/contracts/messages.js';
@@ -21,6 +21,35 @@ const PROJECT_DIR = mkdtempSync(join(tmpdir(), 'kookr-it-project-'));
 const REPO_A = mkdtempSync(join(tmpdir(), 'kookr-it-repo-a-'));
 const REPO_B = mkdtempSync(join(tmpdir(), 'kookr-it-repo-b-'));
 const CLI_CWD = mkdtempSync(join(tmpdir(), 'kookr-it-cli-'));
+
+describe('notifyBootReconciledTaskOutcomes', () => {
+  test('replays boot-completed and boot-terminated task outcomes', () => {
+    const onTaskOutcome = vi.fn();
+
+    notifyBootReconciledTaskOutcomes(onTaskOutcome, {
+      tasksCompleted: ['task-completed'],
+      tasksTerminated: ['task-terminated'],
+    });
+
+    expect(onTaskOutcome).toHaveBeenCalledWith('task-completed', { kind: 'completed' });
+    expect(onTaskOutcome).toHaveBeenCalledWith('task-terminated', { kind: 'failed' });
+  });
+
+  test('isolates boot outcome callback failures', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onTaskOutcome = vi.fn((taskId: string) => {
+      if (taskId === 'task-completed') throw new Error('telegram down');
+    });
+
+    notifyBootReconciledTaskOutcomes(onTaskOutcome, {
+      tasksCompleted: ['task-completed'],
+      tasksTerminated: ['task-terminated'],
+    });
+
+    expect(onTaskOutcome).toHaveBeenCalledWith('task-terminated', { kind: 'failed' });
+    warn.mockRestore();
+  });
+});
 
 function getActualPort(server: KookrServerInternal): number {
   const addr = server.httpServer.address();

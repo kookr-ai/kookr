@@ -3,9 +3,10 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
 import { loadTasksWithRecovery, saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
-import { reconcile } from './reconciliation.js';
+import { reconcile, type ReconciliationResult } from './reconciliation.js';
 import { type AgentPreflightSnapshot, type PreflightLogger } from './agent-preflight.js';
 import type { ServerMessage, SnapshotMessage } from '../shared/contracts/messages.js';
+import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
 import type { Scope } from './viewer-data-policy.js';
 import { createTerminalScopeChecker } from './terminal-scope.js';
 import { ContactShareReadModel } from '../core/contact-share.js';
@@ -232,6 +233,27 @@ function formatBackendErrorLine(err: BackendError): string {
 }
 
 // --- Server factory ---
+
+export function notifyBootReconciledTaskOutcomes(
+  onTaskOutcome: ((taskId: string, outcome: TelegramTaskOutcome) => void) | undefined,
+  reconcileResult: Pick<ReconciliationResult, 'tasksCompleted' | 'tasksTerminated'>,
+): void {
+  if (!onTaskOutcome) return;
+  for (const id of reconcileResult.tasksCompleted) {
+    try {
+      onTaskOutcome(id, { kind: 'completed' });
+    } catch (err) {
+      console.warn('[telegram] boot reconcile outcome notification failed:', err);
+    }
+  }
+  for (const id of reconcileResult.tasksTerminated) {
+    try {
+      onTaskOutcome(id, { kind: 'failed' });
+    } catch (err) {
+      console.warn('[telegram] boot reconcile outcome notification failed:', err);
+    }
+  }
+}
 
 export async function createKookrServer(config: KookrConfig): Promise<KookrServer> {
   return createKookrServerInternal(config);
@@ -666,6 +688,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // lets wireEventPipeline take a stable callback shape now and the integration
   // installs the real implementation when it's ready.
   let onPermissionBlockedHolder: ((taskId: string, promptText: string) => void) | undefined;
+  let onTaskOutcomeHolder: ((taskId: string, outcome: TelegramTaskOutcome) => void) | undefined;
 
   // Broadcast circuit breaker state changes to all connected clients
   circuitBreakerRegistry.onChange(() => {
@@ -769,6 +792,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     monitor, watchdog, hookWatcher, interactionLog, githubScanner, autoNameTask, taskStore,
     projectConfigStore,
     terminalInputCoordinator,
+    onTaskOutcome: (taskId, outcome) => {
+      onTaskOutcomeHolder?.(taskId, outcome);
+    },
     ...(issueClaimServices ? { issueClaimRegistry: issueClaimServices.registry } : {}),
   };
 
@@ -824,6 +850,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       watchdog,
       shadowRegistry,
       tokenTracker,
+      onTaskOutcome: (taskId, outcome) => {
+        onTaskOutcomeHolder?.(taskId, outcome);
+      },
       suppressionTracker,
       terminalInputCoordinator,
     }),
@@ -1091,6 +1120,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     skillDiscoveryState, prLessonsState, getRegistryActiveProjects, broadcastProjectSummaries,
     suppressionTracker, scheduleService, scheduleRunner,
     taskStateSaveScheduler,
+    onTaskOutcome: (taskId, outcome) => {
+      onTaskOutcomeHolder?.(taskId, outcome);
+    },
     diagnosticRunner,
     terminalBackend,
     deliveryTrace,
@@ -1243,6 +1275,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     serverCwd, sttUrl, ttsUrl, abortPendingSuggestion,
     lifecycleExtras: {
       hookWatcher, watchdog, shadowRegistry, tokenTracker,
+      onTaskOutcome: (taskId, outcome) => {
+        onTaskOutcomeHolder?.(taskId, outcome);
+      },
       ...(issueClaimServices ? { issueClaimRegistry: issueClaimServices.registry } : {}),
     },
     agentLifecycleDeps: lifecycleDeps, broadcastToAll,
@@ -1389,6 +1424,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
   const telegramHandle = remoteChatTrigger.handle;
   onPermissionBlockedHolder = remoteChatTrigger.onPermissionBlocked;
+  onTaskOutcomeHolder = remoteChatTrigger.onTaskOutcome;
+  notifyBootReconciledTaskOutcomes(onTaskOutcomeHolder, reconcileResult);
 
   // --- Close ---
 

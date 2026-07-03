@@ -36,7 +36,7 @@ Cut. There is one user, one stated channel (Telegram), and zero evidence that a 
 
 1. **R1.** Authorized user sends a Telegram message → Kookr spawns a task.
 2. **R2.** Inbound text is rephrased into a structured `TaskSpec` (prompt, target project, agent type, suggested branch) by a small LLM before spawn.
-3. **R3.** The user receives **one reply on spawn**: task ID and dashboard URL. No further status broadcasting back to chat in V1 — the dashboard is the source of truth for task state. (Revision from v1, which proposed a `notify()` back-channel.)
+3. **R3.** The user receives **one reply on spawn**: task ID and dashboard URL. For remote-spawned tasks, Kookr also sends one outcome notification to the originating chat when the task raises `completion_ready` or reaches `completed`, `failed`, or `cancelled`; the first outcome clears the origin mapping so later terminal outcomes are not duplicated. The dashboard remains the source of truth for review and action.
 
 ### Security
 
@@ -790,7 +790,7 @@ Realistic estimate per round-2 delivery, including: adapter test surface, fake T
 1. **Hardened remote-spawn permission allowlist (V2 priority).** Iterate on a narrower-than-default allowlist with explicit deny rules (`.env*`, `.git/hooks/**`, `*.pem`, `id_*`, restricted git/gh subcommands). Verify Claude Code's permission system supports deny-overrides-allow. Probe each candidate allow rule for exfil paths (`gh pr create --body-file`, `git push origin <crafted-ref>`, `pnpm test`-via-package.json-modification). Ship with explicit POC validation against a malicious-prompt corpus. This is the reason V1 ships with the default allowlist + every-op-prompts.
 2. **Codex CLI remote-spawn.** Investigate Codex's permission model (does `--full-auto` actually auto-approve in-workspace edits? what's the "ask for everything" mode?). If `--ask-for-approval=untrusted` exists, the per-call bypass override extends naturally and Codex remote-spawn lights up.
 3. **Plugin abstraction** — extract `RemoteTriggerService` when channel #2 lands. Telegram becomes one of two callers.
-4. **Status updates back to chat** — start/complete/spawn-success replies (beyond just blocked-alerts).
+4. **Broader status updates back to chat** — streaming per-state progress beyond spawn confirmation, blocked alerts, and the one-shot outcome notification.
 5. **Cancel-from-chat** — `/cancel <task-id>` reply to the spawn confirmation message.
 6. **Slack / Discord plugins** — clean extraction once two channels exist.
 7. **Email plugin (IMAP)** — for messaging-tool-agnostic environments.
@@ -824,7 +824,7 @@ Five subagents reviewed v1 in parallel: boundary-critic, failure-mode-analyst, d
 - **CUT** `RemoteTriggerPlugin`, `RemoteTriggerBus`, `PluginContext`, `PluginRegistry`, `PluginLoader`, manifest format, dynamic-import. V1 is one directory, hardcoded conditional in bootstrap.
 - **CUT** `RephraseProvider` interface — reuse existing `createLlmClient()` from `src/core/llm-client.ts`.
 - **CUT** confidence levels (`high/medium/low`) → two-way `spec | ambiguous`.
-- **CUT** `notify()` back-channel and per-state status replies → single reply on spawn.
+- **CUT** broad `notify()` back-channel and per-state status replies → single reply on spawn; one-shot task outcome notifications were later added through an isolated lifecycle callback.
 - **CUT** `/api/plugins` REST endpoints, dashboard panel.
 - **CUT** in-memory TTL confirmation map → Telegram inline keyboard with HMAC-signed `callback_data`.
 - **CUT** `RephraseContext.recentMessages` (per-sender history) — YAGNI for V1.
@@ -849,7 +849,7 @@ Five subagents reviewed v1 in parallel: boundary-critic, failure-mode-analyst, d
 
 - **High — bus owned 5 responsibilities.** Cut the bus entirely. The integration is one module with explicit dependencies passed in.
 - **High — bus → `launchTask()` direct import inverts dependency direction.** V2 injects `launchTask` as a closure parameter (`(opts) => launchTask(launchServiceDeps, opts)`), matching how `task-routes.ts` does it.
-- **High — `notify()` back-edge creates lifecycle hazard.** Cut `notify()` for V1 (replaced with single-reply-on-spawn). When/if reintroduced as a future enhancement, do it as event subscription, not direct callback.
+- **High — broad `notify()` back-edge creates lifecycle hazard.** Cut per-state notification for V1 (replaced with single-reply-on-spawn). The later one-shot outcome notification is routed through an isolated lifecycle callback and clears the origin mapping on first delivery.
 - **Medium — Telegram plugin owned 6 responsibilities.** Each split into its own file (rate-limit, daily-cap, lockfile, audit, rephrase, api-client, orchestration).
 - **Medium — `submitIntent()` two-phase protocol hidden in single-call signature.** No bus, no submitIntent. Confirmation is its own Telegram-callback handler.
 - **Medium — manifest `botTokenEnv` indirection.** Cut manifest entirely; env vars only.
@@ -858,7 +858,7 @@ Five subagents reviewed v1 in parallel: boundary-critic, failure-mode-analyst, d
 
 - **Q1 — SSH / iOS Shortcut already cover this.** Acknowledged in A3/A4. User explicitly chose Telegram; documenting honestly.
 - **Q2 — no evidence rephrase improves spawn quality.** Reframed P4: rephrase's load-bearing role is *structured-validation gate*, not literary polish. Without it, freeform text → all TaskSpec fields user-controlled.
-- **Q3 — status replies are push-notification-by-another-name.** Cut all post-spawn replies; one spawn-time reply with dashboard URL is enough.
+- **Q3 — status replies are push-notification-by-another-name.** Cut broad post-spawn status streaming; Kookr now sends only blocked alerts and a one-shot terminal outcome/review link for the originating chat.
 - **Q5 — Claude Code subscribers have no API key.** Open Q6, document the hard requirement.
 - **Q6 — prod/dev concurrent operation is the documented norm.** Lockfile rather than warning.
 - **Q7 — hash-only audit is incoherent.** Full text.

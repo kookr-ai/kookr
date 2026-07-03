@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
 import { DEFAULT_AGENT_TYPE, type AgentType } from '../../core/agent-types.js';
 import type { LlmClient } from '../../core/llm-client.js';
 import type { LaunchOpts, LaunchResult } from '../../shared/contracts/launch.js';
-import type { TelegramHandle } from '../../shared/contracts/telegram.js';
+import type { TelegramHandle, TelegramTaskOutcome } from '../../shared/contracts/telegram.js';
 import {
   TelegramApiClient,
   TelegramApiError,
@@ -683,6 +683,39 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
       .catch((err) => audit({ kind: 'spawn_failed', reason: `block_alert: ${String(err)}` }));
   };
 
+  const formatTaskOutcomeMessage = (taskId: string, outcome: TelegramTaskOutcome): string => {
+    const url = dashboardUrl(deps.dashboardBaseUrl, taskId);
+    switch (outcome.kind) {
+      case 'completion_ready': {
+        const safeNote = outcome.note ? `\nNote: ${truncate(redactCredentials(outcome.note), 200)}` : '';
+        return `Task ${taskId} is ready for completion.${safeNote}\nReview: ${url}`;
+      }
+      case 'completed':
+        return `Task ${taskId} completed.\nReview: ${url}`;
+      case 'failed':
+        return `Task ${taskId} failed.\nReview: ${url}`;
+      case 'cancelled':
+        return `Task ${taskId} was cancelled.\nReview: ${url}`;
+    }
+  };
+
+  const onTaskOutcome = (taskId: string, outcome: TelegramTaskOutcome): void => {
+    const chatId = state.get().origin[taskId];
+    if (chatId === undefined) {
+      // Not remote-spawned, or already notified and cleaned up — silently skip
+      // so ordinary local task completions do not spam the Telegram audit path.
+      return;
+    }
+
+    void (async () => {
+      await state.update((s) => { delete s.origin[taskId]; });
+      const sent = await sendMessageSafe(chatId, formatTaskOutcomeMessage(taskId, outcome));
+      if (sent) {
+        audit({ kind: 'task_outcome_sent', taskId, chatId, outcome: outcome.kind });
+      }
+    })().catch((err) => audit({ kind: 'spawn_failed', reason: `task_outcome: ${String(err)}` }));
+  };
+
   const stop = async () => {
     polling = false;
     clearInterval(gcTimer);
@@ -691,5 +724,5 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     await lock.release();
   };
 
-  return { stop, onPermissionBlocked };
+  return { stop, onPermissionBlocked, onTaskOutcome };
 }

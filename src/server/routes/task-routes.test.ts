@@ -730,6 +730,21 @@ describe('POST /api/tasks/:id/complete (issue #691)', () => {
     expect(safeReleaseAllFor).toHaveBeenCalledWith(task.id, 'released');
   });
 
+  test('REST complete notifies task outcome callback', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Telegram-spawned task', '/repo');
+    addLiveSession(taskStore, task.id);
+
+    const { deps } = mkCompleteDeps(taskStore);
+    const onTaskOutcome = vi.fn();
+    deps.onTaskOutcome = onTaskOutcome;
+
+    const res = await mkApp(deps).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(onTaskOutcome).toHaveBeenCalledWith(task.id, { kind: 'completed' });
+  });
+
   test('marks an in-progress task completed and tears down its live session', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask('Shipped the PR', '/repo');
@@ -930,6 +945,45 @@ describe('POST /api/tasks/:id/signal', () => {
     expect(body.signal.note).toBe('tests green');
     expect(typeof body.signal.raisedAt).toBe('string');
     expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+  });
+
+  test('notifies task outcome for completion_ready signals', async () => {
+    const taskStore = new TaskStore();
+    const onTaskOutcome = vi.fn();
+    const app = mkApp({ ...mkLoopDeps(taskStore), onTaskOutcome });
+    const task = taskStore.createTask('Ship it', '/repo');
+
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', note: 'token ghp_0123456789abcdefghij done' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(onTaskOutcome).toHaveBeenCalledWith(task.id, {
+      kind: 'completion_ready',
+      note: expect.stringContaining('[REDACTED]'),
+    });
+  });
+
+  test('records completion_ready signal when task outcome notification throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const taskStore = new TaskStore();
+    const app = mkApp({
+      ...mkLoopDeps(taskStore),
+      onTaskOutcome: vi.fn(() => { throw new Error('telegram down'); }),
+    });
+    const task = taskStore.createTask('Ship it', '/repo');
+
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', note: 'tests green' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+    warn.mockRestore();
   });
 
   test('redacts secrets without truncating short notes', async () => {

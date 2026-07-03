@@ -55,6 +55,7 @@ import type { TaskStateSaveSchedulerLike } from '../task-state-save-scheduler.js
 import type { TerminalInputCoordinator } from '../terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from '../user-input-delivery-service.js';
 import type { DeliveryTraceReader } from '../../core/delivery-trace.js';
+import type { TelegramTaskOutcome } from '../../shared/contracts/telegram.js';
 export type { RemoteShareDeps } from '../remote-share-deps.js';
 
 /**
@@ -88,6 +89,8 @@ export interface TaskRouteDeps {
   tasksFile?: string;
   /** Coalesced task-state saver for bursty mutation paths. */
   taskStateSaveScheduler?: TaskStateSaveSchedulerLike;
+  /** Optional remote-chat back-channel for task signal/lifecycle outcomes. */
+  onTaskOutcome?: (taskId: string, outcome: TelegramTaskOutcome) => void;
   kookrDir?: string;
   coordinatorSuppressions?: CoordinatorSuppressionRegistry;
   /**
@@ -225,6 +228,8 @@ export interface RouteDeps {
   issueClaims?: import('./issue-claim-routes.js').IssueClaimRouteDeps;
   /** Threaded to TaskRouteDeps so REST terminal transitions release claims (R8). */
   issueClaimRegistry?: import('../agent-lifecycle.js').LifecycleDeps['issueClaimRegistry'];
+  /** Threaded to TaskRouteDeps so REST task signals can notify remote-chat origins. */
+  onTaskOutcome?: (taskId: string, outcome: TelegramTaskOutcome) => void;
   taskStore: TaskStore;
   monitor: Monitor;
   queue: AttentionQueue;

@@ -1,6 +1,6 @@
 import type { LlmClient } from '../../core/llm-client.js';
 import type { LaunchResult, LaunchOpts } from '../../shared/contracts/launch.js';
-import type { TelegramHandle } from '../../shared/contracts/telegram.js';
+import type { TelegramHandle, TelegramTaskOutcome } from '../../shared/contracts/telegram.js';
 
 type Env = Record<string, string | undefined>;
 
@@ -41,6 +41,7 @@ export interface RemoteChatTriggerDeps {
 export interface RemoteChatTrigger {
   handle: TelegramHandle | null;
   onPermissionBlocked?: (taskId: string, promptText: string) => void;
+  onTaskOutcome?: (taskId: string, outcome: TelegramTaskOutcome) => void;
 }
 
 function parseAllowedUserIds(value: string | undefined): Set<number> {
@@ -168,6 +169,7 @@ export async function startRemoteChatTrigger(deps: RemoteChatTriggerDeps): Promi
     return {
       handle,
       onPermissionBlocked: handle.onPermissionBlocked,
+      onTaskOutcome: handle.onTaskOutcome,
     };
   } catch (err) {
     error('[telegram] Failed to start integration:', err instanceof Error ? err.message : err);
