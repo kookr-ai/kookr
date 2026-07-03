@@ -58,6 +58,16 @@ function operationalAlertConfigBody() {
   return getOperationalAlertConfigState();
 }
 
+function operationalAlertHistoryBody(deps: RouteDeps) {
+  // Tests and partial route harnesses can omit the resource-status service;
+  // keep the admin route present and report an empty, explicitly unwired view.
+  return deps.getOperationalAlertHistory?.() ?? {
+    generatedAt: new Date().toISOString(),
+    limit: 0,
+    alerts: [],
+  };
+}
+
 function broadcastDrainSnapshot(deps: RouteDeps): void {
   if (!deps.drainController || !deps.broadcastToAll || !deps.monitor || !deps.serverCwd) return;
   deps.broadcastToAll(createSnapshotMessage({
@@ -156,6 +166,17 @@ function registerOperationalAlertConfigRoutes(app: Hono, authorize: (c: Context)
   });
 }
 
+function registerOperationalAlertHistoryRoutes(
+  app: Hono,
+  deps: RouteDeps,
+  authorize: (c: Context) => boolean,
+): void {
+  app.get('/api/admin/operational-alerts', (c) => {
+    if (!authorize(c)) return c.json({ error: 'admin-forbidden' }, 403);
+    return c.json(operationalAlertHistoryBody(deps));
+  });
+}
+
 /**
  * Operator drain / resume control (issue #659).
  *
@@ -175,6 +196,7 @@ export function registerAdminRoutes(app: Hono, deps: RouteDeps): void {
 
   registerLogLevelRoutes(app, authorize);
   registerOperationalAlertConfigRoutes(app, authorize);
+  registerOperationalAlertHistoryRoutes(app, deps, authorize);
 
   if (!drainController) return;
 

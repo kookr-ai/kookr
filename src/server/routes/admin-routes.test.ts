@@ -48,6 +48,97 @@ describe('isAuthorizedAdminRequest', () => {
   });
 });
 
+describe('admin operational-alert history route (issue #1256)', () => {
+  const headers = { 'x-kookr-admin-token': 'secret' };
+
+  const get = (app: Hono, authorized = true) =>
+    app.request('http://example.com/api/admin/operational-alerts', {
+      method: 'GET',
+      headers: authorized ? headers : {},
+    });
+
+  beforeEach(() => {
+    process.env.KOOKR_ADMIN_TOKEN = 'secret';
+  });
+
+  afterEach(() => {
+    delete process.env.KOOKR_ADMIN_TOKEN;
+  });
+
+  test('returns the retained operational alert history', async () => {
+    const res = await get(mkApp({
+      getOperationalAlertHistory: () => ({
+        generatedAt: '2026-05-13T00:02:00.000Z',
+        limit: 100,
+        alerts: [{
+          id: 1,
+          key: 'resource:cpu',
+          metric: 'cpu',
+          firstFiredAt: '2026-05-13T00:00:00.000Z',
+          lastFiredAt: '2026-05-13T00:00:00.000Z',
+          recoveredAt: '2026-05-13T00:01:00.000Z',
+          active: false,
+          fireCount: 1,
+          alert: {
+            type: 'alert',
+            agentId: 'system',
+            summary: 'High host CPU usage',
+            details: 'sustained',
+            severity: 'warning',
+            operationalAlert: { key: 'resource:cpu', metric: 'cpu', state: 'fired' },
+          },
+          recoveryAlert: {
+            type: 'alert',
+            agentId: 'system',
+            summary: 'Recovered host CPU usage',
+            details: 'cleared',
+            severity: 'info',
+            operationalAlert: { key: 'resource:cpu', metric: 'cpu', state: 'recovered' },
+          },
+        }],
+      }),
+    }));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      generatedAt: '2026-05-13T00:02:00.000Z',
+      limit: 100,
+      alerts: [{
+        id: 1,
+        key: 'resource:cpu',
+        metric: 'cpu',
+        firstFiredAt: '2026-05-13T00:00:00.000Z',
+        lastFiredAt: '2026-05-13T00:00:00.000Z',
+        recoveredAt: '2026-05-13T00:01:00.000Z',
+        active: false,
+        fireCount: 1,
+        alert: {
+          type: 'alert',
+          agentId: 'system',
+          summary: 'High host CPU usage',
+          details: 'sustained',
+          severity: 'warning',
+          operationalAlert: { key: 'resource:cpu', metric: 'cpu', state: 'fired' },
+        },
+        recoveryAlert: {
+          type: 'alert',
+          agentId: 'system',
+          summary: 'Recovered host CPU usage',
+          details: 'cleared',
+          severity: 'info',
+          operationalAlert: { key: 'resource:cpu', metric: 'cpu', state: 'recovered' },
+        },
+      }],
+    });
+  });
+
+  test('GET requires authorization', async () => {
+    const res = await get(mkApp({ getOperationalAlertHistory: () => ({ generatedAt: 'now', limit: 100, alerts: [] }) }), false);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'admin-forbidden' });
+  });
+});
+
 describe('admin operational-alert-config routes (issue #737)', () => {
   const headers = { 'x-kookr-admin-token': 'secret' };
 

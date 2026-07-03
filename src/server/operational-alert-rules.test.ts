@@ -115,6 +115,11 @@ describe('OperationalAlertEvaluator', () => {
       severity: 'warning',
     });
     expect(fired[0].summary).toContain('event-loop delay');
+    expect(fired[0].operationalAlert).toEqual({
+      key: 'resource:event_loop_delay',
+      metric: 'event_loop_delay',
+      state: 'fired',
+    });
 
     // Further breaches while already firing do not re-alert.
     expect(alertsFor(evaluator, status({ eventLoopDelayP95Ms: 300 }))).toEqual([]);
@@ -150,6 +155,11 @@ describe('OperationalAlertEvaluator', () => {
     expect(cleared).toHaveLength(1);
     expect(cleared[0]).toMatchObject({ severity: 'info', agentId: OPERATIONAL_ALERT_AGENT_ID });
     expect(cleared[0].summary).toContain('Recovered');
+    expect(cleared[0].operationalAlert).toEqual({
+      key: 'resource:cpu',
+      metric: 'cpu',
+      state: 'recovered',
+    });
     expect(alertsFor(evaluator, status({ cpuUsagePercent: 40 }))).toEqual([]);
 
     // A later sustained crossing fires again (edge re-arms after recovery).
@@ -228,6 +238,11 @@ describe('OperationalAlertEvaluator', () => {
     });
     expect(fired[0].summary).toContain('data-directory disk space');
     expect(fired[0].details).toContain('kookr maintenance prune --dry-run --dir <dataDir>');
+    expect(fired[0].operationalAlert).toEqual({
+      key: 'resource:data_directory_disk_free',
+      metric: 'data_directory_disk_free',
+      state: 'fired',
+    });
 
     expect(alertsFor(evaluator, lowSpace)).toEqual([]);
   });
@@ -263,6 +278,11 @@ describe('OperationalAlertEvaluator', () => {
     expect(cleared).toHaveLength(1);
     expect(cleared[0]).toMatchObject({ severity: 'info', agentId: OPERATIONAL_ALERT_AGENT_ID });
     expect(cleared[0].summary).toContain('Recovered');
+    expect(cleared[0].operationalAlert).toEqual({
+      key: 'resource:data_directory_disk_free',
+      metric: 'data_directory_disk_free',
+      state: 'recovered',
+    });
   });
 
   test('data-directory disk pressure ignores missing data and disabled thresholds', () => {
@@ -391,6 +411,11 @@ describe('OperationalAlertEvaluator', () => {
       severity: 'warning',
     });
     expect(fired[0].summary).toContain('Circuit breaker open: llm');
+    expect(fired[0].operationalAlert).toEqual({
+      key: 'circuit_breaker:llm',
+      metric: 'circuit_breaker_open',
+      state: 'fired',
+    });
   });
 
   test('circuit breaker OPEN duration does not fire before the configured threshold', () => {
@@ -429,6 +454,11 @@ describe('OperationalAlertEvaluator', () => {
     expect(cleared).toHaveLength(1);
     expect(cleared[0]).toMatchObject({ severity: 'info', agentId: OPERATIONAL_ALERT_AGENT_ID });
     expect(cleared[0].summary).toContain('Recovered circuit breaker: llm');
+    expect(cleared[0].operationalAlert).toEqual({
+      key: 'circuit_breaker:llm',
+      metric: 'circuit_breaker_open',
+      state: 'recovered',
+    });
 
     const reopenedAt = Date.parse('2026-05-13T00:03:00.000Z');
     const refired = alertsFor(evaluator, status({
@@ -474,6 +504,11 @@ describe('OperationalAlertEvaluator', () => {
       severity: 'warning',
     });
     expect(fired[0].summary).toContain('Persistence failure: task-state');
+    expect(fired[0].operationalAlert).toEqual({
+      key: 'persistence:task_state',
+      metric: 'persistence:task_state',
+      state: 'fired',
+    });
 
     expect(alertsFor(evaluator, status())).toEqual([]);
 
@@ -482,6 +517,11 @@ describe('OperationalAlertEvaluator', () => {
     expect(cleared).toHaveLength(1);
     expect(cleared[0]).toMatchObject({ severity: 'info' });
     expect(cleared[0].summary).toContain('Recovered task-state persistence');
+    expect(cleared[0].operationalAlert).toEqual({
+      key: 'persistence:task_state',
+      metric: 'persistence:task_state',
+      state: 'recovered',
+    });
   });
 
   test('hard persistence failures fire on first failed attempt', () => {

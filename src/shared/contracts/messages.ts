@@ -120,6 +120,14 @@ export interface DrainStatusSnapshot {
   since?: string;
 }
 
+export interface OperationalAlertEventMetadata {
+  /** Stable key for correlating a fire event with its recovery. */
+  key: string;
+  /** Human-readable metric/rule identifier for operator filtering. */
+  metric: string;
+  state: 'fired' | 'recovered';
+}
+
 export type SnapshotMessage = {
   type: 'snapshot';
   agents: AgentState[];
@@ -225,6 +233,7 @@ export type ServerMessage =
       summary: string;
       details: string;
       severity: AnomalySeverity;
+      operationalAlert?: OperationalAlertEventMetadata;
     }
   | {
       type: 'githubUpdate';
