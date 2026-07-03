@@ -127,6 +127,8 @@ export type {
   ServerMessage,
   SnapshotMessage,
   SystemResourceStatus,
+  WorkspaceSweepProgressMessage,
+  WorkspaceSweepProgressSnapshot,
 } from './contracts/messages.js';
 export type {
   EmptyEnterDecision,

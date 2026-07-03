@@ -7,6 +7,7 @@ import {
   enumerateSweepProjects,
   runCrossProjectSweep,
   type CrossProjectSweepDeps,
+  type SweepProgressEvent,
 } from './cross-project-cleanup-sweep.js';
 import { canSweepRemove } from '../../core/workspace-cleanup-policy.js';
 import type { ProjectConfigStore, ProjectConfig } from '../../core/project-config-store.js';
@@ -139,6 +140,31 @@ describe('runCrossProjectSweep', () => {
       expect(project.kind).toBe('ok');
     }
     expect(outcome.result.runId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('emits live progress at each project boundary', async () => {
+    const progress: SweepProgressEvent[] = [];
+    deps.onProgress = (event) => {
+      progress.push(event);
+    };
+
+    const outcome = await runCrossProjectSweep(deps);
+    expect(outcome.kind).toBe('completed');
+
+    expect(progress).toHaveLength(4);
+    expect(progress.map((event) => ({
+      index: event.index,
+      total: event.total,
+      projectId: event.projectId,
+      status: event.status,
+      counts: event.counts,
+      hasResult: Boolean(event.result),
+    }))).toEqual([
+      { index: 1, total: 2, projectId: 'github.com/a/a', status: 'running', counts: { done: 0, skipped: 0, failed: 0 }, hasResult: false },
+      { index: 1, total: 2, projectId: 'github.com/a/a', status: 'done', counts: { done: 1, skipped: 0, failed: 0 }, hasResult: true },
+      { index: 2, total: 2, projectId: 'github.com/b/b', status: 'running', counts: { done: 1, skipped: 0, failed: 0 }, hasResult: false },
+      { index: 2, total: 2, projectId: 'github.com/b/b', status: 'done', counts: { done: 2, skipped: 0, failed: 0 }, hasResult: true },
+    ]);
   });
 
   it('forwards the canSweepRemove filter and sweepRunId to the delegate', async () => {

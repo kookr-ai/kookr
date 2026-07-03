@@ -545,7 +545,7 @@ delta sequence number.
 
 | `type` | Purpose | Key fields |
 | --- | --- | --- |
-| `snapshot` | Full dashboard baseline on connect and after broad state changes. | `agents`, `serverCwd`, optional build/speech/achievement/task relation fields |
+| `snapshot` | Full dashboard baseline on connect and after broad state changes. | `agents`, `serverCwd`, optional build/speech/achievement/task relation/workspace fields including `sweepRunning` and `sweepProgress` |
 | `update` | Refresh one agent's current state. | `agentId`, `state` |
 | `alert` | Surface an anomaly, validation error, or handler error. | `agentId`, `summary`, `details`, `severity`, optional `operationalAlert` `{ key, metric, state }` for operational alert fire/recovery events |
 | `githubUpdate` | Push GitHub PR/issue state for one task. | `taskId`, `prs`, `issues`, `changes` |
@@ -565,6 +565,7 @@ delta sequence number.
 | `scheduleFired` | Notify that a schedule launched a task. | `scheduleId`, `taskId` |
 | `workspaceView` | Return contribution-workspace candidates and cleanup results. | `view`, optional `error`, `cleanupResult`, `cleanupResults`, `diagnosticLaunch` |
 | `workspaceCleanupDetail` | Return detail for a cleanup candidate worktree. | `worktreePath`, optional `detail`, `error` |
+| `workspaceSweepProgress` | Broadcast live cross-project cleanup sweep progress. | `runId`, `startedAt`, `index`, `total`, `projectId`, `status`, `counts`, optional `result` |
 | `workspaceSweepComplete` | Report completion of a cross-project cleanup sweep. | `runId`, `startedAt`, `finishedAt`, `projects` |
 | `workspaceSweepBusy` | Report that another cleanup sweep already holds the lock. | `holderPid`, `heldSince` |
 | `diagnosticReport` | Push the latest self-diagnostic report when findings exist. | `report` |

@@ -7,7 +7,7 @@ import type { PrLessonsStateHolder } from '../../core/pr-lessons-discovery.js';
 import type { AvailableAgentType, AgentSelection } from '../../core/agent-types.js';
 import type { ProjectSummary, ProjectRepoHealth } from '../../core/project-summary.js';
 import type { GitHubReference } from '../../core/github-types.js';
-import type { DrainStatusSnapshot, SnapshotMessage } from '../../shared/contracts/messages.js';
+import type { DrainStatusSnapshot, SnapshotMessage, WorkspaceSweepProgressSnapshot } from '../../shared/contracts/messages.js';
 import type { CollaborationCapabilities, SpeechCapability } from '../../shared/contracts/speech.js';
 import { projectEventForClient } from '../event-projection.js';
 import type { AgentActivityMeta } from '../../core/types.js';
@@ -92,6 +92,7 @@ export interface SnapshotMessageDeps extends SnapshotQueryDeps {
   workspaceEnabled?: boolean;
   bypassAllPermissions?: boolean;
   sweepRunning?: boolean;
+  sweepProgress?: WorkspaceSweepProgressSnapshot;
   drainStatus?: DrainStatusSnapshot;
   /** Live getter for the configured concurrency cap (settings.maxActiveTasks). */
   getMaxActiveTasks?: () => number;
@@ -392,6 +393,7 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
     ...(deps.workspaceEnabled && !projectsScope ? { workspaceEnabled: true } : {}),
     ...(deps.bypassAllPermissions && !projectsScope ? { bypassAllPermissions: true } : {}),
     ...(deps.sweepRunning && !projectsScope ? { sweepRunning: true } : {}),
+    ...(deps.sweepProgress && !projectsScope ? { sweepProgress: deps.sweepProgress } : {}),
     ...(deps.drainStatus && !projectsScope ? { drainStatus: deps.drainStatus } : {}),
     ...(deps.getMaxActiveTasks && !projectsScope ? { maxActiveTasks: deps.getMaxActiveTasks() } : {}),
     // Coordinator is whole-world detector state — omitted for a `projects` viewer.

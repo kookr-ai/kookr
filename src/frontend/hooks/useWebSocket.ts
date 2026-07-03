@@ -66,6 +66,7 @@ export function dispatchSnapshotMessageForClient(
     msg.ttsUrl,
     msg.bypassAllPermissions,
     msg.drainStatus,
+    msg.sweepProgress,
   );
   // Sticky: only overwrite the cached graph when the server actually shipped
   // one. High-frequency event-pipeline broadcasts omit it on purpose, and we
@@ -263,6 +264,9 @@ export function useWebSocket() {
               break;
             case 'workspaceCleanupDetail':
               store.handleWorkspaceCleanupDetail(msg.worktreePath, msg.detail, msg.error);
+              break;
+            case 'workspaceSweepProgress':
+              store.handleSweepProgress(msg);
               break;
             case 'workspaceSweepComplete':
               store.handleSweepComplete({

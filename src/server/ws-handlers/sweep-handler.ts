@@ -17,6 +17,7 @@ import { runCrossProjectSweep } from '../use-cases/cross-project-cleanup-sweep.j
  */
 export interface SweepHandlerDeps {
   send: (msg: ServerMessage) => void;
+  broadcastToAll?: (msg: ServerMessage) => void;
   taskStore: TaskStore;
   serverCwd: string;
   serverProjectId?: string;
@@ -31,9 +32,13 @@ export class SweepHandler {
   constructor(private readonly deps: SweepHandlerDeps) {}
 
   async handle(): Promise<void> {
+    const publish = (msg: ServerMessage): void => {
+      (this.deps.broadcastToAll ?? this.deps.send)(msg);
+    };
+
     const missingDeps = this.missingWorkspaceDeps();
     if (missingDeps.length > 0) {
-      this.deps.send({
+      publish({
         type: 'workspaceSweepComplete',
         runId: '',
         startedAt: new Date().toISOString(),
@@ -67,6 +72,11 @@ export class SweepHandler {
         },
         projectConfigStore,
         taskStore: this.deps.taskStore,
+        onProgress: (progress) => publish({
+          type: 'workspaceSweepProgress',
+          ...progress,
+        }),
+        logger: console,
         resolveRepoPath: async (projectId) => {
           const context = await resolveWorkspaceContext(projectId, {
             taskStore: this.deps.taskStore,
@@ -87,7 +97,7 @@ export class SweepHandler {
         return;
       }
 
-      this.deps.send({
+      publish({
         type: 'workspaceSweepComplete',
         runId: outcome.result.runId,
         startedAt: outcome.result.startedAt,
@@ -97,7 +107,7 @@ export class SweepHandler {
     } catch (err) {
       // Defensive: sweep should not throw to the caller, but if it does we
       // still want to surface the failure instead of crashing the handler.
-      this.deps.send({
+      publish({
         type: 'workspaceSweepComplete',
         runId: '',
         startedAt: new Date().toISOString(),

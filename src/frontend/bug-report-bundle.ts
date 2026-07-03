@@ -145,6 +145,7 @@ const DEBUG_MESSAGE_TYPES = new Set([
   'scheduleFired',
   'workspaceView',
   'workspaceCleanupDetail',
+  'workspaceSweepProgress',
   'workspaceSweepComplete',
   'workspaceSweepBusy',
   'ossAttempts',

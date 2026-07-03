@@ -219,7 +219,7 @@ stateDiagram-v2
 > - Infrastructure health: `quotaStatus`, `resourceStatus`, `circuitBreakerStatus`, `diagnosticReport`
 > - Scheduled tasks: `schedules`, `scheduleFired`
 > - GitHub PR/issue awareness: `githubUpdate`
-> - Workspace / contribution workspace: `workspaceView`, `workspaceCleanupDetail`, `workspaceSweepComplete`, `workspaceSweepBusy`
+> - Workspace / contribution workspace: `workspaceView`, `workspaceCleanupDetail`, `workspaceSweepProgress`, `workspaceSweepComplete`, `workspaceSweepBusy`
 > - OSS attempts: `ossAttempts`
 >
 > **ClientMessage families:**

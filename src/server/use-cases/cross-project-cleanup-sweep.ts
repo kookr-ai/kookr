@@ -17,6 +17,7 @@ import type { ProjectConfigStore } from '../../core/project-config-store.js';
 import type { TaskStore } from '../../core/tasks.js';
 import { canSweepRemove } from '../../core/workspace-cleanup-policy.js';
 import type { CleanupResultSummary } from '../../core/workspace-types.js';
+import type { WorkspaceSweepProgressSnapshot, WorkspaceSweepProgressStatus } from '../../shared/contracts/messages.js';
 import {
   cleanupSafeWorkspaceCandidates,
   type WorkspaceCleanupDeps,
@@ -40,12 +41,22 @@ const NESTED_GIT_ENV_VARS = [
   'GIT_WORK_TREE',
 ] as const;
 
+export type SweepProgressEvent = WorkspaceSweepProgressSnapshot & {
+  result?: ProjectSweepResult;
+};
+
 export interface CrossProjectSweepDeps {
   cleanupDeps: WorkspaceCleanupDeps;
   projectConfigStore: ProjectConfigStore;
   taskStore: TaskStore;
   /** Pre-bound `(projectId) => Promise<repoPath>` — caller binds once. */
   resolveRepoPath: (projectId: string) => Promise<string>;
+  /** Called when a project starts or finishes. */
+  onProgress?: (progress: SweepProgressEvent) => void;
+  logger?: {
+    info: (message: string, meta?: Record<string, unknown>) => void;
+    warn: (message: string, meta?: Record<string, unknown>) => void;
+  };
   now?: () => Date;
   /** Injectable for tests. */
   lockDir?: string;
@@ -67,6 +78,12 @@ export interface CrossProjectSweepResult {
 export type SweepOutcome =
   | { kind: 'completed'; result: CrossProjectSweepResult }
   | { kind: 'busy'; holderPid: number; heldSince: string };
+
+let sweepProgress: WorkspaceSweepProgressSnapshot | null = null;
+
+export function getSweepProgressSnapshot(): WorkspaceSweepProgressSnapshot | null {
+  return sweepProgress ? { ...sweepProgress } : null;
+}
 
 /**
  * Union configStore and taskStore projects, deduped, deterministically ordered.
@@ -111,13 +128,39 @@ export async function runCrossProjectSweep(
 
   try {
     const projectIds = enumerateSweepProjects(deps.projectConfigStore, deps.taskStore);
+    deps.logger?.info('workspace_sweep_start', { runId, total: projectIds.length });
 
-    for (const projectId of projectIds) {
-      projects.push(await sweepOneProject(projectId, deps, runId, timeoutMs));
+    for (let offset = 0; offset < projectIds.length; offset++) {
+      const projectId = projectIds[offset]!;
+      const index = offset + 1;
+      emitSweepProgress(deps, {
+        runId,
+        startedAt,
+        index,
+        total: projectIds.length,
+        projectId,
+        status: 'running',
+        counts: countsForResults(projects),
+      });
+      const result = await sweepOneProject(projectId, deps, runId, timeoutMs);
+      projects.push(result);
+      emitSweepProgress(deps, {
+        runId,
+        startedAt,
+        index,
+        total: projectIds.length,
+        projectId,
+        status: progressStatusForResult(result),
+        counts: countsForResults(projects),
+        result,
+      });
     }
   } finally {
     lockAttempt.release();
+    sweepProgress = null;
   }
+
+  deps.logger?.info('workspace_sweep_finish', { runId, projects: projects.length });
 
   return {
     kind: 'completed',
@@ -191,12 +234,18 @@ async function sweepOneProject(
         finishedAt: new Date().toISOString(),
         evidenceSummary: `Cross-project sweep timed out for ${projectId} after ${timeoutMs}ms`,
       });
+      deps.logger?.warn('workspace_sweep_project_timeout', { sweepRunId, projectId, timeoutMs });
       return { kind: 'failed', projectId, code: 'timeout', message: `Timed out after ${timeoutMs}ms`, elapsedMs };
     }
     deps.cleanupDeps.attemptRepository.blockAttempt(
       sweepAttempt.attemptId,
       err instanceof Error ? err.message : String(err),
     );
+    deps.logger?.warn('workspace_sweep_project_error', {
+      sweepRunId,
+      projectId,
+      message: err instanceof Error ? err.message : String(err),
+    });
     return {
       kind: 'failed',
       projectId,
@@ -206,6 +255,35 @@ async function sweepOneProject(
     };
   } finally {
     clearTimeout(timer);
+  }
+}
+
+function emitSweepProgress(deps: CrossProjectSweepDeps, event: SweepProgressEvent): void {
+  const { result: _result, ...snapshot } = event;
+  sweepProgress = snapshot;
+  deps.onProgress?.(event);
+}
+
+function countsForResults(projects: ProjectSweepResult[]): WorkspaceSweepProgressSnapshot['counts'] {
+  return projects.reduce(
+    (acc, result) => {
+      if (result.kind === 'ok') acc.done += 1;
+      if (result.kind === 'skipped') acc.skipped += 1;
+      if (result.kind === 'failed') acc.failed += 1;
+      return acc;
+    },
+    { done: 0, skipped: 0, failed: 0 },
+  );
+}
+
+function progressStatusForResult(result: ProjectSweepResult): Exclude<WorkspaceSweepProgressStatus, 'running'> {
+  switch (result.kind) {
+    case 'ok':
+      return 'done';
+    case 'skipped':
+      return 'skipped';
+    case 'failed':
+      return 'failed';
   }
 }
 

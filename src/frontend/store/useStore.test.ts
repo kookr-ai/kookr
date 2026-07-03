@@ -2225,6 +2225,101 @@ describe('Kookr Zustand Store', () => {
     expect(alerts[0].summary).not.toContain('attemptRepository');
   });
 
+  test('handleSweepProgress tracks live cursor and terminal counts', () => {
+    store.getState().handleSweepProgress({
+      type: 'workspaceSweepProgress',
+      runId: 'run-1',
+      startedAt: '2026-06-21T05:00:00.000Z',
+      index: 1,
+      total: 2,
+      projectId: 'github.com/acme/a',
+      status: 'running',
+      counts: { done: 0, skipped: 0, failed: 0 },
+    });
+
+    expect(store.getState().sweepRunning).toBe(true);
+    expect(store.getState().sweepProgress?.projectId).toBe('github.com/acme/a');
+    expect(store.getState().sweepProgress?.counts).toEqual({ done: 0, skipped: 0, failed: 0 });
+
+    store.getState().handleSweepProgress({
+      type: 'workspaceSweepProgress',
+      runId: 'run-1',
+      startedAt: '2026-06-21T05:00:00.000Z',
+      index: 1,
+      total: 2,
+      projectId: 'github.com/acme/a',
+      status: 'done',
+      counts: { done: 1, skipped: 0, failed: 0 },
+      result: { kind: 'ok', projectId: 'github.com/acme/a', summaries: [], elapsedMs: 1 },
+    });
+    store.getState().handleSweepProgress({
+      type: 'workspaceSweepProgress',
+      runId: 'run-1',
+      startedAt: '2026-06-21T05:00:00.000Z',
+      index: 2,
+      total: 2,
+      projectId: 'github.com/acme/b',
+      status: 'failed',
+      counts: { done: 1, skipped: 0, failed: 1 },
+      result: { kind: 'failed', projectId: 'github.com/acme/b', code: 'error', message: 'boom', elapsedMs: 1 },
+    });
+
+    expect(store.getState().sweepProgress?.counts).toEqual({ done: 1, skipped: 0, failed: 1 });
+
+    store.getState().handleSweepComplete({
+      runId: 'run-1',
+      startedAt: '2026-06-21T05:00:00.000Z',
+      finishedAt: '2026-06-21T05:00:02.000Z',
+      projects: [],
+    });
+
+    expect(store.getState().sweepRunning).toBe(false);
+    expect(store.getState().sweepProgress).toBeNull();
+  });
+
+  test('handleSnapshot hydrates in-flight sweep progress for reconnects', () => {
+    store.getState().handleSnapshot(
+      [],
+      '/cwd',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        runId: 'run-snapshot',
+        startedAt: '2026-06-21T05:00:00.000Z',
+        index: 2,
+        total: 4,
+        projectId: 'github.com/acme/repo',
+        status: 'running',
+        counts: { done: 1, skipped: 1, failed: 0 },
+      },
+    );
+
+    expect(store.getState().sweepRunning).toBe(true);
+    expect(store.getState().sweepProgress).toMatchObject({
+      runId: 'run-snapshot',
+      index: 2,
+      total: 4,
+      projectId: 'github.com/acme/repo',
+      status: 'running',
+      counts: { done: 1, skipped: 1, failed: 0 },
+      projectStatuses: { 'github.com/acme/repo': 'running' },
+    });
+  });
+
   describe('selectProject auto-select finding', () => {
     const anomaly = {
       agentId: 'agent-1',
