@@ -34,12 +34,12 @@ KOOKR_OPENROUTER_API_KEY=sk-or-...   # or OPENROUTER_API_KEY
 
 By default (`KOOKR_LLM_PROVIDER` unset, i.e. `auto`), Kookr chains every
 configured provider for fallback in the order `GROQ > GEMINI > ANTHROPIC >
-OPENROUTER`. Requesty is not part of `auto`; select it explicitly when you
-want helper LLM calls routed through Requesty's gateway. To pin a single
-provider:
+OPENROUTER`. Requesty and Baseten are not part of `auto`; select either
+explicitly when you want helper LLM calls routed through that gateway. To pin a
+single provider:
 
 ```bash
-KOOKR_LLM_PROVIDER=openrouter        # openrouter | requesty | groq | gemini | anthropic | auto
+KOOKR_LLM_PROVIDER=openrouter        # openrouter | requesty | baseten | groq | gemini | anthropic | auto
 KOOKR_LLM_MODEL=deepseek/deepseek-v4-flash
 KOOKR_LLM_BASE_URL=https://openrouter.ai/api/v1
 ```
@@ -62,6 +62,19 @@ KOOKR_REQUESTY_MODEL=openai/gpt-4o-mini
 Requesty model ids use provider prefixes such as `openai/gpt-4o-mini`.
 `KOOKR_REQUESTY_MODEL` applies only to Requesty; `KOOKR_LLM_MODEL` and
 `KOOKR_LLM_BASE_URL` remain OpenRouter-only.
+
+**Baseten** exposes OpenAI-compatible Model APIs and is explicit-only:
+
+```bash
+KOOKR_LLM_PROVIDER=baseten
+KOOKR_BASETEN_API_KEY=...             # or BASETEN_API_KEY
+KOOKR_BASETEN_MODEL=nvidia/Nemotron-120B-A12B
+```
+
+Baseten defaults to model `nvidia/Nemotron-120B-A12B` at
+`https://inference.baseten.co/v1` (override with `KOOKR_BASETEN_BASE_URL`).
+`KOOKR_BASETEN_API_KEY` is preferred over `BASETEN_API_KEY` so a Kookr-scoped
+credential can be kept separate. `KOOKR_BASETEN_MODEL` applies only to Baseten.
 
 Without any provider key, Kookr still works. It falls back to truncated prompt
 names and omits AI suggestions.

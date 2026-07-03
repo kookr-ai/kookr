@@ -140,7 +140,7 @@ features stay disabled and Kookr falls back to truncated prompt names.
 
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
-| `KOOKR_LLM_PROVIDER` | `auto` | `openrouter`, `requesty`, `groq`, `gemini`, `anthropic`, `auto` | Selects the LLM provider. `auto` chains every configured provider for fallback in order `GROQ > GEMINI > ANTHROPIC > OPENROUTER`; Requesty is explicit-only and is not included in `auto`. An explicit value uses only that provider. An unrecognized value warns and falls back to `auto`. |
+| `KOOKR_LLM_PROVIDER` | `auto` | `openrouter`, `requesty`, `baseten`, `groq`, `gemini`, `anthropic`, `auto` | Selects the LLM provider. `auto` chains every configured provider for fallback in order `GROQ > GEMINI > ANTHROPIC > OPENROUTER`; Requesty and Baseten are explicit-only and are not included in `auto`. An explicit value uses only that provider. An unrecognized value warns and falls back to `auto`. |
 | `GROQ_API_KEY` | unset | Groq API key | Enables the Groq provider (Llama 4 Scout, free tier). |
 | `GEMINI_API_KEY` | unset | Google AI API key | Enables the Gemini provider (Gemini 3 Flash, free tier). |
 | `ANTHROPIC_API_KEY` | unset | Anthropic API key | Enables the Anthropic provider (Claude Haiku). |
@@ -154,6 +154,10 @@ features stay disabled and Kookr falls back to truncated prompt names.
 | `KOOKR_LLM_APP_TITLE` | `Kookr` | String | Optional `X-Title` app-attribution header sent on OpenRouter requests. |
 | `KOOKR_LLM_TIMEOUT_MS` | `20000` | Positive integer milliseconds | Explicit OpenRouter request timeout, used verbatim. OpenRouter provider only. When unset (or non-numeric/non-positive), a caller timeout below `20000` is floored up to it. Groq/Gemini/Anthropic use a fixed ~10s budget. |
 | `KOOKR_REQUESTY_MODEL` | `openai/gpt-4o-mini` | Requesty model or policy id | Overrides the Requesty model. Requesty model ids use provider prefixes, e.g. `openai/gpt-4o-mini`. Applies only when `KOOKR_LLM_PROVIDER=requesty`. |
+| `KOOKR_BASETEN_API_KEY` | unset | Baseten API key | Enables the Baseten provider when `KOOKR_LLM_PROVIDER=baseten`. Preferred over `BASETEN_API_KEY` so a separate Baseten credential can be scoped to Kookr. |
+| `BASETEN_API_KEY` | unset | Baseten API key | Fallback Baseten key for simple single-key setups. Used only when `KOOKR_LLM_PROVIDER=baseten` and `KOOKR_BASETEN_API_KEY` is unset. |
+| `KOOKR_BASETEN_MODEL` | `nvidia/Nemotron-120B-A12B` | Baseten model id | Overrides the Baseten model. Applies only when `KOOKR_LLM_PROVIDER=baseten`. |
+| `KOOKR_BASETEN_BASE_URL` | `https://inference.baseten.co/v1` | OpenAI-compatible base URL | Overrides the Baseten chat-completions base URL. Baseten provider only. |
 
 ## Remote Chat Trigger
 

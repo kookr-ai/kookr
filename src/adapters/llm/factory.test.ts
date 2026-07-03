@@ -25,6 +25,7 @@ const created = vi.hoisted(() => ({
   anthropic: [] as string[],
   openrouter: [] as string[],
   requesty: [] as string[],
+  baseten: [] as string[],
 }));
 
 vi.mock('./groq-client.js', () => ({
@@ -81,6 +82,10 @@ const ENV_KEYS = [
   'KOOKR_REQUESTY_API_KEY',
   'REQUESTY_API_KEY',
   'KOOKR_REQUESTY_MODEL',
+  'KOOKR_BASETEN_API_KEY',
+  'BASETEN_API_KEY',
+  'KOOKR_BASETEN_MODEL',
+  'KOOKR_BASETEN_BASE_URL',
   'KOOKR_LLM_PROVIDER',
   'KOOKR_LLM_MODEL',
   'KOOKR_LLM_BASE_URL',
@@ -121,6 +126,19 @@ function buildRequesty(model = 'requesty-model'): () => LlmClient {
   };
 }
 
+function buildBaseten(model = 'baseten-model'): () => LlmClient {
+  return () => {
+    created.baseten.push(model);
+    return {
+      provider: 'baseten',
+      model,
+      async complete(): Promise<string | null> {
+        return null;
+      },
+    };
+  };
+}
+
 describe('createLlmClient', () => {
   beforeEach(() => {
     clearEnv();
@@ -129,6 +147,7 @@ describe('createLlmClient', () => {
     created.anthropic = [];
     created.openrouter = [];
     created.requesty = [];
+    created.baseten = [];
   });
 
   afterEach(() => {
@@ -269,6 +288,52 @@ describe('createLlmClient', () => {
     expect(created.requesty).toEqual([]);
     expect(created.openrouter).toEqual([]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('no API key is configured'));
+    warn.mockRestore();
+  });
+
+  test('does not include Baseten in the auto fallback chain', async () => {
+    process.env.BASETEN_API_KEY = 'baseten-key';
+    process.env.OPENROUTER_API_KEY = 'openrouter-key';
+
+    const client = await createLlmClient({ buildOpenRouter: buildOpenRouter(), buildBaseten: buildBaseten() });
+
+    expect(client?.provider).toBe('openrouter');
+    expect(created.baseten).toEqual([]);
+    expect(created.openrouter).toEqual(['openrouter-model']);
+  });
+
+  test('explicit KOOKR_LLM_PROVIDER=baseten uses Baseten only', async () => {
+    process.env.KOOKR_LLM_PROVIDER = 'baseten';
+    process.env.GROQ_API_KEY = 'groq-key';
+    process.env.KOOKR_BASETEN_API_KEY = ' baseten-key ';
+    process.env.OPENROUTER_API_KEY = 'or-key';
+
+    const client = await createLlmClient({ buildOpenRouter: buildOpenRouter(), buildBaseten: buildBaseten() });
+
+    expect(client?.provider).toBe('baseten');
+    expect(client?.model).toBe('baseten-model');
+    expect(created.baseten).toEqual(['baseten-model']);
+    expect(created.groq).toEqual([]);
+    expect(created.openrouter).toEqual([]);
+  });
+
+  test('explicit Baseten selection is case-insensitive', async () => {
+    process.env.KOOKR_LLM_PROVIDER = ' Baseten ';
+    process.env.BASETEN_API_KEY = 'baseten-key';
+
+    const client = await createLlmClient({ buildBaseten: buildBaseten() });
+
+    expect(client?.provider).toBe('baseten');
+    expect(created.baseten).toEqual(['baseten-model']);
+  });
+
+  test('explicit Baseten provider without an adapter builder warns clearly', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.KOOKR_LLM_PROVIDER = 'baseten';
+    process.env.BASETEN_API_KEY = 'baseten-key';
+
+    await expect(createLlmClient()).resolves.toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('provider adapter is not configured'));
     warn.mockRestore();
   });
 

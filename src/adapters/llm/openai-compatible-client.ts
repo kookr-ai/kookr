@@ -12,7 +12,7 @@ import {
   type LlmProviderFailureCategory,
 } from '../../core/llm-types.js';
 
-export type OpenAiCompatibleProvider = 'openrouter' | 'requesty';
+export type OpenAiCompatibleProvider = 'openrouter' | 'requesty' | 'baseten';
 
 export interface OpenAiCompatibleClientOptions {
   provider: OpenAiCompatibleProvider;
@@ -61,6 +61,7 @@ function providerLabel(provider: OpenAiCompatibleProvider): string {
   switch (provider) {
     case 'openrouter': return 'OpenRouter';
     case 'requesty': return 'Requesty';
+    case 'baseten': return 'Baseten';
   }
 }
 
