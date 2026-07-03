@@ -133,6 +133,12 @@ vi.mock('@xterm/addon-search', () => {
   return { SearchAddon: MockSearchAddon };
 });
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class WebLinksAddon {} }));
+vi.mock('@xterm/addon-webgl', () => ({
+  WebglAddon: class WebglAddon {
+    onContextLoss = vi.fn(() => ({ dispose: vi.fn() }));
+    dispose = vi.fn();
+  },
+}));
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}));
 vi.mock('../terminal-send.js', () => ({ registerTerminalSend: vi.fn() }));
 vi.mock('../telemetry.js', () => ({ track: vi.fn() }));
