@@ -92,6 +92,11 @@ Only after the user validates the diagnosis:
 
 Behavioral rules never go in memory. Use the placement picker for rules, procedures, and guards. If the right answer is merely "keep an eye on this," report observation only.
 
+When your edit targets a Kookr plugin artifact (a skill, playbook, agent, or command under `plugin/`), deliver it correctly:
+
+- **Edit the source repo, not a runtime mirror.** The source of truth is `kookr-ai/kookr` — make the change in a fresh worktree of that repo. Never edit `kookr-prod` (the production runtime mirror), which syncs from `main`.
+- **Bump the plugin version before the first push.** Any change under `plugin/` requires bumping `version` in `plugin/.claude-plugin/plugin.json` — the pre-push hook rejects the push otherwise, and installed-plugin users only receive the update when the version string changes. Anticipate this up front rather than after a rejected push, since an amend re-runs the full pre-push suite.
+
 ## Step 5 - Human Gate Before Shipping
 
 Before committing, pushing, or opening a PR, show the exact diff and ask the user whether to ship it. If the user declines, leave changes uncommitted and report that clearly.
