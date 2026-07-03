@@ -122,6 +122,7 @@ export type {
   SweepReportNotAnalyzed,
   SweepReportRow,
   WorkspaceAttemptRecord,
+  WorkspaceBulkRemoveRow,
   WorkspaceView,
   WorktreeLease,
 } from './contracts/workspace.js';
@@ -132,6 +133,7 @@ export type {
   ServerMessage,
   SnapshotMessage,
   SystemResourceStatus,
+  WorkspaceBulkRemoveProgressMessage,
   WorkspaceSweepProgressMessage,
   WorkspaceSweepProgressSnapshot,
 } from './contracts/messages.js';

@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
+import type { WorkspaceBulkRemoveRow } from '../../shared/contracts/workspace.js';
 import type { ProjectConfigStore } from '../../core/project-config-store.js';
 import type { TaskStore } from '../../core/tasks.js';
 import type { WorkspaceAttemptRepository } from '../../core/workspace-attempt-repository.js';
@@ -6,6 +8,7 @@ import type { RepoPolicyResolver } from '../../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../../core/worktree-lease-service.js';
 import { resolveWorkspaceContext } from '../use-cases/workspace-context.js';
 import { runCrossProjectSweep } from '../use-cases/cross-project-cleanup-sweep.js';
+import { bulkRemoveProbablySafeCandidates } from '../use-cases/workspace-cleanup-service.js';
 import { reconstructRemovedFromLedger } from '../../core/sweep-report.js';
 
 /**
@@ -122,6 +125,70 @@ export class SweepHandler {
           elapsedMs: 0,
         }],
       });
+    }
+  }
+
+  /**
+   * Probably-safe bulk reclaim (RFC PR 3): remove each selected row's path and
+   * KEEP its branch. Broadcasts `workspaceBulkRemoveProgress` per selected row
+   * so every connected client sees a determinate bar. The repo path is
+   * re-resolved per row via the same `resolveWorkspaceContext` the sweep uses;
+   * the keep-branch guarantee is enforced structurally by
+   * `bulkRemoveProbablySafeCandidates` (no `deleteBranch` param).
+   */
+  async handleBulkRemove(rows: WorkspaceBulkRemoveRow[]): Promise<void> {
+    const publish = (msg: ServerMessage): void => {
+      (this.deps.broadcastToAll ?? this.deps.send)(msg);
+    };
+
+    const runId = randomUUID();
+    // Clients flip an optimistic `bulkRemoveRunning` before sending, cleared
+    // only by a terminal progress event (index >= total). Like the sweep's
+    // guaranteed `workspaceSweepComplete`, EVERY exit path here must broadcast a
+    // terminal event or the initiating UI is stuck on "Removing…" forever. A
+    // 0/0 terminal event satisfies the client's `index >= total` completion gate.
+    const emitTerminal = (): void => publish({
+      type: 'workspaceBulkRemoveProgress',
+      runId,
+      index: 0,
+      total: 0,
+      projectId: '',
+      worktreePath: '',
+      status: 'skipped',
+    });
+
+    const { projectConfigStore, attemptRepository, policyResolver, leaseService } = this.deps;
+    if (!this.deps.workspaceEnabled || !projectConfigStore || !attemptRepository || !policyResolver || !leaseService) {
+      emitTerminal();
+      return;
+    }
+    if (rows.length === 0) {
+      emitTerminal();
+      return;
+    }
+
+    try {
+      await bulkRemoveProbablySafeCandidates(
+        { policyResolver, leaseService, attemptRepository },
+        {
+          rows,
+          runId,
+          resolveRepoPath: async (projectId) => {
+            const context = await resolveWorkspaceContext(projectId, {
+              taskStore: this.deps.taskStore,
+              serverCwd: this.deps.serverCwd,
+              serverProjectId: this.deps.serverProjectId,
+              projectConfigStore,
+            });
+            return context.repoPath;
+          },
+          onProgress: (event) => publish({ type: 'workspaceBulkRemoveProgress', ...event }),
+        },
+      );
+    } catch {
+      // Defensive: bulkRemoveProbablySafeCandidates swallows per-row failures, but
+      // an unexpected throw (e.g. a broadcast error) must still release the client.
+      emitTerminal();
     }
   }
 

@@ -48,6 +48,8 @@ export function createWorkspaceSlice(set: StoreSet, get: StoreGet): WorkspaceSli
     sweepReport: null,
     sweepReportOpen: false,
     lastSweepRunId: null,
+    bulkRemoveRunning: false,
+    bulkRemoveProgress: null,
 
     handleWorkspaceView: (view, error, cleanupResult, cleanupResults, diagnosticLaunch) => {
       set({
@@ -216,6 +218,81 @@ export function createWorkspaceSlice(set: StoreSet, get: StoreGet): WorkspaceSli
 
     closeSweepReport: () => {
       set({ sweepReportOpen: false });
+    },
+
+    startBulkRemove: () => {
+      set({ bulkRemoveRunning: true, bulkRemoveProgress: null });
+    },
+
+    handleBulkRemoveProgress: (msg) => {
+      // A terminal event for the final row (or a synthetic 0/0 terminal the
+      // server emits on an early/error exit) ends the run — one predicate,
+      // reused to clear the running flag and to fire the completion alert.
+      const finished = msg.status !== 'running' && msg.index >= msg.total;
+      set((prev) => {
+        const sameRun = prev.bulkRemoveProgress?.runId === msg.runId;
+        let done = sameRun ? prev.bulkRemoveProgress!.done : 0;
+        let skipped = sameRun ? prev.bulkRemoveProgress!.skipped : 0;
+        if (msg.status === 'done') done += 1;
+        else if (msg.status === 'skipped' || msg.status === 'failed') skipped += 1;
+
+        // A removed path leaves the Probably-safe bucket live so the list and
+        // its footprint headline shrink as the bulk runs.
+        let sweepReport = prev.sweepReport;
+        if (msg.status === 'done' && sweepReport) {
+          const removedRow = sweepReport.rows.find(
+            (r) => r.worktreePath === msg.worktreePath && r.bucket === 'probably_safe',
+          );
+          if (removedRow) {
+            const ps = sweepReport.buckets.probably_safe;
+            sweepReport = {
+              ...sweepReport,
+              rows: sweepReport.rows.filter((r) => r !== removedRow),
+              buckets: {
+                ...sweepReport.buckets,
+                probably_safe: {
+                  count: Math.max(0, ps.count - 1),
+                  footprintBytesUpperBound: removedRow.footprintBytes === null
+                    ? ps.footprintBytesUpperBound
+                    : Math.max(0, ps.footprintBytesUpperBound - removedRow.footprintBytes),
+                  unknownFootprintCount: removedRow.footprintBytes === null
+                    ? Math.max(0, ps.unknownFootprintCount - 1)
+                    : ps.unknownFootprintCount,
+                },
+              },
+            };
+          }
+        }
+
+        return {
+          sweepReport,
+          bulkRemoveRunning: !finished,
+          bulkRemoveProgress: {
+            runId: msg.runId,
+            index: msg.index,
+            total: msg.total,
+            projectId: msg.projectId,
+            worktreePath: msg.worktreePath,
+            status: msg.status,
+            done,
+            skipped,
+          },
+        };
+      });
+
+      if (finished) {
+        const progress = get().bulkRemoveProgress;
+        const done = progress?.done ?? 0;
+        const skipped = progress?.skipped ?? 0;
+        const reflogHint = done > 0
+          ? ' Branches were kept; removed paths are gone (gitignored files included).'
+          : '';
+        get().handleAlert(
+          'workspace',
+          `Bulk reclaim finished · removed ${done} path(s)${skipped > 0 ? ` · skipped ${skipped}` : ''}.${reflogHint}`,
+          'info',
+        );
+      }
     },
   };
 }

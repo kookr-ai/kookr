@@ -473,6 +473,15 @@ const clientMessageRoundTripCases = [
   }),
   clientMessageCase({ type: 'workspace:sweep' }),
   clientMessageCase({ type: 'workspace:requestSweepReport', runId: 'run-1' }),
+  clientMessageCase({
+    type: 'workspace:bulkRemoveProbablySafe',
+    rows: [{
+      projectId: 'github.com/acme/project',
+      worktreePath: '/tmp/worktree',
+      branch: 'feat/x',
+      fingerprint: 'fingerprint-1',
+    }],
+  }),
 ] as const;
 
 const coveredClientMessageTypes = clientMessageRoundTripCases.map((message) => message.type);

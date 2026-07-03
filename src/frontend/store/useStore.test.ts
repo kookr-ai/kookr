@@ -2538,3 +2538,81 @@ describe('Kookr Zustand Store', () => {
     });
   });
 });
+
+describe('bulk-remove progress reducer (RFC PR 3)', () => {
+  function reportWithProbablySafe() {
+    const row = (worktreePath: string, footprintBytes: number | null, hasSensitiveIgnored = false) => ({
+      projectId: 'github.com/acme/project',
+      worktreePath,
+      branch: `feat/${worktreePath.slice(-1)}`,
+      classification: 'unique_commits' as const,
+      reasonCode: 'has_unique_commits',
+      bucket: 'probably_safe' as const,
+      footprintBytes,
+      lastTouchedMs: 0,
+      reason: 'stale',
+      hasSensitiveIgnored,
+      fingerprint: `fp-${worktreePath.slice(-1)}`,
+    });
+    return {
+      runId: 'run-1',
+      generatedAt: '2026-06-10T00:00:00Z',
+      thresholdDays: 14,
+      rows: [row('/wt/a', 1000), row('/wt/b', null, true)],
+      buckets: {
+        removed: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+        removal_failed: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+        probably_safe: { count: 2, footprintBytesUpperBound: 1000, unknownFootprintCount: 1 },
+        needs_call: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+        blocked: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+      },
+      notAnalyzed: [],
+    };
+  }
+
+  test('drops removed rows live and ends the run on the last row', () => {
+    const store = createKookrStore();
+    store.setState({ sweepReport: reportWithProbablySafe() });
+    store.getState().startBulkRemove();
+    expect(store.getState().bulkRemoveRunning).toBe(true);
+
+    const base = { runId: 'bulk-1', total: 2, projectId: 'github.com/acme/project' };
+    store.getState().handleBulkRemoveProgress({ type: 'workspaceBulkRemoveProgress', ...base, index: 1, worktreePath: '/wt/a', status: 'running' });
+    store.getState().handleBulkRemoveProgress({ type: 'workspaceBulkRemoveProgress', ...base, index: 1, worktreePath: '/wt/a', status: 'done' });
+
+    // The removed row left the report and the bucket recounted.
+    let report = store.getState().sweepReport!;
+    expect(report.rows.map((r) => r.worktreePath)).toEqual(['/wt/b']);
+    expect(report.buckets.probably_safe.count).toBe(1);
+    expect(report.buckets.probably_safe.footprintBytesUpperBound).toBe(0);
+    expect(store.getState().bulkRemoveRunning).toBe(true);
+
+    store.getState().handleBulkRemoveProgress({ type: 'workspaceBulkRemoveProgress', ...base, index: 2, worktreePath: '/wt/b', status: 'running' });
+    store.getState().handleBulkRemoveProgress({ type: 'workspaceBulkRemoveProgress', ...base, index: 2, worktreePath: '/wt/b', status: 'skipped' });
+
+    // Skipped row stays; run ends after the final row.
+    report = store.getState().sweepReport!;
+    expect(report.rows.map((r) => r.worktreePath)).toEqual(['/wt/b']);
+    expect(store.getState().bulkRemoveRunning).toBe(false);
+    expect(store.getState().bulkRemoveProgress).toMatchObject({ done: 1, skipped: 1 });
+  });
+
+  test('a synthetic 0/0 terminal event clears an optimistically-set running flag', () => {
+    const store = createKookrStore();
+    store.getState().startBulkRemove();
+    expect(store.getState().bulkRemoveRunning).toBe(true);
+
+    // The server emits this on an early/error exit so the client never sticks.
+    store.getState().handleBulkRemoveProgress({
+      type: 'workspaceBulkRemoveProgress',
+      runId: 'bulk-empty',
+      index: 0,
+      total: 0,
+      projectId: '',
+      worktreePath: '',
+      status: 'skipped',
+    });
+
+    expect(store.getState().bulkRemoveRunning).toBe(false);
+  });
+});

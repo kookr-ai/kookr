@@ -258,3 +258,21 @@ export interface SweepReport {
    */
   reconstructedFromLedger?: boolean;
 }
+
+// --- Probably-safe bulk reclaim (RFC sweep-worktree-ux PR 3) ---
+
+/**
+ * One selected Probably-safe row the client asks the server to reclaim
+ * (remove path, keep branch). Carries only what the keep-branch bulk needs:
+ * the project + worktree + branch identity and the report-time `fingerprint`
+ * captured in PR 2. `CleanupCandidateAssessment` has no `repoPath`, so the
+ * server re-resolves the repo path per row via the same `resolveRepoPath` the
+ * sweep uses.
+ */
+export interface WorkspaceBulkRemoveRow {
+  projectId: string;
+  worktreePath: string;
+  branch: string;
+  /** Report-time optimistic-concurrency fingerprint; re-validated at bulk time. */
+  fingerprint?: string;
+}

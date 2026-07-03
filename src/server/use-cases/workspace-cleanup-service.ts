@@ -123,6 +123,149 @@ export async function cleanupSafeWorkspaceCandidates(
   return { summaries, safeCandidates, nonRemoved };
 }
 
+/**
+ * One selected Probably-safe row for a bulk keep-branch reclaim. Carries the
+ * projectId/worktreePath/branch identity plus the report-time `fingerprint`;
+ * the repo path is resolved by the injected `resolveRepoPath` (per RFC PR 3:
+ * `CleanupCandidateAssessment` has no `repoPath`).
+ */
+export interface BulkRemoveProbablySafeRow {
+  projectId: string;
+  worktreePath: string;
+  branch: string;
+  fingerprint?: string;
+}
+
+/** Per-row progress emitted during a bulk reclaim (RFC PR 3). */
+export interface BulkRemoveProgressEvent {
+  runId: string;
+  /** 1-based, over the selected rows. */
+  index: number;
+  total: number;
+  projectId: string;
+  worktreePath: string;
+  status: 'running' | 'done' | 'failed' | 'skipped';
+  /** Present on a `done` row: the keep-branch summary (never `branchRemoved`). */
+  result?: CleanupResultSummary;
+}
+
+export interface BulkRemoveProbablySafeInput {
+  rows: readonly BulkRemoveProbablySafeRow[];
+  runId: string;
+  /** Same per-project repo-path resolver the sweep uses. */
+  resolveRepoPath: (projectId: string) => Promise<string>;
+  signal?: AbortSignal;
+  onProgress?: (event: BulkRemoveProgressEvent) => void;
+}
+
+export interface BulkRemoveRowResult {
+  projectId: string;
+  worktreePath: string;
+  branch: string;
+  status: 'done' | 'failed' | 'skipped';
+  disposition?: CleanupResultSummary['disposition'];
+  /** Always false — the keep-branch bulk never deletes a branch. */
+  branchRemoved: boolean;
+  reason?: string;
+}
+
+export interface BulkRemoveProbablySafeResult {
+  runId: string;
+  rows: BulkRemoveRowResult[];
+}
+
+/**
+ * Bulk reclaim of Probably-safe worktrees: remove each selected path, KEEP the
+ * branch (RFC sweep-worktree-ux PR 3, the RFC's one destructive-adjacent
+ * surface).
+ *
+ * This function DELIBERATELY has no `deleteBranch` parameter — it hardcodes
+ * keep-branch (`deleteBranch: false`) internally so that the landmine in
+ * {@link cleanupWorkspaceCandidate}'s `deleteBranch ?? true` default can never
+ * be reintroduced here by a later edit. Each row still routes through the
+ * per-candidate {@link cleanupWorkspaceCandidate} for its revalidation,
+ * capability gating, dirty-recovery guard, and fingerprint re-validation — no
+ * new deletion primitive, just a keep-branch caller. A row whose worktree
+ * changed between report and bulk (busy lease acquired, ref moved, path already
+ * removed by a second actor) is re-validated and skipped; the carried
+ * `fingerprint` is a staleness gate, not a mutex.
+ */
+export async function bulkRemoveProbablySafeCandidates(
+  deps: WorkspaceCleanupDeps,
+  input: BulkRemoveProbablySafeInput,
+): Promise<BulkRemoveProbablySafeResult> {
+  const total = input.rows.length;
+  const rows: BulkRemoveRowResult[] = [];
+  const repoPathCache = new Map<string, string | null>();
+
+  const resolveCached = async (projectId: string): Promise<string | null> => {
+    if (repoPathCache.has(projectId)) return repoPathCache.get(projectId) ?? null;
+    try {
+      const repoPath = await input.resolveRepoPath(projectId);
+      repoPathCache.set(projectId, repoPath);
+      return repoPath;
+    } catch {
+      repoPathCache.set(projectId, null);
+      return null;
+    }
+  };
+
+  for (let offset = 0; offset < input.rows.length; offset++) {
+    if (input.signal?.aborted) break;
+    const row = input.rows[offset]!;
+    const index = offset + 1;
+    const emit = (status: BulkRemoveProgressEvent['status'], summary?: CleanupResultSummary): void => {
+      input.onProgress?.({
+        runId: input.runId,
+        index,
+        total,
+        projectId: row.projectId,
+        worktreePath: row.worktreePath,
+        status,
+        ...(summary ? { result: summary } : {}),
+      });
+    };
+
+    emit('running');
+
+    const base = { projectId: row.projectId, worktreePath: row.worktreePath, branch: row.branch };
+    const repoPath = await resolveCached(row.projectId);
+    if (!repoPath) {
+      rows.push({ ...base, status: 'skipped', branchRemoved: false, reason: 'repo path could not be resolved' });
+      emit('skipped');
+      continue;
+    }
+
+    try {
+      const { summary } = await cleanupWorkspaceCandidate(deps, {
+        ...base,
+        repoPath,
+        // keep-branch is hardcoded; see the doc comment on why there is no
+        // deleteBranch param on this bulk function.
+        deleteBranch: false,
+        reviewFingerprint: row.fingerprint,
+        signal: input.signal,
+        sweepRunId: input.runId,
+      });
+      const status = summary.pathRemoved ? 'done' : 'skipped';
+      rows.push({
+        ...base,
+        status,
+        disposition: summary.disposition,
+        branchRemoved: summary.branchRemoved,
+        reason: summary.pathRemoved ? undefined : 'not removed',
+      });
+      emit(status, summary.pathRemoved ? summary : undefined);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      rows.push({ ...base, status: 'skipped', branchRemoved: false, reason });
+      emit('skipped');
+    }
+  }
+
+  return { runId: input.runId, rows };
+}
+
 export async function cleanupWorkspaceCandidate(
   deps: WorkspaceCleanupDeps,
   input: WorkspaceCleanupInput,

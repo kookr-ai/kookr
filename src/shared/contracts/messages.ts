@@ -29,6 +29,7 @@ import type {
   CleanupCandidateDetail,
   CleanupDiagnosticLaunch,
   SweepReport,
+  WorkspaceBulkRemoveRow,
 } from './workspace.js';
 
 export type { SweepReport };
@@ -37,6 +38,7 @@ export type {
   SweepReportBucket,
   SweepReportBucketSummary,
   SweepReportNotAnalyzed,
+  WorkspaceBulkRemoveRow,
 } from './workspace.js';
 
 // Re-export store types through the shared contract layer so the frontend
@@ -90,6 +92,27 @@ export type WorkspaceSweepProgressMessage = WorkspaceSweepProgressSnapshot & {
   type: 'workspaceSweepProgress';
   result?: CrossProjectSweepProjectResult;
 };
+
+/**
+ * Broadcast per selected-row boundary during a Probably-safe bulk reclaim
+ * (RFC sweep-worktree-ux PR 3). Its own `index`/`total` run over the SELECTED
+ * rows (not the project list), so a 40-row bulk shows a real determinate bar.
+ * `status: 'done'` carries the per-row `result` summary (always keep-branch:
+ * `branchRemoved` is structurally false). Independent from
+ * {@link WorkspaceSweepProgressMessage} so PR 3 can be reverted without touching
+ * the read-only report.
+ */
+export interface WorkspaceBulkRemoveProgressMessage {
+  type: 'workspaceBulkRemoveProgress';
+  runId: string;
+  /** 1-based, over selected rows. */
+  index: number;
+  total: number;
+  projectId: string;
+  worktreePath: string;
+  status: WorkspaceSweepProgressStatus;
+  result?: CleanupResultSummary;
+}
 
 /**
  * Wire-format snapshot of OSS contribution attempts, broadcast on the
@@ -329,6 +352,7 @@ export type ServerMessage =
     }
   | { type: 'workspaceCleanupDetail'; worktreePath: string; detail?: CleanupCandidateDetail; error?: string }
   | WorkspaceSweepProgressMessage
+  | WorkspaceBulkRemoveProgressMessage
   | {
       type: 'workspaceSweepComplete';
       runId: string;
@@ -436,7 +460,8 @@ export type ClientMessage =
   | { type: 'workspace:bulkSafeCleanup'; projectId: string }
   | { type: 'workspace:runCleanupDiagnostic'; projectId: string; worktreePath: string; reviewFingerprint: string }
   | { type: 'workspace:sweep' }
-  | { type: 'workspace:requestSweepReport'; runId: string };
+  | { type: 'workspace:requestSweepReport'; runId: string }
+  | { type: 'workspace:bulkRemoveProbablySafe'; rows: WorkspaceBulkRemoveRow[] };
 
 export const SERVER_MESSAGE_TYPES = [
   'snapshot',
@@ -460,6 +485,7 @@ export const SERVER_MESSAGE_TYPES = [
   'workspaceView',
   'workspaceCleanupDetail',
   'workspaceSweepProgress',
+  'workspaceBulkRemoveProgress',
   'workspaceSweepComplete',
   'workspaceSweepBusy',
   'workspaceSweepReport',
@@ -512,6 +538,7 @@ export const CLIENT_MESSAGE_TYPES = [
   'workspace:runCleanupDiagnostic',
   'workspace:sweep',
   'workspace:requestSweepReport',
+  'workspace:bulkRemoveProbablySafe',
 ] as const satisfies readonly ClientMessage['type'][];
 
 type _MissingServerMessageType = Exclude<ServerMessage['type'], (typeof SERVER_MESSAGE_TYPES)[number]>;

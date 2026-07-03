@@ -2,7 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { WorkspaceAttemptRepository } from '../../core/workspace-attempt-repository.js';
 import { RepoPolicyResolver } from '../../core/repo-policy-resolver.js';
 import { WorktreeLeaseService } from '../../core/worktree-lease-service.js';
-import { cleanupSafeWorkspaceCandidates, cleanupWorkspaceCandidate } from './workspace-cleanup-service.js';
+import {
+  bulkRemoveProbablySafeCandidates,
+  cleanupSafeWorkspaceCandidates,
+  cleanupWorkspaceCandidate,
+  type BulkRemoveProgressEvent,
+} from './workspace-cleanup-service.js';
 import { createCleanupFingerprint } from './workspace-cleanup-detail-query.js';
 import { deriveCleanupCapabilities } from '../../core/workspace-cleanup-policy.js';
 
@@ -736,5 +741,197 @@ describe('cleanupSafeWorkspaceCandidates', () => {
     const cleanupAttempts = attempts.filter((a) => a.type === 'cleanup');
     expect(cleanupAttempts.every((a) => a.sweepRunId === undefined)).toBe(true);
     expect(cleanupAttempts.every((a) => a.source === 'workspace_ui')).toBe(true);
+  });
+});
+
+describe('bulkRemoveProbablySafeCandidates (RFC PR 3)', () => {
+  let attemptRepository: WorkspaceAttemptRepository;
+  let policyResolver: RepoPolicyResolver;
+  let leaseService: WorktreeLeaseService;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    attemptRepository = new WorkspaceAttemptRepository();
+    policyResolver = new RepoPolicyResolver({ profiles: [{ projectId: 'github.com/org/repo', baselineRef: 'main' }] });
+    leaseService = new WorktreeLeaseService();
+    mockInspectCleanupCandidate.mockImplementation(async (_repoPath, _projectId, worktreePath) => {
+      const candidates = await mockInspectCleanupCandidates();
+      return candidates.find((candidate) => candidate.worktreePath === worktreePath);
+    });
+  });
+
+  const deps = () => ({ attemptRepository, policyResolver, leaseService });
+  const resolveRepoPath = async () => '/repo';
+
+  /** git responses for a healthy keep-branch removal of a unique_commits row. */
+  function mockKeepBranchGit(overrides: Record<string, { stdout?: string; stderr?: string; error?: boolean }> = {}) {
+    mockGitResponses({
+      'rev-parse HEAD': { stdout: 'head123' },
+      'rev-parse --verify refs/heads/feature/test': { stdout: 'abc123' },
+      'rev-parse --verify main': { stdout: 'baseline123' },
+      'status --porcelain=v1': { stdout: '' },
+      'rev-list --left-right --count main...feature/test': { stdout: '1 0' },
+      'log -1 --format=%H%x1f%an%x1f%aI%x1f%s HEAD': { stdout: 'head123Jean2026-04-04T00:00:00ZLocal only' },
+      'worktree remove /repo-worktree': { stdout: '' },
+      'worktree prune': { stdout: '' },
+      ...overrides,
+    });
+  }
+
+  const matchingFingerprint = () => createCleanupFingerprint({
+    headOid: 'head123',
+    branchRefOid: 'abc123',
+    baselineOid: 'baseline123',
+    statusDigest: '',
+  });
+
+  it('removes the path but NEVER deletes the branch (keep-branch regression)', async () => {
+    mockInspectCleanupCandidates.mockResolvedValue([cleanupCandidate({
+      classification: 'unique_commits',
+      reasonCode: 'has_unique_commits',
+    })]);
+    mockKeepBranchGit();
+
+    const result = await bulkRemoveProbablySafeCandidates(deps(), {
+      runId: 'bulk-1',
+      resolveRepoPath,
+      rows: [{
+        projectId: 'github.com/org/repo',
+        worktreePath: '/repo-worktree',
+        branch: 'feature/test',
+        fingerprint: matchingFingerprint(),
+      }],
+    });
+
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]!.status).toBe('done');
+    expect(result.rows[0]!.branchRemoved).toBe(false);
+    expect(result.rows[0]!.disposition).toBe('path_removed_branch_retained');
+    // Structural proof the branch ref was never touched: no branch delete ran.
+    expect(mockExecFile.mock.calls.some(([, args]) => args.includes('update-ref'))).toBe(false);
+    // The path WAS reclaimed.
+    expect(mockExecFile.mock.calls.some(([, args]) => args.includes('worktree') && args.includes('remove'))).toBe(true);
+  });
+
+  it('skips a row that became busy between report and bulk (revalidation)', async () => {
+    mockInspectCleanupCandidates.mockResolvedValue([cleanupCandidate({
+      classification: 'busy',
+      reasonCode: 'active_lease',
+    })]);
+    mockKeepBranchGit();
+
+    const result = await bulkRemoveProbablySafeCandidates(deps(), {
+      runId: 'bulk-busy',
+      resolveRepoPath,
+      rows: [{
+        projectId: 'github.com/org/repo',
+        worktreePath: '/repo-worktree',
+        branch: 'feature/test',
+        fingerprint: matchingFingerprint(),
+      }],
+    });
+
+    expect(result.rows[0]!.status).toBe('skipped');
+    expect(result.rows[0]!.branchRemoved).toBe(false);
+    // Blocked before any destructive git ran.
+    expect(mockExecFile.mock.calls.some(([, args]) => args.includes('worktree') && args.includes('remove'))).toBe(false);
+  });
+
+  it('degrades to a benign skip when a second actor already removed the worktree', async () => {
+    mockInspectCleanupCandidates.mockResolvedValue([cleanupCandidate({
+      classification: 'unique_commits',
+      reasonCode: 'has_unique_commits',
+    })]);
+    // The remove itself fails (second-actor double-click) → manual_intervention_required.
+    mockKeepBranchGit({
+      'worktree remove /repo-worktree': { error: true, stderr: 'fatal: not a working tree' },
+    });
+
+    const result = await bulkRemoveProbablySafeCandidates(deps(), {
+      runId: 'bulk-race',
+      resolveRepoPath,
+      rows: [{
+        projectId: 'github.com/org/repo',
+        worktreePath: '/repo-worktree',
+        branch: 'feature/test',
+        fingerprint: matchingFingerprint(),
+      }],
+    });
+
+    expect(result.rows[0]!.status).toBe('skipped');
+    expect(result.rows[0]!.branchRemoved).toBe(false);
+    expect(mockExecFile.mock.calls.some(([, args]) => args.includes('update-ref'))).toBe(false);
+  });
+
+  it('skips a row whose fingerprint went stale (ref changed mid-window)', async () => {
+    mockInspectCleanupCandidates.mockResolvedValue([cleanupCandidate({
+      classification: 'unique_commits',
+      reasonCode: 'has_unique_commits',
+    })]);
+    mockKeepBranchGit();
+
+    const result = await bulkRemoveProbablySafeCandidates(deps(), {
+      runId: 'bulk-stale',
+      resolveRepoPath,
+      rows: [{
+        projectId: 'github.com/org/repo',
+        worktreePath: '/repo-worktree',
+        branch: 'feature/test',
+        fingerprint: 'stale-fingerprint',
+      }],
+    });
+
+    expect(result.rows[0]!.status).toBe('skipped');
+    expect(result.rows[0]!.branchRemoved).toBe(false);
+    expect(mockExecFile.mock.calls.some(([, args]) => args.includes('worktree') && args.includes('remove'))).toBe(false);
+  });
+
+  it('emits a determinate running→terminal progress event per selected row', async () => {
+    mockInspectCleanupCandidates.mockResolvedValue([cleanupCandidate({
+      classification: 'unique_commits',
+      reasonCode: 'has_unique_commits',
+    })]);
+    mockKeepBranchGit();
+
+    const events: BulkRemoveProgressEvent[] = [];
+    await bulkRemoveProbablySafeCandidates(deps(), {
+      runId: 'bulk-progress',
+      resolveRepoPath,
+      onProgress: (event) => events.push(event),
+      rows: [{
+        projectId: 'github.com/org/repo',
+        worktreePath: '/repo-worktree',
+        branch: 'feature/test',
+        fingerprint: matchingFingerprint(),
+      }],
+    });
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ index: 1, total: 1, status: 'running', worktreePath: '/repo-worktree' });
+    expect(events[1]).toMatchObject({ index: 1, total: 1, status: 'done' });
+    expect(events[1]!.result?.branchRemoved).toBe(false);
+  });
+
+  it('skips a row whose repo path cannot be resolved without touching git', async () => {
+    mockInspectCleanupCandidates.mockResolvedValue([cleanupCandidate({
+      classification: 'unique_commits',
+      reasonCode: 'has_unique_commits',
+    })]);
+    mockKeepBranchGit();
+
+    const result = await bulkRemoveProbablySafeCandidates(deps(), {
+      runId: 'bulk-unresolved',
+      resolveRepoPath: async () => { throw new Error('no repo path'); },
+      rows: [{
+        projectId: 'github.com/org/repo',
+        worktreePath: '/repo-worktree',
+        branch: 'feature/test',
+        fingerprint: matchingFingerprint(),
+      }],
+    });
+
+    expect(result.rows[0]!.status).toBe('skipped');
+    expect(result.rows[0]!.reason).toContain('repo path');
+    expect(mockExecFile.mock.calls.length).toBe(0);
   });
 });

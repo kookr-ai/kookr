@@ -240,6 +240,117 @@ describe('SweepReport', () => {
     expect(container.querySelector('[data-testid="sweep-report-panel"]')).not.toBeNull();
   });
 
+  test('bulk-remove: pre-selects clean probably-safe rows but not sensitive ones, and sends only selected rows keeping branches', () => {
+    const rows: SweepReportRow[] = [
+      makeRow({
+        bucket: 'probably_safe',
+        projectId: 'github.com/acme/proj-safe',
+        worktreePath: '/repos/acme/wt-clean',
+        branch: 'feat/clean',
+        classification: 'unique_commits',
+        reason: 'Stale, clean.',
+        fingerprint: 'fp-clean',
+      }),
+      makeRow({
+        bucket: 'probably_safe',
+        projectId: 'github.com/acme/proj-safe',
+        worktreePath: '/repos/acme/wt-sensitive',
+        branch: 'feat/sensitive',
+        classification: 'unique_commits',
+        reason: 'Stale, holds .env.',
+        fingerprint: 'fp-sensitive',
+        hasSensitiveIgnored: true,
+        ignoredSample: ['.env'],
+      }),
+    ];
+    useKookrStore.setState({
+      sweepReport: makeReport({
+        rows,
+        buckets: {
+          removed: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+          removal_failed: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+          probably_safe: { count: 2, footprintBytesUpperBound: 0, unknownFootprintCount: 2 },
+          needs_call: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+          blocked: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+        },
+      }),
+      sweepReportOpen: true,
+    });
+
+    render();
+
+    const checkboxes = container.querySelectorAll<HTMLInputElement>('[data-testid="sweep-report-row-select"]');
+    expect(checkboxes).toHaveLength(2);
+    // Clean row pre-selected; sensitive row NOT pre-selected.
+    expect(checkboxes[0]!.checked).toBe(true);
+    expect(checkboxes[1]!.checked).toBe(false);
+
+    // Only 1 pre-selected → button reflects the count.
+    const bulkButton = container.querySelector('[data-testid="sweep-report-bulk-remove"]');
+    expect(bulkButton?.textContent).toContain('Remove 1 path(s)');
+
+    // Open confirm, then confirm.
+    act(() => bulkButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(container.querySelector('[data-testid="sweep-report-bulk-confirm"]')).not.toBeNull();
+
+    const go = container.querySelector('[data-testid="sweep-report-bulk-confirm-go"]');
+    act(() => go?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    expect(send).toHaveBeenCalledWith({
+      type: 'workspace:bulkRemoveProbablySafe',
+      rows: [{
+        projectId: 'github.com/acme/proj-safe',
+        worktreePath: '/repos/acme/wt-clean',
+        branch: 'feat/clean',
+        fingerprint: 'fp-clean',
+      }],
+    });
+    expect(useKookrStore.getState().bulkRemoveRunning).toBe(true);
+  });
+
+  test('bulk-remove confirm names the gitignored risk strongly when a sensitive row is selected', () => {
+    const rows: SweepReportRow[] = [
+      makeRow({
+        bucket: 'probably_safe',
+        worktreePath: '/repos/acme/wt-sensitive',
+        branch: 'feat/sensitive',
+        classification: 'unique_commits',
+        reason: 'Stale, holds .env.',
+        fingerprint: 'fp-sensitive',
+        hasSensitiveIgnored: true,
+        ignoredSample: ['.env'],
+      }),
+    ];
+    useKookrStore.setState({
+      sweepReport: makeReport({
+        rows,
+        buckets: {
+          removed: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+          removal_failed: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+          probably_safe: { count: 1, footprintBytesUpperBound: 0, unknownFootprintCount: 1 },
+          needs_call: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+          blocked: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+        },
+      }),
+      sweepReportOpen: true,
+    });
+
+    render();
+
+    // Manually select the sensitive row (not pre-selected).
+    const checkbox = container.querySelector<HTMLInputElement>('[data-testid="sweep-report-row-select"]');
+    act(() => checkbox?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    const bulkButton = container.querySelector('[data-testid="sweep-report-bulk-remove"]');
+    act(() => bulkButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    const warning = container.querySelector('[data-testid="sweep-report-bulk-sensitive-warning"]');
+    expect(warning).not.toBeNull();
+    expect(warning?.textContent).toContain('gitignored');
+    const dialog = container.querySelector('[data-testid="sweep-report-bulk-confirm"]');
+    expect(dialog?.textContent).toContain('keep its branch and commits');
+  });
+
   test('closing the panel via the close button hides it', () => {
     useKookrStore.setState({ sweepReport: makeReport(), sweepReportOpen: true });
 

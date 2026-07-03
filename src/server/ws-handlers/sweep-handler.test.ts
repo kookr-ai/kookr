@@ -5,9 +5,11 @@ import { SweepHandler, type SweepHandlerDeps } from './sweep-handler.js';
 const {
   runCrossProjectSweepMock,
   resolveWorkspaceContextMock,
+  bulkRemoveProbablySafeCandidatesMock,
 } = vi.hoisted(() => ({
   runCrossProjectSweepMock: vi.fn(),
   resolveWorkspaceContextMock: vi.fn(),
+  bulkRemoveProbablySafeCandidatesMock: vi.fn(),
 }));
 
 vi.mock('../use-cases/cross-project-cleanup-sweep.js', () => ({
@@ -16,6 +18,10 @@ vi.mock('../use-cases/cross-project-cleanup-sweep.js', () => ({
 
 vi.mock('../use-cases/workspace-context.js', () => ({
   resolveWorkspaceContext: resolveWorkspaceContextMock,
+}));
+
+vi.mock('../use-cases/workspace-cleanup-service.js', () => ({
+  bulkRemoveProbablySafeCandidates: bulkRemoveProbablySafeCandidatesMock,
 }));
 
 function makeDeps(overrides: Partial<SweepHandlerDeps> = {}): { deps: SweepHandlerDeps; sent: ServerMessage[] } {
@@ -150,6 +156,63 @@ describe('SweepHandler', () => {
     expect(msg.report?.reconstructedFromLedger).toBe(true);
     expect(msg.report?.buckets.removed.count).toBe(1);
     expect(msg.report?.buckets.removal_failed.count).toBe(1);
+  });
+
+  it('broadcasts bulk-remove progress and re-resolves repo paths per row', async () => {
+    resolveWorkspaceContextMock.mockResolvedValue({ repoPath: '/resolved/repo' });
+    bulkRemoveProbablySafeCandidatesMock.mockImplementationOnce(async (_deps: unknown, input: {
+      resolveRepoPath: (p: string) => Promise<string>;
+      onProgress?: (event: unknown) => void;
+      rows: unknown[];
+    }) => {
+      // The handler wires a resolver backed by resolveWorkspaceContext.
+      await expect(input.resolveRepoPath('github.com/acme/a')).resolves.toBe('/resolved/repo');
+      input.onProgress?.({ runId: 'bulk-1', index: 1, total: 1, projectId: 'github.com/acme/a', worktreePath: '/wt/a', status: 'done' });
+      return { runId: 'bulk-1', rows: [] };
+    });
+
+    const broadcast: ServerMessage[] = [];
+    const { deps } = makeDeps({ broadcastToAll: (msg) => broadcast.push(msg) });
+
+    await new SweepHandler(deps).handleBulkRemove([
+      { projectId: 'github.com/acme/a', worktreePath: '/wt/a', branch: 'feat/a', fingerprint: 'fp-a' },
+    ]);
+
+    expect(bulkRemoveProbablySafeCandidatesMock).toHaveBeenCalledTimes(1);
+    expect(broadcast).toEqual([
+      { type: 'workspaceBulkRemoveProgress', runId: 'bulk-1', index: 1, total: 1, projectId: 'github.com/acme/a', worktreePath: '/wt/a', status: 'done' },
+    ]);
+  });
+
+  it('emits a terminal event (no work) for an empty bulk-remove selection so the client unsticks', async () => {
+    const { deps, sent } = makeDeps();
+    await new SweepHandler(deps).handleBulkRemove([]);
+    expect(bulkRemoveProbablySafeCandidatesMock).not.toHaveBeenCalled();
+    // A 0/0 terminal event clears the client's optimistic bulkRemoveRunning flag.
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ type: 'workspaceBulkRemoveProgress', index: 0, total: 0, status: 'skipped' });
+  });
+
+  it('emits a terminal event instead of running when workspace deps are missing', async () => {
+    const { deps, sent } = makeDeps({ workspaceEnabled: false });
+    await new SweepHandler(deps).handleBulkRemove([
+      { projectId: 'github.com/acme/a', worktreePath: '/wt/a', branch: 'feat/a' },
+    ]);
+    expect(bulkRemoveProbablySafeCandidatesMock).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ type: 'workspaceBulkRemoveProgress', index: 0, total: 0, status: 'skipped' });
+  });
+
+  it('emits a terminal event when the bulk operation throws unexpectedly', async () => {
+    bulkRemoveProbablySafeCandidatesMock.mockRejectedValueOnce(new Error('boom'));
+    resolveWorkspaceContextMock.mockResolvedValue({ repoPath: '/resolved/repo' });
+    const broadcast: ServerMessage[] = [];
+    const { deps } = makeDeps({ broadcastToAll: (msg) => broadcast.push(msg) });
+    await new SweepHandler(deps).handleBulkRemove([
+      { projectId: 'github.com/acme/a', worktreePath: '/wt/a', branch: 'feat/a' },
+    ]);
+    expect(broadcast).toHaveLength(1);
+    expect(broadcast[0]).toMatchObject({ type: 'workspaceBulkRemoveProgress', index: 0, total: 0, status: 'skipped' });
   });
 
   it('replies with an empty report request when the runId is unknown to the ledger', () => {

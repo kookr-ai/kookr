@@ -354,6 +354,19 @@ const workspaceSweepProgressMessage = workspaceSweepProgressSnapshot.extend({
   result: crossProjectSweepProjectResult.optional(),
 });
 
+const workspaceBulkRemoveProgressMessage = z.object({
+  type: z.literal('workspaceBulkRemoveProgress'),
+  runId: z.string(),
+  index: z.number(),
+  total: z.number(),
+  projectId: z.string(),
+  worktreePath: z.string(),
+  status: workspaceSweepProgressStatus,
+  // Loose object, mirroring workspaceView.cleanupResult — a CleanupResultSummary
+  // when status === 'done'.
+  result: jsonObject.optional(),
+});
+
 const workspaceSweepCompleteMessage = z.object({
   type: z.literal('workspaceSweepComplete'),
   runId: z.string(),
@@ -418,6 +431,7 @@ const ServerMessageSchemaImpl = z.union([
   workspaceViewMessage,
   workspaceCleanupDetailMessage,
   workspaceSweepProgressMessage,
+  workspaceBulkRemoveProgressMessage,
   workspaceSweepCompleteMessage,
   workspaceSweepBusyMessage,
   workspaceSweepReportMessage,

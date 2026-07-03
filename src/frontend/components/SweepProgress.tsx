@@ -13,6 +13,47 @@ function shortProjectLabel(projectId: string): string {
   return parts.length >= 2 ? parts.slice(-2).join('/') : projectId;
 }
 
+function BulkRemoveProgress() {
+  const running = useKookrStore((s) => s.bulkRemoveRunning);
+  const progress = useKookrStore((s) => s.bulkRemoveProgress);
+
+  if (!running) return null;
+
+  const total = progress?.total ?? 0;
+  const determinate = !!progress && total > 0;
+  const percent = determinate ? Math.min(100, Math.max(0, (progress.index / total) * 100)) : 0;
+  const label = progress ? shortProjectLabel(progress.projectId) : 'Starting';
+
+  return (
+    <section className="sweep-progress" aria-live="polite" data-testid="bulk-remove-progress">
+      <div className="sweep-progress-header">
+        <div>
+          <div className="sweep-progress-title">Reclaiming worktree paths</div>
+          <div className="sweep-progress-subtitle">
+            {determinate
+              ? `Path ${progress.index} of ${total} — ${label} (keeping branches)`
+              : 'Preparing bulk removal…'}
+          </div>
+        </div>
+      </div>
+      <div
+        className={`sweep-progress-bar${determinate ? '' : ' sweep-progress-bar-indeterminate'}`}
+        role="progressbar"
+        aria-label="Bulk path removal progress"
+        aria-valuemin={0}
+        aria-valuemax={determinate ? total : undefined}
+        aria-valuenow={determinate ? progress.index : undefined}
+      >
+        <div className="sweep-progress-fill" style={{ width: determinate ? `${percent}%` : undefined }} />
+      </div>
+      <div className="sweep-progress-counts">
+        <span>{progress?.done ?? 0} removed</span>
+        <span>{progress?.skipped ?? 0} skipped</span>
+      </div>
+    </section>
+  );
+}
+
 export function SweepProgress() {
   const sweepRunning = useKookrStore((s) => s.sweepRunning);
   const progress = useKookrStore((s) => s.sweepProgress);
@@ -30,7 +71,9 @@ export function SweepProgress() {
     return Number.isFinite(started) ? formatElapsed(now - started) : null;
   }, [now, progress?.startedAt]);
 
-  if (!sweepRunning) return null;
+  // Bulk reclaim (PR 3) can run independently of a sweep, so render its
+  // determinate bar even when no sweep is active.
+  if (!sweepRunning) return <BulkRemoveProgress />;
 
   const hasDeterminateProgress = progress && progress.total > 0;
   const percent = hasDeterminateProgress
@@ -78,6 +121,7 @@ export function SweepProgress() {
         <span>{progress?.counts.skipped ?? 0} skipped</span>
         <span>{progress?.counts.failed ?? 0} failed</span>
       </div>
+      <BulkRemoveProgress />
     </section>
   );
 }

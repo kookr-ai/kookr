@@ -134,6 +134,22 @@ const serverMessageCases = [
     counts: { done: 0, skipped: 0, failed: 0 },
   }),
   serverMessageCase({
+    type: 'workspaceBulkRemoveProgress',
+    runId: 'bulk-1',
+    index: 1,
+    total: 3,
+    projectId: 'github.com/acme/project',
+    worktreePath: '/tmp/wt',
+    status: 'done',
+    result: {
+      branch: 'feat/x',
+      disposition: 'path_removed_branch_retained',
+      pathRemoved: true,
+      branchRemoved: false,
+      retainedReason: 'user_requested_keep_branch',
+    },
+  }),
+  serverMessageCase({
     type: 'workspaceSweepComplete',
     runId: 'run-1',
     startedAt: '2026-06-10T12:00:00.000Z',
