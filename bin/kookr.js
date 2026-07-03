@@ -13,7 +13,7 @@ Usage:
   kookr doctor --json           Run machine-readable launch preflight checks.
   kookr signal <kind> [OPTIONS]  Raise an agent → user signal for the current task.
   kookr issue <verb> [OPTIONS]   Claim/release/inspect issue ownership.
-  kookr status [--json]         Print a read-only server snapshot.
+  kookr status [--json] [--fail-on <critical|warning|info|none>] Print a read-only server snapshot.
   kookr command outcome [commandId] Inspect local/remote command outcomes as JSONL.
   kookr ralph <command> <taskId> [--json] Inspect or control a Ralph loop.
   kookr drain|resume [OPTIONS]  Control operator drain mode.

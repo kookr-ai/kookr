@@ -2,6 +2,7 @@ export const COMPLETION_SHELLS = ['bash', 'zsh'] as const;
 const ROOT_FLAGS = ['-h', '--help', '-v', '--version'] as const;
 const MAINTENANCE_PRUNE_FLAGS = ['--dry-run', '--max-age-days', '--dir', '--json'] as const;
 const MAINTENANCE_BACKUP_FLAGS = ['--dir', '--out', '--json'] as const;
+const STATUS_FAIL_ON_VALUES = ['critical', 'warning', 'info', 'none'] as const;
 
 export type CompletionShell = (typeof COMPLETION_SHELLS)[number];
 
@@ -54,7 +55,10 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
   },
   {
     name: 'status',
-    flags: ['--json', '-h', '--help'],
+    flags: ['--json', '--fail-on', '-h', '--help'],
+    flagValues: {
+      '--fail-on': STATUS_FAIL_ON_VALUES,
+    },
   },
   {
     name: 'command',
@@ -156,6 +160,8 @@ function renderBashCompletion(): string {
   const signalFlags = flagsFor('signal');
   const doctorFlags = flagsFor('doctor');
   const statusFlags = flagsFor('status');
+  const statusFailOnValues = flagValuesFor('status', '--fail-on');
+  const statusFailOnEqualsValues = equalsFlagValues('--fail-on', statusFailOnValues);
   const commandSubcommands = subcommandsFor('command');
   const ralphSubcommands = subcommandsFor('ralph');
   const ralphFlags = flagsFor('ralph');
@@ -189,6 +195,12 @@ _kookr()
       COMPREPLY=( $(compgen -W "${dedupeValues}" -- "\${cur}") )
       return 0
       ;;
+    --fail-on)
+      if [[ "\${cmd}" == status ]]; then
+        COMPREPLY=( $(compgen -W "${statusFailOnValues}" -- "\${cur}") )
+        return 0
+      fi
+      ;;
     completion)
       COMPREPLY=( $(compgen -W "${shells}" -- "\${cur}") )
       return 0
@@ -201,6 +213,10 @@ _kookr()
   fi
   if [[ "\${cur}" == --effort=* ]]; then
     COMPREPLY=( $(compgen -W "${effortEqualsValues}" -- "\${cur}") )
+    return 0
+  fi
+  if [[ "\${cmd}" == status && "\${cur}" == --fail-on=* ]]; then
+    COMPREPLY=( $(compgen -W "${statusFailOnEqualsValues}" -- "\${cur}") )
     return 0
   fi
 
@@ -294,6 +310,8 @@ function renderZshCompletion(): string {
   const signalFlags = flagsFor('signal');
   const doctorFlags = flagsFor('doctor');
   const statusFlags = flagsFor('status');
+  const statusFailOnValues = flagValuesFor('status', '--fail-on');
+  const statusFailOnEqualsValues = equalsFlagValues('--fail-on', statusFailOnValues);
   const commandSubcommands = subcommandsFor('command');
   const ralphSubcommands = subcommandsFor('ralph');
   const ralphFlags = flagsFor('ralph');
@@ -339,6 +357,12 @@ _kookr()
       fi
       ;;
     status)
+      case "$words[CURRENT]" in
+        --fail-on=*) compadd -- ${statusFailOnEqualsValues}; return ;;
+      esac
+      case "$words[CURRENT-1]" in
+        --fail-on) compadd ${statusFailOnValues}; return ;;
+      esac
       compadd -- ${statusFlags}
       ;;
     doctor)

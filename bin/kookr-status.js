@@ -10,16 +10,20 @@ import { realpathSync } from 'node:fs';
 
 const PORTS_TO_TRY = [4800, 4801];
 const SEVERITIES = /** @type {const} */ (['critical', 'warning', 'info']);
+const FAIL_ON_VALUES = /** @type {const} */ ([...SEVERITIES, 'none']);
+const FINDINGS_EXIT_CODE = 5;
 const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'terminated']);
 const HELP_TEXT = `kookr status — print a read-only snapshot of a running Kookr instance.
 
 Usage:
-  kookr status [--json]
-  kookr-status [--json]        Deprecated compatibility alias.
+  kookr status [--json] [--fail-on <critical|warning|info|none>]
+  kookr-status [--json] [--fail-on <critical|warning|info|none>]        Deprecated compatibility alias.
 
 Options:
-  --json             Print one machine-readable JSON envelope to stdout.
-  -h, --help         Show this help.
+  --json                    Print one machine-readable JSON envelope to stdout.
+  --fail-on <severity>      Exit ${FINDINGS_EXIT_CODE} when active findings meet or exceed
+                            critical, warning, info, or none.
+  -h, --help                Show this help.
 
 Environment:
   KOOKR_PORT          Specific port on 127.0.0.1.
@@ -123,6 +127,19 @@ function summarize(agents) {
   return { statusCounts, severityCounts, findings, totalCost };
 }
 
+function hasFindingsAtOrAbove(summary, failOn) {
+  if (failOn === 'none') return false;
+  const thresholdIndex = SEVERITIES.indexOf(failOn);
+  if (thresholdIndex < 0) return false;
+  return SEVERITIES
+    .slice(0, thresholdIndex + 1)
+    .some((severity) => summary.severityCounts[severity] > 0);
+}
+
+function highestKnownSeverity(summary) {
+  return SEVERITIES.find((severity) => summary.severityCounts[severity] > 0) ?? null;
+}
+
 function renderReport({ port, health, agents }) {
   const lines = [];
   const startedAt = health.serverStartedAt ? Date.parse(health.serverStartedAt) : NaN;
@@ -166,13 +183,33 @@ function renderReport({ port, health, agents }) {
 }
 
 function parseStatusArgs(argv) {
-  const args = { help: false, json: false };
+  const args = { help: false, json: false, failOn: 'none' };
   let error = null;
-  for (const tok of argv) {
+  for (let i = 0; i < argv.length; i += 1) {
+    const tok = argv[i];
     if (tok === '-h' || tok === '--help') {
       args.help = true;
     } else if (tok === '--json') {
       args.json = true;
+    } else if (tok === '--fail-on') {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith('-')) {
+        if (error === null) error = '--fail-on requires one of: critical, warning, info, none';
+      } else {
+        i += 1;
+        if (FAIL_ON_VALUES.includes(value)) {
+          args.failOn = value;
+        } else if (error === null) {
+          error = `Invalid --fail-on value: ${value}. Expected one of: critical, warning, info, none`;
+        }
+      }
+    } else if (tok.startsWith('--fail-on=')) {
+      const value = tok.slice('--fail-on='.length);
+      if (FAIL_ON_VALUES.includes(value)) {
+        args.failOn = value;
+      } else if (error === null) {
+        error = `Invalid --fail-on value: ${value}. Expected one of: critical, warning, info, none`;
+      }
     } else if (error === null) {
       error = `Unexpected argument: ${tok}`;
     }
@@ -310,23 +347,33 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     return exit(1);
   }
 
+  const summary = summarize(agents);
+  const findingsExceeded = hasFindingsAtOrAbove(summary, args.failOn);
+  const gateDetails = args.failOn === 'none'
+    ? {}
+    : { failOn: args.failOn, highestSeverity: highestKnownSeverity(summary) };
+
   if (args.json) {
     return exitJson({
       out,
       exit,
-      exitCode: 0,
-      ok: true,
-      code: 'OK',
-      message: 'Kookr status snapshot',
+      exitCode: findingsExceeded ? FINDINGS_EXIT_CODE : 0,
+      ok: !findingsExceeded,
+      code: findingsExceeded ? 'FINDINGS_PRESENT' : 'OK',
+      message: findingsExceeded
+        ? `Active findings meet or exceed ${args.failOn} severity.`
+        : 'Kookr status snapshot',
       details: {
         port,
         health,
         agents,
-        summary: summarize(agents),
+        summary,
+        ...gateDetails,
       },
     });
   }
   out.log(renderReport({ port, health, agents }));
+  if (findingsExceeded) return exit(FINDINGS_EXIT_CODE);
 }
 
 // Guard main() so vitest can import the module without triggering a fetch.
@@ -353,4 +400,18 @@ if (isInvokedDirectly()) {
   });
 }
 
-export { HELP_TEXT, apiAuthHeaders, formatUptime, formatCost, isActiveFinding, summarize, renderReport, resolvePort, parsePortEnv, parseStatusArgs, main };
+export {
+  HELP_TEXT,
+  apiAuthHeaders,
+  formatUptime,
+  formatCost,
+  isActiveFinding,
+  summarize,
+  hasFindingsAtOrAbove,
+  highestKnownSeverity,
+  renderReport,
+  resolvePort,
+  parsePortEnv,
+  parseStatusArgs,
+  main,
+};

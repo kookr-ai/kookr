@@ -239,7 +239,7 @@ The envelope fields are:
 | `message` | string | Short human-readable summary of the outcome. |
 | `details` | object | Command-specific structured data. |
 
-Exit codes remain unchanged. `kookr status` historically exits `1` for invalid ports, unreachable servers, and unexpected responses; in JSON mode its `code` distinguishes `USER_ERROR`, `NO_SERVER`, and `SERVER_ERROR` while preserving that numeric behavior.
+`kookr status` exits `1` for invalid ports, unreachable servers, and unexpected responses; in JSON mode its `code` distinguishes `USER_ERROR`, `NO_SERVER`, and `SERVER_ERROR` while preserving that numeric behavior. When `kookr status --fail-on <severity>` finds an active finding at or above the threshold, it exits `5` and JSON mode returns `code: "FINDINGS_PRESENT"`.
 
 Examples:
 
@@ -270,11 +270,27 @@ Print a read-only snapshot of the running Kookr instance:
 
 ```bash
 kookr status
+kookr status --fail-on critical
 kookr status --json
 pnpm status
 ```
 
 The command reads `/api/snapshot` and `/api/health`, then reports server uptime, build version, and per-agent severity counts.
+
+Options:
+
+| Option | Argument | Default | Description |
+| --- | --- | --- | --- |
+| `--json` | none | false | Print one machine-readable JSON envelope to stdout. |
+| `--fail-on` | `critical`, `warning`, `info`, or `none` | `none` | Exit `5` when active findings meet or exceed the requested severity. `critical` fails only on critical findings; `warning` fails on warning or critical; `info` fails on any known active finding. |
+| `-h`, `--help` | none | false | Print command help and exit. |
+
+Exit behavior:
+
+- `0` when the status snapshot is read successfully and no `--fail-on` threshold is met.
+- `1` for invalid `KOOKR_PORT`, unreachable servers, or unexpected server responses.
+- `2` for usage errors such as an unknown argument or invalid `--fail-on` value.
+- `5` when `--fail-on` is set and active findings meet or exceed the requested severity.
 
 ## `kookr command outcome`
 
