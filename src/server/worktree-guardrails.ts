@@ -57,7 +57,7 @@ function describeBranch(branchLabel: string): string {
 
 function deliveryGateSentence(deliveryPolicy: DeliveryPolicy): string {
   if (deliveryPolicy === 'pre-authorized') {
-    return 'Delivery is pre-authorized for this task: when your work is committed and verified, push the branch and open the PR without asking — the PR is the review gate. If the work does not actually satisfy the task, do NOT open a PR; stop and report what\'s wrong instead.';
+    return 'Delivery is pre-authorized for this task: when your work is committed and verified, finish the full delivery cycle without asking again — commit, push the branch, open or update the PR, and report the PR URL. If you show a diff or plan and the user approves it, treat that as approval to continue through the full delivery cycle. The PR is the review gate. If the work does not actually satisfy the task, do NOT open a PR; stop and report what\'s wrong instead.';
   }
   return "After committing, don't end your turn silently — unless the task already told you to deliver, ask the user whether to push the branch and open a PR.";
 }

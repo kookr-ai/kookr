@@ -12,7 +12,7 @@ function createTaskForMutation(targetStore: TaskStore, ...args: unknown[]) {
 
 function guardedWorktreePrompt(userPrompt: string, delivery: 'ask-first' | 'pre-authorized' = 'ask-first'): string {
   const gate = delivery === 'pre-authorized'
-    ? "Delivery is pre-authorized for this task: when your work is committed and verified, push the branch and open the PR without asking — the PR is the review gate. If the work does not actually satisfy the task, do NOT open a PR; stop and report what's wrong instead."
+    ? "Delivery is pre-authorized for this task: when your work is committed and verified, finish the full delivery cycle without asking again — commit, push the branch, open or update the PR, and report the PR URL. If you show a diff or plan and the user approves it, treat that as approval to continue through the full delivery cycle. The PR is the review gate. If the work does not actually satisfy the task, do NOT open a PR; stop and report what's wrong instead."
     : "After committing, don't end your turn silently - unless the task already told you to deliver, ask the user whether to push the branch and open a PR.";
   return [
     'You are currently in the main checkout `/repo` on branch `main`. Do NOT commit to main or in this checkout - every Kookr task must make tracked-file changes in a fresh git worktree of its own, not in any pre-existing checkout (the main repo, the production runtime worktree, or any sibling worktree spawned for unrelated work).',
