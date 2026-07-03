@@ -160,7 +160,7 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
     relationFilter: { mode: 'off', rootTaskId: null },
     setRelationFilter: (filter) => set(() => ({ relationFilter: filter })),
 
-    handleSnapshot: (agents, serverCwd, build, serverStartedAt, sttEnabled, sttUrl, totalSpendUsd, achievements, availableAgentTypes, defaultAgentType, workspaceEnabled, sweepRunning, maxActiveTasks, speechCapabilities, coordinator, ttsUrl, bypassAllPermissions, drainStatus) => {
+    handleSnapshot: (agents, serverCwd, build, serverStartedAt, sttEnabled, sttUrl, totalSpendUsd, achievements, availableAgentTypes, defaultAgentType, workspaceEnabled, sweepRunning, maxActiveTasks, speechCapabilities, coordinator, ttsUrl, bypassAllPermissions, drainStatus, sweepProgress) => {
       let restoreMissed = false;
       withSelectionTransitionSource({ source: 'selectedAgentUpdateAfterServerState', reason: 'snapshot_reconcile' }, () => {
         set((prev) => {
@@ -192,7 +192,16 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
             ...(totalSpendUsd !== undefined ? { totalSpendUsd } : {}),
             ...(achievements !== undefined ? { achievements } : {}),
             ...(workspaceEnabled !== undefined ? { workspaceEnabled } : {}),
-            ...(sweepRunning !== undefined ? { sweepRunning } : {}),
+            ...(sweepRunning !== undefined ? {
+              sweepRunning,
+              ...(sweepRunning ? {} : { sweepProgress: null }),
+            } : {}),
+            ...(sweepProgress !== undefined ? {
+              sweepProgress: {
+                ...sweepProgress,
+                projectStatuses: { [sweepProgress.projectId]: sweepProgress.status },
+              },
+            } : {}),
             ...(maxActiveTasks !== undefined ? { maxActiveTasks } : {}),
             bypassAllPermissions: bypassAllPermissions === true,
             ...(drainStatus !== undefined ? { drainStatus } : {}),

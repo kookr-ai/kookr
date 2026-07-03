@@ -26,6 +26,9 @@ import type {
   DrainStatusSnapshot,
   LaunchDependency,
   SkillDiscoveryStateSnapshot,
+  ServerMessage,
+  WorkspaceSweepProgressMessage,
+  WorkspaceSweepProgressSnapshot,
   TaskRelation,
 } from '../../shared/protocol.js';
 import type {
@@ -93,6 +96,10 @@ export interface AchievementToast {
   description: string;
   unlockedAt: string;
   timestamp: number;
+}
+
+export interface SweepProgressState extends WorkspaceSweepProgressSnapshot {
+  projectStatuses: Record<string, WorkspaceSweepProgressMessage['status']>;
 }
 
 export interface TransportSessionSlice {
@@ -176,6 +183,7 @@ export interface TransportSessionSlice {
     ttsUrl?: string,
     bypassAllPermissions?: boolean,
     drainStatus?: DrainStatusSnapshot,
+    sweepProgress?: WorkspaceSweepProgressSnapshot,
   ) => void;
   handleUpdate: (agentId: string, state: AgentState) => void;
   handlePlaybooks: (
@@ -341,6 +349,8 @@ export interface WorkspaceSlice {
   workspaceCleanupDetailError: string | null;
   /** True while a cross-project sweep is running on the server. */
   sweepRunning: boolean;
+  /** Live progress cursor for the current cross-project sweep. */
+  sweepProgress: SweepProgressState | null;
 
   handleWorkspaceView: (
     view: WorkspaceView,
@@ -356,6 +366,7 @@ export interface WorkspaceSlice {
   clearWorkspaceCleanupDetail: () => void;
   clearWorkspaceView: () => void;
   setSweepRunning: (running: boolean) => void;
+  handleSweepProgress: (progress: WorkspaceSweepProgressMessage) => void;
   handleSweepComplete: (result: {
     runId: string;
     startedAt: string;

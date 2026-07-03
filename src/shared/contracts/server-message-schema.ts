@@ -60,6 +60,24 @@ const availableAgentType = z.object({
   label: z.string(),
 });
 
+const workspaceSweepProgressStatus = z.enum(['running', 'done', 'failed', 'skipped']);
+
+const workspaceSweepProgressCounts = z.object({
+  done: z.number(),
+  skipped: z.number(),
+  failed: z.number(),
+});
+
+const workspaceSweepProgressSnapshot = z.object({
+  runId: z.string(),
+  startedAt: z.string(),
+  index: z.number(),
+  total: z.number(),
+  projectId: z.string(),
+  status: workspaceSweepProgressStatus,
+  counts: workspaceSweepProgressCounts,
+});
+
 const snapshotMessage = z.object({
   type: z.literal('snapshot'),
   agents: z.array(jsonObject),
@@ -83,6 +101,7 @@ const snapshotMessage = z.object({
   defaultAgentType: agentSelection.optional(),
   workspaceEnabled: z.boolean().optional(),
   sweepRunning: z.boolean().optional(),
+  sweepProgress: workspaceSweepProgressSnapshot.optional(),
   drainStatus: z.object({
     accepting: z.boolean(),
     draining: z.boolean(),
@@ -285,6 +304,11 @@ const crossProjectSweepProjectResult = z.union([
   }),
 ]);
 
+const workspaceSweepProgressMessage = workspaceSweepProgressSnapshot.extend({
+  type: z.literal('workspaceSweepProgress'),
+  result: crossProjectSweepProjectResult.optional(),
+});
+
 const workspaceSweepCompleteMessage = z.object({
   type: z.literal('workspaceSweepComplete'),
   runId: z.string(),
@@ -341,6 +365,7 @@ const ServerMessageSchemaImpl = z.union([
   scheduleFiredMessage,
   workspaceViewMessage,
   workspaceCleanupDetailMessage,
+  workspaceSweepProgressMessage,
   workspaceSweepCompleteMessage,
   workspaceSweepBusyMessage,
   diagnosticReportMessage,

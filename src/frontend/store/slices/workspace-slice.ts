@@ -44,6 +44,7 @@ export function createWorkspaceSlice(set: StoreSet, get: StoreGet): WorkspaceSli
     workspaceCleanupDetailLoading: false,
     workspaceCleanupDetailError: null,
     sweepRunning: false,
+    sweepProgress: null,
 
     handleWorkspaceView: (view, error, cleanupResult, cleanupResults, diagnosticLaunch) => {
       set({
@@ -110,11 +111,43 @@ export function createWorkspaceSlice(set: StoreSet, get: StoreGet): WorkspaceSli
     },
 
     setSweepRunning: (running) => {
-      set({ sweepRunning: running });
+      set({
+        sweepRunning: running,
+        sweepProgress: null,
+      });
+    },
+
+    handleSweepProgress: (progress) => {
+      set((prev) => {
+        const projectStatuses = { ...(prev.sweepProgress?.projectStatuses ?? {}) };
+        projectStatuses[progress.projectId] = progress.status;
+        const counts = Object.values(projectStatuses).reduce(
+          (acc, status) => {
+            if (status === 'done') acc.done += 1;
+            if (status === 'skipped') acc.skipped += 1;
+            if (status === 'failed') acc.failed += 1;
+            return acc;
+          },
+          { done: 0, skipped: 0, failed: 0 },
+        );
+        return {
+          sweepRunning: true,
+          sweepProgress: {
+            runId: progress.runId,
+            startedAt: progress.startedAt,
+            index: progress.index,
+            total: progress.total,
+            projectId: progress.projectId,
+            status: progress.status,
+            counts: progress.counts ?? counts,
+            projectStatuses,
+          },
+        };
+      });
     },
 
     handleSweepComplete: (result) => {
-      set({ sweepRunning: false });
+      set({ sweepRunning: false, sweepProgress: null });
 
       const ok = result.projects.filter((p) => p.kind === 'ok');
       const skipped = result.projects.filter((p) => p.kind === 'skipped');
@@ -145,7 +178,7 @@ export function createWorkspaceSlice(set: StoreSet, get: StoreGet): WorkspaceSli
     },
 
     handleSweepBusy: (payload) => {
-      set({ sweepRunning: false });
+      set({ sweepRunning: false, sweepProgress: null });
       get().handleAlert(
         'workspace',
         `Sweep already running (PID ${payload.holderPid}, since ${payload.heldSince}).`,

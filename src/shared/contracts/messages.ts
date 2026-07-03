@@ -59,6 +59,29 @@ export type CrossProjectSweepProjectResult =
   | { kind: 'skipped'; projectId: string; reason: 'workspace_unavailable'; missingDeps: string[] }
   | { kind: 'failed'; projectId: string; code: 'timeout' | 'error'; message: string; elapsedMs: number };
 
+export type WorkspaceSweepProgressStatus = 'running' | 'done' | 'failed' | 'skipped';
+
+export interface WorkspaceSweepProgressCounts {
+  done: number;
+  skipped: number;
+  failed: number;
+}
+
+export interface WorkspaceSweepProgressSnapshot {
+  runId: string;
+  startedAt: string;
+  index: number;
+  total: number;
+  projectId: string;
+  status: WorkspaceSweepProgressStatus;
+  counts: WorkspaceSweepProgressCounts;
+}
+
+export type WorkspaceSweepProgressMessage = WorkspaceSweepProgressSnapshot & {
+  type: 'workspaceSweepProgress';
+  result?: CrossProjectSweepProjectResult;
+};
+
 /**
  * Wire-format snapshot of OSS contribution attempts, broadcast on the
  * `ossAttempts` WS message and returned by `GET /api/oss-attempts`.
@@ -179,6 +202,8 @@ export type SnapshotMessage = {
   bypassAllPermissions?: boolean;
   /** True if a cross-project sweep is currently in progress on this server. */
   sweepRunning?: boolean;
+  /** Live cross-project sweep cursor for reconnecting clients. */
+  sweepProgress?: WorkspaceSweepProgressSnapshot;
   /** Operator drain mode: while draining, new launches and schedule fires are paused. */
   drainStatus?: DrainStatusSnapshot;
   /**
@@ -287,6 +312,7 @@ export type ServerMessage =
       diagnosticLaunch?: CleanupDiagnosticLaunch;
     }
   | { type: 'workspaceCleanupDetail'; worktreePath: string; detail?: CleanupCandidateDetail; error?: string }
+  | WorkspaceSweepProgressMessage
   | {
       type: 'workspaceSweepComplete';
       runId: string;
@@ -399,6 +425,7 @@ export const SERVER_MESSAGE_TYPES = [
   'scheduleFired',
   'workspaceView',
   'workspaceCleanupDetail',
+  'workspaceSweepProgress',
   'workspaceSweepComplete',
   'workspaceSweepBusy',
   'diagnosticReport',

@@ -124,6 +124,16 @@ const serverMessageCases = [
   serverMessageCase({ type: 'workspaceView', view: workspaceView }),
   serverMessageCase({ type: 'workspaceCleanupDetail', worktreePath: '/tmp/worktree' }),
   serverMessageCase({
+    type: 'workspaceSweepProgress',
+    runId: 'run-1',
+    startedAt: '2026-06-10T12:00:00.000Z',
+    index: 1,
+    total: 2,
+    projectId: 'github.com/acme/project',
+    status: 'running',
+    counts: { done: 0, skipped: 0, failed: 0 },
+  }),
+  serverMessageCase({
     type: 'workspaceSweepComplete',
     runId: 'run-1',
     startedAt: '2026-06-10T12:00:00.000Z',
@@ -175,6 +185,22 @@ describe('ServerMessageSchema', () => {
       startedAt: '2026-06-10T12:00:00.000Z',
       finishedAt: '2026-06-10T12:00:00.000Z',
       projects: [{ kind: 'skipped', projectId: '', reason: 'workspace_unavailable', missingDeps: ['attemptRepository'] }],
+    }));
+
+    expect(result.success).toBe(true);
+  });
+
+  test('accepts terminal workspace sweep progress messages with result details', () => {
+    const result = ServerMessageSchema.safeParse(serverMessageCase({
+      type: 'workspaceSweepProgress',
+      runId: 'run-1',
+      startedAt: '2026-06-10T12:00:00.000Z',
+      index: 1,
+      total: 2,
+      projectId: 'github.com/acme/project',
+      status: 'skipped',
+      counts: { done: 0, skipped: 1, failed: 0 },
+      result: { kind: 'skipped', projectId: 'github.com/acme/project', reason: 'repo_path_unresolved' },
     }));
 
     expect(result.success).toBe(true);

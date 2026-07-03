@@ -43,6 +43,7 @@ import { SnoozeDialog } from './components/SnoozeDialog.js';
 import { ConfirmDialog } from './components/ConfirmDialog.js';
 import { CompleteDialogFooter } from './components/CompleteDialogFooter.js';
 import { DestructiveUndoToasts } from './components/DestructiveUndoToasts.js';
+import { SweepProgress } from './components/SweepProgress.js';
 import type { TaskCompletionFeedback } from '../shared/contracts/messages.js';
 import { ProjectSidebar } from './components/ProjectSidebar.js';
 import { ProjectDetailDrawer } from './components/ProjectDetailDrawer.js';
@@ -1234,6 +1235,7 @@ export function App() {
       <DrainModeBanner />
       <ConnectionBanner />
       <PermissionBypassBanner />
+      <SweepProgress />
       <TopBar
         findings={findings.length}
         currentIndex={selectedAgent && selectedAgent.anomaly

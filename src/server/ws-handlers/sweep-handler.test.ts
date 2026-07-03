@@ -96,4 +96,59 @@ describe('SweepHandler', () => {
       ],
     });
   });
+
+  it('broadcasts progress and completion to all clients when broadcaster is available', async () => {
+    runCrossProjectSweepMock.mockImplementationOnce(async (depsArg: {
+      onProgress?: (msg: unknown) => void;
+    }) => {
+      depsArg.onProgress?.({
+        runId: 'run-2',
+        startedAt: '2026-06-21T05:00:00.000Z',
+        index: 1,
+        total: 1,
+        projectId: 'github.com/acme/a',
+        status: 'running',
+        counts: { done: 0, skipped: 0, failed: 0 },
+      });
+      return {
+        kind: 'completed',
+        result: {
+          runId: 'run-2',
+          startedAt: '2026-06-21T05:00:00.000Z',
+          finishedAt: '2026-06-21T05:00:01.000Z',
+          projects: [],
+        },
+      };
+    });
+
+    const sent: ServerMessage[] = [];
+    const broadcast: ServerMessage[] = [];
+    const { deps } = makeDeps({
+      send: (msg) => sent.push(msg),
+      broadcastToAll: (msg) => broadcast.push(msg),
+    });
+
+    await new SweepHandler(deps).handle();
+
+    expect(sent).toHaveLength(0);
+    expect(broadcast).toEqual([
+      {
+        type: 'workspaceSweepProgress',
+        runId: 'run-2',
+        startedAt: '2026-06-21T05:00:00.000Z',
+        index: 1,
+        total: 1,
+        projectId: 'github.com/acme/a',
+        status: 'running',
+        counts: { done: 0, skipped: 0, failed: 0 },
+      },
+      {
+        type: 'workspaceSweepComplete',
+        runId: 'run-2',
+        startedAt: '2026-06-21T05:00:00.000Z',
+        finishedAt: '2026-06-21T05:00:01.000Z',
+        projects: [],
+      },
+    ]);
+  });
 });
