@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { CircuitBreaker, CircuitBreakerRegistry } from '../../core/circuit-breaker.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import type { Anomaly } from '../../core/types.js';
+import { AuthThrottle } from '../auth-throttle.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
 import { PROMETHEUS_CONTENT_TYPE } from '../prometheus-exposition.js';
 import { registerMetricsRoutes } from './metrics-routes.js';
@@ -39,6 +40,9 @@ describe('metrics routes', () => {
     expect(body).toContain('# TYPE kookr_http_request_duration_observations_total counter');
     expect(body).toContain('kookr_http_request_duration_observations_total{method="GET",route="/api/tasks"} 1');
     expect(body).toContain('kookr_circuit_breaker_state{name="github",state="closed"} 1');
+    expect(body).toContain('kookr_auth_failed_attempts_total 0');
+    expect(body).toContain('kookr_auth_throttled_attempts_total 0');
+    expect(body).toContain('kookr_auth_locked_out_sources 0');
   });
 
   test('serves live attention queue suppression counters', async () => {
@@ -69,6 +73,25 @@ describe('metrics routes', () => {
     const body = await res.text();
     expect(body).toContain('kookr_audit_sink_writable{sink="private_network_collaboration"} 0');
     expect(body).toContain('kookr_audit_append_failures_total{sink="private_network_collaboration"} 2');
+  });
+
+  test('serves live aggregate auth throttle metrics', async () => {
+    const authThrottle = new AuthThrottle({ freeFailures: 0, audit: () => {} });
+    authThrottle.recordFailure('10.0.0.12', 'bad_token');
+    authThrottle.recordThrottledAttempt('10.0.0.12');
+
+    const res = await mkApp({
+      apiAuth: { required: true, token: 'owner-token', authThrottle },
+    }).request('/metrics', {
+      headers: { authorization: 'Bearer owner-token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('kookr_auth_failed_attempts_total 1');
+    expect(body).toContain('kookr_auth_throttled_attempts_total 1');
+    expect(body).toContain('kookr_auth_locked_out_sources 1');
+    expect(body).not.toContain('10.0.0.12');
   });
 
   test('requires an owner credential when non-loopback API auth is required', async () => {

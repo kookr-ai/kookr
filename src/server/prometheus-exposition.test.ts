@@ -138,4 +138,40 @@ describe('renderPrometheusExposition', () => {
     expect(output).toContain('kookr_audit_append_failures_total{sink="healthy_sink"} 0');
     expect(output).not.toContain('lastFailure');
   });
+
+  test('renders aggregate auth throttle counters without source labels', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      authThrottle: {
+        schemaVersion: 'auth-throttle.v1',
+        totalFailedAttempts: 11,
+        totalThrottledAttempts: 4,
+        activeSourceCount: 3,
+        lockedOutSources: [{
+          source: '10.0.0.1',
+          failures: 6,
+          retryAfterMs: 1_000,
+          throttledAttempts: 3,
+          lastReason: 'bad_token',
+        }, {
+          source: '10.0.0.2',
+          failures: 7,
+          retryAfterMs: 2_000,
+          throttledAttempts: 1,
+          lastReason: 'throttled',
+        }],
+      },
+    });
+
+    expect(output).toContain('# HELP kookr_auth_failed_attempts_total Total failed owner-authentication attempts for this process.');
+    expect(output).toContain('# TYPE kookr_auth_failed_attempts_total counter');
+    expect(output).toContain('kookr_auth_failed_attempts_total 11');
+    expect(output).toContain('# TYPE kookr_auth_throttled_attempts_total counter');
+    expect(output).toContain('kookr_auth_throttled_attempts_total 4');
+    expect(output).toContain('# TYPE kookr_auth_locked_out_sources gauge');
+    expect(output).toContain('kookr_auth_locked_out_sources 2');
+    expect(output).not.toContain('10.0.0.');
+    expect(output).not.toContain('source=');
+  });
 });
