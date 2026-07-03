@@ -8,6 +8,7 @@
  */
 
 import type {
+  BaselineResolution,
   CleanupCandidateAssessment,
   CleanupClassification,
   CleanupCommitSummary,
@@ -183,7 +184,7 @@ async function classifyCandidate(
   wt: GitWorktreeInfo,
   repoPath: string,
   projectId: string,
-  baseline: { policy: string; baselineRef?: string; baselineSha?: string; checkedAt?: string },
+  baseline: Pick<BaselineResolution, 'baselineRef' | 'baselineSha' | 'checkedAt'>,
   leaseService: WorktreeLeaseService,
   observedAt: string,
   allWorktrees: GitWorktreeInfo[],
@@ -321,11 +322,11 @@ async function classifyCandidate(
     };
   }
 
-  // If baseline is unknown, we can't determine merge status → unknown.
+  // If no baseline ref resolved, we can't determine merge status → unknown.
   // The worktree is clean (dirty.reason was null) so no dirtySummary
   // is attached — the UI renders the clean case without a dirty
   // indicator.
-  if (baseline.policy === 'unknown_policy' || !baseline.baselineRef) {
+  if (!baseline.baselineRef) {
     return {
       ...base,
       classification: 'unknown',

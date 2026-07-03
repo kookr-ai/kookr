@@ -123,4 +123,56 @@ describe('runCrossProjectSweep real git integration', () => {
     expect(existsSync(worktreePath)).toBe(false);
     expect(() => git(repoPath, 'rev-parse', '--verify', 'refs/heads/feature/merged')).toThrow();
   }), 10_000);
+
+  it('removes merged worktrees for unprofiled github.com projects with origin default branch', async () => withoutNestedGitEnv(async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kookr-sweep-github-real-'));
+    roots.push(root);
+    const repoPath = join(root, 'repo');
+    const worktreePath = join(root, 'repo-feature');
+    mkdirSync(repoPath);
+
+    git(repoPath, 'init', '-b', 'main');
+    git(repoPath, 'config', 'user.email', 'kookr-test@example.com');
+    git(repoPath, 'config', 'user.name', 'Kookr Test');
+    git(repoPath, 'remote', 'add', 'origin', 'https://github.com/example/repo.git');
+    writeFileSync(join(repoPath, 'README.md'), 'hello\n');
+    git(repoPath, 'add', 'README.md');
+    git(repoPath, 'commit', '-m', 'initial');
+    git(repoPath, 'update-ref', 'refs/remotes/origin/main', 'main');
+    git(repoPath, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
+    git(repoPath, 'worktree', 'add', '-b', 'feature/merged', worktreePath, 'main');
+
+    const projectId = 'github.com/example/repo';
+    const deps: CrossProjectSweepDeps = {
+      cleanupDeps: {
+        attemptRepository: new WorkspaceAttemptRepository(),
+        policyResolver: new RepoPolicyResolver(),
+        leaseService: new WorktreeLeaseService(),
+      },
+      projectConfigStore: makeConfigStore([{ project: projectId }]),
+      taskStore: { getAllTasks: () => [] } as unknown as TaskStore,
+      resolveRepoPath: async () => repoPath,
+      lockDir: join(root, 'locks'),
+      perProjectTimeoutMs: 10_000,
+    };
+
+    const outcome = await runCrossProjectSweep(deps);
+
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind !== 'completed') return;
+
+    expect(outcome.result.projects).toHaveLength(1);
+    const [project] = outcome.result.projects;
+    expect(project.kind).toBe('ok');
+    if (project.kind !== 'ok') return;
+
+    expect(project.summaries).toEqual([expect.objectContaining({
+      branch: 'feature/merged',
+      disposition: 'completed',
+      pathRemoved: true,
+      branchRemoved: true,
+    })]);
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(() => git(repoPath, 'rev-parse', '--verify', 'refs/heads/feature/merged')).toThrow();
+  }), 10_000);
 });
