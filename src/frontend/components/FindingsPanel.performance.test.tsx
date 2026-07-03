@@ -40,6 +40,7 @@ function renderPanel(
   container: HTMLElement,
   findings: AgentState[],
   selectedAgentId: string | null = null,
+  send = vi.fn(),
 ): Root {
   const root = createRoot(container);
   act(() => {
@@ -51,7 +52,7 @@ function renderPanel(
         snoozed={[]}
         completed={[]}
         selectedAgentId={selectedAgentId}
-        send={vi.fn()}
+        send={send}
         clearCompletedFinishedCount={0}
         clearCompletedTerminatedCount={0}
       />
@@ -178,6 +179,118 @@ describe('FindingsPanel flood rendering bounds', () => {
     expect(container.querySelectorAll('.finding-group .finding-card')).toHaveLength(26);
     expect(container.querySelector('.finding-card.selected')?.textContent).toContain('Grouped task 55');
     expect(container.querySelector('.finding-group-show-all')?.textContent).toContain('Showing 26 of 60');
+  });
+
+  test('offers a batch reply only for agents with an identical pending prompt', () => {
+    const sent: unknown[] = [];
+    const findings = [
+      makeAgent({
+        agentId: 'agent-1',
+        taskId: 'task-1',
+        taskName: 'Open PR A',
+        turnState: 'waiting_for_input',
+        events: [{
+          type: 'tool_use',
+          sessionId: 'agent-1',
+          toolName: 'AskUserQuestion',
+          toolInput: { question: 'Open the PR when checks are green?', choices: ['Yes', 'No'] },
+        }],
+      }),
+      makeAgent({
+        agentId: 'agent-2',
+        taskId: 'task-2',
+        taskName: 'Open PR B',
+        turnState: 'waiting_for_input',
+        events: [{
+          type: 'tool_use',
+          sessionId: 'agent-2',
+          toolName: 'AskUserQuestion',
+          toolInput: { question: 'Open the PR when checks are green?', choices: ['Yes', 'No'] },
+        }],
+      }),
+      makeAgent({
+        agentId: 'agent-3',
+        taskId: 'task-3',
+        taskName: 'Merge PR A',
+        turnState: 'waiting_for_input',
+        events: [{
+          type: 'tool_use',
+          sessionId: 'agent-3',
+          toolName: 'AskUserQuestion',
+          toolInput: { question: 'Merge the PR now?', choices: ['Yes', 'No'] },
+        }],
+      }),
+      makeAgent({
+        agentId: 'agent-4',
+        taskId: 'task-4',
+        taskName: 'Merge PR B',
+        turnState: 'waiting_for_input',
+        events: [{
+          type: 'tool_use',
+          sessionId: 'agent-4',
+          toolName: 'AskUserQuestion',
+          toolInput: { question: 'Merge the PR now?', choices: ['Yes', 'No'] },
+        }],
+      }),
+    ];
+    useKookrStore.setState({ agents: findings });
+
+    root = renderPanel(container, findings, null, (msg) => { sent.push(msg); });
+
+    const matchingButton = Array.from(container.querySelectorAll<HTMLButtonElement>('.finding-identical-prompt-action'))
+      .find((button) => button.textContent === 'Approve matching (2)');
+    expect(matchingButton).toBeDefined();
+
+    act(() => matchingButton!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    expect(sent).toEqual([{ type: 'respondAll', agentIds: ['agent-1', 'agent-2'], input: 'yes' }]);
+    expect(useKookrStore.getState().respondAllAgentIds).toBeNull();
+
+    const manualButton = Array.from(container.querySelectorAll<HTMLButtonElement>('.finding-identical-prompt-action'))
+      .find((button) => button.textContent === 'Reply to matching (2)');
+    expect(manualButton).toBeDefined();
+
+    act(() => manualButton!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    expect(sent).toEqual([{ type: 'respondAll', agentIds: ['agent-1', 'agent-2'], input: 'yes' }]);
+    expect(useKookrStore.getState().respondAllAgentIds).toEqual(['agent-3', 'agent-4']);
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-3');
+  });
+
+  test('offers a batch reply for exactly two identical pending prompts', () => {
+    const findings = [
+      makeAgent({
+        agentId: 'agent-1',
+        taskId: 'task-1',
+        taskName: 'Open PR A',
+        turnState: 'waiting_for_input',
+        events: [{
+          type: 'tool_use',
+          sessionId: 'agent-1',
+          toolName: 'AskUserQuestion',
+          toolInput: { question: 'Open PR on green?', choices: ['Yes', 'No'] },
+        }],
+      }),
+      makeAgent({
+        agentId: 'agent-2',
+        taskId: 'task-2',
+        taskName: 'Open PR B',
+        turnState: 'waiting_for_input',
+        events: [{
+          type: 'tool_use',
+          sessionId: 'agent-2',
+          toolName: 'AskUserQuestion',
+          toolInput: { question: 'Open PR on green?', choices: ['Yes', 'No'] },
+        }],
+      }),
+    ];
+    useKookrStore.setState({ agents: findings });
+
+    root = renderPanel(container, findings);
+
+    expect(container.querySelector('.finding-group-label')?.textContent).toBe('2 agents waiting for input');
+    const matchingButton = container.querySelector<HTMLButtonElement>('.finding-identical-prompt-action');
+    expect(matchingButton?.textContent).toBe('Approve matching (2)');
   });
 
   test('renders re-stamped signaled findings with the original pending-signal wait age', () => {

@@ -308,16 +308,16 @@ test.describe('Full integration scenarios', () => {
   test('rapid launch-and-triage: 4 agents in succession', async ({ page, request }) => {
     const agents: string[] = [];
 
-    // Use mixed anomaly types to avoid finding grouping (≥3 same type → group)
+    // Use mixed anomaly types and distinct prompt text to avoid finding grouping.
     for (let i = 0; i < 4; i++) {
       await launchViaUI(page, `Rapid ${i}`, `/test/${i}`);
       const tmux = await getLatestTmuxName(request);
       agents.push(tmux);
       await injectSessionStart(request, tmux);
       if (i % 2 === 0) {
-        await injectStopEvent(request, tmux);
+        await injectStopEvent(request, tmux, `I need your help for rapid task ${i}.`);
       } else {
-        await injectPermissionEvent(request, tmux);
+        await injectPermissionEvent(request, tmux, undefined, `npm install rapid-${i}`);
       }
       await expect(page.locator('.finding-card')).toHaveCount(i + 1, { timeout: 10000 });
     }

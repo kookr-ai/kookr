@@ -37,7 +37,7 @@ import { Tooltip } from './Tooltip.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { SupervisorFeedbackDialog } from './SupervisorFeedbackDialog.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
-import { groupFindings, groupLabel } from '../group-findings.js';
+import { groupFindings, groupIdenticalPendingPrompts, groupLabel } from '../group-findings.js';
 import { ScheduleSection } from './ScheduleSection.js';
 import type { SchedulePrefill } from './SchedulesDialog.js';
 import { useDnd } from '../hooks/useDnd.js';
@@ -530,7 +530,7 @@ function FindingTranscriptContext({ agent }: { agent: AgentState }): React.React
 type FindingDisplayItem =
   | { kind: 'single'; agent: AgentState }
   | { kind: 'rootCauseGroup'; root: AgentState; related: AgentState[] }
-  | { kind: 'duplicateGroup'; type: string; agents: AgentState[] };
+  | { kind: 'duplicateGroup'; key: string; type: string; agents: AgentState[] };
 
 function visibleFindingAgents(
   agents: AgentState[],
@@ -593,15 +593,30 @@ function buildFindingDisplayItems(findings: AgentState[]): FindingDisplayItem[] 
     for (const agent of related) causalityKeys.add(agentRowKey(agent));
   }
 
-  const { groups: duplicateGroups } = groupFindings(findings.filter((agent) => !causalityKeys.has(agentRowKey(agent))));
-  const duplicateGroupByKey = new Map<string, { type: string; agents: AgentState[] }>();
+  const nonCausalFindings = findings.filter((agent) => !causalityKeys.has(agentRowKey(agent)));
+  const identicalPromptGroups = groupIdenticalPendingPrompts(nonCausalFindings);
+  const promptGroupByKey = new Map<string, { key: string; type: string; agents: AgentState[] }>();
+  const promptGroupedKeys = new Set<string>();
+  for (const group of identicalPromptGroups) {
+    const type = group.agents[0]?.anomaly?.type ?? 'needs_input';
+    const displayGroup = { key: `prompt:${group.key}`, type, agents: group.agents };
+    for (const agent of group.agents) {
+      const key = agentRowKey(agent);
+      promptGroupByKey.set(key, displayGroup);
+      promptGroupedKeys.add(key);
+    }
+  }
+
+  const { groups: duplicateGroups } = groupFindings(nonCausalFindings.filter((agent) => !promptGroupedKeys.has(agentRowKey(agent))));
+  const duplicateGroupByKey = new Map<string, { key: string; type: string; agents: AgentState[] }>();
   for (const [type, agents] of duplicateGroups) {
-    for (const agent of agents) duplicateGroupByKey.set(agentRowKey(agent), { type, agents });
+    const displayGroup = { key: `type:${type}`, type, agents };
+    for (const agent of agents) duplicateGroupByKey.set(agentRowKey(agent), displayGroup);
   }
 
   const items: FindingDisplayItem[] = [];
   const consumed = new Set<string>();
-  const emittedDuplicateTypes = new Set<string>();
+  const emittedGroupKeys = new Set<string>();
 
   for (const agent of findings) {
     const key = agentRowKey(agent);
@@ -616,10 +631,18 @@ function buildFindingDisplayItems(findings: AgentState[]): FindingDisplayItem[] 
       continue;
     }
 
+    const promptGroup = promptGroupByKey.get(key);
+    if (promptGroup && !emittedGroupKeys.has(promptGroup.key)) {
+      items.push({ kind: 'duplicateGroup', key: promptGroup.key, type: promptGroup.type, agents: promptGroup.agents });
+      emittedGroupKeys.add(promptGroup.key);
+      for (const groupedAgent of promptGroup.agents) consumed.add(agentRowKey(groupedAgent));
+      continue;
+    }
+
     const duplicateGroup = duplicateGroupByKey.get(key);
-    if (duplicateGroup && !emittedDuplicateTypes.has(duplicateGroup.type)) {
-      items.push({ kind: 'duplicateGroup', type: duplicateGroup.type, agents: duplicateGroup.agents });
-      emittedDuplicateTypes.add(duplicateGroup.type);
+    if (duplicateGroup && !emittedGroupKeys.has(duplicateGroup.key)) {
+      items.push({ kind: 'duplicateGroup', key: duplicateGroup.key, type: duplicateGroup.type, agents: duplicateGroup.agents });
+      emittedGroupKeys.add(duplicateGroup.key);
       for (const groupedAgent of duplicateGroup.agents) consumed.add(agentRowKey(groupedAgent));
       continue;
     }
@@ -1089,20 +1112,22 @@ const FindingGroup = React.memo(function FindingGroup({ type, agents, selectedAg
   const headerAgent = agents.find((a) => a.turnState !== 'completed_turn') ?? agents[0];
   const cls = headerAgent ? severityClass(headerAgent) : '';
   const visibleAgents = visibleFindingAgents(agents, selectedAgentId, selectedTaskId, showAllAgents);
+  const identicalPromptGroups = useMemo(() => groupIdenticalPendingPrompts(agents), [agents]);
 
   useEffect(() => {
     if (selectedInGroup) setExpanded(true);
   }, [selectedInGroup]);
 
-  function handleRespondAll(e: React.MouseEvent) {
+  function handleRespondAll(e: React.MouseEvent, targetAgents = agents, trackingTarget = 'respond_all') {
     e.stopPropagation();
-    const agentIds = agents.map(a => a.agentId);
+    if (targetAgents.length === 0) return;
+    const agentIds = targetAgents.map(a => a.agentId);
     setRespondAllAgentIds(agentIds);
     // Select the first agent so the detail panel has context
-    selectAgent(agents[0].agentId, agents[0].taskId);
+    selectAgent(targetAgents[0].agentId, targetAgents[0].taskId);
     // Re-set respondAllAgentIds since selectAgent clears it
     useKookrStore.getState().setRespondAllAgentIds(agentIds);
-    trackClick('respond_all');
+    trackClick(trackingTarget);
     // Focus the response input after React re-renders
     requestAnimationFrame(() => {
       const input = document.querySelector('.response-area textarea') as HTMLTextAreaElement | null;
@@ -1114,6 +1139,29 @@ const FindingGroup = React.memo(function FindingGroup({ type, agents, selectedAg
     e.stopPropagation();
     trackClick('skip_all');
     send({ type: 'skipAll', agentIds: agents.map(a => a.agentId) });
+  }
+
+  function handleApproveIdenticalPrompt(
+    e: React.MouseEvent,
+    targetAgents: AgentState[],
+    approvalResponse: string,
+  ) {
+    e.stopPropagation();
+    if (targetAgents.length === 0) return;
+    trackClick('approve_identical_prompt');
+    send({ type: 'respondAll', agentIds: targetAgents.map((agent) => agent.agentId), input: approvalResponse });
+  }
+
+  function handleIdenticalPromptAction(
+    e: React.MouseEvent,
+    group: ReturnType<typeof groupIdenticalPendingPrompts>[number],
+  ) {
+    if (group.approvalResponse) {
+      handleApproveIdenticalPrompt(e, group.agents, group.approvalResponse);
+      return;
+    }
+
+    handleRespondAll(e, group.agents, 'respond_identical_prompt');
   }
 
   return (
@@ -1132,6 +1180,22 @@ const FindingGroup = React.memo(function FindingGroup({ type, agents, selectedAg
           <button className="btn-xs btn-primary-xs" onClick={handleRespondAll}>Respond to All</button>
         </span>
       </div>
+      {identicalPromptGroups.length > 0 && (
+        <div className="finding-identical-prompts" aria-label="Identical pending prompts">
+          {identicalPromptGroups.map((group) => (
+            <button
+              key={group.key}
+              type="button"
+              className={`btn-xs finding-identical-prompt-action${group.approvalResponse ? ' finding-identical-prompt-action--approve' : ''}`}
+              aria-label={`${group.approvalResponse ? 'Approve' : 'Reply to'} matching prompt "${group.prompt}" for ${group.agents.length} agents`}
+              title={group.prompt}
+              onClick={(e) => handleIdenticalPromptAction(e, group)}
+            >
+              {group.approvalResponse ? 'Approve' : 'Reply to'} matching ({group.agents.length})
+            </button>
+          ))}
+        </div>
+      )}
       {expanded && (
         <>
           {visibleAgents.map((agent) => (
@@ -1815,7 +1879,7 @@ export function FindingsPanel({
           if (item.kind === 'duplicateGroup') {
             return (
               <FindingGroup
-                key={`group-${item.type}`}
+                key={`group-${item.key}`}
                 type={item.type}
                 agents={item.agents}
                 selectedAgentId={selectedAgentId}

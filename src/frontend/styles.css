@@ -699,6 +699,23 @@ kbd {
   gap: 4px;
   margin-left: auto;
 }
+.finding-identical-prompts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 12px 10px 30px;
+}
+.finding-identical-prompt-action {
+  color: var(--text-secondary);
+  border-color: rgba(45, 212, 191, 0.35);
+}
+.finding-identical-prompt-action:hover {
+  color: var(--teal);
+}
+.finding-identical-prompt-action--approve {
+  color: var(--teal);
+  background: rgba(45, 212, 191, 0.08);
+}
 .btn-primary-xs {
   background: var(--teal);
   border: none;
