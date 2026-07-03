@@ -3,6 +3,7 @@ import {
   ATTENTION_QUEUE_SUPPRESSION_REASONS,
   type AttentionQueueSuppressionCounts,
 } from '../core/attention-queue.js';
+import type { AuthThrottleSnapshot } from './auth-throttle.js';
 import type { RequestDurationMetricsSnapshot } from './request-duration-metrics.js';
 
 export const PROMETHEUS_CONTENT_TYPE = 'text/plain; version=0.0.4';
@@ -12,6 +13,7 @@ export interface PrometheusExpositionSnapshot {
   circuitBreakers: CircuitBreakerSnapshot[];
   attentionQueueSuppressions?: AttentionQueueSuppressionCounts;
   auditSinks?: AuditSinkMetricsSnapshot[];
+  authThrottle?: AuthThrottleSnapshot;
 }
 
 export interface AuditSinkMetricsSnapshot {
@@ -27,6 +29,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendCircuitBreakerMetrics(lines, snapshot.circuitBreakers);
   appendAttentionQueueSuppressionMetrics(lines, snapshot.attentionQueueSuppressions);
   appendAuditSinkMetrics(lines, snapshot.auditSinks ?? []);
+  appendAuthThrottleMetrics(lines, snapshot.authThrottle);
 
   return `${lines.join('\n')}\n`;
 }
@@ -128,7 +131,29 @@ function appendAuditSinkMetrics(lines: string[], snapshots: AuditSinkMetricsSnap
   }
 }
 
+function appendAuthThrottleMetrics(lines: string[], snapshot: AuthThrottleSnapshot = EMPTY_AUTH_THROTTLE): void {
+  lines.push(
+    '# HELP kookr_auth_failed_attempts_total Total failed owner-authentication attempts for this process.',
+    '# TYPE kookr_auth_failed_attempts_total counter',
+    metricLine('kookr_auth_failed_attempts_total', {}, snapshot.totalFailedAttempts),
+    '# HELP kookr_auth_throttled_attempts_total Total owner-authentication attempts rejected while a source was throttled for this process.',
+    '# TYPE kookr_auth_throttled_attempts_total counter',
+    metricLine('kookr_auth_throttled_attempts_total', {}, snapshot.totalThrottledAttempts),
+    '# HELP kookr_auth_locked_out_sources Current count of sources locked out by the auth throttle.',
+    '# TYPE kookr_auth_locked_out_sources gauge',
+    metricLine('kookr_auth_locked_out_sources', {}, snapshot.lockedOutSources.length),
+  );
+}
+
 const CIRCUIT_BREAKER_STATES: CircuitBreakerState[] = ['closed', 'open', 'half-open'];
+
+const EMPTY_AUTH_THROTTLE: AuthThrottleSnapshot = {
+  schemaVersion: 'auth-throttle.v1',
+  totalFailedAttempts: 0,
+  totalThrottledAttempts: 0,
+  activeSourceCount: 0,
+  lockedOutSources: [],
+};
 
 function metricLine(name: string, labels: Record<string, string>, value: number): string {
   const labelText = formatLabels(labels);

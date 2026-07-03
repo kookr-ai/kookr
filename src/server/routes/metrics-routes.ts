@@ -1,5 +1,11 @@
 import type { Context, Hono } from 'hono';
-import { API_TOKEN_HEADER, parseCookieHeader, remoteAddrFromContext, resolveActor } from '../auth.js';
+import {
+  API_TOKEN_HEADER,
+  getAuthThrottleSnapshot,
+  parseCookieHeader,
+  remoteAddrFromContext,
+  resolveActor,
+} from '../auth.js';
 import {
   PROMETHEUS_CONTENT_TYPE,
   renderPrometheusExposition,
@@ -27,6 +33,7 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
       circuitBreakers: deps.circuitBreakerRegistry?.getAllSnapshots() ?? [],
       attentionQueueSuppressions: deps.queue?.getSuppressionCounts(),
       auditSinks: deps.auditSinks?.getAllSnapshots() ?? [],
+      authThrottle: getAuthThrottleSnapshot(deps.apiAuth),
     }), 200, {
       'Content-Type': PROMETHEUS_CONTENT_TYPE,
     });
