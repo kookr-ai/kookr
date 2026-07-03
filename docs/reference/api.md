@@ -566,8 +566,9 @@ delta sequence number.
 | `workspaceView` | Return contribution-workspace candidates and cleanup results. | `view`, optional `error`, `cleanupResult`, `cleanupResults`, `diagnosticLaunch` |
 | `workspaceCleanupDetail` | Return detail for a cleanup candidate worktree. | `worktreePath`, optional `detail`, `error` |
 | `workspaceSweepProgress` | Broadcast live cross-project cleanup sweep progress. | `runId`, `startedAt`, `index`, `total`, `projectId`, `status`, `counts`, optional `result` |
-| `workspaceSweepComplete` | Report completion of a cross-project cleanup sweep. | `runId`, `startedAt`, `finishedAt`, `projects` |
+| `workspaceSweepComplete` | Report completion of a cross-project cleanup sweep. | `runId`, `startedAt`, `finishedAt`, `projects`, optional disk-aware `report` |
 | `workspaceSweepBusy` | Report that another cleanup sweep already holds the lock. | `holderPid`, `heldSince` |
+| `workspaceSweepReport` | Reconstructed Removed/removal-failed sweep manifest from the durable ledger (reconnect-after-completion). | `runId`, optional `report` |
 | `diagnosticReport` | Push the latest self-diagnostic report when findings exist. | `report` |
 | `ossAttempts` | Push OSS contribution-attempt store state and refresh status. | `store`, optional `refreshStatus` |
 
@@ -618,6 +619,7 @@ delta sequence number.
 | `workspace:bulkSafeCleanup` | Clean up all safe workspace candidates for a project. | `projectId` |
 | `workspace:runCleanupDiagnostic` | Launch a cleanup diagnostic for one worktree. | `projectId`, `worktreePath`, `reviewFingerprint` |
 | `workspace:sweep` | Run a cross-project workspace cleanup sweep. | none |
+| `workspace:requestSweepReport` | Request reconstruction of a completed sweep's Removed manifest from the ledger. | `runId` |
 
 ## Data Directory
 

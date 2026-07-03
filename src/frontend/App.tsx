@@ -44,6 +44,7 @@ import { ConfirmDialog } from './components/ConfirmDialog.js';
 import { CompleteDialogFooter } from './components/CompleteDialogFooter.js';
 import { DestructiveUndoToasts } from './components/DestructiveUndoToasts.js';
 import { SweepProgress } from './components/SweepProgress.js';
+import { SweepReport } from './components/SweepReport.js';
 import type { TaskCompletionFeedback } from '../shared/contracts/messages.js';
 import { ProjectSidebar } from './components/ProjectSidebar.js';
 import { ProjectDetailDrawer } from './components/ProjectDetailDrawer.js';
@@ -1236,6 +1237,7 @@ export function App() {
       <ConnectionBanner />
       <PermissionBypassBanner />
       <SweepProgress />
+      <SweepReport send={send} />
       <TopBar
         findings={findings.length}
         currentIndex={selectedAgent && selectedAgent.anomaly

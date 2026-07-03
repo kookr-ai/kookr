@@ -27,7 +27,7 @@ import { AnomalyHandler } from './ws-handlers/anomaly-handler.js';
 import { LifecycleHandler } from './ws-handlers/lifecycle-handler.js';
 import { WorkspaceHandler } from './ws-handlers/workspace-handler.js';
 import { SweepHandler } from './ws-handlers/sweep-handler.js';
-import { getSweepProgressSnapshot, isSweepInProgress } from './use-cases/cross-project-cleanup-sweep.js';
+import { getLastCompletedSweepRunId, getSweepProgressSnapshot, isSweepInProgress } from './use-cases/cross-project-cleanup-sweep.js';
 import type { WorkspaceAttemptRepository } from '../core/workspace-attempt-repository.js';
 import type { RepoPolicyResolver } from '../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../core/worktree-lease-service.js';
@@ -272,6 +272,7 @@ export class MessageRouter {
       workspaceEnabled: this.deps.workspaceEnabled,
       sweepRunning: isSweepInProgress(),
       sweepProgress: getSweepProgressSnapshot() ?? undefined,
+      lastSweepRunId: getLastCompletedSweepRunId() ?? undefined,
       activityMetaProvider: this.deps.activityMetaProvider,
       coordinator: {
         taskStore: this.deps.taskStore,
@@ -466,6 +467,10 @@ export class MessageRouter {
       // --- Cross-project sweep ---
       case 'workspace:sweep':
         await this.sweepHandler.handle();
+        return;
+
+      case 'workspace:requestSweepReport':
+        this.sweepHandler.handleReportRequest(msg.runId);
         return;
     }
   }

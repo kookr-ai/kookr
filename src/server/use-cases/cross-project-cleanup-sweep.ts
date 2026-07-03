@@ -16,12 +16,27 @@ import { join } from 'node:path';
 import type { ProjectConfigStore } from '../../core/project-config-store.js';
 import type { TaskStore } from '../../core/tasks.js';
 import { canSweepRemove } from '../../core/workspace-cleanup-policy.js';
-import type { CleanupResultSummary } from '../../core/workspace-types.js';
-import type { WorkspaceSweepProgressSnapshot, WorkspaceSweepProgressStatus } from '../../shared/contracts/messages.js';
+import type { CleanupCandidateAssessment, CleanupResultSummary } from '../../core/workspace-types.js';
+import type {
+  SweepReport,
+  SweepReportNotAnalyzed,
+  WorkspaceSweepProgressSnapshot,
+  WorkspaceSweepProgressStatus,
+} from '../../shared/contracts/messages.js';
+import {
+  DEFAULT_STALE_THRESHOLD_DAYS,
+  buildSweepReport,
+  isBlockedClassification,
+  isProbablySafe,
+  type SweepReportMeasurements,
+} from '../../core/sweep-report.js';
+import { measureWorktreeFootprint } from '../../adapters/worktree-footprint.js';
+import { scanIgnored } from '../../adapters/ignored-scan.js';
 import {
   cleanupSafeWorkspaceCandidates,
   type WorkspaceCleanupDeps,
 } from './workspace-cleanup-service.js';
+import { hydrateCleanupCandidateDetail } from './workspace-cleanup-detail-query.js';
 
 const execFile = promisify(execFileCb);
 
@@ -61,6 +76,8 @@ export interface CrossProjectSweepDeps {
   /** Injectable for tests. */
   lockDir?: string;
   perProjectTimeoutMs?: number;
+  /** Staleness threshold (days) for the probably-safe bucket. Default 14. */
+  staleThresholdDays?: number;
 }
 
 export type ProjectSweepResult =
@@ -73,6 +90,22 @@ export interface CrossProjectSweepResult {
   startedAt: string;
   finishedAt: string;
   projects: ProjectSweepResult[];
+  /** Disk-aware diagnosis report assembled from per-project measurement (PR 2). */
+  report: SweepReport;
+}
+
+/** Per-project measurement side-channel feeding the pure report builder. */
+interface ProjectReportInputs extends SweepReportMeasurements {
+  safeCandidates: CleanupCandidateAssessment[];
+  nonRemoved: CleanupCandidateAssessment[];
+  summaries: CleanupResultSummary[];
+}
+
+interface ProjectSweepOutcome {
+  result: ProjectSweepResult;
+  reportInputs?: ProjectReportInputs;
+  /** Pre-classification worktree count for the not-analyzed banner. */
+  notAnalyzed?: SweepReportNotAnalyzed;
 }
 
 export type SweepOutcome =
@@ -80,9 +113,19 @@ export type SweepOutcome =
   | { kind: 'busy'; holderPid: number; heldSince: string };
 
 let sweepProgress: WorkspaceSweepProgressSnapshot | null = null;
+let lastCompletedRunId: string | null = null;
 
 export function getSweepProgressSnapshot(): WorkspaceSweepProgressSnapshot | null {
   return sweepProgress ? { ...sweepProgress } : null;
+}
+
+/**
+ * runId of the most recently completed sweep on this process (in-memory
+ * pointer, not report retention). A reconnecting client uses it to request
+ * reconstruction of the Removed manifest from the durable ledger.
+ */
+export function getLastCompletedSweepRunId(): string | null {
+  return lastCompletedRunId;
 }
 
 /**
@@ -124,7 +167,11 @@ export async function runCrossProjectSweep(
 
   const runId = randomUUID();
   const startedAt = now().toISOString();
+  const nowMs = now().getTime();
+  const thresholdDays = deps.staleThresholdDays ?? DEFAULT_STALE_THRESHOLD_DAYS;
   const projects: ProjectSweepResult[] = [];
+  const reportInputs: ProjectReportInputs[] = [];
+  const notAnalyzed: SweepReportNotAnalyzed[] = [];
 
   try {
     const projectIds = enumerateSweepProjects(deps.projectConfigStore, deps.taskStore);
@@ -142,17 +189,19 @@ export async function runCrossProjectSweep(
         status: 'running',
         counts: countsForResults(projects),
       });
-      const result = await sweepOneProject(projectId, deps, runId, timeoutMs);
-      projects.push(result);
+      const outcome = await sweepOneProject(projectId, deps, runId, timeoutMs, nowMs, thresholdDays);
+      projects.push(outcome.result);
+      if (outcome.reportInputs) reportInputs.push(outcome.reportInputs);
+      if (outcome.notAnalyzed) notAnalyzed.push(outcome.notAnalyzed);
       emitSweepProgress(deps, {
         runId,
         startedAt,
         index,
         total: projectIds.length,
         projectId,
-        status: progressStatusForResult(result),
+        status: progressStatusForResult(outcome.result),
         counts: countsForResults(projects),
-        result,
+        result: outcome.result,
       });
     }
   } finally {
@@ -160,6 +209,22 @@ export async function runCrossProjectSweep(
     sweepProgress = null;
   }
 
+  const report = buildSweepReport({
+    runId,
+    generatedAt: now().toISOString(),
+    nowMs,
+    thresholdDays,
+    summaries: reportInputs.flatMap((r) => r.summaries),
+    safeCandidates: reportInputs.flatMap((r) => r.safeCandidates),
+    nonRemoved: reportInputs.flatMap((r) => r.nonRemoved),
+    footprints: mergeMaps(reportInputs.map((r) => r.footprints)),
+    indexMtimes: mergeMaps(reportInputs.map((r) => r.indexMtimes)),
+    ignoredScans: mergeMaps(reportInputs.map((r) => r.ignoredScans)),
+    fingerprints: mergeMaps(reportInputs.map((r) => r.fingerprints)),
+    notAnalyzed,
+  });
+
+  lastCompletedRunId = runId;
   deps.logger?.info('workspace_sweep_finish', { runId, projects: projects.length });
 
   return {
@@ -169,8 +234,17 @@ export async function runCrossProjectSweep(
       startedAt,
       finishedAt: now().toISOString(),
       projects,
+      report,
     },
   };
+}
+
+function mergeMaps<V>(maps: ReadonlyArray<ReadonlyMap<string, V>>): Map<string, V> {
+  const merged = new Map<string, V>();
+  for (const map of maps) {
+    for (const [key, value] of map) merged.set(key, value);
+  }
+  return merged;
 }
 
 async function sweepOneProject(
@@ -178,14 +252,16 @@ async function sweepOneProject(
   deps: CrossProjectSweepDeps,
   sweepRunId: string,
   timeoutMs: number,
-): Promise<ProjectSweepResult> {
+  nowMs: number,
+  thresholdDays: number,
+): Promise<ProjectSweepOutcome> {
   const startedAt = Date.now();
 
   let repoPath: string;
   try {
     repoPath = await deps.resolveRepoPath(projectId);
   } catch {
-    return { kind: 'skipped', projectId, reason: 'repo_path_unresolved' };
+    return { result: { kind: 'skipped', projectId, reason: 'repo_path_unresolved' } };
   }
 
   const sweepAttempt = deps.cleanupDeps.attemptRepository.createAttempt({
@@ -204,38 +280,88 @@ async function sweepOneProject(
   await execFile('git', ['-C', repoPath, 'fetch', 'origin', '--prune'], { timeout: FETCH_TIMEOUT_MS, env: gitExecEnv() }).catch(() => undefined);
   await execFile('git', ['-C', repoPath, 'worktree', 'prune'], { timeout: 10_000, env: gitExecEnv() }).catch(() => undefined);
 
+  // Cheap worktree count captured BEFORE the timeout-guarded classify so a
+  // classification timeout can show a real "not analyzed — N worktrees" banner.
+  const worktreeCount = await countWorktrees(repoPath);
+
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // `inspectCleanupCandidates` (the classification phase) does not observe the
+  // abort signal, and the removal loop swallows per-candidate aborts and returns
+  // normally — so `cleanupSafeWorkspaceCandidates` never rejects on abort. Racing
+  // a rejecting timeout is what actually bounds a hung classification and makes
+  // the timeout / "not analyzed" banner reachable; aborting the controller still
+  // curtails any in-flight removal git subprocess.
+  const timeoutGuard = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      reject(new Error(`Timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
 
   try {
-    const result = await cleanupSafeWorkspaceCandidates(deps.cleanupDeps, {
+    const cleanupPromise = cleanupSafeWorkspaceCandidates(deps.cleanupDeps, {
       projectId,
       repoPath,
       classificationFilter: canSweepRemove,
       signal: controller.signal,
       sweepRunId,
     });
+    // Swallow a late settlement of the losing promise if the timeout wins first.
+    cleanupPromise.catch(() => undefined);
+    const result = await Promise.race([cleanupPromise, timeoutGuard]);
+    // Removal is done — stop the project abort clock so best-effort measurement
+    // (each read has its own short timeout) can't trip a spurious timeout that
+    // would discard the successful removal summaries.
+    clearTimeout(timer);
+    // Record success BEFORE measuring so a measurement hiccup can never demote a
+    // completed removal to a failure.
     deps.cleanupDeps.attemptRepository.passAttempt(
       sweepAttempt.attemptId,
       `Cross-project sweep completed for ${projectId}; removed ${result.summaries.length} worktree(s)`,
     );
+
+    let reportInputs: ProjectReportInputs;
+    try {
+      reportInputs = await measureProject(repoPath, result, nowMs, thresholdDays);
+    } catch {
+      // Defensive: measurement is read-only + best-effort; never fail the sweep.
+      reportInputs = {
+        safeCandidates: result.safeCandidates,
+        nonRemoved: result.nonRemoved,
+        summaries: result.summaries,
+        footprints: new Map(),
+        indexMtimes: new Map(),
+        ignoredScans: new Map(),
+        fingerprints: new Map(),
+      };
+    }
+
     return {
-      kind: 'ok',
-      projectId,
-      summaries: result.summaries,
-      elapsedMs: Date.now() - startedAt,
+      result: {
+        kind: 'ok',
+        projectId,
+        summaries: result.summaries,
+        elapsedMs: Date.now() - startedAt,
+      },
+      reportInputs,
     };
   } catch (err) {
     const elapsedMs = Date.now() - startedAt;
-    if (controller.signal.aborted) {
+    if (timedOut) {
       deps.cleanupDeps.attemptRepository.updateAttempt(sweepAttempt.attemptId, {
         status: 'timed_out',
         disposition: 'blocked',
         finishedAt: new Date().toISOString(),
         evidenceSummary: `Cross-project sweep timed out for ${projectId} after ${timeoutMs}ms`,
       });
-      deps.logger?.warn('workspace_sweep_project_timeout', { sweepRunId, projectId, timeoutMs });
-      return { kind: 'failed', projectId, code: 'timeout', message: `Timed out after ${timeoutMs}ms`, elapsedMs };
+      deps.logger?.warn('workspace_sweep_project_timeout', { sweepRunId, projectId, timeoutMs, worktreeCount });
+      return {
+        result: { kind: 'failed', projectId, code: 'timeout', message: `Timed out after ${timeoutMs}ms`, elapsedMs },
+        notAnalyzed: { projectId, code: 'timeout', notAnalyzedCount: worktreeCount },
+      };
     }
     deps.cleanupDeps.attemptRepository.blockAttempt(
       sweepAttempt.attemptId,
@@ -247,14 +373,91 @@ async function sweepOneProject(
       message: err instanceof Error ? err.message : String(err),
     });
     return {
-      kind: 'failed',
-      projectId,
-      code: 'error',
-      message: err instanceof Error ? err.message : String(err),
-      elapsedMs,
+      result: {
+        kind: 'failed',
+        projectId,
+        code: 'error',
+        message: err instanceof Error ? err.message : String(err),
+        elapsedMs,
+      },
+      notAnalyzed: { projectId, code: 'error', notAnalyzedCount: worktreeCount },
     };
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/**
+ * Read the per-worktree disk footprint + git-index mtime for every worktree
+ * still on disk (non-Blocked candidates), and — for probably-safe candidates
+ * only — hydrate the fingerprint + gitignored-scan the bulk path (PR 3) needs.
+ * All reads are best-effort with their own short timeouts; this is read-only.
+ */
+async function measureProject(
+  repoPath: string,
+  result: Awaited<ReturnType<typeof cleanupSafeWorkspaceCandidates>>,
+  nowMs: number,
+  thresholdDays: number,
+): Promise<ProjectReportInputs> {
+  const footprints = new Map<string, number | null>();
+  const indexMtimes = new Map<string, number | null>();
+  const ignoredScans = new Map<string, { hasSensitiveIgnored: boolean; sample: string[] }>();
+  const fingerprints = new Map<string, string>();
+
+  const removedBranches = new Set(result.summaries.map((s) => s.branch));
+  // Worktrees still on disk: non-blocked non-removed candidates + safe
+  // candidates whose removal failed (never entered `summaries`).
+  const stillOnDisk: CleanupCandidateAssessment[] = [
+    ...result.nonRemoved.filter((c) => !!c.worktreePath && !isBlockedClassification(c.classification)),
+    ...result.safeCandidates.filter((c) => !!c.worktreePath && !removedBranches.has(c.branch)),
+  ];
+
+  for (const candidate of stillOnDisk) {
+    const path = candidate.worktreePath!;
+    if (footprints.has(path)) continue;
+    const footprint = await measureWorktreeFootprint(path);
+    footprints.set(path, footprint.footprintBytes);
+    indexMtimes.set(path, footprint.lastTouchedMs);
+  }
+
+  for (const candidate of result.nonRemoved) {
+    const path = candidate.worktreePath;
+    if (!path) continue;
+    if (!isProbablySafe(candidate, indexMtimes.get(path) ?? null, nowMs, thresholdDays)) continue;
+    // Read-only hydration bounded to the probably-safe bucket (PR 3 carries
+    // the fingerprint back for re-validation; the ignored-scan drives the
+    // gitignored-risk warning).
+    try {
+      const detail = await hydrateCleanupCandidateDetail(repoPath, candidate);
+      fingerprints.set(path, detail.fingerprint);
+    } catch {
+      // best-effort — a missing fingerprint just means PR 3 re-hydrates.
+    }
+    ignoredScans.set(path, await scanIgnored(path));
+  }
+
+  return {
+    safeCandidates: result.safeCandidates,
+    nonRemoved: result.nonRemoved,
+    summaries: result.summaries,
+    footprints,
+    indexMtimes,
+    ignoredScans,
+    fingerprints,
+  };
+}
+
+/** Count linked worktrees (excludes the main checkout). Best-effort → 0 on failure. */
+async function countWorktrees(repoPath: string): Promise<number> {
+  try {
+    const { stdout } = await execFile('git', ['-C', repoPath, 'worktree', 'list', '--porcelain'], {
+      timeout: 10_000,
+      env: gitExecEnv(),
+    });
+    const count = stdout.split('\n').filter((line) => line.startsWith('worktree ')).length;
+    return Math.max(0, count - 1);
+  } catch {
+    return 0;
   }
 }
 

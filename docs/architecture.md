@@ -219,7 +219,7 @@ stateDiagram-v2
 > - Infrastructure health: `quotaStatus`, `resourceStatus`, `circuitBreakerStatus`, `diagnosticReport`
 > - Scheduled tasks: `schedules`, `scheduleFired`
 > - GitHub PR/issue awareness: `githubUpdate`
-> - Workspace / contribution workspace: `workspaceView`, `workspaceCleanupDetail`, `workspaceSweepProgress`, `workspaceSweepComplete`, `workspaceSweepBusy`
+> - Workspace / contribution workspace: `workspaceView`, `workspaceCleanupDetail`, `workspaceSweepProgress`, `workspaceSweepComplete`, `workspaceSweepBusy`, `workspaceSweepReport`
 > - OSS attempts: `ossAttempts`
 >
 > **ClientMessage families:**
@@ -231,7 +231,7 @@ stateDiagram-v2
 > - Projects: `setProjectConfig`, `selectProject`
 > - Achievements: `achievement:reset`, `achievement:setEnabled`
 > - Infrastructure: `rearmCircuitBreaker`, `telemetry`
-> - Workspace: `workspace:getView`, `workspace:getCleanupDetail`, `workspace:cleanupCandidate`, `workspace:bulkSafeCleanup`, `workspace:runCleanupDiagnostic`, `workspace:sweep`
+> - Workspace: `workspace:getView`, `workspace:getCleanupDetail`, `workspace:cleanupCandidate`, `workspace:bulkSafeCleanup`, `workspace:runCleanupDiagnostic`, `workspace:sweep`, `workspace:requestSweepReport`
 
 The `alert` message carries the supervisor's **explanation** of what's wrong with an agent. The `suggestion` message provides AI-generated response predictions and quick-action buttons when an agent needs input. The `playbooks` message returns discovered playbook templates for a given CWD. The `projectSummaries` message broadcasts per-project aggregated state (PRs, agents, contribution limits). The `contributionWarning` message alerts when a project approaches or exceeds its contribution rate limit. The `quotaStatus` and `circuitBreakerStatus` messages expose infrastructure health; the `workspaceView` family drives the contribution workspace UI.
 

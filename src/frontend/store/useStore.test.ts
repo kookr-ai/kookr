@@ -2277,6 +2277,79 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().sweepProgress).toBeNull();
   });
 
+  test('handleSweepComplete stores the disk-aware report and opens the panel', () => {
+    const report = {
+      runId: 'run-1',
+      generatedAt: '2026-06-21T05:00:02.000Z',
+      thresholdDays: 14,
+      rows: [],
+      buckets: {
+        removed: { count: 2, footprintBytesUpperBound: 0, unknownFootprintCount: 2 },
+        removal_failed: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+        probably_safe: { count: 1, footprintBytesUpperBound: 4096, unknownFootprintCount: 0 },
+        needs_call: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+        blocked: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+      },
+      notAnalyzed: [],
+    };
+    store.getState().handleSweepComplete({
+      runId: 'run-1',
+      startedAt: '2026-06-21T05:00:00.000Z',
+      finishedAt: '2026-06-21T05:00:02.000Z',
+      projects: [],
+      report,
+    });
+
+    expect(store.getState().sweepReport).toEqual(report);
+    expect(store.getState().sweepReportOpen).toBe(true);
+    expect(store.getState().lastSweepRunId).toBe('run-1');
+
+    store.getState().closeSweepReport();
+    expect(store.getState().sweepReportOpen).toBe(false);
+    // report is retained so the panel is re-openable for the run's lifetime
+    expect(store.getState().sweepReport).toEqual(report);
+    store.getState().openSweepReport();
+    expect(store.getState().sweepReportOpen).toBe(true);
+  });
+
+  test('handleSweepComplete without a report leaves report state untouched (old-server skew)', () => {
+    store.getState().handleSweepComplete({
+      runId: 'run-x',
+      startedAt: '2026-06-21T05:00:00.000Z',
+      finishedAt: '2026-06-21T05:00:02.000Z',
+      projects: [{ kind: 'ok', projectId: 'p', summaries: [], elapsedMs: 1 }],
+    });
+    expect(store.getState().sweepReport).toBeNull();
+    expect(store.getState().sweepReportOpen).toBe(false);
+  });
+
+  test('handleSweepReport applies a reconstructed report and opens the panel', () => {
+    const report = {
+      runId: 'run-9',
+      generatedAt: '2026-06-21T05:00:02.000Z',
+      thresholdDays: 14,
+      rows: [],
+      buckets: {
+        removed: { count: 1, footprintBytesUpperBound: 0, unknownFootprintCount: 1 },
+        removal_failed: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+        probably_safe: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+        needs_call: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+        blocked: { count: 0, footprintBytesUpperBound: 0, unknownFootprintCount: 0 },
+      },
+      notAnalyzed: [],
+      reconstructedFromLedger: true,
+    };
+    store.getState().handleSweepReport({ runId: 'run-9', report });
+    expect(store.getState().sweepReport?.reconstructedFromLedger).toBe(true);
+    expect(store.getState().sweepReportOpen).toBe(true);
+
+    // An empty reconstruction (unknown runId) surfaces an alert, not a panel.
+    store.getState().closeSweepReport();
+    store.getState().handleSweepReport({ runId: 'nope' });
+    expect(store.getState().sweepReportOpen).toBe(false);
+    expect(store.getState().alerts.at(-1)?.summary).toContain('No sweep report');
+  });
+
   test('handleSnapshot hydrates in-flight sweep progress for reconnects', () => {
     store.getState().handleSnapshot(
       [],

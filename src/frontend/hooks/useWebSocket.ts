@@ -75,6 +75,12 @@ export function dispatchSnapshotMessageForClient(
   if (Array.isArray(msg.taskRelations)) {
     useKookrStore.setState({ taskRelations: msg.taskRelations });
   }
+  // Sticky: remember the last completed sweep's runId so a reconnecting client
+  // can reconstruct its Removed manifest from the ledger. Partial/high-frequency
+  // snapshots omit it — never clear on absence.
+  if (typeof msg.lastSweepRunId === 'string') {
+    useKookrStore.getState().setLastSweepRunId(msg.lastSweepRunId);
+  }
 }
 
 export function dispatchAlertMessageForClient(
@@ -274,6 +280,7 @@ export function useWebSocket() {
                 startedAt: msg.startedAt,
                 finishedAt: msg.finishedAt,
                 projects: msg.projects,
+                report: msg.report,
               });
               {
                 const refresh = workspaceRefreshMessageAfterSweep(msg, store.workspaceView?.projectId);
@@ -286,6 +293,9 @@ export function useWebSocket() {
               break;
             case 'workspaceSweepBusy':
               store.handleSweepBusy({ holderPid: msg.holderPid, heldSince: msg.heldSince });
+              break;
+            case 'workspaceSweepReport':
+              store.handleSweepReport({ runId: msg.runId, report: msg.report });
               break;
             case 'ossAttempts':
               store.handleOssAttempts(msg.store);

@@ -6,6 +6,7 @@ import type { RepoPolicyResolver } from '../../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../../core/worktree-lease-service.js';
 import { resolveWorkspaceContext } from '../use-cases/workspace-context.js';
 import { runCrossProjectSweep } from '../use-cases/cross-project-cleanup-sweep.js';
+import { reconstructRemovedFromLedger } from '../../core/sweep-report.js';
 
 /**
  * Routes the `workspace:sweep` client message.
@@ -103,6 +104,7 @@ export class SweepHandler {
         startedAt: outcome.result.startedAt,
         finishedAt: outcome.result.finishedAt,
         projects: outcome.result.projects,
+        report: outcome.result.report,
       });
     } catch (err) {
       // Defensive: sweep should not throw to the caller, but if it does we
@@ -121,6 +123,24 @@ export class SweepHandler {
         }],
       });
     }
+  }
+
+  /**
+   * Reconstruct a completed sweep's Removed / removal-failed manifest from the
+   * durable attempt ledger (reconnect-after-completion). No server-side report
+   * retention — the ledger rows already exist. Unicast to the requester.
+   */
+  handleReportRequest(runId: string): void {
+    const { attemptRepository } = this.deps;
+    if (!attemptRepository || !runId) {
+      this.deps.send({ type: 'workspaceSweepReport', runId });
+      return;
+    }
+    const attempts = attemptRepository.listBySweepRunId(runId);
+    const report = attempts.length > 0
+      ? reconstructRemovedFromLedger(attempts, runId, new Date().toISOString())
+      : undefined;
+    this.deps.send({ type: 'workspaceSweepReport', runId, report });
   }
 
   private missingWorkspaceDeps(): string[] {

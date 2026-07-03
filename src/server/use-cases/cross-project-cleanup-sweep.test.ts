@@ -123,6 +123,8 @@ describe('runCrossProjectSweep', () => {
         pathRemoved: true,
         branchRemoved: true,
       }],
+      safeCandidates: [],
+      nonRemoved: [],
     }));
   });
 
@@ -140,6 +142,56 @@ describe('runCrossProjectSweep', () => {
       expect(project.kind).toBe('ok');
     }
     expect(outcome.result.runId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('assembles a disk-aware report, bucketing non-removed candidates', async () => {
+    cleanupMock.impl.mockImplementation(async (_deps: unknown, input: WorkspaceBulkCleanupInput) => ({
+      summaries: [],
+      safeCandidates: [],
+      nonRemoved: [
+        {
+          projectId: input.projectId,
+          worktreePath: `/nonexistent/${input.projectId}/dirty`,
+          branch: 'dirty-br',
+          classification: 'dirty' as const,
+          reasonCode: 'uncommitted_changes',
+          source: 'cleanup_inspector',
+          observedAt: new Date().toISOString(),
+          recoveryGuidance: 'x',
+          capabilities: {
+            canSafeRemove: false, canRemovePathKeepBranch: false, canReviewedDiscard: true,
+            requiresDirtyRecovery: true, defaultActionLabel: 'x', riskSummary: 'x',
+          },
+        },
+        {
+          projectId: input.projectId,
+          worktreePath: `/nonexistent/${input.projectId}/busy`,
+          branch: 'busy-br',
+          classification: 'busy' as const,
+          reasonCode: 'active_lease',
+          source: 'cleanup_inspector',
+          observedAt: new Date().toISOString(),
+          recoveryGuidance: 'x',
+          capabilities: {
+            canSafeRemove: false, canRemovePathKeepBranch: false, canReviewedDiscard: false,
+            requiresDirtyRecovery: false, defaultActionLabel: 'x', riskSummary: 'x',
+          },
+        },
+      ],
+    }));
+
+    const outcome = await runCrossProjectSweep(deps);
+    expect(outcome.kind).toBe('completed');
+    if (outcome.kind !== 'completed') return;
+
+    const report = outcome.result.report;
+    expect(report.runId).toBe(outcome.result.runId);
+    // two projects × (1 dirty + 1 busy)
+    expect(report.buckets.needs_call.count).toBe(2);
+    expect(report.buckets.blocked.count).toBe(2);
+    // dirty worktree paths don't exist → footprint measured as unknown, row still present
+    const dirtyRow = report.rows.find((r) => r.bucket === 'needs_call');
+    expect(dirtyRow?.footprintBytes).toBeNull();
   });
 
   it('emits live progress at each project boundary', async () => {
@@ -214,7 +266,7 @@ describe('runCrossProjectSweep', () => {
 
   it('records an audit attempt even when a sweep removes zero worktrees', async () => {
     deps.projectConfigStore = makeConfigStore([{ project: 'github.com/a/a' }]);
-    cleanupMock.impl.mockResolvedValueOnce({ summaries: [] });
+    cleanupMock.impl.mockResolvedValueOnce({ summaries: [], safeCandidates: [], nonRemoved: [] });
 
     await runCrossProjectSweep(deps);
 
@@ -252,7 +304,7 @@ describe('runCrossProjectSweep', () => {
       if (input.projectId === 'github.com/a/a') {
         throw new Error('delegate exploded');
       }
-      return { summaries: [] };
+      return { summaries: [], safeCandidates: [], nonRemoved: [] };
     });
 
     const outcome = await runCrossProjectSweep(deps);
@@ -270,16 +322,13 @@ describe('runCrossProjectSweep', () => {
     if (b.kind === 'ok') expect(b.summaries).toEqual([]);
   });
 
-  it('records timeout when a project exceeds perProjectTimeoutMs', async () => {
-    cleanupMock.impl.mockImplementation((_deps: unknown, input: WorkspaceBulkCleanupInput) => {
-      return new Promise((_resolve, reject) => {
-        // Never resolves unless aborted.
-        const signal = input.signal;
-        if (signal) {
-          signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
-        }
-      });
-    });
+  it('records timeout (and a not-analyzed banner) when a project exceeds perProjectTimeoutMs', async () => {
+    // Mirror the REAL delegate: classification does not observe the abort
+    // signal, so the promise simply never settles on a hang. The rejecting
+    // timeout race — not a delegate rejection — is what must trigger timeout.
+    cleanupMock.impl.mockImplementation(() => new Promise(() => {
+      // never resolves, never rejects
+    }));
 
     deps.perProjectTimeoutMs = 50;
     const outcome = await runCrossProjectSweep(deps);
@@ -291,6 +340,11 @@ describe('runCrossProjectSweep', () => {
       if (project.kind === 'failed') {
         expect(project.code).toBe('timeout');
       }
+    }
+    // The disk-aware report surfaces a loud "not analyzed" banner per project.
+    expect(outcome.result.report.notAnalyzed).toHaveLength(outcome.result.projects.length);
+    for (const banner of outcome.result.report.notAnalyzed) {
+      expect(banner.code).toBe('timeout');
     }
   });
 
@@ -369,7 +423,7 @@ describe('runCrossProjectSweep', () => {
     cleanupMock.impl.mockImplementation(async () => {
       const raw = readFileSync(join(lockDir, 'sweep.lock'), 'utf-8');
       observedLock = JSON.parse(raw);
-      return { summaries: [] };
+      return { summaries: [], safeCandidates: [], nonRemoved: [] };
     });
     await runCrossProjectSweep(deps);
     expect(observedLock?.pid).toBe(process.pid);

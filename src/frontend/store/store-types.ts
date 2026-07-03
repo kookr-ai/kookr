@@ -27,6 +27,7 @@ import type {
   LaunchDependency,
   SkillDiscoveryStateSnapshot,
   ServerMessage,
+  SweepReport,
   WorkspaceSweepProgressMessage,
   WorkspaceSweepProgressSnapshot,
   TaskRelation,
@@ -351,6 +352,16 @@ export interface WorkspaceSlice {
   sweepRunning: boolean;
   /** Live progress cursor for the current cross-project sweep. */
   sweepProgress: SweepProgressState | null;
+  /** Disk-aware diagnosis report from the last completed sweep (PR 2). */
+  sweepReport: SweepReport | null;
+  /** Whether the Sweep Report panel is open (re-openable for the run's lifetime). */
+  sweepReportOpen: boolean;
+  /**
+   * runId of the last completed sweep on the server, from the reconnect
+   * snapshot. Lets a freshly-loaded client offer to reconstruct the report
+   * from the ledger even when the live `sweepReport` was lost.
+   */
+  lastSweepRunId: string | null;
 
   handleWorkspaceView: (
     view: WorkspaceView,
@@ -377,8 +388,16 @@ export interface WorkspaceSlice {
       | { kind: 'skipped'; projectId: string; reason: 'workspace_unavailable'; missingDeps: string[] }
       | { kind: 'failed'; projectId: string; code: 'timeout' | 'error'; message: string; elapsedMs: number }
     >;
+    report?: SweepReport;
   }) => void;
   handleSweepBusy: (payload: { holderPid: number; heldSince: string }) => void;
+  /** Reconstructed-report response (reconnect-after-completion). */
+  handleSweepReport: (payload: { runId: string; report?: SweepReport }) => void;
+  /** Reconnect snapshot pointer to the last completed sweep. */
+  setLastSweepRunId: (runId: string | null) => void;
+  /** Open / close the re-openable Sweep Report panel. */
+  openSweepReport: () => void;
+  closeSweepReport: () => void;
 }
 
 export interface OssAttemptsSlice {

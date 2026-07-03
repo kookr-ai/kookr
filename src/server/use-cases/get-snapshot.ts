@@ -93,6 +93,7 @@ export interface SnapshotMessageDeps extends SnapshotQueryDeps {
   bypassAllPermissions?: boolean;
   sweepRunning?: boolean;
   sweepProgress?: WorkspaceSweepProgressSnapshot;
+  lastSweepRunId?: string;
   drainStatus?: DrainStatusSnapshot;
   /** Live getter for the configured concurrency cap (settings.maxActiveTasks). */
   getMaxActiveTasks?: () => number;
@@ -394,6 +395,7 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
     ...(deps.bypassAllPermissions && !projectsScope ? { bypassAllPermissions: true } : {}),
     ...(deps.sweepRunning && !projectsScope ? { sweepRunning: true } : {}),
     ...(deps.sweepProgress && !projectsScope ? { sweepProgress: deps.sweepProgress } : {}),
+    ...(deps.lastSweepRunId && !projectsScope ? { lastSweepRunId: deps.lastSweepRunId } : {}),
     ...(deps.drainStatus && !projectsScope ? { drainStatus: deps.drainStatus } : {}),
     ...(deps.getMaxActiveTasks && !projectsScope ? { maxActiveTasks: deps.getMaxActiveTasks() } : {}),
     // Coordinator is whole-world detector state — omitted for a `projects` viewer.

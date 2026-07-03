@@ -6,6 +6,7 @@ import type {
   WorktreeLease,
 } from '../../shared/protocol.js';
 import { formatCleanupSubtext } from './cleanup-row-format.js';
+import { ClassificationBadge } from './cleanup-classification-badge.js';
 
 interface CleanupRequestOptions {
   deleteBranch: boolean;
@@ -32,19 +33,6 @@ interface Props {
   loading: boolean;
 }
 
-const CLASSIFICATION_LABELS: Record<string, { label: string; color: string }> = {
-  merged: { label: 'Merged', color: 'var(--color-success, #4caf50)' },
-  patch_equivalent: { label: 'Patch eq.', color: 'var(--color-info, #2196f3)' },
-  unique_commits: { label: 'Unique', color: 'var(--color-warning, #ff9800)' },
-  generated_only: { label: 'Generated', color: 'var(--color-info, #2196f3)' },
-  dirty: { label: 'Dirty', color: 'var(--color-error, #f44336)' },
-  checked_out_elsewhere: { label: 'Elsewhere', color: 'var(--color-warning, #ff9800)' },
-  stale_worktree: { label: 'Stale', color: 'var(--color-muted, #9e9e9e)' },
-  busy: { label: 'Busy', color: 'var(--color-info, #2196f3)' },
-  protected: { label: 'Protected', color: 'var(--color-warning, #ff9800)' },
-  unknown: { label: 'Unknown', color: 'var(--color-muted, #9e9e9e)' },
-};
-
 const FILTER_OPTIONS = [
   { value: 'all', label: 'All' },
   { value: 'merged', label: 'Merged' },
@@ -57,18 +45,6 @@ const FILTER_OPTIONS = [
   { value: 'protected', label: 'Protected' },
   { value: 'unknown', label: 'Unknown' },
 ];
-
-function ClassificationBadge({ classification }: { classification: string }) {
-  const info = CLASSIFICATION_LABELS[classification] ?? { label: classification, color: '#9e9e9e' };
-  return (
-    <span
-      className="cleanup-classification-badge"
-      style={{ borderColor: info.color, color: info.color }}
-    >
-      {info.label}
-    </span>
-  );
-}
 
 /** Render a lease row for the "Held by" block. Marks stale heartbeats
  *  (older than 120 s — matching the lease service's own default).  */

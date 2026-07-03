@@ -45,6 +45,9 @@ export function createWorkspaceSlice(set: StoreSet, get: StoreGet): WorkspaceSli
     workspaceCleanupDetailError: null,
     sweepRunning: false,
     sweepProgress: null,
+    sweepReport: null,
+    sweepReportOpen: false,
+    lastSweepRunId: null,
 
     handleWorkspaceView: (view, error, cleanupResult, cleanupResults, diagnosticLaunch) => {
       set({
@@ -147,7 +150,16 @@ export function createWorkspaceSlice(set: StoreSet, get: StoreGet): WorkspaceSli
     },
 
     handleSweepComplete: (result) => {
-      set({ sweepRunning: false, sweepProgress: null });
+      // Persist the disk-aware report and auto-open the panel; the toast below
+      // stays as the entry point / summary. `report` is optional for old-server
+      // compatibility — the toast alone still renders.
+      set({
+        sweepRunning: false,
+        sweepProgress: null,
+        ...(result.report
+          ? { sweepReport: result.report, sweepReportOpen: true, lastSweepRunId: result.runId }
+          : {}),
+      });
 
       const ok = result.projects.filter((p) => p.kind === 'ok');
       const skipped = result.projects.filter((p) => p.kind === 'skipped');
@@ -184,6 +196,26 @@ export function createWorkspaceSlice(set: StoreSet, get: StoreGet): WorkspaceSli
         `Sweep already running (PID ${payload.holderPid}, since ${payload.heldSince}).`,
         'info',
       );
+    },
+
+    handleSweepReport: (payload) => {
+      if (!payload.report) {
+        get().handleAlert('workspace', 'No sweep report available to reconstruct.', 'info');
+        return;
+      }
+      set({ sweepReport: payload.report, sweepReportOpen: true, lastSweepRunId: payload.runId });
+    },
+
+    setLastSweepRunId: (runId) => {
+      set({ lastSweepRunId: runId });
+    },
+
+    openSweepReport: () => {
+      set({ sweepReportOpen: true });
+    },
+
+    closeSweepReport: () => {
+      set({ sweepReportOpen: false });
     },
   };
 }
