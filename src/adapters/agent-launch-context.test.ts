@@ -49,12 +49,16 @@ describe('agent-launch-context', () => {
     const repoDir = makeTempDir();
     mkdirSync(join(repoDir, '.git'));
 
-    // Hermetic env: production forwards CLAUDE_CODE_DISABLE_AUTO_MEMORY from
-    // process.env when set (see the dedicated forward/omit tests below). This
+    // Hermetic env: production forwards a small set of ambient vars from
+    // process.env when set (CLAUDE_CODE_DISABLE_AUTO_MEMORY and
+    // KOOKR_NUDGE_DISABLED — see the dedicated forward/omit tests below). This
     // exact-env assertion covers the default (unset) case, so clear any value
-    // inherited from the ambient shell — e.g. when the suite runs inside a
-    // Claude Code session, which sets it.
+    // inherited from the ambient shell. Both are set on a machine running a
+    // live Kookr instance (KOOKR_NUDGE_DISABLED) or inside a Claude Code
+    // session (CLAUDE_CODE_DISABLE_AUTO_MEMORY); leaving either would break the
+    // exact `toEqual` in a local dev worktree (#1179).
     vi.stubEnv('CLAUDE_CODE_DISABLE_AUTO_MEMORY', undefined);
+    vi.stubEnv('KOOKR_NUDGE_DISABLED', undefined);
 
     const context = await buildAgentLaunchContext({
       taskStore,
@@ -196,6 +200,34 @@ describe('agent-launch-context', () => {
     });
 
     expect(context.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBeUndefined();
+  });
+
+  test('propagates KOOKR_NUDGE_DISABLED when set so the baked Stop hook can read the kill switch', async () => {
+    vi.stubEnv('KOOKR_NUDGE_DISABLED', '1');
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Task', '/repo');
+    const context = await buildAgentLaunchContext({
+      taskStore,
+      taskId: task.id,
+      cwd: makeTempDir(),
+      basePath: '/usr/bin',
+    });
+
+    expect(context.env.KOOKR_NUDGE_DISABLED).toBe('1');
+  });
+
+  test('omits KOOKR_NUDGE_DISABLED when unset so a live-Kookr ambient value does not leak into agents', async () => {
+    vi.stubEnv('KOOKR_NUDGE_DISABLED', undefined);
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Task', '/repo');
+    const context = await buildAgentLaunchContext({
+      taskStore,
+      taskId: task.id,
+      cwd: makeTempDir(),
+      basePath: '/usr/bin',
+    });
+
+    expect(context.env.KOOKR_NUDGE_DISABLED).toBeUndefined();
   });
 
   function makeTempDir(): string {
