@@ -292,6 +292,47 @@ Exit behavior:
 - `2` for usage errors such as an unknown argument or invalid `--fail-on` value.
 - `5` when `--fail-on` is set and active findings meet or exceed the requested severity.
 
+## `kookr logs`
+
+Tail a task's recent hook-event activity from the shell — the read-side
+counterpart to the hook *write* path (`bin/kookr-hook-writer.js`) and the
+*replay* path (`scripts/replay-hooks.ts`). It answers "what is this task doing?"
+without opening the dashboard or booting a server:
+
+```bash
+kookr logs <taskId>
+kookr logs <taskId> -n 50
+kookr logs <taskId> --json
+kookr logs <taskId> --dir ~/.kookr-4801
+```
+
+`kookr logs` operates directly on the on-disk data directory (like
+`kookr maintenance`). It resolves the data directory the same way, looks the
+task up in `tasks.json`, reads each of its sessions' persisted hook JSONL under
+`<dataDir>/hooks/<session>.jsonl`, parses records with the same framing parser
+the production ingestion route uses, and prints the most recent records
+(newest last). Known secret formats in event payloads are redacted on the read
+path, since output may be pasted into bug reports.
+
+`<taskId>` is a Kookr task id (from the dashboard, or the `task_id=` line printed
+by `kookr spawn`). A session / hook-log id (e.g. `kookr-020f33cb`) is also
+accepted as a direct fallback when it does not match a known task.
+
+Options:
+
+| Option | Argument | Default | Description |
+| --- | --- | --- | --- |
+| `-n`, `--lines` | positive integer | `20` | Show the last N records across the task's sessions. |
+| `--json` | none | false | Print one machine-readable JSON envelope (`taskId`, `dataDir`, `hookLogs`, `totalRecords`, `records[]`) instead of the human summary. |
+| `--dir` | path | resolved from `KOOKR_PORT` | Read from an explicit data directory (e.g. a dev instance's `~/.kookr-4801`). |
+| `-h`, `--help` | none | false | Print command help and exit. |
+
+Exit behavior:
+
+- `0` when records are printed, or the task exists but has no hook activity yet.
+- `1` when the argument matches neither a known task nor an existing hook log.
+- `2` for usage errors such as an unknown option or a non-positive `--lines`.
+
 ## `kookr command outcome`
 
 Inspect recorded local and remote outcomes for terminal commands:
