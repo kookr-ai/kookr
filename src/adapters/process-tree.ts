@@ -20,10 +20,25 @@
  * kill list. On platforms without `/proc` (macOS) the snapshot degrades to just
  * the root pid — no worse than the previous master-only behavior.
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 
 /** Default grace period between the SIGTERM sweep and the SIGKILL sweep. */
 const DEFAULT_GRACE_MS = 10_000;
+
+/**
+ * Split the whitespace-separated fields of a `/proc/<pid>/stat` line that
+ * follow the `comm` field. `comm` is wrapped in parens and can itself contain
+ * spaces and parens, so we split only the remainder after the FINAL ')'. The
+ * returned array is 0-indexed from `state` (stat field 3), i.e.
+ * `fields[0]` = state, `fields[1]` = ppid, `fields[19]` = starttime. Returns
+ * `null` when the line has no ')' (unparseable).
+ */
+function parseProcStatFields(stat: string): string[] | null {
+  const rparen = stat.lastIndexOf(')');
+  if (rparen < 0) return null;
+  return stat.slice(rparen + 2).split(' ');
+}
 
 /**
  * Read `/proc` once and return a pid → ppid map. Returns an empty map on any
@@ -42,13 +57,9 @@ function readProcParentMap(): Map<number, number> {
     if (!/^\d+$/.test(name)) continue;
     const pid = Number(name);
     try {
-      // /proc/<pid>/stat: "<pid> (<comm>) <state> <ppid> …". `comm` can contain
-      // spaces and parens, so parse the fields AFTER the final ')'.
       const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
-      const rparen = stat.lastIndexOf(')');
-      if (rparen < 0) continue;
-      const fields = stat.slice(rparen + 2).split(' ');
-      // fields[0] = state, fields[1] = ppid
+      const fields = parseProcStatFields(stat);
+      if (!fields) continue;
       const ppid = Number(fields[1]);
       if (Number.isInteger(ppid)) map.set(pid, ppid);
     } catch {
@@ -56,6 +67,83 @@ function readProcParentMap(): Map<number, number> {
     }
   }
   return map;
+}
+
+/**
+ * `USER_HZ` — the unit of the `starttime` field in `/proc/<pid>/stat`. This is
+ * fixed at 100 on every mainstream Linux architecture (x86, x86_64, arm,
+ * arm64) and, crucially, is DECOUPLED from the kernel's `CONFIG_HZ` timer rate:
+ * the kernel always exports clock-tick counts to userspace in `USER_HZ` units
+ * regardless of its internal tick rate. Hardcoding 100 is therefore correct
+ * without a `sysconf(_SC_CLK_TCK)` call (which Node does not expose).
+ */
+const USER_HZ = 100;
+
+/** Read the system boot time (ms since epoch) from `/proc/stat` `btime`. */
+function readLinuxBootTimeMs(): number | null {
+  try {
+    const stat = readFileSync('/proc/stat', 'utf-8');
+    const match = stat.match(/^btime\s+(\d+)/m);
+    if (!match) return null;
+    const seconds = Number(match[1]);
+    return Number.isFinite(seconds) ? seconds * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+/** macOS start-time via `ps -o lstart=`, which prints a parseable wall clock. */
+function readDarwinStartTimeMs(pid: number): number | null {
+  try {
+    const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+      encoding: 'utf-8',
+      timeout: 5_000,
+    }).trim();
+    if (!out) return null;
+    const ms = Date.parse(out);
+    return Number.isNaN(ms) ? null : ms;
+  } catch {
+    return null; // no such pid, or ps unavailable.
+  }
+}
+
+/**
+ * Best-effort OS process start time as wall-clock ms since epoch, or `null`
+ * when it cannot be determined (unsupported platform, process gone,
+ * unparseable stat, unknown boot time, or an implausible result).
+ *
+ * Linux: `boot time + starttime_ticks / USER_HZ` from `/proc`. macOS:
+ * `ps -o lstart=`. The value is deliberately coarse (`btime` is whole-second
+ * granularity), so callers must treat sub-second differences as noise.
+ *
+ * Used to distinguish an original PID holder from an unrelated live process
+ * that merely reused a recycled PID: the reused process necessarily started
+ * AFTER the recorded event, whereas the original started before it.
+ */
+export function readProcessStartTimeMs(pid: number): number | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (process.platform === 'darwin') return readDarwinStartTimeMs(pid);
+  if (process.platform !== 'linux') return null;
+
+  let stat: string;
+  try {
+    stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
+  } catch {
+    return null; // process gone or /proc unavailable.
+  }
+  const fields = parseProcStatFields(stat);
+  if (!fields) return null;
+  const starttimeTicks = Number(fields[19]); // stat field 22.
+  if (!Number.isFinite(starttimeTicks) || starttimeTicks < 0) return null;
+  const bootMs = readLinuxBootTimeMs();
+  if (bootMs === null) return null;
+
+  const startMs = Math.floor(bootMs + (starttimeTicks / USER_HZ) * 1000);
+  // Defensive: a process cannot have started in the future. If the arithmetic
+  // says otherwise (bad btime / unexpected USER_HZ), report "unknown" so
+  // callers degrade to their fallback instead of a false PID-recycle verdict.
+  if (startMs > Date.now() + 60_000) return null;
+  return startMs;
 }
 
 /**

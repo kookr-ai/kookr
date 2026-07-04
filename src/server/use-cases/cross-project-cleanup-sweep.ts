@@ -32,6 +32,7 @@ import {
 } from '../../core/sweep-report.js';
 import { measureWorktreeFootprint } from '../../adapters/worktree-footprint.js';
 import { scanIgnored } from '../../adapters/ignored-scan.js';
+import { readProcessStartTimeMs } from '../../adapters/process-tree.js';
 import {
   cleanupSafeWorkspaceCandidates,
   type WorkspaceCleanupDeps,
@@ -78,6 +79,8 @@ export interface CrossProjectSweepDeps {
   perProjectTimeoutMs?: number;
   /** Staleness threshold (days) for the probably-safe bucket. Default 14. */
   staleThresholdDays?: number;
+  /** Injectable OS process probe (liveness + start-time). Real probe by default. */
+  processProbe?: ProcessProbe;
 }
 
 export type ProjectSweepResult =
@@ -160,7 +163,12 @@ export async function runCrossProjectSweep(
   const lockDir = deps.lockDir ?? join(homedir(), '.kookr');
   const timeoutMs = deps.perProjectTimeoutMs ?? PER_PROJECT_TIMEOUT_MS;
 
-  const lockAttempt = acquireSweepLock({ lockDir, now, ttlMs: LOCK_TTL_MS });
+  const lockAttempt = acquireSweepLock({
+    lockDir,
+    now,
+    ttlMs: LOCK_TTL_MS,
+    probe: deps.processProbe ?? defaultProcessProbe,
+  });
   if (lockAttempt.kind === 'busy') {
     return { kind: 'busy', holderPid: lockAttempt.holderPid, heldSince: lockAttempt.heldSince };
   }
@@ -503,10 +511,66 @@ interface LockBusy {
   heldSince: string;
 }
 
+/**
+ * OS-level probe for a PID. Abstracted so the PID-recycle guard is testable
+ * without spawning real processes.
+ */
+export interface ProcessProbe {
+  /** True if `pid` maps to a live process (any owner). */
+  isAlive(pid: number): boolean;
+  /** Wall-clock start time (ms since epoch) of `pid`, or null if unknown. */
+  startTimeMs(pid: number): number | null;
+}
+
+const defaultProcessProbe: ProcessProbe = {
+  isAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      // ESRCH → no such process. EPERM (and anything else) → alive but not ours.
+      return (err as NodeJS.ErrnoException).code !== 'ESRCH';
+    }
+  },
+  startTimeMs(pid: number): number | null {
+    return readProcessStartTimeMs(pid);
+  },
+};
+
+/**
+ * Slack (ms) absorbed when comparing a process start time against the lock's
+ * recorded `startedAt`. The OS start time is coarse (`/proc` `btime` is
+ * whole-second granularity), so a live PID is only treated as recycled when it
+ * started measurably AFTER the lock. Anything within this window resolves to
+ * "held" — the fail-safe side that never risks a double sweep.
+ */
+const START_TIME_SLACK_MS = 2_000;
+
+type LivePidVerdict = 'held' | 'recycled' | 'unknown';
+
+/**
+ * Decide whether a live PID is the original lock holder or an unrelated
+ * process that reused a recycled PID. The original holder started BEFORE it
+ * wrote the lock; a recycled PID belongs to a process that started AFTER. When
+ * the start time or the recorded timestamp is unreadable, return `unknown` so
+ * the caller can fall back to its time-to-live heuristic.
+ */
+function classifyLivePid(
+  holder: { pid: number; startedAt: string },
+  probe: ProcessProbe,
+): LivePidVerdict {
+  const startMs = probe.startTimeMs(holder.pid);
+  if (startMs === null) return 'unknown';
+  const lockMs = Date.parse(holder.startedAt);
+  if (Number.isNaN(lockMs)) return 'unknown';
+  return startMs - lockMs > START_TIME_SLACK_MS ? 'recycled' : 'held';
+}
+
 function acquireSweepLock(opts: {
   lockDir: string;
   now: () => Date;
   ttlMs: number;
+  probe: ProcessProbe;
 }): LockAcquired | LockBusy {
   mkdirSync(opts.lockDir, { recursive: true });
   const lockPath = join(opts.lockDir, 'sweep.lock');
@@ -533,7 +597,7 @@ function acquireSweepLock(opts: {
         // Second attempt also failed — fall through to report busy.
         break;
       }
-      if (tryReclaimStaleLock(lockPath, opts.ttlMs)) continue;
+      if (tryReclaimStaleLock(lockPath, opts.ttlMs, opts.probe)) continue;
       break;
     }
   }
@@ -542,29 +606,28 @@ function acquireSweepLock(opts: {
   return { kind: 'busy', holderPid: holder.pid, heldSince: holder.startedAt };
 }
 
-function tryReclaimStaleLock(lockPath: string, ttlMs: number): boolean {
+function tryReclaimStaleLock(lockPath: string, ttlMs: number, probe: ProcessProbe): boolean {
   const holder = readLockHolder(lockPath);
   if (holder.pid > 0) {
-    try {
-      process.kill(holder.pid, 0);
-      // Process is alive — lock is held, do not reclaim. mtime-based
-      // staleness must NOT override a live PID; a legitimately slow sweep
-      // (up to N × per-project timeout) can exceed the TTL while still
-      // running. PID is authoritative.
-      return false;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ESRCH') {
-        // Process is dead — reclaim.
-        try {
-          unlinkSync(lockPath);
-        } catch {
-          // Someone else already did.
-        }
-        return true;
-      }
-      // EPERM — process is alive but not ours. Treat as held.
-      return false;
+    if (!probe.isAlive(holder.pid)) {
+      // Process is dead — reclaim.
+      reclaimLockFile(lockPath);
+      return true;
     }
+    // A live PID is authoritative: a legitimately slow sweep can exceed the
+    // TTL while still running, so mtime staleness must NEVER override a live
+    // holder (that would allow a concurrent double-sweep). The one exception
+    // is a recycled PID — after a crash the OS can reassign the dead holder's
+    // PID to an unrelated live process, wedging the lock forever. The start
+    // time disambiguates: a PID that started AFTER the lock was written is a
+    // recycled one and is reclaimed. When the start time is unreadable we
+    // cannot prove recycling, so we stay on the fail-safe side and hold —
+    // never risking a double-sweep on an unreadable-but-live PID.
+    if (classifyLivePid(holder, probe) === 'recycled') {
+      reclaimLockFile(lockPath);
+      return true;
+    }
+    return false;
   }
   // Malformed lock file (no readable pid) — fall back to mtime TTL.
   try {
@@ -579,6 +642,14 @@ function tryReclaimStaleLock(lockPath: string, ttlMs: number): boolean {
   return false;
 }
 
+function reclaimLockFile(lockPath: string): void {
+  try {
+    unlinkSync(lockPath);
+  } catch {
+    // Someone else already did.
+  }
+}
+
 /**
  * Process-wide sweep-running check based on the lock file.
  *
@@ -586,19 +657,17 @@ function tryReclaimStaleLock(lockPath: string, ttlMs: number): boolean {
  * and co-resident Kookr instances. Using it here keeps the per-connection
  * MessageRouter out of the snapshot-fan-out path.
  */
-export function isSweepInProgress(lockDir?: string): boolean {
+export function isSweepInProgress(lockDir?: string, probe: ProcessProbe = defaultProcessProbe): boolean {
   const dir = lockDir ?? join(homedir(), '.kookr');
   const lockPath = join(dir, 'sweep.lock');
   const holder = readLockHolder(lockPath);
   if (holder.pid <= 0) return false;
-  try {
-    process.kill(holder.pid, 0);
-    return true;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return false;
-    // EPERM — live but not ours. Treat as running.
-    return true;
-  }
+  if (!probe.isAlive(holder.pid)) return false;
+  // A live PID that demonstrably started after the lock was written is a
+  // recycled PID, not the original sweep — report not-running. When the start
+  // time is unknown, stay conservative and report running (matches the prior
+  // EPERM behavior and keeps the UI from offering an overlapping sweep).
+  return classifyLivePid(holder, probe) !== 'recycled';
 }
 
 function readLockHolder(lockPath: string): { pid: number; startedAt: string } {
