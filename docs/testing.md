@@ -86,6 +86,17 @@ xdg-open coverage/index.html   # or `open coverage/index.html` on macOS
 
 The HTML report is not uploaded by CI by default (it is large and noisy on routine runs).
 
+### Capturing a Playwright trace on a local E2E failure
+
+CI captures a trace via `trace: 'on-first-retry'`, but locally `retries` is `0` (`playwright.config.ts`), so that path never fires and a failing spec produces no trace. Opt in with the `KOOKR_E2E_TRACE` env var to retain a trace (and screenshots) on any local failure:
+
+```bash
+KOOKR_E2E_TRACE=1 pnpm exec playwright test        # retain trace.zip + screenshots on failure
+pnpm exec playwright show-trace test-results/<failed-test>/trace.zip
+```
+
+When `KOOKR_E2E_TRACE` is set, the config switches to `trace: 'retain-on-failure'` and `screenshot: 'only-on-failure'`, writing artifacts under `test-results/`. The env var is unset by default, so default local runs (no trace) and CI behavior/cost (`on-first-retry`, one retry) are unchanged.
+
 ## Troubleshooting
 
 ### Coverage artifact missing on a PR

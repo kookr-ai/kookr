@@ -16,7 +16,15 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   use: {
     // baseURL is set per-worker by e2e/fixtures.ts (ephemeral port)
-    trace: 'on-first-retry',
+    //
+    // Locally `retries` is 0, so `on-first-retry` never fires and a contributor
+    // reproducing a failure gets no trace. Opt in with `KOOKR_E2E_TRACE=1` to
+    // retain a `trace.zip` (and screenshots) under `test-results/` on any
+    // failure — inspect with `pnpm exec playwright show-trace <trace.zip>`.
+    // The env is unset by default, so default local behavior (no trace) and
+    // default CI behavior/cost (`on-first-retry`, one retry) are unchanged.
+    trace: process.env.KOOKR_E2E_TRACE ? 'retain-on-failure' : 'on-first-retry',
+    screenshot: process.env.KOOKR_E2E_TRACE ? 'only-on-failure' : 'off',
   },
   projects: [
     {
