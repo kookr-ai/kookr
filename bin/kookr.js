@@ -14,6 +14,7 @@ Usage:
   kookr signal <kind> [OPTIONS]  Raise an agent → user signal for the current task.
   kookr issue <verb> [OPTIONS]   Claim/release/inspect issue ownership.
   kookr status [--json] [--fail-on <critical|warning|info|none>] Print a read-only server snapshot.
+  kookr logs <taskId> [OPTIONS]   Tail a task's recent hook-event activity.
   kookr command outcome [commandId] Inspect local/remote command outcomes as JSONL.
   kookr ralph <command> <taskId> [--json] Inspect or control a Ralph loop.
   kookr drain|resume [OPTIONS]  Control operator drain mode.
@@ -90,6 +91,11 @@ async function main({
   if (command === 'ralph') {
     const { main: runRalphCli } = await import('./kookr-ralph.js');
     return runRalphCli({ argv: rest, env, out, err, exit });
+  }
+
+  if (command === 'logs') {
+    await runLogsCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
   }
 
   if (command === 'push') {
@@ -180,6 +186,20 @@ async function runCommandOutcomeCommand(argv) {
   }
   const mod = await import(entry);
   process.exitCode = await mod.runCommandOutcomeCli(argv);
+}
+
+async function runLogsCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-logs.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-logs.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] Logs module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exit(1);
+  }
+  const mod = await import(pathToFileURL(entry).href);
+  process.exitCode = await mod.runLogsCli(argv, { env, out, err });
 }
 
 async function runDoctorCommand(argv, { env = process.env, out = console, err = console } = {}) {

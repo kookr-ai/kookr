@@ -61,6 +61,10 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     },
   },
   {
+    name: 'logs',
+    flags: ['-n', '--lines', '--json', '--dir', '-h', '--help'],
+  },
+  {
     name: 'command',
     subcommands: ['outcome'],
   },
