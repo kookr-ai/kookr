@@ -11,14 +11,14 @@ importers:
   .:
     dependencies:
       '@anthropic-ai/sdk':
-        specifier: ^0.107.0
-        version: 0.107.0(zod@4.4.3)
+        specifier: ^0.110.0
+        version: 0.110.0(zod@4.4.3)
       '@google/genai':
         specifier: ^2.10.0
         version: 2.10.0
       '@hono/node-server':
-        specifier: ^2.0.6
-        version: 2.0.6(hono@4.12.27)
+        specifier: ^2.0.8
+        version: 2.0.8(hono@4.12.28)
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
@@ -47,8 +47,8 @@ importers:
         specifier: ^1.3.0
         version: 1.3.0
       hono:
-        specifier: ^4.12.27
-        version: 4.12.27
+        specifier: ^4.12.28
+        version: 4.12.28
       node-pty:
         specifier: ^1.1.0
         version: 1.1.0
@@ -119,8 +119,8 @@ importers:
 
 packages:
 
-  '@anthropic-ai/sdk@0.107.0':
-    resolution: {integrity: sha512-RWDWyvIeZnatUTzyX8+ayFzAqqLyoDHKnDEODFyW8H89zH+qEsh5h6XAmnbHY5DCoa58o3rjuNe3F3Hg851ayA==}
+  '@anthropic-ai/sdk@0.110.0':
+    resolution: {integrity: sha512-hOP4bNYXDFHDxxiEgzlILXrxZIYCDnhe8sry0RDRKD/QnsEpvZcQpablCdm9X/WuD/YgOiSIkkqsL1mLLlTqJw==}
     hasBin: true
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
@@ -396,8 +396,8 @@ packages:
       '@modelcontextprotocol/sdk':
         optional: true
 
-  '@hono/node-server@2.0.6':
-    resolution: {integrity: sha512-7DeRlKG57JDBNZ5Qj2jwVdgwQy4b0tLubRLl3zCf91/rCf9i7p1V5FtW/yWibm1uUHE493ts9ZXH/7g/LQWl+g==}
+  '@hono/node-server@2.0.8':
+    resolution: {integrity: sha512-GuCWzLxwg218fy1JaHculFsdcuY12hxit83V+algozTPnwhNjLrRL/Alg9OYjLZLoUZ1rw/S4CdTMsnkSKCmFA==}
     engines: {node: '>=20'}
     peerDependencies:
       hono: ^4
@@ -874,8 +874,8 @@ packages:
     resolution: {integrity: sha512-EykJT/Q1KjTWctppgIAgfSO0tKVuZUjhgMr17kqTumMl6Afv3EISleU7qZUzoXDFTAHTDC4NOoG/ZxU3EvlMPQ==}
     engines: {node: '>=8'}
 
-  hono@4.12.27:
-    resolution: {integrity: sha512-1yrb/+w6HWQJrUCLkJ2IF5jNIPvvFkblV5RNOYl6bV+OA6p9GLcMpHFFGTosSvHvcAUibuUukRqhlYI4z32C7Q==}
+  hono@4.12.28:
+    resolution: {integrity: sha512-YwUvVpSF7m1yOblFPrU3Hbo8XhPheBoiyfGuII6z19LnOr6JpDnyyp7LFNrfV56wS8tpvtBFGRISHN02pDdLOA==}
     engines: {node: '>=16.9.0'}
 
   html-encoding-sniffer@6.0.0:
@@ -1505,7 +1505,7 @@ packages:
 
 snapshots:
 
-  '@anthropic-ai/sdk@0.107.0(zod@4.4.3)':
+  '@anthropic-ai/sdk@0.110.0(zod@4.4.3)':
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.0.0
@@ -1689,9 +1689,9 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@hono/node-server@2.0.6(hono@4.12.27)':
+  '@hono/node-server@2.0.8(hono@4.12.28)':
     dependencies:
-      hono: 4.12.27
+      hono: 4.12.28
 
   '@isaacs/fs-minipass@4.0.1':
     dependencies:
@@ -2116,7 +2116,7 @@ snapshots:
 
   has-flag@4.0.0: {}
 
-  hono@4.12.27: {}
+  hono@4.12.28: {}
 
   html-encoding-sniffer@6.0.0:
     dependencies:
