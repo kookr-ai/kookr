@@ -87,6 +87,7 @@ checklist:
   - Candidate issues filtered for author trust, duplicates, active PRs, and blocked labels
   - Selected issues have a documented non-overlapping write-scope matrix
   - One child Kookr task spawned per selected issue, up to the concurrency cap
+  - Each child prompt prepended with a context pack (issue, non-exhaustive candidate files, base ref, cached skill digests) framed as a floor, not a ceiling
   - Child prompts require fresh git worktrees and no edits in the main checkout
   - Child tasks monitored for idle prompts, pasted-but-unsubmitted messages, permission dialogs, PR creation, CI, and mergeability
   - Interactivity policy honored: autonomous onAmbiguity modes never paused for user input
@@ -349,11 +350,38 @@ Read `$CHILDREN_FILE` first. Do not spawn a second child for an issue that alrea
 
 Spawn at most `maxConcurrentTasks` children at a time. For each selected issue without a child:
 
-1. Create a prompt file under `$PROMPTS_DIR/issue-<N>.md` using a file-writing tool, not a shell heredoc when running under hook-scanned shells.
-2. Include this child prompt content, customized for the issue:
+1. **Build a context pack** so the child warm-starts instead of cold-reading the issue and the same static skills every run (issue #1306). Write a JSON spec from data you already gathered — never interpolate untrusted issue text into shell — then generate the pack with the hook-safe CLI:
+
+   ```bash
+   # Spec is inert data. Write it with a file-writing tool, not a heredoc, when
+   # the issue body may contain shell-triggering strings.
+   #   $PROMPTS_DIR/issue-$N.spec.json:
+   #   {
+   #     "issueNumber": <N>,
+   #     "issueTitle": "<title>",
+   #     "issueBodyFile": "<path to the raw issue body you saved>",
+   #     "candidateFiles": [<expected_files from the selection matrix>],
+   #     "baseBranch": "<defaultBranchRef.name>",
+   #     "baseCommit": "<origin/<branch> commit sha>",
+   #     "repoFullName": "<owner/repo>"
+   #   }
+   node "$KOOKR_REPO/bin/kookr-context-pack.js" \
+     --spec "$PROMPTS_DIR/issue-$N.spec.json" \
+     --out "$PROMPTS_DIR/issue-$N.pack.md"
+   ```
+
+   The pack bundles the issue title/body, acceptance criteria, candidate file paths (as **non-exhaustive hints**), the base branch/commit, and pre-digested excerpts of the static skills a child needs (commit discipline, pre-PR review checklist, PR workflow). Skill digests are cached and reused across children and runs, and re-generated automatically when a skill file changes. The pack is a **floor, not a ceiling**: the candidate-file list is a starting shortlist, never an authoritative set, and the child must stay free to explore beyond it.
+
+2. Create a prompt file under `$PROMPTS_DIR/issue-<N>.md` using a file-writing tool, not a shell heredoc when running under hook-scanned shells. **Prepend the generated `issue-<N>.pack.md`** to the child prompt content below (pack first, then the instructions), so the child opens with the warm-start context. If pack generation failed, fall back to the bare prompt — the pack is an optimization, never a gate.
+3. Include this child prompt content, customized for the issue:
 
 ```markdown
 Implement issue #<N> in <owner/repo> end-to-end.
+
+A **context pack** is prepended above: a warm-start digest of the issue, candidate
+files, base ref, and pre-digested skill excerpts. It is a floor, not a ceiling — the
+file list is a non-exhaustive hint, packed facts can be stale, and you must verify and
+explore beyond it. Never gate real work on "the pack says X".
 
 Hard constraints:
 - Work from local checkout <LOCAL>.
@@ -375,6 +403,11 @@ Implementation target:
 - Implement only this issue.
 - Add or update focused tests.
 - Run the repo-appropriate build/test checks.
+- Before opening the PR, when running the pre-PR review specialists, feed each one a **review pack** — the staged diff plus the same shared context — instead of letting it re-explore the repo cold. Stage your changes, then, if `$KOOKR_REPO/bin/kookr-context-pack.js` is available, regenerate the pack with a review output:
+  `git diff --cached > /tmp/issue-<N>.diff`
+  add `"stagedDiffFile": "/tmp/issue-<N>.diff"` to the spec, then
+  `node "$KOOKR_REPO/bin/kookr-context-pack.js" --spec <spec.json> --out /tmp/issue-<N>.pack.md --review-out /tmp/issue-<N>.review.md`
+  and pass `/tmp/issue-<N>.review.md` to each reviewer specialist as its context. This is an optimization layered on top of the pre-pr-review skill — do not skip any review step because of it, and treat pack contents as hints to verify against the diff, not facts.
 - Commit with a conventional message if the repo uses one.
 - Push the branch and open a PR that closes #<N>.
 - Monitor CI and fix failures.
@@ -389,7 +422,7 @@ Supervisor note:
 If you are blocked by conflicts, unclear requirements, missing credentials, or a required shared-file edit, stop and report the blocker rather than widening scope.
 ```
 
-3. Spawn through the hook-safe CLI:
+4. Spawn through the hook-safe CLI:
 
    ```bash
    AGENT_FLAG=""
@@ -403,7 +436,7 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
 
    If `KOOKR_REPO` is not set, derive it from the parent cwd if it contains `bin/kookr-spawn.js`, otherwise use `$HOME/git/kookr`.
 
-4. Parse the returned task ID and append it to `$CHILDREN_FILE`:
+5. Parse the returned task ID and append it to `$CHILDREN_FILE`:
 
 ```json
 {
