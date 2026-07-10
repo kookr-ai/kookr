@@ -16,7 +16,7 @@ import { TaskLifecycleCommands } from '../use-cases/task-lifecycle-commands.js';
 import { launchTask, DrainModeError, isCwdValidationError, isEffortValidationError } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import { LAUNCH_DEPENDENCIES, type LaunchDependency } from '../../core/playbook.js';
-import type { Task } from '../../core/tasks.js';
+import type { Task, TaskStore, TokenUsage } from '../../core/tasks.js';
 import type { TaskDependencyEdge, TaskMetadataIntent } from '../../shared/contracts/task.js';
 import { normalizeTerminalWorktreeHealth } from '../../core/worktree-health.js';
 import { readEvolutionRunProjection } from '../../core/evolution-summary.js';
@@ -85,7 +85,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   }
 
   app.get('/api/tasks', (c) => {
-    const tasks = taskStore.listTasks().map(normalizeTaskForApi);
+    const tasks = taskStore.listTasks()
+      .map(normalizeTaskForApi)
+      .map((t) => attachAggregateTokenUsage(t, taskStore));
     if (!deps.suppressionTracker) return c.json(tasks);
     const tracker = deps.suppressionTracker;
     return c.json(tasks.map((t) => withSuppressionFlag(t, tracker)));
@@ -117,7 +119,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     const id = c.req.param('id');
     const task = taskStore.getTask(id);
     if (!task) return c.json({ error: 'Task not found' }, 404);
-    const normalized = normalizeTaskForApi(task);
+    const normalized = attachAggregateTokenUsage(normalizeTaskForApi(task), taskStore);
     if (!deps.suppressionTracker) return c.json(normalized);
     return c.json(withSuppressionFlag(normalized, deps.suppressionTracker));
   });
@@ -484,7 +486,19 @@ function parseThresholdMs(raw: string | undefined): number | Error {
  * `/api/projects` `recentTasks[]`, and `/api/snapshot` agents (which all key
  * by `taskId`). `id` stays for backwards compatibility.
  */
-type ApiTask = Task & { taskId: string };
+type ApiTask = Task & { taskId: string; aggregateTokenUsage?: TokenUsage };
+
+/**
+ * Attach the descendant-rolled-up token usage to a parent/batch task so a
+ * batch shows aggregate spend (issue #1307). Left off leaf tasks so their
+ * response is byte-identical to before; `tokenUsage` (own usage) is never
+ * touched, keeping cross-task totals free of double counting.
+ */
+function attachAggregateTokenUsage(task: ApiTask, store: TaskStore): ApiTask {
+  if (!task.childTaskIds || task.childTaskIds.length === 0) return task;
+  const aggregate = store.getAggregateTokenUsage(task.id);
+  return aggregate ? { ...task, aggregateTokenUsage: aggregate } : task;
+}
 
 function normalizeTaskForApi(task: Task): ApiTask {
   let changed = false;

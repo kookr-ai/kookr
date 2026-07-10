@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest';
-import { TaskStore, InvalidTransitionError, isTerminalStatus, isActiveStatus, type Task } from './tasks.js';
+import { TaskStore, InvalidTransitionError, isTerminalStatus, isActiveStatus, type Task, type TokenUsage } from './tasks.js';
 import type { TaskStatus } from './types.js';
 
 describe('TaskStore', () => {
@@ -1131,6 +1131,91 @@ describe('TaskStore', () => {
       ];
       store.loadTasks(tasks);
       expect(store.getLifetimeSpendUsd()).toBeCloseTo(3.50);
+    });
+  });
+
+  describe('getAggregateTokenUsage (issue #1307)', () => {
+    const usage = (costUsd: number, extra: Partial<TokenUsage> = {}): TokenUsage => ({
+      inputTokens: 100, outputTokens: 50, cacheReadTokens: 10, cacheWriteTokens: 0, costUsd, ...extra,
+    });
+
+    test('returns undefined when neither task nor descendants have usage', () => {
+      const parent = store.createTask('parent', '/cwd');
+      store.createTask({ prompt: 'child', cwd: '/cwd', parentTaskId: parent.id });
+      expect(store.getAggregateTokenUsage(parent.id)).toBeUndefined();
+    });
+
+    test('returns undefined for an unknown task', () => {
+      expect(store.getAggregateTokenUsage('nope')).toBeUndefined();
+    });
+
+    test('rolls child token usage and cost up into the parent batch', () => {
+      const parent = store.createTask('batch', '/cwd');
+      const childA = store.createTask({ prompt: 'a', cwd: '/cwd', parentTaskId: parent.id });
+      const childB = store.createTask({ prompt: 'b', cwd: '/cwd', parentTaskId: parent.id });
+      store.updateTokenUsage(childA.id, usage(0.50, { provider: 'openai', model: 'gpt-5.3-codex' }));
+      store.updateTokenUsage(childB.id, usage(0.30, { provider: 'openai', model: 'gpt-5.3-codex' }));
+
+      const agg = store.getAggregateTokenUsage(parent.id);
+      expect(agg).toMatchObject({
+        inputTokens: 200, outputTokens: 100, cacheReadTokens: 20, cacheWriteTokens: 0,
+        provider: 'openai', model: 'gpt-5.3-codex',
+      });
+      expect(agg!.costUsd).toBeCloseTo(0.80);
+      // Each task's own usage is untouched — the aggregate is derived, so
+      // cross-task totals (outcome ledger, lifetime spend) never double count.
+      expect(store.getTask(childA.id)!.tokenUsage!.costUsd).toBeCloseTo(0.50);
+      expect(store.getTask(parent.id)!.tokenUsage).toBeUndefined();
+    });
+
+    test('includes the parent own usage and recurses through grandchildren', () => {
+      const parent = store.createTask('batch', '/cwd');
+      const child = store.createTask({ prompt: 'c', cwd: '/cwd', parentTaskId: parent.id });
+      const grandchild = store.createTask({ prompt: 'g', cwd: '/cwd', parentTaskId: child.id });
+      store.updateTokenUsage(parent.id, usage(1.00, { provider: 'openai', model: 'gpt-5.3-codex' }));
+      store.updateTokenUsage(child.id, usage(0.50, { provider: 'openai', model: 'gpt-5.3-codex' }));
+      store.updateTokenUsage(grandchild.id, usage(0.25, { provider: 'openai', model: 'gpt-5.3-codex' }));
+
+      const agg = store.getAggregateTokenUsage(parent.id);
+      expect(agg!.inputTokens).toBe(300);
+      expect(agg!.costUsd).toBeCloseTo(1.75);
+    });
+
+    test('omits provider/model when a batch mixes vendors', () => {
+      const parent = store.createTask('batch', '/cwd');
+      const codexChild = store.createTask({ prompt: 'codex', cwd: '/cwd', parentTaskId: parent.id });
+      const claudeChild = store.createTask({ prompt: 'claude', cwd: '/cwd', parentTaskId: parent.id });
+      store.updateTokenUsage(codexChild.id, usage(0.50, { provider: 'openai', model: 'gpt-5.3-codex' }));
+      store.updateTokenUsage(claudeChild.id, usage(0.40, { provider: 'anthropic', model: 'claude-opus-4-7' }));
+
+      const agg = store.getAggregateTokenUsage(parent.id);
+      expect(agg!.costUsd).toBeCloseTo(0.90);
+      expect(agg!.provider).toBeUndefined();
+      expect(agg!.model).toBeUndefined();
+    });
+
+    test('keeps a uniform provider while dropping the model when only models differ', () => {
+      const parent = store.createTask('batch', '/cwd');
+      const childA = store.createTask({ prompt: 'a', cwd: '/cwd', parentTaskId: parent.id });
+      const childB = store.createTask({ prompt: 'b', cwd: '/cwd', parentTaskId: parent.id });
+      store.updateTokenUsage(childA.id, usage(0.50, { provider: 'openai', model: 'gpt-5.3-codex' }));
+      store.updateTokenUsage(childB.id, usage(0.30, { provider: 'openai', model: 'gpt-5.4' }));
+
+      const agg = store.getAggregateTokenUsage(parent.id);
+      expect(agg!.provider).toBe('openai');
+      expect(agg!.model).toBeUndefined();
+    });
+
+    test('a non-finite child costUsd does not poison the aggregate cost', () => {
+      const parent = store.createTask('batch', '/cwd');
+      const childA = store.createTask({ prompt: 'a', cwd: '/cwd', parentTaskId: parent.id });
+      const childB = store.createTask({ prompt: 'b', cwd: '/cwd', parentTaskId: parent.id });
+      store.updateTokenUsage(childA.id, usage(0.50, { provider: 'openai', model: 'gpt-5.3-codex' }));
+      store.updateTokenUsage(childB.id, usage(Number.NaN, { provider: 'openai', model: 'gpt-5.3-codex' }));
+
+      const agg = store.getAggregateTokenUsage(parent.id);
+      expect(agg!.costUsd).toBeCloseTo(0.50);
+      expect(Number.isFinite(agg!.costUsd)).toBe(true);
     });
   });
 

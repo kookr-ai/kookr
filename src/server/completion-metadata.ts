@@ -171,7 +171,10 @@ function usageFromOutcome(outcome: DiscoveryOutcome | undefined): { digestUsage:
   }
 
   const inputTokens = Math.max(0, binding.totalInputTokens - binding.totalCachedInputTokens);
-  const outputTokens = binding.totalOutputTokens;
+  // Codex reports reasoning tokens separately from visible output; both are
+  // billed at the model's output rate, so fold reasoning into output for the
+  // task record (issue #1307: output = output_tokens + reasoning_output_tokens).
+  const outputTokens = binding.totalOutputTokens + (binding.totalReasoningOutputTokens ?? 0);
   const cacheReadTokens = binding.totalCachedInputTokens;
   const cacheWriteTokens = 0;
   const pricing = binding.model ? lookupPricing(binding.model) : null;
@@ -193,13 +196,17 @@ function usageFromOutcome(outcome: DiscoveryOutcome | undefined): { digestUsage:
 
   return {
     digestUsage,
-    ...(costUsd != null ? {
+    ...(costUsd != null && pricing ? {
+      // Tag the record with the OpenAI vendor + model so Codex spend is not
+      // conflated with Anthropic spend on the same dashboard (issue #1307).
       taskTokenUsage: {
         inputTokens,
         outputTokens,
         cacheReadTokens,
         cacheWriteTokens,
         costUsd,
+        provider: pricing.vendor,
+        ...(binding.model ? { model: binding.model } : {}),
       },
     } : {}),
   };

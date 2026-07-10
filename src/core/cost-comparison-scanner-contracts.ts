@@ -55,6 +55,14 @@ export interface BoundTaskTokens {
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCachedInputTokens: number;
+  /**
+   * Sum of `reasoning_output_tokens` across parent and sub-agents. Reported
+   * separately from `totalOutputTokens` so callers that bill reasoning as
+   * output (task metering, issue #1307) can add it while the cost-comparison
+   * panel keeps its existing visible-output accounting. Optional for
+   * backward-compatibility with bindings constructed before this field.
+   */
+  totalReasoningOutputTokens?: number;
   /** First non-null model among parent and sub-agents, parent first. */
   model: string | null;
   /** True iff at least one rollout in the binding had token telemetry. */
@@ -74,6 +82,9 @@ export interface OrphanBinding {
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCachedInputTokens: number;
+  // Reasoning is summed by the shared thread accountant but orphan bindings feed
+  // only the cost-comparison panel, which stays on visible-output accounting, so
+  // no `totalReasoningOutputTokens` is surfaced here (it lives on BoundTaskTokens).
   model: string | null;
   hasTokenData: boolean;
   hasParseError: boolean;

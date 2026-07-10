@@ -665,6 +665,65 @@ export class TaskStore {
     return cloneTask(task);
   }
 
+  /**
+   * Roll a task's own `tokenUsage` up with every descendant's (children,
+   * grandchildren, …) so a parent/batch task shows aggregate spend
+   * (issue #1307). Read-only: this does NOT mutate any task's own
+   * `tokenUsage`, so per-task totals (outcome ledger, lifetime spend) stay
+   * un-double-counted. Returns undefined when neither the task nor any
+   * descendant has metered usage.
+   *
+   * `provider`/`model` are carried onto the aggregate only when every
+   * contributing task agrees. A batch that mixes vendors (e.g. a Claude parent
+   * orchestrating Codex children) reports neither, because a single blended
+   * cost cannot be attributed to one price.
+   */
+  getAggregateTokenUsage(taskId: string): TokenUsage | undefined {
+    if (!this.tasks.has(taskId)) return undefined;
+    let inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0, costUsd = 0;
+    let sawUsage = false;
+    let provider: TokenUsage['provider'] | undefined;
+    let model: string | undefined;
+    let providerUniform = true;
+    let modelUniform = true;
+    const visited = new Set<string>();
+    const stack = [taskId];
+    while (stack.length > 0) {
+      const id = stack.pop()!;
+      if (visited.has(id)) continue; // guard against relation cycles / DAG re-convergence
+      visited.add(id);
+      const task = this.tasks.get(id);
+      if (!task) continue;
+      const usage = task.tokenUsage;
+      if (usage) {
+        if (!sawUsage) {
+          sawUsage = true;
+          provider = usage.provider;
+          model = usage.model;
+        } else {
+          if (usage.provider !== provider) providerUniform = false;
+          if (usage.model !== model) modelUniform = false;
+        }
+        inputTokens += usage.inputTokens;
+        outputTokens += usage.outputTokens;
+        cacheReadTokens += usage.cacheReadTokens;
+        cacheWriteTokens += usage.cacheWriteTokens;
+        if (Number.isFinite(usage.costUsd)) costUsd += usage.costUsd;
+      }
+      for (const childId of task.childTaskIds ?? []) stack.push(childId);
+    }
+    if (!sawUsage) return undefined;
+    return {
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
+      costUsd,
+      ...(providerUniform && provider ? { provider } : {}),
+      ...(modelUniform && model ? { model } : {}),
+    };
+  }
+
   getActiveSessions(): Array<{ taskId: string; session: SessionInfo }> {
     const result: Array<{ taskId: string; session: SessionInfo }> = [];
     for (const task of this.tasks.values()) {
