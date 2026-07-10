@@ -53,9 +53,23 @@ Study existing RFCs in `docs/rfc/` for tone, depth, and structure. Match them �
 
 Run **3 review rounds** by default (the task prompt may specify a different number).
 
+### Shared evidence pack (assemble once, before the panel)
+
+Before launching the first critic panel, assemble a **shared evidence pack** and reuse it across every round. Without it, each critic independently rebuilds the same mental model of the codebase (re-reading the same files, re-running the same probes) — in one real session that redundant re-exploration, not the critique, is what drove each critic to $10–15 and the panel to the majority of the run's cost.
+
+**What the pack contains** (assemble from the orchestrator's own pre-panel investigation — the same pipeline map + telemetry work you already do before the panel; do not spawn extra investigators just to fill it):
+
+1. **Pipeline map** — the relevant modules/files, their responsibilities, and how they connect for the area the RFC touches. A critic should be able to orient from this instead of re-deriving it.
+2. **Telemetry / evidence findings** — concrete measurements, log excerpts, cost/latency numbers, or reproduction notes gathered before the panel.
+3. **Source pointers** — file paths and line ranges for the load-bearing claims, so a critic who wants to re-verify can jump straight to the source.
+
+**How to deliver it:** paste the pack (or a link to a written pack file, e.g. `docs/rfc/rfc-<slug>-evidence.md`) into **every** critic's prompt via the subagent prompt template below. The pack is assembled once and shared verbatim so all critics reason from one evidence set.
+
+**The pack is "evidence to check," not settled facts.** Every item in the pack — a pipeline map, a telemetry claim, an investigator's summary — can be **wrong**, and a critic independently re-deriving it is exactly how that gets caught. The pack is a **floor, not a ceiling**: it saves critics the cold-start re-exploration, but critics stay free (and are encouraged) to re-read source and re-verify any pack claim. See "Preserving redundancy" below — the cap limits *breadth*, never *depth*.
+
 ### Each round
 
-Launch the following subagents **in parallel** using the Agent tool. Pick 3-5 that are most relevant to the RFC's topic.
+Launch the following subagents **in parallel** using the Agent tool. Select critics through the **Panel Selection Gate** below (3–5, hard max 5), picking the ones most relevant to the RFC's topic.
 
 > **Invocation note:** The agent names below appear unqualified for readability. When calling `Agent({ subagent_type: "..." })`, prepend `kookr-toolkit:` to every name (e.g., `kookr-toolkit:boundary-critic`). Unqualified `subagent_type` does not resolve for plugin-namespaced agents.
 
@@ -71,6 +85,22 @@ Launch the following subagents **in parallel** using the Agent tool. Pick 3-5 th
 | `delivery-pragmatist` | When the RFC involves migration, phased rollout, or risky sequencing |
 | `module-interface-auditor` | When the RFC defines new module boundaries or public APIs |
 | `state-machine-verifier` | When the RFC involves state transitions or workflow steps |
+
+### Panel Selection Gate (checked — do not skip)
+
+Before launching a round's panel, run this gate. It converts the old prose rule ("3–5, hard max 5") into a checked constraint — the count is an assertion, not a suggestion that gets exceeded in practice.
+
+1. **List** the critics you intend to launch this round (by name).
+2. **Count** them → `N`.
+3. **Assert `N ≤ 5`.** This is a hard cap on the number of distinct critic lenses per round. `design-experimenter` invoked via the post-round-1 empirical checkpoint or the `assumption-archaeologist` hand-off is a verification step, **not** a panel lens — it does not count against `N`.
+4. **If `N ≤ 5`:** proceed. Aim for 3–5; more critics is not better — it is diminishing returns and multiplied cost past 4–5.
+5. **If `N > 5`:** **stop.** You may not launch more than 5 unless you record an explicit justification. Write, in the RFC's "Critic feedback incorporated" section, a line of the form:
+
+   `Panel cap override — round <n>: launched <N> critics because <specific reason this RFC needs this lens breadth>. Justification: <why 5 is insufficient here>.`
+
+   Without that recorded line, cut the panel back to 5. The override is a deliberate, logged exception — not the default.
+
+**The cap limits breadth, not depth.** `N` counts *distinct lenses in a round*. It never limits a single critic from re-reading source or re-verifying a suspicious pack claim, and it never suppresses the mandatory post-round-1 empirical check. See "Preserving redundancy" below.
 
 ### Adversarial pair: `ambition-amplifier` + `design-minimalist`
 
@@ -92,6 +122,8 @@ Before launching round 2, scan round-1 findings for **load-bearing empirical cla
 
 **Why this is mandatory, not optional:** without it, round 2 re-debates the same hypothetical concerns round 1 raised, critics escalate theoretical edge cases, and the RFC grows to accommodate risks that a 10-minute experiment could have falsified. Empirical grounding between rounds converts speculation into evidence and prevents the review cycle from drifting into analysis paralysis.
 
+**This checkpoint is intentional redundancy — keep it.** The shared evidence pack makes critics *efficient* (no cold-start re-exploration), but the pack can be wrong. This checkpoint is the redundancy that *falsifies* wrong load-bearing claims — including claims that originated in the pack itself. It is the depth counterpart to the breadth-limiting Panel Selection Gate: the cap trims how many lenses run per round, this check preserves the deep second look that catches wrong information. Do not trim it as "duplication" of the pack or of round-1 critique — the whole point is that an independent empirical probe can contradict both.
+
 **When to skip the checkpoint:**
 - Round 1 produced no empirical claims — all findings were definitional, stylistic, or structural.
 - All empirical claims require platforms/tools unavailable (e.g., macOS runner needed but only Linux present); in this case, note the gap explicitly in the RFC's Open Questions section.
@@ -103,6 +135,22 @@ Converge early (skip further critic rounds) if empirical probes have falsified t
 **Subagent prompt template:**
 
 > Review the following RFC document for [agent's focus area]. The document is at `<path-to-rfc>`. Read it completely, then provide specific, actionable feedback. Focus on substantive issues — not formatting or style. For each finding, state: (1) what the issue is, (2) why it matters, (3) a concrete suggestion.
+>
+> **Shared evidence pack (evidence to check — NOT settled fact):** the following pipeline map and telemetry findings were gathered before this panel so you don't have to rebuild them from scratch:
+>
+> ```
+> <paste the shared evidence pack here — pipeline map, telemetry/measurements, source pointers>
+> ```
+>
+> Treat every item above as a claim to verify, not a given. If any of it is load-bearing for your review, re-read the cited source and confirm it — the pack can be wrong, and catching that is part of your job. Do not, however, re-explore the whole codebase just to reconstruct what the pack already gives you.
+
+### Preserving redundancy (breadth vs depth)
+
+The efficiency measures above (shared pack, panel cap) cut *wasteful* redundancy — many critics re-deriving the same map — without cutting the *useful* redundancy that catches wrong information. Hold these three lines firm:
+
+- **The pack is a floor, not a ceiling.** It labels its contents "evidence to check." Critics stay free to re-read source and independently re-verify any claim; independent re-derivation is how a wrong pipeline map or a bad telemetry number gets caught.
+- **The cap limits breadth, not depth.** It bounds *distinct lenses per round*, never a single critic's re-verification of a suspicious claim. A warranted second look is depth, and the cap must never suppress it.
+- **The post-round-1 empirical check stays mandatory.** It is the deep, independent falsification step for load-bearing claims (see above). It is not "duplication" of the pack or of round-1 critique — keep it.
 
 ### After each round
 
@@ -158,5 +206,6 @@ Wait for their explicit direction.
 - **Don't implement before approval.** The entire point of this workflow is human review before action.
 - **Don't skip the worktree.** RFCs are written artifacts — they need a branch even if they're "just docs".
 - **Don't invent a new RFC format.** Match existing RFCs in the project.
-- **Don't run 5+ critics when 3 suffice.** Pick the most relevant ones for the topic. More critics != better — it's diminishing returns past 4-5.
+- **Don't run more than 5 critics without a recorded justification.** The Panel Selection Gate makes this a checked cap, not a suggestion: 3–5 per round, hard max 5, and `N > 5` requires a logged override line in "Critic feedback incorporated". Pick the most relevant lenses — more critics != better, it's diminishing returns and multiplied cost past 4–5. (The cap limits breadth; it never blocks a critic from re-verifying a suspicious claim, and never counts the mandatory empirical-check `design-experimenter`.)
+- **Don't let critics each re-explore from cold start.** Assemble the shared evidence pack once and paste it into every critic's prompt. But mark it "evidence to check," not settled fact — never suppress a critic's re-verification of a load-bearing claim.
 - **Don't iterate if converged.** If round 2 produces nothing new, stop and present. Mention that you stopped early due to convergence.
