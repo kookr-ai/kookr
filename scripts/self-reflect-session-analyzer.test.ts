@@ -324,4 +324,45 @@ describe("session analyzer repeated-instruction workflow filtering", () => {
       }),
     ]);
   });
+
+  test("excludes structured reviewer fan-out launches (marker) regardless of body text", () => {
+    // A structured launch carries the machine-event marker on its first line;
+    // its body no longer needs to open with the legacy "You are the ..." line.
+    const structuredLaunch = [
+      "[[kookr-workflow:reviewer-fanout]] role=correctness workflow=reviewer-fanout:feat/x",
+      "Repo: /path/to/worktree",
+      "Diff scope: origin/main..HEAD (3 changed file(s))",
+      "",
+      "<verbatim specialist instructions with a completely different opening>",
+    ].join("\n");
+    const analyses = repeatedAnalyses("structured", 3, structuredLaunch);
+
+    const filtered = collectRepeatedInstructions(analyses, 2);
+    expect(filtered.repeated).toEqual([]);
+    expect(filtered.filteredReasons).toMatchObject({ reviewer_prompt: 3 });
+
+    const debug = collectRepeatedInstructions(analyses, 2, { includeFilteredWorkflow: true });
+    expect(debug.repeated).toEqual([
+      expect.objectContaining({
+        intent: "machine_workflow",
+        filteredReason: "reviewer_prompt",
+      }),
+    ]);
+  });
+
+  test("keeps operator-authored text that merely quotes the marker mid-body", () => {
+    // The operator authored this — the marker is not on the first line, so it
+    // must NOT be reclassified as a machine event.
+    const operatorText = [
+      "Can you explain what the reviewer fan-out marker does?",
+      "I saw [[kookr-workflow:reviewer-fanout]] in a prompt and was confused.",
+    ].join("\n");
+    const analyses = repeatedAnalyses("operator", 3, operatorText);
+
+    const filtered = collectRepeatedInstructions(analyses, 2);
+    expect(filtered.filteredCount).toBe(0);
+    expect(filtered.repeated).toEqual([
+      expect.objectContaining({ intent: expect.not.stringMatching(/machine_workflow/) }),
+    ]);
+  });
 });
