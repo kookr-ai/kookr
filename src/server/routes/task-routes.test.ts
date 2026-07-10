@@ -111,6 +111,47 @@ describe('GET /api/tasks worktree health', () => {
   });
 });
 
+describe('GET /api/tasks aggregate token usage (issue #1307)', () => {
+  const usage = (costUsd: number) => ({
+    inputTokens: 100, outputTokens: 50, cacheReadTokens: 10, cacheWriteTokens: 0, costUsd,
+    provider: 'openai' as const, model: 'gpt-5.3-codex',
+  });
+
+  test('surfaces rolled-up child usage on the parent and omits it on leaves', async () => {
+    const taskStore = new TaskStore();
+    const parent = taskStore.createTask({ prompt: 'batch', cwd: '/repo' });
+    const childA = taskStore.createTask({ prompt: 'a', cwd: '/repo', parentTaskId: parent.id });
+    const childB = taskStore.createTask({ prompt: 'b', cwd: '/repo', parentTaskId: parent.id });
+    taskStore.updateTokenUsage(childA.id, usage(0.50));
+    taskStore.updateTokenUsage(childB.id, usage(0.30));
+
+    const app = mkApp(mkLoopDeps(taskStore));
+    const tasks = await (await app.request('/api/tasks')).json();
+
+    const parentRow = tasks.find((t: { id: string }) => t.id === parent.id);
+    expect(parentRow.aggregateTokenUsage).toMatchObject({
+      inputTokens: 200, outputTokens: 100, cacheReadTokens: 20, provider: 'openai', model: 'gpt-5.3-codex',
+    });
+    expect(parentRow.aggregateTokenUsage.costUsd).toBeCloseTo(0.80);
+
+    // Leaf tasks stay byte-identical to before — no aggregate field.
+    const childRow = tasks.find((t: { id: string }) => t.id === childA.id);
+    expect(childRow.aggregateTokenUsage).toBeUndefined();
+  });
+
+  test('GET /api/tasks/:id also carries the aggregate on a parent', async () => {
+    const taskStore = new TaskStore();
+    const parent = taskStore.createTask({ prompt: 'batch', cwd: '/repo' });
+    const child = taskStore.createTask({ prompt: 'c', cwd: '/repo', parentTaskId: parent.id });
+    taskStore.updateTokenUsage(child.id, usage(1.25));
+
+    const app = mkApp(mkLoopDeps(taskStore));
+    const body = await (await app.request(`/api/tasks/${parent.id}`)).json();
+
+    expect(body.aggregateTokenUsage.costUsd).toBeCloseTo(1.25);
+  });
+});
+
 describe('GET /api/tasks/completion-ready/stale', () => {
   test('returns stale completion-ready tasks as a cleanup queue', async () => {
     const taskStore = new TaskStore();

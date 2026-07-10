@@ -122,6 +122,8 @@ describe('buildTaskCompletionMetadata', () => {
       cacheReadTokens: 100,
       cacheWriteTokens: 0,
       costUsd: expect.any(Number),
+      provider: 'openai',
+      model: 'gpt-5.3-codex',
     });
   });
 

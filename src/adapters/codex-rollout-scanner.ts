@@ -54,11 +54,12 @@ function sumThread(
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCachedInputTokens: number;
+  totalReasoningOutputTokens: number;
   model: string | null;
   hasTokenData: boolean;
   hasParseError: boolean;
 } {
-  let totalInput = 0, totalOutput = 0, totalCached = 0;
+  let totalInput = 0, totalOutput = 0, totalCached = 0, totalReasoning = 0;
   let model: string | null = null;
   let hasTokenData = false;
   let hasParseError = false;
@@ -69,6 +70,7 @@ function sumThread(
       totalInput += r.totalUsage.inputTokens;
       totalOutput += r.totalUsage.outputTokens;
       totalCached += r.totalUsage.cachedInputTokens;
+      totalReasoning += r.totalUsage.reasoningOutputTokens;
     }
     if (model == null && r.model) model = r.model;
   }
@@ -76,6 +78,7 @@ function sumThread(
     totalInputTokens: totalInput,
     totalOutputTokens: totalOutput,
     totalCachedInputTokens: totalCached,
+    totalReasoningOutputTokens: totalReasoning,
     model,
     hasTokenData,
     hasParseError,
