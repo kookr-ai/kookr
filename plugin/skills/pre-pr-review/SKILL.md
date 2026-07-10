@@ -209,6 +209,64 @@ For non-trivial changes, quick-check:
 
 Run specialized reviewer subagents in parallel against the diff. **Skip for trivial changes** (typo fixes, comment updates, single-line config changes).
 
+#### Diff-adaptive panel selection (issue #1305)
+
+Do **not** launch a fixed 5-agent fan-out on every PR. Select the panel from the
+**content of the diff** — never from the implementer's self-report that "there's
+nothing to review." Run the deterministic helper to get the selection and the
+gating rationale:
+
+```bash
+plugin/skills/pre-pr-review/select-specialists.sh           # keys off origin/main..HEAD
+plugin/skills/pre-pr-review/select-specialists.sh --base main
+plugin/skills/pre-pr-review/select-specialists.sh --force   # escape hatch: full 5-panel
+```
+
+It prints a stable, machine-readable block you record verbatim in the aggregate
+review result (see the Output Contract):
+
+```
+SPECIALISTS=correctness,lint-like,test
+DOCS_DRIFT=active|inactive
+FORCE=yes|no
+COUNT=<n>
+rationale:
+  <one line per selected specialist>
+```
+
+The gating rules the helper encodes:
+
+| Specialist | When it runs |
+|---|---|
+| **correctness** | **always** — unconditional, independent cross-check. Never gated. |
+| **test** | when the diff changes **non-test logic** (a non-test, non-doc source file). |
+| **lint-like** (consolidated) | on **any** change. Folds `conventions` + `deadcode` (+ `docs-drift` when active) into **one** reviewer with **per-concern verdicts**. |
+
+The **docs-drift concern** inside `lint-like` activates (`DOCS_DRIFT=active`) when
+the diff touches docs (`*.md`, `docs/**`) or public API (added `export`s) — the
+signal comes from diff content, not from whether the author remembered to touch
+docs. When dormant it stays a light check; when active it is expected to emit
+concrete doc edits.
+
+This makes review **proportional**: a small single-file source PR launches ≤3
+specialists (`correctness`, `lint-like`, `test`); a docs- or test-only PR launches
+2. It does **not** collapse cross-checking — `correctness` remains standalone and
+independent, and the consolidated reviewer keeps each merged concern as a distinct
+checklist item with its own verdict (one agent, but not one blurred opinion).
+
+**Force-full-panel escape hatch.** For large, risky, or security-touching diffs,
+pass `--force` (or `FORCE_FULL_PANEL=1`). This restores the full, **un-consolidated**
+5-panel — `conventions`, `correctness`, `deadcode`, `test`, `docs-drift` as five
+independent specialists — trading tokens for maximum redundant cross-checking.
+
+**Composing the consolidated `lint-like` reviewer.** There is no separate
+`lint-like` file. Spawn **one** agent whose prompt concatenates the bodies of
+`conventions-specialist.md` + `deadcode-specialist.md` (and, when
+`DOCS_DRIFT=active`, `docs-drift-specialist.md`), prefixed with an instruction to
+return a **separate, labelled verdict per concern** (`conventions:`, `deadcode:`,
+`docs-drift:`) rather than one merged opinion. `correctness` and `test` stay
+standalone specialists spawned from their own files.
+
 **Two reviewer layers are available:**
 
 #### Layer 1: Reviewer Specialists (`plugin/reviewer-specialists/`)
@@ -239,16 +297,17 @@ Use when the change touches module boundaries, imports, or public APIs:
 
 | Change type | Which reviewers |
 |---|---|
-| Any non-trivial code change | conventions / correctness / deadcode / test / docs-drift specialists (Layer 1) |
-| Change touches behavior cited by a requirement, ADR, or system-model doc | docs-drift-specialist is mandatory (blocking findings expected) |
+| Any non-trivial code change | run `select-specialists.sh` — `correctness` + `lint-like` (consolidated conventions/deadcode/docs-drift) + `test` when non-test logic changed (Layer 1) |
+| Large / risky / security-touching diff | `select-specialists.sh --force` — restores the full un-consolidated 5-panel |
+| Change touches behavior cited by a requirement, ADR, or system-model doc | docs-drift concern is mandatory (blocking findings expected); force the full panel if in doubt |
 | UI-component change (`.tsx` / `.jsx` / `.vue` / `.svelte` touching `aria-*`, `role=`, semantic HTML, or spreading props onto HTML elements) | + a11y-specialist |
 | Module boundary / import refactor | + dependency-graph-analyzer, module-interface-auditor |
 | New public API / API changes | + api-surface-auditor, module-interface-auditor |
 | State / workflow logic | + state-machine-verifier, failure-mode-analyst |
 
 **How to run:**
-1. Prepare context: `git diff main..HEAD` and `git diff main..HEAD --stat`
-2. Launch selected agents **in parallel** as subagents, passing the diff and repo path.
+1. Prepare context: `git diff main..HEAD` and `git diff main..HEAD --stat`, then run `select-specialists.sh` (see *Diff-adaptive panel selection* above) to decide the panel and capture the gating rationale.
+2. Launch the selected agents **in parallel** as subagents, passing the diff and repo path. Compose the consolidated `lint-like` reviewer as described above; spawn `correctness` (and `test` when selected) standalone.
    For the test-focused reviewer, explicitly ask whether the changed runtime path is tested directly or only inferred through helper/unit coverage.
 
    **Claude Code:** spawn each Layer-1 specialist via the `Agent` tool, reading the specialist's `.md` file from `plugin/reviewer-specialists/` as the prompt body:
@@ -337,8 +396,8 @@ Before you conclude this skill, report the checklist result explicitly:
 - diff review: done
 - scope guard: clean / flagged (with fix or PR-body justification)
 - portability check: clean / flagged (with reason or fix) / skipped
-- reviewer specialists: run / skipped, with reason
-- docs-drift: no drift / drift found (list stale docs + suggested edits) / skipped with reason — call out any requirement or system-model doc left stale
+- reviewer specialists: run / skipped, with reason — record the exact `SPECIALISTS=…` selection, whether `--force` was used, and the per-specialist gating `rationale:` block from `select-specialists.sh`
+- docs-drift: no drift / drift found (list stale docs + suggested edits) / skipped with reason — call out any requirement or system-model doc left stale; note whether the docs-drift concern was `active` or dormant per the gating decision
 - OSS base-branch policy (external PRs only): matched / failed / skipped with reason
 - gate file: created / not created
 
