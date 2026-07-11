@@ -19,6 +19,40 @@ export class PlaybookParseError extends Error {
 }
 
 /**
+ * Top-level frontmatter keys the playbook parser recognises. Kept beside the
+ * parser so a newly supported key updates the validation allowlist in lockstep
+ * (see `scripts/validate-playbooks.ts`). `parseFrontmatter` silently ignores
+ * any key outside this set, so the validation gate warns on unknown keys to
+ * catch typos like `checkist:` that would otherwise drop a field with no signal.
+ */
+export const KNOWN_PLAYBOOK_FRONTMATTER_KEYS = [
+  'name',
+  'description',
+  'tags',
+  'loop',
+  'repo-tags',
+  'dependencies',
+  'deliveryPreAuthorized',
+  'autoCloseOnSignal',
+  'parameters',
+  'checklist',
+  'cwd',
+] as const;
+
+/**
+ * Return the top-level frontmatter keys in `content` that the parser does not
+ * recognise. Uses the same `parseFrontmatter` pass as {@link parsePlaybook}, so
+ * the reported keys are exactly the ones the parser saw and ignored. Throws
+ * {@link PlaybookParseError} when the frontmatter block is malformed, mirroring
+ * `parsePlaybook` so callers can treat parse failures uniformly.
+ */
+export function findUnknownFrontmatterKeys(content: string): string[] {
+  const { frontmatter } = extractFrontmatter(content);
+  const known = new Set<string>(KNOWN_PLAYBOOK_FRONTMATTER_KEYS);
+  return Object.keys(parseFrontmatter(frontmatter)).filter((key) => !known.has(key));
+}
+
+/**
  * Parse a playbook Markdown file into a Playbook object.
  * Expects YAML-like frontmatter delimited by --- lines.
  */

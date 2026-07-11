@@ -58,6 +58,7 @@
     "shadow:report": "node --import tsx scripts/shadow-report.ts",
     "test:onboarding": "bash scripts/onboarding-smoke-test.sh",
     "validate:skills": "node --import tsx scripts/validate-skills.ts",
+    "validate:playbooks": "node --import tsx scripts/validate-playbooks.ts",
     "validate:requirements": "node scripts/validate-requirements-status.mjs",
     "test:hooks": "bash scripts/run-hook-tests.sh",
     "validate:docs-commands": "node --import tsx scripts/verify-documented-commands.ts",
