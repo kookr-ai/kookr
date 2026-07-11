@@ -23,10 +23,7 @@ import { runStartupConfigPreflightOrExit } from './config-preflight.js';
 import { resolveListenPort } from './resolve-listen-port.js';
 import { parseSTTDevice, startSTT, type STTManager } from './stt-manager.js';
 import { DEFAULT_TTS_VOICE, parseTTSDeviceFromEnv, startTTS, type TTSManager } from './tts-manager.js';
-import {
-  inFlightRequestRegistry,
-  startInFlightRequestShutdownLogger,
-} from './in-flight-request-registry.js';
+import { createShutdownHandler } from './shutdown.js';
 
 const HOST = process.env.KOOKR_HOST ?? '127.0.0.1';
 const STT_ENABLED = process.env.KOOKR_STT === 'true';
@@ -224,34 +221,10 @@ async function main(): Promise<void> {
     sessionAuth,
   });
 
-  async function shutdown(signal: string): Promise<void> {
-    console.log(`\n${signal} received. Shutting down...`);
-    // Signal lifecycle abort BEFORE stopping STT/TTS containers so any
-    // in-flight startup-warmup work (Telegram whisper) cancels cleanly. The
-    // catch path inside warmupWhisper turns this into a distinct info-level
-    // log instead of a "warmup FAILED — first user message will pay the
-    // cold-start cost" warning that misleads operators during a clean shutdown.
-    // See issue #188.
-    lifecycleAc.abort();
-    // Stop Docker containers BEFORE closing the HTTP server so that the port
-    // stays occupied until cleanup is complete. The restart scripts poll the
-    // port to decide when to launch the new server — releasing it early caused
-    // a race where the old process tore down containers the new process started.
-    if (sttManager) {
-      await sttManager.stop();
-    }
-    if (ttsManager) {
-      await ttsManager.stop();
-    }
-    const stopInFlightRequestLogging = startInFlightRequestShutdownLogger(inFlightRequestRegistry);
-    try {
-      await server.close();
-    } finally {
-      stopInFlightRequestLogging();
-    }
-    console.log('Server closed.');
-    process.exit(0);
-  }
+  // Issue #1320: a single re-entrancy-guarded handler backs both signals so a
+  // second Ctrl-C during a slow graceful shutdown force-exits instead of
+  // re-running the container stops concurrently.
+  const shutdown = createShutdownHandler({ lifecycleAc, sttManager, ttsManager, server });
 
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
