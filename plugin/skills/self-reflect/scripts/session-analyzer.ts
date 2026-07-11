@@ -1620,12 +1620,26 @@ function classifyIntent(text: string): string {
   return "other";
 }
 
+// Structured reviewer fan-out launch marker (issue #1149). Mirrors
+// REVIEWER_FANOUT_LAUNCH_MARKER in src/shared/contracts/reviewer-fanout.ts.
+// Kept as a literal here because this analyzer runs standalone (bun) and must
+// not import app source. Keep the two in sync.
+const REVIEWER_FANOUT_LAUNCH_MARKER = "[[kookr-workflow:reviewer-fanout]]";
+
 function classifyWorkflowInjectedInstruction(text: string): WorkflowFilteredReason | undefined {
   const trimmed = text.trim();
   const lower = trimmed.toLowerCase();
 
   if (lower.startsWith("harness note:")) return "harness_note";
   if (lower.startsWith("## task gist")) return "eval_fixture";
+  // Structured launches carry the marker on their first line — a deterministic
+  // machine-event signal that survives changes to the specialist body text.
+  const firstLine = trimmed.split("\n", 1)[0] ?? "";
+  if (firstLine.includes(REVIEWER_FANOUT_LAUNCH_MARKER)) {
+    return "reviewer_prompt";
+  }
+  // Compatibility shim: legacy reviewer launches predate the structured marker
+  // and are recognized by their prompt opening.
   if (/^you are the (?:test|correctness|dead[- ]?code|conventions|a11y|accessibility)-specialist reviewer for a kookr pr\b/i.test(trimmed)) {
     return "reviewer_prompt";
   }

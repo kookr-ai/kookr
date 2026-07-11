@@ -267,6 +267,35 @@ return a **separate, labelled verdict per concern** (`conventions:`, `deadcode:`
 `docs-drift:`) rather than one merged opinion. `correctness` and `test` stay
 standalone specialists spawned from their own files.
 
+#### Structured fan-out — mark launches as machine events (issue #1149)
+
+The reviewer fan-out is a **structured workflow**, not a series of ad-hoc user
+prompts. The model (specialist role, diff scope, repo/worktree, status, result
+summary) lives in `src/shared/contracts/reviewer-fanout.ts`; the orchestration
+helpers (`createReviewerFanoutWorkflow`, `buildSpecialistLaunch`,
+`aggregateReviewerRuns`) live in `src/core/reviewer-fanout.ts`.
+
+When you launch a specialist, **prefix its prompt with the machine-event marker
+header** so the session analyzer classifies the launch as workflow traffic
+instead of an organic repeated user instruction:
+
+```
+[[kookr-workflow:reviewer-fanout]] role=<role> workflow=reviewer-fanout:<branch>
+Repo: {repoDir}
+Diff scope: <base>..<head> (<n> changed file(s))
+
+<verbatim specialist instructions, with {repoDir} inlined>
+```
+
+The specialist instruction bodies (`plugin/reviewer-specialists/*.md`) are
+unchanged — only the transport/metadata shape around them is new. Legacy
+launches without the marker still work (the analyzer keeps a compatibility shim
+that recognizes the `You are the <role>-specialist reviewer…` opening).
+
+When the panel finishes, roll the per-specialist runs into **one** parent-visible
+aggregate (`aggregateReviewerRuns`) — per-specialist statuses and findings in a
+single review result — rather than reporting N loose reviewer messages.
+
 **Two reviewer layers are available:**
 
 #### Layer 1: Reviewer Specialists (`plugin/reviewer-specialists/`)
@@ -310,9 +339,9 @@ Use when the change touches module boundaries, imports, or public APIs:
 2. Launch the selected agents **in parallel** as subagents, passing the diff and repo path. Compose the consolidated `lint-like` reviewer as described above; spawn `correctness` (and `test` when selected) standalone.
    For the test-focused reviewer, explicitly ask whether the changed runtime path is tested directly or only inferred through helper/unit coverage.
 
-   **Claude Code:** spawn each Layer-1 specialist via the `Agent` tool, reading the specialist's `.md` file from `plugin/reviewer-specialists/` as the prompt body:
+   **Claude Code:** spawn each Layer-1 specialist via the `Agent` tool, reading the specialist's `.md` file from `plugin/reviewer-specialists/` as the prompt body, prefixed with the machine-event marker header (see *Structured fan-out* above):
    ```
-   Agent({ subagent_type: "general-purpose", prompt: "<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>" })
+   Agent({ subagent_type: "general-purpose", prompt: "[[kookr-workflow:reviewer-fanout]] role=correctness workflow=reviewer-fanout:<branch>\n<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>" })
    ```
    For Layer-2 architecture agents use `Agent({ subagent_type: "kookr-toolkit:<name>" })`.
 
@@ -320,7 +349,7 @@ Use when the change touches module boundaries, imports, or public APIs:
    ```
    spawn_agent({
      task_name: "review_correctness",
-     instructions: "<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>"
+     instructions: "[[kookr-workflow:reviewer-fanout]] role=correctness workflow=reviewer-fanout:<branch>\n<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>"
    })
    ```
    Then `wait_agent` on all spawned ids. Do NOT fall back to forging a `.review-state/<branch>.json` marker via shell — that bypasses the review the gate exists to enforce. Layer-2 architecture agents on Codex follow the same `spawn_agent` pattern, naming the role in `task_name`.
