@@ -26,6 +26,21 @@ Kookr starts the agent in a persistent dtach session. If the server restarts, th
 
 For Ralph loops that look stopped after a crash or show a **Replace with new** recovery dialog, see [Ralph Loop Stopped Or Shows "Replace With New"](troubleshooting.md#ralph-loop-stopped-or-shows-replace-with-new).
 
+### Protecting A Worktree From Automatic Cleanup
+
+When a task completes, Kookr normally removes its managed git worktree. To keep a long-lived worktree, create a `.kookr-protected` file at the worktree root before the task completes:
+
+```text
+production runtime
+parentRepo: /home/me/git/project
+```
+
+For managed task worktree cleanup, the file's presence makes Kookr skip removal with reason `protected`. The first non-empty line is an optional human-readable reason. The optional `parentRepo:` field identifies the parent repository when Kookr needs to resolve it; replace the example path with the real absolute path. A production checkout such as `kookr-prod` should use this marker when it must remain long-lived.
+
+This marker does not preserve Kookr's ephemeral reflection worktrees. Those carry a separate `.kookr-reflect.json` identity marker and are intentionally force-removed when their reflection task ends.
+
+Remove `.kookr-protected` only when the worktree may be cleaned up normally again. The filename must be exact and the file must be at the worktree root.
+
 ## Responding To Findings
 
 When a finding appears:
