@@ -1,0 +1,105 @@
+{
+  "schema": "grok-build-compatibility.v1",
+  "binary": {
+    "packageName": "@xai-official/grok",
+    "version": "0.2.93",
+    "buildId": "f00f96316d",
+    "canonicalPath": "<HOME>/.grok/bin/grok-0.2.93",
+    "sha256": "4e0738d3b5550f3c842bc0ae69f468815c6329c008a110d0c27a694dc3401135",
+    "sizeBytes": 159465672,
+    "npmIntegrity": "sha512-StW5WskGJYc3RRMylkNDyYogfJKf5tuzzdq1BMKTTHfFW3cHKABgly/r6tJWPFcnBhsWIQuW0npdZIcJCO6ugA==",
+    "ownership": "owner 755 (rwxr-xr-x)"
+  },
+  "platform": {
+    "os": "linux",
+    "arch": "x86_64",
+    "libc": "glibc 2.35",
+    "kernel": "6.6.87.2-microsoft-standard-WSL2",
+    "distro": "Ubuntu 22.04.3 LTS (WSL2)"
+  },
+  "probeRevision": "docs/poc/009-grok-build-basic-supervision/run-poc.sh (POC-A, 2026-07-11)",
+  "pluginRevision": "kookr-toolkit-poc@0.0.1 (synthetic POC fixture: one sentinel skill + benign hook)",
+  "authCategory": "oauth",
+  "selectedModel": "grok-build",
+  "capturedAt": "2026-07-11T12:16Z",
+  "reviewStatus": "tested",
+  "reviewedBy": "POC-A operator run (issue #1339)",
+  "gates": [
+    {
+      "id": "additive_hook_injection",
+      "verdict": "pass",
+      "evidence": "Two independent hook sources (simulated user + Kookr monitoring) both executed for every lifecycle event in the same session; merging across ~/.grok/hooks, ~/.claude/settings.json and plugin hooks is documented and observed.",
+      "fixtureRefs": ["fixtures/hook-payloads.redacted.json", "fixtures/results.redacted.json"]
+    },
+    {
+      "id": "minimum_supervision",
+      "verdict": "pass",
+      "evidence": "A harmless `echo` tool call fired pre_tool_use and post_tool_use with toolName=run_terminal_command and toolInput.command; the command executed (exit 0). Stable sessionId correlates the events.",
+      "fixtureRefs": ["fixtures/hook-payloads.redacted.json"]
+    },
+    {
+      "id": "permission_visibility",
+      "verdict": "pass",
+      "evidence": "A blocking permission produces a reliable structured signal: a Kookr PreToolUse hook receives toolName+toolInput and returns an explicit deny decision; the blocked command never runs (no post_tool_use). CAVEAT: the advertised dedicated PermissionDenied event did NOT fire for --deny-rule or hook-deny blocks in headless -p; Kookr must detect blocks via PreToolUse-without-PostToolUse and its own deny decisions, not by relying on a PermissionDenied event.",
+      "fixtureRefs": ["fixtures/results.redacted.json"]
+    },
+    {
+      "id": "toolkit_discovery",
+      "verdict": "pass",
+      "evidence": "A synthetic Kookr toolkit plugin placed in the (isolated) ~/.grok/plugins/ user scope is discovered by `grok inspect --json` with provides.skills=1, hooks=true.",
+      "fixtureRefs": ["fixtures/results.redacted.json"]
+    },
+    {
+      "id": "toolkit_invocation",
+      "verdict": "pass",
+      "evidence": "From an arbitrary cwd the model invoked the injected sentinel skill and emitted its unique token SKILL_SENTINEL_5E1D.",
+      "fixtureRefs": ["fixtures/results.redacted.json"]
+    },
+    {
+      "id": "instruction_discovery",
+      "verdict": "pass",
+      "evidence": "`grok inspect --json` lists both CLAUDE.md and AGENTS.md under projectInstructions (fileType agents_md, scope project) in independent single-file cwds.",
+      "fixtureRefs": ["fixtures/instruction-discovery.redacted.json"]
+    },
+    {
+      "id": "instruction_following",
+      "verdict": "pass",
+      "evidence": "In two independent runs from non-Kookr cwds the model followed the project instruction file and returned the exact sentinels CLAUDE_SENTINEL_7F3A (CLAUDE.md-only cwd) and AGENTS_SENTINEL_9B2C (AGENTS.md-only cwd).",
+      "fixtureRefs": ["fixtures/results.redacted.json"]
+    },
+    {
+      "id": "interactive_dtach",
+      "verdict": "pass",
+      "evidence": "Under a real PTY the TUI reached readiness (honoring --no-alt-screen), accepted byte-level input, and the initial prompt/approval flow worked. Additionally confirmed through Kookr's own vendored dtach (vendor/dtach/dtach): grok launched detached, held a live socket, and accepted byte input via `dtach -p`, then drained cleanly on kill. Interactive user-driven deny signal shape is POC-B follow-up.",
+      "fixtureRefs": ["fixtures/pty-interactive.redacted.json"]
+    },
+    {
+      "id": "stable_outcome",
+      "verdict": "pass",
+      "evidence": "Success: Stop.reason=end_turn + clean exit(0) => completed. Failure (403): Stop.reason=error + StopFailure(http_status 403) + exit(1) => terminated; process evidence overrides. NOTE: SessionEnd does NOT fire in headless -p, so Kookr must classify from Stop.reason + process exit, not SessionEnd.",
+      "fixtureRefs": ["fixtures/hook-payloads.redacted.json"]
+    },
+    {
+      "id": "child_control",
+      "verdict": "pass",
+      "evidence": "Satisfied via the correlation path: subagent_start carries a distinct subagentId (child) vs sessionId (parent) plus subagentType and a child transcriptPath. CONSTRAINT: enforceable disablement is NOT reliable — --no-subagents, --disallowed-tools spawn_subagent, and both combined all failed to prevent a spawn in headless -p (--disallowed-tools Task throws an internal error). Slice 1 must supervise subagents via correlation, not assume they are off. subagent_stop was not observed before headless process exit (late-event/drain concern).",
+      "fixtureRefs": ["fixtures/hook-payloads.redacted.json", "fixtures/results.redacted.json"]
+    },
+    {
+      "id": "process_ownership",
+      "verdict": "pass",
+      "evidence": "SIGKILL of the owned PTY process tree drained every descendant (clean_drain=true). Default config spawns no detached leader daemon (no ~/.grok/leader.sock), so no orphaned backend survived.",
+      "fixtureRefs": ["fixtures/pty-interactive.redacted.json"]
+    }
+  ],
+  "decision": "constrained-proceed",
+  "constraints": [
+    "Interactive injection: --plugin-dir is agent-only (interactive root `grok` rejects it). Toolkit distribution must sync into ~/.grok/plugins/ (mirroring the existing ~/.claude/plugins/ deploy flow); launch-scoped monitoring hooks must use per-session GROK_HOME composition, never a persistent ~/.grok mutation.",
+    "Hook schema divergence: Grok payloads are camelCase (sessionId, hookEventName, toolName, toolInput, subagentId) — a Grok-specific decoder is required; Kookr's snake_case parseHookEvent() cannot be reused unchanged.",
+    "Subagent disablement is not enforceable via tested flags; supervise children via subagent_start correlation instead of assuming they are disabled.",
+    "PermissionDenied event not observed for rule/hook denials in headless -p; detect blocks via PreToolUse-without-PostToolUse and Kookr's own deny decisions.",
+    "SessionEnd does not fire in headless -p; rely on Stop.reason + process exit for terminal classification.",
+    "Only this exact build (0.2.93 / f00f96316d / linux-x86_64 / glibc 2.35) is tested; other builds/platforms (incl. macOS) remain unqualified and may run only inside the POC runner.",
+    "Chat-endpoint access requires an account entitlement (console.x.ai); a plain grok.com OAuth login returns HTTP 403 at the chat proxy until enabled."
+  ]
+}

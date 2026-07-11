@@ -1,0 +1,153 @@
+{
+  "generated_at": "2026-07-11T12:26:41.855799Z",
+  "gates": [
+    {
+      "gate": "identity",
+      "verdict": "ok",
+      "evidence": {
+        "launcher_path": "<HOME>/.grok/bin/grok",
+        "canonical_path": "<HOME>/.grok/bin/grok-0.2.93",
+        "version_string": "grok 0.2.93 (f00f96316d) [stable]",
+        "sha256_canonical": "4e0738d3b5550f3c842bc0ae69f468815c6329c008a110d0c27a694dc3401135",
+        "stat_canonical": {
+          "size": 159465672,
+          "mode": "0o755",
+          "uid": 1000,
+          "gid": 1000
+        },
+        "platform": {
+          "system": "Linux",
+          "machine": "x86_64",
+          "libc": [
+            "glibc",
+            "2.35"
+          ],
+          "release": "6.6.87.2-microsoft-standard-WSL2"
+        },
+        "captured_at": "2026-07-11T12:22:31.958000Z"
+      }
+    },
+    {
+      "gate": "instruction_discovery_CLAUDE",
+      "verdict": "pass",
+      "evidence": {
+        "family": "CLAUDE",
+        "discovered": "True"
+      }
+    },
+    {
+      "gate": "instruction_discovery_AGENTS",
+      "verdict": "pass",
+      "evidence": {
+        "family": "AGENTS",
+        "discovered": "True"
+      }
+    },
+    {
+      "gate": "toolkit_discovery",
+      "verdict": "pass",
+      "evidence": {
+        "plugin_discovered": "True"
+      }
+    },
+    {
+      "gate": "instruction_following_CLAUDE",
+      "verdict": "pass",
+      "evidence": {
+        "got": "CLAUDE_SENTINEL_7F3A"
+      }
+    },
+    {
+      "gate": "instruction_following_AGENTS",
+      "verdict": "pass",
+      "evidence": {
+        "got": "AGENTS_SENTINEL_9B2C"
+      }
+    },
+    {
+      "gate": "toolkit_invocation",
+      "verdict": "pass",
+      "evidence": {
+        "got": "SKILL_SENTINEL_5E1D"
+      }
+    },
+    {
+      "gate": "minimum_supervision",
+      "verdict": "pass",
+      "evidence": {
+        "pre_tool_use": 1,
+        "post_tool_use": 1,
+        "tool_ran": 1
+      }
+    },
+    {
+      "gate": "additive_hook_injection",
+      "verdict": "pass",
+      "evidence": {
+        "user_event_types": 5,
+        "kookr_event_types": 5
+      }
+    },
+    {
+      "gate": "permission_visibility",
+      "verdict": "pass",
+      "evidence": {
+        "structured_signals": 2,
+        "command_blocked": 1
+      }
+    },
+    {
+      "gate": "outcome_success",
+      "verdict": "pass",
+      "evidence": {
+        "exit": 0,
+        "stop_reason": "end_turn",
+        "session_end_fired": "False"
+      }
+    },
+    {
+      "gate": "subagent_disable_enforceable",
+      "verdict": "fail",
+      "evidence": {
+        "subagent_start_with_--no-subagents": 2,
+        "note": "informational; 0 == enforceable disable works"
+      }
+    },
+    {
+      "gate": "child_control",
+      "verdict": "pass",
+      "evidence": {
+        "starts": 1,
+        "stops": 0,
+        "distinct_child_id": true,
+        "stop_correlates": false,
+        "parent_session": "019f5124-3bb0-7291-ba33-0f03a3360360",
+        "child_id": "019f5124-5fa6-7690-b866-a350f1d73c88",
+        "child_type": "general-purpose"
+      }
+    },
+    {
+      "gate": "interactive_dtach",
+      "verdict": "pass",
+      "evidence": {
+        "ready": "True",
+        "input": "True"
+      }
+    },
+    {
+      "gate": "process_ownership",
+      "verdict": "pass",
+      "evidence": {
+        "clean_drain": "True"
+      }
+    },
+    {
+      "gate": "canary_secret",
+      "verdict": "warn",
+      "evidence": {
+        "artifacts_containing_secret": 4,
+        "note": "prompt-embedded secret is expected in the session transcript; env secret must not leak into hooks"
+      }
+    }
+  ]
+}

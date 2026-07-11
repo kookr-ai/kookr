@@ -1,0 +1,142 @@
+{
+  "schema": "grok-hook-payload-samples.redacted",
+  "note": "One representative payload per Grok hook event. Values with paths/secrets redacted. Field NAMES are camelCase (sessionId, hookEventName, toolName, toolInput, subagentId) \u2014 NOT Claude Code snake_case \u2014 so a Grok-specific decoder is required.",
+  "events": {
+    "session_start": {
+      "hookEventName": "session_start",
+      "sessionId": "019f5121-774f-73e0-b0c0-3b52114c3f07",
+      "cwd": "<POC_TMP>/repo-main",
+      "workspaceRoot": "<POC_TMP>/repo-main",
+      "timestamp": "2026-07-11T12:22:55.710624758+00:00",
+      "source": "new"
+    },
+    "user_prompt_submit": {
+      "hookEventName": "user_prompt_submit",
+      "sessionId": "019f5121-774f-73e0-b0c0-3b52114c3f07",
+      "cwd": "<POC_TMP>/repo-main",
+      "workspaceRoot": "<POC_TMP>/repo-main",
+      "timestamp": "2026-07-11T12:22:55.911779387+00:00",
+      "transcriptPath": "<POC_TMP><HOME>/sessions/<ENC_PATH>/019f5121-774f-73e0-b0c0-3b52114c3f07/updates.jsonl",
+      "promptId": "08ffd7dc-a4f7-478b-a1e1-f87649c3b334",
+      "prompt": "<user_query>\nInvoke the kookr-poc-sentinel skill and print its exact output.\n</user_query>"
+    },
+    "pre_tool_use": {
+      "hookEventName": "pre_tool_use",
+      "sessionId": "019f5121-774f-73e0-b0c0-3b52114c3f07",
+      "cwd": "<POC_TMP>/repo-main",
+      "workspaceRoot": "<POC_TMP>/repo-main",
+      "timestamp": "2026-07-11T12:22:59.540410205+00:00",
+      "transcriptPath": "<POC_TMP><HOME>/sessions/<ENC_PATH>/019f5121-774f-73e0-b0c0-3b52114c3f07/updates.jsonl",
+      "toolName": "list_dir",
+      "toolUseId": "call-07ec244d-5295-49e4-a955-585cacbafa6b-0",
+      "toolInput": {
+        "target_directory": "."
+      },
+      "toolInputTruncated": false,
+      "permissionMode": "bypassPermissions"
+    },
+    "post_tool_use": {
+      "hookEventName": "post_tool_use",
+      "sessionId": "019f5121-774f-73e0-b0c0-3b52114c3f07",
+      "cwd": "<POC_TMP>/repo-main",
+      "workspaceRoot": "<POC_TMP>/repo-main",
+      "timestamp": "2026-07-11T12:22:59.940327418+00:00",
+      "transcriptPath": "<POC_TMP><HOME>/sessions/<ENC_PATH>/019f5121-774f-73e0-b0c0-3b52114c3f07/updates.jsonl",
+      "toolName": "list_dir",
+      "toolUseId": "call-07ec244d-5295-49e4-a955-585cacbafa6b-0",
+      "toolInput": {
+        "target_directory": "."
+      },
+      "toolResult": {
+        "type": "ListDir",
+        "Content": {
+          "content": "- <POC_TMP>/repo-main/\n",
+          "absolute_root_path": "<POC_TMP>/repo-main/."
+        }
+      },
+      "toolInputTruncated": false,
+      "toolResultTruncated": false,
+      "isBackgrounded": false
+    },
+    "stop[end_turn]": {
+      "hookEventName": "stop",
+      "sessionId": "019f5121-774f-73e0-b0c0-3b52114c3f07",
+      "cwd": "<POC_TMP>/repo-main",
+      "workspaceRoot": "<POC_TMP>/repo-main",
+      "timestamp": "2026-07-11T12:24:00.427574427+00:00",
+      "transcriptPath": "<POC_TMP><HOME>/sessions/<ENC_PATH>/019f5121-774f-73e0-b0c0-3b52114c3f07/updates.jsonl",
+      "promptId": "08ffd7dc-a4f7-478b-a1e1-f87649c3b334",
+      "reason": "end_turn"
+    },
+    "notification": {
+      "hookEventName": "notification",
+      "sessionId": "019f5121-774f-73e0-b0c0-3b52114c3f07",
+      "cwd": "<POC_TMP>/repo-main",
+      "workspaceRoot": "<POC_TMP>/repo-main",
+      "timestamp": "2026-07-11T12:25:00.533791537+00:00",
+      "transcriptPath": "<POC_TMP><HOME>/sessions/<ENC_PATH>/019f5121-774f-73e0-b0c0-3b52114c3f07/updates.jsonl",
+      "notificationType": "idle_prompt",
+      "message": "Turn complete",
+      "level": "info"
+    },
+    "subagent_start": {
+      "hookEventName": "subagent_start",
+      "sessionId": "019f5124-3bb0-7291-ba33-0f03a3360360",
+      "cwd": "<POC_TMP>/repo-main",
+      "workspaceRoot": "<POC_TMP>/repo-main",
+      "timestamp": "2026-07-11T12:26:06.142720612+00:00",
+      "transcriptPath": "<POC_TMP><HOME>/sessions/<ENC_PATH>/019f5124-3bb0-7291-ba33-0f03a3360360/updates.jsonl",
+      "subagentId": "019f5124-5fa6-7690-b866-a350f1d73c88",
+      "subagentType": "general-purpose",
+      "description": "Echo hi then stop"
+    },
+    "session_end": {
+      "hookEventName": "session_end",
+      "sessionId": "019f5124-5fa6-7690-b866-a350f1d73c88",
+      "cwd": "<POC_TMP>/repo-main",
+      "workspaceRoot": "<POC_TMP>/repo-main",
+      "timestamp": "2026-07-11T12:26:26.290542572+00:00",
+      "transcriptPath": "<POC_TMP><HOME>/sessions/<ENC_PATH>/019f5124-5fa6-7690-b866-a350f1d73c88/updates.jsonl",
+      "reason": "shutdown"
+    },
+    "stop[shutdown]": {
+      "hookEventName": "stop",
+      "sessionId": "019f5124-5fa6-7690-b866-a350f1d73c88",
+      "cwd": "<POC_TMP>/repo-main",
+      "workspaceRoot": "<POC_TMP>/repo-main",
+      "timestamp": "2026-07-11T12:26:26.436706001+00:00",
+      "transcriptPath": "<POC_TMP><HOME>/sessions/<ENC_PATH>/019f5124-5fa6-7690-b866-a350f1d73c88/updates.jsonl",
+      "reason": "shutdown"
+    },
+    "stop[cancelled]": {
+      "hookEventName": "stop",
+      "sessionId": "019f5127-14e6-7f03-a30e-608d7cc73a38",
+      "cwd": "<POC_TMP>/repo-main",
+      "workspaceRoot": "<POC_TMP>/repo-main",
+      "timestamp": "2026-07-11T12:29:07.309567075+00:00",
+      "transcriptPath": "<POC_TMP><HOME>/sessions/<ENC_PATH>/019f5127-14e6-7f03-a30e-608d7cc73a38/updates.jsonl",
+      "promptId": "2cba7e27-a149-4089-a235-3e0e446374b1",
+      "reason": "cancelled"
+    },
+    "stop_failure": {
+      "hookEventName": "stop_failure",
+      "sessionId": "019f510a-dd0d-7cb0-802f-b770f3a5825c",
+      "cwd": "<POC_TMP>/repo",
+      "workspaceRoot": "<POC_TMP>/repo",
+      "timestamp": "2026-07-11T11:58:15.312561087+00:00",
+      "transcriptPath": "<POC_TMP><HOME>/sessions/<ENC_PATH>/019f510a-dd0d-7cb0-802f-b770f3a5825c/updates.jsonl",
+      "promptId": "35c0785c-96a4-494b-badd-0ad6d8080d2d",
+      "error": "Internal error: {\n  \"message\": \"API error (status 403 Forbidden): permission-denied: Access to the chat endpoint is denied. Please ensure you're using the correct credentials. If you believe this is a mistake, please log into console.x.ai and update the permissions, or contact support.\\n\\nRequest URL: https://cli-chat-proxy.grok.com/v1/responses\",\n  \"http_status\": 403\n}"
+    },
+    "stop[error]": {
+      "hookEventName": "stop",
+      "sessionId": "019f510a-dd0d-7cb0-802f-b770f3a5825c",
+      "cwd": "<POC_TMP>/repo",
+      "workspaceRoot": "<POC_TMP>/repo",
+      "timestamp": "2026-07-11T11:58:15.558629286+00:00",
+      "transcriptPath": "<POC_TMP><HOME>/sessions/<ENC_PATH>/019f510a-dd0d-7cb0-802f-b770f3a5825c/updates.jsonl",
+      "promptId": "35c0785c-96a4-494b-badd-0ad6d8080d2d",
+      "reason": "error"
+    }
+  }
+}

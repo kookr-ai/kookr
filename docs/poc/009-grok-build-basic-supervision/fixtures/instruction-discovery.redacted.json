@@ -1,0 +1,26 @@
+{
+  "CLAUDE": {
+    "projectInstructions": [
+      {
+        "path": "<POC_TMP>/repo-claude/CLAUDE.md",
+        "scope": "project",
+        "fileType": "agents_md",
+        "sizeBytes": 112,
+        "approxTokens": 28
+      }
+    ],
+    "projectTrusted": true
+  },
+  "AGENTS": {
+    "projectInstructions": [
+      {
+        "path": "<POC_TMP>/repo-agents/AGENTS.md",
+        "scope": "project",
+        "fileType": "agents_md",
+        "sizeBytes": 111,
+        "approxTokens": 27
+      }
+    ],
+    "projectTrusted": true
+  }
+}
