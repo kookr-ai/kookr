@@ -72,6 +72,41 @@ describe('implement-github-issue playbook', () => {
     expect(pb.body).toMatch(/skip issues with labels.*automation-blocked.*question/i);
   });
 
+  test('uses the deployed issue-claim API contract', () => {
+    const phase2 = pb.body.slice(pb.body.indexOf('Phase 2: Acquire or Resume Claim'), pb.body.indexOf('Phase 2.5:'));
+    const quarantine = pb.body.slice(pb.body.indexOf('Phase 2.6:'), pb.body.indexOf('Phase 3:'));
+    const release = pb.body.slice(pb.body.indexOf('Release completed claims when possible'), pb.body.indexOf('If no further action is possible'));
+    const claimBody = '-d "{\\"repo\\":\\"$REPO\\",\\"number\\":$TARGET,\\"taskId\\":\\"$KOOKR_TASK_ID\\"}"';
+
+    expect(phase2).toContain('$KOOKR_API_BASE_URL/api/issue-claims?repo=$REPO&number=$TARGET');
+    expect(phase2).toContain("CLAIM_OWNER_TASK_ID=$(jq -r '.[0].taskId // empty'");
+    expect(phase2).toContain('if [ "$CLAIM_OWNER_TASK_ID" = "$KOOKR_TASK_ID" ]; then\n        CLAIM_OWNED=1\n      fi');
+    expect(phase2).toContain('-X POST "$KOOKR_API_BASE_URL/api/issue-claims"');
+    expect(phase2).toContain(claimBody);
+    expect(phase2).toContain('404)\n      echo "issue-claims API not deployed (HTTP 404); proceeding without claim coordination."');
+    expect(phase2).toContain('CLAIM_OWNED=1');
+    expect(phase2).toContain('409)');
+    expect(phase2).toContain('stop_for_claim_blocker "Issue is already claimed by another task" "claim_contended" 0');
+    expect(phase2).toContain('stop_for_claim_blocker "Issue claims probe failed with HTTP $PROBE_STATUS" "claims_api_unavailable" 1');
+    expect(phase2).toContain('stop_for_claim_blocker "Issue claim acquisition failed with HTTP $CLAIM_STATUS" "claims_api_unavailable" 1');
+    expect(phase2).toContain('--argjson iteration "$RALPH_ITERATION"');
+    expect(phase2).toContain('--arg target "$TARGET"');
+    expect(phase2).toContain('--argjson targetTitle "$TARGET_TITLE_JSON"');
+    expect(phase2).toContain("'{verdict:\"stalled\",iteration:$iteration,target:$target,targetTitle:$targetTitle,reason:$reason,blockers:[$blocker]}'");
+    expect(phase2).toContain('> "${RALPH_VERDICT_FILE}.tmp"');
+    expect(phase2).toContain('mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"');
+    expect(phase2).toContain('exit "$exit_code"');
+    for (const section of [quarantine, release]) {
+      expect(section).toContain('CLAIMS_API_AVAILABLE:-0');
+      expect(section).toContain('CLAIM_OWNED:-0');
+      expect(section).toContain('-X DELETE "$KOOKR_API_BASE_URL/api/issue-claims"');
+      expect(section).toContain(claimBody);
+    }
+    expect(pb.body).not.toContain('/api/issue-claims/acquire');
+    expect(pb.body).not.toContain('/api/issue-claims/heartbeat');
+    expect(pb.body).not.toContain('/api/issue-claims/release');
+  });
+
   test('defines an automation-quarantine path for trusted non-implementable issues', () => {
     expect(pb.body).toMatch(/automation-quarantine/i);
     expect(pb.body).toContain('gh issue comment "$TARGET"');

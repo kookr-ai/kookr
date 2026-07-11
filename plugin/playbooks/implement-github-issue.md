@@ -162,7 +162,7 @@ Read the trimmed selector from `{{issueSelector}}`. Take the first non-blank non
 
 ```bash
 gh issue list --repo "$REPO" --state open --limit 50 --json number,title,labels,assignees,updatedAt
-curl -fsS "$KOOKR_API_BASE_URL/api/issue-claims?provider=github&repo=$REPO" 2>/dev/null || true
+curl -fsS "$KOOKR_API_BASE_URL/api/issue-claims?repo=$REPO" 2>/dev/null || true
 ```
 
 The candidate set in blank shape is the full open-issue list; eligibility is filtered in Step 0d.
@@ -275,62 +275,83 @@ If `{{closeUnworthyIssues}}` is `true` and the issue is clearly not worth implem
 
 ## Phase 2: Acquire or Resume Claim
 
-Use Kookr's issue-claim lease as the machine lock **when the API is deployed**. The endpoint is optional: not every Kookr build ships it. Probe first; treat a 404 as "no claim coordination available, proceed without it" — do **not** stop. A 200 with no `claimId` means another live task owns the claim — stop in that case.
+Use Kookr's issue claim as the machine lock **when the API is deployed**. The endpoint is optional: not every Kookr build ships it. Probe first; treat a 404 as "no claim coordination available, proceed without it" — do **not** stop. `GET /api/issue-claims` returns an array directly. A matching row owned by this task means resume; a matching row owned by another task means stop. Acquisition is a re-entrant `POST` to the same endpoint and returns HTTP 409 when another live task owns the claim.
 
 ```bash
-CLAIM_ID=""
+CLAIM_OWNED=0
 CLAIMS_API_AVAILABLE=0
+
+stop_for_claim_blocker() {
+  local reason="$1"
+  local blocker="$2"
+  local exit_code="$3"
+  if [ -n "${RALPH_VERDICT_FILE:-}" ] && [ -n "${RALPH_ITERATION:-}" ]; then
+    jq -n \
+      --argjson iteration "$RALPH_ITERATION" \
+      --arg target "$TARGET" \
+      --argjson targetTitle "$TARGET_TITLE_JSON" \
+      --arg reason "$reason" \
+      --arg blocker "$blocker" \
+      '{verdict:"stalled",iteration:$iteration,target:$target,targetTitle:$targetTitle,reason:$reason,blockers:[$blocker]}' \
+      > "${RALPH_VERDICT_FILE}.tmp"
+    mv "${RALPH_VERDICT_FILE}.tmp" "$RALPH_VERDICT_FILE"
+  fi
+  echo "$reason"
+  exit "$exit_code"
+}
+
 if [ -n "${KOOKR_API_BASE_URL:-}" ] && [ -n "${KOOKR_TASK_ID:-}" ]; then
   PROBE_STATUS=$(curl -sS -o /tmp/kookr-claims-probe.$$ -w '%{http_code}' \
-    "$KOOKR_API_BASE_URL/api/issue-claims?provider=github&repo=$REPO" || echo "000")
+    "$KOOKR_API_BASE_URL/api/issue-claims?repo=$REPO&number=$TARGET") || PROBE_STATUS="000"
   case "$PROBE_STATUS" in
     2*)
       CLAIMS_API_AVAILABLE=1
-      CLAIM_ID=$(jq -r --argjson issue "$TARGET" --arg task "$KOOKR_TASK_ID" \
-          '.leases[]? | select(.issueNumber == $issue and .status == "active" and .ownerTaskId == $task) | .claimId' \
-          /tmp/kookr-claims-probe.$$ 2>/dev/null | head -n 1)
+      CLAIM_OWNER_TASK_ID=$(jq -r '.[0].taskId // empty' /tmp/kookr-claims-probe.$$ 2>/dev/null)
+      if [ -n "$CLAIM_OWNER_TASK_ID" ] && [ "$CLAIM_OWNER_TASK_ID" != "$KOOKR_TASK_ID" ]; then
+        rm -f /tmp/kookr-claims-probe.$$
+        stop_for_claim_blocker "Issue is already claimed by another task: $CLAIM_OWNER_TASK_ID" "claim_contended" 0
+      fi
+      if [ "$CLAIM_OWNER_TASK_ID" = "$KOOKR_TASK_ID" ]; then
+        CLAIM_OWNED=1
+      fi
       ;;
     404)
       echo "issue-claims API not deployed (HTTP 404); proceeding without claim coordination."
       ;;
     *)
-      echo "issue-claims probe returned HTTP $PROBE_STATUS; proceeding without claim coordination."
+      rm -f /tmp/kookr-claims-probe.$$
+      stop_for_claim_blocker "Issue claims probe failed with HTTP $PROBE_STATUS" "claims_api_unavailable" 1
       ;;
   esac
   rm -f /tmp/kookr-claims-probe.$$
 fi
 
-if [ "$CLAIMS_API_AVAILABLE" -eq 1 ] && [ -z "$CLAIM_ID" ]; then
-  CLAIM_RESPONSE=$(curl -sS -X POST "$KOOKR_API_BASE_URL/api/issue-claims/acquire" \
+if [ "$CLAIMS_API_AVAILABLE" -eq 1 ] && [ "$CLAIM_OWNED" -eq 0 ]; then
+  CLAIM_STATUS=$(curl -sS -o /tmp/kookr-claim-response.$$ -w '%{http_code}' \
+    -X POST "$KOOKR_API_BASE_URL/api/issue-claims" \
     -H 'Content-Type: application/json' \
-    -d "{\"provider\":\"github\",\"repo\":\"$REPO\",\"issueNumber\":$TARGET,\"ownerTaskId\":\"$KOOKR_TASK_ID\"}")
-  CLAIM_ID=$(printf '%s' "$CLAIM_RESPONSE" | jq -r '.lease.claimId // empty')
-
-  if [ -z "$CLAIM_ID" ]; then
-    printf '%s\n' "$CLAIM_RESPONSE"
-    echo "Issue is already claimed by another task; stopping."
-    exit 0
-  fi
-fi
-
-if [ "$CLAIMS_API_AVAILABLE" -eq 1 ] && [ -n "$CLAIM_ID" ]; then
-  curl -fsS -X POST "$KOOKR_API_BASE_URL/api/issue-claims/heartbeat" \
-    -H 'Content-Type: application/json' \
-    -d "{\"claimId\":\"$CLAIM_ID\",\"ownerTaskId\":\"$KOOKR_TASK_ID\"}" || true
-fi
-```
-
-If the acquire response says another live task owns the claim, stop without doing work. If this task already owns the claim, resume using its `claimId`. If the claims API isn't deployed (404 from the probe), continue without coordination — duplicate-PR protection in Phase 0d/Phase 4 still prevents collisions.
-
-Heartbeat the claim after long operations (only when the API is available):
-
-```bash
-if [ "${CLAIMS_API_AVAILABLE:-0}" -eq 1 ] && [ -n "${CLAIM_ID:-}" ]; then
-  curl -fsS -X POST "$KOOKR_API_BASE_URL/api/issue-claims/heartbeat" \
-    -H 'Content-Type: application/json' \
-    -d "{\"claimId\":\"$CLAIM_ID\",\"ownerTaskId\":\"$KOOKR_TASK_ID\"}" || true
+    -d "{\"repo\":\"$REPO\",\"number\":$TARGET,\"taskId\":\"$KOOKR_TASK_ID\"}") \
+    || CLAIM_STATUS="000"
+  case "$CLAIM_STATUS" in
+    2*) CLAIM_OWNED=1 ;;
+    409)
+      cat /tmp/kookr-claim-response.$$
+      rm -f /tmp/kookr-claim-response.$$
+      stop_for_claim_blocker "Issue is already claimed by another task" "claim_contended" 0
+      ;;
+    *)
+      cat /tmp/kookr-claim-response.$$
+      rm -f /tmp/kookr-claim-response.$$
+      stop_for_claim_blocker "Issue claim acquisition failed with HTTP $CLAIM_STATUS" "claims_api_unavailable" 1
+      ;;
+  esac
+  rm -f /tmp/kookr-claim-response.$$
 fi
 ```
+
+If the acquire response says another live task owns the claim, stop without doing work. If this task already owns the claim, resume; `POST` is re-entrant as a race-safe backstop. If the claims API isn't deployed (404 from the probe), continue without coordination — duplicate-PR protection in Phase 0d/Phase 4 still prevents collisions.
+
+There is no separate claim-heartbeat route. The registry derives freshness from the owning task's activity and reconciles claims when tasks become terminal or dead.
 
 ## Phase 2.5: Apply KB-First Task Policy
 
@@ -362,10 +383,10 @@ gh api "repos/$REPO/labels/automation-blocked" >/dev/null 2>&1 || \
 gh issue edit "$TARGET" --repo "$REPO" --add-label automation-blocked
 gh issue comment "$TARGET" --repo "$REPO" --body "Automation note: Ralph selected this issue, but it is not currently an implementable unit. I added \`automation-blocked\` so implementation automation will skip it. Once the human decision or concrete acceptance criteria exist, remove the label or open a focused follow-up issue."
 
-if [ "${CLAIMS_API_AVAILABLE:-0}" -eq 1 ] && [ -n "${CLAIM_ID:-}" ]; then
-  curl -fsS -X POST "$KOOKR_API_BASE_URL/api/issue-claims/release" \
+if [ "${CLAIMS_API_AVAILABLE:-0}" -eq 1 ] && [ "${CLAIM_OWNED:-0}" -eq 1 ]; then
+  curl -fsS -X DELETE "$KOOKR_API_BASE_URL/api/issue-claims" \
     -H 'Content-Type: application/json' \
-    -d "{\"claimId\":\"$CLAIM_ID\",\"status\":\"completed\"}" || true
+    -d "{\"repo\":\"$REPO\",\"number\":$TARGET,\"taskId\":\"$KOOKR_TASK_ID\"}" || true
 fi
 
 REASON="target is not currently an implementable automation unit"
@@ -526,14 +547,14 @@ If `{{mergeAfterImplementation}}` is `true`:
 Release completed claims when possible (only when the API is available and a claim was actually acquired):
 
 ```bash
-if [ "${CLAIMS_API_AVAILABLE:-0}" -eq 1 ] && [ -n "${CLAIM_ID:-}" ]; then
-  curl -fsS -X POST "$KOOKR_API_BASE_URL/api/issue-claims/release" \
+if [ "${CLAIMS_API_AVAILABLE:-0}" -eq 1 ] && [ "${CLAIM_OWNED:-0}" -eq 1 ]; then
+  curl -fsS -X DELETE "$KOOKR_API_BASE_URL/api/issue-claims" \
     -H 'Content-Type: application/json' \
-    -d "{\"claimId\":\"$CLAIM_ID\",\"status\":\"completed\"}" || true
+    -d "{\"repo\":\"$REPO\",\"number\":$TARGET,\"taskId\":\"$KOOKR_TASK_ID\"}" || true
 fi
 ```
 
-If no further action is possible because external review/checks are pending, leave a concise status note in the PR only if there is new evidence, heartbeat the claim if appropriate, and stop. The next Ralph iteration will re-check the external state.
+If no further action is possible because external review/checks are pending, leave a concise status note in the PR only if there is new evidence, leave the claim owned so task activity supplies freshness, and stop. The next Ralph iteration will re-check the external state.
 
 If `{{selfContinuation}}` is `true` and you are NOT running in Ralph loop mode, after the PR for this target is merged use the `self-continuation-task` skill to spawn a fresh Kookr task that re-runs this playbook for the next batch, forwarding the same parameter values (repo, selector, merge policy, and these toggles). This chains batches without the built-in loop. In Ralph loop mode, do nothing extra — the loop already advances to the next target.
 
