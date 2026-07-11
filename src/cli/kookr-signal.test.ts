@@ -150,6 +150,31 @@ describe('kookr signal main', () => {
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({ kind: 'completion_ready', note: 'tests green' });
   });
 
+  it('is idempotent: a repeated completion-ready signal still exits 0', async () => {
+    const exit = vi.fn();
+    // The CLI reports success on every attempt rather than surfacing a spurious
+    // failure on a repeat raise. (Store-level idempotency — preserving the
+    // original raisedAt — is covered directly in src/core/tasks.test.ts.)
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      for (let i = 0; i < 2; i++) {
+        await main({
+          argv: ['completion-ready'],
+          env: { KOOKR_TASK_ID: 't-1', KOOKR_API_BASE_URL: 'http://127.0.0.1:4800' },
+          out: { log: () => {} },
+          err: { error: () => {} },
+          exit,
+        });
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(exit).toHaveBeenNthCalledWith(1, EXIT_OK);
+    expect(exit).toHaveBeenNthCalledWith(2, EXIT_OK);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('emits a success JSON envelope with server truncation state', async () => {
     const { out, err, logs, errs } = mkConsole();
     const exit = vi.fn();

@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest';
 import { TaskStore, InvalidTransitionError, isTerminalStatus, isActiveStatus, type Task, type TokenUsage } from './tasks.js';
-import type { TaskStatus } from './types.js';
+import type { AgentEvent, TaskStatus } from './types.js';
 
 describe('TaskStore', () => {
   let store: TaskStore;
@@ -1559,16 +1559,41 @@ describe('TaskStore pending agent signal', () => {
     expect(store.clearPendingSignal(task.id)).toBe(false);
   });
 
-  test('setPendingSignal replaces in place (idempotent per task)', () => {
+  test('setPendingSignal is idempotent per kind: preserves raisedAt, merges a new note', () => {
     const store = new TaskStore();
     const task = store.createTask('Ship it', '/repo');
     store.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-05T12:00:00.000Z' });
+    // A repeat completion-ready signal keeps the original raisedAt (no review-window
+    // churn) but adopts a freshly supplied note.
     store.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-05T13:00:00.000Z', note: 'now with PR' });
     expect(store.getPendingSignal(task.id)).toEqual({
       kind: 'completion_ready',
-      raisedAt: '2026-06-05T13:00:00.000Z',
+      raisedAt: '2026-06-05T12:00:00.000Z',
       note: 'now with PR',
     });
+  });
+
+  test('setPendingSignal re-raise without a note preserves the existing note', () => {
+    const store = new TaskStore();
+    const task = store.createTask('Ship it', '/repo');
+    store.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-05T12:00:00.000Z', note: 'PR #1' });
+    // A note-less re-raise keeps both the original raisedAt and the prior note.
+    store.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-05T13:00:00.000Z' });
+    expect(store.getPendingSignal(task.id)).toEqual({
+      kind: 'completion_ready',
+      raisedAt: '2026-06-05T12:00:00.000Z',
+      note: 'PR #1',
+    });
+  });
+
+  test('recordCompletionRemediation round-trips a fingerprint and clears on delete', () => {
+    const store = new TaskStore();
+    const task = store.createTask('Ship it', '/repo');
+    expect(store.getCompletionRemediationFingerprint(task.id)).toBeUndefined();
+    store.recordCompletionRemediation(task.id, 'fp-1');
+    expect(store.getCompletionRemediationFingerprint(task.id)).toBe('fp-1');
+    store.deleteTask(task.id);
+    expect(store.getCompletionRemediationFingerprint(task.id)).toBeUndefined();
   });
 
   test('set/clear are no-ops for unknown tasks', () => {
@@ -1576,6 +1601,64 @@ describe('TaskStore pending agent signal', () => {
     expect(store.setPendingSignal('missing', { kind: 'completion_ready', raisedAt: 'x' })).toBe(false);
     expect(store.clearPendingSignal('missing')).toBe(false);
     expect(store.getPendingSignal('missing')).toBeUndefined();
+  });
+});
+
+describe('TaskStore.evaluateCompletionSignal', () => {
+  const completedTurn: AgentEvent[] = [
+    { type: 'user_prompt', sessionId: 's1', prompt: 'continue', eventSeq: 1 },
+    { type: 'stop', sessionId: 's1', lastMessage: 'Implemented and pushed.', eventSeq: 2 },
+  ];
+
+  function inProgressTask(store: TaskStore, opts: Parameters<TaskStore['createTask']>[0] = { prompt: 'Ship it', cwd: '/repo' }) {
+    const task = store.createTask(opts);
+    store.addSession(task.id, { tmuxSession: 'kookr-x', agentType: 'claude-code', cwd: '/repo', createdAt: new Date() });
+    return task;
+  }
+
+  test('remediates once, then suppresses the identical follow-up (once per state)', () => {
+    const store = new TaskStore();
+    const task = inProgressTask(store);
+
+    const first = store.evaluateCompletionSignal(task.id, completedTurn);
+    expect(first.action).toBe('remediate');
+    expect(store.getCompletionRemediationFingerprint(task.id)).toBe(first.stateFingerprint);
+
+    const repeat = store.evaluateCompletionSignal(task.id, completedTurn);
+    expect(repeat.action).toBe('skip');
+    expect(repeat.reason).toBe('remediation_already_delivered');
+  });
+
+  test('auto-signals a pre-authorized task and is idempotent once signaled', () => {
+    const store = new TaskStore();
+    const task = inProgressTask(store, { prompt: 'Ship it', cwd: '/repo', deliveryAuthorization: 'pre-authorized' });
+
+    expect(store.evaluateCompletionSignal(task.id, completedTurn).action).toBe('auto_signal');
+
+    store.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-07-11T00:00:00.000Z' });
+    const afterSignal = store.evaluateCompletionSignal(task.id, completedTurn);
+    expect(afterSignal.action).toBe('skip');
+    expect(afterSignal.reason).toBe('already_signaled');
+  });
+
+  test('never auto-signals a delivery-gated (ask-first) task with unsatisfied delivery', () => {
+    const store = new TaskStore();
+    const task = inProgressTask(store, { prompt: 'Ship it', cwd: '/repo', deliveryAuthorization: 'ask-first' });
+
+    const decision = store.evaluateCompletionSignal(task.id, completedTurn);
+    expect(decision.action).toBe('skip');
+    expect(decision.reason).toBe('delivery_blocked');
+
+    // Once delivery is satisfied it becomes eligible to auto-signal.
+    expect(store.evaluateCompletionSignal(task.id, completedTurn, { deliverySatisfied: true }).action).toBe('auto_signal');
+  });
+
+  test('skips an unknown task without throwing', () => {
+    const store = new TaskStore();
+    expect(store.evaluateCompletionSignal('missing', completedTurn)).toMatchObject({
+      action: 'skip',
+      reason: 'unknown_task',
+    });
   });
 });
 
