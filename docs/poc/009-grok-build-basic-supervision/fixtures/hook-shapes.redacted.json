@@ -1,0 +1,126 @@
+{
+  "schema": "grok-hook-payload-shapes.poc",
+  "events": {
+    "session_start": {
+      "grok_hook_event": "session_start",
+      "payload_field_kinds": {
+        "hookEventName": "str",
+        "sessionId": "str",
+        "cwd": "str",
+        "workspaceRoot": "str",
+        "timestamp": "str",
+        "source": "str"
+      }
+    },
+    "user_prompt_submit": {
+      "grok_hook_event": "user_prompt_submit",
+      "payload_field_kinds": {
+        "hookEventName": "str",
+        "sessionId": "str",
+        "cwd": "str",
+        "workspaceRoot": "str",
+        "timestamp": "str",
+        "transcriptPath": "str",
+        "promptId": "str",
+        "prompt": "str"
+      }
+    },
+    "pre_tool_use": {
+      "grok_hook_event": "pre_tool_use",
+      "payload_field_kinds": {
+        "hookEventName": "str",
+        "sessionId": "str",
+        "cwd": "str",
+        "workspaceRoot": "str",
+        "timestamp": "str",
+        "transcriptPath": "str",
+        "toolName": "str",
+        "toolUseId": "str",
+        "toolInput": {
+          "target_directory": "str"
+        },
+        "toolInputTruncated": "bool",
+        "permissionMode": "str"
+      }
+    },
+    "post_tool_use": {
+      "grok_hook_event": "post_tool_use",
+      "payload_field_kinds": {
+        "hookEventName": "str",
+        "sessionId": "str",
+        "cwd": "str",
+        "workspaceRoot": "str",
+        "timestamp": "str",
+        "transcriptPath": "str",
+        "toolName": "str",
+        "toolUseId": "str",
+        "toolInput": {
+          "target_directory": "str"
+        },
+        "toolResult": {
+          "type": "str",
+          "Content": {
+            "content": "str",
+            "absolute_root_path": "str"
+          }
+        },
+        "toolInputTruncated": "bool",
+        "toolResultTruncated": "bool",
+        "isBackgrounded": "bool"
+      }
+    },
+    "stop": {
+      "grok_hook_event": "stop",
+      "payload_field_kinds": {
+        "hookEventName": "str",
+        "sessionId": "str",
+        "cwd": "str",
+        "workspaceRoot": "str",
+        "timestamp": "str",
+        "transcriptPath": "str",
+        "promptId": "str",
+        "reason": "str"
+      }
+    },
+    "notification": {
+      "grok_hook_event": "notification",
+      "payload_field_kinds": {
+        "hookEventName": "str",
+        "sessionId": "str",
+        "cwd": "str",
+        "workspaceRoot": "str",
+        "timestamp": "str",
+        "transcriptPath": "str",
+        "notificationType": "str",
+        "message": "str",
+        "level": "str"
+      }
+    },
+    "subagent_start": {
+      "grok_hook_event": "subagent_start",
+      "payload_field_kinds": {
+        "hookEventName": "str",
+        "sessionId": "str",
+        "cwd": "str",
+        "workspaceRoot": "str",
+        "timestamp": "str",
+        "transcriptPath": "str",
+        "subagentId": "str",
+        "subagentType": "str",
+        "description": "str"
+      }
+    },
+    "session_end": {
+      "grok_hook_event": "session_end",
+      "payload_field_kinds": {
+        "hookEventName": "str",
+        "sessionId": "str",
+        "cwd": "str",
+        "workspaceRoot": "str",
+        "timestamp": "str",
+        "transcriptPath": "str",
+        "reason": "str"
+      }
+    }
+  }
+}

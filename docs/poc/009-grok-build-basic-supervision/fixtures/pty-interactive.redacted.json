@@ -1,0 +1,18 @@
+{
+  "ready": true,
+  "ready_at": 0.94,
+  "input_accepted": true,
+  "approval_prompt_seen": false,
+  "bytes_captured": 93,
+  "exit_code": 9,
+  "tree_pids_before": [
+    1782338
+  ],
+  "tree_pids_after_kill": [],
+  "clean_drain": true,
+  "readiness_markers": [
+    "grok"
+  ],
+  "note": "",
+  "capture_head": "\\x1b]0;grok\\x07\\x1b[?1000h\\x1b[?1002h\\x1b[?1003h\\x1b[?1015h\\x1b[?1006h\\x1b[?1004h\\x1b[?2004h\\x1b[?25l\\x1b]12;rgb:c8/c8/c8\\x07\\x1b[6n"
+}

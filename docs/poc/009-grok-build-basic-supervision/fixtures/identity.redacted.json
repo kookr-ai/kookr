@@ -1,0 +1,22 @@
+{
+  "launcher_path": "<HOME>/.grok/bin/grok",
+  "canonical_path": "<HOME>/.grok/bin/grok-0.2.93",
+  "version_string": "grok 0.2.93 (f00f96316d) [stable]",
+  "sha256_canonical": "4e0738d3b5550f3c842bc0ae69f468815c6329c008a110d0c27a694dc3401135",
+  "stat_canonical": {
+    "size": 159465672,
+    "mode": "0o755",
+    "uid": 1000,
+    "gid": 1000
+  },
+  "platform": {
+    "system": "Linux",
+    "machine": "x86_64",
+    "libc": [
+      "glibc",
+      "2.35"
+    ],
+    "release": "6.6.87.2-microsoft-standard-WSL2"
+  },
+  "captured_at": "2026-07-11T12:22:31.958000Z"
+}
