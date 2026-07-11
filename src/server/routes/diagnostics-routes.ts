@@ -136,6 +136,20 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     }
   });
 
+  app.get('/api/health/tts', async (c) => {
+    if (!deps.ttsUrl) return c.json({ status: 'disabled' }, 200);
+    try {
+      const res = await fetch(`${deps.ttsUrl.replace(/\/$/, '')}/health`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!res.ok) return c.json({ status: 'unavailable' }, 200);
+      return c.json(await res.json());
+    } catch {
+      // TTS is optional, so runtime probe failures are soft health signals.
+      return c.json({ status: 'unavailable' }, 200);
+    }
+  });
+
   // Debug endpoint: full fidelity (not projected). Operators need the raw
   // toolResponse / toolInput / lastMessage for incident investigation.
   app.get('/api/snapshot', (c) => c.json(getSnapshotAgentsRaw({ monitor: deps.monitor })));
