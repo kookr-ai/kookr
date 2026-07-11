@@ -3,6 +3,7 @@ import { useKookrStore } from '../store/useStore.js';
 import { isAudibleAlertEnabled, useSoundPreference } from '../audio/sound.js';
 import { isDndEnabled } from './useDnd.js';
 import { isProjectNotificationMuted } from './useProjectNotificationMute.js';
+import { projectLabel } from '../presentation.js';
 import type { AgentState } from '../../shared/protocol.js';
 
 /**
@@ -81,10 +82,17 @@ export function useNotifications() {
     if (Notification.permission !== 'granted') return;
 
     for (const agent of newFindings) {
-      const title = agent.anomaly!.type === 'needs_input'
+      const fallbackTitle = agent.anomaly!.type === 'needs_input'
         ? 'Agent needs input'
         : `Agent: ${agent.anomaly!.type.replace('_', ' ')}`;
-      const body = agent.anomaly!.explanation;
+      const findingLabel = agent.anomaly!.type.replace('_', ' ');
+      const title = agent.taskName
+        ? `${agent.taskName} · ${findingLabel}`
+        : fallbackTitle;
+      const project = agent.projectDisplayLabel ?? projectLabel(agent.cwd);
+      const body = project
+        ? `${project} · ${agent.anomaly!.explanation}`
+        : agent.anomaly!.explanation;
 
       const notification = new Notification(title, {
         body,

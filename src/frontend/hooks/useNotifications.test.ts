@@ -31,6 +31,7 @@ function mkAgent(agentId: string, projectId = 'github.com/kookr-ai/kookr'): Agen
     events: [],
     anomaly,
     projectId,
+    projectDisplayLabel: projectId?.split('/').at(-1),
     taskStatus: 'inProgress',
   };
 }
@@ -138,7 +139,79 @@ describe('useNotifications', () => {
     expect(notificationCtor).toHaveBeenCalledTimes(1);
     expect(notificationCtor).toHaveBeenCalledWith(
       'Agent: permission blocked',
+      expect.objectContaining({ body: 'kookr · mock finding' }),
+    );
+  });
+
+  test('includes task and project identity in the desktop notification', () => {
+    setSoundEnabled(false);
+    useKookrStore.setState({
+      agents: [{
+        ...mkAgent('agent-a'),
+        taskName: 'Fix checkout race',
+        anomaly: { ...mkAgent('agent-a').anomaly!, type: 'needs_input' },
+      }],
+    });
+
+    mount();
+
+    expect(notificationCtor).toHaveBeenCalledWith(
+      'Fix checkout race · needs input',
+      expect.objectContaining({ body: 'kookr · mock finding' }),
+    );
+  });
+
+  test('falls back gracefully when task and project identity are absent', () => {
+    setSoundEnabled(false);
+    useKookrStore.setState({
+      agents: [{
+        ...mkAgent('agent-a'),
+        projectId: undefined,
+        projectDisplayLabel: undefined,
+      }],
+    });
+
+    mount();
+
+    expect(notificationCtor).toHaveBeenCalledWith(
+      'Agent: permission blocked',
       expect.objectContaining({ body: 'mock finding' }),
+    );
+  });
+
+  test('uses the project display label when the project ID is absent', () => {
+    setSoundEnabled(false);
+    useKookrStore.setState({
+      agents: [{
+        ...mkAgent('agent-a'),
+        projectId: undefined,
+        projectDisplayLabel: 'Local project',
+      }],
+    });
+
+    mount();
+
+    expect(notificationCtor).toHaveBeenCalledWith(
+      'Agent: permission blocked',
+      expect.objectContaining({ body: 'Local project · mock finding' }),
+    );
+  });
+
+  test('falls back to the cwd project label when the display label is absent', () => {
+    setSoundEnabled(false);
+    useKookrStore.setState({
+      agents: [{
+        ...mkAgent('agent-a'),
+        projectDisplayLabel: undefined,
+        cwd: '/workspace/kookr',
+      }],
+    });
+
+    mount();
+
+    expect(notificationCtor).toHaveBeenCalledWith(
+      'Agent: permission blocked',
+      expect.objectContaining({ body: 'kookr · mock finding' }),
     );
   });
 
@@ -151,7 +224,7 @@ describe('useNotifications', () => {
     expect(notificationCtor).toHaveBeenCalledTimes(1);
     expect(notificationCtor).toHaveBeenCalledWith(
       'Agent: permission blocked',
-      expect.objectContaining({ body: 'mock finding' }),
+      expect.objectContaining({ body: 'kookr · mock finding' }),
     );
   });
 
