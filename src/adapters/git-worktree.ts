@@ -32,9 +32,14 @@ async function git(...args: string[]): Promise<string | null> {
   }
 }
 
+/** Resolve a repository context that remains valid after a linked worktree is removed. */
+async function getGitCommonDir(path: string): Promise<string | null> {
+  return git('-C', path, 'rev-parse', '--path-format=absolute', '--git-common-dir');
+}
+
 /** Resolve the default branch name (e.g. main, master) from origin/HEAD. */
-async function getDefaultBranch(): Promise<string> {
-  const ref = await git('symbolic-ref', 'refs/remotes/origin/HEAD');
+async function getDefaultBranch(worktreePath: string): Promise<string> {
+  const ref = await git('-C', worktreePath, 'symbolic-ref', 'refs/remotes/origin/HEAD');
   if (ref) {
     // "refs/remotes/origin/main" → "main"
     const parts = ref.split('/');
@@ -75,7 +80,7 @@ async function isClean(
   }
 
   // Check for unmerged commits
-  const defaultBranch = await getDefaultBranch();
+  const defaultBranch = await getDefaultBranch(worktreePath);
   const unmerged = await git('-C', worktreePath, 'log', `${defaultBranch}..${branch}`, '--oneline');
   if (unmerged === null) {
     // git log failed — branch might not exist locally, treat as dirty
@@ -89,13 +94,13 @@ async function isClean(
 }
 
 /** Run `git worktree prune` to clean up stale registry entries. */
-async function pruneStaleEntries(): Promise<void> {
-  await git('worktree', 'prune');
+async function pruneStaleEntries(repoPath: string): Promise<void> {
+  await git('-C', repoPath, 'worktree', 'prune');
 }
 
 /** Delete a fully-merged local branch. Uses -d (safe delete — fails if not merged). */
-async function deleteBranch(branch: string): Promise<boolean> {
-  const result = await git('branch', '-d', branch);
+async function deleteBranch(repoPath: string, branch: string): Promise<boolean> {
+  const result = await git('-C', repoPath, 'branch', '-d', branch);
   return result !== null;
 }
 
@@ -179,9 +184,9 @@ async function cleanupSingleWorktree(
   worktreePath: string,
   interactionLog?: DeferredInteractionLogWriter,
 ): Promise<void> {
-  // Path doesn't exist on disk — just prune git registry
+  // The path is already gone, so its owning repository can no longer be
+  // established safely. Do not guess a repo for pruning.
   if (!existsSync(worktreePath)) {
-    await pruneStaleEntries();
     markWorktreeCleanedUp(taskStore, taskId, task, worktreePath);
     await interactionLog?.append({
       type: 'worktree_skipped',
@@ -235,6 +240,21 @@ async function cleanupSingleWorktree(
     return;
   }
 
+  // Resolve a repository context that remains valid after the worktree directory
+  // is removed. Abort if it cannot be established safely.
+  const repoPath = await getGitCommonDir(worktreePath);
+  if (!repoPath) {
+    await interactionLog?.append({
+      type: 'worktree_kept',
+      taskId,
+      worktreePath,
+      branch,
+      reason: 'repository context unavailable',
+      timestamp: nowISO(),
+    });
+    return;
+  }
+
   // --- Destructive steps: check task status before each ---
 
   // Guard: abort if task was reopened
@@ -266,11 +286,11 @@ async function cleanupSingleWorktree(
   }
 
   // Step 2: Prune git worktree registry
-  await pruneStaleEntries();
+  await pruneStaleEntries(repoPath);
 
   // Step 3: Delete merged branch
   if (branch) {
-    await deleteBranch(branch);
+    await deleteBranch(repoPath, branch);
   }
 
   await interactionLog?.append({

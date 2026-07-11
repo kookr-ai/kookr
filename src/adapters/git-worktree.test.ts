@@ -51,6 +51,10 @@ function mockGitResponses(handlers: Record<string, string | 'error'>) {
         return;
       }
     }
+    if (args.includes('--git-common-dir')) {
+      cb(null, { stdout: `${args[1]}/.git\n`, stderr: '' });
+      return;
+    }
     // Default: empty success
     cb(null, { stdout: '', stderr: '' });
   });
@@ -113,6 +117,24 @@ describe('cleanupTaskWorktrees', () => {
         timeout: DEFAULT_GIT_TIMEOUT_MS,
         maxBuffer: DEFAULT_GIT_MAX_BUFFER,
       }),
+      expect.any(Function),
+    );
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'git',
+      ['-C', '/wt/feature-branch', 'symbolic-ref', 'refs/remotes/origin/HEAD'],
+      expect.any(Object),
+      expect.any(Function),
+    );
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'git',
+      ['-C', '/wt/feature-branch/.git', 'worktree', 'prune'],
+      expect.any(Object),
+      expect.any(Function),
+    );
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'git',
+      ['-C', '/wt/feature-branch/.git', 'branch', '-d', 'feature'],
+      expect.any(Object),
       expect.any(Function),
     );
 
@@ -281,7 +303,7 @@ describe('cleanupTaskWorktrees', () => {
     });
   });
 
-  test('worktree path does not exist → prune and skip', async () => {
+  test('worktree path does not exist → skip without guessing a repo to prune', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask('Fix bug', '/project');
     taskStore.addSession(task.id, {
@@ -296,17 +318,100 @@ describe('cleanupTaskWorktrees', () => {
 
     const { log, events } = makeFakeLog();
     mockExistsSync.mockReturnValue(false);
-    mockGitResponses({ 'worktree prune': '' });
 
     await cleanupTaskWorktrees(taskStore, task.id, log);
 
-    // Should prune but not rm
     expect(mockRm).not.toHaveBeenCalled();
+    expect(mockExecFile).not.toHaveBeenCalled();
     const skipped = events.find((e) => e.type === 'worktree_skipped');
     expect(skipped).toMatchObject({
       type: 'worktree_skipped',
       reason: 'not found',
     });
+  });
+
+  test('prune and branch deletion use the worktree repository after its directory is removed', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Fix bug', '/project');
+    taskStore.addSession(task.id, {
+      tmuxSession: 's1',
+      agentType: 'claude-code',
+      cwd: '/other-repo/wt/feature',
+      createdAt: new Date(),
+      gitIsWorktree: true,
+      gitBranch: 'feature',
+    });
+    taskStore.completeTask(task.id);
+
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({
+      'status --porcelain': '',
+      'symbolic-ref': 'refs/remotes/origin/master\n',
+      'log master..feature': '',
+      'rev-parse --path-format=absolute --git-common-dir': '/other-repo/.git\n',
+      'worktree prune': '',
+      'branch -d': 'Deleted branch feature.\n',
+    });
+
+    await cleanupTaskWorktrees(taskStore, task.id);
+
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'git',
+      ['-C', '/other-repo/wt/feature', 'symbolic-ref', 'refs/remotes/origin/HEAD'],
+      expect.any(Object),
+      expect.any(Function),
+    );
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'git',
+      ['-C', '/other-repo/.git', 'worktree', 'prune'],
+      expect.any(Object),
+      expect.any(Function),
+    );
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'git',
+      ['-C', '/other-repo/.git', 'branch', '-d', 'feature'],
+      expect.any(Object),
+      expect.any(Function),
+    );
+    const resolveCallOrder = mockExecFile.mock.invocationCallOrder.find((_, index) =>
+      mockExecFile.mock.calls[index][1].includes('--git-common-dir'));
+    expect(resolveCallOrder).toBeLessThan(mockRm.mock.invocationCallOrder[0]);
+    const pruneCallIndex = mockExecFile.mock.calls.findIndex((call) => call[1].includes('prune'));
+    expect(mockExecFile.mock.invocationCallOrder[pruneCallIndex]).toBeGreaterThan(
+      mockRm.mock.invocationCallOrder[0],
+    );
+  });
+
+  test('repository context resolution failure preserves the worktree', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Fix bug', '/project');
+    taskStore.addSession(task.id, {
+      tmuxSession: 's1',
+      agentType: 'claude-code',
+      cwd: '/wt/feature',
+      createdAt: new Date(),
+      gitIsWorktree: true,
+      gitBranch: 'feature',
+    });
+    taskStore.completeTask(task.id);
+
+    const { log, events } = makeFakeLog();
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({
+      'status --porcelain': '',
+      'symbolic-ref': 'refs/remotes/origin/main\n',
+      'log main..feature': '',
+      'rev-parse --path-format=absolute --git-common-dir': 'error',
+    });
+
+    await cleanupTaskWorktrees(taskStore, task.id, log);
+
+    expect(mockRm).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'worktree_kept',
+      worktreePath: '/wt/feature',
+      reason: 'repository context unavailable',
+    }));
   });
 
   test('git timeout during cleanup → worktree kept and guard warning logged', async () => {
