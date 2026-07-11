@@ -18,6 +18,17 @@ export interface IssueClaimRouteDeps {
   flushTasks: () => Promise<void>;
   /** To 400 an unknown/terminal claimant task before ever touching the registry. */
   getTaskStatus: (taskId: string) => TaskStatus | undefined;
+  /**
+   * The claimant task's configured cwd, or undefined when unknown (#1351).
+   *
+   * When a caller omits an explicit `cwd`, the claim repo must be resolved
+   * from the OWNING TASK's configured checkout — not the server's launch
+   * checkout (`serverCwd`) or the agent session's bootstrap directory. A task
+   * configured for repo A can then claim A even when the process that hosts
+   * the API was bootstrapped from repo B. Returns undefined for pure API
+   * callers with no known task, preserving the existing `serverCwd` fallback.
+   */
+  getTaskCwd: (taskId: string) => string | undefined;
 }
 
 const ISSUE_CLAIMS_PATH = '/api/issue-claims';
@@ -65,17 +76,22 @@ export function registerIssueClaimRoutes(app: Hono, deps: IssueClaimRouteDeps): 
 
     const sessionId = typeof body.sessionId === 'string' ? body.sessionId : undefined;
     const force = body.force === true;
-    const cwd = typeof body.cwd === 'string' ? body.cwd : undefined;
+    const bodyCwd = typeof body.cwd === 'string' ? body.cwd : undefined;
     const repoFlag = typeof body.repo === 'string' ? body.repo : undefined;
 
     let repo: string;
-    if (repoFlag !== undefined && isSafeGithubProjectId(repoFlag) && cwd === undefined) {
-      // Canonical repo with NO cwd context (pure API caller): nothing to
-      // check a mismatch against, accept as-is. When cwd IS present, always
-      // run resolveRepo so the R20 hallucination guard applies even to
-      // canonical-form input.
+    if (repoFlag !== undefined && isSafeGithubProjectId(repoFlag) && bodyCwd === undefined) {
+      // Canonical repo with NO explicit cwd context (pure API caller):
+      // nothing to check a mismatch against, accept as-is. When cwd IS
+      // present, always run resolveRepo so the R20 hallucination guard
+      // applies even to canonical-form input.
       repo = repoFlag;
     } else {
+      // #1351: when the caller supplies no explicit cwd, fall back to the
+      // claimant task's configured checkout rather than the server's launch
+      // cwd, so repo resolution reflects the task's project. Applied only on
+      // the resolve path so the canonical short-circuit above is unchanged.
+      const cwd = bodyCwd ?? deps.getTaskCwd(taskId);
       const resolution = await deps.resolveRepo({ cwd, repoFlag });
       if (!resolution.ok) {
         return c.json(
@@ -137,12 +153,15 @@ export function registerIssueClaimRoutes(app: Hono, deps: IssueClaimRouteDeps): 
     // Same repo resolution as POST: cwd default, normalization, and the R20
     // mismatch guard — `kookr issue release 779` with no --repo must work,
     // and an `owner/repo` short form must normalize to the canonical key.
-    const cwd = typeof body.cwd === 'string' ? body.cwd : undefined;
+    const bodyCwd = typeof body.cwd === 'string' ? body.cwd : undefined;
     const repoFlag = typeof body.repo === 'string' ? body.repo : undefined;
     let repo: string;
-    if (repoFlag !== undefined && isSafeGithubProjectId(repoFlag) && cwd === undefined) {
+    if (repoFlag !== undefined && isSafeGithubProjectId(repoFlag) && bodyCwd === undefined) {
       repo = repoFlag;
     } else {
+      // #1351: mirror POST's task-cwd fallback so a release resolves against
+      // the same key the claim was granted under.
+      const cwd = bodyCwd ?? deps.getTaskCwd(taskId);
       const resolution = await deps.resolveRepo({ cwd, repoFlag });
       if (!resolution.ok) {
         return c.json(
