@@ -488,6 +488,34 @@ describe('GitHubScannerService', () => {
       expect(stateStore.getTaskState('task-1').issues).toHaveLength(1);
     });
 
+    it('skips merged PRs while continuing to refresh non-terminal references', async () => {
+      const fetcher = createMockFetcher(true);
+      const mergedRef = makePRRef('task-1', 1);
+      const closedRef = makePRRef('task-1', 2);
+      const openRef = makePRRef('task-1', 3);
+      const issueRef = makeIssueRef('task-1', 4);
+      for (const ref of [mergedRef, closedRef, openRef, issueRef]) {
+        stateStore.addReference(ref);
+      }
+      stateStore.updatePRState({ ...makePRState(mergedRef), status: 'merged' });
+      stateStore.updatePRState({ ...makePRState(closedRef), status: 'closed' });
+      stateStore.updatePRState(makePRState(openRef));
+      fetcher.fetchStates = vi.fn().mockResolvedValue({ prs: [], issues: [] });
+
+      scanner = new GitHubScannerService({
+        taskStore, stateStore,
+        fetcher,
+        config: { ...DEFAULT_GITHUB_SCANNER_CONFIG, stateFetchIntervalMs: 1000 },
+        onChanges,
+      });
+      await scanner.start();
+
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(fetcher.fetchStates).toHaveBeenCalledTimes(1);
+      expect(fetcher.fetchStates).toHaveBeenCalledWith([closedRef, openRef, issueRef]);
+    });
+
     it('backs off batched state fetches when GitHub returns a rate-limit diagnostic', async () => {
       const fetcher = createMockFetcher(true);
       const ref = makePRRef('task-1', 1);

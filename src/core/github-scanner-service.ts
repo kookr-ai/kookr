@@ -294,9 +294,12 @@ export class GitHubScannerService {
     // This periodic scan is a safety net / will be the entry point for Haiku in Phase 2.
   }
 
-  /** Fetch current state for all known references and emit changes. */
+  /** Fetch current state for all refresh-eligible references and emit changes. */
   private async fetchAllStates(): Promise<void> {
-    await this.fetchReferences(this.stateStore.getAllReferences());
+    const refs = this.stateStore.getAllReferences().filter((ref) => (
+      ref.type !== 'pr' || this.stateStore.getPRState(ref)?.status !== 'merged'
+    ));
+    await this.fetchReferences(refs);
   }
 
   /** Fetch current state for the provided references and emit changes. */

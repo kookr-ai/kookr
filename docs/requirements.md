@@ -729,6 +729,7 @@ The system SHOULD poll GitHub PR and issue state with the fewest API calls neede
 **Acceptance criteria:**
 - GitHub references detected from agent output are fetched immediately without refetching unrelated known references
 - Periodic GitHub state refresh batches all known references by repository
+- Periodic GitHub state refresh excludes PR references whose last-known status is `merged`; open, draft, and closed references remain eligible for refresh
 - Each repository batch uses a single GraphQL request that returns PR metadata, review threads, review decision, comments, checks, issue metadata, labels, and comment counts
 - The same GitHub object referenced by multiple tasks remains visible in each task without causing duplicate query selections
 - Existing WebSocket `githubUpdate` messages and GitHub alert behavior are preserved
