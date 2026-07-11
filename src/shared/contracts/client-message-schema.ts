@@ -55,6 +55,7 @@ const projectConfigPartial = z.object({
   tracked: z.boolean().optional(),
   dailyPrLimit: z.number().optional(),
   weeklyPrLimit: z.number().optional(),
+  budgetWarnUsd: z.number().nullable().optional(),
   notes: z.string().optional(),
   webhook: z.object({
     enabled: z.boolean().optional(),

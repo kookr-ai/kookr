@@ -423,7 +423,11 @@ export type ClientMessage =
   | { type: 'listPlaybooks'; cwd: string }
   | LaunchPlaybookClientMessage
   | { type: 'telemetry'; events: TelemetryEvent[] }
-  | { type: 'setProjectConfig'; project: string; config: Partial<ProjectConfig> }
+  | {
+      type: 'setProjectConfig';
+      project: string;
+      config: Omit<Partial<ProjectConfig>, 'budgetWarnUsd'> & { budgetWarnUsd?: number | null };
+    }
   | { type: 'clearCompleted'; includeTerminated?: boolean; projectId?: string }
   | { type: 'ackTerminatedTask'; taskId: string }
   | { type: 'achievement:reset' }

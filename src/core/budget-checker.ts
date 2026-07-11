@@ -44,8 +44,14 @@ export class BudgetChecker {
    * is preferred — it implicitly marks the warning level as delivered so
    * we do not enqueue a duplicate warning on the next tick.
    */
-  check(taskId: string, agentId: string, costUsd: number, now = new Date()): Anomaly | null {
-    if (this.thresholdUsd <= 0) return null;
+  check(
+    taskId: string,
+    agentId: string,
+    costUsd: number,
+    now = new Date(),
+    thresholdUsd = this.thresholdUsd,
+  ): Anomaly | null {
+    if (thresholdUsd <= 0) return null;
 
     let state = this.states.get(taskId);
     if (!state) {
@@ -53,7 +59,7 @@ export class BudgetChecker {
       this.states.set(taskId, state);
     }
 
-    const criticalThresholdUsd = this.thresholdUsd * 2;
+    const criticalThresholdUsd = thresholdUsd * 2;
 
     if (!state.critical && costUsd >= criticalThresholdUsd) {
       state.critical = true;
@@ -67,13 +73,13 @@ export class BudgetChecker {
       };
     }
 
-    if (!state.warned && costUsd >= this.thresholdUsd) {
+    if (!state.warned && costUsd >= thresholdUsd) {
       state.warned = true;
       return {
         agentId,
         type: 'budget_exceeded',
         severity: 'warning',
-        explanation: buildExplanation(costUsd, this.thresholdUsd, 'warning'),
+        explanation: buildExplanation(costUsd, thresholdUsd, 'warning'),
         detectedAt: now,
       };
     }

@@ -36,6 +36,7 @@ export interface ProjectSummary {
   todayPrCount: number;
   weekPrCount: number;
   dailyLimit?: number;
+  budgetWarnUsd?: number;
   /**
    * Contribution attempts currently in Kookr's `pr_open` state. This is scoped
    * to Kookr agent attempts; repo-wide open PRs live at `repoHealth.openPullRequests`.

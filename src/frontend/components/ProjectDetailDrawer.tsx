@@ -51,6 +51,7 @@ function TaskRow({ task }: { task: TaskSummary }) {
 
 export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, onLaunchManual, onRunPlaybook, compact = false }: Props) {
   const [dailyLimit, setDailyLimit] = useState<string>(project.dailyLimit?.toString() ?? '');
+  const [budgetWarnUsd, setBudgetWarnUsd] = useState<string>(project.budgetWarnUsd?.toString() ?? '');
   const [notes, setNotes] = useState(project.notes ?? '');
   const [dirty, setDirty] = useState(false);
   const [tasksExpanded, setTasksExpanded] = useState(false);
@@ -60,12 +61,14 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
 
   function handleSave() {
     const limit = parseInt(dailyLimit, 10);
+    const budget = Number(budgetWarnUsd);
     send({
       type: 'setProjectConfig',
       project: project.project,
       config: {
         project: project.project,
         dailyPrLimit: isNaN(limit) ? undefined : limit,
+        budgetWarnUsd: budgetWarnUsd.trim() === '' || !Number.isFinite(budget) ? null : budget,
         notes: notes || undefined,
       },
     });
@@ -301,6 +304,20 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
               onChange={(e) => { setDailyLimit(e.target.value); setDirty(true); }}
               className="project-drawer-input"
               data-testid="daily-limit-input"
+            />
+          </div>
+          <div className="project-drawer-setting">
+            <label htmlFor={`budget-warn-${project.project}`}>Cost warning (USD)</label>
+            <input
+              id={`budget-warn-${project.project}`}
+              type="number"
+              min="0"
+              step="0.01"
+              value={budgetWarnUsd}
+              placeholder="Global default"
+              onChange={(e) => { setBudgetWarnUsd(e.target.value); setDirty(true); }}
+              className="project-drawer-input"
+              data-testid="budget-warn-input"
             />
           </div>
           <div className="project-drawer-setting project-drawer-setting-block">

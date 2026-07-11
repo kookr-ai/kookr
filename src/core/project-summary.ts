@@ -45,6 +45,8 @@ export interface ProjectSummary {
   todayPrCount: number;
   weekPrCount: number;
   dailyLimit?: number;
+  /** Per-task cost warning threshold in USD. 0 disables budget alerts for this project. */
+  budgetWarnUsd?: number;
   /**
    * Contribution attempts currently in the `pr_open` state in Kookr's OSS
    * attempt ledger. This is scoped to agent attempts, not repo-wide GitHub PRs;
@@ -185,6 +187,7 @@ export function configSeedsMembership(config: ProjectConfig): boolean {
   if (config.tracked === true) return true;
   if (config.dailyPrLimit !== undefined) return true;
   if (config.weeklyPrLimit !== undefined) return true;
+  if (config.budgetWarnUsd !== undefined) return true;
   if (config.notes !== undefined && config.notes.trim() !== '') return true;
   if (config.webhook?.enabled !== undefined || config.webhook?.minSeverity !== undefined) return true;
   return false;
@@ -320,6 +323,7 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
       todayPrCount: todayCount,
       weekPrCount: weekCount,
       dailyLimit: effectiveLimit ?? config?.dailyPrLimit,
+      budgetWarnUsd: config?.budgetWarnUsd,
       openContributionAttempts,
       lastContribution: lastContrib,
       recentTasks,

@@ -7,6 +7,7 @@ import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { TokenTracker } from '../core/token-tracker.js';
 import type { Watchdog } from '../core/watchdog.js';
 import type { BudgetChecker } from '../core/budget-checker.js';
+import type { ProjectConfigStore } from '../core/project-config-store.js';
 import type { ProgressBudgetBurnDiagnostics } from '../core/progress-budget-burn-diagnostics.js';
 import type { HookFileWatcher } from './hook-watcher.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
@@ -72,6 +73,8 @@ export interface TimerDeps {
    * levels. Reactive only — may overshoot by one turn.
    */
   budgetChecker?: BudgetChecker;
+  /** Per-project budget threshold overrides. Falls back to the checker's global threshold. */
+  projectConfigStore?: Pick<ProjectConfigStore, 'getConfig'>;
   /** Diagnostics-only progress-aware budget-burn sampler. Never mutates the attention queue. */
   progressBudgetBurnDiagnostics?: ProgressBudgetBurnDiagnostics;
   /** Authoritative git worktree registry, refreshed when dashboard clients are connected. */
@@ -132,11 +135,16 @@ export function runBudgetCheck(
   costUsd: number,
   budgetChecker: BudgetChecker | undefined,
   enqueue: (agentId: string, anomaly: Anomaly) => void,
+  projectConfigStore?: Pick<ProjectConfigStore, 'getConfig'>,
 ): boolean {
-  if (!budgetChecker || budgetChecker.getThresholdUsd() <= 0) return false;
+  if (!budgetChecker) return false;
+  const thresholdUsd = task.projectId
+    ? projectConfigStore?.getConfig(task.projectId)?.budgetWarnUsd ?? budgetChecker.getThresholdUsd()
+    : budgetChecker.getThresholdUsd();
+  if (thresholdUsd <= 0) return false;
   const activeSession = findFirstActiveSession(task);
   if (!activeSession) return false;
-  const anomaly = budgetChecker.check(task.id, activeSession.tmuxSession, costUsd);
+  const anomaly = budgetChecker.check(task.id, activeSession.tmuxSession, costUsd, undefined, thresholdUsd);
   if (!anomaly) return false;
   enqueue(activeSession.tmuxSession, anomaly);
   return true;
@@ -302,7 +310,13 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           // Budget threshold check (issue #98). Reactive — fires at most once per
           // severity level per task, routed through the same attention queue the
           // watchdog uses.
-          if (runBudgetCheck(task, usage.costUsd, deps.budgetChecker, (aid, a) => queue.enqueue(aid, a))) {
+          if (runBudgetCheck(
+            task,
+            usage.costUsd,
+            deps.budgetChecker,
+            (aid, a) => queue.enqueue(aid, a),
+            deps.projectConfigStore,
+          )) {
             changed = true;
           }
 

@@ -56,6 +56,24 @@ describe('ProjectConfigStore', () => {
     expect(config.notes).toBe('Test');
   });
 
+  test('sanitizes and persists a per-project budget threshold', async () => {
+    await store.load();
+    store.setConfig('github.com/org/repo', { budgetWarnUsd: 7.5 });
+    store.setConfig('github.com/org/disabled', { budgetWarnUsd: -1 });
+    await store.save();
+
+    const store2 = new ProjectConfigStore(tempDir);
+    await store2.load();
+    expect(store2.getConfig('github.com/org/repo')?.budgetWarnUsd).toBe(7.5);
+    expect(store2.getConfig('github.com/org/disabled')?.budgetWarnUsd).toBe(0);
+  });
+
+  test('drops non-finite per-project budget thresholds', async () => {
+    await store.load();
+    const config = store.setConfig('github.com/org/repo', { budgetWarnUsd: Infinity });
+    expect(config.budgetWarnUsd).toBeUndefined();
+  });
+
   test('loads only browser-safe webhook routing fields', async () => {
     writeFileSync(join(tempDir, 'project-configs.json'), JSON.stringify([
       {
