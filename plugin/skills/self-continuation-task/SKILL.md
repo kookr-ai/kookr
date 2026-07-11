@@ -56,12 +56,15 @@ Every task in the chain must carry these rules in its prompt:
 - Record the outcome before spawning a successor.
 - Stop without spawning when no eligible unit remains or a configured cap is
   reached.
-- Include this same continuation contract in the successor prompt.
 - Include a uniqueness cursor in every successor prompt so Kookr's task
   deduplication does not collapse distinct iterations into one task.
 
-The successor prompt must be self-contained. Assume task N+1 starts cold and
-cannot see task N's transcript.
+The successor prompt must be self-contained *for state*, not for prose: assume
+task N+1 starts cold and cannot see task N's transcript, but do NOT re-embed the
+invariant rules above. Those live here in the skill. The successor carries only a
+compact, versioned **continuation envelope** — stable parameters plus a durable
+cursor — and re-derives everything else from durable state at start. See
+[Compact Continuation Envelope](#compact-continuation-envelope).
 
 ## Durable State
 
@@ -76,6 +79,48 @@ PR closes issue N" is stronger than "N appears in attempts.log".
 
 Use an attempt cap for units that can fail repeatedly. The cap should be
 mechanical, stored in durable state, and checked before starting work.
+
+## Compact Continuation Envelope
+
+Do not hand the successor a narrative essay — repository policy, prior PR
+details, issue scans, CI behaviour, and continuation history re-pasted verbatim.
+That prose is pure repeated input cost across the chain and drifts stale the
+moment durable state moves. Analysis of real chains found the same handoff
+paragraphs copied into successor after successor with only the unit id changing.
+
+Instead, every successor carries a **compact, versioned continuation envelope**:
+only the *stable* parameters (overall goal, authorization toggles) plus a durable
+**cursor** (repo, selector, parent task/PR/issue, next-unit pointer, remaining
+units, source revision, attempt cap). The invariant safety rules stay in this
+skill; the successor references them rather than re-inlining them.
+
+The helper `src/core/continuation-envelope.ts` codifies this shape and the
+successor-start logic:
+
+- `ContinuationEnvelope` — the versioned envelope (goal + cursor + parent +
+  authorization toggles).
+- `resolveContinuationState(envelope, resolver)` — at successor start, re-derives
+  the *current* GitHub/task state from durable sources through an injected
+  resolver. A stale cursor (the next unit already done, in-flight, blocked, or
+  vanished) self-heals to the next eligible unit; missing parent state is flagged
+  but does not stop the chain.
+- `advanceEnvelope(current, resolved, parent?)` — builds the next envelope after a
+  unit completes. **Authorization toggles are copied verbatim** so delivery and
+  safety grants survive continuation exactly — they are never re-derived.
+- `continuationCursorKey` / `areContinuationsDistinct` — the content-distinct
+  signal that keeps successive iterations from being deduplicated into one task.
+  Never spawn a successor whose cursor did not change. (Content-distinctness is
+  the dedup guard; the per-unit `attemptCap` is what stops re-working the *same*
+  unit after a failed attempt.)
+- `renderContinuationPrompt(envelope)` — the bounded successor prompt (remaining
+  units capped, invariant rules referenced not inlined).
+- `parseContinuationEnvelope(raw)` — validate an envelope read back from durable
+  state; rejects an unknown version or a malformed cursor and drops non-boolean
+  authorization values, so a corrupt handoff fails loudly.
+
+The pointer in the cursor (`nextUnit`) is **advisory**. The successor always
+revalidates it against durable state before acting, so a chain that raced with
+another workstream recovers instead of working an already-finished unit.
 
 ## Successor Prompt Uniqueness
 
@@ -162,37 +207,41 @@ docs/reference/auto-close-on-signal.md for the full model.
 
 ## Successor Prompt Template
 
-Use this shape and fill in concrete paths, repo names, selection rules, caps,
-and verification commands:
+The successor prompt is the rendered continuation envelope — a bounded block, not
+a re-pasted narrative. Fill the cursor from fresh durable state; leave the
+invariant rules to this skill. `renderContinuationPrompt` in
+`src/core/continuation-envelope.ts` produces this shape:
 
 ```markdown
-You are continuing a sequential Kookr task chain.
+You are continuing a sequential Kookr task chain (continuation envelope v1).
 
-Goal: <overall batch goal>.
+Goal: <overall batch goal>
 
-Continuation contract:
-- Read durable state from <source of truth>.
-- Select exactly one eligible unit using <selection rule>.
-- Before tracked-file edits, create a fresh git worktree and work only there.
-- Complete that one unit end to end.
-- Record the result in <source of truth>.
-- If no eligible unit remains, stop and report completion.
-- If another eligible unit remains, spawn the next Kookr task with this same
-  continuation contract using a hook-safe prompt file.
-- Make the successor prompt content-distinct by including the current
-  uniqueness cursor from durable state.
+Follow the self-continuation-task skill for all invariant rules
+(fresh worktree, one unit only, durable-state selection, record-before-spawn,
+completion signal, end-of-chain sweep). Do not re-derive them here.
 
-Current source-of-truth details:
-- Repo/cwd: <absolute cwd or owner/name>.
-- Queue/query: <selector>.
-- Continuation cursor: <next unit id, remaining eligible ids/count, source
-  revision/checksum, and parent/previous task id if available>.
-- Attempt cap: <N>.
-- Completion evidence: <how to detect done>.
-- Verification commands: <commands>.
+Cursor:
+- repo: <owner/name>
+- selector: <stable query, e.g. gh issue list ...>
+- next unit: <advisory next unit id>
+- remaining eligible: <capped id list>
+- source revision: <SHA/checksum/ETag>
+- attempt cap: <N>
+
+Parent: task <id>, PR <url>, issue <#N>
+
+Authorization (preserve exactly in any successor):
+- <toggle>: <true|false>
+
+Revalidate the cursor against durable state before acting; if the next unit is
+no longer eligible, recover the next eligible unit from the selector.
+```
 
 Do not batch multiple units into this task. Do not rely on prior conversation.
-```
+The authorization block carries forward unchanged in every successor — never
+re-derive or drop it. Anything not in the envelope must be re-derived from
+durable state, not remembered from a prior task's prompt.
 
 ## GitHub Issue Chain Pattern
 
@@ -256,6 +305,11 @@ in the chain's completion-detection logic.
 - Letting one task work multiple issues because setup is already warm.
 - Reusing a static successor prompt such as "Implement next issue" for every
   child task.
+- Re-pasting the full narrative handoff (repo policy, prior PR details, CI
+  behaviour, continuation history) into every successor instead of a compact
+  versioned envelope with a durable cursor.
+- Re-deriving or dropping authorization/delivery toggles between tasks. They must
+  carry forward verbatim via the envelope.
 - Using only a timestamp to bypass deduplication when a durable queue cursor is
   available.
 - Using inline `kookr-spawn "long prompt..."` from inside agent sessions.
