@@ -14,6 +14,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -943,4 +944,326 @@ describe('LocalDtachBackend', () => {
       await backend.killSession(id);
     }
   }, 10_000);
+});
+
+/**
+ * reconnect-transport (kookr-ai/kookr#1347). These exercise the safe transport
+ * repair: it rebuilds ONLY Kookr's internal `dtach -a` attach child, preserves
+ * the dtach master + agent processes, and never writes terminal input.
+ */
+describe('LocalDtachBackend reconnectTransport', () => {
+  let tmpDir: string;
+  let backend: LocalDtachBackend;
+
+  afterEach(async () => {
+    if (tmpDir) {
+      try {
+        await reapDtachReferencing(tmpDir);
+      } catch {
+        // best-effort
+      }
+    }
+    try {
+      if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  function manifestPidFor(id: string): number {
+    const manifest = JSON.parse(
+      readFileSync(join(tmpDir, 'test', 'manifest.json'), 'utf-8'),
+    ) as { entries: Array<{ sessionId: string; pid: number }> };
+    return manifest.entries.find((e) => e.sessionId === id)!.pid;
+  }
+
+  /** Live pids whose cmdline references `sock` and carries the `-a` (attach) flag. */
+  function attachPids(sock: string): number[] {
+    return procsReferencingSock(sock)
+      .filter((p) => p.tokens.includes('-a'))
+      .map((p) => p.pid);
+  }
+
+  skipIfNoProc(
+    'rebuilds only the internal attach child, preserving master + agent pids',
+    async () => {
+      tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+      backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+
+      const id = 'reconnect-ok';
+      // A session that keeps emitting output, so a fresh-liveness byte is
+      // guaranteed within the window regardless of dtach's redraw behaviour.
+      await backend.createSession({
+        id,
+        command: '/bin/sh',
+        args: ['-c', 'while true; do echo tick; sleep 0.05; done'],
+      });
+      const sock = join(tmpDir, 'test', `${id}.sock`);
+
+      const masterPid = manifestPidFor(id);
+      const resolver = backend as unknown as { findAgentPidSync(pid: number): number | null };
+      const agentPidBefore = resolver.findAgentPidSync(masterPid);
+      expect(agentPidBefore).toBeGreaterThan(0);
+      const attachBefore = attachPids(sock);
+      expect(attachBefore.length).toBeGreaterThanOrEqual(1);
+
+      const result = await backend.reconnectTransport(id, { livenessTimeoutMs: 2_000 });
+
+      expect(result.outcome).toBe('success');
+      expect(result.reason).toBe('reconnected');
+      expect(result.identityVerified).toBe(true);
+      // Master + agent pids are unchanged and still alive.
+      expect(result.masterPid).toBe(masterPid);
+      expect(result.agentPid).toBe(agentPidBefore);
+      expect(isPidAlive(masterPid)).toBe(true);
+      expect(isPidAlive(agentPidBefore!)).toBe(true);
+      // A fresh attach generation replaced the old internal attach child.
+      expect(result.newGeneration).toBe(result.previousGeneration + 1);
+      const deadline = Date.now() + 2_000;
+      while (attachBefore.some((p) => isPidAlive(p)) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      const attachAfter = attachPids(sock);
+      // The old attach pid is gone; a new one references the same socket.
+      expect(attachBefore.every((p) => !isPidAlive(p))).toBe(true);
+      expect(attachAfter.some((p) => !attachBefore.includes(p))).toBe(true);
+
+      await backend.killSession(id);
+    },
+    20_000,
+  );
+
+  skipIfNoProc('rejects when the master identity cannot be verified', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+
+    const id = 'reconnect-identity';
+    await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+
+    // Overwrite the manifest pid with a live-but-not-dtach pid (this test
+    // process): alive, so process.kill(pid,0) succeeds, but /proc/<pid>/exe is
+    // not dtach — identity must fail without disposing the attach child.
+    const manifestPath = join(tmpDir, 'test', 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as {
+      entries: Array<{ sessionId: string; pid: number }>;
+    };
+    manifest.entries.find((e) => e.sessionId === id)!.pid = process.pid;
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+
+    const result = await backend.reconnectTransport(id);
+    expect(result.outcome).toBe('failure');
+    expect(result.reason).toBe('identity-unverified');
+    expect(result.identityVerified).toBe(false);
+    // The attach child was NOT rebuilt (identity is checked before disposal).
+    expect(result.newGeneration).toBe(result.previousGeneration);
+
+    // NOTE: do NOT call killSession here — the manifest pid now points at this
+    // test process, and killSession reaps the manifest pid's tree. afterEach
+    // reaps the real dtach master by cmdline (referencing tmpDir) instead.
+  });
+
+  skipIfNoDtach('rejects when the dtach socket is missing', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+
+    const id = 'reconnect-nosock';
+    await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+    const sock = join(tmpDir, 'test', `${id}.sock`);
+    unlinkSync(sock);
+
+    const result = await backend.reconnectTransport(id);
+    expect(result.outcome).toBe('failure');
+    expect(result.reason).toBe('socket-missing');
+
+    await backend.killSession(id);
+  });
+
+  skipIfNoProc('reports attach-spawn-failed when the fresh attach cannot be opened', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+
+    const id = 'reconnect-spawnfail';
+    await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+
+    // Make the fresh attach spawn throw AFTER identity + disposal.
+    const anyBackend = backend as unknown as { attachPtyInto: (...a: unknown[]) => void };
+    anyBackend.attachPtyInto = () => {
+      throw new Error('spawn boom');
+    };
+
+    const result = await backend.reconnectTransport(id);
+    expect(result.outcome).toBe('failure');
+    expect(result.reason).toBe('attach-spawn-failed');
+    expect(result.identityVerified).toBe(true);
+
+    await backend.killSession(id);
+  });
+
+  skipIfNoProc('reports inconclusive when no fresh-liveness byte arrives in the window', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+
+    const id = 'reconnect-timeout';
+    await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+
+    // Replace the attach with a silent fake pty so the liveness probe never
+    // fires — deterministically exercising the bounded-wait timeout path
+    // without depending on dtach's redraw behaviour.
+    const anyBackend = backend as unknown as {
+      attachPtyInto: (sess: { pty: unknown; attachGeneration: number }) => void;
+    };
+    anyBackend.attachPtyInto = (sess) => {
+      sess.pty = {
+        kill() {},
+        resize() {},
+        write() {},
+        onData() {},
+        onExit() {},
+      };
+      sess.attachGeneration += 1;
+    };
+
+    const result = await backend.reconnectTransport(id, { livenessTimeoutMs: 100 });
+    expect(result.outcome).toBe('inconclusive');
+    expect(result.reason).toBe('liveness-timeout');
+    expect(result.identityVerified).toBe(true);
+    expect(result.newGeneration).toBe(result.previousGeneration + 1);
+
+    await backend.killSession(id);
+  });
+
+  skipIfNoProc('collapses concurrent duplicate requests onto one reconnect attempt', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+
+    const id = 'reconnect-dup';
+    await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+
+    const [r1, r2] = await Promise.all([
+      backend.reconnectTransport(id, { livenessTimeoutMs: 300 }),
+      backend.reconnectTransport(id, { livenessTimeoutMs: 300 }),
+    ]);
+    // Same result object → the duplicate collapsed onto the in-flight attempt.
+    expect(r1).toBe(r2);
+    // Exactly one generation bump, not two.
+    expect(r1.newGeneration).toBe(r1.previousGeneration + 1);
+
+    await backend.killSession(id);
+  }, 10_000);
+
+  skipIfNoProc('rejects a second reconnect within the cooldown window', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH!,
+      reconnectCooldownMs: 10_000,
+    });
+
+    const id = 'reconnect-cooldown';
+    await backend.createSession({
+      id,
+      command: '/bin/sh',
+      args: ['-c', 'while true; do echo tick; sleep 0.05; done'],
+    });
+
+    const first = await backend.reconnectTransport(id, { livenessTimeoutMs: 2_000 });
+    expect(first.outcome).not.toBe('failure');
+    const second = await backend.reconnectTransport(id, { livenessTimeoutMs: 2_000 });
+    expect(second.outcome).toBe('failure');
+    expect(second.reason).toBe('cooldown');
+    // The rejected duplicate did not rebuild the transport.
+    expect(second.newGeneration).toBe(second.previousGeneration);
+
+    await backend.killSession(id);
+  }, 20_000);
+
+  skipIfNoProc('writes zero bytes to the fresh attach on the real path (no-input guarantee)', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+
+    const id = 'reconnect-noinput';
+    // `cat` would echo any injected input, but we assert the stronger property
+    // directly: instrument the freshly-attached pty's `write` and prove the
+    // reconnect + liveness wait never calls it.
+    await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+
+    let writesDuringReconnect = 0;
+    const proto = Object.getPrototypeOf(backend) as {
+      attachPtyInto(sess: { pty: { write(d: unknown): unknown } }, sock: string, size?: unknown): void;
+    };
+    const realAttach = proto.attachPtyInto;
+    (backend as unknown as { attachPtyInto: typeof realAttach }).attachPtyInto = function attach(sess, sock, size) {
+      realAttach.call(this, sess, sock, size);
+      const realWrite = sess.pty.write.bind(sess.pty);
+      sess.pty.write = (data: unknown): unknown => {
+        writesDuringReconnect += 1;
+        return realWrite(data);
+      };
+    };
+
+    const result = await backend.reconnectTransport(id, { livenessTimeoutMs: 300 });
+    expect(result.outcome).not.toBe('failure');
+    expect(writesDuringReconnect).toBe(0);
+
+    await backend.killSession(id);
+  }, 10_000);
+
+  skipIfNoProc('keeps existing onData subscribers attached across a real reconnect', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+
+    const id = 'reconnect-subs';
+    await backend.createSession({
+      id,
+      command: '/bin/sh',
+      args: ['-c', 'while true; do echo tick; sleep 0.05; done'],
+    });
+
+    // A single subscriber registered ONCE, never re-registered — the exact
+    // SessionBridge continuity the repair must preserve across dispose+respawn.
+    const received: Uint8Array[] = [];
+    const off = backend.onData(id, (b) => received.push(b));
+
+    const result = await backend.reconnectTransport(id, { livenessTimeoutMs: 2_000 });
+    expect(result.outcome).toBe('success');
+
+    // Fresh bytes emitted strictly AFTER the reconnect completed still reach the
+    // same subscriber — if the rebuild had dropped it, this count would freeze.
+    const afterReconnect = received.length;
+    const deadline = Date.now() + 2_000;
+    while (received.length <= afterReconnect && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(received.length).toBeGreaterThan(afterReconnect);
+
+    off();
+    await backend.killSession(id);
+  }, 15_000);
+
+  skipIfNoProc('reports attach-spawn-failed when the fresh attach exits immediately', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+
+    const id = 'reconnect-immediate-exit';
+    await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+
+    // Model a fresh attach that comes up then dies before the liveness wait:
+    // `attachPtyInto` bumps the generation but leaves no live pty. This is the
+    // `if (!sess.pty)` branch, distinct from a synchronous spawn throw.
+    const anyBackend = backend as unknown as {
+      attachPtyInto: (sess: { pty: unknown; attachGeneration: number }) => void;
+    };
+    anyBackend.attachPtyInto = (sess) => {
+      sess.pty = null;
+      sess.attachGeneration += 1;
+    };
+
+    const result = await backend.reconnectTransport(id, { livenessTimeoutMs: 50 });
+    expect(result.outcome).toBe('failure');
+    expect(result.reason).toBe('attach-spawn-failed');
+    expect(result.identityVerified).toBe(true);
+
+    await backend.killSession(id);
+  });
 });
