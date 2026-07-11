@@ -35,7 +35,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     ],
     flagValues: {
       '--agent': ['claude-code', 'codex-cli'],
-      '--effort': ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+      '--effort': ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
       '--dedupe': ['warn', 'block', 'skip'],
     },
   },

@@ -143,8 +143,9 @@ describe('parseArgs', () => {
     expect(parseArgs(['--effort', 'minimal']).effort).toBe('minimal');
   });
 
-  it('rejects an --effort value outside the cross-agent union (#681)', () => {
-    expect(() => parseArgs(['--effort', 'ultra'])).toThrow(UsageError);
+  it('accepts Codex ultra and rejects values outside the cross-agent union (#681)', () => {
+    expect(parseArgs(['--effort', 'ultra']).effort).toBe('ultra');
+    expect(() => parseArgs(['--effort', 'supermax'])).toThrow(UsageError);
     expect(() => parseArgs(['--effort', ''])).toThrow(UsageError);
   });
 

@@ -13,7 +13,7 @@ describe('lookupPricing — strict exact-match', () => {
     const observed = [
       'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5',
       'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini',
-      'gpt-5.5', 'gpt-5.5-pro', 'gpt-5', 'gpt-5-mini', 'o3', 'o3-mini',
+      'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.5-pro', 'gpt-5', 'gpt-5-mini', 'o3', 'o3-mini',
     ];
     for (const m of observed) {
       const p = lookupPricing(m);
@@ -70,13 +70,28 @@ describe('lookupPricing — strict exact-match', () => {
   });
 
   test('cache rates may legitimately be 0 for non-caching models', () => {
-    // OpenAI rows ship `cacheWritePerMTok: 0` because OpenAI's API does not
-    // bill cache writes — this is correct, not placeholder. Only input/output
-    // non-positivity disqualifies a row.
+    // Older OpenAI rows ship `cacheWritePerMTok: 0` because those APIs do not
+    // bill cache writes; GPT-5.6 rows use their separately published write rate.
+    // Only input/output non-positivity disqualifies a row.
     const codex = lookupPricing('gpt-5.3-codex');
     expect(codex).not.toBeNull();
     expect(codex!.cacheWritePerMTok).toBe(0);
     expect(codex!.cacheReadPerMTok).toBeGreaterThan(0);
+  });
+
+  test('GPT-5.6 Luna and Sol use their published token and cache rates', () => {
+    expect(lookupPricing('gpt-5.6-luna')).toMatchObject({
+      inputPerMTok: 1,
+      outputPerMTok: 6,
+      cacheWritePerMTok: 1.25,
+      cacheReadPerMTok: 0.1,
+    });
+    expect(lookupPricing('gpt-5.6-sol')).toMatchObject({
+      inputPerMTok: 5,
+      outputPerMTok: 30,
+      cacheWritePerMTok: 6.25,
+      cacheReadPerMTok: 0.5,
+    });
   });
 });
 

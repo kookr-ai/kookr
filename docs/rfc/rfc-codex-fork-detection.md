@@ -10,7 +10,7 @@
 
 ## Problem
 
-PRs [#241](https://github.com/kookr-ai/kookr/pull/241) and [#242](https://github.com/kookr-ai/kookr/pull/242) shipped the Codex `--plugin-dir` adapter wiring with a runtime capability probe. The kookr-fork of Codex (jeanibarz/codex#52) advertises `--plugin-dir` in `codex --help`, so the adapter auto-injects the plugin tree. Stock Codex (`npm i -g @openai/codex`) does not, so the adapter skips injection and emits a one-time `console.warn` pointing at `pnpm codex:rebuild`.
+PRs [#241](https://github.com/kookr-ai/kookr/pull/241) and [#242](https://github.com/kookr-ai/kookr/pull/242) shipped the Codex `--plugin-dir` adapter wiring with a runtime capability probe. The kookr-fork of Codex (jeanibarz/codex#52) advertises `--plugin-dir` in `codex --help`, so the adapter auto-injects the plugin tree and enables fork-specific Luna/Sol model and effort settings. Stock Codex (`npm i -g @openai/codex`) does not, so the adapter skips those fork-only settings and emits a one-time `console.warn` pointing at `pnpm codex:rebuild`.
 
 The warn is the only signal a dev gets that their Codex sessions will not see the kookr-toolkit. It fires:
 
@@ -58,7 +58,7 @@ The issue body listed four candidate surfaces:
 
 ### One source of truth: `scripts/lib/probe-codex-plugin-dir.sh`
 
-The `pnpm doctor` extension and the runtime adapter probe share a *contract*, not just code: same binary, same flag, same expected substring, same env var (`KOOKR_CODEX_BIN`). Two independent implementations of that contract create a drift surface — if the criterion ever changes (flag rename, version-range check, multi-flag probe), both sites must update independently.
+The `pnpm doctor` extension and the runtime adapter probe share a *contract*, not just code: same binary, same flag, same expected substring, same env var (`KOOKR_CODEX_BIN`). The runtime adapter uses this fork-capability signal for toolkit injection and fork-specific model/effort settings. Two independent implementations of that contract create a drift surface — if the criterion ever changes (flag rename, version-range check, multi-flag probe), both sites must update independently.
 
 To bound the drift surface to one place, ship a small bash library at `scripts/lib/probe-codex-plugin-dir.sh`:
 
@@ -217,9 +217,9 @@ The issue raised five open questions. Short answers:
 
 1. **Auto-fix?** No. `pnpm doctor` declares "Auto-fixing detected problems" as out of scope per its header (citing #9). Print the recipe; the dev runs it. Revisit only if a separate `pnpm doctor:fix` flag is introduced for *all* checks.
 2. **Discoverability vs noise.** Doctor on demand + launch-time warn covers it without alarm fatigue. Always-on banners are rejected (see Surfaces).
-3. **Generality.** The bash library is the reusable primitive at the diagnostic layer; `probeBinaryFlagSupport` is the one at the runtime layer. Both are shaped for one binary today; widening to a generic "external binary capability" framework should wait for a second case.
+3. **Generality.** The bash library is the reusable primitive at the diagnostic layer; `probeBinaryFlagSupport` is the one at the runtime layer. The runtime result now gates both toolkit injection and fork-specific model/effort settings. Both are shaped for one binary today; widening to a generic "external binary capability" framework should wait for a second external binary.
 4. **Interaction with `pnpm prod:update`.** Addressed — the probe lands at the end of `prod-restart.sh` (which `prod:update` invokes). Not added to `pnpm prod:setup` (one-time bootstrap; dev reads README) or `pnpm dev` (constant restart cycle; alarm fatigue).
-5. **Stock-codex fallback.** Out of scope. If the kookr-fork-only surface area keeps growing (this is the second flag-gap after [#210](https://github.com/kookr-ai/kookr/issues/210)), "stock Codex is supported" becomes a strategic question, not a UX surface call. The doctor row tolerates either answer: WARN today; if the policy flips to "fork required," the same row becomes FAIL with the same fix recipe.
+5. **Stock-codex fallback.** The adapter preserves stock/older-binary model behavior and skips fork-only `max`/`ultra` overrides with a warning. If the kookr-fork-only surface area keeps growing (this is the second flag-gap after [#210](https://github.com/kookr-ai/kookr/issues/210)), "stock Codex is supported" becomes a strategic question, not a UX surface call. The doctor row tolerates either answer: WARN today; if the policy flips to "fork required," the same row becomes FAIL with the same fix recipe.
 
 ## Acceptance criteria
 

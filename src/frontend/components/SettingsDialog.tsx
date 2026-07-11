@@ -681,8 +681,8 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
   }
 
   // #681: set or clear a per-agent-type reasoning-effort default. An empty
-  // value removes the entry, restoring the agent CLI's own default (no flag
-  // passed at launch). Invalid (agent, level) pairs are dropped server-side.
+  // value removes the entry, restoring Kookr's current default. Invalid
+  // (agent, level) pairs are dropped server-side.
   function handleAgentEffortChange(agent: AgentType, level: string) {
     if (!settings) return;
     const nextEffort: AgentEffortMap = { ...(settings.agentEffort ?? {}) };
@@ -1179,16 +1179,16 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                       </div>
                     </div>
                     {/* #681: per-agent-type reasoning-effort default. One row per
-                        concrete agent. "Default" clears the setting, so the agent
-                        CLI's own default applies and no effort flag is passed. */}
+                        concrete agent. */}
                     {AVAILABLE_AGENT_TYPES.map(({ type, label }) => (
                       <div className="settings-row" key={`effort-${type}`}>
                         <div className="settings-row-info">
                           <span className="settings-label">{label} effort</span>
                           <span className="settings-desc">
-                            Reasoning-effort level new {label} tasks launch at. "Default" uses the
-                            agent CLI's own default (no flag passed). A per-task override (via the
-                            task API or <code>kookr-spawn --effort</code>) wins over this default.
+                            Reasoning-effort level new {label} tasks launch at. "Default" uses
+                            {type === 'codex-cli' ? ' Kookr\'s Luna max default' : ' the agent CLI\'s own default'}.
+                            A per-task override (via the task API or <code>kookr-spawn --effort</code>)
+                            wins over this default.
                           </span>
                         </div>
                         <div className="settings-agent-select">
@@ -1198,7 +1198,7 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                             value={settings.agentEffort?.[type] ?? ''}
                             onChange={(e) => handleAgentEffortChange(type, e.target.value)}
                           >
-                            <option value="">Default</option>
+                            <option value="">{type === 'codex-cli' ? 'Kookr default (Luna max)' : 'Agent default'}</option>
                             {effortLevelsForAgent(type).map((level) => (
                               <option key={level} value={level}>{level}</option>
                             ))}

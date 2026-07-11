@@ -82,13 +82,16 @@ This applies to v1 only (`Feature::Collab`, default enabled). The v2 description
 
 ### Claude model alias mapping
 
-Map Claude names to Codex model strings:
+Map Claude agent aliases to the Kookr Codex fork's Luna model and role effort:
 
-- `opus` -> `gpt-5.4`
-- `sonnet` -> `gpt-5.4`
-- `haiku` -> `gpt-5.4-mini`
+- `opus` -> `gpt-5.6-luna`, `model_reasoning_effort = "max"`
+- `sonnet` -> `gpt-5.6-luna`, `model_reasoning_effort = "high"`
+- `haiku` -> `gpt-5.6-luna`, `model_reasoning_effort = "medium"`
 
-Use the Codex model names exactly as hyphenated above. `gpt5.4` is not the right slug.
+Kookr's top-level Codex launches also default to `gpt-5.6-luna` with
+`model_reasoning_effort = "max"`; a per-task effort override still wins.
+An explicit top-level `ultra` effort selects `gpt-5.6-sol`, because Luna's
+advertised reasoning ceiling is `max`.
 
 ## Build and Deploy Workflow
 

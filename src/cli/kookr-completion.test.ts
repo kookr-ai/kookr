@@ -128,7 +128,7 @@ describe('renderCompletion', () => {
     expect(script).toContain('status pause resume cancel');
     expect(script).toContain('--prompt-file');
     expect(script).toContain('compgen -W "claude-code codex-cli"');
-    expect(script).toContain('compgen -W "none minimal low medium high xhigh max"');
+    expect(script).toContain('compgen -W "none minimal low medium high xhigh max ultra"');
     expect(script).toContain('compgen -W "warn block skip"');
     expect(script).toContain('--dedupe=warn');
     expect(script).toContain('--fail-on=critical');
@@ -146,7 +146,7 @@ describe('renderCompletion', () => {
     expect(script).toContain('compadd outcome');
     expect(script).toContain('compadd -- status pause resume cancel');
     expect(script).toContain('compadd claude-code codex-cli');
-    expect(script).toContain('compadd none minimal low medium high xhigh max');
+    expect(script).toContain('compadd none minimal low medium high xhigh max ultra');
     expect(script).toContain('compadd warn block skip');
     expect(script).toContain('compadd -- --dedupe=warn --dedupe=block --dedupe=skip');
     expect(script).toContain('compadd -- --fail-on=critical --fail-on=warning --fail-on=info --fail-on=none');

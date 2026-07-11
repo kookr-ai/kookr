@@ -38,6 +38,8 @@ import { effectiveHookSettingsPath, readPersistedHookSettings } from './effectiv
 import { buildHookCommand, resolveHookWriterPath } from '../core/hook-writer-paths.js';
 
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
+const DEFAULT_CODEX_MODEL = 'gpt-5.6-luna';
+const ULTRA_CODEX_MODEL = 'gpt-5.6-sol';
 
 interface CodexHookSettings {
   hooks: Record<string, Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>>;
@@ -109,7 +111,8 @@ export interface CodexCliAdapterOptions {
    * `-c model_reasoning_effort="<level>"` into the argv (unless a per-task
    * override is supplied via {@link AdapterLaunchOptions.effort}, which wins).
    * Returning `undefined` — the default when no effort is configured — passes
-   * no effort override, leaving the launch argv byte-identical to pre-#681.
+   * no `model_reasoning_effort` override; the adapter still selects its
+   * configured default model.
    * Invalid values are ignored (skip + warn) as a final guard.
    */
   resolveDefaultEffort?: () => string | undefined;
@@ -156,8 +159,10 @@ export class CodexCliAdapter implements AgentAdapter {
   private trustWorkspace: boolean;
   private bypassAllPermissions: boolean;
   private pluginDir?: string;
-  private pluginDirSupportProbe?: Promise<boolean>;
+  /** Also gates fork-only model and reasoning-effort settings. */
+  private kookrForkSupportProbe?: Promise<boolean>;
   private warnedAboutMissingPluginDirSupport = false;
+  private warnedAboutUnsupportedForkEfforts = new Set<string>();
   private promptFileSupportProbe?: Promise<boolean>;
   private warnedAboutMissingPromptFileSupport = false;
   private probeExec?: ProbeExecRunner;
@@ -183,7 +188,7 @@ export class CodexCliAdapter implements AgentAdapter {
     // from the compiled module location. The runtime --plugin-dir capability
     // probe (run lazily at first launch) gates whether we actually inject,
     // so onboarding devs don't have to set any env var even before the
-    // codex-fork supporting --plugin-dir lands. See `probePluginDirSupport`.
+    // codex-fork supporting --plugin-dir lands. See `probeKookrForkSupport`.
     this.pluginDir = resolvePluginDir(options?.pluginDir);
     this.probeExec = options?.probeExec;
     this.resolveDefaultEffort = options?.resolveDefaultEffort;
@@ -202,19 +207,19 @@ export class CodexCliAdapter implements AgentAdapter {
 
   /**
    * Memoized capability probe: does this codex binary advertise `--plugin-dir`
-   * in its `--help` output? Caches the Promise so concurrent first-launches
-   * share the work. Lazy — only spawns the probe subprocess when the adapter
-   * actually has a plugin tree to inject.
+   * in its `--help` output? The flag identifies the Kookr fork and gates both
+   * plugin injection and fork-specific model/effort settings. Caches the
+   * Promise so concurrent first launches share the work.
    */
-  private probePluginDirSupport(): Promise<boolean> {
-    if (this.pluginDirSupportProbe === undefined) {
-      this.pluginDirSupportProbe = probeBinaryFlagSupport(
+  private probeKookrForkSupport(): Promise<boolean> {
+    if (this.kookrForkSupportProbe === undefined) {
+      this.kookrForkSupportProbe = probeBinaryFlagSupport(
         this.agentBin,
         '--plugin-dir',
         { exec: this.probeExec },
       );
     }
-    return this.pluginDirSupportProbe;
+    return this.kookrForkSupportProbe;
   }
 
   /**
@@ -303,10 +308,21 @@ export class CodexCliAdapter implements AgentAdapter {
       );
     }
 
+    // A Luna session is the default for the Kookr fork. The same capability
+    // probe used for --plugin-dir keeps stock/older Codex binaries on their
+    // previous model defaults. Luna tops out at `max`; an explicit `ultra`
+    // request selects the fork's Sol model, which advertises ultra.
+    const forkCapabilitiesSupported = await this.probeKookrForkSupport();
+    const effort = opts?.effort ?? this.resolveDefaultEffort?.();
+    const model = forkCapabilitiesSupported
+      ? (effort === 'ultra' ? ULTRA_CODEX_MODEL : DEFAULT_CODEX_MODEL)
+      : undefined;
+
     // V8: argv-based launch through the backend. No shell features needed;
     // env goes in SessionSpec.env, flags become argv.
     const args = [
       '-c', 'features.codex_hooks=true',
+      ...(model ? ['-c', `model="${model}"`] : []),
       permissionFlagStr,
       '--settings', settingsPath,
     ];
@@ -314,19 +330,29 @@ export class CodexCliAdapter implements AgentAdapter {
     // its lever is the `model_reasoning_effort` config key, overridable from
     // the CLI via `-c key=value` (value parsed as TOML). Resolution order:
     // per-task override (opts.effort) → configured per-agent-type default
-    // (resolveDefaultEffort) → unset. When both are absent, nothing is pushed
-    // and the argv is byte-identical to pre-#681. The agent-specific validity
+    // (resolveDefaultEffort) → unset. When both are absent, no effort override
+    // is pushed; the adapter still selects its configured default model. The
+    // agent-specific validity
     // guard is a last line of defense (route + settings validation reject
     // invalid values upstream). The prompt positional is appended later, so
     // this flag pair never lands in trailing-positional position.
-    const effort = opts?.effort ?? this.resolveDefaultEffort?.();
-    if (effort) {
+    const forkOnlyEffort = effort === 'max' || effort === 'ultra';
+    if (effort && forkOnlyEffort && !forkCapabilitiesSupported) {
+      if (!this.warnedAboutUnsupportedForkEfforts.has(effort)) {
+        this.warnedAboutUnsupportedForkEfforts.add(effort);
+        console.warn(
+          `[codex-cli-adapter] effort "${effort}" requires the Kookr Codex fork; ` +
+          `keeping the stock Codex model and skipping the unsupported override. ` +
+          `Run \`pnpm codex:rebuild\` from kookr to install the fork.`,
+        );
+      }
+    } else if (effort) {
       if (isValidEffortForAgent(this.agentType, effort)) {
         args.push('-c', `model_reasoning_effort="${effort}"`);
       } else {
         console.warn(
           `[codex-cli-adapter] ignoring invalid effort "${effort}" for ${this.agentType}; ` +
-          `valid: none, minimal, low, medium, high, xhigh`,
+          `valid: none, minimal, low, medium, high, xhigh, max, ultra`,
         );
       }
     }
@@ -341,7 +367,7 @@ export class CodexCliAdapter implements AgentAdapter {
     // (jeanibarz/codex#52) advertises the flag → injection is automatic
     // with no env var setup.
     if (this.pluginDir) {
-      const supported = await this.probePluginDirSupport();
+      const supported = await this.probeKookrForkSupport();
       if (supported) {
         args.push('--plugin-dir', this.pluginDir);
       } else if (!this.warnedAboutMissingPluginDirSupport) {

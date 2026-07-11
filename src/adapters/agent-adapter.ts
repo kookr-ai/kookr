@@ -70,8 +70,8 @@ export interface AdapterLaunchOptions {
    * it to the agent CLI's effort lever (claude-code: `--effort <level>`;
    * codex-cli: `-c model_reasoning_effort="<level>"`). When undefined, the
    * adapter falls back to its constructor-time per-agent-type default; when
-   * *that* is also undefined no effort flag is passed at all — byte-identical
-   * to pre-#681 launch argv.
+   * *that* is also undefined no effort override is passed. Adapters may still
+   * select an explicit default model.
    *
    * Carries only the resolved per-task override. The per-agent-type default is
    * resolved *inside* the adapter (see each adapter's `resolveDefaultEffort`)

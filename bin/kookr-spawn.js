@@ -35,13 +35,13 @@ const EXIT_WAIT_TIMEOUT = 6;
 const DEDUPE_MODES = new Set(['warn', 'block', 'skip']);
 const TERMINAL_TASK_STATUSES = new Set(['completed', 'cancelled', 'terminated']);
 // #681: union of every agent's accepted reasoning-effort levels — claude-code
-// (low|medium|high|xhigh|max) ∪ codex-cli (none|minimal|low|medium|high|xhigh).
+// (low|medium|high|xhigh|max) ∪ codex-cli (none|minimal|low|medium|high|xhigh|max|ultra).
 // This is a cross-agent fast-fail check only: the CLI cannot know which agent a
 // `round-robin` launch resolves to, so the authoritative agent-specific check
-// runs server-side and surfaces as a 400 (→ EXIT_SERVER_ERROR) if, e.g., `max`
-// is requested for codex-cli. Keep in sync with ALL_EFFORT_LEVELS in
+// runs server-side for agent-specific validation. Keep in sync with
+// ALL_EFFORT_LEVELS in
 // src/shared/contracts/agent-types.ts.
-const EFFORT_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+const EFFORT_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 
 // ---------- arg parsing ----------
 
@@ -59,7 +59,7 @@ Options:
       --effort <level>     Reasoning effort for this task (default: server's
                            per-agent-type setting, else the agent CLI default).
                            claude-code: low|medium|high|xhigh|max.
-                           codex-cli:   none|minimal|low|medium|high|xhigh.
+                           codex-cli:   none|minimal|low|medium|high|xhigh|max|ultra.
       --criteria <text>    Acceptance criteria. Note: this is argv-exposed.
       --dedupe <mode>      warn, block, or skip (default: warn).
       --wait[=<seconds>]   After creating the task, poll until it raises
