@@ -33,6 +33,8 @@ export const KNOWN_RULE_IDS: ReadonlySet<string> = new Set([
   'docs',
   'mbse',
   'roadmap',
+  'changelog',
+  'benchmarks',
 ]);
 
 export interface ChecklistConfig {

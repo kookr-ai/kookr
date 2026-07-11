@@ -47,6 +47,18 @@ describe('parseChecklist', () => {
     expect(parseChecklist(body)).toHaveLength(1);
     expect(parseChecklist(body)).toHaveLength(1);
   });
+
+  it('does not mistake a struck checklist label for a waiver reason', () => {
+    const withoutReason = parseChecklist(
+      '~~- [ ] <!-- kookr:check:tests --> Tests were added or updated~~',
+    )[0];
+    expect(withoutReason).toMatchObject({ struck: true, reason: '' });
+
+    const withReason = parseChecklist(
+      '~~- [ ] <!-- kookr:check:tests --> Tests were added or updated~~ — docs-only change',
+    )[0];
+    expect(withReason).toMatchObject({ struck: true, reason: 'docs-only change' });
+  });
 });
 
 describe('evaluateAttestation', () => {
@@ -81,6 +93,51 @@ describe('evaluateAttestation', () => {
     );
     expect(results[0]).toMatchObject({ status: 'waived', reason: 'N/A, docs-only' });
     expect(waived.has('mbse')).toBe(true);
+  });
+
+  it('rejects a struck box without a waiver reason', () => {
+    const { results, waived } = evaluateAttestation(
+      [{ id: 'docs', checked: false, struck: true, reason: '' }],
+      [],
+    );
+    expect(results[0]).toMatchObject({ id: 'docs', status: 'fail' });
+    expect(results[0].summary).toMatch(/waiver reason/);
+    expect(waived.has('docs')).toBe(false);
+  });
+
+  it.each([
+    ['tests', 'src/core/example.test.ts'],
+    ['tests', 'src/core/example.spec.tsx'],
+    ['new-tests', 'test/example.test.ts'],
+    ['integration-tests', 'tests/integration/example.test.ts'],
+    ['e2e-tests', 'tests/e2e/example.spec.ts'],
+    ['docs', 'docs/operations/local-services.md'],
+    ['mbse', 'docs/rfc/legacy-contract.md'],
+    ['mbse', 'docs/rfcs/021-contextual-prefaces.md'],
+    ['mbse', 'docs/adr/004-index-layout.md'],
+    ['mbse', 'docs/system-models/runtime.md'],
+    ['changelog', 'CHANGELOG.md'],
+    ['benchmarks', 'benchmark/smoke.ts'],
+    ['benchmarks', 'benchmarks/compare/model-quality.test.ts'],
+  ])('accepts conventional %s evidence at %s', (id, changedPath) => {
+    const { results } = evaluateAttestation([{ id, checked: true, struck: false, reason: '' }], [changedPath]);
+    expect(results[0]).toMatchObject({ id, status: 'pass' });
+  });
+
+  it.each(['changelog', 'benchmarks'])('rejects checked %s without matching evidence', (id) => {
+    const { results } = evaluateAttestation([{ id, checked: true, struck: false, reason: '' }], ['src/index.ts']);
+    expect(results[0]).toMatchObject({ id, status: 'fail' });
+  });
+
+  it.each([
+    ['docs', 'README.md'],
+    ['mbse', 'docs/operations/local-services.md'],
+    ['tests', 'src/core/example.ts'],
+    ['integration-tests', 'src/core/example.test.ts'],
+    ['e2e-tests', 'src/core/example.spec.ts'],
+  ])('rejects %s evidence from a non-matching path %s', (id, changedPath) => {
+    const { results } = evaluateAttestation([{ id, checked: true, struck: false, reason: '' }], [changedPath]);
+    expect(results[0]).toMatchObject({ id, status: 'fail' });
   });
 
   it('treats an unknown checked id as a bare attestation (pass) and notes it', () => {

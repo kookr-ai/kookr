@@ -178,9 +178,12 @@ inspectable via `kookr pr-checklist verify --explain`.
 |---|---|
 | `kookr:check:env` | `changed-when` (a): new `process.env.X` in changed source ⇒ must be in `.env.example` |
 | `kookr:check:tests` | `changed-when` (b): a new source file ⇒ referenced under a test path |
-| `kookr:check:docs`, `:mbse`, `:readme`, `:roadmap`, unknown ids | `attest` (checked ⇒ conventionally-named path in diff; struck ⇒ waived) |
+| `kookr:check:docs`, `:mbse`, `:readme`, `:roadmap`, `:changelog`, `:benchmarks` | `attest` (checked ⇒ conventionally-named path in diff; struck with a non-empty reason ⇒ waived) |
+| unknown ids | Bare attestation only (checked ⇒ pass with a warning; struck with a non-empty reason ⇒ waived) |
 
-v1 hardcodes JS/Node path/env conventions (the only proven profile). A
+Conventional evidence includes nested `docs/**`, RFC/ADR/system-model paths,
+test directories and colocated `*.test.*` / `*.spec.*` files, `CHANGELOG.md`,
+and `benchmark/` or `benchmarks/`. v1 otherwise hardcodes JS/Node path/env conventions (the only proven profile). A
 "language profile" abstraction is introduced only when a second-language repo
 adopts (P5-adjacent), not speculatively.
 

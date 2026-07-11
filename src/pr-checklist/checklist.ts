@@ -21,13 +21,24 @@ export const BOX_EVIDENCE: Record<string, BoxEvidence> = {
   readme: { label: 'README updated', paths: [/^README\.md$/] },
   help: { label: 'command surfaces updated', paths: [/^src\/commands\.[jt]s$/, /^README\.md$/] },
   env: { label: '.env.example updated', paths: [/^\.env\.example$/] },
-  docs: { label: 'operator docs updated', paths: [/^docs\/[^/]+\.md$/] },
-  mbse: { label: 'architecture docs refreshed', paths: [/^docs\/system-models\//, /^docs\/rfc\//] },
+  docs: { label: 'operator docs updated', paths: [/^docs\//] },
+  mbse: {
+    label: 'architecture docs refreshed',
+    paths: [/^docs\/(?:system-models|rfcs?|adr)\//],
+  },
   roadmap: { label: 'ROADMAP updated', paths: [/^ROADMAP\.md$/] },
-  'new-tests': { label: 'new behavior has tests', paths: [/(^|\/)tests?\//] },
-  tests: { label: 'tests added/updated', paths: [/(^|\/)tests?\//] },
-  'integration-tests': { label: 'integration tests added/updated', paths: [/(^|\/)tests?\//] },
-  'e2e-tests': { label: 'end-to-end test added/updated', paths: [/(^|\/)tests?\//] },
+  changelog: { label: 'changelog updated', paths: [/^CHANGELOG\.md$/] },
+  benchmarks: { label: 'benchmark evidence updated', paths: [/^benchmarks?\//] },
+  'new-tests': { label: 'new behavior has tests', paths: [/(^|\/)tests?\//, /\.(?:test|spec)\.[jt]sx?$/] },
+  tests: { label: 'tests added/updated', paths: [/(^|\/)tests?\//, /\.(?:test|spec)\.[jt]sx?$/] },
+  'integration-tests': {
+    label: 'integration tests added/updated',
+    paths: [/(^|\/)tests?\//],
+  },
+  'e2e-tests': {
+    label: 'end-to-end test added/updated',
+    paths: [/(^|\/)tests?\//],
+  },
 };
 
 // Conservative committed-secret patterns (low false-positive).
@@ -49,11 +60,14 @@ export function parseChecklist(body: string): ChecklistRow[] {
   while ((match = MARKER_LINE.exec(body)) !== null) {
     const rest = match[5] ?? '';
     const struck = Boolean(match[1]) || Boolean(match[3]) || /~~/.test(rest);
+    const closingStrike = rest.lastIndexOf('~~');
     rows.push({
       id: match[4],
       checked: match[2].toLowerCase() === 'x',
       struck,
-      reason: struck ? rest.replace(/~~/g, '').replace(/^[\s—:-]+/, '').trim() : '',
+      // Only text after the closing strike is a waiver reason. The struck
+      // checklist label itself is evidence of what was waived, not why.
+      reason: struck && closingStrike >= 0 ? rest.slice(closingStrike + 2).replace(/^[\s—:-]+/, '').trim() : '',
     });
   }
   return rows;
@@ -85,6 +99,14 @@ export function evaluateAttestation(
     seen.add(row.id);
     const spec = BOX_EVIDENCE[row.id];
     if (row.struck) {
+      if (!row.reason) {
+        results.push({
+          id: row.id,
+          status: 'fail',
+          summary: `checklist waiver for ${row.id} requires a one-line waiver reason`,
+        });
+        continue;
+      }
       waived.add(row.id);
       results.push({
         id: row.id,
