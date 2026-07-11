@@ -407,7 +407,7 @@ Body.
     expect(parsed.body).toContain('### 4.3 Knowledge Base Refinement');
     expect(parsed.body).toContain('### 4.4 Critic Review');
     expect(parsed.body).toContain(
-      'literal headings `## Duplicate evidence table` and `## Knowledge base grounding`',
+      'literal headings `## Classification (authority, changeShape, size, confidence, risks)`, `## Duplicate evidence table`, and `## Knowledge base grounding`',
     );
   });
 
