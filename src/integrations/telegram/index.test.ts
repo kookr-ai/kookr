@@ -235,6 +235,13 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
     };
   }
 
+  it('bounds empty long-poll requests instead of busy-spinning', async () => {
+    handle = await startTelegramTrigger(makeDeps());
+    await sleep(150);
+    expect(fake.outbound.getUpdates).toBeGreaterThan(0);
+    expect(fake.outbound.getUpdates).toBeLessThan(10);
+  });
+
   it('sends a confirmation in response to a free-form message', async () => {
     fake.queueUpdates([makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: 'fix sweep button' })]);
     handle = await startTelegramTrigger(makeDeps());
@@ -548,13 +555,11 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
     fake.queueUpdates([makeCallback({ update_id: 2, userId: ALLOWED_USER_ID, data: cbData, messageId: 1 })]);
     await waitFor(() => expect(fake.outbound.editMessageText.some((m) => /Spawned: t-test-123/.test(m.text))).toBe(true));
 
-    handle!.onTaskOutcome('t-test-123', { kind: 'completed' });
-    await waitFor(() => {
-      const outcomeMessages = fake.outbound.sendMessage.filter((m) => /completed/.test(m.text));
-      expect(outcomeMessages).toHaveLength(1);
-      expect(outcomeMessages[0].chat_id).toBe(ALLOWED_USER_ID);
-      expect(outcomeMessages[0].text).toMatch(/http:\/\/localhost:4800\/\?task=t-test-123/);
-    });
+    await handle!.onTaskOutcome('t-test-123', { kind: 'completed' });
+    const outcomeMessages = fake.outbound.sendMessage.filter((m) => /completed/.test(m.text));
+    expect(outcomeMessages).toHaveLength(1);
+    expect(outcomeMessages[0].chat_id).toBe(ALLOWED_USER_ID);
+    expect(outcomeMessages[0].text).toMatch(/http:\/\/localhost:4800\/\?task=t-test-123/);
   });
 
   it('task outcome formats failed messages for remote-spawned tasks', async () => {
@@ -570,10 +575,8 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
     fake.queueUpdates([makeCallback({ update_id: 2, userId: ALLOWED_USER_ID, data: cbData, messageId: 1 })]);
     await waitFor(() => expect(fake.outbound.editMessageText.some((m) => /Spawned: t-failed-123/.test(m.text))).toBe(true));
 
-    handle!.onTaskOutcome('t-failed-123', { kind: 'failed' });
-    await waitFor(() => {
-      expect(fake.outbound.sendMessage.some((m) => m.chat_id === ALLOWED_USER_ID && /Task t-failed-123 failed/.test(m.text))).toBe(true);
-    });
+    await handle!.onTaskOutcome('t-failed-123', { kind: 'failed' });
+    expect(fake.outbound.sendMessage.some((m) => m.chat_id === ALLOWED_USER_ID && /Task t-failed-123 failed/.test(m.text))).toBe(true);
   });
 
   it('task outcome formats cancelled messages for remote-spawned tasks', async () => {
@@ -589,10 +592,8 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
     fake.queueUpdates([makeCallback({ update_id: 2, userId: ALLOWED_USER_ID, data: cbData, messageId: 1 })]);
     await waitFor(() => expect(fake.outbound.editMessageText.some((m) => /Spawned: t-cancelled-123/.test(m.text))).toBe(true));
 
-    handle!.onTaskOutcome('t-cancelled-123', { kind: 'cancelled' });
-    await waitFor(() => {
-      expect(fake.outbound.sendMessage.some((m) => m.chat_id === ALLOWED_USER_ID && /Task t-cancelled-123 was cancelled/.test(m.text))).toBe(true);
-    });
+    await handle!.onTaskOutcome('t-cancelled-123', { kind: 'cancelled' });
+    expect(fake.outbound.sendMessage.some((m) => m.chat_id === ALLOWED_USER_ID && /Task t-cancelled-123 was cancelled/.test(m.text))).toBe(true);
   });
 
   it('task outcome redacts completion-ready notes and dedupes later terminal outcomes', async () => {
@@ -604,7 +605,7 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
     fake.queueUpdates([makeCallback({ update_id: 2, userId: ALLOWED_USER_ID, data: cbData, messageId: 1 })]);
     await sleep(200);
 
-    handle!.onTaskOutcome('t-test-123', {
+    await handle!.onTaskOutcome('t-test-123', {
       kind: 'completion_ready',
       note: 'opened PR with api_key=fake-test-value',
     });
@@ -615,14 +616,14 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
       expect(readyMessages[0].text).not.toMatch(/fake-test-value/);
     });
 
-    handle!.onTaskOutcome('t-test-123', { kind: 'completed' });
+    await handle!.onTaskOutcome('t-test-123', { kind: 'completed' });
     await sleep(50);
     expect(fake.outbound.sendMessage.filter((m) => /completed/.test(m.text))).toHaveLength(0);
   });
 
   it('task outcome silently skips for non-remote tasks', async () => {
     handle = await startTelegramTrigger(makeDeps());
-    handle.onTaskOutcome('t-not-remote', { kind: 'completed' });
+    await handle.onTaskOutcome('t-not-remote', { kind: 'completed' });
     await sleep(50);
     expect(fake.outbound.sendMessage).toHaveLength(0);
   });
