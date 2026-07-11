@@ -19,7 +19,7 @@ import {
 } from './reviewer-fanout.js';
 
 const diffScope: ReviewerDiffScope = {
-  repoDir: '/home/dev/kookr-worktree',
+  repoDir: '/repo/worktree',
   baseRef: 'origin/main',
   headRef: 'feat/x',
   changedFiles: ['src/a.ts', 'src/b.ts'],
@@ -137,7 +137,7 @@ describe('buildSpecialistLaunch', () => {
     expect(launch.prompt).toContain('role=correctness');
     expect(launch.prompt).toContain('origin/main..feat/x (2 changed file(s))');
     // {repoDir} is substituted, specialist body preserved verbatim otherwise.
-    expect(launch.prompt).toContain('Find bugs in /home/dev/kookr-worktree.');
+    expect(launch.prompt).toContain('Find bugs in /repo/worktree.');
     expect(launch.prompt).not.toContain('{repoDir}');
   });
 
