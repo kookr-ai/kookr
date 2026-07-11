@@ -11,7 +11,9 @@ import type { Actor } from '../auth.js';
 import type { SocketRegistrar } from '../viewer-connection-registry.js';
 import type { TerminalInputWriterPort } from '../../core/ports/terminal-input-writer-port.js';
 import {
+  DASHBOARD_WEBSOCKET_MAX_PAYLOAD_BYTES,
   startHttpAndWebSockets,
+  TERMINAL_WEBSOCKET_MAX_PAYLOAD_BYTES,
   WEBSOCKET_PER_MESSAGE_DEFLATE,
   type HttpAndWebSockets,
 } from './start-http-and-websockets.js';
@@ -140,7 +142,7 @@ describe('startHttpAndWebSockets', () => {
     expect(dashboardConnections).toHaveLength(1);
   });
 
-  test('configures dashboard and terminal WebSocket compression explicitly', async () => {
+  test('configures dashboard and terminal WebSocket resource limits explicitly', async () => {
     runtime = await startHttpAndWebSockets({
       app: new Hono(),
       port: 0,
@@ -159,12 +161,53 @@ describe('startHttpAndWebSockets', () => {
 
     expect(runtime.wss.options.perMessageDeflate).toEqual(WEBSOCKET_PER_MESSAGE_DEFLATE);
     expect(runtime.terminalWss.options.perMessageDeflate).toEqual(WEBSOCKET_PER_MESSAGE_DEFLATE);
+    expect(runtime.wss.options.maxPayload).toBe(DASHBOARD_WEBSOCKET_MAX_PAYLOAD_BYTES);
+    expect(runtime.terminalWss.options.maxPayload).toBe(TERMINAL_WEBSOCKET_MAX_PAYLOAD_BYTES);
     expect(runtime.wss.options.perMessageDeflate).toMatchObject({
       clientNoContextTakeover: true,
       serverNoContextTakeover: true,
       concurrencyLimit: 10,
       threshold: 1024,
     });
+  });
+
+  test.each([
+    {
+      label: 'dashboard',
+      path: '/ws',
+      maxPayload: DASHBOARD_WEBSOCKET_MAX_PAYLOAD_BYTES,
+    },
+    {
+      label: 'terminal',
+      path: '/ws/terminal/kookr-test-session',
+      maxPayload: TERMINAL_WEBSOCKET_MAX_PAYLOAD_BYTES,
+    },
+  ])('closes $label WebSockets that exceed the inbound frame limit', async ({ path, maxPayload }) => {
+    runtime = await startHttpAndWebSockets({
+      app: new Hono(),
+      port: 0,
+      host: '127.0.0.1',
+      tasksFile: '/tmp/tasks.json',
+      hooksDir: '/tmp/hooks',
+      terminalBackend: new FakeTerminalBackend(),
+      terminalDeps: {
+        monitor: {} as never,
+        abortPendingSuggestion: () => {},
+        broadcastToAll: () => {},
+        serverCwd: '/repo',
+      },
+      useFakeTerminalBridge: true,
+      onDashboardConnection: () => {},
+    });
+
+    const ws = new WebSocket(`ws://127.0.0.1:${portFor(runtime)}${path}`);
+    const closeCode = await new Promise<number>((resolve, reject) => {
+      ws.on('open', () => ws.send(Buffer.alloc(maxPayload + 1)));
+      ws.on('close', (code) => resolve(code));
+      ws.on('error', reject);
+    });
+
+    expect(closeCode).toBe(1009);
   });
 
   test('logs dashboard WebSocket connect and disconnect lifecycle events', async () => {
