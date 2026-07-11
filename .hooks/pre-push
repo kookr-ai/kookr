@@ -249,6 +249,13 @@ if ! pnpm validate:skills; then
   exit 1
 fi
 
+echo "Validating bundled playbooks parse..."
+if ! pnpm validate:playbooks; then
+  echo ""
+  echo "Push rejected: playbook validation failed."
+  exit 1
+fi
+
 echo "Validating documented commands..."
 if ! pnpm validate:docs-commands; then
   echo ""
