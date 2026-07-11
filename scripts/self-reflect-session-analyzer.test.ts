@@ -1,10 +1,13 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   analyzeMessages,
+  buildToolEfficiencyReport,
   collectRepeatedInstructions,
+  normalizeCommandFingerprint,
   parseCodexMessage,
   parseMessage,
   parseSubagentNotification,
+  renderToolsReport,
   type ParsedMessage,
   type SessionMeta,
 } from "../plugin/skills/self-reflect/scripts/session-analyzer.js";
@@ -366,3 +369,154 @@ describe("session analyzer repeated-instruction workflow filtering", () => {
     ]);
   });
 });
+
+describe("session analyzer tool efficiency report", () => {
+  test("normalizes volatile command arguments and redacts secrets", () => {
+    const first = normalizeCommandFingerprint("git show 0123456789abcdef0123456789abcdef --token=super-secret /tmp/run-123 2026-07-11T10:00:00Z");
+    const second = normalizeCommandFingerprint("git show fedcba9876543210fedcba9876543210 --token=different /tmp/run-999 2026-07-12T11:22:33Z");
+
+    expect(first).toBe(second);
+    expect(first).toContain("--token=<redacted>");
+    expect(first).not.toContain("super-secret");
+    expect(first).not.toContain("0123456789abcdef");
+    expect(normalizeCommandFingerprint("curl --password 'quoted secret' --data abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"))
+      .toMatch("curl --password <redacted> --data <arg:");
+    expect(normalizeCommandFingerprint("TOKEN=secret API_KEY=also-secret PASSWORD='quoted secret' env"))
+      .toBe("TOKEN=<redacted> API_KEY=<redacted> PASSWORD=<redacted> env");
+  });
+
+  test("distinguishes repeats with and without intervening state changes", () => {
+    const analysis = analyzeMessages(meta, [
+      toolCall("status-1", "exec_command", { cmd: "git status --short" }),
+      toolCall("status-2", "exec_command", { cmd: "git status --short" }),
+      toolCall("edit-1", "apply_patch", {}),
+      toolCall("status-3", "exec_command", { cmd: "git status --short" }),
+    ]);
+
+    const report = buildToolEfficiencyReport([analysis]);
+    expect(report.repeatedStatusDiffPollCalls).toEqual([
+      expect.objectContaining({
+        fingerprint: "git status --short",
+        count: 3,
+        repeats: 2,
+        repeatsWithoutStateChange: 1,
+      }),
+    ]);
+
+    const ghChecks = analyzeMessages(meta, [
+      toolCall("checks-1", "exec_command", { cmd: "gh pr checks 1328" }),
+      toolCall("checks-2", "exec_command", { cmd: "gh pr checks 1328" }),
+    ]);
+    expect(buildToolEfficiencyReport([ghChecks]).repeatedStatusDiffPollCalls[0])
+      .toMatchObject({ count: 2, repeatsWithoutStateChange: 1 });
+  });
+
+  test("classifies repeated reads, identical failures, sleep loops, and empty polls", () => {
+    const analysis = analyzeMessages(meta, [
+      toolCall("read-1", "Read", { file_path: "/repo/src/a.ts" }),
+      toolCall("read-2", "Read", { file_path: "/repo/src/a.ts" }),
+      toolCall("fail-1", "exec_command", { cmd: "pnpm test --run 123" }),
+      toolResult("fail-1", true, "8f3f5dc1a214"),
+      toolCall("fail-2", "exec_command", { cmd: "pnpm test --run 456" }),
+      toolResult("fail-2", true, "8f3f5dc1a214"),
+      toolCall("sleep-1", "exec_command", { cmd: "sleep 10; gh pr checks 1328" }),
+      toolCall("sleep-2", "exec_command", { cmd: "sleep 30; gh pr checks 1328" }),
+      toolCall("poll-1", "write_stdin", {}),
+      toolCall("poll-2", "write_stdin", { chars: "" }),
+    ]);
+
+    const report = buildToolEfficiencyReport([analysis]);
+    expect(report.repeatedSameFileReads[0]).toMatchObject({ count: 2, repeatsWithoutStateChange: 1 });
+    expect(report.identicalFailedRetries[0]).toMatchObject({ count: 2, repeats: 1 });
+    expect(report.identicalFailedRetries[0]?.fingerprint).not.toContain("same-error");
+    expect(report.fixedSleepPollLoops[0]).toMatchObject({ count: 2, repeats: 1 });
+    expect(report.emptyStdinPolls).toMatchObject({ count: 2, sessions: 1 });
+    expect(report.emptyStdinPolls.exampleSessionIds).toEqual(["session-1"]);
+  });
+
+  test("correlates raw Codex and Claude provider fixtures with failed commands", () => {
+    const codexMessages = [
+      parseCodexMessage({
+        type: "response_item",
+        payload: { type: "function_call", name: "exec_command", call_id: "codex-1", arguments: JSON.stringify({ cmd: "pnpm test 123" }) },
+      }, false)!,
+      parseCodexMessage({
+        type: "response_item",
+        payload: { type: "function_call_output", call_id: "codex-1", output: JSON.stringify({ output: "failed at 123", metadata: { exit_code: 1 } }) },
+      }, false)!,
+      parseCodexMessage({
+        type: "response_item",
+        payload: { type: "function_call", name: "exec_command", call_id: "codex-2", arguments: JSON.stringify({ cmd: "pnpm test 456" }) },
+      }, false)!,
+      parseCodexMessage({
+        type: "response_item",
+        payload: { type: "function_call_output", call_id: "codex-2", output: JSON.stringify({ output: "failed at 456", metadata: { exit_code: 1 } }) },
+      }, false)!,
+    ];
+    const claudeMessages = [
+      parseMessage({
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "claude-1", name: "Bash", input: { command: "pnpm test 123" } }] },
+      }, false)!,
+      parseMessage({
+        type: "user",
+        toolUseResult: { stdout: "failed at 123", stderr: "", is_error: true },
+        message: { content: [{ type: "tool_result", tool_use_id: "claude-1", is_error: true, content: "failed at 123" }] },
+      }, false)!,
+      parseMessage({
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "claude-2", name: "Bash", input: { command: "pnpm test 456" } }] },
+      }, false)!,
+      parseMessage({
+        type: "user",
+        toolUseResult: { stdout: "failed at 456", stderr: "", is_error: true },
+        message: { content: [{ type: "tool_result", tool_use_id: "claude-2", is_error: true, content: "failed at 456" }] },
+      }, false)!,
+    ];
+
+    for (const [provider, messages] of [["codex-cli", codexMessages], ["claude-code", claudeMessages]] as const) {
+      const report = buildToolEfficiencyReport([analyzeMessages({ ...meta, provider }, messages)]);
+      expect(report.identicalFailedRetries).toEqual([
+        expect.objectContaining({ fingerprint: expect.stringContaining("pnpm test <n>"), count: 2, repeats: 1 }),
+      ]);
+    }
+  });
+
+  test("renders bounded JSON and human-readable tool report sections", () => {
+    const analysis = analyzeMessages(meta, [
+      toolCall("status-1", "exec_command", { cmd: "git status --short" }),
+      toolCall("status-2", "exec_command", { cmd: "git status --short" }),
+    ]);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      renderToolsReport([analysis], "json");
+      const json = JSON.parse(String(log.mock.calls.at(-1)?.[0]));
+      expect(json.efficiency.repeatedStatusDiffPollCalls[0]).toMatchObject({
+        fingerprint: "git status --short",
+        count: 2,
+      });
+
+      log.mockClear();
+      renderToolsReport([analysis], "text");
+      expect(log.mock.calls.flat().join("\n")).toContain("Repeated status/diff/poll calls:");
+      expect(log.mock.calls.flat().join("\n")).toContain("git status --short");
+    } finally {
+      log.mockRestore();
+    }
+  });
+});
+
+function toolCall(callId: string, name: string, input: Record<string, unknown>): ParsedMessage {
+  return {
+    type: "assistant",
+    isSyntheticAssistantEvent: true,
+    toolCalls: [{ name, input, inputSummary: "", callId }],
+  };
+}
+
+function toolResult(callId: string, failed: boolean, outputHash: string): ParsedMessage {
+  return {
+    type: "progress",
+    toolResults: [{ callId, failed, outputHash }],
+  };
+}
