@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_AGENT_TYPE, type AgentType } from './agent-types.js';
 import type { CompletionDigest } from './completion-digest.js';
+import { evaluateCompletionSignal, type CompletionSignalDecision } from './completion-signal.js';
+import type { AgentEvent } from './types.js';
 import type { IssueClaim } from './issue-claim-types.js';
 import type { CriteriaCompletionVerdict } from '../shared/contracts/completion-digest.js';
 import type { PendingAgentSignal } from '../shared/contracts/agent-signal.js';
@@ -125,6 +127,15 @@ export class TaskStore {
    * detectors and inference can append to without ever mutating that field.
    */
   private relations = new Map<string, TaskRelation>();
+  /**
+   * Last completion-remediation fingerprint delivered per task (issue #1324):
+   * taskId → the {@link evaluateCompletionSignal} `stateFingerprint` of the most
+   * recent one-time reminder. Lets the Stop-hook policy inject a completion
+   * reminder at most once per task state — a fresh reminder only after the task
+   * state actually changes. Not persisted: a missing entry simply re-enables one
+   * reminder, which is the safe default.
+   */
+  private completionRemediation = new Map<string, string>();
   /** Monotonically increasing lifetime spending counter (USD). Survives task deletion. */
   private lifetimeSpendUsd: number = 0;
 
@@ -258,16 +269,96 @@ export class TaskStore {
   }
 
   /**
-   * Raise (or replace) the pending signal for a task. Idempotent per task: a
-   * repeat call overwrites the prior signal rather than stacking. No-op for
-   * unknown tasks. Returns true when a task was found and updated.
+   * Raise the pending signal for a task. Idempotent per kind (issue #1324): if a
+   * signal of the same kind is already pending, the original `raisedAt` is
+   * preserved so a re-raise does not churn the review window or the surfacing;
+   * only a newly supplied note is merged in. Raising a different kind replaces
+   * the prior signal. No-op for unknown tasks. Returns true when a task was found.
    */
   setPendingSignal(taskId: string, signal: PendingAgentSignal): boolean {
     const task = this.tasks.get(taskId);
     if (!task) return false;
-    task.pendingSignal = signal;
+    const existing = task.pendingSignal;
+    if (existing && existing.kind === signal.kind) {
+      // Same-kind re-raise: keep the first raisedAt, adopt a fresh note only if
+      // one was provided. This is the store-level idempotency behind a repeated
+      // `kookr signal completion-ready`.
+      //
+      // Deliberate trade-off: pinning raisedAt also drops the incidental
+      // "re-raise refreshes the auto-close review window" side effect. If a task
+      // keeps an old completion_ready signal across a *new* live session start
+      // (crash-recovery/ralph relaunch without a clear), a re-raise no longer
+      // advances raisedAt past that start, so the stale-completion auto-close in
+      // completion-ready-cleanup keeps skipping it. That errs toward NOT
+      // auto-closing (a human completes it) — the safe direction — and refreshing
+      // the window on every re-raise is exactly the churn #1324 removes.
+      task.pendingSignal = {
+        ...existing,
+        ...(signal.note !== undefined ? { note: signal.note } : {}),
+      };
+    } else {
+      task.pendingSignal = signal;
+    }
     task.updatedAt = new Date();
     return true;
+  }
+
+  /**
+   * Read the fingerprint of the last completion remediation delivered for a task
+   * (issue #1324). Undefined when no reminder has been recorded yet, which the
+   * policy treats as "a reminder is allowed".
+   */
+  getCompletionRemediationFingerprint(taskId: string): string | undefined {
+    return this.completionRemediation.get(taskId);
+  }
+
+  /**
+   * Record that a completion remediation was delivered for the current task
+   * state (issue #1324). Passing the {@link evaluateCompletionSignal}
+   * `stateFingerprint` suppresses an identical reminder until the state changes.
+   */
+  recordCompletionRemediation(taskId: string, fingerprint: string): void {
+    this.completionRemediation.set(taskId, fingerprint);
+  }
+
+  /**
+   * Decide what the Stop-hook completion policy should do for a task (issue
+   * #1324), wiring the store's own state — status, any pending signal, delivery
+   * posture, and the last remediation fingerprint — into
+   * {@link evaluateCompletionSignal}. The call latches the once-per-state
+   * reminder: a `remediate` decision records its fingerprint, so an identical
+   * follow-up call returns `remediation_already_delivered` until the task state
+   * changes. Idempotent for already-signaled tasks (returns `skip`). Never
+   * marks a delivery-gated task ready before its delivery is satisfied.
+   */
+  evaluateCompletionSignal(
+    taskId: string,
+    events: AgentEvent[],
+    opts: { agentId?: string; deliverySatisfied?: boolean } = {},
+  ): CompletionSignalDecision {
+    const task = this.tasks.get(taskId);
+    if (!task) {
+      return { action: 'skip', reason: 'unknown_task', detail: `Unknown task: ${taskId}.` };
+    }
+    const decision = evaluateCompletionSignal({
+      taskId,
+      agentId: opts.agentId ?? taskId,
+      status: task.status,
+      pendingSignalKind: task.pendingSignal?.kind,
+      deliveryAuthorization: task.deliveryAuthorization,
+      deliverySatisfied: opts.deliverySatisfied,
+      events,
+      lastRemediationFingerprint: this.getCompletionRemediationFingerprint(taskId),
+    });
+    // Latch at decision time, not delivery time: once we decide to remediate we
+    // record the fingerprint immediately, so a caller that retries — or crashes
+    // mid-delivery — still gets at-most-once feedback per state. This mirrors the
+    // Stop nudge's "commit the marker before blocking" rule (bin/kookr-stop-nudge.js):
+    // for a "non-repetitive" gate, a missed reminder is preferable to a repeated one.
+    if (decision.action === 'remediate' && decision.stateFingerprint) {
+      this.recordCompletionRemediation(taskId, decision.stateFingerprint);
+    }
+    return decision;
   }
 
   /**
@@ -344,6 +435,7 @@ export class TaskStore {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
     this.launchReservations.delete(id);
+    this.completionRemediation.delete(id);
     // Unlink from parent
     if (task.parentTaskId) {
       const parent = this.tasks.get(task.parentTaskId);
