@@ -1,6 +1,9 @@
 import {
   type BackendError,
   type BackendStats,
+  type ReconnectTransportOptions,
+  type ReconnectTransportReason,
+  type ReconnectTransportResult,
   type SessionId,
   type SessionSpec,
   type TerminalBackend,
@@ -60,7 +63,22 @@ export interface FakeSession {
   written: Uint8Array[];
   /** Draft text accumulated by separate write() calls until Enter submits it. */
   inputDraft: string;
+  /** Synthetic dtach master pid reported by `reconnectTransport`. */
+  masterPid: number;
+  /** Synthetic agent pid reported by `reconnectTransport`. */
+  agentPid: number;
+  /** Internal attach generation, bumped by `reconnectTransport`. */
+  attachGeneration: number;
+  /**
+   * When true, `reconnectTransport` models a wedged attach that never emits a
+   * fresh-liveness byte — the reconnect times out to `inconclusive`. Default
+   * false: the reconnect emits a synthetic redraw and reports `success`.
+   */
+  reconnectWedged: boolean;
 }
+
+/** Synthetic redraw a successful fake reconnect emits (models the dtach redraw). */
+const RECONNECT_REDRAW_BYTES = encoder.encode('\x1b[H');
 
 export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriterPort {
   readonly sessions = new Map<SessionId, FakeSession>();
@@ -72,6 +90,21 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
 
   /** Per-session write queue — preserves submission order across writes. */
   private writeQueues = new Map<SessionId, Promise<void>>();
+
+  /** Per-session in-flight reconnect (idempotency/serialization modeling). */
+  private reconnectInFlight = new Map<SessionId, Promise<ReconnectTransportResult>>();
+  /** Per-session timestamps of recent reconnects (cooldown/cap modeling). */
+  private reconnectHistory = new Map<SessionId, number[]>();
+  /** Liveness wait for the modeled reconnect. */
+  reconnectLivenessTimeoutMs = 50;
+  /** Cooldown between reconnects. Default 0 so tests aren't rate-limited unless they opt in. */
+  reconnectCooldownMs = 0;
+  /** Rolling reconnect cap. Default Infinity so tests aren't capped unless they opt in. */
+  reconnectCap = Number.POSITIVE_INFINITY;
+  /** Window for the reconnect cap. */
+  reconnectWindowMs = 60_000;
+  /** Records the options of the most recent `reconnectTransport` call (test inspection). */
+  lastReconnectOptions: ReconnectTransportOptions | null = null;
 
   createSession(spec: SessionSpec): Promise<void>;
   createSession(
@@ -101,6 +134,10 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
       dataSubscribers: new Set(),
       written: [],
       inputDraft: '',
+      masterPid: 100_000 + this.sessions.size,
+      agentPid: 200_000 + this.sessions.size,
+      attachGeneration: 1,
+      reconnectWedged: false,
     });
   }
 
@@ -218,6 +255,95 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
 
   async resize(_id: SessionId, _cols: number, _rows: number): Promise<void> {
     // Fake does not model viewport size.
+  }
+
+  async reconnectTransport(
+    id: SessionId,
+    options: ReconnectTransportOptions = {},
+  ): Promise<ReconnectTransportResult> {
+    this.lastReconnectOptions = options;
+    const inFlight = this.reconnectInFlight.get(id);
+    if (inFlight) return inFlight;
+    const run = this.performReconnect(id, options);
+    this.reconnectInFlight.set(id, run);
+    try {
+      return await run;
+    } finally {
+      this.reconnectInFlight.delete(id);
+    }
+  }
+
+  private async performReconnect(
+    id: SessionId,
+    options: ReconnectTransportOptions,
+  ): Promise<ReconnectTransportResult> {
+    const now = Date.now();
+    const s = this.sessions.get(id);
+    const prevGen = s?.attachGeneration ?? 0;
+    const fail = (reason: ReconnectTransportReason): ReconnectTransportResult => ({
+      outcome: 'failure',
+      reason,
+      identityVerified: false,
+      masterPid: s?.masterPid ?? -1,
+      agentPid: s?.agentPid ?? null,
+      previousGeneration: prevGen,
+      newGeneration: prevGen,
+      livenessWaitedMs: 0,
+    });
+
+    if (!s) return fail('session-unknown');
+    // Identity cannot be verified for a dead session (models pid/socket gone).
+    if (!s.alive) return fail('identity-unverified');
+
+    const history = (this.reconnectHistory.get(id) ?? []).filter((t) => now - t < this.reconnectWindowMs);
+    const lastAttempt = history.length > 0 ? history[history.length - 1] : Number.NEGATIVE_INFINITY;
+    if (now - lastAttempt < this.reconnectCooldownMs) {
+      this.reconnectHistory.set(id, history);
+      return { ...fail('cooldown'), identityVerified: true, agentPid: s.agentPid };
+    }
+    if (history.length >= this.reconnectCap) {
+      this.reconnectHistory.set(id, history);
+      return { ...fail('retry-cap'), identityVerified: true, agentPid: s.agentPid };
+    }
+
+    // Dispose+respawn the internal attach child (modeled): bump generation,
+    // preserve dataSubscribers (the SessionBridge stays subscribed). Never
+    // writes input and never touches the (synthetic) master/agent pids.
+    s.attachGeneration += 1;
+    history.push(Date.now());
+    this.reconnectHistory.set(id, history);
+
+    let live: boolean;
+    let waited = 0;
+    if (s.reconnectWedged) {
+      const start = Date.now();
+      await sleep(options.livenessTimeoutMs ?? this.reconnectLivenessTimeoutMs);
+      waited = Date.now() - start;
+      live = false;
+    } else {
+      // Model the dtach redraw reaching subscribers — this is also the browser
+      // reconnect/replay boundary. It is output, never input.
+      this.emit(id, RECONNECT_REDRAW_BYTES);
+      live = true;
+    }
+
+    return {
+      outcome: live ? 'success' : 'inconclusive',
+      reason: live ? 'reconnected' : 'liveness-timeout',
+      identityVerified: true,
+      masterPid: s.masterPid,
+      agentPid: s.agentPid,
+      previousGeneration: prevGen,
+      newGeneration: s.attachGeneration,
+      livenessWaitedMs: waited,
+    };
+  }
+
+  /** Test helper: model a wedged attach so `reconnectTransport` → `inconclusive`. */
+  setReconnectWedged(id: SessionId, wedged: boolean): void {
+    const s = this.sessions.get(id);
+    if (!s) throw new SessionGoneError(id);
+    s.reconnectWedged = wedged;
   }
 
   getStats(): BackendStats {
@@ -354,6 +480,10 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
     );
     await next;
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function concatBytes(chunks: Uint8Array[]): Uint8Array {

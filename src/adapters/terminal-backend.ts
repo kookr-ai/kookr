@@ -73,6 +73,74 @@ export interface BackendStats {
   errorCount: number;
 }
 
+/**
+ * Options for {@link TerminalBackend.reconnectTransport}.
+ */
+export interface ReconnectTransportOptions {
+  /**
+   * Bounded window (ms) to wait for a fresh-liveness signal — the first byte
+   * emitted by the freshly-respawned internal attach child (typically the
+   * dtach master's redraw). Reaching it → `success`; exceeding it while the
+   * attach is still alive → `inconclusive`. Defaults to the backend's own
+   * `DEFAULT_RECONNECT_LIVENESS_TIMEOUT_MS`.
+   */
+  livenessTimeoutMs?: number;
+  /** Free-text operator reason, recorded in the audit line. */
+  reason?: string;
+  /** Actor label for the audit line (e.g. 'owner', a token id). */
+  actor?: string;
+}
+
+/** Coarse verdict of a reconnect-transport attempt. */
+export type ReconnectTransportOutcome = 'success' | 'inconclusive' | 'failure';
+
+/**
+ * Machine-readable cause of a reconnect-transport result. Exactly one is set.
+ *   - `reconnected`         → success: fresh attach spawned + liveness observed.
+ *   - `liveness-timeout`    → inconclusive: fresh attach is alive but emitted no
+ *                             bytes within the bounded window.
+ *   - `session-unknown`     → failure: no manifest entry for the session.
+ *   - `socket-missing`      → failure: the dtach socket is gone.
+ *   - `identity-unverified` → failure: the master pid/socket could not be
+ *                             confirmed to still be our session (pid recycle /
+ *                             wrong process).
+ *   - `attach-spawn-failed` → failure: the fresh internal attach could not be
+ *                             opened (or exited immediately).
+ *   - `cooldown`            → failure: another reconnect happened too recently.
+ *   - `retry-cap`           → failure: too many reconnects in the rolling window.
+ */
+export type ReconnectTransportReason =
+  | 'reconnected'
+  | 'liveness-timeout'
+  | 'session-unknown'
+  | 'socket-missing'
+  | 'identity-unverified'
+  | 'attach-spawn-failed'
+  | 'cooldown'
+  | 'retry-cap';
+
+/**
+ * Result of a reconnect-transport attempt. The operation NEVER writes terminal
+ * input and NEVER kills the agent; the dtach master pid and agent pid are
+ * captured before and after so callers can prove they were preserved.
+ */
+export interface ReconnectTransportResult {
+  outcome: ReconnectTransportOutcome;
+  reason: ReconnectTransportReason;
+  /** Whether the master pid + socket identity was positively verified. */
+  identityVerified: boolean;
+  /** dtach master pid (unchanged by the operation). -1 if unresolved. */
+  masterPid: number;
+  /** Agent (claude/codex) pid under the master, best-effort. null if unresolved. */
+  agentPid: number | null;
+  /** Internal attach generation before this attempt (0 if none was open). */
+  previousGeneration: number;
+  /** Internal attach generation after this attempt. Equal to previous on failure. */
+  newGeneration: number;
+  /** ms spent waiting for the fresh-liveness signal (0 when not reached). */
+  livenessWaitedMs: number;
+}
+
 export interface TerminalBackend extends TerminalSessionStreamPort {
   /**
    * Launch a new child process under a persistence layer (dtach). The backend
@@ -167,6 +235,28 @@ export interface TerminalBackend extends TerminalSessionStreamPort {
    * survive Kookr restart by design (dtach masters detached via setsid).
    */
   close?(): void;
+
+  /**
+   * Safely reconnect the session's terminal *transport* without disturbing the
+   * agent (kookr-ai/kookr#1347). Verifies the dtach master pid + socket still
+   * belong to the expected session, disposes ONLY Kookr's internal attach
+   * child, opens a fresh attach generation, reapplies the last rows/cols, keeps
+   * every ring-capture + `onData` (SessionBridge) consumer subscribed, and
+   * waits a bounded window for a fresh-liveness signal.
+   *
+   * Guarantees: it NEVER writes terminal input (no Enter / Ctrl-C / Ctrl-D /
+   * prompts) and NEVER relaunches or signals the agent. Reconnects are
+   * serialized per session and idempotent under duplicate requests (a
+   * concurrent duplicate collapses onto the in-flight attempt); a cooldown and
+   * a rolling retry cap reject storms. The dtach master pid and agent pid are
+   * unchanged and reported before/after.
+   *
+   * Optional: backends that do not manage a detachable transport omit it.
+   */
+  reconnectTransport?(
+    id: SessionId,
+    options?: ReconnectTransportOptions,
+  ): Promise<ReconnectTransportResult>;
 }
 
 /** Typed error: session manifest entry / socket is gone. */
