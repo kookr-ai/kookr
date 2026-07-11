@@ -77,7 +77,7 @@ else
 fi
 assert_contains "runner continues after a failure" "$all_output" "gamma ran"
 assert_contains "summary reports aggregate counts" "$all_output" "2 passed / 1 failed"
-assert_contains "summary names the failing suite" "$all_output" "beta-failure.test.sh"
+assert_contains "summary names the failing suite" "$all_output" $'Failing suites:\n  - beta-failure.test.sh'
 
 filtered_output=$(bash "$TMP_ROOT/scripts/run-hook-tests.sh" alpha 2>&1)
 assert_contains "filter runs matching suite" "$filtered_output" "alpha ran"
