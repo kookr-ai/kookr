@@ -73,6 +73,9 @@ jobs:
       - name: Validate skill frontmatter
         run: pnpm validate:skills
 
+      - name: Validate bundled playbooks parse
+        run: pnpm validate:playbooks
+
       - name: Validate documented commands
         run: pnpm validate:docs-commands
 
