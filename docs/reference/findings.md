@@ -264,7 +264,9 @@ threshold.
 **Severity.** `warning` at the threshold; `critical` at twice the threshold.
 
 **Trigger.** Raised by `src/core/budget-checker.ts` when observed cost reaches
-`KOOKR_BUDGET_WARN_USD` (warning) or `2 × KOOKR_BUDGET_WARN_USD` (critical).
+the task project's configured cost warning threshold (warning) or twice that
+threshold (critical). When the project has no override, the threshold falls back
+to `KOOKR_BUDGET_WARN_USD`.
 Each level fires at most once per task; a jump past both levels prefers the
 critical alert and marks the warning delivered (F2.5, F4.9).
 
@@ -274,7 +276,9 @@ redirect the task. If it is, acknowledge the finding and continue.
 **Suppression / tuning.**
 [`KOOKR_BUDGET_WARN_USD`](environment-variables.md#diagnostics-and-budgeting)
 sets the warning threshold (default `25`); the critical level is always twice
-that. Setting it to `0` disables budget findings entirely.
+that. A project's **Cost warning (USD)** setting takes precedence; setting either
+the project override or the global fallback to `0` disables budget findings at
+that scope.
 
 ---
 

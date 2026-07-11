@@ -268,7 +268,7 @@ Bundled STT and TTS run via Docker Compose. The default STT config targets an NV
 
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
-| `KOOKR_BUDGET_WARN_USD` | `25` | Number in USD, `0` disables | Per-task reactive token-cost warning threshold. Critical alerts fire at twice this value. Invalid or blank values use the default. |
+| `KOOKR_BUDGET_WARN_USD` | `25` | Number in USD, `0` disables | Global fallback for the per-task reactive token-cost warning threshold; a project's **Cost warning (USD)** setting takes precedence. Critical alerts fire at twice the effective value. Invalid or blank values use the default; `0` disables alerts when no project override is set. |
 | `KOOKR_ALERT_CPU_PERCENT` | `0` (disabled) | Non-negative number (percent), `0` disables | Host CPU usage threshold for operational alerts on the already-sampled resource feed. Fires one `warning` alert when CPU stays at or above this for `KOOKR_ALERT_SUSTAIN_SAMPLES` consecutive samples, and one `info` alert on recovery. Negative or invalid values are treated as `0`. |
 | `KOOKR_ALERT_MEMORY_PERCENT` | `0` (disabled) | Non-negative number (percent), `0` disables | Host memory-used threshold for operational alerts, evaluated like `KOOKR_ALERT_CPU_PERCENT`. |
 | `KOOKR_ALERT_EVENT_LOOP_DELAY_MS` | `0` (disabled) | Non-negative number (milliseconds), `0` disables | Server event-loop delay (p95) threshold for operational alerts, evaluated like `KOOKR_ALERT_CPU_PERCENT`. |

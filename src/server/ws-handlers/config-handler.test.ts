@@ -53,4 +53,34 @@ describe('ConfigHandler', () => {
       minSeverity: 'warning',
     });
   });
+
+  test('setProjectConfig persists a per-project budget threshold', async () => {
+    const handler = new ConfigHandler({
+      send: vi.fn(),
+      projectConfigStore,
+    });
+
+    await handler.handle({
+      type: 'setProjectConfig',
+      project: 'github.com/kookr-ai/kookr',
+      config: { budgetWarnUsd: 12.5 },
+    });
+
+    const reloaded = new ProjectConfigStore(tempDir);
+    await reloaded.load();
+    expect(reloaded.getConfig('github.com/kookr-ai/kookr')?.budgetWarnUsd).toBe(12.5);
+  });
+
+  test('setProjectConfig clears a per-project budget threshold with null', async () => {
+    projectConfigStore.setConfig('github.com/kookr-ai/kookr', { budgetWarnUsd: 12.5 });
+    const handler = new ConfigHandler({ send: vi.fn(), projectConfigStore });
+
+    await handler.handle({
+      type: 'setProjectConfig',
+      project: 'github.com/kookr-ai/kookr',
+      config: { budgetWarnUsd: null },
+    });
+
+    expect(projectConfigStore.getConfig('github.com/kookr-ai/kookr')?.budgetWarnUsd).toBeUndefined();
+  });
 });

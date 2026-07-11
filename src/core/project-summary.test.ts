@@ -426,6 +426,10 @@ describe('configSeedsMembership', () => {
   test('weeklyPrLimit returns true', () => {
     expect(configSeedsMembership({ project: 'p', weeklyPrLimit: 5 })).toBe(true);
   });
+  test('budgetWarnUsd returns true, including disabled zero', () => {
+    expect(configSeedsMembership({ project: 'p', budgetWarnUsd: 5 })).toBe(true);
+    expect(configSeedsMembership({ project: 'p', budgetWarnUsd: 0 })).toBe(true);
+  });
   test('notes non-empty returns true', () => {
     expect(configSeedsMembership({ project: 'p', notes: 'hi' })).toBe(true);
   });

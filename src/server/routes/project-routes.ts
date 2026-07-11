@@ -73,6 +73,7 @@ export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
       tracked?: boolean;
       dailyPrLimit?: number;
       weeklyPrLimit?: number;
+      budgetWarnUsd?: number | null;
       notes?: string;
       webhook?: unknown;
     };
@@ -84,12 +85,14 @@ export function registerProjectRoutes(app: Hono, deps: RouteDeps): void {
       tracked?: boolean;
       dailyPrLimit?: number;
       weeklyPrLimit?: number;
+      budgetWarnUsd?: number;
       notes?: string;
       webhook?: ProjectConfig['webhook'];
     } = {};
     if (body.tracked !== undefined) patch.tracked = body.tracked;
     if (body.dailyPrLimit !== undefined) patch.dailyPrLimit = body.dailyPrLimit;
     if (body.weeklyPrLimit !== undefined) patch.weeklyPrLimit = body.weeklyPrLimit;
+    if (body.budgetWarnUsd !== undefined) patch.budgetWarnUsd = body.budgetWarnUsd ?? undefined;
     if (body.notes !== undefined) patch.notes = body.notes;
     if (body.webhook !== undefined) {
       const webhook = normalizeProjectWebhookRoutingSettings(body.webhook);

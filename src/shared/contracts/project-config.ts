@@ -10,6 +10,8 @@ export interface ProjectConfig {
   tracked?: boolean;
   dailyPrLimit?: number;
   weeklyPrLimit?: number;
+  /** Per-task cost warning threshold in USD. 0 disables budget alerts for this project. */
+  budgetWarnUsd?: number;
   notes?: string;
   localPath?: string;
   webhook?: ProjectWebhookRoutingSettings;
@@ -39,6 +41,9 @@ export function sanitizeProjectConfig(raw: unknown): ProjectConfig | null {
   if (typeof input.tracked === 'boolean') config.tracked = input.tracked;
   if (typeof input.dailyPrLimit === 'number') config.dailyPrLimit = input.dailyPrLimit;
   if (typeof input.weeklyPrLimit === 'number') config.weeklyPrLimit = input.weeklyPrLimit;
+  if (typeof input.budgetWarnUsd === 'number' && Number.isFinite(input.budgetWarnUsd)) {
+    config.budgetWarnUsd = Math.max(0, input.budgetWarnUsd);
+  }
   if (typeof input.notes === 'string') config.notes = input.notes;
   if (typeof input.localPath === 'string') config.localPath = input.localPath;
   const webhook = normalizeProjectWebhookRoutingSettings(input.webhook);

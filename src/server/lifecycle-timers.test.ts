@@ -81,6 +81,41 @@ describe('runBudgetCheck', () => {
     expect(enqueue).not.toHaveBeenCalled();
   });
 
+  test('prefers the task project budget threshold over the global threshold', () => {
+    const checker = new BudgetChecker(25);
+    const enqueue = vi.fn();
+    const task = timerTask({ projectId: 'github.com/org/repo' });
+    const projectConfigStore = {
+      getConfig: vi.fn(() => ({ project: task.projectId!, budgetWarnUsd: 5 })),
+    };
+
+    expect(runBudgetCheck(task, 5, checker, enqueue, projectConfigStore)).toBe(true);
+    expect(enqueue.mock.calls[0][1].explanation).toContain('threshold ($5.00)');
+  });
+
+  test('project threshold 0 disables alerts even when the global threshold is enabled', () => {
+    const checker = new BudgetChecker(5);
+    const enqueue = vi.fn();
+    const task = timerTask({ projectId: 'github.com/org/repo' });
+    const projectConfigStore = {
+      getConfig: vi.fn(() => ({ project: task.projectId!, budgetWarnUsd: 0 })),
+    };
+
+    expect(runBudgetCheck(task, 100, checker, enqueue, projectConfigStore)).toBe(false);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  test('project threshold works when the global threshold is disabled', () => {
+    const checker = new BudgetChecker(0);
+    const enqueue = vi.fn();
+    const task = timerTask({ projectId: 'github.com/org/repo' });
+    const projectConfigStore = {
+      getConfig: vi.fn(() => ({ project: task.projectId!, budgetWarnUsd: 5 })),
+    };
+
+    expect(runBudgetCheck(task, 5, checker, enqueue, projectConfigStore)).toBe(true);
+  });
+
   test('does nothing when all sessions are completed or aborted', () => {
     const checker = new BudgetChecker(5);
     const enqueue = vi.fn();
@@ -479,6 +514,74 @@ describe('runPersistenceSaveTick', () => {
     });
 
     expect(flush).toHaveBeenCalledWith('periodic', { force: true, policy: 'daily' });
+  });
+});
+
+describe('startLifecycleTimers budget threshold wiring', () => {
+  test('forwards the project config store to the token-scan budget check', async () => {
+    vi.useFakeTimers();
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({
+      prompt: 'budgeted task',
+      cwd: '/tmp',
+      projectId: 'github.com/org/repo',
+    });
+    taskStore.addSession(task.id, aSession({ tmuxSession: 'agent-budget', lastStatus: 'running' }));
+    const queue = new AttentionQueue();
+    const handles = startLifecycleTimers({
+      monitor: {
+        getSnapshot: () => [],
+        getAgentEvents: () => [],
+        applyWatchdogVerdict: vi.fn(),
+        sampleFindingEvidence: vi.fn(),
+        getCurrentAnomaly: vi.fn(),
+      } as any,
+      taskStore,
+      queue,
+      adapter: { captureDisplay: vi.fn(async () => '') } as any,
+      adapterRegistry: {} as any,
+      tokenTracker: {
+        scanGrowth: vi.fn(async () => []),
+        scanAll: vi.fn(async () => undefined),
+        getTrackedTaskIds: vi.fn(() => [task.id]),
+        getUsage: vi.fn(() => ({
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          costUsd: 5,
+        })),
+      } as any,
+      watchdog: {
+        getTrackedAgents: vi.fn(() => []),
+        recordTokenActivity: vi.fn(),
+        tick: vi.fn(),
+      } as any,
+      hookWatcher: { drainNow: vi.fn(async () => undefined) } as any,
+      terminalBackend: { listSessions: vi.fn(async () => []) } as any,
+      hooksDir: '/tmp/hooks',
+      tasksFile: '/tmp/tasks.json',
+      serverCwd: '/tmp/repo',
+      saveIntervalMs: 60_000,
+      livenessIntervalMs: 60_000,
+      broadcastToAll: vi.fn(),
+      budgetChecker: new BudgetChecker(0),
+      projectConfigStore: {
+        getConfig: vi.fn(() => ({ project: task.projectId!, budgetWarnUsd: 5 })),
+      },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(queue.getAll()).toEqual([
+        expect.objectContaining({
+          agentId: 'agent-budget',
+          anomaly: expect.objectContaining({ type: 'budget_exceeded', severity: 'warning' }),
+        }),
+      ]);
+    } finally {
+      clearAllTimers(handles);
+    }
   });
 });
 

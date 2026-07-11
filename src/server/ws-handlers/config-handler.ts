@@ -50,6 +50,9 @@ export class ConfigHandler {
           if (config.tracked !== undefined) patch.tracked = config.tracked;
           if (config.dailyPrLimit !== undefined) patch.dailyPrLimit = config.dailyPrLimit;
           if (config.weeklyPrLimit !== undefined) patch.weeklyPrLimit = config.weeklyPrLimit;
+          if (config.budgetWarnUsd !== undefined) {
+            patch.budgetWarnUsd = config.budgetWarnUsd ?? undefined;
+          }
           if (config.notes !== undefined) patch.notes = config.notes;
           if (config.webhook !== undefined) {
             const webhook = normalizeProjectWebhookRoutingSettings(config.webhook);

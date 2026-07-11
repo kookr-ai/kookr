@@ -1339,7 +1339,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       saveIntervalMs, livenessIntervalMs, broadcastToAll,
       shadowRegistry, agentLifecycleDeps: lifecycleDeps,
       quotaAdapter, getMaxActiveTasks, suppressionTracker,
-      budgetChecker, progressBudgetBurnDiagnostics,
+      budgetChecker, projectConfigStore, progressBudgetBurnDiagnostics,
       detectionStatsStore,
       persistenceHealth,
       worktreeRegistry,

@@ -3,8 +3,8 @@
 import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import type { ProjectSummary } from '../../shared/protocol.js';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import type { ClientMessage, ProjectSummary } from '../../shared/protocol.js';
 import { ProjectDetailDrawer } from './ProjectDetailDrawer.js';
 
 function baseProject(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
@@ -33,6 +33,7 @@ let container: HTMLElement;
 let root: Root;
 
 beforeEach(() => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -43,20 +44,50 @@ afterEach(() => {
   container.remove();
 });
 
-function renderDrawer(project: ProjectSummary, compact = false) {
+function renderDrawer(project: ProjectSummary, compact = false, send: (msg: ClientMessage) => void = () => {}) {
   act(() => {
     root.render(
       React.createElement(ProjectDetailDrawer, {
         project,
         onClose: () => {},
-        send: () => {},
+        send,
         compact,
       }),
     );
   });
 }
 
+function setInputValue(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+  setter.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 describe('ProjectDetailDrawer — active-task overlay', () => {
+  test('renders the per-project cost warning threshold', () => {
+    renderDrawer(baseProject({ budgetWarnUsd: 7.5 }));
+    const input = container.querySelector('[data-testid="budget-warn-input"]') as HTMLInputElement;
+
+    expect(input.value).toBe('7.5');
+  });
+
+  test('saves an edited threshold and sends null to restore the global default', () => {
+    const send = vi.fn<(msg: ClientMessage) => void>();
+    renderDrawer(baseProject({ budgetWarnUsd: 7.5 }), false, send);
+    const input = container.querySelector('[data-testid="budget-warn-input"]') as HTMLInputElement;
+
+    act(() => setInputValue(input, '12'));
+    act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ budgetWarnUsd: 12 }),
+    }));
+
+    act(() => setInputValue(input, ''));
+    act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ budgetWarnUsd: null }),
+    }));
+  });
   test('renders contribution-attempt count with the renamed label', () => {
     renderDrawer(baseProject({ openContributionAttempts: 2 }));
 

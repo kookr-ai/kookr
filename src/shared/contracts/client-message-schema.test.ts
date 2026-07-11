@@ -434,7 +434,12 @@ const clientMessageRoundTripCases = [
   clientMessageCase({
     type: 'setProjectConfig',
     project: 'github.com/acme/project',
-    config: { tracked: true, dailyPrLimit: 3, webhook: { enabled: true, minSeverity: 'warning' } },
+    config: {
+      tracked: true,
+      dailyPrLimit: 3,
+      budgetWarnUsd: null,
+      webhook: { enabled: true, minSeverity: 'warning' },
+    },
   }),
   clientMessageCase({ type: 'clearCompleted', includeTerminated: true, projectId: 'github.com/acme/project' }),
   clientMessageCase({ type: 'ackTerminatedTask', taskId: 'task-1' }),

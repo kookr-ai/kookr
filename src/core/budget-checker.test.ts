@@ -97,6 +97,21 @@ describe('BudgetChecker', () => {
     const anomaly = checker.check('task-1', 'agent-1', 5, now);
     expect(anomaly?.detectedAt).toEqual(now);
   });
+
+  test('uses a per-call threshold override without changing the global threshold', () => {
+    const checker = new BudgetChecker(25);
+    const anomaly = checker.check('task-1', 'agent-1', 5, undefined, 5);
+
+    expect(anomaly?.severity).toBe('warning');
+    expect(anomaly?.explanation).toContain('threshold ($5.00)');
+    expect(checker.getThresholdUsd()).toBe(25);
+  });
+
+  test('allows a per-call threshold to disable a task', () => {
+    const checker = new BudgetChecker(5);
+    expect(checker.check('task-1', 'agent-1', 100, undefined, 0)).toBeNull();
+    expect(checker.hasFired('task-1')).toEqual({ warning: false, critical: false });
+  });
 });
 
 describe('readBudgetThresholdFromEnv', () => {
