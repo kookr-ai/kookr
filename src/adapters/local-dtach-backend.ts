@@ -44,6 +44,9 @@ import { spawn, type IPty } from 'node-pty';
 import {
   type BackendError,
   type BackendStats,
+  type ReconnectTransportOptions,
+  type ReconnectTransportReason,
+  type ReconnectTransportResult,
   type SessionId,
   type SessionSpec,
   type TerminalBackend,
@@ -82,6 +85,17 @@ const DEFAULT_WRITE_TIMEOUT_MS = 2_000;
 const REATTACH_WINDOW_MS = 60_000;
 const REATTACH_CAP = 3;
 /**
+ * Reconnect-transport policy (kookr-ai/kookr#1347). A manual transport repair
+ * is rarer than a crash re-attach, so the window/cap are separate from the
+ * lazy-reattach ones above. `COOLDOWN` rejects rapid double-clicks that slip
+ * past in-flight collapse (a click after the prior attempt already resolved);
+ * `CAP` per `WINDOW` rejects a storm.
+ */
+const DEFAULT_RECONNECT_LIVENESS_TIMEOUT_MS = 1_500;
+const RECONNECT_COOLDOWN_MS = 2_000;
+const RECONNECT_WINDOW_MS = 60_000;
+const RECONNECT_CAP = 3;
+/**
  * How often to persist each session's ring buffer to disk. The periodic flush
  * is the primary mechanism that lets a restarted Kookr rebuild the scrollback
  * for sessions whose dtach master survived the restart (most commonly after
@@ -113,6 +127,31 @@ interface AttachedSession extends DtachRingState {
    * first create or resize supplies one.
    */
   currentSize: { cols: number; rows: number } | null;
+  /**
+   * Disposes the current attach child's `onData`/`onExit` listeners. Called
+   * before `pty.kill()` on every teardown so a just-killed attach cannot fan
+   * trailing bytes into the shared ring / subscribers — which would otherwise
+   * let a disposed generation's teardown bytes count as the NEXT generation's
+   * fresh-liveness signal (kookr-ai/kookr#1347). `null` while detached.
+   */
+  disposePtyListeners: (() => void) | null;
+  /**
+   * Monotonic counter of internal attach children opened for this session.
+   * Bumped by `attachPtyInto` on every (re)attach. Reported by
+   * `reconnectTransport` as the old/new "attach generation" so an operator can
+   * see the transport was actually rebuilt.
+   */
+  attachGeneration: number;
+}
+
+/** Mutable accumulator threaded through `performReconnect` into the result. */
+interface ReconnectBase {
+  identityVerified: boolean;
+  masterPid: number;
+  agentPid: number | null;
+  previousGeneration: number;
+  newGeneration: number;
+  livenessWaitedMs: number;
 }
 
 export interface LocalDtachBackendOptions {
@@ -136,6 +175,12 @@ export interface LocalDtachBackendOptions {
    * value so they don't have to sleep through the production cadence.
    */
   ringFlushIntervalMs?: number;
+
+  /**
+   * Override the reconnect-transport cooldown (ms). Tests set a small value so
+   * they can assert the cooldown rejection without a real 2 s sleep.
+   */
+  reconnectCooldownMs?: number;
 }
 
 /**
@@ -171,6 +216,16 @@ export class LocalDtachBackend implements TerminalBackend {
   private readonly dtachBinary: string;
   private readonly instanceId: string;
   private readonly writeTimeoutMs: number;
+  private readonly reconnectCooldownMs: number;
+
+  /**
+   * Per-session in-flight reconnect. A duplicate `reconnectTransport` call
+   * while one is running collapses onto the same promise (serialization +
+   * idempotency, kookr-ai/kookr#1347).
+   */
+  private readonly reconnectInFlight = new Map<SessionId, Promise<ReconnectTransportResult>>();
+  /** Per-session timestamps of recent completed reconnects, for the cap + cooldown. */
+  private readonly reconnectHistory = new Map<SessionId, number[]>();
 
   /** Active attached sessions (persistent internal attaches). */
   private readonly attached = new Map<SessionId, AttachedSession>();
@@ -194,6 +249,7 @@ export class LocalDtachBackend implements TerminalBackend {
     this.instanceId = options.instanceId ?? 'default';
     this.dtachBinary = options.dtachBinary ?? 'dtach';
     this.writeTimeoutMs = options.writeTimeoutMs ?? DEFAULT_WRITE_TIMEOUT_MS;
+    this.reconnectCooldownMs = options.reconnectCooldownMs ?? RECONNECT_COOLDOWN_MS;
 
     // On macOS, `os.tmpdir()` returns `/var/folders/<XX>/<hash>/T` (~48 chars).
     // Combined with `kookr-dtach/<uid>/<instanceId>/<sessionId>.sock`, that
@@ -448,6 +504,188 @@ export class LocalDtachBackend implements TerminalBackend {
     }
   }
 
+  async reconnectTransport(
+    id: SessionId,
+    options: ReconnectTransportOptions = {},
+  ): Promise<ReconnectTransportResult> {
+    // Serialize per session AND collapse duplicates onto the in-flight attempt
+    // (idempotency under duplicate clicks/requests, kookr-ai/kookr#1347).
+    const inFlight = this.reconnectInFlight.get(id);
+    if (inFlight) return inFlight;
+    const run = this.performReconnect(id, options);
+    this.reconnectInFlight.set(id, run);
+    try {
+      return await run;
+    } finally {
+      this.reconnectInFlight.delete(id);
+    }
+  }
+
+  private async performReconnect(
+    id: SessionId,
+    options: ReconnectTransportOptions,
+  ): Promise<ReconnectTransportResult> {
+    const now = Date.now();
+    const currentGeneration = this.attached.get(id)?.attachGeneration ?? 0;
+    const base: ReconnectBase = {
+      identityVerified: false,
+      masterPid: -1,
+      agentPid: null,
+      previousGeneration: currentGeneration,
+      newGeneration: currentGeneration,
+      livenessWaitedMs: 0,
+    };
+
+    // 1. Session must be known and its socket present.
+    const entry = await this.readEntry(id);
+    if (!entry) return this.reconnectFailure(id, 'session-unknown', base, options);
+    if (!existsSync(entry.sock)) return this.reconnectFailure(id, 'socket-missing', base, options);
+
+    // 2. Verify the dtach master pid + socket still belong to this session.
+    let masterPid = entry.pid;
+    if (masterPid <= 0) masterPid = this.findDtachMasterPidSync(entry.sock);
+    base.masterPid = masterPid;
+    if (!this.verifyMasterIdentity(masterPid, entry.sock)) {
+      return this.reconnectFailure(id, 'identity-unverified', base, options);
+    }
+    base.identityVerified = true;
+    base.agentPid = this.findAgentPidSync(masterPid);
+
+    // 3. Cooldown + rolling retry cap (per session).
+    const history = (this.reconnectHistory.get(id) ?? []).filter((t) => now - t < RECONNECT_WINDOW_MS);
+    const lastAttempt = history.length > 0 ? history[history.length - 1] : Number.NEGATIVE_INFINITY;
+    if (now - lastAttempt < this.reconnectCooldownMs) {
+      this.reconnectHistory.set(id, history);
+      return this.reconnectFailure(id, 'cooldown', base, options);
+    }
+    if (history.length >= RECONNECT_CAP) {
+      this.reconnectHistory.set(id, history);
+      return this.reconnectFailure(id, 'retry-cap', base, options);
+    }
+
+    // 4. Get/create the session state WITHOUT touching the ring or subscribers,
+    //    then dispose ONLY the internal attach child.
+    const sess = this.createAttachedState(id, entry.sock);
+    base.previousGeneration = sess.attachGeneration;
+    this.disposeAttachChildOnly(sess);
+
+    // 5. Install the fresh-liveness probe BEFORE spawning so the first byte the
+    //    new attach emits (the dtach redraw) is observed. The probe only reads;
+    //    it NEVER writes input.
+    let resolveLive: (() => void) | null = null;
+    const liveSignal = new Promise<void>((resolve) => {
+      resolveLive = resolve;
+    });
+    const probe = (bytes: Uint8Array): void => {
+      if (bytes.length > 0) resolveLive?.();
+    };
+    sess.dataSubscribers.add(probe);
+
+    // 6. Open a fresh attach generation (reapplies sess.currentSize, keeps the
+    //    same dataSubscribers + ring). No agent relaunch, no input written.
+    try {
+      this.attachPtyInto(sess, entry.sock);
+    } catch (err) {
+      sess.dataSubscribers.delete(probe);
+      base.newGeneration = sess.attachGeneration;
+      return this.reconnectFailure(id, 'attach-spawn-failed', base, options, err);
+    }
+    base.newGeneration = sess.attachGeneration;
+
+    // 7. Bounded wait for the fresh-liveness signal. Guard against a 0/negative
+    //    window from a direct programmatic caller (the HTTP route already
+    //    rejects those) so `livenessTimeoutMs: 0` falls back to the default
+    //    instead of returning `inconclusive` after `sleep(0)`.
+    const timeoutMs =
+      options.livenessTimeoutMs && options.livenessTimeoutMs > 0
+        ? options.livenessTimeoutMs
+        : DEFAULT_RECONNECT_LIVENESS_TIMEOUT_MS;
+    const start = Date.now();
+    const live = await Promise.race([
+      liveSignal.then(() => true),
+      sleep(timeoutMs).then(() => false),
+    ]);
+    sess.dataSubscribers.delete(probe);
+    base.livenessWaitedMs = Date.now() - start;
+
+    // Re-resolve the agent pid post-attach so the audit proves it is unchanged.
+    base.agentPid = this.findAgentPidSync(masterPid);
+
+    if (!sess.pty) {
+      // The fresh attach came up but exited immediately — treat as a spawn
+      // failure. Like a hard spawn throw (the `catch` above), this does NOT
+      // count toward the cooldown/cap: a transport that never stayed up should
+      // not rate-limit the operator's next genuine attempt.
+      return this.reconnectFailure(id, 'attach-spawn-failed', base, options);
+    }
+
+    // Record the attempt for the cooldown/cap ONLY now that a working transport
+    // is confirmed up — so neither `attach-spawn-failed` path rate-limits the
+    // next click, keeping the two spawn-failure paths consistent.
+    history.push(Date.now());
+    this.reconnectHistory.set(id, history);
+
+    const result: ReconnectTransportResult = {
+      outcome: live ? 'success' : 'inconclusive',
+      reason: live ? 'reconnected' : 'liveness-timeout',
+      identityVerified: true,
+      masterPid,
+      agentPid: base.agentPid,
+      previousGeneration: base.previousGeneration,
+      newGeneration: sess.attachGeneration,
+      livenessWaitedMs: base.livenessWaitedMs,
+    };
+    this.auditReconnect(id, result, options);
+    return result;
+  }
+
+  private reconnectFailure(
+    id: SessionId,
+    reason: ReconnectTransportReason,
+    base: ReconnectBase,
+    options: ReconnectTransportOptions,
+    cause?: unknown,
+  ): ReconnectTransportResult {
+    const result: ReconnectTransportResult = {
+      outcome: 'failure',
+      reason,
+      identityVerified: base.identityVerified,
+      masterPid: base.masterPid,
+      agentPid: base.agentPid,
+      previousGeneration: base.previousGeneration,
+      newGeneration: base.newGeneration,
+      livenessWaitedMs: base.livenessWaitedMs,
+    };
+    this.auditReconnect(id, result, options, cause);
+    return result;
+  }
+
+  private auditReconnect(
+    id: SessionId,
+    result: ReconnectTransportResult,
+    options: ReconnectTransportOptions,
+    cause?: unknown,
+  ): void {
+    // eslint-disable-next-line no-console
+    console.log(
+      JSON.stringify({
+        msg: 'terminal_transport_reconnect',
+        sessionId: id,
+        outcome: result.outcome,
+        reason: result.reason,
+        actor: options.actor ?? 'owner',
+        operatorReason: options.reason,
+        identityVerified: result.identityVerified,
+        masterPid: result.masterPid,
+        agentPid: result.agentPid,
+        previousGeneration: result.previousGeneration,
+        newGeneration: result.newGeneration,
+        livenessWaitedMs: result.livenessWaitedMs,
+        ...(cause ? { error: cause instanceof Error ? cause.message : String(cause) } : {}),
+      }),
+    );
+  }
+
   getStats(): BackendStats {
     let pending = 0;
     for (const s of this.attached.values()) pending += s.pendingWriters;
@@ -542,28 +780,41 @@ export class LocalDtachBackend implements TerminalBackend {
     sock: string,
     initialSize: { cols: number; rows: number } | undefined,
   ): void {
-    let sess = this.attached.get(id);
-    if (!sess) {
-      sess = {
-        ...createDtachRingState(id),
-        sock,
-        pty: null,
-        dataSubscribers: new Set(),
-        writeMutex: Promise.resolve(),
-        pendingWriters: 0,
-        reattachWindow: [],
-        reattachCount: 0,
-        // `currentSize` is seeded by `attachPtyInto` below.
-        currentSize: null,
-      };
-      // Seed from disk BEFORE wiring up the attach child so the very first
-      // `captureBytes` after restart replays the persisted scrollback instead
-      // of returning an empty ring. Fail-open if the file is missing or
-      // malformed — a fresh ring is strictly better than a crash here.
-      this.ringStore.load(sess);
-      this.attached.set(id, sess);
-    }
+    const sess = this.createAttachedState(id, sock);
     this.attachPtyInto(sess, sock, initialSize);
+  }
+
+  /**
+   * Get or create the in-memory `AttachedSession` for `id` WITHOUT opening an
+   * attach child. Splitting this out of {@link openAttach} lets
+   * {@link reconnectTransport} rebuild only the internal attach child while
+   * preserving the session's ring buffer, `onData` subscribers, and remembered
+   * size across the swap.
+   */
+  private createAttachedState(id: SessionId, sock: string): AttachedSession {
+    const existing = this.attached.get(id);
+    if (existing) return existing;
+    const sess: AttachedSession = {
+      ...createDtachRingState(id),
+      sock,
+      pty: null,
+      dataSubscribers: new Set(),
+      writeMutex: Promise.resolve(),
+      pendingWriters: 0,
+      reattachWindow: [],
+      reattachCount: 0,
+      // `currentSize` is seeded by `attachPtyInto`.
+      currentSize: null,
+      disposePtyListeners: null,
+      attachGeneration: 0,
+    };
+    // Seed from disk BEFORE wiring up the attach child so the very first
+    // `captureBytes` after restart replays the persisted scrollback instead
+    // of returning an empty ring. Fail-open if the file is missing or
+    // malformed — a fresh ring is strictly better than a crash here.
+    this.ringStore.load(sess);
+    this.attached.set(id, sess);
+    return sess;
   }
 
   private attachPtyInto(
@@ -586,7 +837,7 @@ export class LocalDtachBackend implements TerminalBackend {
       encoding: null,
     });
 
-    pty.onData((data) => {
+    const onDataDisposable = pty.onData((data) => {
       // With `encoding: null` node-pty emits Buffers, so the string branch is
       // defensive only. If it ever fires, the string was produced by node-pty's
       // default UTF-8 decode — re-encode with UTF-8 to invert it. (A 'binary'
@@ -607,7 +858,7 @@ export class LocalDtachBackend implements TerminalBackend {
       this.copyIntoRing(sess, bytes);
     });
 
-    pty.onExit(() => {
+    const onExitDisposable = pty.onExit(() => {
       // Only clear if this is still the current pty (defend against races
       // between kill + a stale onExit).
       if (sess.pty === pty) {
@@ -616,6 +867,42 @@ export class LocalDtachBackend implements TerminalBackend {
     });
 
     sess.pty = pty;
+    sess.disposePtyListeners = () => {
+      try {
+        onDataDisposable.dispose();
+      } catch {
+        // fine
+      }
+      try {
+        onExitDisposable.dispose();
+      } catch {
+        // fine
+      }
+    };
+    sess.attachGeneration += 1;
+  }
+
+  /**
+   * Dispose ONLY the internal attach child, preserving the `AttachedSession`
+   * (ring buffer, `onData` subscribers, remembered size, attach generation).
+   * The reconnect-transport path (kookr-ai/kookr#1347) uses this so every
+   * SessionBridge consumer stays subscribed across the attach swap and the
+   * fresh attach reuses the same ring. The dtach master + agent are untouched:
+   * `pty.kill()` closes only Kookr's `dtach -a` read-side child.
+   */
+  private disposeAttachChildOnly(sess: AttachedSession): void {
+    if (!sess.pty) return;
+    // Detach listeners BEFORE kill so trailing teardown bytes from this attach
+    // cannot reach the ring / subscribers (and be miscounted as the next
+    // generation's fresh-liveness signal).
+    sess.disposePtyListeners?.();
+    sess.disposePtyListeners = null;
+    try {
+      sess.pty.kill();
+    } catch {
+      // fine
+    }
+    sess.pty = null;
   }
 
   /** Dispose any internal attach + clear subscribers for the given session. */
@@ -623,6 +910,8 @@ export class LocalDtachBackend implements TerminalBackend {
     const sess = this.attached.get(id);
     if (!sess) return;
     if (sess.pty) {
+      sess.disposePtyListeners?.();
+      sess.disposePtyListeners = null;
       try {
         sess.pty.kill();
       } catch {
@@ -838,27 +1127,72 @@ export class LocalDtachBackend implements TerminalBackend {
       // pid never resolved; fall back to socket-file presence only.
       return existsSync(entry.sock);
     }
+    return this.verifyMasterIdentity(entry.pid, entry.sock);
+  }
+
+  /**
+   * Strict identity check for a dtach master `pid` + `sock`: the pid is alive,
+   * its `/proc/<pid>/exe` resolves to a dtach binary, its cmdline references
+   * `sock`, and the socket file exists. Guards against pid recycling. Returns
+   * false (not throw) when `/proc` is unreadable so callers treat "cannot
+   * verify" as "not verified" — the reconnect path rejects on false.
+   */
+  private verifyMasterIdentity(pid: number, sock: string): boolean {
+    if (pid <= 0) return false;
     try {
-      process.kill(entry.pid, 0);
+      process.kill(pid, 0);
     } catch {
       return false;
     }
-    const procDir = `/proc/${entry.pid}`;
+    const procDir = `/proc/${pid}`;
     try {
       const exe = readlinkSync(`${procDir}/exe`);
       const exeBase = exe.split('/').pop() ?? '';
       if (!exeBase.includes('dtach')) return false;
     } catch {
-      // /proc unreadable — treat as unverified, caller will demote to 'recovered'.
+      // /proc unreadable — treat as unverified.
       return false;
     }
     try {
       const cmdline = readFileSync(`${procDir}/cmdline`, 'utf-8').replace(/\0/g, ' ');
-      if (!cmdline.includes(entry.sock)) return false;
+      if (!cmdline.includes(sock)) return false;
     } catch {
       return false;
     }
-    return existsSync(entry.sock);
+    return existsSync(sock);
+  }
+
+  /**
+   * Best-effort resolution of the agent (claude/codex) pid hosted under a dtach
+   * master via a `/proc` ppid scan. dtach forks the agent as its direct child
+   * (in a new session), so the agent is the process whose PPid is the master.
+   * Returns null off Linux or when no such child exists. Reported by
+   * `reconnectTransport` so an operator can confirm the agent pid is unchanged.
+   */
+  private findAgentPidSync(masterPid: number): number | null {
+    if (masterPid <= 0) return null;
+    let names: string[];
+    try {
+      names = readdirSync('/proc');
+    } catch {
+      return null; // no /proc (non-Linux).
+    }
+    for (const name of names) {
+      if (!/^\d+$/.test(name)) continue;
+      let stat: string;
+      try {
+        stat = readFileSync(`/proc/${name}/stat`, 'utf-8');
+      } catch {
+        continue; // exited between readdir and read.
+      }
+      // `comm` (field 2) is paren-wrapped and may contain spaces/parens; PPid
+      // is the field right after the final ')'.
+      const rparen = stat.lastIndexOf(')');
+      if (rparen < 0) continue;
+      const ppid = Number(stat.slice(rparen + 2).split(' ')[1]);
+      if (ppid === masterPid) return Number(name);
+    }
+    return null;
   }
 
   // ─── Error emission ─────────────────────────────────────────────────────
