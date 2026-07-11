@@ -108,6 +108,7 @@ function buildGuidance(
     `- Create one: \`git worktree add ../${repoName}-<short-name> -b <feature-branch> ${shellQuote(baseRef)}\``,
     `- Perform all tracked-file edits, commits, and pushes from that new worktree.`,
     `- If the task stays read-only, you may remain in the current checkout.`,
+    `- When an investigation or analysis wraps up and the task hasn't already fixed the path forward, proactively recommend a right-sized next step — implement now for a small change, open an issue for a medium one, draft an RFC or umbrella issue for a large one — and ask which to proceed with rather than waiting to be asked.`,
     `- ${deliveryGateSentence(deliveryPolicy)}`,
   );
   return guidance.join('\n');
