@@ -26,6 +26,7 @@ export interface FakeTelegramServer {
    */
   registerFile(fileId: string, filePath: string, bytes: Buffer, reportedFileSize?: number | null): void;
   outbound: {
+    getUpdates: number;
     sendMessage: Array<{ chat_id: number; text: string; reply_markup?: unknown }>;
     editMessageText: Array<{ chat_id: number; message_id: number; text: string }>;
     answerCallbackQuery: Array<{ callback_query_id: string; text?: string }>;
@@ -41,9 +42,11 @@ interface PendingBatch {
 
 export async function startFakeTelegram(): Promise<FakeTelegramServer> {
   const queue: PendingBatch[] = [];
+  const pendingEmptyPolls = new Map<NodeJS.Timeout, () => void>();
   let nextMessageId = 100;
   const files = new Map<string, { filePath: string; bytes: Buffer; reportedFileSize?: number | null }>();
   const outbound = {
+    getUpdates: 0,
     sendMessage: [] as Array<{ chat_id: number; text: string; reply_markup?: unknown }>,
     editMessageText: [] as Array<{ chat_id: number; message_id: number; text: string }>,
     answerCallbackQuery: [] as Array<{ callback_query_id: string; text?: string }>,
@@ -82,8 +85,20 @@ export async function startFakeTelegram(): Promise<FakeTelegramServer> {
       let payload: Record<string, unknown> = {};
       try { payload = body ? JSON.parse(body) : {}; } catch { /* noop */ }
       if (url.includes('/getUpdates')) {
+        outbound.getUpdates += 1;
         const batch = queue.shift();
-        respond(batch?.updates ?? []);
+        if (batch) {
+          respond(batch.updates);
+        } else {
+          // Telegram getUpdates is a long poll. A small bounded delay models
+          // that behavior without monopolizing a loopback connection, and
+          // prevents the integration from busy-spinning under suite load.
+          const timer = setTimeout(() => {
+            pendingEmptyPolls.delete(timer);
+            respond([]);
+          }, 25);
+          pendingEmptyPolls.set(timer, () => respond([]));
+        }
         return;
       }
       if (url.includes('/getFile')) {
@@ -132,14 +147,22 @@ export async function startFakeTelegram(): Promise<FakeTelegramServer> {
 
   return {
     baseUrl,
-    queueUpdates(updates) { queue.push({ updates }); },
+    queueUpdates(updates) {
+      queue.push({ updates });
+    },
     registerFile(fileId, filePath, bytes, reportedFileSize) {
       files.set(fileId, { filePath, bytes, reportedFileSize });
     },
     outbound,
-    stop: () =>
-      new Promise<void>((resolve, reject) => {
+    stop: () => {
+      for (const [timer, respondEmpty] of pendingEmptyPolls) {
+        clearTimeout(timer);
+        respondEmpty();
+      }
+      pendingEmptyPolls.clear();
+      return new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
-      }),
+      });
+    },
   };
 }

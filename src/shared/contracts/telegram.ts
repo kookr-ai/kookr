@@ -13,7 +13,8 @@ export interface TelegramHandle {
   onPermissionBlocked: (taskId: string, promptText: string) => void;
   /**
    * Callback wired into task lifecycle/signal paths for remote Telegram task
-   * outcomes. Implementations should handle send failures internally.
+   * outcomes. Implementations should handle send failures internally. Callers
+   * may await completion when they need to observe the routed notification.
    */
-  onTaskOutcome: (taskId: string, outcome: TelegramTaskOutcome) => void;
+  onTaskOutcome: (taskId: string, outcome: TelegramTaskOutcome) => void | Promise<void>;
 }

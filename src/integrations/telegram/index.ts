@@ -700,7 +700,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     }
   };
 
-  const onTaskOutcome = (taskId: string, outcome: TelegramTaskOutcome): void => {
+  const onTaskOutcome = async (taskId: string, outcome: TelegramTaskOutcome): Promise<void> => {
     const chatId = state.get().origin[taskId];
     if (chatId === undefined) {
       // Not remote-spawned, or already notified and cleaned up — silently skip
@@ -708,13 +708,15 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
       return;
     }
 
-    void (async () => {
+    try {
       await state.update((s) => { delete s.origin[taskId]; });
       const sent = await sendMessageSafe(chatId, formatTaskOutcomeMessage(taskId, outcome));
       if (sent) {
         audit({ kind: 'task_outcome_sent', taskId, chatId, outcome: outcome.kind });
       }
-    })().catch((err) => audit({ kind: 'spawn_failed', reason: `task_outcome: ${String(err)}` }));
+    } catch (err) {
+      audit({ kind: 'spawn_failed', reason: `task_outcome: ${String(err)}` });
+    }
   };
 
   const stop = async () => {
