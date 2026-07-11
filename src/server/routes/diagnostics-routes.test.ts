@@ -183,6 +183,7 @@ describe('diagnostics routes', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     rmSync(tempDir, { recursive: true, force: true });
     delete process.env.KOOKR_FINDING_REVIEW_ENABLED;
     delete process.env.KOOKR_FINDING_REVIEW_DAILY_COST_CENTS;
@@ -682,6 +683,55 @@ describe('diagnostics routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.status).toBe('unavailable');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health/tts
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health/tts', () => {
+    test('returns {status:"disabled"} when ttsUrl is not configured', async () => {
+      const res = await mkApp({}).request('/api/health/tts');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'disabled' });
+    });
+
+    test('returns the TTS service health response when reachable', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(JSON.stringify({ status: 'ok' }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+
+      const res = await mkApp({ ttsUrl: 'http://tts.local/' }).request('/api/health/tts');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'ok' });
+      expect(fetchSpy).toHaveBeenCalledWith('http://tts.local/health', {
+        signal: expect.any(AbortSignal),
+      });
+      expect(timeoutSpy).toHaveBeenCalledWith(3000);
+    });
+
+    test('returns {status:"unavailable"} with 200 when TTS service reports unhealthy', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: 'Model not loaded' }), { status: 503 }),
+      );
+
+      const res = await mkApp({ ttsUrl: 'http://tts.local' }).request('/api/health/tts');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'unavailable' });
+    });
+
+    test('returns {status:"unavailable"} with 200 when TTS service is unreachable', async () => {
+      vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new Error('connection refused'));
+
+      const res = await mkApp({ ttsUrl: 'http://tts.local' }).request('/api/health/tts');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'unavailable' });
     });
   });
 
