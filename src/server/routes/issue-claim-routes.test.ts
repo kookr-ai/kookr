@@ -61,6 +61,7 @@ describe('issue-claim routes', () => {
   let registry: IssueClaimRegistry;
   let flushTasks: ReturnType<typeof vi.fn>;
   let resolveRepo: ReturnType<typeof vi.fn>;
+  let taskCwds: Map<string, string>;
   let deps: IssueClaimRouteDeps;
 
   beforeEach(() => {
@@ -69,6 +70,7 @@ describe('issue-claim routes', () => {
     registry = new IssueClaimRegistry(port, (e) => events.push(e));
     flushTasks = vi.fn(async () => {});
     resolveRepo = vi.fn(async (): Promise<ResolveClaimRepoResult> => ({ ok: true, repo: KEY.repo }));
+    taskCwds = new Map();
     deps = {
       enabled: true,
       registry,
@@ -76,6 +78,7 @@ describe('issue-claim routes', () => {
       resolveRepo,
       flushTasks,
       getTaskStatus: (taskId) => port.getTaskView(taskId)?.status,
+      getTaskCwd: (taskId) => taskCwds.get(taskId),
     };
   });
 
@@ -203,6 +206,53 @@ describe('issue-claim routes', () => {
       expect(res.status).toBe(200);
       expect(await res.json()).toMatchObject({ owned: true, reentrant: true });
     });
+
+    // #1351: when the caller omits `cwd`, repo resolution must use the
+    // claimant TASK's configured checkout, not the server/session bootstrap
+    // cwd. A task configured for repo A can then claim A even though the host
+    // process was bootstrapped from repo B.
+    test('resolves repo from the claimant task cwd when body has no cwd (#1351)', async () => {
+      port.addTask('a');
+      taskCwds.set('a', '/work/lucy');
+      resolveRepo.mockImplementationOnce(async (input) => {
+        expect(input).toEqual({ cwd: '/work/lucy', repoFlag: 'jeanibarz/lucy' });
+        return { ok: true, repo: 'github.com/jeanibarz/lucy' };
+      });
+
+      const res = await mkApp(deps).request(
+        '/api/issue-claims',
+        // owner/repo short form + NO cwd — exactly what an instrumented
+        // playbook POSTs; previously this fell back to serverCwd and 400'd.
+        jsonRequest('POST', { repo: 'jeanibarz/lucy', number: KEY.number, taskId: 'a' }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ owned: true, reentrant: false });
+      expect(resolveRepo).toHaveBeenCalledWith({ cwd: '/work/lucy', repoFlag: 'jeanibarz/lucy' });
+      expect(port.tasks.get('a')?.issueClaim).toMatchObject({ repo: 'github.com/jeanibarz/lucy', number: KEY.number });
+    });
+
+    // #1351: the task-cwd path must NOT weaken the mismatch guard — a genuinely
+    // unrelated repo still fails closed (resolveClaimRepo returns `mismatch`).
+    test('still rejects a repo unrelated to the task cwd (#1351)', async () => {
+      port.addTask('a');
+      taskCwds.set('a', '/work/lucy');
+      resolveRepo.mockResolvedValueOnce({
+        ok: false,
+        code: 'mismatch',
+        message: '--repo other/thing (resolves to github.com/other/thing) does not match cwd repo github.com/jeanibarz/lucy, and is not its upstream',
+      });
+
+      const res = await mkApp(deps).request(
+        '/api/issue-claims',
+        jsonRequest('POST', { repo: 'other/thing', number: KEY.number, taskId: 'a' }),
+      );
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'mismatch' });
+      expect(resolveRepo).toHaveBeenCalledWith({ cwd: '/work/lucy', repoFlag: 'other/thing' });
+      expect(registry.ownerRecord({ repo: 'github.com/other/thing', number: KEY.number })).toBeNull();
+    });
   });
 
   describe('DELETE /api/issue-claims', () => {
@@ -257,6 +307,23 @@ describe('issue-claim routes', () => {
       expect(resolveRepo).toHaveBeenCalledWith({ cwd: '/some/checkout', repoFlag: undefined });
       expect(registry.ownerRecord(KEY)).toBeNull();
       expect(flushTasks).toHaveBeenCalled(); // release persists too (R5)
+    });
+
+    // #1351: DELETE mirrors POST — with no cwd/repo in the body it must
+    // resolve against the claimant task's configured checkout so the release
+    // targets the same key the grant used.
+    test('releases with no cwd/repo, resolving from the claimant task cwd (#1351)', async () => {
+      port.addTask('a');
+      taskCwds.set('a', '/work/lucy');
+      registry.claim(KEY, { taskId: 'a' });
+
+      const res = await mkApp(deps).request(
+        '/api/issue-claims',
+        jsonRequest('DELETE', { number: KEY.number, taskId: 'a' }),
+      );
+      expect(res.status).toBe(200);
+      expect(resolveRepo).toHaveBeenCalledWith({ cwd: '/work/lucy', repoFlag: undefined });
+      expect(registry.ownerRecord(KEY)).toBeNull();
     });
 
     // Regression pin: the `owner/repo` short form must normalize to the

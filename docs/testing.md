@@ -30,7 +30,7 @@ Some UI regressions are covered below the Playwright layer because they are data
 
 | Workflow | Triggers | Jobs |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | Push to `main`, PRs targeting `main`. | `test` (typecheck, skill validation, Vitest + coverage, smoke gates, hook tests), `build` (Playwright). On PRs, both jobs path-filter: code-heavy steps are skipped when the PR touches no code paths (docs/skills-only PRs run just the validators). Push to `main` always runs everything. |
+| `.github/workflows/ci.yml` | Push to `main`, PRs targeting `main`. | `test` (typecheck, skill validation, playbook validation, Vitest + coverage, smoke gates, hook tests), `build` (Playwright). On PRs, both jobs path-filter: code-heavy steps are skipped when the PR touches no code paths (docs/skills-only PRs run just the validators). Push to `main` always runs everything. |
 | `.github/workflows/e2e.yml` | Manual `/run-e2e` PR comment. | Full Playwright run, uploads HTML report on every run, comments result on the PR. |
 | `.github/workflows/staging.yml` | Staging-branch flow. | Plain `pnpm test` (no coverage). The testing-surfacing RFC defers staging coverage to a later phase. |
 
