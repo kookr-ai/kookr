@@ -13,6 +13,7 @@ import { join, basename } from "path";
 import { createInterface } from "readline";
 import { homedir } from "os";
 import { pathToFileURL } from "url";
+import { createHash } from "crypto";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -72,6 +73,7 @@ export interface ParsedMessage {
   textContent?: string;
   thinkingContent?: string;
   toolCalls?: ToolCall[];
+  toolResults?: ToolResult[];
   stopReason?: string;
   inputTokens?: number;
   outputTokens?: number;
@@ -84,9 +86,17 @@ export interface ParsedMessage {
   durationMs?: number;
 }
 
-interface ToolCall {
+export interface ToolCall {
   name: string;
   inputSummary: string; // first ~100 chars of input
+  input?: Record<string, unknown>;
+  callId?: string;
+}
+
+interface ToolResult {
+  callId?: string;
+  failed: boolean;
+  outputHash: string;
 }
 
 type ReviewerRole = "conventions" | "correctness" | "deadcode" | "test" | "a11y" | "unknown";
@@ -142,6 +152,24 @@ export interface SessionAnalysis {
   interruptions: number;
   reviewerAggregate: ReviewerAggregateResult;
   messages: ParsedMessage[]; // full parsed messages (only populated for detail modes that need it)
+}
+
+export interface ToolPatternSummary {
+  fingerprint: string;
+  count: number;
+  repeats: number;
+  repeatsWithoutStateChange: number;
+  exampleSessionIds: string[];
+}
+
+export interface ToolEfficiencyReport {
+  sessionCount: number;
+  commandFingerprints: ToolPatternSummary[];
+  repeatedStatusDiffPollCalls: ToolPatternSummary[];
+  repeatedSameFileReads: ToolPatternSummary[];
+  identicalFailedRetries: ToolPatternSummary[];
+  fixedSleepPollLoops: ToolPatternSummary[];
+  emptyStdinPolls: { count: number; sessions: number; exampleSessionIds: string[] };
 }
 
 type WorkflowFilteredReason = "harness_note" | "eval_fixture" | "reviewer_prompt" | "workflow_launch";
@@ -656,12 +684,30 @@ export function parseCodexMessage(obj: Record<string, unknown>, fullContent: boo
     if (payloadType === "function_call") {
       const name = typeof payload.name === "string" ? payload.name : "tool";
       const args = typeof payload.arguments === "string" ? payload.arguments : JSON.stringify(payload.arguments ?? {});
+      const input = parseToolArguments(args);
       return {
         ...base,
         type: "assistant",
         codexEventKind: "function_call",
         isSyntheticAssistantEvent: true,
-        toolCalls: [{ name, inputSummary: truncate(args, 80) }],
+        toolCalls: [{
+          name,
+          inputSummary: summarizeToolInput(name, input),
+          input,
+          callId: typeof payload.call_id === "string" ? payload.call_id : undefined,
+        }],
+      };
+    }
+    if (payloadType === "function_call_output") {
+      const output = typeof payload.output === "string" ? payload.output : JSON.stringify(payload.output ?? "");
+      return {
+        ...base,
+        type: "progress",
+        toolResults: [{
+          callId: typeof payload.call_id === "string" ? payload.call_id : undefined,
+          failed: codexToolOutputFailed(output),
+          outputHash: shortHash(normalizeFailureOutput(output)),
+        }],
       };
     }
     return null;
@@ -736,6 +782,21 @@ export function parseMessage(obj: Record<string, unknown>, fullContent: boolean)
     base.toolUseResult = hasToolResult;
     base.permissionMode = obj.permissionMode as string | undefined;
 
+    if (hasToolResult) {
+      const result = obj.toolUseResult as Record<string, unknown> | undefined;
+      const message = obj.message as Record<string, unknown> | undefined;
+      const blocks = Array.isArray(message?.content) ? message.content : [];
+      const block = blocks.find((item) => item && typeof item === "object" && (item as Record<string, unknown>).type === "tool_result") as Record<string, unknown> | undefined;
+      const output = typeof result?.stdout === "string"
+        ? `${result.stdout}\n${typeof result.stderr === "string" ? result.stderr : ""}`
+        : typeof block?.content === "string" ? block.content : JSON.stringify(result ?? block ?? "");
+      base.toolResults = [{
+        callId: typeof block?.tool_use_id === "string" ? block.tool_use_id : undefined,
+        failed: result?.is_error === true || result?.interrupted === true || block?.is_error === true,
+        outputHash: shortHash(normalizeFailureOutput(output)),
+      }];
+    }
+
     if (!hasToolResult) {
       const msg = obj.message as Record<string, unknown> | undefined;
       if (msg) {
@@ -801,6 +862,8 @@ export function parseMessage(obj: Record<string, unknown>, fullContent: boolean)
           tools.push({
             name: b.name as string,
             inputSummary: input ? summarizeToolInput(b.name as string, input) : "",
+            input,
+            callId: typeof b.id === "string" ? b.id : undefined,
           });
         }
       }
@@ -837,6 +900,9 @@ function summarizeToolInput(toolName: string, input: Record<string, unknown>): s
       return (input.file_path as string) || "";
     case "Bash":
       return truncate((input.command as string) || "", 80);
+    case "exec_command":
+    case "functions.exec_command":
+      return truncate((input.cmd as string) || "", 80);
     case "Grep":
       return `${input.pattern || ""} ${input.path || ""}`.trim();
     case "Glob":
@@ -847,6 +913,39 @@ function summarizeToolInput(toolName: string, input: Record<string, unknown>): s
       return (input.skill as string) || "";
     default:
       return truncate(JSON.stringify(input), 80);
+  }
+}
+
+function parseToolArguments(args: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(args);
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+  } catch {
+    return { raw: args };
+  }
+}
+
+function shortHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+function normalizeFailureOutput(output: string): string {
+  return output
+    .replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, "<uuid>")
+    .replace(/\b[0-9a-f]{7,64}\b/gi, "<hex>")
+    .replace(/\b\d+(?:\.\d+)?\b/g, "<n>")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 500);
+}
+
+function codexToolOutputFailed(output: string): boolean {
+  try {
+    const parsed = JSON.parse(output) as Record<string, unknown>;
+    const metadata = parsed.metadata as Record<string, unknown> | undefined;
+    return typeof metadata?.exit_code === "number" && metadata.exit_code !== 0;
+  } catch {
+    return /(?:exit code|process exited with code)\s*[1-9]\d*/i.test(output);
   }
 }
 
@@ -1420,9 +1519,172 @@ function renderTimeline(analyses: SessionAnalysis[]): void {
 
 // ─── Reports ─────────────────────────────────────────────────────────────────
 
-function renderToolsReport(analyses: SessionAnalysis[]): void {
+const MAX_TOOL_PATTERNS = 20;
+const MAX_PATTERN_EXAMPLES = 3;
+
+interface MutableToolPattern extends ToolPatternSummary {
+  sessions: Set<string>;
+}
+
+export function normalizeCommandFingerprint(command: string): string {
+  let normalized = command.trim().replace(/\s+/g, " ");
+  normalized = normalized
+    .replace(/\b(authorization:\s*bearer|bearer)\s+[^\s'";|]+/gi, "$1 <redacted>")
+    .replace(/(^|[\s;|])(--?(?:token|password|passwd|secret|api[-_]?key|auth)(?:=|\s+))(?:"[^"]*"|'[^']*'|[^\s;|]+)/gi, "$1$2<redacted>")
+    .replace(/\b((?:[A-Z][A-Z0-9_]*_)?(?:TOKEN|PASSWORD|PASSWD|SECRET|API_KEY|AUTH))=(?:"[^"]*"|'[^']*'|[^\s;|]+)/g, "$1=<redacted>")
+    .replace(/https?:\/\/([^\s/@]+):([^\s/@]+)@/gi, "https://<redacted>@")
+    .replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, "<uuid>")
+    .replace(/\b[0-9a-f]{16,64}\b/gi, "<hex>")
+    .replace(/(?:\/tmp|\/var\/folders)\/[^\s'";|]+/g, "<temp-path>")
+    .replace(/\b\d{4}-\d{2}-\d{2}(?:T[^\s'";|]+)?/g, "<timestamp>")
+    .replace(/\b\d+(?:\.\d+)?\b/g, "<n>")
+    .replace(/(['"])([^'"]{48,})\1/g, (_match, quote: string, value: string) => `${quote}<arg:${shortHash(value)}>${quote}`)
+    .replace(/[^\s'";|]{49,}/g, (value) => `<arg:${shortHash(value)}>`);
+  return truncate(normalized, 240);
+}
+
+function commandFromTool(call: ToolCall): string | undefined {
+  const input = call.input ?? {};
+  if (call.name === "Bash") return typeof input.command === "string" ? input.command : call.inputSummary;
+  if (/(?:^|\.)exec_command$/.test(call.name)) return typeof input.cmd === "string" ? input.cmd : call.inputSummary;
+  return undefined;
+}
+
+function normalizedReadPath(call: ToolCall): string | undefined {
+  if (!/^(?:Read|read_file|view_image)$/i.test(call.name)) return undefined;
+  const raw = call.input?.file_path ?? call.input?.path ?? call.inputSummary;
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  return raw.trim()
+    .replace(homedir(), "~")
+    .replace(/(?:\/tmp|\/var\/folders)\/[^\s]+/g, "<temp-path>")
+    .slice(0, 240);
+}
+
+function isStateChangingCall(call: ToolCall): boolean {
+  const command = commandFromTool(call);
+  if (command !== undefined) {
+    const segments = command.split(/(?:&&|\|\||;|\n)/).map((part) => part.trim()).filter(Boolean);
+    return segments.some((segment) => !/^(?:(?:cd|pwd|ls|find|rg|grep|sed|cat|head|tail|wc|stat|test|true|sleep)\b|git\s+(?:status|diff|log|show|branch|rev-parse|remote|worktree\s+list)\b|gh\s+pr\s+(?:checks|view)\b)/.test(segment));
+  }
+  return /^(?:Write|Edit|MultiEdit|NotebookEdit|apply_patch|imagegen)$/i.test(call.name);
+}
+
+function isStatusDiffPoll(fingerprint: string): boolean {
+  return /(?:\bgit\s+(?:status|diff)\b|\b(?:gh\s+pr\s+(?:checks|view)|write_stdin|wait|poll)\b)/i.test(fingerprint);
+}
+
+function isFixedSleepPoll(fingerprint: string): boolean {
+  return /(?:^|[;&|]\s*)sleep\s+<n>/i.test(fingerprint);
+}
+
+function addPattern(
+  map: Map<string, MutableToolPattern>,
+  fingerprint: string,
+  sessionId: string,
+  repeatedWithoutStateChange: boolean,
+): void {
+  const pattern = map.get(fingerprint) ?? {
+    fingerprint,
+    count: 0,
+    repeats: 0,
+    repeatsWithoutStateChange: 0,
+    exampleSessionIds: [],
+    sessions: new Set<string>(),
+  };
+  pattern.count++;
+  pattern.repeats = Math.max(0, pattern.count - pattern.sessions.size - (pattern.sessions.has(sessionId) ? 0 : 1));
+  if (repeatedWithoutStateChange) pattern.repeatsWithoutStateChange++;
+  pattern.sessions.add(sessionId);
+  if (!pattern.exampleSessionIds.includes(sessionId) && pattern.exampleSessionIds.length < MAX_PATTERN_EXAMPLES) {
+    pattern.exampleSessionIds.push(sessionId);
+  }
+  map.set(fingerprint, pattern);
+}
+
+function finishPatterns(map: Map<string, MutableToolPattern>, repeatedOnly = true): ToolPatternSummary[] {
+  return [...map.values()]
+    .filter((pattern) => !repeatedOnly || pattern.repeats > 0)
+    .sort((a, b) => b.count - a.count || a.fingerprint.localeCompare(b.fingerprint))
+    .slice(0, MAX_TOOL_PATTERNS)
+    .map(({ sessions: _sessions, ...pattern }) => pattern);
+}
+
+export function buildToolEfficiencyReport(analyses: SessionAnalysis[]): ToolEfficiencyReport {
+  const commands = new Map<string, MutableToolPattern>();
+  const statusPolls = new Map<string, MutableToolPattern>();
+  const reads = new Map<string, MutableToolPattern>();
+  const failures = new Map<string, MutableToolPattern>();
+  const sleepPolls = new Map<string, MutableToolPattern>();
+  const emptyPollSessions = new Set<string>();
+  let emptyPollCount = 0;
+
+  for (const analysis of analyses) {
+    let stateEpoch = 0;
+    const lastEpoch = new Map<string, number>();
+    const pendingCalls = new Map<string, string>();
+    for (const message of analysis.messages) {
+      for (const call of message.toolCalls ?? []) {
+        const command = commandFromTool(call);
+        const readPath = normalizedReadPath(call);
+        let fingerprint: string;
+        if (command !== undefined) {
+          fingerprint = normalizeCommandFingerprint(command);
+          const noStateChange = lastEpoch.get(`command:${fingerprint}`) === stateEpoch;
+          addPattern(commands, fingerprint, analysis.meta.sessionId, noStateChange);
+          if (isStatusDiffPoll(fingerprint)) addPattern(statusPolls, fingerprint, analysis.meta.sessionId, noStateChange);
+          if (isFixedSleepPoll(fingerprint)) addPattern(sleepPolls, fingerprint, analysis.meta.sessionId, noStateChange);
+          lastEpoch.set(`command:${fingerprint}`, stateEpoch);
+        } else if (readPath !== undefined) {
+          fingerprint = `read ${readPath}`;
+          const noStateChange = lastEpoch.get(fingerprint) === stateEpoch;
+          addPattern(reads, fingerprint, analysis.meta.sessionId, noStateChange);
+          lastEpoch.set(fingerprint, stateEpoch);
+        } else {
+          fingerprint = call.name;
+        }
+
+        if (/(?:^|\.)write_stdin$/i.test(call.name)) {
+          const chars = call.input?.chars;
+          if (chars === undefined || chars === "") {
+            emptyPollCount++;
+            emptyPollSessions.add(analysis.meta.sessionId);
+            addPattern(statusPolls, "write_stdin <empty>", analysis.meta.sessionId, lastEpoch.get("write_stdin <empty>") === stateEpoch);
+            lastEpoch.set("write_stdin <empty>", stateEpoch);
+          }
+        }
+        if (call.callId) pendingCalls.set(call.callId, fingerprint);
+        if (isStateChangingCall(call)) stateEpoch++;
+      }
+
+      for (const result of message.toolResults ?? []) {
+        if (!result.failed) continue;
+        const fingerprint = result.callId ? pendingCalls.get(result.callId) : undefined;
+        if (fingerprint) {
+          addPattern(failures, `${fingerprint} [failure:${result.outputHash}]`, analysis.meta.sessionId, false);
+        }
+      }
+    }
+  }
+
+  return {
+    sessionCount: analyses.length,
+    commandFingerprints: finishPatterns(commands, false),
+    repeatedStatusDiffPollCalls: finishPatterns(statusPolls),
+    repeatedSameFileReads: finishPatterns(reads),
+    identicalFailedRetries: finishPatterns(failures),
+    fixedSleepPollLoops: finishPatterns(sleepPolls),
+    emptyStdinPolls: {
+      count: emptyPollCount,
+      sessions: emptyPollSessions.size,
+      exampleSessionIds: [...emptyPollSessions].slice(0, MAX_PATTERN_EXAMPLES),
+    },
+  };
+}
+
+export function renderToolsReport(analyses: SessionAnalysis[], format: CliArgs["format"]): void {
   const aggregate: Record<string, { count: number; sessions: number }> = {};
   const sessionCount = analyses.length;
+  const efficiency = buildToolEfficiencyReport(analyses);
 
   for (const a of analyses) {
     for (const [tool, count] of Object.entries(a.toolCounts)) {
@@ -1433,6 +1695,11 @@ function renderToolsReport(analyses: SessionAnalysis[]): void {
   }
 
   const sorted = Object.entries(aggregate).sort((a, b) => b[1].count - a[1].count);
+
+  if (format === "json") {
+    console.log(JSON.stringify({ tools: aggregate, efficiency }, null, 2));
+    return;
+  }
 
   console.log(`\nTool Usage Report (${sessionCount} sessions)\n`);
   renderProviderCoverage(analyses);
@@ -1445,6 +1712,25 @@ function renderToolsReport(analyses: SessionAnalysis[]): void {
     const sessPercent = `${data.sessions}/${sessionCount}`;
     console.log(`${tool.padEnd(24)} ${data.count.toString().padStart(7)} ${avg.padStart(10)} ${sessPercent.padStart(10)}`);
   }
+
+  const sections: Array<[string, ToolPatternSummary[]]> = [
+    ["Command fingerprints", efficiency.commandFingerprints],
+    ["Repeated status/diff/poll calls", efficiency.repeatedStatusDiffPollCalls],
+    ["Repeated same-file reads", efficiency.repeatedSameFileReads],
+    ["Identical failed retries", efficiency.identicalFailedRetries],
+    ["Fixed sleep/poll loops", efficiency.fixedSleepPollLoops],
+  ];
+  for (const [title, patterns] of sections) {
+    console.log(`\n${title}:`);
+    if (patterns.length === 0) {
+      console.log("  (none)");
+      continue;
+    }
+    for (const pattern of patterns) {
+      console.log(`  ${pattern.count}x (${pattern.repeatsWithoutStateChange} without state change) ${pattern.fingerprint} [sessions: ${pattern.exampleSessionIds.join(", ")}]`);
+    }
+  }
+  console.log(`\nEmpty stdin polls: ${efficiency.emptyStdinPolls.count} across ${efficiency.emptyStdinPolls.sessions} session(s)`);
 }
 
 function renderPatterns(analyses: SessionAnalysis[]): void {
@@ -2005,7 +2291,7 @@ async function main(): Promise<void> {
 
   // Render reports if requested
   if (args.toolsReport) {
-    renderToolsReport(limited);
+    renderToolsReport(limited, args.format);
     return;
   }
 
