@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The agent adapter bridges Kookr to the supported coding-agent CLIs — **Claude Code** and **Codex CLI** (updated 2026-04-10). It manages terminal sessions through the `TerminalBackend` abstraction; production is dtach-only through `LocalDtachBackend` per ADR-014 and V8. It consumes structured data from hooks and transcript files, and delivers developer input as bytes to the child PTY. A thin `RoutingAgentAdapter` dispatches calls to the per-agent-type adapter (`claude-code-adapter.ts`, `codex-cli-adapter.ts`) behind the common `AgentAdapter` interface. The layer exposes a uniform `AgentEvent` stream for the supervisor to consume.
+The agent adapter bridges Kookr to the supported coding-agent CLIs — **Claude Code** and **Codex CLI** (updated 2026-04-10), plus an **experimental Grok Build** adapter (`grok-build-adapter.ts`, issue #1339 Phase 1) registered only when `KOOKR_GROK_BUILD_ENABLED=true` and deliberately excluded from the frontend picker / round-robin. It manages terminal sessions through the `TerminalBackend` abstraction; production is dtach-only through `LocalDtachBackend` per ADR-014 and V8. It consumes structured data from hooks and transcript files, and delivers developer input as bytes to the child PTY. A thin `RoutingAgentAdapter` dispatches calls to the per-agent-type adapter (`claude-code-adapter.ts`, `codex-cli-adapter.ts`, `grok-build-adapter.ts`) behind the common `AgentAdapter` interface. The layer exposes a uniform `AgentEvent` stream for the supervisor to consume.
 
 > Updated 2026-05-09: Removed stale tmux escape-hatch, `SessionMonitor`, and `capture-pane` descriptions. `src/server/start.ts` rejects non-dtach backends; the ring buffer lives inside `LocalDtachBackend`.
 

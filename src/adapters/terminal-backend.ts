@@ -31,6 +31,18 @@ export interface SessionSpec {
   /** Argv array for the binary. Shell features require a wrapper script. */
   args: string[];
   env?: Record<string, string>;
+  /**
+   * How {@link env} relates to the Kookr server's own `process.env`:
+   *   - `'inherit'` (default): child env is `{ ...process.env, ...env }` — the
+   *     long-standing behavior for Claude Code / Codex CLI.
+   *   - `'replace'`: child env is EXACTLY `env` (a fully-resolved allowlist);
+   *     `process.env` is NOT merged in. Used by the Grok Build adapter so
+   *     unrelated provider/GitHub/deploy secrets in the server environment never
+   *     reach the Grok child (RFC "allowlisted child environment"). The caller
+   *     is responsible for including everything the child needs (PATH, HOME,
+   *     TERM, locale, …).
+   */
+  envMode?: 'inherit' | 'replace';
   cwd?: string;
   /** Initial size; subsequent resizes flow through `resize`. */
   size?: { cols: number; rows: number };
