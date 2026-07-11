@@ -1146,4 +1146,47 @@ describe('SessionBridge', () => {
       expect(Array.from(written[0])).toEqual([0x61, 0x0d]);
     });
   });
+
+  // reconnect-transport (kookr-ai/kookr#1347): a connected browser keeps its
+  // SessionBridge subscription across a transport reconnect and resumes on the
+  // fresh attach without a re-open.
+  describe('reconnect transport', () => {
+    it('keeps delivering live bytes to a connected browser after a reconnect', async () => {
+      const backend = await makeReadySession('s1');
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+      await bridge.start();
+
+      // A transport reconnect rebuilds the internal attach child. The bridge's
+      // onData subscription is preserved by the backend, so the browser is not
+      // re-opened.
+      const result = await backend.reconnectTransport('s1');
+      expect(result.outcome).toBe('success');
+      await waitForOutputFlush();
+
+      // Post-reconnect live bytes still reach the same WS.
+      backend.emit('s1', new Uint8Array([0x4f, 0x4b])); // "OK"
+      await waitForOutputFlush();
+
+      const merged = ws.sent
+        .filter((s): s is Buffer => Buffer.isBuffer(s))
+        .map((b) => b.toString('utf-8'))
+        .join('');
+      expect(merged).toContain('OK');
+      // The bridge was never closed by the reconnect.
+      expect(ws.closeCode).toBeUndefined();
+    });
+
+    it('writes no terminal input while reconnecting the transport', async () => {
+      const backend = await makeReadySession('s1');
+      const ws = new FakeWs();
+      const bridge = new SessionBridge('s1', ws as unknown as never, backend);
+      await bridge.start();
+
+      await backend.reconnectTransport('s1', { reason: 'operator repair' });
+
+      // The no-input guarantee: nothing was written to the PTY by the repair.
+      expect(backend.getWrittenBytes('s1')).toHaveLength(0);
+    });
+  });
 });

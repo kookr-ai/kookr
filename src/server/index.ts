@@ -1067,6 +1067,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         // crash-durability guarantee the RFC requires on grant/release.
         flushTasks: () => taskStateSaveScheduler.flush('flush', { force: true }),
         getTaskStatus: (taskId) => taskStore.getTask(taskId)?.status,
+        // #1351: default claim-repo resolution to the CLAIMANT TASK's
+        // configured checkout (not serverCwd) when the caller omits an
+        // explicit cwd, so a task configured for repo A can claim A even when
+        // this server process was bootstrapped from repo B.
+        getTaskCwd: (taskId) => taskStore.getTask(taskId)?.cwd,
       },
     } : {}),
     taskStore, monitor, queue, adapter, hookWatcher, watchdog,
