@@ -16,7 +16,7 @@ describe('protected worktree documentation', () => {
 
   test('keeps the documented marker filename aligned with the exported constant', () => {
     expect(userGuide).toContain(`\`${PROTECTED_MARKER}\``);
-    expect(userGuide).toContain('parentRepo: /home/me/git/project');
+    expect(userGuide).toContain('parentRepo: /path/to/project');
     expect(userGuide).toContain('skip removal with reason `protected`');
   });
 

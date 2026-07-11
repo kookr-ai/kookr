@@ -32,7 +32,7 @@ When a task completes, Kookr normally removes its managed git worktree. To keep 
 
 ```text
 production runtime
-parentRepo: /home/me/git/project
+parentRepo: /path/to/project
 ```
 
 For managed task worktree cleanup, the file's presence makes Kookr skip removal with reason `protected`. The first non-empty line is an optional human-readable reason. The optional `parentRepo:` field identifies the parent repository when Kookr needs to resolve it; replace the example path with the real absolute path. A production checkout such as `kookr-prod` should use this marker when it must remain long-lived.
