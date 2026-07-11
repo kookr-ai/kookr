@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'vitest';
 import type { AgentEvent } from './types.js';
-import { deriveLatestCompletionSignal } from './completion-signal.js';
+import {
+  deriveLatestCompletionSignal,
+  evaluateCompletionSignal,
+  type CompletionSignalEvaluationInput,
+} from './completion-signal.js';
 
 function stop(lastMessage = 'Done.', eventSeq = 3): AgentEvent {
   return { type: 'stop', sessionId: 's1', lastMessage, eventSeq };
@@ -79,5 +83,82 @@ describe('deriveLatestCompletionSignal', () => {
     const second = signal([userPrompt(1), stop('All done.', 2), userPrompt(3), stop('All done.', 4)]);
 
     expect(second?.id).not.toBe(first?.id);
+  });
+});
+
+describe('evaluateCompletionSignal', () => {
+  const completedTurn: AgentEvent[] = [userPrompt(1), stop('Implemented and pushed.', 2)];
+
+  function evaluate(overrides: Partial<CompletionSignalEvaluationInput> = {}) {
+    return evaluateCompletionSignal({
+      taskId: 'task-1',
+      agentId: 'agent-1',
+      status: 'inProgress',
+      events: completedTurn,
+      ...overrides,
+    });
+  }
+
+  test('auto-signals when delivery is pre-authorized and the turn completed cleanly', () => {
+    const decision = evaluate({ deliveryAuthorization: 'pre-authorized' });
+    expect(decision.action).toBe('auto_signal');
+    expect(decision.reason).toBe('auto_signal_authorized');
+    expect(decision.signalId).toHaveLength(16);
+    expect(decision.detail).toMatch(/auto-raising/i);
+  });
+
+  test('auto-signals an ask-first task once its delivery is satisfied', () => {
+    const decision = evaluate({ deliveryAuthorization: 'ask-first', deliverySatisfied: true });
+    expect(decision.action).toBe('auto_signal');
+    expect(decision.reason).toBe('auto_signal_authorized');
+  });
+
+  test('remediates once per task state and suppresses the repeat', () => {
+    const first = evaluate();
+    expect(first.action).toBe('remediate');
+    expect(first.reason).toBe('remediation_needed');
+    expect(first.stateFingerprint).toBeTruthy();
+
+    // A repeated Stop attempt with no state change replays the same fingerprint.
+    const repeat = evaluate({ lastRemediationFingerprint: first.stateFingerprint });
+    expect(repeat.action).toBe('skip');
+    expect(repeat.reason).toBe('remediation_already_delivered');
+    expect(repeat.stateFingerprint).toBe(first.stateFingerprint);
+  });
+
+  test('re-enables one reminder after the task state changes', () => {
+    const first = evaluate();
+    // The agent does more work: a later Stop shifts the completion evidence.
+    const afterMoreWork = evaluate({
+      events: [userPrompt(1), stop('Implemented and pushed.', 2), userPrompt(3), stop('Addressed review.', 4)],
+      lastRemediationFingerprint: first.stateFingerprint,
+    });
+    expect(afterMoreWork.action).toBe('remediate');
+    expect(afterMoreWork.stateFingerprint).not.toBe(first.stateFingerprint);
+  });
+
+  test('is idempotent for an already-signaled task', () => {
+    const decision = evaluate({ pendingSignalKind: 'completion_ready', deliveryAuthorization: 'pre-authorized' });
+    expect(decision.action).toBe('skip');
+    expect(decision.reason).toBe('already_signaled');
+  });
+
+  test('never auto-signals a delivery-blocked (ask-first, undelivered) task', () => {
+    const decision = evaluate({ deliveryAuthorization: 'ask-first' });
+    expect(decision.action).toBe('skip');
+    expect(decision.reason).toBe('delivery_blocked');
+    // An explicit not-satisfied flag is treated the same as the fail-safe default.
+    expect(evaluate({ deliveryAuthorization: 'ask-first', deliverySatisfied: false }).reason).toBe('delivery_blocked');
+  });
+
+  test('skips when the turn is not cleanly complete', () => {
+    const decision = evaluate({ events: [{ type: 'tool_use', sessionId: 's1', toolName: 'Bash', eventSeq: 1 }] });
+    expect(decision.action).toBe('skip');
+    expect(decision.reason).toBe('turn_incomplete');
+  });
+
+  test('skips terminal and non-in-progress tasks with a recorded reason', () => {
+    expect(evaluate({ status: 'completed' })).toMatchObject({ action: 'skip', reason: 'terminal_status' });
+    expect(evaluate({ status: 'open' })).toMatchObject({ action: 'skip', reason: 'not_in_progress' });
   });
 });
