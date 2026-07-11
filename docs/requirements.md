@@ -890,6 +890,18 @@ The system SHALL ship as a single npm package with no monorepo structure.
 
 **Evidence:** Root `package.json`, no workspace config.
 
+### R7.5: Aggregate Hook Test Results — SHALL — `done`
+
+The hook test runner SHALL execute every selected shell-hook suite before reporting an aggregate result.
+
+**Acceptance criteria:**
+- A failing suite does not prevent later selected suites from running
+- The final summary reports passed and failed suite counts and names every failing suite
+- An optional name filter selects suites by a substring of their filename
+- The runner exits non-zero if any selected suite fails or if the filter matches no suites
+
+**Evidence:** `scripts/run-hook-tests.sh`, `.claude/hooks-tests/run-hook-tests.test.sh`, and the `test:hooks` package script.
+
 ---
 
 ## R8: Contribution Workspace Cleanup Controls
@@ -1068,6 +1080,7 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R7.2 | CLAUDE.md | SHALL | done | Vitest test suite (count maintained via CI) |
 | R7.3 | ADR-007 | SHALL | done | hook-parser, hook-watcher |
 | R7.4 | CLAUDE.md | SHALL | done | package.json |
+| R7.5 | #1315 | SHALL | done | run-hook-tests.sh, run-hook-tests.test.sh, package.json |
 | R8.1 | — | SHALL | done | workspace-cleanup-policy, cleanup inspector/projections/service |
 | R8.2 | — | SHALL | done | workspace-cleanup use-cases, shared contracts |
 | R8.3 | — | SHALL | done | workspace-cleanup-service, CleanupCandidateTable |
