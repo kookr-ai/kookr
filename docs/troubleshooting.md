@@ -260,6 +260,11 @@ For configuration-only changes:
 pnpm prod:restart
 ```
 
+If a long-lived production or scratch worktree disappears when its task
+completes, protect it with the root-level `.kookr-protected` marker. See
+[Protecting A Worktree From Automatic Cleanup](user-guide.md#protecting-a-worktree-from-automatic-cleanup)
+for the marker format and removal guidance.
+
 ## Agent Prompt Is Blocked By Hooks
 
 When launching from inside Claude Code, hooks inspect the bash command line. Use a prompt file or stdin so sensitive command text is not in argv:

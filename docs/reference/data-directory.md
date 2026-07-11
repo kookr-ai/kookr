@@ -69,6 +69,10 @@ runtime crash-recovery state for surviving dtach masters, not long-term backup
 state. If Kookr is stopped cleanly and the dtach masters are gone, restoring the
 data directory alone restores task records but not live terminal processes.
 
+The `.kookr-protected` file is also outside the data directory: it belongs at a
+git worktree root and prevents managed task cleanup from removing that worktree.
+See [Protecting A Worktree From Automatic Cleanup](../user-guide.md#protecting-a-worktree-from-automatic-cleanup).
+
 ## Snapshot Semantics
 
 `tasks.json` is written atomically: Kookr writes a temporary file, fsyncs it,

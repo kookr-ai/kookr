@@ -9,6 +9,25 @@ import {
   resolveParentRepoFromMarker,
   migrateLegacyProtectedWorktree,
 } from './worktree-marker.js';
+import { PROTECTED_MARKER } from '../core/worktree-protection.js';
+
+describe('protected worktree documentation', () => {
+  const userGuide = readFileSync(new URL('../../docs/user-guide.md', import.meta.url), 'utf8');
+
+  test('keeps the documented marker filename aligned with the exported constant', () => {
+    expect(userGuide).toContain(`\`${PROTECTED_MARKER}\``);
+    expect(userGuide).toContain('parentRepo: /path/to/project');
+    expect(userGuide).toContain('skip removal with reason `protected`');
+  });
+
+  test.each([
+    ['data directory reference', '../../docs/reference/data-directory.md'],
+    ['troubleshooting guide', '../../docs/troubleshooting.md'],
+  ])('%s links to the canonical user-guide section', (_name, path) => {
+    const page = readFileSync(new URL(path, import.meta.url), 'utf8');
+    expect(page).toContain('user-guide.md#protecting-a-worktree-from-automatic-cleanup');
+  });
+});
 
 describe('worktree-marker', () => {
   let root: string;
