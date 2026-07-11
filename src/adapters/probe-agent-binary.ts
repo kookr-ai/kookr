@@ -1,4 +1,9 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { access, realpath, stat } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -94,6 +99,139 @@ const defaultExec: ProbeExecRunner = async (file, args, options) => {
   });
   return { stdout, stderr };
 };
+
+/**
+ * Local installed-agent identity for the executable Kookr will actually exec.
+ * Distinct from launch readiness (auth/model/region) — this check performs NO
+ * auth, plugin, MCP, or network work (RFC "Binary identity, readiness, and
+ * compatibility" §1). Fields mirror the reviewed `grok-build-compatibility.v1`
+ * manifest so a resolved identity can be matched against it.
+ */
+export interface InstalledBinaryIdentity {
+  /** The command as configured (bare name or path), before resolution. */
+  configured: string;
+  /** Absolute path the command resolves to on PATH (pre-symlink-resolution). */
+  launcherPath: string;
+  /** realpath of {@link launcherPath} — the exact file that is exec'd. */
+  canonicalPath: string;
+  /** SHA-256 of the canonical file's bytes. */
+  sha256: string;
+  sizeBytes: number;
+  /** File mode permission bits (`st_mode & 0o777`). */
+  mode: number;
+  uid: number;
+  gid: number;
+}
+
+export type BinaryIdentityOutcome =
+  | { kind: 'ok'; identity: InstalledBinaryIdentity }
+  | { kind: 'absent'; reason: string };
+
+/**
+ * Injected filesystem seam so {@link resolveInstalledBinaryIdentity} is unit
+ * testable without a real 152 MB binary on disk.
+ */
+export interface IdentityFsDeps {
+  /** Resolve a bare command to an absolute path via PATH lookup; identity for absolute inputs. */
+  resolveExecutablePath?: (bin: string, env: NodeJS.ProcessEnv) => Promise<string | null>;
+  realpath?: (p: string) => Promise<string>;
+  stat?: (p: string) => Promise<{ size: number; mode: number; uid: number; gid: number }>;
+  hashFile?: (p: string) => Promise<string>;
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Resolve the canonical identity of an installed binary: PATH-resolve the
+ * configured command, follow symlinks to the real file (Grok's launcher
+ * `~/.grok/bin/grok` is a symlink to the versioned `grok-<ver>` binary), then
+ * stat + hash the canonical file. Returns `{kind:'absent'}` on any failure so
+ * callers degrade to an actionable diagnostic instead of throwing.
+ */
+export async function resolveInstalledBinaryIdentity(
+  bin: string,
+  deps: IdentityFsDeps = {},
+): Promise<BinaryIdentityOutcome> {
+  const env = deps.env ?? process.env;
+  const resolveExec = deps.resolveExecutablePath ?? defaultResolveExecutablePath;
+  const rp = deps.realpath ?? ((p) => realpath(p));
+  const st =
+    deps.stat ??
+    (async (p) => {
+      const s = await stat(p);
+      return { size: s.size, mode: s.mode & 0o777, uid: s.uid, gid: s.gid };
+    });
+  const hf = deps.hashFile ?? hashFileSha256;
+
+  let launcherPath: string | null;
+  try {
+    launcherPath = await resolveExec(bin, env);
+  } catch (err) {
+    return { kind: 'absent', reason: `failed to resolve "${bin}" on PATH: ${describeErr(err)}` };
+  }
+  if (!launcherPath) {
+    return { kind: 'absent', reason: `binary "${bin}" not found on PATH` };
+  }
+
+  try {
+    const canonicalPath = await rp(launcherPath);
+    const s = await st(canonicalPath);
+    const sha256 = await hf(canonicalPath);
+    return {
+      kind: 'ok',
+      identity: {
+        configured: bin,
+        launcherPath,
+        canonicalPath,
+        sha256,
+        sizeBytes: s.size,
+        mode: s.mode,
+        uid: s.uid,
+        gid: s.gid,
+      },
+    };
+  } catch (err) {
+    return { kind: 'absent', reason: `identity resolution failed for "${launcherPath}": ${describeErr(err)}` };
+  }
+}
+
+/** PATH-resolve a bare command; pass through an already-absolute path if executable. */
+async function defaultResolveExecutablePath(
+  bin: string,
+  env: NodeJS.ProcessEnv,
+): Promise<string | null> {
+  if (bin.includes('/') || isAbsolute(bin)) {
+    return (await isExecutable(bin)) ? bin : null;
+  }
+  const pathDirs = (env.PATH ?? '').split(delimiter).filter(Boolean);
+  for (const dir of pathDirs) {
+    const candidate = join(dir, bin);
+    if (await isExecutable(candidate)) return candidate;
+  }
+  return null;
+}
+
+async function isExecutable(p: string): Promise<boolean> {
+  try {
+    await access(p, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hashFileSha256(p: string): Promise<string> {
+  return new Promise((resolvePromise, reject) => {
+    const hash = createHash('sha256');
+    const stream = createReadStream(p);
+    stream.on('error', reject);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolvePromise(hash.digest('hex')));
+  });
+}
+
+function describeErr(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 /**
  * Probe whether `<bin> --help` advertises a specific flag (e.g. `--plugin-dir`).

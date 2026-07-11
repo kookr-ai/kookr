@@ -11,6 +11,7 @@ flowchart TD
   Router[RoutingAgentAdapter]
   CCAdapter[ClaudeCodeAdapter]
   CodexAdapter[CodexCliAdapter]
+  GrokAdapter[GrokBuildAdapter<br/>experimental, flag-gated]
   Backend[Terminal Backend<br/>terminal-backend.ts]
   Dtach[LocalDtachBackend<br/>local-dtach-backend.ts<br/>persistent master + ring buffer]
   Fake[FakeTerminalBackend<br/>fake-terminal-backend.ts<br/>tests only]
@@ -39,8 +40,9 @@ flowchart TD
 
 | Component | Responsibility |
 |---|---|
-| **RoutingAgentAdapter** (`routing-agent-adapter.ts`) | Selects the concrete adapter per `agentType` (`claude-code` or `codex-cli`) and forwards `AgentAdapter` calls. Lets the rest of the server treat agents uniformly |
+| **RoutingAgentAdapter** (`routing-agent-adapter.ts`) | Selects the concrete adapter per `agentType` (`claude-code`, `codex-cli`, or `grok-build`) and forwards `AgentAdapter` calls. Lets the rest of the server treat agents uniformly |
 | **ClaudeCodeAdapter / CodexCliAdapter** | Concrete implementations. Own the per-agent `--settings`/config file, hook command wiring, and transcript path discovery |
+| **GrokBuildAdapter** (`grok-build-adapter.ts`) | Experimental, flag-gated (`KOOKR_GROK_BUILD_ENABLED`) concrete implementation for xAI's official Grok Build CLI (issue #1339 Phase 1). Coordinator over pure helpers: per-session `GROK_HOME` composition (monitoring hooks + seeded auth + linked toolkit plugins), a Grok-specific camelCase hook decoder normalizing into `AgentEvent`, build qualification derived solely from the reviewed `grok-build-compatibility.v1` manifest, and an allowlisted child environment. Registered but excluded from the frontend picker / round-robin |
 | **Terminal Backend** (`terminal-backend.ts`) | Session I/O abstraction over the dtach persistence layer. It owns lifecycle (`createSession` / `listSessions` / `isAlive` / `killSession`), input (`write` / `writeSequence`), output (`captureBytes` / `onData`), transport errors (`onBackendError`), resize, and health stats. `LocalDtachBackend` is the sole production implementation (ADR-014); `FakeTerminalBackend` is used by tests. Selected in `src/server/start.ts`. Launches the agent binary in interactive mode, monitors process exit, cleans up sessions on shutdown. No circuit-breaker wrapper on the dtach path at present |
 | **Persistent dtach attach + ring buffer** (inside `local-dtach-backend.ts`) | One persistent `dtach -a` client per session, shared by all viewers. Owns a ring buffer of recent bytes so every reconnecting xterm.js viewer (and the attention-router UI) sees the last rendered screen synchronously, not just newly-emitted bytes. Replaces the V7-era `SessionMonitor` module — the functionality now lives inside the backend itself |
 | **Event Source** | Consumes four structured data channels: (1) **Hooks** — per-session JSONL files (`~/.kookr/hooks/<session>.jsonl`) covering the full `HookEventName` set (SessionStart, PreToolUse, PostToolUse, PostToolUseFailure, Stop, StopFailure, PermissionRequest, Notification, UserPromptSubmit, SubagentStart, SubagentStop, SessionEnd); (2) **Transcript JSONL** — file-watched transcript for full structured history; (3) **GitHub state** — PR/issue status, review comments, CI checks via periodic `gh` CLI polling ([ADR-012](../../../adr/012-github-pr-awareness.md)); (4) **Interaction log** — developer actions (inputs, skips, snoozes) for reflection ([ADR-010](../../../adr/010-session-reflection-workflow.md)). Maps to `AgentEvent` union. No ANSI terminal parsing needed |

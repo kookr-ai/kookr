@@ -10,6 +10,7 @@ import {
   ROUND_ROBIN_OPTION,
   CLAUDE_CODE_EFFORT_LEVELS,
   CODEX_CLI_EFFORT_LEVELS,
+  GROK_BUILD_EFFORT_LEVELS,
   ALL_EFFORT_LEVELS,
   effortLevelsForAgent,
   isValidEffortForAgent,
@@ -67,6 +68,11 @@ describe('normalizeAgentSelection', () => {
   test('preserves the round-robin sentinel', () => {
     expect(normalizeAgentSelection('round-robin')).toBe('round-robin');
     expect(normalizeAgentSelection('round-robin')).toBe(ROUND_ROBIN_AGENT_TYPE);
+  });
+
+  test('normalizes grok aliases to grok-build', () => {
+    expect(normalizeAgentType('grok')).toBe('grok-build');
+    expect(normalizeAgentType('grok-build')).toBe('grok-build');
   });
 
   test('normalizes concrete agents like normalizeAgentType', () => {
@@ -140,6 +146,18 @@ describe('reasoning-effort levels (#681)', () => {
   test('codex-cli allowed set mirrors the codex ReasoningEffort enum exactly', () => {
     expect([...CODEX_CLI_EFFORT_LEVELS]).toEqual(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
     expect(effortLevelsForAgent('codex-cli')).toEqual(CODEX_CLI_EFFORT_LEVELS);
+  });
+
+  test('grok-build exposes NO validated effort levels (no Claude inheritance)', () => {
+    // The whole point of the exhaustive switch: a new agent type must not
+    // silently inherit Claude's levels. Grok's set is empty until validated.
+    expect([...GROK_BUILD_EFFORT_LEVELS]).toEqual([]);
+    expect(effortLevelsForAgent('grok-build')).toEqual(GROK_BUILD_EFFORT_LEVELS);
+    // Every Claude level must be REJECTED for grok-build (proves no fallback).
+    for (const level of CLAUDE_CODE_EFFORT_LEVELS) {
+      expect(isValidEffortForAgent('grok-build', level)).toBe(false);
+    }
+    expect(isValidEffortForAgent('grok-build', 'high')).toBe(false);
   });
 
   test('isValidEffortForAgent accepts only that agent\'s levels', () => {

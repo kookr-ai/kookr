@@ -261,7 +261,15 @@ export class LocalDtachBackend implements TerminalBackend {
     // Step 2: spawn the dtach master so it outlives this Kookr process.
     const dtachArgs = ['-n', sock, '-r', 'winch', '-E', spec.command, ...spec.args];
     const { command, args } = buildDtachSpawn(process.platform, this.dtachBinary, dtachArgs);
-    const env = { ...process.env, ...spec.env };
+    // `envMode: 'replace'` gives the caller an exact allowlisted child env (the
+    // Grok adapter uses it to keep server secrets out of the agent process);
+    // the default 'inherit' preserves the historical `{...process.env, ...}`
+    // merge for Claude Code / Codex CLI. dtach itself is exec'd with the same
+    // env, so a 'replace' caller must include PATH so the multiplexer resolves.
+    const env =
+      spec.envMode === 'replace'
+        ? { ...(spec.env ?? {}) }
+        : { ...process.env, ...spec.env };
     try {
       this.assertExecutableAvailable(spec.id, this.dtachBinary, env);
       if (command !== this.dtachBinary) this.assertExecutableAvailable(spec.id, command, env);

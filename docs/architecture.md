@@ -154,7 +154,7 @@ Other anomaly patterns: `detect-budget-burn` (V2), `detect-trajectory-drift` (V2
 ### 3. Agent Adapter Layer
 
 **What it does:**
-- Wraps each agent type (Claude Code, Codex CLI) behind a common `AgentAdapter` interface. `RoutingAgentAdapter` dispatches to the concrete adapter by `agentType` (`claude-code-adapter.ts` or `codex-cli-adapter.ts`)
+- Wraps each agent type (Claude Code, Codex CLI, and the experimental flag-gated Grok Build) behind a common `AgentAdapter` interface. `RoutingAgentAdapter` dispatches to the concrete adapter by `agentType` (`claude-code-adapter.ts`, `codex-cli-adapter.ts`, or `grok-build-adapter.ts`)
 - Spawns and controls agent sessions through `LocalDtachBackend` — creation, byte-level write for input delivery, termination. The backend owns one persistent attach per session, a 64 KB ring buffer, a per-session write mutex, and lazy re-attach with a 3-per-60-s cap. Transport-level failures surface as structured `BackendError` events wired into the anomaly queue and `/api/health`
 - Registers the agent's **transcript JSONL path** for token/cost and freshness tracking; transcript-derived `AgentEvent` ingestion remains a V2 enhancement
 - Receives **hook events** via per-session JSONL files in `~/.kookr/hooks/`. Full event set is `SessionStart`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`, `PermissionRequest`, `Notification`, `UserPromptSubmit`, `SubagentStart`, `SubagentStop`, `SessionEnd` — see `HookEventName` in `src/core/hook-events.ts`. Codex CLI advertises its supported subset via `codexHookCapabilities` on `session_start`. Hooks are configured per agent via a Kookr-generated settings file (Claude Code `--settings`, Codex CLI config file); they are additive to the user's own hooks. See [PoC 001](poc/001-hook-mechanism-validation.md)
@@ -628,7 +628,7 @@ kookr/
 >
 > **Note on `GitInfo`:** The `GitInfo` interface lives in `src/core/types.ts`. The `src/adapters/git-info.ts` module re-exports it alongside the I/O function `getGitInfo()`, keeping the core layer free of adapter dependencies.
 >
-> **Note on agent adapters:** Kookr supports two coding-agent CLIs — Claude Code and the forked Codex CLI — through a `RoutingAgentAdapter` that dispatches by `agentType`. The Codex fork lives at `~/git/codex` and is rebuilt via `pnpm codex:rebuild`. See the project `CLAUDE.md` for the build/deploy workflow.
+> **Note on agent adapters:** Kookr supports two production coding-agent CLIs — Claude Code and the forked Codex CLI — through a `RoutingAgentAdapter` that dispatches by `agentType`. The Codex fork lives at `~/git/codex` and is rebuilt via `pnpm codex:rebuild`. A third, **experimental Grok Build** adapter (`grok-build-adapter.ts`, issue #1339 Phase 1) is registered only when `KOOKR_GROK_BUILD_ENABLED=true` and is kept out of the frontend picker / round-robin. See the project `CLAUDE.md` for the build/deploy workflow.
 
 > **Design note:** The original architecture envisioned a monolithic `supervisor.ts` module. In implementation, the supervisor logic was split into three focused modules — `anomaly-detector.ts` (detection), `attention-queue.ts` (prioritization), and `monitor.ts` (orchestration). This separation improves testability (each module is a pure function or small class) and follows the single-responsibility principle.
 >

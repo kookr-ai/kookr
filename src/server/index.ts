@@ -139,6 +139,8 @@ export interface KookrConfig {
   agentBin?: string;
   /** Path or command name for the Codex binary. Defaults to 'codex'. */
   codexBin?: string;
+  /** Path or command name for the experimental Grok Build binary. Defaults to 'grok'. */
+  grokBin?: string;
   /**
    * Opt-in: bypass ALL permission prompts in spawned agents. When true,
    * Claude Code launches with --dangerously-skip-permissions and Codex
@@ -264,7 +266,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const {
     port, host, kookrDir, tasksFile, hooksDir, settingsDir,
     serverCwd, frontendDir, saveIntervalMs, livenessIntervalMs,
-    terminalBackend, sttUrl, ttsUrl, useFakeTerminalBridge, agentBin, codexBin, bypassAllPermissions,
+    terminalBackend, sttUrl, ttsUrl, useFakeTerminalBridge, agentBin, codexBin, grokBin, bypassAllPermissions,
     claudeDir, preflightOnFatal, preflightLogger,
     ossSourceWatcherFs, ossSourceWatcherDebounceMs,
     resourceStatusSampler,
@@ -354,6 +356,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     serverPort: port,
     agentBin,
     codexBin,
+    grokBin,
     bypassAllPermissions,
     preflightOnFatal,
     preflightLogger,

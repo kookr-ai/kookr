@@ -41,6 +41,7 @@ const TTS_VOICE = process.env.TTS_VOICE ?? DEFAULT_TTS_VOICE;
 const TTS_DEVICE = parseTTSDeviceFromEnv();
 const AGENT_BIN = process.env.KOOKR_AGENT_BIN || undefined;
 const CODEX_BIN = process.env.KOOKR_CODEX_BIN || undefined;
+const GROK_BIN = process.env.KOOKR_GROK_BIN || undefined;
 const BYPASS_ALL_PERMISSIONS = process.env.KOOKR_BYPASS_ALL_PERMISSIONS === 'true';
 const SPEAK_FINDING_ENABLED = process.env.KOOKR_SPEAK !== 'false';
 
@@ -216,6 +217,7 @@ async function main(): Promise<void> {
     speakFindingEnabled: SPEAK_FINDING_ENABLED,
     agentBin: AGENT_BIN,
     codexBin: CODEX_BIN,
+    grokBin: GROK_BIN,
     bypassAllPermissions: BYPASS_ALL_PERMISSIONS,
     lifecycleSignal: lifecycleAc.signal,
     apiAuth,
