@@ -527,6 +527,10 @@ with an `alert` frame instead of being routed to a handler. The
 `/ws/terminal/:sessionId` channel is separate and uses binary terminal frames;
 the message tables below apply only to `/ws`.
 
+Inbound messages are limited to 1,000,000 bytes on `/ws` and 8,000,000 bytes on
+`/ws/terminal/:sessionId`. The server closes connections that exceed the
+applicable limit with WebSocket close code `1009`.
+
 On connect, the server sends a full `snapshot` first. Owner sessions may then
 receive startup alerts and the latest optional side-channel state
 (`resourceStatus`, `githubUpdate`, `projectSummaries`, `quotaStatus`,

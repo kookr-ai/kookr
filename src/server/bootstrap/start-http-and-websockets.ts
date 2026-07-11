@@ -35,6 +35,9 @@ export const WEBSOCKET_PER_MESSAGE_DEFLATE: PerMessageDeflatePolicy = {
   threshold: 1024,
 };
 
+export const DASHBOARD_WEBSOCKET_MAX_PAYLOAD_BYTES = 1_000_000;
+export const TERMINAL_WEBSOCKET_MAX_PAYLOAD_BYTES = 8_000_000;
+
 export interface HttpAndWebSocketsDeps {
   app: Hono;
   port: number;
@@ -189,10 +192,12 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
   const httpServer = createServer(requestListener);
   const wss = new WebSocketServer({
     noServer: true,
+    maxPayload: DASHBOARD_WEBSOCKET_MAX_PAYLOAD_BYTES,
     perMessageDeflate: WEBSOCKET_PER_MESSAGE_DEFLATE,
   });
   const terminalWss = new WebSocketServer({
     noServer: true,
+    maxPayload: TERMINAL_WEBSOCKET_MAX_PAYLOAD_BYTES,
     perMessageDeflate: WEBSOCKET_PER_MESSAGE_DEFLATE,
   });
   const terminalInputWriter = deps.terminalInputWriter ?? asTerminalInputWriterPort(deps.terminalBackend);
@@ -300,6 +305,10 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
   const activeBridges = new Map<WebSocket, FakeTerminalBridge | SessionBridge>();
 
   terminalWss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
+    ws.on('error', (err) => {
+      console.error('[terminal-websocket] connection error:', err);
+    });
+
     // Reuse the actor + canonical session name vetted by the upgrade scope gate
     // (#810). The fallback (gate not run — e.g. a directly-emitted connection in a
     // test) re-derives from the query-stripped path so the two paths stay
@@ -369,6 +378,10 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
   wss.on('connection', (ws: WebSocket) => {
     const clientId = allocateDashboardWsClientId();
     const connectedAt = performance.now();
+
+    ws.on('error', (err) => {
+      console.error(`[dashboard-websocket] connection error for ${clientId}:`, err);
+    });
 
     console.log(JSON.stringify({
       msg: 'dashboard_ws_connected',
