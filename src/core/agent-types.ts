@@ -5,6 +5,7 @@ export type {
   AvailableAgentSelection,
   ClaudeCodeEffort,
   CodexCliEffort,
+  GrokBuildEffort,
   EffortLevel,
   AgentEffortMap,
 } from '../shared/contracts/agent-types.js';
@@ -20,6 +21,7 @@ export {
   buildAgentSelectionOptions,
   CLAUDE_CODE_EFFORT_LEVELS,
   CODEX_CLI_EFFORT_LEVELS,
+  GROK_BUILD_EFFORT_LEVELS,
   ALL_EFFORT_LEVELS,
   effortLevelsForAgent,
   isValidEffortForAgent,

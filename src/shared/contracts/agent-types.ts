@@ -1,4 +1,4 @@
-export type AgentType = 'claude-code' | 'codex-cli';
+export type AgentType = 'claude-code' | 'codex-cli' | 'grok-build';
 
 /**
  * Sentinel for the round-robin agent *selection*. Not a real adapter — the
@@ -52,12 +52,24 @@ export const AVAILABLE_AGENT_TYPES: AvailableAgentType[] = [
  */
 export const CLAUDE_CODE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export const CODEX_CLI_EFFORT_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+/**
+ * Grok Build exposes NO validated effort levels (issue #1343 / RFC "Grok Build
+ * adapter"). Grok advertises a `--reasoning-effort` flag, but POC-A did not
+ * validate its accepted values, so Kookr passes no effort lever to Grok at all
+ * until a follow-up empirically qualifies the exact tokens. Keeping this empty
+ * (rather than reusing Claude's levels) is the whole point of the exhaustive
+ * per-agent map below: a new agent type must NOT silently inherit Claude effort
+ * values. `isValidEffortForAgent('grok-build', …)` is therefore always false and
+ * the adapter never emits an effort flag.
+ */
+export const GROK_BUILD_EFFORT_LEVELS = [] as const;
 
 export type ClaudeCodeEffort = (typeof CLAUDE_CODE_EFFORT_LEVELS)[number];
 export type CodexCliEffort = (typeof CODEX_CLI_EFFORT_LEVELS)[number];
+export type GrokBuildEffort = (typeof GROK_BUILD_EFFORT_LEVELS)[number];
 
 /** Any effort token. Validity is agent-specific — see {@link isValidEffortForAgent}. */
-export type EffortLevel = ClaudeCodeEffort | CodexCliEffort;
+export type EffortLevel = ClaudeCodeEffort | CodexCliEffort | GrokBuildEffort;
 
 /**
  * Per-agent-type effort defaults, as persisted in kookr settings (`agentEffort`).
@@ -67,9 +79,35 @@ export type EffortLevel = ClaudeCodeEffort | CodexCliEffort;
  */
 export type AgentEffortMap = Partial<Record<AgentType, EffortLevel>>;
 
-/** The allowed effort levels for a given agent type. */
+/**
+ * The allowed effort levels for a given agent type.
+ *
+ * EXHAUSTIVE per-agent switch (issue #1343): the previous binary
+ * `codex-cli ? CODEX : CLAUDE` fallback meant any newly added agent type would
+ * silently inherit Claude Code's effort levels. A `default: assertNever` now
+ * forces every future agent type to declare its own set here, so `grok-build`
+ * correctly resolves to its (empty) set rather than Claude's.
+ */
 export function effortLevelsForAgent(agent: AgentType): readonly string[] {
-  return agent === 'codex-cli' ? CODEX_CLI_EFFORT_LEVELS : CLAUDE_CODE_EFFORT_LEVELS;
+  switch (agent) {
+    case 'claude-code':
+      return CLAUDE_CODE_EFFORT_LEVELS;
+    case 'codex-cli':
+      return CODEX_CLI_EFFORT_LEVELS;
+    case 'grok-build':
+      return GROK_BUILD_EFFORT_LEVELS;
+    default:
+      return assertNeverAgentType(agent);
+  }
+}
+
+/**
+ * Exhaustiveness guard for {@link AgentType} switches. Returns `never` so the
+ * compiler flags any unhandled agent type at build time; throws at runtime if
+ * an out-of-contract value is somehow reached.
+ */
+function assertNeverAgentType(agent: never): never {
+  throw new Error(`Unhandled agent type: ${String(agent)}`);
 }
 
 /** True when `effort` is a level the given agent's CLI accepts. */
@@ -84,7 +122,11 @@ export function isValidEffortForAgent(agent: AgentType, effort: string): boolean
  * agent-specific check still runs server-side once the agent is resolved.
  */
 export const ALL_EFFORT_LEVELS: readonly string[] = [
-  ...new Set<string>([...CLAUDE_CODE_EFFORT_LEVELS, ...CODEX_CLI_EFFORT_LEVELS]),
+  ...new Set<string>([
+    ...CLAUDE_CODE_EFFORT_LEVELS,
+    ...CODEX_CLI_EFFORT_LEVELS,
+    ...GROK_BUILD_EFFORT_LEVELS,
+  ]),
 ];
 
 /** Picker option representing the round-robin selection. */
@@ -101,6 +143,9 @@ export function normalizeAgentType(value: string | undefined | null): AgentType 
     case 'codex':
     case 'codex-cli':
       return 'codex-cli';
+    case 'grok':
+    case 'grok-build':
+      return 'grok-build';
     default:
       return DEFAULT_AGENT_TYPE;
   }

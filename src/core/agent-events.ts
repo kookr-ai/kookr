@@ -66,6 +66,16 @@ export type AgentEvent = (
       activeBackgroundTaskCount?: number;
       /** Active Claude Code session crons reported by the Stop hook, when available. */
       activeSessionCronCount?: number;
+      /**
+       * Grok Build turn-stop reason (`end_turn` | `error` | `cancelled` |
+       * `shutdown`), carried verbatim from the Grok `stop` hook's `reason`
+       * field. Absent for Claude Code / Codex CLI, whose Stop hooks do not
+       * emit a reason. Load-bearing for the RFC outcome truth table: only
+       * `end_turn` + a clean process exit is a `completed` session; every
+       * other reason is non-success. See docs/poc/009-grok-build-basic-supervision.md
+       * "Outcome truth table (observed)".
+       */
+      stopReason?: string;
     }
   | {
       type: 'permission_request';

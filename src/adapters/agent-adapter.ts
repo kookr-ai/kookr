@@ -1,6 +1,7 @@
 import type { AgentEvent, EventMeta, InjectHookEventResult } from '../core/types.js';
 import type { AgentType } from '../core/agent-types.js';
 import type { AgentInteractionPort } from '../core/ports/agent-interaction-port.js';
+import type { InstalledBinaryIdentity } from './probe-agent-binary.js';
 
 /**
  * Handler signature for adapter hook events. The optional third argument is
@@ -90,7 +91,22 @@ export interface AdapterLaunchOptions {
  * the adapter fell back to the default command name on PATH.
  */
 export type PreflightResult =
-  | { kind: 'ok'; resolvedPath: string; version: string }
+  | {
+      kind: 'ok';
+      resolvedPath: string;
+      version: string;
+      /**
+       * realpath of the executable actually launched, when the adapter resolves
+       * it (Grok Build). Distinct from {@link resolvedPath}, which may be the
+       * configured command / launcher symlink. Absent for adapters that only
+       * probe `--version` (Claude Code, Codex CLI).
+       */
+      canonicalPath?: string;
+      /** Exact advertised build id (e.g. Grok's `f00f96316d`), when captured. */
+      buildId?: string;
+      /** Full installed-binary identity (digest, size, ownership), when resolved. */
+      identity?: InstalledBinaryIdentity;
+    }
   | { kind: 'absent'; reason: string; configuredVia: 'env' | 'default'; envVarName: string };
 
 export interface AgentAdapter extends AgentInteractionPort {

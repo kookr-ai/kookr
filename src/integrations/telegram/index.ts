@@ -122,6 +122,8 @@ function agentLabel(agentType: AgentType): string {
       return 'Claude Code';
     case 'codex-cli':
       return 'Codex CLI';
+    case 'grok-build':
+      return 'Grok Build';
   }
 }
 
