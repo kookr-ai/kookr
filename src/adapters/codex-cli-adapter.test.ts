@@ -106,6 +106,9 @@ describe('CodexCliAdapter', () => {
     // The binary is argv[0] on its own — no `env VAR=x codex …` shell prefix.
     expect(spec.command).toMatch(/(^|\/)codex$/);
     expect(spec.args).toEqual(expect.arrayContaining(['-c', 'features.codex_hooks=true']));
+    const modelIndex = spec.args.indexOf('model="gpt-5.6-luna"');
+    expect(modelIndex).toBeGreaterThan(0);
+    expect(spec.args[modelIndex - 1]).toBe('-c');
     expect(spec.args).toContain('--full-auto');
     expect(spec.args).toContain('--settings');
     expect(spec.args).toContain('--prompt-file');
@@ -146,6 +149,7 @@ describe('CodexCliAdapter', () => {
 
     const spec = backend.sessions.get(sessionId)!.spec;
     expect(spec.args).not.toContain('--prompt-file');
+    expect(spec.args).not.toContain('model="gpt-5.6-luna"');
     // Prompt delivered as the trailing positional argv entry.
     expect(spec.args[spec.args.length - 1]).toBe('Fix bug');
   });
@@ -1008,12 +1012,12 @@ describe('CodexCliAdapter', () => {
       return args.findIndex((a) => a.startsWith('model_reasoning_effort='));
     }
 
-    test('no configured default and no override → argv is byte-identical (no effort override)', async () => {
+    test('no configured default and no override → no effort override is passed', async () => {
       const task = taskStore.createTask('Fix bug', '/cwd');
       const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
       const spec = backend.sessions.get(sessionId)!.spec;
       expect(effortValueIndex(spec.args)).toBe(-1);
-      // The pre-#681 base config flag is untouched.
+      // The base config flag remains present alongside the selected model.
       expect(spec.args).toEqual(expect.arrayContaining(['-c', 'features.codex_hooks=true']));
     });
 
@@ -1034,6 +1038,73 @@ describe('CodexCliAdapter', () => {
       expect(spec.args[idx]).toBe('model_reasoning_effort="high"');
     });
 
+    test('per-agent-type max default keeps the Luna model and applies max effort', async () => {
+      const maxAdapter = new CodexCliAdapter(backend, taskStore, {
+        trustWorkspace: false,
+        probeExec: forkProbeExec,
+        writeFile: async () => {},
+        resolveDefaultEffort: () => 'max',
+      });
+      const task = taskStore.createTask('Fix hardest bug by default', '/cwd');
+      const sessionId = await maxAdapter.launch(task.id, 'Fix hardest bug by default', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      const modelIndex = spec.args.indexOf('model="gpt-5.6-luna"');
+      const effortIndex = spec.args.indexOf('model_reasoning_effort="max"');
+      expect(modelIndex).toBeGreaterThan(0);
+      expect(effortIndex).toBeGreaterThan(0);
+      expect(spec.args[modelIndex - 1]).toBe('-c');
+      expect(spec.args[effortIndex - 1]).toBe('-c');
+    });
+
+    test('per-agent-type ultra default selects the Sol model and applies ultra effort', async () => {
+      const ultraAdapter = new CodexCliAdapter(backend, taskStore, {
+        trustWorkspace: false,
+        probeExec: forkProbeExec,
+        writeFile: async () => {},
+        resolveDefaultEffort: () => 'ultra',
+      });
+      const task = taskStore.createTask('Use the explicit escalation tier', '/cwd');
+      const sessionId = await ultraAdapter.launch(task.id, 'Use the explicit escalation tier', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      const modelIndex = spec.args.indexOf('model="gpt-5.6-sol"');
+      const effortIndex = spec.args.indexOf('model_reasoning_effort="ultra"');
+      expect(modelIndex).toBeGreaterThan(0);
+      expect(effortIndex).toBeGreaterThan(0);
+      expect(spec.args[modelIndex - 1]).toBe('-c');
+      expect(spec.args[effortIndex - 1]).toBe('-c');
+    });
+
+    test('stock Codex skips fork-only max instead of forcing Luna', async () => {
+      const stockAdapter = new CodexCliAdapter(backend, taskStore, {
+        trustWorkspace: false,
+        probeExec: stockProbeExec,
+        writeFile: async () => {},
+        resolveDefaultEffort: () => 'max',
+      });
+      const task = taskStore.createTask('Use stock Codex fallback', '/cwd');
+      const sessionId = await stockAdapter.launch(task.id, 'Use stock Codex fallback', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      expect(spec.args).not.toContain('model="gpt-5.6-luna"');
+      expect(effortValueIndex(spec.args)).toBe(-1);
+    });
+
+    test('explicit ultra selects the Sol model that supports it', async () => {
+      const ultraAdapter = new CodexCliAdapter(backend, taskStore, {
+        trustWorkspace: false,
+        probeExec: forkProbeExec,
+        writeFile: async () => {},
+      });
+      const task = taskStore.createTask('Fix hardest bug', '/cwd');
+      const sessionId = await ultraAdapter.launch(task.id, 'Fix hardest bug', '/cwd', undefined, { effort: 'ultra' });
+      const spec = backend.sessions.get(sessionId)!.spec;
+      const modelIndex = spec.args.indexOf('model="gpt-5.6-sol"');
+      const effortIndex = spec.args.indexOf('model_reasoning_effort="ultra"');
+      expect(modelIndex).toBeGreaterThan(0);
+      expect(effortIndex).toBeGreaterThan(0);
+      expect(spec.args[modelIndex - 1]).toBe('-c');
+      expect(spec.args[effortIndex - 1]).toBe('-c');
+    });
+
     test('per-task override (opts.effort) wins over the configured default', async () => {
       const effortAdapter = new CodexCliAdapter(backend, taskStore, {
         trustWorkspace: false,
@@ -1049,12 +1120,12 @@ describe('CodexCliAdapter', () => {
     });
 
     test('an effort invalid for codex-cli is skipped (defensive guard), not passed', async () => {
-      // `max` is claude-only; it must never reach codex argv.
+      // Unknown values must never reach Codex argv.
       const effortAdapter = new CodexCliAdapter(backend, taskStore, {
         trustWorkspace: false,
         probeExec: forkProbeExec,
         writeFile: async () => {},
-        resolveDefaultEffort: () => 'max',
+        resolveDefaultEffort: () => 'supermax',
       });
       const task = taskStore.createTask('Fix bug', '/cwd');
       const sessionId = await effortAdapter.launch(task.id, 'Fix bug', '/cwd');

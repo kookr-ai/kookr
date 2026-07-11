@@ -358,6 +358,7 @@ describe('loadSettings / saveSettings', () => {
     expect(result.settings.defaultAgentType).toBe('claude-code');
     expect(result.settings.shortcutBindings).toEqual({});
     expect(result.settings.speakVerbosity).toBe('medium');
+    expect(result.settings.agentEffort).toEqual({ 'codex-cli': 'max' });
     expect(result.settings.replySnippets).toEqual([]);
     expect(result.loadedFromDefaults).toBe(false);
     expect(result.warnings).toEqual([]);
@@ -375,9 +376,20 @@ describe('loadSettings / saveSettings', () => {
 });
 
 describe('agentEffort validation (#681)', () => {
-  it('defaults to an empty map (no configured effort → byte-identical to pre-#681)', () => {
-    expect(validateSettings({}).agentEffort).toEqual({});
-    expect(DEFAULT_SETTINGS.agentEffort).toEqual({});
+  it('defaults Codex CLI to maximum Luna reasoning effort', () => {
+    expect(validateSettings({}).agentEffort).toEqual({ 'codex-cli': 'max' });
+    expect(DEFAULT_SETTINGS.agentEffort).toEqual({ 'codex-cli': 'max' });
+  });
+
+  it('migrates the legacy empty map to the current Codex default', () => {
+    expect(validateSettings({ agentEffort: {} }).agentEffort).toEqual({ 'codex-cli': 'max' });
+  });
+
+  it('fills the Codex default when another agent has an explicit setting', () => {
+    expect(validateSettings({ agentEffort: { 'claude-code': 'high' } }).agentEffort).toEqual({
+      'claude-code': 'high',
+      'codex-cli': 'max',
+    });
   });
 
   it('keeps valid (agent, level) pairs', () => {
@@ -388,27 +400,34 @@ describe('agentEffort validation (#681)', () => {
     expect(warnings).toEqual([]);
   });
 
-  it('drops a level not in the agent-specific set, with a warning', () => {
-    // `max` is claude-only — invalid for codex-cli.
+  it('keeps Luna max as a valid Codex level', () => {
     const { settings, warnings } = validateSettingsWithWarnings({
       agentEffort: { 'codex-cli': 'max' },
     });
-    expect(settings.agentEffort).toEqual({});
-    expect(warnings.some((w) => w.includes('codex-cli'))).toBe(true);
+    expect(settings.agentEffort).toEqual({ 'codex-cli': 'max' });
+    expect(warnings).toEqual([]);
+  });
+
+  it('keeps Sol ultra as an explicit Codex level', () => {
+    const { settings, warnings } = validateSettingsWithWarnings({
+      agentEffort: { 'codex-cli': 'ultra' },
+    });
+    expect(settings.agentEffort).toEqual({ 'codex-cli': 'ultra' });
+    expect(warnings).toEqual([]);
   });
 
   it('drops unknown agent keys, with a warning', () => {
     const { settings, warnings } = validateSettingsWithWarnings({
       agentEffort: { 'gpt-5': 'high', 'claude-code': 'high' },
     });
-    expect(settings.agentEffort).toEqual({ 'claude-code': 'high' });
+    expect(settings.agentEffort).toEqual({ 'claude-code': 'high', 'codex-cli': 'max' });
     expect(warnings.some((w) => w.includes('gpt-5'))).toBe(true);
   });
 
   it('drops non-string values and ignores a non-object map', () => {
-    expect(validateSettingsWithWarnings({ agentEffort: { 'claude-code': 3 } }).settings.agentEffort).toEqual({});
-    expect(validateSettingsWithWarnings({ agentEffort: 'high' }).settings.agentEffort).toEqual({});
-    expect(validateSettingsWithWarnings({ agentEffort: ['high'] }).settings.agentEffort).toEqual({});
+    expect(validateSettingsWithWarnings({ agentEffort: { 'claude-code': 3 } }).settings.agentEffort).toEqual({ 'codex-cli': 'max' });
+    expect(validateSettingsWithWarnings({ agentEffort: 'high' }).settings.agentEffort).toEqual({ 'codex-cli': 'max' });
+    expect(validateSettingsWithWarnings({ agentEffort: ['high'] }).settings.agentEffort).toEqual({ 'codex-cli': 'max' });
   });
 });
 

@@ -35,23 +35,26 @@ export const AVAILABLE_AGENT_TYPES: AvailableAgentType[] = [
 ];
 
 /**
- * Reasoning-effort levels, per agent type (#681). Each set mirrors the agent
- * binary's own allowed values exactly, so Kookr validation rejects precisely
- * what the CLI would reject — no more, no less:
+ * Reasoning-effort levels, per agent type (#681). Each set describes the
+ * levels Kookr exposes for the configured agent policy; model-specific
+ * selection is handled by the adapter:
  *
  * - `claude --effort <level>` accepts: low, medium, high, xhigh, max
  *   (verified: `claude --effort __bogus__` → "It must be one of: low, medium,
  *   high, xhigh, max").
- * - `codex -c model_reasoning_effort=<level>` takes the `ReasoningEffort` enum
- *   (serde `rename_all = "lowercase"`): none, minimal, low, medium, high, xhigh.
+ * - `codex -c model_reasoning_effort=<level>` takes the model's advertised
+ *   reasoning-effort values. Kookr exposes: none, minimal, low, medium, high,
+ *   xhigh, max, ultra. The adapter selects GPT-5.6-Sol for an explicit
+ *   `ultra` request because Luna's supported ceiling is `max`.
  *
  * Effort is only meaningful relative to an agent type: `max` is valid for
- * claude-code but not codex-cli; `minimal`/`none` are valid for codex-cli but
- * not claude-code. There is no shared canonical scale — always validate against
+ * both Claude Code and Kookr's Luna-backed codex-cli; `minimal`/`none`/`ultra`
+ * are valid for codex-cli but not claude-code. There is no shared canonical
+ * scale across all possible agent binaries — always validate against
  * {@link effortLevelsForAgent} / {@link isValidEffortForAgent}.
  */
 export const CLAUDE_CODE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-export const CODEX_CLI_EFFORT_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+export const CODEX_CLI_EFFORT_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 /**
  * Grok Build exposes NO validated effort levels (issue #1343 / RFC "Grok Build
  * adapter"). Grok advertises a `--reasoning-effort` flag, but POC-A did not
@@ -73,9 +76,10 @@ export type EffortLevel = ClaudeCodeEffort | CodexCliEffort | GrokBuildEffort;
 
 /**
  * Per-agent-type effort defaults, as persisted in kookr settings (`agentEffort`).
- * Sparse by design: an agent absent from the map (or the whole map empty) means
- * "no configured effort" — the agent CLI's own default applies and Kookr passes
- * no effort flag at all, byte-identical to pre-#681 behavior.
+ * Sparse by design: an agent absent from the map means "no configured effort"
+ * — the agent CLI's own effort default applies and Kookr passes no
+ * `model_reasoning_effort` override; model selection remains explicit in the
+ * adapter. Settings normalize a missing or legacy-empty map before validation.
  */
 export type AgentEffortMap = Partial<Record<AgentType, EffortLevel>>;
 

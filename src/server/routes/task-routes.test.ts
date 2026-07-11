@@ -627,12 +627,12 @@ describe('POST /api/tasks error paths', () => {
   });
 
   test('maps EffortValidationError to 400 with code invalid_effort (#681)', async () => {
-    vi.mocked(launchTask).mockRejectedValueOnce(new EffortValidationError('Invalid effort "max" for agent codex-cli'));
+    vi.mocked(launchTask).mockRejectedValueOnce(new EffortValidationError('Invalid effort "supermax" for agent codex-cli'));
     const taskStore = new TaskStore();
     const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: 'p', cwd: '/cwd', agentType: 'codex-cli', effort: 'max' }),
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd', agentType: 'codex-cli', effort: 'supermax' }),
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ code: 'invalid_effort' });

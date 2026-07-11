@@ -98,8 +98,8 @@ export class DrainModeError extends Error {
  * Thrown by {@link launchTask} when a per-task `effort` override is not valid
  * for the resolved agent type (#681). Validation happens here — not at the
  * route — because a `round-robin` selection only resolves to a concrete agent
- * inside this service, and `max` (claude-only) vs `minimal`/`none` (codex-only)
- * are agent-specific. The API maps this to HTTP 400.
+ * inside this service, and `minimal`/`none`/`ultra` (codex-only) are
+ * agent-specific. The API maps this to HTTP 400.
  */
 export class EffortValidationError extends Error {
   readonly code = 'invalid_effort';
@@ -291,8 +291,8 @@ export async function launchTask(
   // Validate a per-task effort override against the *resolved* agent's allowed
   // set (#681), before any side effect or task record. Done here — not at the
   // route — because round-robin only resolves to a concrete agent now, and the
-  // allowed set is agent-specific (`max` is claude-only; `minimal`/`none` are
-  // codex-only). The per-agent-type *default* is applied inside the adapter and
+  // allowed set is agent-specific (`minimal`/`none`/`ultra` are codex-only). The
+  // per-agent-type *default* is applied inside the adapter and
   // validated when settings are saved, so it is not re-checked here.
   if (opts.effort !== undefined && !isValidEffortForAgent(agentType, opts.effort)) {
     throw new EffortValidationError(
@@ -386,7 +386,7 @@ export async function launchTask(
   // #681: thread the per-task effort override through to the adapter. The
   // per-agent-type default is resolved inside the adapter, so this only carries
   // an explicit override. When neither effort nor ralph verdict env is set,
-  // adapterOpts stays `undefined` — byte-identical to the pre-#681 launch call.
+  // adapterOpts stays `undefined`; the adapter still selects its default model.
   const adapterOpts: import('../adapters/agent-adapter.js').AdapterLaunchOptions | undefined =
     (opts.ralphVerdictEnv || opts.effort || opts.sandboxProfile)
       ? {

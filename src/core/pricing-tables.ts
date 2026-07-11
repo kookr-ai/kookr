@@ -44,7 +44,9 @@ export interface ModelPricing {
  * correctly without a follow-up PR.
  *
  * Cached-input rate for OpenAI = 10% of input rate (matches developer docs
- * convention). Codex's `total_token_usage.input_tokens` includes
+ * convention). GPT-5.6 cache writes are billed at 1.25x input; those rows
+ * override the older OpenAI zero-write convention below. Codex's
+ * `total_token_usage.input_tokens` includes
  * `cached_input_tokens` — callers must subtract before charging the input rate.
  */
 export const MODEL_PRICING: Record<string, ModelPricing> = {
@@ -60,6 +62,8 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   'gpt-5.4-mini':      { vendor: 'openai',    lastVerified: '2026-05-08', inputPerMTok: 0.75, outputPerMTok: 4.50, cacheWritePerMTok: 0, cacheReadPerMTok: 0.075 },
 
   // OpenAI — proactive rows (not merge-blocking; future-proof for new sessions)
+  'gpt-5.6-sol':       { vendor: 'openai',    lastVerified: '2026-07-11', inputPerMTok: 5,    outputPerMTok: 30,   cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.50  },
+  'gpt-5.6-luna':      { vendor: 'openai',    lastVerified: '2026-07-11', inputPerMTok: 1,    outputPerMTok: 6,    cacheWritePerMTok: 1.25, cacheReadPerMTok: 0.10  },
   'gpt-5.5':           { vendor: 'openai',    lastVerified: '2026-05-08', inputPerMTok: 5,    outputPerMTok: 30,   cacheWritePerMTok: 0, cacheReadPerMTok: 0.50  },
   'gpt-5.5-pro':       { vendor: 'openai',    lastVerified: '2026-05-08', inputPerMTok: 30,   outputPerMTok: 180,  cacheWritePerMTok: 0, cacheReadPerMTok: 3.00  },
   'gpt-5':             { vendor: 'openai',    lastVerified: '2026-05-08', inputPerMTok: 1.25, outputPerMTok: 10,   cacheWritePerMTok: 0, cacheReadPerMTok: 0.125 },

@@ -24,7 +24,7 @@ The author probed real on-disk data on his machine before and during rounds 1–
 - Codex rollout JSONL events from Feb 2026 onward (≥ 95% of sessions) contain: `event_msg.token_count.info.total_token_usage` (cumulative tokens per session), `turn_context.model`, `task_started`/`task_complete` for per-turn duration, `function_call`/`function_call_output` (joinable for per-tool latency by `call_id`), `session_meta.cwd`/`session_meta.timestamp`/`session_meta.id`, and `forked_from_id` linking resumed sessions.
 - **`last_token_usage` is NOT a per-turn delta.** On a real 421-event session, summing it gives 48M input tokens vs final `total_token_usage` of 16M (3× overcount). It is the most-recent-turn snapshot re-emitted on subsequent events. **Authoritative source = last `total_token_usage` in the file.** `last_token_usage` is ignored.
 - **Schema is NOT stable across all on-disk files.** Pre-Nov 2025 rollouts have only `input_text`/`message`/`response_item`/`session_meta` — no token data at all.
-- **Real model strings on disk** (top of distribution, recent rollouts): `gpt-5.5` (dominant), `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, `gpt-5.2-codex`, `gpt-5.1-codex-mini`, `gpt-5.4-mini`, `o3-mini`, plus older `gpt-5`. The pricing table must cover these specific strings, not invent generic ones.
+- **Real model strings on disk** (top of distribution, recent rollouts): `gpt-5.5` (dominant), `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, `gpt-5.2-codex`, `gpt-5.1-codex-mini`, `gpt-5.4-mini`, `o3-mini`, plus older `gpt-5`. Kookr-selected `gpt-5.6-luna` and explicit-escalation `gpt-5.6-sol` are also emitted by the adapter. The exact-match pricing table must cover every emitted model string.
 - **Codex DOES have hierarchical sub-agents.** `session_meta.source.subagent.thread_spawn.parent_thread_id` and `agent_nickname` (e.g., "Helmholtz") appear in real rollouts. The v1/v2 claim that Codex doesn't expose subagents was empirically wrong.
 - **Codex resume creates a new file** with `forked_from_id` linking back, NOT a same-file append. Token totals must be chained via `forked_from_id`.
 - **Kookr does not capture Codex `session_meta.id` today.** `claudeSessionId` is null for Codex sessions (literal comment at `src/adapters/codex-cli-adapter.ts:137`). Discovery must use `(cwd, timestamp)` matching, not session ID.
@@ -75,7 +75,7 @@ Single-tenant local. Author + small handful of OSS contributors. ≤ ~1000 Kookr
 | Category | Source | Field shape | Notes |
 |---|---|---|---|
 | Tokens | `event_msg.token_count.info.total_token_usage` (last-seen value in file) | `input_tokens`, `cached_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `total_tokens` | `last_token_usage` ignored entirely. |
-| Model | `turn_context.model` (first non-null in file) | string | Real strings include `gpt-5.5`, `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`. |
+| Model | `turn_context.model` (first non-null in file) | string | Real strings include `gpt-5.5`, `gpt-5.4`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`; Kookr launches may emit `gpt-5.6-luna` or `gpt-5.6-sol`. |
 | Tool calls | `response_item.function_call`/`function_call_output` | `name`, `arguments`, `call_id` | Joinable by `call_id` for per-tool latency. |
 | Per-tool latency | event `timestamp` diff joined by `call_id` | ms | Better than Claude Code; computed but not surfaced in v1 panel. |
 | Session duration | First → last event `timestamp` | ms | Reliable. |
@@ -97,7 +97,7 @@ Single-tenant local. Author + small handful of OSS contributors. ≤ ~1000 Kookr
 - **R5.** Cost values SHALL be labeled "(est.)". The `lastVerified` ISO date for the model used SHALL be visible inline next to the cost (round-2 design-minimalist — date next to value beats banner). A staleness banner SHALL fire when `(today − lastVerified) > 90 days` for any model used in the window.
 - **R6.** Aggregate cards SHALL render in **< 200 ms over a warm scan**. Cold-start completion target is **< 5 s for a corpus ≤ 1500 rollout files** on author's WSL2 hardware. Both targets SHALL be measured by a microbenchmark in `codex-rollout-scanner.test.ts` (failing test if exceeded). If real corpus exceeds 1500 files, the cold-scan ceiling SHALL be revised on the basis of measured numbers, not asserted.
 - **R7.** No fork modification. Both agents are consumed by file-scan.
-- **R8.** Pricing tables SHALL live in `src/core/pricing-tables.ts`. The Anthropic table moves out of `token-tracker.ts`; OpenAI rows cover the **empirically-observed models** in the author's last 1500 rollouts: **`gpt-5.3-codex` (69%), `gpt-5.4` (31%), `gpt-5.4-mini` (0.4%)** — these three are the merge gate. Additional rows for `gpt-5.5`, `gpt-5.5-pro`, `gpt-5`, `gpt-5-mini`, `o3`, `o3-mini` are populated proactively from the same sources but are not merge-blocking. Lookup is **exact-match only** (R18 — no prefix-match on the strict path).
+- **R8.** Pricing tables SHALL live in `src/core/pricing-tables.ts`. The Anthropic table moves out of `token-tracker.ts`; OpenAI rows cover every **emitted model string**, including Kookr-selected `gpt-5.6-luna` and `gpt-5.6-sol`, plus the **empirically-observed models** in the author's last 1500 rollouts: **`gpt-5.3-codex` (69%), `gpt-5.4` (31%), `gpt-5.4-mini` (0.4%)** — these three are the merge gate. Additional rows for `gpt-5.5`, `gpt-5.5-pro`, `gpt-5`, `gpt-5-mini`, `o3`, `o3-mini` are populated proactively from the same sources but are not merge-blocking. Lookup is **exact-match only** (R18 — no prefix-match on the strict path).
 - **R9.** No new persistent storage.
 - **R10.** Codex scanner SHALL fail soft on schema mismatch — log a single warning per file, skip the file, surface `dataQuality: 'codex-parse-error'` on affected rows. The scanner SHALL assert presence of `total_token_usage.input_tokens` AND `output_tokens` AND `cached_input_tokens` before computing cost; missing any → parse error (not silent zero — round-2 F18).
 - **R11.** The panel SHALL be a sidebar-toggleable view following Kookr's existing pattern (boolean state in `App.tsx`, e.g., `showCostComparison`). **No URL routing in v1** — Kookr has no router (round-2 delivery-pragmatist; deferred to a separate "introduce routing" RFC if multiple views need URLs). Time-window presets: 24h / 7d / 30d / all. Default 7d.
@@ -221,10 +221,10 @@ export interface ModelPricing {
 }
 
 // Exact-match lookup; no prefix-match on the strict path.
-// OpenAI values verified 2026-05-08 from developers.openai.com/api/docs/pricing
-// (gpt-5.5/gpt-5.4/gpt-5.4-mini/gpt-5.3-codex), cross-checked with
-// devtk.ai's 2026 guide. Cached-input rate for OpenAI = 10% of input
-// (matches developer docs convention).
+// Older OpenAI values verified 2026-05-08 from developers.openai.com/api/docs/pricing;
+// GPT-5.6 values verified 2026-07-11 from the GPT-5.6 pricing documentation.
+// Cached-input rate for OpenAI = 10% of input (matches developer docs
+// convention); GPT-5.6 cache writes are billed at 1.25x input.
 export const MODEL_PRICING: Record<string, ModelPricing> = {
   // Anthropic
   'claude-opus-4-7':   { vendor: 'anthropic', lastVerified: '2026-04-24', inputPerMTok: 5,    outputPerMTok: 25,  cacheWritePerMTok: 6.25,   cacheReadPerMTok: 0.5   },
@@ -236,6 +236,8 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   'gpt-5.4':           { vendor: 'openai',    lastVerified: '2026-05-08', inputPerMTok: 2.50, outputPerMTok: 15,  cacheWritePerMTok: 0,      cacheReadPerMTok: 0.25  },
   'gpt-5.4-mini':      { vendor: 'openai',    lastVerified: '2026-05-08', inputPerMTok: 0.75, outputPerMTok: 4.50,cacheWritePerMTok: 0,      cacheReadPerMTok: 0.075 },
   // OpenAI — proactive rows (not merge-blocking; future-proof for new sessions)
+  'gpt-5.6-sol':       { vendor: 'openai',    lastVerified: '2026-07-11', inputPerMTok: 5,    outputPerMTok: 30,  cacheWritePerMTok: 6.25,  cacheReadPerMTok: 0.50  },
+  'gpt-5.6-luna':      { vendor: 'openai',    lastVerified: '2026-07-11', inputPerMTok: 1,    outputPerMTok: 6,   cacheWritePerMTok: 1.25,  cacheReadPerMTok: 0.10  },
   'gpt-5.5':           { vendor: 'openai',    lastVerified: '2026-05-08', inputPerMTok: 5,    outputPerMTok: 30,  cacheWritePerMTok: 0,      cacheReadPerMTok: 0.50  },
   'gpt-5.5-pro':       { vendor: 'openai',    lastVerified: '2026-05-08', inputPerMTok: 30,   outputPerMTok: 180, cacheWritePerMTok: 0,      cacheReadPerMTok: 3.00  },
   'gpt-5':             { vendor: 'openai',    lastVerified: '2026-05-08', inputPerMTok: 1.25, outputPerMTok: 10,  cacheWritePerMTok: 0,      cacheReadPerMTok: 0.125 },
@@ -560,7 +562,7 @@ Round-1: orthogonal axes — both incorporated. Round-2 (design-minimalist re-en
 
 | Question | v5 decision | Evidence |
 |---|---|---|
-| OpenAI pricing values | Populated in `pricing-tables.ts` for the merge-gate models (`gpt-5.3-codex`, `gpt-5.4`, `gpt-5.4-mini`) plus proactive rows for `gpt-5.5`, `gpt-5.5-pro`, `gpt-5`, `gpt-5-mini`, `o3`, `o3-mini`. `lastVerified: '2026-05-08'`. | `developers.openai.com/api/docs/pricing` and `devtk.ai/en/blog/openai-api-pricing-guide-2026/` cross-referenced. |
+| OpenAI pricing values | Populated in `pricing-tables.ts` for the merge-gate models (`gpt-5.3-codex`, `gpt-5.4`, `gpt-5.4-mini`) plus proactive rows for GPT-5.6 Sol/Luna and the older `gpt-5.5`, `gpt-5.5-pro`, `gpt-5`, `gpt-5-mini`, `o3`, `o3-mini` set. Older rows use `lastVerified: '2026-05-08'`; GPT-5.6 rows use `lastVerified: '2026-07-11'`. | OpenAI pricing and GPT-5.6 model documentation cross-referenced. |
 | Sub-agent attribution rule | **Sum sub-agent rollouts into parent recursively** via `thread_spawn.parent_thread_id`. Sanity-checked in Phase 0 against OpenAI billing-day delta. Not a kill criterion. | 54.2% of recent rollouts are sub-agents (381/703); deferring would erase half the Codex side. |
 | Resume / `forked_from_id` chain | **Skipped in v1.** Documented minor undercount for resumed sessions. | 4.3% of recent rollouts are resumes (30/703); below the 5% threshold v4 set. |
 | Sidebar slot | **Top-level entry**, after Activity, before Settings (matches existing pattern in `App.tsx`). Icon glyph: `$`. | Follows existing sidebar structure; no router introduced (R11). |

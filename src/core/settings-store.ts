@@ -61,10 +61,10 @@ export interface KookrSettings {
   /**
    * Per-agent-type reasoning-effort default (#681). Maps an agent type to the
    * effort level its spawned sessions launch at (claude-code → `--effort`;
-   * codex-cli → `-c model_reasoning_effort`). Sparse and empty by default: an
-   * agent absent from the map launches at the agent CLI's own default effort
-   * with no flag passed — byte-identical to pre-#681. A per-task `effort`
-   * override (POST /api/tasks / `kookr-spawn --effort`) wins over this default.
+   * codex-cli → `-c model_reasoning_effort`). Kookr defaults codex-cli to
+   * `max`; missing or legacy-empty `agentEffort` maps receive this default.
+   * A per-task `effort` override (POST /api/tasks / `kookr-spawn --effort`)
+   * wins over this default.
    * Invalid (agent, level) pairs are dropped with a warning during validation.
    */
   agentEffort: AgentEffortMap;
@@ -92,7 +92,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   roundRobinIndex: 0,
   shortcutBindings: {},
   speakVerbosity: DEFAULT_VERBOSITY,
-  agentEffort: {},
+  agentEffort: { 'codex-cli': 'max' },
   quietHours: [],
   replySnippets: [],
 };
@@ -173,7 +173,17 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     }
   }
 
-  const { agentEffort, warnings: agentEffortWarnings } = validateAgentEffort(raw.agentEffort);
+  // Missing from an older settings file, or the empty map emitted by the
+  // previous default, means "use Kookr's current default".
+  const configuredAgentEffort = isEmptyAgentEffortMap(raw.agentEffort)
+    ? DEFAULT_SETTINGS.agentEffort
+    : raw.agentEffort;
+  const validatedAgentEffort = validateAgentEffort(configuredAgentEffort);
+  const agentEffort = validatedAgentEffort.agentEffort;
+  if (agentEffort['codex-cli'] === undefined) {
+    agentEffort['codex-cli'] = 'max';
+  }
+  const agentEffortWarnings = validatedAgentEffort.warnings;
   const replySnippetValidation = validateReplySnippets(raw.replySnippets);
 
   return {
@@ -210,12 +220,10 @@ const KNOWN_AGENT_TYPES: readonly AgentType[] = AVAILABLE_AGENT_TYPES.map((entry
  * launch cleanly — unknown agent keys, non-string values, and effort levels
  * outside the agent's CLI-accepted set — emitting a warning for each so the
  * operator sees why their input was ignored. Returns a sparse, fully-valid
- * map; an absent or malformed input collapses to `{}` (no configured effort,
- * byte-identical to pre-#681).
+ * map; a malformed input collapses to `{}` after emitting a warning.
  */
 function validateAgentEffort(raw: unknown): { agentEffort: AgentEffortMap; warnings: string[] } {
   const warnings: string[] = [];
-  if (raw === undefined) return { agentEffort: {}, warnings };
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     warnings.push(`Invalid agentEffort (expected an object); ignored`);
     return { agentEffort: {}, warnings };
@@ -238,6 +246,11 @@ function validateAgentEffort(raw: unknown): { agentEffort: AgentEffortMap; warni
     agentEffort[agent] = value as AgentEffortMap[AgentType];
   }
   return { agentEffort, warnings };
+}
+
+function isEmptyAgentEffortMap(raw: unknown): boolean {
+  return raw === undefined
+    || (typeof raw === 'object' && raw !== null && !Array.isArray(raw) && Object.keys(raw).length === 0);
 }
 
 export interface SettingsLoadResult {

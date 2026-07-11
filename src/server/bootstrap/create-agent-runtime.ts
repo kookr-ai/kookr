@@ -46,7 +46,8 @@ export interface AgentRuntimeDeps {
    * adapter receives a narrowed `resolveDefaultEffort` closure reading its own
    * entry, so an operator's settings change applies to the next launch — across
    * every launch path — without a restart. Omitted in tests that don't exercise
-   * effort: adapters then pass no effort flag (byte-identical to pre-#681).
+   * effort: adapters then pass no effort override; model selection remains
+   * adapter-specific.
    */
   getAgentEffort?: () => AgentEffortMap;
 }

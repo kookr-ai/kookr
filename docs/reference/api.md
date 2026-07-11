@@ -101,11 +101,12 @@ resolves to a concrete agent first — and an invalid level returns
 `400 {"error", "code": "invalid_effort"}`. Allowed levels:
 
 - `claude-code`: `low`, `medium`, `high`, `xhigh`, `max`
-- `codex-cli`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+- `codex-cli`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`
 
-Omitting `effort` falls back to the per-agent-type setting, then to the agent
-CLI's own default (no effort flag passed — unchanged from before this field
-existed). The `kookr-spawn --effort <level>` flag maps to this field.
+Omitting `effort` falls back to the per-agent-type setting. For `codex-cli`,
+missing, legacy-empty, or Codex-less `agentEffort` maps are normalized to
+Kookr's `gpt-5.6-luna`/`max` default. The `kookr-spawn --effort <level>` flag
+maps to this field.
 
 ### `POST /api/tasks/:id/complete`
 
@@ -360,13 +361,16 @@ reasoning-effort level spawned agents launch at:
 
 When set, the adapter launches `claude-code` with `--effort <level>` and
 `codex-cli` with `-c model_reasoning_effort="<level>"`. Allowed levels are
-agent-specific (`claude-code`: `low|medium|high|xhigh|max`; `codex-cli`:
-`none|minimal|low|medium|high|xhigh`); invalid `(agent, level)` pairs are
-dropped on save with a warning. The map is **empty by default** — an unset
-agent launches at the agent CLI's own default with no effort flag passed
-(identical to behavior before this setting existed). A per-task `effort` on
-`POST /api/tasks` (or `kookr-spawn --effort`) overrides this default for one
-launch. Resolution order: per-task override → per-agent-type setting → unset.
+agent-specific (`claude-code`: `low|medium|high|xhigh|max`; Kookr's
+Luna-backed `codex-cli`: `none|minimal|low|medium|high|xhigh|max|ultra`); invalid
+`(agent, level)` pairs are dropped on save with a warning. Kookr defaults
+Codex tasks to `gpt-5.6-luna` at `max` effort. If the `agentEffort` property is
+missing, is the legacy empty map, or lacks a `codex-cli` entry, Kookr uses this default. An explicit
+`ultra` request selects the Sol model because Luna does not advertise `ultra`.
+A per-task `effort` on `POST /api/tasks`
+(or `kookr-spawn --effort`) overrides this default for one launch. Resolution
+order: per-task override → per-agent-type setting → Kookr's Codex default;
+stock binaries skip fork-only model and effort overrides.
 
 ### Admin / runtime control
 

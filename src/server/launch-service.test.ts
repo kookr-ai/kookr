@@ -241,9 +241,9 @@ describe('launchTask', () => {
       return launch.mock.calls[0]?.[4];
     }
 
-    it('with no effort, passes no effort opt — byte-identical launch call', async () => {
+    it('with no effort, passes no effort override', async () => {
       await launchTask(deps, { prompt: 'hello', cwd: '/tmp' });
-      // 5th arg is undefined (no ralph env, no effort) — exactly as pre-#681.
+      // 5th arg is undefined (no ralph env, no effort override).
       expect(launchOptsFor(deps, 'claude-code')).toBeUndefined();
     });
 
@@ -257,9 +257,9 @@ describe('launchTask', () => {
       expect(launchOptsFor(deps, 'claude-code')).toMatchObject({ sandboxProfile: 'reflect' });
     });
 
-    it('validates against the RESOLVED agent: max is rejected for codex-cli', async () => {
+    it('validates against the RESOLVED agent: an unknown level is rejected for codex-cli', async () => {
       await expect(
-        launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'codex-cli', effort: 'max' }),
+        launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'codex-cli', effort: 'supermax' }),
       ).rejects.toBeInstanceOf(EffortValidationError);
       // Fail-fast: no task record, no adapter launch.
       expect(store.listTasks()).toHaveLength(0);
@@ -269,6 +269,16 @@ describe('launchTask', () => {
     it('accepts a codex-only level for codex-cli (minimal)', async () => {
       await launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'codex-cli', effort: 'minimal' });
       expect(launchOptsFor(deps, 'codex-cli')).toMatchObject({ effort: 'minimal' });
+    });
+
+    it('accepts max for codex-cli', async () => {
+      await launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'codex-cli', effort: 'max' });
+      expect(launchOptsFor(deps, 'codex-cli')).toMatchObject({ effort: 'max' });
+    });
+
+    it('accepts ultra for codex-cli', async () => {
+      await launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'codex-cli', effort: 'ultra' });
+      expect(launchOptsFor(deps, 'codex-cli')).toMatchObject({ effort: 'ultra' });
     });
 
     it('rejects an entirely unknown effort token', async () => {

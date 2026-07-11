@@ -143,8 +143,8 @@ describe('reasoning-effort levels (#681)', () => {
     expect(effortLevelsForAgent('claude-code')).toEqual(CLAUDE_CODE_EFFORT_LEVELS);
   });
 
-  test('codex-cli allowed set mirrors the codex ReasoningEffort enum exactly', () => {
-    expect([...CODEX_CLI_EFFORT_LEVELS]).toEqual(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+  test('codex-cli allowed set exposes Luna max and Sol ultra', () => {
+    expect([...CODEX_CLI_EFFORT_LEVELS]).toEqual(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
     expect(effortLevelsForAgent('codex-cli')).toEqual(CODEX_CLI_EFFORT_LEVELS);
   });
 
@@ -161,9 +161,10 @@ describe('reasoning-effort levels (#681)', () => {
   });
 
   test('isValidEffortForAgent accepts only that agent\'s levels', () => {
-    // `max` is claude-only.
+    // `max` is supported by the Kookr fork's Luna-backed Codex model.
     expect(isValidEffortForAgent('claude-code', 'max')).toBe(true);
-    expect(isValidEffortForAgent('codex-cli', 'max')).toBe(false);
+    expect(isValidEffortForAgent('codex-cli', 'max')).toBe(true);
+    expect(isValidEffortForAgent('codex-cli', 'ultra')).toBe(true);
     // `minimal`/`none` are codex-only.
     expect(isValidEffortForAgent('codex-cli', 'minimal')).toBe(true);
     expect(isValidEffortForAgent('codex-cli', 'none')).toBe(true);
@@ -184,7 +185,7 @@ describe('reasoning-effort levels (#681)', () => {
 
   test('ALL_EFFORT_LEVELS is the deduped union of both sets', () => {
     expect([...ALL_EFFORT_LEVELS].sort()).toEqual(
-      ['high', 'low', 'max', 'medium', 'minimal', 'none', 'xhigh'],
+      ['high', 'low', 'max', 'medium', 'minimal', 'none', 'ultra', 'xhigh'],
     );
   });
 });

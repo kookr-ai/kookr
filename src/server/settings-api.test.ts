@@ -63,7 +63,7 @@ describe('Settings API', () => {
       roundRobinIndex: 0,
       shortcutBindings: {},
       speakVerbosity: 'medium',
-      agentEffort: {},
+      agentEffort: { 'codex-cli': 'max' },
       quietHours: [],
       replySnippets: [],
       loadedFromDefaults: true,
