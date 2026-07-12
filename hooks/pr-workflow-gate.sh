@@ -100,6 +100,13 @@ if [ -n "$HEAD_FLAG" ]; then
   esac
 fi
 
+# Detect file-backed PR bodies separately. Inline bodies do not need a cwd
+# lookup, while relative --body-file paths must use a proven worktree.
+BODY_FILE_PRESENT=0
+if printf '%s\n' "$COMMAND" | grep -qE '(^|[[:space:]])--body-file([=[:space:]])'; then
+  BODY_FILE_PRESENT=1
+fi
+
 # Fall back to session-cwd git detection if the command didn't specify both
 if [ -z "$REPO_NAME" ] || [ -z "$BRANCH" ]; then
   CWD=$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) || fail_open "no cwd in payload"
@@ -118,7 +125,7 @@ fi
 # checklist engine's cwd; if the mapping cannot be proven, leave it empty so
 # the opt-in checklist gate fails open instead of reading another checkout.
 CHECKLIST_CWD="$CWD"
-if [ -n "$HEAD_FLAG" ]; then
+if [ -n "$HEAD_FLAG" ] && [ "$BODY_FILE_PRESENT" -eq 1 ]; then
   CHECKLIST_CWD=""
   HEAD_WORKTREE=$(worktree_for_branch "$CWD" "$BRANCH" || true)
   if [ -n "$HEAD_WORKTREE" ]; then
