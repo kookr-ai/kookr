@@ -1342,3 +1342,172 @@ describe('POST /api/tasks/:id/signal', () => {
     });
   });
 });
+
+describe('POST /api/tasks/abort (issue #1325)', () => {
+  function mkAbortDeps(
+    taskStore: TaskStore,
+    overrides: Partial<TaskRouteDeps> = {},
+  ): { deps: TaskRouteDeps; stop: ReturnType<typeof vi.fn> } {
+    const queue = new AttentionQueue();
+    const monitor = new Monitor(taskStore, queue);
+    const stop = vi.fn(async () => {});
+    const deps = {
+      taskStore,
+      monitor,
+      queue,
+      adapter: { stop } as never,
+      hookWatcher: { stop: vi.fn(), isWatching: () => false, watch: vi.fn() } as never,
+      watchdog: { unregisterAgent: vi.fn() } as never,
+      broadcastToAll: vi.fn(),
+      serverCwd: '/server',
+      ...overrides,
+    } as unknown as TaskRouteDeps;
+    return { deps, stop };
+  }
+
+  function addLiveSession(taskStore: TaskStore, taskId: string, tmuxSession: string): void {
+    taskStore.addSession(taskId, {
+      tmuxSession,
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(),
+    });
+  }
+
+  async function postAbort(app: Hono, body: unknown) {
+    return app.request('/api/tasks/abort', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  test('aborts a mix of live, terminal, and missing tasks and reports each', async () => {
+    const taskStore = new TaskStore();
+    const live = taskStore.createTask('live', '/repo');
+    addLiveSession(taskStore, live.id, 'kookr-live');
+    const done = taskStore.createTask('done', '/repo');
+    taskStore.startTask(done.id);
+    taskStore.completeTask(done.id);
+    const { deps, stop } = mkAbortDeps(taskStore);
+
+    const res = await postAbort(mkApp(deps), {
+      taskIds: [live.id, done.id, 'missing'],
+      reason: 'mass shutdown',
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      results: Array<{ taskId: string; outcome: string; status?: string }>;
+      summary: Record<string, number>;
+    };
+    expect(body.summary).toEqual({ total: 3, aborted: 1, already_terminal: 1, not_found: 1, failed: 0 });
+    expect(body.results).toEqual([
+      { taskId: live.id, outcome: 'aborted', status: 'cancelled' },
+      { taskId: done.id, outcome: 'already_terminal', status: 'completed' },
+      { taskId: 'missing', outcome: 'not_found' },
+    ]);
+    expect(taskStore.getTask(live.id)!.status).toBe('cancelled');
+    expect(stop).toHaveBeenCalledWith('kookr-live');
+  });
+
+  test('is idempotent across retries', async () => {
+    const taskStore = new TaskStore();
+    const live = taskStore.createTask('live', '/repo');
+    addLiveSession(taskStore, live.id, 'kookr-live');
+    const { deps, stop } = mkAbortDeps(taskStore);
+    const app = mkApp(deps);
+
+    const first = await (await postAbort(app, { taskIds: [live.id] })).json();
+    expect(first.summary).toMatchObject({ aborted: 1 });
+    expect(stop).toHaveBeenCalledTimes(1);
+
+    const second = await (await postAbort(app, { taskIds: [live.id] })).json();
+    expect(second.summary).toEqual({ total: 1, aborted: 0, already_terminal: 1, not_found: 0, failed: 0 });
+    expect(second.results).toEqual([{ taskId: live.id, outcome: 'already_terminal', status: 'cancelled' }]);
+    // No second interruption.
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  test('writes an API-actor batch-abort audit row only when something aborts', async () => {
+    const kookrDir = mkdtempSync(join(tmpdir(), 'kookr-api-abort-audit-'));
+    try {
+      const taskStore = new TaskStore();
+      const live = taskStore.createTask('live', '/repo');
+      addLiveSession(taskStore, live.id, 'kookr-live');
+      const { deps } = mkAbortDeps(taskStore, { kookrDir });
+      const app = mkApp(deps);
+
+      await postAbort(app, { taskIds: [live.id], reason: 'shutdown' });
+      const row = JSON.parse(readFileSync(join(kookrDir, 'audit.jsonl'), 'utf-8').trim()) as Record<string, unknown>;
+      expect(row).toEqual(expect.objectContaining({
+        type: 'task.batchAbort',
+        actor: { source: 'api' },
+        reason: 'shutdown',
+        count: 1,
+        abortedTaskIds: [live.id],
+      }));
+
+      // A retry aborts nothing and must not append a second row.
+      await postAbort(app, { taskIds: [live.id], reason: 'shutdown' });
+      const lines = readFileSync(join(kookrDir, 'audit.jsonl'), 'utf-8').trim().split('\n').filter(Boolean);
+      expect(lines).toHaveLength(1);
+    } finally {
+      rmSync(kookrDir, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a non-array taskIds body', async () => {
+    const res = await postAbort(mkApp(mkAbortDeps(new TaskStore()).deps), { taskIds: 'nope' });
+    expect(res.status).toBe(400);
+  });
+
+  test('rejects non-string taskIds entries', async () => {
+    const res = await postAbort(mkApp(mkAbortDeps(new TaskStore()).deps), { taskIds: ['ok', 42] });
+    expect(res.status).toBe(400);
+  });
+
+  test('rejects a non-string reason', async () => {
+    const res = await postAbort(mkApp(mkAbortDeps(new TaskStore()).deps), { taskIds: [], reason: 7 });
+    expect(res.status).toBe(400);
+  });
+
+  test('rejects invalid JSON', async () => {
+    const res = await mkApp(mkAbortDeps(new TaskStore()).deps).request('/api/tasks/abort', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{not json',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test('rejects a non-object JSON body (null) with 400, not 500', async () => {
+    const res = await postAbort(mkApp(mkAbortDeps(new TaskStore()).deps), null);
+    expect(res.status).toBe(400);
+  });
+
+  test('rejects a batch larger than the cap with 400', async () => {
+    const taskIds = Array.from({ length: 501 }, (_, i) => `task-${i}`);
+    const res = await postAbort(mkApp(mkAbortDeps(new TaskStore()).deps), { taskIds });
+    expect(res.status).toBe(400);
+  });
+
+  test('drops remote-owned SharedTask IDs and aborts the rest', async () => {
+    const taskStore = new TaskStore();
+    const live = taskStore.createTask('live', '/repo');
+    addLiveSession(taskStore, live.id, 'kookr-live');
+    const { deps } = mkAbortDeps(taskStore);
+
+    const res = await postAbort(mkApp(deps), { taskIds: [live.id, 'shared:abc123'] });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      results: Array<{ taskId: string; outcome: string }>;
+      summary: Record<string, number>;
+    };
+    // The shared id is filtered before processing — never counted, never reported.
+    expect(body.summary).toEqual({ total: 1, aborted: 1, already_terminal: 0, not_found: 0, failed: 0 });
+    expect(body.results).toEqual([{ taskId: live.id, outcome: 'aborted', status: 'cancelled' }]);
+    expect(taskStore.getTask(live.id)!.status).toBe('cancelled');
+  });
+});

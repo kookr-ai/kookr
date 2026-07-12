@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ClientMessage } from './messages.js';
+import { type ClientMessage, MAX_BATCH_ABORT_TASKS } from './messages.js';
 import { TELEMETRY_EVENT_TYPES } from './telemetry.js';
 import { LAUNCH_DEPENDENCIES } from './playbook.js';
 
@@ -170,6 +170,11 @@ const ClientMessageSchemaImpl = z.union([
     dependencies: z.array(launchDependency).optional(),
   }),
   z.object({ type: z.literal('cancelTask'), taskId: z.string() }),
+  z.object({
+    type: z.literal('batchAbortTasks'),
+    taskIds: z.array(z.string()).max(MAX_BATCH_ABORT_TASKS),
+    reason: z.string().optional(),
+  }),
   z.object({ type: z.literal('reopenTask'), taskId: z.string() }),
   z.object({ type: z.literal('dismissAgentSignal'), taskId: z.string() }),
   z.object({ type: z.literal('deleteTask'), taskId: z.string() }),

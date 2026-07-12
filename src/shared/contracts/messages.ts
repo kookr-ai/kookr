@@ -413,6 +413,7 @@ export type ClientMessage =
   | { type: 'requestTaskSnapshotReflect'; taskId: string; hint?: string }
   | { type: 'relaunch'; taskId: string; prompt: string; agentType?: AgentSelection; dependencies?: LaunchDependency[] }
   | { type: 'cancelTask'; taskId: string }
+  | { type: 'batchAbortTasks'; taskIds: string[]; reason?: string }
   | { type: 'reopenTask'; taskId: string }
   | { type: 'dismissAgentSignal'; taskId: string }
   | { type: 'deleteTask'; taskId: string }
@@ -497,6 +498,9 @@ export const SERVER_MESSAGE_TYPES = [
   'ossAttempts',
 ] as const satisfies readonly ServerMessage['type'][];
 
+/** Upper bound on task IDs accepted by one batch-abort request (issue #1325). */
+export const MAX_BATCH_ABORT_TASKS = 500;
+
 export const CLIENT_MESSAGE_TYPES = [
   'respond',
   'respondAll',
@@ -516,6 +520,7 @@ export const CLIENT_MESSAGE_TYPES = [
   'requestTaskSnapshotReflect',
   'relaunch',
   'cancelTask',
+  'batchAbortTasks',
   'reopenTask',
   'dismissAgentSignal',
   'deleteTask',

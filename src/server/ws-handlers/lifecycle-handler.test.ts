@@ -113,4 +113,79 @@ describe('LifecycleHandler lifecycle commands', () => {
     expect(taskStore.getTask(completed.id)).toBeUndefined();
     expect(taskStore.getTask(active.id)?.status).toBe('inProgress');
   });
+
+  test('batchAbortTasks aborts active tasks and broadcasts a concise result summary', async () => {
+    const taskStore = new TaskStore();
+    const live = taskStore.createTask('live', '/repo');
+    addSession(taskStore, live.id, 'kookr-live');
+    const done = taskStore.createTask('done', '/repo');
+    addSession(taskStore, done.id, 'kookr-done');
+    taskStore.completeTask(done.id);
+    const broadcastToAll = vi.fn();
+    const { deps, stop } = makeDeps(taskStore, {
+      broadcastToAll,
+      deletionAuditActor: () => ({ source: 'websocket', actorId: 'conn-1' }),
+    });
+    const handler = new LifecycleHandler(deps);
+
+    await handler.handle({ type: 'batchAbortTasks', taskIds: [live.id, done.id, 'missing'] });
+
+    expect(taskStore.getTask(live.id)?.status).toBe('cancelled');
+    expect(stop).toHaveBeenCalledWith('kookr-live');
+    // done was already terminal → no second teardown of its session.
+    expect(stop).not.toHaveBeenCalledWith('kookr-done');
+    expect(broadcastToAll).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'alert',
+      summary: 'Aborted 1 task',
+      severity: 'info',
+    }));
+  });
+
+  test('batchAbortTasks drops remote-owned SharedTask IDs before aborting', async () => {
+    const taskStore = new TaskStore();
+    const live = taskStore.createTask('live', '/repo');
+    addSession(taskStore, live.id, 'kookr-live');
+    const broadcastToAll = vi.fn();
+    const { deps, stop } = makeDeps(taskStore, { broadcastToAll });
+    const handler = new LifecycleHandler(deps);
+
+    await handler.handle({ type: 'batchAbortTasks', taskIds: [live.id, 'shared:remote-1'] });
+
+    expect(taskStore.getTask(live.id)?.status).toBe('cancelled');
+    expect(stop).toHaveBeenCalledWith('kookr-live');
+    // The shared id must be filtered *before* the command, not merely resolved
+    // to not_found there. If it reached the command, total would be 2 and the
+    // details would read "1 not found"; filtered, only the single local task is
+    // considered, so details reads "1 selected".
+    expect(broadcastToAll).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'alert',
+      summary: 'Aborted 1 task',
+      details: '1 selected',
+    }));
+  });
+
+  test('batchAbortTasks flags partial failures with a warning-severity summary', async () => {
+    const taskStore = new TaskStore();
+    const bad = taskStore.createTask('bad', '/repo');
+    addSession(taskStore, bad.id, 'kookr-bad');
+    const broadcastToAll = vi.fn();
+    const { deps } = makeDeps(taskStore, { broadcastToAll });
+    deps.getLifecycleDeps = () => ({
+      adapter: { stop: vi.fn(async () => { throw new Error('stop failed'); }) },
+      monitor: deps.monitor,
+      taskStore,
+      hookWatcher: { stop: vi.fn() },
+      watchdog: { unregisterAgent: vi.fn() },
+    } as never);
+    const handler = new LifecycleHandler(deps);
+
+    await handler.handle({ type: 'batchAbortTasks', taskIds: [bad.id] });
+
+    expect(taskStore.getTask(bad.id)?.status).toBe('inProgress');
+    expect(broadcastToAll).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'alert',
+      summary: 'Aborted 0 tasks',
+      severity: 'warning',
+    }));
+  });
 });

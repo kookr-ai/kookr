@@ -499,6 +499,25 @@ kbd {
   outline: 2px solid var(--teal);
   outline-offset: 2px;
 }
+.btn-abort-active {
+  border: 1px solid var(--red);
+  background: transparent;
+  color: var(--red);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font: inherit;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+.btn-abort-active:hover {
+  background: rgba(248, 113, 113, 0.15);
+}
+.btn-abort-active:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
+
 .findings-count { color: var(--amber); }
 .findings-count-empty { color: var(--text-muted); }
 
