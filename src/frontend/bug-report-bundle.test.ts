@@ -96,7 +96,7 @@ describe('bug report bundle', () => {
           lastProgressAt: new Date('2026-05-24T09:59:30Z').toISOString(),
           stallAgeMs: 30_000,
         },
-        evidence: ['Transcript path /home/alice/private-transcript.jsonl is redacted before capture'],
+        evidence: ['Transcript path /home/alice/private-transcript.jsonl is redacted before capture'], // portability-ok: intentional redaction fixture
         coordinatedStall: {
           id: 'coordinated-stall:one,two',
           rootCause: 'coordinated-terminal-path-stall',
@@ -105,7 +105,7 @@ describe('bug report bundle', () => {
           windowMs: 2_000,
           restartEpoch: new Date('2026-05-24T09:59:00Z').toISOString(),
           postRestart: true,
-          evidence: ['Shared transcript path /home/alice/private-transcript.jsonl'],
+          evidence: ['Shared transcript path /home/alice/private-transcript.jsonl'], // portability-ok: intentional redaction fixture
         },
       },
     }));
