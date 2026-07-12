@@ -9,6 +9,7 @@ import {
   asTerminalInputWriterPort,
   type TerminalInputWriterPort,
 } from '../core/ports/terminal-input-writer-port.js';
+import type { TerminalSessionDataSource } from '../core/ports/terminal-session-stream-port.js';
 
 /**
  * SessionBridge — per-WS-client view over the backend's byte stream.
@@ -50,6 +51,12 @@ const DEFAULT_VIEWER_BACKPRESSURE_HARD_BYTES = 16 * 1024 * 1024;
 const DEFAULT_OWNER_BACKPRESSURE_HARD_BYTES = 64 * 1024 * 1024;
 const ON_DATA_SUBSCRIBE_RETRY_DELAYS_MS = [16, 32, 64] as const;
 
+interface PreReplayChunk {
+  bytes: Buffer;
+  countsAsLive: boolean;
+  countsAsReplay: boolean;
+}
+
 function readPositiveIntegerEnv(name: string, fallback: number): number {
   const value = process.env[name];
   if (!value) return fallback;
@@ -85,6 +92,12 @@ export interface SessionBridgeOptions {
 
   /** Hard queued+buffered ceiling for read-only viewer bridges. */
   viewerBackpressureHardBytes?: number;
+
+  /** Cross-signal browser bridge lifecycle hooks. Replay and live bytes are tracked separately. */
+  onBridgeOpened?: (sessionId: SessionId) => void;
+  onBridgeReplay?: (sessionId: SessionId) => void;
+  onBridgeLiveBytes?: (sessionId: SessionId) => void;
+  onBridgeClosed?: (sessionId: SessionId) => void;
 }
 
 export class SessionBridge {
@@ -92,6 +105,8 @@ export class SessionBridge {
   private closed = false;
   private pendingOutputChunks: Buffer[] = [];
   private pendingOutputBytes = 0;
+  private pendingOutputHasLiveBytes = false;
+  private pendingOutputHasReplayBytes = false;
   private outputFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly sessionId: SessionId;
   private readonly ws: WebSocket;
@@ -104,6 +119,11 @@ export class SessionBridge {
   private readonly backpressureRetryMs: number;
   private readonly backpressureSoftBytes: number;
   private readonly backpressureHardBytes: number;
+  private readonly onBridgeOpened?: (sessionId: SessionId) => void;
+  private readonly onBridgeReplay?: (sessionId: SessionId) => void;
+  private readonly onBridgeLiveBytes?: (sessionId: SessionId) => void;
+  private readonly onBridgeClosed?: (sessionId: SessionId) => void;
+  private bridgeHealthStarted = false;
 
   constructor(
     sessionId: SessionId,
@@ -117,6 +137,10 @@ export class SessionBridge {
     this.sessionId = sessionId;
     this.ws = ws;
     this.backend = backend;
+    this.onBridgeOpened = options?.onBridgeOpened;
+    this.onBridgeReplay = options?.onBridgeReplay;
+    this.onBridgeLiveBytes = options?.onBridgeLiveBytes;
+    this.onBridgeClosed = options?.onBridgeClosed;
     this.readOnly = options?.readOnly ?? false;
     this.outputBatchMs = options?.outputBatchMs
       ?? readPositiveIntegerEnv('KOOKR_SESSION_BRIDGE_OUTPUT_BATCH_MS', DEFAULT_OUTPUT_BATCH_MS);
@@ -150,6 +174,8 @@ export class SessionBridge {
   }
 
   async start(_cols = 120, _rows = 40): Promise<void> {
+    this.onBridgeOpened?.(this.sessionId);
+    this.bridgeHealthStarted = true;
     // Install the ws 'error' listener FIRST — before any awaits or safeSend
     // calls. Without this, a socket fault during the initial replay window
     // hits EventEmitter's no-listener path and re-raises as
@@ -170,14 +196,30 @@ export class SessionBridge {
     // bridge are either in the replay snapshot or in the local pre-replay
     // buffer. `onData` itself has no history, so capture-after-subscribe closes
     // the retry/backoff gap without adding a second backend subscription.
-    const preReplayChunks: Buffer[] = [];
+    const preReplayChunks: PreReplayChunk[] = [];
+    let preReplayBytes = 0;
     let replaySent = false;
-    const subscribed = await this.subscribeToDataWithRetry((bytes: Uint8Array) => {
+    const subscribed = await this.subscribeToDataWithRetry((
+      bytes: Uint8Array,
+      source?: TerminalSessionDataSource,
+    ) => {
       if (!replaySent) {
-        preReplayChunks.push(Buffer.from(bytes));
+        const projectedBytes = this.getBufferedAmount() + preReplayBytes + bytes.length;
+        if (projectedBytes > this.backpressureHardBytes) {
+          this.closeBridgeForFailure(
+            `terminal output backpressure exceeded (${projectedBytes} bytes queued before replay)`,
+          );
+          return;
+        }
+        preReplayChunks.push({
+          bytes: Buffer.from(bytes),
+          countsAsLive: source !== 'attach-replay',
+          countsAsReplay: source === 'attach-replay',
+        });
+        preReplayBytes += bytes.length;
         return;
       }
-      this.enqueueOutput(bytes);
+      this.enqueueOutput(bytes, source !== 'attach-replay', source === 'attach-replay');
     });
     if (!subscribed) {
       return;
@@ -206,12 +248,14 @@ export class SessionBridge {
     // already removed the subscriber and there is no client left to replay to.
     if (this.closed) return;
     if (replay.length > 0) {
-      this.safeSend(Buffer.from(replay));
+      if (this.safeSend(Buffer.from(replay), true)) {
+        this.onBridgeReplay?.(this.sessionId);
+      }
     }
     replaySent = true;
-    const bufferedLive = this.removeReplayOverlap(replay, preReplayChunks);
-    if (bufferedLive.length > 0) {
-      this.enqueueOutput(bufferedLive);
+    const bufferedPreReplay = this.removeReplayOverlap(replay, preReplayChunks);
+    for (const chunk of bufferedPreReplay) {
+      this.enqueueOutput(chunk.bytes, chunk.countsAsLive, chunk.countsAsReplay);
     }
 
     // Read-only (viewer) bridges never wire the inbound handler, so no write,
@@ -284,24 +328,40 @@ export class SessionBridge {
    * would otherwise propagate up to the backend's subscriber loop or to
    * `start()`'s caller. We handle it locally and close the bridge.
    */
-  private safeSend(payload: Buffer): void {
-    if (this.ws.readyState !== this.ws.OPEN) return;
+  private safeSend(payload: Buffer, enforceBackpressure = false): boolean {
+    if (this.ws.readyState !== this.ws.OPEN) return false;
+    if (enforceBackpressure) {
+      const projectedBufferedBytes = this.getBufferedAmount() + payload.length;
+      if (projectedBufferedBytes > this.backpressureHardBytes) {
+        this.closeBridgeForFailure(
+          `terminal output backpressure exceeded (${projectedBufferedBytes} bytes in replay)`,
+        );
+        return false;
+      }
+    }
     try {
       this.ws.send(payload);
+      return true;
     } catch (err) {
       console.error(`[session-bridge] ws.send failed for ${this.sessionId}:`, err);
       this.closeBridgeForFailure('ws.send failed');
+      return false;
     }
   }
 
-  private async subscribeToDataWithRetry(onBytes: (bytes: Uint8Array) => void): Promise<boolean> {
+  private async subscribeToDataWithRetry(
+    onBytes: (bytes: Uint8Array, source?: TerminalSessionDataSource) => void,
+  ): Promise<boolean> {
     for (let attempt = 0; attempt <= ON_DATA_SUBSCRIBE_RETRY_DELAYS_MS.length; attempt++) {
       // A client can disconnect while a retry backoff is sleeping; stop
       // before registering a backend subscriber with no live WS owner.
       if (this.closed) return false;
       try {
-        this.unsubscribeData = this.backend.onData(this.sessionId, (bytes: Uint8Array) => {
-          onBytes(bytes);
+        this.unsubscribeData = this.backend.onData(this.sessionId, (
+          bytes: Uint8Array,
+          source?: TerminalSessionDataSource,
+        ) => {
+          onBytes(bytes, source);
         });
         return true;
       } catch (err) {
@@ -330,17 +390,33 @@ export class SessionBridge {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  private removeReplayOverlap(replay: Uint8Array, chunks: Buffer[]): Buffer {
-    if (chunks.length === 0) return Buffer.alloc(0);
-    const live = chunks.length === 1
-      ? chunks[0]
-      : Buffer.concat(chunks);
+  private removeReplayOverlap(replay: Uint8Array, chunks: PreReplayChunk[]): PreReplayChunk[] {
+    if (chunks.length === 0) return [];
+    const buffered = chunks.length === 1
+      ? chunks[0].bytes
+      : Buffer.concat(chunks.map((chunk) => chunk.bytes));
     // Bytes emitted after subscribe but before capture returns can be present
     // in both places: at the replay snapshot's suffix and the live buffer's
     // prefix. Trim that shared prefix so startup neither drops nor duplicates
     // terminal output.
-    const overlap = this.findSuffixPrefixOverlap(replay, live);
-    return overlap >= live.length ? Buffer.alloc(0) : live.subarray(overlap);
+    const overlap = this.findSuffixPrefixOverlap(replay, buffered);
+    if (overlap >= buffered.length) return [];
+
+    let skip = overlap;
+    const remaining: PreReplayChunk[] = [];
+    for (const chunk of chunks) {
+      if (skip >= chunk.bytes.length) {
+        skip -= chunk.bytes.length;
+        continue;
+      }
+      remaining.push({
+        bytes: chunk.bytes.subarray(skip),
+        countsAsLive: chunk.countsAsLive,
+        countsAsReplay: chunk.countsAsReplay,
+      });
+      skip = 0;
+    }
+    return remaining;
   }
 
   private findSuffixPrefixOverlap(suffixSource: Uint8Array, prefixSource: Uint8Array): number {
@@ -365,10 +441,19 @@ export class SessionBridge {
    * per-bridge backpressure policy instead of pushing on the shared backend
    * stream.
    */
-  private enqueueOutput(bytes: Uint8Array): void {
+  private enqueueOutput(bytes: Uint8Array, countsAsLive = true, countsAsReplay = false): void {
     if (this.closed || bytes.length === 0) return;
+    const projectedBufferedBytes = this.getBufferedAmount() + this.pendingOutputBytes + bytes.length;
+    if (projectedBufferedBytes > this.backpressureHardBytes) {
+      this.closeBridgeForFailure(
+        `terminal output backpressure exceeded (${projectedBufferedBytes} bytes queued)`,
+      );
+      return;
+    }
     this.pendingOutputChunks.push(Buffer.from(bytes));
     this.pendingOutputBytes += bytes.length;
+    this.pendingOutputHasLiveBytes ||= countsAsLive;
+    this.pendingOutputHasReplayBytes ||= countsAsReplay;
     this.scheduleOutputFlush(this.outputBatchMs);
   }
 
@@ -401,9 +486,16 @@ export class SessionBridge {
     const payload = this.pendingOutputChunks.length === 1
       ? this.pendingOutputChunks[0]
       : Buffer.concat(this.pendingOutputChunks, this.pendingOutputBytes);
+    const hasLiveBytes = this.pendingOutputHasLiveBytes;
+    const hasReplayBytes = this.pendingOutputHasReplayBytes;
     this.pendingOutputChunks = [];
     this.pendingOutputBytes = 0;
-    this.safeSend(payload);
+    this.pendingOutputHasLiveBytes = false;
+    this.pendingOutputHasReplayBytes = false;
+    if (this.safeSend(payload)) {
+      if (hasReplayBytes) this.onBridgeReplay?.(this.sessionId);
+      if (hasLiveBytes) this.onBridgeLiveBytes?.(this.sessionId);
+    }
   }
 
   private getBufferedAmount(): number {
@@ -520,6 +612,7 @@ export class SessionBridge {
   }
 
   dispose(): void {
+    const wasClosed = this.closed;
     this.closed = true;
     if (this.outputFlushTimer) {
       clearTimeout(this.outputFlushTimer);
@@ -527,8 +620,14 @@ export class SessionBridge {
     }
     this.pendingOutputChunks = [];
     this.pendingOutputBytes = 0;
+    this.pendingOutputHasLiveBytes = false;
+    this.pendingOutputHasReplayBytes = false;
     this.unsubscribeData?.();
     this.unsubscribeData = null;
+    if (!wasClosed && this.bridgeHealthStarted) {
+      this.bridgeHealthStarted = false;
+      this.onBridgeClosed?.(this.sessionId);
+    }
   }
 
   private notifyInput(bytes: Uint8Array): void {

@@ -3,6 +3,7 @@ import type { CompletionDigest } from './completion-digest.js';
 import type { TaskDependencyEdge, TaskLaunchPermissionPosture } from '../shared/contracts/task.js';
 import type { Task, TaskLaunchHealthSummary, TaskStore } from './tasks.js';
 import type { UserInputDeliverySnapshot } from '../shared/contracts/user-input-delivery.js';
+import type { SessionHealthSnapshot } from '../shared/contracts/session-health.js';
 import type { AttentionQueue } from './attention-queue.js';
 import type { SnoozeSuppressionTracker } from './snooze-suppression.js';
 import type { WatchdogVerdict } from './watchdog.js';
@@ -82,6 +83,8 @@ export interface AgentState {
    * fresh activity arrived between cache hit and TTS playback.
    */
   lastEventSeq?: number;
+  /** Cross-signal terminal/session health supplied by the server read model. */
+  sessionHealth?: SessionHealthSnapshot;
 }
 
 const DEFAULT_WINDOW_SIZE = 50;
@@ -190,6 +193,7 @@ export class Monitor {
   private outstandingSubagents = new Map<string, Map<string, number>>();
   /** Completion signal ids suppressed because the parent Stop was stale behind TTL-evicted subagents. */
   private suppressedCompletionSignalIds = new Map<string, Set<string>>();
+  private sessionHealthProvider?: (agentId: string, turnState: TurnState) => SessionHealthSnapshot | undefined;
   /** Event count at which an outstanding subagent set was TTL-evicted before snapshot turn-state projection. */
   private ttlEvictedSubagentEventCounts = new Map<string, number>();
 
@@ -209,6 +213,13 @@ export class Monitor {
    */
   setAnomalyConfig(config: Partial<AnomalyDetectorConfig>): void {
     this.anomalyConfig = { ...this.anomalyConfig, ...config };
+  }
+
+  /** Attach the live cross-signal health read model without coupling core to server services. */
+  setSessionHealthProvider(
+    provider: (agentId: string, turnState: TurnState) => SessionHealthSnapshot | undefined,
+  ): void {
+    this.sessionHealthProvider = provider;
   }
 
   /**
@@ -929,6 +940,8 @@ export class Monitor {
       turnState,
       lastEventSeq: events.at(-1)?.eventSeq ?? 0,
     };
+    const sessionHealth = this.sessionHealthProvider?.(agentId, turnState);
+    if (sessionHealth) state.sessionHealth = sessionHealth;
     const findingEvidenceAudit = this.findingEvidenceAuditor.getActiveRecord(agentId);
     if (findingEvidenceAudit) state.findingEvidenceAudit = findingEvidenceAudit;
 
@@ -961,6 +974,17 @@ export class Monitor {
     const events = this.agentEvents.get(agentId);
     if (events === undefined) return undefined;
     return this.buildAgentState(agentId, events);
+  }
+
+  /**
+   * Return the live turn state without building an AgentState. Server-side
+   * diagnostics use this to keep REST projections aligned with WebSocket
+   * snapshots without recursively asking the health provider for a snapshot.
+   */
+  getLiveTurnState(agentId: string): TurnState | undefined {
+    const events = this.agentEvents.get(agentId);
+    if (events === undefined) return undefined;
+    return this.deriveTurnStateForSnapshot(agentId, events);
   }
 
   /**

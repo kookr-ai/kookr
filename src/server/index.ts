@@ -96,6 +96,8 @@ import { CoordinatorSuppressionStore } from './coordinator/suppression-store.js'
 import { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { DashboardSelectionController } from './dashboard-selection-controller.js';
 import { DeliveryTraceBuffer } from '../core/delivery-trace.js';
+import { SessionHealthTracker } from '../core/session-health.js';
+import { SessionHealthService } from './session-health-service.js';
 import type { ApiAuthConfig } from './auth.js';
 import type { SessionAuthConfig } from './auth-session.js';
 import {
@@ -321,6 +323,22 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // next launch without a restart (the PUT path reassigns `currentSettings`).
   const getAgentEffort = () => currentSettings.agentEffort;
   const terminalInputCoordinator = new TerminalInputCoordinator(terminalBackend);
+  const sessionHealthTracker = new SessionHealthTracker();
+  const restartEpoch = Number.isFinite(Date.parse(serverStartedAt)) ? Date.parse(serverStartedAt) : Date.now();
+  const sessionHealthService = new SessionHealthService({
+    listSessions: () => taskStore.getAllTasks().flatMap((task) => task.sessions.map((session) => ({
+      sessionId: session.tmuxSession,
+      taskStatus: task.status,
+      ...(session.lastTurnState ? { turnState: session.lastTurnState } : {}),
+      ...(session.transcriptPath ? { transcriptPath: session.transcriptPath } : {}),
+    }))),
+    getTurnState: (sessionId) => monitor.getLiveTurnState(sessionId),
+    getWatchdogState: (sessionId) => watchdog.getState(sessionId),
+    getBackendDiagnostics: (sessionId) => terminalBackend.getSessionDiagnostics?.(sessionId),
+    browser: sessionHealthTracker,
+    restartEpoch,
+  });
+  monitor.setSessionHealthProvider((sessionId, turnState) => sessionHealthService.getSessionHealth(sessionId, turnState));
   const deliveryTrace = new DeliveryTraceBuffer();
   const stopDeliveryTraceObserver = queue.addObserver({
     admitted: (event) => deliveryTrace.recordAdmitted(event),
@@ -924,6 +942,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ralphLoopService,
     hookIngestion,
     activityLedger,
+    restartEpoch,
   });
   await promotePendingStartupTasks({
     taskStore,
@@ -1094,6 +1113,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     serverCwd, serverPort: port, pluginUpdateBin: agentBin, kookrDir, frontendDir, broadcastToAll,
     getOperationalAlertHistory: () => resourceStatusService.getOperationalAlertHistory(),
     llmClient,
+    sessionHealthService,
     ...(findingEvidenceReviewEnabled ? { findingEvidenceReviewHmacKey } : {}),
     findingEvidenceReviewSampler,
     remoteShare: remoteRelayRuntime.remoteShare,
@@ -1392,6 +1412,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // deferred to the resolveViewer security gate (#808/#809/#810), so every live
     // terminal socket resolves to the owner for now.
     terminalRegistrar: connectionRegistry,
+    sessionHealthTracker,
     // #810 terminal scope gate: an out-of-scope viewer terminal upgrade is a 403
     // before the handshake. Inert while `resolveTerminalActor` is unset (owners
     // always pass); enforced the moment viewer terminal resolution is wired.

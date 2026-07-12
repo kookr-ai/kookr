@@ -1008,6 +1008,44 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 
 ---
 
+## R12: Cross-Signal Terminal Session Health
+
+### R12.1: Classify Session Health From Independent Signals [F15.3] — SHALL — `done`
+
+The system SHALL derive an explainable health classification for each managed terminal session from PTY/ring progress, hook progress, transcript progress, task turn state, dtach liveness/attach state, browser bridge activity, and the current server restart epoch.
+
+**Acceptance criteria:**
+- A working session with fresh PTY and provider progress is `healthy-working`.
+- A completed or input-waiting session with verified transport and sufficient independent signal context, but no new PTY bytes, is `healthy-idle`; unavailable or dead signals remain `session-lost` or `health-unknown`.
+- A live dtach master/socket with a frozen PTY/ring head is distinguishable from a lost session and from a provider/agent stall.
+- Replayed ring bytes are recorded separately from fresh post-restart/live bytes and never establish liveness on their own.
+- Every signal exposes its last progress timestamp (or an explicit unknown/missing state), together with the current attach generation and restart epoch.
+
+**Evidence:** `src/core/session-health.ts`, `src/adapters/local-dtach-backend.ts`, `src/adapters/dtach-ring-store.ts`, `src/server/session-bridge.ts`, `src/core/session-health.test.ts` (`TS-HEALTH-001` through `TS-HEALTH-004`).
+
+### R12.2: Detect Coordinated Session Stalls [F15.3] — SHALL — `done`
+
+The system SHALL group multiple independent sessions that stop advancing within a narrow time window into one coordinated/root-cause diagnostic with related child sessions.
+
+**Acceptance criteria:**
+- Two or more working sessions whose independent progress signals stop within the configured coordination window produce one root finding.
+- The finding records the related session ids, the observed window, and the restart epoch used for correlation.
+- A healthy idle/completed session does not participate in coordinated-stall detection.
+
+**Evidence:** `src/core/session-health.ts` (`detectCoordinatedStall`), `src/core/session-health.test.ts` (`TS-HEALTH-005`).
+
+### R12.3: Expose Session Health in Diagnostics and Support Capture [F15.3] — SHOULD — `done`
+
+The system SHOULD expose the same structured session-health data through the diagnostics endpoint (subject to the deployment's authentication mode), the Diagnostics UI, stale-finding context, and redacted bug-report bundles.
+
+**Acceptance criteria:**
+- `GET /api/diagnostics/session-health` returns a versioned fleet snapshot with per-session classifications, evidence, signal timestamps, and any coordinated root finding.
+- The Diagnostics UI renders a compact per-session health table with signal states, timestamps/ages, and bounded classification evidence.
+- Stale findings include the computed classification and evidence rather than only generic stale wording.
+- Support capture includes session health while redacting transcript paths, secrets, and other sensitive values.
+
+**Evidence:** `src/server/session-health-service.ts`, `src/server/routes/diagnostics-routes.ts`, `src/frontend/components/SessionHealthPanel.tsx`, `src/frontend/components/FindingsPanel.tsx`, `src/frontend/bug-report-bundle.ts`, `src/server/session-health-service.test.ts` (`TS-HEALTH-006`), `src/server/routes/session-health-route.test.ts` (`TS-HEALTH-007`), `src/frontend/bug-report-bundle.test.ts` (`TS-HEALTH-008`).
+
 ## Summary Matrix
 
 | Req | Feature | Priority | Status | Module(s) |
@@ -1089,6 +1127,9 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 | R10.1 | F11 | SHALL | done | schedule, schedule-service, schedule-runner, schedule-routes |
 | R10.2 | F11 | SHALL | done | schedule execution ledger, schedule-runner, schedule-routes, SchedulesDialog |
 | R11.1 | F15.3 | SHALL | done | anomaly-detector, monitor, DetectionStatsPanel |
+| R12.1 | F15.3 | SHALL | done | session-health, local-dtach-backend, dtach-ring-store, session-bridge, Monitor |
+| R12.2 | F15.3 | SHALL | done | session-health, SessionHealthService, diagnostics-routes |
+| R12.3 | F15.3 | SHOULD | done | diagnostics-routes, SessionHealthPanel, FindingsPanel, bug-report-bundle |
 
 ---
 

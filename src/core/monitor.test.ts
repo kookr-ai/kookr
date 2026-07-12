@@ -7,6 +7,7 @@ import { Monitor } from './monitor.js';
 import { TaskStore } from './tasks.js';
 import { AttentionQueue } from './attention-queue.js';
 import { getDetectionStats, resetDetectionStats } from './detection-stats.js';
+import { classifySessionHealth } from './session-health.js';
 
 function makeToolUse(sessionId: string, toolName: string, toolInput?: unknown, toolUseId?: string): AgentEvent {
   return { type: 'tool_use', sessionId, toolName, toolInput, toolUseId };
@@ -82,6 +83,46 @@ describe('Monitor', () => {
     expect(monitor.getAgentState('missing-agent')).toBe(
       monitor.getSnapshot().find((state) => state.agentId === 'missing-agent'),
     );
+  });
+
+  test('projects server-provided session health into live monitor snapshots', () => {
+    const health = classifySessionHealth({
+      sessionId: 'agent-1',
+      now: 100_000,
+      restartEpoch: 90_000,
+      taskStatus: 'inProgress',
+      turnState: 'running',
+      pty: { ringHead: 10, lastByteAt: 95_000 },
+      hooks: { lastEventAt: 95_000 },
+      transcript: { present: true, lastRecordAt: 95_000 },
+      backend: {
+        socketPresent: true,
+        identityVerified: true,
+        masterPid: 101,
+        agentPid: 202,
+        attachChildAlive: true,
+        attachGeneration: 1,
+        reattachCount: 0,
+        lastAttachAt: 94_000,
+      },
+      browser: {
+        bridgeOpen: false,
+        lastOpenAt: null,
+        lastReplayAt: null,
+        lastLiveByteAt: null,
+      },
+    });
+    monitor.registerAgent('agent-1');
+    monitor.processEvents('agent-1', [makeToolUse('session-1', 'Read', { file_path: '/tmp/example' }, 'tool-1')]);
+    let callbackArgs: { agentId: string; turnState: string } | undefined;
+    monitor.setSessionHealthProvider((agentId, turnState) => {
+      callbackArgs = { agentId, turnState };
+      return health;
+    });
+
+    expect(monitor.getAgentState('agent-1')?.sessionHealth).toBe(health);
+    expect(callbackArgs?.agentId).toBe('agent-1');
+    expect(callbackArgs?.turnState).toBe('running');
   });
 
   test('getAgentState returns the same live state slice as getSnapshot().find', () => {

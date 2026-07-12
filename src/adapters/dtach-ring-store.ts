@@ -26,6 +26,8 @@ export interface DtachRingState {
    * count; nothing outside the backend depends on the absolute value.
    */
   ringHead: number;
+  /** Timestamp of the most recent PTY bytes ingested into this ring. */
+  lastByteAt: number | null;
   /** Fixed-size backing store for the ring buffer. */
   ringBuffer: Buffer;
   /**
@@ -39,6 +41,7 @@ export function createDtachRingState(id: SessionId): DtachRingState {
   return {
     id,
     ringHead: 0,
+    lastByteAt: null,
     ringBuffer: Buffer.alloc(RING_BUFFER_BYTES),
     lastFlushedHead: -1,
   };
@@ -96,6 +99,7 @@ export class DtachRingStore {
           version: RING_META_VERSION,
           size,
           savedAt: new Date().toISOString(),
+          lastByteAt: state.lastByteAt,
         }),
         { mode: 0o600 },
       );
@@ -120,7 +124,7 @@ export class DtachRingStore {
     if (!existsSync(binPath) || !existsSync(metaPath)) return;
     try {
       const metaRaw = readFileSync(metaPath, 'utf-8');
-      const meta = JSON.parse(metaRaw) as { version?: number; size?: number };
+      const meta = JSON.parse(metaRaw) as { version?: number; size?: number; lastByteAt?: unknown };
       if (meta.version !== RING_META_VERSION) return;
       const buf = readFileSync(binPath);
       if (typeof meta.size !== 'number' || meta.size !== buf.length) return;
@@ -128,6 +132,9 @@ export class DtachRingStore {
       if (size === 0) return;
       buf.copy(state.ringBuffer, 0, 0, size);
       state.ringHead = size;
+      state.lastByteAt = typeof meta.lastByteAt === 'number' && Number.isFinite(meta.lastByteAt)
+        ? meta.lastByteAt
+        : null;
       state.lastFlushedHead = size;
     } catch {
       // fail-open

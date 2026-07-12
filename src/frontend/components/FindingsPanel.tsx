@@ -48,6 +48,7 @@ import { sendRalphLoopCommand, type RalphLoopCommand } from '../ralph-loop-api.j
 import { CoordinatorTaskChipView, coordinatorChipForTask } from './CoordinatorSurfaces.js';
 import { ChildRollupPill } from './RelatedTasksSection.js';
 import { compareCompletedAgents } from '../agent-buckets.js';
+import { formatDiagnosticIdentifier } from './diagnostics-format.js';
 
 export const HEALTHY_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.healthy';
 export const PENDING_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.pending';
@@ -809,6 +810,12 @@ const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
         )}
         {agent.anomaly && (
           <div className="finding-explanation">{agent.anomaly.explanation}</div>
+        )}
+        {(agent.anomaly?.type === 'stale_agent' || agent.anomaly?.type === 'hook_disconnected') && agent.sessionHealth && (
+          <div className="finding-health-evidence">
+            Health: {formatDiagnosticIdentifier(agent.sessionHealth.classification)}
+            {agent.sessionHealth.evidence.length > 0 ? ` — ${agent.sessionHealth.evidence.join(' · ')}` : ''}
+          </div>
         )}
         <FindingTranscriptContext agent={agent} />
         <CoordinatorTaskChipView chip={coordinatorChip} agent={agent} send={send} />

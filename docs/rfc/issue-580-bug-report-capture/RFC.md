@@ -105,10 +105,25 @@ interface BugReportAgentSnapshot {
   cwd: { present: boolean; kind: 'home' | 'temp' | 'workspace' | 'other' | 'unknown' };
   git: { branchPresent: boolean; commitPresent: boolean };
   tokenUsage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; totalCostUsd?: number };
+  health?: BugReportSessionHealthSnapshot;
 }
 ```
 
+`BugReportSessionHealthSnapshot` is the strict allowlisted projection of the
+versioned `SessionHealthSnapshot` contract: it retains the task state, signal
+states/timestamps, backend attach facts, browser bridge facts, progress, and
+classification, plus redacted `evidence` and (when present) a redacted
+`coordinatedStall` whose shape is `CoordinatedStallFinding` with its `evidence`
+field replaced by the same bounded string list. It excludes transcript paths,
+terminal bytes, and all raw event payloads.
+
 The projection explicitly excludes `events`, raw `activityMeta`, `playbookParameterValues`, completion digests, finding-evidence pane excerpts, transcript paths, hook payloads, terminal output, and raw tool input/response objects.
+
+When the dashboard has a `sessionHealth` projection, the selected-agent
+summary may include its versioned classification, signal ages, attach/browser
+state, bounded evidence, and coordinated-stall relationship. The capture path
+uses an explicit allowlist and applies the same text redaction to health
+evidence; it never includes transcript paths or terminal bytes.
 
 ### Capture Scope
 
@@ -118,6 +133,8 @@ The bundle includes:
 - Low-entropy browser metadata from `window.location`, `navigator`, and viewport bucket.
 - Selected agent/task and whether a project filter was active. V1 does not include raw or hashed project identity because hashes are still correlatable across reports and guessable from common repo names.
 - One selected-agent summary plus fleet counts by task status and anomaly severity.
+- Cross-signal session health for the selected agent when available, including
+  bounded classification evidence and attach/browser progress facts.
 - Last 20 reportable alerts, captured before visual toast dismissal. DND may silence toasts, but it must not erase reportable alert history.
 - Last 10 WebSocket observations from a browser-memory recorder.
 

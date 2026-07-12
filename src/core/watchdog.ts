@@ -156,11 +156,16 @@ export class Watchdog {
    * Notify the watchdog that new events arrived for an agent.
    * Updates lastEventAt and tracks tool_use/tool_result pairing.
    */
-  recordEvents(agentId: string, events: AgentEvent[], now = Date.now()): void {
+  recordEvents(
+    agentId: string,
+    events: AgentEvent[],
+    now = Date.now(),
+    options: { updateLastEventAt?: boolean } = {},
+  ): void {
     const state = this.agents.get(agentId);
     if (!state) return;
 
-    state.lastEventAt = now;
+    if (options.updateLastEventAt !== false) state.lastEventAt = now;
 
     // MCP startup (issue #224): Codex fork emits `Notification(mcp_startup_starting)` right
     // before the MCP connection manager spawns servers. Startup commonly takes 30–60s of
@@ -184,7 +189,11 @@ export class Watchdog {
         state.mcpStartupAt = 0;
       } else if (event.type === 'stop' || event.type === 'session_end') {
         state.mcpStartupAt = 0;
-      } else if (event.type === 'notification' && event.notificationType === 'mcp_startup_starting') {
+      } else if (
+        options.updateLastEventAt !== false
+        && event.type === 'notification'
+        && event.notificationType === 'mcp_startup_starting'
+      ) {
         state.mcpStartupAt = now;
       }
 

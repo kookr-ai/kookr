@@ -54,6 +54,7 @@ import type { RequestDurationMetrics } from '../request-duration-metrics.js';
 import type { TaskStateSaveSchedulerLike } from '../task-state-save-scheduler.js';
 import type { TerminalInputCoordinator } from '../terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from '../user-input-delivery-service.js';
+import type { SessionHealthService } from '../session-health-service.js';
 import type { DeliveryTraceReader } from '../../core/delivery-trace.js';
 import type { TelegramTaskOutcome } from '../../shared/contracts/telegram.js';
 export type { RemoteShareDeps } from '../remote-share-deps.js';
@@ -307,6 +308,8 @@ export interface RouteDeps {
    * stats (attached sessions, pending writers, last error, etc.).
    */
   terminalBackend?: TerminalBackend;
+  /** Cross-signal terminal/session diagnostics for the dashboard and support capture. */
+  sessionHealthService?: Pick<SessionHealthService, 'getDiagnostics'>;
   /** Result of the crash-recovery startup phase; fetched once by the frontend on mount. */
   startupRecoverySummary?: CrashRecoveryResult | null;
   /** Ralph iteration cycler — drives the loop state machine on Stop events. */
