@@ -7,8 +7,10 @@ import type { Monitor } from '../core/monitor.js';
 import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
 import type { Watchdog } from '../core/watchdog.js';
 import type { ServerMessage } from '../shared/protocol.js';
+import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import { promotePendingTasks, registerNewAgent, type AgentLifecycleDeps } from './agent-lifecycle.js';
 import { recoverCrashedSessions, type CrashRecoveryResult } from './crash-recovery.js';
+import { runPostRestartRecovery } from './post-restart-recovery.js';
 import type { HookFileWatcher } from './hook-watcher.js';
 import type { HookIngestion } from './hook-ingestion.js';
 import type { ActivityLedger } from '../core/activity-ledger.js';
@@ -20,6 +22,7 @@ interface StartupRecoveryDeps {
   queue: AttentionQueue;
   monitor: Monitor;
   watchdog: Watchdog;
+  terminalBackend: TerminalBackend;
   hookWatcher: HookFileWatcher;
   suppressionTracker: SnoozeSuppressionTracker;
   interactionLog: DeferredInteractionLogWriter;
@@ -49,6 +52,7 @@ export async function runStartupRecoveryPhase({
   queue,
   monitor,
   watchdog,
+  terminalBackend,
   hookWatcher,
   suppressionTracker,
   interactionLog,
@@ -151,6 +155,25 @@ export async function runStartupRecoveryPhase({
       }
     }
     hookWatcher.watch(tmuxName, { replayExisting: true, suppressParseAlertsForExisting: true });
+  }
+
+  // Post-restart transport verification (kookr-ai/kookr#1345). The resumed
+  // sessions above are re-registered off process/socket liveness, which does
+  // NOT catch a wedged internal attach (alive but emitting no bytes). Verify
+  // each recovered session becomes observably live and self-heal only the attach
+  // transport when it does not — the dtach master + agent are preserved. Runs
+  // best-effort so a verification hiccup never blocks startup.
+  if (reconcileResult.resumed.length > 0) {
+    try {
+      await runPostRestartRecovery({
+        terminalBackend,
+        taskStore,
+        resumedSessions: reconcileResult.resumed,
+        restartEpoch: Date.now(),
+      });
+    } catch (err) {
+      console.warn('[post-restart-recovery] verification phase failed:', err);
+    }
   }
 
   // Ralph startup reconcile. Runs AFTER recoverCrashedSessions so dead-but-relaunched

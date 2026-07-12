@@ -1267,3 +1267,372 @@ describe('LocalDtachBackend reconnectTransport', () => {
     await backend.killSession(id);
   });
 });
+
+/**
+ * Post-restart recovery state machine (kookr-ai/kookr#1345).
+ *
+ * These exercise `verifyRecoveredSession`: after a Kookr restart the dtach
+ * master + agent survive, but the resumed internal attach can come up wedged
+ * (alive but emitting no bytes) — a false-healthy state that process/socket
+ * liveness misses. The machine classifies each recovered session and self-heals
+ * ONLY the attach transport for sessions expected to be working, bounded by a
+ * grace window + repair cap, without ever touching the agent.
+ */
+describe('LocalDtachBackend verifyRecoveredSession', () => {
+  let tmpDir: string;
+  let backend: LocalDtachBackend;
+
+  afterEach(async () => {
+    if (tmpDir) {
+      try {
+        await reapDtachReferencing(tmpDir);
+      } catch {
+        // best-effort
+      }
+    }
+    try {
+      if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  function manifestPidFor(id: string): number {
+    const manifest = JSON.parse(
+      readFileSync(join(tmpDir, 'test', 'manifest.json'), 'utf-8'),
+    ) as { entries: Array<{ sessionId: string; pid: number }> };
+    return manifest.entries.find((e) => e.sessionId === id)!.pid;
+  }
+
+  /** A silent PTY double — models a wedged attach that never emits a byte. */
+  function silentPty(): Record<string, () => void> {
+    return { kill() {}, resize() {}, write() {}, onData() {}, onExit() {} };
+  }
+
+  /** Live pids whose cmdline references `sock` and carries the `-a` (attach) flag. */
+  function attachPids(sock: string): number[] {
+    return procsReferencingSock(sock)
+      .filter((p) => p.tokens.includes('-a'))
+      .map((p) => p.pid);
+  }
+
+  /**
+   * Replace the session's current attach with a silent double so the initial
+   * recovery probe observes a wedged (byte-less) transport, exactly like the
+   * production false-healthy state. The subsequent repair spawns a REAL
+   * `dtach -a`, so the actual respawn path is exercised.
+   */
+  function wedgeCurrentAttach(id: string): void {
+    const anyB = backend as unknown as {
+      attached: Map<string, { pty: unknown; disposePtyListeners: (() => void) | null }>;
+      disposeAttachChildOnly(sess: unknown): void;
+    };
+    const sess = anyB.attached.get(id)!;
+    anyB.disposeAttachChildOnly(sess);
+    sess.pty = silentPty();
+    sess.disposePtyListeners = null;
+  }
+
+  // Criterion 1: dtach-backed agent, restart the backend, post-restart output continues.
+  skipIfNoProc('classifies a still-emitting recovered session live and output continues', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+
+    const id = 'recover-live';
+    // Keeps emitting after the restart, so ONGOING progress (not just an on-attach
+    // redraw) is guaranteed within the window.
+    await backend.createSession({
+      id,
+      command: '/bin/sh',
+      args: ['-c', 'while true; do echo tick; sleep 0.05; done'],
+    });
+    const masterPid = manifestPidFor(id);
+    const resolver = backend as unknown as { findAgentPidSync(pid: number): number | null };
+    const agentPidBefore = resolver.findAgentPidSync(masterPid);
+    expect(agentPidBefore).toBeGreaterThan(0);
+
+    // Restart Kookr: close() flushes + disposes the internal attach but leaves
+    // the setsid'd dtach master (and its agent) running.
+    backend.close();
+    const backend2 = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+    await new Promise((r) => setTimeout(r, 25)); // let recoverOnStartup settle
+
+    try {
+      const result = await backend2.verifyRecoveredSession(id, {
+        expectWorking: true,
+        settleWindowMs: 100,
+        graceWindowMs: 2_000,
+      });
+      expect(result.classification).toBe('recovered-live');
+      expect(result.repairAttempts).toBe(0);
+      expect(result.identityVerified).toBe(true);
+      expect(result.livenessObserved).toBe(true);
+      expect(result.elapsedMs).toBeGreaterThanOrEqual(0);
+      expect(result.masterPid).toBe(masterPid);
+      expect(result.agentPid).toBe(agentPidBefore);
+      expect(isPidAlive(masterPid)).toBe(true);
+      expect(isPidAlive(agentPidBefore!)).toBe(true);
+
+      // Post-restart output continues to reach a subscriber.
+      const seen: number[] = [];
+      const off = backend2.onData(id, (b) => seen.push(b.length));
+      const deadline = Date.now() + 2_000;
+      while (seen.length === 0 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      off();
+      expect(seen.length).toBeGreaterThan(0);
+    } finally {
+      await backend2.killSession(id);
+      backend2.close();
+    }
+  }, 20_000);
+
+  // Criterion 2 + 4: wedged internal attach → recycle ONLY the attach child with
+  // a REAL fresh dtach -a; dtach master + agent PID unchanged and alive.
+  skipIfNoProc('repairs a wedged attach by recycling only the (real) attach child', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+
+    const id = 'recover-wedged';
+    // Emitting session so the fresh REAL attach observes ongoing progress and the
+    // repair resolves to live.
+    await backend.createSession({
+      id,
+      command: '/bin/sh',
+      args: ['-c', 'while true; do echo tick; sleep 0.05; done'],
+    });
+    const sock = join(tmpDir, 'test', `${id}.sock`);
+    const masterPid = manifestPidFor(id);
+    const resolver = backend as unknown as { findAgentPidSync(pid: number): number | null };
+    const agentPidBefore = resolver.findAgentPidSync(masterPid);
+    expect(agentPidBefore).toBeGreaterThan(0);
+    const attachBefore = attachPids(sock);
+    expect(attachBefore.length).toBeGreaterThanOrEqual(1);
+
+    // Model the wedged attach that survived into the observation window. The
+    // repair path below is NOT stubbed — it spawns a real `dtach -a`.
+    wedgeCurrentAttach(id);
+
+    const result = await backend.verifyRecoveredSession(id, {
+      expectWorking: true,
+      settleWindowMs: 100,
+      graceWindowMs: 800,
+      maxRepairAttempts: 3,
+    });
+
+    expect(result.classification).toBe('recovered-live');
+    expect(result.repairAttempts).toBe(1); // one real recycle brought it back
+    expect(result.livenessObserved).toBe(true);
+    // The agent + master were never signalled — same pids, still alive.
+    expect(result.masterPid).toBe(masterPid);
+    expect(result.agentPid).toBe(agentPidBefore);
+    expect(isPidAlive(masterPid)).toBe(true);
+    expect(isPidAlive(agentPidBefore!)).toBe(true);
+
+    // A NEW real `dtach -a` replaced the old attach child; the pre-wedge attach
+    // pid is gone (killed by dispose), a fresh one references the same socket.
+    const deadline = Date.now() + 2_000;
+    while (attachBefore.some((p) => isPidAlive(p)) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(attachBefore.every((p) => !isPidAlive(p))).toBe(true);
+    const attachAfter = attachPids(sock);
+    expect(attachAfter.some((p) => !attachBefore.includes(p))).toBe(true);
+
+    await backend.killSession(id);
+  }, 20_000);
+
+  // Criterion 3 + 6 + 7: a permanently-silent session (real cat, no output) is
+  // bounded by the repair cap with REAL dtach spawns (no orphan storm), surfaces
+  // the distinct unverified finding, and records structured diagnostics.
+  skipIfNoProc('bounds real repairs (no attach storm) and surfaces a distinct unverified finding', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+
+    const id = 'recover-storm';
+    // A genuinely silent agent: `cat` with no input never produces output, so
+    // every REAL attach observes no progress (the on-attach redraw is discounted
+    // by the settle window). This exercises the real repair-spawn cap.
+    await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+    const sock = join(tmpDir, 'test', `${id}.sock`);
+    const masterPid = manifestPidFor(id);
+
+    const findings: Array<{ kind: string }> = [];
+    backend.onBackendError((e) => findings.push(e));
+
+    const result = await backend.verifyRecoveredSession(id, {
+      expectWorking: true,
+      settleWindowMs: 80,
+      graceWindowMs: 120,
+      maxRepairAttempts: 2,
+      restartEpoch: 1234567,
+    });
+
+    expect(result.classification).toBe('recovered-unverified');
+    expect(result.repairAttempts).toBe(2); // capped — did NOT spin further
+    expect(result.failureReason).toBe('no-liveness-after-repair');
+    expect(result.livenessObserved).toBe(false);
+    // Structured diagnostics carry the restart epoch, attempt count, and reason.
+    expect(result.restartEpoch).toBe(1234567);
+    expect(result.masterPid).toBe(masterPid);
+
+    // No orphan storm: dispose-before-respawn means at most one real `dtach -a`
+    // is alive at a time — the repairs did NOT accumulate attach processes.
+    expect(attachPids(sock).length).toBeLessThanOrEqual(1);
+
+    // A distinct, actionable finding — NOT stale_agent.
+    const unverified = findings.filter((f) => f.kind === 'session-recovery-unverified');
+    expect(unverified).toHaveLength(1);
+    expect(unverified[0]).toMatchObject({
+      kind: 'session-recovery-unverified',
+      id,
+      attempts: 2,
+      failureReason: 'no-liveness-after-repair',
+    });
+    expect(findings.some((f) => f.kind === 'stale_agent')).toBe(false);
+
+    await backend.killSession(id);
+  }, 20_000);
+
+  // Criterion 5: a known-idle (not-expected-working) session is never repaired.
+  skipIfNoProc('does not repair a known-idle session that is legitimately silent', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+
+    const id = 'recover-idle';
+    await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+
+    wedgeCurrentAttach(id);
+
+    // If repair were (wrongly) attempted, it would call the real attachPtyInto.
+    let attachCalls = 0;
+    const anyB = backend as unknown as {
+      attachPtyInto: (...a: unknown[]) => void;
+    };
+    const realAttach = Object.getPrototypeOf(backend).attachPtyInto;
+    anyB.attachPtyInto = function attach(this: unknown, ...a: unknown[]) {
+      attachCalls += 1;
+      return realAttach.apply(this, a);
+    };
+
+    const result = await backend.verifyRecoveredSession(id, {
+      expectWorking: false,
+      settleWindowMs: 40,
+      graceWindowMs: 60,
+    });
+
+    expect(result.classification).toBe('recovered-idle');
+    expect(result.repairAttempts).toBe(0);
+    expect(attachCalls).toBe(0); // NO repair attaches were opened
+
+    await backend.killSession(id);
+  }, 15_000);
+
+  // Medium coverage: a repair attach that cannot be spawned is a distinct terminal
+  // failure (attach-spawn-failed), not masked as generic no-liveness.
+  skipIfNoProc('reports attach-spawn-failed when a repair attach cannot be opened', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+
+    const id = 'recover-spawnfail';
+    await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+
+    wedgeCurrentAttach(id);
+    // Make the repair spawn throw AFTER identity + dispose.
+    const anyB = backend as unknown as { attachPtyInto: (...a: unknown[]) => void };
+    anyB.attachPtyInto = () => {
+      throw new Error('spawn boom');
+    };
+
+    const result = await backend.verifyRecoveredSession(id, {
+      expectWorking: true,
+      settleWindowMs: 20,
+      graceWindowMs: 40,
+      maxRepairAttempts: 3,
+    });
+
+    expect(result.classification).toBe('recovered-unverified');
+    expect(result.failureReason).toBe('attach-spawn-failed');
+    expect(result.repairAttempts).toBe(1); // broke out on the hard spawn failure
+    expect(result.identityVerified).toBe(true);
+
+    await backend.killSession(id);
+  }, 15_000);
+
+  // Coverage: an unknown session id classifies unverified without any repair.
+  it('reports session-unknown for an id with no manifest entry', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH ?? 'dtach' });
+
+    const result = await backend.verifyRecoveredSession('no-such-session', { expectWorking: true });
+    expect(result.classification).toBe('recovered-unverified');
+    expect(result.failureReason).toBe('session-unknown');
+    expect(result.identityVerified).toBe(false);
+    expect(result.repairAttempts).toBe(0);
+  });
+
+  // Criterion: identity that cannot be verified never touches the attach child.
+  skipIfNoProc('reports unverified with identity-unverified when the master is not ours', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+
+    const id = 'recover-identity';
+    await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+
+    // Point the manifest pid at this test process: alive, but /proc/<pid>/exe is
+    // not dtach — identity must fail before any repair.
+    const manifestPath = join(tmpDir, 'test', 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as {
+      entries: Array<{ sessionId: string; pid: number }>;
+    };
+    manifest.entries.find((e) => e.sessionId === id)!.pid = process.pid;
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+
+    const result = await backend.verifyRecoveredSession(id, { expectWorking: true, graceWindowMs: 40 });
+    expect(result.classification).toBe('recovered-unverified');
+    expect(result.failureReason).toBe('identity-unverified');
+    expect(result.identityVerified).toBe(false);
+    expect(result.repairAttempts).toBe(0);
+
+    // Do NOT killSession — manifest pid points at this process; afterEach reaps
+    // the real dtach master by cmdline instead.
+  });
+
+  // Criterion 8: multiple sessions recover concurrently; one failure does not
+  // block the others.
+  skipIfNoProc('recovers multiple sessions concurrently without one failure blocking others', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+
+    const liveA = 'concurrent-a';
+    const liveB = 'concurrent-b';
+    const broken = 'concurrent-broken';
+    for (const id of [liveA, liveB]) {
+      await backend.createSession({
+        id,
+        command: '/bin/sh',
+        args: ['-c', 'while true; do echo tick; sleep 0.05; done'],
+      });
+    }
+    await backend.createSession({ id: broken, command: '/bin/sh', args: ['-c', 'exec cat'] });
+    // Break the third session's transport: remove its socket → socket-missing.
+    unlinkSync(join(tmpDir, 'test', `${broken}.sock`));
+
+    const [ra, rb, rbroken] = await Promise.all([
+      backend.verifyRecoveredSession(liveA, { expectWorking: true, settleWindowMs: 100, graceWindowMs: 2_000 }),
+      backend.verifyRecoveredSession(liveB, { expectWorking: true, settleWindowMs: 100, graceWindowMs: 2_000 }),
+      backend.verifyRecoveredSession(broken, { expectWorking: true, settleWindowMs: 100, graceWindowMs: 2_000 }),
+    ]);
+
+    // The two healthy sessions recovered live despite the third failing.
+    expect(ra.classification).toBe('recovered-live');
+    expect(rb.classification).toBe('recovered-live');
+    expect(rbroken.classification).toBe('recovered-unverified');
+    expect(rbroken.failureReason).toBe('socket-missing');
+
+    await backend.killSession(liveA);
+    await backend.killSession(liveB);
+    await backend.killSession(broken);
+  }, 20_000);
+});

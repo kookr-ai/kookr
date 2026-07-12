@@ -231,6 +231,11 @@ function formatBackendErrorLine(err: BackendError): string {
       return `[terminal-backend] write to session ${err.id} timed out after ${err.durationMs}ms`;
     case 'manifest-corrupt':
       return `[terminal-backend] manifest corrupt; recovered ${err.recoveredCount} entries from socket dir`;
+    case 'session-recovery-repaired':
+      return `[terminal-backend] session ${err.id} attach transport repaired after restart (${err.attempts} attempt(s))`;
+    case 'session-recovery-unverified':
+      return `[terminal-backend] session ${err.id} could not be verified live after restart `
+        + `(${err.attempts} repair attempt(s); ${err.failureReason}) — agent preserved, attach transport unrevived`;
   }
 }
 
@@ -709,8 +714,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         // Already logged at WARN inside the backend; additional surface is
         // not needed per the RFC's "silent recovery except for a log line".
         break;
+      case 'session-recovery-repaired':
+        // Successful post-restart self-heal — informational only. The backend
+        // already emitted a structured audit line (kookr-ai/kookr#1345).
+        console.log(line);
+        break;
       case 'dtach-unavailable':
       case 'manifest-corrupt':
+      case 'session-recovery-unverified':
+        // A recovered session whose attach transport could not be revived is an
+        // actionable operator finding, distinct from the watchdog's stale_agent.
         console.error(line);
         break;
       default:
@@ -898,6 +911,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     queue,
     monitor,
     watchdog,
+    terminalBackend,
     hookWatcher,
     suppressionTracker,
     interactionLog,
