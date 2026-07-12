@@ -1091,7 +1091,10 @@ export class LocalDtachBackend implements TerminalBackend {
     initialSize: { cols: number; rows: number } | undefined,
   ): void {
     const sess = this.createAttachedState(id, sock);
-    this.attachPtyInto(sess, sock, initialSize);
+    // A newly created session has no historical screen to discount. Keep its
+    // first response in the ring; replay suppression is only for recovered
+    // attach generations that explicitly opt into it.
+    this.attachPtyInto(sess, sock, initialSize, false, false);
   }
 
   /**
