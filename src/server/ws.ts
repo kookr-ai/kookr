@@ -422,6 +422,7 @@ export class MessageRouter {
       case 'setTaskFeedback':
       case 'requestTaskReflect':
       case 'cancelTask':
+      case 'batchAbortTasks':
       case 'reopenTask':
       case 'dismissAgentSignal':
       case 'deleteTask':

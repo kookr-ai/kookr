@@ -21,6 +21,7 @@ import type { TaskDependencyEdge, TaskMetadataIntent } from '../../shared/contra
 import { normalizeTerminalWorktreeHealth } from '../../core/worktree-health.js';
 import { readEvolutionRunProjection } from '../../core/evolution-summary.js';
 import { isSharedTaskId } from '../../shared/contracts/contact-share.js';
+import { MAX_BATCH_ABORT_TASKS } from '../../shared/contracts/messages.js';
 import { CoordinatorSuppressionStore } from '../coordinator/suppression-store.js';
 import { promotePendingTasks } from '../agent-lifecycle.js';
 import type { TaskRouteDeps } from './shared.js';
@@ -430,6 +431,56 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         ? { manualActionRequiredReason: closePolicy.manualActionRequiredReason }
         : {}),
     });
+  });
+
+  // Idempotent batch abort (issue #1325). Accepts explicit task IDs plus an
+  // operator reason, aborts every still-active task, interrupts its live
+  // sessions, and returns a per-task result so callers can report partial
+  // failures. Retrying the same request is safe: already-terminal tasks report
+  // `already_terminal` without a second transition or audit row.
+  app.post('/api/tasks/abort', async (c) => {
+    let body: { taskIds?: unknown; reason?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    // Guard non-object bodies (`null`, primitives, arrays) before dereferencing
+    // fields — otherwise `null.taskIds` throws and surfaces as a 500.
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return c.json({ error: 'body must be a JSON object' }, 400);
+    }
+    if (!Array.isArray(body.taskIds)) {
+      return c.json({ error: 'taskIds is required and must be an array of strings' }, 400);
+    }
+    if (body.taskIds.some((id) => typeof id !== 'string')) {
+      return c.json({ error: 'taskIds entries must be strings' }, 400);
+    }
+    if (body.taskIds.length > MAX_BATCH_ABORT_TASKS) {
+      return c.json(
+        { error: `cannot abort more than ${MAX_BATCH_ABORT_TASKS} tasks in one request` },
+        400,
+      );
+    }
+    if (body.reason !== undefined && typeof body.reason !== 'string') {
+      return c.json({ error: 'reason must be a string when supplied' }, 400);
+    }
+    // SharedTask lifecycle is remote-owned; drop any that slipped in and abort
+    // the rest, matching the WS control-room path. A single remote-owned id must
+    // never block a bulk abort of the operator's local tasks.
+    const taskIds = (body.taskIds as string[]).filter((id) => !isSharedTaskId(id));
+
+    try {
+      const result = await lifecycleCommands.batchAbortTasks(taskIds, {
+        reason: typeof body.reason === 'string' ? body.reason : undefined,
+        actor: { source: 'api' },
+      });
+      broadcastSnapshotWithCoordinator();
+      return c.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
   });
 
   app.get('/api/playbooks', async (c) => {

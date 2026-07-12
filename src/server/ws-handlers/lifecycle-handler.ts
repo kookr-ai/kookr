@@ -14,7 +14,12 @@ import {
 import { nowISO } from '../../core/interaction-log.js';
 import { getSnapshotAgentsForClient } from '../use-cases/get-snapshot.js';
 import { handleLaunchResult } from './launch-result.js';
-import { TaskLifecycleCommands, type TaskDeletionAuditActor, type TaskLifecycleCommandResult } from '../use-cases/task-lifecycle-commands.js';
+import {
+  TaskLifecycleCommands,
+  type TaskDeletionAuditActor,
+  type TaskLifecycleCommandResult,
+  type BatchAbortSummary,
+} from '../use-cases/task-lifecycle-commands.js';
 import { isSharedTaskId } from '../../shared/contracts/contact-share.js';
 
 /**
@@ -69,6 +74,7 @@ type LifecycleMessage = Extract<ClientMessage, {
     | 'stop'
     | 'completeTask'
     | 'cancelTask'
+    | 'batchAbortTasks'
     | 'reopenTask'
     | 'dismissAgentSignal'
     | 'renameTask'
@@ -227,6 +233,29 @@ export class LifecycleHandler {
         return { duplicate: false };
       }
 
+      case 'batchAbortTasks': {
+        // SharedTask lifecycle is remote-owned (same rule the single-task guard
+        // above enforces). Drop any that slipped into the batch so a bulk abort
+        // can never mutate a Contact Share task locally.
+        const localTaskIds = msg.taskIds.filter((id) => !isSharedTaskId(id));
+        const { summary } = await this.commands.batchAbortTasks(localTaskIds, {
+          reason: msg.reason,
+          actor: this.deps.deletionAuditActor?.(),
+        });
+        // Concise result summary, delivered as a toast to every client — the
+        // control room shows partial failures without a bespoke response
+        // channel. The next periodic snapshot reflects the new terminal states,
+        // matching how the single-task cancelTask path surfaces its result.
+        this.deps.broadcastToAll?.({
+          type: 'alert',
+          agentId: '',
+          summary: summarizeBatchAbortAlert(summary),
+          details: describeBatchAbortAlertDetails(summary),
+          severity: summary.failed > 0 ? 'warning' : 'info',
+        });
+        return { duplicate: false };
+      }
+
       case 'reopenTask':
         assertCommandSucceeded(this.commands.reopenTask(msg.taskId));
         return { duplicate: false };
@@ -312,4 +341,17 @@ function assertCommandSucceeded(result: TaskLifecycleCommandResult): void {
   if (result.outcome === 'not_found' || result.outcome === 'invalid') {
     throw new Error(result.error);
   }
+}
+
+function summarizeBatchAbortAlert(summary: BatchAbortSummary): string {
+  const n = summary.aborted;
+  return `Aborted ${n} task${n === 1 ? '' : 's'}`;
+}
+
+function describeBatchAbortAlertDetails(summary: BatchAbortSummary): string {
+  const parts: string[] = [];
+  if (summary.already_terminal > 0) parts.push(`${summary.already_terminal} already finished`);
+  if (summary.not_found > 0) parts.push(`${summary.not_found} not found`);
+  if (summary.failed > 0) parts.push(`${summary.failed} failed`);
+  return parts.length > 0 ? parts.join(' · ') : `${summary.total} selected`;
 }

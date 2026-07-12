@@ -225,7 +225,7 @@ stateDiagram-v2
 > **ClientMessage families:**
 >
 > - Respond / triage: `respond`, `respondAll`, `directReply`, `navigate`, `getNext`, `skip`, `skipAll`, `snooze`, `cancelSnooze`, `stop`, `findingFeedback`
-> - Task lifecycle: `launch`, `completeTask`, `setTaskFeedback`, `requestTaskReflect`, `relaunch`, `cancelTask`, `reopenTask`, `deleteTask`, `renameTask`, `clearCompleted`, `ackTerminatedTask`, `permissionChoice`
+> - Task lifecycle: `launch`, `completeTask`, `setTaskFeedback`, `requestTaskReflect`, `relaunch`, `cancelTask`, `batchAbortTasks`, `reopenTask`, `deleteTask`, `renameTask`, `clearCompleted`, `ackTerminatedTask`, `permissionChoice`
 > - Playbooks: `listPlaybooks`, `launchPlaybook`
 > - Session reflection: `reflect`
 > - Projects: `setProjectConfig`, `selectProject`

@@ -69,6 +69,7 @@ import {
 import type { VerbosityScale } from '../shared/contracts/speech.js';
 import { setSpeakVerbositySnapshot } from './hooks/useSpeakAgent.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
+import { computeAbortActiveTaskIds } from './abort-active-tasks.js';
 import { buildBugReportBundle } from './bug-report-bundle.js';
 import { getBugReportAlerts, getBugReportWireObservations } from './bug-report-recorder.js';
 import { getDebugTimelineEntries, isDebugTimelineEnabled } from './debug-timeline.js';
@@ -1084,6 +1085,15 @@ export function App() {
   const clearCompletedFinishedCount = clearCompletedFinishedAgents.length;
   const clearCompletedTerminatedCount = clearCompletedTerminatedAgents.length;
 
+  // Active (non-terminal) task IDs in the current scope, deduped by task so a
+  // multi-session task aborts once. Feeds the control-room "Abort all" action
+  // (issue #1325): one batch request cancels these and interrupts their live
+  // sessions, instead of prompting each agent to abort.
+  const abortActiveTaskIds = useMemo(
+    () => computeAbortActiveTaskIds(clearCompletedScopeAgents, pendingDestructiveTaskIdSet),
+    [clearCompletedScopeAgents, pendingDestructiveTaskIdSet],
+  );
+
   const findingsPanel = (
     <FindingsPanel
       findings={findings}
@@ -1099,6 +1109,7 @@ export function App() {
       clearCompletedFinishedTaskIds={clearCompletedFinishedAgents.map((agent) => agent.taskId!)}
       clearCompletedTerminatedTaskIds={clearCompletedTerminatedAgents.map((agent) => agent.taskId!)}
       clearCompletedProjectId={selectedProject ?? undefined}
+      abortActiveTaskIds={abortActiveTaskIds}
       pendingDeletionTaskIds={pendingDestructiveTaskIdSet}
       onQueueDeleteTask={queueDeleteTask}
       onQueueClearCompleted={queueClearCompleted}
