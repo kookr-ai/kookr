@@ -56,6 +56,8 @@ export type EventOrigin = 'live' | 'replay';
  */
 export interface EventMeta {
   parentage: EventParentage;
+  /** Whether this event was replayed from persisted hook history. */
+  origin?: EventOrigin;
   /** Provider session id from the raw payload (`session_id`). */
   rawSessionId?: string;
   /** Kookr-assigned monotonic sequence number per kookrSessionId. */

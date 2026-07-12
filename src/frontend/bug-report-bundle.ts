@@ -1,4 +1,4 @@
-import type { AgentState, BuildInfo } from '../shared/protocol.js';
+import type { AgentState, BuildInfo, SessionHealthSnapshot } from '../shared/protocol.js';
 import type { BugReportRecordedAlert, BugReportWireObservation } from './bug-report-recorder.js';
 import type { DebugTimelineEntry } from './debug-timeline.js';
 import type {
@@ -61,7 +61,15 @@ export interface BugReportAgentSnapshot {
   cwd: { present: boolean; kind: 'home' | 'temp' | 'workspace' | 'other' | 'unknown' };
   git: { branchPresent: boolean; commitPresent: boolean };
   tokenUsage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; totalCostUsd?: number };
+  health?: BugReportSessionHealthSnapshot;
 }
+
+export type BugReportSessionHealthSnapshot = Omit<SessionHealthSnapshot, 'evidence' | 'coordinatedStall'> & {
+  evidence: string[];
+  coordinatedStall?: Omit<NonNullable<SessionHealthSnapshot['coordinatedStall']>, 'evidence'> & {
+    evidence: string[];
+  };
+};
 
 export interface BugReportFleetSummary {
   totalAgents: number;
@@ -208,6 +216,7 @@ export function buildBugReportBundle(input: BuildBugReportInput): { bundle: BugR
         'wire_payload_summarization',
         'debug_trace_redaction',
         'selection_diagnostics_redaction',
+        'session_health_redaction',
       ],
     },
     selection: {
@@ -306,6 +315,70 @@ export function toBugReportAgentSnapshot(agent: AgentState): BugReportAgentSnaps
         outputTokens: agent.tokenUsage.outputTokens,
         totalTokens: agent.tokenUsage.inputTokens + agent.tokenUsage.outputTokens + agent.tokenUsage.cacheReadTokens + agent.tokenUsage.cacheWriteTokens,
         totalCostUsd: agent.tokenUsage.costUsd,
+      },
+    } : {}),
+    ...(agent.sessionHealth ? { health: toBugReportSessionHealth(agent.sessionHealth) } : {}),
+  };
+}
+
+function toBugReportSessionHealth(health: SessionHealthSnapshot): BugReportSessionHealthSnapshot {
+  return {
+    schemaVersion: health.schemaVersion,
+    sessionId: health.sessionId,
+    generatedAt: health.generatedAt,
+    restartEpoch: health.restartEpoch,
+    classification: health.classification,
+    task: { status: health.task.status, turnState: health.task.turnState },
+    signals: {
+      pty: {
+        state: health.signals.pty.state,
+        lastProgressAt: health.signals.pty.lastProgressAt,
+        ageMs: health.signals.pty.ageMs,
+        ringHead: health.signals.pty.ringHead,
+      },
+      hooks: {
+        state: health.signals.hooks.state,
+        lastProgressAt: health.signals.hooks.lastProgressAt,
+        ageMs: health.signals.hooks.ageMs,
+      },
+      transcript: {
+        state: health.signals.transcript.state,
+        lastProgressAt: health.signals.transcript.lastProgressAt,
+        ageMs: health.signals.transcript.ageMs,
+        present: health.signals.transcript.present,
+      },
+    },
+    backend: {
+      transportState: health.backend.transportState,
+      attachState: health.backend.attachState,
+      recoveryInProgress: health.backend.recoveryInProgress,
+      attachGeneration: health.backend.attachGeneration,
+      reattachCount: health.backend.reattachCount,
+      lastAttachAt: health.backend.lastAttachAt,
+    },
+    browser: {
+      bridgeOpen: health.browser.bridgeOpen,
+      lastOpenAt: health.browser.lastOpenAt,
+      lastReplayAt: health.browser.lastReplayAt,
+      lastLiveByteAt: health.browser.lastLiveByteAt,
+      freshBytesAfterReplay: health.browser.freshBytesAfterReplay,
+      replayedOnly: health.browser.replayedOnly,
+    },
+    progress: {
+      lastProgressAt: health.progress.lastProgressAt,
+      stallAgeMs: health.progress.stallAgeMs,
+    },
+    evidence: health.evidence.map(redactText),
+    ...(health.coordinatedStall ? {
+      coordinatedStall: {
+        id: health.coordinatedStall.id,
+        rootCause: health.coordinatedStall.rootCause,
+        detectedAt: health.coordinatedStall.detectedAt,
+        sessionIds: [...health.coordinatedStall.sessionIds],
+        windowMs: health.coordinatedStall.windowMs,
+        restartEpoch: health.coordinatedStall.restartEpoch,
+        postRestart: health.coordinatedStall.postRestart,
+        evidence: health.coordinatedStall.evidence.map(redactText),
       },
     } : {}),
   };

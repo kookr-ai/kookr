@@ -1,6 +1,7 @@
 import React, { useRef } from 'react';
 import type { ClientMessage } from '../../shared/protocol.js';
 import { DetectionStatsPanel } from './DetectionStatsPanel.js';
+import { SessionHealthPanel } from './SessionHealthPanel.js';
 import { CircuitBreakerPanel } from './CircuitBreakerPanel.js';
 import { AudioAlertsPanel } from './AudioAlertsPanel.js';
 import { FindingEvidenceDiagnosticsPanel } from './FindingEvidenceDiagnosticsPanel.js';
@@ -49,6 +50,7 @@ export function OperationsPanel({ send, onClose }: Props) {
           <OutcomeLedgerPanel />
           <AudioAlertsPanel />
           <DetectionStatsPanel defaultExpanded showEmpty />
+          <SessionHealthPanel />
           <LiveFrictionCalibrationPanel />
           <FindingEvidenceDiagnosticsPanel />
           <CircuitBreakerPanel send={send} defaultExpanded showEmpty />

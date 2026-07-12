@@ -43,6 +43,9 @@ export interface FakeTerminalBridgeOptions {
    * same write-suppression path as the real bridge. Default: false.
    */
   readOnly?: boolean;
+  /** Optional lifecycle hooks used by cross-signal health diagnostics. */
+  onReplay?: () => void;
+  onLiveBytes?: () => void;
 }
 
 export class FakeTerminalBridge {
@@ -53,6 +56,9 @@ export class FakeTerminalBridge {
   private lineDelayMs: number;
   private loop: boolean;
   private readOnly: boolean;
+  private onReplay?: () => void;
+  private onLiveBytes?: () => void;
+  private disposed = false;
 
   constructor(
     private tmuxName: string,
@@ -68,16 +74,19 @@ export class FakeTerminalBridge {
     this.lineDelayMs = resolved?.lineDelayMs ?? 150;
     this.loop = resolved?.loop ?? false;
     this.readOnly = options?.readOnly ?? false;
+    this.onReplay = options?.onReplay;
+    this.onLiveBytes = options?.onLiveBytes;
   }
 
   /** Start displaying content. */
   start(cols = 120, rows = 40): void {
+    if (this.disposed) return;
     // Clear screen, cursor home
-    this.sendRaw('\x1b[2J\x1b[H');
+    this.sendRaw('\x1b[2J\x1b[H', 'replay');
 
     if (this.mode === 'instant') {
       // Dump everything at once — agent is blocked, output is frozen
-      this.sendRaw(this.lines.join('\r\n'));
+      this.sendRaw(this.lines.join('\r\n'), 'replay');
     } else {
       // Stream line-by-line — agent is actively working
       this.interval = setInterval(() => {
@@ -85,7 +94,7 @@ export class FakeTerminalBridge {
           if (this.loop) {
             // Reset and replay
             this.lineIndex = 0;
-            this.sendRaw('\x1b[2J\x1b[H');
+            this.sendRaw('\x1b[2J\x1b[H', 'replay');
             return;
           }
           if (this.interval) {
@@ -96,7 +105,7 @@ export class FakeTerminalBridge {
         }
 
         const line = this.lines[this.lineIndex++];
-        this.sendRaw(line + '\r\n');
+        this.sendRaw(line + '\r\n', 'live');
       }, this.lineDelayMs);
     }
 
@@ -109,6 +118,7 @@ export class FakeTerminalBridge {
     // above is unaffected.
     if (!this.readOnly) {
       this.ws.on('message', (data) => {
+        if (this.disposed) return;
         const msg = data.toString();
         if (msg.startsWith('{"type":"resize"')) {
           // Acknowledge resize but don't act on it
@@ -148,14 +158,17 @@ export class FakeTerminalBridge {
   }
 
   /** Send raw text to the xterm.js client. */
-  private sendRaw(data: string): void {
-    if (this.ws.readyState === this.ws.OPEN) {
+  private sendRaw(data: string, source: 'replay' | 'live'): void {
+    if (!this.disposed && this.ws.readyState === this.ws.OPEN) {
       this.ws.send(data);
+      if (source === 'replay') this.onReplay?.();
+      else this.onLiveBytes?.();
     }
   }
 
   /** Clean up timers. */
   dispose(): void {
+    this.disposed = true;
     if (this.interval) {
       clearInterval(this.interval);
       this.interval = null;

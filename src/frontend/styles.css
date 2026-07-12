@@ -8635,6 +8635,101 @@ button.project-drawer-link:focus-visible {
   background: rgba(245, 158, 11, 0.08);
 }
 
+/* --- Session Health Section --- */
+.session-health-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+.session-health-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 6px;
+}
+.session-health-row {
+  font-size: 10px;
+}
+.session-health-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0 5px;
+  font-size: 10px;
+}
+.session-health-table th,
+.session-health-table td {
+  padding: 6px 8px;
+  border-top: 1px solid var(--border-dim);
+  border-bottom: 1px solid var(--border-dim);
+  background: var(--bg-card);
+  text-align: left;
+  vertical-align: top;
+}
+.session-health-table th:first-child,
+.session-health-table td:first-child {
+  border-left: 1px solid var(--border-dim);
+}
+.session-health-table th:last-child,
+.session-health-table td:last-child {
+  border-right: 1px solid var(--border-dim);
+}
+.session-health-table tr th:first-child {
+  border-radius: 5px 0 0 5px;
+}
+.session-health-table tr td:last-child {
+  border-radius: 0 5px 5px 0;
+}
+.session-health-table thead th {
+  padding-top: 2px;
+  padding-bottom: 2px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 600;
+}
+.session-health-classification {
+  color: var(--orange, #f59e0b);
+  text-transform: capitalize;
+}
+.session-health-row--healthy-working .session-health-classification,
+.session-health-row--healthy-idle .session-health-classification {
+  color: var(--green, #22c55e);
+}
+.session-health-row--session-lost .session-health-classification,
+.session-health-row--provider-or-agent-stalled .session-health-classification,
+.session-health-row--terminal-attach-stalled .session-health-classification,
+.session-health-row--browser-bridge-stalled .session-health-classification {
+  color: var(--orange, #f59e0b);
+}
+.session-health-evidence {
+  color: var(--text-secondary);
+  margin-top: 4px;
+  line-height: 1.35;
+}
+.session-health-evidence span {
+  display: block;
+}
+.diagnostic-muted {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-style: italic;
+  padding: 4px 6px;
+}
+.session-health-section .diagnostic-muted {
+  color: var(--text-secondary);
+}
+.finding-health-evidence {
+  color: var(--orange, #f59e0b);
+  font-size: 10px;
+  line-height: 1.4;
+  margin: -2px 0 8px;
+}
+
 /* --- Self-Diagnostic Section --- */
 .diagnostic-section {
   margin-bottom: 8px;

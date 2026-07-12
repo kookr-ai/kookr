@@ -6,6 +6,7 @@ import type { Hono } from 'hono';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import type { TerminalBackend } from '../../adapters/terminal-backend.js';
+import type { SessionHealthTracker } from '../../core/session-health.js';
 import {
   asTerminalInputWriterPort,
   type TerminalInputWriterPort,
@@ -88,6 +89,8 @@ export interface HttpAndWebSocketsDeps {
    * (most tests) every upgrade is admitted, matching pre-#810 behaviour.
    */
   isActorAllowedTerminalSession?: IsActorAllowedTerminalSession;
+  /** Browser bridge lifecycle tracker used by cross-signal session diagnostics. */
+  sessionHealthTracker?: Pick<SessionHealthTracker, 'recordBridgeOpened' | 'recordBridgeReplay' | 'recordBridgeLiveBytes' | 'recordBridgeClosed'>;
 }
 
 export interface HttpAndWebSocketsCloseOptions {
@@ -335,13 +338,20 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
     // swept.
     deps.terminalRegistrar?.register(ws, actor, 'terminal', { sessionName });
 
+    let fakeHealthTracked = false;
     void (async () => {
       const bridgeKind: 'fake' | 'session' = deps.useFakeTerminalBridge ? 'fake' : 'session';
       console.log(`Terminal bridge opened for ${sessionName} (kind=${bridgeKind}, readOnly=${readOnly})`);
 
       if (bridgeKind === 'fake') {
         const content = FakeTerminalBridge.getContent(sessionName);
-        const bridge = new FakeTerminalBridge(sessionName, ws, content, terminalInputWriter, { readOnly });
+        const bridge = new FakeTerminalBridge(sessionName, ws, content, terminalInputWriter, {
+          readOnly,
+          onReplay: () => deps.sessionHealthTracker?.recordBridgeReplay(sessionName),
+          onLiveBytes: () => deps.sessionHealthTracker?.recordBridgeLiveBytes(sessionName),
+        });
+        deps.sessionHealthTracker?.recordBridgeOpened(sessionName);
+        fakeHealthTracked = true;
         activeBridges.set(ws, bridge);
         bridge.start();
         return;
@@ -360,7 +370,13 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
           deps.onLocalTerminalActivity?.(id);
           handleTerminalKeystroke(deps.terminalDeps, id);
         },
-        { readOnly },
+        {
+          readOnly,
+          onBridgeOpened: (id) => deps.sessionHealthTracker?.recordBridgeOpened(id),
+          onBridgeReplay: (id) => deps.sessionHealthTracker?.recordBridgeReplay(id),
+          onBridgeLiveBytes: (id) => deps.sessionHealthTracker?.recordBridgeLiveBytes(id),
+          onBridgeClosed: (id) => deps.sessionHealthTracker?.recordBridgeClosed(id),
+        },
       );
       activeBridges.set(ws, sb);
       sb.start().catch((err) => {
@@ -370,6 +386,10 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
 
     ws.on('close', () => {
       console.log(`Terminal bridge closed for ${sessionName}`);
+      if (fakeHealthTracked) {
+        fakeHealthTracked = false;
+        deps.sessionHealthTracker?.recordBridgeClosed(sessionName);
+      }
       activeBridges.delete(ws);
       deps.terminalRegistrar?.unregister(ws);
     });

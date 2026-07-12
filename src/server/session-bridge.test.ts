@@ -340,6 +340,66 @@ describe('SessionBridge', () => {
     expect(replayed).toBeDefined();
   });
 
+  it('reports bridge open, replay, live-byte, and close phases independently', async () => {
+    const backend = await makeReadySession('s1');
+    const ws = new FakeWs();
+    const onOpened = vi.fn();
+    const onReplay = vi.fn();
+    const onLiveBytes = vi.fn();
+    const onClosed = vi.fn();
+    const bridge = new SessionBridge(
+      's1',
+      ws as unknown as never,
+      backend,
+      undefined,
+      undefined,
+      undefined,
+      { onBridgeOpened: onOpened, onBridgeReplay: onReplay, onBridgeLiveBytes: onLiveBytes, onBridgeClosed: onClosed },
+    );
+
+    await bridge.start();
+    expect(onOpened).toHaveBeenCalledWith('s1');
+    expect(onReplay).toHaveBeenCalledWith('s1');
+
+    backend.emit('s1', new TextEncoder().encode('attach-redraw'), 'attach-replay');
+    await waitForOutputFlush();
+    expect(onLiveBytes).not.toHaveBeenCalled();
+
+    backend.emit('s1', new TextEncoder().encode('live'));
+    await waitForOutputFlush();
+    expect(onLiveBytes).toHaveBeenCalledWith('s1');
+
+    ws.emit('close');
+    ws.emit('close');
+    expect(onClosed).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not count attach-replay bytes emitted during startup as live browser liveness', async () => {
+    const backend = await makeReadySession('s1');
+    backend.setCaptureContent('s1', 'ring-snapshot');
+    backend.captureBytes = async () => {
+      backend.emit('s1', 'attach-redraw', 'attach-replay');
+      return new TextEncoder().encode('ring-snapshot');
+    };
+    const onLiveBytes = vi.fn();
+    const ws = new FakeWs();
+    const bridge = new SessionBridge(
+      's1',
+      ws as unknown as never,
+      backend,
+      undefined,
+      undefined,
+      undefined,
+      { onBridgeLiveBytes: onLiveBytes, outputBatchMs: 1 },
+    );
+
+    await bridge.start();
+    await waitForOutputFlush();
+
+    expect(Buffer.concat(ws.sent.filter(Buffer.isBuffer)).toString('utf-8')).toContain('attach-redraw');
+    expect(onLiveBytes).not.toHaveBeenCalled();
+  });
+
   it('forwards binary WS input to the session verbatim (no string coercion)', async () => {
     const backend = await makeReadySession('s1');
     const ws = new FakeWs();

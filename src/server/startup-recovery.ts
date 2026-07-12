@@ -37,6 +37,8 @@ interface StartupRecoveryDeps {
    *  replay their hook files. See rfc-activity-log-reliability edge cases. */
   hookIngestion?: HookIngestion;
   activityLedger?: ActivityLedger;
+  /** Shared boot epoch used by both recovery audit and session-health diagnostics. */
+  restartEpoch: number;
 }
 
 interface PromotePendingStartupTasksDeps {
@@ -65,6 +67,7 @@ export async function runStartupRecoveryPhase({
   ralphLoopService,
   hookIngestion,
   activityLedger,
+  restartEpoch,
 }: StartupRecoveryDeps): Promise<CrashRecoveryResult | null> {
   let startupRecoverySummary: CrashRecoveryResult | null = null;
 
@@ -169,7 +172,7 @@ export async function runStartupRecoveryPhase({
         terminalBackend,
         taskStore,
         resumedSessions: reconcileResult.resumed,
-        restartEpoch: Date.now(),
+        restartEpoch,
       });
     } catch (err) {
       console.warn('[post-restart-recovery] verification phase failed:', err);

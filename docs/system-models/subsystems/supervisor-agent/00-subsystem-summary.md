@@ -10,6 +10,8 @@ The supervisor agent is Kookr's core intelligence. It reads normalized agent eve
 - Runs anomaly detection patterns against recent events (event-driven via `HookFileWatcher` — no round-robin polling)
 - Produces `Alert` objects with severity, summary, and explanation
 - Expresses live agent state through `AgentState.anomaly` (anomaly type/severity) and `AgentState.snoozedUntil` in `monitor.ts`. The `AgentStatus` enum in `types.ts` is kept only as metadata on persisted sessions (`SessionInfo.lastStatus`) — there is no live `AgentStatus` state machine
+- Joins PTY/ring, hook, transcript, task-turn, dtach attach, browser bridge, and restart signals into versioned per-session health classifications and coordinated-stall diagnostics
+- Publishes health through `AgentState.sessionHealth`, the diagnostics endpoint, stale-finding context, and redacted support capture
 
 ## Owned Responsibilities
 

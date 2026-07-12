@@ -263,7 +263,13 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
     const wasNeedsInput = preState?.anomaly?.type === 'needs_input';
 
     monitor.processEvents(tmuxName, [pipelineEvent], { eventId });
-    watchdog.recordEvents(tmuxName, [pipelineEvent]);
+    if (meta.origin === 'replay') {
+      // Replayed hook history restores pairing/finding state but must not move
+      // the liveness clock forward to the restart time.
+      watchdog.recordEvents(tmuxName, [pipelineEvent], meta.observedAt, { updateLastEventAt: false });
+    } else {
+      watchdog.recordEvents(tmuxName, [pipelineEvent], meta.observedAt);
+    }
 
     // Post-event: if anomaly transitioned away from needs_input, clear stale suggestions
     const postState = monitor.getAgentState(tmuxName);

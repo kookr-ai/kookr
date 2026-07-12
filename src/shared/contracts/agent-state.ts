@@ -19,6 +19,7 @@ import type { TokenUsage } from './usage.js';
 import type { WorktreeHealth } from './session.js';
 import type { TerminalInputSnapshot } from './terminal-input.js';
 import type { UserInputDeliverySnapshot } from './user-input-delivery.js';
+import type { SessionHealthSnapshot } from './session-health.js';
 
 export interface AgentState {
   agentId: string;
@@ -105,4 +106,6 @@ export interface AgentState {
    * raw Monitor AgentState never carries it. Absent when no signal is raised.
    */
   pendingSignal?: PendingAgentSignal;
+  /** Cross-signal terminal/session health, projected when the session is live. */
+  sessionHealth?: SessionHealthSnapshot;
 }

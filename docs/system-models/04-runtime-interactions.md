@@ -201,6 +201,35 @@ sequenceDiagram
 
 > Updated 2026-05-09 for post-V8 code. `src/server/start.ts` now rejects `KOOKR_BACKEND` values other than `dtach`; reconciliation no longer has a tmux manager path. Dead unacknowledged sessions transition their task to `terminated`, preserving user review before cleanup.
 
+### Sequence 7: Cross-Signal Session Health Diagnostics
+
+```mermaid
+sequenceDiagram
+  participant PTY as LocalDtachBackend
+  participant Hooks as Hook/Watchdog Sources
+  participant Transcript as Transcript JSONL
+  participant Health as SessionHealthService
+  participant WS as Monitor Snapshot
+  participant API as Diagnostics API
+  participant SPA as Browser SPA
+
+  PTY-->>Health: ring progress + attach/socket diagnostics
+  Hooks-->>Health: last hook event timestamp
+  Transcript-->>Health: transcript freshness timestamp
+  Health->>Health: classify per-session health from independent signals
+  Health->>Health: correlate running stalls within the coordination window
+  Health-->>WS: AgentState.sessionHealth
+  SPA->>API: GET /api/diagnostics/session-health
+  API->>Health: build versioned fleet projection
+  Health-->>API: classifications, evidence, and optional root finding
+  API-->>SPA: session-health.v1 JSON
+```
+
+The projection is diagnostic-only: it does not mutate the attention queue or
+terminal sessions. Replay timestamps remain separate from fresh browser bytes,
+and missing signals are reported as unknown/missing rather than inferred as
+failure.
+
 ## Interaction Summary Table
 
 | Sequence | Trigger | Key Actors | Outcome |
@@ -212,6 +241,7 @@ sequenceDiagram
 | Agent session ends | Process exits in terminal session | Hook (Stop) / Terminal Session -> BE -> SPA | Agent session done; task returns to Open for review |
 | Task lifecycle | Developer marks complete / relaunches / cancels / reopens | SPA -> BE | Task state updated in tasks.json |
 | Startup reconnection | Kookr restarts | BE -> tasks.json + LocalDtachBackend -> Supervisor | Alive sessions reconnected, dead sessions marked terminated, dtach orphans logged (ADR-008 + ADR-014) |
+| Cross-signal session health | Signal stall or diagnostics refresh | LocalDtachBackend + hooks + transcript -> SessionHealthService -> Monitor/API -> SPA | Versioned health classifications and optional coordinated-stall root finding |
 
 ## Cross-Cutting Bottlenecks
 
