@@ -1,3 +1,4 @@
+import type { EventOrigin, InjectHookEventResult } from '../core/types.js';
 import type { TaskStore } from '../core/tasks.js';
 import { normalizeAgentType } from '../core/agent-types.js';
 import type {
@@ -71,8 +72,16 @@ export class RoutingAgentAdapter implements AgentAdapter {
     this.refreshHandlers.push(handler);
   }
 
-  injectHookEvent(tmuxName: string, rawJson: string, sequence?: number) {
-    return this.resolve(tmuxName).injectHookEvent(tmuxName, rawJson, sequence);
+  injectHookEvent(
+    tmuxName: string,
+    rawJson: string,
+    sequence?: number,
+    options?: { origin?: EventOrigin },
+  ): InjectHookEventResult {
+    const adapter = this.resolve(tmuxName);
+    return options
+      ? adapter.injectHookEvent(tmuxName, rawJson, sequence, options)
+      : adapter.injectHookEvent(tmuxName, rawJson, sequence);
   }
 
   getEffectiveHookSettings(tmuxName: string): EffectiveHookSettings | undefined {

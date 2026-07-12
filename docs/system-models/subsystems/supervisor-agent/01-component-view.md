@@ -13,6 +13,9 @@ flowchart TD
   Queue[Attention Queue<br/>attention-queue.ts]
   Explainer[Explanation Generator]
   Watchdog[Heartbeat Watchdog<br/>watchdog.ts]
+  Health[Session Health Projection<br/>session-health.ts + SessionHealthService]
+  SnapshotOut[AgentState.sessionHealth]
+  Diagnostics[Diagnostics API / SessionHealthPanel]
 
   HookEvents[Hook Events] -->|"processEvents()"| EventDriven
   EventDriven -->|"sliding event window"| Detectors
@@ -20,6 +23,9 @@ flowchart TD
   Detectors -->|"anomaly found"| Explainer
   Explainer -->|"summary text"| AlertOut[Alert Output]
   Watchdog -->|"stale agent detected"| EventDriven
+  EventDriven -->|"live turn state"| Health
+  Health -->|"versioned health snapshot"| SnapshotOut
+  Health -->|"fleet root diagnostics"| Diagnostics
 ```
 
 > Updated 2026-03-29: Replaced "Round-Robin Poller" with event-driven model to match implementation.
@@ -35,6 +41,7 @@ flowchart TD
 | **Attention Queue** (`attention-queue.ts`) | Priority queue with active/skipped tiers, snooze management, auto-advance. Sorts by `AnomalySeverity` (`critical > warning > info`) |
 | **Explanation Generator** | Fills templates with context from the anomaly: tool name, count, error message, duration |
 | **Heartbeat Watchdog** (`watchdog.ts`) | Detects agents that have stopped producing events (stale heartbeat). Fires callback when an agent exceeds the heartbeat threshold |
+| **Session Health Projection** (`session-health.ts`, `session-health-service.ts`) | Joins PTY/ring, hook, transcript, task-turn, dtach attach, browser bridge, and restart signals into explainable per-session classifications; groups correlated stalls into one fleet diagnostic for the diagnostics endpoint and agent snapshots |
 | **Alert Output** | The `Alert` object emitted to the attention-router: `{agentId, summary, details, severity}`. Enters the priority queue |
 
 ## Interaction And Ownership Notes

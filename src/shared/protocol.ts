@@ -2,6 +2,26 @@
 // Both sides import from here; neither imports directly from the other.
 
 export type { AgentState } from './contracts/agent-state.js';
+export {
+  COORDINATED_STALL_ROOT_CAUSES,
+  SESSION_HEALTH_CLASSIFICATIONS,
+  SESSION_HEALTH_SCHEMA_VERSION,
+} from './contracts/session-health.js';
+export type {
+  CoordinatedStallFinding,
+  SessionHealthBackend,
+  SessionHealthBrowser,
+  SessionHealthClassification,
+  SessionHealthDiagnostics,
+  SessionHealthAttachState,
+  SessionHealthProgress,
+  SessionHealthPtySignal,
+  SessionHealthSignal,
+  SessionHealthSignalState,
+  SessionHealthSnapshot,
+  SessionHealthTranscriptSignal,
+  SessionHealthTransportState,
+} from './contracts/session-health.js';
 export type {
   AgentType,
   AgentSelection,

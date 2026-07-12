@@ -270,7 +270,9 @@ export class HookIngestion implements HookEventInjector {
   private ingest({ kookrSessionId, raw, source, startupReplay = false, fileMtimeMs }: IngestInput): IngestResult {
     const normalized = raw.trim();
     const contentHash = createHash('sha256').update(normalized).digest('hex');
-    const origin = deriveEventOrigin(kookrSessionId);
+    // Startup replay rebuilds monitor state from durable history, but it must
+    // not refresh liveness timestamps as if the provider emitted new work.
+    const origin = startupReplay ? 'replay' : deriveEventOrigin(kookrSessionId);
     if (!normalized) {
       return {
         dispatched: false,
@@ -615,7 +617,9 @@ export class HookIngestion implements HookEventInjector {
       if (maxSequence > existing) this.sequenceCounters.set(kookrSessionId, maxSequence);
     }
     if (options?.replayLiveState === true && canReplayLiveState) {
-      const origin = deriveEventOrigin(kookrSessionId);
+      // Rehydrating durable rows after a server restart is historical replay,
+      // even when the original session id is a normal live-session id.
+      const origin: EventOrigin = 'replay';
       let replayedAllRows = true;
       for (const row of primaryParsedRows) {
         const raw = rawBySequence.get(row.envelope.sequence);

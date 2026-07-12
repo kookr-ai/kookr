@@ -209,6 +209,7 @@ Present only when the server was started with `KOOKR_ISSUE_CLAIMS` enabled; with
 | `GET /api/queue` | Attention queue contents |
 | `GET /api/anomaly-stats` | Anomaly counters and detector stats |
 | `GET /api/capture/:sessionId` | Snapshot of the dtach session ring buffer |
+| `GET /api/diagnostics/session-health` | Versioned cross-signal health snapshot for tracked sessions, including signal timestamps, attach state, browser bridge state, and coordinated-stall diagnostics |
 | `POST /api/hook-event/:sessionId` | HTTP push surface for hook events, used by Codex CLI hooks |
 
 ### `POST /api/hook-event/:sessionId`

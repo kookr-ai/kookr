@@ -62,6 +62,68 @@ describe('bug report bundle', () => {
     expect(serialized).not.toContain('ghp_123456789012345678901234');
   });
 
+  test('TS-HEALTH-008 includes redacted session-health evidence in support capture', () => {
+    const snapshot = toBugReportAgentSnapshot(agent({
+      sessionHealth: {
+        schemaVersion: 'session-health.v1',
+        sessionId: 'agent-1',
+        generatedAt: new Date('2026-05-24T10:00:00Z').toISOString(),
+        restartEpoch: new Date('2026-05-24T09:59:00Z').toISOString(),
+        classification: 'terminal-attach-stalled',
+        task: { status: 'inProgress', turnState: 'running' },
+        signals: {
+          pty: { state: 'stale', lastProgressAt: new Date('2026-05-24T09:00:00Z').toISOString(), ageMs: 3_600_000, ringHead: 12 },
+          hooks: { state: 'fresh', lastProgressAt: new Date('2026-05-24T09:59:30Z').toISOString(), ageMs: 30_000 },
+          transcript: { state: 'fresh', lastProgressAt: new Date('2026-05-24T09:59:30Z').toISOString(), ageMs: 30_000, present: true },
+        },
+        backend: {
+          transportState: 'verified',
+          attachState: 'alive',
+          recoveryInProgress: false,
+          attachGeneration: 4,
+          reattachCount: 2,
+          lastAttachAt: new Date('2026-05-24T09:58:00Z').toISOString(),
+        },
+        browser: {
+          bridgeOpen: false,
+          lastOpenAt: null,
+          lastReplayAt: null,
+          lastLiveByteAt: null,
+          freshBytesAfterReplay: false,
+          replayedOnly: false,
+        },
+        progress: {
+          lastProgressAt: new Date('2026-05-24T09:59:30Z').toISOString(),
+          stallAgeMs: 30_000,
+        },
+        evidence: ['Transcript path /home/alice/private-transcript.jsonl is redacted before capture'], // portability-ok: intentional redaction fixture
+        coordinatedStall: {
+          id: 'coordinated-stall:one,two',
+          rootCause: 'coordinated-terminal-path-stall',
+          detectedAt: new Date('2026-05-24T10:00:00Z').toISOString(),
+          sessionIds: ['agent-1', 'agent-2'],
+          windowMs: 2_000,
+          restartEpoch: new Date('2026-05-24T09:59:00Z').toISOString(),
+          postRestart: true,
+          evidence: ['Shared transcript path /home/alice/private-transcript.jsonl'], // portability-ok: intentional redaction fixture
+        },
+      },
+    }));
+
+    expect(snapshot.health).toMatchObject({ classification: 'terminal-attach-stalled' });
+    expect(snapshot.health?.evidence).toEqual([
+      'Transcript path [redacted path] is redacted before capture',
+    ]);
+    expect(snapshot.health?.coordinatedStall?.evidence).toEqual([
+      'Shared transcript path [redacted path]',
+    ]);
+    expect(JSON.stringify(snapshot)).not.toContain('/home/alice');
+    expect(JSON.stringify(snapshot)).not.toContain('private-transcript.jsonl');
+    expect(JSON.stringify(snapshot)).not.toContain('masterPid');
+    expect(JSON.stringify(snapshot)).not.toContain('agentPid');
+    expect(JSON.stringify(snapshot)).not.toContain('identityVerified');
+  });
+
   test('redacts project identity, paths, prompts, alerts, notes, and secrets by default', () => {
     const { bundle, serialized } = buildBugReportBundle({
       agents: [agent()],

@@ -88,6 +88,27 @@ export interface BackendStats {
 }
 
 /**
+ * Server-only per-session transport diagnostics. The session-health service
+ * projects this raw adapter shape to a privacy-safe wire DTO; callers must not
+ * forward this interface directly to browser clients.
+ */
+export interface TerminalSessionDiagnostics {
+  sessionId: SessionId;
+  socketPresent: boolean | null;
+  identityVerified: boolean | null;
+  masterPid: number | null;
+  agentPid: number | null;
+  attachChildAlive: boolean | null;
+  /** True while startup/restart recovery is actively repairing this session. */
+  recoveryInProgress?: boolean;
+  attachGeneration: number;
+  reattachCount: number;
+  ringHead: number;
+  lastByteAt: number | null;
+  lastAttachAt: number | null;
+}
+
+/**
  * Options for {@link TerminalBackend.reconnectTransport}.
  */
 export interface ReconnectTransportOptions {
@@ -120,6 +141,7 @@ export type ReconnectTransportOutcome = 'success' | 'inconclusive' | 'failure';
  *                             wrong process).
  *   - `attach-spawn-failed` → failure: the fresh internal attach could not be
  *                             opened (or exited immediately).
+ *   - `backend-closed`       → failure: shutdown won the race with recovery.
  *   - `cooldown`            → failure: another reconnect happened too recently.
  *   - `retry-cap`           → failure: too many reconnects in the rolling window.
  */
@@ -130,6 +152,7 @@ export type ReconnectTransportReason =
   | 'socket-missing'
   | 'identity-unverified'
   | 'attach-spawn-failed'
+  | 'backend-closed'
   | 'cooldown'
   | 'retry-cap';
 
@@ -180,6 +203,7 @@ export type RecoveredSessionFailureReason =
   | 'socket-missing' // the dtach socket is gone.
   | 'identity-unverified' // master pid/socket could not be confirmed (pid recycle / wrong process).
   | 'attach-spawn-failed' // a fresh internal attach could not be opened during repair.
+  | 'backend-closed' // backend shutdown won the race with recovery.
   | 'no-liveness-after-repair'; // attaches spawned fine but never emitted a byte within the caps.
 
 /** Options for {@link TerminalBackend.verifyRecoveredSession}. */
@@ -329,6 +353,9 @@ export interface TerminalBackend extends TerminalSessionStreamPort {
 
   /** Snapshot of internal counters for `/api/health.terminalBackend`. */
   getStats(): BackendStats;
+
+  /** Optional per-session transport diagnostics for cross-signal health. */
+  getSessionDiagnostics?(id: SessionId): TerminalSessionDiagnostics | null;
 
   /**
    * Optional. Tear down any backend-owned background work (timers, final

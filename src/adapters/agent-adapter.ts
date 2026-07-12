@@ -1,4 +1,4 @@
-import type { AgentEvent, EventMeta, InjectHookEventResult } from '../core/types.js';
+import type { AgentEvent, EventMeta, EventOrigin, InjectHookEventResult } from '../core/types.js';
 import type { AgentType } from '../core/agent-types.js';
 import type { AgentInteractionPort } from '../core/ports/agent-interaction-port.js';
 import type { InstalledBinaryIdentity } from './probe-agent-binary.js';
@@ -159,7 +159,12 @@ export interface AgentAdapter extends AgentInteractionPort {
    *  throw on malformed payloads. The optional `sequence` lets callers thread
    *  a Kookr-side sequence number into the emitted EventMeta; when omitted,
    *  the adapter falls back to its own per-session counter. */
-  injectHookEvent(tmuxName: string, rawJson: string, sequence?: number): InjectHookEventResult;
+  injectHookEvent(
+    tmuxName: string,
+    rawJson: string,
+    sequence?: number,
+    options?: { origin?: EventOrigin },
+  ): InjectHookEventResult;
 
   /**
    * Return the hook settings Kookr passed to --settings for a given session,

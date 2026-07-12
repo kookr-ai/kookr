@@ -62,7 +62,7 @@ On each hook event, the supervisor:
 3. If an anomaly is detected, enqueues the agent and generates an explanation
 4. Broadcasts an updated snapshot to all connected frontends
 
-A separate 5-second liveness interval reconciles session state against the dtach backend (detecting dead sessions), but event monitoring is purely event-driven.
+A separate 5-second liveness interval reconciles session state against the dtach backend (detecting dead sessions), but event monitoring is purely event-driven. The `SessionHealthService` composes that backend state with PTY/ring progress, hook freshness, transcript mtime, task turn state, browser bridge replay/live timing, and the server restart epoch. It publishes the same versioned projection to `AgentState.sessionHealth` and `GET /api/diagnostics/session-health`; `detectCoordinatedStall` adds one fleet-level root diagnostic when independent sessions stop advancing together.
 
 **Ralph-loop startup probe:** `RalphLoopService.reconcileStartupLoops` runs once at server boot for each task whose `ralphLoop.status === 'running'`. It calls `probeStartupLiveness`, a startup-only helper that asks `terminalBackend.isAlive` per session with a 500 ms per-probe timeout. Loops with a probe-confirmed-alive session are preserved; the rest are marked `failed` with `exitReason: 'kookr_crash'`. The probe catches the dtach-master-killed phantom shape (WSL/OS crashes) but not the agent-child-exited shape; the latter still goes through the user-facing Replace dialog (`POST /api/tasks/:taskId/ralph-loop/replace-with-new`). See `docs/rfc/rfc-ralph-loop-crash-restart-recovery.md`.
 

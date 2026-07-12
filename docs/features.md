@@ -269,8 +269,8 @@ For field debugging, Kookr can run a self-diagnostic pass (disk, memory, hook pi
 | ID | Feature | Description |
 |----|---------|-------------|
 | F15.1 | **Diagnostic runner** | `self-diagnostic.ts` + `diagnostic-runner.ts` execute checks and build a `DiagnosticReport`. |
-| F15.2 | **On-demand HTTP surface** | `routes/diagnostics-routes.ts` exposes `/api/diagnostic` for cached status and `/api/diagnostic/run` for manual diagnostic runs. |
-| F15.3 | **Detection stats panel** | `DetectionStatsPanel.tsx` renders anomaly-detection stats and recent health signals. |
+| F15.2 | **On-demand HTTP surface** | `routes/diagnostics-routes.ts` exposes `/api/diagnostic` for cached status, `/api/diagnostic/run` for manual diagnostic runs, and `/api/diagnostics/session-health` for versioned cross-signal session diagnostics. |
+| F15.3 | **Detection and session health diagnostics** | `DetectionStatsPanel.tsx` renders anomaly-detection stats; `SessionHealthPanel.tsx` exposes explainable cross-signal terminal health, attach/browser state, and coordinated-stall context. |
 
 ### F-Settings: Settings UI
 

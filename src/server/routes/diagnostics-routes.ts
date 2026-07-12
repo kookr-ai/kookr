@@ -29,6 +29,7 @@ import type { HookIngestionDiagnosticsSnapshot } from '../hook-ingestion.js';
 import type { HookWatcherHealthSnapshot } from '../hook-watcher.js';
 import { getAuthThrottleSnapshot } from '../auth.js';
 import { DELIVERY_TRACE_SCHEMA_VERSION, type DeliveryTraceFilter } from '../../shared/contracts/delivery-trace.js';
+import { SESSION_HEALTH_SCHEMA_VERSION } from '../../shared/contracts/session-health.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const REVIEW_ADMIN_TOKEN_HEADER = 'x-kookr-admin-token';
@@ -199,6 +200,20 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   app.get('/api/diagnostics/launch-dependencies', (c) => (
     c.json(buildLaunchDependencyDiagnostics(taskStore.listTasks()))
   ));
+
+  app.get('/api/diagnostics/session-health', (c) => {
+    try {
+      return c.json(deps.sessionHealthService?.getDiagnostics() ?? {
+        schemaVersion: SESSION_HEALTH_SCHEMA_VERSION,
+        generatedAt: new Date().toISOString(),
+        restartEpoch: serverStartedAt,
+        sessions: [],
+        coordinatedStall: null,
+      });
+    } catch {
+      return c.json({ error: 'session health diagnostics unavailable' }, 503);
+    }
+  });
 
   app.get('/api/live-friction-calibration', async (c) => {
     try {

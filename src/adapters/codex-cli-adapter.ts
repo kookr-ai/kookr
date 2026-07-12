@@ -8,6 +8,7 @@ import type { TaskStore } from '../core/tasks.js';
 import type {
   AgentEvent,
   EventMeta,
+  EventOrigin,
   EventParentage,
   InjectHookEventResult,
 } from '../core/types.js';
@@ -465,7 +466,12 @@ export class CodexCliAdapter implements AgentAdapter {
    * returns parseStatus='malformed' so HookIngestion can record a
    * diagnostic ledger row. See rfc-activity-log-reliability §2.
    */
-  injectHookEvent(tmuxName: string, rawJson: string, externalSequence?: number): InjectHookEventResult {
+  injectHookEvent(
+    tmuxName: string,
+    rawJson: string,
+    externalSequence?: number,
+    options?: { origin?: EventOrigin },
+  ): InjectHookEventResult {
     const observedAt = Date.now();
     const observedAtIso = new Date(observedAt).toISOString();
 
@@ -580,7 +586,13 @@ export class CodexCliAdapter implements AgentAdapter {
 
     const sequence = externalSequence ?? (this.sequenceCounters.get(tmuxName) ?? 0) + 1;
     this.sequenceCounters.set(tmuxName, sequence);
-    const meta: EventMeta = { parentage, rawSessionId, sequence, observedAt };
+    const meta: EventMeta = {
+      parentage,
+      rawSessionId,
+      sequence,
+      observedAt,
+      ...(options?.origin ? { origin: options.origin } : {}),
+    };
 
     for (const handler of this.eventHandlers) {
       handler(tmuxName, event, meta);

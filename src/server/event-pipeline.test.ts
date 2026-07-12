@@ -112,6 +112,7 @@ function createMockDeps(): {
       sequence += 1;
       const fullMeta: EventMeta = {
         parentage: meta?.parentage ?? 'parent',
+        ...(meta?.origin ? { origin: meta.origin } : {}),
         rawSessionId: meta?.rawSessionId ?? ('sessionId' in event ? event.sessionId : undefined),
         sequence: meta?.sequence ?? sequence,
         observedAt: meta?.observedAt ?? Date.now(),
@@ -935,6 +936,26 @@ describe('event-pipeline: parentage gating (rfc-activity-log-reliability)', () =
 
     expect(deps.monitor.processEvents).toHaveBeenCalledTimes(1);
     expect(deps.watchdog.recordEvents).toHaveBeenCalledTimes(1);
+  });
+
+  test('startup-replayed events rebuild watchdog state without refreshing liveness', () => {
+    const { deps, fireEvent } = createMockDeps();
+    wireEventPipeline(deps);
+    const observedAt = 90_000;
+
+    fireEvent('kookr-parent', {
+      type: 'tool_result',
+      sessionId: 'codex-parent',
+      toolName: 'Read',
+      toolUseId: 'tu-1',
+    }, { parentage: 'parent', origin: 'replay', observedAt });
+
+    expect(deps.watchdog.recordEvents).toHaveBeenCalledWith(
+      'kookr-parent',
+      expect.any(Array),
+      observedAt,
+      { updateLastEventAt: false },
+    );
   });
 
   test('child session_start still registers transcript with parent task for token rollup', () => {

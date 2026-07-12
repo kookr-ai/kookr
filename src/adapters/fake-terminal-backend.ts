@@ -14,6 +14,7 @@ import {
   SessionGoneError,
 } from './terminal-backend.js';
 import type { TerminalInputWriteResult, TerminalInputWriterPort } from '../core/ports/terminal-input-writer-port.js';
+import type { TerminalSessionDataSource } from '../core/ports/terminal-session-stream-port.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: false });
@@ -62,7 +63,7 @@ export interface FakeSession {
   keysReceived: string[];
   /** Multi-line text recorded by the historical `pasteText` helper. */
   pastedTexts: string[];
-  dataSubscribers: Set<(data: Uint8Array) => void>;
+  dataSubscribers: Set<(data: Uint8Array, source?: TerminalSessionDataSource) => void>;
   /** Raw byte record of every `write` call, in submission order. */
   written: Uint8Array[];
   /** Draft text accumulated by separate write() calls until Enter submits it. */
@@ -261,7 +262,7 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
     return full.subarray(full.length - maxBytes);
   }
 
-  onData(id: SessionId, cb: (data: Uint8Array) => void): () => void {
+  onData(id: SessionId, cb: (data: Uint8Array, source?: TerminalSessionDataSource) => void): () => void {
     const s = this.sessions.get(id);
     if (!s) throw new SessionGoneError(id);
     s.dataSubscribers.add(cb);
@@ -498,14 +499,14 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
   // ─── Test-only helpers ──────────────────────────────────────────────────
 
   /** Simulate bytes arriving from the agent. Fans out to `onData` subscribers. */
-  emit(id: SessionId, bytes: Uint8Array | string): void {
+  emit(id: SessionId, bytes: Uint8Array | string, source?: TerminalSessionDataSource): void {
     const u8 = typeof bytes === 'string' ? encoder.encode(bytes) : new Uint8Array(bytes);
     const s = this.sessions.get(id);
     if (!s) throw new SessionGoneError(id);
     s.paneContent += decoder.decode(u8);
     for (const cb of s.dataSubscribers) {
       try {
-        cb(u8);
+        cb(u8, source);
       } catch {
         /* keep serving others */
       }

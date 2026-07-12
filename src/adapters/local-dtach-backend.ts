@@ -19,7 +19,8 @@
  *     `session-attach-recovered` on recovery and `session-attach-failed`
  *     on cap exhaustion.
  *   - Manifest pid verification via `/proc/<pid>/exe` + `/proc/<pid>/cmdline`
- *     (guards against pid recycling).
+ *     on Linux, or a `ps` command-line check on macOS (guards against pid
+ *     recycling).
  *   - Manifest corruption recovery — on parse failure, the corrupt file is
  *     renamed to `.corrupt-<ts>` and entries are rebuilt from the socket
  *     directory; a `manifest-corrupt` error is emitted.
@@ -27,7 +28,7 @@
  * See: docs/rfc/rfc-v8-tmux-removal.md
  * See: docs/adr/014-local-dtach-backend.md
  */
-import { spawn as spawnChild } from 'node:child_process';
+import { execFileSync, spawn as spawnChild } from 'node:child_process';
 import {
   accessSync,
   constants as fsConstants,
@@ -41,6 +42,7 @@ import {
 import { access as fsAccess } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 import { spawn, type IPty } from 'node-pty';
+import type { TerminalSessionDataSource } from '../core/ports/terminal-session-stream-port.js';
 import {
   type BackendError,
   type BackendStats,
@@ -51,6 +53,7 @@ import {
   type RecoveredSessionFailureReason,
   type SessionId,
   type SessionSpec,
+  type TerminalSessionDiagnostics,
   type TerminalBackend,
   type VerifyRecoveredSessionOptions,
   type VerifyRecoveredSessionResult,
@@ -140,7 +143,7 @@ interface AttachedSession extends DtachRingState {
   /** Current attach child; null while transiently detached after a crash. */
   pty: IPty | null;
   /** Byte subscribers. */
-  dataSubscribers: Set<(data: Uint8Array) => void>;
+  dataSubscribers: Set<(data: Uint8Array, source?: TerminalSessionDataSource) => void>;
   /** Writer-mutex tail — chained Promise that sequences write/writeSequence. */
   writeMutex: Promise<void>;
   /** Count of callers currently queued or executing under `writeMutex`. */
@@ -156,6 +159,12 @@ interface AttachedSession extends DtachRingState {
    * first create or resize supplies one.
    */
   currentSize: { cols: number; rows: number } | null;
+  /** Timestamp when the current attach generation was opened. */
+  lastAttachAt: number | null;
+  /** Ignore the one-shot dtach redraw while rebuilding an existing attach. */
+  attachReplayUntil: number;
+  /** First non-empty chunk from explicit recovery is replay, even if delayed. */
+  attachReplayPending: boolean;
   /**
    * Disposes the current attach child's `onData`/`onExit` listeners. Called
    * before `pty.kill()` on every teardown so a just-killed attach cannot fan
@@ -256,6 +265,9 @@ export class LocalDtachBackend implements TerminalBackend {
   /** Per-session timestamps of recent completed reconnects, for the cap + cooldown. */
   private readonly reconnectHistory = new Map<SessionId, number[]>();
 
+  /** Sessions whose internal transport is currently being repaired. */
+  private readonly recoveryInProgress = new Set<SessionId>();
+
   /** Active attached sessions (persistent internal attaches). */
   private readonly attached = new Map<SessionId, AttachedSession>();
 
@@ -273,6 +285,8 @@ export class LocalDtachBackend implements TerminalBackend {
 
   /** True after `close()` has torn down the backend. Prevents double-close. */
   private closed = false;
+  /** Resolves in-flight recovery waits immediately when shutdown starts. */
+  private readonly closeWaiters = new Set<() => void>();
 
   constructor(options: LocalDtachBackendOptions = {}) {
     this.instanceId = options.instanceId ?? 'default';
@@ -318,6 +332,9 @@ export class LocalDtachBackend implements TerminalBackend {
     }
     // Final flush first so disposal can't race the last snapshot.
     this.flushAllRings();
+    for (const resolve of this.closeWaiters) resolve();
+    this.closeWaiters.clear();
+    this.recoveryInProgress.clear();
     for (const id of [...this.attached.keys()]) {
       this.disposeAttach(id);
     }
@@ -504,7 +521,7 @@ export class LocalDtachBackend implements TerminalBackend {
     return new Uint8Array(out);
   }
 
-  onData(id: SessionId, cb: (data: Uint8Array) => void): () => void {
+  onData(id: SessionId, cb: (data: Uint8Array, source?: TerminalSessionDataSource) => void): () => void {
     const sess = this.ensureReadable(id);
     sess.dataSubscribers.add(cb);
     return () => {
@@ -541,12 +558,14 @@ export class LocalDtachBackend implements TerminalBackend {
     // (idempotency under duplicate clicks/requests, kookr-ai/kookr#1347).
     const inFlight = this.reconnectInFlight.get(id);
     if (inFlight) return inFlight;
+    this.recoveryInProgress.add(id);
     const run = this.performReconnect(id, options);
     this.reconnectInFlight.set(id, run);
     try {
       return await run;
     } finally {
       this.reconnectInFlight.delete(id);
+      this.recoveryInProgress.delete(id);
     }
   }
 
@@ -567,6 +586,7 @@ export class LocalDtachBackend implements TerminalBackend {
 
     // 1. Session must be known and its socket present.
     const entry = await this.readEntry(id);
+    if (this.closed) return this.reconnectFailure(id, 'backend-closed', base, options);
     if (!entry) return this.reconnectFailure(id, 'session-unknown', base, options);
     if (!existsSync(entry.sock)) return this.reconnectFailure(id, 'socket-missing', base, options);
 
@@ -597,6 +617,7 @@ export class LocalDtachBackend implements TerminalBackend {
     const sess = this.createAttachedState(id, entry.sock);
     base.previousGeneration = sess.attachGeneration;
     this.disposeAttachChildOnly(sess);
+    if (this.closed) return this.reconnectFailure(id, 'backend-closed', base, options);
 
     // 5. Install the fresh-liveness probe BEFORE spawning so the first byte the
     //    new attach emits (the dtach redraw) is observed. The probe only reads;
@@ -605,15 +626,15 @@ export class LocalDtachBackend implements TerminalBackend {
     const liveSignal = new Promise<void>((resolve) => {
       resolveLive = resolve;
     });
-    const probe = (bytes: Uint8Array): void => {
-      if (bytes.length > 0) resolveLive?.();
+    const probe = (bytes: Uint8Array, source?: TerminalSessionDataSource): void => {
+      if (bytes.length > 0 && source !== 'attach-replay') resolveLive?.();
     };
     sess.dataSubscribers.add(probe);
 
     // 6. Open a fresh attach generation (reapplies sess.currentSize, keeps the
     //    same dataSubscribers + ring). No agent relaunch, no input written.
     try {
-      this.attachPtyInto(sess, entry.sock);
+      this.attachPtyInto(sess, entry.sock, undefined, true);
     } catch (err) {
       sess.dataSubscribers.delete(probe);
       base.newGeneration = sess.attachGeneration;
@@ -630,12 +651,17 @@ export class LocalDtachBackend implements TerminalBackend {
         ? options.livenessTimeoutMs
         : DEFAULT_RECONNECT_LIVENESS_TIMEOUT_MS;
     const start = Date.now();
-    const live = await Promise.race([
+    const liveResult = await this.raceWithClose(Promise.race([
       liveSignal.then(() => true),
       sleep(timeoutMs).then(() => false),
-    ]);
+    ]));
     sess.dataSubscribers.delete(probe);
     base.livenessWaitedMs = Date.now() - start;
+
+    if (liveResult === 'backend-closed') {
+      return this.reconnectFailure(id, 'backend-closed', base, options);
+    }
+    const live = liveResult;
 
     // Re-resolve the agent pid post-attach so the audit proves it is unchanged.
     base.agentPid = this.findAgentPidSync(masterPid);
@@ -721,6 +747,20 @@ export class LocalDtachBackend implements TerminalBackend {
     id: SessionId,
     options: VerifyRecoveredSessionOptions,
   ): Promise<VerifyRecoveredSessionResult> {
+    this.recoveryInProgress.add(id);
+    try {
+      return await this.verifyRecoveredSessionImpl(id, options);
+    } finally {
+      // A thrown read/probe error must not leave health stuck at
+      // `recovery-in-progress` forever.
+      this.recoveryInProgress.delete(id);
+    }
+  }
+
+  private async verifyRecoveredSessionImpl(
+    id: SessionId,
+    options: VerifyRecoveredSessionOptions,
+  ): Promise<VerifyRecoveredSessionResult> {
     const restartEpoch = options.restartEpoch ?? Date.now();
     const grace =
       options.graceWindowMs && options.graceWindowMs > 0
@@ -736,7 +776,6 @@ export class LocalDtachBackend implements TerminalBackend {
         ? options.maxRepairAttempts
         : DEFAULT_RECOVERY_MAX_REPAIRS;
     const start = Date.now();
-
     const acc = {
       identityVerified: false,
       masterPid: -1,
@@ -749,6 +788,7 @@ export class LocalDtachBackend implements TerminalBackend {
       livenessObserved: boolean,
       failureReason?: RecoveredSessionFailureReason,
     ): VerifyRecoveredSessionResult => {
+      this.recoveryInProgress.delete(id);
       const result: VerifyRecoveredSessionResult = {
         sessionId: id,
         classification,
@@ -762,7 +802,7 @@ export class LocalDtachBackend implements TerminalBackend {
         ...(failureReason ? { failureReason } : {}),
       };
       this.auditRecovery(result, options.expectWorking, acc.spawnError);
-      if (classification === 'recovered-unverified') {
+      if (classification === 'recovered-unverified' && failureReason !== 'backend-closed') {
         this.emitError({
           kind: 'session-recovery-unverified',
           id,
@@ -780,6 +820,7 @@ export class LocalDtachBackend implements TerminalBackend {
 
     // 1. Session must be known and its socket present.
     const entry = await this.readEntry(id);
+    if (this.closed) return finish('recovered-unverified', 0, false, 'backend-closed');
     if (!entry) return finish('recovered-unverified', 0, false, 'session-unknown');
     if (!existsSync(entry.sock)) return finish('recovered-unverified', 0, false, 'socket-missing');
 
@@ -798,6 +839,7 @@ export class LocalDtachBackend implements TerminalBackend {
     //    with the on-attach redraw discounted via the settle window).
     const sess = this.createAttachedState(id, entry.sock);
     let probe = await this.observeRecoveryProgress(sess, entry.sock, settle, grace);
+    if (this.closed) return finish('recovered-unverified', 0, false, 'backend-closed');
     if (probe.spawnError) acc.spawnError = probe.spawnError;
     if (probe.live) return finish('recovered-live', 0, true);
 
@@ -812,6 +854,7 @@ export class LocalDtachBackend implements TerminalBackend {
       attempts += 1;
       this.disposeAttachChildOnly(sess);
       probe = await this.observeRecoveryProgress(sess, entry.sock, settle, grace);
+      if (this.closed) return finish('recovered-unverified', attempts, false, 'backend-closed');
       if (probe.spawnError) acc.spawnError = probe.spawnError;
       if (probe.live) {
         // Re-resolve the agent pid so the audit proves it is unchanged post-repair.
@@ -846,9 +889,10 @@ export class LocalDtachBackend implements TerminalBackend {
     settleMs: number,
     windowMs: number,
   ): Promise<{ live: boolean; spawnError?: string }> {
+    if (this.closed) return { live: false, spawnError: 'backend-closed' };
     if (!sess.pty) {
       try {
-        this.attachPtyInto(sess, sock);
+        this.attachPtyInto(sess, sock, undefined, true);
       } catch (err) {
         return { live: false, spawnError: err instanceof Error ? err.message : String(err) };
       }
@@ -856,7 +900,10 @@ export class LocalDtachBackend implements TerminalBackend {
     if (!sess.pty) return { live: false };
 
     // Let the on-attach redraw/replay flush so it is not mistaken for progress.
-    if (settleMs > 0) await sleep(settleMs);
+    if (settleMs > 0) {
+      const settled = await this.raceWithClose(sleep(settleMs));
+      if (settled === 'backend-closed') return { live: false, spawnError: 'backend-closed' };
+    }
 
     // Baseline AFTER settle: bytes up to here (redraw + any pre-settle output)
     // are discounted. We only count what arrives during the window.
@@ -865,17 +912,20 @@ export class LocalDtachBackend implements TerminalBackend {
     const progressSignal = new Promise<void>((resolve) => {
       resolveProgress = resolve;
     });
-    const probe = (bytes: Uint8Array): void => {
-      if (bytes.length > 0) resolveProgress?.();
+    const probe = (bytes: Uint8Array, source?: TerminalSessionDataSource): void => {
+      if (bytes.length > 0 && source !== 'attach-replay') resolveProgress?.();
     };
     sess.dataSubscribers.add(probe);
     try {
-      const progressed = await Promise.race([
+      const progressedResult = await this.raceWithClose(Promise.race([
         progressSignal.then(() => true),
         sleep(windowMs).then(() => false),
-      ]);
+      ]));
+      if (progressedResult === 'backend-closed') {
+        return { live: false, spawnError: 'backend-closed' };
+      }
       // Fall back to the ring-head delta for a byte that raced probe install.
-      return { live: progressed || sess.ringHead > baseline };
+      return { live: progressedResult || sess.ringHead > baseline };
     } finally {
       sess.dataSubscribers.delete(probe);
     }
@@ -915,6 +965,43 @@ export class LocalDtachBackend implements TerminalBackend {
       pendingWriters: pending,
       lastError: this.lastError,
       errorCount: this.errorCount,
+    };
+  }
+
+  getSessionDiagnostics(id: SessionId): TerminalSessionDiagnostics | null {
+    const entry = this.manifestStore.read().entries.find((candidate) => candidate.sessionId === id);
+    const sess = this.attached.get(id);
+    if (!entry && !sess) return null;
+
+    const socketPresent = entry ? existsSync(entry.sock) : null;
+    const resolvedMasterPid = entry
+      ? entry.pid > 0 ? entry.pid : this.findDtachMasterPidSync(entry.sock)
+      : -1;
+    const masterPid = resolvedMasterPid > 0 ? resolvedMasterPid : null;
+    // A recovered manifest can lack a PID when the platform has no /proc
+    // process table (notably macOS). The owned socket is useful best-effort
+    // identity evidence there; on Linux an unresolved PID remains unknown
+    // rather than being turned into either a false live or false lost state.
+    const identityVerified = entry === undefined
+      ? null
+      : masterPid !== null
+        ? this.verifyMasterIdentity(masterPid, entry.sock)
+        : socketPresent === false ? false : null;
+    return {
+      sessionId: id,
+      socketPresent,
+      identityVerified,
+      masterPid,
+      // Agent PID lookup scans the full process table and is only needed for
+      // explicit reconnect/recovery audit results, not health classification.
+      agentPid: null,
+      attachChildAlive: sess ? sess.pty !== null : null,
+      recoveryInProgress: this.recoveryInProgress.has(id),
+      attachGeneration: sess?.attachGeneration ?? 0,
+      reattachCount: sess?.reattachCount ?? 0,
+      ringHead: sess?.ringHead ?? 0,
+      lastByteAt: sess?.lastByteAt ?? null,
+      lastAttachAt: sess?.lastAttachAt ?? null,
     };
   }
 
@@ -971,7 +1058,10 @@ export class LocalDtachBackend implements TerminalBackend {
       sess.reattachWindow.push(now);
       sess.reattachCount += 1;
       this.reattachCounts[id] = sess.reattachCount;
-      this.attachPtyInto(sess, entry.sock);
+      // This path is immediately followed by a user write. Keep its bytes in
+      // the ring; replay suppression is reserved for explicit recovery probes
+      // that are measuring post-restart transport liveness.
+      this.attachPtyInto(sess, entry.sock, undefined, false, false);
       this.emitError({
         kind: 'session-attach-recovered',
         id,
@@ -1001,7 +1091,10 @@ export class LocalDtachBackend implements TerminalBackend {
     initialSize: { cols: number; rows: number } | undefined,
   ): void {
     const sess = this.createAttachedState(id, sock);
-    this.attachPtyInto(sess, sock, initialSize);
+    // A newly created session has no historical screen to discount. Keep its
+    // first response in the ring; replay suppression is only for recovered
+    // attach generations that explicitly opt into it.
+    this.attachPtyInto(sess, sock, initialSize, false, false);
   }
 
   /**
@@ -1025,6 +1118,9 @@ export class LocalDtachBackend implements TerminalBackend {
       reattachCount: 0,
       // `currentSize` is seeded by `attachPtyInto`.
       currentSize: null,
+      lastAttachAt: null,
+      attachReplayUntil: 0,
+      attachReplayPending: false,
       disposePtyListeners: null,
       attachGeneration: 0,
     };
@@ -1041,12 +1137,21 @@ export class LocalDtachBackend implements TerminalBackend {
     sess: AttachedSession,
     sock: string,
     initialSize?: { cols: number; rows: number },
+    suppressAttachReplay = false,
+    classifyFirstChunkAsReplay = true,
   ): void {
+    if (this.closed) return;
     // Re-attaches after a crash pass `initialSize=undefined`; falling back to
     // the remembered size keeps the TUI viewport stable across the crash
     // instead of snapping back to the 80x24 default.
     const size = initialSize ?? sess.currentSize ?? { cols: 80, rows: 24 };
     sess.currentSize = size;
+    sess.attachReplayUntil = suppressAttachReplay ? Date.now() + DEFAULT_RECOVERY_SETTLE_MS : 0;
+    // The first non-empty chunk from normal and recovery attaches is the dtach
+    // redraw/replay, even if delayed beyond the settle timer. A lazy reattach
+    // is immediately followed by a user write, so its first chunk remains live
+    // to preserve genuine response bytes in the ring.
+    sess.attachReplayPending = classifyFirstChunkAsReplay;
     // `dtach -a <sock> -E` — socket first, no detach escape char.
     const pty = spawn(this.dtachBinary, ['-a', sock, '-E'], {
       name: 'xterm-256color',
@@ -1065,17 +1170,22 @@ export class LocalDtachBackend implements TerminalBackend {
       // "â" in the activity stream.)
       const buf = typeof data === 'string' ? Buffer.from(data, 'utf-8') : Buffer.from(data);
       const bytes = new Uint8Array(buf);
+      const isAttachReplay = sess.attachReplayPending || Date.now() < sess.attachReplayUntil;
+      if (sess.attachReplayPending && bytes.length > 0) sess.attachReplayPending = false;
+      const source: TerminalSessionDataSource = isAttachReplay ? 'attach-replay' : 'live';
       // Fan out to subscribers FIRST, then update the ring. `captureBytes` is
       // lock-free; subscribers see the stream before it is buffered for pull
       // consumers, which matches the v7 SessionBridge semantics.
       for (const cb of sess.dataSubscribers) {
         try {
-          cb(bytes);
+          cb(bytes, source);
         } catch {
           // a listener threw — keep serving others
         }
       }
-      this.copyIntoRing(sess, bytes);
+      if (source === 'live') {
+        this.copyIntoRing(sess, bytes);
+      }
     });
 
     const onExitDisposable = pty.onExit(() => {
@@ -1087,6 +1197,7 @@ export class LocalDtachBackend implements TerminalBackend {
     });
 
     sess.pty = pty;
+    sess.lastAttachAt = Date.now();
     sess.disposePtyListeners = () => {
       try {
         onDataDisposable.dispose();
@@ -1242,6 +1353,7 @@ export class LocalDtachBackend implements TerminalBackend {
   }
 
   private copyIntoRing(sess: AttachedSession, bytes: Uint8Array): void {
+    if (bytes.length > 0) sess.lastByteAt = Date.now();
     this.ringStore.copyInto(sess, bytes);
   }
 
@@ -1343,27 +1455,39 @@ export class LocalDtachBackend implements TerminalBackend {
    * to the dtach binary AND `/proc/<pid>/cmdline` contains the socket path.
    */
   private verifyEntryOwnership(entry: DtachManifestEntry): boolean {
-    if (entry.pid <= 0) {
-      // pid never resolved; fall back to socket-file presence only.
-      return existsSync(entry.sock);
-    }
-    return this.verifyMasterIdentity(entry.pid, entry.sock);
+    const pid = entry.pid > 0 ? entry.pid : this.findDtachMasterPidSync(entry.sock);
+    return this.verifyMasterIdentity(pid, entry.sock);
   }
 
   /**
-   * Strict identity check for a dtach master `pid` + `sock`: the pid is alive,
-   * its `/proc/<pid>/exe` resolves to a dtach binary, its cmdline references
-   * `sock`, and the socket file exists. Guards against pid recycling. Returns
-   * false (not throw) when `/proc` is unreadable so callers treat "cannot
-   * verify" as "not verified" — the reconnect path rejects on false.
+   * Strict identity check for a dtach master `pid` + `sock` on Linux: the pid
+   * is alive, its `/proc/<pid>/exe` resolves to a dtach binary, its cmdline
+   * references `sock`, and the socket file exists. macOS has no `/proc`, so a
+   * `ps` command-line check provides the equivalent identity guard there.
+   * Returns false (not throw) when neither identity path can verify the session.
    */
   private verifyMasterIdentity(pid: number, sock: string): boolean {
+    if (!existsSync(sock)) return false;
+    // A PID is required on every platform; macOS resolves it through `ps`
+    // before reaching this check because it has no `/proc`.
     if (pid <= 0) return false;
     try {
       process.kill(pid, 0);
     } catch {
       return false;
     }
+    if (process.platform !== 'linux') {
+      try {
+        const command = execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        return command.includes(sock) && command.includes(this.dtachBinary);
+      } catch {
+        return false;
+      }
+    }
+
     const procDir = `/proc/${pid}`;
     try {
       const exe = readlinkSync(`${procDir}/exe`);
@@ -1379,7 +1503,7 @@ export class LocalDtachBackend implements TerminalBackend {
     } catch {
       return false;
     }
-    return existsSync(sock);
+    return true;
   }
 
   /**
@@ -1462,7 +1586,8 @@ export class LocalDtachBackend implements TerminalBackend {
   }
 
   /**
-   * Resolve the dtach master pid for `sock` via a pure-Node `/proc` scan.
+   * Resolve the dtach master pid for `sock` via a pure-Node `/proc` scan on
+   * Linux and an argv-based `ps` query on macOS.
    *
    * The previous implementation shelled out to a per-pid bash loop over
    * `/proc/<pid>/cmdline` that piped `tr` into `grep`, spawning two
@@ -1478,11 +1603,12 @@ export class LocalDtachBackend implements TerminalBackend {
    * disambiguated by its `-n` flag; a sock-only match is used as a fallback.
    */
   private findDtachMasterPidSync(sock: string): number {
+    if (process.platform !== 'linux') return this.findDtachMasterPidWithPs(sock);
     let names: string[];
     try {
       names = readdirSync('/proc');
     } catch {
-      return -1; // no /proc (non-Linux) — caller falls back to -1.
+      return -1; // defensive fallback; non-Linux uses findDtachMasterPidWithPs.
     }
     let fallback = -1;
     for (const name of names) {
@@ -1499,6 +1625,27 @@ export class LocalDtachBackend implements TerminalBackend {
       if (fallback < 0) fallback = Number(name);
     }
     return fallback;
+  }
+
+  /** Portable process lookup for macOS, which does not provide `/proc`. */
+  private findDtachMasterPidWithPs(sock: string): number {
+    try {
+      const output = execFileSync('ps', ['-axo', 'pid=,command='], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      let fallback = -1;
+      for (const line of output.split('\n')) {
+        const match = /^\s*(\d+)\s+(.+)$/.exec(line);
+        if (!match || !match[2].includes(sock) || !match[2].includes(this.dtachBinary)) continue;
+        const pid = Number(match[1]);
+        if (/(?:^|\s)-n(?:\s|$)/.test(match[2])) return pid;
+        if (fallback < 0) fallback = pid;
+      }
+      return fallback;
+    } catch {
+      return -1;
+    }
   }
 
   private async readEntry(id: SessionId): Promise<DtachManifestEntry | null> {
@@ -1545,6 +1692,21 @@ export class LocalDtachBackend implements TerminalBackend {
     } catch (err) {
       const code = err && typeof err === 'object' && 'code' in err ? String(err.code) : undefined;
       throw this.dtachUnavailableError(id, binary, code, err instanceof Error ? err : undefined);
+    }
+  }
+
+  private async raceWithClose<T>(operation: Promise<T>): Promise<T | 'backend-closed'> {
+    if (this.closed) return 'backend-closed';
+    let resolveClosed!: () => void;
+    const closed = new Promise<void>((resolve) => {
+      resolveClosed = resolve;
+    });
+    const onClose = () => resolveClosed();
+    this.closeWaiters.add(onClose);
+    try {
+      return await Promise.race([operation, closed.then(() => 'backend-closed' as const)]);
+    } finally {
+      this.closeWaiters.delete(onClose);
     }
   }
 
