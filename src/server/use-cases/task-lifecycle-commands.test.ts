@@ -312,6 +312,231 @@ describe('TaskLifecycleCommands.clearFinishedTasks', () => {
   });
 });
 
+describe('TaskLifecycleCommands.batchAbortTasks', () => {
+  test('aborts multiple active tasks in one call and interrupts their sessions', async () => {
+    const taskStore = new TaskStore();
+    const a = taskStore.createTask('A', '/repo');
+    addSession(taskStore, a.id, 'kookr-a');
+    const b = taskStore.createTask('B', '/repo');
+    addSession(taskStore, b.id, 'kookr-b');
+    const { deps, stop } = makeDeps(taskStore);
+
+    const { results, summary } = await new TaskLifecycleCommands(deps).batchAbortTasks([a.id, b.id]);
+
+    expect(summary).toEqual({ total: 2, aborted: 2, already_terminal: 0, not_found: 0, failed: 0 });
+    expect(results).toEqual([
+      { taskId: a.id, outcome: 'aborted', status: 'cancelled' },
+      { taskId: b.id, outcome: 'aborted', status: 'cancelled' },
+    ]);
+    expect(taskStore.getTask(a.id)?.status).toBe('cancelled');
+    expect(taskStore.getTask(b.id)?.status).toBe('cancelled');
+    expect(stop).toHaveBeenCalledWith('kookr-a');
+    expect(stop).toHaveBeenCalledWith('kookr-b');
+    expect(deps.scheduleService?.recordTaskTerminalOutcome).toHaveBeenCalledWith(a.id, 'cancelled');
+  });
+
+  test('reports mixed live / terminal / missing tasks per task', async () => {
+    const taskStore = new TaskStore();
+    const active = taskStore.createTask('active', '/repo');
+    addSession(taskStore, active.id, 'kookr-active');
+    const done = taskStore.createTask('done', '/repo');
+    taskStore.startTask(done.id);
+    taskStore.completeTask(done.id);
+    const cancelledAlready = taskStore.createTask('already cancelled', '/repo');
+    taskStore.startTask(cancelledAlready.id);
+    taskStore.cancelTask(cancelledAlready.id);
+    const { deps, stop } = makeDeps(taskStore);
+
+    const { results, summary } = await new TaskLifecycleCommands(deps).batchAbortTasks([
+      active.id,
+      done.id,
+      cancelledAlready.id,
+      'missing-task-id',
+    ]);
+
+    expect(summary).toEqual({ total: 4, aborted: 1, already_terminal: 2, not_found: 1, failed: 0 });
+    expect(results).toEqual([
+      { taskId: active.id, outcome: 'aborted', status: 'cancelled' },
+      { taskId: done.id, outcome: 'already_terminal', status: 'completed' },
+      { taskId: cancelledAlready.id, outcome: 'already_terminal', status: 'cancelled' },
+      { taskId: 'missing-task-id', outcome: 'not_found' },
+    ]);
+    // Only the live task's session was interrupted.
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenCalledWith('kookr-active');
+  });
+
+  test('is idempotent: retrying does not re-transition, re-interrupt, or duplicate audit rows', async () => {
+    const auditDir = await mkdtemp(join(tmpdir(), 'kookr-abort-audit-'));
+    const auditLogPath = join(auditDir, 'audit.jsonl');
+    try {
+      const taskStore = new TaskStore();
+      const a = taskStore.createTask('A', '/repo');
+      addSession(taskStore, a.id, 'kookr-a');
+      const { deps, stop } = makeDeps(taskStore, { auditLogPath });
+      const commands = new TaskLifecycleCommands(deps);
+
+      const first = await commands.batchAbortTasks([a.id], {
+        reason: 'mass shutdown',
+        actor: { source: 'api' },
+      });
+      expect(first.summary).toMatchObject({ aborted: 1, already_terminal: 0 });
+      expect(stop).toHaveBeenCalledTimes(1);
+
+      const second = await commands.batchAbortTasks([a.id], {
+        reason: 'mass shutdown',
+        actor: { source: 'api' },
+      });
+      expect(second.summary).toEqual({ total: 1, aborted: 0, already_terminal: 1, not_found: 0, failed: 0 });
+      expect(second.results).toEqual([{ taskId: a.id, outcome: 'already_terminal', status: 'cancelled' }]);
+      // No second interruption, no second terminal-outcome record.
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(deps.scheduleService?.recordTaskTerminalOutcome).toHaveBeenCalledTimes(1);
+
+      // Exactly one audit row — the retry aborted nothing, so it appended nothing.
+      const rows = await readJsonl(auditLogPath);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toEqual(expect.objectContaining({
+        type: 'task.batchAbort',
+        actor: { source: 'api' },
+        reason: 'mass shutdown',
+        count: 1,
+        abortedTaskIds: [a.id],
+        summary: { total: 1, aborted: 1, already_terminal: 0, not_found: 0, failed: 0 },
+      }));
+    } finally {
+      await rm(auditDir, { recursive: true, force: true });
+    }
+  });
+
+  test('dedupes and trims repeated ids so a task aborts once', async () => {
+    const taskStore = new TaskStore();
+    const a = taskStore.createTask('A', '/repo');
+    addSession(taskStore, a.id, 'kookr-a');
+    const { deps, stop } = makeDeps(taskStore);
+
+    const { results, summary } = await new TaskLifecycleCommands(deps).batchAbortTasks([
+      a.id,
+      `  ${a.id}  `,
+      '',
+      a.id,
+    ]);
+
+    expect(summary).toEqual({ total: 1, aborted: 1, already_terminal: 0, not_found: 0, failed: 0 });
+    expect(results).toEqual([{ taskId: a.id, outcome: 'aborted', status: 'cancelled' }]);
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  test('reports a per-task failure without blocking the rest of the batch', async () => {
+    const taskStore = new TaskStore();
+    const bad = taskStore.createTask('bad', '/repo');
+    addSession(taskStore, bad.id, 'kookr-bad');
+    const good = taskStore.createTask('good', '/repo');
+    addSession(taskStore, good.id, 'kookr-good');
+    const { deps } = makeDeps(taskStore);
+    const baseLifecycleDeps = deps.getLifecycleDeps;
+    deps.getLifecycleDeps = () => ({
+      ...baseLifecycleDeps(),
+      adapter: {
+        stop: vi.fn(async (session: string) => {
+          if (session === 'kookr-bad') throw new Error('stop failed');
+        }),
+      },
+    } as never);
+
+    const { results, summary } = await new TaskLifecycleCommands(deps).batchAbortTasks([bad.id, good.id]);
+
+    expect(summary).toEqual({ total: 2, aborted: 1, already_terminal: 0, not_found: 0, failed: 1 });
+    expect(results).toEqual([
+      { taskId: bad.id, outcome: 'failed', error: 'stop failed' },
+      { taskId: good.id, outcome: 'aborted', status: 'cancelled' },
+    ]);
+    // The failed task keeps its live state; the healthy one still converged.
+    expect(taskStore.getTask(bad.id)?.status).toBe('inProgress');
+    expect(taskStore.getTask(good.id)?.status).toBe('cancelled');
+  });
+
+  test('does not write an audit row when nothing is aborted', async () => {
+    const auditDir = await mkdtemp(join(tmpdir(), 'kookr-abort-noop-'));
+    const auditLogPath = join(auditDir, 'audit.jsonl');
+    try {
+      const taskStore = new TaskStore();
+      const done = taskStore.createTask('done', '/repo');
+      taskStore.startTask(done.id);
+      taskStore.completeTask(done.id);
+      const { deps } = makeDeps(taskStore, { auditLogPath });
+
+      const { summary } = await new TaskLifecycleCommands(deps).batchAbortTasks([done.id, 'missing'], {
+        actor: { source: 'api' },
+      });
+
+      expect(summary).toEqual({ total: 2, aborted: 0, already_terminal: 1, not_found: 1, failed: 0 });
+      await expect(readFile(auditLogPath, 'utf-8')).rejects.toThrow();
+    } finally {
+      await rm(auditDir, { recursive: true, force: true });
+    }
+  });
+
+  test('audits a wholly-failed batch (nothing aborted, teardown failed)', async () => {
+    const auditDir = await mkdtemp(join(tmpdir(), 'kookr-abort-allfail-'));
+    const auditLogPath = join(auditDir, 'audit.jsonl');
+    try {
+      const taskStore = new TaskStore();
+      const bad = taskStore.createTask('bad', '/repo');
+      addSession(taskStore, bad.id, 'kookr-bad');
+      const { deps } = makeDeps(taskStore, { auditLogPath });
+      const baseLifecycleDeps = deps.getLifecycleDeps;
+      deps.getLifecycleDeps = () => ({
+        ...baseLifecycleDeps(),
+        adapter: { stop: vi.fn(async () => { throw new Error('daemon down'); }) },
+      } as never);
+
+      const { summary } = await new TaskLifecycleCommands(deps).batchAbortTasks([bad.id], {
+        actor: { source: 'websocket', actorId: 'conn-1' },
+      });
+
+      expect(summary).toEqual({ total: 1, aborted: 0, already_terminal: 0, not_found: 0, failed: 1 });
+      const rows = await readJsonl(auditLogPath);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toEqual(expect.objectContaining({
+        type: 'task.batchAbort',
+        abortedTaskIds: [],
+        summary: { total: 1, aborted: 0, already_terminal: 0, not_found: 0, failed: 1 },
+      }));
+    } finally {
+      await rm(auditDir, { recursive: true, force: true });
+    }
+  });
+
+  test('redacts secrets and truncates an over-long reason in the audit row', async () => {
+    const auditDir = await mkdtemp(join(tmpdir(), 'kookr-abort-reason-'));
+    const auditLogPath = join(auditDir, 'audit.jsonl');
+    try {
+      const taskStore = new TaskStore();
+      const a = taskStore.createTask('A', '/repo');
+      addSession(taskStore, a.id, 'kookr-a');
+      const b = taskStore.createTask('B', '/repo');
+      addSession(taskStore, b.id, 'kookr-b');
+      const { deps } = makeDeps(taskStore, { auditLogPath });
+      const commands = new TaskLifecycleCommands(deps);
+
+      await commands.batchAbortTasks([a.id], { reason: 'leak ghp_0123456789abcdefghij now' });
+      await commands.batchAbortTasks([b.id], { reason: 'x'.repeat(600) });
+
+      const rows = await readJsonl(auditLogPath) as Array<{ reason?: string }>;
+      expect(rows).toHaveLength(2);
+      // Secret is redacted, never persisted verbatim.
+      expect(rows[0].reason).not.toContain('ghp_0123456789abcdefghij');
+      expect(rows[0].reason).toContain('[REDACTED]');
+      // Over-long reason is truncated with a marker.
+      expect(rows[1].reason!.endsWith(' [truncated]')).toBe(true);
+      expect(rows[1].reason!.length).toBeLessThanOrEqual(600);
+    } finally {
+      await rm(auditDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('TaskLifecycleCommands.requestTaskSnapshotReflect', () => {
   async function makeSnapshotDeps(taskStore: TaskStore) {
     const dir = await mkdtemp(join(tmpdir(), 'snapshot-reflect-'));

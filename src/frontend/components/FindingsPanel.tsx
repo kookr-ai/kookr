@@ -82,6 +82,12 @@ interface Props {
   clearCompletedFinishedTaskIds?: string[];
   clearCompletedTerminatedTaskIds?: string[];
   clearCompletedProjectId?: string;
+  /**
+   * Task IDs of the active (non-terminal) tasks in the current scope, used by
+   * the control-room "Abort all" action (issue #1325). One batch request
+   * interrupts every live session and cancels these tasks — no per-agent prose.
+   */
+  abortActiveTaskIds?: string[];
   pendingDeletionTaskIds?: ReadonlySet<string>;
   onQueueDeleteTask?: (args: { taskId: string; label: string }) => void;
   onQueueClearCompleted?: (args: {
@@ -1427,6 +1433,58 @@ function ClearCompletedButton({
   );
 }
 
+// Control-room bulk shutdown (issue #1325). One confirmed action interrupts
+// every live session and cancels every active task in scope — replacing the
+// old pattern of fanning out "abort your work" prose to each agent. The server
+// answers with a concise result toast (aborted / already-finished / failed);
+// retries are idempotent, so a double-click never double-cancels.
+function AbortActiveButton({
+  taskIds,
+  send,
+}: {
+  taskIds: string[];
+  send: (msg: ClientMessage) => void;
+}) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  // Nothing active to abort → hide, so the label never promises a no-op.
+  if (taskIds.length === 0) return null;
+
+  const count = taskIds.length;
+  const openConfirm = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setConfirmOpen(true);
+  };
+  const confirmAbort = () => {
+    send({ type: 'batchAbortTasks', taskIds });
+    setConfirmOpen(false);
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        className="btn-abort-active"
+        onClick={openConfirm}
+        aria-label="Abort all active tasks"
+        title="Interrupt live sessions and cancel all active tasks"
+      >
+        Abort all
+      </button>
+      {confirmOpen && (
+        <ConfirmDialog
+          title="Abort active tasks"
+          message={`Abort ${count} active task${count === 1 ? '' : 's'}? Live sessions are interrupted and the tasks are cancelled.`}
+          confirmLabel="Abort"
+          confirmClass="btn-danger"
+          onConfirm={confirmAbort}
+          onClose={() => setConfirmOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
 function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDeleteTask, onSchedulePlaybook }: {
   agent: AgentState;
   selected: boolean;
@@ -1705,6 +1763,7 @@ export function FindingsPanel({
   clearCompletedFinishedTaskIds = [],
   clearCompletedTerminatedTaskIds = [],
   clearCompletedProjectId,
+  abortActiveTaskIds = [],
   pendingDeletionTaskIds = new Set<string>(),
   onQueueDeleteTask,
   onQueueClearCompleted,
@@ -1843,6 +1902,7 @@ export function FindingsPanel({
       <div className="findings-header">
         <span className="findings-header-title">Supervisor Findings</span>
         <span className="findings-header-actions">
+          <AbortActiveButton taskIds={abortActiveTaskIds} send={send} />
           <button
             type="button"
             className="findings-collapse-all-button"

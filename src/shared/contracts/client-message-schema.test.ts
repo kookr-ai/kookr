@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { describe, test, expect } from 'vitest';
 import { z } from 'zod';
 import { ClientMessageSchema, summarizeZodIssues } from './client-message-schema.js';
-import { CLIENT_MESSAGE_TYPES, SERVER_MESSAGE_TYPES, type ClientMessage } from './messages.js';
+import { CLIENT_MESSAGE_TYPES, SERVER_MESSAGE_TYPES, MAX_BATCH_ABORT_TASKS, type ClientMessage } from './messages.js';
 import { TELEMETRY_EVENT_TYPES } from './telemetry.js';
 
 describe('summarizeZodIssues', () => {
@@ -398,6 +398,7 @@ const clientMessageRoundTripCases = [
   clientMessageCase({ type: 'requestTaskSnapshotReflect', taskId: 'task-1', hint: 'liked being asked for e2e tests' }),
   clientMessageCase({ type: 'relaunch', taskId: 'task-1', prompt: 'try again', agentType: 'codex-cli', dependencies: ['kb'] }),
   clientMessageCase({ type: 'cancelTask', taskId: 'task-1' }),
+  clientMessageCase({ type: 'batchAbortTasks', taskIds: ['task-1', 'task-2'], reason: 'mass shutdown' }),
   clientMessageCase({ type: 'reopenTask', taskId: 'task-1' }),
   clientMessageCase({ type: 'dismissAgentSignal', taskId: 'task-1' }),
   clientMessageCase({ type: 'deleteTask', taskId: 'task-1' }),
@@ -509,6 +510,14 @@ describe('ClientMessageSchema — JSON round trips', () => {
     if (reparsed.success) {
       expect(reparsed.data).toEqual(parsed.data);
     }
+  });
+
+  test('rejects a batchAbortTasks batch over the cap', () => {
+    const taskIds = Array.from({ length: MAX_BATCH_ABORT_TASKS + 1 }, (_, i) => `task-${i}`);
+    expect(ClientMessageSchema.safeParse({ type: 'batchAbortTasks', taskIds }).success).toBe(false);
+    // At the cap it is still accepted.
+    const atCap = Array.from({ length: MAX_BATCH_ABORT_TASKS }, (_, i) => `task-${i}`);
+    expect(ClientMessageSchema.safeParse({ type: 'batchAbortTasks', taskIds: atCap }).success).toBe(true);
   });
 });
 

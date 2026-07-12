@@ -79,6 +79,17 @@ type TaskDeletionAuditRow = {
   includeTerminated?: boolean;
 };
 
+type BatchAbortAuditRow = {
+  type: 'task.batchAbort';
+  timestamp: string;
+  actor: TaskDeletionAuditActor;
+  reason?: string;
+  count: number;
+  abortedTaskIds: string[];
+  summary: BatchAbortSummary;
+  results: Array<{ taskId: string; outcome: BatchAbortTaskOutcome }>;
+};
+
 export type TaskLifecycleCommandResult =
   | { outcome: 'completed'; task: Task }
   | { outcome: 'already_terminal'; task: Task }
@@ -90,6 +101,36 @@ export type TaskLifecycleCommandResult =
   | { outcome: 'not_found'; error: string }
   | { outcome: 'invalid'; code: string; error: string }
   | { outcome: 'snapshot_failed'; error: string };
+
+const MAX_ABORT_REASON_LENGTH = 500;
+
+/** Per-task outcome of a batch-abort request. Retries are idempotent: a task
+ * that is already terminal (or missing) reports `already_terminal`/`not_found`
+ * without a second state transition. */
+export type BatchAbortTaskOutcome = 'aborted' | 'already_terminal' | 'not_found' | 'failed';
+
+export interface BatchAbortTaskResult {
+  taskId: string;
+  outcome: BatchAbortTaskOutcome;
+  /** Terminal status the task converged to (present for aborted / already_terminal). */
+  status?: Task['status'];
+  /** Failure detail for `failed` outcomes. */
+  error?: string;
+}
+
+export interface BatchAbortSummary {
+  /** Unique task IDs considered (after trimming + dedup). */
+  total: number;
+  aborted: number;
+  already_terminal: number;
+  not_found: number;
+  failed: number;
+}
+
+export interface BatchAbortResult {
+  results: BatchAbortTaskResult[];
+  summary: BatchAbortSummary;
+}
 
 export class TaskLifecycleCommands {
   constructor(private readonly deps: TaskLifecycleCommandDeps) {}
@@ -177,6 +218,82 @@ export class TaskLifecycleCommands {
     const task = this.deps.taskStore.getTask(taskId);
     if (!task) return { outcome: 'not_found', error: `Task not found: ${taskId}` };
     return { outcome: 'reopened', task: this.deps.taskStore.reopenTask(taskId) };
+  }
+
+  /**
+   * Idempotent batch abort (issue #1325). Accepts explicit task IDs and an
+   * operator reason, aborts every still-active task (interrupting its live
+   * sessions via the same {@link cancelTask} path the UI uses), and returns a
+   * per-task result so callers can report partial failures.
+   *
+   * Idempotency: the eligible set is filtered to non-terminal tasks *before*
+   * any teardown, so retrying the same request never drives a second state
+   * transition and never re-tears-down a session. A retry of an already-aborted
+   * set reports every task as `already_terminal` and — because nothing
+   * transitioned — writes no new audit record. IDs are trimmed and de-duplicated
+   * so a list that repeats the same task aborts it once.
+   */
+  async batchAbortTasks(
+    taskIds: readonly string[],
+    opts: { reason?: string } & TaskDeletionAuditOpts = {},
+  ): Promise<BatchAbortResult> {
+    const orderedIds = dedupeTaskIds(taskIds);
+    const results: BatchAbortTaskResult[] = [];
+    for (const taskId of orderedIds) {
+      results.push(await this.abortSingleTask(taskId));
+    }
+
+    const summary = summarizeBatchAbort(orderedIds.length, results);
+    // Audit any batch that did something or attempted-and-failed a teardown —
+    // an all-fail batch (e.g. the daemon is down) is the case most worth a
+    // record. A pure no-op (only already-terminal / missing tasks) writes
+    // nothing, so retrying an already-aborted set never appends a duplicate row.
+    if (summary.aborted > 0 || summary.failed > 0) {
+      await this.writeBatchAbortAudit({
+        actor: opts.actor,
+        reason: normalizeAbortReason(opts.reason),
+        results,
+        summary,
+      });
+    }
+    return { results, summary };
+  }
+
+  private async abortSingleTask(taskId: string): Promise<BatchAbortTaskResult> {
+    const task = this.deps.taskStore.getTask(taskId);
+    if (!task) return { taskId, outcome: 'not_found' };
+    // Terminal tasks are a safe no-op: no transition, no session teardown, no
+    // audit row. This is the crux of retry-idempotency.
+    if (isTerminalStatus(task.status)) {
+      return { taskId, outcome: 'already_terminal', status: task.status };
+    }
+    try {
+      const result = await this.cancelTask(taskId);
+      switch (result.outcome) {
+        case 'cancelled':
+          return { taskId, outcome: 'aborted', status: result.task.status };
+        case 'not_found':
+          return { taskId, outcome: 'not_found' };
+        default:
+          return {
+            taskId,
+            outcome: 'failed',
+            error: `unexpected cancel outcome: ${result.outcome}`,
+          };
+      }
+    } catch (err) {
+      // A concurrent aborter may have raced this task to terminal between the
+      // guard above and the cancel transition; that is still a safe no-op.
+      const current = this.deps.taskStore.getTask(taskId);
+      if (current && isTerminalStatus(current.status)) {
+        return { taskId, outcome: 'already_terminal', status: current.status };
+      }
+      return {
+        taskId,
+        outcome: 'failed',
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
 
   async deleteTask(
@@ -590,6 +707,34 @@ export class TaskLifecycleCommands {
     }
   }
 
+  private async writeBatchAbortAudit(record: {
+    actor?: TaskDeletionAuditActor;
+    reason?: string;
+    results: BatchAbortTaskResult[];
+    summary: BatchAbortSummary;
+  }): Promise<void> {
+    if (!this.deps.auditLogPath) return;
+    const abortedTaskIds = record.results
+      .filter((r) => r.outcome === 'aborted')
+      .map((r) => r.taskId);
+    const row: BatchAbortAuditRow = {
+      type: 'task.batchAbort',
+      timestamp: nowISO(),
+      actor: record.actor ?? { source: 'unknown' },
+      ...(record.reason ? { reason: record.reason } : {}),
+      count: record.summary.total,
+      abortedTaskIds,
+      summary: record.summary,
+      results: record.results.map((r) => ({ taskId: r.taskId, outcome: r.outcome })),
+    };
+    try {
+      await mkdir(dirname(this.deps.auditLogPath), { recursive: true });
+      await appendFile(this.deps.auditLogPath, `${JSON.stringify(row)}\n`, 'utf-8');
+    } catch (err) {
+      console.warn('[task-audit] failed to append batch-abort audit row:', err);
+    }
+  }
+
   private broadcastClearCompleted(count: number, projectId?: string): void {
     if (!this.deps.broadcastToAll || count === 0) return;
     this.deps.broadcastToAll({
@@ -604,6 +749,39 @@ export class TaskLifecycleCommands {
 
 function isActiveRalphLoop(task: Task): boolean {
   return task.ralphLoop?.status === 'running' || task.ralphLoop?.status === 'paused';
+}
+
+function dedupeTaskIds(taskIds: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const raw of taskIds) {
+    const id = typeof raw === 'string' ? raw.trim() : '';
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ordered.push(id);
+  }
+  return ordered;
+}
+
+function summarizeBatchAbort(total: number, results: BatchAbortTaskResult[]): BatchAbortSummary {
+  const summary: BatchAbortSummary = {
+    total,
+    aborted: 0,
+    already_terminal: 0,
+    not_found: 0,
+    failed: 0,
+  };
+  for (const result of results) summary[result.outcome] += 1;
+  return summary;
+}
+
+function normalizeAbortReason(raw: string | undefined): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const redacted = redactSecrets(raw).trim();
+  if (!redacted) return undefined;
+  return redacted.length > MAX_ABORT_REASON_LENGTH
+    ? `${redacted.slice(0, MAX_ABORT_REASON_LENGTH)} [truncated]`
+    : redacted;
 }
 
 function sanitizeFeedback(input: TaskCompletionFeedback): TaskCompletionFeedback {
