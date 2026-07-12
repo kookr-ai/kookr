@@ -38,6 +38,7 @@ INPUT=$(cat)
 
 # Extract the command from Claude Code's PreToolUse payload
 COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || fail_open "failed to parse input JSON"
+CWD=$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) || CWD=""
 
 if [ -z "$COMMAND" ]; then
   exit 0
@@ -65,6 +66,18 @@ strip_quotes() {
   printf '%s' "$s"
 }
 
+worktree_for_branch() {
+  local cwd="$1"
+  local branch="$2"
+  [ -n "$cwd" ] && [ -d "$cwd" ] || return 1
+
+  git -C "$cwd" worktree list --porcelain 2>/dev/null \
+    | awk -v target="refs/heads/$branch" '
+        /^worktree / { current = substr($0, 10) }
+        /^branch / && $2 == target { print current; exit }
+      '
+}
+
 # Parse -R owner/repo or --repo owner/repo (quotes optional).
 REPO_FLAG=$(printf '%s\n' "$COMMAND" | sed -nE 's/.*(-R|--repo)[[:space:]]+"?'"'"'?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+).*/\2/p' | head -1)
 if [ -n "$REPO_FLAG" ]; then
@@ -72,11 +85,19 @@ if [ -n "$REPO_FLAG" ]; then
   REPO_NAME="${REPO_FLAG#*/}"
 fi
 
-# Parse --head [user:]branch (strip user: prefix).
-HEAD_FLAG=$(printf '%s\n' "$COMMAND" | sed -nE 's/.*--head[[:space:]]+"?'"'"'?([^"'"'"'[:space:]]+).*/\1/p' | head -1)
+# Parse --head [user:]branch (strip user: prefix). Handle the raw command
+# substitution form used by the OSS playbooks before the simpler token form;
+# otherwise a PreToolUse payload captures only $(gh before the first space.
+HEAD_FLAG=$(printf '%s\n' "$COMMAND" | sed -nE 's/.*--head[=[:space:]]+"?\$\([^)]*\):([^"[:space:]]+)"?.*/\1/p' | head -1) || true
+if [ -z "$HEAD_FLAG" ]; then
+  HEAD_FLAG=$(printf '%s\n' "$COMMAND" | sed -nE 's/.*--head[=[:space:]]+"?'"'"'?([^"'"'"'[:space:]]+).*/\1/p' | head -1) || true
+fi
 if [ -n "$HEAD_FLAG" ]; then
   HEAD_FLAG=$(strip_quotes "$HEAD_FLAG")
   BRANCH="${HEAD_FLAG##*:}"
+  case "$BRANCH" in
+    refs/heads/*) BRANCH="${BRANCH#refs/heads/}" ;;
+  esac
 fi
 
 # Fall back to session-cwd git detection if the command didn't specify both
@@ -90,6 +111,19 @@ if [ -z "$REPO_NAME" ] || [ -z "$BRANCH" ]; then
   REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null) || fail_open "not in a git repo: $CWD"
   [ -z "$REPO_NAME" ] && REPO_NAME=$(basename "$REPO_ROOT")
   [ -z "$BRANCH" ] && { BRANCH=$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null) || fail_open "cannot determine branch"; }
+fi
+
+# A managed agent can report the launcher checkout as hook cwd while --head
+# names a sibling linked worktree. Use Git's worktree registry for the
+# checklist engine's cwd; if the mapping cannot be proven, leave it empty so
+# the opt-in checklist gate fails open instead of reading another checkout.
+CHECKLIST_CWD="$CWD"
+if [ -n "$HEAD_FLAG" ]; then
+  CHECKLIST_CWD=""
+  HEAD_WORKTREE=$(worktree_for_branch "$CWD" "$BRANCH" || true)
+  if [ -n "$HEAD_WORKTREE" ]; then
+    CHECKLIST_CWD="$HEAD_WORKTREE"
+  fi
 fi
 
 # --- Scope check (issue #405 / rfc-oss-extension-distribution) ---
@@ -219,11 +253,10 @@ pr_checklist_gate() {
     return 0
   fi
 
-  # --- Resolve the repo dir to verify (the session cwd from the payload). ---
-  local cl_cwd
-  cl_cwd=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) || cl_cwd=""
+  # --- Resolve the repo dir to verify (effective linked-worktree cwd). ---
+  local cl_cwd="$CHECKLIST_CWD"
   if [ -z "$cl_cwd" ] || [ ! -d "$cl_cwd" ]; then
-    checklist_fail_open "session cwd unavailable — cannot resolve the diff"
+    checklist_fail_open "effective checklist cwd unavailable — cannot resolve the diff"
     return 0
   fi
 
