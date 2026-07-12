@@ -307,6 +307,99 @@ run_case "19: existing PR on branch → fail open" existing-pr \
   allow "" "" "$TEST19_REPO"
 rm -rf "$TEST19_REPO"
 
+# 20-22. A Codex-managed hook may receive the launcher checkout as cwd while
+# the command targets a sibling linked worktree. Relative --body-file must
+# resolve from the --head branch's worktree, not from the hook process cwd.
+run_worktree_body_file_case() {
+  local name="$1"
+  local head="$2"
+  local head_arg="$3"
+  local expected_error="$4"
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  local parent="$tmpdir/parent"
+  local child="$tmpdir/child"
+  mkdir -p "$parent/data"
+  git -C "$parent" init -q -b main
+  git -C "$parent" config user.email test@example.com
+  git -C "$parent" config user.name Test
+  git -C "$parent" remote add origin https://github.com/testowner/testrepo.git
+  printf 'Fixes #1\n' > "$parent/data/pr-body.md"
+  git -C "$parent" add data/pr-body.md
+  git -C "$parent" commit -q -m init
+  if [ "$head" = "feature" ]; then
+    git -C "$parent" worktree add -q -b feature "$child"
+    printf 'No linked issue here.\n' > "$child/data/pr-body.md"
+  fi
+
+  local cmd
+  printf -v cmd 'gh pr create --head %s --body-file data/pr-body.md' "$head_arg"
+  local payload
+  payload=$(jq -n --arg cwd "$parent" --arg cmd "$cmd" '{
+    tool_name: "Bash",
+    cwd: $cwd,
+    tool_input: { command: $cmd }
+  }')
+
+  export KOOKR_HOOKS_DIR="$tmpdir/state"
+  export GH_SHIM_FIXTURE_DIR="$FIXTURE_ROOT/closed-by-other"
+  export GH_BIN="$SHIM_DIR/gh"
+  unset KOOKR_TASK_ID 2>/dev/null || true
+
+  local out
+  out=$(printf '%s' "$payload" | (cd "$parent" && bash "$HOOK") 2>&1) || true
+  local got="allow"
+  if printf '%s' "$out" | grep -q '"permissionDecision": "deny"'; then
+    got="deny"
+  fi
+  local errors=""
+  if [ -s "$tmpdir/state/hook-errors.log" ]; then
+    errors=$(cat "$tmpdir/state/hook-errors.log")
+  fi
+
+  local passed=0
+  if [ "$got" = "allow" ]; then
+    if [ -n "$expected_error" ]; then
+      printf '%s' "$errors" | grep -q "$expected_error" && passed=1
+    elif [ -z "$errors" ]; then
+      passed=1
+    fi
+  fi
+  if [ "$passed" = "1" ]; then
+    PASS=$((PASS + 1))
+    printf '  [OK]   %s\n' "$name"
+  else
+    FAIL=$((FAIL + 1))
+    FAILED_CASES+=("$name")
+    printf '  [FAIL] %s\n' "$name"
+    if [ -n "$expected_error" ]; then
+      printf '         expected=allow with error=%s got=%s\n' "$expected_error" "$got"
+    else
+      printf '         expected=allow with no errors got=%s\n' "$got"
+    fi
+    printf '         output: %s\n' "$(printf '%s' "$out" | head -c 400)"
+    [ -n "$errors" ] && printf '         errors: %s\n' "$(printf '%s' "$errors" | head -c 400)"
+  fi
+
+  rm -rf "$tmpdir"
+}
+
+run_worktree_body_file_case \
+  "20: relative body-file follows linked --head worktree" \
+  feature \
+  feature \
+  ""
+run_worktree_body_file_case \
+  "21: command-substitution --head follows linked worktree" \
+  feature \
+  '"$(gh api user --jq .login):feature"' \
+  ""
+run_worktree_body_file_case \
+  "22: unresolved --head fails open without reading launcher body" \
+  missing \
+  missing \
+  "body-file cwd resolution failed"
+
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 if [ "$FAIL" -gt 0 ]; then
   printf 'Failed cases:\n'

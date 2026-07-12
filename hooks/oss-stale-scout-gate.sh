@@ -130,11 +130,6 @@ extract_heredoc_body() {
 read_body_file() {
   local path="$1"
   [ "$path" = "-" ] && return 1
-  # Expand a leading ~ (the shell won't have done it — arguments arrive literal)
-  case "$path" in
-    "~"/*) path="$HOME/${path#\~/}" ;;
-    "~") path="$HOME" ;;
-  esac
   [ -f "$path" ] || return 1
   local size
   size=$(stat -c %s "$path" 2>/dev/null || stat -f %z "$path" 2>/dev/null || echo 0)
@@ -142,13 +137,77 @@ read_body_file() {
   head -c 1048576 "$path" 2>/dev/null
 }
 
+worktree_for_branch() {
+  local cwd="$1"
+  local branch="$2"
+  [ -n "$cwd" ] && [ -d "$cwd" ] || return 1
+
+  git -C "$cwd" worktree list --porcelain 2>/dev/null \
+    | awk -v target="refs/heads/$branch" '
+        /^worktree / { current = substr($0, 10) }
+        /^branch / && $2 == target { print current; exit }
+      '
+}
+
+resolve_body_file_path() {
+  local path="$1"
+
+  # Expand a leading ~ (the shell won't have done it — arguments arrive literal)
+  case "$path" in
+    "~"/*) printf '%s\n' "$HOME/${path#\~/}" ;;
+    "~") printf '%s\n' "$HOME" ;;
+    /*) printf '%s\n' "$path" ;;
+    *)
+      # A Codex hook can report the launcher checkout as cwd while gh is
+      # invoked for a sibling linked worktree. When --head identifies a local
+      # branch, Git's worktree registry is the authoritative path for the
+      # relative body file. Never fall back to the hook process cwd here.
+      if [ -n "$HEAD_REF" ]; then
+        [ "$HEAD_WORKTREE_RESOLVED" = "1" ] || return 1
+        printf '%s/%s\n' "$EFFECTIVE_CWD" "$path"
+      else
+        [ -n "$CWD" ] && [ -d "$CWD" ] || return 1
+        printf '%s/%s\n' "$CWD" "$path"
+      fi
+      ;;
+  esac
+}
+
+# Resolve the effective worktree before reading --body-file. The hook payload
+# cwd is still the fallback when no head branch is supplied, but the shell's
+# own process cwd is intentionally never consulted.
+# Handle the command-substitution form used by the OSS playbooks before the
+# simpler token form. A raw PreToolUse command has not expanded gh api user,
+# so tokenizing at the first whitespace would capture only $(gh.
+HEAD_REF=$(printf '%s\n' "$COMMAND" | sed -nE 's/.*--head[=[:space:]]+"?\$\([^)]*\):([^"[:space:]]+)"?.*/\1/p' | head -1) || true
+if [ -z "$HEAD_REF" ]; then
+  HEAD_REF=$(printf '%s\n' "$COMMAND" | sed -nE "s/.*--head[=[:space:]]+['\"]?([^[:space:]\"']+)['\"]?.*/\1/p" | head -1) || true
+fi
+HEAD_REF="${HEAD_REF#*:}"
+case "$HEAD_REF" in
+  refs/heads/*) HEAD_REF="${HEAD_REF#refs/heads/}" ;;
+esac
+EFFECTIVE_CWD="$CWD"
+HEAD_WORKTREE_RESOLVED=0
+if [ -n "$HEAD_REF" ]; then
+  HEAD_WORKTREE=$(worktree_for_branch "$CWD" "$HEAD_REF" || true)
+  if [ -n "$HEAD_WORKTREE" ]; then
+    EFFECTIVE_CWD="$HEAD_WORKTREE"
+    HEAD_WORKTREE_RESOLVED=1
+  else
+    log_warning "could not resolve --head worktree: $HEAD_REF"
+  fi
+fi
+
 # Try --body-file first (explicit flag wins over --body heuristics)
 BODY_FILE_PATH=$(printf '%s\n' "$COMMAND" | sed -nE "s/.*--body-file[[:space:]]+([^[:space:]\"']+).*/\1/p" | head -1) || true
 if [ -n "$BODY_FILE_PATH" ]; then
-  if BODY=$(read_body_file "$BODY_FILE_PATH"); then
+  RESOLVED_BODY_FILE_PATH=$(resolve_body_file_path "$BODY_FILE_PATH") || \
+    fail_open "body-file cwd resolution failed: $BODY_FILE_PATH"
+  if BODY=$(read_body_file "$RESOLVED_BODY_FILE_PATH"); then
     :
   else
-    fail_open "body-file parse failed: $BODY_FILE_PATH"
+    fail_open "body-file parse failed: $RESOLVED_BODY_FILE_PATH"
   fi
 else
   # Heredoc form — match <<DELIM or <<'DELIM' or <<"DELIM"
@@ -195,8 +254,8 @@ REPO_FLAG=$(printf '%s\n' "$COMMAND" | sed -nE "s/.*(-R|--repo)[[:space:]]+\"?'?
 if [ -n "$REPO_FLAG" ]; then
   TARGET_OWNER="${REPO_FLAG%%/*}"
   TARGET_REPO="${REPO_FLAG##*/}"
-elif [ -n "$CWD" ] && [ -d "$CWD" ]; then
-  REMOTE_URL=$(git -C "$CWD" remote get-url origin 2>/dev/null) || REMOTE_URL=""
+elif [ -n "$EFFECTIVE_CWD" ] && [ -d "$EFFECTIVE_CWD" ]; then
+  REMOTE_URL=$(git -C "$EFFECTIVE_CWD" remote get-url origin 2>/dev/null) || REMOTE_URL=""
   if [ -n "$REMOTE_URL" ]; then
     SLUG=$(printf '%s' "$REMOTE_URL" | sed -E 's#.*github\.com[:/]##; s#\.git$##')
     if [[ "$SLUG" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
@@ -255,8 +314,8 @@ fi
 
 # --- 8. Existing open PR on current branch? defer to gh's native error ---
 BRANCH=""
-if [ -n "$CWD" ] && [ -d "$CWD" ]; then
-  BRANCH=$(git -C "$CWD" symbolic-ref -q --short HEAD 2>/dev/null) || BRANCH=""
+if [ -n "$EFFECTIVE_CWD" ] && [ -d "$EFFECTIVE_CWD" ]; then
+  BRANCH=$(git -C "$EFFECTIVE_CWD" symbolic-ref -q --short HEAD 2>/dev/null) || BRANCH=""
 fi
 if [ -n "$BRANCH" ]; then
   LOGIN=$(timeout "$AUTH_TIMEOUT" "$GH_BIN" api user --jq .login 2>/dev/null) || LOGIN=""

@@ -267,6 +267,59 @@ run_case_5() {
 run_case_5
 
 # ---------------------------------------------------------------------
+# 5b. The opt-in checklist gate resolves relative body files from the
+#     --head branch's linked worktree, not the hook payload cwd.
+# ---------------------------------------------------------------------
+run_case_5b() {
+  local name="5b: checklist uses linked --head worktree cwd"
+  local tmpdir; tmpdir=$(mktemp -d)
+  local parent="$tmpdir/parent"
+  local child="$tmpdir/child"
+  mkdir -p "$parent/data" "$tmpdir/bin"
+  git -C "$parent" init -q -b main
+  git -C "$parent" config user.email test@example.com
+  git -C "$parent" config user.name Test
+  git -C "$parent" remote add origin https://github.com/testowner/testrepo.git
+  printf 'launcher checkout\n' > "$parent/data/pr-body.md"
+  git -C "$parent" add data/pr-body.md
+  git -C "$parent" commit -q -m init
+  git -C "$parent" worktree add -q -b feature "$child"
+  printf 'effective worktree\n' > "$child/data/pr-body.md"
+
+  local state="/dev/shm/.pr-gate-testrepo-$SUFFIX-feature-pre-done"
+  track_state_file "$state"
+  rm -f "$state"
+  touch "$state"
+
+  printf '%s\n' '#!/usr/bin/env bash' 'pwd > "$CHECKLIST_PWD_FILE"' 'exit 0' > "$tmpdir/bin/kookr"
+  chmod +x "$tmpdir/bin/kookr"
+  local checklist_pwd="$tmpdir/checklist-cwd"
+  local original_path="$PATH"
+  export PATH="$tmpdir/bin:$PATH"
+  export CHECKLIST_PWD_FILE="$checklist_pwd"
+  export KOOKR_PR_CHECKLIST=1
+
+  local cmd="gh pr create -R testowner/testrepo-$SUFFIX --head \"\$(gh api user --jq .login):feature\" --body-file data/pr-body.md --title t"
+  local payload; payload=$(mk_payload "$cmd" "$parent")
+  local out; out=$(run_hook "$payload" "$tmpdir")
+
+  PATH="$original_path"
+  unset CHECKLIST_PWD_FILE KOOKR_PR_CHECKLIST
+
+  if [ "$(classify "$out")" != "allow" ]; then
+    record_fail "$name" "expected allow, got: $(printf '%s' "$out" | head -c 300)"
+  elif [ ! -f "$checklist_pwd" ] || [ "$(cat "$checklist_pwd")" != "$child" ]; then
+    record_fail "$name" "checklist engine ran from $(cat "$checklist_pwd" 2>/dev/null || printf '<missing>'), expected $child"
+  else
+    record_pass "$name"
+  fi
+
+  rm -f "$state"
+  rm -rf "$tmpdir"
+}
+run_case_5b
+
+# ---------------------------------------------------------------------
 # 6a. Malformed (non-JSON) stdin → fail-open (allow) + error logged.
 # ---------------------------------------------------------------------
 run_case_6a() {
