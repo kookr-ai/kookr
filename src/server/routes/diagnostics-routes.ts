@@ -562,7 +562,11 @@ function deriveTerminalBackendStatus(stats: BackendStats): 'ok' | 'degraded' | '
   ) {
     return 'error';
   }
-  if (stats.pendingWriters > 0 || stats.lastError) return 'degraded';
+  // A successful post-restart self-heal (kookr-ai/kookr#1345) is a benign
+  // success signal on the error bus, not a fault — it must not leave the backend
+  // pinned to `degraded` forever via the sticky `lastError` slot.
+  const benign = stats.lastError?.kind === 'session-recovery-repaired';
+  if (stats.pendingWriters > 0 || (stats.lastError && !benign)) return 'degraded';
   return 'ok';
 }
 

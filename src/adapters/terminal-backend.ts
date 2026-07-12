@@ -59,7 +59,21 @@ export type BackendError =
   | { kind: 'session-gone'; id: SessionId }
   | { kind: 'session-attach-recovered'; id: SessionId; attempt: number }
   | { kind: 'write-timed-out'; id: SessionId; durationMs: number }
-  | { kind: 'manifest-corrupt'; recoveredCount: number };
+  | { kind: 'manifest-corrupt'; recoveredCount: number }
+  /**
+   * Post-restart recovery repaired a wedged attach transport by recycling only
+   * the internal attach child (kookr-ai/kookr#1345). Informational — the agent
+   * and its conversation were preserved.
+   */
+  | { kind: 'session-recovery-repaired'; id: SessionId; attempts: number }
+  /**
+   * Post-restart recovery could not make a session that was expected to be
+   * working observably live even after the bounded repair attempts
+   * (kookr-ai/kookr#1345). This is a distinct, actionable finding — NOT the
+   * watchdog's generic `stale_agent`: the dtach master and agent process are
+   * still alive, but Kookr's attach transport to them could not be revived.
+   */
+  | { kind: 'session-recovery-unverified'; id: SessionId; attempts: number; failureReason: string };
 
 /**
  * Snapshot of backend internals used by `/api/health.terminalBackend`.
@@ -139,6 +153,97 @@ export interface ReconnectTransportResult {
   newGeneration: number;
   /** ms spent waiting for the fresh-liveness signal (0 when not reached). */
   livenessWaitedMs: number;
+}
+
+/**
+ * Post-restart recovery classification of a session whose dtach master survived
+ * a Kookr restart (kookr-ai/kookr#1345).
+ *
+ *   - `recovered-live`       → a fresh byte was observed within the grace window;
+ *                              the attach transport is healthy (no repair, or a
+ *                              repair brought it back).
+ *   - `recovered-idle`       → no bytes observed, but the session was NOT expected
+ *                              to be producing output (idle / completed-turn /
+ *                              blocked). Silence is normal; no repair is attempted.
+ *   - `recovered-unverified` → the session was expected to be working yet stayed
+ *                              silent even after the bounded attach recycles. A
+ *                              distinct, actionable finding (see BackendError).
+ */
+export type RecoveredSessionClassification =
+  | 'recovered-live'
+  | 'recovered-idle'
+  | 'recovered-unverified';
+
+/** Machine-readable reason a recovery ended `recovered-unverified`. Exactly one is set. */
+export type RecoveredSessionFailureReason =
+  | 'session-unknown' // no manifest entry for the session.
+  | 'socket-missing' // the dtach socket is gone.
+  | 'identity-unverified' // master pid/socket could not be confirmed (pid recycle / wrong process).
+  | 'attach-spawn-failed' // a fresh internal attach could not be opened during repair.
+  | 'no-liveness-after-repair'; // attaches spawned fine but never emitted a byte within the caps.
+
+/** Options for {@link TerminalBackend.verifyRecoveredSession}. */
+export interface VerifyRecoveredSessionOptions {
+  /**
+   * Whether the session's agent was actively producing output (mid-turn) at the
+   * instant Kookr restarted. The caller derives this from the last observed turn
+   * state. When true, a session that stays silent through the grace window is
+   * treated as a wedged attach transport and its internal attach child is
+   * recycled (bounded). When false — idle, completed-turn, blocked — silence is
+   * expected: NO repair is attempted and the session is classified
+   * `recovered-idle`. This is the guard that stops known-idle sessions from being
+   * repeatedly repaired.
+   */
+  expectWorking: boolean;
+  /**
+   * Grace window (ms) to observe *ongoing* agent output (ring-head progress)
+   * before (re)classifying. Defaults to the backend's own value.
+   */
+  graceWindowMs?: number;
+  /**
+   * Settle window (ms) to let the dtach on-attach redraw/replay flush before the
+   * progress baseline is snapshotted, so a one-shot redraw is never mistaken for
+   * live agent output. Defaults to the backend's own value. Tests set it small.
+   */
+  settleWindowMs?: number;
+  /**
+   * Maximum internal-attach recycles before giving up. Bounds the attach storm so
+   * a permanently-wedged transport cannot spin forever. Defaults to the backend's
+   * own value. 0 disables repair (classify-only).
+   */
+  maxRepairAttempts?: number;
+  /**
+   * Restart epoch (ms since epoch) recorded in the structured diagnostics so an
+   * operator can correlate every recovery attempt with one restart. Defaults to
+   * the moment the verification starts.
+   */
+  restartEpoch?: number;
+}
+
+/**
+ * Result of {@link TerminalBackend.verifyRecoveredSession}. The operation NEVER
+ * writes terminal input and NEVER relaunches or signals the agent; the dtach
+ * master pid and agent pid are captured so callers can prove they were preserved.
+ */
+export interface VerifyRecoveredSessionResult {
+  sessionId: SessionId;
+  classification: RecoveredSessionClassification;
+  /** Restart epoch (ms) recorded for this verification. */
+  restartEpoch: number;
+  /** Number of internal-attach recycles performed (0 when none were needed). */
+  repairAttempts: number;
+  /** Whether the dtach master pid + socket identity was positively verified. */
+  identityVerified: boolean;
+  /** dtach master pid (unchanged by the operation). -1 if unresolved. */
+  masterPid: number;
+  /** Agent (claude/codex) pid under the master, best-effort. null if unresolved. */
+  agentPid: number | null;
+  /** True when a fresh byte was observed at any point (initial probe or a repair). */
+  livenessObserved: boolean;
+  /** Wall-clock ms spent classifying + repairing. */
+  elapsedMs: number;
+  /** Set only when `classification === 'recovered-unverified'`. */
+  failureReason?: RecoveredSessionFailureReason;
 }
 
 export interface TerminalBackend extends TerminalSessionStreamPort {
@@ -257,6 +362,38 @@ export interface TerminalBackend extends TerminalSessionStreamPort {
     id: SessionId,
     options?: ReconnectTransportOptions,
   ): Promise<ReconnectTransportResult>;
+
+  /**
+   * Validate that a session recovered after a Kookr restart is observably live,
+   * and self-heal ONLY its attach transport when it is not (kookr-ai/kookr#1345).
+   *
+   * A Kookr restart leaves the dtach masters and agent processes running (they
+   * were detached via setsid), but the resumed internal attach can come up
+   * wedged: the process and socket pass liveness while no terminal bytes,
+   * transcript records, or hook events flow. This runs a bounded state machine
+   * per recovered session:
+   *
+   *   1. Verify the dtach master pid + socket still belong to the session.
+   *   2. Ensure the persistent attach is open and observe it for a fresh byte
+   *      during a grace window → `recovered-live`.
+   *   3. If silent AND the session was NOT expected to be working → no repair,
+   *      classify `recovered-idle`.
+   *   4. If silent AND expected to be working → recycle ONLY the internal attach
+   *      child (fresh generation, reapplied size, preserved ring + subscribers)
+   *      up to a repair cap; a fresh byte → `recovered-live`, exhaustion →
+   *      `recovered-unverified`.
+   *
+   * Guarantees: it NEVER writes terminal input (a resize/attach recycle is
+   * transport repair, not user activity) and NEVER relaunches or signals the
+   * agent — the dtach master pid and agent pid are unchanged and reported. The
+   * grace window and repair cap bound it so it cannot create an attach storm.
+   *
+   * Optional: backends that do not manage a detachable transport omit it.
+   */
+  verifyRecoveredSession?(
+    id: SessionId,
+    options: VerifyRecoveredSessionOptions,
+  ): Promise<VerifyRecoveredSessionResult>;
 }
 
 /** Typed error: session manifest entry / socket is gone. */

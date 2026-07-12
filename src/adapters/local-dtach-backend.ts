@@ -47,9 +47,13 @@ import {
   type ReconnectTransportOptions,
   type ReconnectTransportReason,
   type ReconnectTransportResult,
+  type RecoveredSessionClassification,
+  type RecoveredSessionFailureReason,
   type SessionId,
   type SessionSpec,
   type TerminalBackend,
+  type VerifyRecoveredSessionOptions,
+  type VerifyRecoveredSessionResult,
   SessionAttachFailedError,
   SessionGoneError,
   WriteTimeoutError,
@@ -95,6 +99,31 @@ const DEFAULT_RECONNECT_LIVENESS_TIMEOUT_MS = 1_500;
 const RECONNECT_COOLDOWN_MS = 2_000;
 const RECONNECT_WINDOW_MS = 60_000;
 const RECONNECT_CAP = 3;
+/**
+ * Post-restart recovery policy (kookr-ai/kookr#1345).
+ *
+ * `GRACE_WINDOW` is how long a recovered session is observed for a fresh byte
+ * before it is classified. It is deliberately longer than the reconnect
+ * liveness timeout: a mid-turn agent may pause briefly between tool calls, and
+ * the false-healthy state this guards against is silence measured in seconds,
+ * not sub-second gaps. `MAX_REPAIRS` bounds the internal-attach recycles per
+ * verification so a permanently-wedged transport cannot spin an attach storm —
+ * one initial attach plus at most this many fresh attaches, then the session is
+ * surfaced as `recovered-unverified` instead of being retried forever.
+ */
+const DEFAULT_RECOVERY_GRACE_WINDOW_MS = 1_500;
+const DEFAULT_RECOVERY_MAX_REPAIRS = 2;
+/**
+ * On attach, dtach replays its saved screen buffer to the new client — a
+ * one-shot burst that is NOT evidence the hosted agent is making progress. If
+ * that redraw were counted as liveness, a freshly-opened (or fresh-but-wedged)
+ * attach that only replays its stale screen would be misclassified live and the
+ * false-healthy state this feature targets would go undetected. So the recovery
+ * probe lets the redraw flush for this settle window, snapshots the ring head,
+ * then measures whether *new* bytes keep arriving — genuine agent progress —
+ * over the grace window. Bounded well under the grace window.
+ */
+const DEFAULT_RECOVERY_SETTLE_MS = 250;
 /**
  * How often to persist each session's ring buffer to disk. The periodic flush
  * is the primary mechanism that lets a restarted Kookr rebuild the scrollback
@@ -682,6 +711,197 @@ export class LocalDtachBackend implements TerminalBackend {
         newGeneration: result.newGeneration,
         livenessWaitedMs: result.livenessWaitedMs,
         ...(cause ? { error: cause instanceof Error ? cause.message : String(cause) } : {}),
+      }),
+    );
+  }
+
+  // ─── Post-restart recovery (kookr-ai/kookr#1345) ─────────────────────────
+
+  async verifyRecoveredSession(
+    id: SessionId,
+    options: VerifyRecoveredSessionOptions,
+  ): Promise<VerifyRecoveredSessionResult> {
+    const restartEpoch = options.restartEpoch ?? Date.now();
+    const grace =
+      options.graceWindowMs && options.graceWindowMs > 0
+        ? options.graceWindowMs
+        : DEFAULT_RECOVERY_GRACE_WINDOW_MS;
+    const settle =
+      options.settleWindowMs != null && options.settleWindowMs >= 0
+        ? options.settleWindowMs
+        : DEFAULT_RECOVERY_SETTLE_MS;
+    // A negative cap is coerced to the default; 0 is honored (classify-only).
+    const cap =
+      options.maxRepairAttempts != null && options.maxRepairAttempts >= 0
+        ? options.maxRepairAttempts
+        : DEFAULT_RECOVERY_MAX_REPAIRS;
+    const start = Date.now();
+
+    const acc = {
+      identityVerified: false,
+      masterPid: -1,
+      agentPid: null as number | null,
+      spawnError: undefined as string | undefined,
+    };
+    const finish = (
+      classification: RecoveredSessionClassification,
+      repairAttempts: number,
+      livenessObserved: boolean,
+      failureReason?: RecoveredSessionFailureReason,
+    ): VerifyRecoveredSessionResult => {
+      const result: VerifyRecoveredSessionResult = {
+        sessionId: id,
+        classification,
+        restartEpoch,
+        repairAttempts,
+        identityVerified: acc.identityVerified,
+        masterPid: acc.masterPid,
+        agentPid: acc.agentPid,
+        livenessObserved,
+        elapsedMs: Date.now() - start,
+        ...(failureReason ? { failureReason } : {}),
+      };
+      this.auditRecovery(result, options.expectWorking, acc.spawnError);
+      if (classification === 'recovered-unverified') {
+        this.emitError({
+          kind: 'session-recovery-unverified',
+          id,
+          attempts: repairAttempts,
+          failureReason: failureReason ?? 'no-liveness-after-repair',
+        });
+      } else if (classification === 'recovered-live' && repairAttempts > 0) {
+        // Only announce a repair when a recycle actually happened — a
+        // first-probe-live session is silent success, matching the RFC's
+        // "silent recovery except for a log line" posture for the happy path.
+        this.emitError({ kind: 'session-recovery-repaired', id, attempts: repairAttempts });
+      }
+      return result;
+    };
+
+    // 1. Session must be known and its socket present.
+    const entry = await this.readEntry(id);
+    if (!entry) return finish('recovered-unverified', 0, false, 'session-unknown');
+    if (!existsSync(entry.sock)) return finish('recovered-unverified', 0, false, 'socket-missing');
+
+    // 2. Verify the dtach master pid + socket still belong to this session.
+    let masterPid = entry.pid;
+    if (masterPid <= 0) masterPid = this.findDtachMasterPidSync(entry.sock);
+    acc.masterPid = masterPid;
+    if (!this.verifyMasterIdentity(masterPid, entry.sock)) {
+      return finish('recovered-unverified', 0, false, 'identity-unverified');
+    }
+    acc.identityVerified = true;
+    acc.agentPid = this.findAgentPidSync(masterPid);
+
+    // 3. Ensure the persistent attach is open (opening the initial attach is NOT
+    //    a repair) and observe it for ONGOING agent output (ring-head progress,
+    //    with the on-attach redraw discounted via the settle window).
+    const sess = this.createAttachedState(id, entry.sock);
+    let probe = await this.observeRecoveryProgress(sess, entry.sock, settle, grace);
+    if (probe.spawnError) acc.spawnError = probe.spawnError;
+    if (probe.live) return finish('recovered-live', 0, true);
+
+    // 4. Silent. Known-idle sessions expect silence — never repair them.
+    if (!options.expectWorking) return finish('recovered-idle', 0, false);
+
+    // 5. Expected to be working but silent → recycle ONLY the internal attach
+    //    child, bounded by the cap. The dtach master + agent are untouched.
+    let attempts = 0;
+    let failureReason: RecoveredSessionFailureReason = 'no-liveness-after-repair';
+    while (attempts < cap) {
+      attempts += 1;
+      this.disposeAttachChildOnly(sess);
+      probe = await this.observeRecoveryProgress(sess, entry.sock, settle, grace);
+      if (probe.spawnError) acc.spawnError = probe.spawnError;
+      if (probe.live) {
+        // Re-resolve the agent pid so the audit proves it is unchanged post-repair.
+        acc.agentPid = this.findAgentPidSync(masterPid);
+        return finish('recovered-live', attempts, true);
+      }
+      // A fresh attach that never came up (spawn threw / immediately exited) is a
+      // distinct, terminal failure — stop retrying and surface it.
+      if (!sess.pty) {
+        failureReason = 'attach-spawn-failed';
+        break;
+      }
+    }
+
+    acc.agentPid = this.findAgentPidSync(masterPid);
+    return finish('recovered-unverified', attempts, false, failureReason);
+  }
+
+  /**
+   * Ensure an attach child is live (opening one if none exists), let the dtach
+   * on-attach redraw/replay flush during the settle window, then measure whether
+   * *new* bytes keep arriving over the grace window — genuine agent progress, not
+   * the one-shot redraw. Progress is detected two ways so nothing is missed: a
+   * passive byte probe (resolves early on the next byte) and a `ringHead` delta
+   * (catches bytes that landed between the baseline snapshot and probe install).
+   * The probe ONLY reads — it never writes input. Returns `spawnError` when a
+   * fresh attach could not be opened so the caller can record the OS cause.
+   */
+  private async observeRecoveryProgress(
+    sess: AttachedSession,
+    sock: string,
+    settleMs: number,
+    windowMs: number,
+  ): Promise<{ live: boolean; spawnError?: string }> {
+    if (!sess.pty) {
+      try {
+        this.attachPtyInto(sess, sock);
+      } catch (err) {
+        return { live: false, spawnError: err instanceof Error ? err.message : String(err) };
+      }
+    }
+    if (!sess.pty) return { live: false };
+
+    // Let the on-attach redraw/replay flush so it is not mistaken for progress.
+    if (settleMs > 0) await sleep(settleMs);
+
+    // Baseline AFTER settle: bytes up to here (redraw + any pre-settle output)
+    // are discounted. We only count what arrives during the window.
+    const baseline = sess.ringHead;
+    let resolveProgress: (() => void) | null = null;
+    const progressSignal = new Promise<void>((resolve) => {
+      resolveProgress = resolve;
+    });
+    const probe = (bytes: Uint8Array): void => {
+      if (bytes.length > 0) resolveProgress?.();
+    };
+    sess.dataSubscribers.add(probe);
+    try {
+      const progressed = await Promise.race([
+        progressSignal.then(() => true),
+        sleep(windowMs).then(() => false),
+      ]);
+      // Fall back to the ring-head delta for a byte that raced probe install.
+      return { live: progressed || sess.ringHead > baseline };
+    } finally {
+      sess.dataSubscribers.delete(probe);
+    }
+  }
+
+  private auditRecovery(
+    result: VerifyRecoveredSessionResult,
+    expectWorking: boolean,
+    spawnError?: string,
+  ): void {
+    // eslint-disable-next-line no-console
+    console.log(
+      JSON.stringify({
+        msg: 'terminal_session_recovery',
+        sessionId: result.sessionId,
+        classification: result.classification,
+        expectWorking,
+        restartEpoch: result.restartEpoch,
+        repairAttempts: result.repairAttempts,
+        identityVerified: result.identityVerified,
+        masterPid: result.masterPid,
+        agentPid: result.agentPid,
+        livenessObserved: result.livenessObserved,
+        elapsedMs: result.elapsedMs,
+        ...(result.failureReason ? { failureReason: result.failureReason } : {}),
+        ...(spawnError ? { spawnError } : {}),
       }),
     );
   }

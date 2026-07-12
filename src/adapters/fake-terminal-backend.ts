@@ -4,9 +4,13 @@ import {
   type ReconnectTransportOptions,
   type ReconnectTransportReason,
   type ReconnectTransportResult,
+  type RecoveredSessionClassification,
+  type RecoveredSessionFailureReason,
   type SessionId,
   type SessionSpec,
   type TerminalBackend,
+  type VerifyRecoveredSessionOptions,
+  type VerifyRecoveredSessionResult,
   SessionGoneError,
 } from './terminal-backend.js';
 import type { TerminalInputWriteResult, TerminalInputWriterPort } from '../core/ports/terminal-input-writer-port.js';
@@ -75,6 +79,20 @@ export interface FakeSession {
    * false: the reconnect emits a synthetic redraw and reports `success`.
    */
   reconnectWedged: boolean;
+  /**
+   * When true, `verifyRecoveredSession` models a post-restart attach that came
+   * up wedged (no bytes). If the session is also expected to be working, the
+   * modeled repair loop exhausts and the session is classified
+   * `recovered-unverified`. Default false: the initial probe is live and the
+   * session is `recovered-live`. See kookr-ai/kookr#1345.
+   */
+  recoveryWedged: boolean;
+  /**
+   * Repair attempt at which a wedged recovery becomes live (models a fresh
+   * attach clearing the wedge). Default Infinity: the wedge is permanent, so a
+   * working session ends `recovered-unverified`.
+   */
+  recoveryRepairsUntilLive: number;
 }
 
 /** Synthetic redraw a successful fake reconnect emits (models the dtach redraw). */
@@ -138,6 +156,8 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
       agentPid: 200_000 + this.sessions.size,
       attachGeneration: 1,
       reconnectWedged: false,
+      recoveryWedged: false,
+      recoveryRepairsUntilLive: Number.POSITIVE_INFINITY,
     });
   }
 
@@ -344,6 +364,83 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
     const s = this.sessions.get(id);
     if (!s) throw new SessionGoneError(id);
     s.reconnectWedged = wedged;
+  }
+
+  /**
+   * Test helper: model a session that came up wedged after a restart. When
+   * `repairsUntilLive` is given, the modeled repair loop makes it live at that
+   * attempt; otherwise the wedge is permanent. See kookr-ai/kookr#1345.
+   */
+  setRecoveryWedged(id: SessionId, wedged: boolean, repairsUntilLive?: number): void {
+    const s = this.sessions.get(id);
+    if (!s) throw new SessionGoneError(id);
+    s.recoveryWedged = wedged;
+    if (repairsUntilLive != null) s.recoveryRepairsUntilLive = repairsUntilLive;
+  }
+
+  async verifyRecoveredSession(
+    id: SessionId,
+    options: VerifyRecoveredSessionOptions,
+  ): Promise<VerifyRecoveredSessionResult> {
+    const restartEpoch = options.restartEpoch ?? 0;
+    const cap = options.maxRepairAttempts != null && options.maxRepairAttempts >= 0
+      ? options.maxRepairAttempts
+      : 2;
+    const s = this.sessions.get(id);
+    const finish = (
+      classification: RecoveredSessionClassification,
+      repairAttempts: number,
+      livenessObserved: boolean,
+      identityVerified: boolean,
+      failureReason?: RecoveredSessionFailureReason,
+    ): VerifyRecoveredSessionResult => {
+      const result: VerifyRecoveredSessionResult = {
+        sessionId: id,
+        classification,
+        restartEpoch,
+        repairAttempts,
+        identityVerified,
+        masterPid: s?.masterPid ?? -1,
+        agentPid: s?.agentPid ?? null,
+        livenessObserved,
+        elapsedMs: 0,
+        ...(failureReason ? { failureReason } : {}),
+      };
+      if (classification === 'recovered-unverified') {
+        this.fireError({
+          kind: 'session-recovery-unverified',
+          id,
+          attempts: repairAttempts,
+          failureReason: failureReason ?? 'no-liveness-after-repair',
+        });
+      } else if (classification === 'recovered-live' && repairAttempts > 0) {
+        this.fireError({ kind: 'session-recovery-repaired', id, attempts: repairAttempts });
+      }
+      return result;
+    };
+
+    if (!s) return finish('recovered-unverified', 0, false, false, 'session-unknown');
+    if (!s.alive) return finish('recovered-unverified', 0, false, false, 'identity-unverified');
+
+    // Model opening/observing the persistent attach.
+    s.attachGeneration += 1;
+    if (!s.recoveryWedged) {
+      this.emit(id, RECONNECT_REDRAW_BYTES);
+      return finish('recovered-live', 0, true, true);
+    }
+    // Silent. Known-idle sessions are never repaired.
+    if (!options.expectWorking) return finish('recovered-idle', 0, false, true);
+    // Expected working but wedged → bounded repairs.
+    let attempts = 0;
+    while (attempts < cap) {
+      attempts += 1;
+      s.attachGeneration += 1;
+      if (attempts >= s.recoveryRepairsUntilLive) {
+        this.emit(id, RECONNECT_REDRAW_BYTES);
+        return finish('recovered-live', attempts, true, true);
+      }
+    }
+    return finish('recovered-unverified', attempts, false, true, 'no-liveness-after-repair');
   }
 
   getStats(): BackendStats {
