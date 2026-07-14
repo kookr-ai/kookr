@@ -31,9 +31,11 @@ export type {
   AgentEffortMap,
 } from './contracts/agent-types.js';
 export {
+  AGENT_TYPES,
   AVAILABLE_AGENT_TYPES,
   buildAgentSelectionOptions,
   effortLevelsForAgent,
+  isAgentType,
   isValidEffortForAgent,
 } from './contracts/agent-types.js';
 export type { AgentEvent } from './contracts/agent-events.js';

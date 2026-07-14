@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { AgentType } from '../../shared/contracts/agent-types.js';
+import { isAgentType, type AgentType } from '../../shared/contracts/agent-types.js';
 import type { CoordinatorDetectorId } from '../../shared/contracts/coordinator.js';
 
 export interface CoordinatorSuppressionEntry {
@@ -38,6 +38,7 @@ export class CoordinatorSuppressionStore implements CoordinatorSuppressionRegist
   }
 
   isSuppressed(detectorId: CoordinatorDetectorId, agentType: AgentType, now = new Date(), taskId?: string): boolean {
+    assertAgentType(agentType);
     const state = this.read();
     const keys = [
       ...(taskId ? [taskAcknowledgementKey(detectorId, agentType, taskId)] : []),
@@ -50,6 +51,7 @@ export class CoordinatorSuppressionStore implements CoordinatorSuppressionRegist
   }
 
   suppress(detectorId: CoordinatorDetectorId, agentType: AgentType, now = new Date()): CoordinatorSuppressionEntry {
+    assertAgentType(agentType);
     const state = this.read();
     const key = suppressionKey(detectorId, agentType);
     const existing = state.suppressions.find((entry) => entry.key === key);
@@ -85,6 +87,7 @@ export class CoordinatorSuppressionStore implements CoordinatorSuppressionRegist
   }
 
   acknowledgeTask(detectorId: CoordinatorDetectorId, agentType: AgentType, taskId: string, now = new Date()): CoordinatorSuppressionEntry {
+    assertAgentType(agentType);
     const state = this.read();
     const key = taskAcknowledgementKey(detectorId, agentType, taskId);
     const next: CoordinatorSuppressionEntry = {
@@ -115,7 +118,11 @@ export class CoordinatorSuppressionStore implements CoordinatorSuppressionRegist
       }
       return {
         version: 'coordinator-suppressions.v1',
-        suppressions: parsed.suppressions.filter(isEntry),
+        suppressions: parsed.suppressions.filter((candidate) => {
+          if (isEntry(candidate)) return true;
+          logInvalidEntry(candidate);
+          return false;
+        }),
       };
     } catch {
       return { version: 'coordinator-suppressions.v1', suppressions: [] };
@@ -129,6 +136,7 @@ export class CoordinatorSuppressionStore implements CoordinatorSuppressionRegist
 }
 
 export function suppressionKey(detectorId: CoordinatorDetectorId, agentType: AgentType): string {
+  assertAgentType(agentType);
   return `${detectorId}:${agentType}`;
 }
 
@@ -141,11 +149,29 @@ function isEntry(value: unknown): value is CoordinatorSuppressionEntry {
   const candidate = value as Partial<CoordinatorSuppressionEntry>;
   return typeof candidate.key === 'string'
     && isDetectorId(candidate.detectorId)
-    && (candidate.agentType === 'claude-code' || candidate.agentType === 'codex-cli')
+    && isAgentType(candidate.agentType)
     && (candidate.taskId === undefined || typeof candidate.taskId === 'string')
     && typeof candidate.suppressedUntil === 'string'
     && typeof candidate.dismissalCount === 'number'
     && typeof candidate.lastDismissedAt === 'string';
+}
+
+function assertAgentType(value: unknown): asserts value is AgentType {
+  if (isAgentType(value)) return;
+  const label = String(value);
+  console.warn(`[coordinator-suppressions] rejecting unknown agent type: ${label}`);
+  throw new Error(`Unknown agent type: ${label}`);
+}
+
+function logInvalidEntry(value: unknown): void {
+  const agentType = value && typeof value === 'object'
+    ? (value as { agentType?: unknown }).agentType
+    : undefined;
+  if (agentType !== undefined && !isAgentType(agentType)) {
+    console.warn(`[coordinator-suppressions] ignoring persisted suppression with unknown agent type: ${String(agentType)}`);
+    return;
+  }
+  console.warn('[coordinator-suppressions] ignoring invalid persisted suppression entry');
 }
 
 function isDetectorId(value: unknown): value is CoordinatorDetectorId {

@@ -1,4 +1,12 @@
-export type AgentType = 'claude-code' | 'codex-cli' | 'grok-build';
+/** Every concrete agent type accepted by persisted and runtime contracts. */
+export const AGENT_TYPES = ['claude-code', 'codex-cli', 'grok-build'] as const;
+
+export type AgentType = (typeof AGENT_TYPES)[number];
+
+/** True when a runtime value is one of the concrete agent types. */
+export function isAgentType(value: unknown): value is AgentType {
+  return typeof value === 'string' && AGENT_TYPES.includes(value as AgentType);
+}
 
 /**
  * Sentinel for the round-robin agent *selection*. Not a real adapter — the

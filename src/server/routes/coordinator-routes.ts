@@ -3,6 +3,7 @@ import { buildCoordinatorDetectorTasks, createSnapshotMessage, getSnapshotAgents
 import { completeTask as completeTaskLifecycle } from '../agent-lifecycle.js';
 import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
 import { CoordinatorSuppressionStore } from '../coordinator/suppression-store.js';
+import { isAgentType } from '../../shared/contracts/agent-types.js';
 import type { CoordinatorRouteDeps } from './shared.js';
 
 export function registerCoordinatorRoutes(app: Hono, deps: CoordinatorRouteDeps): void {
@@ -37,8 +38,8 @@ export function registerCoordinatorRoutes(app: Hono, deps: CoordinatorRouteDeps)
     }
     if (!isCoordinatorDetectorId(body.detectorId)) return c.json({ error: 'detectorId is required' }, 400);
     const task = typeof body.taskId === 'string' ? taskStore.getTask(body.taskId) : undefined;
-    const agentType = isAgentType(body.agentType) ? body.agentType : task?.agentType;
-    if (!agentType) return c.json({ error: 'agentType or valid taskId is required' }, 400);
+    const agentType = body.agentType === undefined ? task?.agentType : body.agentType;
+    if (!isAgentType(agentType)) return c.json({ error: 'agentType or valid taskId is required' }, 400);
 
     const suppression = coordinatorSuppressions.suppress(body.detectorId, agentType);
     broadcastSnapshotWithCoordinator();
@@ -56,7 +57,8 @@ export function registerCoordinatorRoutes(app: Hono, deps: CoordinatorRouteDeps)
     if (!isCoordinatorDetectorId(body.detectorId)) return c.json({ error: 'detectorId is required' }, 400);
     const task = taskStore.getTask(body.taskId);
     if (!task) return c.json({ error: 'Task not found' }, 404);
-    const agentType = isAgentType(body.agentType) ? body.agentType : task.agentType;
+    const agentType = body.agentType === undefined ? task.agentType : body.agentType;
+    if (!isAgentType(agentType)) return c.json({ error: 'agentType or valid taskId is required' }, 400);
 
     const acknowledgement = coordinatorSuppressions.acknowledgeTask(body.detectorId, agentType, task.id);
     broadcastSnapshotWithCoordinator();
@@ -137,10 +139,6 @@ export function registerCoordinatorRoutes(app: Hono, deps: CoordinatorRouteDeps)
 
 function isCoordinatorDetectorId(value: unknown): value is 'declared_edge' | 'stale' | 'duplicate' | 'done_not_cleared' {
   return value === 'declared_edge' || value === 'stale' || value === 'duplicate' || value === 'done_not_cleared';
-}
-
-function isAgentType(value: unknown): value is 'claude-code' | 'codex-cli' {
-  return value === 'claude-code' || value === 'codex-cli';
 }
 
 function sameStringSet(left: string[], right: string[]): boolean {
