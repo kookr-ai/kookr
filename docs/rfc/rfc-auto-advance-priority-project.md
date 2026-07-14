@@ -60,12 +60,14 @@ These facts drive the v3 design: do not auto-select an agent on auto-switch, do 
 - When Auto-Advance is on and the priority queue's head changes (because a new finding appeared on a higher-priority project, OR because the current project lost all findings and the head fell through to another project), the dashboard SHALL switch to the new head, after a 2000 ms settle delay, UNLESS the user is currently engaged with a manually selected agent on the currently-selected project. Engagement is held by an active finding or by focus in the terminal or reply input.
 - An auto-advance switch SHALL change `selectedProject` only. It SHALL NOT auto-select an agent in the destination project. The switch SHALL still invoke the existing `selectAgent(null)` side-effect cleanup so `respondAllAgentIds`, `leftPane`, and `narrowTab` are reset to their default values. (See Design §4 for why and how.)
 - The user's engagement SHALL be defined as: `selectedAgentId` is set, `selectedAgentSource === 'manual'`, and the selected agent exists with either `isActiveFinding()` true or `focusZone !== 'none'`. Engagement SHALL be released when:
-  - the user uses next-finding (Alt+N), next-task (Alt+J), previous-task (Alt+K);
+  - the user uses next-finding (Alt+N), next-task (Alt+J), previous-task (Alt+K), provided no focus zone is held;
   - the user presses Esc to deselect;
   - the user manually selects a different project;
   - focus leaves the terminal or reply input;
   - the engaged agent's `isActiveFinding()` flips to false (anomaly cleared, snoozed, suppressed, terminal status) while no focus zone is held;
   - the user snoozes, completes, or cancels the agent.
+
+Selection gestures change the selected agent and release the prior finding-based engagement, but they do not clear `focusZone`; while focus remains in the terminal or reply input, the newly selected task is still protected.
 - Priority order SHALL be: pinned projects in their sidebar order (top of pinned list = highest priority), followed by unpinned projects in their sidebar order.
 - The Auto-Advance on/off state SHALL persist across page reloads via `localStorage` key `kookr-auto-advance-mode`, and SHALL synchronize across open tabs via the `storage` window event.
 - Auto-Advance SHALL emit a telemetry event on every actual switch via the existing `track()` infrastructure: `{ type: 'auto_advance_switch', from, to, cause, settleMs }`. No persistent log buffer is shipped in v1.
@@ -184,14 +186,14 @@ Release events (the full set):
 | Event                                                          | Engagement released? |
 |----------------------------------------------------------------|:--------------------:|
 | `selectAgent(null)` (Esc)                                      | yes                  |
-| `selectAgent(other)` from a user gesture                       | yes                  |
-| `nextBottleneck()` (Alt+N)                                     | yes                  |
-| `nextTask()` / `previousTask()` (Alt+J / K)                    | yes                  |
+| `selectAgent(other)` from a user gesture                       | yes, if no focus zone remains |
+| `nextBottleneck()` (Alt+N)                                     | yes, if no focus zone remains |
+| `nextTask()` / `previousTask()` (Alt+J / K)                    | yes, if no focus zone remains |
 | Focus leaves terminal or reply input                            | yes, if no finding remains |
 | Engaged agent's `isActiveFinding()` flips to false             | yes — predicate goes false |
-| Engaged agent's `anomaly` clears (reply, fix, server-side)     | yes — same as above  |
+| Engaged agent's `anomaly` clears (reply, fix, server-side)     | yes, if no focus zone remains |
 | Snooze / complete / cancel of the engaged agent                | yes — predicate goes false |
-| Manual `selectProject()`                                       | yes                  |
+| Manual `selectProject()`                                       | yes, if no focus zone remains |
 | User opens a modal / context-menu / clicks the sidebar         | no — selection unchanged |
 | User Cmd-Tabs to another browser tab                           | no — selection unchanged |
 | Auto-advance switches the project                              | new selection is `auto-advance`-sourced → no engagement |

@@ -461,6 +461,29 @@ describe('attachAutoAdvanceSubscribers', () => {
     expect(store.getState().lastTickReason).toBe('engaged');
   });
 
+  test.each(['terminal', 'response-input'] as const)('focus leaving %s allows auto-advance to resume', async (focusZone) => {
+    attachAutoAdvanceSubscribers(store, { settleMs: 50 });
+    hydrateWith({
+      projects: [makeProject('org/a'), makeProject('org/b')],
+      pinned: ['org/b'],
+      agents: [
+        makeAgent({ agentId: 'selected', projectId: 'org/a' }),
+        makeFinding('target', 'org/b'),
+      ],
+      selectedProject: 'org/a',
+      selectedAgentId: 'selected',
+      focusZone,
+    });
+    expect(store.getState().lastTickReason).toBe('engaged');
+
+    store.setState({ focusZone: 'none' });
+    expect(store.getState().lastTickReason).toBe('settling');
+    await vi.advanceTimersByTimeAsync(60);
+
+    expect(store.getState().selectedProject).toBe('org/b');
+    expect(store.getState().lastAutoSwitch?.to).toBe('org/b');
+  });
+
   test('toggle-off during settle cancels the pending switch', async () => {
     attachAutoAdvanceSubscribers(store, { settleMs: 50 });
     hydrateWith({
