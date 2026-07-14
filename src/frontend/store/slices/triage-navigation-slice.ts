@@ -184,6 +184,7 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
           selectedAgentId: agentId,
           selectedTaskId: selected?.taskId ?? taskId ?? null,
           selectedAgentSource: 'manual',
+          ...(agentId === null ? { focusZone: 'none' as const } : {}),
           respondAllAgentIds: null,
           leftPane: 'activity',
           narrowTab: 'activity',
@@ -202,7 +203,7 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
 
       if (findings.length === 0) {
         withSelectionTransitionSource({ source: 'nextBottleneck', reason: 'no_active_findings' }, () => {
-          set({ selectedAgentId: null, selectedTaskId: null, selectedAgentSource: 'manual', shortcutsArmed: false });
+          set({ selectedAgentId: null, selectedTaskId: null, selectedAgentSource: 'manual', focusZone: 'none', shortcutsArmed: false });
         });
         return;
       }
@@ -211,7 +212,7 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
       const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % findings.length : 0;
       if (matchesSelection(findings[nextIdx], selectedAgentId, selectedTaskId)) {
         withSelectionTransitionSource({ source: 'nextBottleneck', reason: 'only_current_finding' }, () => {
-          set({ selectedAgentId: null, selectedTaskId: null, selectedAgentSource: 'manual', shortcutsArmed: false });
+          set({ selectedAgentId: null, selectedTaskId: null, selectedAgentSource: 'manual', focusZone: 'none', shortcutsArmed: false });
         });
         return;
       }
@@ -253,6 +254,7 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
             selectedAgentId: null,
             selectedTaskId: null,
             selectedAgentSource: 'manual',
+            focusZone: 'none',
             respondAllAgentIds: null,
             shortcutsArmed: false,
           });

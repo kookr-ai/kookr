@@ -68,6 +68,7 @@ These facts drive the v3 design: do not auto-select an agent on auto-switch, do 
   - the user snoozes, completes, or cancels the agent.
 
 Selection gestures change the selected agent and release the prior finding-based engagement, but they do not clear `focusZone`; while focus remains in the terminal or reply input, the newly selected task is still protected.
+Any transition that clears `selectedAgentId` also resets `focusZone` to `'none'`, including auto-advance cleanup and server/project deselection, so focus from an unmounted detail panel cannot guard a later selection.
 - Priority order SHALL be: pinned projects in their sidebar order (top of pinned list = highest priority), followed by unpinned projects in their sidebar order.
 - The Auto-Advance on/off state SHALL persist across page reloads via `localStorage` key `kookr-auto-advance-mode`, and SHALL synchronize across open tabs via the `storage` window event.
 - Auto-Advance SHALL emit a telemetry event on every actual switch via the existing `track()` infrastructure: `{ type: 'auto_advance_switch', from, to, cause, settleMs }`. No persistent log buffer is shipped in v1.

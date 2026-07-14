@@ -107,7 +107,7 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
         if (!project) {
           // Deselecting project — clear any previously auto-selected finding.
           // Source is 'manual' since this only fires on explicit deselect.
-          set({ selectedAgentId: null, selectedTaskId: null, selectedAgentSource: 'manual' });
+          set({ selectedAgentId: null, selectedTaskId: null, selectedAgentSource: 'manual', focusZone: 'none' });
           return;
         }
 

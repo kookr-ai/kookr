@@ -427,12 +427,14 @@ describe('attachAutoAdvanceSubscribers', () => {
       pinned: ['org/b'],
       agents: [makeFinding('x', 'org/b')],
       selectedProject: 'org/a',
+      focusZone: 'response-input',
     });
 
     await vi.advanceTimersByTimeAsync(60);
     expect(store.getState().selectedProject).toBe('org/b');
     expect(store.getState().selectedAgentSource).toBe('auto-advance');
     expect(store.getState().selectedAgentId).toBeNull();
+    expect(store.getState().focusZone).toBe('none');
     expect(store.getState().lastAutoSwitch?.to).toBe('org/b');
     expect(store.getState().lastAutoSwitch?.from).toBe('org/a');
   });
@@ -591,10 +593,25 @@ describe('selection write convention', () => {
   test('selectAgent(null) tags source as manual (engagement release)', () => {
     const store = createKookrStore();
     // pretend we landed via auto-advance previously
-    store.setState({ selectedAgentId: 'x', selectedAgentSource: 'auto-advance' });
+    store.setState({ selectedAgentId: 'x', selectedAgentSource: 'auto-advance', focusZone: 'response-input' });
     store.getState().selectAgent(null);
     expect(store.getState().selectedAgentId).toBeNull();
     expect(store.getState().selectedAgentSource).toBe('manual');
+    expect(store.getState().focusZone).toBe('none');
+  });
+
+  test.each(['terminal', 'response-input'] as const)('clears stale %s focus before a later healthy selection', (focusZone) => {
+    const store = createKookrStore();
+    store.getState().handleSnapshot([
+      makeAgent({ agentId: 'healthy', projectId: 'org/a' }),
+    ]);
+    store.setState({ selectedAgentId: 'old', selectedAgentSource: 'auto-advance', focusZone });
+
+    store.getState().selectAgent(null);
+    store.getState().selectAgent('healthy');
+
+    expect(store.getState().focusZone).toBe('none');
+    expect(engagedWithAgent(store.getState())).toBe(false);
   });
 
   test('selectProject(p, {source: "auto-advance"}) tags source as auto-advance after side-effect cleanup', () => {

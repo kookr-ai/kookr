@@ -1,4 +1,4 @@
-import type { AgentState, TransportSessionSlice, StoreGet, StoreSet } from '../store-types.js';
+import type { AgentState, FocusZone, TransportSessionSlice, StoreGet, StoreSet } from '../store-types.js';
 import { SEVERITY_ORDER } from '../store-types.js';
 import { mergeActivityAgent } from '../activity-history.js';
 import { firstReadyKookrSTTEndpoint } from '../../../shared/contracts/speech.js';
@@ -36,7 +36,7 @@ function selectedAgentUpdateAfterServerState(
   selectedTaskId: string | null,
   previousAgents: AgentState[],
   nextAgents: AgentState[],
-): { selectedAgentId?: string | null; selectedTaskId?: string | null; selectedAgentSource?: 'manual'; respondAllAgentIds?: null; leftPane?: 'activity'; narrowTab?: 'activity'; shortcutsArmed?: false } {
+): { selectedAgentId?: string | null; selectedTaskId?: string | null; selectedAgentSource?: 'manual'; focusZone?: FocusZone; respondAllAgentIds?: null; leftPane?: 'activity'; narrowTab?: 'activity'; shortcutsArmed?: false } {
   if (!selectedAgentId) return {};
 
   const previousSelected = selectedTaskId
@@ -48,7 +48,7 @@ function selectedAgentUpdateAfterServerState(
   if (!nextSelected) {
     // Server evicted the agent. Tag as 'manual' so the engagement guard isn't
     // confused into thinking the (now null) selection is an auto-advance landing.
-    return { selectedAgentId: null, selectedTaskId: null, selectedAgentSource: 'manual', respondAllAgentIds: null };
+    return { selectedAgentId: null, selectedTaskId: null, selectedAgentSource: 'manual', focusZone: 'none', respondAllAgentIds: null };
   }
 
   if (
@@ -62,6 +62,7 @@ function selectedAgentUpdateAfterServerState(
       selectedAgentId: nextAgentId,
       selectedTaskId: nextAgent?.taskId ?? null,
       selectedAgentSource: 'manual',
+      ...(nextAgentId ? {} : { focusZone: 'none' as const }),
       respondAllAgentIds: null,
       leftPane: 'activity',
       narrowTab: 'activity',
@@ -81,6 +82,7 @@ function selectedAgentRestoreAfterFirstSnapshot(
     selectedAgentId?: string | null;
     selectedTaskId?: string | null;
     selectedAgentSource?: 'manual';
+    focusZone?: FocusZone;
     respondAllAgentIds?: null;
     leftPane?: 'activity';
     narrowTab?: 'activity';
@@ -110,6 +112,7 @@ function selectedAgentRestoreAfterFirstSnapshot(
         selectedAgentId: null,
         selectedTaskId: null,
         selectedAgentSource: 'manual',
+        focusZone: 'none',
         respondAllAgentIds: null,
       },
       missed: true,
@@ -253,6 +256,7 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
                 selectedAgentId: selection.selectedSessionId,
                 selectedTaskId: selection.selectedTaskId,
                 selectedAgentSource: 'manual' as const,
+                ...(selection.selectedSessionId === null ? { focusZone: 'none' as const } : {}),
               }
             : {}),
         });
