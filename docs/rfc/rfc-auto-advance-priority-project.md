@@ -147,7 +147,7 @@ const unsubscribe = useKookrStore.subscribe((state, prevState) => {
 |----------------------|----------------------------------------------------------|
 | `no_eligible_project`| no-op; mode remains ON                                   |
 | `already_top`        | no-op                                                    |
-| `engaged`            | no-op (user has a finding selected)                      |
+| `engaged`            | no-op (user has an engaged agent selected or focused)    |
 | `settling`           | timer already pending; recompute on fire                 |
 | `scheduled`          | start 2000 ms timer; fire after delay re-checks guard    |
 
