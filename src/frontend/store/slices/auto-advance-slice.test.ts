@@ -614,6 +614,68 @@ describe('selection write convention', () => {
     expect(engagedWithAgent(store.getState())).toBe(false);
   });
 
+  test('project deselection clears focus held by the removed detail panel', () => {
+    const store = createKookrStore();
+    store.setState({ selectedAgentId: 'selected', selectedAgentSource: 'manual', focusZone: 'terminal' });
+
+    store.getState().selectProject(null);
+
+    expect(store.getState().selectedAgentId).toBeNull();
+    expect(store.getState().focusZone).toBe('none');
+  });
+
+  test('navigation deselection clears focus before the next selection', () => {
+    const store = createKookrStore();
+    store.setState({
+      agents: [makeFinding('finding', 'org/a')],
+      selectedAgentId: 'finding',
+      selectedAgentSource: 'manual',
+      focusZone: 'response-input',
+    });
+
+    store.getState().nextBottleneck();
+
+    expect(store.getState().selectedAgentId).toBeNull();
+    expect(store.getState().focusZone).toBe('none');
+  });
+
+  test('completion with no successor clears focus', () => {
+    const store = createKookrStore();
+    store.setState({
+      agents: [makeAgent({ agentId: 'completed', projectId: 'org/a', taskStatus: 'completed' })],
+      selectedAgentId: 'completed',
+      selectedAgentSource: 'manual',
+      focusZone: 'terminal',
+    });
+
+    store.getState().selectNextTaskAfterCompletion('completed', null);
+
+    expect(store.getState().selectedAgentId).toBeNull();
+    expect(store.getState().focusZone).toBe('none');
+  });
+
+  test('server eviction clears focus for the removed selected agent', () => {
+    const store = createKookrStore();
+    store.getState().handleSnapshot([makeAgent({ agentId: 'evicted', projectId: 'org/a' })]);
+    store.getState().selectAgent('evicted');
+    store.getState().setFocusZone('response-input');
+
+    store.getState().handleSnapshot([]);
+
+    expect(store.getState().selectedAgentId).toBeNull();
+    expect(store.getState().focusZone).toBe('none');
+  });
+
+  test('dashboard null selection clears focus', () => {
+    const store = createKookrStore();
+    store.setState({ selectedAgentId: 'selected', selectedAgentSource: 'manual', focusZone: 'terminal' });
+
+    store.getState().handleDashboardSelection({ selectedTaskId: null, selectedSessionId: null, selectionVersion: 1 });
+
+    expect(store.getState().selectedAgentId).toBeNull();
+    expect(store.getState().focusZone).toBe('none');
+  });
+
   test('selectProject(p, {source: "auto-advance"}) tags source as auto-advance after side-effect cleanup', () => {
     const store = createKookrStore();
     store.setState({
