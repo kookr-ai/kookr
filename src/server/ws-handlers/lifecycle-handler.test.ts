@@ -4,8 +4,9 @@ import { Monitor } from '../../core/monitor.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { LifecycleHandler, type LifecycleHandlerDeps } from './lifecycle-handler.js';
 
+const mockCleanupTaskWorktrees = vi.fn(async () => undefined);
 vi.mock('../../adapters/git-worktree.js', () => ({
-  cleanupTaskWorktrees: vi.fn(async () => undefined),
+  cleanupTaskWorktrees: (...args: unknown[]) => mockCleanupTaskWorktrees(...args),
 }));
 
 function addSession(taskStore: TaskStore, taskId: string, tmuxSession = 'kookr-session'): void {
@@ -46,6 +47,18 @@ function makeDeps(taskStore: TaskStore, overrides: Partial<LifecycleHandlerDeps>
 }
 
 describe('LifecycleHandler lifecycle commands', () => {
+  test('forwards the per-task cleanup override to the shared lifecycle', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Keep worktree', '/repo');
+    addSession(taskStore, task.id);
+    const { deps } = makeDeps(taskStore);
+    const handler = new LifecycleHandler(deps);
+
+    await handler.handle({ type: 'completeTask', taskId: task.id, cleanupWorktree: false });
+
+    expect(mockCleanupTaskWorktrees).not.toHaveBeenCalled();
+  });
+
   test('completeTask delegates active Ralph completion to shared partial policy', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask('Ralph loop', '/repo');

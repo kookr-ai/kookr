@@ -28,6 +28,13 @@ describe('validateSettings', () => {
     expect(validateSettings({ githubPollingEnabled: 'yes' })).toEqual(DEFAULT_SETTINGS);
   });
 
+  it('TS-CLEANUP-001: accepts the task completion worktree cleanup preference', () => {
+    expect(validateSettings({ cleanupWorktreeOnComplete: false })).toEqual({
+      ...DEFAULT_SETTINGS,
+      cleanupWorktreeOnComplete: false,
+    });
+  });
+
   it('clamps interval below minimum to 15', () => {
     expect(validateSettings({ githubPollingIntervalSec: 5 })).toEqual({
       ...DEFAULT_SETTINGS,
@@ -95,6 +102,7 @@ describe('validateSettings', () => {
     expect(result.defaultAgentType).toBe('claude-code');
     expect(result.shortcutBindings).toEqual({});
     expect(result.speakVerbosity).toBe('medium');
+    expect(result.cleanupWorktreeOnComplete).toBe(true);
     expect(result.replySnippets).toEqual([]);
   });
 
@@ -292,6 +300,7 @@ describe('loadSettings / saveSettings', () => {
       watchdogStaleThresholdSec: 45,
       repeatedErrorThreshold: 5,
       maxActiveTasks: 15,
+      cleanupWorktreeOnComplete: false,
       defaultAgentType: 'codex-cli' as const,
       roundRobinIndex: 3,
       shortcutBindings: {

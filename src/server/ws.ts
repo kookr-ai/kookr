@@ -68,6 +68,8 @@ export interface MessageRouterDeps {
   circuitBreakerRegistry?: CircuitBreakerRegistry;
   /** Live getter for max concurrent tasks. */
   getMaxActiveTasks?: () => number;
+  /** Live default for the completion dialog's worktree cleanup checkbox. */
+  getCleanupWorktreeOnComplete?: () => boolean;
   suppressionTracker?: SnoozeSuppressionTracker;
   availableAgentTypes?: AvailableAgentType[];
   defaultAgentType?: AgentSelection;
@@ -248,6 +250,7 @@ export class MessageRouter {
       taskStore: this.deps.taskStore,
       queue: this.deps.queue,
       interactionLog: this.deps.interactionLog,
+      getCleanupWorktreeOnComplete: this.deps.getCleanupWorktreeOnComplete,
       suppressionTracker: this.deps.suppressionTracker,
       leaseService: this.deps.leaseService,
       attemptRepository: this.deps.attemptRepository,

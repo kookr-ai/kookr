@@ -4,8 +4,11 @@ import type { TaskCompletionFeedback } from '../../shared/contracts/messages.js'
 interface Props {
   feedback: TaskCompletionFeedback | undefined;
   requestReflect: boolean;
+  cleanupWorktree: boolean;
+  showCleanupWorktree?: boolean;
   onChange: (feedback: TaskCompletionFeedback | undefined) => void;
   onRequestReflectChange: (requestReflect: boolean) => void;
+  onCleanupWorktreeChange: (cleanupWorktree: boolean) => void;
 }
 
 /**
@@ -21,8 +24,11 @@ interface Props {
 export function CompleteDialogFooter({
   feedback,
   requestReflect,
+  cleanupWorktree,
+  showCleanupWorktree = true,
   onChange,
   onRequestReflectChange,
+  onCleanupWorktreeChange,
 }: Props): JSX.Element {
   const [showNoteInput, setShowNoteInput] = useState(feedback !== undefined);
 
@@ -85,6 +91,22 @@ export function CompleteDialogFooter({
           {feedback ? '(click again to clear)' : '(optional — skip to complete without rating)'}
         </span>
       </div>
+      {showCleanupWorktree && (
+        <div className="complete-cleanup-option">
+          <label className="complete-cleanup-checkbox">
+            <input
+              type="checkbox"
+              checked={cleanupWorktree}
+              aria-label="Remove task worktree and branch"
+              onChange={(e) => onCleanupWorktreeChange(e.target.checked)}
+            />
+            <span>Remove task worktree and branch</span>
+          </label>
+          <span className="complete-cleanup-hint">
+            Safely removes the task worktree, prunes Git, and deletes its merged local branch. Dirty or unmerged worktrees are kept.
+          </span>
+        </div>
+      )}
       {showNoteInput && feedback && (
         <>
           <textarea

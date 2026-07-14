@@ -114,6 +114,8 @@ export interface WsConnectionDeps {
   circuitBreakerRegistry?: CircuitBreakerRegistry;
   /** Live getter for max concurrent tasks. */
   getMaxActiveTasks?: () => number;
+  /** Live default for the completion dialog's worktree cleanup checkbox. */
+  getCleanupWorktreeOnComplete?: () => boolean;
   suppressionTracker?: SnoozeSuppressionTracker;
   availableAgentTypes?: AvailableAgentType[];
   defaultAgentType?: AgentSelection;
@@ -217,6 +219,7 @@ export function handleWsConnection(
     agentLifecycleDeps, broadcastToAll, launchTask,
     circuitBreakerRegistry: deps.circuitBreakerRegistry,
     getMaxActiveTasks: deps.getMaxActiveTasks,
+    getCleanupWorktreeOnComplete: deps.getCleanupWorktreeOnComplete,
     suppressionTracker: deps.suppressionTracker,
     availableAgentTypes: deps.availableAgentTypes,
     defaultAgentType: deps.defaultAgentType,

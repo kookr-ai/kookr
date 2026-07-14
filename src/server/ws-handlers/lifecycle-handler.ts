@@ -209,6 +209,7 @@ export class LifecycleHandler {
         assertCommandSucceeded(await this.commands.completeTask(msg.taskId, {
           feedback: msg.feedback,
           requestReflect: msg.requestReflect,
+          cleanupWorktree: msg.cleanupWorktree,
         }));
         return { duplicate: false };
       }

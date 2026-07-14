@@ -444,6 +444,51 @@ describe('completeTask', () => {
     expect(deps.monitor.unregisterAgent).toHaveBeenCalledWith('kookr-s1');
     expect(deps.taskStore.updateSession).toHaveBeenCalledWith('task-42', 'kookr-s1', { lastStatus: 'completed' });
     expect(deps.taskStore.completeTask).toHaveBeenCalledWith('task-42');
+    expect(mockCleanupTaskWorktrees).toHaveBeenCalledWith(deps.taskStore, 'task-42', deps.interactionLog);
+  });
+
+  test('TS-CLEANUP-004: skips task worktree cleanup when the completion override is disabled', async () => {
+    const task = lifecycleTask({
+      id: 'task-42',
+      status: 'inProgress',
+      sessions: [{ tmuxSession: 'kookr-s1', lastStatus: 'inProgress' }] as any,
+    });
+    const deps = makeLifecycleDeps();
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await completeTask('task-42', deps, { cleanupWorktree: false });
+
+    expect(deps.taskStore.completeTask).toHaveBeenCalledWith('task-42');
+    expect(deps.adapter.stop).toHaveBeenCalledWith('kookr-s1');
+    expect(mockCleanupTaskWorktrees).not.toHaveBeenCalled();
+  });
+
+  test('uses the live cleanup setting when no per-task override is supplied', async () => {
+    const task = lifecycleTask({
+      id: 'task-42',
+      status: 'inProgress',
+      sessions: [{ tmuxSession: 'kookr-s1', lastStatus: 'inProgress' }] as any,
+    });
+    const deps = makeLifecycleDeps({ getCleanupWorktreeOnComplete: () => false });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await completeTask('task-42', deps);
+
+    expect(mockCleanupTaskWorktrees).not.toHaveBeenCalled();
+  });
+
+  test('explicitly enables cleanup even when the saved setting is disabled', async () => {
+    const task = lifecycleTask({
+      id: 'task-42',
+      status: 'inProgress',
+      sessions: [{ tmuxSession: 'kookr-s1', lastStatus: 'inProgress' }] as any,
+    });
+    const deps = makeLifecycleDeps({ getCleanupWorktreeOnComplete: () => false });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await completeTask('task-42', deps, { cleanupWorktree: true });
+
+    expect(mockCleanupTaskWorktrees).toHaveBeenCalledWith(deps.taskStore, 'task-42', deps.interactionLog);
   });
 
   test('does not wait for terminal stop before marking task completed', async () => {

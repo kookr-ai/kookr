@@ -449,6 +449,20 @@ The system SHOULD allow the developer to open an agent's managed dtach session d
 
 **Evidence:** `src/adapters/local-dtach-backend.ts` (socket path layout, attach-safe), `src/frontend/components/TerminalPanel.tsx` (in-browser xterm.js bridge satisfies F4.6 fully). The previous "Attach" button + clipboard copy was removed (see commit `80100d0`).
 
+### R4.7: Configure Task Completion Cleanup [F4.4] — SHOULD — `done`
+
+The system SHOULD let the developer choose whether completing a task should clean up its task-owned Git worktree and branch, with a per-task override.
+
+**Acceptance criteria:**
+- Completing a task opens a confirmation dialog containing a cleanup checkbox.
+- The cleanup checkbox defaults to the saved completion-cleanup setting.
+- The developer can override the checkbox for the current task completion without changing the saved setting.
+- When cleanup is selected, Kookr removes eligible task-owned worktrees, prunes Git's worktree registry, and deletes eligible merged local branches using the existing safety checks.
+- When cleanup is not selected, task completion still performs non-worktree lifecycle cleanup, including session teardown, queue cleanup, lease release, and issue-claim release.
+- Dirty, unmerged, protected, or shared worktrees remain preserved and are reported through the existing interaction log.
+
+**Linked tests:** `TS-CLEANUP-001` through `TS-CLEANUP-004`.
+
 ---
 
 ## R4b: Task Launch UX
@@ -1087,6 +1101,7 @@ The system SHOULD expose the same structured session-health data through the dia
 | R4.4 | F4.4 | SHALL | done | tasks, task-persistence, reconciliation |
 | R4.5 | F4.5 | SHOULD | partial | LaunchTaskDialog, tasks (auto-eval todo) |
 | R4.6 | F4.6 | SHOULD | done | local-dtach-backend (stable socket path), TerminalPanel (in-browser xterm.js) |
+| R4.7 | F4.4 | SHOULD | done | settings-store, App, SettingsDialog, agent-lifecycle, client-message-schema |
 | R4b.1 | — | SHALL | done | ws, server/index, useStore, LaunchTaskDialog |
 | R4b.2 | — | SHALL | done | recent-paths, LaunchTaskDialog |
 | R4b.3 | — | SHOULD | done | useStore, DetailPanel, App |

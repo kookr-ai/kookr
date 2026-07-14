@@ -59,6 +59,7 @@ describe('Settings API', () => {
       watchdogStaleThresholdSec: 30,
       repeatedErrorThreshold: 3,
       maxActiveTasks: 10,
+      cleanupWorktreeOnComplete: true,
       defaultAgentType: 'claude-code',
       roundRobinIndex: 0,
       shortcutBindings: {},
@@ -78,6 +79,7 @@ describe('Settings API', () => {
       body: JSON.stringify({
         githubPollingEnabled: false,
         githubPollingIntervalSec: 120,
+        cleanupWorktreeOnComplete: false,
         defaultAgentType: 'codex-cli',
         shortcutBindings: {
           mac: { next_bottleneck: 'Cmd+Ctrl+Space' },
@@ -88,6 +90,7 @@ describe('Settings API', () => {
     const data = await res.json();
     expect(data.githubPollingEnabled).toBe(false);
     expect(data.githubPollingIntervalSec).toBe(120);
+    expect(data.cleanupWorktreeOnComplete).toBe(false);
     expect(data.defaultAgentType).toBe('codex-cli');
     expect(data.shortcutBindings).toEqual({
       mac: { next_bottleneck: 'Cmd+Ctrl+Space' },
@@ -98,6 +101,7 @@ describe('Settings API', () => {
     const fileContent = JSON.parse(readFileSync(join(tempDir, 'settings.json'), 'utf-8'));
     expect(fileContent.githubPollingEnabled).toBe(false);
     expect(fileContent.githubPollingIntervalSec).toBe(120);
+    expect(fileContent.cleanupWorktreeOnComplete).toBe(false);
     expect(fileContent.defaultAgentType).toBe('codex-cli');
     expect(fileContent.shortcutBindings).toEqual({
       mac: { next_bottleneck: 'Cmd+Ctrl+Space' },

@@ -8,12 +8,13 @@ import { AttentionQueue } from '../../core/attention-queue.js';
 import { TaskLifecycleCommands, type TaskLifecycleCommandDeps } from './task-lifecycle-commands.js';
 
 const mockBuildTaskCompletionMetadata = vi.fn();
+const mockCleanupTaskWorktrees = vi.fn();
 vi.mock('../completion-metadata.js', () => ({
   buildTaskCompletionMetadata: (...args: unknown[]) => mockBuildTaskCompletionMetadata(...args),
 }));
 
 vi.mock('../../adapters/git-worktree.js', () => ({
-  cleanupTaskWorktrees: vi.fn(async () => undefined),
+  cleanupTaskWorktrees: (...args: unknown[]) => mockCleanupTaskWorktrees(...args),
 }));
 
 function makeDeps(taskStore: TaskStore, overrides: Partial<TaskLifecycleCommandDeps> = {}) {
@@ -62,6 +63,21 @@ describe('TaskLifecycleCommands.completeTask', () => {
       digest: { bullets: ['shipped fix', 'updated tests'], filesChanged: [] },
       taskTokenUsage: undefined,
     });
+    mockCleanupTaskWorktrees.mockReset().mockResolvedValue(undefined);
+  });
+
+  test('forwards a per-task worktree cleanup override to the shared lifecycle', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Complete without cleanup', '/repo');
+    addSession(taskStore, task.id);
+    const { deps } = makeDeps(taskStore);
+
+    const result = await new TaskLifecycleCommands(deps).completeTask(task.id, {
+      cleanupWorktree: false,
+    });
+
+    expect(result.outcome).toBe('completed');
+    expect(mockCleanupTaskWorktrees).not.toHaveBeenCalled();
   });
 
   test('treats active Ralph completion as partial session completion', async () => {

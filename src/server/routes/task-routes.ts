@@ -49,6 +49,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       adapter,
       monitor,
       taskStore,
+      getCleanupWorktreeOnComplete: deps.getCleanupWorktreeOnComplete,
       hookWatcher,
       watchdog,
       ...(deps.issueClaimRegistry ? { issueClaimRegistry: deps.issueClaimRegistry } : {}),
