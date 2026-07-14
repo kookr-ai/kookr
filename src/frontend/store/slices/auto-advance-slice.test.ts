@@ -124,8 +124,8 @@ describe('autoAdvanceQueue', () => {
 // ---------------------------------------------------------------------------
 
 describe('engagedWithAgent', () => {
-  test('false when no agent selected', () => {
-    expect(engagedWithAgent({ selectedAgentId: null, selectedAgentSource: 'manual', focusZone: 'none', agents: [] })).toBe(false);
+  test.each(['none', 'terminal', 'response-input'] as const)('false when no agent selected, even with %s focus', (focusZone) => {
+    expect(engagedWithAgent({ selectedAgentId: null, selectedAgentSource: 'manual', focusZone, agents: [] })).toBe(false);
   });
 
   test('false when selected agent is healthy (no anomaly)', () => {
@@ -449,6 +449,7 @@ describe('attachAutoAdvanceSubscribers', () => {
       selectedProject: 'org/a',
       selectedAgentId: 'selected',
     });
+    expect(store.getState().lastTickReason).toBe('settling');
 
     // The initial healthy selection schedules a switch because no focus is
     // held. Focus changing before the settle window must re-evaluate the

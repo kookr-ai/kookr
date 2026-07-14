@@ -36,7 +36,7 @@ These facts drive the v3 design: do not auto-select an agent on auto-switch, do 
 - Provide an opt-in mode that automatically switches the active project to the highest-priority project with at least one active finding, so the user spends time triaging rather than navigating.
 - Make the mode's on/off state continuously visible in the dashboard chrome, so the user always knows whether their view might shift under them.
 - Use the user's existing pinned-and-ordered sidebar as the priority source. Do not invent a new "priority" mental model.
-- Guard against focus stealing: never switch away while the user is engaged with a finding on the current project.
+- Guard against focus stealing: never switch away while the user is engaged with a manually selected agent on the current project, either through an active finding or focused terminal/reply input.
 - Make the trigger explicit and small: one classifier function, one engagement predicate, one subscriber callback.
 - Ship in a single PR. Opt-in feature → no staging or feature flag needed.
 
@@ -45,7 +45,7 @@ These facts drive the v3 design: do not auto-select an agent on auto-switch, do 
 - Do not change the manual `selectProject()` UX. Manual selection still wins and pauses any auto-switch consideration until the user takes the next "release" gesture.
 - Do not introduce a new project-priority concept. Pinned + sidebar order is the priority source.
 - Do not implement auto-advance for mobile in v1. Mobile uses a tab-based layout and a project switch reshuffles two tabs at once, which is more disruptive than the desktop sidebar shift. v1 hides the pill entirely on mobile via CSS breakpoint — no inert control is shipped.
-- Do not implement an "idle detection" engagement model. Engagement is selection-based with explicit release gestures, per Design §3.
+- Do not implement an "idle detection" engagement model. Engagement is based on manual selection plus an active finding or focused terminal/reply input, with explicit release events, per Design §3.
 - Do not auto-advance to a project that has only *healthy* tasks. The mode is for attention routing; healthy projects don't need attention.
 - Do not page or notify outside the dashboard.
 - Do not ship a configurable settle delay in v1. Hardcoded 2000 ms. Configurability is a v2 add only if real users report 2000 ms is wrong.
@@ -57,13 +57,14 @@ These facts drive the v3 design: do not auto-select an agent on auto-switch, do 
 - The user SHALL be able to toggle Auto-Advance on or off with `Alt+F`, and the shortcut SHALL appear in the ShortcutsHelp panel under Navigation.
 - The dashboard SHALL display the Auto-Advance on/off state in the TopBar via a `FollowPill` placed adjacent to the existing `DndPill`.
 - When the user enables Auto-Advance, the dashboard SHALL evaluate the priority queue and switch to the highest-priority eligible project, after a 2000 ms settle delay. If the current project is already the highest-priority eligible project, the switch is a no-op.
-- When Auto-Advance is on and the priority queue's head changes (because a new finding appeared on a higher-priority project, OR because the current project lost all findings and the head fell through to another project), the dashboard SHALL switch to the new head, after a 2000 ms settle delay, UNLESS the user is currently engaged with an active finding on the currently-selected project.
+- When Auto-Advance is on and the priority queue's head changes (because a new finding appeared on a higher-priority project, OR because the current project lost all findings and the head fell through to another project), the dashboard SHALL switch to the new head, after a 2000 ms settle delay, UNLESS the user is currently engaged with a manually selected agent on the currently-selected project. Engagement is held by an active finding or by focus in the terminal or reply input.
 - An auto-advance switch SHALL change `selectedProject` only. It SHALL NOT auto-select an agent in the destination project. The switch SHALL still invoke the existing `selectAgent(null)` side-effect cleanup so `respondAllAgentIds`, `leftPane`, and `narrowTab` are reset to their default values. (See Design §4 for why and how.)
-- The user's engagement SHALL be defined as: `selectedAgentId` is set AND that agent satisfies `isActiveFinding()` AND `selectedAgentSource === 'manual'`. Engagement SHALL be released when:
+- The user's engagement SHALL be defined as: `selectedAgentId` is set, `selectedAgentSource === 'manual'`, and the selected agent exists with either `isActiveFinding()` true or `focusZone !== 'none'`. Engagement SHALL be released when:
   - the user uses next-finding (Alt+N), next-task (Alt+J), previous-task (Alt+K);
   - the user presses Esc to deselect;
   - the user manually selects a different project;
-  - the engaged agent's `isActiveFinding()` flips to false (anomaly cleared, snoozed, suppressed, terminal status);
+  - focus leaves the terminal or reply input;
+  - the engaged agent's `isActiveFinding()` flips to false (anomaly cleared, snoozed, suppressed, terminal status) while no focus zone is held;
   - the user snoozes, completes, or cancels the agent.
 - Priority order SHALL be: pinned projects in their sidebar order (top of pinned list = highest priority), followed by unpinned projects in their sidebar order.
 - The Auto-Advance on/off state SHALL persist across page reloads via `localStorage` key `kookr-auto-advance-mode`, and SHALL synchronize across open tabs via the `storage` window event.
@@ -75,7 +76,7 @@ These facts drive the v3 design: do not auto-select an agent on auto-switch, do 
 - The settle timer's fire-time re-evaluation SHALL re-check `autoAdvanceEnabled === true` in addition to the queue head and engagement guard. A toggle-off mid-settle SHALL cancel the switch.
 - `tick()` SHALL be wrapped in a try/catch. On error the slice SHALL set `autoAdvanceError: { message, firstSeenTs }`. The popover SHALL render the error with "first seen Ns ago" so the user can distinguish a transient blip from a persistent fault. `autoAdvanceError` SHALL be cleared on the next successful `tick()` completion. The slice SHALL continue evaluating on subsequent updates without disabling the mode.
 - `lastTickReason` SHALL be written only when `tick()` reaches an actual decision point (`no_eligible_project`, `already_top`, `engaged`, `settling`, `scheduled`). It SHALL NOT be overwritten when the subscriber's pre-tick early-exit guards fire (mode off, not hydrated, unrelated update). This prevents popover flicker on every store update.
-- The `FollowPill` popover SHALL render display strings, not raw enum values: `engaged` → "You have a finding selected"; `already_top` → "Already on the highest-priority project"; `no_eligible_project` → "No project has active findings"; `settling` → "Switching in ~2s…"; `scheduled` → "Scheduled".
+- The `FollowPill` popover SHALL render display strings, not raw enum values: `engaged` → the existing "You have a finding selected" copy (also used when terminal/reply-input focus holds engagement); `already_top` → "Already on the highest-priority project"; `no_eligible_project` → "No project has active findings"; `settling` → "Switching in ~2s…"; `scheduled` → "Scheduled".
 
 ## Design
 
@@ -131,7 +132,8 @@ const unsubscribe = useKookrStore.subscribe((state, prevState) => {
     state.agents === prevState.agents &&
     state.selectedAgentId === prevState.selectedAgentId &&
     state.selectedProject === prevState.selectedProject &&
-    state.autoAdvanceEnabled === prevState.autoAdvanceEnabled
+    state.autoAdvanceEnabled === prevState.autoAdvanceEnabled &&
+    state.focusZone === prevState.focusZone
   ) {
     return;                                                // unrelated update
   }
@@ -154,19 +156,21 @@ The settle timer is a module-level closure managed by the slice initializer (a s
 ### 3. Engagement guard
 
 ```ts
-function engagedWithFinding(state: {
+function engagedWithAgent(state: {
   selectedAgentId: string | null;
   selectedAgentSource: 'manual' | 'auto-advance';
+  focusZone: 'terminal' | 'response-input' | 'none';
   agents: AgentState[];
 }): boolean {
   if (!state.selectedAgentId) return false;
   if (state.selectedAgentSource !== 'manual') return false;
   const agent = state.agents.find((a) => a.agentId === state.selectedAgentId);
-  return !!agent && isActiveFinding(agent);
+  if (!agent) return false;
+  return state.focusZone !== 'none' || isActiveFinding(agent);
 }
 ```
 
-The new field `selectedAgentSource` is the cascade-engagement fix (Empirical Checkpoint, finding 1). Type is `'manual' | 'auto-advance'` (no `null` third state — when `selectedAgentId` is null, the engagement guard short-circuits before reading the source). Default is `'manual'`.
+The fields `selectedAgentSource` and `focusZone` define engagement. `selectedAgentSource` is the cascade-engagement fix (Empirical Checkpoint, finding 1); `focusZone` preserves a manually selected healthy agent while the user types into its terminal or reply input. Type is `'manual' | 'auto-advance'` (no `null` third state — when `selectedAgentId` is null, the engagement guard short-circuits before reading the source). Default is `'manual'`.
 
 Invariant (enforced by convention + a slice-internal helper):
 
@@ -183,6 +187,7 @@ Release events (the full set):
 | `selectAgent(other)` from a user gesture                       | yes                  |
 | `nextBottleneck()` (Alt+N)                                     | yes                  |
 | `nextTask()` / `previousTask()` (Alt+J / K)                    | yes                  |
+| Focus leaves terminal or reply input                            | yes, if no finding remains |
 | Engaged agent's `isActiveFinding()` flips to false             | yes — predicate goes false |
 | Engaged agent's `anomaly` clears (reply, fix, server-side)     | yes — same as above  |
 | Snooze / complete / cancel of the engaged agent                | yes — predicate goes false |
@@ -193,7 +198,7 @@ Release events (the full set):
 
 **Reply-Enter row removed from v1.** Round 1 surfaced that the slice cannot directly observe an Enter key in the reply input; the only signal is the anomaly clearing server-side. The release model is therefore purely state-derived: when the anomaly clears, the engagement predicate flips. A heavy bottleneck whose anomaly does *not* clear after a reply will keep the engagement guard active until the user takes one of the gesture-based release actions (Esc, Alt+N/J/K, etc.). This is documented in the popover help text.
 
-**Known v1 loophole:** a user who opens a finding and walks away from the keyboard remains "engaged" indefinitely. Auto-Advance will not switch out of that project. This is documented and accepted for v1 in favor of predictability. An idle-based release is deferred.
+**Known v1 loophole:** a user who opens a finding and walks away from the keyboard remains "engaged" indefinitely. Auto-Advance will not switch out of that project. Focus-based engagement is released on blur, but an active finding remains engaged until its explicit release event. This is documented and accepted for v1 in favor of predictability. An idle-based release is deferred.
 
 ### 4. Auto-switch must not establish engagement
 
@@ -269,7 +274,7 @@ This resolves the v1 contradiction between "activation always starts a timer" an
 
 ## Files to change
 
-- `src/frontend/store/slices/auto-advance-slice.ts` (NEW) — owns the new state fields, `toggleAutoAdvance`, `applySelection` helper, colocated `autoAdvanceQueue` and `engagedWithFinding` (no separate pure-functions file per round-1 design-minimalist guidance), `tick()` evaluator, settle-timer closure, the `useKookrStore.subscribe()` callback, the `storage` window event listener, and `__resetAutoAdvanceForTests` per `src/frontend/hooks/useDnd.ts:116,153` precedent. All side effects guarded by `typeof window !== 'undefined'`.
+- `src/frontend/store/slices/auto-advance-slice.ts` (NEW) — owns the new state fields, `toggleAutoAdvance`, `applySelection` helper, colocated `autoAdvanceQueue` and `engagedWithAgent` (no separate pure-functions file per round-1 design-minimalist guidance), `tick()` evaluator, settle-timer closure, the `useKookrStore.subscribe()` callback, the `storage` window event listener, and `__resetAutoAdvanceForTests` per `src/frontend/hooks/useDnd.ts:116,153` precedent. All side effects guarded by `typeof window !== 'undefined'`.
 - `src/frontend/store/store-types.ts` — add the new fields and the `applySelection`/`toggleAutoAdvance` actions to `KookrStore`.
 - `src/frontend/store/useStore.ts` — register the new slice.
 - `src/frontend/store/slices/project-sidebar-slice.ts` — extend `selectProject` signature with `options?: { source?: 'manual' | 'auto-advance' }`. When `'auto-advance'`, skip the agent auto-select block (lines 115–137 today) but still call `selectAgent(null)` to clear `respondAllAgentIds`/`leftPane`/`narrowTab`. All existing call sites remain unchanged and default to `'manual'`.
@@ -289,7 +294,7 @@ Files *not* changed: `Settings.tsx` (no Auto-Advance section), `SettingsDialog.t
 
 - **No project has any active finding.** `tick()` records `no_eligible_project`, no-op.
 - **The only-eligible project IS the current project.** `tick()` records `already_top`, no-op.
-- **A higher-priority project gains a finding while user is engaged.** `tick()` records `engaged`, no-op. When engagement is released, the next `tick()` re-evaluates and may schedule.
+- **A higher-priority project gains a finding while user is engaged.** `tick()` records `engaged`, no-op. When engagement is released by blur or another release event, the next `tick()` re-evaluates and may schedule.
 - **User manually selects a different project while a switch is settling.** The selectedProject change wakes the subscriber; `tick()` recomputes from new state; the pending timer is discarded (its fire-time re-check would correctly produce `already_top` or recompute), but we also clear it eagerly on `selectedProject` change for predictability.
 - **Sidebar order changes (drag/reorder) while a switch is settling.** The schedule-time target is not stored; the fire-time `autoAdvanceQueue()[0]` is recomputed. The new top wins.
 - **Stale anomaly on the scheduled target.** The fire-time re-check runs `autoAdvanceQueue()` and confirms `target` is still the head. If the target lost its findings between schedule and fire, the recomputed head wins (or `no_eligible_project` if none remain).
@@ -334,7 +339,7 @@ Files *not* changed: `Settings.tsx` (no Auto-Advance section), `SettingsDialog.t
 Unit tests (single new test file: `auto-advance-slice.test.ts`). Use `__resetAutoAdvanceForTests()` in `beforeEach` / `afterEach` to avoid module-load listener leaks across tests.
 
 - `autoAdvanceQueue`: pinned-first ordering; pinned ordering matches sidebar order; unpinned ordered by sidebar; eligibility filter excludes projects with no `isActiveFinding`.
-- `engagedWithFinding`: selection null → false; selection of healthy agent → false; selection of finding agent with `source: 'manual'` → true; selection of finding agent with `source: 'auto-advance'` → false (cascade-engagement non-regression); selection of snoozed/suppressed/terminal agent → false.
+- `engagedWithAgent`: selection null → false; selection of healthy agent without focus → false; focused terminal and reply-input selection of a healthy agent → true; selection of finding agent with `source: 'manual'` → true; selection of finding agent with `source: 'auto-advance'` → false (cascade-engagement non-regression); selection of snoozed/suppressed/terminal agent without focus → false.
 - `tick()` outcomes for each guard: `no_eligible_project`, `already_top`, `engaged`, `settling`, `scheduled`. Each row asserts the resulting `lastTickReason`.
 - `lastTickReason` is NOT overwritten when the pre-tick early-exit fires (mode off, not hydrated, unrelated update).
 - Settling timer is cancelled when `selectedProject` changes during settle.
