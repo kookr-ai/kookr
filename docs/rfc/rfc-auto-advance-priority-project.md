@@ -62,10 +62,10 @@ These facts drive the v3 design: do not auto-select an agent on auto-switch, do 
 - The user's engagement SHALL be defined as: `selectedAgentId` is set, `selectedAgentSource === 'manual'`, and the selected agent exists with either `isActiveFinding()` true or `focusZone !== 'none'`. Engagement SHALL be released when:
   - the user uses next-finding (Alt+N), next-task (Alt+J), previous-task (Alt+K), provided no focus zone is held;
   - the user presses Esc to deselect;
-  - the user manually selects a different project;
+  - the user manually selects a different project, provided no focus zone is held;
   - focus leaves the terminal or reply input;
   - the engaged agent's `isActiveFinding()` flips to false (anomaly cleared, snoozed, suppressed, terminal status) while no focus zone is held;
-  - the user snoozes, completes, or cancels the agent.
+  - the user snoozes, completes, or cancels the agent, provided no focus zone is held.
 
 Selection gestures change the selected agent and release the prior finding-based engagement, but they do not clear `focusZone`; while focus remains in the terminal or reply input, the newly selected task is still protected.
 Any transition that clears `selectedAgentId` also resets `focusZone` to `'none'`, including auto-advance cleanup and server/project deselection, so focus from an unmounted detail panel cannot guard a later selection.
@@ -191,9 +191,9 @@ Release events (the full set):
 | `nextBottleneck()` (Alt+N)                                     | yes, if no focus zone remains |
 | `nextTask()` / `previousTask()` (Alt+J / K)                    | yes, if no focus zone remains |
 | Focus leaves terminal or reply input                            | yes, if no finding remains |
-| Engaged agent's `isActiveFinding()` flips to false             | yes — predicate goes false |
+| Engaged agent's `isActiveFinding()` flips to false             | yes, if no focus zone remains |
 | Engaged agent's `anomaly` clears (reply, fix, server-side)     | yes, if no focus zone remains |
-| Snooze / complete / cancel of the engaged agent                | yes — predicate goes false |
+| Snooze / complete / cancel of the engaged agent                | yes, if no focus zone remains |
 | Manual `selectProject()`                                       | yes, if no focus zone remains |
 | User opens a modal / context-menu / clicks the sidebar         | no — selection unchanged |
 | User Cmd-Tabs to another browser tab                           | no — selection unchanged |
