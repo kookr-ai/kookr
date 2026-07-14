@@ -59,7 +59,7 @@ IP addresses.
 | `GET /api/tasks/:id` | A single task by id (404 with `{"error": "Task not found"}` for unknown ids) |
 | `GET /api/tasks/completion-ready/stale` | List stale `completion_ready` signals and whether each can be auto-closed |
 | `POST /api/tasks` | Create and launch a new task |
-| `POST /api/tasks/:id/complete` | Mark a finished task `completed` (non-destructive) and tear down its idle session |
+| `POST /api/tasks/:id/complete` | Mark a finished task `completed` (non-destructive), tear down its idle session, and apply the saved worktree-cleanup policy |
 | `POST /api/tasks/:id/signal` | Raise an agent → user signal (e.g. `completion_ready`); schedules delayed auto-completion when the task opted into `autoCloseOnSignal` |
 | `POST /api/tasks/abort` | Idempotent batch abort: cancel the given `taskIds` (with an optional operator `reason`), interrupting each live session. Returns a per-task result (`aborted`/`already_terminal`/`not_found`/`failed`) and a summary; retries are safe |
 | `POST /api/tasks/:taskId/sessions/:sessionId/reconnect-transport` | Safely rebuild only Kookr's internal dtach attach child for a session — verifies the dtach master pid + socket identity, preserves the agent + master pids and the ring/subscribers, and never writes terminal input or relaunches the agent. `200` on success/inconclusive, `429` on cooldown/retry-cap, `409` on identity/socket/unknown-session, `501` if the backend has no reconnect support, `502` if the fresh attach cannot be opened |
@@ -117,6 +117,11 @@ abort semantics). Transitions an `inProgress` task to `completed` and
 tears down its idle agent session through the same lifecycle handler the
 dashboard's complete action uses, so projections, the schedule service,
 and the coordinator all observe the terminal state. History is preserved.
+The route uses the saved **Clean worktrees on completion** setting; when it is
+enabled, eligible task worktrees and branches are cleaned up asynchronously
+after the task is completed. The route does not provide a per-request override;
+use the dashboard's completion dialog when an individual task needs a
+different cleanup choice.
 
 This is the safe path for an operator — or an orchestrating agent cleaning
 up its own finished helper tasks — to clear a task that has delivered its
@@ -600,7 +605,7 @@ delta sequence number.
 | `snooze` | Snooze monitoring or attention for an agent. | `agentId`, `durationMs`, optional `taskId`, `reason`, `resumeMonitoring` |
 | `cancelSnooze` | Wake a snoozed agent. | `agentId`, optional `taskId` |
 | `launch` | Launch a new task. | `prompt`, `cwd`, optional `criteria`, `agentType`, `dependencies` |
-| `completeTask` | Mark a task complete, optionally with feedback or reflection request. | `taskId`, optional `feedback`, `requestReflect` |
+| `completeTask` | Mark a task complete, optionally with feedback, reflection request, or worktree cleanup override. | `taskId`, optional `feedback`, `requestReflect`, `cleanupWorktree` |
 | `setTaskFeedback` | Save feedback for an existing task. | `taskId`, `feedback` |
 | `requestTaskReflect` | Start task reflection from thumbs-up/down feedback. | `taskId`, `direction` |
 | `requestTaskSnapshotReflect` | Start an anytime task snapshot reflection, with an optional free-text hint to steer the analysis. | `taskId`, optional `hint` |

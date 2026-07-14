@@ -41,6 +41,8 @@ export interface AgentLifecycleDeps {
    */
   projectConfigStore?: ProjectConfigStore;
   terminalInputCoordinator?: Pick<TerminalInputCoordinator, 'registerSession'>;
+  /** Live default used by completion paths that omit a per-task override. */
+  getCleanupWorktreeOnComplete?: () => boolean;
   /**
    * Issue-claim registry (RFC rfc-issue-ownership-lock). Carried here so the
    * reconcile call sites (lifecycle-timers) can release claims for
@@ -217,6 +219,8 @@ export interface LifecycleDeps {
       reason?: 'released' | 'dead_reclaim' | 'orphan_reclaim',
     ): Array<{ repo: string; number: number }>;
   };
+  /** Live default used when a completion request omits its per-task override. */
+  getCleanupWorktreeOnComplete?: () => boolean;
   /**
    * Optional remote-chat back-channel for terminal task outcomes. Implementers
    * must isolate their own failures so lifecycle transitions cannot be blocked.
@@ -359,6 +363,7 @@ function notifyTaskOutcome(deps: LifecycleDeps, taskId: string, outcome: Telegra
 export async function completeTask(
   taskId: string,
   deps: LifecycleDeps,
+  opts: { cleanupWorktree?: boolean } = {},
 ): Promise<void> {
   const task = deps.taskStore.getTask(taskId);
   if (!task) throw new Error(`Task not found: ${taskId}`);
@@ -385,8 +390,15 @@ export async function completeTask(
   deps.issueClaimRegistry?.safeReleaseAllFor(taskId, 'released');
   notifyTaskOutcome(deps, taskId, { kind: 'completed' });
 
-  // Fire-and-forget worktree cleanup — does not block the caller
-  cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});
+  // Fire-and-forget worktree cleanup — does not block the caller. The explicit
+  // completion choice wins over the live setting; the historical default is
+  // enabled so clients that omit the new field retain the old behavior.
+  const shouldCleanupWorktree = opts.cleanupWorktree
+    ?? deps.getCleanupWorktreeOnComplete?.()
+    ?? true;
+  if (shouldCleanupWorktree) {
+    cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});
+  }
   cleanupReflectWorktree(task);
 }
 

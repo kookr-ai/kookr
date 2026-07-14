@@ -1,6 +1,6 @@
 import React, { lazy, Suspense, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import type { ClientMessage, ProjectSummary } from '../shared/protocol.js';
+import type { AgentState, ClientMessage, ProjectSummary } from '../shared/protocol.js';
 import { deriveLaunchProjectCwd } from './derive-project-cwd.js';
 import { useKookrStore } from './store/useStore.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
@@ -142,6 +142,7 @@ interface PendingCompleteConfirmation {
   agentId: string;
   label: string;
   method: 'button' | 'shortcut';
+  cleanupWorktreeAllowed: boolean;
 }
 
 const MOBILE_BREAKPOINT_PX = 768;
@@ -154,6 +155,10 @@ const MIN_TERMINAL_RESERVE_PX = 480;
 function quotedTaskLabel(label: string): string {
   const trimmed = label.trim();
   return trimmed.length > 0 ? `"${trimmed}"` : 'task';
+}
+
+function isActiveRalphLoop(agent: AgentState | undefined): boolean {
+  return agent?.ralphLoop?.status === 'running' || agent?.ralphLoop?.status === 'paused';
 }
 
 function reflectionDismissKey(sessionId: string): string {
@@ -348,6 +353,9 @@ export function App() {
   const [pendingComplete, setPendingComplete] = useState<PendingCompleteConfirmation | null>(null);
   const [completeFeedback, setCompleteFeedback] = useState<TaskCompletionFeedback | undefined>(undefined);
   const [completeRequestReflect, setCompleteRequestReflect] = useState(false);
+  const [cleanupWorktreeOnComplete, setCleanupWorktreeOnComplete] = useState<boolean | undefined>(undefined);
+  const [completeCleanupWorktree, setCompleteCleanupWorktree] = useState(true);
+  const [completeCleanupWorktreeTouched, setCompleteCleanupWorktreeTouched] = useState(false);
   const [showProjectSidebarManager, setShowProjectSidebarManager] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsFocus, setSettingsFocus] = useState<SettingsFocusField | undefined>(undefined);
@@ -532,14 +540,24 @@ export function App() {
     let cancelled = false;
     fetch('/api/settings')
       .then((r) => r.json())
-      .then((settings: { shortcutBindings?: PlatformShortcutBindingOverrides; speakVerbosity?: VerbosityScale }) => {
+      .then((settings: {
+        shortcutBindings?: PlatformShortcutBindingOverrides;
+        speakVerbosity?: VerbosityScale;
+        cleanupWorktreeOnComplete?: boolean;
+      }) => {
         if (cancelled) return;
         setShortcutOverrides(settings.shortcutBindings ?? {});
         setSpeakVerbositySnapshot(settings.speakVerbosity);
+        setCleanupWorktreeOnComplete(settings.cleanupWorktreeOnComplete);
       })
       .catch(() => {});
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    if (confirmAction !== 'complete' || cleanupWorktreeOnComplete === undefined || completeCleanupWorktreeTouched) return;
+    setCompleteCleanupWorktree(cleanupWorktreeOnComplete);
+  }, [cleanupWorktreeOnComplete, completeCleanupWorktreeTouched, confirmAction]);
 
   // Open launch dialog when relaunchTask is set
   useEffect(() => {
@@ -819,7 +837,10 @@ export function App() {
               agentId: selectedAgent.agentId,
               label: selectedAgent.taskName ?? selectedAgent.agentId,
               method: 'shortcut',
+              cleanupWorktreeAllowed: !isActiveRalphLoop(selectedAgent),
             });
+            setCompleteCleanupWorktree(cleanupWorktreeOnComplete ?? true);
+            setCompleteCleanupWorktreeTouched(false);
             setConfirmAction('complete');
           }
         }
@@ -935,7 +956,7 @@ export function App() {
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [nextBottleneck, nextTask, advanceEmptyEnter, previousTask, send, shortcutBindings, showBugReport, showShareViewer, showOperations, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel, wideDetailActive, selectedAgent]);
+  }, [nextBottleneck, nextTask, advanceEmptyEnter, previousTask, send, shortcutBindings, showBugReport, showShareViewer, showOperations, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel, wideDetailActive, selectedAgent, cleanupWorktreeOnComplete]);
 
   useEffect(() => {
     if (!selectedProject || !agentsHydrated || !projectSummariesHydrated) return;
@@ -1132,7 +1153,10 @@ export function App() {
           agentId: selectedAgent.agentId,
           label: selectedAgent.taskName ?? selectedAgent.agentId,
           method: 'button',
+          cleanupWorktreeAllowed: !isActiveRalphLoop(selectedAgent),
         });
+        setCompleteCleanupWorktree(cleanupWorktreeOnComplete ?? true);
+        setCompleteCleanupWorktreeTouched(false);
         setConfirmAction('complete');
       }}
       detailPaneMode={detailPaneMode}
@@ -1488,15 +1512,26 @@ export function App() {
             <CompleteDialogFooter
               feedback={completeFeedback}
               requestReflect={completeRequestReflect}
+              cleanupWorktree={completeCleanupWorktree}
+              showCleanupWorktree={pendingComplete.cleanupWorktreeAllowed}
               onChange={setCompleteFeedback}
               onRequestReflectChange={setCompleteRequestReflect}
+              onCleanupWorktreeChange={(value) => {
+                setCompleteCleanupWorktree(value);
+                setCompleteCleanupWorktreeTouched(true);
+              }}
             />
           }
           onConfirm={() => {
             track({ type: 'task_completed', agentId: pendingComplete.agentId, method: pendingComplete.method });
+            const cleanupOverride = pendingComplete.cleanupWorktreeAllowed
+              && (completeCleanupWorktreeTouched || cleanupWorktreeOnComplete !== undefined)
+              ? completeCleanupWorktree
+              : undefined;
             const completionSent = send({
               type: 'completeTask',
               taskId: pendingComplete.taskId,
+              ...(cleanupOverride === undefined ? {} : { cleanupWorktree: cleanupOverride }),
               ...(completeFeedback ? { feedback: completeFeedback } : {}),
               ...(completeFeedback ? { requestReflect: completeRequestReflect } : {}),
             });
@@ -1507,12 +1542,16 @@ export function App() {
             setPendingComplete(null);
             setCompleteFeedback(undefined);
             setCompleteRequestReflect(false);
+            setCompleteCleanupWorktree(true);
+            setCompleteCleanupWorktreeTouched(false);
           }}
           onClose={() => {
             setConfirmAction(null);
             setPendingComplete(null);
             setCompleteFeedback(undefined);
             setCompleteRequestReflect(false);
+            setCompleteCleanupWorktree(true);
+            setCompleteCleanupWorktreeTouched(false);
           }}
         />
       )}
@@ -1550,6 +1589,7 @@ export function App() {
             onSettingsSaved={(settings) => {
               setShortcutOverrides(settings.shortcutBindings ?? {});
               setSpeakVerbositySnapshot(settings.speakVerbosity);
+              setCleanupWorktreeOnComplete(settings.cleanupWorktreeOnComplete);
             }}
           />
         </Suspense>

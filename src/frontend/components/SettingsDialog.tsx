@@ -44,6 +44,7 @@ interface ServerSettings {
   watchdogStaleThresholdSec: number;
   repeatedErrorThreshold: number;
   maxActiveTasks: number;
+  cleanupWorktreeOnComplete: boolean;
   defaultAgentType: AgentSelection;
   agentEffort?: AgentEffortMap;
   shortcutBindings: PlatformShortcutBindingOverrides;
@@ -1177,6 +1178,24 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                           step={1}
                         />
                       </div>
+                    </div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-label">Clean worktrees on completion</span>
+                        <span className="settings-desc">
+                          Pre-check the completion dialog&apos;s cleanup option. Kookr removes eligible task worktrees,
+                          prunes Git, and deletes merged local branches; dirty or unmerged worktrees are kept.
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className={`settings-toggle ${settings.cleanupWorktreeOnComplete ? 'active' : ''}`}
+                        onClick={() => handleToggle('cleanupWorktreeOnComplete')}
+                        aria-label="Toggle worktree cleanup on task completion"
+                        aria-pressed={settings.cleanupWorktreeOnComplete}
+                      >
+                        <span className="settings-toggle-knob" />
+                      </button>
                     </div>
                     {/* #681: per-agent-type reasoning-effort default. One row per
                         concrete agent. */}

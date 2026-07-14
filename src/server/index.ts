@@ -318,6 +318,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     llmClient,
   } = coreStores;
   const getMaxActiveTasks = () => currentSettings.maxActiveTasks;
+  const getCleanupWorktreeOnComplete = () => currentSettings.cleanupWorktreeOnComplete;
   // #681: live getter for the per-agent-type effort defaults. Reads the live
   // `currentSettings` binding so an operator's settings PUT takes effect on the
   // next launch without a restart (the PUT path reassigns `currentSettings`).
@@ -826,6 +827,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     monitor, watchdog, hookWatcher, interactionLog, githubScanner, autoNameTask, taskStore,
     projectConfigStore,
     terminalInputCoordinator,
+    getCleanupWorktreeOnComplete,
     onTaskOutcome: (taskId, outcome) => {
       onTaskOutcomeHolder?.(taskId, outcome);
     },
@@ -889,6 +891,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       },
       suppressionTracker,
       terminalInputCoordinator,
+      getCleanupWorktreeOnComplete,
     }),
   });
 
@@ -1036,6 +1039,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         suppressionTracker,
         terminalInputCoordinator,
         queue,
+        getCleanupWorktreeOnComplete,
       });
     },
   });
@@ -1117,6 +1121,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ...(findingEvidenceReviewEnabled ? { findingEvidenceReviewHmacKey } : {}),
     findingEvidenceReviewSampler,
     remoteShare: remoteRelayRuntime.remoteShare,
+    getCleanupWorktreeOnComplete,
     relayConnection: remoteRelayRuntime.relayConnection,
     contactShare,
     collaborationDiagnostics: {
@@ -1330,7 +1335,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     achievementWatcher,
     getQuotaStatus: () => quotaAdapter.getLatest(),
     circuitBreakerRegistry,
-    getMaxActiveTasks, suppressionTracker,
+    getMaxActiveTasks, getCleanupWorktreeOnComplete, suppressionTracker,
     availableAgentTypes: AVAILABLE_AGENT_TYPES.filter((item) => adapterRegistry.getTypes().includes(item.type)),
     defaultAgentType: getDefaultAgentType(),
     getDefaultAgentType,

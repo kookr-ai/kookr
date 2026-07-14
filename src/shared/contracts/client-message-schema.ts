@@ -142,6 +142,7 @@ const ClientMessageSchemaImpl = z.union([
       downReason: z.enum(['agent_behavior', 'my_prompt']).optional(),
     }).optional(),
     requestReflect: z.boolean().optional(),
+    cleanupWorktree: z.boolean().optional(),
   }),
   z.object({
     type: z.literal('setTaskFeedback'),

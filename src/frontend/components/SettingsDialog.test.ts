@@ -16,6 +16,7 @@ interface MockSettings {
   repeatedErrorThreshold: number;
   maxActiveTasks: number;
   defaultAgentType: AgentSelection;
+  cleanupWorktreeOnComplete: boolean;
   shortcutBindings: Record<string, Record<string, string>>;
 }
 
@@ -87,6 +88,7 @@ const DEFAULT_SETTINGS: MockSettings = {
   repeatedErrorThreshold: 3,
   maxActiveTasks: 10,
   defaultAgentType: 'claude-code',
+  cleanupWorktreeOnComplete: true,
   shortcutBindings: {},
 };
 
@@ -253,6 +255,29 @@ describe('SettingsDialog tabs', () => {
       defaultAgentType: 'codex-cli',
     });
     expect(localStorage.getItem('kookr:defaultAgentType')).toBeNull();
+  });
+
+  test('persists the task completion cleanup default', async () => {
+    await flush();
+
+    const toggle = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Toggle worktree cleanup on task completion"]',
+    );
+    expect(toggle).not.toBeNull();
+    expect(toggle!.classList.contains('active')).toBe(true);
+
+    await act(async () => {
+      toggle!.click();
+    });
+    await flush();
+
+    const putCall = vi.mocked(fetch).mock.calls.find(([url, init]) =>
+      url === '/api/settings' && init && init.method === 'PUT'
+    );
+    expect(putCall).toBeDefined();
+    expect(JSON.parse(String(putCall![1]!.body))).toMatchObject({
+      cleanupWorktreeOnComplete: false,
+    });
   });
 
   test('updates client-local audio volume and chime preferences from controls', async () => {

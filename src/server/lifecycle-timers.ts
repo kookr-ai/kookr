@@ -440,6 +440,9 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     ...(deps.agentLifecycleDeps?.onTaskOutcome
       ? { onTaskOutcome: deps.agentLifecycleDeps.onTaskOutcome }
       : {}),
+    ...(deps.agentLifecycleDeps?.getCleanupWorktreeOnComplete
+      ? { getCleanupWorktreeOnComplete: deps.agentLifecycleDeps.getCleanupWorktreeOnComplete }
+      : {}),
   };
 
   const livenessInterval = setInterval(async () => {

@@ -407,7 +407,13 @@ export type ClientMessage =
   | { type: 'snooze'; agentId: string; taskId?: string; durationMs: number; reason?: string; resumeMonitoring?: boolean }
   | { type: 'cancelSnooze'; agentId: string; taskId?: string }
   | { type: 'launch'; prompt: string; cwd: string; criteria?: string; agentType?: AgentSelection; dependencies?: LaunchDependency[] }
-  | { type: 'completeTask'; taskId: string; feedback?: TaskCompletionFeedback; requestReflect?: boolean }
+  | {
+      type: 'completeTask';
+      taskId: string;
+      feedback?: TaskCompletionFeedback;
+      requestReflect?: boolean;
+      cleanupWorktree?: boolean;
+    }
   | { type: 'setTaskFeedback'; taskId: string; feedback: TaskCompletionFeedback }
   | { type: 'requestTaskReflect'; taskId: string; direction: 'up' | 'down' }
   | { type: 'requestTaskSnapshotReflect'; taskId: string; hint?: string }

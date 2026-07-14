@@ -137,7 +137,11 @@ export class TaskLifecycleCommands {
 
   async completeTask(
     taskId: string,
-    opts: { feedback?: TaskCompletionFeedback; requestReflect?: boolean } = {},
+    opts: {
+      feedback?: TaskCompletionFeedback;
+      requestReflect?: boolean;
+      cleanupWorktree?: boolean;
+    } = {},
   ): Promise<TaskLifecycleCommandResult> {
     const task = this.deps.taskStore.getTask(taskId);
     if (!task) return { outcome: 'not_found', error: `Task not found: ${taskId}` };
@@ -169,7 +173,9 @@ export class TaskLifecycleCommands {
 
     try {
       this.deps.taskStore.clearPendingSignal(taskId);
-      await completeTaskImpl(taskId, this.deps.getLifecycleDeps());
+      await completeTaskImpl(taskId, this.deps.getLifecycleDeps(), {
+        cleanupWorktree: opts.cleanupWorktree,
+      });
     } catch (err) {
       if (err instanceof InvalidTransitionError) {
         const current = this.deps.taskStore.getTask(taskId);

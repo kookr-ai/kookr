@@ -35,6 +35,8 @@ export interface KookrSettings {
   watchdogStaleThresholdSec: number;
   repeatedErrorThreshold: number;
   maxActiveTasks: number;
+  /** Default checkbox value for task-owned worktree cleanup on completion. */
+  cleanupWorktreeOnComplete: boolean;
   /**
    * Pre-selected agent for new tasks when no explicit agent is supplied. May
    * be the `round-robin` sentinel — the launch service resolves that to a
@@ -88,6 +90,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   watchdogStaleThresholdSec: 30,
   repeatedErrorThreshold: 3,
   maxActiveTasks: 10,
+  cleanupWorktreeOnComplete: true,
   defaultAgentType: DEFAULT_AGENT_TYPE,
   roundRobinIndex: 0,
   shortcutBindings: {},
@@ -139,6 +142,10 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
   if (typeof raw.maxActiveTasks === 'number' && Number.isFinite(raw.maxActiveTasks)) {
     maxTasks = Math.max(MIN_ACTIVE_TASKS, Math.min(MAX_ACTIVE_TASKS, Math.round(raw.maxActiveTasks)));
   }
+
+  const cleanupWorktreeOnComplete = typeof raw.cleanupWorktreeOnComplete === 'boolean'
+    ? raw.cleanupWorktreeOnComplete
+    : DEFAULT_SETTINGS.cleanupWorktreeOnComplete;
 
   const defaultAgentType =
     typeof raw.defaultAgentType === 'string'
@@ -201,6 +208,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       watchdogStaleThresholdSec: staleThreshold,
       repeatedErrorThreshold: errorThreshold,
       maxActiveTasks: maxTasks,
+      cleanupWorktreeOnComplete,
       defaultAgentType,
       roundRobinIndex,
       shortcutBindings: shortcutValidation.overrides,

@@ -142,8 +142,14 @@ sequenceDiagram
 
   alt Mark complete
     Dev->>SPA: Click "Mark Complete"
-    SPA->>BE: WS: {type: "completeTask", taskId}
+    SPA->>SPA: Show confirmation with cleanup checkbox<br/>(saved default, editable per task)
+    Dev->>SPA: Confirm completion
+    SPA->>BE: WS: {type: "completeTask", taskId, cleanupWorktree}
+    BE->>BE: Stop sessions, purge queue, release claims
     BE->>BE: Task → Completed in tasks.json
+    opt cleanupWorktree is true
+      BE->>BE: Start asynchronous cleanup of eligible task worktree and branch; prune Git
+    end
     BE->>SPA: WS: {type: "update", taskId, taskState: "completed"}
   else Relaunch
     Dev->>SPA: Edit prompt + click "Relaunch"

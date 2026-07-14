@@ -32,8 +32,9 @@ kookr signal completion-ready --note "PR #123 merged"
   user decides. This is the default, unchanged behavior.
 - **With** `autoCloseOnSignal`: the same signal starts a **one-hour auto-close
   grace period**. If the task is still in progress after that hour, Kookr runs
-  the normal completion lifecycle (stops sessions, cleans up worktrees,
-  generates the completion digest), and promotes the next pending task.
+  the normal completion lifecycle (stops sessions, applies the saved
+  worktree-cleanup setting, generates the completion digest), and promotes the
+  next pending task.
 
 > **Signal only when work is truly finished.** Under `autoCloseOnSignal` the
 > signal starts the close timer, so signalling mid-work can still close the task

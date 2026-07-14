@@ -5467,6 +5467,35 @@ label.task-share-row {
   font-size: 11px;
   color: var(--text-muted);
 }
+.complete-cleanup-option {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary, transparent);
+}
+.complete-cleanup-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+.complete-cleanup-checkbox input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--teal);
+}
+.complete-cleanup-hint {
+  padding-left: 20px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
 .complete-feedback-note {
   width: 100%;
   font-family: inherit;

@@ -392,6 +392,7 @@ const clientMessageRoundTripCases = [
     taskId: 'task-1',
     feedback: { rating: 'down', note: 'missed tests', downReason: 'agent_behavior' },
     requestReflect: true,
+    cleanupWorktree: false,
   }),
   clientMessageCase({ type: 'setTaskFeedback', taskId: 'task-1', feedback: { rating: 'up', note: 'done' } }),
   clientMessageCase({ type: 'requestTaskReflect', taskId: 'task-1', direction: 'up' }),

@@ -28,7 +28,9 @@ For Ralph loops that look stopped after a crash or show a **Replace with new** r
 
 ### Protecting A Worktree From Automatic Cleanup
 
-When a task completes, Kookr normally removes its managed git worktree. To keep a long-lived worktree, create a `.kookr-protected` file at the worktree root before the task completes:
+When a task completes, Kookr normally removes its managed git worktree. The **Settings → Task Management → Clean worktrees on completion** toggle controls the default cleanup choice. The **Complete task** dialog shows that choice for each task, so you can uncheck it to keep a worktree for one completion or check it when the saved default is disabled.
+
+The cleanup choice removes the managed worktree and its task branch when Git reports the worktree is safe to remove. Dirty or unmerged worktrees remain available for manual recovery. To keep a long-lived worktree regardless of the cleanup choice, create a `.kookr-protected` file at the worktree root before the task completes:
 
 ```text
 production runtime

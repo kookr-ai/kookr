@@ -107,6 +107,12 @@ describe('App operations modal shortcuts', () => {
     __resetViewerSessionForTests();
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
+      if (url.includes('/api/settings')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ cleanupWorktreeOnComplete: true }),
+        } as Response);
+      }
       if (url.includes('/api/anomaly-stats')) {
         return Promise.resolve({
           ok: true,
@@ -190,6 +196,163 @@ describe('App operations modal shortcuts', () => {
     expect(container.textContent).toContain('Complete Task');
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Thumbs up"]')).toBeInstanceOf(HTMLButtonElement);
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Thumbs down"]')).toBeInstanceOf(HTMLButtonElement);
+    const cleanupCheckbox = await waitForElement<HTMLInputElement>(
+      container,
+      '.complete-cleanup-checkbox input[type="checkbox"]',
+    );
+    expect(cleanupCheckbox.checked).toBe(true);
+  });
+
+  test('TS-CLEANUP-002: completion dialog lets the user override worktree cleanup for one task', async () => {
+    useKookrStore.setState({
+      agents: [makeAgent({ agentId: 'agent-1', taskId: 'task-1' })],
+      selectedAgentId: 'agent-1',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const completeButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-complete-button"]');
+    await act(async () => {
+      completeButton.click();
+    });
+    const cleanupCheckbox = await waitForElement<HTMLInputElement>(
+      container,
+      '.complete-cleanup-checkbox input[type="checkbox"]',
+    );
+    expect(cleanupCheckbox.checked).toBe(true);
+
+    await act(async () => {
+      cleanupCheckbox.click();
+    });
+    const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
+    await act(async () => {
+      confirmButton.click();
+    });
+
+    expect(websocketMock.send).toHaveBeenCalledWith({
+      type: 'completeTask',
+      taskId: 'task-1',
+      cleanupWorktree: false,
+    });
+  });
+
+  test('TS-CLEANUP-003: uses the saved cleanup setting as the completion checkbox default', async () => {
+    vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/settings')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ cleanupWorktreeOnComplete: false }),
+        } as Response);
+      }
+      if (url.includes('/api/anomaly-stats')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ checks: {}, fires: {}, falsePositives: {} }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ configured: false }) } as Response);
+    });
+    useKookrStore.setState({
+      agents: [makeAgent({ agentId: 'agent-1', taskId: 'task-1' })],
+      selectedAgentId: 'agent-1',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+    await flush();
+
+    const completeButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-complete-button"]');
+    await act(async () => {
+      completeButton.click();
+    });
+    const cleanupCheckbox = await waitForElement<HTMLInputElement>(
+      container,
+      '.complete-cleanup-checkbox input[type="checkbox"]',
+    );
+    expect(cleanupCheckbox.checked).toBe(false);
+
+    websocketMock.send.mockClear();
+    const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
+    await act(async () => {
+      confirmButton.click();
+    });
+    expect(websocketMock.send).toHaveBeenCalledWith({
+      type: 'completeTask',
+      taskId: 'task-1',
+      cleanupWorktree: false,
+    });
+  });
+
+  test('does not override the server policy when settings have not loaded yet', async () => {
+    let resolveSettings!: (response: Response) => void;
+    vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/settings')) {
+        return new Promise<Response>((resolve) => {
+          resolveSettings = resolve;
+        });
+      }
+      if (url.includes('/api/anomaly-stats')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ checks: {}, fires: {}, falsePositives: {} }),
+        } as Response);
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ configured: false }) } as Response);
+    });
+    useKookrStore.setState({
+      agents: [makeAgent({ agentId: 'agent-1', taskId: 'task-1' })],
+      selectedAgentId: 'agent-1',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const completeButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-complete-button"]');
+    await act(async () => {
+      completeButton.click();
+    });
+    const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
+    await act(async () => {
+      confirmButton.click();
+    });
+
+    expect(websocketMock.send).toHaveBeenCalledWith({ type: 'completeTask', taskId: 'task-1' });
+    resolveSettings({
+      ok: true,
+      json: () => Promise.resolve({ cleanupWorktreeOnComplete: false }),
+    } as Response);
+  });
+
+  test('does not offer worktree cleanup for an active Ralph iteration', async () => {
+    useKookrStore.setState({
+      agents: [makeAgent({
+        agentId: 'agent-1',
+        taskId: 'task-1',
+        ralphLoop: { status: 'running' } as never,
+      })],
+      selectedAgentId: 'agent-1',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+    const completeButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-complete-button"]');
+    await act(async () => {
+      completeButton.click();
+    });
+
+    expect(container.querySelector('.complete-cleanup-checkbox')).toBeNull();
+    const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
+    await act(async () => {
+      confirmButton.click();
+    });
+    expect(websocketMock.send).toHaveBeenCalledWith({ type: 'completeTask', taskId: 'task-1' });
   });
 
   test('delete task undo cancels the deferred destructive send', async () => {
@@ -454,6 +617,7 @@ describe('App operations modal shortcuts', () => {
       taskId: 'task-1',
       feedback: { rating: 'up' },
       requestReflect: true,
+      cleanupWorktree: true,
     });
   });
 
@@ -500,6 +664,7 @@ describe('App operations modal shortcuts', () => {
       taskId: 'task-1',
       feedback: { rating: 'down' },
       requestReflect: true,
+      cleanupWorktree: true,
     });
   });
 
@@ -553,7 +718,7 @@ describe('App operations modal shortcuts', () => {
       confirmButton.click();
     });
 
-    expect(websocketMock.send).toHaveBeenCalledWith({ type: 'completeTask', taskId: 'task-1' });
+    expect(websocketMock.send).toHaveBeenCalledWith({ type: 'completeTask', taskId: 'task-1', cleanupWorktree: true });
     expect(useKookrStore.getState().selectedAgentId).toBe('agent-2');
   });
 
@@ -600,7 +765,7 @@ describe('App operations modal shortcuts', () => {
       confirmButton.click();
     });
 
-    expect(websocketMock.send).toHaveBeenCalledWith({ type: 'completeTask', taskId: 'task-1' });
+    expect(websocketMock.send).toHaveBeenCalledWith({ type: 'completeTask', taskId: 'task-1', cleanupWorktree: true });
     expect(useKookrStore.getState().selectedAgentId).toBe('agent-3');
   });
 
@@ -645,7 +810,7 @@ describe('App operations modal shortcuts', () => {
       confirmButton.click();
     });
 
-    expect(websocketMock.send).toHaveBeenCalledWith({ type: 'completeTask', taskId: 'task-1' });
+    expect(websocketMock.send).toHaveBeenCalledWith({ type: 'completeTask', taskId: 'task-1', cleanupWorktree: true });
     expect(useKookrStore.getState().selectedAgentId).toBe('agent-1');
   });
 

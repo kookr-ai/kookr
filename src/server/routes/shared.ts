@@ -92,6 +92,8 @@ export interface TaskRouteDeps {
   taskStateSaveScheduler?: TaskStateSaveSchedulerLike;
   /** Optional remote-chat back-channel for task signal/lifecycle outcomes. */
   onTaskOutcome?: (taskId: string, outcome: TelegramTaskOutcome) => void;
+  /** Live default for task completion worktree cleanup. */
+  getCleanupWorktreeOnComplete?: () => boolean;
   kookrDir?: string;
   coordinatorSuppressions?: CoordinatorSuppressionRegistry;
   /**
@@ -296,6 +298,8 @@ export interface RouteDeps {
   };
   /** Live getter for the configured concurrency cap (settings.maxActiveTasks). */
   getMaxActiveTasks?: () => number;
+  /** Live default for task completion worktree cleanup. */
+  getCleanupWorktreeOnComplete?: () => boolean;
   circuitBreakerRegistry?: CircuitBreakerRegistry;
   suppressionTracker?: SnoozeSuppressionTracker;
   scheduleService?: ScheduleService;
