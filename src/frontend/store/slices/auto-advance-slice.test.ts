@@ -1,7 +1,7 @@
 import { describe, expect, test, beforeEach, afterEach, vi } from 'vitest';
 import {
   autoAdvanceQueue,
-  engagedWithFinding,
+  engagedWithAgent,
   describeTickReason,
   describeSwitchCause,
   evaluateAutoAdvance,
@@ -10,6 +10,7 @@ import {
 } from './auto-advance-slice.js';
 import { createKookrStore } from '../useStore.js';
 import type { AgentState, ProjectSummary } from '../../../shared/protocol.js';
+import type { FocusZone } from '../store-types.js';
 import type { ProjectSidebarPrefs } from '../project-sidebar-prefs.js';
 
 // ---------------------------------------------------------------------------
@@ -119,34 +120,46 @@ describe('autoAdvanceQueue', () => {
 });
 
 // ---------------------------------------------------------------------------
-// engagedWithFinding
+// engagedWithAgent
 // ---------------------------------------------------------------------------
 
-describe('engagedWithFinding', () => {
+describe('engagedWithAgent', () => {
   test('false when no agent selected', () => {
-    expect(engagedWithFinding({ selectedAgentId: null, selectedAgentSource: 'manual', agents: [] })).toBe(false);
+    expect(engagedWithAgent({ selectedAgentId: null, selectedAgentSource: 'manual', focusZone: 'none', agents: [] })).toBe(false);
   });
 
   test('false when selected agent is healthy (no anomaly)', () => {
-    expect(engagedWithFinding({
+    expect(engagedWithAgent({
       selectedAgentId: 'a1',
       selectedAgentSource: 'manual',
+      focusZone: 'none',
       agents: [makeAgent({ agentId: 'a1', projectId: 'p' })],
     })).toBe(false);
   });
 
   test('true when selected finding is manually picked', () => {
-    expect(engagedWithFinding({
+    expect(engagedWithAgent({
       selectedAgentId: 'a1',
       selectedAgentSource: 'manual',
+      focusZone: 'none',
       agents: [makeFinding('a1', 'p')],
     })).toBe(true);
   });
 
-  test('false when finding selection came from auto-advance (cascade non-regression)', () => {
-    expect(engagedWithFinding({
+  test.each(['terminal', 'response-input'] as const)('true when %s focus is held on a manually selected healthy agent', (focusZone) => {
+    expect(engagedWithAgent({
+      selectedAgentId: 'a1',
+      selectedAgentSource: 'manual',
+      focusZone,
+      agents: [makeAgent({ agentId: 'a1', projectId: 'p' })],
+    })).toBe(true);
+  });
+
+  test('false when selection came from auto-advance even while focus is held (cascade non-regression)', () => {
+    expect(engagedWithAgent({
       selectedAgentId: 'a1',
       selectedAgentSource: 'auto-advance',
+      focusZone: 'terminal',
       agents: [makeFinding('a1', 'p')],
     })).toBe(false);
   });
@@ -154,9 +167,10 @@ describe('engagedWithFinding', () => {
   test('false when selected agent is snoozed', () => {
     const finding = makeFinding('a1', 'p');
     finding.snoozedUntil = Date.now() + 60_000;
-    expect(engagedWithFinding({
+    expect(engagedWithAgent({
       selectedAgentId: 'a1',
       selectedAgentSource: 'manual',
+      focusZone: 'none',
       agents: [finding],
     })).toBe(false);
   });
@@ -164,9 +178,10 @@ describe('engagedWithFinding', () => {
   test('false when selected agent is suppressed', () => {
     const finding = makeFinding('a1', 'p');
     finding.suppressed = true;
-    expect(engagedWithFinding({
+    expect(engagedWithAgent({
       selectedAgentId: 'a1',
       selectedAgentSource: 'manual',
+      focusZone: 'none',
       agents: [finding],
     })).toBe(false);
   });
@@ -174,9 +189,10 @@ describe('engagedWithFinding', () => {
   test('false when selected agent is in terminal state', () => {
     const finding = makeFinding('a1', 'p');
     finding.taskStatus = 'completed';
-    expect(engagedWithFinding({
+    expect(engagedWithAgent({
       selectedAgentId: 'a1',
       selectedAgentSource: 'manual',
+      focusZone: 'none',
       agents: [finding],
     })).toBe(false);
   });
@@ -384,6 +400,9 @@ describe('attachAutoAdvanceSubscribers', () => {
     pinned?: string[];
     agents?: AgentState[];
     selectedProject?: string | null;
+    selectedAgentId?: string | null;
+    selectedAgentSource?: 'manual' | 'auto-advance';
+    focusZone?: FocusZone;
     enabled?: boolean;
   }): void {
     store.setState({
@@ -392,6 +411,9 @@ describe('attachAutoAdvanceSubscribers', () => {
       projectSidebarPrefs: makePrefs(opts.pinned ?? [], opts.projects.map((p) => p.project)),
       agents: opts.agents ?? [],
       selectedProject: opts.selectedProject ?? null,
+      selectedAgentId: opts.selectedAgentId ?? null,
+      selectedAgentSource: opts.selectedAgentSource ?? 'manual',
+      focusZone: opts.focusZone ?? 'none',
       agentsHydrated: true,
       projectSummariesHydrated: true,
       autoAdvanceEnabled: opts.enabled ?? true,
@@ -413,6 +435,29 @@ describe('attachAutoAdvanceSubscribers', () => {
     expect(store.getState().selectedAgentId).toBeNull();
     expect(store.getState().lastAutoSwitch?.to).toBe('org/b');
     expect(store.getState().lastAutoSwitch?.from).toBe('org/a');
+  });
+
+  test.each(['terminal', 'response-input'] as const)('focus in %s prevents a pending switch for a healthy selected agent', async (focusZone) => {
+    attachAutoAdvanceSubscribers(store, { settleMs: 50 });
+    hydrateWith({
+      projects: [makeProject('org/a'), makeProject('org/b')],
+      pinned: ['org/b'],
+      agents: [
+        makeAgent({ agentId: 'selected', projectId: 'org/a' }),
+        makeFinding('target', 'org/b'),
+      ],
+      selectedProject: 'org/a',
+      selectedAgentId: 'selected',
+    });
+
+    // The initial healthy selection schedules a switch because no focus is
+    // held. Focus changing before the settle window must re-evaluate the
+    // guard and cancel that pending switch.
+    store.setState({ focusZone });
+    await vi.advanceTimersByTimeAsync(60);
+
+    expect(store.getState().selectedProject).toBe('org/a');
+    expect(store.getState().lastTickReason).toBe('engaged');
   });
 
   test('toggle-off during settle cancels the pending switch', async () => {
