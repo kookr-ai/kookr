@@ -250,6 +250,17 @@ The system SHOULD turn repeated finding-evidence review outcomes into advisory d
 
 **Evidence:** `src/server/detector-proposal-report.ts`, `src/server/review-log-store.ts`, `src/server/routes/diagnostics-routes.ts`, `src/server/detector-proposal-report.test.ts`, `src/server/routes/diagnostics-routes.test.ts`.
 
+### R2.14: Preserve Coordinator Suppressions Across Agent Types [#1378] — SHALL — `done`
+
+The system SHALL validate coordinator suppression agent types from the shared concrete-agent contract and preserve valid suppressions across persistence round-trips.
+
+**Acceptance criteria:**
+- A suppression for every concrete `AgentType`, including `grok-build`, survives a store write/read round-trip and remains active.
+- An unknown agent type is rejected before a suppression is written.
+- An invalid persisted suppression is ignored and the rejection is logged for diagnosis.
+
+**Evidence:** `src/shared/contracts/agent-types.ts`, `src/server/coordinator/suppression-store.ts`, `src/server/routes/coordinator-routes.ts`, `src/server/coordinator/suppression-store.test.ts` (`TS-COORD-001` through `TS-COORD-003`).
+
 ---
 
 ## R3: The Loop — Respond & Advance
@@ -1085,6 +1096,7 @@ The system SHOULD expose the same structured session-health data through the dia
 | R2.11 | F2.10 | SHOULD | done | finding-evidence-audit, monitor, lifecycle-timers, diagnostics-routes |
 | R2.12 | F2.11 | SHOULD | done | review-log-store, finding-evidence-review-service, diagnostics-routes |
 | R2.13 | F2.12 | SHOULD | done | detector-proposal-report, review-log-store, diagnostics-routes |
+| R2.14 | #1378 | SHALL | done | agent-types, suppression-store, coordinator-routes |
 | R3.1 | F3.1 | SHALL | done | AgentDetail, useStore |
 | R3.2 | F3.2 | SHALL | done | AgentDetail, ws, claude-code-adapter |
 | R3.3 | F3.3 | SHALL | done | attention-queue, loop.test |

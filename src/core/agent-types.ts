@@ -11,6 +11,7 @@ export type {
 } from '../shared/contracts/agent-types.js';
 
 export {
+  AGENT_TYPES,
   AVAILABLE_AGENT_TYPES,
   DEFAULT_AGENT_TYPE,
   ROUND_ROBIN_AGENT_TYPE,
@@ -24,5 +25,6 @@ export {
   GROK_BUILD_EFFORT_LEVELS,
   ALL_EFFORT_LEVELS,
   effortLevelsForAgent,
+  isAgentType,
   isValidEffortForAgent,
 } from '../shared/contracts/agent-types.js';
