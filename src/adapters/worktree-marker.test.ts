@@ -18,6 +18,16 @@ import {
 } from './worktree-safety.js';
 import { execFileSync } from 'node:child_process';
 
+function cleanGitEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const name of [
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CEILING_DIRECTORIES', 'GIT_COMMON_DIR',
+    'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_INDEX_FILE',
+    'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX', 'GIT_WORK_TREE',
+  ]) delete env[name];
+  return env;
+}
+
 describe('protected worktree documentation', () => {
   const userGuide = readFileSync(new URL('../../docs/user-guide.md', import.meta.url), 'utf8');
 
@@ -194,13 +204,13 @@ describe('worktree safety predicates', () => {
   test('distinguishes the primary checkout from a registered linked worktree', async () => {
     const repo = join(root, 'repo');
     const linked = join(root, 'linked');
-    execFileSync('git', ['init', '-b', 'main', repo], { stdio: 'ignore' });
-    execFileSync('git', ['-C', repo, 'config', 'user.email', 'test@example.com'], { stdio: 'ignore' });
-    execFileSync('git', ['-C', repo, 'config', 'user.name', 'Kookr Test'], { stdio: 'ignore' });
+    execFileSync('git', ['init', '-b', 'main', repo], { stdio: 'ignore', env: cleanGitEnv() });
+    execFileSync('git', ['-C', repo, 'config', 'user.email', 'test@example.com'], { stdio: 'ignore', env: cleanGitEnv() });
+    execFileSync('git', ['-C', repo, 'config', 'user.name', 'Kookr Test'], { stdio: 'ignore', env: cleanGitEnv() });
     await writeFile(join(repo, 'tracked.txt'), 'tracked\n');
-    execFileSync('git', ['-C', repo, 'add', 'tracked.txt'], { stdio: 'ignore' });
-    execFileSync('git', ['-C', repo, 'commit', '-m', 'initial'], { stdio: 'ignore' });
-    execFileSync('git', ['-C', repo, 'worktree', 'add', '-b', 'feature', linked], { stdio: 'ignore' });
+    execFileSync('git', ['-C', repo, 'add', 'tracked.txt'], { stdio: 'ignore', env: cleanGitEnv() });
+    execFileSync('git', ['-C', repo, 'commit', '-m', 'initial'], { stdio: 'ignore', env: cleanGitEnv() });
+    execFileSync('git', ['-C', repo, 'worktree', 'add', '-b', 'feature', linked], { stdio: 'ignore', env: cleanGitEnv() });
 
     expect(await isPrimaryWorkingTree(repo)).toBe(true);
     expect(await isPrimaryWorkingTree(linked)).toBe(false);

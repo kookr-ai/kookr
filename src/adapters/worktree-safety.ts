@@ -9,6 +9,18 @@ import {
 } from '../shared/contracts/worktree-protection.js';
 
 const execFile = promisify(execFileCb);
+const NESTED_GIT_ENV_VARS = [
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_CEILING_DIRECTORIES',
+  'GIT_COMMON_DIR',
+  'GIT_CONFIG_COUNT',
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_DIR',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_PREFIX',
+  'GIT_WORK_TREE',
+] as const;
 
 export type WorktreeRemovalGuardReason =
   | 'primary-working-tree'
@@ -28,6 +40,7 @@ async function git(...args: string[]): Promise<string | null> {
     const { stdout } = await execFile('git', args, {
       timeout: DEFAULT_GIT_TIMEOUT_MS,
       maxBuffer: DEFAULT_GIT_MAX_BUFFER,
+      env: gitExecEnv(),
     });
     return stdout.trim();
   } catch (err) {
@@ -42,6 +55,12 @@ async function git(...args: string[]): Promise<string | null> {
     }
     return null;
   }
+}
+
+function gitExecEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const name of NESTED_GIT_ENV_VARS) delete env[name];
+  return env;
 }
 
 function samePath(left: string, right: string): boolean {
