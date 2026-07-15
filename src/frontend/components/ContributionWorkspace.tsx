@@ -127,6 +127,7 @@ export function ContributionWorkspace({ send, projectId, onClose }: Props) {
                   deleteBranch: options.deleteBranch,
                   riskAccepted: options.riskAccepted,
                   discardDirtyState: options.discardDirtyState,
+                  confirmProtectedBranch: options.confirmProtectedBranch,
                   reviewFingerprint: options.reviewFingerprint,
                 });
               }}

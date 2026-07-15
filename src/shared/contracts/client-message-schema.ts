@@ -235,6 +235,7 @@ const ClientMessageSchemaImpl = z.union([
     deleteBranch: z.boolean().optional(),
     riskAccepted: z.boolean().optional(),
     discardDirtyState: z.boolean().optional(),
+    confirmProtectedBranch: z.boolean().optional(),
     reviewFingerprint: z.string().optional(),
   }),
   z.object({ type: z.literal('workspace:bulkSafeCleanup'), projectId: z.string() }),

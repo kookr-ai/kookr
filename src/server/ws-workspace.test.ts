@@ -2,13 +2,19 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 
 // Hoist mock so it's available in vi.mock factory
-const { mockExecFile } = vi.hoisted(() => ({
+const { mockExecFile, mockRemovalGuard } = vi.hoisted(() => ({
   mockExecFile: vi.fn(),
+  mockRemovalGuard: vi.fn(),
 }));
 
 // Mock child_process for git calls in CleanupInspector and RepoPolicyResolver
 vi.mock('node:child_process', () => ({
   execFile: mockExecFile,
+}));
+
+vi.mock('../adapters/worktree-safety.js', () => ({
+  getWorktreeRemovalGuardReason: mockRemovalGuard,
+  isProtectedBranch: () => false,
 }));
 
 // Mock existsSync so test paths pass validation. Marker files (`.kookr-protected`)
@@ -69,6 +75,7 @@ describe('WebSocket workspace message routing', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockRemovalGuard.mockResolvedValue(undefined);
     taskStore = new TaskStore();
     queue = new AttentionQueue();
     monitor = new Monitor(taskStore, queue);

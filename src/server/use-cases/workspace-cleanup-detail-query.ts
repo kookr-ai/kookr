@@ -8,6 +8,7 @@ import type {
 import type { RepoPolicyResolver } from '../../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../../core/worktree-lease-service.js';
 import { deriveCleanupCapabilitiesForCandidate } from '../../core/workspace-cleanup-policy.js';
+import { isProtectedBranch } from '../../adapters/worktree-safety.js';
 import { inspectCleanupCandidates } from './cleanup-inspector.js';
 import {
   DEFAULT_ENRICHMENT_TIMEOUT_MS,
@@ -100,6 +101,7 @@ export async function hydrateCleanupCandidateDetail(
     projectId: candidate.projectId,
     worktreePath: candidate.worktreePath,
     branch: candidate.branch,
+    protectedBranch: candidate.protectedBranch ?? isProtectedBranch(candidate.branch),
     classification: candidate.classification,
     reasonCode: candidate.reasonCode,
     branchRefOid,

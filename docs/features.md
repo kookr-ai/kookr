@@ -238,7 +238,7 @@ For OSS contribution workflows, Kookr manages a shared contribution workspace wh
 | F12.1 | **Worktree lease** | `worktree-lease-service.ts` leases each worktree to exactly one agent at a time; `worktree-protection.ts` guards against concurrent writes. |
 | F12.2 | **Repo policy resolver** | `repo-policy-resolver.ts` loads per-repo contribution / style rules and surfaces them to the agent and UI. |
 | F12.3 | **Workspace cleanup view** | `ContributionWorkspace.tsx` surfaces worktree cleanup candidates per project. (Tasks launch via `LaunchTaskDialog` / Ctrl+K.) |
-| F12.4 | **Safe cleanup** | `workspace-cleanup-policy.ts` classifies each worktree (safe / risky / blocked). `CleanupCandidateTable.tsx` drives individual and bulk `workspace:cleanupCandidate` actions; `workspace:bulkSafeCleanup` performs one-click batch cleanup. |
+| F12.4 | **Safe cleanup** | `workspace-cleanup-policy.ts` classifies each worktree (safe / risky / blocked). Cleanup hard-guards the primary checkout, unregistered paths, and protected branches; `CleanupCandidateTable.tsx` drives individual and bulk `workspace:cleanupCandidate` actions; `workspace:bulkSafeCleanup` performs one-click batch cleanup. |
 | F12.5 | **Cleanup diagnostics** | `workspace:runCleanupDiagnostic` launches an agent-powered diagnostic when automated classification is inconclusive. |
 | F12.6 | **Attempt history** | `workspace-attempt-repository.ts` tracks prior attempts per worktree so repeated failures don't silently restart. |
 

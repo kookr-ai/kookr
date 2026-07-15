@@ -60,6 +60,7 @@ variables** — it reuses the bind/auth/transport knobs above:
 | `KOOKR_GROK_COMPAT_MANIFEST` | In-repo reviewed manifest | Absolute path | Overrides the path to the reviewed `grok-build-compatibility.v1` manifest used for advisory build qualification (unqualified builds launch with a supervision warning). |
 | `KOOKR_PLUGIN_DIR` | Auto-resolved `<kookr>/plugin` | Absolute or relative path, or empty string | Overrides the toolkit plugin directory injected into spawned Claude Code sessions. Set to an empty string to disable injection. |
 | `KOOKR_BYPASS_ALL_PERMISSIONS` | unset | `true` to enable | Launches spawned agents with permission-bypass flags. See "Operational Risk" below before enabling. |
+| `KOOKR_PROTECTED_BRANCHES` | `main,master,develop,dev` | Comma-separated branch names | Replaces the branch allowlist that requires explicit confirmation for user-initiated worktree cleanup and blocks automatic cleanup. |
 
 ## Kookr-Injected Agent Context
 
