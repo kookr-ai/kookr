@@ -35,7 +35,7 @@ describe('Grok Build hook payload shapes (POC-A evidence)', () => {
     ]) {
       expect(events).toContain(required);
     }
-    // A failure path (403) event was captured too.
+    // A failure path (HTTP 401) event was captured too.
     expect(events.some((e) => e === 'stop_failure')).toBe(true);
   });
 
