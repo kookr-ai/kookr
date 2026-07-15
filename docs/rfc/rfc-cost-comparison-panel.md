@@ -129,15 +129,15 @@ Single-tenant local. Author + small handful of OSS contributors. ≤ ~1000 Kookr
 
 | Path | Responsibility | Layer |
 |---|---|---|
-| `src/core/pricing-tables.ts` (NEW) | `MODEL_PRICING` table + `lookupPricing(model): ModelPricing \| null` (longest-prefix-match, sorted by descending key length). Exports `MODEL_PRICING_LOOKUP_LOG_WARNINGS_ONCE` set so the existing `token-tracker.ts` warn-once behavior is preserved. | core |
+| `src/core/pricing-tables.ts` (NEW) | `MODEL_PRICING` table + strict exact-match `lookupPricing(model): ModelPricing \| null`. The legacy `getPricing` path retains prefix matching and Sonnet fallback for transcript estimates; `lookupPricing` drives `pricingQuality`. | core |
 | `src/core/pricing-tables.test.ts` (NEW) | Empirical fixture: every observed model string on the author's machine resolves to a non-fallback row. Insertion-order bug regression test (`gpt-5.3-codex-spark` must hit the longest matching prefix, not just `gpt-5`). | core test |
-| `src/core/token-tracker.ts` (MODIFY) | Drop local `MODEL_PRICING`. Import from `pricing-tables.ts`. Re-export `getPricing/estimateCost/ModelPricing` for backward compat (`token-tracker.test.ts` and any external imports keep working — round-2 delivery-pragmatist atomicity). The internal `getPricing` keeps Sonnet fallback for the existing call site at line 199. | core |
+| `src/core/token-tracker.ts` (MODIFY) | Drop local `MODEL_PRICING`. Import from `pricing-tables.ts`, maintain per-model transcript buckets, and expose exact/fallback pricing quality. Re-export `getPricing/estimateCost/ModelPricing` for backward compat (`token-tracker.test.ts` and any external imports keep working — round-2 delivery-pragmatist atomicity). | core |
 | `src/adapters/codex-rollout-scanner.ts` (NEW) | Single file: discovery + scan. `register(taskId, taskCwd, taskCreatedAt)` finds matching rollout via `(cwd, timestamp ± 60 s, UTC, abandoned excluded)` heuristic, then incremental scan with offset bookkeeping. Aggregates `total_token_usage` (last-seen value); rollouts with `forked_from_id` are flagged but chain logic is deferred to post-Phase 0 (round-3). No per-tool latency join in v1 (round-3 design-minimalist). Reads files as `Buffer`, splits on `\n`, parses each line; **last line is skipped if `mtime` < 5 s** (round-2 F27). Asserts presence of canonical token keys (R10). | adapter |
 | `src/adapters/codex-rollout-scanner.test.ts` (NEW) | Fixtures: short session, multi-turn, resumed (`forked_from_id`), schema-pre-Nov-2025 (no `token_count`), schema-with-renamed-keys (parse-error path), parallel-tool-call session, half-written last line. Microbenchmark fixture: 1500 small-rollout-files cold scan completes in < 5 s. | adapter test |
 | `src/core/cost-comparison-aggregator.ts` (NEW) | Pure function `aggregate(tasks, perTaskUsage, perTaskFeedback, window): { perPlaybook, aggregate, notes }`. No I/O. ~150 LOC. Note: round-2 design-minimalist suggested inlining into the route; v3 keeps separate because pure-function unit testing is cleaner against fixtures than against a route handler that must be exercised through a request. | core |
 | `src/core/cost-comparison-aggregator.test.ts` (NEW) | Empty, single-agent, mixed, window edges, dataQuality propagation, per-playbook bucketing, banner-priority test, DST-boundary test. | core test |
 | `src/server/routes/task-routes.ts` (MODIFY) | Add `GET /api/cost-comparison?window=7d&agent=&q=` and `GET /api/cost-comparison/diagnostics`. Origin/Host validation reuses `validateLocalRequest` helper from `routes/shared.ts`. | route |
-| `src/server/event-pipeline.ts` (MODIFY) | Add handler for `subagent_stop`: when `agentTranscriptPath` is present, call `tokenTracker.register(agentTranscriptPath, parentTaskId)` (R13). Currently absent. | server |
+| `src/server/event-processors/token-accounting-processor.ts` (MODIFY) | Add handler for `subagent_stop`: when `agentTranscriptPath` is present, call `tokenTracker.register(agentTranscriptPath, parentTaskId)` (R13). Currently absent. | server |
 | `src/shared/protocol.ts` (EXTEND) | `CostComparisonResponse`, `CostComparisonDiagnosticsResponse`, `AggregateMetrics`, `PerPlaybookRow`, `PerTaskRow`, `Note`. | shared |
 | `src/frontend/components/CostComparisonPanel.tsx` (NEW) | Per-playbook table + aggregate cards + per-task virtualized table + banner stack honoring R17 priority order. | frontend |
 | `src/frontend/components/CostComparisonPanel.test.ts` (NEW) | Empty state, asymmetric data, "—" tooltip, banner priority order, time-window switch. | frontend test |
@@ -227,6 +227,8 @@ export interface ModelPricing {
 // convention); GPT-5.6 cache writes are billed at 1.25x input.
 export const MODEL_PRICING: Record<string, ModelPricing> = {
   // Anthropic
+  'claude-opus-4-8':   { vendor: 'anthropic', lastVerified: '2026-07-15', inputPerMTok: 5,    outputPerMTok: 25,  cacheWritePerMTok: 6.25,   cacheReadPerMTok: 0.5   },
+  'claude-fable-5':    { vendor: 'anthropic', lastVerified: '2026-07-15', inputPerMTok: 10,   outputPerMTok: 50,  cacheWritePerMTok: 12.5,   cacheReadPerMTok: 1     },
   'claude-opus-4-7':   { vendor: 'anthropic', lastVerified: '2026-04-24', inputPerMTok: 5,    outputPerMTok: 25,  cacheWritePerMTok: 6.25,   cacheReadPerMTok: 0.5   },
   'claude-opus-4-6':   { vendor: 'anthropic', lastVerified: '2026-04-24', inputPerMTok: 15,   outputPerMTok: 75,  cacheWritePerMTok: 18.75,  cacheReadPerMTok: 1.875 },
   'claude-sonnet-4-6': { vendor: 'anthropic', lastVerified: '2026-04-24', inputPerMTok: 3,    outputPerMTok: 15,  cacheWritePerMTok: 3.75,   cacheReadPerMTok: 0.30  },
@@ -266,7 +268,7 @@ export function lookupPricing(model: string): ModelPricing | null {
 export function getPricing(model: string): ModelPricing { /* old behavior — unchanged */ }
 ```
 
-The `lookupPricing` vs `getPricing` split (round-2 delivery-pragmatist atomicity + operability) is deliberate: the existing `token-tracker.ts` cost path keeps its silent fallback to avoid changing live behavior in the same PR; the new cost-comparison scanner uses the strict lookup so users see "—" instead of phantom Sonnet costs on unknown models. A follow-up PR can converge them once the panel has been validated.
+The `lookupPricing` vs `getPricing` split (round-2 delivery-pragmatist atomicity + operability) is deliberate: `token-tracker.ts` now prices each transcript usage bucket against its producing model, while `getPricing` retains prefix matching and the legacy Sonnet fallback for non-exact rows. `lookupPricing` remains strict and drives the `pricingQuality` field, so callers can distinguish exact rows from legacy fallback estimates. The cost-comparison scanner continues to use strict lookup so users see "—" instead of phantom Sonnet costs on unknown models.
 
 `lastVerified: 'TBD'` is **not a permitted state in the merged file** — pricing rows ship populated or not at all. The empirical OpenAI model list above is the merge gate.
 
@@ -362,7 +364,7 @@ The cost ratio in the per-playbook table is the artifact the qualitative decisio
 
 ## Edge cases
 
-- **Mixed-model task.** First non-null model wins on both sides. Token-tracker.ts:255 already enforces this on the Claude side; the Codex scanner uses the same rule for symmetry.
+- **Mixed-model task.** Claude transcript cost is priced per model bucket. `TokenTracker.getModel()` retains the first non-null model only for display and pricing-staleness metadata; the Codex scanner uses its first-model rule for symmetry where it needs a single attribution.
 - **Concurrent file write (UTF-8 partial reads).** Scanner reads `Buffer`, splits on `\n`. The last line is **skipped if file `mtime` is within 5 seconds**. Otherwise parsed normally with try/catch (round-2 F27).
 - **Schema partial drift.** Scanner asserts `info.total_token_usage.{input_tokens,output_tokens,cached_input_tokens}` are numeric. Missing → `'codex-parse-error'` (R10).
 - **Time-window boundary.** Tasks counted by `started_at`. Tasks that started before the window and ended inside are excluded. DST handled in tests.
@@ -388,7 +390,7 @@ The cost ratio in the per-playbook table is the artifact the qualitative decisio
 - `docs/reports/cost-comparison-decisions.md` (~5 lines — placeholder w/ docstring)
 
 **Modified:**
-- `src/core/token-tracker.ts` — drop local `MODEL_PRICING`; import + re-export from `pricing-tables.ts`. Keep `getPricing` Sonnet fallback; existing call site untouched. ~15 LOC diff.
+- `src/core/token-tracker.ts` — drop local `MODEL_PRICING`; import + re-export from `pricing-tables.ts`. Price transcript buckets per model while keeping `getPricing` prefix matching and Sonnet fallback for legacy/non-exact rows. The implementation also preserves authoritative legacy result totals and per-message deduplication.
 - `src/server/event-pipeline.ts` — handle `subagent_stop` event; call `tokenTracker.register(agentTranscriptPath, parentTaskId)` (R13). ~25 LOC diff.
 - `src/server/routes/task-routes.ts` — add `GET /api/cost-comparison` and `GET /api/cost-comparison/diagnostics`. Use `validateLocalRequest` from `routes/shared.ts`. ~120 LOC diff.
 - `src/shared/protocol.ts` — extend with response shapes. ~80 LOC diff.
@@ -423,7 +425,7 @@ The author writes findings into a new `## Phase 0 findings` section of this RFC 
 
 Round-2 delivery-pragmatist asked whether Phase 1 ships as one giant PR or three. Three:
 
-**PR 1 — Pricing-tables move + R13 subagent registration.** Refactor only. Strict atomicity: `pricing-tables.ts` + `token-tracker.ts` re-exports + `event-pipeline.ts` subagent_stop handler + tests, in one commit. No new behavior visible to users. Verifies live cost displays still work (existing `token-tracker.test.ts` is the regression test).
+**PR 1 — Pricing-tables move + R13 subagent registration.** Refactor plus corrective metering behavior. Strict atomicity: `pricing-tables.ts` + `token-tracker.ts` per-model buckets/re-exports + `token-accounting-processor.ts` subagent_stop handler + tests, in one commit. Mixed-model totals intentionally change from first-model pricing, and `pricingQuality` makes fallback estimates visible while legacy result totals remain supported.
 
 **PR 2 — Codex rollout scanner + aggregator + route + diagnostics endpoint.** Backend only. No UI. End-to-end is verifiable with `curl /api/cost-comparison?window=7d`.
 

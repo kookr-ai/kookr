@@ -29,9 +29,12 @@ export interface ModelPricing {
  * input/output rates are treated as "missing" by `lookupPricing`. Adding a new
  * model REQUIRES populating all four rates and an ISO `lastVerified` date.
  *
- * Anthropic verified 2026-04-24 against
+ * Anthropic pricing rows are verified against
  *   https://www.anthropic.com/news/claude-opus-4-7
+ *   https://www.anthropic.com/news/claude-opus-4-8
+ *   https://platform.claude.com/docs/en/about-claude/pricing
  *   https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+ * Each row's `lastVerified` field records its own verification date.
  *
  * OpenAI verified 2026-05-08 against
  *   https://developers.openai.com/api/docs/pricing
@@ -51,6 +54,8 @@ export interface ModelPricing {
  */
 export const MODEL_PRICING: Record<string, ModelPricing> = {
   // Anthropic
+  'claude-opus-4-8':   { vendor: 'anthropic', lastVerified: '2026-07-15', inputPerMTok: 5,    outputPerMTok: 25,  cacheWritePerMTok: 6.25,   cacheReadPerMTok: 0.5   },
+  'claude-fable-5':    { vendor: 'anthropic', lastVerified: '2026-07-15', inputPerMTok: 10,   outputPerMTok: 50,  cacheWritePerMTok: 12.5,   cacheReadPerMTok: 1     },
   'claude-opus-4-7':   { vendor: 'anthropic', lastVerified: '2026-04-24', inputPerMTok: 5,    outputPerMTok: 25,  cacheWritePerMTok: 6.25,   cacheReadPerMTok: 0.5   },
   'claude-opus-4-6':   { vendor: 'anthropic', lastVerified: '2026-04-24', inputPerMTok: 15,   outputPerMTok: 75,  cacheWritePerMTok: 18.75,  cacheReadPerMTok: 1.875 },
   'claude-sonnet-4-6': { vendor: 'anthropic', lastVerified: '2026-04-24', inputPerMTok: 3,    outputPerMTok: 15,  cacheWritePerMTok: 3.75,   cacheReadPerMTok: 0.30  },

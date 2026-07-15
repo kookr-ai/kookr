@@ -1090,7 +1090,7 @@ describe('TaskStore', () => {
       expect(store.getLifetimeSpendUsd()).toBeCloseTo(1.50);
     });
 
-    test('survives task deletion (monotonically increasing)', () => {
+    test('survives task deletion after recording spending', () => {
       const task = store.createTask('Task', '/cwd');
       store.updateTokenUsage(task.id, { inputTokens: 1000, outputTokens: 200, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 2.00 });
       store.startTask(task.id);
@@ -1108,12 +1108,13 @@ describe('TaskStore', () => {
       expect(store.getLifetimeSpendUsd()).toBeCloseTo(1.00);
     });
 
-    test('ignores negative deltas (cost decrease)', () => {
+    test('applies negative deltas for corrected costs', () => {
       const task = store.createTask('Task', '/cwd');
       store.updateTokenUsage(task.id, { inputTokens: 1000, outputTokens: 200, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 1.00 });
-      // Cost goes down (should not happen, but guard against it)
+      // A later transcript scan can replace fallback pricing with a lower
+      // exact estimate; lifetime spend must follow the corrected task value.
       store.updateTokenUsage(task.id, { inputTokens: 500, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.50 });
-      expect(store.getLifetimeSpendUsd()).toBeCloseTo(1.00);
+      expect(store.getLifetimeSpendUsd()).toBeCloseTo(0.50);
     });
 
     test('loadTasks with saved lifetime counter restores it', () => {
@@ -1192,6 +1193,39 @@ describe('TaskStore', () => {
       expect(agg!.costUsd).toBeCloseTo(0.90);
       expect(agg!.provider).toBeUndefined();
       expect(agg!.model).toBeUndefined();
+    });
+
+    test('propagates fallback pricing quality to a batch aggregate', () => {
+      const parent = store.createTask('batch', '/cwd');
+      const exactChild = store.createTask({ prompt: 'exact', cwd: '/cwd', parentTaskId: parent.id });
+      const fallbackChild = store.createTask({ prompt: 'fallback', cwd: '/cwd', parentTaskId: parent.id });
+      store.updateTokenUsage(exactChild.id, usage(0.50, { pricingQuality: 'exact' }));
+      store.updateTokenUsage(fallbackChild.id, usage(0.40, { pricingQuality: 'fallback' }));
+
+      // Child traversal is LIFO, so fallback is visited before exact; it must
+      // remain sticky when the later exact contribution is processed.
+      const aggregate = store.getAggregateTokenUsage(parent.id)!;
+      expect(aggregate.pricingQuality).toBe('fallback');
+      expect(aggregate.inputTokens).toBe(200);
+      expect(aggregate.costUsd).toBeCloseTo(0.90);
+    });
+
+    test('reports exact pricing quality when every contribution is exact', () => {
+      const parent = store.createTask('batch', '/cwd');
+      const child = store.createTask({ prompt: 'exact', cwd: '/cwd', parentTaskId: parent.id });
+      store.updateTokenUsage(child.id, usage(0.50, { pricingQuality: 'exact' }));
+
+      expect(store.getAggregateTokenUsage(parent.id)?.pricingQuality).toBe('exact');
+    });
+
+    test('omits pricing quality when a legacy contribution has no quality', () => {
+      const parent = store.createTask('batch', '/cwd');
+      const exactChild = store.createTask({ prompt: 'exact', cwd: '/cwd', parentTaskId: parent.id });
+      const legacyChild = store.createTask({ prompt: 'legacy', cwd: '/cwd', parentTaskId: parent.id });
+      store.updateTokenUsage(exactChild.id, usage(0.50, { pricingQuality: 'exact' }));
+      store.updateTokenUsage(legacyChild.id, usage(0.40));
+
+      expect(store.getAggregateTokenUsage(parent.id)?.pricingQuality).toBeUndefined();
     });
 
     test('keeps a uniform provider while dropping the model when only models differ', () => {

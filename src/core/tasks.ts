@@ -136,7 +136,7 @@ export class TaskStore {
    * reminder, which is the safe default.
    */
   private completionRemediation = new Map<string, string>();
-  /** Monotonically increasing lifetime spending counter (USD). Survives task deletion. */
+  /** Lifetime spending counter (USD); corrected task costs adjust it, and it survives task deletion. */
   private lifetimeSpendUsd: number = 0;
 
   /**
@@ -746,10 +746,11 @@ export class TaskStore {
     if (!task) {
       throw new Error(`Task not found: ${taskId}`);
     }
-    // Accumulate spending delta into lifetime counter
+    // Apply the current task's spending delta, including downward corrections
+    // when a later transcript scan replaces fallback pricing with exact data.
     const previousCost = task.tokenUsage?.costUsd ?? 0;
     const delta = usage.costUsd - previousCost;
-    if (Number.isFinite(delta) && delta > 0) {
+    if (Number.isFinite(delta) && Number.isFinite(usage.costUsd) && usage.costUsd >= 0) {
       this.lifetimeSpendUsd += delta;
     }
     task.tokenUsage = structuredClone(usage) as TokenUsage;
@@ -769,6 +770,8 @@ export class TaskStore {
    * contributing task agrees. A batch that mixes vendors (e.g. a Claude parent
    * orchestrating Codex children) reports neither, because a single blended
    * cost cannot be attributed to one price.
+   * `pricingQuality` is carried only when every contributing record has the
+   * field; when present, `fallback` wins over `exact`.
    */
   getAggregateTokenUsage(taskId: string): TokenUsage | undefined {
     if (!this.tasks.has(taskId)) return undefined;
@@ -776,6 +779,8 @@ export class TaskStore {
     let sawUsage = false;
     let provider: TokenUsage['provider'] | undefined;
     let model: string | undefined;
+    let pricingQuality: TokenUsage['pricingQuality'];
+    let pricingQualityComplete = true;
     let providerUniform = true;
     let modelUniform = true;
     const visited = new Set<string>();
@@ -796,6 +801,13 @@ export class TaskStore {
           if (usage.provider !== provider) providerUniform = false;
           if (usage.model !== model) modelUniform = false;
         }
+        if (usage.pricingQuality == null) {
+          pricingQualityComplete = false;
+        } else if (usage.pricingQuality === 'fallback') {
+          pricingQuality = 'fallback';
+        } else if (pricingQuality !== 'fallback') {
+          pricingQuality = 'exact';
+        }
         inputTokens += usage.inputTokens;
         outputTokens += usage.outputTokens;
         cacheReadTokens += usage.cacheReadTokens;
@@ -813,6 +825,7 @@ export class TaskStore {
       costUsd,
       ...(providerUniform && provider ? { provider } : {}),
       ...(modelUniform && model ? { model } : {}),
+      ...(pricingQualityComplete && pricingQuality ? { pricingQuality } : {}),
     };
   }
 
