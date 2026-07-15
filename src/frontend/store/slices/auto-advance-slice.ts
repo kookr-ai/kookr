@@ -5,6 +5,7 @@ import type {
   KookrStore,
   StoreSet,
   StoreGet,
+  FocusZone,
 } from '../store-types.js';
 import type { AgentState, ProjectSummary } from '../../../shared/protocol.js';
 import type { ProjectSidebarPrefs } from '../project-sidebar-prefs.js';
@@ -41,22 +42,24 @@ export function autoAdvanceQueue(state: QueueState): string[] {
 interface EngagementState {
   selectedAgentId: string | null;
   selectedAgentSource: 'manual' | 'auto-advance';
+  focusZone: FocusZone;
   agents: AgentState[];
 }
 
 /**
- * True when the user is currently focused on an active finding they picked
+ * True when the user is currently engaged with an agent they picked
  * themselves. Auto-advance never yanks focus while this is true.
  *
- * `selectedAgentSource` is the load-bearing distinguisher: a finding the
+ * `selectedAgentSource` is the load-bearing distinguisher: an agent the
  * auto-advance branch left selected (it actually leaves none) would not count
  * as engagement, avoiding the cascade self-disable.
  */
-export function engagedWithFinding(state: EngagementState): boolean {
+export function engagedWithAgent(state: EngagementState): boolean {
   if (!state.selectedAgentId) return false;
   if (state.selectedAgentSource !== 'manual') return false;
   const agent = state.agents.find((a) => a.agentId === state.selectedAgentId);
-  return !!agent && isActiveFinding(agent);
+  if (!agent) return false;
+  return state.focusZone !== 'none' || isActiveFinding(agent);
 }
 
 /** Map a tick-reason enum to a sentence shown in the FollowPill popover. */
@@ -190,7 +193,8 @@ export function attachAutoAdvanceSubscribers(
       state.selectedProject === prevState.selectedProject &&
       state.autoAdvanceEnabled === prevState.autoAdvanceEnabled &&
       state.projectSidebarPrefs === prevState.projectSidebarPrefs &&
-      state.visibleProjectSummaries === prevState.visibleProjectSummaries
+      state.visibleProjectSummaries === prevState.visibleProjectSummaries &&
+      state.focusZone === prevState.focusZone
     ) {
       return;
     }
@@ -275,7 +279,7 @@ export function evaluateAutoAdvance(
     } else if (head === state.selectedProject) {
       outcome = 'already_top';
       ctx.cancelPending();
-    } else if (engagedWithFinding(state)) {
+    } else if (engagedWithAgent(state)) {
       outcome = 'engaged';
       ctx.cancelPending();
     } else {
@@ -320,7 +324,7 @@ function fireSwitch(
   const head = queue[0] ?? null;
   if (head === null) return;
   if (head === state.selectedProject) return;
-  if (engagedWithFinding(state)) return;
+  if (engagedWithAgent(state)) return;
 
   const from = state.selectedProject;
   state.selectProject(head, { source: 'auto-advance' });
