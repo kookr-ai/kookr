@@ -54,6 +54,8 @@ export interface CleanupCandidateAssessment {
   currentProjectId?: string;
   worktreePath?: string;
   branch: string;
+  /** Server-authoritative protected-branch status for cleanup confirmation UI. */
+  protectedBranch?: boolean;
   classification: CleanupClassification;
   reasonCode: string;
   source: string;
@@ -161,6 +163,8 @@ export interface CleanupCandidateDetail {
   projectId: string;
   worktreePath: string;
   branch: string;
+  /** Server-authoritative protected-branch status for cleanup confirmation UI. */
+  protectedBranch?: boolean;
   classification: CleanupClassification;
   reasonCode: string;
   branchRefOid?: string;

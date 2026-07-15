@@ -6,6 +6,14 @@ import {
   endsWithProtectedSuffix,
 } from '../core/worktree-protection.js';
 
+export {
+  getWorktreeRemovalGuardReason,
+  isPrimaryWorkingTree,
+  isProtectedBranch,
+  isRegisteredLinkedWorktree,
+  looksLikeLinkedWorktree,
+} from './worktree-safety.js';
+
 export interface ProtectedMarker {
   reason: string;
   parentRepo: string | null;

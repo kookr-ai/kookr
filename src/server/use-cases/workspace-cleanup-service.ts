@@ -8,6 +8,8 @@ import type {
   CleanupResultSummary,
 } from '../../core/workspace-types.js';
 import { deriveCleanupCapabilitiesForCandidate } from '../../core/workspace-cleanup-policy.js';
+import { isProtectedBranch } from '../../adapters/worktree-safety.js';
+import { getWorktreeRemovalGuardReason } from '../../adapters/worktree-safety.js';
 import { inspectCleanupCandidate, inspectCleanupCandidates } from './cleanup-inspector.js';
 import { hydrateCleanupCandidateDetail } from './workspace-cleanup-detail-query.js';
 
@@ -39,6 +41,8 @@ export interface WorkspaceCleanupInput {
   deleteBranch?: boolean;
   riskAccepted?: boolean;
   discardDirtyState?: boolean;
+  /** Required when removing a worktree whose branch is protected. */
+  confirmProtectedBranch?: boolean;
   reviewFingerprint?: string;
   /** Optional abort signal; when aborted, in-flight git subprocesses receive SIGTERM. */
   signal?: AbortSignal;
@@ -92,12 +96,11 @@ export async function cleanupSafeWorkspaceCandidates(
   const filter = input.classificationFilter
     ?? ((candidate) => deriveCleanupCapabilitiesForCandidate(candidate).canSafeRemove);
 
-  const safeCandidates = candidates.filter((candidate) => (
-    !!candidate.worktreePath && filter(candidate)
-  ));
-  const nonRemoved = candidates.filter((candidate) => (
-    !!candidate.worktreePath && !filter(candidate)
-  ));
+  const isSafeCandidate = (candidate: CleanupCandidateAssessment): boolean => (
+    !!candidate.worktreePath && filter(candidate) && !isProtectedBranch(candidate.branch)
+  );
+  const safeCandidates = candidates.filter(isSafeCandidate);
+  const nonRemoved = candidates.filter((candidate) => !!candidate.worktreePath && !isSafeCandidate(candidate));
 
   const summaries: CleanupResultSummary[] = [];
   for (const candidate of safeCandidates) {
@@ -286,6 +289,20 @@ export async function cleanupWorkspaceCandidate(
     sweepRunId: input.sweepRunId,
   });
 
+  // This pre-flight runs before candidate inspection so a recorded primary
+  // checkout and arbitrary path receive purposeful hard-stop reasons instead
+  // of falling through to Git's generic removal error.
+  const preflightReason = await getWorktreeRemovalGuardReason(input.worktreePath, {
+    repoPath: input.repoPath,
+    branch: input.branch,
+    confirmProtectedBranch: input.confirmProtectedBranch,
+  });
+  if (preflightReason) {
+    const message = `Cleanup blocked: ${preflightReason}`;
+    deps.attemptRepository.blockAttempt(attempt.attemptId, message);
+    throw new Error(message);
+  }
+
   const candidate = await inspectCleanupCandidate(input.repoPath, input.projectId, input.worktreePath, {
     policyResolver: deps.policyResolver,
     leaseService: deps.leaseService,
@@ -294,6 +311,14 @@ export async function cleanupWorkspaceCandidate(
   if (!candidate || !candidate.worktreePath) {
     deps.attemptRepository.blockAttempt(attempt.attemptId, 'Cleanup candidate could not be revalidated');
     throw new Error('Cleanup candidate could not be revalidated');
+  }
+
+  // The branch is authoritative only after registry revalidation. This second
+  // check covers clients that omit the branch from their request.
+  if (isProtectedBranch(candidate.branch) && !input.confirmProtectedBranch) {
+    const message = 'Cleanup blocked: protected-branch';
+    deps.attemptRepository.blockAttempt(attempt.attemptId, message);
+    throw new Error(message);
   }
 
   if (input.branch && input.branch !== candidate.branch) {

@@ -466,6 +466,8 @@ export type ClientMessage =
       deleteBranch?: boolean;
       riskAccepted?: boolean;
       discardDirtyState?: boolean;
+      /** Explicit second confirmation for main/master/develop/dev branches. */
+      confirmProtectedBranch?: boolean;
       reviewFingerprint?: string;
     }
   | { type: 'workspace:bulkSafeCleanup'; projectId: string }

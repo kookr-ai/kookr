@@ -108,6 +108,35 @@ describe('inspectCleanupCandidates', () => {
     expect(result).toEqual([]);
   });
 
+  it('handles a bare porcelain entry before the primary and linked worktrees', async () => {
+    const worktreeList = [
+      'worktree /repo.git',
+      'bare',
+      '',
+      'worktree /repo',
+      'HEAD abc123',
+      'branch refs/heads/main',
+      '',
+      'worktree /repo-wt',
+      'HEAD def456',
+      'branch refs/heads/feature',
+      '',
+    ].join('\n');
+    mockGitArgs([
+      { match: (a) => a.includes('worktree') && a.includes('list'), stdout: worktreeList },
+      { match: (a) => a.includes('rev-parse') && a[a.length - 1] === 'main', stdout: 'abc123' },
+      { match: (a) => a.includes('status') && a.includes('--porcelain'), stdout: '' },
+      { match: (a) => a.includes('merge-base'), stdout: '' },
+    ]);
+
+    const result = await inspectCleanupCandidates('/repo', 'github.com/org/repo', {
+      policyResolver, leaseService,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].worktreePath).toBe('/repo-wt');
+  });
+
   it('returns empty when worktree list output is completely empty', async () => {
     mockGitArgs([
       { match: (a) => a.includes('worktree') && a.includes('list'), stdout: '' },

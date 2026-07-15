@@ -20,6 +20,7 @@ import type { WorktreeLeaseService } from '../../core/worktree-lease-service.js'
 import { gitIn } from '../../core/git-helpers.js';
 import { getProjectId } from '../../core/project-identity.js';
 import { isProtectedWorktreePath } from '../../adapters/worktree-marker.js';
+import { isProtectedBranch } from '../../adapters/worktree-safety.js';
 import { deriveCleanupCapabilities } from '../../core/workspace-cleanup-policy.js';
 import { parsePorcelainStatus, runCommitEnrichment } from './cleanup-enrichment.js';
 
@@ -95,8 +96,10 @@ export async function inspectCleanupCandidates(
   const worktrees = parseWorktreeList(rawList);
   if (worktrees.length === 0) return [];
 
-  // The first worktree is the main checkout — skip it
-  const candidates = worktrees.slice(1);
+  // The first non-bare worktree is the primary checkout. A bare repository can
+  // appear as the first porcelain entry, so never rely on a fixed array index.
+  const primaryPath = worktrees.find((wt) => !wt.bare)?.worktree;
+  const candidates = worktrees.filter((wt) => !wt.bare && wt.worktree !== primaryPath);
 
   const currentProjectId = await getProjectId(repoPath);
   if (currentProjectId !== projectId) {
@@ -145,7 +148,10 @@ export async function inspectCleanupCandidate(
   }
 
   const worktrees = parseWorktreeList(rawList);
-  const wt = worktrees.slice(1).find((item) => item.worktree === worktreePath);
+  const primaryPath = worktrees.find((item) => !item.bare)?.worktree;
+  const wt = worktrees.find((item) => (
+    !item.bare && item.worktree === worktreePath && item.worktree !== primaryPath
+  ));
   if (!wt || wt.bare) {
     return undefined;
   }
@@ -170,6 +176,7 @@ function classifyProjectRepointedCandidate(
     currentProjectId,
     worktreePath: wt.worktree,
     branch: wt.branch ?? `(detached at ${wt.HEAD?.slice(0, 8) ?? 'unknown'})`,
+    protectedBranch: isProtectedBranch(wt.branch),
     classification: 'unknown',
     reasonCode: 'project_repointed',
     source: 'cleanup_inspector',
@@ -193,6 +200,7 @@ async function classifyCandidate(
     projectId,
     worktreePath: wt.worktree,
     branch: wt.branch ?? `(detached at ${wt.HEAD?.slice(0, 8) ?? 'unknown'})`,
+    protectedBranch: isProtectedBranch(wt.branch),
     source: 'cleanup_inspector',
     baselineRef: baseline.baselineRef,
     baselineSha: baseline.baselineSha,

@@ -44,6 +44,7 @@ export interface CleanupCandidateAssessment {
   currentProjectId?: string;
   worktreePath?: string;
   branch: string;
+  protectedBranch?: boolean;
   classification: CleanupClassification;
   reasonCode: string;
   source: string;
@@ -113,6 +114,7 @@ export interface CleanupCandidateDetail {
   projectId: string;
   worktreePath: string;
   branch: string;
+  protectedBranch?: boolean;
   classification: CleanupClassification;
   reasonCode: string;
   branchRefOid?: string;

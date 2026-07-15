@@ -27,7 +27,15 @@ export type InteractionEvent =
   | { type: 'task_reflect_requested'; taskId: string; agentId: string; mode: 'snapshot'; hint?: string; timestamp: string }
   | { type: 'worktree_cleaned'; taskId: string; worktreePath: string; branch: string | undefined; timestamp: string }
   | { type: 'worktree_kept'; taskId: string; worktreePath: string; branch: string | undefined; reason: string; timestamp: string }
-  | { type: 'worktree_skipped'; taskId: string; worktreePath: string; reason: 'protected' | 'shared' | 'task reopened' | 'not found'; timestamp: string }
+  | {
+      type: 'worktree_skipped';
+      taskId: string;
+      worktreePath: string;
+      branch?: string;
+      reason: 'protected' | 'shared' | 'task reopened' | 'not found'
+        | 'primary-working-tree' | 'not-a-linked-worktree' | 'protected-branch';
+      timestamp: string;
+    }
   | { type: 'worktree_cleanup_failed'; taskId: string; worktreePath: string; error: string; timestamp: string }
   | { type: 'crash_recovery'; relaunched: number; skipped: number; failed: number; details: unknown; timestamp: string }
   | { type: 'submission_rejected_dedup'; existingTaskId: string; promptHash: string; canonicalCwd: string; timestamp: string }

@@ -646,6 +646,31 @@ describe('completeTask', () => {
     expect(deps.taskStore.completeTask).toHaveBeenCalledWith('task-42');
   });
 
+  test('task close still routes a primary-checkout session through guarded cleanup', async () => {
+    const task = lifecycleTask({
+      id: 'task-primary',
+      status: 'inProgress',
+      sessions: [{
+        tmuxSession: 'kookr-primary',
+        lastStatus: 'inProgress',
+        cwd: '/repo',
+        gitIsWorktree: true,
+        gitBranch: 'main',
+      }] as any,
+    });
+    const deps = makeLifecycleDeps();
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await completeTask('task-primary', deps);
+    await vi.waitFor(() => {
+      expect(mockCleanupTaskWorktrees).toHaveBeenCalledWith(
+        deps.taskStore,
+        'task-primary',
+        deps.interactionLog,
+      );
+    });
+  });
+
   test('notifies task outcome as completed', async () => {
     const task = lifecycleTask({ id: 'task-42' });
     const onTaskOutcome = vi.fn();

@@ -7,11 +7,13 @@ import type {
 } from '../../shared/protocol.js';
 import { formatCleanupSubtext } from './cleanup-row-format.js';
 import { ClassificationBadge } from './cleanup-classification-badge.js';
+import { isProtectedBranch } from '../../shared/contracts/worktree-protection.js';
 
 interface CleanupRequestOptions {
   deleteBranch: boolean;
   riskAccepted?: boolean;
   discardDirtyState?: boolean;
+  confirmProtectedBranch?: boolean;
   reviewFingerprint?: string;
 }
 
@@ -99,6 +101,7 @@ export function CleanupCandidateTable({
   const [reviewCandidate, setReviewCandidate] = useState<CleanupCandidateAssessment | null>(null);
   const [confirmBulkSafeCleanup, setConfirmBulkSafeCleanup] = useState(false);
   const [riskAccepted, setRiskAccepted] = useState(false);
+  const [confirmProtectedBranch, setConfirmProtectedBranch] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
 
   const filtered = useMemo(
@@ -177,12 +180,14 @@ export function CleanupCandidateTable({
   const openReview = useCallback((candidate: CleanupCandidateAssessment) => {
     setReviewCandidate(candidate);
     setRiskAccepted(false);
+    setConfirmProtectedBranch(false);
     onRequestDetail(candidate);
   }, [onRequestDetail]);
 
   const closeReview = useCallback(() => {
     setReviewCandidate(null);
     setRiskAccepted(false);
+    setConfirmProtectedBranch(false);
     onClearDetail();
   }, [onClearDetail]);
 
@@ -452,6 +457,16 @@ export function CleanupCandidateTable({
                   {reviewDetail.capabilities.canSafeRemove && (
                     <p>Branch deletion is skipped automatically if the branch ref changed after review.</p>
                   )}
+                  {(reviewDetail.protectedBranch ?? isProtectedBranch(reviewDetail.branch)) && (
+                    <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginTop: '0.75rem' }}>
+                      <input
+                        type="checkbox"
+                        checked={confirmProtectedBranch}
+                        onChange={(e) => setConfirmProtectedBranch(e.target.checked)}
+                      />
+                      <span>I confirm this worktree is on a protected branch and want to remove it.</span>
+                    </label>
+                  )}
                   {(reviewDetail.classification === 'unique_commits'
                     || (reviewDetail.classification === 'dirty' && (reviewDetail.commitSummary?.aheadCount ?? 0) > 0))
                     && reviewDetail.capabilities.canReviewedDiscard && (
@@ -488,9 +503,10 @@ export function CleanupCandidateTable({
                     deleteBranch: false,
                     riskAccepted: false,
                     discardDirtyState: reviewDetail.classification === 'dirty',
+                    confirmProtectedBranch,
                     reviewFingerprint: reviewDetail.fingerprint,
                   })}
-                  disabled={loading || cleanupDetailLoading}
+                  disabled={loading || cleanupDetailLoading || ((reviewDetail.protectedBranch ?? isProtectedBranch(reviewDetail.branch)) && !confirmProtectedBranch)}
                 >
                   {reviewDetail.classification === 'dirty' ? 'Create stash and remove path' : 'Keep branch, remove path'}
                 </button>
@@ -500,9 +516,10 @@ export function CleanupCandidateTable({
                   className="btn-danger"
                   onClick={() => submitCleanup(reviewCandidate, {
                     deleteBranch: true,
+                    confirmProtectedBranch,
                     reviewFingerprint: reviewDetail.fingerprint,
                   })}
-                  disabled={loading || cleanupDetailLoading}
+                  disabled={loading || cleanupDetailLoading || ((reviewDetail.protectedBranch ?? isProtectedBranch(reviewDetail.branch)) && !confirmProtectedBranch)}
                 >
                   Remove path and delete branch
                 </button>
@@ -513,9 +530,10 @@ export function CleanupCandidateTable({
                   onClick={() => submitCleanup(reviewCandidate, {
                     deleteBranch: true,
                     riskAccepted,
+                    confirmProtectedBranch,
                     reviewFingerprint: reviewDetail.fingerprint,
                   })}
-                  disabled={loading || cleanupDetailLoading || !riskAccepted}
+                  disabled={loading || cleanupDetailLoading || !riskAccepted || ((reviewDetail.protectedBranch ?? isProtectedBranch(reviewDetail.branch)) && !confirmProtectedBranch)}
                 >
                   Remove path and delete branch
                 </button>
@@ -527,11 +545,13 @@ export function CleanupCandidateTable({
                     deleteBranch: true,
                     riskAccepted,
                     discardDirtyState: true,
+                    confirmProtectedBranch,
                     reviewFingerprint: reviewDetail.fingerprint,
                   })}
                   disabled={
                     loading
                     || cleanupDetailLoading
+                    || ((reviewDetail.protectedBranch ?? isProtectedBranch(reviewDetail.branch)) && !confirmProtectedBranch)
                     || ((reviewDetail.commitSummary?.aheadCount ?? 0) > 0 && !riskAccepted)
                     || reviewDetail.commitSummary?.aheadCount === undefined
                   }

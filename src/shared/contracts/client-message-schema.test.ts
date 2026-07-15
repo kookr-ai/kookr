@@ -469,6 +469,7 @@ const clientMessageRoundTripCases = [
     deleteBranch: true,
     riskAccepted: true,
     discardDirtyState: false,
+    confirmProtectedBranch: true,
     reviewFingerprint: 'fingerprint-1',
   }),
   clientMessageCase({ type: 'workspace:bulkSafeCleanup', projectId: 'github.com/acme/project' }),

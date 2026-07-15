@@ -940,9 +940,10 @@ The system SHALL derive cleanup authorization from a single server-owned policy 
 - `merged` and `patch_equivalent` are authorized for safe remove
 - `unique_commits` is authorized for reviewed cleanup and path-only cleanup
 - `dirty`, `busy`, `protected`, `checked_out_elsewhere`, detached-HEAD, and other `unknown` states are blocked according to the rollout rules
+- removal always refuses the primary checkout and paths that are not registered linked worktrees; protected branches require explicit user confirmation and are blocked from automatic cleanup
 - UI-facing cleanup actions consume server-derived capability data rather than hard-coding `classification === 'merged'`
 
-**Evidence:** shared policy boundary in `src/core/workspace-cleanup-policy.ts`, cleanup inspector/view projections, cleanup service authorization tests.
+**Evidence:** shared policy boundary in `src/core/workspace-cleanup-policy.ts`, worktree safety predicates in `src/adapters/worktree-safety.ts`, cleanup inspector/view projections, cleanup service authorization tests.
 
 ### R8.2: Freshness-gated Cleanup Execution — SHALL — `done`
 

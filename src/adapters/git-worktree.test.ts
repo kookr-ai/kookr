@@ -1,10 +1,11 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
 // Hoist mock functions so they're available in vi.mock factories
-const { mockExecFile, mockExistsSync, mockRm } = vi.hoisted(() => ({
+const { mockExecFile, mockExistsSync, mockRm, mockRemovalGuard } = vi.hoisted(() => ({
   mockExecFile: vi.fn(),
   mockExistsSync: vi.fn(),
   mockRm: vi.fn(),
+  mockRemovalGuard: vi.fn(),
 }));
 
 vi.mock('node:child_process', () => ({
@@ -17,6 +18,10 @@ vi.mock('node:fs', () => ({
 
 vi.mock('node:fs/promises', () => ({
   rm: mockRm,
+}));
+
+vi.mock('./worktree-safety.js', () => ({
+  getWorktreeRemovalGuardReason: mockRemovalGuard,
 }));
 
 import {
@@ -75,6 +80,8 @@ beforeEach(() => {
   mockExistsSync.mockReset();
   mockRm.mockReset();
   mockRm.mockResolvedValue(undefined);
+  mockRemovalGuard.mockReset();
+  mockRemovalGuard.mockResolvedValue(undefined);
 });
 
 describe('cleanupTaskWorktrees', () => {
@@ -265,6 +272,79 @@ describe('cleanupTaskWorktrees', () => {
       type: 'worktree_skipped',
       reason: 'protected',
     });
+  });
+
+  test('primary checkout regression: clean and unmarked path is never removed', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Fix bug', '/repo');
+    taskStore.addSession(task.id, {
+      tmuxSession: 's-primary',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+      gitIsWorktree: true,
+      gitBranch: 'main',
+    });
+    taskStore.completeTask(task.id);
+
+    const { log, events } = makeFakeLog();
+    mockExistsSync.mockImplementation((path: string) => !path.endsWith('.kookr-protected'));
+    mockRemovalGuard.mockResolvedValue('primary-working-tree');
+
+    await cleanupTaskWorktrees(taskStore, task.id, log);
+
+    expect(mockRm).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'worktree_skipped',
+      worktreePath: '/repo',
+      reason: 'primary-working-tree',
+    }));
+  });
+
+  test('non-worktree path is refused before destructive cleanup', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Fix bug', '/repo');
+    taskStore.addSession(task.id, {
+      tmuxSession: 's-arbitrary',
+      agentType: 'claude-code',
+      cwd: '/tmp/arbitrary-directory',
+      createdAt: new Date(),
+      gitIsWorktree: true,
+      gitBranch: 'feature',
+    });
+    taskStore.completeTask(task.id);
+
+    const { log, events } = makeFakeLog();
+    mockExistsSync.mockReturnValue(true);
+    mockRemovalGuard.mockResolvedValue('not-a-linked-worktree');
+
+    await cleanupTaskWorktrees(taskStore, task.id, log);
+
+    expect(mockRm).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({ reason: 'not-a-linked-worktree' }));
+  });
+
+  test('protected branch is refused by automatic cleanup', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Fix bug', '/repo');
+    taskStore.addSession(task.id, {
+      tmuxSession: 's-protected-branch',
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(),
+      gitIsWorktree: true,
+      gitBranch: 'main',
+    });
+    taskStore.completeTask(task.id);
+
+    const { log, events } = makeFakeLog();
+    mockExistsSync.mockReturnValue(true);
+    mockRemovalGuard.mockResolvedValue('protected-branch');
+
+    await cleanupTaskWorktrees(taskStore, task.id, log);
+
+    expect(mockRm).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({ reason: 'protected-branch' }));
   });
 
   test('shared worktree → skipped', async () => {

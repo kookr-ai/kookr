@@ -199,6 +199,7 @@ export class WorkspaceHandler {
             deleteBranch: msg.deleteBranch,
             riskAccepted: msg.riskAccepted,
             discardDirtyState: msg.discardDirtyState,
+            confirmProtectedBranch: msg.confirmProtectedBranch,
             reviewFingerprint: msg.reviewFingerprint,
           });
           const view = await getWorkspaceView(msg.projectId, context.repoPath, {

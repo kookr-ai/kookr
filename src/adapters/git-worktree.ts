@@ -7,6 +7,7 @@ import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
 import { classifyGitError, DEFAULT_GIT_MAX_BUFFER, DEFAULT_GIT_TIMEOUT_MS } from '../core/git-helpers.js';
 import { isProtectedWorktreePath } from './worktree-marker.js';
+import { getWorktreeRemovalGuardReason } from './worktree-safety.js';
 
 const execFile = promisify(execFileCb);
 
@@ -198,6 +199,27 @@ async function cleanupSingleWorktree(
     return;
   }
 
+  const session = getSessionForWorktree(task, worktreePath);
+  const branch = session?.gitBranch;
+  const isDetached = session?.gitIsDetached;
+
+  // Always-on removal backstop. This must run before the marker, cleanliness,
+  // or task-state checks so a clean, unmarked primary checkout can never reach
+  // rm -rf. Registry membership also prevents arbitrary recorded paths from
+  // being treated as disposable worktrees.
+  const guardReason = await getWorktreeRemovalGuardReason(worktreePath, { branch });
+  if (guardReason) {
+    await interactionLog?.append({
+      type: 'worktree_skipped',
+      taskId,
+      worktreePath,
+      branch,
+      reason: guardReason,
+      timestamp: nowISO(),
+    });
+    return;
+  }
+
   // Protected worktree
   if (isProtectedWorktreePath(worktreePath)) {
     await interactionLog?.append({
@@ -223,10 +245,6 @@ async function cleanupSingleWorktree(
   }
 
   // Safety checks
-  const session = getSessionForWorktree(task, worktreePath);
-  const branch = session?.gitBranch;
-  const isDetached = session?.gitIsDetached;
-
   const result = await isClean(worktreePath, branch, isDetached);
   if (!result.clean) {
     await interactionLog?.append({

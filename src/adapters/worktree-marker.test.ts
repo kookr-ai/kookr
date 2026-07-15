@@ -10,6 +10,13 @@ import {
   migrateLegacyProtectedWorktree,
 } from './worktree-marker.js';
 import { PROTECTED_MARKER } from '../core/worktree-protection.js';
+import {
+  isPrimaryWorkingTree,
+  isRegisteredLinkedWorktree,
+  isProtectedBranch,
+  looksLikeLinkedWorktree,
+} from './worktree-safety.js';
+import { execFileSync } from 'node:child_process';
 
 describe('protected worktree documentation', () => {
   const userGuide = readFileSync(new URL('../../docs/user-guide.md', import.meta.url), 'utf8');
@@ -170,5 +177,53 @@ describe('worktree-marker', () => {
     test('skips when the worktree path does not exist', () => {
       expect(migrateLegacyProtectedWorktree(join(root, 'kookr-prod'))).toBe(false);
     });
+  });
+});
+
+describe('worktree safety predicates', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'wt-safety-'));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  test('distinguishes the primary checkout from a registered linked worktree', async () => {
+    const repo = join(root, 'repo');
+    const linked = join(root, 'linked');
+    execFileSync('git', ['init', '-b', 'main', repo], { stdio: 'ignore' });
+    execFileSync('git', ['-C', repo, 'config', 'user.email', 'test@example.com'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', repo, 'config', 'user.name', 'Kookr Test'], { stdio: 'ignore' });
+    await writeFile(join(repo, 'tracked.txt'), 'tracked\n');
+    execFileSync('git', ['-C', repo, 'add', 'tracked.txt'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', repo, 'commit', '-m', 'initial'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', repo, 'worktree', 'add', '-b', 'feature', linked], { stdio: 'ignore' });
+
+    expect(await isPrimaryWorkingTree(repo)).toBe(true);
+    expect(await isPrimaryWorkingTree(linked)).toBe(false);
+    expect(looksLikeLinkedWorktree(repo)).toBe(false);
+    expect(looksLikeLinkedWorktree(linked)).toBe(true);
+    expect(await isRegisteredLinkedWorktree(linked, repo)).toBe(true);
+    expect(await isRegisteredLinkedWorktree(repo, repo)).toBe(false);
+  });
+
+  test('rejects an ordinary directory as a linked worktree', async () => {
+    const ordinary = join(root, 'ordinary');
+    await mkdir(ordinary);
+    expect(looksLikeLinkedWorktree(ordinary)).toBe(false);
+    expect(await isPrimaryWorkingTree(ordinary)).toBe(false);
+  });
+
+  test.each(['main', 'MASTER', 'develop', 'Dev'])('protects %s by default', (branch) => {
+    expect(isProtectedBranch(branch)).toBe(true);
+  });
+
+  test('allows callers to supply a narrower protected-branch allowlist', () => {
+    expect(isProtectedBranch('release', ['release'])).toBe(true);
+    expect(isProtectedBranch('main', ['release'])).toBe(false);
+    expect(isProtectedBranch(undefined)).toBe(false);
   });
 });

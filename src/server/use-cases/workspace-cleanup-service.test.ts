@@ -11,8 +11,9 @@ import {
 import { createCleanupFingerprint } from './workspace-cleanup-detail-query.js';
 import { deriveCleanupCapabilities } from '../../core/workspace-cleanup-policy.js';
 
-const { mockExecFile } = vi.hoisted(() => ({
+const { mockExecFile, mockRemovalGuard } = vi.hoisted(() => ({
   mockExecFile: vi.fn(),
+  mockRemovalGuard: vi.fn(),
 }));
 
 vi.mock('node:child_process', () => ({
@@ -22,6 +23,11 @@ vi.mock('node:child_process', () => ({
 vi.mock('./cleanup-inspector.js', () => ({
   inspectCleanupCandidates: vi.fn(),
   inspectCleanupCandidate: vi.fn(),
+}));
+
+vi.mock('../../adapters/worktree-safety.js', () => ({
+  getWorktreeRemovalGuardReason: mockRemovalGuard,
+  isProtectedBranch: (branch: string | undefined) => ['main', 'master', 'develop', 'dev'].includes(branch ?? ''),
 }));
 
 import { inspectCleanupCandidate, inspectCleanupCandidates } from './cleanup-inspector.js';
@@ -76,6 +82,7 @@ describe('cleanupWorkspaceCandidate', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockRemovalGuard.mockResolvedValue(undefined);
     attemptRepository = new WorkspaceAttemptRepository();
     policyResolver = new RepoPolicyResolver({ profiles: [{ projectId: 'github.com/org/repo', baselineRef: 'main' }] });
     leaseService = new WorktreeLeaseService();
@@ -83,6 +90,87 @@ describe('cleanupWorkspaceCandidate', () => {
       const candidates = await mockInspectCleanupCandidates();
       return candidates.find((candidate) => candidate.worktreePath === worktreePath);
     });
+  });
+
+  it('rejects the primary working tree before candidate inspection', async () => {
+    mockRemovalGuard.mockResolvedValue('primary-working-tree');
+
+    await expect(cleanupWorkspaceCandidate({
+      attemptRepository,
+      policyResolver,
+      leaseService,
+    }, {
+      projectId: 'github.com/org/repo',
+      repoPath: '/repo',
+      worktreePath: '/repo',
+    })).rejects.toThrow('Cleanup blocked: primary-working-tree');
+
+    expect(mockInspectCleanupCandidate).not.toHaveBeenCalled();
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-worktree path before candidate inspection', async () => {
+    mockRemovalGuard.mockResolvedValue('not-a-linked-worktree');
+
+    await expect(cleanupWorkspaceCandidate({
+      attemptRepository,
+      policyResolver,
+      leaseService,
+    }, {
+      projectId: 'github.com/org/repo',
+      repoPath: '/repo',
+      worktreePath: '/tmp/not-a-worktree',
+    })).rejects.toThrow('Cleanup blocked: not-a-linked-worktree');
+
+    expect(mockInspectCleanupCandidate).not.toHaveBeenCalled();
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('requires explicit confirmation for protected-branch cleanup', async () => {
+    mockInspectCleanupCandidates.mockResolvedValue([cleanupCandidate({ branch: 'main' })]);
+
+    await expect(cleanupWorkspaceCandidate({
+      attemptRepository,
+      policyResolver,
+      leaseService,
+    }, {
+      projectId: 'github.com/org/repo',
+      repoPath: '/repo',
+      worktreePath: '/repo-worktree',
+      deleteBranch: false,
+    })).rejects.toThrow('Cleanup blocked: protected-branch');
+
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  it('allows protected-branch cleanup only when confirmed', async () => {
+    mockInspectCleanupCandidates.mockResolvedValue([cleanupCandidate({ branch: 'main' })]);
+    mockGitResponses({
+      'rev-parse HEAD': { stdout: 'head123' },
+      'rev-parse --verify refs/heads/main': { stdout: 'main123' },
+      'rev-parse --verify main': { stdout: 'baseline123' },
+      'status --porcelain=v1': { stdout: '' },
+      'rev-list --left-right --count main...main': { stdout: '0 0' },
+      'log -1 --format=%H%x1f%an%x1f%aI%x1f%s HEAD': { stdout: 'head123\u001fJean\u001f2026-04-04T00:00:00Z\u001fProtected branch' },
+      'worktree remove /repo-worktree': { stdout: '' },
+      'worktree prune': { stdout: '' },
+    });
+
+    const result = await cleanupWorkspaceCandidate({
+      attemptRepository,
+      policyResolver,
+      leaseService,
+    }, {
+      projectId: 'github.com/org/repo',
+      repoPath: '/repo',
+      worktreePath: '/repo-worktree',
+      branch: 'main',
+      deleteBranch: false,
+      confirmProtectedBranch: true,
+    });
+
+    expect(result.summary.pathRemoved).toBe(true);
+    expect(result.summary.branchRemoved).toBe(false);
   });
 
   it('removes a patch-equivalent worktree and deletes the matching branch ref', async () => {
