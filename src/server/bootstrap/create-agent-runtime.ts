@@ -4,7 +4,8 @@ import { AdapterRegistry, type AgentAdapter } from '../../adapters/agent-adapter
 import { ClaudeCodeAdapter } from '../../adapters/claude-code-adapter.js';
 import { CodexCliAdapter } from '../../adapters/codex-cli-adapter.js';
 import { GrokBuildAdapter } from '../../adapters/grok-build-adapter.js';
-import { GROK_BUILD_ENABLED_ENV } from '../../adapters/grok-launch-args.js';
+import type { GrokInstalledState } from '../../adapters/grok-build-preflight.js';
+import type { ProbeExecRunner } from '../../adapters/probe-agent-binary.js';
 import { RoutingAgentAdapter } from '../../adapters/routing-agent-adapter.js';
 import type { TerminalBackend } from '../../adapters/terminal-backend.js';
 import {
@@ -29,16 +30,18 @@ export interface AgentRuntimeDeps {
   serverPort: number;
   agentBin?: string;
   codexBin?: string;
-  /** Grok Build binary path/command (`KOOKR_GROK_BIN`). Experimental — see below. */
+  /** Grok Build binary path/command (`KOOKR_GROK_BIN`). */
   grokBin?: string;
   bypassAllPermissions?: boolean;
   /**
-   * Env source for the experimental Grok Build feature flag / kill switch and
-   * model resolution. Defaults to `process.env`; injectable for tests. The Grok
-   * adapter is registered ONLY when `KOOKR_GROK_BUILD_ENABLED=true`, so default
-   * deployments are byte-identical (no Grok preflight, no new-agent surface).
+   * Env source for the Grok Build kill switch and model resolution. Defaults
+   * to `process.env`; injectable for tests.
    */
   grokEnv?: NodeJS.ProcessEnv;
+  /** Test seam: probe runner for the Grok binary-identity preflight. */
+  grokProbeExec?: ProbeExecRunner;
+  /** Test seam: bypass the Grok binary probe with a fixed installed state. */
+  grokInstalledState?: GrokInstalledState;
   preflightOnFatal?: (snapshot: AgentPreflightSnapshot & { status: 'absent' }) => never;
   preflightLogger?: PreflightLogger;
   /**
@@ -55,8 +58,8 @@ export interface AgentRuntimeDeps {
 export interface AgentRuntime {
   claudeCodeAdapter: ClaudeCodeAdapter;
   codexCliAdapter: CodexCliAdapter;
-  /** Present only when the experimental Grok Build feature flag is enabled. */
-  grokBuildAdapter?: GrokBuildAdapter;
+  /** Always constructed; registered (and thus launchable) only when its binary preflight passed. */
+  grokBuildAdapter: GrokBuildAdapter;
   adapterRegistry: AdapterRegistry;
   adapter: AgentAdapter;
   agentPreflight: Record<string, AgentPreflightSnapshot>;
@@ -89,25 +92,50 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
   adapterRegistry.register(claudeCodeAdapter);
   adapterRegistry.register(codexCliAdapter);
 
-  // Experimental Grok Build adapter (issue #1343). Registered ONLY when the
-  // operator opts in via KOOKR_GROK_BUILD_ENABLED=true, so unrelated deployments
-  // pay no Grok preflight cost and never see the new agent type. It is not added
-  // to AVAILABLE_AGENT_TYPES, so it stays out of the frontend picker and the
-  // round-robin rotation (Phase 1 excludes frontend selection); launches are
-  // additionally guarded per-call by the same flag + a kill switch + build
-  // qualification inside the adapter.
+  // Grok Build adapter (issue #1343, GA). Registered by default like the other
+  // agents — but ONLY when its binary is actually present: registration is what
+  // feeds the frontend picker and the round-robin rotation
+  // (AVAILABLE_AGENT_TYPES ∩ registry), and a registered-but-absent grok would
+  // put a guaranteed-failing slot into the rotation (the cursor only advances
+  // on successful launches, so it would wedge there). A missing default binary
+  // therefore degrades to a warn-and-skip; an explicitly configured
+  // KOOKR_GROK_BIN that is unreachable stays fail-loud, matching
+  // runAdapterPreflights' env-misconfig policy. New launches can be halted
+  // operationally via the KOOKR_GROK_BUILD_DISABLE_NEW_LAUNCHES kill switch,
+  // and build qualification against the reviewed compatibility manifest is
+  // advisory supervision status inside the adapter.
   const grokEnv = deps.grokEnv ?? process.env;
-  let grokBuildAdapter: GrokBuildAdapter | undefined;
-  if (grokEnv[GROK_BUILD_ENABLED_ENV] === 'true') {
-    grokBuildAdapter = new GrokBuildAdapter(deps.terminalBackend, deps.taskStore, {
-      terminalInputWriter,
-      hooksDir: deps.hooksDir,
-      serverPort: deps.serverPort,
-      agentBin: deps.grokBin,
-      bypassAllPermissions: deps.bypassAllPermissions,
-      env: grokEnv,
-    });
+  const grokBuildAdapter = new GrokBuildAdapter(deps.terminalBackend, deps.taskStore, {
+    terminalInputWriter,
+    hooksDir: deps.hooksDir,
+    serverPort: deps.serverPort,
+    agentBin: deps.grokBin,
+    bypassAllPermissions: deps.bypassAllPermissions,
+    env: grokEnv,
+    probeExec: deps.grokProbeExec,
+    installedStateOverride: deps.grokInstalledState,
+  });
+  const preflightLogger = deps.preflightLogger ?? console;
+  const grokPreflight = await grokBuildAdapter.preflight();
+  if (grokPreflight.kind === 'ok') {
     adapterRegistry.register(grokBuildAdapter);
+  } else if (grokPreflight.configuredVia === 'env') {
+    preflightLogger.error(
+      `[fatal] grok-build binary unreachable: ${grokPreflight.reason}\n` +
+        `  Set ${grokPreflight.envVarName}=<path> or unset it to fall back to PATH.`,
+    );
+    (deps.preflightOnFatal ?? ((): never => process.exit(1)))({
+      agentType: 'grok-build',
+      status: 'absent',
+      reason: grokPreflight.reason,
+      configuredVia: grokPreflight.configuredVia,
+      envVarName: grokPreflight.envVarName,
+    });
+  } else {
+    preflightLogger.warn(
+      `[startup] warning: grok binary not found on PATH (${grokPreflight.reason}); ` +
+        `grok-build is not registered — it stays out of the agent picker and round-robin.`,
+    );
   }
 
   const adapter = new RoutingAgentAdapter(deps.taskStore, adapterRegistry);

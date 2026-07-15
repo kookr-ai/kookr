@@ -51,10 +51,8 @@ describe('normalizeAgentType', () => {
 });
 
 describe('AVAILABLE_AGENT_TYPES', () => {
-  test('contains claude-code and codex-cli', () => {
-    const types = AVAILABLE_AGENT_TYPES.map((a) => a.type);
-    expect(types).toContain('claude-code');
-    expect(types).toContain('codex-cli');
+  test('contains claude-code, codex-cli, and grok-build in canonical order', () => {
+    expect(AVAILABLE_AGENT_TYPES.map((a) => a.type)).toEqual(['claude-code', 'codex-cli', 'grok-build']);
   });
 
   test('each entry has a label', () => {
@@ -113,6 +111,24 @@ describe('resolveRoundRobinAgent', () => {
     expect(resolveRoundRobinAgent(1, ['codex-cli', 'claude-code'])).toBe('codex-cli');
   });
 
+  test('rotates across all three agents when grok-build is registered', () => {
+    const all: ReadonlyArray<'claude-code' | 'codex-cli' | 'grok-build'> = [
+      'claude-code',
+      'codex-cli',
+      'grok-build',
+    ];
+    expect(resolveRoundRobinAgent(0, all)).toBe('claude-code');
+    expect(resolveRoundRobinAgent(1, all)).toBe('codex-cli');
+    expect(resolveRoundRobinAgent(2, all)).toBe('grok-build');
+    expect(resolveRoundRobinAgent(3, all)).toBe('claude-code');
+  });
+
+  test('skips grok-build when its adapter is not registered (absent binary)', () => {
+    expect(resolveRoundRobinAgent(0, ['claude-code', 'codex-cli'])).toBe('claude-code');
+    expect(resolveRoundRobinAgent(1, ['claude-code', 'codex-cli'])).toBe('codex-cli');
+    expect(resolveRoundRobinAgent(2, ['claude-code', 'codex-cli'])).toBe('claude-code');
+  });
+
   test('handles a negative or non-integer cursor defensively', () => {
     expect(resolveRoundRobinAgent(-1, both)).toBe('claude-code');
     expect(resolveRoundRobinAgent(1.5, both)).toBe('claude-code');
@@ -133,7 +149,7 @@ describe('buildAgentSelectionOptions', () => {
 
   test('falls back to the canonical list (with round-robin) when none are supplied', () => {
     const options = buildAgentSelectionOptions([]);
-    expect(options.map((o) => o.type)).toEqual(['claude-code', 'codex-cli', 'round-robin']);
+    expect(options.map((o) => o.type)).toEqual(['claude-code', 'codex-cli', 'grok-build', 'round-robin']);
   });
 });
 

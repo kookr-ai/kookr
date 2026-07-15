@@ -13,15 +13,14 @@ export const GROK_AGENT_BIN_ENV = 'KOOKR_GROK_BIN';
 /** Env var overriding the configured Grok model. */
 export const GROK_MODEL_ENV = 'KOOKR_GROK_MODEL';
 /**
- * Default model. POC-A ran with model `grok-build` (the exact string recorded in
- * the reviewed manifest's `selectedModel`); default to what was tested rather
- * than the RFC's pre-POC `grok-4.5` guess. Configurable via {@link GROK_MODEL_ENV}.
+ * Default model. The 2026-07-15 POC-A requalification ran with `grok-4.5` (the
+ * exact string recorded in the reviewed manifest's `selectedModel`); the
+ * original `grok-build` model is no longer listed by the chat proxy.
+ * Configurable via {@link GROK_MODEL_ENV}.
  */
-export const DEFAULT_GROK_MODEL = 'grok-build';
+export const DEFAULT_GROK_MODEL = 'grok-4.5';
 
-/** Experimental opt-in: Grok launches are refused unless this is `true`. */
-export const GROK_BUILD_ENABLED_ENV = 'KOOKR_GROK_BUILD_ENABLED';
-/** New-launch kill switch: halts new Grok launches even when enabled. */
+/** New-launch kill switch: halts new Grok launches when set to `true`. */
 export const GROK_BUILD_KILL_SWITCH_ENV = 'KOOKR_GROK_BUILD_DISABLE_NEW_LAUNCHES';
 
 export interface BuildGrokLaunchArgsOptions {
@@ -135,25 +134,18 @@ export interface GrokLaunchGate {
 }
 
 /**
- * Resolve whether a new Grok launch is permitted: the experimental feature flag
- * must be explicitly enabled AND the new-launch kill switch must not be set.
- * Pure + env-injectable so the adapter and tests share one source of truth.
+ * Resolve whether a new Grok launch is permitted: allowed unless the
+ * new-launch kill switch is set. Pure + env-injectable so the adapter and
+ * tests share one source of truth.
  */
 export function resolveGrokLaunchGate(env: NodeJS.ProcessEnv = process.env): GrokLaunchGate {
-  if (env[GROK_BUILD_ENABLED_ENV] !== 'true') {
-    return {
-      allowed: false,
-      reason:
-        `Grok Build is experimental and disabled by default. Set ${GROK_BUILD_ENABLED_ENV}=true to enable it.`,
-    };
-  }
   if (env[GROK_BUILD_KILL_SWITCH_ENV] === 'true') {
     return {
       allowed: false,
       reason: `New Grok Build launches are halted by the kill switch (${GROK_BUILD_KILL_SWITCH_ENV}=true).`,
     };
   }
-  return { allowed: true, reason: 'enabled' };
+  return { allowed: true, reason: 'ok' };
 }
 
 /** Resolve the configured model: {@link GROK_MODEL_ENV} → {@link DEFAULT_GROK_MODEL}. */
