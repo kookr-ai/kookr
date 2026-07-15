@@ -1,12 +1,12 @@
 {
   "ready": true,
-  "ready_at": 0.94,
+  "ready_at": 0.78,
   "input_accepted": true,
   "approval_prompt_seen": false,
   "bytes_captured": 93,
   "exit_code": 9,
   "tree_pids_before": [
-    1782338
+    3446006
   ],
   "tree_pids_after_kill": [],
   "clean_drain": true,

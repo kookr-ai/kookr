@@ -25,9 +25,9 @@ describe('loadCompatibilityRecord (real reviewed manifest)', () => {
     expect(result.record.reviewStatus).toBe('tested');
     expect(result.record.decision).toBe('constrained-proceed');
     expect(result.record.manifestQualification).toBe('tested');
-    expect(result.record.version).toBe('0.2.93');
-    expect(result.record.buildId).toBe('f00f96316d');
-    expect(result.record.evidenceBuildId).toBe('0.2.93 (f00f96316d)');
+    expect(result.record.version).toBe('0.2.101');
+    expect(result.record.buildId).toBe('5bc4b5dfad');
+    expect(result.record.evidenceBuildId).toBe('0.2.101 (5bc4b5dfad)');
   });
 });
 
@@ -39,9 +39,9 @@ describe('qualifyInstalledBuild', () => {
   it('is tested when identity and host exactly match the manifest record', () => {
     const result = qualifyInstalledBuild(
       {
-        sha256: '4e0738d3b5550f3c842bc0ae69f468815c6329c008a110d0c27a694dc3401135',
-        version: '0.2.93',
-        buildId: 'f00f96316d',
+        sha256: '2556299cded37f81e54c02420cfa7f1a2df9feab72a445869a0f5596e143b333',
+        version: '0.2.101',
+        buildId: '5bc4b5dfad',
       },
       { os: 'linux', arch: 'x86_64' },
       record,
@@ -52,9 +52,9 @@ describe('qualifyInstalledBuild', () => {
   it('is unknown on a version mismatch, with the mismatch named in the reason', () => {
     const result = qualifyInstalledBuild(
       {
-        sha256: '4e0738d3b5550f3c842bc0ae69f468815c6329c008a110d0c27a694dc3401135',
+        sha256: '2556299cded37f81e54c02420cfa7f1a2df9feab72a445869a0f5596e143b333',
         version: '0.3.0',
-        buildId: 'f00f96316d',
+        buildId: '5bc4b5dfad',
       },
       { os: 'linux', arch: 'x86_64' },
       record,
@@ -67,8 +67,8 @@ describe('qualifyInstalledBuild', () => {
     const result = qualifyInstalledBuild(
       {
         sha256: 'deadbeef00000000000000000000000000000000000000000000000000000000',
-        version: '0.2.93',
-        buildId: 'f00f96316d',
+        version: '0.2.101',
+        buildId: '5bc4b5dfad',
       },
       { os: 'linux', arch: 'x86_64' },
       record,
@@ -80,9 +80,9 @@ describe('qualifyInstalledBuild', () => {
   it('is unknown on an arch mismatch', () => {
     const result = qualifyInstalledBuild(
       {
-        sha256: '4e0738d3b5550f3c842bc0ae69f468815c6329c008a110d0c27a694dc3401135',
-        version: '0.2.93',
-        buildId: 'f00f96316d',
+        sha256: '2556299cded37f81e54c02420cfa7f1a2df9feab72a445869a0f5596e143b333',
+        version: '0.2.101',
+        buildId: '5bc4b5dfad',
       },
       { os: 'linux', arch: 'arm64' },
       record,

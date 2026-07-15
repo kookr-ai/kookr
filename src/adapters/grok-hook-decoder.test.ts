@@ -21,7 +21,7 @@ const line = (key: string) => JSON.stringify(fixtures.events[key]);
 describe('parseGrokHookEvent — POC-A fixtures', () => {
   it('decodes session_start (camelCase) into session_start', () => {
     const e = parseGrokHookEvent(line('session_start'));
-    expect(e).toMatchObject({ type: 'session_start', sessionId: '019f5121-774f-73e0-b0c0-3b52114c3f07' });
+    expect(e).toMatchObject({ type: 'session_start', sessionId: '019f6783-0ec6-71b3-bd86-68708172b611' });
     expect(e && 'cwd' in e ? e.cwd : undefined).toBe('<POC_TMP>/repo-main');
   });
 
@@ -36,8 +36,10 @@ describe('parseGrokHookEvent — POC-A fixtures', () => {
     expect(e?.type).toBe('tool_use');
     if (e?.type !== 'tool_use') throw new Error('unreachable');
     expect(e.toolName).toBe('list_dir'); // Grok-native name preserved verbatim
-    expect(e.toolInput).toEqual({ target_directory: '.' });
-    expect(e.toolUseId).toBe('call-07ec244d-5295-49e4-a955-585cacbafa6b-0');
+    expect(e.toolInput).toEqual({
+      target_directory: '<POC_TMP><HOME>/plugins/kookr-toolkit-poc/skills/kookr-poc-sentinel',
+    });
+    expect(e.toolUseId).toBe('call-8cbb1d86-99c7-49fc-b0fb-a5e7dbddbf3f-1');
   });
 
   it('decodes post_tool_use into tool_result carrying toolResult', () => {
@@ -58,22 +60,26 @@ describe('parseGrokHookEvent — POC-A fixtures', () => {
     }
   });
 
-  it('decodes stop_failure with the 403 error text', () => {
+  it('decodes stop_failure with the HTTP error text', () => {
     const e = parseGrokHookEvent(line('stop_failure'));
     expect(e?.type).toBe('stop_failure');
-    expect(e && e.type === 'stop_failure' ? e.error : '').toContain('403');
+    expect(e && e.type === 'stop_failure' ? e.error : '').toContain('401');
   });
 
   it('decodes notification', () => {
     const e = parseGrokHookEvent(line('notification'));
-    expect(e).toMatchObject({ type: 'notification', notificationType: 'idle_prompt', message: 'Turn complete' });
+    expect(e).toMatchObject({
+      type: 'notification',
+      notificationType: 'permission_prompt',
+      message: 'Tool permission requested',
+    });
   });
 
   it('decodes subagent_start with child correlation (subagentId → agentId, distinct from sessionId)', () => {
     const e = parseGrokHookEvent(line('subagent_start'));
     expect(e?.type).toBe('subagent_start');
     if (e?.type !== 'subagent_start') throw new Error('unreachable');
-    expect(e.agentId).toBe('019f5124-5fa6-7690-b866-a350f1d73c88');
+    expect(e.agentId).toBe('019f6783-f798-7ef1-9371-1e4534e51053');
     expect(e.agentType).toBe('general-purpose');
     expect(e.agentId).not.toBe(e.sessionId);
   });
@@ -111,9 +117,9 @@ describe('parseGrokHookEvent — robustness', () => {
 
   it('extractGrokHookHeader pulls camelCase correlation keys (promptId as turn id)', () => {
     const h = extractGrokHookHeader(line('user_prompt_submit'));
-    expect(h.rawSessionId).toBe('019f5121-774f-73e0-b0c0-3b52114c3f07');
+    expect(h.rawSessionId).toBe('019f6783-0ec6-71b3-bd86-68708172b611');
     expect(h.rawHookEventName).toBe('user_prompt_submit');
-    expect(h.rawTurnId).toBe('08ffd7dc-a4f7-478b-a1e1-f87649c3b334');
+    expect(h.rawTurnId).toBe('30414cf9-e6ae-4e53-9adc-74547c104366');
     expect(h.rawTranscriptPath).toContain('updates.jsonl');
   });
 

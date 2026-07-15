@@ -36,6 +36,8 @@ Options:
           Enable cross-session memory
       --fork-session
           When resuming (`--resume` / `--continue`), create a new session ID instead of reusing the original (optionally set via `--session-id`)
+      --fullscreen
+          Open in the standard fullscreen TUI, overriding a sticky minimal preference. Sticky counterpart of --minimal: records `[ui] screen_mode = "fullscreen"` in ~/.grok/config.toml so future plain `grok` invocations open fullscreen again. Fullscreen-vs-inline still follows the alt-screen policy (--no-alt-screen, [terminal] alt_screen, terminal auto-detection)
   -h, --help
           Print help
       --json-schema <SCHEMA>
@@ -47,7 +49,7 @@ Options:
       --max-turns <N>
           Maximum number of agent turns
       --minimal
-          Experimental: scrollback-native rendering. Finalized blocks are printed into the terminal's native scrollback (use the terminal's own scroll / selection); a small pinned region holds the prompt + running turn
+          Experimental: scrollback-native rendering. Finalized blocks are printed into the terminal's native scrollback (use the terminal's own scroll / selection); a small pinned region holds the prompt + running turn. Sticky: records `[ui] screen_mode = "minimal"` in ~/.grok/config.toml so future plain `grok` invocations open in minimal mode too
       --no-alt-screen
           Run inline instead of using the terminal alternate screen
       --no-memory

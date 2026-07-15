@@ -37,7 +37,8 @@
         "toolName": "str",
         "toolUseId": "str",
         "toolInput": {
-          "target_directory": "str"
+          "command": "str",
+          "description": "str"
         },
         "toolInputTruncated": "bool",
         "permissionMode": "str"
@@ -55,14 +56,24 @@
         "toolName": "str",
         "toolUseId": "str",
         "toolInput": {
-          "target_directory": "str"
+          "command": "str",
+          "description": "str"
         },
         "toolResult": {
           "type": "str",
-          "Content": {
-            "content": "str",
-            "absolute_root_path": "str"
-          }
+          "output": [
+            "int"
+          ],
+          "output_for_prompt": "str",
+          "exit_code": "int",
+          "command": "str",
+          "truncated": "bool",
+          "signal": "NoneType",
+          "timed_out": "bool",
+          "description": "str",
+          "current_dir": "str",
+          "output_file": "str",
+          "total_bytes": "int"
         },
         "toolInputTruncated": "bool",
         "toolResultTruncated": "bool",
@@ -80,20 +91,6 @@
         "transcriptPath": "str",
         "promptId": "str",
         "reason": "str"
-      }
-    },
-    "notification": {
-      "grok_hook_event": "notification",
-      "payload_field_kinds": {
-        "hookEventName": "str",
-        "sessionId": "str",
-        "cwd": "str",
-        "workspaceRoot": "str",
-        "timestamp": "str",
-        "transcriptPath": "str",
-        "notificationType": "str",
-        "message": "str",
-        "level": "str"
       }
     },
     "subagent_start": {
@@ -120,6 +117,40 @@
         "timestamp": "str",
         "transcriptPath": "str",
         "reason": "str"
+      }
+    },
+    "notification": {
+      "grok_hook_event": "notification",
+      "payload_field_kinds": {
+        "hookEventName": "str",
+        "sessionId": "str",
+        "cwd": "str",
+        "workspaceRoot": "str",
+        "timestamp": "str",
+        "transcriptPath": "str",
+        "notificationType": "str",
+        "message": "str",
+        "level": "str"
+      }
+    },
+    "post_tool_use_failure": {
+      "grok_hook_event": "post_tool_use_failure",
+      "payload_field_kinds": {
+        "hookEventName": "str",
+        "sessionId": "str",
+        "cwd": "str",
+        "workspaceRoot": "str",
+        "timestamp": "str",
+        "transcriptPath": "str",
+        "toolName": "str",
+        "toolUseId": "str",
+        "toolInput": {
+          "completed": "bool",
+          "message": "str"
+        },
+        "toolInputTruncated": "bool",
+        "error": "str",
+        "subagentType": "str"
       }
     }
   }
