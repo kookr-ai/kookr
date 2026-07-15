@@ -54,11 +54,10 @@ variables** — it reuses the bind/auth/transport knobs above:
 | --- | --- | --- | --- |
 | `KOOKR_AGENT_BIN` | `claude` | Executable path or command name | Overrides the Claude Code binary used for new `claude-code` tasks. |
 | `KOOKR_CODEX_BIN` | `codex` | Executable path or command name | Overrides the Codex CLI binary used for new `codex-cli` tasks. |
-| `KOOKR_GROK_BIN` | `grok` | Executable path or command name | Overrides the experimental Grok Build binary used for new `grok-build` tasks (issue #1339 Phase 1). |
-| `KOOKR_GROK_MODEL` | `grok-build` | Model identifier | Model passed to `grok --model` for `grok-build` tasks. Defaults to the POC-A-tested model. |
-| `KOOKR_GROK_BUILD_ENABLED` | unset | `true` to enable | Experimental opt-in. Grok Build is off by default; when set to `true` the adapter is registered and launches are permitted (subject to the kill switch and build qualification). Not added to the agent picker or round robin. |
-| `KOOKR_GROK_BUILD_DISABLE_NEW_LAUNCHES` | unset | `true` to halt | New-launch kill switch: refuses new `grok-build` launches even when enabled (incident response), without a restart. Existing sessions are unaffected. |
-| `KOOKR_GROK_COMPAT_MANIFEST` | In-repo reviewed manifest | Absolute path | Overrides the path to the reviewed `grok-build-compatibility.v1` manifest that is the sole source of build qualification. |
+| `KOOKR_GROK_BIN` | `grok` | Executable path or command name | Overrides the Grok Build binary used for new `grok-build` tasks (issue #1339). If set but unreachable, startup is fatal; if the default `grok` is missing from PATH, `grok-build` is simply not registered (excluded from the picker and round-robin). |
+| `KOOKR_GROK_MODEL` | `grok-4.5` | Model identifier | Model passed to `grok --model` for `grok-build` tasks. Defaults to the requalified POC-A model (the original `grok-build` model is no longer served by the chat proxy). |
+| `KOOKR_GROK_BUILD_DISABLE_NEW_LAUNCHES` | unset | `true` to halt | New-launch kill switch: refuses new `grok-build` launches (incident response), without a restart. Existing sessions are unaffected. |
+| `KOOKR_GROK_COMPAT_MANIFEST` | In-repo reviewed manifest | Absolute path | Overrides the path to the reviewed `grok-build-compatibility.v1` manifest used for advisory build qualification (unqualified builds launch with a supervision warning). |
 | `KOOKR_PLUGIN_DIR` | Auto-resolved `<kookr>/plugin` | Absolute or relative path, or empty string | Overrides the toolkit plugin directory injected into spawned Claude Code sessions. Set to an empty string to disable injection. |
 | `KOOKR_BYPASS_ALL_PERMISSIONS` | unset | `true` to enable | Launches spawned agents with permission-bypass flags. See "Operational Risk" below before enabling. |
 

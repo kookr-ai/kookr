@@ -40,6 +40,7 @@ export const DEFAULT_AGENT_TYPE: AgentType = 'claude-code';
 export const AVAILABLE_AGENT_TYPES: AvailableAgentType[] = [
   { type: 'claude-code', label: 'Claude Code' },
   { type: 'codex-cli', label: 'Codex CLI' },
+  { type: 'grok-build', label: 'Grok Build' },
 ];
 
 /**

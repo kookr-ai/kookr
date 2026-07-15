@@ -5,7 +5,6 @@ import {
   resolveGrokLaunchGate,
   resolveGrokModel,
   DEFAULT_GROK_MODEL,
-  GROK_BUILD_ENABLED_ENV,
   GROK_BUILD_KILL_SWITCH_ENV,
   GROK_MODEL_ENV,
 } from './grok-launch-args.js';
@@ -98,18 +97,12 @@ describe('buildAllowlistedGrokEnv', () => {
 });
 
 describe('resolveGrokLaunchGate', () => {
-  it('refuses when the experimental flag is not enabled (default)', () => {
-    expect(resolveGrokLaunchGate({}).allowed).toBe(false);
-    expect(resolveGrokLaunchGate({ [GROK_BUILD_ENABLED_ENV]: 'false' }).allowed).toBe(false);
+  it('allows by default (GA — no opt-in flag)', () => {
+    expect(resolveGrokLaunchGate({}).allowed).toBe(true);
   });
 
-  it('allows when enabled and the kill switch is unset', () => {
-    expect(resolveGrokLaunchGate({ [GROK_BUILD_ENABLED_ENV]: 'true' }).allowed).toBe(true);
-  });
-
-  it('refuses new launches when the kill switch is set, even if enabled', () => {
+  it('refuses new launches when the kill switch is set', () => {
     const gate = resolveGrokLaunchGate({
-      [GROK_BUILD_ENABLED_ENV]: 'true',
       [GROK_BUILD_KILL_SWITCH_ENV]: 'true',
     });
     expect(gate.allowed).toBe(false);
@@ -118,11 +111,11 @@ describe('resolveGrokLaunchGate', () => {
 });
 
 describe('resolveGrokModel', () => {
-  it('defaults to the POC-tested model', () => {
+  it('defaults to the requalified model', () => {
     expect(resolveGrokModel({})).toBe(DEFAULT_GROK_MODEL);
-    expect(DEFAULT_GROK_MODEL).toBe('grok-build');
+    expect(DEFAULT_GROK_MODEL).toBe('grok-4.5');
   });
   it('honors the env override', () => {
-    expect(resolveGrokModel({ [GROK_MODEL_ENV]: 'grok-4.5' })).toBe('grok-4.5');
+    expect(resolveGrokModel({ [GROK_MODEL_ENV]: 'grok-composer-2.5-fast' })).toBe('grok-composer-2.5-fast');
   });
 });

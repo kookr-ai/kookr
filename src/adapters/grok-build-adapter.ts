@@ -80,7 +80,7 @@ export interface GrokBuildAdapterOptions {
   serverPort?: number;
   /** Grok binary path/command. Defaults to `KOOKR_GROK_BIN` env or `grok`. */
   agentBin?: string;
-  /** Configured model. Defaults to `KOOKR_GROK_MODEL` env or `grok-build`. */
+  /** Configured model. Defaults to `KOOKR_GROK_MODEL` env or `grok-4.5`. */
   model?: string;
   /** Explicit permission-bypass opt-in (mapped to `--permission-mode bypassPermissions`). */
   bypassAllPermissions?: boolean;
@@ -112,7 +112,7 @@ export class GrokLaunchRefusedError extends Error {
 }
 
 /**
- * Experimental Grok Build adapter (issue #1343, RFC Issue 2). A COORDINATOR over
+ * Grok Build adapter (issue #1343, RFC Issue 2). A COORDINATOR over
  * focused pure helpers — it does NOT subclass `ClaudeCodeAdapter` and adds no
  * speculative provider framework. It reuses the shared launch-context, prompt
  * delivery, parentage, input, hook-writer, and binary helpers by composition.
@@ -121,8 +121,8 @@ export class GrokLaunchRefusedError extends Error {
  * `--plugin-dir`, never a persistent `~/.grok` edit); a Grok-specific camelCase
  * hook decoder; child supervision via `subagent_start` correlation; an
  * allowlisted child environment; the exact resolved canonical binary path
- * re-checked immediately before launch; and build qualification derived solely
- * from the reviewed compatibility manifest.
+ * re-checked immediately before launch; and advisory build qualification
+ * derived from the reviewed compatibility manifest.
  */
 export class GrokBuildAdapter implements AgentAdapter {
   readonly agentType = 'grok-build';
@@ -256,25 +256,28 @@ export class GrokBuildAdapter implements AgentAdapter {
     if (resume?.sessionId) {
       console.warn(
         `[grok-build-adapter] Ignoring resume request for ${taskId}: Grok resume ` +
-        `is out of scope for the experimental adapter (Phase 1). Launching fresh.`,
+        `is not yet implemented for the Grok Build adapter. Launching fresh.`,
       );
     }
 
-    // Gate 1: experimental feature flag + new-launch kill switch.
+    // Gate 1: new-launch kill switch.
     const gate = resolveGrokLaunchGate(this.env);
     if (!gate.allowed) throw new GrokLaunchRefusedError(gate.reason);
 
-    // Gate 2: exact-binary identity + build qualification, re-resolved here so a
-    // PATH swap or auto-update between preflight and launch cannot smuggle an
-    // unqualified binary through (TOCTOU). Unknown builds are POC-runner-only.
+    // Binary identity + build qualification, re-resolved here so a PATH swap or
+    // auto-update between preflight and launch is observed (TOCTOU). Since GA,
+    // qualification is ADVISORY: a build that doesn't match the reviewed
+    // compatibility manifest still launches, with a warning that supervision
+    // behavior was not verified for it (supervisionStatus reports the same).
     const state = await this.resolveInstalledState(true);
     if (state.kind === 'absent') {
       throw new GrokLaunchRefusedError(`Grok binary unavailable: ${state.reason}`);
     }
     if (state.qualification.status !== 'tested') {
-      throw new GrokLaunchRefusedError(
-        `Refusing to launch Grok on an unqualified build — ${state.qualification.reason}. ` +
-        `Unknown builds may run only inside the POC runner.`,
+      console.warn(
+        `[grok-build-adapter] Launching on an unqualified Grok build — ` +
+        `${state.qualification.reason}. Supervision behavior (hooks, outcome ` +
+        `classification) was not verified against this build.`,
       );
     }
 

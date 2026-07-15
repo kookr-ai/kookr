@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
 import { GrokBuildAdapter, GrokLaunchRefusedError } from './grok-build-adapter.js';
 import type { GrokInstalledState } from './grok-build-preflight.js';
-import { GROK_BUILD_ENABLED_ENV, GROK_BUILD_KILL_SWITCH_ENV } from './grok-launch-args.js';
+import { GROK_BUILD_KILL_SWITCH_ENV } from './grok-launch-args.js';
 import { TaskStore } from '../core/tasks.js';
 
 vi.mock('./git-info.js', async (importOriginal) => {
@@ -51,7 +51,7 @@ describe('GrokBuildAdapter', () => {
 
   function makeAdapter(overrides: Partial<{ env: NodeJS.ProcessEnv; state: GrokInstalledState }> = {}) {
     return new GrokBuildAdapter(backend, taskStore, {
-      env: overrides.env ?? { ...baseEnv, [GROK_BUILD_ENABLED_ENV]: 'true' },
+      env: overrides.env ?? { ...baseEnv },
       installedStateOverride: overrides.state ?? testedState(),
       sourceGrokHome: join(sessionHomeRoot, 'no-such-home'),
       sessionHomeRoot,
@@ -77,7 +77,7 @@ describe('GrokBuildAdapter', () => {
 
     const spec = backend.sessions.get(sessionId)!.spec;
     expect(spec.command).toBe(CANONICAL); // exact resolved path, not the launcher symlink
-    expect(spec.args).toEqual(['--no-alt-screen', '--model', 'grok-build']);
+    expect(spec.args).toEqual(['--no-alt-screen', '--model', 'grok-4.5']);
     expect(spec.envMode).toBe('replace');
   });
 
@@ -104,27 +104,31 @@ describe('GrokBuildAdapter', () => {
     expect(backend.sessions.get(sessionId)!.keysReceived.join('')).toContain('y');
   });
 
-  test('launch is refused when the experimental flag is off', async () => {
+  test('launch is allowed by default (GA — no opt-in flag)', async () => {
     const adapter = makeAdapter({ env: { ...baseEnv } });
     const task = taskStore.createTask('x', '/workspace');
-    await expect(adapter.launch(task.id, 'x', '/workspace')).rejects.toBeInstanceOf(GrokLaunchRefusedError);
-    expect(backend.sessions.size).toBe(0);
+    const sessionId = await adapter.launch(task.id, 'x', '/workspace');
+    expect(backend.sessions.has(sessionId)).toBe(true);
   });
 
   test('launch is refused when the kill switch is set', async () => {
     const adapter = makeAdapter({
-      env: { ...baseEnv, [GROK_BUILD_ENABLED_ENV]: 'true', [GROK_BUILD_KILL_SWITCH_ENV]: 'true' },
+      env: { ...baseEnv, [GROK_BUILD_KILL_SWITCH_ENV]: 'true' },
     });
     const task = taskStore.createTask('x', '/workspace');
     await expect(adapter.launch(task.id, 'x', '/workspace')).rejects.toThrow(/kill switch/);
   });
 
-  test('launch is refused on an unqualified (unknown) build — POC-runner-only', async () => {
+  test('launch proceeds on an unqualified (unknown) build with an advisory warning', async () => {
     const state = testedState();
     state.qualification = { status: 'unknown', reason: 'installed binary does not match the tested build' };
     const adapter = makeAdapter({ state });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const task = taskStore.createTask('x', '/workspace');
-    await expect(adapter.launch(task.id, 'x', '/workspace')).rejects.toThrow(/unqualified build/);
+    const sessionId = await adapter.launch(task.id, 'x', '/workspace');
+    expect(backend.sessions.has(sessionId)).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('unqualified Grok build'));
+    warn.mockRestore();
   });
 
   test('resume request is ignored (Phase-1 policy: disabled) and launches fresh', async () => {
@@ -170,7 +174,7 @@ describe('GrokBuildAdapter', () => {
       throw e;
     };
     const adapter = new GrokBuildAdapter(backend, taskStore, {
-      env: { ...baseEnv, [GROK_BUILD_ENABLED_ENV]: 'true' },
+      env: { ...baseEnv },
       probeExec, // real resolveInstalledState path (no installedStateOverride)
       sourceGrokHome: join(sessionHomeRoot, 'no-such-home'),
       sessionHomeRoot,
@@ -187,15 +191,15 @@ describe('GrokBuildAdapter', () => {
     expect(calls).toBe(2);
   });
 
-  test('supervisionStatus reports supported for a tested+enabled build', async () => {
+  test('supervisionStatus reports supported for a tested build', async () => {
     const adapter = makeAdapter();
     const status = await adapter.supervisionStatus();
     expect(status.status).toBe('supported');
     expect(status.evidenceBuildId).toBe('0.2.93 (f00f96316d)');
   });
 
-  test('supervisionStatus reports unsupported for a tested build with the flag off', async () => {
-    const adapter = makeAdapter({ env: { ...baseEnv } });
+  test('supervisionStatus reports unsupported when the kill switch is set', async () => {
+    const adapter = makeAdapter({ env: { ...baseEnv, [GROK_BUILD_KILL_SWITCH_ENV]: 'true' } });
     const status = await adapter.supervisionStatus();
     expect(status.status).toBe('unsupported');
   });
