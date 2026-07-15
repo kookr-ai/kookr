@@ -66,6 +66,7 @@
     "demo:record": "pnpm build && node --import tsx demo/record.ts",
     "demo:check": "pnpm build && DEMO_CHECK=1 node --import tsx demo/record.ts",
     "codex:rebuild": "bash scripts/rebuild-codex.sh",
+    "grok:rebuild": "bash scripts/rebuild-grok.sh",
     "merge": "bash scripts/kookr-merge.sh",
     "prepare": "git config core.hooksPath .hooks && pnpm build:dtach && pnpm fix:native-perms"
   },
