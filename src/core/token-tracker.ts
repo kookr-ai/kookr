@@ -1,7 +1,7 @@
 import { readFile, stat } from 'node:fs/promises';
 import { statSync } from 'node:fs';
 import type { TokenUsage } from './types.js';
-import { getPricing, estimateCost, type ModelPricing } from './pricing-tables.js';
+import { getPricing, lookupPricing, estimateCost, type ModelPricing } from './pricing-tables.js';
 
 /**
  * A transcript file that has grown since the last `scanAll`, but whose new bytes
@@ -28,6 +28,7 @@ export interface TranscriptGrowth {
 interface TranscriptCostEntry {
   type?: string;
   role?: string;
+  model?: string;
   // Legacy top-level fields
   cost_usd?: number;
   total_cost_usd?: number;
@@ -48,6 +49,26 @@ interface UsageBlock {
   cache_read_input_tokens?: number;
 }
 
+interface UsageBucket {
+  model: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+interface MessageUsage {
+  model: string | null;
+  usage: UsageBlock;
+}
+
+interface TokenTotals {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
 interface TranscriptState {
   taskId: string;
   /**
@@ -63,16 +84,14 @@ interface TranscriptState {
    * (em-dashes, smart quotes, emoji are all common in transcripts).
    */
   byteOffset: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
+  /** Usage is grouped by the model named on each assistant entry. */
+  tokenBuckets: Map<string | null, UsageBucket>;
   /** Explicit cost from cost_usd fields (legacy format). */
   explicitCostUsd: number;
   /** Authoritative total from result entry (legacy format). */
   totalCostUsd: number | null;
-  /** Model detected from transcript, used for cost estimation. */
-  model: string | null;
+  /** Models observed in first-seen order, used by the legacy getModel surface. */
+  models: Set<string>;
   /**
    * Per-`message.id` latest-seen usage block. Claude Code writes one JSONL line
    * per content block (thinking / text / tool_use) of a single API response,
@@ -80,13 +99,77 @@ interface TranscriptState {
    * growing usage. We keep only the final value per id — on a repeat, the prior
    * contribution is subtracted and the new one added.
    */
-  perMsgUsage: Map<string, UsageBlock>;
+  perMsgUsage: Map<string, MessageUsage>;
   /**
    * Signature of the last assistant entry that had usage but no `message.id`.
    * Preserves the pre-v2.1 consecutive-dedup behavior for legacy transcripts
    * where per-content-block duplicates shared identical usage blocks.
    */
   lastLegacySignature: string | null;
+}
+
+function updateBucket(
+  state: TranscriptState,
+  model: string | null,
+  usage: UsageBlock,
+  factor: 1 | -1,
+): void {
+  const key = model;
+  let bucket = state.tokenBuckets.get(key);
+  if (!bucket) {
+    // A duplicate may arrive after an authoritative result cleared the old
+    // buckets; a decrement must not recreate a negative bucket.
+    if (factor === -1) return;
+    bucket = {
+      model,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    };
+    state.tokenBuckets.set(key, bucket);
+  }
+  bucket.inputTokens += factor * (usage.input_tokens ?? 0);
+  bucket.outputTokens += factor * (usage.output_tokens ?? 0);
+  bucket.cacheReadTokens += factor * (usage.cache_read_input_tokens ?? 0);
+  bucket.cacheWriteTokens += factor * (usage.cache_creation_input_tokens ?? 0);
+}
+
+function rememberModel(state: TranscriptState, model: string | undefined): void {
+  if (model) state.models.add(model);
+}
+
+function firstObservedModel(state: TranscriptState): string | null {
+  const firstModel = state.models.values().next();
+  return firstModel.done ? null : firstModel.value;
+}
+
+function totalTokenCounts(state: TranscriptState): TokenTotals {
+  const totals: TokenTotals = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  for (const bucket of state.tokenBuckets.values()) {
+    totals.inputTokens += bucket.inputTokens;
+    totals.outputTokens += bucket.outputTokens;
+    totals.cacheReadTokens += bucket.cacheReadTokens;
+    totals.cacheWriteTokens += bucket.cacheWriteTokens;
+  }
+  return totals;
+}
+
+function totalUsage(state: TranscriptState): UsageBlock {
+  const totals = totalTokenCounts(state);
+  return {
+    input_tokens: totals.inputTokens,
+    output_tokens: totals.outputTokens,
+    cache_read_input_tokens: totals.cacheReadTokens,
+    cache_creation_input_tokens: totals.cacheWriteTokens,
+  };
+}
+
+function usageMatchesTotals(usage: UsageBlock, totals: UsageBlock): boolean {
+  return (usage.input_tokens == null || usage.input_tokens === totals.input_tokens)
+    && (usage.output_tokens == null || usage.output_tokens === totals.output_tokens)
+    && (usage.cache_read_input_tokens == null || usage.cache_read_input_tokens === totals.cache_read_input_tokens)
+    && (usage.cache_creation_input_tokens == null || usage.cache_creation_input_tokens === totals.cache_creation_input_tokens);
 }
 
 /**
@@ -113,13 +196,10 @@ export class TokenTracker {
       taskId,
       offset: 0,
       byteOffset: initialByteOffset,
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
+      tokenBuckets: new Map(),
       explicitCostUsd: 0,
       totalCostUsd: null,
-      model: null,
+      models: new Set(),
       perMsgUsage: new Map(),
       lastLegacySignature: null,
     });
@@ -180,10 +260,10 @@ export class TokenTracker {
     for (const path of this.taskToTranscripts.get(taskId) ?? []) {
       const state = this.transcripts.get(path);
       if (!state) continue;
-      const beforeInput = state.inputTokens;
-      const beforeOutput = state.outputTokens;
+      const before = totalTokenCounts(state);
       await this.scanOne(path, state);
-      if (state.inputTokens !== beforeInput || state.outputTokens !== beforeOutput) {
+      const after = totalTokenCounts(state);
+      if (after.inputTokens !== before.inputTokens || after.outputTokens !== before.outputTokens) {
         changed = true;
       }
     }
@@ -198,15 +278,21 @@ export class TokenTracker {
     let cacheReadTokens = 0;
     let cacheWriteTokens = 0;
     let costUsd = 0;
+    let pricingQuality: TokenUsage['pricingQuality'];
 
     for (const path of this.taskToTranscripts.get(taskId) ?? []) {
       const state = this.transcripts.get(path);
       if (!state) continue;
       found = true;
-      inputTokens += state.inputTokens;
-      outputTokens += state.outputTokens;
-      cacheReadTokens += state.cacheReadTokens;
-      cacheWriteTokens += state.cacheWriteTokens;
+      for (const bucket of state.tokenBuckets.values()) {
+        inputTokens += bucket.inputTokens;
+        outputTokens += bucket.outputTokens;
+        cacheReadTokens += bucket.cacheReadTokens;
+        cacheWriteTokens += bucket.cacheWriteTokens;
+        if (pricingQuality !== 'fallback') {
+          pricingQuality = bucket.model && lookupPricing(bucket.model) ? 'exact' : 'fallback';
+        }
+      }
 
       // Use explicit cost if available (legacy format), otherwise estimate from tokens
       if (state.totalCostUsd != null) {
@@ -214,16 +300,25 @@ export class TokenTracker {
       } else if (state.explicitCostUsd > 0) {
         costUsd += state.explicitCostUsd;
       } else {
-        const pricing = getPricing(state.model ?? '');
-        costUsd += estimateCost(
-          state.inputTokens, state.outputTokens,
-          state.cacheWriteTokens, state.cacheReadTokens, pricing,
-        );
+        for (const bucket of state.tokenBuckets.values()) {
+          const pricing = getPricing(bucket.model ?? '');
+          costUsd += estimateCost(
+            bucket.inputTokens, bucket.outputTokens,
+            bucket.cacheWriteTokens, bucket.cacheReadTokens, pricing,
+          );
+        }
       }
     }
 
     if (!found) return undefined;
-    return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd };
+    return {
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
+      costUsd,
+      ...(pricingQuality ? { pricingQuality } : {}),
+    };
   }
 
   /** Get all task IDs that have registered transcripts. */
@@ -242,7 +337,8 @@ export class TokenTracker {
     for (const path of this.taskToTranscripts.get(taskId) ?? []) {
       const state = this.transcripts.get(path);
       if (!state) continue;
-      if (state.model) return state.model;
+      const model = firstObservedModel(state);
+      if (model) return model;
     }
     return null;
   }
@@ -289,39 +385,33 @@ export class TokenTracker {
     // Assistant messages: accumulate per-turn token usage
     if (entryType === 'assistant') {
       // Detect model from message.model (real format)
-      if (entry.message?.model && !state.model) {
-        state.model = entry.message.model;
-      }
+      const messageModel = entry.message?.model;
+      rememberModel(state, messageModel);
 
       // Real format carries usage under message.usage; legacy fixtures put it at top level.
       const usage = entry.message?.usage ?? entry.usage;
       const msgId = entry.message?.id;
       if (usage) {
+        const previous = msgId ? state.perMsgUsage.get(msgId) : undefined;
+        const model = messageModel ?? previous?.model ?? null;
         if (msgId) {
           // Real format: multiple content blocks from one API response share a
           // message.id with progressive usage updates. Keep the latest value
           // per id — replacing the prior contribution rather than adding to it.
-          const prev = state.perMsgUsage.get(msgId);
-          if (prev) {
-            state.inputTokens -= prev.input_tokens ?? 0;
-            state.outputTokens -= prev.output_tokens ?? 0;
-            state.cacheReadTokens -= prev.cache_read_input_tokens ?? 0;
-            state.cacheWriteTokens -= prev.cache_creation_input_tokens ?? 0;
+          if (previous) {
+            updateBucket(state, previous.model, previous.usage, -1);
           }
-          state.perMsgUsage.set(msgId, usage);
+          state.perMsgUsage.set(msgId, { model, usage });
           state.lastLegacySignature = null;
         } else {
           // No message.id (legacy transcript). Preserve the pre-v2.1
           // consecutive-signature dedup so older on-disk logs don't suddenly
           // start over-counting content-block duplicates.
-          const sig = `${usage.input_tokens ?? 0}:${usage.output_tokens ?? 0}:${usage.cache_read_input_tokens ?? 0}:${usage.cache_creation_input_tokens ?? 0}`;
+          const sig = `${model ?? ''}:${usage.input_tokens ?? 0}:${usage.output_tokens ?? 0}:${usage.cache_read_input_tokens ?? 0}:${usage.cache_creation_input_tokens ?? 0}`;
           if (sig === state.lastLegacySignature) return;
           state.lastLegacySignature = sig;
         }
-        state.inputTokens += usage.input_tokens ?? 0;
-        state.outputTokens += usage.output_tokens ?? 0;
-        state.cacheReadTokens += usage.cache_read_input_tokens ?? 0;
-        state.cacheWriteTokens += usage.cache_creation_input_tokens ?? 0;
+        updateBucket(state, model, usage, 1);
       }
 
       // Legacy format: top-level cost_usd
@@ -343,10 +433,34 @@ export class TokenTracker {
       // If result carries usage totals, override accumulated values
       const usage = entry.usage;
       if (usage) {
-        if (usage.input_tokens != null) state.inputTokens = usage.input_tokens;
-        if (usage.output_tokens != null) state.outputTokens = usage.output_tokens;
-        if (usage.cache_read_input_tokens != null) state.cacheReadTokens = usage.cache_read_input_tokens;
-        if (usage.cache_creation_input_tokens != null) state.cacheWriteTokens = usage.cache_creation_input_tokens;
+        // Result usage is an authoritative absolute total. Legacy result
+        // entries may omit individual counters, so preserve the accumulated
+        // value for each omitted field before replacing the buckets.
+        const previous = totalUsage(state);
+        const mergedUsage: UsageBlock = {
+          input_tokens: usage.input_tokens ?? previous.input_tokens,
+          output_tokens: usage.output_tokens ?? previous.output_tokens,
+          cache_read_input_tokens: usage.cache_read_input_tokens ?? previous.cache_read_input_tokens,
+          cache_creation_input_tokens: usage.cache_creation_input_tokens ?? previous.cache_creation_input_tokens,
+        };
+        const activeModels = new Set(
+          [...state.tokenBuckets.values()].map((bucket) => bucket.model),
+        );
+        const preserveModelBuckets = entry.model == null
+          && activeModels.size > 1
+          && usageMatchesTotals(usage, previous);
+        if (!preserveModelBuckets) {
+          // When a mixed-model result disagrees with the model buckets but has
+          // no model of its own, keep the total unattributed rather than
+          // inventing first-model pricing.
+          const model = entry.model
+            ?? (activeModels.size === 1
+              ? [...activeModels][0]
+              : activeModels.size === 0 ? firstObservedModel(state) : null);
+          state.tokenBuckets.clear();
+          updateBucket(state, model, mergedUsage, 1);
+        }
+        rememberModel(state, entry.model);
       }
     }
   }

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { TokenTracker, estimateCost, getPricing } from './token-tracker.js';
+import { BudgetChecker } from './budget-checker.js';
 
 function makeTempDir(): string {
   const dir = join(tmpdir(), `token-tracker-test-${randomUUID()}`);
@@ -96,6 +97,154 @@ describe('TokenTracker', () => {
       expect(usage!.costUsd).toBeCloseTo(22.5, 1);
     });
 
+    test('prices mixed-model transcripts with a separate bucket for each model', async () => {
+      const path = join(dir, 'transcript.jsonl');
+      writeJsonl(path, [
+        {
+          type: 'assistant',
+          message: {
+            model: 'claude-opus-4-8',
+            usage: {
+              input_tokens: 1_000_000,
+              output_tokens: 100_000,
+              cache_read_input_tokens: 100_000,
+              cache_creation_input_tokens: 100_000,
+            },
+          },
+        },
+        {
+          type: 'assistant',
+          message: {
+            model: 'claude-fable-5',
+            usage: {
+              input_tokens: 2_000_000,
+              output_tokens: 200_000,
+              cache_read_input_tokens: 100_000,
+              cache_creation_input_tokens: 100_000,
+            },
+          },
+        },
+        {
+          type: 'result',
+          usage: {
+            input_tokens: 3_000_000,
+            output_tokens: 300_000,
+            cache_read_input_tokens: 200_000,
+            cache_creation_input_tokens: 200_000,
+          },
+        },
+      ]);
+
+      tracker.register(path, 'task-1');
+      await tracker.scanAll();
+
+      const usage = tracker.getUsage('task-1');
+      expect(usage).toMatchObject({
+        inputTokens: 3_000_000,
+        outputTokens: 300_000,
+        cacheReadTokens: 200_000,
+        cacheWriteTokens: 200_000,
+        pricingQuality: 'exact',
+      });
+      expect(usage!.costUsd).toBeCloseTo(39.525, 6);
+
+      const checker = new BudgetChecker(39.5);
+      expect(checker.check('task-1', 'agent-1', usage!.costUsd)?.severity).toBe('warning');
+    });
+
+    test('does not invent first-model pricing for conflicting mixed-model result totals', async () => {
+      const path = join(dir, 'transcript.jsonl');
+      writeJsonl(path, [
+        { type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 1_000_000, output_tokens: 100_000 } } },
+        { type: 'assistant', message: { model: 'claude-fable-5', usage: { input_tokens: 2_000_000, output_tokens: 200_000 } } },
+        { type: 'result', usage: { input_tokens: 4_000_000, output_tokens: 300_000 } },
+      ]);
+
+      tracker.register(path, 'task-1');
+      await tracker.scanAll();
+
+      expect(tracker.getUsage('task-1')).toMatchObject({
+        inputTokens: 4_000_000,
+        outputTokens: 300_000,
+        pricingQuality: 'fallback',
+      });
+      expect(tracker.getUsage('task-1')!.costUsd).toBeCloseTo(16.5, 6);
+    });
+
+    test('keeps model-less usage unattributed during result reconciliation', async () => {
+      const path = join(dir, 'transcript.jsonl');
+      writeJsonl(path, [
+        { type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 1_000_000, output_tokens: 100_000 } } },
+        { type: 'assistant', message: { usage: { input_tokens: 1_000_000, output_tokens: 100_000 } } },
+        { type: 'result', usage: { input_tokens: 2_000_000, output_tokens: 200_000 } },
+      ]);
+
+      tracker.register(path, 'task-1');
+      await tracker.scanAll();
+
+      expect(tracker.getUsage('task-1')).toMatchObject({
+        inputTokens: 2_000_000,
+        outputTokens: 200_000,
+        pricingQuality: 'fallback',
+      });
+      expect(tracker.getUsage('task-1')!.costUsd).toBeCloseTo(12, 6);
+    });
+
+    test('marks cost estimates as fallback for an unknown model', async () => {
+      const path = join(dir, 'transcript.jsonl');
+      writeJsonl(path, [
+        {
+          type: 'assistant',
+          message: {
+            model: 'claude-unknown-9',
+            usage: {
+              input_tokens: 1_000_000,
+              output_tokens: 100_000,
+              cache_read_input_tokens: 100_000,
+              cache_creation_input_tokens: 100_000,
+            },
+          },
+        },
+        {
+          type: 'assistant',
+          message: {
+            model: 'claude-opus-4-8',
+            usage: { input_tokens: 1_000_000, output_tokens: 100_000 },
+          },
+        },
+      ]);
+
+      tracker.register(path, 'task-1');
+      await tracker.scanAll();
+
+      expect(tracker.getUsage('task-1')).toMatchObject({
+        inputTokens: 2_000_000,
+        outputTokens: 200_000,
+        cacheReadTokens: 100_000,
+        cacheWriteTokens: 100_000,
+        pricingQuality: 'fallback',
+      });
+      expect(tracker.getUsage('task-1')!.costUsd).toBeCloseTo(12.405, 6);
+    });
+
+    test('marks prefix-priced dated model IDs as fallback quality', async () => {
+      const path = join(dir, 'transcript.jsonl');
+      writeJsonl(path, [
+        {
+          type: 'assistant',
+          message: {
+            model: 'claude-opus-4-8-20260701',
+            usage: { input_tokens: 1_000_000, output_tokens: 0 },
+          },
+        },
+      ]);
+
+      tracker.register(path, 'task-1');
+      await tracker.scanAll();
+
+      expect(tracker.getUsage('task-1')).toMatchObject({ costUsd: 5, pricingQuality: 'fallback' });
+    });
+
     test('handles real-world transcript with cache tokens', async () => {
       const path = join(dir, 'transcript.jsonl');
       writeJsonl(path, [
@@ -175,6 +324,39 @@ describe('TokenTracker', () => {
       expect(usage!.inputTokens).toBe(5000);
       expect(usage!.outputTokens).toBe(1000);
       expect(usage!.cacheReadTokens).toBe(3000);
+      expect(usage!.costUsd).toBeCloseTo(0.015, 4);
+    });
+
+    test('result entry preserves omitted counters and the observed model', async () => {
+      const path = join(dir, 'transcript.jsonl');
+      writeJsonl(path, [
+        {
+          type: 'assistant',
+          message: {
+            model: 'claude-opus-4-8',
+            usage: {
+              input_tokens: 1_000_000,
+              output_tokens: 100_000,
+              cache_read_input_tokens: 200_000,
+              cache_creation_input_tokens: 300_000,
+            },
+          },
+        },
+        { type: 'result', usage: { input_tokens: 2_000_000, output_tokens: 200_000 }, result: 'done' },
+      ]);
+
+      tracker.register(path, 'task-1');
+      await tracker.scanAll();
+
+      expect(tracker.getUsage('task-1')).toMatchObject({
+        inputTokens: 2_000_000,
+        outputTokens: 200_000,
+        cacheReadTokens: 200_000,
+        cacheWriteTokens: 300_000,
+        pricingQuality: 'exact',
+      });
+      expect(tracker.getUsage('task-1')!.costUsd).toBeCloseTo(16.975, 6);
+      expect(tracker.getModel('task-1')).toBe('claude-opus-4-8');
     });
   });
 
@@ -183,8 +365,8 @@ describe('TokenTracker', () => {
       const path = join(dir, 'transcript.jsonl');
       writeJsonl(path, [
         {
-          type: 'assistant', cost_usd: 0.003,
-          message: { role: 'assistant', usage: { input_tokens: 100, output_tokens: 50 } },
+          type: 'assistant',
+          message: { role: 'assistant', model: 'claude-opus-4-8', usage: { input_tokens: 100, output_tokens: 50 } },
         },
       ]);
 
@@ -197,14 +379,17 @@ describe('TokenTracker', () => {
       // Append more content
       appendJsonl(path, [
         {
-          type: 'assistant', cost_usd: 0.005,
-          message: { role: 'assistant', usage: { input_tokens: 200, output_tokens: 100 } },
+          type: 'assistant',
+          message: { role: 'assistant', model: 'claude-fable-5', usage: { input_tokens: 200, output_tokens: 100 } },
         },
       ]);
 
       await tracker.scanAll();
       const usage2 = tracker.getUsage('task-1')!;
       expect(usage2.inputTokens).toBe(300);
+      expect(usage2.outputTokens).toBe(150);
+      expect(usage2.costUsd).toBeCloseTo(0.00875, 8);
+      expect(usage2.pricingQuality).toBe('exact');
     });
   });
 

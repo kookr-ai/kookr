@@ -11,7 +11,7 @@ describe('lookupPricing — strict exact-match', () => {
     // MUST have its own pricing row. If you add an OpenAI model to the disk corpus,
     // add it here and to MODEL_PRICING in the same change.
     const observed = [
-      'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5',
+      'claude-opus-4-8', 'claude-fable-5', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5',
       'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini',
       'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.5-pro', 'gpt-5', 'gpt-5-mini', 'o3', 'o3-mini',
     ];
@@ -22,6 +22,21 @@ describe('lookupPricing — strict exact-match', () => {
       expect(p!.outputPerMTok, `outputPerMTok for ${m}`).toBeGreaterThan(0);
       expect(p!.lastVerified, `lastVerified for ${m}`).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     }
+  });
+
+  test('uses current Anthropic API rates for Opus 4.8 and Fable 5', () => {
+    expect(lookupPricing('claude-opus-4-8')).toMatchObject({
+      inputPerMTok: 5,
+      outputPerMTok: 25,
+      cacheWritePerMTok: 6.25,
+      cacheReadPerMTok: 0.5,
+    });
+    expect(lookupPricing('claude-fable-5')).toMatchObject({
+      inputPerMTok: 10,
+      outputPerMTok: 50,
+      cacheWritePerMTok: 12.5,
+      cacheReadPerMTok: 1,
+    });
   });
 
   test('returns null for unknown model (no prefix-match fallback)', () => {

@@ -1071,6 +1071,24 @@ The system SHOULD expose the same structured session-health data through the dia
 
 **Evidence:** `src/server/session-health-service.ts`, `src/server/routes/diagnostics-routes.ts`, `src/frontend/components/SessionHealthPanel.tsx`, `src/frontend/components/FindingsPanel.tsx`, `src/frontend/bug-report-bundle.ts`, `src/server/session-health-service.test.ts` (`TS-HEALTH-006`), `src/server/routes/session-health-route.test.ts` (`TS-HEALTH-007`), `src/frontend/bug-report-bundle.test.ts` (`TS-HEALTH-008`).
 
+---
+
+## R13: Accurate Cost Metering
+
+### R13.1: Price Transcript Usage Per Model [F4.9] — SHALL — `done`
+
+The system SHALL price transcript token usage against the model that produced each usage bucket and SHALL expose when an estimate used fallback pricing.
+
+**Acceptance criteria:**
+- A transcript containing usage from two known models keeps separate token buckets and reports the sum priced at each model's rates with `pricingQuality: 'exact'`.
+- A transcript containing an unknown model does not throw, uses the legacy fallback rate, and reports `pricingQuality: 'fallback'`.
+- Legacy result-entry totals continue to override estimated cost and authoritative token totals continue to be honored.
+- Corrected transcript cost remains the input to `BudgetChecker`, so the configured threshold is evaluated against the corrected amount.
+- A later corrected task cost adjusts the lifetime spend counter by its delta, including a finite downward correction.
+- `TokenUsage.pricingQuality` is optional so existing persisted task records remain valid.
+
+**Evidence:** `src/core/pricing-tables.ts`, `src/core/token-tracker.ts`, `src/core/usage-types.ts`, `src/core/tasks.ts`, `src/shared/contracts/usage.ts`, `src/core/pricing-tables.test.ts`, `src/core/token-tracker.test.ts`, `src/core/tasks.test.ts`.
+
 ## Summary Matrix
 
 | Req | Feature | Priority | Status | Module(s) |
@@ -1157,6 +1175,7 @@ The system SHOULD expose the same structured session-health data through the dia
 | R12.1 | F15.3 | SHALL | done | session-health, local-dtach-backend, dtach-ring-store, session-bridge, Monitor |
 | R12.2 | F15.3 | SHALL | done | session-health, SessionHealthService, diagnostics-routes |
 | R12.3 | F15.3 | SHOULD | done | diagnostics-routes, SessionHealthPanel, FindingsPanel, bug-report-bundle |
+| R13.1 | F4.9 | SHALL | done | pricing-tables, token-tracker, usage-types, tasks |
 
 ---
 
