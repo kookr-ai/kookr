@@ -15,6 +15,27 @@ export const DEFAULT_GIT_MAX_BUFFER = 8 * 1024 * 1024;
 export const DEFAULT_GIT_MAX_ATTEMPTS = 3;
 const DEFAULT_GIT_RETRY_DELAYS_MS = [1_000, 3_000];
 
+/** Git environment variables that can redirect a subprocess away from cwd. */
+export const NESTED_GIT_ENV_VARS = [
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_CEILING_DIRECTORIES',
+  'GIT_COMMON_DIR',
+  'GIT_CONFIG_COUNT',
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_DIR',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_PREFIX',
+  'GIT_WORK_TREE',
+] as const;
+
+/** Make cwd/explicit -C the authority for a Git subprocess. */
+export function gitExecEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const name of NESTED_GIT_ENV_VARS) delete env[name];
+  return env;
+}
+
 export interface GitRunOptions {
   timeoutMs?: number;
   maxBuffer?: number;
@@ -47,12 +68,12 @@ export async function runGitIn(
   let lastKind: GitFailureKind = 'failed';
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      // Strip GIT_DIR/GIT_WORK_TREE so the cwd is authoritative.
-      // These vars leak from git hooks (e.g. pre-push) and override --work-tree/cwd.
-      const env = { ...process.env };
-      delete env.GIT_DIR;
-      delete env.GIT_WORK_TREE;
-      const { stdout } = await execFileAsync('git', args, { cwd, env, timeout: timeoutMs, maxBuffer });
+      const { stdout } = await execFileAsync('git', args, {
+        cwd,
+        env: gitExecEnv(),
+        timeout: timeoutMs,
+        maxBuffer,
+      });
       return { kind: 'ok', stdout: stdout.trim() };
     } catch (err) {
       const kind = classifyGitError(err);

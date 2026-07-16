@@ -30,7 +30,7 @@ For Ralph loops that look stopped after a crash or show a **Replace with new** r
 
 When a task completes, Kookr normally removes its managed git worktree. The **Settings → Task Management → Clean worktrees on completion** toggle controls the default cleanup choice. The **Complete task** dialog shows that choice for each task, so you can uncheck it to keep a worktree for one completion or check it when the saved default is disabled.
 
-Cleanup has unconditional backstops: it refuses the repository's primary checkout, any path that is not a registered linked worktree, and automatic removal of worktrees on `main`, `master`, `develop`, or `dev`. The workspace cleanup dialog shows a second confirmation checkbox before it will remove a protected-branch worktree. The default protected-branch list can be replaced for a server process with `KOOKR_PROTECTED_BRANCHES=branch-a,branch-b`.
+Cleanup has unconditional backstops: it refuses the repository's primary checkout, any path that is not a currently registered linked worktree, and automatic removal of worktrees on `main`, `master`, `develop`, or `dev`. Every Git worktree removal is revalidated against Git immediately before Kookr runs `git worktree remove`; if repository context or current identity cannot be established, Kookr leaves the path in place for manual recovery. The workspace cleanup dialog shows a second confirmation checkbox before it will remove a protected-branch worktree. The default protected-branch list can be replaced for a server process with `KOOKR_PROTECTED_BRANCHES=branch-a,branch-b`.
 
 The cleanup choice removes the managed worktree and its task branch when Git reports the worktree is safe to remove. Dirty or unmerged worktrees remain available for manual recovery. To keep a long-lived worktree regardless of the cleanup choice, create a `.kookr-protected` file at the worktree root before the task completes:
 
@@ -41,7 +41,7 @@ parentRepo: /path/to/project
 
 For managed task worktree cleanup, the file's presence makes Kookr skip removal with reason `protected`. The first non-empty line is an optional human-readable reason. The optional `parentRepo:` field identifies the parent repository when Kookr needs to resolve it; replace the example path with the real absolute path. A production checkout such as `kookr-prod` should use this marker when it must remain long-lived.
 
-This marker does not preserve Kookr's ephemeral reflection worktrees. Those carry a separate `.kookr-reflect.json` identity marker and are intentionally force-removed when their reflection task ends.
+This marker does not preserve Kookr's ephemeral reflection worktrees. Those carry a separate `.kookr-reflect.json` identity marker, live directly under Kookr's reflection-worktree root, and are intentionally force-removed through Git when their reflection task ends. Legacy plain reflection directories without that marker are removable only during the startup sweep when their UUID basename and direct-child root checks pass; Git-looking directories are left untouched.
 
 Remove `.kookr-protected` only when the worktree may be cleaned up normally again. The filename must be exact and the file must be at the worktree root.
 

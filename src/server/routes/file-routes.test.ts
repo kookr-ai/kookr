@@ -96,6 +96,20 @@ describe('file routes', () => {
       }
     });
 
+    test('does not allow files inside a bare registry root', async () => {
+      const bare = mkdtempSync(join(tmpdir(), 'file-routes-bare-'));
+      writeFileSync(join(bare, 'config-secret.md'), 'private Git metadata');
+      try {
+        const res = await mkApp({
+          serverCwd: root,
+          worktreeRegistry: { all: () => [{ path: bare, isBare: true } as never] },
+        }).request(metaUrl(join(bare, 'config-secret.md')));
+        expect(res.status).toBe(403);
+      } finally {
+        rmSync(bare, { recursive: true, force: true });
+      }
+    });
+
     test('too_large for a text file over the inline cap', async () => {
       const big = 'x'.repeat(600 * 1024); // > 512 KiB inline cap
       writeFileSync(join(root, 'big.txt'), big);

@@ -108,7 +108,7 @@ describe('inspectCleanupCandidates', () => {
     expect(result).toEqual([]);
   });
 
-  it('handles a bare porcelain entry before the primary and linked worktrees', async () => {
+  it('handles a bare-only registry without inventing a primary worktree', async () => {
     const worktreeList = [
       'worktree /repo.git',
       'bare',
@@ -133,8 +133,8 @@ describe('inspectCleanupCandidates', () => {
       policyResolver, leaseService,
     });
 
-    expect(result).toHaveLength(1);
-    expect(result[0].worktreePath).toBe('/repo-wt');
+    expect(result).toHaveLength(2);
+    expect(result.map((item) => item.worktreePath)).toEqual(['/repo', '/repo-wt']);
   });
 
   it('returns empty when worktree list output is completely empty', async () => {
@@ -558,9 +558,9 @@ describe('inspectCleanupCandidates', () => {
       policyResolver, leaseService,
     });
 
-    // Only the feature worktree, not the bare entry
-    expect(result).toHaveLength(1);
-    expect(result[0].branch).toBe('feature');
+    // Both linked worktrees are candidates; only the bare entry is excluded.
+    expect(result).toHaveLength(2);
+    expect(result.map((item) => item.branch)).toEqual(['main', 'feature']);
   });
 
   // --- Assessment field completeness ---

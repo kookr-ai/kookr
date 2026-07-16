@@ -33,6 +33,7 @@ import {
 import { measureWorktreeFootprint } from '../../adapters/worktree-footprint.js';
 import { scanIgnored } from '../../adapters/ignored-scan.js';
 import { readProcessStartTimeMs } from '../../adapters/process-tree.js';
+import { gitExecEnv } from '../../core/git-helpers.js';
 import {
   cleanupSafeWorkspaceCandidates,
   type WorkspaceCleanupDeps,
@@ -44,18 +45,6 @@ const execFile = promisify(execFileCb);
 const PER_PROJECT_TIMEOUT_MS = 10 * 60_000;
 const LOCK_TTL_MS = 20 * 60 * 1000; // 20 min
 const FETCH_TIMEOUT_MS = 30_000;
-const NESTED_GIT_ENV_VARS = [
-  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-  'GIT_CEILING_DIRECTORIES',
-  'GIT_COMMON_DIR',
-  'GIT_CONFIG_COUNT',
-  'GIT_CONFIG_PARAMETERS',
-  'GIT_DIR',
-  'GIT_INDEX_FILE',
-  'GIT_OBJECT_DIRECTORY',
-  'GIT_PREFIX',
-  'GIT_WORK_TREE',
-] as const;
 
 export type SweepProgressEvent = WorkspaceSweepProgressSnapshot & {
   result?: ProjectSweepResult;
@@ -691,12 +680,4 @@ function readLockHolder(lockPath: string): { pid: number; startedAt: string } {
 
 function isEExist(err: unknown): boolean {
   return !!err && typeof err === 'object' && (err as NodeJS.ErrnoException).code === 'EEXIST';
-}
-
-function gitExecEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const name of NESTED_GIT_ENV_VARS) {
-    delete env[name];
-  }
-  return env;
 }

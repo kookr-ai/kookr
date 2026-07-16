@@ -20,13 +20,13 @@ import type { WorktreeLeaseService } from '../../core/worktree-lease-service.js'
 import { gitIn } from '../../core/git-helpers.js';
 import { getProjectId } from '../../core/project-identity.js';
 import { isProtectedWorktreePath } from '../../adapters/worktree-marker.js';
-import { isProtectedBranch } from '../../adapters/worktree-safety.js';
+import { isProtectedBranch, samePath } from '../../adapters/worktree-safety.js';
 import { deriveCleanupCapabilities } from '../../core/workspace-cleanup-policy.js';
 import { parsePorcelainStatus, runCommitEnrichment } from './cleanup-enrichment.js';
 
 interface GitWorktreeInfo {
   worktree: string;
-  HEAD: string;
+  HEAD?: string;
   branch?: string;
   detached?: boolean;
   bare?: boolean;
@@ -96,10 +96,15 @@ export async function inspectCleanupCandidates(
   const worktrees = parseWorktreeList(rawList);
   if (worktrees.length === 0) return [];
 
-  // The first non-bare worktree is the primary checkout. A bare repository can
-  // appear as the first porcelain entry, so never rely on a fixed array index.
-  const primaryPath = worktrees.find((wt) => !wt.bare)?.worktree;
-  const candidates = worktrees.filter((wt) => !wt.bare && wt.worktree !== primaryPath);
+  // A bare repository has no primary checkout: every non-bare entry is linked.
+  // Only a registry without a bare entry can identify its first non-bare entry
+  // as the ordinary repository checkout.
+  const primaryPath = worktrees.some((wt) => wt.bare)
+    ? undefined
+    : worktrees.find((wt) => !wt.bare)?.worktree;
+  const candidates = worktrees.filter((wt) => (
+    !wt.bare && (!primaryPath || !samePath(wt.worktree, primaryPath))
+  ));
 
   const currentProjectId = await getProjectId(repoPath);
   if (currentProjectId !== projectId) {
@@ -148,9 +153,13 @@ export async function inspectCleanupCandidate(
   }
 
   const worktrees = parseWorktreeList(rawList);
-  const primaryPath = worktrees.find((item) => !item.bare)?.worktree;
+  const primaryPath = worktrees.some((item) => item.bare)
+    ? undefined
+    : worktrees.find((item) => !item.bare)?.worktree;
   const wt = worktrees.find((item) => (
-    !item.bare && item.worktree === worktreePath && item.worktree !== primaryPath
+    !item.bare
+    && samePath(item.worktree, worktreePath)
+    && (!primaryPath || !samePath(item.worktree, primaryPath))
   ));
   if (!wt || wt.bare) {
     return undefined;

@@ -33,10 +33,18 @@ export type InteractionEvent =
       worktreePath: string;
       branch?: string;
       reason: 'protected' | 'shared' | 'task reopened' | 'not found'
-        | 'primary-working-tree' | 'not-a-linked-worktree' | 'protected-branch';
+        | 'primary-working-tree' | 'not-a-linked-worktree' | 'protected-branch'
+        | 'repository-context-unavailable' | 'repository-context-mismatch';
       timestamp: string;
     }
-  | { type: 'worktree_cleanup_failed'; taskId: string; worktreePath: string; error: string; timestamp: string }
+  | {
+      type: 'worktree_cleanup_failed';
+      taskId: string;
+      worktreePath: string;
+      branch?: string;
+      error: string;
+      timestamp: string;
+    }
   | { type: 'crash_recovery'; relaunched: number; skipped: number; failed: number; details: unknown; timestamp: string }
   | { type: 'submission_rejected_dedup'; existingTaskId: string; promptHash: string; canonicalCwd: string; timestamp: string }
   | {

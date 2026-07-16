@@ -6,6 +6,8 @@ import type { AgentStatus, TurnState } from './task-status.js';
 export interface GitInfo {
   branch: string | null;
   commit: string | null;
+  /** Private Git administrative directory for a linked worktree, when known. */
+  gitDir?: string;
   isWorktree: boolean;
   isDetached: boolean;
   /** Top-level working tree path for the repository that produced this metadata. */
@@ -64,6 +66,8 @@ export interface SessionInfo {
   lastEventAt?: number;
   gitBranch?: string;
   gitCommit?: string;
+  /** Private Git administrative directory captured for worktree identity checks. */
+  gitDir?: string;
   gitIsWorktree?: boolean;
   gitIsDetached?: boolean;
   worktreeHealth?: WorktreeHealth;

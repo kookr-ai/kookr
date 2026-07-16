@@ -324,6 +324,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // next launch without a restart (the PUT path reassigns `currentSettings`).
   const getAgentEffort = () => currentSettings.agentEffort;
   const terminalInputCoordinator = new TerminalInputCoordinator(terminalBackend);
+  const reflectWorktreesDir = join(kookrDir, 'reflect-worktrees');
   const sessionHealthTracker = new SessionHealthTracker();
   const restartEpoch = Number.isFinite(Date.parse(serverStartedAt)) ? Date.parse(serverStartedAt) : Date.now();
   const sessionHealthService = new SessionHealthService({
@@ -828,6 +829,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     projectConfigStore,
     terminalInputCoordinator,
     getCleanupWorktreeOnComplete,
+    reflectWorktreesDir,
     onTaskOutcome: (taskId, outcome) => {
       onTaskOutcomeHolder?.(taskId, outcome);
     },
@@ -892,6 +894,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       suppressionTracker,
       terminalInputCoordinator,
       getCleanupWorktreeOnComplete,
+      reflectWorktreesDir,
     }),
   });
 
@@ -922,10 +925,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const terminalDeps: TerminalInputDeps = {
     monitor, watchdog, abortPendingSuggestion, broadcastToAll, serverCwd, taskStore,
   };
-
-  // Ephemeral worktrees for per-task self-reflect. Shared between the startup
-  // sweep (below) and the WsConnection deps that spawn reflect tasks.
-  const reflectWorktreesDir = join(kookrDir, 'reflect-worktrees');
 
   const startupRecoverySummary = await runStartupRecoveryPhase({
     taskStore,
@@ -1040,6 +1039,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         terminalInputCoordinator,
         queue,
         getCleanupWorktreeOnComplete,
+        reflectWorktreesDir,
       });
     },
   });

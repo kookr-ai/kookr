@@ -158,6 +158,7 @@ export async function reconcile(
               const changed =
                 session.gitBranch !== (info.branch ?? undefined)
                 || session.gitCommit !== (info.commit ?? undefined)
+                || session.gitDir !== info.gitDir
                 || session.gitIsWorktree !== (info.isWorktree || undefined)
                 || session.gitIsDetached !== (info.isDetached || undefined);
               taskStore.updateSessionGitInfo(task.id, session.tmuxSession, info);

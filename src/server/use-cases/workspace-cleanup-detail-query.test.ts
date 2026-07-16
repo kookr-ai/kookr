@@ -69,6 +69,7 @@ describe('getCleanupCandidateDetail', () => {
     }]);
     mockGitResponses({
       'rev-parse HEAD': 'head123\n',
+      'rev-parse --path-format=absolute --git-dir': '/repo/.git/worktrees/detail\n',
       'rev-parse --verify refs/heads/feature/detail': 'branch123\n',
       'status --porcelain=v1': ' M src/file.ts\nA  src/new.ts\n?? scratch.txt\n',
       'rev-list --left-right --count main...feature/detail': '2 5\n',
@@ -103,6 +104,7 @@ describe('getCleanupCandidateDetail', () => {
     ]);
     expect(detail.fingerprint).toBe(createCleanupFingerprint({
       headOid: 'head123',
+      gitDir: '/repo/.git/worktrees/detail',
       branchRefOid: 'branch123',
       baselineOid: 'baseline123',
       statusDigest: ' M src/file.ts\n?? scratch.txt\nA  src/new.ts',

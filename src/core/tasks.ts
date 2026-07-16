@@ -647,6 +647,7 @@ export class TaskStore {
     if (!session) return;
     session.gitBranch = gitInfo.branch ?? undefined;
     session.gitCommit = gitInfo.commit ?? undefined;
+    session.gitDir = gitInfo.gitDir;
     session.gitIsWorktree = gitInfo.isWorktree || undefined;
     session.gitIsDetached = gitInfo.isDetached || undefined;
     task.updatedAt = new Date();

@@ -169,6 +169,8 @@ export interface CleanupCandidateDetail {
   reasonCode: string;
   branchRefOid?: string;
   headOid?: string;
+  /** Private Git administrative directory captured with the review evidence. */
+  gitDir?: string;
   baselineOid?: string;
   fingerprint: string;
   dirtySummary?: CleanupDirtySummary;

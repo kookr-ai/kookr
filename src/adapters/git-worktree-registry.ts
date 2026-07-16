@@ -10,6 +10,7 @@ export interface WorktreeEntry {
   head: string;
   isDetached: boolean;
   isPrunable: boolean;
+  isBare: boolean;
   isMain: boolean;
 }
 
@@ -41,14 +42,15 @@ export function parseGitWorktreeList(output: string): WorktreeEntry[] {
   let current: Partial<WorktreeEntry> | null = null;
 
   const pushCurrent = (): void => {
-    if (!current?.path || !current.head) return;
+    if (!current?.path) return;
     entries.push({
       path: normalizePath(current.path),
       branch: current.branch ?? null,
-      head: current.head,
+      head: current.head ?? '',
       isDetached: current.isDetached ?? false,
       isPrunable: current.isPrunable ?? false,
-      isMain: entries.length === 0,
+      isBare: current.isBare ?? false,
+      isMain: false,
     });
   };
 
@@ -65,6 +67,8 @@ export function parseGitWorktreeList(output: string): WorktreeEntry[] {
       current.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
     } else if (line === 'detached') {
       current.isDetached = true;
+    } else if (line === 'bare') {
+      current.isBare = true;
     } else if (line.startsWith('prunable')) {
       current.isPrunable = true;
     } else if (line === '') {
@@ -74,7 +78,15 @@ export function parseGitWorktreeList(output: string): WorktreeEntry[] {
   }
   pushCurrent();
 
-  return entries;
+  // A bare repository contributes registry metadata but has no primary
+  // checkout. Once a bare entry is present, every non-bare entry is linked.
+  const primaryIndex = entries.some((entry) => entry.isBare)
+    ? -1
+    : entries.findIndex((entry) => !entry.isBare);
+  return entries.map((entry, index) => ({
+    ...entry,
+    isMain: index === primaryIndex,
+  }));
 }
 
 export class WorktreeRegistry {

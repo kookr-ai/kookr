@@ -32,6 +32,21 @@ describe('git worktree registry', () => {
     expect(entries[3]).toMatchObject({ path: '/repo-missing', branch: 'stale', isPrunable: true });
   });
 
+  test('does not invent a primary checkout for a bare repository registry', () => {
+    const entries = parseGitWorktreeList([
+      'worktree /repo',
+      'bare',
+      '',
+      'worktree /repo-feature',
+      'HEAD 2222222222222222222222222222222222222222',
+      'branch refs/heads/feat/work',
+      '',
+    ].join('\n'));
+
+    expect(entries[0]).toMatchObject({ path: '/repo', isBare: true, isMain: false, head: '' });
+    expect(entries[1]).toMatchObject({ path: '/repo-feature', isBare: false, isMain: false });
+  });
+
   test('indexes refreshed worktrees by path and branch', async () => {
     const calls: string[][] = [];
     const registry = new WorktreeRegistry(async (_repoPath, args) => {
