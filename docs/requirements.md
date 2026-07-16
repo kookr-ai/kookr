@@ -396,9 +396,11 @@ The system SHALL allow launching a new agent from the GUI with a task descriptio
 - Agent is started in a managed dtach session in interactive mode (see [ADR-014](adr/014-local-dtach-backend.md))
 - Claude Code launched with `--settings` flag pointing to Kookr-generated hook settings
 - Hook settings are additive to user's existing settings
+- Launch, relaunch, and playbook messages accept every concrete agent type advertised by the server, including `grok-build`
+- WebSocket client and server schemas validate concrete agent types consistently with the shared `AgentType` contract
 - New task created with status `open`, transitions to `in_progress` on agent start
 
-**Evidence:** `src/frontend/components/LaunchTaskDialog.tsx` (dialog UI), `src/server/ws.ts` (launch handler), `src/adapters/claude-code-adapter.ts` (settings generation, launch wiring), `src/adapters/local-dtach-backend.ts` (dtach session creation), `src/server/ws.test.ts` ("client sends launch - new task started"), `src/adapters/claude-code-adapter.test.ts` (settings with hooks).
+**Evidence:** `src/frontend/components/LaunchTaskDialog.tsx` (dialog UI), `src/server/ws.ts` (launch handler), `src/shared/contracts/agent-types.ts` (concrete agent contract), `src/shared/contracts/client-message-schema.ts` and `src/shared/contracts/server-message-schema.ts` (WebSocket validation), `src/adapters/claude-code-adapter.ts` (settings generation, launch wiring), `src/adapters/local-dtach-backend.ts` (dtach session creation), `src/server/ws.test.ts` ("client sends launch - new task started"), `src/shared/contracts/client-message-schema.test.ts` and `src/shared/contracts/server-message-schema.test.ts` (agent-type validation), `src/adapters/claude-code-adapter.test.ts` (settings with hooks).
 
 ### R4.2: Stop Agent [F4.2] — SHOULD — `done`
 
@@ -1126,7 +1128,7 @@ The system SHALL price transcript token usage against the model that produced ea
 | R3.7 | F3.7 | SHALL | done | attention-queue, ws, loop.test |
 | R3.8 | — | SHOULD | done | useStore, SentOverlay, DetailPanel |
 | R3.9 | — | SHOULD | done | group-findings, FindingsPanel |
-| R4.1 | F4.1 | SHALL | done | LaunchTaskDialog, ws, claude-code-adapter, local-dtach-backend |
+| R4.1 | F4.1 | SHALL | done | LaunchTaskDialog, ws, agent-types, client-message-schema, server-message-schema, claude-code-adapter, local-dtach-backend |
 | R4.2 | F4.2 | SHOULD | done | claude-code-adapter, local-dtach-backend, ws, DetailPanel |
 | R4.3 | F4.3 | SHOULD | done | tasks (relaunch), ws (relaunch handler), LaunchTaskDialog |
 | R4.4 | F4.4 | SHALL | done | tasks, task-persistence, reconciliation |

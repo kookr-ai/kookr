@@ -133,6 +133,40 @@ describe('ClientMessageSchema — happy path sanity', () => {
     expect(result.success).toBe(true);
   });
 
+  test('accepts a launch message with the Grok Build agent selection', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'launch',
+      prompt: 'hi',
+      cwd: '/tmp',
+      agentType: 'grok-build',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.agentType).toBe('grok-build');
+  });
+
+  test('accepts a relaunch message with the Grok Build agent selection', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'relaunch',
+      taskId: 't1',
+      prompt: 'hi',
+      agentType: 'grok-build',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.agentType).toBe('grok-build');
+  });
+
+  test('accepts a playbook launch message with the Grok Build agent selection', () => {
+    const result = ClientMessageSchema.safeParse({
+      type: 'launchPlaybook',
+      playbookPath: 'test.md',
+      cwd: '/tmp',
+      parameterValues: {},
+      agentType: 'grok-build',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.agentType).toBe('grok-build');
+  });
+
   test('accepts clearCompleted scoped to a project', () => {
     const result = ClientMessageSchema.safeParse({
       type: 'clearCompleted',
