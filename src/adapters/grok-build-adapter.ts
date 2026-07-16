@@ -64,6 +64,14 @@ const textDecoder = new TextDecoder('utf-8', { fatal: false });
 
 const DEFAULT_READY_TIMEOUT_MS = 15_000;
 const DEFAULT_READY_POLL_MS = 100;
+const DEFAULT_GROK_PROMPT_SUBMIT_RETRIES = 0;
+/**
+ * Grok emits UserPromptSubmit promptly, but its command-hook acknowledgement
+ * can take several seconds to complete the local writer + HTTP round trip.
+ * The shared 2-second confirmation deadline is tuned for Claude Code and can
+ * resend an already accepted Grok prompt before that acknowledgement arrives.
+ */
+export const DEFAULT_GROK_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS = 10_000;
 
 /** Minimal, generic supervision status the RFC's Phase-1 slice exposes. */
 export interface GrokSupervisionStatus {
@@ -150,8 +158,8 @@ export class GrokBuildAdapter implements AgentAdapter {
   private installedStateOverride?: GrokInstalledState;
   private promptBracketedPaste: boolean;
   private promptReadyTimeoutMs: number;
-  private promptSubmitConfirmTimeoutMs?: number;
-  private promptSubmitRetries?: number;
+  private promptSubmitConfirmTimeoutMs: number;
+  private promptSubmitRetries: number;
   /** Memoized installed-state resolution (identity + qualification). */
   private installedStateProbe?: Promise<GrokInstalledState>;
 
@@ -175,8 +183,12 @@ export class GrokBuildAdapter implements AgentAdapter {
     this.installedStateOverride = options?.installedStateOverride;
     this.promptBracketedPaste = resolveBracketedPasteSubmit(options?.promptBracketedPaste, this.env);
     this.promptReadyTimeoutMs = options?.promptReadyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
-    this.promptSubmitConfirmTimeoutMs = options?.promptSubmitConfirmTimeoutMs;
-    this.promptSubmitRetries = options?.promptSubmitRetries;
+    this.promptSubmitConfirmTimeoutMs =
+      options?.promptSubmitConfirmTimeoutMs ?? DEFAULT_GROK_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS;
+    // Grok's TUI does not expose the Claude-specific busy-screen markers used
+    // to decide whether a retry Enter is safe. A missing acknowledgement must
+    // therefore fail closed rather than risk submitting the same prompt again.
+    this.promptSubmitRetries = options?.promptSubmitRetries ?? DEFAULT_GROK_PROMPT_SUBMIT_RETRIES;
   }
 
   /** Resolve installed identity/qualification (memoized). */
@@ -339,7 +351,7 @@ export class GrokBuildAdapter implements AgentAdapter {
     try {
       await this.waitForReadyOrAbort(tmuxName);
       const awaitSubmit = (timeoutMs: number) => withTimeout(submitConfirmed.then(() => true), timeoutMs, false);
-      let delivery = await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
+      const delivery = await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
         inputWriter: this.inputWriter,
         bracketedPaste: this.promptBracketedPaste,
         waitForReady: this.promptBracketedPaste,
@@ -348,16 +360,11 @@ export class GrokBuildAdapter implements AgentAdapter {
         submitRetries: this.promptSubmitRetries,
         readyTimeoutMs: this.promptReadyTimeoutMs,
       });
-      if (delivery.status === 'unconfirmed' && this.promptBracketedPaste) {
-        // Fall back to the plain write+Enter path, keeping the same hook-backed
-        // confirmation loop so text cannot be silently stranded in the composer.
-        delivery = await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
-          inputWriter: this.inputWriter,
-          bracketedPaste: false,
-          awaitSubmit,
-          submitConfirmTimeoutMs: this.promptSubmitConfirmTimeoutMs,
-          submitRetries: this.promptSubmitRetries,
-        });
+      if (delivery.status === 'unconfirmed') {
+        throw new Error(
+          `[grok-build-adapter] Grok did not acknowledge the initial prompt within ` +
+            `${this.promptSubmitConfirmTimeoutMs}ms; refusing to resend it`,
+        );
       }
     } catch (err) {
       await this.cleanupFailedLaunch(tmuxName);
@@ -409,8 +416,8 @@ export class GrokBuildAdapter implements AgentAdapter {
       );
     }
     // `ready === false` here means the DECSET never arrived within the window;
-    // delivery still proceeds fail-open (deliverInitialPromptToSession also
-    // waits for the same signal and has a plain-write fallback).
+    // delivery still proceeds fail-open, while the hook-backed confirmation
+    // guard refuses to resend an unacknowledged prompt.
     void ready;
   }
 
@@ -639,10 +646,14 @@ export class GrokBuildAdapter implements AgentAdapter {
     return identity;
   }
 
-  getEffectiveHookSettings(tmuxName: string): EffectiveHookSettings | undefined {
+  getActiveHookSettings(tmuxName: string): EffectiveHookSettings | undefined {
     const settings = this.hookSettings.get(tmuxName);
     if (!settings) return undefined;
     return { content: settings.config, agentType: this.agentType, settingsPath: settings.path };
+  }
+
+  getEffectiveHookSettings(tmuxName: string): EffectiveHookSettings | undefined {
+    return this.getActiveHookSettings(tmuxName);
   }
 }
 

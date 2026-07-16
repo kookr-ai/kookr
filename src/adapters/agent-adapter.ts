@@ -174,6 +174,15 @@ export interface AgentAdapter extends AgentInteractionPort {
    * are known for this adapter/session.
    */
   getEffectiveHookSettings(tmuxName: string): EffectiveHookSettings | undefined;
+
+  /**
+   * Return only launch-scoped settings held in adapter memory. This is
+   * optional so lightweight adapters and test doubles do not need to model
+   * persistence; the routing adapter uses it to disambiguate concurrent
+   * providers before TaskStore registration, when persisted settings paths
+   * are shared.
+   */
+  getActiveHookSettings?(tmuxName: string): EffectiveHookSettings | undefined;
 }
 
 export interface EffectiveHookSettings {
