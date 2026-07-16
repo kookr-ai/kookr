@@ -15,6 +15,9 @@ export function isAgentType(value: unknown): value is AgentType {
  */
 export const ROUND_ROBIN_AGENT_TYPE = 'round-robin';
 
+/** Every agent selection accepted at launch time, including the round-robin sentinel. */
+export const AGENT_SELECTIONS = [...AGENT_TYPES, ROUND_ROBIN_AGENT_TYPE] as const;
+
 /**
  * A user-facing agent selection: either a concrete agent or the
  * {@link ROUND_ROBIN_AGENT_TYPE} sentinel. `round-robin` only ever appears as

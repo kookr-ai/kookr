@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { type ClientMessage, MAX_BATCH_ABORT_TASKS } from './messages.js';
 import { TELEMETRY_EVENT_TYPES } from './telemetry.js';
 import { LAUNCH_DEPENDENCIES } from './playbook.js';
+import { AGENT_SELECTIONS } from './agent-types.js';
 
 /**
  * Runtime validators for the ClientMessage discriminated union.
@@ -16,7 +17,7 @@ import { LAUNCH_DEPENDENCIES } from './playbook.js';
 
 // Launch-time selections may carry the `round-robin` sentinel, which the
 // server resolves to a concrete agent. Persisted task/session shapes never do.
-const agentSelection = z.enum(['claude-code', 'codex-cli', 'round-robin']);
+const agentSelection = z.enum(AGENT_SELECTIONS);
 const playbookScope = z.enum(['project', 'user', 'plugin']);
 const launchDependency = z.enum(LAUNCH_DEPENDENCIES);
 const taskPriorityUpdate = z.enum(['high', 'normal']);

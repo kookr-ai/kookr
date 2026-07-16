@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { LAUNCH_DEPENDENCIES } from './playbook.js';
+import { AGENT_SELECTIONS, AGENT_TYPES } from './agent-types.js';
 
 /**
  * Runtime validators for the ServerMessage discriminated union.
@@ -10,8 +11,8 @@ import { LAUNCH_DEPENDENCIES } from './playbook.js';
  * fields while requiring nested DTOs to be JSON objects.
  */
 
-const agentType = z.enum(['claude-code', 'codex-cli']);
-const agentSelection = z.enum(['claude-code', 'codex-cli', 'round-robin']);
+const agentType = z.enum(AGENT_TYPES);
+const agentSelection = z.enum(AGENT_SELECTIONS);
 const anomalySeverity = z.enum(['info', 'warning', 'critical']);
 const hostCapability = z.enum(['available', 'absent']);
 const launchDependency = z.enum(LAUNCH_DEPENDENCIES);

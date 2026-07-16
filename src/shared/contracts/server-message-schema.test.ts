@@ -224,6 +224,22 @@ describe('ServerMessageSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  test('accepts Grok Build in the advertised agent types and default selection', () => {
+    const result = ServerMessageSchema.safeParse(serverMessageCase({
+      type: 'snapshot',
+      agents: [],
+      serverCwd: '/tmp/project',
+      availableAgentTypes: [{ type: 'grok-build', label: 'Grok Build' }],
+      defaultAgentType: 'grok-build',
+    }));
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.availableAgentTypes).toEqual([{ type: 'grok-build', label: 'Grok Build' }]);
+      expect(result.data.defaultAgentType).toBe('grok-build');
+    }
+  });
+
   test('accepts workspace-unavailable sweep results with missing dependency details', () => {
     const result = ServerMessageSchema.safeParse(serverMessageCase({
       type: 'workspaceSweepComplete',
