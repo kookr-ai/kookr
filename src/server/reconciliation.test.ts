@@ -196,6 +196,7 @@ describe('Startup Reconciliation', () => {
         head: '2222222222222222222222222222222222222222',
         isDetached: false,
         isPrunable: false,
+        isBare: false,
         isMain: false,
       }),
       snapshot: () => ({ entries: [], refreshedAt: new Date().toISOString(), lastError: null }),

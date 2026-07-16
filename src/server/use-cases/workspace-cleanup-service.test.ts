@@ -11,9 +11,10 @@ import {
 import { createCleanupFingerprint } from './workspace-cleanup-detail-query.js';
 import { deriveCleanupCapabilities } from '../../core/workspace-cleanup-policy.js';
 
-const { mockExecFile, mockRemovalGuard } = vi.hoisted(() => ({
+const { mockExecFile, mockRemovalGuard, mockRemoveRegisteredWorktree } = vi.hoisted(() => ({
   mockExecFile: vi.fn(),
   mockRemovalGuard: vi.fn(),
+  mockRemoveRegisteredWorktree: vi.fn(),
 }));
 
 vi.mock('node:child_process', () => ({
@@ -28,6 +29,7 @@ vi.mock('./cleanup-inspector.js', () => ({
 vi.mock('../../adapters/worktree-safety.js', () => ({
   getWorktreeRemovalGuardReason: mockRemovalGuard,
   isProtectedBranch: (branch: string | undefined) => ['main', 'master', 'develop', 'dev'].includes(branch ?? ''),
+  removeRegisteredWorktree: mockRemoveRegisteredWorktree,
 }));
 
 import { inspectCleanupCandidate, inspectCleanupCandidates } from './cleanup-inspector.js';
@@ -83,6 +85,18 @@ describe('cleanupWorkspaceCandidate', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRemovalGuard.mockResolvedValue(undefined);
+    mockRemoveRegisteredWorktree.mockResolvedValue({
+      removed: true,
+      target: {
+        worktreePath: '/repo-worktree',
+        commonDir: '/repo/.git',
+        gitDir: '/repo/.git/worktrees/test',
+        head: 'head123',
+        branch: 'feature/test',
+        detached: false,
+        bare: false,
+      },
+    });
     attemptRepository = new WorkspaceAttemptRepository();
     policyResolver = new RepoPolicyResolver({ profiles: [{ projectId: 'github.com/org/repo', baselineRef: 'main' }] });
     leaseService = new WorktreeLeaseService();
@@ -147,6 +161,7 @@ describe('cleanupWorkspaceCandidate', () => {
     mockInspectCleanupCandidates.mockResolvedValue([cleanupCandidate({ branch: 'main' })]);
     mockGitResponses({
       'rev-parse HEAD': { stdout: 'head123' },
+      'rev-parse --path-format=absolute --git-dir': { stdout: '/repo/.git/worktrees/test' },
       'rev-parse --verify refs/heads/main': { stdout: 'main123' },
       'rev-parse --verify main': { stdout: 'baseline123' },
       'status --porcelain=v1': { stdout: '' },
@@ -180,6 +195,7 @@ describe('cleanupWorkspaceCandidate', () => {
     })]);
     mockGitResponses({
       'rev-parse HEAD': { stdout: 'head123' },
+      'rev-parse --path-format=absolute --git-dir': { stdout: '/repo/.git/worktrees/test' },
       'rev-parse --verify refs/heads/feature/test': { stdout: 'abc123' },
       'rev-parse --verify main': { stdout: 'baseline123' },
       'status --porcelain=v1': { stdout: '' },
@@ -192,6 +208,7 @@ describe('cleanupWorkspaceCandidate', () => {
 
     const reviewFingerprint = createCleanupFingerprint({
       headOid: 'head123',
+      gitDir: '/repo/.git/worktrees/test',
       branchRefOid: 'abc123',
       baselineOid: 'baseline123',
       statusDigest: '',
@@ -213,6 +230,16 @@ describe('cleanupWorkspaceCandidate', () => {
     expect(result.summary.branchRemoved).toBe(true);
     const [attempt] = attemptRepository.listByProject('github.com/org/repo');
     expect(attempt.disposition).toBe('completed');
+    expect(mockRemoveRegisteredWorktree).toHaveBeenCalledWith(
+      '/repo-worktree',
+      expect.objectContaining({
+        repoPath: '/repo',
+        force: false,
+        expectedHead: 'head123',
+        expectedGitDir: '/repo/.git/worktrees/test',
+        expectedBranch: 'feature/test',
+      }),
+    );
   });
 
   it('rejects stale fingerprints before any destructive git command runs', async () => {
@@ -494,9 +521,22 @@ describe('cleanupSafeWorkspaceCandidates', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockRemovalGuard.mockResolvedValue(undefined);
     attemptRepository = new WorkspaceAttemptRepository();
     policyResolver = new RepoPolicyResolver({ profiles: [{ projectId: 'github.com/org/repo', baselineRef: 'main' }] });
     leaseService = new WorktreeLeaseService();
+    mockRemoveRegisteredWorktree.mockResolvedValue({
+      removed: true,
+      target: {
+        worktreePath: '/repo-worktree',
+        commonDir: '/repo/.git',
+        gitDir: '/repo/.git/worktrees/test',
+        head: 'head123',
+        branch: 'feature/test',
+        detached: false,
+        bare: false,
+      },
+    });
   });
 
   it('cleans up only currently safe candidates', async () => {
@@ -839,6 +879,19 @@ describe('bulkRemoveProbablySafeCandidates (RFC PR 3)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockRemovalGuard.mockResolvedValue(undefined);
+    mockRemoveRegisteredWorktree.mockResolvedValue({
+      removed: true,
+      target: {
+        worktreePath: '/repo-worktree',
+        commonDir: '/repo/.git',
+        gitDir: '/repo/.git/worktrees/test',
+        head: 'head123',
+        branch: 'feature/test',
+        detached: false,
+        bare: false,
+      },
+    });
     attemptRepository = new WorkspaceAttemptRepository();
     policyResolver = new RepoPolicyResolver({ profiles: [{ projectId: 'github.com/org/repo', baselineRef: 'main' }] });
     leaseService = new WorktreeLeaseService();
@@ -898,7 +951,9 @@ describe('bulkRemoveProbablySafeCandidates (RFC PR 3)', () => {
     // Structural proof the branch ref was never touched: no branch delete ran.
     expect(mockExecFile.mock.calls.some(([, args]) => args.includes('update-ref'))).toBe(false);
     // The path WAS reclaimed.
-    expect(mockExecFile.mock.calls.some(([, args]) => args.includes('worktree') && args.includes('remove'))).toBe(true);
+    expect(mockRemoveRegisteredWorktree).toHaveBeenCalledWith('/repo-worktree', expect.objectContaining({
+      force: false,
+    }));
   });
 
   it('skips a row that became busy between report and bulk (revalidation)', async () => {
@@ -922,7 +977,7 @@ describe('bulkRemoveProbablySafeCandidates (RFC PR 3)', () => {
     expect(result.rows[0]!.status).toBe('skipped');
     expect(result.rows[0]!.branchRemoved).toBe(false);
     // Blocked before any destructive git ran.
-    expect(mockExecFile.mock.calls.some(([, args]) => args.includes('worktree') && args.includes('remove'))).toBe(false);
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
   });
 
   it('degrades to a benign skip when a second actor already removed the worktree', async () => {
@@ -933,6 +988,11 @@ describe('bulkRemoveProbablySafeCandidates (RFC PR 3)', () => {
     // The remove itself fails (second-actor double-click) → manual_intervention_required.
     mockKeepBranchGit({
       'worktree remove /repo-worktree': { error: true, stderr: 'fatal: not a working tree' },
+    });
+    mockRemoveRegisteredWorktree.mockResolvedValue({
+      removed: false,
+      reason: 'git-remove-failed',
+      stderr: 'fatal: not a working tree',
     });
 
     const result = await bulkRemoveProbablySafeCandidates(deps(), {

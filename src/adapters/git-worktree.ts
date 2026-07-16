@@ -1,13 +1,12 @@
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
-import { rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import type { TaskStore, Task } from '../core/tasks.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
-import { classifyGitError, DEFAULT_GIT_MAX_BUFFER, DEFAULT_GIT_TIMEOUT_MS } from '../core/git-helpers.js';
+import { classifyGitError, DEFAULT_GIT_MAX_BUFFER, DEFAULT_GIT_TIMEOUT_MS, gitExecEnv } from '../core/git-helpers.js';
 import { isProtectedWorktreePath } from './worktree-marker.js';
-import { getWorktreeRemovalGuardReason } from './worktree-safety.js';
+import { getWorktreeRemovalGuardReason, removeRegisteredWorktree, samePath } from './worktree-safety.js';
 
 const execFile = promisify(execFileCb);
 
@@ -17,6 +16,7 @@ async function git(...args: string[]): Promise<string | null> {
     const { stdout } = await execFile('git', args, {
       timeout: DEFAULT_GIT_TIMEOUT_MS,
       maxBuffer: DEFAULT_GIT_MAX_BUFFER,
+      env: gitExecEnv(),
     });
     return stdout.trim();
   } catch (err) {
@@ -31,11 +31,6 @@ async function git(...args: string[]): Promise<string | null> {
     }
     return null;
   }
-}
-
-/** Resolve a repository context that remains valid after a linked worktree is removed. */
-async function getGitCommonDir(path: string): Promise<string | null> {
-  return git('-C', path, 'rev-parse', '--path-format=absolute', '--git-common-dir');
 }
 
 /** Resolve the default branch name (e.g. main, master) from origin/HEAD. */
@@ -125,7 +120,7 @@ function isSharedWorktree(taskStore: TaskStore, taskId: string, worktreePath: st
   for (const task of activeTasks) {
     if (task.id === taskId) continue;
     for (const s of task.sessions) {
-      if (s.gitIsWorktree && s.cwd === worktreePath) {
+      if (s.gitIsWorktree && s.cwd && samePath(s.cwd, worktreePath)) {
         return true;
       }
     }
@@ -135,12 +130,12 @@ function isSharedWorktree(taskStore: TaskStore, taskId: string, worktreePath: st
 
 /** Get session info for a worktree path from the task. */
 function getSessionForWorktree(task: Task, worktreePath: string) {
-  return task.sessions.find((s) => s.gitIsWorktree && s.cwd === worktreePath);
+  return task.sessions.find((s) => s.gitIsWorktree && s.cwd && samePath(s.cwd, worktreePath));
 }
 
 function markWorktreeCleanedUp(taskStore: TaskStore, taskId: string, task: Task, worktreePath: string): void {
   for (const session of task.sessions) {
-    if (session.gitIsWorktree && session.cwd === worktreePath) {
+    if (session.gitIsWorktree && session.cwd && samePath(session.cwd, worktreePath)) {
       taskStore.updateSessionWorktreeHealth(taskId, session.tmuxSession, 'cleaned_up');
     }
   }
@@ -205,8 +200,8 @@ async function cleanupSingleWorktree(
 
   // Always-on removal backstop. This must run before the marker, cleanliness,
   // or task-state checks so a clean, unmarked primary checkout can never reach
-  // rm -rf. Registry membership also prevents arbitrary recorded paths from
-  // being treated as disposable worktrees.
+  // a recursive filesystem delete. Registry membership also prevents
+  // arbitrary recorded paths from being treated as disposable worktrees.
   const guardReason = await getWorktreeRemovalGuardReason(worktreePath, { branch });
   if (guardReason) {
     await interactionLog?.append({
@@ -258,21 +253,6 @@ async function cleanupSingleWorktree(
     return;
   }
 
-  // Resolve a repository context that remains valid after the worktree directory
-  // is removed. Abort if it cannot be established safely.
-  const repoPath = await getGitCommonDir(worktreePath);
-  if (!repoPath) {
-    await interactionLog?.append({
-      type: 'worktree_kept',
-      taskId,
-      worktreePath,
-      branch,
-      reason: 'repository context unavailable',
-      timestamp: nowISO(),
-    });
-    return;
-  }
-
   // --- Destructive steps: check task status before each ---
 
   // Guard: abort if task was reopened
@@ -287,8 +267,31 @@ async function cleanupSingleWorktree(
     return;
   }
 
-  // Step 1: Remove directory
-  await rm(worktreePath, { recursive: true, force: true });
+  // Step 1: Remove the registered worktree through Git. `force` preserves the
+  // existing automatic cleanup behavior for ignored build outputs, but it is
+  // accepted only after the shared identity/protection guard and clean-tree
+  // checks above pass.
+  const removal = await removeRegisteredWorktree(worktreePath, {
+    force: true,
+    expectedHead: session?.gitCommit,
+    expectedBranch: branch,
+    expectedDetached: isDetached,
+    expectedGitDir: session?.gitDir,
+  });
+  if (!removal.removed || !removal.target) {
+    await interactionLog?.append({
+      type: 'worktree_cleanup_failed',
+      taskId,
+      worktreePath,
+      branch,
+      error: removal.stderr ?? removal.reason ?? 'worktree removal failed',
+      timestamp: nowISO(),
+    });
+    return;
+  }
+
+  const repoPath = removal.target.commonDir;
+  const cleanedBranch = removal.target.branch;
   markWorktreeCleanedUp(taskStore, taskId, task, worktreePath);
 
   // Guard again before prune + branch delete
@@ -307,15 +310,15 @@ async function cleanupSingleWorktree(
   await pruneStaleEntries(repoPath);
 
   // Step 3: Delete merged branch
-  if (branch) {
-    await deleteBranch(repoPath, branch);
+  if (cleanedBranch) {
+    await deleteBranch(repoPath, cleanedBranch);
   }
 
   await interactionLog?.append({
     type: 'worktree_cleaned',
     taskId,
     worktreePath,
-    branch,
+    branch: cleanedBranch,
     timestamp: nowISO(),
   });
 }

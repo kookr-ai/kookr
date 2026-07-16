@@ -3,26 +3,9 @@ import { promisify } from 'node:util';
 import { basename } from 'node:path';
 import { existsSync } from 'node:fs';
 import { endsWithProtectedSuffix, deriveParentRepoFromProtected } from './worktree-protection.js';
+import { gitExecEnv } from './git-helpers.js';
 
 const execFileAsync = promisify(execFile);
-const NESTED_GIT_ENV_VARS = [
-  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-  'GIT_CEILING_DIRECTORIES',
-  'GIT_COMMON_DIR',
-  'GIT_DIR',
-  'GIT_INDEX_FILE',
-  'GIT_OBJECT_DIRECTORY',
-  'GIT_PREFIX',
-  'GIT_WORK_TREE',
-] as const;
-
-function gitExecEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const name of NESTED_GIT_ENV_VARS) {
-    delete env[name];
-  }
-  return env;
-}
 
 /**
  * Normalize a git remote URL to a canonical form: "github.com/owner/repo"

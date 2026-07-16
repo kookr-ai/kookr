@@ -43,6 +43,8 @@ export interface AgentLifecycleDeps {
   terminalInputCoordinator?: Pick<TerminalInputCoordinator, 'registerSession'>;
   /** Live default used by completion paths that omit a per-task override. */
   getCleanupWorktreeOnComplete?: () => boolean;
+  /** Configured root for ephemeral reflection worktrees. */
+  reflectWorktreesDir?: string;
   /**
    * Issue-claim registry (RFC rfc-issue-ownership-lock). Carried here so the
    * reconcile call sites (lifecycle-timers) can release claims for
@@ -221,6 +223,8 @@ export interface LifecycleDeps {
   };
   /** Live default used when a completion request omits its per-task override. */
   getCleanupWorktreeOnComplete?: () => boolean;
+  /** Configured root for ephemeral reflection worktrees. */
+  reflectWorktreesDir?: string;
   /**
    * Optional remote-chat back-channel for terminal task outcomes. Implementers
    * must isolate their own failures so lifecycle transitions cannot be blocked.
@@ -310,10 +314,13 @@ function completeLiveSessionsInBackground(task: Task, deps: LifecycleDeps): void
  * marker, so the overlap with `cleanupTaskWorktrees` is a harmless no-op when
  * that path already removed a clean worktree).
  */
-function cleanupReflectWorktree(task: Task): void {
+function cleanupReflectWorktree(task: Task, deps: LifecycleDeps): void {
   const worktreePath = task.reflectMeta?.worktreePath;
   if (!worktreePath) return;
-  void removeReflectWorktree(worktreePath).catch(() => {});
+  const removal = deps.reflectWorktreesDir
+    ? removeReflectWorktree(worktreePath, deps.reflectWorktreesDir)
+    : removeReflectWorktree(worktreePath);
+  void removal.catch(() => {});
 }
 
 function markCompletedMissingWorktreesCleanedUp(task: Task, deps: LifecycleDeps): void {
@@ -399,7 +406,7 @@ export async function completeTask(
   if (shouldCleanupWorktree) {
     cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});
   }
-  cleanupReflectWorktree(task);
+  cleanupReflectWorktree(task, deps);
 }
 
 /**
@@ -438,7 +445,7 @@ export async function terminateTask(
 
   // Fire-and-forget worktree cleanup — does not block the caller
   cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});
-  cleanupReflectWorktree(task);
+  cleanupReflectWorktree(task, deps);
 }
 
 /**
@@ -474,7 +481,7 @@ export async function cancelTask(
 
   // Fire-and-forget worktree cleanup — does not block the caller
   cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});
-  cleanupReflectWorktree(task);
+  cleanupReflectWorktree(task, deps);
 }
 
 // ---------------------------------------------------------------------------

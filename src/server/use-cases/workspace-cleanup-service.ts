@@ -8,25 +8,16 @@ import type {
   CleanupResultSummary,
 } from '../../core/workspace-types.js';
 import { deriveCleanupCapabilitiesForCandidate } from '../../core/workspace-cleanup-policy.js';
-import { isProtectedBranch } from '../../adapters/worktree-safety.js';
-import { getWorktreeRemovalGuardReason } from '../../adapters/worktree-safety.js';
+import { gitExecEnv } from '../../core/git-helpers.js';
+import {
+  getWorktreeRemovalGuardReason,
+  isProtectedBranch,
+  removeRegisteredWorktree,
+} from '../../adapters/worktree-safety.js';
 import { inspectCleanupCandidate, inspectCleanupCandidates } from './cleanup-inspector.js';
 import { hydrateCleanupCandidateDetail } from './workspace-cleanup-detail-query.js';
 
 const execFile = promisify(execFileCb);
-const NESTED_GIT_ENV_VARS = [
-  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-  'GIT_CEILING_DIRECTORIES',
-  'GIT_COMMON_DIR',
-  'GIT_CONFIG_COUNT',
-  'GIT_CONFIG_PARAMETERS',
-  'GIT_DIR',
-  'GIT_INDEX_FILE',
-  'GIT_OBJECT_DIRECTORY',
-  'GIT_PREFIX',
-  'GIT_WORK_TREE',
-] as const;
-
 export interface WorkspaceCleanupDeps {
   policyResolver: RepoPolicyResolver;
   leaseService: WorktreeLeaseService;
@@ -394,16 +385,24 @@ export async function cleanupWorkspaceCandidate(
     }
   }
 
-  const removeResult = await runGit(input.repoPath, ['worktree', 'remove', candidate.worktreePath], input.signal);
-  if (!removeResult.ok) {
+  const removeResult = await removeRegisteredWorktree(candidate.worktreePath, {
+    repoPath: input.repoPath,
+    force: isDirtyCleanup && discardDirtyState,
+    signal: input.signal,
+    expectedHead: detail.headOid,
+    expectedGitDir: detail.gitDir,
+    expectedBranch: candidate.branch,
+    confirmProtectedBranch: input.confirmProtectedBranch,
+  });
+  if (!removeResult.removed) {
     deps.attemptRepository.updateAttempt(attempt.attemptId, {
       status: 'completed',
       disposition: 'manual_intervention_required',
       finishedAt: new Date().toISOString(),
       evidenceSummary: `Failed to remove worktree ${candidate.worktreePath}`,
-      stderrSummary: removeResult.stderr,
+      stderrSummary: removeResult.stderr ?? removeResult.reason,
     });
-    throw new Error(removeResult.stderr || 'Failed to remove worktree');
+    throw new Error(removeResult.stderr || removeResult.reason || 'Failed to remove worktree');
   }
 
   const pruneResult = await runGit(input.repoPath, ['worktree', 'prune'], input.signal);
@@ -590,12 +589,4 @@ async function runGit(
       : err instanceof Error ? err.message : String(err);
     return { ok: false, stdout: '', stderr: stderr.trim() };
   }
-}
-
-function gitExecEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const name of NESTED_GIT_ENV_VARS) {
-    delete env[name];
-  }
-  return env;
 }

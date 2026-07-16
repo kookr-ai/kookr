@@ -12,12 +12,15 @@ export type { GitInfo };
 export async function getGitInfo(cwd: string, registry?: Pick<WorktreeRegistry, 'byPath'>): Promise<GitInfo | null> {
   const registryEntry = registry?.byPath(cwd);
   if (registryEntry) {
+    const isWorktree = !registryEntry.isMain && !registryEntry.isBare;
+    const gitDir = isWorktree ? await readLinkedGitDir(registryEntry.path) : undefined;
     return {
       branch: registryEntry.branch,
       commit: registryEntry.head.slice(0, 7),
-      isWorktree: !registryEntry.isMain,
+      isWorktree,
       isDetached: registryEntry.isDetached,
       worktreeRoot: registryEntry.path,
+      ...(gitDir ? { gitDir } : {}),
     };
   }
 
@@ -26,12 +29,15 @@ export async function getGitInfo(cwd: string, registry?: Pick<WorktreeRegistry, 
   const gitPath = join(gitRoot, '.git');
   const registryRootEntry = registry?.byPath(gitRoot);
   if (registryRootEntry) {
+    const isWorktree = !registryRootEntry.isMain && !registryRootEntry.isBare;
+    const gitDir = isWorktree ? await readLinkedGitDir(registryRootEntry.path) : undefined;
     return {
       branch: registryRootEntry.branch,
       commit: registryRootEntry.head.slice(0, 7),
-      isWorktree: !registryRootEntry.isMain,
+      isWorktree,
       isDetached: registryRootEntry.isDetached,
       worktreeRoot: registryRootEntry.path,
+      ...(gitDir ? { gitDir } : {}),
     };
   }
 
@@ -44,6 +50,7 @@ export async function getGitInfo(cwd: string, registry?: Pick<WorktreeRegistry, 
 
   let headPath: string;
   let isWorktree = false;
+  let linkedGitDir: string | undefined;
 
   if (gitStat.isFile()) {
     // Worktree: .git is a file containing "gitdir: /path/to/.git/worktrees/name"
@@ -51,6 +58,7 @@ export async function getGitInfo(cwd: string, registry?: Pick<WorktreeRegistry, 
     const match = content.match(/^gitdir:\s*(.+)$/m);
     if (!match) return null;
     const worktreeGitDir = resolveGitFilePath(gitRoot, match[1].trim());
+    linkedGitDir = worktreeGitDir;
     headPath = join(worktreeGitDir, 'HEAD');
     isWorktree = true;
   } else {
@@ -96,12 +104,36 @@ export async function getGitInfo(cwd: string, registry?: Pick<WorktreeRegistry, 
     } catch {
       // Packed refs or other edge case — commit stays null
     }
-    return { branch, commit, isWorktree, isDetached: false, worktreeRoot: gitRoot };
+    return {
+      branch,
+      commit,
+      isWorktree,
+      isDetached: false,
+      worktreeRoot: gitRoot,
+      ...(linkedGitDir ? { gitDir: linkedGitDir } : {}),
+    };
   }
 
   // Detached HEAD — headContent is a raw SHA
   const commit = headContent.slice(0, 7);
-  return { branch: null, commit, isWorktree, isDetached: true, worktreeRoot: gitRoot };
+  return {
+    branch: null,
+    commit,
+    isWorktree,
+    isDetached: true,
+    worktreeRoot: gitRoot,
+    ...(linkedGitDir ? { gitDir: linkedGitDir } : {}),
+  };
+}
+
+async function readLinkedGitDir(worktreeRoot: string): Promise<string | undefined> {
+  try {
+    const gitFile = await readFile(join(worktreeRoot, '.git'), 'utf8');
+    const match = gitFile.match(/^gitdir:\s*(.+)$/m);
+    return match ? resolveGitFilePath(worktreeRoot, match[1].trim()) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

@@ -2,9 +2,10 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 
 // Hoist mock so it's available in vi.mock factory
-const { mockExecFile, mockRemovalGuard } = vi.hoisted(() => ({
+const { mockExecFile, mockRemovalGuard, mockRemoveRegisteredWorktree } = vi.hoisted(() => ({
   mockExecFile: vi.fn(),
   mockRemovalGuard: vi.fn(),
+  mockRemoveRegisteredWorktree: vi.fn(),
 }));
 
 // Mock child_process for git calls in CleanupInspector and RepoPolicyResolver
@@ -15,6 +16,8 @@ vi.mock('node:child_process', () => ({
 vi.mock('../adapters/worktree-safety.js', () => ({
   getWorktreeRemovalGuardReason: mockRemovalGuard,
   isProtectedBranch: () => false,
+  samePath: (left: string, right: string) => left === right,
+  removeRegisteredWorktree: mockRemoveRegisteredWorktree,
 }));
 
 // Mock existsSync so test paths pass validation. Marker files (`.kookr-protected`)
@@ -76,6 +79,18 @@ describe('WebSocket workspace message routing', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRemovalGuard.mockResolvedValue(undefined);
+    mockRemoveRegisteredWorktree.mockImplementation(async (worktreePath: string, options: { expectedHead?: string; expectedBranch?: string; expectedDetached?: boolean } = {}) => ({
+      removed: true,
+      target: {
+        worktreePath,
+        commonDir: '/test/repo/.git',
+        gitDir: '/test/repo/.git/worktrees/test',
+        head: options.expectedHead ?? 'def456',
+        branch: options.expectedBranch,
+        detached: options.expectedDetached ?? false,
+        bare: false,
+      },
+    }));
     taskStore = new TaskStore();
     queue = new AttentionQueue();
     monitor = new Monitor(taskStore, queue);

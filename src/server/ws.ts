@@ -251,6 +251,7 @@ export class MessageRouter {
       queue: this.deps.queue,
       interactionLog: this.deps.interactionLog,
       getCleanupWorktreeOnComplete: this.deps.getCleanupWorktreeOnComplete,
+      reflectWorktreesDir: this.deps.reflectWorktreesDir,
       suppressionTracker: this.deps.suppressionTracker,
       leaseService: this.deps.leaseService,
       attemptRepository: this.deps.attemptRepository,

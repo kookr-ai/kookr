@@ -112,6 +112,7 @@ describe('getGitInfo', () => {
       expect(result!.isWorktree).toBe(true);
       expect(result!.isDetached).toBe(false);
       expect(result!.worktreeRoot).toBe(worktreeDir);
+      expect(result!.gitDir).toBe(join(mainGitDir, 'worktrees', 'my-worktree'));
     } finally {
       rmSync(mainDir, { recursive: true });
       rmSync(worktreeDir, { recursive: true });
@@ -198,6 +199,7 @@ describe('getGitInfo', () => {
         head: 'abcdef1234567890abcdef1234567890abcdef12',
         isDetached: false,
         isPrunable: false,
+        isBare: false,
         isMain: false,
       }),
     });
@@ -208,6 +210,28 @@ describe('getGitInfo', () => {
       isWorktree: true,
       isDetached: false,
       worktreeRoot: '/missing-from-disk',
+    });
+  });
+
+  test('does not report a bare registry entry as a worktree', async () => {
+    const result = await getGitInfo('/bare-repo', {
+      byPath: () => ({
+        path: '/bare-repo',
+        branch: null,
+        head: '',
+        isDetached: false,
+        isPrunable: false,
+        isBare: true,
+        isMain: false,
+      }),
+    });
+
+    expect(result).toEqual({
+      branch: null,
+      commit: '',
+      isWorktree: false,
+      isDetached: false,
+      worktreeRoot: '/bare-repo',
     });
   });
 });

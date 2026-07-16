@@ -1,11 +1,11 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
 // Hoist mock functions so they're available in vi.mock factories
-const { mockExecFile, mockExistsSync, mockRm, mockRemovalGuard } = vi.hoisted(() => ({
+const { mockExecFile, mockExistsSync, mockRemovalGuard, mockRemoveRegisteredWorktree } = vi.hoisted(() => ({
   mockExecFile: vi.fn(),
   mockExistsSync: vi.fn(),
-  mockRm: vi.fn(),
   mockRemovalGuard: vi.fn(),
+  mockRemoveRegisteredWorktree: vi.fn(),
 }));
 
 vi.mock('node:child_process', () => ({
@@ -16,12 +16,10 @@ vi.mock('node:fs', () => ({
   existsSync: mockExistsSync,
 }));
 
-vi.mock('node:fs/promises', () => ({
-  rm: mockRm,
-}));
-
 vi.mock('./worktree-safety.js', () => ({
   getWorktreeRemovalGuardReason: mockRemovalGuard,
+  samePath: (left: string, right: string) => left === right,
+  removeRegisteredWorktree: mockRemoveRegisteredWorktree,
 }));
 
 import {
@@ -78,10 +76,21 @@ function makeFakeLog(): { log: InteractionLogWriter; events: InteractionEvent[] 
 beforeEach(() => {
   mockExecFile.mockReset();
   mockExistsSync.mockReset();
-  mockRm.mockReset();
-  mockRm.mockResolvedValue(undefined);
   mockRemovalGuard.mockReset();
   mockRemovalGuard.mockResolvedValue(undefined);
+  mockRemoveRegisteredWorktree.mockReset();
+  mockRemoveRegisteredWorktree.mockImplementation(async (worktreePath: string, options: { expectedHead?: string; expectedBranch?: string; expectedDetached?: boolean } = {}) => ({
+    removed: true,
+    target: {
+      worktreePath,
+      commonDir: worktreePath.startsWith('/other-repo/') ? '/other-repo/.git' : `${worktreePath}/.git`,
+      gitDir: `${worktreePath}/.git/worktrees/kookr-test`,
+      head: options.expectedHead ?? 'abc123',
+      branch: options.expectedBranch,
+      detached: options.expectedDetached ?? false,
+      bare: false,
+    },
+  }));
 });
 
 describe('cleanupTaskWorktrees', () => {
@@ -106,6 +115,8 @@ describe('cleanupTaskWorktrees', () => {
       createdAt: new Date(),
       gitIsWorktree: true,
       gitBranch: 'feature',
+      gitCommit: 'abc123',
+      gitDir: '/wt/feature-branch/.git/worktrees/kookr-test',
     });
     taskStore.completeTask(task.id);
 
@@ -115,7 +126,12 @@ describe('cleanupTaskWorktrees', () => {
     await cleanupTaskWorktrees(taskStore, task.id, log);
 
     // Directory removed
-    expect(mockRm).toHaveBeenCalledWith('/wt/feature-branch', { recursive: true, force: true });
+    expect(mockRemoveRegisteredWorktree).toHaveBeenCalledWith('/wt/feature-branch', expect.objectContaining({
+      force: true,
+      expectedHead: 'abc123',
+      expectedBranch: 'feature',
+      expectedGitDir: '/wt/feature-branch/.git/worktrees/kookr-test',
+    }));
     expect(taskStore.getTask(task.id)!.sessions[0].worktreeHealth).toBe('cleaned_up');
     expect(mockExecFile).toHaveBeenCalledWith(
       'git',
@@ -178,7 +194,7 @@ describe('cleanupTaskWorktrees', () => {
     await cleanupTaskWorktrees(taskStore, task.id, log);
 
     // Directory NOT removed
-    expect(mockRm).not.toHaveBeenCalled();
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
 
     // worktree_kept logged
     const kept = events.find((e) => e.type === 'worktree_kept');
@@ -205,7 +221,7 @@ describe('cleanupTaskWorktrees', () => {
     await cleanupTaskWorktrees(taskStore, task.id, log);
 
     expect(mockExecFile).not.toHaveBeenCalled();
-    expect(mockRm).not.toHaveBeenCalled();
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
     expect(events).toHaveLength(0);
   });
 
@@ -237,7 +253,7 @@ describe('cleanupTaskWorktrees', () => {
     await cleanupTaskWorktrees(taskStore, task.id, log);
 
     // Directory NOT removed because task is open
-    expect(mockRm).not.toHaveBeenCalled();
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
 
     // worktree_skipped logged with reason 'task reopened'
     const skipped = events.find((e) => e.type === 'worktree_skipped');
@@ -266,7 +282,7 @@ describe('cleanupTaskWorktrees', () => {
 
     await cleanupTaskWorktrees(taskStore, task.id, log);
 
-    expect(mockRm).not.toHaveBeenCalled();
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
     const skipped = events.find((e) => e.type === 'worktree_skipped');
     expect(skipped).toMatchObject({
       type: 'worktree_skipped',
@@ -293,7 +309,7 @@ describe('cleanupTaskWorktrees', () => {
 
     await cleanupTaskWorktrees(taskStore, task.id, log);
 
-    expect(mockRm).not.toHaveBeenCalled();
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
     expect(events).toContainEqual(expect.objectContaining({
       type: 'worktree_skipped',
       worktreePath: '/repo',
@@ -320,7 +336,7 @@ describe('cleanupTaskWorktrees', () => {
 
     await cleanupTaskWorktrees(taskStore, task.id, log);
 
-    expect(mockRm).not.toHaveBeenCalled();
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
     expect(events).toContainEqual(expect.objectContaining({ reason: 'not-a-linked-worktree' }));
   });
 
@@ -343,7 +359,7 @@ describe('cleanupTaskWorktrees', () => {
 
     await cleanupTaskWorktrees(taskStore, task.id, log);
 
-    expect(mockRm).not.toHaveBeenCalled();
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
     expect(events).toContainEqual(expect.objectContaining({ reason: 'protected-branch' }));
   });
 
@@ -375,7 +391,7 @@ describe('cleanupTaskWorktrees', () => {
 
     await cleanupTaskWorktrees(taskStore, task1.id, log);
 
-    expect(mockRm).not.toHaveBeenCalled();
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
     const skipped = events.find((e) => e.type === 'worktree_skipped');
     expect(skipped).toMatchObject({
       type: 'worktree_skipped',
@@ -401,7 +417,7 @@ describe('cleanupTaskWorktrees', () => {
 
     await cleanupTaskWorktrees(taskStore, task.id, log);
 
-    expect(mockRm).not.toHaveBeenCalled();
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
     expect(mockExecFile).not.toHaveBeenCalled();
     const skipped = events.find((e) => e.type === 'worktree_skipped');
     expect(skipped).toMatchObject({
@@ -453,16 +469,13 @@ describe('cleanupTaskWorktrees', () => {
       expect.any(Object),
       expect.any(Function),
     );
-    const resolveCallOrder = mockExecFile.mock.invocationCallOrder.find((_, index) =>
-      mockExecFile.mock.calls[index][1].includes('--git-common-dir'));
-    expect(resolveCallOrder).toBeLessThan(mockRm.mock.invocationCallOrder[0]);
     const pruneCallIndex = mockExecFile.mock.calls.findIndex((call) => call[1].includes('prune'));
     expect(mockExecFile.mock.invocationCallOrder[pruneCallIndex]).toBeGreaterThan(
-      mockRm.mock.invocationCallOrder[0],
+      mockRemoveRegisteredWorktree.mock.invocationCallOrder[0],
     );
   });
 
-  test('repository context resolution failure preserves the worktree', async () => {
+  test('shared removal failure preserves the worktree', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask('Fix bug', '/project');
     taskStore.addSession(task.id, {
@@ -483,14 +496,19 @@ describe('cleanupTaskWorktrees', () => {
       'log main..feature': '',
       'rev-parse --path-format=absolute --git-common-dir': 'error',
     });
+    mockRemoveRegisteredWorktree.mockResolvedValue({
+      removed: false,
+      reason: 'repository-context-unavailable',
+      stderr: 'repository context unavailable',
+    });
 
     await cleanupTaskWorktrees(taskStore, task.id, log);
 
-    expect(mockRm).not.toHaveBeenCalled();
+    expect(mockRemoveRegisteredWorktree).toHaveBeenCalled();
     expect(events).toContainEqual(expect.objectContaining({
-      type: 'worktree_kept',
+      type: 'worktree_cleanup_failed',
       worktreePath: '/wt/feature',
-      reason: 'repository context unavailable',
+      error: expect.stringContaining('repository context unavailable'),
     }));
   });
 
@@ -525,7 +543,7 @@ describe('cleanupTaskWorktrees', () => {
 
     await cleanupTaskWorktrees(taskStore, task.id, log);
 
-    expect(mockRm).not.toHaveBeenCalled();
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
     const kept = events.find((e) => e.type === 'worktree_kept');
     expect(kept).toMatchObject({
       type: 'worktree_kept',
@@ -543,7 +561,7 @@ describe('cleanupTaskWorktrees', () => {
     );
   });
 
-  test('rm failure → worktree_cleanup_failed logged', async () => {
+  test('Git worktree removal failure → worktree_cleanup_failed logged', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask('Fix bug', '/project');
     taskStore.addSession(task.id, {
@@ -563,7 +581,11 @@ describe('cleanupTaskWorktrees', () => {
       'log': '',
       'symbolic-ref': 'refs/remotes/origin/main\n',
     });
-    mockRm.mockRejectedValue(new Error('EBUSY: resource busy'));
+    mockRemoveRegisteredWorktree.mockResolvedValue({
+      removed: false,
+      reason: 'git-remove-failed',
+      stderr: 'EBUSY: resource busy',
+    });
 
     await cleanupTaskWorktrees(taskStore, task.id, log);
 
@@ -593,7 +615,7 @@ describe('cleanupTaskWorktrees', () => {
 
     await cleanupTaskWorktrees(taskStore, task.id, log);
 
-    expect(mockRm).not.toHaveBeenCalled();
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
     const kept = events.find((e) => e.type === 'worktree_kept');
     expect(kept).toMatchObject({
       type: 'worktree_kept',
@@ -624,7 +646,7 @@ describe('cleanupTaskWorktrees', () => {
 
     await cleanupTaskWorktrees(taskStore, task.id, log);
 
-    expect(mockRm).not.toHaveBeenCalled();
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
     const kept = events.find((e) => e.type === 'worktree_kept');
     expect(kept).toMatchObject({
       type: 'worktree_kept',
@@ -665,7 +687,7 @@ describe('cleanupTaskWorktrees', () => {
 
     await cleanupTaskWorktrees(taskStore, task.id, log);
 
-    expect(mockRm).toHaveBeenCalledTimes(2);
+    expect(mockRemoveRegisteredWorktree).toHaveBeenCalledTimes(2);
     const cleaned = events.filter((e) => e.type === 'worktree_cleaned');
     expect(cleaned).toHaveLength(2);
   });
@@ -704,7 +726,7 @@ describe('cleanupTaskWorktrees', () => {
     await cleanupTaskWorktrees(taskStore, task.id, log);
 
     // getWorktreePaths deduplicates
-    expect(mockRm).toHaveBeenCalledTimes(1);
+    expect(mockRemoveRegisteredWorktree).toHaveBeenCalledTimes(1);
     const cleaned = events.filter((e) => e.type === 'worktree_cleaned');
     expect(cleaned).toHaveLength(1);
   });
@@ -743,6 +765,6 @@ describe('cleanupTaskWorktrees', () => {
       worktreePath: '/wt/fallback',
       branch: 'feature',
     });
-    expect(mockRm).toHaveBeenCalledWith('/wt/fallback', { recursive: true, force: true });
+    expect(mockRemoveRegisteredWorktree).toHaveBeenCalledWith('/wt/fallback', expect.objectContaining({ force: true }));
   });
 });

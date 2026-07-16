@@ -12,6 +12,7 @@ import {
   DEFAULT_GIT_MAX_ATTEMPTS,
   DEFAULT_GIT_MAX_BUFFER,
   DEFAULT_GIT_TIMEOUT_MS,
+  NESTED_GIT_ENV_VARS,
   gitIn,
   runGitIn,
 } from './git-helpers.js';
@@ -23,11 +24,12 @@ beforeEach(() => {
 
 describe('git-helpers', () => {
   it('runs git with timeout, maxBuffer, cwd, and cleaned git env', async () => {
-    const originalGitDir = process.env.GIT_DIR;
-    const originalGitWorkTree = process.env.GIT_WORK_TREE;
+    const previous = new Map<string, string | undefined>();
     try {
-      process.env.GIT_DIR = '/leaked/git-dir';
-      process.env.GIT_WORK_TREE = '/leaked/work-tree';
+      for (const name of NESTED_GIT_ENV_VARS) {
+        previous.set(name, process.env[name]);
+        process.env[name] = '/leaked/git-context';
+      }
       mockExecFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
         cb(null, { stdout: 'abc123\n', stderr: '' });
       });
@@ -41,23 +43,19 @@ describe('git-helpers', () => {
           cwd: '/repo',
           timeout: DEFAULT_GIT_TIMEOUT_MS,
           maxBuffer: DEFAULT_GIT_MAX_BUFFER,
-          env: expect.not.objectContaining({
-            GIT_DIR: expect.any(String),
-            GIT_WORK_TREE: expect.any(String),
-          }),
+          env: expect.any(Object),
         }),
         expect.any(Function),
       );
-    } finally {
-      if (originalGitDir === undefined) {
-        delete process.env.GIT_DIR;
-      } else {
-        process.env.GIT_DIR = originalGitDir;
+      const env = mockExecFile.mock.calls[0]![2].env as NodeJS.ProcessEnv;
+      for (const name of NESTED_GIT_ENV_VARS) {
+        expect(env[name]).toBeUndefined();
       }
-      if (originalGitWorkTree === undefined) {
-        delete process.env.GIT_WORK_TREE;
-      } else {
-        process.env.GIT_WORK_TREE = originalGitWorkTree;
+    } finally {
+      for (const name of NESTED_GIT_ENV_VARS) {
+        const value = previous.get(name);
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
       }
     }
   });

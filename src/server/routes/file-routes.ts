@@ -36,7 +36,10 @@ export function registerFileRoutes(app: Hono, deps: FileRouteDeps): void {
   // Allow-list: the server cwd plus every active worktree root. realpath'd so a
   // symlinked root still matches the realpath'd target below.
   async function allowedRoots(): Promise<string[]> {
-    const raw = [serverCwd, ...(worktreeRegistry?.all().map((e) => e.path) ?? [])];
+    const raw = [
+      serverCwd,
+      ...(worktreeRegistry?.all().filter((entry) => !entry.isBare).map((entry) => entry.path) ?? []),
+    ];
     const out: string[] = [];
     for (const r of raw) {
       try {

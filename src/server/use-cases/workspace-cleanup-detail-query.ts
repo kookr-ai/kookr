@@ -7,6 +7,7 @@ import type {
 } from '../../core/workspace-types.js';
 import type { RepoPolicyResolver } from '../../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../../core/worktree-lease-service.js';
+import { gitExecEnv } from '../../core/git-helpers.js';
 import { deriveCleanupCapabilitiesForCandidate } from '../../core/workspace-cleanup-policy.js';
 import { isProtectedBranch } from '../../adapters/worktree-safety.js';
 import { inspectCleanupCandidates } from './cleanup-inspector.js';
@@ -18,18 +19,6 @@ import {
 } from './cleanup-enrichment.js';
 
 const execFile = promisify(execFileCb);
-const NESTED_GIT_ENV_VARS = [
-  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-  'GIT_CEILING_DIRECTORIES',
-  'GIT_COMMON_DIR',
-  'GIT_CONFIG_COUNT',
-  'GIT_CONFIG_PARAMETERS',
-  'GIT_DIR',
-  'GIT_INDEX_FILE',
-  'GIT_OBJECT_DIRECTORY',
-  'GIT_PREFIX',
-  'GIT_WORK_TREE',
-] as const;
 
 export interface WorkspaceCleanupDetailDeps {
   policyResolver: RepoPolicyResolver;
@@ -67,6 +56,7 @@ export async function hydrateCleanupCandidateDetail(
   }
 
   const headOid = await runGit(candidate.worktreePath, 'rev-parse', 'HEAD');
+  const gitDir = (await runGit(candidate.worktreePath, 'rev-parse', '--path-format=absolute', '--git-dir')) || undefined;
   const branchRefOid = isSymbolicBranch(candidate.branch)
     ? await runGit(repoPath, 'rev-parse', '--verify', `refs/heads/${candidate.branch}`)
     : undefined;
@@ -106,9 +96,11 @@ export async function hydrateCleanupCandidateDetail(
     reasonCode: candidate.reasonCode,
     branchRefOid,
     headOid,
+    gitDir,
     baselineOid,
     fingerprint: createCleanupFingerprint({
       headOid,
+      gitDir,
       branchRefOid,
       baselineOid,
       statusDigest: normalizeStatusDigest(rawStatusForFingerprint),
@@ -122,6 +114,7 @@ export async function hydrateCleanupCandidateDetail(
 
 interface CleanupFingerprintInput {
   headOid?: string;
+  gitDir?: string;
   branchRefOid?: string;
   baselineOid?: string;
   statusDigest: string;
@@ -157,12 +150,4 @@ async function runGit(cwd: string, ...args: string[]): Promise<string | undefine
   } catch {
     return undefined;
   }
-}
-
-function gitExecEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const name of NESTED_GIT_ENV_VARS) {
-    delete env[name];
-  }
-  return env;
 }

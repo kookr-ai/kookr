@@ -10,3 +10,8 @@
   allowlist.
 - The `.kookr-protected` marker remains supported as an additional opt-in
   protection layer.
+- Task, workspace, and reflection cleanup now share one identity-checked Git
+  removal boundary; Git failures leave worktrees on disk instead of falling
+  back to recursive deletion.
+- Bare Git registry entries remain metadata only: they are never treated as a
+  primary checkout, removable worktree, or file-view root.

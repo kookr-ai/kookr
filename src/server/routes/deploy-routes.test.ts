@@ -1011,7 +1011,7 @@ exit 2
 
   describe('resolveProdDir', () => {
     function makeEntry(path: string): WorktreeEntry {
-      return { path, branch: null, head: 'abc', isDetached: false, isPrunable: false, isMain: false };
+      return { path, branch: null, head: 'abc', isDetached: false, isPrunable: false, isBare: false, isMain: false };
     }
 
     it('falls back to legacy sibling path when no registry is provided', () => {

@@ -6,6 +6,7 @@ import {
   writeFileSync,
   existsSync,
   utimesSync,
+  symlinkSync,
 } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -36,11 +37,11 @@ function writeIdentity(dir: string, payload: unknown) {
   writeFileSync(join(dir, REFLECT_IDENTITY_FILE), JSON.stringify(payload));
 }
 
-function git(cwd: string, ...args: string[]) {
+function git(cwd: string, ...args: string[]): string {
   const env = { ...process.env };
   delete env.GIT_DIR;
   delete env.GIT_WORK_TREE;
-  execFileSync('git', args, { cwd, stdio: 'pipe', env });
+  return execFileSync('git', args, { cwd, stdio: 'pipe', env, encoding: 'utf8' }).trim();
 }
 
 function initGitRepo(dir: string) {
@@ -222,14 +223,9 @@ describe('sweepReflectWorktrees', () => {
     expect(existsSync(dir)).toBe(true);
   });
 
-  it('removes a worktree when identity file has valid UUID but no live source task', async () => {
+  it('removes a legacy UUID directory when its source task is no longer live', async () => {
     const dir = join(baseDir, `${VALID_UUID_B}-2026-05-08T19-30-45-123Z`);
     mkdirSync(dir);
-    writeIdentity(dir, {
-      schema: REFLECT_IDENTITY_SCHEMA,
-      sourceTaskId: VALID_UUID_B,
-      createdAt: new Date().toISOString(),
-    });
 
     const result = await sweepReflectWorktrees({
       reflectWorktreesDir: baseDir,
@@ -238,6 +234,30 @@ describe('sweepReflectWorktrees', () => {
 
     expect(result).toEqual({ removed: 1, kept: 0 });
     expect(existsSync(dir)).toBe(false);
+  });
+
+  it('removes a stale registered Git worktree through the startup sweep', async () => {
+    const repo = join(baseDir, 'repo');
+    const reflectRoot = join(baseDir, 'reflect-worktrees');
+    const dir = join(reflectRoot, `${VALID_UUID_B}-2026-05-08T19-30-45-123Z`);
+    mkdirSync(repo, { recursive: true });
+    mkdirSync(reflectRoot, { recursive: true });
+    initGitRepo(repo);
+    git(repo, 'worktree', 'add', '--quiet', '--detach', dir, 'HEAD');
+    writeIdentity(dir, {
+      schema: REFLECT_IDENTITY_SCHEMA,
+      sourceTaskId: VALID_UUID_B,
+      createdAt: new Date().toISOString(),
+    });
+
+    const result = await sweepReflectWorktrees({
+      reflectWorktreesDir: reflectRoot,
+      taskStore: makeTaskStore([]),
+    });
+
+    expect(result).toEqual({ removed: 1, kept: 0 });
+    expect(existsSync(dir)).toBe(false);
+    expect(git(repo, 'worktree', 'list', '--porcelain')).not.toContain(dir);
   });
 
   it('does not classify as reflect when identity sourceTaskId is not a UUID', async () => {
@@ -313,14 +333,9 @@ describe('sweepReflectWorktrees', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('removes a TTL-expired worktree even when its source task is alive', async () => {
+  it('removes a TTL-expired legacy UUID directory even when its source task is alive', async () => {
     const dir = join(baseDir, `${VALID_UUID_A}-old`);
     mkdirSync(dir);
-    writeIdentity(dir, {
-      schema: REFLECT_IDENTITY_SCHEMA,
-      sourceTaskId: VALID_UUID_A,
-      createdAt: '2020-01-01T00:00:00Z',
-    });
     // Backdate mtime to 30 days ago.
     const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     utimesSync(dir, old, old);
@@ -369,25 +384,36 @@ describe('removeReflectWorktree', () => {
       createdAt: new Date().toISOString(),
     });
 
-    const removed = await removeReflectWorktree(worktreePath);
+    const removed = await removeReflectWorktree(worktreePath, baseDir);
 
     expect(removed).toBe(true);
     expect(existsSync(worktreePath)).toBe(false);
   });
 
-  it('falls back to rm for a plain dir carrying the identity marker', async () => {
+  it('falls back to rm for a markerless legacy UUID directory', async () => {
     const dir = join(baseDir, `${VALID_UUID_A}-plain`);
     mkdirSync(dir);
-    writeIdentity(dir, {
+
+    const removed = await removeReflectWorktree(dir, baseDir, { allowLegacy: true });
+
+    expect(removed).toBe(true);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it('refuses to delete a bare primary repository even without a .git child', async () => {
+    const seed = join(baseDir, 'seed');
+    const bare = join(baseDir, `${VALID_UUID_A}-bare`);
+    mkdirSync(seed);
+    initGitRepo(seed);
+    execFileSync('git', ['clone', '--quiet', '--bare', seed, bare], { stdio: 'pipe' });
+    writeIdentity(bare, {
       schema: REFLECT_IDENTITY_SCHEMA,
       sourceTaskId: VALID_UUID_A,
       createdAt: new Date().toISOString(),
     });
 
-    const removed = await removeReflectWorktree(dir);
-
-    expect(removed).toBe(true);
-    expect(existsSync(dir)).toBe(false);
+    expect(await removeReflectWorktree(bare, baseDir)).toBe(false);
+    expect(existsSync(bare)).toBe(true);
   });
 
   it('is a no-op when the path is undefined', async () => {
@@ -399,10 +425,65 @@ describe('removeReflectWorktree', () => {
     mkdirSync(dir);
     writeFileSync(join(dir, 'keep.txt'), 'precious');
 
-    const removed = await removeReflectWorktree(dir);
+    const removed = await removeReflectWorktree(dir, baseDir);
 
     expect(removed).toBe(false);
     expect(existsSync(dir)).toBe(true);
     expect(existsSync(join(dir, 'keep.txt'))).toBe(true);
+  });
+
+  it('refuses the legacy filesystem fallback for a Git-looking directory', async () => {
+    const dir = join(baseDir, `${VALID_UUID_A}-git-looking`);
+    mkdirSync(join(dir, '.git'), { recursive: true });
+    writeIdentity(dir, {
+      schema: REFLECT_IDENTITY_SCHEMA,
+      sourceTaskId: VALID_UUID_A,
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(await removeReflectWorktree(dir, baseDir)).toBe(false);
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it('refuses marked directories outside the configured reflect root', async () => {
+    const outside = join(baseDir, 'outside');
+    mkdirSync(join(baseDir, 'reflect-root'));
+    mkdirSync(outside);
+    writeIdentity(outside, {
+      schema: REFLECT_IDENTITY_SCHEMA,
+      sourceTaskId: VALID_UUID_A,
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(await removeReflectWorktree(outside, join(baseDir, 'reflect-root'))).toBe(false);
+    expect(existsSync(outside)).toBe(true);
+  });
+
+  it('refuses nested and symlinked paths even when their identity marker is valid', async () => {
+    const nested = join(baseDir, 'reflect-root', 'nested', 'worktree');
+    mkdirSync(nested, { recursive: true });
+    writeIdentity(nested, {
+      schema: REFLECT_IDENTITY_SCHEMA,
+      sourceTaskId: VALID_UUID_A,
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(await removeReflectWorktree(nested, join(baseDir, 'reflect-root'))).toBe(false);
+    expect(existsSync(nested)).toBe(true);
+
+    const outside = join(baseDir, 'symlink-target');
+    const link = join(baseDir, 'reflect-root', `${VALID_UUID_B}-link`);
+    mkdirSync(outside);
+    writeIdentity(outside, {
+      schema: REFLECT_IDENTITY_SCHEMA,
+      sourceTaskId: VALID_UUID_B,
+      createdAt: new Date().toISOString(),
+    });
+    mkdirSync(join(baseDir, 'reflect-root'), { recursive: true });
+    symlinkSync(outside, link, 'dir');
+
+    expect(await removeReflectWorktree(link, join(baseDir, 'reflect-root'))).toBe(false);
+    expect(existsSync(outside)).toBe(true);
+    expect(existsSync(link)).toBe(true);
   });
 });

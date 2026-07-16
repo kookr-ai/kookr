@@ -1,13 +1,19 @@
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { access, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
-import { existsSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
+import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import type { Task, TaskStore } from '../../core/tasks.js';
 import type { LaunchOpts } from '../launch-service.js';
 import { resolvePluginDir } from '../../adapters/claude-code-adapter.js';
+import { gitExecEnv } from '../../core/git-helpers.js';
+import { looksLikeLinkedWorktree, removeRegisteredWorktree } from '../../adapters/worktree-safety.js';
 
 const execFile = promisify(execFileCb);
+
+function execGit(args: string[]) {
+  return execFile('git', args, { env: gitExecEnv() });
+}
 
 /**
  * Expected `skillSchemaVersion` values in reflect skill frontmatter.
@@ -122,7 +128,7 @@ export async function requestTaskReflect(
   await mkdir(deps.reflectWorktreesDir, { recursive: true });
 
   try {
-    await execFile('git', ['-C', sourceRepoRoot, 'worktree', 'add', '--detach', worktreePath, baselineRef]);
+    await execGit(['-C', sourceRepoRoot, 'worktree', 'add', '--detach', worktreePath, baselineRef]);
   } catch (err) {
     return { spawned: false, reason: `worktree_create_failed: ${(err as Error).message}` };
   }
@@ -136,8 +142,7 @@ export async function requestTaskReflect(
     };
     await writeFile(join(worktreePath, REFLECT_IDENTITY_FILE), JSON.stringify(identity, null, 2));
   } catch (err) {
-    await execFile('git', ['worktree', 'remove', '--force', worktreePath]).catch(() => {});
-    await rm(worktreePath, { recursive: true, force: true }).catch(() => {});
+    await removeRegisteredWorktree(worktreePath, { force: true }).catch(() => {});
     return { spawned: false, reason: `identity_write_failed: ${(err as Error).message}` };
   }
 
@@ -165,8 +170,7 @@ export async function requestTaskReflect(
     });
   } catch (err) {
     // Clean up worktree on launch failure
-    await execFile('git', ['worktree', 'remove', '--force', worktreePath]).catch(() => {});
-    await rm(worktreePath, { recursive: true, force: true }).catch(() => {});
+    await removeReflectWorktree(worktreePath, deps.reflectWorktreesDir).catch(() => {});
     return { spawned: false, reason: `launch_failed: ${(err as Error).message}` };
   }
 
@@ -234,7 +238,7 @@ async function verifySkill(skillPath: string, expectedName: string, expectedVers
 
 async function resolveRepoRoot(cwd: string): Promise<string | null> {
   try {
-    const { stdout } = await execFile('git', ['-C', cwd, 'rev-parse', '--show-toplevel']);
+    const { stdout } = await execGit(['-C', cwd, 'rev-parse', '--show-toplevel']);
     return resolve(stdout.trim());
   } catch {
     return null;
@@ -245,7 +249,7 @@ async function resolveReflectBaselineRef(repoRoot: string): Promise<string | nul
   const candidates = ['main', 'origin/main', 'master', 'origin/master', 'HEAD'];
   for (const ref of candidates) {
     try {
-      await execFile('git', ['-C', repoRoot, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+      await execGit(['-C', repoRoot, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
       return ref;
     } catch {
       // Try the next conventional baseline; HEAD is the final detached-checkout fallback.
@@ -274,6 +278,7 @@ async function readReflectIdentity(
   const identityPath = join(dirPath, REFLECT_IDENTITY_FILE);
   let raw: string;
   try {
+    if (!lstatSync(identityPath).isFile()) return null;
     raw = await readFile(identityPath, 'utf-8');
   } catch {
     // File missing — try legacy basename parse, but only accept UUIDs.
@@ -297,11 +302,15 @@ async function readReflectIdentity(
     });
     return null;
   }
+  const schema =
+    parsed && typeof parsed === 'object' && 'schema' in parsed
+      ? (parsed as { schema?: unknown }).schema
+      : undefined;
   const sourceTaskId =
     parsed && typeof parsed === 'object' && 'sourceTaskId' in parsed
       ? (parsed as { sourceTaskId?: unknown }).sourceTaskId
       : undefined;
-  if (typeof sourceTaskId !== 'string' || !UUID_RE.test(sourceTaskId)) {
+  if (schema !== REFLECT_IDENTITY_SCHEMA || typeof sourceTaskId !== 'string' || !UUID_RE.test(sourceTaskId)) {
     console.warn('[reflect-sweep] identity file missing valid sourceTaskId', {
       dir: dirPath,
     });
@@ -361,13 +370,9 @@ export async function sweepReflectWorktrees(deps: {
     }
 
     if (stale) {
-      // Try git worktree remove first; fall back to rm -rf
-      try {
-        await execFile('git', ['worktree', 'remove', '--force', dirPath]);
-      } catch {
-        await rm(dirPath, { recursive: true, force: true }).catch(() => {});
-      }
-      removed++;
+      const didRemove = await removeReflectWorktree(dirPath, deps.reflectWorktreesDir, { allowLegacy: true });
+      if (didRemove) removed++;
+      else kept++;
     } else {
       kept++;
     }
@@ -380,21 +385,86 @@ export async function sweepReflectWorktrees(deps: {
  * reaches a terminal state so its worktree is reclaimed immediately rather than
  * lingering until the next startup sweep.
  *
- * Self-guarding: removes `worktreePath` only when it still carries the
- * `.kookr-reflect.json` identity marker, so a missing/corrupt path can never
- * delete an unrelated directory. Best-effort and never throws — cleanup must
- * not fail a task transition. Returns true when `worktreePath` was a marked
- * reflect worktree we attempted to reclaim, false when skipped (absent path or
- * missing identity marker).
+ * Self-guarding: normal cleanup removes `worktreePath` only when it still
+ * carries the `.kookr-reflect.json` identity marker. Startup sweeps may also
+ * opt into the documented legacy UUID-directory format through `allowLegacy`;
+ * malformed or unrelated paths remain untouched. Best-effort and never throws
+ * — cleanup must not fail a task transition. Returns true when `worktreePath`
+ * was an eligible reflect worktree we attempted to reclaim, false when
+ * skipped (absent path, invalid identity, or failed root validation).
  */
-export async function removeReflectWorktree(worktreePath: string | undefined): Promise<boolean> {
-  if (!worktreePath) return false;
-  // Only touch a directory that is provably a reflect worktree.
-  if (!existsSync(join(worktreePath, REFLECT_IDENTITY_FILE))) return false;
+function isDirectChildDirectory(reflectWorktreesDir: string, worktreePath: string): boolean {
   try {
-    await execFile('git', ['worktree', 'remove', '--force', worktreePath]);
+    const root = realpathSync(reflectWorktreesDir);
+    const target = realpathSync(worktreePath);
+    const rel = relative(root, target);
+    return rel !== ''
+      && !rel.startsWith('..')
+      && !rel.startsWith('/')
+      && !rel.startsWith('\\')
+      && !/[\\/]/.test(rel)
+      && lstatSync(worktreePath).isDirectory();
   } catch {
-    await rm(worktreePath, { recursive: true, force: true }).catch(() => {});
+    return false;
   }
-  return true;
+}
+
+function hasGitMetadata(worktreePath: string): boolean {
+  try {
+    const gitPath = lstatSync(join(worktreePath, '.git'));
+    return gitPath.isFile() || gitPath.isDirectory() || gitPath.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+function looksLikeBareRepository(worktreePath: string): boolean {
+  try {
+    const head = lstatSync(join(worktreePath, 'HEAD'));
+    const objects = lstatSync(join(worktreePath, 'objects'));
+    const config = lstatSync(join(worktreePath, 'config'));
+    return head.isFile() && objects.isDirectory() && config.isFile();
+  } catch {
+    return false;
+  }
+}
+
+export async function removeReflectWorktree(
+  worktreePath: string | undefined,
+  reflectWorktreesDir?: string,
+  options: { allowLegacy?: boolean } = {},
+): Promise<boolean> {
+  if (!worktreePath || !reflectWorktreesDir) return false;
+  if (!isDirectChildDirectory(reflectWorktreesDir, worktreePath)) return false;
+
+  const identity = await readReflectIdentity(worktreePath, worktreePath.split(/[\\/]/).pop() ?? '');
+  if (!identity || (identity.legacy && !options.allowLegacy)) return false;
+
+  const removal = await removeRegisteredWorktree(worktreePath, { force: true });
+  if (removal.removed) return true;
+
+  // Only markerless UUID directories from the documented legacy format may
+  // use the filesystem fallback. A current identity marker is expected to be
+  // a Git worktree; context, identity, primary, and Git-removal failures all
+  // fail closed. Bare repositories are also rejected even without `.git`.
+  if (
+    !identity.legacy
+    || !options.allowLegacy
+    || removal.reason !== 'not-a-linked-worktree'
+    || hasGitMetadata(worktreePath)
+    || looksLikeLinkedWorktree(worktreePath)
+    || looksLikeBareRepository(worktreePath)
+  ) return false;
+
+  try {
+    try {
+      if (lstatSync(join(worktreePath, REFLECT_IDENTITY_FILE)).isSymbolicLink()) return false;
+    } catch {
+      // Markerless legacy directories are authorized by their UUID basename.
+    }
+    await rm(worktreePath, { recursive: true, force: true });
+    return !existsSync(worktreePath);
+  } catch {
+    return false;
+  }
 }
