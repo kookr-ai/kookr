@@ -659,8 +659,22 @@ export class CodexCliAdapter implements AgentAdapter {
     return this.settingsMap.get(tmuxName);
   }
 
+  getActiveHookSettings(tmuxName: string): EffectiveHookSettings | undefined {
+    const content = this.settingsMap.get(tmuxName);
+    if (!content) return undefined;
+    const settingsPath = effectiveHookSettingsPath(this.settingsDir, tmuxName);
+    if (!settingsPath) return undefined;
+    return {
+      content,
+      agentType: this.agentType,
+      settingsPath,
+    };
+  }
+
   getEffectiveHookSettings(tmuxName: string): EffectiveHookSettings | undefined {
-    const content = this.settingsMap.get(tmuxName) ?? readPersistedHookSettings(this.settingsDir, tmuxName);
+    const active = this.getActiveHookSettings(tmuxName);
+    if (active) return active;
+    const content = readPersistedHookSettings(this.settingsDir, tmuxName);
     if (!content) return undefined;
     const settingsPath = effectiveHookSettingsPath(this.settingsDir, tmuxName);
     if (!settingsPath) return undefined;

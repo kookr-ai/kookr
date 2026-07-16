@@ -18,6 +18,7 @@ function createMockAdapter(agentType: AgentType): AgentAdapter {
     onRefreshNeeded: vi.fn((handler) => { refreshHandlers.push(handler); }),
     injectHookEvent: vi.fn(),
     getEffectiveHookSettings: vi.fn(() => undefined),
+    getActiveHookSettings: vi.fn(() => undefined),
     // Expose for testing
     _emitEvent: (tmuxName: string, event: any) => {
       for (const h of eventHandlers) h(tmuxName, event);
@@ -113,6 +114,23 @@ describe('RoutingAgentAdapter', () => {
       expect(codexAdapter.injectHookEvent).toHaveBeenCalledWith('kookr-codex-3', '{"event":"test"}', undefined);
     });
 
+    test('routes an in-flight session from generated hook settings before TaskStore registration', () => {
+      codexAdapter.getActiveHookSettings.mockReturnValue({
+        content: { hooks: {} },
+        agentType: 'codex-cli',
+        settingsPath: '/tmp/kookr-codex-settings.json',
+      });
+
+      router.injectHookEvent('kookr-codex-in-flight', '{"event":"test"}');
+
+      expect(codexAdapter.injectHookEvent).toHaveBeenCalledWith(
+        'kookr-codex-in-flight',
+        '{"event":"test"}',
+        undefined,
+      );
+      expect(claudeAdapter.injectHookEvent).not.toHaveBeenCalled();
+    });
+
     test('routes getEffectiveHookSettings to the correct adapter by session agentType', () => {
       const task = taskStore.createTask({ prompt: 'x', cwd: '/cwd', agentType: 'codex-cli' });
       taskStore.addSession(task.id, {
@@ -129,12 +147,17 @@ describe('RoutingAgentAdapter', () => {
     });
 
     test('falls back to default adapter when session is unknown', () => {
-      // Matches resolve() behavior: unknown session → registry.getDefault().
-      // Claude was registered first in beforeEach, so it's the default.
+      // Claude was registered first in beforeEach, so it remains the default
+      // when no adapter has generated settings for the session.
       router.getEffectiveHookSettings('never-seen');
+      router.captureDisplay('never-seen');
 
+      expect(claudeAdapter.getActiveHookSettings).toHaveBeenCalledWith('never-seen');
+      expect(codexAdapter.getActiveHookSettings).toHaveBeenCalledWith('never-seen');
       expect(claudeAdapter.getEffectiveHookSettings).toHaveBeenCalledWith('never-seen');
-      expect(codexAdapter.getEffectiveHookSettings).not.toHaveBeenCalled();
+      expect(codexAdapter.getEffectiveHookSettings).toHaveBeenCalledWith('never-seen');
+      expect(claudeAdapter.captureDisplay).toHaveBeenCalledWith('never-seen');
+      expect(codexAdapter.captureDisplay).not.toHaveBeenCalled();
     });
   });
 

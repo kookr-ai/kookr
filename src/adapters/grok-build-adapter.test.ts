@@ -111,6 +111,25 @@ describe('GrokBuildAdapter', () => {
     expect(backend.sessions.has(sessionId)).toBe(true);
   });
 
+  test('fails closed instead of resending an unacknowledged bracketed prompt', async () => {
+    const adapter = new GrokBuildAdapter(backend, taskStore, {
+      env: { ...baseEnv },
+      installedStateOverride: testedState(),
+      sourceGrokHome: join(sessionHomeRoot, 'no-such-home'),
+      sessionHomeRoot,
+      promptBracketedPaste: true,
+      promptReadyTimeoutMs: 0,
+      promptSubmitConfirmTimeoutMs: 0,
+      promptSubmitRetries: 0,
+    });
+    vi.spyOn(backend, 'captureBytes').mockResolvedValue(new TextEncoder().encode('\x1b[?2004h'));
+
+    const task = taskStore.createTask('x', '/workspace');
+    await expect(adapter.launch(task.id, 'x', '/workspace')).rejects.toThrow(/refusing to resend it/);
+    expect([...backend.sessions.values()].every((session) => !session.alive)).toBe(true);
+    expect(readdirSync(sessionHomeRoot)).toHaveLength(0);
+  });
+
   test('launch is refused when the kill switch is set', async () => {
     const adapter = makeAdapter({
       env: { ...baseEnv, [GROK_BUILD_KILL_SWITCH_ENV]: 'true' },

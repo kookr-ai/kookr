@@ -92,7 +92,25 @@ export class RoutingAgentAdapter implements AgentAdapter {
     const task = this.taskStore.findTaskBySession(tmuxName);
     const session = task?.sessions.find((item) => item.tmuxSession === tmuxName);
     if (!session) {
-      return this.registry.getDefault();
+      // A provider can emit hooks while its launch() call is still waiting for
+      // the first UserPromptSubmit. Adapters register their TaskStore session
+      // after that handshake, so the task-based lookup is intentionally empty
+      // during this window. The generated hook settings already identify the
+      // owning adapter, and using them here prevents a non-default provider
+      // (notably Grok's camelCase payloads) from being parsed by Claude's
+      // snake_case decoder or from losing the launch confirmation event.
+      const inFlightAdapter = this.registry.getAll().find((candidate) =>
+        candidate.getActiveHookSettings?.(tmuxName) !== undefined,
+      );
+      if (inFlightAdapter) return inFlightAdapter;
+
+      // Persisted settings are only a restart-time fallback. They share a
+      // directory across providers, so use them only when no active launch
+      // claims the session; normal live sessions are resolved by TaskStore.
+      const persistedAdapter = this.registry.getAll().find((candidate) =>
+        candidate.getEffectiveHookSettings(tmuxName) !== undefined,
+      );
+      return persistedAdapter ?? this.registry.getDefault();
     }
     return this.registry.get(session.agentType);
   }
