@@ -19,6 +19,18 @@ if [ -n "$STAGED_REVIEW_STATE" ]; then
   exit 1
 fi
 
+# Reject a push whose repo-local committer identity is a reserved test identity
+# (e.g. test@example.com). Worktrees share the main .git/config, so one stray
+# `git config user.email` in a test poisons the whole repo's authorship silently;
+# this catches that state before the fake author reaches the remote or the CLA
+# bot rejects the PR. See hooks/git-identity-guard.sh. Cheap (one git config
+# read), so it runs before the build/test cycle.
+if [ -f hooks/git-identity-guard.sh ]; then
+  if ! bash hooks/git-identity-guard.sh "$REPO_ROOT"; then
+    exit 1
+  fi
+fi
+
 if [ ! -d node_modules ]; then
   echo "node_modules missing — running pnpm install --frozen-lockfile..."
   if ! pnpm install --frozen-lockfile; then
