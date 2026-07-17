@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   loadCompatibilityRecord,
   qualifyInstalledBuild,
+  qualifyInstalledBuildFromManifest,
   resolveCompatibilityManifestPath,
   GROK_COMPAT_MANIFEST_ENV,
 } from './grok-build-compatibility.js';
@@ -28,6 +29,80 @@ describe('loadCompatibilityRecord (real reviewed manifest)', () => {
     expect(result.record.version).toBe('0.2.101');
     expect(result.record.buildId).toBe('5bc4b5dfad');
     expect(result.record.evidenceBuildId).toBe('0.2.101 (5bc4b5dfad)');
+  });
+
+  it('exposes the registered compatible fork build, independently qualified', () => {
+    const result = loadCompatibilityRecord();
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    const fork = result.compatibleBuilds.find((b) => b.buildId === 'c1b5909');
+    expect(fork, 'fork build c1b5909 registered in compatibleBuilds').toBeDefined();
+    expect(fork?.version).toBe('0.1.220-alpha.4');
+    // Qualification derives from the fork's OWN gates (pass+warn), not the primary's.
+    expect(fork?.manifestQualification).toBe('tested');
+  });
+});
+
+const FORK_IDENTITY = {
+  sha256: 'd045aa4d011c4f111b76802f6a0cdedabf9304aa2a248202b07edba250320c02',
+  version: '0.1.220-alpha.4',
+  buildId: 'c1b5909',
+};
+const STOCK_IDENTITY = {
+  sha256: '2556299cded37f81e54c02420cfa7f1a2df9feab72a445869a0f5596e143b333',
+  version: '0.2.101',
+  buildId: '5bc4b5dfad',
+};
+const LINUX_X64 = { os: 'linux', arch: 'x86_64' };
+
+describe('qualifyInstalledBuildFromManifest (primary + compatible builds)', () => {
+  const loaded = loadCompatibilityRecord();
+  if (loaded.kind !== 'ok') throw new Error('reviewed manifest failed to load for test setup');
+
+  it('qualifies the primary stock build as tested', () => {
+    const result = qualifyInstalledBuildFromManifest(STOCK_IDENTITY, LINUX_X64, loaded);
+    expect(result.status).toBe('tested');
+    expect(result.evidenceBuildId).toBe('0.2.101 (5bc4b5dfad)');
+  });
+
+  it('qualifies the registered fork build as tested via compatibleBuilds', () => {
+    const result = qualifyInstalledBuildFromManifest(FORK_IDENTITY, LINUX_X64, loaded);
+    expect(result.status).toBe('tested');
+    expect(result.evidenceBuildId).toBe('0.1.220-alpha.4 (c1b5909)');
+  });
+
+  it('is unknown for a build matching neither the primary nor any compatible entry', () => {
+    const result = qualifyInstalledBuildFromManifest(
+      { sha256: 'deadbeef00000000000000000000000000000000000000000000000000000000', version: '9.9.9', buildId: 'ffffffff' },
+      LINUX_X64,
+      loaded,
+    );
+    expect(result.status).toBe('unknown');
+    expect(result.reason).toContain('no registered compatible build matched either');
+  });
+
+  it('is unknown for the fork identity on a mismatched host arch', () => {
+    const result = qualifyInstalledBuildFromManifest(FORK_IDENTITY, { os: 'linux', arch: 'arm64' }, loaded);
+    expect(result.status).toBe('unknown');
+  });
+
+  it('qualifies a compatible build even when the PRIMARY build is not tested', () => {
+    // Directly exercises the fallthrough: primary fails qualification, a
+    // registered compatible build still qualifies the installed identity.
+    const forkRecord = loaded.compatibleBuilds.find((b) => b.buildId === 'c1b5909');
+    if (!forkRecord) throw new Error('fork record missing from setup');
+    const primaryKnownIncompatible: typeof loaded.record = {
+      ...loaded.record,
+      reviewStatus: 'known-incompatible',
+      manifestQualification: 'known-incompatible',
+    };
+    const result = qualifyInstalledBuildFromManifest(FORK_IDENTITY, LINUX_X64, {
+      kind: 'ok',
+      record: primaryKnownIncompatible,
+      compatibleBuilds: [forkRecord],
+    });
+    expect(result.status).toBe('tested');
+    expect(result.evidenceBuildId).toBe('0.1.220-alpha.4 (c1b5909)');
   });
 });
 

@@ -54,7 +54,14 @@ export interface CompatibilityRecord {
 
 export interface LoadManifestOk {
   kind: 'ok';
+  /** The primary reviewed build (the manifest's top-level `binary`). */
   record: CompatibilityRecord;
+  /**
+   * Additional qualified builds from the manifest's `compatibleBuilds` array
+   * (e.g. an operator's Kookr-adapted Grok fork). Empty for single-build
+   * manifests. Each is qualified independently from its own gates.
+   */
+  compatibleBuilds: CompatibilityRecord[];
 }
 export interface LoadManifestError {
   kind: 'error';
@@ -97,24 +104,53 @@ function interpretManifest(raw: unknown, path: string): LoadManifestResult {
   if (!isObject(raw) || raw.schema !== 'grok-build-compatibility.v1') {
     return { kind: 'error', reason: `manifest at ${path} is not a grok-build-compatibility.v1 document` };
   }
-  const binary = raw.binary;
-  const platform = raw.platform;
-  const gates = raw.gates;
-  if (!isObject(binary) || !isObject(platform) || !Array.isArray(gates)) {
-    return { kind: 'error', reason: `manifest at ${path} is missing binary/platform/gates` };
+  const primary = parseBuildRecord(raw);
+  if (!primary) {
+    return { kind: 'error', reason: `manifest at ${path} is missing or has malformed binary/platform/gates/reviewStatus/decision fields` };
   }
+
+  const rawCompatible = raw.compatibleBuilds;
+  const compatibleBuilds: CompatibilityRecord[] = [];
+  if (rawCompatible !== undefined) {
+    if (!Array.isArray(rawCompatible)) {
+      return { kind: 'error', reason: `manifest at ${path} has a non-array compatibleBuilds field` };
+    }
+    for (let i = 0; i < rawCompatible.length; i += 1) {
+      const record = parseBuildRecord(rawCompatible[i]);
+      if (!record) {
+        return { kind: 'error', reason: `manifest at ${path} has a malformed compatibleBuilds[${i}] entry` };
+      }
+      compatibleBuilds.push(record);
+    }
+  }
+
+  return { kind: 'ok', record: primary, compatibleBuilds };
+}
+
+/**
+ * Parse ONE build entry (the primary `binary` object OR a `compatibleBuilds`
+ * element) into a {@link CompatibilityRecord}, or `null` when required fields
+ * are missing/malformed. The qualification math is byte-identical to the
+ * schema's `qualifyReviewedGates`, applied per build — so a compatible build's
+ * qualification derives from ITS OWN gates, never inherited from the primary.
+ */
+function parseBuildRecord(source: unknown): CompatibilityRecord | null {
+  if (!isObject(source)) return null;
+  const binary = source.binary;
+  const platform = source.platform;
+  const gates = source.gates;
+  if (!isObject(binary) || !isObject(platform) || !Array.isArray(gates)) return null;
+
   const version = asString(binary.version);
   const buildId = asString(binary.buildId);
   const sha256 = asString(binary.sha256);
-  const reviewStatus = asReviewStatus(raw.reviewStatus);
-  const decision = asDecision(raw.decision);
-  if (!version || !buildId || !sha256 || !reviewStatus || !decision) {
-    return { kind: 'error', reason: `manifest at ${path} has malformed binary/reviewStatus/decision fields` };
-  }
+  const reviewStatus = asReviewStatus(source.reviewStatus);
+  const decision = asDecision(source.decision);
+  if (!version || !buildId || !sha256 || !reviewStatus || !decision) return null;
 
-  // Mirror docs/poc/…schema.ts `qualifyBuild`: a `tested` review qualifies only
-  // when every hard gate passes (warn tolerated); otherwise it is
-  // known-incompatible. A non-`tested` review status passes through verbatim.
+  // Mirror docs/poc/…schema.ts `qualifyReviewedGates`: a `tested` review
+  // qualifies only when every hard gate passes (warn tolerated); otherwise it
+  // is known-incompatible. A non-`tested` review status passes through verbatim.
   const hardGatesOk = gates.every((g) => {
     const verdict = isObject(g) ? g.verdict : undefined;
     return verdict === 'pass' || verdict === 'warn';
@@ -123,21 +159,18 @@ function interpretManifest(raw: unknown, path: string): LoadManifestResult {
     reviewStatus !== 'tested' ? reviewStatus : hardGatesOk ? 'tested' : 'known-incompatible';
 
   return {
-    kind: 'ok',
-    record: {
-      version,
-      buildId,
-      sha256,
-      platform: {
-        os: asString(platform.os) ?? '',
-        arch: asString(platform.arch) ?? '',
-        libc: asString(platform.libc) ?? '',
-      },
-      reviewStatus,
-      decision,
-      manifestQualification,
-      evidenceBuildId: `${version} (${buildId})`,
+    version,
+    buildId,
+    sha256,
+    platform: {
+      os: asString(platform.os) ?? '',
+      arch: asString(platform.arch) ?? '',
+      libc: asString(platform.libc) ?? '',
     },
+    reviewStatus,
+    decision,
+    manifestQualification,
+    evidenceBuildId: `${version} (${buildId})`,
   };
 }
 
@@ -190,6 +223,33 @@ export function qualifyInstalledBuild(
     reason: `matches reviewed tested build ${evidenceBuildId} on ${record.platform.os}/${record.platform.arch}`,
     evidenceBuildId,
   };
+}
+
+/**
+ * Qualify a resolved installed identity against the WHOLE manifest — the
+ * primary reviewed build plus every `compatibleBuilds` entry. The running
+ * binary is `tested` when it exactly matches ANY entry that itself qualifies as
+ * tested (e.g. an operator's registered Kookr-adapted Grok fork). When nothing
+ * matches, the primary build's diagnostic reason is preserved, extended to note
+ * that no compatible build matched either.
+ */
+export function qualifyInstalledBuildFromManifest(
+  identity: Pick<InstalledBinaryIdentity, 'sha256'> & { version: string; buildId: string },
+  host: { os: string; arch: string; libc?: string },
+  loaded: LoadManifestOk,
+): QualificationResult {
+  const primary = qualifyInstalledBuild(identity, host, loaded.record);
+  if (primary.status === 'tested') return primary;
+
+  for (const record of loaded.compatibleBuilds) {
+    const candidate = qualifyInstalledBuild(identity, host, record);
+    if (candidate.status === 'tested') return candidate;
+  }
+
+  if (loaded.compatibleBuilds.length > 0 && primary.status === 'unknown') {
+    return { ...primary, reason: `${primary.reason}; no registered compatible build matched either` };
+  }
+  return primary;
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {

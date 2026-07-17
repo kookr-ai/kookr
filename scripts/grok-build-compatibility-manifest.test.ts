@@ -15,6 +15,7 @@ import { describe, it, expect } from 'vitest';
 import {
   CompatibilityManifest,
   qualifyBuild,
+  qualifyReviewedGates,
   GATE_IDS,
 } from '../docs/poc/009-grok-build-basic-supervision/grok-build-compatibility.v1.schema.js';
 
@@ -62,6 +63,23 @@ describe('grok-build-compatibility.v1 manifest', () => {
     // A `tested` manifest with any hard-gate failure must not qualify as tested.
     if (m.reviewStatus === 'tested' && m.gates.some((g) => g.verdict === 'fail')) {
       expect(q).toBe('known-incompatible');
+    }
+  });
+
+  it('each compatible build is self-describing: covers every gate id and qualifies from its own gates', () => {
+    const m = CompatibilityManifest.parse(raw);
+    for (const build of m.compatibleBuilds) {
+      expect(build.binary.sha256).toMatch(/^[0-9a-f]{64}$/);
+      const reported = new Set(build.gates.map((g) => g.id));
+      for (const gate of GATE_IDS) {
+        expect(reported.has(gate), `compatible build ${build.binary.buildId} missing gate ${gate}`).toBe(true);
+      }
+      // Its qualification derives from ITS OWN gates via the shared rule.
+      const q = qualifyReviewedGates(build.reviewStatus, build.gates);
+      expect(['tested', 'unknown', 'known-incompatible']).toContain(q);
+      if (build.reviewStatus === 'tested' && build.gates.some((g) => g.verdict === 'fail')) {
+        expect(q).toBe('known-incompatible');
+      }
     }
   });
 });
