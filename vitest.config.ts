@@ -2,8 +2,11 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'relay/**/*.test.ts', 'scripts/**/*.test.ts', 'demo/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'relay/**/*.test.ts', 'scripts/**/*.test.ts', 'demo/**/*.test.ts', 'test/**/*.test.ts'],
     exclude: ['src/**/*.integration.test.ts', 'src/**/*-e2e.test.ts'],
+    // Fails the run if a test poisons the shared git config (test identity,
+    // core.bare flip, or bare-repo debris) and heals it. See test/git-repo-guard.ts.
+    globalSetup: ['./test/git-repo-guard.global.ts'],
     env: {
       // Claude Code launches submit the prompt via bracketed paste so the
       // trailing Enter is parsed as a keystroke (see

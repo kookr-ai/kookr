@@ -7,6 +7,6 @@
     "sourceMap": false,
     "noEmit": true
   },
-  "include": ["e2e/**/*.ts", "src/**/*.ts"],
+  "include": ["e2e/**/*.ts", "src/**/*.ts", "test/**/*.ts"],
   "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/frontend"]
 }
