@@ -97,7 +97,7 @@ A stable Kookr instance runs from a separate git worktree at `../kookr-prod` on 
 - `pnpm prod:restart` restarts without rebuilding (uses `lsof` — works on Linux and macOS)
 - **When asked to "restart server"** → run `pnpm prod:update` (includes build + restart)
 - **Commit and push before `pnpm prod:update`** — the prod worktree pulls from `origin/main`, so uncommitted or unpushed changes will not be deployed
-- Tests are safe — they use random ports and temp directories
+- Tests are safe — they use random ports and temp directories. Git operations in tests MUST target a `mkdtemp` repo (`git -C <tmpdir> …`), never the ambient checkout: worktrees share `.git/config`, so a stray `git config`/`git init` poisons the whole repo's identity or flips `core.bare`. Enforced by the `test/git-repo-guard.ts` vitest globalSetup, which fails the run if the shared config is corrupted.
 
 ## When working on this project
 

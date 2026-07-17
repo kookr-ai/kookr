@@ -17,8 +17,11 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-/** RFC 2606 reserved documentation domains — never a real committer. */
-const TEST_IDENTITY_DOMAIN = /@(?:example\.(?:com|org|net)|[^@\s]*\.example)$/i;
+/** RFC 2606 reserved documentation domains — never a real committer. Matches the
+ * second-level domains and any subdomain of them (`x@sub.example.net`), plus the
+ * `.example` TLD. Deliberately does NOT match `x@example.company`,
+ * `x@myexample.com`, or `x@example.com.evil.com` (a real domain owned by evil). */
+const TEST_IDENTITY_DOMAIN = /@(?:[^@\s]*\.)?example\.(?:com|org|net)$|@[^@\s]*\.example$/i;
 
 /** Root entries that together look like a stray `git init --bare` skeleton. */
 const BARE_SKELETON_ENTRIES = ['HEAD', 'objects', 'refs'] as const;
@@ -53,6 +56,12 @@ export function isTestIdentity(email: string | null): boolean {
  * Pure: compare the pre-suite snapshot against the post-suite state and report
  * what a test corrupted. Flags a test-domain `user.email`, a `core.bare` flip to
  * true in a working checkout, and a bare-repo skeleton appearing at the root.
+ *
+ * Detection keys on `user.email` — the reliable, CLA-relevant signal (there is
+ * no dependable pattern for a "test" `user.name`). A poisoned name paired with a
+ * *real* email is therefore not detected here; but whenever an identity finding
+ * DOES fire, healing restores email and name together (see healRepoConfig), so a
+ * name never survives half-healed.
  */
 export function assessDrift(before: RepoConfigSnapshot, after: RepoConfigState): DriftFinding[] {
   const findings: DriftFinding[] = [];
@@ -81,17 +90,26 @@ export function assessDrift(before: RepoConfigSnapshot, after: RepoConfigState):
   return findings;
 }
 
-/** The value the identity should be healed back to: the pre-suite value, unless
- * that was itself a test identity (then unset so the global identity applies). */
-export function healedIdentity(before: string | null): string | null {
-  return before != null && !isTestIdentity(before) ? before : null;
-}
-
 // ---- git I/O (thin, defensive) --------------------------------------------
+
+/** Strip inherited GIT_* env that would redirect git away from the target repo.
+ * vitest runs many test files in one worker and leaks these between them; a
+ * stray GIT_DIR makes `git rev-parse` find a repo where there is none and
+ * `git config --local` read the wrong config. The guard runs git against the
+ * ambient repo, so it wants cwd-based discovery, never an inherited override. */
+export function cleanGitEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const out = { ...env };
+  for (const k of [
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CEILING_DIRECTORIES', 'GIT_COMMON_DIR',
+    'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'GIT_INDEX_FILE',
+    'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX', 'GIT_WORK_TREE',
+  ]) delete out[k];
+  return out;
+}
 
 function gitCapture(args: string[], cwd?: string): string | null {
   try {
-    const out = execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const out = execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: cleanGitEnv() });
     return out.trim();
   } catch {
     return null;
@@ -103,11 +121,13 @@ function localConfig(key: string, repoRoot: string): string | null {
   return v && v.length > 0 ? v : null;
 }
 
-/** Snapshot the shared-config identity/bare state. Returns null when not in a
- * usable git repo, so callers can no-op instead of failing the suite. */
-export function snapshotRepoConfig(): RepoConfigSnapshot | null {
-  const repoRoot = gitCapture(['rev-parse', '--show-toplevel']);
-  const commonDir = gitCapture(['rev-parse', '--git-common-dir']);
+/** Snapshot the shared-config identity/bare state of the repo at `cwd` (default
+ * the process cwd). Returns null when not in a usable git repo, so callers can
+ * no-op instead of failing the suite. The `cwd` param keeps this testable
+ * without process.chdir (which is unsupported in vitest worker threads). */
+export function snapshotRepoConfig(cwd: string = process.cwd()): RepoConfigSnapshot | null {
+  const repoRoot = gitCapture(['rev-parse', '--show-toplevel'], cwd);
+  const commonDir = gitCapture(['rev-parse', '--git-common-dir'], cwd);
   if (!repoRoot || !commonDir) return null;
   const sharedConfigPath = join(repoRoot, commonDir, 'config');
   return {
@@ -139,22 +159,30 @@ export function healRepoConfig(before: RepoConfigSnapshot, findings: DriftFindin
   const actions: string[] = [];
   const root = before.repoRoot;
 
+  const restore = (key: string, value: string | null): void => {
+    if (value == null) gitCapture(['config', '--local', '--unset', key], root);
+    else gitCapture(['config', '--local', key, value], root);
+  };
+
   if (findings.some((f) => f.kind === 'identity')) {
-    const email = healedIdentity(before.userEmail);
-    const name = before.userName != null && !isTestIdentity(before.userEmail) ? before.userName : null;
-    if (email == null) {
-      gitCapture(['config', '--local', '--unset', 'user.email'], root);
-      gitCapture(['config', '--local', '--unset', 'user.name'], root);
-      actions.push('unset the poisoned user.email/user.name (global identity now applies)');
-    } else {
-      gitCapture(['config', '--local', 'user.email', email], root);
-      if (name != null) gitCapture(['config', '--local', 'user.name', name], root);
-      actions.push(`restored user.email to "${email}"`);
-    }
+    // Restore the pre-suite identity VERBATIM — that is the known-good state —
+    // healing email and name together as one unit so neither is left half-set.
+    // If the pre-suite email was itself a test identity (already poisoned before
+    // the run), the whole identity is untrusted: unset both so the global
+    // identity applies. Keying the name off the email's trust (not the name's
+    // own prior value) is deliberate — email and name are one identity.
+    const priorPoisoned = isTestIdentity(before.userEmail);
+    restore('user.email', priorPoisoned ? null : before.userEmail);
+    restore('user.name', priorPoisoned ? null : before.userName);
+    actions.push(
+      priorPoisoned
+        ? 'unset the poisoned identity (global identity now applies)'
+        : `restored the pre-suite identity (email=${before.userEmail ?? '<unset>'}, name=${before.userName ?? '<unset>'})`,
+    );
   }
 
   if (findings.some((f) => f.kind === 'core-bare')) {
-    gitCapture(['config', '--local', 'core.bare', before.bare ?? 'false'], root);
+    restore('core.bare', before.bare ?? 'false');
     actions.push(`reset core.bare to ${before.bare ?? 'false'}`);
   }
 
@@ -165,10 +193,12 @@ export function healRepoConfig(before: RepoConfigSnapshot, findings: DriftFindin
   return actions;
 }
 
-export function formatFailure(findings: DriftFinding[], actions: string[], sharedConfigPath: string): string {
+export function formatFailure(findings: DriftFinding[], actions: string[], sharedConfigPath: string, strict = true): string {
   return [
     '',
-    'git-repo-guard: a test corrupted the shared git repository config.',
+    strict
+      ? 'git-repo-guard: a test corrupted the shared git repository config.'
+      : 'git-repo-guard WARNING: a test corrupted the shared git repository config (healed; set KOOKR_GIT_GUARD_STRICT=1 to fail the run).',
     `  shared config: ${sharedConfigPath}`,
     '',
     'Findings:',

@@ -127,3 +127,11 @@ pnpm coverage:summary
 ```
 
 This prints the Markdown to your terminal so you can see the per-layer breakdown before relying on CI.
+
+### `git-repo-guard: a test corrupted the shared git repository config`
+
+`pnpm test` installs a vitest `globalSetup` (`test/git-repo-guard.ts`) that snapshots the shared `.git/config` before the suite and, on teardown, checks whether a test left the config poisoned — a test-domain `user.email` (e.g. `*@example.com`), a `core.bare` flip, or a bare-repo skeleton at the repo root. It **always heals the config automatically** (the actual prevention — nothing durable survives the run).
+
+By default it **warns** but does not fail the run. Set `KOOKR_GIT_GUARD_STRICT=1` to make it fail (via `process.exitCode`) so CI/pre-push block on a poisoner. The default is lenient because the guard was rolled out on a codebase that already had a pre-existing poisoner; once that is located and fixed, strict mode becomes the default.
+
+Cause: a git command in a test ran with a `cwd` that resolved into the real repo instead of an isolated temp dir. Worktrees share `.git/config`, so the write hit the whole repo. Fix the offending test to operate on a `mkdtemp` repo — pass `git -C <tmpdir> …` (or `cwd: tmpdir`) and set any identity there only, never in the ambient checkout.
