@@ -11,6 +11,10 @@ import type { AgentEvent } from '../core/types.js';
 import { HookIngestion, type HookEventInjector } from './hook-ingestion.js';
 import { createHookParseDegradationEvaluator } from './hook-parse-degradation-rules.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-expect-error — JS writer module without bundled types; runtime contract is the public API surface.
+import { appendRecord } from '../../bin/kookr-hook-writer.js';
+import { statSync } from 'node:fs';
 
 describe('HookFileWatcher', () => {
   let tempDir: string;
@@ -522,6 +526,66 @@ describe('HookFileWatcher', () => {
     // Second drain with no new data should not re-deliver.
     await watcher.drainNow('kookr-drain');
     expect(events.length).toBe(1);
+  });
+
+  test('no record is lost or duplicated when the writer rotates the active file (#1433)', async () => {
+    // Models the incremental-read regime that production's fast paths maintain
+    // (fs.watch / the 3s poll / the watchdog drain / the HTTP push): each record
+    // is read while it is still the newest line in the active file, so rotation
+    // only ever moves already-ingested history out. Under that regime — the
+    // common one — every record reaches ingestion exactly once via the file path
+    // and the active file the watcher re-reads on each event stays under the cap.
+    // (If a reader lagged more than a full cap behind, rotation could move an
+    // un-read tail into `.N`, which the file path would not re-read; recovery
+    // then rests on the HTTP-push + ledger paths. That fallback is out of scope
+    // for this watcher-level test.)
+    const session = 'kookr-rotate';
+    const hookFile = join(tempDir, `${session}.jsonl`);
+    writeFileSync(hookFile, '');
+
+    // Use the real HookIngestion (not a mock of the unit under test) so its
+    // content-hash dedup would collapse any boundary overlap the rotation's
+    // reset-to-0 re-read produced. Clean rotation has no overlap, so dedup is a
+    // safety net here rather than load-bearing. The stub adapter parse-oks each
+    // record and is only invoked on a first observation (duplicates
+    // short-circuit before the adapter call), so `dispatched` counts uniques.
+    const dispatched: number[] = [];
+    let seq = 0;
+    const stub: HookEventInjector = {
+      injectHookEvent(_tmux, raw, sequence) {
+        dispatched.push((JSON.parse(raw) as { n: number }).n);
+        return { parseStatus: 'ok', agentType: 'claude-code', parentage: 'parent', sequence: sequence ?? ++seq };
+      },
+    };
+    const ingestion = new HookIngestion({ adapter: stub });
+    const rotatingWatcher = new HookFileWatcher(tempDir, ingestion);
+    try {
+      rotatingWatcher.watch(session); // tail mode: offset 0 on the empty file
+
+      const cap = 512; // ~120-byte records → rotates every few writes
+      const keep = 4;
+      const total = 40;
+      for (let n = 0; n < total; n += 1) {
+        await appendRecord(hookFile, JSON.stringify({ session_id: session, n, pad: 'x'.repeat(90) }), {
+          maxBytes: cap,
+          keep,
+        });
+        // Read while the record is still the newest line in the active file —
+        // exactly what the incremental production readers guarantee.
+        await rotatingWatcher.drainNow(session);
+        // The active file the watcher re-reads never exceeds the cap.
+        expect(statSync(hookFile).size).toBeLessThanOrEqual(cap);
+      }
+
+      // Rotation actually happened during the run.
+      expect(statSync(`${hookFile}.1`).size).toBeGreaterThan(0);
+      // Every record reached ingestion exactly once — no loss, no duplicate.
+      expect(dispatched.slice().sort((a, b) => a - b)).toEqual(
+        Array.from({ length: total }, (_v, i) => i),
+      );
+    } finally {
+      rotatingWatcher.stopAll();
+    }
   });
 
   test('health snapshot reports watcher mode, replay records, and drain latency', async () => {

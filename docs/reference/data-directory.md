@@ -36,7 +36,7 @@ as internal unless this table says they are safe to remove.
 | `tasks.json.daily.YYYYMMDD` | task persistence | First successful task save of each local day. Used for boot-time recovery when `tasks.json` is corrupt. | Automatic 7-day retention. |
 | `tasks.json.predelete.YYYYMMDDTHHMMSS` | task lifecycle | Snapshot taken before `clearCompleted` deletes finished tasks. | Automatic last-5 retention. |
 | `tasks.json.corrupt-<ISO>` | boot recovery | Quarantined corrupt live task file. | Keep until you confirm recovery; then archive or delete manually. |
-| `hooks/*.jsonl` | hook ingestion | Raw Claude Code hook events per terminal session. | `kookr maintenance prune` can remove aged completed-task or orphan logs. |
+| `hooks/*.jsonl` and `hooks/*.jsonl.N` | hook ingestion | Raw Claude Code hook events per terminal session. The active file is size-rotated into numbered generations once it exceeds `KOOKR_HOOK_MAX_BYTES` (`KOOKR_HOOK_ROTATE_KEEP` generations retained — see [environment-variables.md](environment-variables.md); issue #1433). | `kookr maintenance prune` can remove aged completed-task or orphan logs, including rotated generations. |
 | `activity/*.jsonl` and `activity/*.jsonl.1` | activity ledger | Durable parsed hook ledger used for diagnostics and activity views. | Size-rotated per session; preserved by maintenance prune. |
 | `sessions/*/interactions.jsonl` | interaction log | User inputs, finding actions, task lifecycle actions, and other operator interaction events. | Preserved by maintenance prune. |
 | `settings.json` | settings API | Dashboard settings saved through the Settings dialog/API. | Keep; copy with backups. |
@@ -110,7 +110,7 @@ kookr maintenance prune --max-age-days 30 --dir "$KOOKR_DATA_DIR"
 
 It can delete only:
 
-- aged hook logs under `hooks/*.jsonl` for terminal tasks
+- aged hook logs — including rotated `hooks/*.jsonl.N` generations (issue #1433) — under `hooks/*.jsonl` for terminal tasks
 - aged orphan hook logs
 - aged numbered `server.log.N` generations
 

@@ -309,9 +309,10 @@ kookr logs <taskId> --dir ~/.kookr-4801
 `kookr logs` operates directly on the on-disk data directory (like
 `kookr maintenance`). It resolves the data directory the same way, looks the
 task up in `tasks.json`, reads each of its sessions' persisted hook JSONL under
-`<dataDir>/hooks/<session>.jsonl`, parses records with the same framing parser
-the production ingestion route uses, and prints the most recent records
-(newest last). Known secret formats in event payloads are redacted on the read
+`<dataDir>/hooks/<session>.jsonl` — including any rotated `<session>.jsonl.N`
+generations the writer's size cap split off (issue #1433), stitched in
+chronological order — parses records with the same framing parser the production
+ingestion route uses, and prints the most recent records (newest last). Known secret formats in event payloads are redacted on the read
 path, since output may be pasted into bug reports.
 
 `<taskId>` is a Kookr task id (from the dashboard, or the `task_id=` line printed
@@ -417,7 +418,7 @@ Options:
 - `--dir <path>` - use an explicit Kookr data directory.
 - `--json` - print the prune result as JSON.
 
-The prune is intentionally conservative. It removes only hook-event logs under `<dataDir>/hooks/*.jsonl` that belong to terminal tasks older than the age threshold, plus aged orphan hook logs. It preserves task history, crash-recovery data, activity ledgers, interaction logs, contribution history, and other stores whose mapping or audit value is ambiguous.
+The prune is intentionally conservative. It removes only hook-event logs under `<dataDir>/hooks/*.jsonl` — including rotated `<session>.jsonl.N` generations (issue #1433) — that belong to terminal tasks older than the age threshold, plus aged orphan hook logs. It preserves task history, crash-recovery data, activity ledgers, interaction logs, contribution history, and other stores whose mapping or audit value is ambiguous.
 
 Kookr's operational disk-pressure alert points operators here when the
 filesystem containing the data directory stays below the configured free-space

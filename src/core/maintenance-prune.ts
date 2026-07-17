@@ -9,10 +9,11 @@ import { isTerminalStatus, type TaskStatus } from './task-status.js';
  * Kookr accumulates per-task append-only stores under its data directory
  * (`~/.kookr` or `~/.kookr-<port>`) with no global retention policy. This
  * module provides a *conservative, idempotent* prune surface: it removes hook
- * event logs that belong to terminal (completed/terminated/cancelled) tasks
- * whose last activity is older than a configurable age threshold, long-dead
- * orphan hook logs no task references any more, and aged rotated
- * `server.log.N` generations.
+ * event logs — the live `<tmux>.jsonl` base file and its rotated
+ * `<tmux>.jsonl.N` generations (issue #1433) — that belong to terminal
+ * (completed/terminated/cancelled) tasks whose last activity is older than a
+ * configurable age threshold, long-dead orphan hook logs no task references any
+ * more, and aged rotated `server.log.N` generations.
  *
  * ## Why hook logs and server.log generations, and (deliberately) nothing else
  *
@@ -38,6 +39,9 @@ import { isTerminalStatus, type TaskStatus } from './task-status.js';
 
 const HOOKS_DIRNAME = 'hooks';
 const SERVER_LOG_GENERATION_RE = /^server\.log\.(\d+)$/;
+/** Rotated hook-log segment: `<tmux>.jsonl.N` (issue #1433). Captures the
+ *  owning tmux session and the numeric generation. */
+const ROTATED_HOOK_LOG_RE = /^(.*)\.jsonl\.(\d+)$/;
 const DEFAULT_MAX_AGE_DAYS = 30;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -73,6 +77,13 @@ export interface HookLogPlannedRemoval extends PlannedRemovalBase {
   taskId?: string;
   /** The tmux session name the hook file is keyed by. */
   tmuxSession: string;
+  /**
+   * Rotation generation suffix from `<tmux>.jsonl.N` when pruning a rotated
+   * hook-log segment (issue #1433); undefined for the live `<tmux>.jsonl`
+   * base file. Rotated segments are aged and mapped by the same owning session
+   * as the base so a terminal/orphan session sheds its whole rotation set.
+   */
+  generation?: number;
 }
 
 export interface ServerLogGenerationPlannedRemoval extends PlannedRemovalBase {
@@ -283,8 +294,20 @@ async function planHookLogRemovals({
   }
 
   for (const fileName of hookFiles) {
-    if (!fileName.endsWith('.jsonl')) continue;
-    const tmuxSession = fileName.slice(0, -'.jsonl'.length);
+    // Match either the live base file `<tmux>.jsonl` or a rotated generation
+    // `<tmux>.jsonl.N` (issue #1433). Both map to the same owning session so a
+    // terminal/orphan session's whole rotation set is aged and pruned together.
+    const rotated = ROTATED_HOOK_LOG_RE.exec(fileName);
+    let tmuxSession: string;
+    let generation: number | undefined;
+    if (rotated) {
+      tmuxSession = rotated[1];
+      generation = Number(rotated[2]);
+    } else if (fileName.endsWith('.jsonl')) {
+      tmuxSession = fileName.slice(0, -'.jsonl'.length);
+    } else {
+      continue;
+    }
 
     // A session attached to any active task is sacred regardless of age.
     if (activeSessions.has(tmuxSession)) continue;
@@ -322,7 +345,16 @@ async function planHookLogRemovals({
     if (ageRefMs > thresholdMs) continue; // too recent — preserve
 
     const ageDays = Math.floor((now() - ageRefMs) / MS_PER_DAY);
-    planned.push({ path: filePath, kind: 'hook-log', reason, taskId, tmuxSession, bytes, ageDays });
+    planned.push({
+      path: filePath,
+      kind: 'hook-log',
+      reason,
+      taskId,
+      tmuxSession,
+      bytes,
+      ageDays,
+      ...(generation !== undefined ? { generation } : {}),
+    });
   }
 
   return planned;

@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { redactSecrets } from '../core/redact-secrets.js';
@@ -10,8 +10,10 @@ import { resolveKookrDataDir } from './kookr-maintenance.js';
  * *write* path (`bin/kookr-hook-writer.js`) and the *replay* path
  * (`scripts/replay-hooks.ts`). It answers "what is this task doing?" from the
  * shell by tailing a task's persisted hook-event JSONL under
- * `<dataDir>/hooks/<session>.jsonl`, without booting a server or opening the
- * dashboard. See issue #1180.
+ * `<dataDir>/hooks/<session>.jsonl` — including any rotated `<session>.jsonl.N`
+ * generations the writer's size cap split off (issue #1433), read oldest-first
+ * so history is not lost — without booting a server or opening the dashboard.
+ * See issue #1180.
  *
  * It operates directly on the on-disk data directory (like `kookr maintenance`),
  * reusing `resolveKookrDataDir`, the production `splitHookRecords` framing
@@ -157,20 +159,57 @@ interface HookRecord {
   record: string;
 }
 
+/**
+ * List the hook-log files for a session stem in chronological (oldest-first)
+ * order: the writer rotates the active `<stem>.jsonl` into numbered generations
+ * `<stem>.jsonl.N` once it exceeds its size cap (issue #1433), where a higher N
+ * is older. So chronological order is the highest generation first, descending
+ * to `.1`, then the active base file last. Returns just the base file when the
+ * hooks directory can't be read (matching the pre-rotation behavior).
+ */
+async function hookLogFilesForStem(hooksDir: string, stem: string): Promise<string[]> {
+  const base = `${stem}.jsonl`;
+  const rotatedRe = new RegExp(`^${escapeRegExp(base)}\\.(\\d+)$`);
+  let entries: string[];
+  try {
+    entries = await readdir(hooksDir);
+  } catch {
+    return [base];
+  }
+  const rotated = entries
+    .map((name) => {
+      const match = rotatedRe.exec(name);
+      return match ? { name, generation: Number(match[1]) } : undefined;
+    })
+    .filter((v): v is { name: string; generation: number } => v !== undefined)
+    .sort((a, b) => b.generation - a.generation) // oldest (highest N) first
+    .map((v) => v.name);
+  return [...rotated, base];
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /** Read every hook record for the given session stems, in session order. */
 async function collectRecords(dataDir: string, stems: string[]): Promise<HookRecord[]> {
   const out: HookRecord[] = [];
+  const hooksDir = join(dataDir, 'hooks');
   for (const stem of stems) {
-    let content: string;
-    try {
-      content = await readFile(join(dataDir, 'hooks', `${stem}.jsonl`), 'utf8');
-    } catch {
-      // Hook file may not exist yet (no activity) or was swept — skip it.
-      continue;
-    }
-    const { records } = splitHookRecords(content);
-    for (const record of records) {
-      if (record.trim()) out.push({ session: stem, record });
+    // Read the whole rotation set oldest-first so `kookr logs` still shows
+    // history that the writer's size cap moved out of the active file.
+    for (const fileName of await hookLogFilesForStem(hooksDir, stem)) {
+      let content: string;
+      try {
+        content = await readFile(join(hooksDir, fileName), 'utf8');
+      } catch {
+        // Hook file may not exist yet (no activity) or was swept — skip it.
+        continue;
+      }
+      const { records } = splitHookRecords(content);
+      for (const record of records) {
+        if (record.trim()) out.push({ session: stem, record });
+      }
     }
   }
   return out;

@@ -25,8 +25,87 @@
 // to match bin/kookr-spawn.js and friends, and to keep the runtime contract
 // independent of the project's CommonJS vs ESM build resolution.
 
-import { closeSync, openSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, openSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
+
+// Bound per-session hook JSONL growth (issue #1433). The live HookFileWatcher
+// re-reads the WHOLE active file on every append/poll (hook-watcher.ts
+// readNewLines), so an unbounded file makes each hook event cost O(file size)
+// and starves ingestion under load (observed files at 40–58 MB, lagMs ~8 s on a
+// new session's first event). Rotating the active file at a cap keeps that
+// per-event read bounded while preserving append-only JSONL semantics: each
+// generation is itself append-only, and rotation is a plain rename under the
+// existing per-file lock. The watcher already treats a rotated-to-fresh file as
+// a truncation (offset > length → reset to 0), and HookIngestion's content-hash
+// dedup absorbs any boundary overlap, so no record is lost or double-counted.
+const DEFAULT_MAX_BYTES = 32 * 1024 * 1024; // 32 MiB active-file cap
+const DEFAULT_ROTATE_KEEP = 4; // rotated generations retained (.1 … .N)
+
+/**
+ * Parse an env override as a finite number, treating unset / empty / whitespace
+ * / non-numeric as "not provided" so it falls back to the default. `Number('')`
+ * and `Number('   ')` are `0` (finite), so a bare `Number()` would let an empty
+ * `KOOKR_HOOK_MAX_BYTES=` silently disable rotation or an empty
+ * `KOOKR_HOOK_ROTATE_KEEP=` silently hard-truncate history — this guards against
+ * that footgun. A deliberate literal `0` is still honored (rotation off /
+ * no retained generations, as documented).
+ */
+function parseEnvNumber(raw) {
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  if (trimmed === '') return undefined;
+  const value = Number(trimmed);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Resolve the rotation cap + retained-generation count. Explicit `options`
+ * win (used by tests), then `KOOKR_HOOK_MAX_BYTES` / `KOOKR_HOOK_ROTATE_KEEP`
+ * env overrides for operators, then the built-in defaults. A non-positive
+ * `maxBytes` disables rotation entirely (pure append, legacy behavior).
+ */
+export function resolveRotationConfig(options = {}) {
+  const maxBytes = options.maxBytes ?? parseEnvNumber(process.env.KOOKR_HOOK_MAX_BYTES) ?? DEFAULT_MAX_BYTES;
+  const keep = options.keep ?? parseEnvNumber(process.env.KOOKR_HOOK_ROTATE_KEEP) ?? DEFAULT_ROTATE_KEEP;
+  return {
+    maxBytes: Math.floor(maxBytes),
+    keep: Math.max(0, Math.floor(keep)),
+  };
+}
+
+function currentSize(file) {
+  try {
+    return statSync(file).size;
+  } catch (err) {
+    if (err.code === 'ENOENT') return 0;
+    throw err;
+  }
+}
+
+/**
+ * Roll the active file out to `<file>.1`, shifting older generations up and
+ * dropping anything beyond `keep`. Called under the per-file lock, so no
+ * concurrent writer can append or rotate at the same time. Missing generations
+ * are skipped (ENOENT is not an error) so a partially-rotated set self-heals.
+ * When `keep <= 0` the active file is simply removed, hard-capping disk to one
+ * generation's worth.
+ */
+export function rotateHookFile(file, keep) {
+  if (keep <= 0) {
+    try { unlinkSync(file); } catch (err) { if (err.code !== 'ENOENT') throw err; }
+    return;
+  }
+  // Drop the oldest kept slot so the shift below cannot exceed `keep`.
+  try { unlinkSync(`${file}.${keep}`); } catch (err) { if (err.code !== 'ENOENT') throw err; }
+  for (let i = keep - 1; i >= 1; i -= 1) {
+    try {
+      renameSync(`${file}.${i}`, `${file}.${i + 1}`);
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
+    }
+  }
+  renameSync(file, `${file}.1`);
+}
 
 function parseArgs(argv) {
   let file;
@@ -88,9 +167,20 @@ async function withLock(lockPath, fn, opts = {}) {
   }
 }
 
-export async function appendRecord(file, payload) {
+export async function appendRecord(file, payload, options = {}) {
   const record = payload.endsWith('\n') ? payload : `${payload}\n`;
+  const { maxBytes, keep } = resolveRotationConfig(options);
   await withLock(`${file}.lock`, () => {
+    if (maxBytes > 0) {
+      const size = currentSize(file);
+      // Rotate only a non-empty file that this record would push past the cap.
+      // A single record larger than the cap still lands in its own fresh
+      // generation rather than being dropped — append-only semantics are never
+      // sacrificed to enforce the bound.
+      if (size > 0 && size + Buffer.byteLength(record, 'utf8') > maxBytes) {
+        rotateHookFile(file, keep);
+      }
+    }
     const fd = openSync(file, 'a');
     try {
       writeSync(fd, record);
