@@ -96,7 +96,7 @@ Ship it.
       });
 
       expect(launchTask).toHaveBeenCalledWith(
-        expect.objectContaining({ name: 'Ship', prompt: 'Ship it.' }),
+        expect.objectContaining({ name: 'Ship', prompt: expect.stringContaining('Ship it.') }),
         { deliveryPolicy: 'pre-authorized' },
       );
     } finally {

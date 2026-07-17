@@ -67,3 +67,14 @@ checklist:
 - **Global playbooks in `~/.kookr/`**: rejected because playbooks are project-specific by nature
 - **Separate PlaybookStore**: rejected — playbooks create regular Tasks, so no separate lifecycle needed
 - **Full YAML parser dependency**: rejected to keep V1 dependency-free
+
+## Amendments
+
+- **2026-07-17** — Launch now prepends a one-line context header to the prompt, so
+  `task.prompt` is `<context header>\n\n<interpolated body>` rather than the body
+  alone (key design choice 1). Without it a launched agent cannot tell it is
+  executing a playbook, and "modify this playbook" means searching the playbook
+  dirs blind. The template model is unchanged — a playbook still produces a
+  regular Task. See `playbookContextHeader` in
+  [`src/server/use-cases/playbook-launch.ts`](../../src/server/use-cases/playbook-launch.ts)
+  and [Prompt assembly](../reference/playbooks.md#prompt-assembly).

@@ -2050,7 +2050,7 @@ Create MR for release {{version}}.
 
     const tasks = taskStore.listTasks();
     expect(tasks).toHaveLength(1);
-    expect(tasks[0].prompt).toBe('Create MR for release 2.0.0.');
+    expect(tasks[0].prompt).toContain('Create MR for release 2.0.0.');
     expect(tasks[0].criteria).toBe('- CHANGELOG updated\n- CI green');
     expect(tasks[0].name).toBe('Release MR');
     expect(tasks[0].playbookId).toBe('release.md');
