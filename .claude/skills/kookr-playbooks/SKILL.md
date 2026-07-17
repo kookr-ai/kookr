@@ -11,7 +11,7 @@ A **playbook** is a reusable task template stored as a Markdown file in `.kookr/
 ## What a playbook IS
 
 - A Markdown file with YAML frontmatter in `.kookr/playbooks/*.md`
-- A task template: when launched, the Markdown body becomes the agent prompt
+- A task template: when launched, the Markdown body becomes the agent prompt, prefixed by a Kookr-generated context header
 - Reusable: can be launched many times with different parameter values
 - Visible in the Kookr dashboard under Launch > Playbooks tab
 
@@ -123,7 +123,7 @@ Use `<angleBrackets>` for derived values in the body (not `{{mustache}}`) to dis
 
 ## Body
 
-Everything after the frontmatter closing `---` is the agent prompt. Structure it as a comprehensive brief for a fresh agent that has no prior context:
+Everything after the frontmatter closing `---` is the agent prompt body. At launch Kookr prepends a one-line context header naming the playbook, its scope, and its definition path — so don't open the body with your own "you are running X" preamble; it is redundant and competes with the header's framing. Structure the body as a comprehensive brief for a fresh agent that has no prior context:
 
 1. **Derived values** — how to compute repoSlug, forkName, etc. from the primary parameter
 2. **Objective** — what the task achieves
@@ -162,6 +162,12 @@ Deploy version {{version}} to {{environment}}.
 Both paths produce identical tasks (same CWD, same prompt, same projectId).
 
 ### From the API (programmatic)
+
+`POST /api/tasks` takes a raw prompt — it does **not** go through playbook launch
+preparation, so no playbook context header is prepended and `playbookId` is not
+recorded. The resulting task is **not** identical to a UI-launched one: the agent
+won't know it is running a playbook or where the definition lives. Prefer the UI
+or the `launchPlaybook` WS message when you want real playbook semantics.
 
 ```bash
 curl -s -X POST http://localhost:4800/api/tasks \

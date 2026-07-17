@@ -8,6 +8,7 @@ import { isPathInside } from '../../core/playbook-paths.js';
 import { getProjectId, projectDisplayName, projectIdFromRepoSpecifier } from '../../core/project-identity.js';
 import type { AgentSelection } from '../../core/agent-types.js';
 import type { PlaybookParameter, PlaybookScope } from '../../core/playbook.js';
+import type { Playbook } from '../../shared/contracts/playbook.js';
 import { canonicalizeCwd } from '../cwd.js';
 import type { LaunchOpts } from '../launch-service.js';
 import type { DeliveryPolicy } from '../worktree-guardrails.js';
@@ -102,10 +103,11 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
   );
   await validatePlaybookLaunchCapabilities(playbook, parameterValues, effectiveCwd);
 
-  const prompt = normalizePromptFileReferences(
+  const body = normalizePromptFileReferences(
     interpolateParameters(playbook.body, playbook.parameters, parameterValues),
     effectiveCwd,
   );
+  const prompt = `${playbookContextHeader(playbook, filePath)}\n\n${body}`;
 
   // Derive project ID from the first parameter with source: tracked-projects.
   // Project-drawer launches can also send an explicit projectId. Accept it
@@ -146,6 +148,28 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
       ...(playbook.autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal: playbook.autoCloseOnSignal }),
     },
   };
+}
+
+/**
+ * A short context note prepended to every playbook prompt so the coding agent
+ * knows it is executing a playbook and where the definition lives. Without this
+ * the agent has no way to tell it is running a playbook, and "modify this
+ * playbook" would require blindly searching the playbook dirs.
+ */
+function playbookContextHeader(
+  playbook: Pick<Playbook, 'name' | 'scope'>,
+  filePath: string,
+): string {
+  // The name is author-controlled and lands inside markdown emphasis next to a
+  // code span. A backtick or newline in it would close the span early and let
+  // the playbook forge the rest of the header — including the definition path
+  // the agent is told to edit.
+  const name = playbook.name.replace(/[`\r\n]/g, '');
+  return (
+    `> _Kookr playbook context — you are executing the **${name}** playbook `
+    + `(scope: ${playbook.scope}). Its definition file is at \`${filePath}\`. `
+    + `If asked to modify this playbook, edit that file._`
+  );
 }
 
 async function validatePlaybookLaunchCapabilities(
