@@ -67,6 +67,27 @@ assert_grep "cap limits breadth not depth" "cap limits breadth, not depth"
 assert_grep "empirical checkpoint still mandatory" "Empirical validation checkpoint (MANDATORY)"
 assert_grep "checkpoint cross-referenced as intentional redundancy" "intentional redundancy"
 
+# --- Consensus attack at convergence: bounded, but present ----------------
+# The attack is the only step that can catch a blind spot shared by the whole
+# panel AND the pack. Its three bounds are the only thing keeping it from
+# deferring convergence forever, so pin both the step and each bound.
+
+assert_grep "consensus attack section exists" "consensus attack (runs ONCE per RFC)"
+assert_grep "attack listed among preserved redundancy" "The consensus attack at convergence stays"
+# Unconditional trigger: must not regress into a rider on early convergence.
+assert_grep "attack fires on every exit from the loop" "This step is unconditional"
+# Bound 1: once per RFC.
+assert_grep "bound: runs at most once" "runs at most once per RFC"
+# Bound 2: cannot reopen the review.
+assert_grep "bound: never triggers another round" "never triggers another round"
+# Bound 3: empirical attacks terminate via a probe, not more debate.
+assert_grep "bound: empirical attacks route to a probe" "never to more debate"
+# The null verdict must stay expressible, or the advocate manufactures a finding.
+assert_grep "null verdict is blessed" "consensus survives"
+# The advocate must not be failure-mode-analyst: its mandated Risk Rating /
+# Recommendation output format has no slot for the null verdict.
+assert_grep "advocate is general-purpose, not failure-mode-analyst" 'Use `general-purpose`, not `kookr-toolkit:failure-mode-analyst`'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

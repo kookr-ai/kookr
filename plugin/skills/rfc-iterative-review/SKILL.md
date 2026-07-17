@@ -2,7 +2,7 @@
 name: rfc-iterative-review
 description: Iterative RFC drafting workflow — draft in worktree, run parallel critic subagents, incorporate feedback over N rounds, present to user before any action
 keywords: rfc, design document, proposal, design exploration, architecture decision, write rfc, draft rfc, generate rfc, create rfc, design doc
-related: spawn-child-task, kookr-playbooks, requirements-engineering
+related: spawn-child-task, kookr-playbooks, requirements-engineering, adversarial-swarm-analysis
 ---
 
 # RFC Iterative Review Workflow
@@ -146,11 +146,12 @@ Converge early (skip further critic rounds) if empirical probes have falsified t
 
 ### Preserving redundancy (breadth vs depth)
 
-The efficiency measures above (shared pack, panel cap) cut *wasteful* redundancy — many critics re-deriving the same map — without cutting the *useful* redundancy that catches wrong information. Hold these three lines firm:
+The efficiency measures above (shared pack, panel cap) cut *wasteful* redundancy — many critics re-deriving the same map — without cutting the *useful* redundancy that catches wrong information. Hold these four lines firm:
 
 - **The pack is a floor, not a ceiling.** It labels its contents "evidence to check." Critics stay free to re-read source and independently re-verify any claim; independent re-derivation is how a wrong pipeline map or a bad telemetry number gets caught.
 - **The cap limits breadth, not depth.** It bounds *distinct lenses per round*, never a single critic's re-verification of a suspicious claim. A warranted second look is depth, and the cap must never suppress it.
 - **The post-round-1 empirical check stays mandatory.** It is the deep, independent falsification step for load-bearing claims (see above). It is not "duplication" of the pack or of round-1 critique — keep it.
+- **The consensus attack at convergence stays.** It is the one step that can catch a blind spot *shared by the whole panel and the pack* — the failure no additional lens and no extra round can reach, because it lives in the framing they all inherit. It is bounded to one run and cannot reopen the review (see below), so it is not a paralysis risk. Do not trim it as duplication of the critics.
 
 ### After each round
 
@@ -159,6 +160,7 @@ The efficiency measures above (shared pack, panel cap) cut *wasteful* redundancy
 3. **Add a revision note** — at the bottom of the RFC or in the Status line (e.g., `Draft (v2 — post-review revision)`)
 4. **Intent preservation check** — before deciding whether to continue, re-read the original user ask, the RFC's Non-Goals, and its Alternatives considered section. Identify any explicit user motivation, constraint, or rejected alternative that is load-bearing. Verify the post-critic design still honors each one. If critic feedback would pivot away from one, the next revision must present that pivot as an explicit tradeoff/choice, not as the silent recommendation. If the original ask has no load-bearing motivation or rejected alternative, record this as a no-op: `Intent preservation check: no load-bearing motivation.`
 5. **Early convergence** — if a round produces no substantive findings (only minor or already-addressed items), you may stop iterating early. Note this in your summary.
+6. **Before leaving Phase 2 — run the consensus attack** (below) **once**. This step is unconditional: it fires on *every* exit from the review loop, whether you converged early, exhausted the scheduled rounds, or stopped because probes falsified the premise. Do not treat it as a rider on early convergence — a last round that produced findings still exits through here.
 
 ### What counts as substantive
 
@@ -175,12 +177,38 @@ The efficiency measures above (shared pack, panel cap) cut *wasteful* redundancy
 - Generic advice that doesn't apply to this specific design
 - Redundant points already covered in the document
 
+### At convergence — one consensus attack (runs ONCE per RFC)
+
+Every critic reads the same document and the same evidence pack, so every critic inherits the same framing. An assumption the RFC asserts as given is invisible to all of them at once — and that is exactly what a quiet round looks like from the inside. "No substantive findings" is therefore ambiguous: it means either the draft is sound, or the panel shares a blind spot. This step disambiguates. More rounds of the same panel cannot: they reproduce the blind spot, because it is in the framing rather than in any one lens.
+
+Launch **one** `general-purpose` agent against the *panel's agreement*, not against the RFC:
+
+> Here is the RFC at `<path>`, the shared evidence pack, and the findings from `<N>` rounds of critic review. The panel has converged. Your job is not to review the RFC — it is to attack their agreement.
+>
+> Find the assumption this RFC (or its evidence pack) asserts as given that no critic questioned, because it sat in the framing rather than in the argument. Return: (1) the shared assumption most likely to be load-bearing and wrong, (2) a concrete scenario in which the converged design fails because of it, (3) the question the review carefully avoided.
+>
+> If you find no shared blind spot and the convergence looks sound, **say exactly that**. "The consensus survives — no shared blind spot found" is a legitimate, expected result and a complete answer. Do not manufacture a concern to justify the call.
+
+This is **depth, not breadth**: like the post-round-1 empirical check and the `assumption-archaeologist` hand-off, it is a verification step, **not** a panel lens — it does not count against `N` in the Panel Selection Gate.
+
+**Use `general-purpose`, not `kookr-toolkit:failure-mode-analyst`.** The tempting choice is wrong: that agent's definition mandates an output format ending in `Risk Rating: [Critical/High/Medium/Low]` and `Recommendation: [Proceed with caution/Revise/Block]`, and instructs it to "assume anything not proven is wrong". There is no slot in that template for "consensus survives" — so it must fill the form, which manufactures the concern this step exists *not* to manufacture, and burns the single permitted revision on it. The null verdict has to be expressible, so the advocate needs a prompt that permits it.
+
+### Bounds on the attack — do not remove these
+
+The advocate is *obligated* to look for a crack, so it will tend to produce one whether or not one exists. Left unbounded it can defer convergence forever — the analysis-paralysis failure the empirical checkpoint already exists to prevent. Three bounds keep it terminal:
+
+1. **It runs at most once per RFC** — at the first convergence, not at every convergence. The first attack carries nearly all the value; a second is where the paralysis lives.
+2. **Its output never triggers another round.** Triage it exactly like any other finding — incorporate, reject with reason, or defer — for at most one revision. Worst case is +1 agent call and +1 edit.
+3. **An empirical attack routes to `kookr-toolkit:design-experimenter`, never to more debate.** If the scenario is testable ("it breaks under condition C"), run the probe — that terminates with a yes or no. Another critic round is generative and would only manufacture more opinions.
+
+Record the verdict in the RFC's "Critic feedback incorporated" section, keyed on the agent so it stays legible to the invocation log's disuse scan: `general-purpose <date>: consensus-attack — <finding | consensus survives>`. A "consensus survives" line is a real outcome worth recording — it is the difference between a draft nobody attacked and one that was attacked and held.
+
 ## Phase 3 — Present to User
 
 After completing all review rounds, present the RFC to the user:
 
 1. **Show the final RFC** — either print it or tell the user where to find it
-2. **Summarize the review process** — how many rounds, which critics, key changes made
+2. **Summarize the review process** — how many rounds, which critics, key changes made, and what the consensus attack returned
 3. **List the "Critic feedback incorporated" section** — the RFC should have a section (like existing RFCs do) summarizing what critic feedback was addressed
 4. **Ask explicitly for the user's feedback** — e.g., "Here's the RFC after 3 review rounds. Please review and let me know your feedback before I proceed."
 
@@ -208,4 +236,6 @@ Wait for their explicit direction.
 - **Don't invent a new RFC format.** Match existing RFCs in the project.
 - **Don't run more than 5 critics without a recorded justification.** The Panel Selection Gate makes this a checked cap, not a suggestion: 3–5 per round, hard max 5, and `N > 5` requires a logged override line in "Critic feedback incorporated". Pick the most relevant lenses — more critics != better, it's diminishing returns and multiplied cost past 4–5. (The cap limits breadth; it never blocks a critic from re-verifying a suspicious claim, and never counts the mandatory empirical-check `design-experimenter`.)
 - **Don't let critics each re-explore from cold start.** Assemble the shared evidence pack once and paste it into every critic's prompt. But mark it "evidence to check," not settled fact — never suppress a critic's re-verification of a load-bearing claim.
-- **Don't iterate if converged.** If round 2 produces nothing new, stop and present. Mention that you stopped early due to convergence.
+- **Don't iterate if converged.** If round 2 produces nothing new, run the consensus attack once, then stop and present. Mention that you stopped early due to convergence.
+- **Don't let the consensus attack reopen the review.** It is a final input, not a gate with veto power. One call, one triage, at most one revision — then present. An advocate that can order another round can defer convergence forever.
+- **Don't treat "consensus survives" as the advocate failing.** A null verdict is information: it says the agreement was attacked and held. Re-running it to get a "real" finding is how you manufacture one.

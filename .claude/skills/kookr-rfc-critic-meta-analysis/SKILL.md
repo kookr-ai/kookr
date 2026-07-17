@@ -39,9 +39,10 @@ During RFC review:
 
 1. Run the normal `rfc-iterative-review` critic rounds.
 2. After each critic returns, append one `invocation` event.
-3. For each substantive finding that survives triage, append one `finding` event.
-4. Keep the normal human-readable `Critic Feedback Incorporated` section in the RFC.
-5. At the end of the RFC, add a short `Meta-analysis readiness` note in the critic-feedback section.
+3. After the convergence **consensus attack** returns, append one `invocation` event too. It fires once, on the way out of Phase 2, and is not a panel lens — but its outcome is exactly what this trace measures, so it must not go unrecorded. Set `critic: "general-purpose"`, `extractionNote: "consensus-attack at convergence; not a panel lens"`, and reuse the final round number for `round` (the schema requires an integer ≥ 1, and a convergence-time run has no round of its own). Set `noSubstantiveFindings: true` when the verdict is "consensus survives" — a null verdict is a recorded outcome, not a skipped run.
+4. For each substantive finding that survives triage, append one `finding` event.
+5. Keep the normal human-readable `Critic Feedback Incorporated` section in the RFC.
+6. At the end of the RFC, add a short `Meta-analysis readiness` note in the critic-feedback section.
 
 Do not record every sentence from critic output. Record substantive findings: defects, missing constraints, empirical-check requests, scope changes, user-intent questions, or useful simplifications.
 
@@ -49,7 +50,7 @@ Do not record every sentence from critic output. Record substantive findings: de
 
 ### Invocation
 
-Write one invocation event per critic per round, including critics with no substantive findings.
+Write one invocation event per critic per round, including critics with no substantive findings, plus one for the convergence consensus attack (see "When to Capture" step 3).
 
 ```json
 {

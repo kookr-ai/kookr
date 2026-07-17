@@ -22,7 +22,7 @@ After installation, the toolkit is available in every Claude Code session on you
 
 **Code patterns:** `typescript-type-safety`, `error-handling-patterns`, `async-flow-control`, `dependency-injection-patterns`, `domain-driven-design`, `monorepo-architecture`, `requirements-engineering`, `state-machine-workflow-patterns`, `process-lifecycle-patterns`, `realtime-state-sync`, `event-driven-messaging-patterns`, `logging-design-patterns`, `shell-subprocess-safety`, `safe-refactoring`, `testing-patterns`, `playwright-e2e-patterns`, `websocket-dashboard`.
 
-**Workflow:** `git-commit-discipline`, `tdd-workflow`, `token-efficiency`, `agent-efficiency-retrofit`, `claude-code-metrics-analysis`, `hook-driven-workflow-enforcement`, `e2e-agent-testing`, `github-issue-workflow`, `github-trending-repos`, `ui-mockup-variants` (offer design mockup variants before implementing any UI change).
+**Workflow:** `git-commit-discipline`, `tdd-workflow`, `token-efficiency`, `agent-efficiency-retrofit`, `claude-code-metrics-analysis`, `hook-driven-workflow-enforcement`, `e2e-agent-testing`, `github-issue-workflow`, `github-trending-repos`, `ui-mockup-variants` (offer design mockup variants before implementing any UI change), `adversarial-swarm-analysis` (cast conflicting expert roles, run them blind and in parallel, attack their consensus, synthesize a verdict that keeps the disagreement).
 
 **Kookr operations:** Kookr-specific skills that are useful from any working
 directory, such as task spawning, task supervision, and CLI/API workflows. These
@@ -40,7 +40,7 @@ sessions can also see it when the plugin is installed or synced locally.
 
 **Codex PR analysis:** `codex-pr-{critic,distill,plan,threshold}`.
 
-**Review subagents (16):** `api-surface-auditor`, `architecture-drift-detector`, `architecture-smell-scanner`, `boundary-critic`, `delivery-pragmatist`, `dependency-graph-analyzer`, `design-experimenter`, `design-minimalist`, `failure-mode-analyst`, `macos-compat-reviewer`, `module-interface-auditor`, `operability-reviewer`, `socratic-challenger`, `state-machine-verifier`, `test-fixer`, `test-quality-reviewer`.
+**Review subagents (18):** `ambition-amplifier`, `api-surface-auditor`, `architecture-drift-detector`, `architecture-smell-scanner`, `assumption-archaeologist`, `boundary-critic`, `delivery-pragmatist`, `dependency-graph-analyzer`, `design-experimenter`, `design-minimalist`, `failure-mode-analyst`, `macos-compat-reviewer`, `module-interface-auditor`, `operability-reviewer`, `socratic-challenger`, `state-machine-verifier`, `test-fixer`, `test-quality-reviewer`.
 
 ## One-time setup for the OSS extension
 

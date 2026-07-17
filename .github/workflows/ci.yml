@@ -49,6 +49,7 @@ jobs:
             hooks:
               - '.claude/**'
               - '.hooks/**'
+              - 'plugin/**'
 
       - uses: pnpm/action-setup@v6
 
