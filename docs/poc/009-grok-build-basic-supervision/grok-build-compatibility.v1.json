@@ -102,5 +102,95 @@
     "Only this exact build (0.2.101 / 5bc4b5dfad / linux-x86_64 / glibc 2.35) is tested; other builds/platforms (incl. macOS) remain unqualified and may run only inside the POC runner.",
     "Qualified with selectedModel grok-4.5 (the prior grok-build model is no longer listed by the chat proxy as of 2026-07-15); KOOKR_GROK_MODEL should be set to grok-4.5.",
     "Chat-endpoint access requires an account entitlement (console.x.ai); a plain grok.com OAuth login returns HTTP 403 at the chat proxy until enabled."
+  ],
+  "compatibleBuilds": [
+    {
+      "binary": {
+        "packageName": "github:jeanibarz/grok-build (feat/claude-compat fork)",
+        "version": "0.1.220-alpha.4",
+        "buildId": "c1b5909",
+        "canonicalPath": "<HOME>/bin/grok",
+        "sha256": "d045aa4d011c4f111b76802f6a0cdedabf9304aa2a248202b07edba250320c02",
+        "sizeBytes": 196432992,
+        "ownership": "owner 755 (rwxr-xr-x)"
+      },
+      "platform": {
+        "os": "linux",
+        "arch": "x86_64",
+        "libc": "glibc 2.35",
+        "kernel": "6.6.87.2-microsoft-standard-WSL2",
+        "distro": "Ubuntu 22.04.3 LTS (WSL2)"
+      },
+      "reviewStatus": "tested",
+      "decision": "constrained-proceed",
+      "probeRevision": "observed Kookr runtime hook capture (~/.kookr/hooks parent sessions on this exact build); NOT a run-poc.sh re-run",
+      "pluginRevision": "kookr-toolkit-poc@0.0.1 (not re-run against this fork build)",
+      "authCategory": "oauth",
+      "selectedModel": "grok-4.5",
+      "capturedAt": "2026-07-16T08:11Z",
+      "reviewedBy": "Operator-registered entry for the jeanibarz/grok-build fork (feat/claude-compat @ c1b5909). Lifecycle-hook gates are grounded in observed Kookr runtime capture of THIS exact build (session_start / user_prompt_submit / pre_tool_use / post_tool_use / stop; camelCase payloads; stable sessionId). Gates not independently re-run against this build are marked warn with an explicit note — they are NOT inherited as pass from the 0.2.101 review.",
+      "gates": [
+        {
+          "id": "additive_hook_injection",
+          "verdict": "pass",
+          "evidence": "Observed on this fork build in Kookr runtime capture: the per-session GROK_HOME monitoring hooks fired for every lifecycle event (session_start, user_prompt_submit, pre_tool_use, post_tool_use, stop, notification) with a stable camelCase sessionId. Additive injection via GROK_HOME composition works on c1b5909."
+        },
+        {
+          "id": "minimum_supervision",
+          "verdict": "pass",
+          "evidence": "Observed: pre_tool_use + post_tool_use fired carrying toolName=run_terminal_command with a correlated sessionId, and the parent turn advanced to stop. Minimum supervisory signal is present on this build."
+        },
+        {
+          "id": "permission_visibility",
+          "verdict": "warn",
+          "evidence": "NOT independently re-run against this fork build. The fork's fix/issue-3-permission-denied-hook branch specifically targets the upstream gap where PermissionDenied did not fire for rule/hook denials in headless -p. Until re-verified, detect blocks via PreToolUse-without-PostToolUse (inherited 0.2.101 guidance)."
+        },
+        {
+          "id": "toolkit_discovery",
+          "verdict": "warn",
+          "evidence": "NOT re-run against this fork build; plugin discovery is unchanged from the upstream base. Pending an independent run-poc.sh re-run."
+        },
+        {
+          "id": "toolkit_invocation",
+          "verdict": "warn",
+          "evidence": "NOT re-run against this fork build; see toolkit_discovery. Pending an independent run-poc.sh re-run."
+        },
+        {
+          "id": "instruction_discovery",
+          "verdict": "warn",
+          "evidence": "NOT re-run against this fork build; CLAUDE.md/AGENTS.md discovery is unchanged from the upstream base. Pending re-run."
+        },
+        {
+          "id": "instruction_following",
+          "verdict": "warn",
+          "evidence": "NOT re-run against this fork build; see instruction_discovery. Pending re-run."
+        },
+        {
+          "id": "interactive_dtach",
+          "verdict": "pass",
+          "evidence": "Observed: under a real PTY the fork build's TUI reached readiness (bracketed-paste DECSET), accepted byte-level initial-prompt delivery, and emitted user_prompt_submit confirming the composer accepted and submitted the prompt."
+        },
+        {
+          "id": "stable_outcome",
+          "verdict": "warn",
+          "evidence": "Partially observed: Stop fired and the parent turn completed. Terminal classification still relies on Stop.reason + process exit (parent SessionEnd does not fire in headless -p, inherited from 0.2.101). The full outcome truth-table was not re-run against this build."
+        },
+        {
+          "id": "child_control",
+          "verdict": "warn",
+          "evidence": "NOT re-run against this fork build. The fork's fix/issue-2-subagent-stop-alias and fix/issue-4-no-subagents branches target subagent_stop aliasing and enforceable --no-subagents disablement (both upstream gaps at 0.2.101). Supervise children via subagent_start correlation; disablement remains unenforceable pending re-verification."
+        },
+        {
+          "id": "process_ownership",
+          "verdict": "warn",
+          "evidence": "NOT re-measured on this fork build; SIGKILL-of-owned-tree drain is expected-equivalent (same Kookr dtach backend, no detached leader daemon). Pending an independent run-poc.sh re-run."
+        }
+      ],
+      "constraints": [
+        "Registered from observed Kookr runtime capture, NOT a full run-poc.sh re-run: gates permission_visibility, toolkit_discovery, toolkit_invocation, instruction_discovery, instruction_following, stable_outcome, child_control and process_ownership are marked warn pending an independent re-run against this exact build.",
+        "This is a locally-built fork (jeanibarz/grok-build @ c1b5909, branch feat/claude-compat); rebuilding the fork changes buildId/sha256 and will de-qualify this entry until the identity here is updated to match.",
+        "Set KOOKR_GROK_BIN to the fork binary (e.g. <HOME>/bin/grok) and KOOKR_GROK_MODEL=grok-4.5."
+      ]
+    }
   ]
 }

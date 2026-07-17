@@ -23,7 +23,7 @@ import {
 } from './probe-agent-binary.js';
 import {
   loadCompatibilityRecord,
-  qualifyInstalledBuild,
+  qualifyInstalledBuildFromManifest,
   type QualificationResult,
 } from './grok-build-compatibility.js';
 
@@ -118,10 +118,10 @@ export async function resolveGrokInstalledState(
   if (loaded.kind === 'error') {
     qualification = { status: 'unknown', reason: loaded.reason };
   } else {
-    qualification = qualifyInstalledBuild(
+    qualification = qualifyInstalledBuildFromManifest(
       { sha256: identityOutcome.identity.sha256, version: versionInfo.version, buildId: versionInfo.buildId },
       host,
-      loaded.record,
+      loaded,
     );
   }
 
