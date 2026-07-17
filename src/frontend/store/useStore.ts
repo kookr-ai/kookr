@@ -5,6 +5,7 @@ import { createProjectSidebarSlice } from './slices/project-sidebar-slice.js';
 import { createTransportSessionSlice } from './slices/transport-session-slice.js';
 import { createTriageNavigationSlice } from './slices/triage-navigation-slice.js';
 import { createWorkspaceSlice } from './slices/workspace-slice.js';
+import { createWorktreeCleanupSlice } from './slices/worktree-cleanup-slice.js';
 import { createOssAttemptsSlice } from './slices/oss-attempts-slice.js';
 import { createSystemStatusSlice } from './slices/system-status-slice.js';
 import { createAutoAdvanceSlice, attachAutoAdvanceSubscribers } from './slices/auto-advance-slice.js';
@@ -95,6 +96,7 @@ function createKookrStoreState(
     ...createOssAttemptsSlice(tracedSet, get),
     ...createSystemStatusSlice(tracedSet),
     ...createAutoAdvanceSlice(tracedSet, get),
+    ...createWorktreeCleanupSlice(tracedSet),
   };
 }
 

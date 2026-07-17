@@ -10,6 +10,7 @@ import type { Playbook, PlaybookScope, LaunchDependency } from './playbook.js';
 import type { ProjectSummary } from './project-summary.js';
 import type { ProjectConfig } from './project-config.js';
 import type { QuickAction } from './quick-action.js';
+import type { WorktreeCleanupVerdict } from './worktree-cleanup-verdict.js';
 import type { PermissionRequestBinding } from './permission-request-binding.js';
 import type { QuotaStatus } from './quota.js';
 import type { ScheduleResponse, ScheduleStatusSnapshot } from './schedule.js';
@@ -351,6 +352,13 @@ export type ServerMessage =
       diagnosticLaunch?: CleanupDiagnosticLaunch;
     }
   | { type: 'workspaceCleanupDetail'; worktreePath: string; detail?: CleanupCandidateDetail; error?: string }
+  | {
+      /** Reply to `worktree:inspectCleanup` — one verdict per worktree the task owns. */
+      type: 'worktreeCleanupVerdicts';
+      taskId: string;
+      verdicts: WorktreeCleanupVerdict[];
+      error?: string;
+    }
   | WorkspaceSweepProgressMessage
   | WorkspaceBulkRemoveProgressMessage
   | {
@@ -413,6 +421,15 @@ export type ClientMessage =
       feedback?: TaskCompletionFeedback;
       requestReflect?: boolean;
       cleanupWorktree?: boolean;
+    }
+  | {
+      /**
+       * Ask whether this task's worktrees can be removed. Read-only — runs the
+       * same inspection the cleanup uses, so the completion dialog can state
+       * the outcome instead of guessing it.
+       */
+      type: 'worktree:inspectCleanup';
+      taskId: string;
     }
   | { type: 'setTaskFeedback'; taskId: string; feedback: TaskCompletionFeedback }
   | { type: 'requestTaskReflect'; taskId: string; direction: 'up' | 'down' }
@@ -497,6 +514,7 @@ export const SERVER_MESSAGE_TYPES = [
   'scheduleFired',
   'workspaceView',
   'workspaceCleanupDetail',
+  'worktreeCleanupVerdicts',
   'workspaceSweepProgress',
   'workspaceBulkRemoveProgress',
   'workspaceSweepComplete',
@@ -556,6 +574,7 @@ export const CLIENT_MESSAGE_TYPES = [
   'workspace:sweep',
   'workspace:requestSweepReport',
   'workspace:bulkRemoveProbablySafe',
+  'worktree:inspectCleanup',
 ] as const satisfies readonly ClientMessage['type'][];
 
 type _MissingServerMessageType = Exclude<ServerMessage['type'], (typeof SERVER_MESSAGE_TYPES)[number]>;

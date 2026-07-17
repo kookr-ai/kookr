@@ -24,6 +24,9 @@ vi.mock('./worktree-safety.js', () => ({
 
 import {
   cleanupTaskWorktrees,
+  inspectTaskWorktrees,
+  inspectWorktreeCleanup,
+  parsePorcelainStatus,
 } from './git-worktree.js';
 import { DEFAULT_GIT_MAX_BUFFER, DEFAULT_GIT_TIMEOUT_MS } from '../core/git-helpers.js';
 import { TaskStore } from '../core/tasks.js';
@@ -766,5 +769,307 @@ describe('cleanupTaskWorktrees', () => {
       branch: 'feature',
     });
     expect(mockRemoveRegisteredWorktree).toHaveBeenCalledWith('/wt/fallback', expect.objectContaining({ force: true }));
+  });
+});
+
+describe('parsePorcelainStatus', () => {
+  test('counts each category from real porcelain output', () => {
+    const output = [
+      ' M src/a.ts',
+      'A  src/b.ts',
+      ' D src/c.ts',
+      'R  old.ts -> new.ts',
+      '?? untracked.ts',
+    ].join('\n');
+    expect(parsePorcelainStatus(output)).toEqual({
+      modified: 1, added: 1, deleted: 1, renamed: 1, untracked: 1,
+    });
+  });
+
+  test('counts a path once when index and worktree both changed', () => {
+    // "MM" is one file modified in both, not two modifications.
+    expect(parsePorcelainStatus('MM src/a.ts')).toEqual({
+      modified: 1, added: 0, deleted: 0, renamed: 0, untracked: 0,
+    });
+  });
+
+  test('an added-then-modified path counts as added, not double-counted', () => {
+    expect(parsePorcelainStatus('AM src/a.ts')).toEqual({
+      modified: 0, added: 1, deleted: 0, renamed: 0, untracked: 0,
+    });
+  });
+
+  test('a clean tree is all zeroes', () => {
+    expect(parsePorcelainStatus('')).toEqual({
+      modified: 0, added: 0, deleted: 0, renamed: 0, untracked: 0,
+    });
+  });
+
+  test('unknown status codes fall back to modified rather than being dropped', () => {
+    // Undercounting would let a dirty tree read as clean in the UI.
+    expect(parsePorcelainStatus('T  src/typechange.ts').modified).toBe(1);
+  });
+});
+
+describe('inspectWorktreeCleanup', () => {
+  function taskWithWorktree(opts: { branch?: string; detached?: boolean } = {}) {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Fix bug', '/project');
+    taskStore.addSession(task.id, {
+      tmuxSession: 's1',
+      agentType: 'claude-code',
+      cwd: '/wt/feature-branch',
+      createdAt: new Date(),
+      gitIsWorktree: true,
+      gitBranch: opts.branch ?? 'feature',
+      gitCommit: 'abc123',
+      ...(opts.detached ? { gitIsDetached: true } : {}),
+    });
+    taskStore.completeTask(task.id);
+    return { taskStore, taskId: task.id };
+  }
+
+  test('clean, merged worktree is removable and reports its evidence', async () => {
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({ 'status --porcelain': '', 'log': '', 'symbolic-ref': 'refs/remotes/origin/main\n' });
+    const { taskStore, taskId } = taskWithWorktree();
+
+    const verdict = await inspectWorktreeCleanup(taskStore, taskId, '/wt/feature-branch');
+
+    expect(verdict.removable).toBe(true);
+    expect(verdict.blocker).toBeUndefined();
+    expect(verdict.worktreeName).toBe('feature-branch');
+    expect(verdict.branch).toBe('feature');
+    expect(verdict.evidence.dirty).toEqual({ modified: 0, added: 0, deleted: 0, renamed: 0, untracked: 0 });
+    expect(verdict.evidence.aheadCount).toBe(0);
+  });
+
+  test('dirty worktree is blocked AND still reports the ahead-count', async () => {
+    // The pre-refactor isClean returned on the first failure, so the ahead-count
+    // was never gathered. The drawer shows both, so both must be probed.
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({
+      'status --porcelain': ' M src/a.ts\n?? new.ts\n',
+      'log': 'abc123 commit one\ndef456 commit two\n',
+      'symbolic-ref': 'refs/remotes/origin/main\n',
+    });
+    const { taskStore, taskId } = taskWithWorktree();
+
+    const verdict = await inspectWorktreeCleanup(taskStore, taskId, '/wt/feature-branch');
+
+    expect(verdict.removable).toBe(false);
+    expect(verdict.blocker).toBe('uncommitted-changes');
+    expect(verdict.evidence.dirty).toMatchObject({ modified: 1, untracked: 1 });
+    expect(verdict.evidence.aheadCount).toBe(2);
+  });
+
+  test('clean but unmerged worktree is blocked as unmerged-commits', async () => {
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({
+      'status --porcelain': '',
+      'log': 'abc123 unmerged work\n',
+      'symbolic-ref': 'refs/remotes/origin/main\n',
+    });
+    const { taskStore, taskId } = taskWithWorktree();
+
+    const verdict = await inspectWorktreeCleanup(taskStore, taskId, '/wt/feature-branch');
+
+    expect(verdict.blocker).toBe('unmerged-commits');
+    expect(verdict.evidence.aheadCount).toBe(1);
+  });
+
+  test('missing path reports not-found', async () => {
+    mockExistsSync.mockReturnValue(false);
+    const { taskStore, taskId } = taskWithWorktree();
+
+    const verdict = await inspectWorktreeCleanup(taskStore, taskId, '/wt/feature-branch');
+
+    expect(verdict.blocker).toBe('not-found');
+  });
+
+  test('identity guard wins over cleanliness and gathers no evidence', async () => {
+    // A clean primary checkout must never read as removable, and the guard
+    // trips before any content probe runs.
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({ 'status --porcelain': '', 'log': '', 'symbolic-ref': 'refs/remotes/origin/main\n' });
+    mockRemovalGuard.mockResolvedValue('primary-working-tree');
+    const { taskStore, taskId } = taskWithWorktree();
+
+    const verdict = await inspectWorktreeCleanup(taskStore, taskId, '/wt/feature-branch');
+
+    expect(verdict.removable).toBe(false);
+    expect(verdict.blocker).toBe('primary-working-tree');
+    expect(verdict.evidence.dirty).toBeUndefined();
+  });
+
+  test('detached HEAD is blocked without probing status', async () => {
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({ 'status --porcelain': '', 'log': '', 'symbolic-ref': 'refs/remotes/origin/main\n' });
+    const { taskStore, taskId } = taskWithWorktree({ detached: true });
+
+    const verdict = await inspectWorktreeCleanup(taskStore, taskId, '/wt/feature-branch');
+
+    expect(verdict.blocker).toBe('detached-head');
+  });
+
+  test('worktree shared with another active task is blocked', async () => {
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({ 'status --porcelain': '', 'log': '', 'symbolic-ref': 'refs/remotes/origin/main\n' });
+    const { taskStore, taskId } = taskWithWorktree();
+    // A second, still-open task on the same worktree.
+    const other = taskStore.createTask('Other work', '/project');
+    taskStore.addSession(other.id, {
+      tmuxSession: 's2',
+      agentType: 'claude-code',
+      cwd: '/wt/feature-branch',
+      createdAt: new Date(),
+      gitIsWorktree: true,
+      gitBranch: 'feature',
+    });
+
+    const verdict = await inspectWorktreeCleanup(taskStore, taskId, '/wt/feature-branch');
+
+    expect(verdict.blocker).toBe('shared-with-active-task');
+  });
+
+  test('inspection does not mutate anything', async () => {
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({ 'status --porcelain': '', 'log': '', 'symbolic-ref': 'refs/remotes/origin/main\n' });
+    const { taskStore, taskId } = taskWithWorktree();
+
+    await inspectWorktreeCleanup(taskStore, taskId, '/wt/feature-branch');
+
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
+    expect(taskStore.getTask(taskId)!.sessions[0].worktreeHealth).not.toBe('cleaned_up');
+  });
+});
+
+describe('inspectWorktreeCleanup — remaining blockers', () => {
+  function storeWith(sessionOverrides: Record<string, unknown> = {}) {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Fix bug', '/project');
+    taskStore.addSession(task.id, {
+      tmuxSession: 's1',
+      agentType: 'claude-code',
+      cwd: '/wt/feature-branch',
+      createdAt: new Date(),
+      gitIsWorktree: true,
+      gitBranch: 'feature',
+      ...sessionOverrides,
+    } as never);
+    taskStore.completeTask(task.id);
+    return { taskStore, taskId: task.id };
+  }
+
+  test('a session with no branch is blocked without probing status', async () => {
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({ 'status --porcelain': '', 'log': '', 'symbolic-ref': 'refs/remotes/origin/main\n' });
+    const { taskStore, taskId } = storeWith({ gitBranch: undefined });
+
+    const verdict = await inspectWorktreeCleanup(taskStore, taskId, '/wt/feature-branch');
+
+    expect(verdict.blocker).toBe('no-branch');
+    expect(verdict.evidence.dirty).toBeUndefined();
+  });
+
+  test('a failing git status blocks, and still reports the ahead-count it could gather', async () => {
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({
+      'status --porcelain': 'error',
+      'log': 'abc123 one\n',
+      'symbolic-ref': 'refs/remotes/origin/main\n',
+    });
+    const { taskStore, taskId } = storeWith();
+
+    const verdict = await inspectWorktreeCleanup(taskStore, taskId, '/wt/feature-branch');
+
+    expect(verdict.blocker).toBe('git-status-failed');
+    expect(verdict.evidence.dirty).toBeUndefined();
+    expect(verdict.evidence.aheadCount).toBe(1);
+  });
+
+  test('a failing merge check blocks conservatively, keeping the dirty evidence', async () => {
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({
+      'status --porcelain': '',
+      'log': 'error',
+      'symbolic-ref': 'refs/remotes/origin/main\n',
+    });
+    const { taskStore, taskId } = storeWith();
+
+    const verdict = await inspectWorktreeCleanup(taskStore, taskId, '/wt/feature-branch');
+
+    expect(verdict.blocker).toBe('unmerged-check-failed');
+    expect(verdict.evidence.dirty).toEqual({ modified: 0, added: 0, deleted: 0, renamed: 0, untracked: 0 });
+    expect(verdict.evidence.aheadCount).toBeUndefined();
+  });
+
+  test('a protected marker blocks before any content probe', async () => {
+    // Every other test in this file deliberately makes `.kookr-protected`
+    // absent, so this path would otherwise never be reached.
+    mockExistsSync.mockReturnValue(true);
+    mockGitResponses({ 'status --porcelain': '', 'log': '', 'symbolic-ref': 'refs/remotes/origin/main\n' });
+    const { taskStore, taskId } = storeWith();
+
+    const verdict = await inspectWorktreeCleanup(taskStore, taskId, '/wt/feature-branch');
+
+    expect(verdict.blocker).toBe('protected-marker');
+    expect(verdict.evidence.dirty).toBeUndefined();
+  });
+});
+
+describe('inspectTaskWorktrees', () => {
+  test('returns one verdict per distinct worktree the task owns', async () => {
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({ 'status --porcelain': '', 'log': '', 'symbolic-ref': 'refs/remotes/origin/main\n' });
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Two worktrees', '/project');
+    for (const [tmux, cwd] of [['s1', '/wt/one'], ['s2', '/wt/two']]) {
+      taskStore.addSession(task.id, {
+        tmuxSession: tmux, agentType: 'claude-code', cwd, createdAt: new Date(),
+        gitIsWorktree: true, gitBranch: 'feature',
+      } as never);
+    }
+    taskStore.completeTask(task.id);
+
+    const verdicts = await inspectTaskWorktrees(taskStore, task.id);
+
+    expect(verdicts.map((v) => v.worktreePath)).toEqual(['/wt/one', '/wt/two']);
+  });
+
+  test('deduplicates sessions that share one worktree', async () => {
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({ 'status --porcelain': '', 'log': '', 'symbolic-ref': 'refs/remotes/origin/main\n' });
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Shared cwd', '/project');
+    for (const tmux of ['s1', 's2']) {
+      taskStore.addSession(task.id, {
+        tmuxSession: tmux, agentType: 'claude-code', cwd: '/wt/same', createdAt: new Date(),
+        gitIsWorktree: true, gitBranch: 'feature',
+      } as never);
+    }
+    taskStore.completeTask(task.id);
+
+    const verdicts = await inspectTaskWorktrees(taskStore, task.id);
+
+    expect(verdicts).toHaveLength(1);
+  });
+
+  test('ignores sessions that are not worktrees', async () => {
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({ 'status --porcelain': '', 'log': '', 'symbolic-ref': 'refs/remotes/origin/main\n' });
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Plain checkout', '/project');
+    taskStore.addSession(task.id, {
+      tmuxSession: 's1', agentType: 'claude-code', cwd: '/plain', createdAt: new Date(),
+      gitIsWorktree: false,
+    } as never);
+    taskStore.completeTask(task.id);
+
+    expect(await inspectTaskWorktrees(taskStore, task.id)).toEqual([]);
+  });
+
+  test('an unknown task yields no verdicts rather than throwing', async () => {
+    expect(await inspectTaskWorktrees(new TaskStore(), 'nope')).toEqual([]);
   });
 });

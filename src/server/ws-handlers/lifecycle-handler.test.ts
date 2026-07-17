@@ -1,12 +1,19 @@
-import { describe, expect, test, vi } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { TaskStore } from '../../core/tasks.js';
 import { Monitor } from '../../core/monitor.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { LifecycleHandler, type LifecycleHandlerDeps } from './lifecycle-handler.js';
+import { sharedTaskIdForShare } from '../../shared/contracts/contact-share.js';
 
 const mockCleanupTaskWorktrees = vi.fn(async () => undefined);
+// `inspectTaskWorktrees` must be stubbed too: the handler's catch-all would
+// otherwise turn vitest's "no export defined on the mock" error into a
+// well-formed `worktreeCleanupVerdicts` error reply, and a test asserting only
+// the message type would pass while exercising nothing but the failure path.
+const mockInspectTaskWorktrees = vi.fn(async () => [] as unknown[]);
 vi.mock('../../adapters/git-worktree.js', () => ({
   cleanupTaskWorktrees: (...args: unknown[]) => mockCleanupTaskWorktrees(...args),
+  inspectTaskWorktrees: (...args: unknown[]) => mockInspectTaskWorktrees(...args),
 }));
 
 function addSession(taskStore: TaskStore, taskId: string, tmuxSession = 'kookr-session'): void {
@@ -200,5 +207,108 @@ describe('LifecycleHandler lifecycle commands', () => {
       summary: 'Aborted 0 tasks',
       severity: 'warning',
     }));
+  });
+});
+
+describe('worktree:inspectCleanup', () => {
+  // The git-worktree mocks are module-level and shared with the suites above,
+  // which complete tasks; without a reset, "was never called" assertions here
+  // would see their calls.
+  beforeEach(() => {
+    mockCleanupTaskWorktrees.mockClear();
+    mockInspectTaskWorktrees.mockClear();
+  });
+
+  const verdict = {
+    worktreePath: '/repo-wt',
+    worktreeName: 'repo-wt',
+    branch: 'feature',
+    removable: false,
+    blocker: 'uncommitted-changes',
+    evidence: { dirty: { modified: 2, added: 0, deleted: 0, renamed: 0, untracked: 1 }, aheadCount: 0 },
+    checkedAt: '2026-07-17T00:00:00.000Z',
+  };
+
+  test('replies with the verdicts for the task', async () => {
+    mockInspectTaskWorktrees.mockResolvedValueOnce([verdict]);
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Fix bug', '/repo');
+    addSession(taskStore, task.id);
+    const { deps } = makeDeps(taskStore);
+    const handler = new LifecycleHandler(deps);
+
+    await handler.handle({ type: 'worktree:inspectCleanup', taskId: task.id });
+
+    expect(mockInspectTaskWorktrees).toHaveBeenCalledWith(taskStore, task.id);
+    expect(deps.send).toHaveBeenCalledWith({
+      type: 'worktreeCleanupVerdicts',
+      taskId: task.id,
+      verdicts: [verdict],
+    });
+  });
+
+  test('does not mutate the task', async () => {
+    mockInspectTaskWorktrees.mockResolvedValueOnce([verdict]);
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Fix bug', '/repo');
+    addSession(taskStore, task.id);
+    const { deps } = makeDeps(taskStore);
+    const handler = new LifecycleHandler(deps);
+    // Snapshot AFTER addSession, which itself promotes the task to inProgress.
+    const statusBefore = taskStore.getTask(task.id)!.status;
+
+    await handler.handle({ type: 'worktree:inspectCleanup', taskId: task.id });
+
+    expect(taskStore.getTask(task.id)!.status).toBe(statusBefore);
+    expect(mockCleanupTaskWorktrees).not.toHaveBeenCalled();
+  });
+
+  test('an inspection failure replies with an error rather than rejecting', async () => {
+    // Failing to inspect must never block completing a task.
+    mockInspectTaskWorktrees.mockRejectedValueOnce(new Error('git exploded'));
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Fix bug', '/repo');
+    const { deps } = makeDeps(taskStore);
+    const handler = new LifecycleHandler(deps);
+
+    await expect(handler.handle({ type: 'worktree:inspectCleanup', taskId: task.id })).resolves.toBeDefined();
+
+    expect(deps.send).toHaveBeenCalledWith({
+      type: 'worktreeCleanupVerdicts',
+      taskId: task.id,
+      verdicts: [],
+      error: 'git exploded',
+    });
+  });
+
+  test('a Contact Share task is answered, not swallowed by the mutation guard', async () => {
+    // The guard returns without replying; if it caught this read-only query the
+    // dialog would wait forever on a verdict that never arrives.
+    mockInspectTaskWorktrees.mockResolvedValueOnce([]);
+    const taskStore = new TaskStore();
+    const { deps } = makeDeps(taskStore);
+    const handler = new LifecycleHandler(deps);
+    const sharedTaskId = sharedTaskIdForShare('share-1');
+
+    await handler.handle({ type: 'worktree:inspectCleanup', taskId: sharedTaskId });
+
+    expect(deps.send).toHaveBeenCalledWith({
+      type: 'worktreeCleanupVerdicts',
+      taskId: sharedTaskId,
+      verdicts: [],
+    });
+    expect(deps.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'alert' }));
+  });
+
+  test('a shared task still cannot be completed', async () => {
+    // The read-only carve-out must not widen into lifecycle mutations.
+    const taskStore = new TaskStore();
+    const { deps } = makeDeps(taskStore);
+    const handler = new LifecycleHandler(deps);
+
+    await handler.handle({ type: 'completeTask', taskId: sharedTaskIdForShare('share-1') });
+
+    expect(deps.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'alert' }));
+    expect(mockInspectTaskWorktrees).not.toHaveBeenCalled();
   });
 });

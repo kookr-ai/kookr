@@ -524,6 +524,7 @@ const clientMessageRoundTripCases = [
       fingerprint: 'fingerprint-1',
     }],
   }),
+  clientMessageCase({ type: 'worktree:inspectCleanup', taskId: 'task-1' }),
 ] as const;
 
 const coveredClientMessageTypes = clientMessageRoundTripCases.map((message) => message.type);

@@ -21,6 +21,7 @@ import {
   type BatchAbortSummary,
 } from '../use-cases/task-lifecycle-commands.js';
 import { isSharedTaskId } from '../../shared/contracts/contact-share.js';
+import { inspectTaskWorktrees } from '../../adapters/git-worktree.js';
 
 /**
  * Narrow dependency bag for task-lifecycle messages.
@@ -86,6 +87,7 @@ type LifecycleMessage = Extract<ClientMessage, {
     | 'setTaskFeedback'
     | 'requestTaskReflect'
     | 'requestTaskSnapshotReflect'
+    | 'worktree:inspectCleanup'
 }>;
 
 /**
@@ -97,6 +99,22 @@ type LifecycleMessage = Extract<ClientMessage, {
  */
 export class LifecycleHandler {
   private readonly commands: TaskLifecycleCommands;
+
+  /**
+   * Read-only probe for the completion dialog. Errors resolve to an empty
+   * verdict list with `error` set rather than rejecting: failing to inspect
+   * must never block completing a task, and the dialog degrades to hiding
+   * the cleanup option.
+   */
+  private async inspectCleanup(taskId: string): Promise<void> {
+    try {
+      const verdicts = await inspectTaskWorktrees(this.deps.taskStore, taskId);
+      this.deps.send({ type: 'worktreeCleanupVerdicts', taskId, verdicts });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.deps.send({ type: 'worktreeCleanupVerdicts', taskId, verdicts: [], error: message });
+    }
+  }
 
   constructor(private readonly deps: LifecycleHandlerDeps) {
     this.commands = new TaskLifecycleCommands({
@@ -121,7 +139,12 @@ export class LifecycleHandler {
   }
 
   async handle(msg: LifecycleMessage): Promise<{ duplicate: boolean }> {
-    if ('taskId' in msg && typeof msg.taskId === 'string' && isSharedTaskId(msg.taskId)) {
+    // `worktree:inspectCleanup` is a read-only question, not a lifecycle
+    // mutation, so the Contact Share guard below must not swallow it: that path
+    // returns without replying, and the completion dialog would wait forever on
+    // a `worktreeCleanupVerdicts` message that never comes.
+    const isReadOnlyQuery = msg.type === 'worktree:inspectCleanup';
+    if (!isReadOnlyQuery && 'taskId' in msg && typeof msg.taskId === 'string' && isSharedTaskId(msg.taskId)) {
       this.deps.send({
         type: 'alert',
         agentId: '',
@@ -211,6 +234,11 @@ export class LifecycleHandler {
           requestReflect: msg.requestReflect,
           cleanupWorktree: msg.cleanupWorktree,
         }));
+        return { duplicate: false };
+      }
+
+      case 'worktree:inspectCleanup': {
+        await this.inspectCleanup(msg.taskId);
         return { duplicate: false };
       }
 

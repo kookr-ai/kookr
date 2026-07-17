@@ -146,6 +146,10 @@ const ClientMessageSchemaImpl = z.union([
     cleanupWorktree: z.boolean().optional(),
   }),
   z.object({
+    type: z.literal('worktree:inspectCleanup'),
+    taskId: z.string(),
+  }),
+  z.object({
     type: z.literal('setTaskFeedback'),
     taskId: z.string(),
     feedback: z.object({

@@ -44,6 +44,7 @@ import type {
   OssAttemptsSnapshot,
   HostCapability,
 } from '../../shared/contracts/messages.js';
+import type { WorktreeCleanupVerdict } from '../../shared/contracts/worktree-cleanup-verdict.js';
 
 export type AlertSeverity = 'error' | 'info';
 
@@ -512,6 +513,33 @@ export interface AutoAdvanceSlice {
  * subscriber-flicker bug.
  */
 
+/**
+ * Removal verdicts for the task-completion dialog's cleanup checkbox.
+ *
+ * Distinct from {@link WorkspaceSlice}: that one serves the Contribution
+ * Workspace and classifies worktrees by its own richer rules; this one mirrors
+ * what the completion cleanup will actually do. Conflating them is how the
+ * dialog would end up promising an outcome the cleanup doesn't honor.
+ */
+export interface WorktreeCleanupSlice {
+  /** Task the in-flight/current verdicts belong to. Null when no dialog is open. */
+  cleanupVerdictsTaskId: string | null;
+  /** Null while the first probe is in flight. Empty array = task owns no worktrees. */
+  cleanupVerdicts: WorktreeCleanupVerdict[] | null;
+  cleanupVerdictsError: string | null;
+  /** True only for a re-check; the initial probe uses the null-verdicts state. */
+  cleanupVerdictsRefreshing: boolean;
+
+  /** Mark a probe as started. `refresh` keeps existing verdicts visible. */
+  beginWorktreeCleanupInspect: (taskId: string, opts?: { refresh?: boolean }) => void;
+  handleWorktreeCleanupVerdicts: (
+    taskId: string,
+    verdicts: WorktreeCleanupVerdict[],
+    error?: string,
+  ) => void;
+  clearWorktreeCleanupVerdicts: () => void;
+}
+
 export type KookrStore =
   & TransportSessionSlice
   & TriageNavigationSlice
@@ -520,7 +548,8 @@ export type KookrStore =
   & WorkspaceSlice
   & OssAttemptsSlice
   & SystemStatusSlice
-  & AutoAdvanceSlice;
+  & AutoAdvanceSlice
+  & WorktreeCleanupSlice;
 
 export type StoreSet = (
   partial: Partial<KookrStore> | ((state: KookrStore) => Partial<KookrStore>),

@@ -10,6 +10,7 @@ import { recordOutbound, recordReportableAlert, resetBugReportRecorderForTests }
 import { clearDebugTimeline, setDebugTimelineEnabledForTests } from './debug-timeline.js';
 import { __resetViewerSessionForTests } from './viewer-session.js';
 import type { AgentState } from '../shared/protocol.js';
+import type { WorktreeCleanupVerdict } from '../shared/contracts/worktree-cleanup-verdict.js';
 
 const websocketMock = vi.hoisted(() => ({
   send: vi.fn(() => true),
@@ -55,6 +56,32 @@ async function flush() {
   await act(async () => {
     await Promise.resolve();
     await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+function removableVerdict(): WorktreeCleanupVerdict {
+  return {
+    worktreePath: '/wt/task-1',
+    worktreeName: 'task-1',
+    branch: 'feature',
+    removable: true,
+    evidence: { dirty: { modified: 0, added: 0, deleted: 0, renamed: 0, untracked: 0 }, aheadCount: 0 },
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Simulate the server's reply to the dialog's `worktree:inspectCleanup` probe.
+ *
+ * The socket is mocked here, so nothing answers the probe on its own and the
+ * dialog would sit in its "checking" state — where it deliberately makes no
+ * cleanup claim. Any test that exercises the checkbox has to settle it first.
+ */
+async function settleCleanupVerdicts(verdicts: WorktreeCleanupVerdict[] = [removableVerdict()]) {
+  const taskId = useKookrStore.getState().cleanupVerdictsTaskId;
+  if (taskId === null) return;
+  await act(async () => {
+    useKookrStore.getState().handleWorktreeCleanupVerdicts(taskId, verdicts);
   });
 }
 
@@ -192,6 +219,7 @@ describe('App operations modal shortcuts', () => {
     await act(async () => {
       completeButton.click();
     });
+    await settleCleanupVerdicts();
 
     expect(container.textContent).toContain('Complete Task');
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Thumbs up"]')).toBeInstanceOf(HTMLButtonElement);
@@ -217,6 +245,7 @@ describe('App operations modal shortcuts', () => {
     await act(async () => {
       completeButton.click();
     });
+    await settleCleanupVerdicts();
     const cleanupCheckbox = await waitForElement<HTMLInputElement>(
       container,
       '.complete-cleanup-checkbox input[type="checkbox"]',
@@ -269,6 +298,7 @@ describe('App operations modal shortcuts', () => {
     await act(async () => {
       completeButton.click();
     });
+    await settleCleanupVerdicts();
     const cleanupCheckbox = await waitForElement<HTMLInputElement>(
       container,
       '.complete-cleanup-checkbox input[type="checkbox"]',
@@ -317,6 +347,7 @@ describe('App operations modal shortcuts', () => {
     await act(async () => {
       completeButton.click();
     });
+    await settleCleanupVerdicts();
     const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
     await act(async () => {
       confirmButton.click();
@@ -329,7 +360,45 @@ describe('App operations modal shortcuts', () => {
     } as Response);
   });
 
-  test('does not offer worktree cleanup for an active Ralph iteration', async () => {
+  test('a blocked worktree sends cleanupWorktree: false rather than omitting the field', async () => {
+    // Omitting it would let the server's default decide, so a dialog that said
+    // "kept — uncommitted changes" could still be followed by a removal.
+    useKookrStore.setState({
+      agents: [makeAgent({ agentId: 'agent-1', taskId: 'task-1' })],
+      selectedAgentId: 'agent-1',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+    const completeButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-complete-button"]');
+    await act(async () => {
+      completeButton.click();
+    });
+    await settleCleanupVerdicts([{
+      ...removableVerdict(),
+      removable: false,
+      blocker: 'uncommitted-changes',
+    }]);
+
+    const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
+    await act(async () => {
+      confirmButton.click();
+    });
+
+    expect(websocketMock.send).toHaveBeenCalledWith({
+      type: 'completeTask',
+      taskId: 'task-1',
+      cleanupWorktree: false,
+    });
+  });
+
+  test('refuses worktree cleanup for an active Ralph iteration, and says so on the wire', async () => {
+    // The server refuses to complete an active loop's task outright
+    // (task-lifecycle-commands: the Ralph branch returns before any cleanup),
+    // so the old hidden checkbox was never a cleanup risk — it just vanished
+    // with no explanation. Show it blocked, and state the refusal on the wire
+    // rather than relying on a server short-circuit the client never declared.
     useKookrStore.setState({
       agents: [makeAgent({
         agentId: 'agent-1',
@@ -346,13 +415,24 @@ describe('App operations modal shortcuts', () => {
     await act(async () => {
       completeButton.click();
     });
+    // The server reports the worktree as removable; the live loop still vetoes it.
+    await settleCleanupVerdicts();
 
-    expect(container.querySelector('.complete-cleanup-checkbox')).toBeNull();
+    const cleanupCheckbox = container.querySelector<HTMLInputElement>('.complete-cleanup-checkbox input[type="checkbox"]');
+    expect(cleanupCheckbox).not.toBeNull();
+    expect(cleanupCheckbox!.disabled).toBe(true);
+    expect(cleanupCheckbox!.checked).toBe(false);
+    expect(container.textContent).toContain('Ralph loop still active');
+
     const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
     await act(async () => {
       confirmButton.click();
     });
-    expect(websocketMock.send).toHaveBeenCalledWith({ type: 'completeTask', taskId: 'task-1' });
+    expect(websocketMock.send).toHaveBeenCalledWith({
+      type: 'completeTask',
+      taskId: 'task-1',
+      cleanupWorktree: false,
+    });
   });
 
   test('delete task undo cancels the deferred destructive send', async () => {
@@ -592,6 +672,7 @@ describe('App operations modal shortcuts', () => {
     await act(async () => {
       completeButton.click();
     });
+    await settleCleanupVerdicts();
 
     const thumbsUp = await waitForElement<HTMLButtonElement>(container, 'button[aria-label="Thumbs up"]');
     await act(async () => {
@@ -644,6 +725,7 @@ describe('App operations modal shortcuts', () => {
     await act(async () => {
       completeButton.click();
     });
+    await settleCleanupVerdicts();
 
     const thumbsDown = await waitForElement<HTMLButtonElement>(container, 'button[aria-label="Thumbs down"]');
     await act(async () => {
@@ -713,6 +795,7 @@ describe('App operations modal shortcuts', () => {
     await act(async () => {
       completeButton.click();
     });
+    await settleCleanupVerdicts();
     const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
     await act(async () => {
       confirmButton.click();
@@ -757,6 +840,7 @@ describe('App operations modal shortcuts', () => {
     await act(async () => {
       completeButton.click();
     });
+    await settleCleanupVerdicts();
     await act(async () => {
       useKookrStore.getState().selectAgent('agent-3');
     });
@@ -805,6 +889,7 @@ describe('App operations modal shortcuts', () => {
     await act(async () => {
       completeButton.click();
     });
+    await settleCleanupVerdicts();
     const confirmButton = await waitForElement<HTMLButtonElement>(container, '.confirm-dialog-actions .btn-primary');
     await act(async () => {
       confirmButton.click();

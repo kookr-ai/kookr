@@ -1,11 +1,20 @@
 import React, { useState } from 'react';
 import type { TaskCompletionFeedback } from '../../shared/contracts/messages.js';
+import type { WorktreeCleanupVerdict } from '../../shared/contracts/worktree-cleanup-verdict.js';
+import { CleanupWorktreeOption } from './CleanupWorktreeOption.js';
 
 interface Props {
   feedback: TaskCompletionFeedback | undefined;
   requestReflect: boolean;
   cleanupWorktree: boolean;
-  showCleanupWorktree?: boolean;
+  /** undefined while the removal probe is in flight. */
+  cleanupVerdicts?: WorktreeCleanupVerdict[];
+  /** The inspection errored — removability is unknown, not "no". */
+  cleanupInspectFailed?: boolean;
+  /** An agent is still driving the worktree; blocks cleanup client-side. */
+  ralphActive?: boolean;
+  cleanupRefreshing?: boolean;
+  onRefreshCleanupVerdicts?: () => void;
   onChange: (feedback: TaskCompletionFeedback | undefined) => void;
   onRequestReflectChange: (requestReflect: boolean) => void;
   onCleanupWorktreeChange: (cleanupWorktree: boolean) => void;
@@ -25,7 +34,11 @@ export function CompleteDialogFooter({
   feedback,
   requestReflect,
   cleanupWorktree,
-  showCleanupWorktree = true,
+  cleanupVerdicts,
+  cleanupInspectFailed = false,
+  ralphActive = false,
+  cleanupRefreshing = false,
+  onRefreshCleanupVerdicts,
   onChange,
   onRequestReflectChange,
   onCleanupWorktreeChange,
@@ -91,22 +104,17 @@ export function CompleteDialogFooter({
           {feedback ? '(click again to clear)' : '(optional — skip to complete without rating)'}
         </span>
       </div>
-      {showCleanupWorktree && (
-        <div className="complete-cleanup-option">
-          <label className="complete-cleanup-checkbox">
-            <input
-              type="checkbox"
-              checked={cleanupWorktree}
-              aria-label="Remove task worktree and branch"
-              onChange={(e) => onCleanupWorktreeChange(e.target.checked)}
-            />
-            <span>Remove task worktree and branch</span>
-          </label>
-          <span className="complete-cleanup-hint">
-            Safely removes the task worktree, prunes Git, and deletes its merged local branch. Dirty or unmerged worktrees are kept.
-          </span>
-        </div>
-      )}
+      {/* Renders nothing when the task owns no worktree — the option's own
+          concern, not the caller's. */}
+      <CleanupWorktreeOption
+        cleanupWorktree={cleanupWorktree}
+        verdicts={cleanupVerdicts}
+        inspectFailed={cleanupInspectFailed}
+        ralphActive={ralphActive}
+        refreshing={cleanupRefreshing}
+        onRefresh={() => onRefreshCleanupVerdicts?.()}
+        onChange={onCleanupWorktreeChange}
+      />
       {showNoteInput && feedback && (
         <>
           <textarea

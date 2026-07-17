@@ -279,6 +279,13 @@ const workspaceCleanupDetailMessage = z.object({
   error: z.string().optional(),
 });
 
+const worktreeCleanupVerdictsMessage = z.object({
+  type: z.literal('worktreeCleanupVerdicts'),
+  taskId: z.string(),
+  verdicts: z.array(jsonObject),
+  error: z.string().optional(),
+});
+
 const crossProjectSweepProjectResult = z.union([
   z.object({
     kind: z.literal('ok'),
@@ -431,6 +438,7 @@ const ServerMessageSchemaImpl = z.union([
   scheduleFiredMessage,
   workspaceViewMessage,
   workspaceCleanupDetailMessage,
+  worktreeCleanupVerdictsMessage,
   workspaceSweepProgressMessage,
   workspaceBulkRemoveProgressMessage,
   workspaceSweepCompleteMessage,

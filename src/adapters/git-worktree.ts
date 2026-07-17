@@ -1,10 +1,17 @@
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync } from 'node:fs';
+import { basename } from 'node:path';
 import type { TaskStore, Task } from '../core/tasks.js';
-import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
+import type { DeferredInteractionLogWriter, InteractionEvent } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
 import { classifyGitError, DEFAULT_GIT_MAX_BUFFER, DEFAULT_GIT_TIMEOUT_MS, gitExecEnv } from '../core/git-helpers.js';
+import type {
+  WorktreeCleanupBlocker,
+  WorktreeCleanupEvidence,
+  WorktreeCleanupVerdict,
+  WorktreeDirtySummary,
+} from '../shared/contracts/worktree-cleanup-verdict.js';
 import { isProtectedWorktreePath } from './worktree-marker.js';
 import { getWorktreeRemovalGuardReason, removeRegisteredWorktree, samePath } from './worktree-safety.js';
 
@@ -45,48 +52,217 @@ async function getDefaultBranch(worktreePath: string): Promise<string> {
 }
 
 /**
- * Check whether a worktree is clean:
- * - No uncommitted changes (git status --porcelain)
- * - All commits merged to default branch (git log default..branch --oneline)
+ * Count changed paths by category from `git status --porcelain` output.
  *
- * Returns { clean: true } or { clean: false, reason: string }.
+ * Each line is `XY PATH`, where X is the index status and Y the worktree
+ * status. A path is counted once, under the most significant of its two
+ * codes (rename > add > delete > modify), so `MM` and `AM` don't double-count.
  */
-async function isClean(
+export function parsePorcelainStatus(output: string): WorktreeDirtySummary {
+  const summary: WorktreeDirtySummary = {
+    modified: 0,
+    added: 0,
+    deleted: 0,
+    renamed: 0,
+    untracked: 0,
+  };
+  for (const line of output.split('\n')) {
+    if (line.trim().length === 0) continue;
+    const codes = line.slice(0, 2);
+    if (codes === '??') {
+      summary.untracked++;
+    } else if (codes.includes('R')) {
+      summary.renamed++;
+    } else if (codes.includes('A')) {
+      summary.added++;
+    } else if (codes.includes('D')) {
+      summary.deleted++;
+    } else {
+      // M, C, T, U and any future code — all "changed in place".
+      summary.modified++;
+    }
+  }
+  return summary;
+}
+
+/**
+ * Cleanliness half of the cascade: uncommitted changes, then unmerged commits.
+ *
+ * Both probes run before any verdict is returned, so the dialog can show the
+ * full picture ("3 modified, and 2 commits ahead") rather than only the first
+ * thing that tripped. Blocker precedence is unchanged from the original
+ * early-return order, so the verdict itself is identical.
+ *
+ * Note `aheadCount` is measured against the *default branch*, not a remote —
+ * an empty range proves every commit is reachable from the default branch, so
+ * whether the branch was ever pushed has no bearing on removal safety.
+ */
+async function inspectCleanliness(
   worktreePath: string,
   branch: string | undefined,
   isDetached: boolean | undefined,
-): Promise<{ clean: true } | { clean: false; reason: string }> {
+): Promise<{ blocker?: WorktreeCleanupBlocker; evidence: WorktreeCleanupEvidence }> {
+  const evidence: WorktreeCleanupEvidence = {};
+
   // Detached HEAD — can't verify merge status
-  if (isDetached) {
-    return { clean: false, reason: 'detached HEAD' };
-  }
-
+  if (isDetached) return { blocker: 'detached-head', evidence };
   // No branch info — treat as dirty (conservative)
-  if (!branch) {
-    return { clean: false, reason: 'no branch info' };
-  }
+  if (!branch) return { blocker: 'no-branch', evidence };
 
-  // Check for uncommitted changes
   const status = await git('-C', worktreePath, 'status', '--porcelain');
-  if (status === null) {
-    return { clean: false, reason: 'git status failed' };
-  }
-  if (status.length > 0) {
-    return { clean: false, reason: 'uncommitted changes' };
+  if (status !== null) {
+    evidence.dirty = parsePorcelainStatus(status);
   }
 
-  // Check for unmerged commits
   const defaultBranch = await getDefaultBranch(worktreePath);
   const unmerged = await git('-C', worktreePath, 'log', `${defaultBranch}..${branch}`, '--oneline');
-  if (unmerged === null) {
-    // git log failed — branch might not exist locally, treat as dirty
-    return { clean: false, reason: 'unmerged commits check failed' };
-  }
-  if (unmerged.length > 0) {
-    return { clean: false, reason: 'unmerged commits' };
+  if (unmerged !== null) {
+    evidence.aheadCount = unmerged.length === 0 ? 0 : unmerged.split('\n').length;
   }
 
-  return { clean: true };
+  if (status === null) return { blocker: 'git-status-failed', evidence };
+  if (status.length > 0) return { blocker: 'uncommitted-changes', evidence };
+  // git log failed — branch might not exist locally, treat as dirty
+  if (unmerged === null) return { blocker: 'unmerged-check-failed', evidence };
+  if (unmerged.length > 0) return { blocker: 'unmerged-commits', evidence };
+
+  return { evidence };
+}
+
+/**
+ * Decide whether a task's worktree can be removed, and why not.
+ *
+ * The single source of truth for that question. `cleanupSingleWorktree` calls
+ * it to decide; the completion dialog calls it (over `worktree:inspectCleanup`)
+ * to display. Because both read one verdict, the dialog cannot claim an
+ * outcome the cleanup won't honor.
+ *
+ * The verdict is a snapshot — cleanup re-inspects at execution time, and
+ * `removeRegisteredWorktree` re-validates worktree identity under a lock.
+ */
+export async function inspectWorktreeCleanup(
+  taskStore: TaskStore,
+  taskId: string,
+  worktreePath: string,
+): Promise<WorktreeCleanupVerdict> {
+  const task = taskStore.getTask(taskId);
+  const session = task ? getSessionForWorktree(task, worktreePath) : undefined;
+  const branch = session?.gitBranch;
+  const base = {
+    worktreePath,
+    worktreeName: basename(worktreePath),
+    ...(branch !== undefined ? { branch } : {}),
+    checkedAt: nowISO(),
+  };
+  const blocked = (blocker: WorktreeCleanupBlocker): WorktreeCleanupVerdict => ({
+    ...base,
+    removable: false,
+    blocker,
+    evidence: {},
+  });
+
+  if (!existsSync(worktreePath)) return blocked('not-found');
+
+  // Identity/protection guards run before any content inspection — same order
+  // as the cleanup, so a clean primary checkout can never be reported as
+  // removable.
+  const guardReason = await getWorktreeRemovalGuardReason(worktreePath, { branch });
+  if (guardReason) return blocked(guardReason);
+  if (isProtectedWorktreePath(worktreePath)) return blocked('protected-marker');
+  if (isSharedWorktree(taskStore, taskId, worktreePath)) return blocked('shared-with-active-task');
+
+  const { blocker, evidence } = await inspectCleanliness(worktreePath, branch, session?.gitIsDetached);
+  return {
+    ...base,
+    removable: blocker === undefined,
+    ...(blocker !== undefined ? { blocker } : {}),
+    evidence,
+  };
+}
+
+type WorktreeSkippedEvent = Extract<InteractionEvent, { type: 'worktree_skipped' }>;
+type WorktreeKeptEvent = Extract<InteractionEvent, { type: 'worktree_kept' }>;
+
+/**
+ * The log records identity/protection blockers as `worktree_skipped` (closed
+ * reason union) and cleanliness blockers as `worktree_kept` (free-form reason).
+ * Returns null for the cleanliness blockers, which belong in the other event.
+ */
+function skippedReasonForBlocker(blocker: WorktreeCleanupBlocker): WorktreeSkippedEvent['reason'] | null {
+  switch (blocker) {
+    case 'not-found':
+      return 'not found';
+    case 'protected-marker':
+      return 'protected';
+    case 'shared-with-active-task':
+      return 'shared';
+    case 'primary-working-tree':
+    case 'not-a-linked-worktree':
+    case 'protected-branch':
+    case 'repository-context-unavailable':
+    case 'repository-context-mismatch':
+      // Guard reasons were already logged verbatim.
+      return blocker;
+    default:
+      return null;
+  }
+}
+
+/** Free-form `worktree_kept` reason, preserving the pre-refactor wording. */
+function keptReasonForBlocker(blocker: WorktreeCleanupBlocker): string {
+  switch (blocker) {
+    case 'detached-head':
+      return 'detached HEAD';
+    case 'no-branch':
+      return 'no branch info';
+    case 'uncommitted-changes':
+      return 'uncommitted changes';
+    case 'unmerged-commits':
+      return 'unmerged commits';
+    case 'git-status-failed':
+      return 'git status failed';
+    case 'unmerged-check-failed':
+      return 'unmerged commits check failed';
+    default:
+      return blocker;
+  }
+}
+
+/**
+ * Build the interaction-log event for a blocked cleanup.
+ *
+ * Branch presence mirrors the pre-refactor calls exactly: guard reasons carried
+ * it, `protected`/`shared`/`not found` did not.
+ */
+function blockedCleanupEvent(
+  blocker: WorktreeCleanupBlocker,
+  taskId: string,
+  worktreePath: string,
+  branch: string | undefined,
+): WorktreeSkippedEvent | WorktreeKeptEvent {
+  const timestamp = nowISO();
+  const skippedReason = skippedReasonForBlocker(blocker);
+  if (skippedReason !== null) {
+    const carriesBranch = skippedReason !== 'not found'
+      && skippedReason !== 'protected'
+      && skippedReason !== 'shared';
+    return {
+      type: 'worktree_skipped',
+      taskId,
+      worktreePath,
+      ...(carriesBranch && branch !== undefined ? { branch } : {}),
+      reason: skippedReason,
+      timestamp,
+    };
+  }
+  return {
+    type: 'worktree_kept',
+    taskId,
+    worktreePath,
+    branch,
+    reason: keptReasonForBlocker(blocker),
+    timestamp,
+  };
 }
 
 /** Run `git worktree prune` to clean up stale registry entries. */
@@ -142,6 +318,24 @@ function markWorktreeCleanedUp(taskStore: TaskStore, taskId: string, task: Task,
 }
 
 /**
+ * Inspect every worktree a task owns, without touching any of them.
+ *
+ * Enumerates paths through the same `getWorktreePaths` the cleanup uses, so
+ * the dialog is answering for exactly the set that cleanup would act on —
+ * a task with two worktrees gets two verdicts, not a guess about the first.
+ */
+export async function inspectTaskWorktrees(
+  taskStore: TaskStore,
+  taskId: string,
+): Promise<WorktreeCleanupVerdict[]> {
+  const task = taskStore.getTask(taskId);
+  if (!task) return [];
+  return Promise.all(
+    getWorktreePaths(task).map((path) => inspectWorktreeCleanup(taskStore, taskId, path)),
+  );
+}
+
+/**
  * Clean up worktrees for a completed/cancelled task.
  * Fires asynchronously — does NOT block the caller.
  * Checks task.status before each destructive step to abort if reopened.
@@ -180,9 +374,14 @@ async function cleanupSingleWorktree(
   worktreePath: string,
   interactionLog?: DeferredInteractionLogWriter,
 ): Promise<void> {
+  // The same inspection the completion dialog displays. Running the guard
+  // cascade here — rather than re-implementing it — is what keeps the dialog's
+  // claim and this outcome from drifting apart.
+  const verdict = await inspectWorktreeCleanup(taskStore, taskId, worktreePath);
+
   // The path is already gone, so its owning repository can no longer be
   // established safely. Do not guess a repo for pruning.
-  if (!existsSync(worktreePath)) {
+  if (verdict.blocker === 'not-found') {
     markWorktreeCleanedUp(taskStore, taskId, task, worktreePath);
     await interactionLog?.append({
       type: 'worktree_skipped',
@@ -194,64 +393,16 @@ async function cleanupSingleWorktree(
     return;
   }
 
+  if (verdict.blocker !== undefined) {
+    await interactionLog?.append(
+      blockedCleanupEvent(verdict.blocker, taskId, worktreePath, verdict.branch),
+    );
+    return;
+  }
+
   const session = getSessionForWorktree(task, worktreePath);
-  const branch = session?.gitBranch;
+  const branch = verdict.branch;
   const isDetached = session?.gitIsDetached;
-
-  // Always-on removal backstop. This must run before the marker, cleanliness,
-  // or task-state checks so a clean, unmarked primary checkout can never reach
-  // a recursive filesystem delete. Registry membership also prevents
-  // arbitrary recorded paths from being treated as disposable worktrees.
-  const guardReason = await getWorktreeRemovalGuardReason(worktreePath, { branch });
-  if (guardReason) {
-    await interactionLog?.append({
-      type: 'worktree_skipped',
-      taskId,
-      worktreePath,
-      branch,
-      reason: guardReason,
-      timestamp: nowISO(),
-    });
-    return;
-  }
-
-  // Protected worktree
-  if (isProtectedWorktreePath(worktreePath)) {
-    await interactionLog?.append({
-      type: 'worktree_skipped',
-      taskId,
-      worktreePath,
-      reason: 'protected',
-      timestamp: nowISO(),
-    });
-    return;
-  }
-
-  // Shared with another active task
-  if (isSharedWorktree(taskStore, taskId, worktreePath)) {
-    await interactionLog?.append({
-      type: 'worktree_skipped',
-      taskId,
-      worktreePath,
-      reason: 'shared',
-      timestamp: nowISO(),
-    });
-    return;
-  }
-
-  // Safety checks
-  const result = await isClean(worktreePath, branch, isDetached);
-  if (!result.clean) {
-    await interactionLog?.append({
-      type: 'worktree_kept',
-      taskId,
-      worktreePath,
-      branch,
-      reason: result.reason,
-      timestamp: nowISO(),
-    });
-    return;
-  }
 
   // --- Destructive steps: check task status before each ---
 

@@ -436,6 +436,7 @@ export class MessageRouter {
       case 'clearCompleted':
       case 'ackTerminatedTask':
       case 'requestTaskSnapshotReflect':
+      case 'worktree:inspectCleanup':
         await this.lifecycleHandler.handle(msg);
         return;
 

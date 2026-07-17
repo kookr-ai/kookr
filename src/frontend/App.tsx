@@ -1,6 +1,7 @@
 import React, { lazy, Suspense, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { AgentState, ClientMessage, ProjectSummary } from '../shared/protocol.js';
+import { resolveCleanupOverride } from './cleanup-override.js';
 import { deriveLaunchProjectCwd } from './derive-project-cwd.js';
 import { useKookrStore } from './store/useStore.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
@@ -142,7 +143,6 @@ interface PendingCompleteConfirmation {
   agentId: string;
   label: string;
   method: 'button' | 'shortcut';
-  cleanupWorktreeAllowed: boolean;
 }
 
 const MOBILE_BREAKPOINT_PX = 768;
@@ -160,6 +160,7 @@ function quotedTaskLabel(label: string): string {
 function isActiveRalphLoop(agent: AgentState | undefined): boolean {
   return agent?.ralphLoop?.status === 'running' || agent?.ralphLoop?.status === 'paused';
 }
+
 
 function reflectionDismissKey(sessionId: string): string {
   return `kookr-reflection-dismissed-${sessionId}`;
@@ -427,6 +428,11 @@ export function App() {
     terminalFocusMode,
     setNarrowTab,
     toggleTerminalFocusMode,
+    cleanupVerdicts,
+    cleanupVerdictsError,
+    cleanupVerdictsRefreshing,
+    beginWorktreeCleanupInspect,
+    clearWorktreeCleanupVerdicts,
   } = useKookrStore(useShallow((state) => ({
     agents: state.agents,
     agentsHydrated: state.agentsHydrated,
@@ -463,11 +469,26 @@ export function App() {
     terminalFocusMode: state.terminalFocusMode,
     setNarrowTab: state.setNarrowTab,
     toggleTerminalFocusMode: state.toggleTerminalFocusMode,
+    cleanupVerdicts: state.cleanupVerdicts,
+    cleanupVerdictsError: state.cleanupVerdictsError,
+    cleanupVerdictsRefreshing: state.cleanupVerdictsRefreshing,
+    beginWorktreeCleanupInspect: state.beginWorktreeCleanupInspect,
+    clearWorktreeCleanupVerdicts: state.clearWorktreeCleanupVerdicts,
   })));
 
   useEffect(() => {
     sendRef.current = send;
   }, [send]);
+
+  /**
+   * Ask the server whether this task's worktrees can be removed. Fires when the
+   * complete dialog opens and on each manual re-check; the reply lands in the
+   * store via the `worktreeCleanupVerdicts` message.
+   */
+  const requestCleanupInspect = useCallback((taskId: string, opts?: { refresh?: boolean }) => {
+    beginWorktreeCleanupInspect(taskId, opts);
+    send({ type: 'worktree:inspectCleanup', taskId });
+  }, [beginWorktreeCleanupInspect, send]);
 
   const removePendingDestructiveAction = useCallback((id: string) => {
     const timer = destructiveTimersRef.current.get(id);
@@ -617,6 +638,12 @@ export function App() {
         && selectedTaskId === a.taskId
       )) ?? agents.find((a) => a.agentId === selectedAgentId) ?? null
     : null;
+  // Read from the live agent rather than snapshotting at dialog-open: a loop can
+  // finish while the dialog sits there, and a stale snapshot would make the
+  // dialog's re-check control unable to ever clear the block it reports.
+  const pendingCompleteRalphActive = isActiveRalphLoop(
+    pendingComplete ? agents.find((a) => a.agentId === pendingComplete.agentId) : undefined,
+  );
   useEffect(() => {
     const effectiveSelectedTaskId = selectedAgent?.taskId ?? null;
     const effectiveSelectedSessionId = selectedAgent?.agentId ?? null;
@@ -837,10 +864,10 @@ export function App() {
               agentId: selectedAgent.agentId,
               label: selectedAgent.taskName ?? selectedAgent.agentId,
               method: 'shortcut',
-              cleanupWorktreeAllowed: !isActiveRalphLoop(selectedAgent),
             });
             setCompleteCleanupWorktree(cleanupWorktreeOnComplete ?? true);
             setCompleteCleanupWorktreeTouched(false);
+            requestCleanupInspect(selectedAgent.taskId);
             setConfirmAction('complete');
           }
         }
@@ -1153,10 +1180,10 @@ export function App() {
           agentId: selectedAgent.agentId,
           label: selectedAgent.taskName ?? selectedAgent.agentId,
           method: 'button',
-          cleanupWorktreeAllowed: !isActiveRalphLoop(selectedAgent),
         });
         setCompleteCleanupWorktree(cleanupWorktreeOnComplete ?? true);
         setCompleteCleanupWorktreeTouched(false);
+        requestCleanupInspect(selectedAgent.taskId);
         setConfirmAction('complete');
       }}
       detailPaneMode={detailPaneMode}
@@ -1513,7 +1540,11 @@ export function App() {
               feedback={completeFeedback}
               requestReflect={completeRequestReflect}
               cleanupWorktree={completeCleanupWorktree}
-              showCleanupWorktree={pendingComplete.cleanupWorktreeAllowed}
+              cleanupVerdicts={cleanupVerdicts ?? undefined}
+              cleanupInspectFailed={cleanupVerdictsError !== null}
+              ralphActive={pendingCompleteRalphActive}
+              cleanupRefreshing={cleanupVerdictsRefreshing}
+              onRefreshCleanupVerdicts={() => requestCleanupInspect(pendingComplete.taskId, { refresh: true })}
               onChange={setCompleteFeedback}
               onRequestReflectChange={setCompleteRequestReflect}
               onCleanupWorktreeChange={(value) => {
@@ -1524,10 +1555,14 @@ export function App() {
           }
           onConfirm={() => {
             track({ type: 'task_completed', agentId: pendingComplete.agentId, method: pendingComplete.method });
-            const cleanupOverride = pendingComplete.cleanupWorktreeAllowed
-              && (completeCleanupWorktreeTouched || cleanupWorktreeOnComplete !== undefined)
-              ? completeCleanupWorktree
-              : undefined;
+            const cleanupOverride = resolveCleanupOverride({
+              verdicts: cleanupVerdicts,
+              inspectFailed: cleanupVerdictsError !== null,
+              ralphActive: pendingCompleteRalphActive,
+              touched: completeCleanupWorktreeTouched,
+              savedDefault: cleanupWorktreeOnComplete,
+              checkboxValue: completeCleanupWorktree,
+            });
             const completionSent = send({
               type: 'completeTask',
               taskId: pendingComplete.taskId,
@@ -1544,6 +1579,7 @@ export function App() {
             setCompleteRequestReflect(false);
             setCompleteCleanupWorktree(true);
             setCompleteCleanupWorktreeTouched(false);
+            clearWorktreeCleanupVerdicts();
           }}
           onClose={() => {
             setConfirmAction(null);
@@ -1552,6 +1588,7 @@ export function App() {
             setCompleteRequestReflect(false);
             setCompleteCleanupWorktree(true);
             setCompleteCleanupWorktreeTouched(false);
+            clearWorktreeCleanupVerdicts();
           }}
         />
       )}
