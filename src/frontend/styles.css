@@ -5475,6 +5475,8 @@ label.task-share-row {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-secondary, transparent);
+  /* Anchors .complete-cleanup-refresh to the top-right corner. */
+  position: relative;
 }
 .complete-cleanup-checkbox {
   display: flex;
@@ -5484,17 +5486,138 @@ label.task-share-row {
   color: var(--text);
   cursor: pointer;
   user-select: none;
+  /* Keep the label clear of the absolutely-positioned refresh button. */
+  padding-right: 44px;
 }
 .complete-cleanup-checkbox input[type="checkbox"] {
   margin: 0;
   cursor: pointer;
   accent-color: var(--teal);
 }
-.complete-cleanup-hint {
+.complete-cleanup-checkbox.is-disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+.complete-cleanup-checkbox.is-disabled input[type="checkbox"] {
+  cursor: not-allowed;
+}
+
+/* --- Worktree removal verdict --- */
+.complete-cleanup-refresh {
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+.complete-cleanup-refresh:hover:not(:disabled) {
+  border-color: var(--teal);
+  color: var(--teal);
+  background: var(--bg-card-hover);
+}
+.complete-cleanup-refresh:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* Identity row. Sits inside the refresh button's vertical band, so it reserves
+   space for it; the rows below clear the button and use the full width. */
+.complete-cleanup-idline {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  padding-left: 20px;
+  padding-right: 44px;
+  font-size: 10px;
+  min-width: 0;
+}
+.complete-cleanup-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 5px;
   padding-left: 20px;
   font-size: 10px;
-  line-height: 1.4;
+}
+/* Wraps within its own column instead of being pushed below the glyph. */
+.complete-cleanup-line-text {
+  flex: 1;
+  min-width: 0;
+}
+/* First content row sits inside the refresh button's vertical band, like the
+   identity row, so it reserves the same space. */
+.complete-cleanup-line-reserve {
+  padding-right: 44px;
+}
+.complete-cleanup-name {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  /* Worktree names reach 40+ chars and the dialog is 360px. Truncate rather
+     than wrap mid-word; the full path stays available via the title tooltip. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.complete-cleanup-why {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: 10px;
+  color: var(--blue);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.complete-cleanup-stamp {
   color: var(--text-muted);
+}
+.complete-cleanup-details {
+  margin-left: 20px;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  background: var(--bg-terminal);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.complete-cleanup-details .k {
+  color: var(--amber);
+}
+.complete-cleanup-spinner {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(96, 165, 250, 0.25);
+  border-top-color: var(--blue);
+  animation: complete-cleanup-spin 0.7s linear infinite;
+}
+.complete-cleanup-spin {
+  display: inline-block;
+  animation: complete-cleanup-spin 0.7s linear infinite;
+}
+@keyframes complete-cleanup-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .complete-cleanup-spinner,
+  .complete-cleanup-spin {
+    animation: none;
+  }
 }
 .complete-feedback-note {
   width: 100%;

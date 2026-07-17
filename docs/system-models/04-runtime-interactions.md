@@ -142,7 +142,10 @@ sequenceDiagram
 
   alt Mark complete
     Dev->>SPA: Click "Mark Complete"
-    SPA->>SPA: Show confirmation with cleanup checkbox<br/>(saved default, editable per task)
+    SPA->>BE: WS: {type: "worktree:inspectCleanup", taskId}
+    BE->>BE: Inspect each task-owned worktree<br/>(read-only; same guard cascade as cleanup)
+    BE->>SPA: WS: {type: "worktreeCleanupVerdicts", taskId, verdicts}
+    SPA->>SPA: Show confirmation with cleanup checkbox<br/>(saved default; disabled when no worktree is removable)
     Dev->>SPA: Confirm completion
     SPA->>BE: WS: {type: "completeTask", taskId, cleanupWorktree}
     BE->>BE: Stop sessions, purge queue, release claims

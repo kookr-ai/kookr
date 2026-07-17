@@ -468,11 +468,16 @@ The system SHOULD let the developer choose whether completing a task should clea
 
 **Acceptance criteria:**
 - Completing a task opens a confirmation dialog containing a cleanup checkbox.
-- The cleanup checkbox defaults to the saved completion-cleanup setting.
-- The developer can override the checkbox for the current task completion without changing the saved setting.
+- The dialog names each task-owned worktree and states whether it can be removed, from the same inspection the completion cleanup itself runs.
+- The cleanup checkbox defaults to the saved completion-cleanup setting when a worktree is removable.
+- The developer can override the checkbox for the current task completion without changing the saved setting, unless no worktree is removable — in which case the checkbox is unchecked and disabled, and completion states the refusal explicitly rather than leaving the saved default to decide.
+- The developer can re-run the inspection from the dialog while it is open, except where the reason can never change.
 - When cleanup is selected, Kookr removes eligible task-owned worktrees, prunes Git's worktree registry, and deletes eligible merged local branches using the existing safety checks.
 - When cleanup is not selected, task completion still performs non-worktree lifecycle cleanup, including session teardown, queue cleanup, lease release, and issue-claim release.
 - Dirty, unmerged, protected, or shared worktrees remain preserved and are reported through the existing interaction log.
+- When the inspection cannot be completed, removability is reported as unknown and the saved setting still applies.
+
+**Evidence:** `src/adapters/git-worktree.ts` (`inspectWorktreeCleanup`, `inspectTaskWorktrees`), `src/shared/contracts/worktree-cleanup-verdict.ts`, `src/frontend/components/CleanupWorktreeOption.tsx`, `src/frontend/cleanup-override.ts`.
 
 **Linked tests:** `TS-CLEANUP-001` through `TS-CLEANUP-004`.
 

@@ -581,6 +581,7 @@ delta sequence number.
 | `scheduleFired` | Notify that a schedule launched a task. | `scheduleId`, `taskId` |
 | `workspaceView` | Return contribution-workspace candidates and cleanup results. | `view`, optional `error`, `cleanupResult`, `cleanupResults`, `diagnosticLaunch` |
 | `workspaceCleanupDetail` | Return detail for a cleanup candidate worktree. | `worktreePath`, optional `detail`, `error` |
+| `worktreeCleanupVerdicts` | Whether each worktree a task owns can be removed on completion, and why not. Same inspection the completion cleanup runs. | `taskId`, `verdicts`, optional `error` |
 | `workspaceSweepProgress` | Broadcast live cross-project cleanup sweep progress. | `runId`, `startedAt`, `index`, `total`, `projectId`, `status`, `counts`, optional `result` |
 | `workspaceBulkRemoveProgress` | Broadcast per-row progress of a Probably-safe bulk reclaim (remove path, keep branch). | `runId`, `index`, `total`, `projectId`, `worktreePath`, `status`, optional `result` |
 | `workspaceSweepComplete` | Report completion of a cross-project cleanup sweep. | `runId`, `startedAt`, `finishedAt`, `projects`, optional disk-aware `report` |
@@ -639,6 +640,7 @@ delta sequence number.
 | `workspace:sweep` | Run a cross-project workspace cleanup sweep. | none |
 | `workspace:requestSweepReport` | Request reconstruction of a completed sweep's Removed manifest from the ledger. | `runId` |
 | `workspace:bulkRemoveProbablySafe` | Bulk-remove selected Probably-safe worktree paths, keeping their branches. | `rows` (each `projectId`, `worktreePath`, `branch`, optional `fingerprint`) |
+| `worktree:inspectCleanup` | Ask whether this task's worktrees can be removed. Read-only; replies with `worktreeCleanupVerdicts`. | `taskId` |
 
 ## Data Directory
 

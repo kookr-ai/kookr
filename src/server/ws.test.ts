@@ -100,6 +100,25 @@ describe('WebSocket MessageRouter', () => {
     });
   });
 
+  test('routes worktree:inspectCleanup to the lifecycle handler', async () => {
+    // The router's switch has no `default` and no exhaustiveness guard, so a
+    // missing case compiles clean and every other test still passes — the
+    // message would simply never route, and the completion dialog (which has no
+    // probe timeout) would wait on "Checking..." forever. This is the only test
+    // that touches ws.ts's routing for this message.
+    const task = taskStore.createTask('Inspect me', '/repo');
+
+    await router.handleMessage({ type: 'worktree:inspectCleanup', taskId: task.id });
+
+    // The task owns no worktree sessions, so the inspection short-circuits to
+    // an empty list without shelling out to git.
+    expect(sentMessages).toContainEqual({
+      type: 'worktreeCleanupVerdicts',
+      taskId: task.id,
+      verdicts: [],
+    });
+  });
+
   test('client connects - receives snapshot message', () => {
     router.handleConnect();
 

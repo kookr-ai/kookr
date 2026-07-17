@@ -124,6 +124,19 @@ const serverMessageCases = [
   serverMessageCase({ type: 'workspaceView', view: workspaceView }),
   serverMessageCase({ type: 'workspaceCleanupDetail', worktreePath: '/tmp/worktree' }),
   serverMessageCase({
+    type: 'worktreeCleanupVerdicts',
+    taskId: 'task-1',
+    verdicts: [{
+      worktreePath: '/tmp/worktree',
+      worktreeName: 'worktree',
+      branch: 'feat/x',
+      removable: false,
+      blocker: 'uncommitted-changes',
+      evidence: { dirty: { modified: 1, added: 0, deleted: 0, renamed: 0, untracked: 2 }, aheadCount: 3 },
+      checkedAt: '2026-06-10T12:00:00.000Z',
+    }],
+  }),
+  serverMessageCase({
     type: 'workspaceSweepProgress',
     runId: 'run-1',
     startedAt: '2026-06-10T12:00:00.000Z',

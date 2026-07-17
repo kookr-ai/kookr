@@ -271,6 +271,9 @@ export function useWebSocket() {
             case 'workspaceCleanupDetail':
               store.handleWorkspaceCleanupDetail(msg.worktreePath, msg.detail, msg.error);
               break;
+            case 'worktreeCleanupVerdicts':
+              store.handleWorktreeCleanupVerdicts(msg.taskId, msg.verdicts, msg.error);
+              break;
             case 'workspaceSweepProgress':
               store.handleSweepProgress(msg);
               break;
