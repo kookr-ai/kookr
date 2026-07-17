@@ -1,6 +1,7 @@
 import type { ServerMessage } from '../../shared/contracts/messages.js';
 import { isCwdValidationError, type LaunchResult } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
+import { GrokAuthPreflightError } from '../../adapters/grok-build-adapter.js';
 
 const GENERIC_LAUNCH_RECOVERY_DETAILS = [
   'Launch recovery:',
@@ -16,6 +17,12 @@ const CWD_LAUNCH_RECOVERY_DETAILS = [
   'The working directory was not found on this machine — nothing was launched.',
   '- Create the directory, or reopen the Launch dialog and pick an existing checkout.',
   '- If you typed the prompt in the Launch dialog, it is preserved as a draft and restored when the dialog reopens.',
+].join('\n');
+
+const GROK_AUTH_LAUNCH_RECOVERY_DETAILS = [
+  'Grok authentication preflight failed before a terminal session was created.',
+  '- Run `grok login --device-code` (or `grok login --oauth`) and retry.',
+  '- Credential values are intentionally omitted from this diagnostic.',
 ].join('\n');
 
 /**
@@ -43,6 +50,8 @@ export function handleLaunchResult(
     console.error(`[launch] failed prompt="${promptExcerpt}" err=${message}`);
     const details = isCwdValidationError(err)
       ? CWD_LAUNCH_RECOVERY_DETAILS
+      : err instanceof GrokAuthPreflightError
+      ? GROK_AUTH_LAUNCH_RECOVERY_DETAILS
       : err instanceof LaunchPreflightError
       ? err.findings.map((finding) =>
           [
