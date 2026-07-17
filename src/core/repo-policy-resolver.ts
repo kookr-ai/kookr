@@ -104,12 +104,12 @@ export class RepoPolicyResolver {
   }
 }
 
-interface ResolveDefaultBranchOptions {
+export interface ResolveDefaultBranchOptions {
   allowLocalFallback: boolean;
 }
 
 /** Resolve the default branch from origin/HEAD, remote common names, or optionally local common names. */
-async function resolveDefaultBranch(
+export async function resolveDefaultBranch(
   repoPath: string,
   opts: ResolveDefaultBranchOptions,
 ): Promise<string | null> {

@@ -61,6 +61,10 @@ function mockGitResponses(handlers: Record<string, string | 'error'>) {
       cb(null, { stdout: `${args[1]}/.git\n`, stderr: '' });
       return;
     }
+    if (args.includes('rev-list') && args.includes('--left-right') && args.includes('--count')) {
+      cb(null, { stdout: '0\t0', stderr: '' });
+      return;
+    }
     // Default: empty success
     cb(null, { stdout: '', stderr: '' });
   });
@@ -147,8 +151,8 @@ describe('cleanupTaskWorktrees', () => {
     );
     expect(mockExecFile).toHaveBeenCalledWith(
       'git',
-      ['-C', '/wt/feature-branch', 'symbolic-ref', 'refs/remotes/origin/HEAD'],
-      expect.any(Object),
+      ['symbolic-ref', 'refs/remotes/origin/HEAD'],
+      expect.objectContaining({ cwd: '/wt/feature-branch' }),
       expect.any(Function),
     );
     expect(mockExecFile).toHaveBeenCalledWith(
@@ -456,8 +460,8 @@ describe('cleanupTaskWorktrees', () => {
 
     expect(mockExecFile).toHaveBeenCalledWith(
       'git',
-      ['-C', '/other-repo/wt/feature', 'symbolic-ref', 'refs/remotes/origin/HEAD'],
-      expect.any(Object),
+      ['symbolic-ref', 'refs/remotes/origin/HEAD'],
+      expect.objectContaining({ cwd: '/other-repo/wt/feature' }),
       expect.any(Function),
     );
     expect(mockExecFile).toHaveBeenCalledWith(
@@ -643,8 +647,10 @@ describe('cleanupTaskWorktrees', () => {
     mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
     mockGitResponses({
       'status --porcelain': '',
+      'merge-base': 'error',
       'log': 'abc1234 Add feature\ndef5678 Fix bug\n',
       'symbolic-ref': 'refs/remotes/origin/main\n',
+      'rev-list': '0\t2',
     });
 
     await cleanupTaskWorktrees(taskStore, task.id, log);
@@ -752,8 +758,8 @@ describe('cleanupTaskWorktrees', () => {
     mockGitResponses({
       'status --porcelain': '',
       'symbolic-ref': 'error',
-      // When symbolic-ref fails, getDefaultBranch returns 'main'
-      // log with main..feature returns empty → clean
+      // When symbolic-ref fails, resolveDefaultBranch falls back to main.
+      'rev-parse --verify main': 'main-sha',
       'log': '',
       'worktree prune': '',
       'branch -d': 'Deleted.\n',
@@ -850,8 +856,10 @@ describe('inspectWorktreeCleanup', () => {
     mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
     mockGitResponses({
       'status --porcelain': ' M src/a.ts\n?? new.ts\n',
+      'merge-base': 'error',
       'log': 'abc123 commit one\ndef456 commit two\n',
       'symbolic-ref': 'refs/remotes/origin/main\n',
+      'rev-list': '0\t2',
     });
     const { taskStore, taskId } = taskWithWorktree();
 
@@ -867,8 +875,10 @@ describe('inspectWorktreeCleanup', () => {
     mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
     mockGitResponses({
       'status --porcelain': '',
+      'merge-base': 'error',
       'log': 'abc123 unmerged work\n',
       'symbolic-ref': 'refs/remotes/origin/main\n',
+      'rev-list': '0\t1',
     });
     const { taskStore, taskId } = taskWithWorktree();
 
@@ -976,8 +986,10 @@ describe('inspectWorktreeCleanup — remaining blockers', () => {
     mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
     mockGitResponses({
       'status --porcelain': 'error',
+      'merge-base': 'error',
       'log': 'abc123 one\n',
       'symbolic-ref': 'refs/remotes/origin/main\n',
+      'rev-list': '0\t1',
     });
     const { taskStore, taskId } = storeWith();
 
@@ -992,8 +1004,10 @@ describe('inspectWorktreeCleanup — remaining blockers', () => {
     mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
     mockGitResponses({
       'status --porcelain': '',
+      'merge-base': 'error',
       'log': 'error',
       'symbolic-ref': 'refs/remotes/origin/main\n',
+      'rev-list': 'error',
     });
     const { taskStore, taskId } = storeWith();
 

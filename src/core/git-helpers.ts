@@ -41,6 +41,8 @@ export interface GitRunOptions {
   maxBuffer?: number;
   maxAttempts?: number;
   retryDelayMs?: (attempt: number) => number;
+  /** Override the sanitized environment for isolated Git operations. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export type GitRunResult =
@@ -70,7 +72,7 @@ export async function runGitIn(
     try {
       const { stdout } = await execFileAsync('git', args, {
         cwd,
-        env: gitExecEnv(),
+        env: options.env ?? gitExecEnv(),
         timeout: timeoutMs,
         maxBuffer,
       });

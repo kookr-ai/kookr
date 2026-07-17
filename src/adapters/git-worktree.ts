@@ -6,6 +6,7 @@ import type { TaskStore, Task } from '../core/tasks.js';
 import type { DeferredInteractionLogWriter, InteractionEvent } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
 import { classifyGitError, DEFAULT_GIT_MAX_BUFFER, DEFAULT_GIT_TIMEOUT_MS, gitExecEnv } from '../core/git-helpers.js';
+import { resolveWorktreeMergeStatus } from '../core/worktree-merge-status.js';
 import type {
   WorktreeCleanupBlocker,
   WorktreeCleanupEvidence,
@@ -38,17 +39,6 @@ async function git(...args: string[]): Promise<string | null> {
     }
     return null;
   }
-}
-
-/** Resolve the default branch name (e.g. main, master) from origin/HEAD. */
-async function getDefaultBranch(worktreePath: string): Promise<string> {
-  const ref = await git('-C', worktreePath, 'symbolic-ref', 'refs/remotes/origin/HEAD');
-  if (ref) {
-    // "refs/remotes/origin/main" → "main"
-    const parts = ref.split('/');
-    return parts[parts.length - 1];
-  }
-  return 'main';
 }
 
 /**
@@ -93,9 +83,10 @@ export function parsePorcelainStatus(output: string): WorktreeDirtySummary {
  * thing that tripped. Blocker precedence is unchanged from the original
  * early-return order, so the verdict itself is identical.
  *
- * Note `aheadCount` is measured against the *default branch*, not a remote —
- * an empty range proves every commit is reachable from the default branch, so
- * whether the branch was ever pushed has no bearing on removal safety.
+ * Note `aheadCount` is display-only evidence measured against the remote-
+ * tracking default branch when available. Removal safety comes from the
+ * shared ancestor/patch-equivalence classification, so squash merges can be
+ * removable even when their original commit SHAs remain ahead.
  */
 async function inspectCleanliness(
   worktreePath: string,
@@ -114,17 +105,20 @@ async function inspectCleanliness(
     evidence.dirty = parsePorcelainStatus(status);
   }
 
-  const defaultBranch = await getDefaultBranch(worktreePath);
-  const unmerged = await git('-C', worktreePath, 'log', `${defaultBranch}..${branch}`, '--oneline');
-  if (unmerged !== null) {
-    evidence.aheadCount = unmerged.length === 0 ? 0 : unmerged.split('\n').length;
-  }
+  const mergeStatus = await resolveWorktreeMergeStatus(worktreePath, branch, {
+    allowLocalFallback: true,
+    includeAheadCount: true,
+  });
+  if (mergeStatus?.aheadCount !== undefined) evidence.aheadCount = mergeStatus.aheadCount;
 
   if (status === null) return { blocker: 'git-status-failed', evidence };
   if (status.length > 0) return { blocker: 'uncommitted-changes', evidence };
-  // git log failed — branch might not exist locally, treat as dirty
-  if (unmerged === null) return { blocker: 'unmerged-check-failed', evidence };
-  if (unmerged.length > 0) return { blocker: 'unmerged-commits', evidence };
+  // A missing baseline, failed merge probe, or failed ahead-count probe means
+  // the dialog cannot prove removability. Keep the old fail-closed behavior.
+  if (!mergeStatus || mergeStatus.mergeCheckFailed || mergeStatus.aheadCountCheckFailed) {
+    return { blocker: 'unmerged-check-failed', evidence };
+  }
+  if (mergeStatus.classification === 'unique_commits') return { blocker: 'unmerged-commits', evidence };
 
   return { evidence };
 }
@@ -270,10 +264,21 @@ async function pruneStaleEntries(repoPath: string): Promise<void> {
   await git('-C', repoPath, 'worktree', 'prune');
 }
 
-/** Delete a fully-merged local branch. Uses -d (safe delete — fails if not merged). */
+/** Delete a safely classified local branch, preserving -d's guard when possible. */
 async function deleteBranch(repoPath: string, branch: string): Promise<boolean> {
   const result = await git('-C', repoPath, 'branch', '-d', branch);
-  return result !== null;
+  if (result !== null) return true;
+
+  // `branch -d` only understands raw ancestry. Revalidate against the same
+  // squash-aware classifier before using `-D`; otherwise a branch that became
+  // unique after the first inspection could be destroyed accidentally.
+  const mergeStatus = await resolveWorktreeMergeStatus(repoPath, branch, {
+    allowLocalFallback: true,
+  });
+  if (!mergeStatus || (mergeStatus.classification !== 'merged' && mergeStatus.classification !== 'patch_equivalent')) {
+    return false;
+  }
+  return (await git('-C', repoPath, 'branch', '-D', branch)) !== null;
 }
 
 /** Collect all unique worktree paths from a task's sessions. */
@@ -462,7 +467,18 @@ async function cleanupSingleWorktree(
 
   // Step 3: Delete merged branch
   if (cleanedBranch) {
-    await deleteBranch(repoPath, cleanedBranch);
+    const branchDeleted = await deleteBranch(repoPath, cleanedBranch);
+    if (!branchDeleted) {
+      await interactionLog?.append({
+        type: 'worktree_cleanup_failed',
+        taskId,
+        worktreePath,
+        branch: cleanedBranch,
+        error: 'branch deletion failed after worktree removal',
+        timestamp: nowISO(),
+      });
+      return;
+    }
   }
 
   await interactionLog?.append({

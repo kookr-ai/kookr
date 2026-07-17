@@ -50,7 +50,7 @@ export interface WorktreeDirtySummary {
  */
 export interface WorktreeCleanupEvidence {
   dirty?: WorktreeDirtySummary;
-  /** Commits on the branch not reachable from the default branch. */
+  /** Raw commits on the branch not reachable from the cleanup baseline. */
   aheadCount?: number;
 }
 
