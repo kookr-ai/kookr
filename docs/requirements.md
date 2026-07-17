@@ -402,6 +402,18 @@ The system SHALL allow launching a new agent from the GUI with a task descriptio
 
 **Evidence:** `src/frontend/components/LaunchTaskDialog.tsx` (dialog UI), `src/server/ws.ts` (launch handler), `src/shared/contracts/agent-types.ts` (concrete agent contract), `src/shared/contracts/client-message-schema.ts` and `src/shared/contracts/server-message-schema.ts` (WebSocket validation), `src/adapters/claude-code-adapter.ts` (settings generation, launch wiring), `src/adapters/local-dtach-backend.ts` (dtach session creation), `src/server/ws.test.ts` ("client sends launch - new task started"), `src/shared/contracts/client-message-schema.test.ts` and `src/shared/contracts/server-message-schema.test.ts` (agent-type validation), `src/adapters/claude-code-adapter.test.ts` (settings with hooks).
 
+### R4.1a: Actionable Grok Launch Authentication Preflight [F4.1] — SHALL — `done`
+
+For `grok-build` launches, the system SHALL validate the launch-scoped `auth.json` before creating a managed terminal session and SHALL report missing, unreadable, malformed, unusable, or expired credentials with an actionable re-authentication command without exposing credential values.
+
+**Acceptance criteria:**
+- Given a missing, malformed, unusable, or expired Grok credential file, when a `grok-build` launch is requested, Kookr refuses before creating a dtach session and reports `grok login --device-code` (or an equivalent supported login action)
+- Given a valid cached Grok credential, launch proceeds through the existing isolated `GROK_HOME` composition and managed terminal path
+- Auth diagnostics never include access tokens, refresh tokens, or other credential values
+- If auth preflight passes but Grok does not acknowledge the initial prompt, the failure identifies the terminal/PTY or hook-readiness path rather than presenting the result as an auth failure
+
+**Evidence:** `src/adapters/grok-auth-preflight.ts`, `src/adapters/grok-auth-preflight.test.ts`, `src/adapters/grok-build-adapter.ts`, and `src/server/ws-handlers/launch-result.ts`.
+
 ### R4.2: Stop Agent [F4.2] — SHOULD — `done`
 
 The system SHOULD allow terminating a running agent from the GUI.
@@ -1134,6 +1146,7 @@ The system SHALL price transcript token usage against the model that produced ea
 | R3.8 | — | SHOULD | done | useStore, SentOverlay, DetailPanel |
 | R3.9 | — | SHOULD | done | group-findings, FindingsPanel |
 | R4.1 | F4.1 | SHALL | done | LaunchTaskDialog, ws, agent-types, client-message-schema, server-message-schema, claude-code-adapter, local-dtach-backend |
+| R4.1a | F4.1 | SHALL | done | grok-auth-preflight, grok-build-adapter |
 | R4.2 | F4.2 | SHOULD | done | claude-code-adapter, local-dtach-backend, ws, DetailPanel |
 | R4.3 | F4.3 | SHOULD | done | tasks (relaunch), ws (relaunch handler), LaunchTaskDialog |
 | R4.4 | F4.4 | SHALL | done | tasks, task-persistence, reconciliation |

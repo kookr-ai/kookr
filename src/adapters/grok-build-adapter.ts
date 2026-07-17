@@ -45,6 +45,7 @@ import { withTimeout } from '../core/with-timeout.js';
 import { HookParseError } from '../core/hook-parser.js';
 import { extractGrokHookHeader, parseGrokHookEvent, type RawGrokHookHeader } from './grok-hook-decoder.js';
 import { composeGrokHome, type GrokHomeFs } from './grok-home-composer.js';
+import { formatGrokAuthPreflightFailure, inspectGrokAuthFile } from './grok-auth-preflight.js';
 import {
   buildAllowlistedGrokEnv,
   buildGrokLaunchArgs,
@@ -116,6 +117,16 @@ export class GrokLaunchRefusedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'GrokLaunchRefusedError';
+  }
+}
+
+/** Auth cache failures are rendered with login-specific recovery guidance. */
+export class GrokAuthPreflightError extends GrokLaunchRefusedError {
+  readonly code = 'grok_auth_preflight';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'GrokAuthPreflightError';
   }
 }
 
@@ -318,6 +329,12 @@ export class GrokBuildAdapter implements AgentAdapter {
     };
     try {
       await composeGrokHome({ grokHome, sourceGrokHome: this.sourceGrokHome, monitoring, fs: this.homeFs });
+      const authPreflight = await inspectGrokAuthFile(join(grokHome, 'auth.json'));
+      if (authPreflight.kind !== 'ok') {
+        throw new GrokAuthPreflightError(
+          formatGrokAuthPreflightFailure(join(this.sourceGrokHome, 'auth.json'), authPreflight),
+        );
+      }
     } catch (err) {
       await this.cleanupFailedLaunch(tmuxName);
       throw err;
@@ -363,7 +380,9 @@ export class GrokBuildAdapter implements AgentAdapter {
       if (delivery.status === 'unconfirmed') {
         throw new Error(
           `[grok-build-adapter] Grok did not acknowledge the initial prompt within ` +
-            `${this.promptSubmitConfirmTimeoutMs}ms; refusing to resend it`,
+            `${this.promptSubmitConfirmTimeoutMs}ms; refusing to resend it. ` +
+            `Auth preflight passed; inspect Grok terminal/PTY readiness and hook dispatch ` +
+            `(including terminal query handling).`,
         );
       }
     } catch (err) {
@@ -411,7 +430,8 @@ export class GrokBuildAdapter implements AgentAdapter {
     if (blocker) {
       await this.cleanupFailedLaunch(tmuxName);
       throw new GrokLaunchRefusedError(
-        `${blocker}. Aborting rather than typing into it — check Grok authentication/entitlement ` +
+        `${blocker}. Auth preflight passed, but Grok displayed a blocking startup screen. ` +
+        `Aborting rather than typing into it — check Grok authentication/entitlement ` +
         `(chat access requires a console.x.ai grant) or a pending CLI update.`,
       );
     }

@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
@@ -40,6 +40,7 @@ describe('GrokBuildAdapter', () => {
   let backend: FakeTerminalBackend;
   let taskStore: TaskStore;
   let sessionHomeRoot: string;
+  let sourceGrokHome: string;
 
   const baseEnv = {
     PATH: '/usr/bin:/bin',
@@ -53,7 +54,7 @@ describe('GrokBuildAdapter', () => {
     return new GrokBuildAdapter(backend, taskStore, {
       env: overrides.env ?? { ...baseEnv },
       installedStateOverride: overrides.state ?? testedState(),
-      sourceGrokHome: join(sessionHomeRoot, 'no-such-home'),
+      sourceGrokHome,
       sessionHomeRoot,
       promptBracketedPaste: false,
       promptReadyTimeoutMs: 30,
@@ -64,10 +65,25 @@ describe('GrokBuildAdapter', () => {
     backend = new FakeTerminalBackend();
     taskStore = new TaskStore();
     sessionHomeRoot = mkdtempSync(join(tmpdir(), 'grok-adapter-test-'));
+    sourceGrokHome = mkdtempSync(join(tmpdir(), 'grok-source-test-'));
+    writeFileSync(
+      join(sourceGrokHome, 'auth.json'),
+      JSON.stringify({
+        'https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828': {
+          key: 'test-access-token',
+          auth_mode: 'oidc',
+          create_time: '2026-07-01T00:00:00Z',
+          user_id: 'test-user',
+          expires_at: '2030-01-01T00:00:00Z',
+          refresh_token: 'test-refresh-token',
+        },
+      }),
+    );
     mockGetGitInfo.mockReset().mockResolvedValue(null);
   });
   afterEach(() => {
     rmSync(sessionHomeRoot, { recursive: true, force: true });
+    rmSync(sourceGrokHome, { recursive: true, force: true });
   });
 
   test('launch execs the exact canonical path with the POC-verified argv', async () => {
@@ -111,11 +127,43 @@ describe('GrokBuildAdapter', () => {
     expect(backend.sessions.has(sessionId)).toBe(true);
   });
 
+  test('refuses before session creation when the source auth file is missing', async () => {
+    rmSync(join(sourceGrokHome, 'auth.json'));
+    const adapter = makeAdapter();
+    const task = taskStore.createTask('x', '/workspace');
+
+    await expect(adapter.launch(task.id, 'x', '/workspace')).rejects.toThrow(/grok login --device-code/);
+    expect(backend.sessions).toHaveLength(0);
+    expect(readdirSync(sessionHomeRoot)).toHaveLength(0);
+  });
+
+  test('refuses before session creation when the source auth file is expired', async () => {
+    writeFileSync(
+      join(sourceGrokHome, 'auth.json'),
+      JSON.stringify({
+        'https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828': {
+          key: 'expired-access-token',
+          auth_mode: 'oidc',
+          create_time: '2020-01-01T00:00:00Z',
+          user_id: 'test-user',
+          expires_at: '2020-01-01T00:00:00Z',
+          refresh_token: 'expired-refresh-token',
+        },
+      }),
+    );
+    const adapter = makeAdapter();
+    const task = taskStore.createTask('x', '/workspace');
+
+    await expect(adapter.launch(task.id, 'x', '/workspace')).rejects.toThrow(/Grok authentication expired/);
+    expect(backend.sessions).toHaveLength(0);
+    expect(readdirSync(sessionHomeRoot)).toHaveLength(0);
+  });
+
   test('fails closed instead of resending an unacknowledged bracketed prompt', async () => {
     const adapter = new GrokBuildAdapter(backend, taskStore, {
       env: { ...baseEnv },
       installedStateOverride: testedState(),
-      sourceGrokHome: join(sessionHomeRoot, 'no-such-home'),
+      sourceGrokHome,
       sessionHomeRoot,
       promptBracketedPaste: true,
       promptReadyTimeoutMs: 0,
@@ -125,7 +173,7 @@ describe('GrokBuildAdapter', () => {
     vi.spyOn(backend, 'captureBytes').mockResolvedValue(new TextEncoder().encode('\x1b[?2004h'));
 
     const task = taskStore.createTask('x', '/workspace');
-    await expect(adapter.launch(task.id, 'x', '/workspace')).rejects.toThrow(/refusing to resend it/);
+    await expect(adapter.launch(task.id, 'x', '/workspace')).rejects.toThrow(/refusing to resend it.*Auth preflight passed/);
     expect([...backend.sessions.values()].every((session) => !session.alive)).toBe(true);
     expect(readdirSync(sessionHomeRoot)).toHaveLength(0);
   });
