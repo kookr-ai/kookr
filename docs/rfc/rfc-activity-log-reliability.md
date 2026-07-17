@@ -240,6 +240,8 @@ Writer responsibilities:
 
 The generated hook settings call the writer instead of embedding complex shell pipelines. This also makes behavior easier to test than stringly shell commands.
 
+**Post-RFC addition (issue #1433):** the writer also size-rotates the active hook file. Because the live `HookFileWatcher` re-reads the whole active file on every append, an unbounded `hooks/<session>.jsonl` made each hook event cost O(file size) and starved ingestion under load (observed files at 40–58 MB). When appending a record would push the file past `KOOKR_HOOK_MAX_BYTES` (default 32 MiB), the writer renames it to `<session>.jsonl.1` (shifting older generations up to `KOOKR_HOOK_ROTATE_KEEP`) under the same per-session lock and starts a fresh file — each generation stays append-only. This is distinct from §7's ledger rotation, which caps the separate `activity/<session>.jsonl` durable ledger. See [environment-variables.md](../reference/environment-variables.md).
+
 ### 7. Keep a Durable Activity Ledger Separate From Monitor Window
 
 `Monitor.agentEvents` is a bounded live-state window. It should not be the only activity history.

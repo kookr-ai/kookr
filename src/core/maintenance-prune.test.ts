@@ -153,6 +153,68 @@ describe('planAndPruneMaintenance', () => {
     expect(second.removed).toHaveLength(0);
   });
 
+  async function writeRotatedHook(tmuxSession: string, generation: number, mtimeDaysAgo?: number): Promise<string> {
+    const path = join(hooksDir, `${tmuxSession}.jsonl.${generation}`);
+    await writeFile(path, `{"event":"PostToolUse","session":"${tmuxSession}","gen":${generation}}\n`, 'utf8');
+    if (mtimeDaysAgo !== undefined) {
+      const when = new Date(NOW - mtimeDaysAgo * MS_PER_DAY);
+      await utimes(path, when, when);
+    }
+    return path;
+  }
+
+  test('prunes rotated hook-log generations alongside the base for an aged completed task (#1433)', async () => {
+    await writeTasks([
+      { id: 't-aged', status: 'completed', updatedAt: daysAgo(45), sessions: [{ tmuxSession: 'kookr-aged' }] },
+    ]);
+    const base = await writeHook('kookr-aged');
+    const g1 = await writeRotatedHook('kookr-aged', 1);
+    const g2 = await writeRotatedHook('kookr-aged', 2);
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    expect(result.removed).toHaveLength(3);
+    const generations = result.planned
+      .filter((p) => p.kind === 'hook-log')
+      .map((p) => (p as { generation?: number }).generation);
+    // Base file carries no generation; the two rotated segments carry 1 and 2.
+    expect(generations.filter((g) => g === undefined)).toHaveLength(1);
+    expect(generations.filter((g) => typeof g === 'number').sort()).toEqual([1, 2]);
+    for (const p of result.planned) {
+      expect(p).toMatchObject({ kind: 'hook-log', reason: 'completed-task-aged', taskId: 't-aged', tmuxSession: 'kookr-aged' });
+    }
+    expect(await exists(base)).toBe(false);
+    expect(await exists(g1)).toBe(false);
+    expect(await exists(g2)).toBe(false);
+  });
+
+  test('never prunes rotated generations of an active session (#1433)', async () => {
+    await writeTasks([
+      { id: 't-live', status: 'inProgress', updatedAt: daysAgo(90), sessions: [{ tmuxSession: 'kookr-live' }] },
+    ]);
+    const base = await writeHook('kookr-live');
+    const g1 = await writeRotatedHook('kookr-live', 1);
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    expect(result.planned).toHaveLength(0);
+    expect(await exists(base)).toBe(true);
+    expect(await exists(g1)).toBe(true);
+  });
+
+  test('prunes aged orphan rotated generations by mtime (#1433)', async () => {
+    await writeTasks([]); // no task references this session
+    const agedGen = await writeRotatedHook('kookr-orphan-old', 1, 60);
+    const freshGen = await writeRotatedHook('kookr-orphan-new', 1, 2);
+
+    const result = await planAndPruneMaintenance({ dataDir, maxAgeDays: 30, now });
+
+    expect(result.planned).toHaveLength(1);
+    expect(result.planned[0]).toMatchObject({ reason: 'orphan-aged', tmuxSession: 'kookr-orphan-old', generation: 1 });
+    expect(await exists(agedGen)).toBe(false);
+    expect(await exists(freshGen)).toBe(true);
+  });
+
   test('prunes aged orphan hook logs but preserves recent orphans', async () => {
     await writeTasks([]); // no task references either file
     const agedOrphan = await writeHook('kookr-orphan-old', 60);

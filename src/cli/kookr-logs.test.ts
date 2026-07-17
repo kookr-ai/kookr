@@ -108,6 +108,31 @@ describe('runLogsCli', () => {
     expect(output).not.toContain('SessionStart');
   });
 
+  test('reads rotated hook generations oldest-first so history is not lost (#1433)', async () => {
+    await writeTasks([{ id: 'task-rot', sessions: [{ tmuxSession: 'kookr-rot' }] }]);
+    // Oldest history lives in the highest-numbered generation; the active base
+    // file holds the newest records. `kookr logs` must stitch them together in
+    // chronological order (`.2` → `.1` → base), not read the base alone.
+    await writeFile(join(dataDir, 'hooks', 'kookr-rot.jsonl.2'), `${record({ hook_event_name: 'SessionStart' })}\n`, 'utf8');
+    await writeFile(join(dataDir, 'hooks', 'kookr-rot.jsonl.1'), `${record({ hook_event_name: 'PreToolUse', tool_name: 'Bash' })}\n`, 'utf8');
+    await writeHooks('kookr-rot', [record({ hook_event_name: 'Stop' })]);
+
+    const c = captureConsole();
+    const code = await runLogsCli(['task-rot', '--json', '--dir', dataDir], { env, out: c.out, err: c.err });
+    expect(code).toBe(0);
+    const envelope = JSON.parse(c.logs[0]) as {
+      totalRecords: number;
+      records: Array<{ event: Record<string, unknown> }>;
+    };
+    // All three generations are read, oldest-first.
+    expect(envelope.totalRecords).toBe(3);
+    expect(envelope.records.map((r) => r.event.hook_event_name)).toEqual([
+      'SessionStart',
+      'PreToolUse',
+      'Stop',
+    ]);
+  });
+
   test('--json emits an envelope and redacts secrets in payloads', async () => {
     await writeTasks([{ id: 'task-B', sessions: [{ tmuxSession: 'kookr-bbbb' }] }]);
     const secret = 'ghp_0123456789abcdefghij';

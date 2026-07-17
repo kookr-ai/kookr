@@ -121,6 +121,15 @@ only when diagnosing slow viewers or unusually high terminal-output volume.
 | `KOOKR_CONTEXT_ADVISORY_ENABLED` | unset | `1` to enable | Enables context-window hook advisories. |
 | `KOOKR_CONTEXT_ADVISORY_DISABLED` | unset | `1` to disable | Kill switch for context-window hook advisories. Takes precedence over enablement. |
 
+## Hook Event Log
+
+Read by `bin/kookr-hook-writer.js` at hook time to bound per-session hook JSONL growth (issue #1433). The live `HookFileWatcher` re-reads the whole active file on every append, so an unbounded file makes each hook event cost O(file size) and starves ingestion under load. Rotation caps the active file while preserving append-only JSONL semantics; rotated segments are named `<session>.jsonl.N` and cleaned up by `kookr maintenance` once the owning task is terminal and aged.
+
+| Variable | Default | Accepted values | Effect |
+| --- | --- | --- | --- |
+| `KOOKR_HOOK_MAX_BYTES` | `33554432` | Integer bytes; `<= 0` disables rotation | Size cap for the active per-session hook JSONL file. When appending a record would push the file past this cap, the writer rotates it to `<session>.jsonl.1` (shifting older generations up) and starts a fresh file. A single record larger than the cap is still written intact to its own fresh generation. |
+| `KOOKR_HOOK_ROTATE_KEEP` | `4` | Non-negative integer | Number of rotated hook-log generations (`.1` … `.N`) retained per session before the oldest is deleted, bounding total on-disk hook history to roughly `(keep + 1) × KOOKR_HOOK_MAX_BYTES` per session. `0` keeps no rotated history (hard truncate on rotation). |
+
 ## Agent Signal Nudge
 
 See `docs/rfc/rfc-agent-signal-surface.md`.
