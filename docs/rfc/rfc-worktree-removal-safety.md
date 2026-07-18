@@ -110,7 +110,8 @@ worktree removal guards (#1406)`) and from the live worktree registry:
 ### Compatibility requirements
 
 10. Automatic task cleanup SHALL keep its current policy decisions: shared,
-   dirty, detached, unmerged, protected-marker, and reopened-task checks still
+   dirty, detached, unique-commit/non-patch-equivalent, protected-marker, and
+   reopened-task checks still
    skip removal. Patch-equivalent branches may pass only the shared
    squash-aware merge-status check and its identity guards; this is not a
    broad policy relaxation. The change is the final removal mechanism and

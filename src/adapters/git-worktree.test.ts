@@ -45,8 +45,10 @@ function mockGitSuccess(stdout: string) {
  * handlers is a map from a substring of the args to { stdout }, 'error', or
  * 'not-ancestor' (the expected exit 1 from merge-base --is-ancestor).
  */
+type MockGitResponse = string | 'error' | 'not-ancestor' | (() => string | 'error' | 'not-ancestor');
+
 function mockGitResponses(
-  handlers: Record<string, string | 'error' | 'not-ancestor'>,
+  handlers: Record<string, MockGitResponse>,
   onCall?: (args: string[]) => void,
 ) {
   mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
@@ -54,13 +56,14 @@ function mockGitResponses(
     const argsStr = args.join(' ');
     for (const [pattern, response] of Object.entries(handlers)) {
       if (argsStr.includes(pattern)) {
-        if (response === 'error' || response === 'not-ancestor') {
+        const resolvedResponse = typeof response === 'function' ? response() : response;
+        if (resolvedResponse === 'error' || resolvedResponse === 'not-ancestor') {
           const error = Object.assign(new Error('git error'), {
-            code: response === 'not-ancestor' ? 1 : 128,
+            code: resolvedResponse === 'not-ancestor' ? 1 : 128,
           });
           cb(error, { stdout: '', stderr: 'git error' });
         } else {
-          cb(null, { stdout: response, stderr: '' });
+          cb(null, { stdout: resolvedResponse, stderr: '' });
         }
         return;
       }
@@ -71,6 +74,10 @@ function mockGitResponses(
     }
     if (args.includes('rev-list') && args.includes('--left-right') && args.includes('--count')) {
       cb(null, { stdout: '0\t0', stderr: '' });
+      return;
+    }
+    if (args.includes('rev-parse') && args.includes('--verify') && args.some((arg) => arg.startsWith('refs/heads/'))) {
+      cb(null, { stdout: 'abc123', stderr: '' });
       return;
     }
     // Default: empty success
@@ -626,13 +633,21 @@ describe('cleanupTaskWorktrees', () => {
     taskStore.completeTask(task.id);
 
     const { log, events } = makeFakeLog();
+    let worktreeListCalls = 0;
     mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
     mockGitResponses({
       'status --porcelain': '',
       'symbolic-ref': 'refs/remotes/origin/main\n',
+      'merge-base --is-ancestor': 'not-ancestor',
       'log': '',
+      'merge-base origin/main feature': 'common-sha',
+      'read-tree': '',
+      'write-tree': 'baseline-tree',
+      'rev-parse origin/main^{tree}': 'baseline-tree',
       'branch -d': 'error',
-      'worktree list': 'worktree /external\nHEAD abc123\nbranch refs/heads/feature\n',
+      'worktree list': () => worktreeListCalls++ === 0
+        ? 'worktree /other\nHEAD abc123\nbranch refs/heads/main\n'
+        : 'worktree /external\nHEAD abc123\nbranch refs/heads/feature\n',
       'update-ref -d': 'Deleted.\n',
     });
 
@@ -690,6 +705,100 @@ describe('cleanupTaskWorktrees', () => {
       error: 'branch deletion failed after worktree removal',
     }));
     expect(events.some((event) => event.type === 'worktree_cleaned')).toBe(false);
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'git',
+      ['-C', '/wt/feature/.git', 'update-ref', '-d', 'refs/heads/feature', 'branch-sha'],
+      expect.any(Object),
+      expect.any(Function),
+    );
+  });
+
+  test('differing aggregate tree → cleanup preserves the worktree', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Fix bug', '/project');
+    taskStore.addSession(task.id, {
+      tmuxSession: 's1',
+      agentType: 'claude-code',
+      cwd: '/wt/feature',
+      createdAt: new Date(),
+      gitIsWorktree: true,
+      gitBranch: 'feature',
+    });
+    taskStore.completeTask(task.id);
+
+    const { log, events } = makeFakeLog();
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({
+      'status --porcelain': '',
+      'symbolic-ref': 'refs/remotes/origin/main\n',
+      'merge-base --is-ancestor': 'not-ancestor',
+      'log': '',
+      'merge-base origin/main feature': 'common-sha',
+      'read-tree': '',
+      'write-tree': 'different-tree',
+      'rev-parse origin/main^{tree}': 'baseline-tree',
+    });
+
+    await cleanupTaskWorktrees(taskStore, task.id, log);
+
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'worktree_kept',
+      reason: 'unmerged commits',
+    }));
+  });
+
+  test('task reopens after removal → pruning and branch deletion do not start', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Fix bug', '/project');
+    taskStore.addSession(task.id, {
+      tmuxSession: 's1',
+      agentType: 'claude-code',
+      cwd: '/wt/feature',
+      createdAt: new Date(),
+      gitIsWorktree: true,
+      gitBranch: 'feature',
+    });
+    taskStore.completeTask(task.id);
+
+    const { log, events } = makeFakeLog();
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockRemoveRegisteredWorktree.mockImplementation(async (worktreePath: string, options: { expectedHead?: string; expectedBranch?: string; expectedDetached?: boolean } = {}) => {
+      taskStore.reopenTask(task.id);
+      return {
+        removed: true,
+        target: {
+          worktreePath,
+          commonDir: `${worktreePath}/.git`,
+          gitDir: `${worktreePath}/.git/worktrees/kookr-test`,
+          head: options.expectedHead ?? 'abc123',
+          branch: options.expectedBranch,
+          detached: options.expectedDetached ?? false,
+          bare: false,
+        },
+      };
+    });
+    mockGitResponses({
+      'status --porcelain': '',
+      'symbolic-ref': 'refs/remotes/origin/main\n',
+      'merge-base --is-ancestor': '',
+    });
+
+    await cleanupTaskWorktrees(taskStore, task.id, log);
+
+    expect(mockExecFile).not.toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['worktree', 'prune']),
+      expect.any(Object),
+      expect.any(Function),
+    );
+    expect(mockExecFile).not.toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['branch', '-d']),
+      expect.any(Object),
+      expect.any(Function),
+    );
+    expect(events).toContainEqual(expect.objectContaining({ type: 'worktree_skipped', reason: 'task reopened' }));
   });
 
   test('task reopened during final merge revalidation → branch deletion is aborted', async () => {
@@ -882,7 +991,7 @@ describe('cleanupTaskWorktrees', () => {
 
   test('default branch fallback when symbolic-ref fails', async () => {
     const taskStore = new TaskStore();
-    const task = taskStore.createTask('Fix bug', '/project');
+    const task = taskStore.createTask({ prompt: 'Fix bug', cwd: '/project', projectId: 'local/project' });
     taskStore.addSession(task.id, {
       tmuxSession: 's1',
       agentType: 'claude-code',

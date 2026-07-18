@@ -156,6 +156,7 @@ describe('inspectWorktreeCleanup real git integration', () => {
   it('deletes a squash-equivalent branch after removing its worktree', async () => {
     const fixture = createFixture();
     roots.push(fixture.root);
+    fixture.branchHead = commitFile(fixture.worktree, 'second-feature.txt', 'second feature\n', 'second feature change');
 
     git(fixture.repo, 'switch', '-c', 'squash-result', 'main');
     git(fixture.repo, 'merge', '--squash', 'feature');

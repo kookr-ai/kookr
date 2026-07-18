@@ -6,7 +6,7 @@ import type { TaskStore, Task } from '../core/tasks.js';
 import type { DeferredInteractionLogWriter, InteractionEvent } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
 import { classifyGitError, DEFAULT_GIT_MAX_BUFFER, DEFAULT_GIT_TIMEOUT_MS, gitExecEnv } from '../core/git-helpers.js';
-import { resolveWorktreeMergeStatus } from '../core/worktree-merge-status.js';
+import { resolveWorktreeMergeStatus, type WorktreeMergeStatus } from '../core/worktree-merge-status.js';
 import type {
   WorktreeCleanupBlocker,
   WorktreeCleanupEvidence,
@@ -92,7 +92,12 @@ async function inspectCleanliness(
   worktreePath: string,
   branch: string | undefined,
   isDetached: boolean | undefined,
-): Promise<{ blocker?: WorktreeCleanupBlocker; evidence: WorktreeCleanupEvidence }> {
+  allowLocalFallback: boolean,
+): Promise<{
+  blocker?: WorktreeCleanupBlocker;
+  evidence: WorktreeCleanupEvidence;
+  mergeStatus?: WorktreeMergeStatus;
+}> {
   const evidence: WorktreeCleanupEvidence = {};
 
   // Detached HEAD — can't verify merge status
@@ -106,7 +111,7 @@ async function inspectCleanliness(
   }
 
   const mergeStatus = await resolveWorktreeMergeStatus(worktreePath, branch, {
-    allowLocalFallback: true,
+    allowLocalFallback,
     includeAheadCount: true,
   });
   if (mergeStatus?.aheadCount !== undefined) evidence.aheadCount = mergeStatus.aheadCount;
@@ -120,7 +125,7 @@ async function inspectCleanliness(
   }
   if (mergeStatus.classification === 'unique_commits') return { blocker: 'unmerged-commits', evidence };
 
-  return { evidence };
+  return { evidence, mergeStatus };
 }
 
 /**
@@ -165,12 +170,18 @@ export async function inspectWorktreeCleanup(
   if (isProtectedWorktreePath(worktreePath)) return blocked('protected-marker');
   if (isSharedWorktree(taskStore, taskId, worktreePath)) return blocked('shared-with-active-task');
 
-  const { blocker, evidence } = await inspectCleanliness(worktreePath, branch, session?.gitIsDetached);
+  const { blocker, evidence, mergeStatus } = await inspectCleanliness(
+    worktreePath,
+    branch,
+    session?.gitIsDetached,
+    task?.projectId?.startsWith('local/') === true,
+  );
   return {
     ...base,
     removable: blocker === undefined,
     ...(blocker !== undefined ? { blocker } : {}),
     evidence,
+    ...(mergeStatus ? { baselineRef: mergeStatus.baselineRef } : {}),
   };
 }
 
@@ -266,38 +277,82 @@ async function pruneStaleEntries(repoPath: string): Promise<void> {
 
 type CleanupAbortCheck = () => boolean;
 
+interface DeleteBranchOptions {
+  baselineRef: string;
+  shouldAbort?: CleanupAbortCheck;
+}
+
+const ZERO_OID = '0000000000000000000000000000000000000000';
+
+function hasCheckedOutBranch(worktrees: string, branch: string): boolean {
+  return worktrees.split(/\r?\n/).some((line) => line === `branch refs/heads/${branch}`);
+}
+
+async function restoreBranchIfAbsent(repoPath: string, branch: string, oid: string): Promise<void> {
+  const currentRef = await git('-C', repoPath, 'rev-parse', '--verify', `refs/heads/${branch}`);
+  if (currentRef === null) {
+    await git('-C', repoPath, 'update-ref', `refs/heads/${branch}`, oid, ZERO_OID);
+  }
+}
+
 /** Delete a safely classified local branch, preserving -d's guard when possible. */
 async function deleteBranch(
   repoPath: string,
   branch: string,
-  shouldAbort?: CleanupAbortCheck,
+  options: DeleteBranchOptions,
 ): Promise<boolean> {
+  const { baselineRef, shouldAbort } = options;
+  if (!baselineRef || shouldAbort?.()) return false;
+
+  // Capture the exact ref before using branch -d. Git's own -d decision may
+  // use an upstream that differs from Kookr's cleanup baseline, so it is only
+  // accepted after the shared squash-aware classification succeeds.
+  const expectedOid = await git('-C', repoPath, 'rev-parse', '--verify', `refs/heads/${branch}`);
+  if (!expectedOid) return false;
+  const mergeStatus = await resolveWorktreeMergeStatus(repoPath, branch, { baselineRef });
+  if (
+    !mergeStatus
+    || mergeStatus.mergeCheckFailed
+    || (mergeStatus.classification !== 'merged' && mergeStatus.classification !== 'patch_equivalent')
+  ) {
+    return false;
+  }
+
   if (shouldAbort?.()) return false;
 
   const result = await git('-C', repoPath, 'branch', '-d', branch);
-  if (result !== null) return true;
+  if (result !== null) {
+    const worktreesAfterBranchDelete = await git('-C', repoPath, 'worktree', 'list', '--porcelain');
+    if (worktreesAfterBranchDelete !== null && !hasCheckedOutBranch(worktreesAfterBranchDelete, branch) && !shouldAbort?.()) {
+      return true;
+    }
+    await restoreBranchIfAbsent(repoPath, branch, expectedOid);
+    return false;
+  }
 
   if (shouldAbort?.()) return false;
 
   // A branch can be checked out by a worktree owned outside Kookr's task
   // registry. Never fall back to update-ref while Git still reports it as
   // occupied, and fail closed if the occupancy probe itself is unavailable.
+  const currentOid = await git('-C', repoPath, 'rev-parse', '--verify', `refs/heads/${branch}`);
+  if (currentOid !== expectedOid) return false;
+
   const worktrees = await git('-C', repoPath, 'worktree', 'list', '--porcelain');
   if (worktrees === null) return false;
-  const branchRef = `branch refs/heads/${branch}`;
-  if (worktrees.split(/\r?\n/).some((line) => line === branchRef)) return false;
+  if (hasCheckedOutBranch(worktrees, branch)) return false;
 
   // `branch -d` only understands raw ancestry. Revalidate against the same
   // squash-aware classifier, then compare-and-delete the exact ref that was
   // classified. A concurrent ref replacement must make deletion fail rather
   // than turn the safe fallback into an unconditional force-delete.
-  const expectedOid = await git('-C', repoPath, 'rev-parse', '--verify', `refs/heads/${branch}`);
-  if (!expectedOid) return false;
-
-  const mergeStatus = await resolveWorktreeMergeStatus(repoPath, branch, {
-    allowLocalFallback: true,
-  });
-  if (!mergeStatus || (mergeStatus.classification !== 'merged' && mergeStatus.classification !== 'patch_equivalent')) {
+  const revalidatedMergeStatus = await resolveWorktreeMergeStatus(repoPath, branch, { baselineRef });
+  if (
+    !revalidatedMergeStatus
+    || revalidatedMergeStatus.mergeCheckFailed
+    || (revalidatedMergeStatus.classification !== 'merged'
+      && revalidatedMergeStatus.classification !== 'patch_equivalent')
+  ) {
     return false;
   }
 
@@ -306,12 +361,25 @@ async function deleteBranch(
   // Recheck both lifecycle state and Git worktree occupancy immediately
   // before the compare-and-delete mutation.
   const worktreesBeforeDelete = await git('-C', repoPath, 'worktree', 'list', '--porcelain');
-  if (worktreesBeforeDelete === null || worktreesBeforeDelete.split(/\r?\n/).some((line) => line === branchRef)) {
+  if (worktreesBeforeDelete === null || hasCheckedOutBranch(worktreesBeforeDelete, branch)) {
     return false;
   }
   if (shouldAbort?.()) return false;
 
-  return (await git('-C', repoPath, 'update-ref', '-d', `refs/heads/${branch}`, expectedOid)) !== null;
+  const deleted = await git('-C', repoPath, 'update-ref', '-d', `refs/heads/${branch}`, expectedOid);
+  if (deleted === null) return false;
+
+  // The ref mutation is conditional on expectedOid. Recheck the two
+  // destructive preconditions after it as well; if a task reopened or a
+  // worktree appeared during the short mutation window, restore only an
+  // absent ref and report failure rather than leaving a dangling checkout.
+  const worktreesAfterDelete = await git('-C', repoPath, 'worktree', 'list', '--porcelain');
+  const reopened = shouldAbort?.() === true;
+  if (worktreesAfterDelete === null || hasCheckedOutBranch(worktreesAfterDelete, branch) || reopened) {
+    await restoreBranchIfAbsent(repoPath, branch, expectedOid);
+    return false;
+  }
+  return true;
 }
 
 /** Collect all unique worktree paths from a task's sessions. */
@@ -503,7 +571,10 @@ async function cleanupSingleWorktree(
     const branchDeleted = await deleteBranch(
       repoPath,
       cleanedBranch,
-      () => taskStore.getTask(taskId)?.status === 'open',
+      {
+        baselineRef: verdict.baselineRef ?? '',
+        shouldAbort: () => taskStore.getTask(taskId)?.status === 'open',
+      },
     );
     if (!branchDeleted) {
       await interactionLog?.append({

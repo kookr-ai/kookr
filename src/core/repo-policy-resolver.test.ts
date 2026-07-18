@@ -153,6 +153,20 @@ describe('RepoPolicyResolver', () => {
       expect(result.baselineSha).toBe('external-main-sha');
     });
 
+    it('preserves slash-separated names in the remote default branch', async () => {
+      const resolver = new RepoPolicyResolver();
+      let callCount = 0;
+      mockExecFile.mockImplementation((_cmd, _args: any, _opts, cb: any) => {
+        callCount++;
+        cb(null, { stdout: callCount === 1 ? 'refs/remotes/origin/release/v2\n' : 'release-v2-sha\n' }, '');
+      });
+
+      const result = await resolver.resolveBaseline('github.com/unknown/repo', '/repo');
+
+      expect(result.baselineRef).toBe('origin/release/v2');
+      expect(result.baselineSha).toBe('release-v2-sha');
+    });
+
     it('does not fall back to local branches for unconfigured external repos', async () => {
       const resolver = new RepoPolicyResolver();
 

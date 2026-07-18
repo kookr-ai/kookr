@@ -59,6 +59,8 @@ export interface WorktreeCleanupVerdict {
   /** Basename of the worktree path — what the dialog shows. */
   worktreeName: string;
   branch?: string;
+  /** Baseline ref used by the merge decision, retained for cleanup revalidation. */
+  baselineRef?: string;
   removable: boolean;
   /** Present exactly when `removable` is false. */
   blocker?: WorktreeCleanupBlocker;

@@ -360,6 +360,9 @@ async function classifyCandidate(
   const mergeResult = await resolveWorktreeMergeStatus(repoPath, wt.branch, {
     baselineRef: baseline.baselineRef,
   });
+  // The explicit baseline makes this branch unreachable in the current
+  // resolver, but keep the guard as a fail-closed boundary if that contract
+  // changes or a future implementation cannot resolve the ref.
   if (!mergeResult) {
     return {
       ...base,
