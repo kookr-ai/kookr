@@ -41,8 +41,8 @@ describe('inspectGrokAuthFile', () => {
   test('reports a missing file with a supported re-authentication action', async () => {
     const missing = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     const fs: GrokAuthPreflightFs = { readFile: async () => { throw missing; } };
-    const result = await inspectGrokAuthFile('/home/dev/.grok/auth.json', { fs, now: FIXED_NOW });
-    const message = formatGrokAuthPreflightFailure('/home/dev/.grok/auth.json', result);
+    const result = await inspectGrokAuthFile('/tmp/grok/auth.json', { fs, now: FIXED_NOW });
+    const message = formatGrokAuthPreflightFailure('/tmp/grok/auth.json', result);
 
     expect(result).toEqual({ kind: 'missing', reason: 'file_missing' });
     expect(message).toContain('grok login --device-code');
