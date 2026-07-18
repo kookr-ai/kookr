@@ -222,6 +222,31 @@ function validateCredential(
 }
 
 function isDateString(value: string): boolean {
+  // The fork deserializes these fields as chrono::DateTime<Utc>, whose serde
+  // implementation requires an RFC 3339 timestamp. Date.parse alone accepts
+  // date-only values, whitespace separators, and normalizes invalid calendar
+  // dates, which would let a cache pass here and fail only after launch.
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!match) return false;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const offset = match[8];
+  const offsetHour = offset === 'Z' ? 0 : Number(offset.slice(1, 3));
+  const offsetMinute = offset === 'Z' ? 0 : Number(offset.slice(4, 6));
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+
+  if (
+    month < 1 || month > 12 || day < 1 || day > daysInMonth ||
+    hour > 23 || minute > 59 || second > 59 || offsetHour > 23 || offsetMinute > 59
+  ) {
+    return false;
+  }
+
   return Number.isFinite(Date.parse(value));
 }
 

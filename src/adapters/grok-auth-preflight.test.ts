@@ -140,6 +140,22 @@ describe('inspectGrokAuthFile', () => {
     expect(result).toEqual({ kind: 'invalid', reason: 'invalid_record' });
   });
 
+  test('requires Grok-compatible RFC 3339 timestamps instead of Date.parse guesses', async () => {
+    for (const expiresAt of [
+      '2026-07-18',
+      '2026-07-18 00:00:00Z',
+      '2026-02-30T00:00:00Z',
+      '2026-07-18T00:00:00.1234567890Z',
+    ]) {
+      const result = await inspectGrokAuthFile('/tmp/grok/auth.json', {
+        fs: fsReturning(JSON.stringify({ [AUTH_SCOPE]: authRecord({ expires_at: expiresAt }) })),
+        now: FIXED_NOW,
+      });
+
+      expect(result, expiresAt).toEqual({ kind: 'invalid', reason: 'invalid_record' });
+    }
+  });
+
   test('rejects malformed optional fields that Grok would fail to deserialize', async () => {
     const result = await inspectGrokAuthFile('/tmp/grok/auth.json', {
       fs: fsReturning(JSON.stringify({ [AUTH_SCOPE]: authRecord({ team_blocked_reasons: 'not-an-array' }) })),
