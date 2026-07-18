@@ -1,8 +1,8 @@
-import { readFileSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import ts from 'typescript';
+import * as ts from 'typescript/unstable/ast';
+import { API } from 'typescript/unstable/sync';
 
 const SOURCE_ROOTS = ['src/server', 'src/core', 'src/adapters', 'src/frontend'];
 const ALLOWED_DYNAMIC_IMPORT_FILES = [
@@ -53,9 +53,12 @@ function lineOf(source: ts.SourceFile, pos: number): number {
   return source.getLineAndCharacterOfPosition(pos).line + 1;
 }
 
-function checkFile(file: string, root: string, allowedDynamicImportFiles: Set<string>): RemoteImportBoundaryViolation[] {
-  const text = readFileSync(file, 'utf8');
-  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+function checkFile(
+  file: string,
+  root: string,
+  allowedDynamicImportFiles: Set<string>,
+  source: ts.SourceFile,
+): RemoteImportBoundaryViolation[] {
   const violations: RemoteImportBoundaryViolation[] = [];
 
   const visit = (node: ts.Node): void => {
@@ -87,7 +90,7 @@ function checkFile(file: string, root: string, allowedDynamicImportFiles: Set<st
       ts.isCallExpression(node)
       && node.expression.kind === ts.SyntaxKind.ImportKeyword
       && node.arguments.length === 1
-      && ts.isStringLiteralLike(node.arguments[0])
+      && isStringLiteralLike(node.arguments[0])
       && isRemoteImport(node.arguments[0].text, file, root)
       && !allowedDynamicImportFiles.has(file)
     ) {
@@ -98,11 +101,15 @@ function checkFile(file: string, root: string, allowedDynamicImportFiles: Set<st
       });
     }
 
-    ts.forEachChild(node, visit);
+    node.forEachChild(visit);
   };
 
   visit(source);
   return violations;
+}
+
+function isStringLiteralLike(node: ts.Node): node is ts.StringLiteral | ts.NoSubstitutionTemplateLiteral {
+  return ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node);
 }
 
 export async function checkRemoteImportBoundaries(root = process.cwd()): Promise<RemoteImportBoundaryResult> {
@@ -111,13 +118,32 @@ export async function checkRemoteImportBoundaries(root = process.cwd()): Promise
     ALLOWED_DYNAMIC_IMPORT_FILES.map((file) => join(resolvedRoot, file)),
   );
   const files = (await Promise.all(SOURCE_ROOTS.map((sourceRoot) => listTypeScriptFiles(join(resolvedRoot, sourceRoot))))).flat();
-  const violations = files.flatMap((file) => checkFile(file, resolvedRoot, allowedDynamicImportFiles));
+  if (files.length === 0) {
+    return { root: resolvedRoot, fileCount: 0, violations: [] };
+  }
 
-  return {
-    root: resolvedRoot,
-    fileCount: files.length,
-    violations,
-  };
+  // TypeScript 7's stable package entry point only exposes version metadata.
+  // Its synchronous API returns the same AST node surface used by this checker
+  // while keeping parser/server lifecycle management inside this function.
+  const api = new API({ cwd: resolvedRoot });
+  const snapshot = api.updateSnapshot({ openFiles: files });
+  try {
+    const violations = files.flatMap((file) => {
+      const project = snapshot.getDefaultProjectForFile(file);
+      const source = project?.program.getSourceFile(file);
+      if (!source) throw new Error(`TypeScript did not produce an AST for ${file}`);
+      return checkFile(file, resolvedRoot, allowedDynamicImportFiles, source);
+    });
+
+    return {
+      root: resolvedRoot,
+      fileCount: files.length,
+      violations,
+    };
+  } finally {
+    snapshot.dispose();
+    api.close();
+  }
 }
 
 async function main(): Promise<void> {
