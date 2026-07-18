@@ -54,6 +54,7 @@ variables** — it reuses the bind/auth/transport knobs above:
 | --- | --- | --- | --- |
 | `KOOKR_AGENT_BIN` | `claude` | Executable path or command name | Overrides the Claude Code binary used for new `claude-code` tasks. |
 | `KOOKR_CODEX_BIN` | `codex` | Executable path or command name | Overrides the Codex CLI binary used for new `codex-cli` tasks. |
+| `KOOKR_CODEX_MODEL` | `gpt-5.6-sol` | Model identifier | Model passed as `-c model="<id>"` for Kookr-fork `codex-cli` launches. Defaults to Sol. Set to `gpt-5.6-luna` (or another fork-supported model id) to opt into a different default. An explicit `ultra` effort always escalates to `gpt-5.6-sol` regardless of this value. Stock (non-fork) Codex binaries ignore this setting. |
 | `KOOKR_GROK_BIN` | `grok` | Executable path or command name | Overrides the Grok Build binary used for new `grok-build` tasks (issue #1339). If set but unreachable, startup is fatal; if the default `grok` is missing from PATH, `grok-build` is simply not registered (excluded from the picker and round-robin). |
 | `KOOKR_GROK_MODEL` | `grok-4.5` | Model identifier | Model passed to `grok --model` for `grok-build` tasks. Defaults to the requalified POC-A model (the original `grok-build` model is no longer served by the chat proxy). |
 | `KOOKR_GROK_BUILD_DISABLE_NEW_LAUNCHES` | unset | `true` to halt | New-launch kill switch: refuses new `grok-build` launches (incident response), without a restart. Existing sessions are unaffected. |

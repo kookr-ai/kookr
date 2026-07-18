@@ -56,13 +56,15 @@ export const AVAILABLE_AGENT_TYPES: AvailableAgentType[] = [
  *   high, xhigh, max").
  * - `codex -c model_reasoning_effort=<level>` takes the model's advertised
  *   reasoning-effort values. Kookr exposes: none, minimal, low, medium, high,
- *   xhigh, max, ultra. The adapter selects GPT-5.6-Sol for an explicit
- *   `ultra` request because Luna's supported ceiling is `max`.
+ *   xhigh, max, ultra. Default Codex launches use GPT-5.6-Sol with no effort
+ *   override (model-native default); set `KOOKR_CODEX_MODEL` / `agentEffort`
+ *   to change. An explicit `ultra` request always selects GPT-5.6-Sol because
+ *   Luna's supported ceiling is `max`.
  *
  * Effort is only meaningful relative to an agent type: `max` is valid for
- * both Claude Code and Kookr's Luna-backed codex-cli; `minimal`/`none`/`ultra`
- * are valid for codex-cli but not claude-code. There is no shared canonical
- * scale across all possible agent binaries — always validate against
+ * both Claude Code and codex-cli; `minimal`/`none`/`ultra` are valid for
+ * codex-cli but not claude-code. There is no shared canonical scale across
+ * all possible agent binaries — always validate against
  * {@link effortLevelsForAgent} / {@link isValidEffortForAgent}.
  */
 export const CLAUDE_CODE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;

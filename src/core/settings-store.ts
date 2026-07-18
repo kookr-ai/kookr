@@ -63,11 +63,11 @@ export interface KookrSettings {
   /**
    * Per-agent-type reasoning-effort default (#681). Maps an agent type to the
    * effort level its spawned sessions launch at (claude-code → `--effort`;
-   * codex-cli → `-c model_reasoning_effort`). Kookr defaults codex-cli to
-   * `max`; missing or legacy-empty `agentEffort` maps receive this default.
-   * A per-task `effort` override (POST /api/tasks / `kookr-spawn --effort`)
-   * wins over this default.
-   * Invalid (agent, level) pairs are dropped with a warning during validation.
+   * codex-cli → `-c model_reasoning_effort`). Sparse by design: a missing
+   * agent key means "no override" — the agent CLI / model uses its own default
+   * effort. A per-task `effort` override (POST /api/tasks / `kookr-spawn
+   * --effort`) wins over this map. Invalid (agent, level) pairs are dropped
+   * with a warning during validation.
    */
   agentEffort: AgentEffortMap;
   /**
@@ -95,7 +95,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   roundRobinIndex: 0,
   shortcutBindings: {},
   speakVerbosity: DEFAULT_VERBOSITY,
-  agentEffort: { 'codex-cli': 'max' },
+  agentEffort: {},
   quietHours: [],
   replySnippets: [],
 };
@@ -180,16 +180,14 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     }
   }
 
-  // Missing from an older settings file, or the empty map emitted by the
-  // previous default, means "use Kookr's current default".
+  // Missing or empty agentEffort means "no configured defaults" — each agent
+  // uses its own CLI/model default effort. Explicit keys are validated and
+  // kept; unknown agents / invalid levels are dropped with warnings.
   const configuredAgentEffort = isEmptyAgentEffortMap(raw.agentEffort)
     ? DEFAULT_SETTINGS.agentEffort
     : raw.agentEffort;
   const validatedAgentEffort = validateAgentEffort(configuredAgentEffort);
   const agentEffort = validatedAgentEffort.agentEffort;
-  if (agentEffort['codex-cli'] === undefined) {
-    agentEffort['codex-cli'] = 'max';
-  }
   const agentEffortWarnings = validatedAgentEffort.warnings;
   const replySnippetValidation = validateReplySnippets(raw.replySnippets);
 

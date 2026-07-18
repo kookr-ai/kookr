@@ -39,8 +39,33 @@ import { effectiveHookSettingsPath, readPersistedHookSettings } from './effectiv
 import { buildHookCommand, resolveHookWriterPath } from '../core/hook-writer-paths.js';
 
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
-const DEFAULT_CODEX_MODEL = 'gpt-5.6-luna';
-const ULTRA_CODEX_MODEL = 'gpt-5.6-sol';
+
+/** Env var that overrides the default Codex model for Kookr-fork launches. */
+export const CODEX_MODEL_ENV = 'KOOKR_CODEX_MODEL';
+/**
+ * Default Codex model for Kookr-fork launches. Override with {@link CODEX_MODEL_ENV}.
+ * Sol is the general-purpose GPT-5.6 coding model; Luna remains available by setting
+ * `KOOKR_CODEX_MODEL=gpt-5.6-luna` (and pairing it with a high effort if desired).
+ */
+export const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
+/**
+ * Model used when an explicit `ultra` reasoning effort is requested. Luna's
+ * advertised ceiling is `max`, so ultra always escalates to Sol regardless of
+ * {@link CODEX_MODEL_ENV}.
+ */
+export const ULTRA_CODEX_MODEL = 'gpt-5.6-sol';
+
+/**
+ * Resolve the Codex model for a Kookr-fork launch.
+ *
+ * - `effort === 'ultra'` → {@link ULTRA_CODEX_MODEL} (Sol)
+ * - otherwise → `KOOKR_CODEX_MODEL` if set and non-empty, else {@link DEFAULT_CODEX_MODEL}
+ */
+export function resolveCodexModel(effort?: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (effort === 'ultra') return ULTRA_CODEX_MODEL;
+  const fromEnv = env[CODEX_MODEL_ENV]?.trim();
+  return fromEnv && fromEnv.length > 0 ? fromEnv : DEFAULT_CODEX_MODEL;
+}
 
 interface CodexHookSettings {
   hooks: Record<string, Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>>;
@@ -309,15 +334,14 @@ export class CodexCliAdapter implements AgentAdapter {
       );
     }
 
-    // A Luna session is the default for the Kookr fork. The same capability
-    // probe used for --plugin-dir keeps stock/older Codex binaries on their
-    // previous model defaults. Luna tops out at `max`; an explicit `ultra`
-    // request selects the fork's Sol model, which advertises ultra.
+    // A Sol session is the default for the Kookr fork (override with
+    // KOOKR_CODEX_MODEL). The same capability probe used for --plugin-dir
+    // keeps stock/older Codex binaries on their previous model defaults.
+    // Luna tops out at `max`; an explicit `ultra` request selects Sol, which
+    // advertises ultra — regardless of KOOKR_CODEX_MODEL.
     const forkCapabilitiesSupported = await this.probeKookrForkSupport();
     const effort = opts?.effort ?? this.resolveDefaultEffort?.();
-    const model = forkCapabilitiesSupported
-      ? (effort === 'ultra' ? ULTRA_CODEX_MODEL : DEFAULT_CODEX_MODEL)
-      : undefined;
+    const model = forkCapabilitiesSupported ? resolveCodexModel(effort) : undefined;
 
     // V8: argv-based launch through the backend. No shell features needed;
     // env goes in SessionSpec.env, flags become argv.
