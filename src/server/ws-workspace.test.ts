@@ -53,7 +53,7 @@ function mockGitResponses(handlers: Record<string, string | 'error'>) {
     for (const [pattern, response] of Object.entries(handlers)) {
       if (argsStr.includes(pattern)) {
         if (response === 'error') {
-          cb(new Error('git error'), { stdout: '', stderr: 'git error' });
+          cb(Object.assign(new Error('git error'), { code: 1 }), { stdout: '', stderr: 'git error' });
         } else {
           cb(null, { stdout: response, stderr: '' });
         }

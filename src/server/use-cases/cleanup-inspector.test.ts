@@ -49,13 +49,13 @@ const MULTI_WT = [
  * Note: gitIn(cwd, ...args) calls execFile('git', args, { cwd }, cb).
  * The cwd is in opts, not in args.
  */
-function mockGitArgs(rules: Array<{ match: (args: string[], opts?: any) => boolean; stdout: string | null }>) {
+function mockGitArgs(rules: Array<{ match: (args: string[], opts?: any) => boolean; stdout: string | null; exitCode?: number }>) {
   mockExecFile.mockImplementation((_cmd, args: any, opts: any, cb: any) => {
     const argsArr: string[] = Array.isArray(args) ? args : [];
     for (const rule of rules) {
       if (rule.match(argsArr, opts)) {
         if (rule.stdout === null) {
-          cb(new Error('git failed'), { stdout: '' }, '');
+          cb(Object.assign(new Error('git failed'), { code: rule.exitCode ?? 128 }), { stdout: '' }, '');
         } else {
           cb(null, { stdout: rule.stdout }, '');
         }
@@ -388,7 +388,7 @@ describe('inspectCleanupCandidates', () => {
       { match: (a) => a.includes('worktree') && a.includes('list'), stdout: SINGLE_WT },
       { match: (a) => a.includes('rev-parse') && a[a.length - 1] === 'main', stdout: 'abc123' },
       { match: (a) => a.includes('status') && a.includes('--porcelain'), stdout: '' },
-      { match: (a) => a.includes('merge-base') && a.includes('--is-ancestor'), stdout: null },
+      { match: (a) => a.includes('merge-base') && a.includes('--is-ancestor'), stdout: null, exitCode: 1 },
       { match: (a) => a.includes('--cherry-pick') && a.includes('--right-only'), stdout: '' },
     ]);
 
@@ -409,7 +409,7 @@ describe('inspectCleanupCandidates', () => {
       { match: (a) => a.includes('worktree') && a.includes('list'), stdout: SINGLE_WT },
       { match: (a) => a.includes('rev-parse') && a[a.length - 1] === 'main', stdout: 'abc123' },
       { match: (a) => a.includes('status') && a.includes('--porcelain'), stdout: '' },
-      { match: (a) => a.includes('merge-base') && a.includes('--is-ancestor'), stdout: null },
+      { match: (a) => a.includes('merge-base') && a.includes('--is-ancestor'), stdout: null, exitCode: 1 },
       { match: (a) => a.includes('--cherry-pick') && a.includes('--right-only'), stdout: 'abc1234 Add feature\ndef5678 Fix tests' },
     ]);
 
@@ -428,7 +428,7 @@ describe('inspectCleanupCandidates', () => {
       { match: (a) => a.includes('worktree') && a.includes('list'), stdout: SINGLE_WT },
       { match: (a) => a.includes('rev-parse') && a[a.length - 1] === 'main', stdout: 'abc123' },
       { match: (a) => a.includes('status') && a.includes('--porcelain'), stdout: '' },
-      { match: (a) => a.includes('merge-base') && a.includes('--is-ancestor'), stdout: null },
+      { match: (a) => a.includes('merge-base') && a.includes('--is-ancestor'), stdout: null, exitCode: 1 },
       // cherry-pick log command fails entirely (null result)
       // Implementation: uniquePatches === null falls through to unique_commits
       { match: (a) => a.includes('--cherry-pick') && a.includes('--right-only'), stdout: null },
@@ -665,7 +665,7 @@ describe('inspectCleanupCandidates', () => {
       { match: (a) => a.includes('worktree') && a.includes('list'), stdout: SINGLE_WT },
       { match: (a) => a.includes('rev-parse') && a[a.length - 1] === 'main', stdout: 'abc123' },
       { match: (a) => a.includes('status') && a.includes('--porcelain'), stdout: '' },
-      { match: (a) => a.includes('merge-base') && a.includes('--is-ancestor'), stdout: null },
+      { match: (a) => a.includes('merge-base') && a.includes('--is-ancestor'), stdout: null, exitCode: 1 },
       { match: (a) => a.includes('--cherry-pick') && a.includes('--right-only'), stdout: 'abc unique' },
       // enrichment calls
       { match: (a) => a.includes('rev-list') && a.includes('--left-right'), stdout: '97\t2' },
@@ -715,7 +715,7 @@ describe('inspectCleanupCandidates', () => {
       { match: (a) => a.includes('worktree') && a.includes('list'), stdout: SINGLE_WT },
       { match: (a) => a.includes('rev-parse') && a[a.length - 1] === 'main', stdout: 'abc123' },
       { match: (a) => a.includes('status') && a.includes('--porcelain'), stdout: '' },
-      { match: (a) => a.includes('merge-base') && a.includes('--is-ancestor'), stdout: null },
+      { match: (a) => a.includes('merge-base') && a.includes('--is-ancestor'), stdout: null, exitCode: 1 },
       { match: (a) => a.includes('--cherry-pick') && a.includes('--right-only'), stdout: 'abc unique' },
       // rev-list used by enrichment fails
       { match: (a) => a.includes('rev-list') && a.includes('--left-right'), stdout: null },
