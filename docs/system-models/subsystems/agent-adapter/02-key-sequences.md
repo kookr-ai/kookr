@@ -16,7 +16,12 @@ sequenceDiagram
   participant Sup as Supervisor
 
   BE->>SessionMgr: launch(prompt, cwd)
-  SessionMgr->>Term: Create dtach-backed terminal session
+  alt Grok Build adapter
+    SessionMgr->>SessionMgr: Compose isolated GROK_HOME and validate auth.json
+    SessionMgr-->>BE: Redacted auth recovery error (no terminal session)
+  else Auth preflight passes
+    SessionMgr->>Term: Create dtach-backed terminal session
+  end
   SessionMgr->>Term: Launch agent in interactive mode with prompt + hooks configured
   Term->>CC: Agent starts in interactive mode
   SessionMgr->>SessionMgr: Store terminal session handle + start transcript JSONL file-watch
@@ -67,6 +72,7 @@ sequenceDiagram
 - The adapter never interprets events. It produces a flat stream of `AgentEvent` objects. The supervisor decides what they mean.
 - Terminal session IDs are managed internally by the adapter. Unlike the previous headless approach, there is no session ID mismatch issue (issue #5, resolved by ADR-007).
 - **~~Resume serialization~~ (issue #9, resolved by ADR-007):** No longer needed. Input is delivered through the terminal backend's byte-write path to the running agent process — no subprocess spawning, no serialization required.
+- Grok Build launch performs an offline `auth.json` preflight after composing the isolated `GROK_HOME`; an auth failure returns redacted login guidance before creating a terminal session.
 
 ## Evidence
 
