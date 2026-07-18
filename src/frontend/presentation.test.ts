@@ -114,6 +114,16 @@ describe('agentProviderPresentation', () => {
     });
     expect(agentProviderPresentation('codex-cli').iconPath).toMatch(/^M.+Z$/);
   });
+
+  test('labels Grok Build as an xAI-backed agent with the product mark', () => {
+    expect(agentProviderPresentation('grok-build')).toMatchObject({
+      label: 'Grok Build',
+      provider: 'xAI',
+    });
+    expect(agentProviderPresentation('grok-build').iconPath).toMatch(/^M.+Z$/);
+    // Not the old placeholder X glyph
+    expect(agentProviderPresentation('grok-build').iconPath).not.toContain('M3 3h3l6 8');
+  });
 });
 
 describe('healthyStatusLabel', () => {
@@ -252,6 +262,15 @@ describe('agentProviderPresentation', () => {
       provider: 'OpenAI',
     });
     expect(agentProviderPresentation('codex-cli').iconPath).toMatch(/^M.+Z$/);
+  });
+
+  test('labels Grok Build as an xAI-backed agent with the product mark', () => {
+    expect(agentProviderPresentation('grok-build')).toMatchObject({
+      label: 'Grok Build',
+      provider: 'xAI',
+    });
+    expect(agentProviderPresentation('grok-build').iconPath).toMatch(/^M.+Z$/);
+    expect(agentProviderPresentation('grok-build').iconPath).not.toContain('M3 3h3l6 8');
   });
 });
 
