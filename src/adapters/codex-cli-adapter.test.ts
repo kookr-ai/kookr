@@ -4,7 +4,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
-import { CodexCliAdapter } from './codex-cli-adapter.js';
+import {
+  CodexCliAdapter,
+  DEFAULT_CODEX_MODEL,
+  ULTRA_CODEX_MODEL,
+  resolveCodexModel,
+} from './codex-cli-adapter.js';
 import { DEFAULT_PROMPT_SUBMIT_DELAY_MS } from './agent-launch-context.js';
 import { TaskStore } from '../core/tasks.js';
 import type { AgentEvent } from '../core/types.js';
@@ -66,6 +71,10 @@ describe('CodexCliAdapter', () => {
   let writtenFiles: Map<string, string>;
 
   beforeEach(() => {
+    // Model selection reads process.env.KOOKR_CODEX_MODEL — clear ambient
+    // values so default-model assertions stay hermetic (developer .env may
+    // pin Luna or another override).
+    vi.stubEnv('KOOKR_CODEX_MODEL', '');
     backend = new FakeTerminalBackend();
     taskStore = new TaskStore();
     writtenFiles = new Map();
@@ -77,6 +86,10 @@ describe('CodexCliAdapter', () => {
       },
     });
     mockGetGitInfo.mockReset().mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   /** Initial prompt as delivered to codex via the --prompt-file launch artifact. */
@@ -106,7 +119,7 @@ describe('CodexCliAdapter', () => {
     // The binary is argv[0] on its own — no `env VAR=x codex …` shell prefix.
     expect(spec.command).toMatch(/(^|\/)codex$/);
     expect(spec.args).toEqual(expect.arrayContaining(['-c', 'features.codex_hooks=true']));
-    const modelIndex = spec.args.indexOf('model="gpt-5.6-luna"');
+    const modelIndex = spec.args.indexOf('model="gpt-5.6-sol"');
     expect(modelIndex).toBeGreaterThan(0);
     expect(spec.args[modelIndex - 1]).toBe('-c');
     expect(spec.args).toContain('--full-auto');
@@ -149,7 +162,7 @@ describe('CodexCliAdapter', () => {
 
     const spec = backend.sessions.get(sessionId)!.spec;
     expect(spec.args).not.toContain('--prompt-file');
-    expect(spec.args).not.toContain('model="gpt-5.6-luna"');
+    expect(spec.args).not.toContain('model="gpt-5.6-sol"');
     // Prompt delivered as the trailing positional argv entry.
     expect(spec.args[spec.args.length - 1]).toBe('Fix bug');
   });
@@ -1038,7 +1051,7 @@ describe('CodexCliAdapter', () => {
       expect(spec.args[idx]).toBe('model_reasoning_effort="high"');
     });
 
-    test('per-agent-type max default keeps the Luna model and applies max effort', async () => {
+    test('per-agent-type max default keeps the default Sol model and applies max effort', async () => {
       const maxAdapter = new CodexCliAdapter(backend, taskStore, {
         trustWorkspace: false,
         probeExec: forkProbeExec,
@@ -1048,12 +1061,34 @@ describe('CodexCliAdapter', () => {
       const task = taskStore.createTask('Fix hardest bug by default', '/cwd');
       const sessionId = await maxAdapter.launch(task.id, 'Fix hardest bug by default', '/cwd');
       const spec = backend.sessions.get(sessionId)!.spec;
-      const modelIndex = spec.args.indexOf('model="gpt-5.6-luna"');
+      const modelIndex = spec.args.indexOf('model="gpt-5.6-sol"');
       const effortIndex = spec.args.indexOf('model_reasoning_effort="max"');
       expect(modelIndex).toBeGreaterThan(0);
       expect(effortIndex).toBeGreaterThan(0);
       expect(spec.args[modelIndex - 1]).toBe('-c');
       expect(spec.args[effortIndex - 1]).toBe('-c');
+    });
+
+    test('KOOKR_CODEX_MODEL overrides the default model for non-ultra launches', async () => {
+      vi.stubEnv('KOOKR_CODEX_MODEL', 'gpt-5.6-luna');
+      const task = taskStore.createTask('Use env model', '/cwd');
+      const sessionId = await adapter.launch(task.id, 'Use env model', '/cwd');
+      const spec = backend.sessions.get(sessionId)!.spec;
+      const modelIndex = spec.args.indexOf('model="gpt-5.6-luna"');
+      expect(modelIndex).toBeGreaterThan(0);
+      expect(spec.args[modelIndex - 1]).toBe('-c');
+    });
+
+    test('explicit ultra still escalates to Sol even when KOOKR_CODEX_MODEL is Luna', async () => {
+      vi.stubEnv('KOOKR_CODEX_MODEL', 'gpt-5.6-luna');
+      const task = taskStore.createTask('Ultra beats env model', '/cwd');
+      const sessionId = await adapter.launch(task.id, 'Ultra beats env model', '/cwd', undefined, {
+        effort: 'ultra',
+      });
+      const spec = backend.sessions.get(sessionId)!.spec;
+      expect(spec.args).toContain(`model="${ULTRA_CODEX_MODEL}"`);
+      expect(spec.args).toContain('model_reasoning_effort="ultra"');
+      expect(spec.args).not.toContain('model="gpt-5.6-luna"');
     });
 
     test('per-agent-type ultra default selects the Sol model and applies ultra effort', async () => {
@@ -1074,7 +1109,7 @@ describe('CodexCliAdapter', () => {
       expect(spec.args[effortIndex - 1]).toBe('-c');
     });
 
-    test('stock Codex skips fork-only max instead of forcing Luna', async () => {
+    test('stock Codex skips fork-only max instead of forcing a Kookr model', async () => {
       const stockAdapter = new CodexCliAdapter(backend, taskStore, {
         trustWorkspace: false,
         probeExec: stockProbeExec,
@@ -1084,6 +1119,7 @@ describe('CodexCliAdapter', () => {
       const task = taskStore.createTask('Use stock Codex fallback', '/cwd');
       const sessionId = await stockAdapter.launch(task.id, 'Use stock Codex fallback', '/cwd');
       const spec = backend.sessions.get(sessionId)!.spec;
+      expect(spec.args).not.toContain('model="gpt-5.6-sol"');
       expect(spec.args).not.toContain('model="gpt-5.6-luna"');
       expect(effortValueIndex(spec.args)).toBe(-1);
     });
@@ -1148,5 +1184,23 @@ describe('CodexCliAdapter', () => {
       // ...and the trailing positional prompt is still the very last entry.
       expect(spec.args[spec.args.length - 1]).toBe('Fix bug');
     });
+  });
+});
+
+describe('resolveCodexModel', () => {
+  test('defaults to Sol when env is unset or blank', () => {
+    expect(resolveCodexModel(undefined, {})).toBe(DEFAULT_CODEX_MODEL);
+    expect(resolveCodexModel('high', { KOOKR_CODEX_MODEL: '' })).toBe(DEFAULT_CODEX_MODEL);
+    expect(resolveCodexModel('high', { KOOKR_CODEX_MODEL: '   ' })).toBe(DEFAULT_CODEX_MODEL);
+  });
+
+  test('honors KOOKR_CODEX_MODEL for non-ultra effort', () => {
+    expect(resolveCodexModel(undefined, { KOOKR_CODEX_MODEL: 'gpt-5.6-luna' })).toBe('gpt-5.6-luna');
+    expect(resolveCodexModel('max', { KOOKR_CODEX_MODEL: '  gpt-5.6-luna  ' })).toBe('gpt-5.6-luna');
+  });
+
+  test('ultra always escalates to Sol regardless of env', () => {
+    expect(resolveCodexModel('ultra', {})).toBe(ULTRA_CODEX_MODEL);
+    expect(resolveCodexModel('ultra', { KOOKR_CODEX_MODEL: 'gpt-5.6-luna' })).toBe(ULTRA_CODEX_MODEL);
   });
 });

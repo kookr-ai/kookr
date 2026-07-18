@@ -1204,8 +1204,9 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                         <div className="settings-row-info">
                           <span className="settings-label">{label} effort</span>
                           <span className="settings-desc">
-                            Reasoning-effort level new {label} tasks launch at. "Default" uses
-                            {type === 'codex-cli' ? ' Kookr\'s Luna max default' : ' the agent CLI\'s own default'}.
+                            Reasoning-effort level new {label} tasks launch at. "Agent default" leaves
+                            effort unset so the agent CLI / model uses its own native default
+                            {type === 'codex-cli' ? ' (Codex model defaults to gpt-5.6-sol; override with KOOKR_CODEX_MODEL)' : ''}.
                             A per-task override (via the task API or <code>kookr-spawn --effort</code>)
                             wins over this default.
                           </span>
@@ -1217,7 +1218,7 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                             value={settings.agentEffort?.[type] ?? ''}
                             onChange={(e) => handleAgentEffortChange(type, e.target.value)}
                           >
-                            <option value="">{type === 'codex-cli' ? 'Kookr default (Luna max)' : 'Agent default'}</option>
+                            <option value="">Agent default</option>
                             {effortLevelsForAgent(type).map((level) => (
                               <option key={level} value={level}>{level}</option>
                             ))}

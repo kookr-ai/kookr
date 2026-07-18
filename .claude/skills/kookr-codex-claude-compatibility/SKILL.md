@@ -88,10 +88,11 @@ Map Claude agent aliases to the Kookr Codex fork's Luna model and role effort:
 - `sonnet` -> `gpt-5.6-luna`, `model_reasoning_effort = "high"`
 - `haiku` -> `gpt-5.6-luna`, `model_reasoning_effort = "medium"`
 
-Kookr's top-level Codex launches also default to `gpt-5.6-luna` with
-`model_reasoning_effort = "max"`; a per-task effort override still wins.
-An explicit top-level `ultra` effort selects `gpt-5.6-sol`, because Luna's
-advertised reasoning ceiling is `max`.
+Kookr's top-level Codex launches default to `gpt-5.6-sol` with **no**
+`model_reasoning_effort` override (model-native default). Override the model
+with `KOOKR_CODEX_MODEL` (e.g. `gpt-5.6-luna`) and/or set `agentEffort.codex-cli`
+in settings / per-task `--effort`. An explicit top-level `ultra` effort always
+selects `gpt-5.6-sol`, because Luna's advertised reasoning ceiling is `max`.
 
 ## Build and Deploy Workflow
 

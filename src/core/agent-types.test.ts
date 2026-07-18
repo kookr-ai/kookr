@@ -159,7 +159,7 @@ describe('reasoning-effort levels (#681)', () => {
     expect(effortLevelsForAgent('claude-code')).toEqual(CLAUDE_CODE_EFFORT_LEVELS);
   });
 
-  test('codex-cli allowed set exposes Luna max and Sol ultra', () => {
+  test('codex-cli allowed set exposes fork-supported efforts including max and ultra', () => {
     expect([...CODEX_CLI_EFFORT_LEVELS]).toEqual(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
     expect(effortLevelsForAgent('codex-cli')).toEqual(CODEX_CLI_EFFORT_LEVELS);
   });
@@ -177,7 +177,7 @@ describe('reasoning-effort levels (#681)', () => {
   });
 
   test('isValidEffortForAgent accepts only that agent\'s levels', () => {
-    // `max` is supported by the Kookr fork's Luna-backed Codex model.
+    // `max` is valid for Claude Code and for Kookr's fork-backed Codex models.
     expect(isValidEffortForAgent('claude-code', 'max')).toBe(true);
     expect(isValidEffortForAgent('codex-cli', 'max')).toBe(true);
     expect(isValidEffortForAgent('codex-cli', 'ultra')).toBe(true);
