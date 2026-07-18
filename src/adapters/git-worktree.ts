@@ -264,10 +264,28 @@ async function pruneStaleEntries(repoPath: string): Promise<void> {
   await git('-C', repoPath, 'worktree', 'prune');
 }
 
+type CleanupAbortCheck = () => boolean;
+
 /** Delete a safely classified local branch, preserving -d's guard when possible. */
-async function deleteBranch(repoPath: string, branch: string): Promise<boolean> {
+async function deleteBranch(
+  repoPath: string,
+  branch: string,
+  shouldAbort?: CleanupAbortCheck,
+): Promise<boolean> {
+  if (shouldAbort?.()) return false;
+
   const result = await git('-C', repoPath, 'branch', '-d', branch);
   if (result !== null) return true;
+
+  if (shouldAbort?.()) return false;
+
+  // A branch can be checked out by a worktree owned outside Kookr's task
+  // registry. Never fall back to update-ref while Git still reports it as
+  // occupied, and fail closed if the occupancy probe itself is unavailable.
+  const worktrees = await git('-C', repoPath, 'worktree', 'list', '--porcelain');
+  if (worktrees === null) return false;
+  const branchRef = `branch refs/heads/${branch}`;
+  if (worktrees.split(/\r?\n/).some((line) => line === branchRef)) return false;
 
   // `branch -d` only understands raw ancestry. Revalidate against the same
   // squash-aware classifier, then compare-and-delete the exact ref that was
@@ -282,6 +300,17 @@ async function deleteBranch(repoPath: string, branch: string): Promise<boolean> 
   if (!mergeStatus || (mergeStatus.classification !== 'merged' && mergeStatus.classification !== 'patch_equivalent')) {
     return false;
   }
+
+  if (shouldAbort?.()) return false;
+
+  // Recheck both lifecycle state and Git worktree occupancy immediately
+  // before the compare-and-delete mutation.
+  const worktreesBeforeDelete = await git('-C', repoPath, 'worktree', 'list', '--porcelain');
+  if (worktreesBeforeDelete === null || worktreesBeforeDelete.split(/\r?\n/).some((line) => line === branchRef)) {
+    return false;
+  }
+  if (shouldAbort?.()) return false;
+
   return (await git('-C', repoPath, 'update-ref', '-d', `refs/heads/${branch}`, expectedOid)) !== null;
 }
 
@@ -471,7 +500,11 @@ async function cleanupSingleWorktree(
 
   // Step 3: Delete merged branch
   if (cleanedBranch) {
-    const branchDeleted = await deleteBranch(repoPath, cleanedBranch);
+    const branchDeleted = await deleteBranch(
+      repoPath,
+      cleanedBranch,
+      () => taskStore.getTask(taskId)?.status === 'open',
+    );
     if (!branchDeleted) {
       await interactionLog?.append({
         type: 'worktree_cleanup_failed',

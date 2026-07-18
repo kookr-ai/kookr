@@ -97,11 +97,17 @@ export async function resolveWorktreeMergeStatus(
       mergeCheckFailed = true;
     } else {
       const uniquePatches = uniquePatchesResult.stdout;
-      const aggregatePatchEquivalent = uniquePatches.length > 0
-        ? await isAggregatePatchEquivalent(repoPath, baselineRef, branch)
-        : false;
+      // Always verify the aggregate tree, including when cherry-pick reports
+      // no unique patches. Patch IDs intentionally ignore some context, so an
+      // empty output alone is not proof that the branch's final tree matches
+      // the baseline.
+      const aggregatePatchEquivalent = await isAggregatePatchEquivalent(
+        repoPath,
+        baselineRef,
+        branch,
+      );
 
-      if (uniquePatches.length === 0 || aggregatePatchEquivalent) {
+      if (aggregatePatchEquivalent) {
         classification = 'patch_equivalent';
         reasonCode = uniquePatches.length === 0 ? 'no_unique_patches' : 'aggregate_patch_equivalent';
         recoveryGuidance = 'Branch adds no unique patches vs baseline (likely squash-merged). Safe to remove.';
@@ -166,7 +172,10 @@ async function isAggregatePatchEquivalent(
     return false;
   }
   const indexPath = join(tempDir, 'index');
-  const env = { ...gitExecEnv(), GIT_INDEX_FILE: indexPath };
+  // read-tree refuses to run from a bare/common Git directory unless a work
+  // tree is provided. The temporary tree is only a command context: the
+  // temporary index is never connected to a user's checkout.
+  const env = { ...gitExecEnv(), GIT_INDEX_FILE: indexPath, GIT_WORK_TREE: tempDir };
   try {
     const readTree = await runGitIn(
       repoPath,

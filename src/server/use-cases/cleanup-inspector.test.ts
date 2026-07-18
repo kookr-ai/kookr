@@ -390,6 +390,10 @@ describe('inspectCleanupCandidates', () => {
       { match: (a) => a.includes('status') && a.includes('--porcelain'), stdout: '' },
       { match: (a) => a.includes('merge-base') && a.includes('--is-ancestor'), stdout: null, exitCode: 1 },
       { match: (a) => a.includes('--cherry-pick') && a.includes('--right-only'), stdout: '' },
+      { match: (a) => a.includes('merge-base') && !a.includes('--is-ancestor'), stdout: 'common-sha' },
+      { match: (a) => a.includes('read-tree'), stdout: '' },
+      { match: (a) => a.includes('write-tree'), stdout: 'baseline-tree' },
+      { match: (a) => a.includes('rev-parse') && a.some((arg) => arg.endsWith('^{tree}')), stdout: 'baseline-tree' },
     ]);
 
     const result = await inspectCleanupCandidates('/repo', 'github.com/org/repo', {
@@ -400,6 +404,29 @@ describe('inspectCleanupCandidates', () => {
     expect(result[0].classification).toBe('patch_equivalent');
     expect(result[0].reasonCode).toBe('no_unique_patches');
     expect(result[0].recoveryGuidance).toContain('squash-merged');
+  });
+
+  it('does not treat empty cherry-pick output as equivalent when the aggregate tree differs', async () => {
+    mockGitArgs([
+      { match: (a) => a.includes('worktree') && a.includes('list'), stdout: SINGLE_WT },
+      { match: (a) => a.includes('rev-parse') && a[a.length - 1] === 'main', stdout: 'abc123' },
+      { match: (a) => a.includes('status') && a.includes('--porcelain'), stdout: '' },
+      { match: (a) => a.includes('merge-base') && a.includes('--is-ancestor'), stdout: null, exitCode: 1 },
+      { match: (a) => a.includes('--cherry-pick') && a.includes('--right-only'), stdout: '' },
+      { match: (a) => a.includes('merge-base') && !a.includes('--is-ancestor'), stdout: 'common-sha' },
+      { match: (a) => a.includes('read-tree'), stdout: '' },
+      { match: (a) => a.includes('write-tree'), stdout: 'different-tree' },
+      { match: (a) => a.includes('rev-parse') && a.some((arg) => arg.endsWith('^{tree}')), stdout: 'baseline-tree' },
+    ]);
+
+    const result = await inspectCleanupCandidates('/repo', 'github.com/org/repo', {
+      policyResolver, leaseService,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].classification).toBe('unique_commits');
+    expect(result[0].reasonCode).toBe('has_unique_commits');
+    expect(result[0].capabilities.canSafeRemove).toBe(false);
   });
 
   // --- Classification: unique_commits ---
