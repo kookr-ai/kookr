@@ -18,6 +18,17 @@ const CWD_LAUNCH_RECOVERY_DETAILS = [
   '- If you typed the prompt in the Launch dialog, it is preserved as a draft and restored when the dialog reopens.',
 ].join('\n');
 
+const GROK_AUTH_LAUNCH_RECOVERY_DETAILS = [
+  'Grok authentication preflight failed before a terminal session was created.',
+  '- Run `grok login --device-code` (or `grok login --oauth`) and retry.',
+  '- Credential values are intentionally omitted from this diagnostic.',
+].join('\n');
+
+function isGrokAuthPreflightError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && 'code' in err &&
+    (err as { code?: unknown }).code === 'grok_auth_preflight';
+}
+
 /**
  * Emit result-aware feedback after a launch/relaunch/launchPlaybook attempt.
  *
@@ -43,6 +54,8 @@ export function handleLaunchResult(
     console.error(`[launch] failed prompt="${promptExcerpt}" err=${message}`);
     const details = isCwdValidationError(err)
       ? CWD_LAUNCH_RECOVERY_DETAILS
+      : isGrokAuthPreflightError(err)
+      ? GROK_AUTH_LAUNCH_RECOVERY_DETAILS
       : err instanceof LaunchPreflightError
       ? err.findings.map((finding) =>
           [

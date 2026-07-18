@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
+import { GrokAuthPreflightError } from '../../adapters/grok-build-adapter.js';
 import { CwdValidationError } from '../launch-service.js';
 import { handleLaunchResult } from './launch-result.js';
 
@@ -37,5 +38,21 @@ describe('handleLaunchResult', () => {
     const alert = sent[0] as Extract<ServerMessage, { type: 'alert' }>;
     expect(alert.summary).toBe('Error starting "fix the bug": tmux exploded');
     expect(alert.details).toMatch(/^Launch recovery:/);
+  });
+
+  it('gives Grok auth preflight failures login-specific recovery details', () => {
+    const { send, sent } = collect();
+
+    handleLaunchResult(
+      send,
+      'run the Grok task',
+      undefined,
+      new GrokAuthPreflightError('Grok authentication expired; run `grok login --device-code`'),
+    );
+
+    const alert = sent[0] as Extract<ServerMessage, { type: 'alert' }>;
+    expect(alert.details).toContain('before a terminal session was created');
+    expect(alert.details).toContain('grok login --device-code');
+    expect(alert.summary).toContain('Grok authentication expired');
   });
 });
