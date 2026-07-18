@@ -619,7 +619,51 @@ describe('cleanupTaskWorktrees', () => {
     });
   });
 
-  test('branch occupied by an external Git worktree → fallback deletion is refused', async () => {
+  test('branch occupied at the first fallback probe → deletion is refused', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Fix bug', '/project');
+    taskStore.addSession(task.id, {
+      tmuxSession: 's1',
+      agentType: 'claude-code',
+      cwd: '/wt/feature',
+      createdAt: new Date(),
+      gitIsWorktree: true,
+      gitBranch: 'feature',
+    });
+    taskStore.completeTask(task.id);
+
+    const { log, events } = makeFakeLog();
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({
+      'status --porcelain': '',
+      'symbolic-ref': 'refs/remotes/origin/main\n',
+      'merge-base --is-ancestor': 'not-ancestor',
+      'log': '',
+      'merge-base origin/main feature': 'common-sha',
+      'read-tree': '',
+      'write-tree': 'baseline-tree',
+      'rev-parse origin/main^{tree}': 'baseline-tree',
+      'branch -d': 'error',
+      'worktree list': 'worktree /external\nHEAD abc123\nbranch refs/heads/feature\n',
+      'update-ref -d': 'Deleted.\n',
+    });
+
+    await cleanupTaskWorktrees(taskStore, task.id, log);
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'worktree_cleanup_failed',
+      branch: 'feature',
+      error: 'branch deletion failed after worktree removal',
+    }));
+    expect(mockExecFile).not.toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['update-ref', '-d']),
+      expect.any(Object),
+      expect.any(Function),
+    );
+  });
+
+  test('branch occupied at the final fallback probe → deletion is refused', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask('Fix bug', '/project');
     taskStore.addSession(task.id, {
