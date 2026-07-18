@@ -37,6 +37,8 @@ const OPTIONAL_STRING_FIELDS = [
  */
 export const GROK_DEFAULT_AUTH_SCOPE =
   'https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828';
+/** Scope used by the fork's `grok login --api-key` storage path. */
+export const GROK_API_KEY_AUTH_SCOPE = 'xai::api_key';
 const GROK_LEGACY_AUTH_SCOPE = 'https://accounts.x.ai/sign-in';
 
 export type GrokUsableAuthMode = 'oidc' | 'external' | 'api_key';
@@ -104,13 +106,13 @@ export async function inspectGrokAuthFile(
     validated.set(scope, credential.value);
   }
 
-  // Grok looks up the configured scope, then falls back only to its legacy
-  // scope. Seeing a valid token under an unrelated scope would otherwise make
-  // this preflight pass while AuthManager still reports NotLoggedIn.
-  const selectedScope = Object.prototype.hasOwnProperty.call(parsed, GROK_DEFAULT_AUTH_SCOPE)
-    ? GROK_DEFAULT_AUTH_SCOPE
-    : GROK_LEGACY_AUTH_SCOPE;
-  const selected = validated.get(selectedScope);
+  // Grok looks up the configured scope, supports the separate API-key scope,
+  // then falls back only to its legacy scope. Seeing a valid token under an
+  // unrelated scope would otherwise make this preflight pass while AuthManager
+  // still reports NotLoggedIn.
+  const selected = [GROK_DEFAULT_AUTH_SCOPE, GROK_API_KEY_AUTH_SCOPE, GROK_LEGACY_AUTH_SCOPE]
+    .map((scope) => validated.get(scope))
+    .find((credential): credential is ValidatedCredential => credential !== undefined);
   const credentials = selected ? [selected] : [];
   if (credentials.length === 0) return { kind: 'missing', reason: 'no_usable_credential' };
 
@@ -173,7 +175,7 @@ function validateCredential(
     typeof key !== 'string' || key.length === 0 ||
     typeof authMode !== 'string' ||
     typeof createTime !== 'string' || !isDateString(createTime) ||
-    typeof userId !== 'string' || userId.length === 0
+    typeof userId !== 'string'
   ) {
     return { kind: 'invalid', reason: 'invalid_record' };
   }
@@ -185,9 +187,9 @@ function validateCredential(
       return { kind: 'invalid', reason: 'invalid_record' };
     }
     expiresAt = raw.expires_at;
-    expiresAtMs = Date.parse(expiresAt);
+    expiresAtMs = parseDateString(expiresAt)!;
   } else {
-    expiresAtMs = Date.parse(createTime) + TOKEN_TTL_MS;
+    expiresAtMs = parseDateString(createTime)! + TOKEN_TTL_MS;
     expiresAt = new Date(expiresAtMs).toISOString();
   }
 
@@ -222,12 +224,13 @@ function validateCredential(
 }
 
 function isDateString(value: string): boolean {
-  // The fork deserializes these fields as chrono::DateTime<Utc>, whose serde
-  // implementation requires an RFC 3339 timestamp. Date.parse alone accepts
-  // date-only values, whitespace separators, and normalizes invalid calendar
-  // dates, which would let a cache pass here and fail only after launch.
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/.exec(value);
-  if (!match) return false;
+  return parseDateString(value) !== undefined;
+}
+
+/** Parse the relaxed RFC 3339 form accepted by chrono's serde impl. */
+function parseDateString(value: string): number | undefined {
+  const match = /^(\d{4})\s*-\s*(\d{2})\s*-\s*(\d{2})\s*[Tt ]\s*(\d{2})\s*:\s*(\d{2})\s*:\s*(\d{2})(?:\.(\d+))?\s*(Z|UTC|[+-]\s*\d{2}\s*:?\s*\d{2})$/i.exec(value.trimEnd());
+  if (!match) return undefined;
 
   const year = Number(match[1]);
   const month = Number(match[2]);
@@ -235,19 +238,32 @@ function isDateString(value: string): boolean {
   const hour = Number(match[4]);
   const minute = Number(match[5]);
   const second = Number(match[6]);
-  const offset = match[8];
-  const offsetHour = offset === 'Z' ? 0 : Number(offset.slice(1, 3));
-  const offsetMinute = offset === 'Z' ? 0 : Number(offset.slice(4, 6));
-  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const fraction = match[7] ?? '';
+  const offset = match[8]!.replace(/\s/g, '').toUpperCase();
+  const offsetHour = offset === 'Z' || offset === 'UTC' ? 0 : Number(offset.slice(1, 3));
+  const offsetMinute = offset === 'Z' || offset === 'UTC' ? 0 : Number(offset.slice(-2));
+  const offsetSign = offset.startsWith('-') ? -1 : 1;
+  const daysInMonth = month === 2
+    ? 28 + (year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 1 : 0)
+    : [4, 6, 9, 11].includes(month) ? 30 : 31;
 
   if (
     month < 1 || month > 12 || day < 1 || day > daysInMonth ||
-    hour > 23 || minute > 59 || second > 59 || offsetHour > 23 || offsetMinute > 59
+    hour > 23 || minute > 59 || second > 60 || offsetHour > 23 || offsetMinute > 59
   ) {
-    return false;
+    return undefined;
   }
 
-  return Number.isFinite(Date.parse(value));
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(hour, minute, second === 60 ? 59 : second, Number(fraction.slice(0, 3).padEnd(3, '0')));
+  const timestamp = date.getTime();
+  if (!Number.isFinite(timestamp)) return undefined;
+
+  const offsetMinutes = offset === 'Z' || offset === 'UTC'
+    ? 0
+    : offsetSign * (offsetHour * 60 + offsetMinute);
+  return timestamp - offsetMinutes * 60_000 + (second === 60 ? 1000 : 0);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

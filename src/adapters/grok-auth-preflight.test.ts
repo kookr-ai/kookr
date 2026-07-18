@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   formatGrokAuthPreflightFailure,
+  GROK_API_KEY_AUTH_SCOPE,
   GROK_DEFAULT_AUTH_SCOPE,
   inspectGrokAuthFile,
   type GrokAuthPreflightFs,
@@ -36,6 +37,17 @@ describe('inspectGrokAuthFile', () => {
     expect(result).toMatchObject({ kind: 'ok', authMode: 'oidc', credentialCount: 1 });
     expect(JSON.stringify(result)).not.toContain('access-token-that-must-not-be-reported');
     expect(JSON.stringify(result)).not.toContain('refresh-token-that-must-not-be-reported');
+  });
+
+  test('accepts the fork API-key scope even when its default user id is empty', async () => {
+    const result = await inspectGrokAuthFile('/tmp/grok/auth.json', {
+      fs: fsReturning(JSON.stringify({
+        [GROK_API_KEY_AUTH_SCOPE]: authRecord({ auth_mode: 'api_key', user_id: '' }),
+      })),
+      now: FIXED_NOW,
+    });
+
+    expect(result).toMatchObject({ kind: 'ok', authMode: 'api_key', credentialCount: 1 });
   });
 
   test('reports a missing file with a supported re-authentication action', async () => {
@@ -140,12 +152,24 @@ describe('inspectGrokAuthFile', () => {
     expect(result).toEqual({ kind: 'invalid', reason: 'invalid_record' });
   });
 
-  test('requires Grok-compatible RFC 3339 timestamps instead of Date.parse guesses', async () => {
+  test('mirrors the fork timestamp parser instead of Date.parse guesses', async () => {
+    for (const expiresAt of [
+      '2026-07-18 00:00:00Z',
+      '2026-07-18T00:00:00.1234567890Z',
+      '2026-07-18T00:00:60Z',
+    ]) {
+      const result = await inspectGrokAuthFile('/tmp/grok/auth.json', {
+        fs: fsReturning(JSON.stringify({ [AUTH_SCOPE]: authRecord({ expires_at: expiresAt }) })),
+        now: FIXED_NOW,
+      });
+
+      expect(result, expiresAt).toMatchObject({ kind: 'ok', authMode: 'oidc' });
+    }
+
     for (const expiresAt of [
       '2026-07-18',
-      '2026-07-18 00:00:00Z',
       '2026-02-30T00:00:00Z',
-      '2026-07-18T00:00:00.1234567890Z',
+      '2026-07-18T24:00:00Z',
     ]) {
       const result = await inspectGrokAuthFile('/tmp/grok/auth.json', {
         fs: fsReturning(JSON.stringify({ [AUTH_SCOPE]: authRecord({ expires_at: expiresAt }) })),
