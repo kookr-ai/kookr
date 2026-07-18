@@ -876,7 +876,7 @@ describe('cleanupTaskWorktrees', () => {
       'rev-parse --verify refs/heads/feature': 'branch-sha',
       'update-ref -d': 'Deleted.\n',
     }, (args) => {
-      if (args.includes('write-tree') && writeTreeCalls++ === 1) {
+      if (args.includes('write-tree') && writeTreeCalls++ === 2) {
         taskStore.reopenTask(task.id);
       }
     });
