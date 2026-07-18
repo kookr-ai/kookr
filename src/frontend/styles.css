@@ -1261,6 +1261,11 @@ kbd {
   background: rgba(116,217,187,0.08);
   border-color: rgba(116,217,187,0.24);
 }
+.agent-provider-mark--grok-build {
+  color: #e8eaed;
+  background: rgba(232,234,237,0.08);
+  border-color: rgba(232,234,237,0.24);
+}
 .agent-provider-mark--running::after {
   content: '';
   position: absolute;

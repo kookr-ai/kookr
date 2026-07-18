@@ -112,4 +112,17 @@ describe('FindingsPanel agent provider marks', () => {
     expect(mark?.classList.contains('agent-provider-mark--claude-code')).toBe(true);
     expect(mark?.getAttribute('title')).toBe('Claude Code by Anthropic');
   });
+
+  test('healthy Grok Build cards use the grok-build provider mark class', () => {
+    root = renderPanel(container, {
+      healthy: [makeAgent({ agentId: 'h-grok', agentType: 'grok-build' })],
+    });
+
+    const mark = container.querySelector('.healthy-row .agent-provider-mark');
+    expect(mark?.classList.contains('agent-provider-mark--grok-build')).toBe(true);
+    expect(mark?.getAttribute('title')).toBe('Grok Build by xAI');
+    expect(mark?.getAttribute('aria-label')).toBe('Grok Build by xAI');
+    const path = mark?.querySelector('path');
+    expect(path?.getAttribute('d') ?? '').toMatch(/^M9\.27 /);
+  });
 });
