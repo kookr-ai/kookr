@@ -134,6 +134,16 @@ NVIDIA Docker runtime, Kookr applies the GPU compose override so Pocket TTS
 can use CUDA; otherwise it stays on CPU. Set `KOOKR_TTS_DEVICE=cpu` or
 `KOOKR_TTS_DEVICE=gpu` to force either mode.
 
+Advanced Pocket TTS voice-quality knobs (read by the Python sidecar at model
+load; defaults `0.7` / `1` / `-4.0` / unset):
+
+```bash
+TTS_MODEL_TEMPERATURE=0.7
+TTS_MODEL_LSD_STEPS=1
+TTS_MODEL_EOS_THRESHOLD=-4.0
+# TTS_MODEL_NOISE_CLAMP=   # optional; empty/unset uses model default
+```
+
 External services:
 
 ```bash
