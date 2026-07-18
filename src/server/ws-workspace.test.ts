@@ -44,7 +44,9 @@ import { createCleanupFingerprint } from './use-cases/workspace-cleanup-detail-q
  * Make mockExecFile respond based on git subcommand.
  * handlers maps a substring of args to { stdout } or 'error'.
  */
-function mockGitResponses(handlers: Record<string, string | 'error'>) {
+type MockGitResponse = string | 'error' | (() => string | 'error');
+
+function mockGitResponses(handlers: Record<string, MockGitResponse>) {
   mockExecFile.mockImplementation((_cmd: string, args: string[], maybeOpts: unknown, maybeCb?: Function) => {
     const cb = typeof maybeCb === 'function'
       ? maybeCb
@@ -52,10 +54,11 @@ function mockGitResponses(handlers: Record<string, string | 'error'>) {
     const argsStr = args.join(' ');
     for (const [pattern, response] of Object.entries(handlers)) {
       if (argsStr.includes(pattern)) {
-        if (response === 'error') {
-          cb(new Error('git error'), { stdout: '', stderr: 'git error' });
+        const resolvedResponse = typeof response === 'function' ? response() : response;
+        if (resolvedResponse === 'error') {
+          cb(Object.assign(new Error('git error'), { code: 1 }), { stdout: '', stderr: 'git error' });
         } else {
-          cb(null, { stdout: response, stderr: '' });
+          cb(null, { stdout: resolvedResponse, stderr: '' });
         }
         return;
       }
@@ -336,32 +339,43 @@ describe('WebSocket workspace message routing', () => {
   });
 
   test('workspace:bulkSafeCleanup runs only the current safe set and returns bulk results', async () => {
+    const worktreeList = [
+      'worktree /test/repo',
+      'HEAD abc123',
+      'branch refs/heads/main',
+      '',
+      'worktree /test/repo-safe-a',
+      'HEAD def456',
+      'branch refs/heads/feature/safe-a',
+      '',
+      'worktree /test/repo-safe-b',
+      'HEAD fedcba',
+      'branch refs/heads/feature/safe-b',
+      '',
+      'worktree /test/repo-unique',
+      'HEAD 999999',
+      'branch refs/heads/feature/unique',
+      '',
+    ].join('\n');
+    let worktreeListCalls = 0;
     mockGitResponses({
       '--git-common-dir': '/test/repo/.git',
-      'worktree list': [
-        'worktree /test/repo',
-        'HEAD abc123',
-        'branch refs/heads/main',
-        '',
-        'worktree /test/repo-safe-a',
-        'HEAD def456',
-        'branch refs/heads/feature/safe-a',
-        '',
-        'worktree /test/repo-safe-b',
-        'HEAD fedcba',
-        'branch refs/heads/feature/safe-b',
-        '',
-        'worktree /test/repo-unique',
-        'HEAD 999999',
-        'branch refs/heads/feature/unique',
-        '',
-      ].join('\n'),
+      'worktree list': () => {
+        const call = worktreeListCalls++;
+        return call < 3
+          ? worktreeList
+          : 'worktree /test/repo\nHEAD abc123\nbranch refs/heads/main\n';
+      },
       'status --porcelain': '',
       'merge-base --is-ancestor feature/safe-a main': '',
       'merge-base --is-ancestor feature/safe-b main': 'error',
       'merge-base --is-ancestor feature/unique main': 'error',
       '--cherry-pick --right-only main...feature/safe-b': '',
       '--cherry-pick --right-only main...feature/unique': 'abc123 unique commit',
+      'merge-base main feature/safe-b': 'common-sha',
+      'read-tree': '',
+      'write-tree': 'baseline-tree',
+      'rev-parse main^{tree}': 'baseline-tree',
       'rev-parse HEAD': 'def456',
       'rev-parse --verify refs/heads/feature/safe-a': 'def456',
       'rev-parse --verify refs/heads/feature/safe-b': 'fedcba',

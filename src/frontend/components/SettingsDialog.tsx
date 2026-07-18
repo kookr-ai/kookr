@@ -1184,7 +1184,7 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                         <span className="settings-label">Clean worktrees on completion</span>
                         <span className="settings-desc">
                           Pre-check the completion dialog&apos;s cleanup option. Kookr removes eligible task worktrees,
-                          prunes Git, and deletes merged local branches; dirty or unmerged worktrees are kept.
+                          prunes Git, and deletes merged or patch-equivalent local branches; dirty or unique-commit worktrees are kept.
                         </span>
                       </div>
                       <button

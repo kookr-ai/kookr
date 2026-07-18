@@ -83,7 +83,7 @@ export function WorktreeCleanupVerdictRow({ verdict, tone }: Props): JSX.Element
           {hasAhead && (
             <div>
               <span className="k">ahead</span> {verdict.evidence.aheadCount}
-              {verdict.evidence.aheadCount === 1 ? ' commit' : ' commits'} not on the default branch
+              {verdict.evidence.aheadCount === 1 ? ' commit' : ' commits'} ahead of the cleanup baseline
             </div>
           )}
         </div>

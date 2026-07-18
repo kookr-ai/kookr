@@ -110,9 +110,12 @@ worktree removal guards (#1406)`) and from the live worktree registry:
 ### Compatibility requirements
 
 10. Automatic task cleanup SHALL keep its current policy decisions: shared,
-   dirty, detached, unmerged, protected-marker, and reopened-task checks still
-   skip removal. The change is the final removal mechanism and identity source,
-   not a policy relaxation.
+   dirty, detached, unique-commit/non-patch-equivalent, protected-marker, and
+   reopened-task checks still
+   skip removal. Patch-equivalent branches may pass only the shared
+   squash-aware merge-status check and its identity guards; this is not a
+   broad policy relaxation. The change is the final removal mechanism and
+   identity source.
 11. Workspace cleanup SHALL retain its existing review, dirty-state, recovery,
     branch-ref compare-and-delete, and attempt-ledger behavior.
 12. Reflection startup cleanup SHALL continue to recognize existing valid
@@ -255,8 +258,9 @@ Update `cleanupTaskWorktrees` to:
 - call `removeRegisteredWorktree` instead of `rm`, passing the inspected HEAD,
   branch, and detached state as expected identity;
 - mark session worktree health as `cleaned_up` only after Git reports success;
-- prune and delete the branch only after removal, preserving the current
-  conservative `branch -d` behavior;
+- prune and delete the branch only after removal, preserving `branch -d` when
+  it succeeds and using the validated squash-aware classification plus an
+  OID-checked compare-and-delete fallback when raw ancestry rejects it;
 - treat any removal failure as `worktree_cleanup_failed` and leave the path
   intact.
 

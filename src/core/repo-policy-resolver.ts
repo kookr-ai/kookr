@@ -104,12 +104,12 @@ export class RepoPolicyResolver {
   }
 }
 
-interface ResolveDefaultBranchOptions {
+export interface ResolveDefaultBranchOptions {
   allowLocalFallback: boolean;
 }
 
 /** Resolve the default branch from origin/HEAD, remote common names, or optionally local common names. */
-async function resolveDefaultBranch(
+export async function resolveDefaultBranch(
   repoPath: string,
   opts: ResolveDefaultBranchOptions,
 ): Promise<string | null> {
@@ -118,9 +118,11 @@ async function resolveDefaultBranch(
   // main/master branch has not been advanced.
   const ref = await gitIn(repoPath, 'symbolic-ref', 'refs/remotes/origin/HEAD');
   if (ref) {
-    const parts = ref.split('/');
-    const branchName = parts[parts.length - 1];
-    if (branchName) return `origin/${branchName}`;
+    const remotePrefix = 'refs/remotes/';
+    if (ref.startsWith(remotePrefix)) {
+      const remoteBranch = ref.slice(remotePrefix.length);
+      if (remoteBranch) return remoteBranch;
+    }
   }
 
   // Prefer remote-tracking defaults when origin/HEAD is missing. For known

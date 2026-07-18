@@ -10,7 +10,6 @@
 import type {
   BaselineResolution,
   CleanupCandidateAssessment,
-  CleanupClassification,
   CleanupCommitSummary,
   CleanupDirtySummary,
 } from '../../core/workspace-types.js';
@@ -22,6 +21,7 @@ import { getProjectId } from '../../core/project-identity.js';
 import { isProtectedWorktreePath } from '../../adapters/worktree-marker.js';
 import { isProtectedBranch, samePath } from '../../adapters/worktree-safety.js';
 import { deriveCleanupCapabilities } from '../../core/workspace-cleanup-policy.js';
+import { resolveWorktreeMergeStatus } from '../../core/worktree-merge-status.js';
 import { parsePorcelainStatus, runCommitEnrichment } from './cleanup-enrichment.js';
 
 interface GitWorktreeInfo {
@@ -354,8 +354,25 @@ async function classifyCandidate(
     };
   }
 
-  // Check merge status against baseline
-  const mergeResult = await checkMergeStatus(repoPath, wt.branch, baseline.baselineRef);
+  // Check merge status against the same shared logic used by the completion
+  // dialog. The resolver already supplied the configured baseline when one is
+  // present, so this call does not replace explicit repo policy.
+  const mergeResult = await resolveWorktreeMergeStatus(repoPath, wt.branch, {
+    baselineRef: baseline.baselineRef,
+  });
+  // The explicit baseline makes this branch unreachable in the current
+  // resolver, but keep the guard as a fail-closed boundary if that contract
+  // changes or a future implementation cannot resolve the ref.
+  if (!mergeResult) {
+    return {
+      ...base,
+      classification: 'unknown',
+      reasonCode: 'no_baseline',
+      recoveryGuidance: 'Repository baseline is unknown. Configure a repo profile to enable classification.',
+      capabilities: deriveCleanupCapabilities({ classification: 'unknown', reasonCode: 'no_baseline' }),
+      dirtySummary: dirty.summary,
+    };
+  }
   const commitSummary = await maybeEnrichCommits(repoPath, wt.worktree, wt.branch, baseline.baselineRef);
   return {
     ...base,
@@ -421,44 +438,4 @@ function isGeneratedArtifactStatus(rawStatus: string): boolean {
     const path = line.slice(3).trim();
     return status === '??' && (path === 'graphify-out/' || path === 'graphify-out' || path.startsWith('graphify-out/'));
   });
-}
-
-/** Check merge/patch-equivalence status of a branch against the baseline. */
-async function checkMergeStatus(
-  repoPath: string,
-  branch: string,
-  baselineRef: string,
-): Promise<{ classification: CleanupClassification; reasonCode: string; recoveryGuidance: string }> {
-  // Check if branch tip is ancestor of baseline (fully merged)
-  const mergeBase = await gitIn(repoPath, 'merge-base', '--is-ancestor', branch, baselineRef);
-  // merge-base --is-ancestor exits 0 if true, 1 if false
-  // Our gitIn returns null on non-zero exit, non-null on zero exit
-  if (mergeBase !== null) {
-    return {
-      classification: 'merged',
-      reasonCode: 'ancestor_of_baseline',
-      recoveryGuidance: 'Branch is fully merged. Safe to remove.',
-    };
-  }
-
-  // Check for patch equivalence (squash-merge detection)
-  // Compare the diff of branch..baseline vs baseline..branch
-  const uniquePatches = await gitIn(
-    repoPath, 'log', '--oneline', '--cherry-pick', '--right-only',
-    `${baselineRef}...${branch}`,
-  );
-
-  if (uniquePatches !== null && uniquePatches.length === 0) {
-    return {
-      classification: 'patch_equivalent',
-      reasonCode: 'no_unique_patches',
-      recoveryGuidance: 'Branch adds no unique patches vs baseline (likely squash-merged). Safe to remove.',
-    };
-  }
-
-  return {
-    classification: 'unique_commits',
-    reasonCode: 'has_unique_commits',
-    recoveryGuidance: 'Branch has commits not in the baseline. Review before removing.',
-  };
 }

@@ -6,6 +6,7 @@ import type { TaskStore, Task } from '../core/tasks.js';
 import type { DeferredInteractionLogWriter, InteractionEvent } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
 import { classifyGitError, DEFAULT_GIT_MAX_BUFFER, DEFAULT_GIT_TIMEOUT_MS, gitExecEnv } from '../core/git-helpers.js';
+import { resolveWorktreeMergeStatus, type WorktreeMergeStatus } from '../core/worktree-merge-status.js';
 import type {
   WorktreeCleanupBlocker,
   WorktreeCleanupEvidence,
@@ -38,17 +39,6 @@ async function git(...args: string[]): Promise<string | null> {
     }
     return null;
   }
-}
-
-/** Resolve the default branch name (e.g. main, master) from origin/HEAD. */
-async function getDefaultBranch(worktreePath: string): Promise<string> {
-  const ref = await git('-C', worktreePath, 'symbolic-ref', 'refs/remotes/origin/HEAD');
-  if (ref) {
-    // "refs/remotes/origin/main" → "main"
-    const parts = ref.split('/');
-    return parts[parts.length - 1];
-  }
-  return 'main';
 }
 
 /**
@@ -93,15 +83,21 @@ export function parsePorcelainStatus(output: string): WorktreeDirtySummary {
  * thing that tripped. Blocker precedence is unchanged from the original
  * early-return order, so the verdict itself is identical.
  *
- * Note `aheadCount` is measured against the *default branch*, not a remote —
- * an empty range proves every commit is reachable from the default branch, so
- * whether the branch was ever pushed has no bearing on removal safety.
+ * Note `aheadCount` is display-only evidence measured against the remote-
+ * tracking default branch when available. Removal safety comes from the
+ * shared ancestor/patch-equivalence classification, so squash merges can be
+ * removable even when their original commit SHAs remain ahead.
  */
 async function inspectCleanliness(
   worktreePath: string,
   branch: string | undefined,
   isDetached: boolean | undefined,
-): Promise<{ blocker?: WorktreeCleanupBlocker; evidence: WorktreeCleanupEvidence }> {
+  allowLocalFallback: boolean,
+): Promise<{
+  blocker?: WorktreeCleanupBlocker;
+  evidence: WorktreeCleanupEvidence;
+  mergeStatus?: WorktreeMergeStatus;
+}> {
   const evidence: WorktreeCleanupEvidence = {};
 
   // Detached HEAD — can't verify merge status
@@ -114,19 +110,22 @@ async function inspectCleanliness(
     evidence.dirty = parsePorcelainStatus(status);
   }
 
-  const defaultBranch = await getDefaultBranch(worktreePath);
-  const unmerged = await git('-C', worktreePath, 'log', `${defaultBranch}..${branch}`, '--oneline');
-  if (unmerged !== null) {
-    evidence.aheadCount = unmerged.length === 0 ? 0 : unmerged.split('\n').length;
-  }
+  const mergeStatus = await resolveWorktreeMergeStatus(worktreePath, branch, {
+    allowLocalFallback,
+    includeAheadCount: true,
+  });
+  if (mergeStatus?.aheadCount !== undefined) evidence.aheadCount = mergeStatus.aheadCount;
 
   if (status === null) return { blocker: 'git-status-failed', evidence };
   if (status.length > 0) return { blocker: 'uncommitted-changes', evidence };
-  // git log failed — branch might not exist locally, treat as dirty
-  if (unmerged === null) return { blocker: 'unmerged-check-failed', evidence };
-  if (unmerged.length > 0) return { blocker: 'unmerged-commits', evidence };
+  // A missing baseline, failed merge probe, or failed ahead-count probe means
+  // the dialog cannot prove removability. Keep the old fail-closed behavior.
+  if (!mergeStatus || mergeStatus.mergeCheckFailed || mergeStatus.aheadCountCheckFailed) {
+    return { blocker: 'unmerged-check-failed', evidence };
+  }
+  if (mergeStatus.classification === 'unique_commits') return { blocker: 'unmerged-commits', evidence };
 
-  return { evidence };
+  return { evidence, mergeStatus };
 }
 
 /**
@@ -171,12 +170,18 @@ export async function inspectWorktreeCleanup(
   if (isProtectedWorktreePath(worktreePath)) return blocked('protected-marker');
   if (isSharedWorktree(taskStore, taskId, worktreePath)) return blocked('shared-with-active-task');
 
-  const { blocker, evidence } = await inspectCleanliness(worktreePath, branch, session?.gitIsDetached);
+  const { blocker, evidence, mergeStatus } = await inspectCleanliness(
+    worktreePath,
+    branch,
+    session?.gitIsDetached,
+    task?.projectId?.startsWith('local/') === true,
+  );
   return {
     ...base,
     removable: blocker === undefined,
     ...(blocker !== undefined ? { blocker } : {}),
     evidence,
+    ...(mergeStatus ? { baselineRef: mergeStatus.baselineRef } : {}),
   };
 }
 
@@ -270,10 +275,111 @@ async function pruneStaleEntries(repoPath: string): Promise<void> {
   await git('-C', repoPath, 'worktree', 'prune');
 }
 
-/** Delete a fully-merged local branch. Uses -d (safe delete — fails if not merged). */
-async function deleteBranch(repoPath: string, branch: string): Promise<boolean> {
+type CleanupAbortCheck = () => boolean;
+
+interface DeleteBranchOptions {
+  baselineRef: string;
+  shouldAbort?: CleanupAbortCheck;
+}
+
+const ZERO_OID = '0000000000000000000000000000000000000000';
+
+function hasCheckedOutBranch(worktrees: string, branch: string): boolean {
+  return worktrees.split(/\r?\n/).some((line) => line === `branch refs/heads/${branch}`);
+}
+
+async function restoreBranchIfAbsent(repoPath: string, branch: string, oid: string): Promise<void> {
+  const currentRef = await git('-C', repoPath, 'rev-parse', '--verify', `refs/heads/${branch}`);
+  if (currentRef === null) {
+    await git('-C', repoPath, 'update-ref', `refs/heads/${branch}`, oid, ZERO_OID);
+  }
+}
+
+/** Delete a safely classified local branch, preserving -d's guard when possible. */
+async function deleteBranch(
+  repoPath: string,
+  branch: string,
+  options: DeleteBranchOptions,
+): Promise<boolean> {
+  const { baselineRef, shouldAbort } = options;
+  if (!baselineRef || shouldAbort?.()) return false;
+
+  // Capture the exact ref before using branch -d. Git's own -d decision may
+  // use an upstream that differs from Kookr's cleanup baseline, so it is only
+  // accepted after the shared squash-aware classification succeeds.
+  const expectedOid = await git('-C', repoPath, 'rev-parse', '--verify', `refs/heads/${branch}`);
+  if (!expectedOid) return false;
+  const mergeStatus = await resolveWorktreeMergeStatus(repoPath, branch, { baselineRef });
+  if (
+    !mergeStatus
+    || mergeStatus.mergeCheckFailed
+    || (mergeStatus.classification !== 'merged' && mergeStatus.classification !== 'patch_equivalent')
+  ) {
+    return false;
+  }
+
+  if (shouldAbort?.()) return false;
+
   const result = await git('-C', repoPath, 'branch', '-d', branch);
-  return result !== null;
+  if (result !== null) {
+    const worktreesAfterBranchDelete = await git('-C', repoPath, 'worktree', 'list', '--porcelain');
+    if (worktreesAfterBranchDelete !== null && !hasCheckedOutBranch(worktreesAfterBranchDelete, branch) && !shouldAbort?.()) {
+      return true;
+    }
+    await restoreBranchIfAbsent(repoPath, branch, expectedOid);
+    return false;
+  }
+
+  if (shouldAbort?.()) return false;
+
+  // A branch can be checked out by a worktree owned outside Kookr's task
+  // registry. Never fall back to update-ref while Git still reports it as
+  // occupied, and fail closed if the occupancy probe itself is unavailable.
+  const currentOid = await git('-C', repoPath, 'rev-parse', '--verify', `refs/heads/${branch}`);
+  if (currentOid !== expectedOid) return false;
+
+  const worktrees = await git('-C', repoPath, 'worktree', 'list', '--porcelain');
+  if (worktrees === null) return false;
+  if (hasCheckedOutBranch(worktrees, branch)) return false;
+
+  // `branch -d` only understands raw ancestry. Revalidate against the same
+  // squash-aware classifier, then compare-and-delete the exact ref that was
+  // classified. A concurrent ref replacement must make deletion fail rather
+  // than turn the safe fallback into an unconditional force-delete.
+  const revalidatedMergeStatus = await resolveWorktreeMergeStatus(repoPath, branch, { baselineRef });
+  if (
+    !revalidatedMergeStatus
+    || revalidatedMergeStatus.mergeCheckFailed
+    || (revalidatedMergeStatus.classification !== 'merged'
+      && revalidatedMergeStatus.classification !== 'patch_equivalent')
+  ) {
+    return false;
+  }
+
+  if (shouldAbort?.()) return false;
+
+  // Recheck both lifecycle state and Git worktree occupancy immediately
+  // before the compare-and-delete mutation.
+  const worktreesBeforeDelete = await git('-C', repoPath, 'worktree', 'list', '--porcelain');
+  if (worktreesBeforeDelete === null || hasCheckedOutBranch(worktreesBeforeDelete, branch)) {
+    return false;
+  }
+  if (shouldAbort?.()) return false;
+
+  const deleted = await git('-C', repoPath, 'update-ref', '-d', `refs/heads/${branch}`, expectedOid);
+  if (deleted === null) return false;
+
+  // The ref mutation is conditional on expectedOid. Recheck the two
+  // destructive preconditions after it as well; if a task reopened or a
+  // worktree appeared during the short mutation window, restore only an
+  // absent ref and report failure rather than leaving a dangling checkout.
+  const worktreesAfterDelete = await git('-C', repoPath, 'worktree', 'list', '--porcelain');
+  const reopened = shouldAbort?.() === true;
+  if (worktreesAfterDelete === null || hasCheckedOutBranch(worktreesAfterDelete, branch) || reopened) {
+    await restoreBranchIfAbsent(repoPath, branch, expectedOid);
+    return false;
+  }
+  return true;
 }
 
 /** Collect all unique worktree paths from a task's sessions. */
@@ -462,7 +568,25 @@ async function cleanupSingleWorktree(
 
   // Step 3: Delete merged branch
   if (cleanedBranch) {
-    await deleteBranch(repoPath, cleanedBranch);
+    const branchDeleted = await deleteBranch(
+      repoPath,
+      cleanedBranch,
+      {
+        baselineRef: verdict.baselineRef ?? '',
+        shouldAbort: () => taskStore.getTask(taskId)?.status === 'open',
+      },
+    );
+    if (!branchDeleted) {
+      await interactionLog?.append({
+        type: 'worktree_cleanup_failed',
+        taskId,
+        worktreePath,
+        branch: cleanedBranch,
+        error: 'branch deletion failed after worktree removal',
+        timestamp: nowISO(),
+      });
+      return;
+    }
   }
 
   await interactionLog?.append({
