@@ -1,7 +1,6 @@
 import type { ServerMessage } from '../../shared/contracts/messages.js';
 import { isCwdValidationError, type LaunchResult } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
-import { GrokAuthPreflightError } from '../../adapters/grok-build-adapter.js';
 
 const GENERIC_LAUNCH_RECOVERY_DETAILS = [
   'Launch recovery:',
@@ -24,6 +23,11 @@ const GROK_AUTH_LAUNCH_RECOVERY_DETAILS = [
   '- Run `grok login --device-code` (or `grok login --oauth`) and retry.',
   '- Credential values are intentionally omitted from this diagnostic.',
 ].join('\n');
+
+function isGrokAuthPreflightError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && 'code' in err &&
+    (err as { code?: unknown }).code === 'grok_auth_preflight';
+}
 
 /**
  * Emit result-aware feedback after a launch/relaunch/launchPlaybook attempt.
@@ -50,7 +54,7 @@ export function handleLaunchResult(
     console.error(`[launch] failed prompt="${promptExcerpt}" err=${message}`);
     const details = isCwdValidationError(err)
       ? CWD_LAUNCH_RECOVERY_DETAILS
-      : err instanceof GrokAuthPreflightError
+      : isGrokAuthPreflightError(err)
       ? GROK_AUTH_LAUNCH_RECOVERY_DETAILS
       : err instanceof LaunchPreflightError
       ? err.findings.map((finding) =>
