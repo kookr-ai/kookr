@@ -51,6 +51,7 @@ describe('buildAllowlistedGrokEnv', () => {
     XAI_API_KEY: 'xai-should-not-leak',
     AWS_SECRET_ACCESS_KEY: 'aws-should-not-leak',
     KOOKR_DEPLOY_SECRET: 'deploy-should-not-leak',
+    GROK_CLAUDE_HOOKS_ENABLED: '1',
   } as NodeJS.ProcessEnv;
 
   const env = buildAllowlistedGrokEnv({
@@ -84,6 +85,10 @@ describe('buildAllowlistedGrokEnv', () => {
     expect(env.GROK_AUTO_UPDATE).toBe('0');
     expect(env.GROK_WORKSPACE_DATA_COLLECTION_DISABLED).toBe('1');
     expect(env.GROK_FOLDER_TRUST).toBe('1');
+  });
+
+  it('disables inherited Claude hooks while keeping Kookr native hooks active', () => {
+    expect(env.GROK_CLAUDE_HOOKS_ENABLED).toBe('0');
   });
 
   it('defaults TERM when the server env lacks it', () => {

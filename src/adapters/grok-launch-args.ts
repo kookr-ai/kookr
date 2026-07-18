@@ -123,6 +123,13 @@ export function buildAllowlistedGrokEnv(opts: BuildGrokEnvOptions): Record<strin
   env.GROK_AUTO_UPDATE = '0';
   env.GROK_WORKSPACE_DATA_COLLECTION_DISABLED = '1';
   env.GROK_FOLDER_TRUST = '1';
+  // Kookr's monitoring hook is native Grok instrumentation under the isolated
+  // GROK_HOME. Do not also execute the operator's global Claude hooks merely
+  // because HOME is preserved for the coding task's git/ssh tooling: those
+  // hooks are unrelated to this session and can run serially before Kookr's
+  // UserPromptSubmit acknowledgement, stranding launch confirmation behind
+  // the adapter's timeout.
+  env.GROK_CLAUDE_HOOKS_ENABLED = '0';
   if (!env.TERM) env.TERM = 'xterm-256color';
 
   return env;
