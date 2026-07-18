@@ -277,6 +277,10 @@ Bundled STT and TTS run via Docker Compose. The default STT config targets an NV
 | `KOOKR_TTS_PORT` | `8004` | Integer port | Port for the bundled text-to-speech service. Also injected into the TTS child process. |
 | `KOOKR_TTS_DEVICE` | `auto` | `auto`, `cpu`, `gpu` | Inference device for the bundled TTS stack. `auto` probes `docker info` for an nvidia runtime and applies the GPU compose override when available; set explicitly to force CPU or GPU. |
 | `TTS_VOICE` | `/app/voices/matilda.mp3` | Built-in voice name or path inside the `kookr-tts` container | Default voice used by the bundled TTS service. Built-in voices: `alba`, `marius`, `javert`, `jean`, `fantine`, `cosette`, `eponine`, `azelma`. Bundled/custom voices are copied from `tts/voices/` into the image at build time and can be referenced as `/app/voices/<name>.<ext>`. Bundled startup probes this configured voice before advertising TTS as enabled. |
+| `TTS_MODEL_TEMPERATURE` | `0.7` | Positive float | Pocket TTS sampling temperature at model load (`temp=`). Higher values increase voice variation; lower values sound more deterministic. Read by the Python TTS sidecar (`tts/src/server.py`), not the TypeScript process. |
+| `TTS_MODEL_LSD_STEPS` | `1` | Positive integer | Pocket TTS latent spectral decode steps (`lsd_decode_steps=`). More steps can improve quality at the cost of latency. Read by the Python TTS sidecar at model load. |
+| `TTS_MODEL_EOS_THRESHOLD` | `-4.0` | Float | Pocket TTS end-of-speech threshold (`eos_threshold=`). Controls when the model stops generating audio. Read by the Python TTS sidecar at model load. |
+| `TTS_MODEL_NOISE_CLAMP` | unset | Float, or empty to leave unset | Optional Pocket TTS noise clamp (`noise_clamp=`). When unset or empty, the model uses its built-in default (`None`). Read by the Python TTS sidecar at model load. Note: compose passthrough for this var is a separate plumbing concern — set it on the container env if you need it today. |
 
 ## Diagnostics And Budgeting
 
