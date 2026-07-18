@@ -270,15 +270,19 @@ async function deleteBranch(repoPath: string, branch: string): Promise<boolean> 
   if (result !== null) return true;
 
   // `branch -d` only understands raw ancestry. Revalidate against the same
-  // squash-aware classifier before using `-D`; otherwise a branch that became
-  // unique after the first inspection could be destroyed accidentally.
+  // squash-aware classifier, then compare-and-delete the exact ref that was
+  // classified. A concurrent ref replacement must make deletion fail rather
+  // than turn the safe fallback into an unconditional force-delete.
+  const expectedOid = await git('-C', repoPath, 'rev-parse', '--verify', `refs/heads/${branch}`);
+  if (!expectedOid) return false;
+
   const mergeStatus = await resolveWorktreeMergeStatus(repoPath, branch, {
     allowLocalFallback: true,
   });
   if (!mergeStatus || (mergeStatus.classification !== 'merged' && mergeStatus.classification !== 'patch_equivalent')) {
     return false;
   }
-  return (await git('-C', repoPath, 'branch', '-D', branch)) !== null;
+  return (await git('-C', repoPath, 'update-ref', '-d', `refs/heads/${branch}`, expectedOid)) !== null;
 }
 
 /** Collect all unique worktree paths from a task's sessions. */

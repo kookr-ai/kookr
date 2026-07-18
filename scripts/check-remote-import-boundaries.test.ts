@@ -63,6 +63,43 @@ describe('remote import boundaries', () => {
     }
   });
 
+  it('reports runtime re-exports and dynamic imports while ignoring type-only and non-code text', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kookr-import-boundary-'));
+    try {
+      mkdirSync(join(root, 'src/server'), { recursive: true });
+      mkdirSync(join(root, 'src/remote'), { recursive: true });
+      writeFileSync(
+        join(root, 'src/server/bad.ts'),
+        [
+          'const text = "import { fake } from \'../remote/text\'";',
+          '/* export { fake } from \'../remote/comment\'; */',
+          "export { value } from '../remote/export';",
+          "export type { RemoteValue } from '../remote/type';",
+          "const loaded = import('../remote/dynamic');",
+          "const withOptions = import('../remote/options', {});",
+        ].join('\n'),
+        'utf8',
+      );
+
+      const result = await checkRemoteImportBoundaries(root);
+
+      expect(result.violations).toEqual([
+        {
+          file: join(root, 'src/server/bad.ts'),
+          line: 3,
+          message: 'runtime export from ../remote/export',
+        },
+        {
+          file: join(root, 'src/server/bad.ts'),
+          line: 5,
+          message: 'dynamic import from ../remote/dynamic outside src/server/index.ts',
+        },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('exits non-zero when the CLI entrypoint finds violations', () => {
     const root = mkdtempSync(join(tmpdir(), 'kookr-import-boundary-cli-'));
     try {

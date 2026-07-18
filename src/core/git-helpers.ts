@@ -47,7 +47,7 @@ export interface GitRunOptions {
 
 export type GitRunResult =
   | { kind: 'ok'; stdout: string }
-  | { kind: 'failed' }
+  | { kind: 'failed'; exitCode?: number }
   | { kind: 'timed_out' }
   | { kind: 'max_buffer_exceeded' };
 
@@ -68,6 +68,7 @@ export async function runGitIn(
   const maxBuffer = options.maxBuffer ?? DEFAULT_GIT_MAX_BUFFER;
   const maxAttempts = Math.max(1, options.maxAttempts ?? DEFAULT_GIT_MAX_ATTEMPTS);
   let lastKind: GitFailureKind = 'failed';
+  let lastExitCode: number | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const { stdout } = await execFileAsync('git', args, {
@@ -79,7 +80,9 @@ export async function runGitIn(
       return { kind: 'ok', stdout: stdout.trim() };
     } catch (err) {
       const kind = classifyGitError(err);
+      const exitCode = getGitExitCode(err);
       lastKind = kind;
+      lastExitCode = exitCode;
       if (kind !== 'failed') {
         console.warn('[git-helpers] git subprocess guard tripped', {
           kind,
@@ -92,12 +95,21 @@ export async function runGitIn(
         });
       }
       if (attempt >= maxAttempts || !shouldRetryGitFailure(args, kind, err)) {
-        return { kind };
+        return failureResult(kind, exitCode);
       }
       await delay(retryDelayMs(options, attempt));
     }
   }
-  return { kind: lastKind };
+  return failureResult(lastKind, lastExitCode);
+}
+
+function failureResult(kind: GitFailureKind, exitCode: number | undefined): GitRunResult {
+  return kind === 'failed' && exitCode !== undefined ? { kind, exitCode } : { kind };
+}
+
+function getGitExitCode(err: unknown): number | undefined {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === 'number' ? code : undefined;
 }
 
 export function classifyGitError(err: unknown): GitFailureKind {

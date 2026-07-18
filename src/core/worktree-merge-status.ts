@@ -60,46 +60,56 @@ export async function resolveWorktreeMergeStatus(
   });
   if (!baselineRef) return undefined;
 
-  const mergeBase = await gitIn(repoPath, 'merge-base', '--is-ancestor', branch, baselineRef);
+  const ancestorCheck = await runGitIn(
+    repoPath,
+    ['merge-base', '--is-ancestor', branch, baselineRef],
+    { maxAttempts: 1 },
+  );
   let classification: WorktreeMergeClassification;
   let reasonCode: string;
   let recoveryGuidance: string;
   let mergeCheckFailed = false;
 
-  // merge-base --is-ancestor exits 0 when the branch tip is reachable from
-  // the baseline. gitIn returns null for both exit 1 (not an ancestor) and a
-  // real subprocess failure, so the patch probes below decide whether the
-  // branch can be classified or must remain blocked.
-  if (mergeBase !== null) {
+  // `merge-base --is-ancestor` exits 1 for the expected "not an ancestor"
+  // result. Any other failure is an inability to prove merge status and must
+  // remain blocked; treating it as the expected result would let a later empty
+  // probe fail open as patch-equivalent.
+  if (ancestorCheck.kind === 'ok') {
     classification = 'merged';
     reasonCode = 'ancestor_of_baseline';
     recoveryGuidance = 'Branch is fully merged. Safe to remove.';
+  } else if (ancestorCheck.kind !== 'failed' || ancestorCheck.exitCode !== 1) {
+    classification = 'unique_commits';
+    reasonCode = 'merge_check_failed';
+    recoveryGuidance = 'Could not verify whether the branch is merged. Review before removing.';
+    mergeCheckFailed = true;
   } else {
-    const uniquePatches = await gitIn(
+    const uniquePatchesResult = await runGitIn(
       repoPath,
-      'log',
-      '--oneline',
-      '--cherry-pick',
-      '--right-only',
-      `${baselineRef}...${branch}`,
+      ['log', '--oneline', '--cherry-pick', '--right-only', `${baselineRef}...${branch}`],
+      { maxAttempts: 1 },
     );
-    const aggregatePatchEquivalent = uniquePatches !== null && uniquePatches.length > 0
-      ? await isAggregatePatchEquivalent(repoPath, baselineRef, branch)
-      : false;
 
-    if (uniquePatches === null) {
+    if (uniquePatchesResult.kind !== 'ok') {
       classification = 'unique_commits';
       reasonCode = 'has_unique_commits';
       recoveryGuidance = 'Branch has commits not in the baseline. Review before removing.';
       mergeCheckFailed = true;
-    } else if (uniquePatches.length === 0 || aggregatePatchEquivalent) {
-      classification = 'patch_equivalent';
-      reasonCode = uniquePatches.length === 0 ? 'no_unique_patches' : 'aggregate_patch_equivalent';
-      recoveryGuidance = 'Branch adds no unique patches vs baseline (likely squash-merged). Safe to remove.';
     } else {
-      classification = 'unique_commits';
-      reasonCode = 'has_unique_commits';
-      recoveryGuidance = 'Branch has commits not in the baseline. Review before removing.';
+      const uniquePatches = uniquePatchesResult.stdout;
+      const aggregatePatchEquivalent = uniquePatches.length > 0
+        ? await isAggregatePatchEquivalent(repoPath, baselineRef, branch)
+        : false;
+
+      if (uniquePatches.length === 0 || aggregatePatchEquivalent) {
+        classification = 'patch_equivalent';
+        reasonCode = uniquePatches.length === 0 ? 'no_unique_patches' : 'aggregate_patch_equivalent';
+        recoveryGuidance = 'Branch adds no unique patches vs baseline (likely squash-merged). Safe to remove.';
+      } else {
+        classification = 'unique_commits';
+        reasonCode = 'has_unique_commits';
+        recoveryGuidance = 'Branch has commits not in the baseline. Review before removing.';
+      }
     }
   }
 

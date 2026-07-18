@@ -87,6 +87,15 @@ describe('git-helpers', () => {
     );
   });
 
+  it('preserves a numeric git exit code for expected non-zero probes', async () => {
+    mockExecFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
+      cb(Object.assign(new Error('not an ancestor'), { code: 1 }), { stdout: '', stderr: '' });
+    });
+
+    await expect(runGitIn('/repo', ['merge-base', '--is-ancestor', 'feature', 'main'], { maxAttempts: 1 }))
+      .resolves.toEqual({ kind: 'failed', exitCode: 1 });
+  });
+
   it('retries transient network git commands with backoff before succeeding', async () => {
     mockExecFile
       .mockImplementationOnce((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {

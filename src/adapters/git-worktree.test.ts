@@ -42,15 +42,19 @@ function mockGitSuccess(stdout: string) {
 
 /**
  * Set up mockExecFile to return different results based on the git subcommand.
- * handlers is a map from a substring of the args to { stdout } or 'error'.
+ * handlers is a map from a substring of the args to { stdout }, 'error', or
+ * 'not-ancestor' (the expected exit 1 from merge-base --is-ancestor).
  */
-function mockGitResponses(handlers: Record<string, string | 'error'>) {
+function mockGitResponses(handlers: Record<string, string | 'error' | 'not-ancestor'>) {
   mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
     const argsStr = args.join(' ');
     for (const [pattern, response] of Object.entries(handlers)) {
       if (argsStr.includes(pattern)) {
-        if (response === 'error') {
-          cb(new Error('git error'), { stdout: '', stderr: 'git error' });
+        if (response === 'error' || response === 'not-ancestor') {
+          const error = Object.assign(new Error('git error'), {
+            code: response === 'not-ancestor' ? 1 : 128,
+          });
+          cb(error, { stdout: '', stderr: 'git error' });
         } else {
           cb(null, { stdout: response, stderr: '' });
         }
@@ -647,7 +651,7 @@ describe('cleanupTaskWorktrees', () => {
     mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
     mockGitResponses({
       'status --porcelain': '',
-      'merge-base': 'error',
+      'merge-base': 'not-ancestor',
       'log': 'abc1234 Add feature\ndef5678 Fix bug\n',
       'symbolic-ref': 'refs/remotes/origin/main\n',
       'rev-list': '0\t2',
@@ -850,13 +854,31 @@ describe('inspectWorktreeCleanup', () => {
     expect(verdict.evidence.aheadCount).toBe(0);
   });
 
+  test('a merge-base subprocess failure never becomes patch-equivalent', async () => {
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({
+      'status --porcelain': '',
+      'merge-base': 'error',
+      'log': '',
+      'symbolic-ref': 'refs/remotes/origin/main\n',
+      'rev-list': '0\t0',
+    });
+    const { taskStore, taskId } = taskWithWorktree();
+
+    const verdict = await inspectWorktreeCleanup(taskStore, taskId, '/wt/feature-branch');
+
+    expect(verdict.removable).toBe(false);
+    expect(verdict.blocker).toBe('unmerged-check-failed');
+    expect(verdict.evidence.aheadCount).toBe(0);
+  });
+
   test('dirty worktree is blocked AND still reports the ahead-count', async () => {
     // The pre-refactor isClean returned on the first failure, so the ahead-count
     // was never gathered. The drawer shows both, so both must be probed.
     mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
     mockGitResponses({
       'status --porcelain': ' M src/a.ts\n?? new.ts\n',
-      'merge-base': 'error',
+      'merge-base': 'not-ancestor',
       'log': 'abc123 commit one\ndef456 commit two\n',
       'symbolic-ref': 'refs/remotes/origin/main\n',
       'rev-list': '0\t2',
@@ -875,7 +897,7 @@ describe('inspectWorktreeCleanup', () => {
     mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
     mockGitResponses({
       'status --porcelain': '',
-      'merge-base': 'error',
+      'merge-base': 'not-ancestor',
       'log': 'abc123 unmerged work\n',
       'symbolic-ref': 'refs/remotes/origin/main\n',
       'rev-list': '0\t1',
