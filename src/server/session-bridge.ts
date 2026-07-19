@@ -10,16 +10,20 @@ import {
   type TerminalInputWriterPort,
 } from '../core/ports/terminal-input-writer-port.js';
 import type { TerminalSessionDataSource } from '../core/ports/terminal-session-stream-port.js';
+import { isAbsolutePositionTuiRing } from './absolute-position-tui-ring.js';
 
 /**
  * SessionBridge — per-WS-client view over the backend's byte stream.
  *
  * V8 (rfc-v8-tmux-removal.md) makes the bridge a fan-out view, not an
  * independent owner of the attach:
- *   - on WS open, replay the backend's ring buffer via `captureBytes`
- *     before wiring live updates;
+ *   - on WS open, optionally replay the backend's ring buffer via
+ *     `captureBytes` before wiring live updates — unless the ring looks like
+ *     a dense absolute-position TUI (Grok Build), in which case we skip replay
+ *     and nudge a live WINCH redraw so the browser receives one clean frame
+ *     at the current geometry instead of a megabyte of wrong-width history;
  *   - subscribe to live bytes via `backend.onData`;
-   *   - forward inbound WS frames through the input-writer port and resize via the backend;
+ *   - forward inbound WS frames through the input-writer port and resize via the backend;
  *   - on WS close, unsubscribe.
  *
  * The ring buffer moved to the backend (one owner per session), so every
@@ -49,7 +53,15 @@ const DEFAULT_BACKPRESSURE_RETRY_MS = 25;
 const DEFAULT_BACKPRESSURE_SOFT_BYTES = 1 * 1024 * 1024;
 const DEFAULT_VIEWER_BACKPRESSURE_HARD_BYTES = 16 * 1024 * 1024;
 const DEFAULT_OWNER_BACKPRESSURE_HARD_BYTES = 64 * 1024 * 1024;
+/** Wait for the browser's first FitAddon resize before replaying the ring. */
+const DEFAULT_INITIAL_RESIZE_WAIT_MS = 400;
+/** Coalesce FitAddon/layout thrash so multi-tab owners do not WINCH-storm the agent. */
+const DEFAULT_RESIZE_DEBOUNCE_MS = 80;
+/** Pause between cols-1 and cols when forcing a live TUI repaint. */
+const DEFAULT_LIVE_REDRAW_NUDGE_MS = 40;
 const ON_DATA_SUBSCRIBE_RETRY_DELAYS_MS = [16, 32, 64] as const;
+
+export type RingReplayPolicy = 'auto' | 'full' | 'skip-live-redraw';
 
 interface PreReplayChunk {
   bytes: Buffer;
@@ -57,11 +69,25 @@ interface PreReplayChunk {
   countsAsReplay: boolean;
 }
 
+interface TerminalSize {
+  cols: number;
+  rows: number;
+}
+
 function readPositiveIntegerEnv(name: string, fallback: number): number {
   const value = process.env[name];
   if (!value) return fallback;
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+/** Like {@link readPositiveIntegerEnv} but accepts 0 (used to disable waits in tests). */
+function readNonNegativeIntegerEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (!value) return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) return fallback;
   return parsed;
 }
 
@@ -93,6 +119,32 @@ export interface SessionBridgeOptions {
   /** Hard queued+buffered ceiling for read-only viewer bridges. */
   viewerBackpressureHardBytes?: number;
 
+  /**
+   * How to handle ring-buffer replay on connect:
+   * - `auto` (default): skip + live WINCH redraw when the ring looks like a
+   *   dense absolute-position TUI (Grok); otherwise full replay.
+   * - `full`: always replay `captureBytes` (legacy behaviour).
+   * - `skip-live-redraw`: never replay; always nudge a live redraw when the
+   *   bridge is writable.
+   */
+  ringReplay?: RingReplayPolicy;
+
+  /**
+   * Milliseconds to wait for the browser's first `resize` control frame before
+   * deciding on ring replay. Defaults to
+   * `KOOKR_SESSION_BRIDGE_INITIAL_RESIZE_WAIT_MS` or 400. Set to 0 in unit tests.
+   */
+  initialResizeWaitMs?: number;
+
+  /**
+   * Coalesce subsequent resize control frames. Defaults to
+   * `KOOKR_SESSION_BRIDGE_RESIZE_DEBOUNCE_MS` or 80. Set to 0 to apply immediately.
+   */
+  resizeDebounceMs?: number;
+
+  /** Pause between the two WINCH steps of a live-redraw nudge. */
+  liveRedrawNudgeMs?: number;
+
   /** Cross-signal browser bridge lifecycle hooks. Replay and live bytes are tracked separately. */
   onBridgeOpened?: (sessionId: SessionId) => void;
   onBridgeReplay?: (sessionId: SessionId) => void;
@@ -123,7 +175,20 @@ export class SessionBridge {
   private readonly onBridgeReplay?: (sessionId: SessionId) => void;
   private readonly onBridgeLiveBytes?: (sessionId: SessionId) => void;
   private readonly onBridgeClosed?: (sessionId: SessionId) => void;
+  private readonly ringReplayPolicy: RingReplayPolicy;
+  private readonly initialResizeWaitMs: number;
+  private readonly resizeDebounceMs: number;
+  private readonly liveRedrawNudgeMs: number;
   private bridgeHealthStarted = false;
+  /** Latest browser-reported size observed before startup settles. */
+  private pendingInitialResize: TerminalSize | null = null;
+  private initialResizeResolver: (() => void) | null = null;
+  /** After startup, further resizes are debounced. */
+  private startupComplete = false;
+  private inboundWired = false;
+  private resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private debouncedResize: TerminalSize | null = null;
+  private lastAppliedResize: TerminalSize | null = null;
 
   constructor(
     sessionId: SessionId,
@@ -142,6 +207,22 @@ export class SessionBridge {
     this.onBridgeLiveBytes = options?.onBridgeLiveBytes;
     this.onBridgeClosed = options?.onBridgeClosed;
     this.readOnly = options?.readOnly ?? false;
+    this.ringReplayPolicy = options?.ringReplay ?? 'auto';
+    this.initialResizeWaitMs = options?.initialResizeWaitMs
+      ?? readNonNegativeIntegerEnv(
+        'KOOKR_SESSION_BRIDGE_INITIAL_RESIZE_WAIT_MS',
+        DEFAULT_INITIAL_RESIZE_WAIT_MS,
+      );
+    this.resizeDebounceMs = options?.resizeDebounceMs
+      ?? readNonNegativeIntegerEnv(
+        'KOOKR_SESSION_BRIDGE_RESIZE_DEBOUNCE_MS',
+        DEFAULT_RESIZE_DEBOUNCE_MS,
+      );
+    this.liveRedrawNudgeMs = options?.liveRedrawNudgeMs
+      ?? readNonNegativeIntegerEnv(
+        'KOOKR_SESSION_BRIDGE_LIVE_REDRAW_NUDGE_MS',
+        DEFAULT_LIVE_REDRAW_NUDGE_MS,
+      );
     this.outputBatchMs = options?.outputBatchMs
       ?? readPositiveIntegerEnv('KOOKR_SESSION_BRIDGE_OUTPUT_BATCH_MS', DEFAULT_OUTPUT_BATCH_MS);
     this.backpressureRetryMs = options?.backpressureRetryMs
@@ -192,6 +273,12 @@ export class SessionBridge {
       }
     });
 
+    // Owner bridges accept resize before ring replay so the browser FitAddon
+    // size lands first. Read-only viewers never resize the shared PTY (#807).
+    if (!this.readOnly) {
+      this.wireInboundHandler();
+    }
+
     // Subscribe before replay capture so bytes emitted while we are opening the
     // bridge are either in the replay snapshot or in the local pre-replay
     // buffer. `onData` itself has no history, so capture-after-subscribe closes
@@ -225,11 +312,19 @@ export class SessionBridge {
       return;
     }
 
+    // Prefer the browser's FitAddon size before replaying absolute-position
+    // history. Without this, a 200-col Grok ring paints into a ~100-col xterm.
+    const initialSize = await this.waitForInitialResize();
+    if (this.closed) return;
+    if (initialSize && !this.readOnly) {
+      this.applyResizeNow(initialSize.cols, initialSize.rows);
+    }
+
     // The backend owns the single ring buffer; this bridge is a stateless
     // view. `captureBytes` is lock-free and does not force a re-attach.
-    let replay: Uint8Array;
+    let captured: Uint8Array;
     try {
-      replay = await this.backend.captureBytes(this.sessionId);
+      captured = await this.backend.captureBytes(this.sessionId);
     } catch (err) {
       if (this.isBackendSessionFailure(err)) {
         this.closeBridgeForFailure(`session ${this.sessionId} is gone`);
@@ -247,25 +342,35 @@ export class SessionBridge {
     // The WS may close while captureBytes awaits; in that case dispose() has
     // already removed the subscriber and there is no client left to replay to.
     if (this.closed) return;
-    if (replay.length > 0) {
-      if (this.safeSend(Buffer.from(replay), true)) {
-        this.onBridgeReplay?.(this.sessionId);
+
+    const skipRingReplay = this.shouldSkipRingReplay(captured);
+    let replay: Uint8Array = new Uint8Array(0);
+    if (skipRingReplay) {
+      // Dense absolute-position TUIs (Grok Build): replaying the ring paints
+      // thousands of historical CUP frames at mixed widths. Skip it and force
+      // the live agent to redraw at the browser geometry instead.
+      if (!this.readOnly) {
+        const size = initialSize ?? this.lastAppliedResize;
+        if (size) {
+          await this.nudgeLiveRedraw(size.cols, size.rows);
+        }
+      }
+      if (this.closed) return;
+    } else {
+      replay = captured;
+      if (replay.length > 0) {
+        if (this.safeSend(Buffer.from(replay), true)) {
+          this.onBridgeReplay?.(this.sessionId);
+        }
       }
     }
+
     replaySent = true;
+    this.startupComplete = true;
     const bufferedPreReplay = this.removeReplayOverlap(replay, preReplayChunks);
     for (const chunk of bufferedPreReplay) {
       this.enqueueOutput(chunk.bytes, chunk.countsAsLive, chunk.countsAsReplay);
     }
-
-    // Read-only (viewer) bridges never wire the inbound handler, so no write,
-    // resize, or paste frame can reach the PTY (#807). The write path is
-    // load-bearing for output suppression: skipping the listener — not merely
-    // dropping the activity callbacks — is what makes the socket output-only.
-    if (!this.readOnly) {
-      this.wireInboundHandler();
-    }
-
   }
 
   /**
@@ -274,6 +379,8 @@ export class SessionBridge {
    * call this; read-only viewer bridges skip it entirely (#807).
    */
   private wireInboundHandler(): void {
+    if (this.inboundWired) return;
+    this.inboundWired = true;
     this.ws.on('message', (data, isBinary) => {
       if (this.closed) return;
 
@@ -299,7 +406,7 @@ export class SessionBridge {
               && Number.isInteger(parsed.rows)
               && parsed.rows > 0
             ) {
-              this.safeForwardResize(parsed.cols, parsed.rows);
+              this.handleResizeControl(parsed.cols, parsed.rows);
             }
             return;
           }
@@ -320,6 +427,97 @@ export class SessionBridge {
       this.safeForwardWrite(bytes);
       this.notifyInput(bytes);
     });
+  }
+
+  private shouldSkipRingReplay(captured: Uint8Array): boolean {
+    if (this.ringReplayPolicy === 'skip-live-redraw') return true;
+    if (this.ringReplayPolicy === 'full') return false;
+    return isAbsolutePositionTuiRing(captured);
+  }
+
+  private waitForInitialResize(): Promise<TerminalSize | null> {
+    if (this.pendingInitialResize) return Promise.resolve(this.pendingInitialResize);
+    if (this.initialResizeWaitMs <= 0 || this.readOnly) {
+      return Promise.resolve(this.pendingInitialResize);
+    }
+    return new Promise((resolve) => {
+      const finish = () => {
+        if (timer) clearTimeout(timer);
+        this.initialResizeResolver = null;
+        resolve(this.pendingInitialResize);
+      };
+      this.initialResizeResolver = finish;
+      const timer = setTimeout(finish, this.initialResizeWaitMs);
+    });
+  }
+
+  private handleResizeControl(cols: number, rows: number): void {
+    // Always remember the latest browser size for the startup path.
+    this.pendingInitialResize = { cols, rows };
+    if (!this.startupComplete) {
+      // Unblock waitForInitialResize; if we have already applied a size
+      // (capture/nudge phase), keep the PTY in lockstep with the browser.
+      this.initialResizeResolver?.();
+      if (this.lastAppliedResize) {
+        this.applyResizeNow(cols, rows);
+      }
+      return;
+    }
+    this.scheduleDebouncedResize(cols, rows);
+  }
+
+  private scheduleDebouncedResize(cols: number, rows: number): void {
+    if (
+      this.lastAppliedResize
+      && this.lastAppliedResize.cols === cols
+      && this.lastAppliedResize.rows === rows
+    ) {
+      return;
+    }
+    this.debouncedResize = { cols, rows };
+    if (this.resizeDebounceMs <= 0) {
+      this.flushDebouncedResize();
+      return;
+    }
+    if (this.resizeDebounceTimer) clearTimeout(this.resizeDebounceTimer);
+    this.resizeDebounceTimer = setTimeout(() => {
+      this.resizeDebounceTimer = null;
+      this.flushDebouncedResize();
+    }, this.resizeDebounceMs);
+  }
+
+  private flushDebouncedResize(): void {
+    const next = this.debouncedResize;
+    this.debouncedResize = null;
+    if (!next || this.closed) return;
+    this.applyResizeNow(next.cols, next.rows);
+  }
+
+  private applyResizeNow(cols: number, rows: number): void {
+    if (
+      this.lastAppliedResize
+      && this.lastAppliedResize.cols === cols
+      && this.lastAppliedResize.rows === rows
+    ) {
+      return;
+    }
+    this.lastAppliedResize = { cols, rows };
+    this.safeForwardResize(cols, rows);
+  }
+
+  /**
+   * Toggle the PTY size by one column so absolute-position TUIs (Grok, Ink)
+   * repaint the live viewport after we skipped historical ring replay.
+   * No-ops when the bridge is closed or size is degenerate.
+   */
+  private async nudgeLiveRedraw(cols: number, rows: number): Promise<void> {
+    if (this.closed || cols < 2 || rows < 1) return;
+    this.applyResizeNow(cols - 1, rows);
+    if (this.liveRedrawNudgeMs > 0) {
+      await this.sleep(this.liveRedrawNudgeMs);
+    }
+    if (this.closed) return;
+    this.applyResizeNow(cols, rows);
   }
 
   /**
@@ -618,6 +816,12 @@ export class SessionBridge {
       clearTimeout(this.outputFlushTimer);
       this.outputFlushTimer = null;
     }
+    if (this.resizeDebounceTimer) {
+      clearTimeout(this.resizeDebounceTimer);
+      this.resizeDebounceTimer = null;
+    }
+    this.debouncedResize = null;
+    this.initialResizeResolver = null;
     this.pendingOutputChunks = [];
     this.pendingOutputBytes = 0;
     this.pendingOutputHasLiveBytes = false;

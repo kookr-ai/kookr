@@ -14,6 +14,12 @@ export default defineConfig({
       // tests exercise the legacy single-write delivery path and stay fast;
       // dedicated tests pass `promptBracketedPaste: true` explicitly.
       KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE: '0',
+      // SessionBridge waits for the browser FitAddon size before ring replay
+      // in production; unit tests that never send resize would otherwise pay
+      // the full wait on every start(). Dedicated tests set these explicitly.
+      KOOKR_SESSION_BRIDGE_INITIAL_RESIZE_WAIT_MS: '0',
+      KOOKR_SESSION_BRIDGE_RESIZE_DEBOUNCE_MS: '0',
+      KOOKR_SESSION_BRIDGE_LIVE_REDRAW_NUDGE_MS: '0',
     },
     coverage: {
       provider: 'v8',

@@ -451,11 +451,107 @@ describe('SessionBridge', () => {
     await bridge.start();
 
     ws.emit('message', Buffer.from('{"type":"resize","cols":120,"rows":30}'), false);
+    await new Promise((r) => setTimeout(r, 10));
 
     expect(resizeSpy).toHaveBeenCalledWith('s1', 120, 30);
     // No keystroke bytes should reach the session from a resize JSON frame.
-    await new Promise((r) => setTimeout(r, 10));
     expect(backend.getWrittenBytes('s1').length).toBe(0);
+  });
+
+  it('skips absolute-position TUI ring replay and nudges a live redraw', async () => {
+    const backend = await makeReadySession('s1');
+    // Dense CUP + sync frames, no ED2 — matches Grok Build ring shape.
+    const cups = Array.from({ length: 220 }, (_, i) => {
+      const row = (i % 40) + 1;
+      const col = 10 + (i % 170);
+      return `\x1b[?2026h\x1b[${row};${col}H·\x1b[?2026l`;
+    }).join('');
+    backend.setCaptureContent('s1', cups);
+
+    const resizeSpy = vi.spyOn(backend, 'resize');
+    const onReplay = vi.fn();
+    const ws = new FakeWs();
+    const bridge = new SessionBridge(
+      's1',
+      ws as unknown as never,
+      backend,
+      undefined,
+      undefined,
+      undefined,
+      {
+        ringReplay: 'auto',
+        initialResizeWaitMs: 30,
+        liveRedrawNudgeMs: 0,
+        resizeDebounceMs: 0,
+        onBridgeReplay: onReplay,
+      },
+    );
+
+    const startPromise = bridge.start();
+    // Browser FitAddon size arrives shortly after open.
+    ws.emit('message', Buffer.from('{"type":"resize","cols":100,"rows":40}'), false);
+    await startPromise;
+
+    // Ring contents must NOT be dumped to the client.
+    const binaryText = ws.sent
+      .filter((s): s is Buffer => Buffer.isBuffer(s))
+      .map((b) => b.toString('latin1'))
+      .join('');
+    expect(binaryText.includes(cups.slice(0, 40))).toBe(false);
+    expect(onReplay).not.toHaveBeenCalled();
+
+    // Live redraw nudge: cols-1 then cols (and the initial apply).
+    const resizeArgs = resizeSpy.mock.calls.map((c) => [c[1], c[2]]);
+    expect(resizeArgs).toContainEqual([100, 40]);
+    expect(resizeArgs).toContainEqual([99, 40]);
+  });
+
+  it('still replays ordinary ring content when the stream is not absolute-TUI', async () => {
+    const backend = await makeReadySession('s1');
+    backend.setCaptureContent('s1', 'banner-text-plain-scrollback\nline2\n');
+    const onReplay = vi.fn();
+    const ws = new FakeWs();
+    const bridge = new SessionBridge(
+      's1',
+      ws as unknown as never,
+      backend,
+      undefined,
+      undefined,
+      undefined,
+      { ringReplay: 'auto', onBridgeReplay: onReplay, initialResizeWaitMs: 0 },
+    );
+    await bridge.start();
+
+    const replayed = ws.sent.find(
+      (s) => Buffer.isBuffer(s) && s.toString('utf-8').includes('banner-text-plain-scrollback'),
+    );
+    expect(replayed).toBeDefined();
+    expect(onReplay).toHaveBeenCalledWith('s1');
+  });
+
+  it('debounces post-startup resize thrash to the last size', async () => {
+    const backend = await makeReadySession('s1');
+    const resizeSpy = vi.spyOn(backend, 'resize');
+    const ws = new FakeWs();
+    const bridge = new SessionBridge(
+      's1',
+      ws as unknown as never,
+      backend,
+      undefined,
+      undefined,
+      undefined,
+      { resizeDebounceMs: 25, initialResizeWaitMs: 0 },
+    );
+    await bridge.start();
+    resizeSpy.mockClear();
+
+    ws.emit('message', Buffer.from('{"type":"resize","cols":80,"rows":24}'), false);
+    ws.emit('message', Buffer.from('{"type":"resize","cols":90,"rows":30}'), false);
+    ws.emit('message', Buffer.from('{"type":"resize","cols":100,"rows":40}'), false);
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(resizeSpy).toHaveBeenCalledTimes(1);
+    expect(resizeSpy).toHaveBeenCalledWith('s1', 100, 40);
   });
 
   it.each([

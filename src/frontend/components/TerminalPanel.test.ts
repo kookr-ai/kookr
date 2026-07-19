@@ -560,22 +560,31 @@ describe('TerminalPanel', () => {
   });
 
   test('sends valid positive-integer resize frames', () => {
-    act(() => {
-      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
-    });
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true }));
+      });
 
-    const terminal = mocks.terminalInstances[0];
-    const ws = mocks.webSocketInstances[0];
-    act(() => {
-      ws.onopen?.();
-    });
-    ws.send.mockClear();
+      const terminal = mocks.terminalInstances[0];
+      const ws = mocks.webSocketInstances[0];
+      act(() => {
+        ws.onopen?.();
+      });
+      ws.send.mockClear();
 
-    act(() => {
-      terminal.resizeHandler?.({ cols: 80, rows: 24 });
-    });
+      act(() => {
+        terminal.resizeHandler?.({ cols: 80, rows: 24 });
+      });
+      // FitAddon thrash is debounced (~80ms) before a resize control frame is sent.
+      act(() => {
+        vi.advanceTimersByTime(100);
+      });
 
-    expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resize', cols: 80, rows: 24 }));
+      expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resize', cols: 80, rows: 24 }));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('captures empty terminal Enter and advances without sending a newline', () => {
@@ -1924,8 +1933,8 @@ describe('TerminalPanel', () => {
   test('reconnects after an abnormal close and resets the terminal before the ring-buffer replay', () => {
     // Server restart / host offline: the byte stream must come back on its
     // own, and because the server replays the session ring buffer on every
-    // connect, the terminal must reset exactly once per reconnect or the
-    // scrollback would be duplicated.
+    // connect (or nudges a live redraw), the terminal must reset on every
+    // open or stale cells / duplicated scrollback remain.
     vi.useFakeTimers();
     try {
       act(() => {
@@ -1936,7 +1945,7 @@ describe('TerminalPanel', () => {
       act(() => {
         first.onopen?.();
       });
-      expect(terminal.reset).not.toHaveBeenCalled();
+      expect(terminal.reset).toHaveBeenCalledTimes(1);
 
       act(() => {
         first.onclose?.({ code: 1006 });
@@ -1955,7 +1964,7 @@ describe('TerminalPanel', () => {
       act(() => {
         second.onopen?.();
       });
-      expect(terminal.reset).toHaveBeenCalledOnce();
+      expect(terminal.reset).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
@@ -1975,6 +1984,7 @@ describe('TerminalPanel', () => {
       act(() => {
         ws.onopen?.();
       });
+      expect(terminal.reset).toHaveBeenCalledTimes(1);
       act(() => {
         ws.onclose?.({ code });
       });
@@ -1986,7 +1996,8 @@ describe('TerminalPanel', () => {
         vi.advanceTimersByTime(120_000);
       });
       expect(mocks.webSocketInstances).toHaveLength(1);
-      expect(terminal.reset).not.toHaveBeenCalled();
+      // No reconnect ⇒ no additional reset beyond the initial open.
+      expect(terminal.reset).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
