@@ -15,6 +15,7 @@ describe('readOperationalAlertConfigFromEnv', () => {
       cpuPercent: 0,
       memoryPercent: 0,
       eventLoopDelayMs: 0,
+      processRssBytes: 0,
       dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
       dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
       circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
@@ -28,6 +29,7 @@ describe('readOperationalAlertConfigFromEnv', () => {
         KOOKR_ALERT_CPU_PERCENT: '90',
         KOOKR_ALERT_MEMORY_PERCENT: '85.5',
         KOOKR_ALERT_EVENT_LOOP_DELAY_MS: '200',
+        KOOKR_ALERT_PROCESS_RSS_BYTES: '2147483648',
         KOOKR_ALERT_DATA_DIR_FREE_PERCENT: '4.5',
         KOOKR_ALERT_DATA_DIR_FREE_BYTES: '1073741824',
         KOOKR_ALERT_CIRCUIT_BREAKER_OPEN_MS: '120000',
@@ -37,6 +39,7 @@ describe('readOperationalAlertConfigFromEnv', () => {
       cpuPercent: 90,
       memoryPercent: 85.5,
       eventLoopDelayMs: 200,
+      processRssBytes: 2_147_483_648,
       dataDirectoryFreePercent: 4.5,
       dataDirectoryFreeBytes: 1_073_741_824,
       circuitBreakerOpenMs: 120_000,
@@ -49,6 +52,7 @@ describe('readOperationalAlertConfigFromEnv', () => {
       KOOKR_ALERT_CPU_PERCENT: '-5',
       KOOKR_ALERT_MEMORY_PERCENT: '-0.1',
       KOOKR_ALERT_EVENT_LOOP_DELAY_MS: '-100',
+      KOOKR_ALERT_PROCESS_RSS_BYTES: '-1',
       KOOKR_ALERT_DATA_DIR_FREE_PERCENT: '-1',
       KOOKR_ALERT_DATA_DIR_FREE_BYTES: '-1',
       KOOKR_ALERT_CIRCUIT_BREAKER_OPEN_MS: '-1',
@@ -56,6 +60,7 @@ describe('readOperationalAlertConfigFromEnv', () => {
     expect(config.cpuPercent).toBe(0);
     expect(config.memoryPercent).toBe(0);
     expect(config.eventLoopDelayMs).toBe(0);
+    expect(config.processRssBytes).toBe(0);
     expect(config.dataDirectoryFreePercent).toBe(0);
     expect(config.dataDirectoryFreeBytes).toBe(0);
     expect(config.circuitBreakerOpenMs).toBe(0);

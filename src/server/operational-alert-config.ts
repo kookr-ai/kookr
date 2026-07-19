@@ -28,6 +28,7 @@ const THRESHOLD_FIELDS = [
   'cpuPercent',
   'memoryPercent',
   'eventLoopDelayMs',
+  'processRssBytes',
   'dataDirectoryFreePercent',
   'dataDirectoryFreeBytes',
   'circuitBreakerOpenMs',

@@ -88,6 +88,7 @@ describe('persistence health runtime wiring', () => {
         cpuPercent: 0,
         memoryPercent: 0,
         eventLoopDelayMs: 0,
+        processRssBytes: 0,
         dataDirectoryFreePercent: 0,
         dataDirectoryFreeBytes: 0,
         circuitBreakerOpenMs: 0,
