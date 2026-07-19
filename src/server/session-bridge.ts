@@ -12,6 +12,7 @@ import {
 import type { TerminalSessionDataSource } from '../core/ports/terminal-session-stream-port.js';
 import { isAbsolutePositionTuiRing } from './absolute-position-tui-ring.js';
 import { extractLastSubstantialAbsoluteFrame } from './absolute-position-tui-frame.js';
+import { reconstructAbsoluteTuiScreen } from './absolute-position-tui-screen.js';
 
 /**
  * SessionBridge — per-WS-client view over the backend's byte stream.
@@ -21,8 +22,8 @@ import { extractLastSubstantialAbsoluteFrame } from './absolute-position-tui-fra
  *   - on WS open, optionally replay the backend's ring buffer via
  *     `captureBytes` before wiring live updates — unless the ring looks like
  *     a dense absolute-position TUI (Grok Build), in which case we skip the
- *     smashy history and recover one clean current frame via multi-attach
- *     snapshot (`captureCurrentFrame`), reconnect attach-replay, or WINCH;
+ *     smashy history and seed one clean frame by reconstructing the VT cell
+ *     buffer from the ring (fallback: last sync frame / multi-attach / WINCH);
  *   - subscribe to live bytes via `backend.onData`;
  *   - forward inbound WS frames through the input-writer port and resize via the backend;
  *   - on WS close, unsubscribe.
@@ -374,28 +375,49 @@ export class SessionBridge {
       // Dense absolute-position TUIs (Grok Build): replaying the *entire* ring
       // paints thousands of historical CUP frames at mixed widths. Instead:
       //
-      //   0. Extract the last substantial DECSET-2026 sync frame from the ring
-      //      (a complete screen paint at the agent's width). With the browser
-      //      xterm pinned to ~200 cols (Grok), this is readable.
-      //   1. multi-attach snapshot + Ctrl+L live repaint (refreshAbsoluteTuiFrame)
-      //   2. reconnectTransport attach-replay (rate-limited)
-      //   3. WINCH nudge last resort
+      //   0. Reconstruct the current screen by replaying the ring into a VT
+      //      cell buffer (Grok paints differentially — last-sync-frame alone
+      //      leaves missing letters; multi-attach is often empty for idle
+      //      --no-alt-screen sessions). Browser xterm is pinned to ~200 cols.
+      //   1. Fall back: last substantial DECSET-2026 sync frame
+      //   2. Fall back: multi-attach + Ctrl+L (only when reconstruction failed)
+      //   3. reconnectTransport / WINCH last resort
+      //
+      // When reconstruction succeeds we deliberately skip Ctrl+L: the live
+      // repaint after a clear is sparse and would wipe the reconstructed seed.
       //
       // Read-only viewers never resize/snapshot/reconnect the shared PTY
-      // (#807); they still get the ring-extracted frame and live fan-out.
-      const ringFrame = extractLastSubstantialAbsoluteFrame(captured);
-      if (ringFrame && ringFrame.length > 0) {
-        replay = ringFrame;
+      // (#807); they still get the reconstructed frame and live fan-out.
+      const size = this.pendingInitialResize ?? this.lastAppliedResize;
+      const seedCols = size?.cols && size.cols > 0 ? size.cols : 200;
+      const seedRows = size?.rows && size.rows > 0 ? size.rows : 50;
+      const reconstructed = reconstructAbsoluteTuiScreen(captured, {
+        cols: seedCols,
+        rows: seedRows,
+      });
+      if (reconstructed && reconstructed.length > 0) {
+        replay = reconstructed;
+      } else {
+        const ringFrame = extractLastSubstantialAbsoluteFrame(captured);
+        if (ringFrame && ringFrame.length > 0) {
+          replay = ringFrame;
+        }
       }
       if (!this.readOnly) {
-        const size = this.pendingInitialResize ?? this.lastAppliedResize;
         if (size) {
-          const frame = await this.refreshAbsoluteTuiFrame(size);
-          // Prefer a larger live/snapshot frame over the ring extract when both exist.
-          if (frame && frame.length > replay.length) {
-            replay = frame;
+          // Keep PTY size aligned for subsequent live paints even when we skip
+          // the Ctrl+L refresh path.
+          this.applyResizeNow(size.cols, size.rows);
+          // Only force live refresh when we have no usable seed — Ctrl+L after
+          // a good reconstruction often clears the browser and leaves spinner
+          // differentials only.
+          if (replay.length === 0) {
+            const frame = await this.refreshAbsoluteTuiFrame(size);
+            if (frame && frame.length > 0) {
+              replay = frame;
+            }
           }
-        } else if (!ringFrame) {
+        } else if (replay.length === 0) {
           console.warn(
             `[session-bridge] skipped absolute-TUI ring for ${this.sessionId} without a browser size; waiting for live frames`,
           );

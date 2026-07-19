@@ -458,9 +458,11 @@ describe('SessionBridge', () => {
     expect(backend.getWrittenBytes('s1').length).toBe(0);
   });
 
-  it('skips absolute-position TUI ring replay and nudges a live redraw', async () => {
+  it('skips absolute-position TUI ring replay and seeds a reconstructed frame', async () => {
     const backend = await makeReadySession('s1');
     // Dense CUP + sync frames, no ED2 — matches Grok Build ring shape.
+    // Enough unique cells that VT reconstruction yields a usable seed, so we
+    // must NOT burn captureCurrentFrame / Ctrl+L (those wipe a good seed).
     const cups = Array.from({ length: 220 }, (_, i) => {
       const row = (i % 40) + 1;
       const col = 10 + (i % 170);
@@ -492,28 +494,32 @@ describe('SessionBridge', () => {
     ws.emit('message', Buffer.from('{"type":"resize","cols":100,"rows":40}'), false);
     await startPromise;
 
-    // Ring contents must NOT be dumped to the client.
+    // Ring contents must NOT be dumped raw to the client.
     const binaryText = ws.sent
       .filter((s): s is Buffer => Buffer.isBuffer(s))
       .map((b) => b.toString('latin1'))
       .join('');
     expect(binaryText.includes(cups.slice(0, 40))).toBe(false);
 
-    // Browser size applied; current-frame recovery via captureCurrentFrame
-    // (preferred — does not burn reconnect-transport budget).
+    // Browser size applied for live paints; reconstructed seed sent without
+    // multi-attach / Ctrl+L refresh.
     expect(resizeSpy).toHaveBeenCalledWith('s1', 100, 40);
-    expect(backend.lastCaptureCurrentFrameOptions?.cols).toBe(100);
-    expect(backend.lastCaptureCurrentFrameOptions?.rows).toBe(40);
+    expect(backend.lastCaptureCurrentFrameOptions).toBeNull();
     expect(backend.lastReconnectOptions).toBeNull();
-    expect(binaryText.includes('[fake-current-frame]')).toBe(true);
+    // Reconstructed frame starts with home+clear and contains painted cells.
+    expect(binaryText.startsWith('\x1b[H\x1b[2J') || binaryText.includes('\x1b[H\x1b[2J')).toBe(true);
+    expect(binaryText.includes('·')).toBe(true);
     expect(onReplay).toHaveBeenCalledWith('s1');
   });
 
-  it('falls back to reconnectTransport when the frame snapshot is empty', async () => {
+  it('falls back to reconnectTransport when reconstruction and frame snapshot are empty', async () => {
     const backend = await makeReadySession('s1');
+    // Wide absolute-TUI shape (maxCol ≥ 120, ≥200 CUPs) but only a handful of
+    // unique cells — reconstruction stays under the printable-cell threshold,
+    // so we fall through to captureCurrentFrame + reconnect.
     const cups = Array.from({ length: 220 }, (_, i) => {
-      const row = (i % 40) + 1;
-      const col = 10 + (i % 170);
+      const row = (i % 3) + 1;
+      const col = 120 + (i % 3);
       return `\x1b[?2026h\x1b[${row};${col}H·\x1b[?2026l`;
     }).join('');
     backend.setCaptureContent('s1', cups);
@@ -591,7 +597,7 @@ describe('SessionBridge', () => {
     expect(resizeSpy).toHaveBeenCalledWith('s1', 100, 40);
   });
 
-  it('applies a late FitAddon resize after the wait times out and refreshes the TUI frame', async () => {
+  it('applies a late FitAddon resize after the wait times out and seeds a reconstructed frame', async () => {
     const backend = await makeReadySession('s1');
     const cups = Array.from({ length: 220 }, (_, i) => {
       const row = (i % 40) + 1;
@@ -635,15 +641,15 @@ describe('SessionBridge', () => {
     await startPromise;
 
     expect(resizeSpy).toHaveBeenCalledWith('s1', 110, 42);
-    expect(backend.lastCaptureCurrentFrameOptions?.cols).toBe(110);
-    expect(backend.lastCaptureCurrentFrameOptions?.rows).toBe(42);
+    // Reconstruction succeeded → no multi-attach refresh needed.
+    expect(backend.lastCaptureCurrentFrameOptions).toBeNull();
     expect(backend.lastReconnectOptions).toBeNull();
     const binaryText = ws.sent
       .filter((s): s is Buffer => Buffer.isBuffer(s))
       .map((b) => b.toString('latin1'))
       .join('');
     expect(binaryText.includes(cups.slice(0, 40))).toBe(false);
-    expect(binaryText.includes('[fake-current-frame]')).toBe(true);
+    expect(binaryText.includes('·')).toBe(true);
   });
 
   it.each([
