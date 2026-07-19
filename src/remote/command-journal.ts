@@ -236,7 +236,7 @@ export class CommandJournal {
   }
 
   begin(command: CommandEnvelope): CommandResult | null {
-    this.prune(command);
+    this.prune();
     const existing = this.idempotency.get(tupleKey(command));
     if (existing?.result) {
       existing.lastUsedAt = this.now().getTime();
@@ -316,12 +316,13 @@ export class CommandJournal {
     return { commandId, action: 'presetReply', outcome: 'unknown-never-seen' };
   }
 
-  private prune(scope?: Pick<CommandEnvelope, 'nodeEpoch' | 'sessionEpoch'>): void {
+  private prune(): void {
     const cutoff = this.now().getTime() - DAY_MS;
     for (const [key, entry] of this.idempotency) {
       const expired = entry.createdAt < cutoff;
-      const epochBumped = scope && !key.includes(`\0${scope.nodeEpoch}\0`) || scope && !key.includes(`\0${scope.sessionEpoch}\0`);
-      if (expired || epochBumped) this.idempotency.delete(key);
+      // tupleKey stores nodeEpoch as its second null-delimited field.
+      const nodeEpochBumped = key.split('\0', 3)[1] !== this.nodeEpoch;
+      if (expired || nodeEpochBumped) this.idempotency.delete(key);
     }
     if (this.idempotency.size <= MAX_IDEMPOTENCY_ENTRIES) return;
     const lru = [...this.idempotency.values()].sort((a, b) => a.lastUsedAt - b.lastUsedAt);
