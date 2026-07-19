@@ -4,10 +4,12 @@ import { QuotaAdapter } from './quota-adapter.js';
 // Mock fetch and fs
 vi.mock('node:fs/promises', () => ({
   readFile: vi.fn(),
+  stat: vi.fn(),
 }));
 
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 const mockReadFile = vi.mocked(readFile);
+const mockStat = vi.mocked(stat);
 
 describe('QuotaAdapter', () => {
   let adapter: QuotaAdapter;
@@ -15,6 +17,8 @@ describe('QuotaAdapter', () => {
   beforeEach(() => {
     adapter = new QuotaAdapter(120_000);
     vi.restoreAllMocks();
+    vi.clearAllMocks();
+    mockStat.mockResolvedValue({ mtimeMs: 1 } as Awaited<ReturnType<typeof stat>>);
   });
 
   afterEach(() => {
@@ -169,18 +173,99 @@ describe('QuotaAdapter', () => {
     expect(adapter.getCurrentIntervalMs()).toBe(900_000); // 900s from header
   });
 
-  test('does not poll when in auth_failed state', async () => {
+  test('auth_failed recovers after the credentials token changes', async () => {
     // First: put into auth_failed state
-    mockReadFile.mockResolvedValue(JSON.stringify({
-      claudeAiOauth: { accessToken: 'expired' },
-    }));
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401 }));
+    mockReadFile
+      .mockResolvedValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: 'expired' } }))
+      .mockResolvedValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: 'expired' } }))
+      .mockResolvedValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: 'fresh' } }));
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 401 })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 25, resets_at: '2026-07-19T18:00:00Z' },
+        }),
+      });
+    vi.stubGlobal('fetch', mockFetch);
     await adapter.poll();
     expect(adapter.getState()).toBe('auth_failed');
 
-    // Second: poll should be skipped
+    mockStat.mockResolvedValue({ mtimeMs: 2 } as Awaited<ReturnType<typeof stat>>);
     const changed = await adapter.poll();
-    expect(changed).toBe(false);
+
+    expect(changed).toBe(true);
+    expect(adapter.getState()).toBe('healthy');
+    expect(adapter.getLatest()?.fiveHour?.utilization).toBe(25);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenNthCalledWith(2, expect.any(String), expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer fresh' }),
+    }));
+  });
+
+  test('auth_failed does not retry an unchanged invalid credential', async () => {
+    mockReadFile.mockResolvedValue(JSON.stringify({
+      claudeAiOauth: { accessToken: 'expired' },
+    }));
+    const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 401 });
+    vi.stubGlobal('fetch', mockFetch);
+
+    await adapter.poll();
+    expect(adapter.getState()).toBe('auth_failed');
+    expect(adapter.getCurrentIntervalMs()).toBe(240_000);
+
+    await adapter.poll();
+
+    expect(mockStat).toHaveBeenCalledTimes(3);
+    expect(mockReadFile).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('auth_failed backs off again when a changed credential is still invalid', async () => {
+    mockReadFile
+      .mockResolvedValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: 'expired' } }))
+      .mockResolvedValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: 'expired' } }))
+      .mockResolvedValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: 'also-invalid' } }))
+      .mockResolvedValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: 'also-invalid' } }));
+    const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 401 });
+    vi.stubGlobal('fetch', mockFetch);
+
+    await adapter.poll();
+    mockStat.mockResolvedValue({ mtimeMs: 2 } as Awaited<ReturnType<typeof stat>>);
+    await adapter.poll();
+
+    expect(adapter.getState()).toBe('auth_failed');
+    expect(adapter.getCurrentIntervalMs()).toBe(480_000);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('disabled recovers when the credentials file appears', async () => {
+    mockStat
+      .mockRejectedValueOnce(new Error('ENOENT'))
+      .mockRejectedValueOnce(new Error('ENOENT'))
+      .mockResolvedValue({ mtimeMs: 1 } as Awaited<ReturnType<typeof stat>>);
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ seven_day: { utilization: 10, resets_at: '2026-07-26T00:00:00Z' } }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    expect(await adapter.poll()).toBe(false);
+    expect(adapter.getState()).toBe('disabled');
+    expect(await adapter.poll()).toBe(false);
+    expect(mockFetch).not.toHaveBeenCalled();
+
+    mockReadFile.mockResolvedValue(JSON.stringify({
+      claudeAiOauth: { accessToken: 'new-token' },
+    }));
+    expect(await adapter.poll()).toBe(true);
+    expect(adapter.getState()).toBe('healthy');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer new-token' }),
+    }));
   });
 
   test('backoff decays after 3 consecutive successes', async () => {
