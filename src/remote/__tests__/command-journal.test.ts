@@ -89,6 +89,69 @@ describe('CommandJournal and pipeline', () => {
     expect(audit.match(/command\.intent/g)).toHaveLength(2);
   });
 
+  it('preserves idempotency entries across concurrent session epochs', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-command-concurrent-sessions-'));
+    const journal = await CommandJournal.open({ kookrDir: dir, nodeId: asNodeId('node-1'), nodeEpoch: asNodeEpoch('1') });
+    const execute = vi.fn(async () => ({ execution: execute.mock.calls.length }));
+    const handler = {
+      action: 'presetReply' as const,
+      authorize: () => ({ ok: true as const }),
+      validate: () => ({ ok: true as const }),
+      execute,
+    };
+    const sessionA = command({
+      sessionId: asSessionId('session-a'),
+      sessionEpoch: asSessionEpoch('epoch-a'),
+      idempotencyKey: asIdempotencyKey('idem-a'),
+    });
+    const sessionB = command({
+      commandId: asCommandId('cmd-b'),
+      sessionId: asSessionId('session-b'),
+      sessionEpoch: asSessionEpoch('epoch-b'),
+      idempotencyKey: asIdempotencyKey('idem-b'),
+    });
+
+    const firstA = await executeWithPipeline({ journal, handler, request: sessionA, isOwnerLocal: () => true });
+    await executeWithPipeline({ journal, handler, request: sessionB, isOwnerLocal: () => true });
+    const replayA = await executeWithPipeline({
+      journal,
+      handler,
+      request: { ...sessionA, commandId: asCommandId('cmd-a-retry') },
+      isOwnerLocal: () => true,
+    });
+
+    expect(firstA).toMatchObject({ outcome: 'accepted', result: { execution: 1 } });
+    expect(replayA).toMatchObject({ commandId: 'cmd-a-retry', outcome: 'accepted', result: { execution: 1 } });
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not replay snapshot idempotency entries from a stale node epoch', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-command-stale-node-epoch-'));
+    const first = await CommandJournal.open({
+      kookrDir: dir,
+      nodeId: asNodeId('node-1'),
+      nodeEpoch: asNodeEpoch('1'),
+      compactAfterBytes: 1,
+    });
+    const request = command({ idempotencyKey: asIdempotencyKey('idem-stale-node') });
+    await first.appendIntent(request);
+    await first.appendResult(request, {
+      commandId: request.commandId,
+      action: request.action,
+      outcome: 'accepted',
+      result: { ok: true },
+    });
+
+    const restarted = await CommandJournal.open({
+      kookrDir: dir,
+      nodeId: asNodeId('node-1'),
+      nodeEpoch: asNodeEpoch('2'),
+      compactAfterBytes: Number.MAX_SAFE_INTEGER,
+    });
+
+    expect(restarted.begin({ ...request, commandId: asCommandId('cmd-stale-retry') })).toBeNull();
+  });
+
   it('records deterministic validation failures as rejected-pre-audit', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kookr-command-preaudit-'));
     const journal = await CommandJournal.open({ kookrDir: dir, nodeId: asNodeId('node-1'), nodeEpoch: asNodeEpoch('1') });
