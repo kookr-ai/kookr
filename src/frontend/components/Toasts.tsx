@@ -18,6 +18,20 @@ function alertKey(alert: Alert): string {
   return `${alert.agentId}-${alert.timestamp.getTime()}`;
 }
 
+function alertAnnouncementText(alert: Alert): string {
+  return alert.details ? `${alert.summary}. ${alert.details}` : alert.summary;
+}
+
+/**
+ * Persistent live regions for toast announcements.
+ *
+ * Screen readers only announce content changes in regions that already exist
+ * in the accessibility tree. Mounting a region with its message already present
+ * (the previous `return null` when empty) routinely drops the announcement.
+ * Keep polite/assertive regions mounted and inject text into them instead.
+ * Visible toasts intentionally omit role/aria-live so the same text is not
+ * double-read.
+ */
 export function Toasts() {
   const { alerts, dismissAlert } = useKookrStore();
   const timersRef = useRef<Map<string, DismissTimer>>(new Map());
@@ -91,39 +105,58 @@ export function Toasts() {
     [],
   );
 
-  if (alerts.length === 0) return null;
+  const politeText = alerts
+    .filter((alert) => alert.severity !== 'error')
+    .map(alertAnnouncementText)
+    .join(' ');
+  const assertiveText = alerts
+    .filter((alert) => alert.severity === 'error')
+    .map(alertAnnouncementText)
+    .join(' ');
 
   return (
-    <div className="toasts">
-      {alerts.map((alert, i) => (
-        <div
-          key={alertKey(alert)}
-          className={`toast ${alert.severity === 'error' ? 'toast-error' : 'toast-info'}`}
-          onMouseEnter={() => pauseTimer(alertKey(alert), 'hover')}
-          onMouseLeave={() => resumeTimer(alertKey(alert), 'hover')}
-          onFocus={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget)) {
-              pauseTimer(alertKey(alert), 'focus');
-            }
-          }}
-          onBlur={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget)) {
-              resumeTimer(alertKey(alert), 'focus');
-            }
-          }}
-          role={alert.severity === 'error' ? 'alert' : 'status'}
-          aria-live={alert.severity === 'error' ? 'assertive' : 'polite'}
-          aria-atomic="true"
-        >
-          <span className="toast-message">
-            <span>{alert.summary}</span>
-            {alert.details && <span className="toast-details">{alert.details}</span>}
-          </span>
-          <button className="toast-dismiss" onClick={() => dismissAlert(i)}>
-            &times;
-          </button>
+    <>
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="toast-live-polite">
+        {politeText}
+      </div>
+      <div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true" data-testid="toast-live-assertive">
+        {assertiveText}
+      </div>
+      {alerts.length > 0 && (
+        <div className="toasts">
+          {alerts.map((alert, i) => (
+            <div
+              key={alertKey(alert)}
+              className={`toast ${alert.severity === 'error' ? 'toast-error' : 'toast-info'}`}
+              onMouseEnter={() => pauseTimer(alertKey(alert), 'hover')}
+              onMouseLeave={() => resumeTimer(alertKey(alert), 'hover')}
+              onFocus={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget)) {
+                  pauseTimer(alertKey(alert), 'focus');
+                }
+              }}
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget)) {
+                  resumeTimer(alertKey(alert), 'focus');
+                }
+              }}
+            >
+              <span className="toast-message">
+                <span>{alert.summary}</span>
+                {alert.details && <span className="toast-details">{alert.details}</span>}
+              </span>
+              <button
+                type="button"
+                className="toast-dismiss"
+                aria-label={`Dismiss: ${alert.summary}`}
+                onClick={() => dismissAlert(i)}
+              >
+                &times;
+              </button>
+            </div>
+          ))}
         </div>
-      ))}
-    </div>
+      )}
+    </>
   );
 }
