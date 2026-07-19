@@ -1,6 +1,7 @@
 import {
   type BackendError,
   type BackendStats,
+  type CaptureCurrentFrameOptions,
   type ReconnectTransportOptions,
   type ReconnectTransportReason,
   type ReconnectTransportResult,
@@ -124,6 +125,13 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
   reconnectWindowMs = 60_000;
   /** Records the options of the most recent `reconnectTransport` call (test inspection). */
   lastReconnectOptions: ReconnectTransportOptions | null = null;
+  /** Records the options of the most recent `captureCurrentFrame` call (test inspection). */
+  lastCaptureCurrentFrameOptions: CaptureCurrentFrameOptions | null = null;
+  /**
+   * When set, `captureCurrentFrame` returns these bytes instead of a synthetic
+   * CUP-home frame. Empty string forces an empty snapshot (reconnect fallback).
+   */
+  private currentFrameBySession = new Map<SessionId, string | null>();
 
   createSession(spec: SessionSpec): Promise<void>;
   createSession(
@@ -260,6 +268,27 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
     const full = encoder.encode(s.paneContent);
     if (full.length <= maxBytes) return full;
     return full.subarray(full.length - maxBytes);
+  }
+
+  /**
+   * Non-destructive current-frame snapshot. Returns a synthetic frame by
+   * default so absolute-TUI SessionBridge tests exercise the preferred path
+   * without calling `reconnectTransport`. Override with
+   * {@link setCurrentFrameContent}.
+   */
+  async captureCurrentFrame(
+    id: SessionId,
+    options: CaptureCurrentFrameOptions = {},
+  ): Promise<Uint8Array> {
+    this.lastCaptureCurrentFrameOptions = options;
+    const s = this.sessions.get(id);
+    if (!s) throw new SessionGoneError(id);
+    if (this.currentFrameBySession.has(id)) {
+      const override = this.currentFrameBySession.get(id);
+      return encoder.encode(override ?? '');
+    }
+    // Distinct from the dense ring so tests can assert the snapshot path.
+    return encoder.encode('\x1b[H\x1b[2J[fake-current-frame]');
   }
 
   onData(id: SessionId, cb: (data: Uint8Array, source?: TerminalSessionDataSource) => void): () => void {
@@ -518,6 +547,14 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
     const s = this.sessions.get(id);
     if (!s) throw new SessionGoneError(id);
     s.paneContent = text;
+  }
+
+  /**
+   * Override `captureCurrentFrame` for `id`. Pass `''` to force empty
+   * (SessionBridge should fall back to reconnectTransport).
+   */
+  setCurrentFrameContent(id: SessionId, text: string): void {
+    this.currentFrameBySession.set(id, text);
   }
 
   /** All bytes the adapter wrote to this session, in submission order. */

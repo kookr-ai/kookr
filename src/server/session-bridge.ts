@@ -19,9 +19,9 @@ import { isAbsolutePositionTuiRing } from './absolute-position-tui-ring.js';
  * independent owner of the attach:
  *   - on WS open, optionally replay the backend's ring buffer via
  *     `captureBytes` before wiring live updates — unless the ring looks like
- *     a dense absolute-position TUI (Grok Build), in which case we skip replay
- *     and nudge a live WINCH redraw so the browser receives one clean frame
- *     at the current geometry instead of a megabyte of wrong-width history;
+ *     a dense absolute-position TUI (Grok Build), in which case we skip the
+ *     smashy history and recover one clean current frame via multi-attach
+ *     snapshot (`captureCurrentFrame`), reconnect attach-replay, or WINCH;
  *   - subscribe to live bytes via `backend.onData`;
  *   - forward inbound WS frames through the input-writer port and resize via the backend;
  *   - on WS close, unsubscribe.
@@ -352,17 +352,24 @@ export class SessionBridge {
       // Dense absolute-position TUIs (Grok Build): replaying the ring paints
       // thousands of historical CUP frames at mixed widths. Skip it.
       //
-      // Prefer a dtach transport reconnect so the master emits its *current*
-      // screen buffer (attach-replay) at the browser geometry — WINCH alone
-      // does not force Grok to full-repaint, which left blank panes after
-      // deploy. Fall back to a WINCH nudge when reconnect is unavailable or
-      // rate-limited. Read-only viewers never resize or reconnect the shared
-      // PTY (#807); they still skip the smashy ring and pick up live frames
-      // (and any attach-replay fan-out from an owner refresh).
+      // Recover a readable current frame without dumping history:
+      //   1. Preferred: non-destructive multi-attach snapshot
+      //      (`captureCurrentFrame`) — no reconnect-cap burn, primary attach
+      //      stays up.
+      //   2. Fallback: `reconnectTransport` so the primary attach re-emits
+      //      attach-replay (rate-limited; counted against the 3/min budget).
+      //   3. Last resort: WINCH nudge (Grok often ignores this for a full
+      //      repaint — may leave a blank pane).
+      // Read-only viewers never resize/snapshot/reconnect the shared PTY
+      // (#807); they skip the smashy ring and pick up live frames (and any
+      // attach-replay fan-out from an owner refresh).
       if (!this.readOnly) {
         const size = this.pendingInitialResize ?? this.lastAppliedResize;
         if (size) {
-          await this.refreshAbsoluteTuiFrame(size);
+          const frame = await this.refreshAbsoluteTuiFrame(size);
+          if (frame && frame.length > 0) {
+            replay = frame;
+          }
         } else {
           console.warn(
             `[session-bridge] skipped absolute-TUI ring for ${this.sessionId} without a browser size; waiting for live frames`,
@@ -370,6 +377,11 @@ export class SessionBridge {
         }
       }
       if (this.closed) return;
+      if (replay.length > 0) {
+        if (this.safeSend(Buffer.from(replay), true)) {
+          this.onBridgeReplay?.(this.sessionId);
+        }
+      }
     } else {
       replay = captured;
       if (replay.length > 0) {
@@ -527,15 +539,41 @@ export class SessionBridge {
 
   /**
    * Recover a readable frame after skipping absolute-TUI ring history.
-   * 1. Apply the browser size.
-   * 2. Try `reconnectTransport` so dtach re-attaches and emits its current
-   *    screen buffer (attach-replay) — the only cheap source of a full frame
-   *    when the agent does not full-repaint on WINCH.
-   * 3. Fall back to a cols±1 WINCH nudge if reconnect is missing/capped.
+   * 1. Apply the browser size (WINCH the agent so subsequent live paints match).
+   * 2. Prefer `captureCurrentFrame` — temporary secondary dtach attach that
+   *    dumps the master's current screen without reconnect-cap pressure.
+   * 3. Fall back to `reconnectTransport` (primary attach recycle; rate-limited).
+   * 4. Last resort: cols±1 WINCH nudge when both are missing/empty/capped.
+   *
+   * @returns Snapshot bytes to send as the client's initial frame, or null
+   *   when recovery relied on reconnect attach-replay / live bytes instead.
    */
-  private async refreshAbsoluteTuiFrame(size: TerminalSize): Promise<void> {
-    if (this.closed) return;
+  private async refreshAbsoluteTuiFrame(size: TerminalSize): Promise<Uint8Array | null> {
+    if (this.closed) return null;
     this.applyResizeNow(size.cols, size.rows);
+
+    const captureFrame = this.backend.captureCurrentFrame?.bind(this.backend);
+    if (captureFrame) {
+      try {
+        const frame = await captureFrame(this.sessionId, {
+          cols: size.cols,
+          rows: size.rows,
+          // Match the reconnect liveness floor so a slow Grok dump still lands.
+          timeoutMs: Math.max(800, this.liveRedrawNudgeMs * 10 || 800),
+        });
+        if (frame.length > 0) {
+          return frame;
+        }
+        console.warn(
+          `[session-bridge] absolute-TUI frame snapshot for ${this.sessionId} was empty; trying reconnect`,
+        );
+      } catch (err) {
+        console.warn(
+          `[session-bridge] absolute-TUI frame snapshot failed for ${this.sessionId}; trying reconnect:`,
+          err,
+        );
+      }
+    }
 
     const reconnect = this.backend.reconnectTransport?.bind(this.backend);
     if (reconnect) {
@@ -550,7 +588,7 @@ export class SessionBridge {
         if (result.outcome === 'success' || result.outcome === 'inconclusive') {
           // Attach-replay / live bytes fan out via onData into preReplayChunks
           // (before replaySent) or enqueueOutput (after).
-          return;
+          return null;
         }
         console.warn(
           `[session-bridge] absolute-TUI reconnect for ${this.sessionId} was ${result.outcome}/${result.reason}; falling back to WINCH nudge`,
@@ -564,6 +602,7 @@ export class SessionBridge {
     }
 
     await this.nudgeLiveRedraw(size.cols, size.rows);
+    return null;
   }
 
   /**

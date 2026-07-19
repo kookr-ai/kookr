@@ -498,11 +498,48 @@ describe('SessionBridge', () => {
       .map((b) => b.toString('latin1'))
       .join('');
     expect(binaryText.includes(cups.slice(0, 40))).toBe(false);
-    expect(onReplay).not.toHaveBeenCalled();
 
-    // Browser size applied; current-frame recovery via reconnectTransport
-    // (FakeTerminalBackend succeeds, so no WINCH fallback).
+    // Browser size applied; current-frame recovery via captureCurrentFrame
+    // (preferred — does not burn reconnect-transport budget).
     expect(resizeSpy).toHaveBeenCalledWith('s1', 100, 40);
+    expect(backend.lastCaptureCurrentFrameOptions?.cols).toBe(100);
+    expect(backend.lastCaptureCurrentFrameOptions?.rows).toBe(40);
+    expect(backend.lastReconnectOptions).toBeNull();
+    expect(binaryText.includes('[fake-current-frame]')).toBe(true);
+    expect(onReplay).toHaveBeenCalledWith('s1');
+  });
+
+  it('falls back to reconnectTransport when the frame snapshot is empty', async () => {
+    const backend = await makeReadySession('s1');
+    const cups = Array.from({ length: 220 }, (_, i) => {
+      const row = (i % 40) + 1;
+      const col = 10 + (i % 170);
+      return `\x1b[?2026h\x1b[${row};${col}H·\x1b[?2026l`;
+    }).join('');
+    backend.setCaptureContent('s1', cups);
+    backend.setCurrentFrameContent('s1', ''); // force empty snapshot
+
+    const ws = new FakeWs();
+    const bridge = new SessionBridge(
+      's1',
+      ws as unknown as never,
+      backend,
+      undefined,
+      undefined,
+      undefined,
+      {
+        ringReplay: 'auto',
+        initialResizeWaitMs: 30,
+        liveRedrawNudgeMs: 0,
+        resizeDebounceMs: 0,
+      },
+    );
+
+    const startPromise = bridge.start();
+    ws.emit('message', Buffer.from('{"type":"resize","cols":100,"rows":40}'), false);
+    await startPromise;
+
+    expect(backend.lastCaptureCurrentFrameOptions?.cols).toBe(100);
     expect(backend.lastReconnectOptions?.reason).toBe('absolute-tui-frame-refresh');
   });
 
@@ -598,12 +635,15 @@ describe('SessionBridge', () => {
     await startPromise;
 
     expect(resizeSpy).toHaveBeenCalledWith('s1', 110, 42);
-    expect(backend.lastReconnectOptions?.reason).toBe('absolute-tui-frame-refresh');
+    expect(backend.lastCaptureCurrentFrameOptions?.cols).toBe(110);
+    expect(backend.lastCaptureCurrentFrameOptions?.rows).toBe(42);
+    expect(backend.lastReconnectOptions).toBeNull();
     const binaryText = ws.sent
       .filter((s): s is Buffer => Buffer.isBuffer(s))
       .map((b) => b.toString('latin1'))
       .join('');
     expect(binaryText.includes(cups.slice(0, 40))).toBe(false);
+    expect(binaryText.includes('[fake-current-frame]')).toBe(true);
   });
 
   it.each([

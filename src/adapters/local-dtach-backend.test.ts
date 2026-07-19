@@ -1269,6 +1269,91 @@ describe('LocalDtachBackend reconnectTransport', () => {
 });
 
 /**
+ * Non-destructive current-frame snapshot for absolute-TUI browser opens.
+ * Uses a temporary secondary `dtach -a` without recycling the primary attach
+ * or burning the reconnect-transport retry budget.
+ */
+describe('LocalDtachBackend captureCurrentFrame', () => {
+  let tmpDir: string;
+  let backend: LocalDtachBackend;
+
+  afterEach(async () => {
+    if (tmpDir) {
+      try {
+        await reapDtachReferencing(tmpDir);
+      } catch {
+        // best-effort
+      }
+    }
+    try {
+      if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  function attachPids(sock: string): number[] {
+    return procsReferencingSock(sock)
+      .filter((p) => p.tokens.includes('-a'))
+      .map((p) => p.pid);
+  }
+
+  skipIfNoProc(
+    'returns the current screen without recycling the primary attach',
+    async () => {
+      tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+      backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+
+      const id = 'frame-snapshot';
+      // Keep emitting so both the primary attach and a secondary snapshot see
+      // non-empty screen content (dtach attach-replay dumps the current buffer).
+      await backend.createSession({
+        id,
+        command: '/bin/sh',
+        args: ['-c', 'while true; do printf "frame-marker-ABC\\n"; sleep 0.05; done'],
+      });
+      await new Promise((r) => setTimeout(r, 200));
+
+      const sock = join(tmpDir, 'test', `${id}.sock`);
+      const attachBefore = attachPids(sock);
+      expect(attachBefore.length).toBeGreaterThanOrEqual(1);
+      const generationBefore = backend.getSessionDiagnostics?.(id)?.attachGeneration;
+
+      const frame = await backend.captureCurrentFrame(id, {
+        timeoutMs: 2_000,
+        quietMs: 100,
+        minHoldMs: 150,
+        cols: 100,
+        rows: 30,
+      });
+
+      expect(frame.length).toBeGreaterThan(4);
+      const text = Buffer.from(frame).toString('latin1');
+      // Full screen dump (not just a leading clear) — marker may be present, or
+      // at least substantially more than ESC[H ESC[J.
+      expect(text.includes('frame-marker-ABC') || frame.length > 32).toBe(true);
+
+      // Primary attach must not have been recycled (generation unchanged).
+      const attachAfter = attachPids(sock);
+      expect(attachAfter.some((p) => attachBefore.includes(p))).toBe(true);
+      const generationAfter = backend.getSessionDiagnostics?.(id)?.attachGeneration;
+      if (generationBefore !== undefined && generationAfter !== undefined) {
+        expect(generationAfter).toBe(generationBefore);
+      }
+
+      await backend.killSession(id);
+    },
+    20_000,
+  );
+
+  skipIfNoProc('throws SessionGoneError for an unknown session', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
+    await expect(backend.captureCurrentFrame('no-such-session')).rejects.toBeInstanceOf(SessionGoneError);
+  });
+});
+
+/**
  * Post-restart recovery state machine (kookr-ai/kookr#1345).
  *
  * These exercise `verifyRecoveredSession`: after a Kookr restart the dtach
