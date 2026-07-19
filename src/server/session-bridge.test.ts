@@ -18,6 +18,7 @@ import {
   SessionBridge,
   BRACKETED_PASTE_START,
   BRACKETED_PASTE_END,
+  stripLeadingTerminalClear,
 } from './session-bridge.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import {
@@ -83,6 +84,25 @@ async function withEnv<T>(values: Record<string, string>, fn: () => Promise<T>):
     }
   }
 }
+
+describe('stripLeadingTerminalClear', () => {
+  it('removes a leading ESC[H ESC[J home+clear from dtach attach dumps', () => {
+    const body = new TextEncoder().encode('[frame-body]');
+    const withClear = new Uint8Array([0x1b, 0x5b, 0x48, 0x1b, 0x5b, 0x4a, ...body]);
+    expect(Buffer.from(stripLeadingTerminalClear(withClear)).toString()).toBe('[frame-body]');
+  });
+
+  it('removes a leading ESC[H ESC[2J full clear', () => {
+    const body = new TextEncoder().encode('x');
+    const withClear = new Uint8Array([0x1b, 0x5b, 0x48, 0x1b, 0x5b, 0x32, 0x4a, ...body]);
+    expect(Buffer.from(stripLeadingTerminalClear(withClear)).toString()).toBe('x');
+  });
+
+  it('leaves non-clear payloads untouched', () => {
+    const body = new TextEncoder().encode('\x1b[10;10Hcell');
+    expect(Buffer.from(stripLeadingTerminalClear(body))).toEqual(Buffer.from(body));
+  });
+});
 
 describe('SessionBridge', () => {
   it('sends backend-emitted bytes as binary frames', async () => {
