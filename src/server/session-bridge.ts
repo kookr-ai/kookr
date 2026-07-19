@@ -542,7 +542,9 @@ export class SessionBridge {
       try {
         const result = await reconnect(this.sessionId, {
           reason: 'absolute-tui-frame-refresh',
-          livenessTimeoutMs: Math.max(200, this.liveRedrawNudgeMs * 5 || 400),
+          // dtach attach-replay of a full Grok frame can take hundreds of ms;
+          // a 200ms window was timing out as inconclusive and dropping content.
+          livenessTimeoutMs: Math.max(800, this.liveRedrawNudgeMs * 10 || 800),
           actor: 'session-bridge',
         });
         if (result.outcome === 'success' || result.outcome === 'inconclusive') {
