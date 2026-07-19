@@ -18,6 +18,8 @@ logger = logging.getLogger("tts-server")
 
 app = FastAPI(title="Pocket TTS API")
 
+MAX_TEXT_LENGTH = int(os.environ.get("TTS_MAX_TEXT_LENGTH", "5000"))
+
 # Global model state
 model = None
 voice_states = {}
@@ -141,6 +143,15 @@ def move_to_device(obj, device):
 
 @app.post("/synthesize")
 def synthesize(req: SynthesisRequest):
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="Text must not be blank")
+
+    if len(req.text) > MAX_TEXT_LENGTH:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Text exceeds maximum length of {MAX_TEXT_LENGTH} characters"
+        )
+
     if model is None:
         raise HTTPException(status_code=503, detail="Model not initialized")
         
