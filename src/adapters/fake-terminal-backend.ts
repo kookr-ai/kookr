@@ -288,7 +288,9 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
       return encoder.encode(override ?? '');
     }
     // Distinct from the dense ring so tests can assert the snapshot path.
-    return encoder.encode('\x1b[H\x1b[2J[fake-current-frame]');
+    // Include a leading clear (dtach attach does this) so stripLeadingTerminalClear
+    // is exercised, then a body large enough to count as a usable frame.
+    return encoder.encode(`\x1b[H\x1b[2J[fake-current-frame]${'·'.repeat(40)}`);
   }
 
   onData(id: SessionId, cb: (data: Uint8Array, source?: TerminalSessionDataSource) => void): () => void {

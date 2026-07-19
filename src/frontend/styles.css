@@ -2341,6 +2341,20 @@ kbd {
   flex: 1;
   overflow: hidden;
 }
+/* Grok Build paints ~200 cols of absolute CUP cells. Keep horizontal scroll
+   so the full frame is visible instead of clipping to a ~70–100 col FitAddon. */
+.terminal-xterm.terminal-xterm--absolute-tui {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.terminal-xterm.terminal-xterm--absolute-tui .xterm-viewport {
+  scrollbar-width: thin;
+}
+.terminal-xterm.terminal-xterm--absolute-tui .xterm-viewport::-webkit-scrollbar {
+  display: block;
+  height: 8px;
+  width: 8px;
+}
 .terminal-xterm .xterm {
   height: 100%;
   padding: 4px;

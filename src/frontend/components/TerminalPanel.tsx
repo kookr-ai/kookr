@@ -23,9 +23,24 @@ import {
 interface Props {
   tmuxName: string | null;
   visible: boolean;
+  /**
+   * When set to an absolute-position TUI agent (Grok Build), the panel pins
+   * xterm columns to the agent's paint width (~200) with horizontal scroll
+   * instead of FitAddon-shrinking to the container. Grok paints CUP cells out
+   * near col 180–200 regardless of a short FitAddon width; fitting to ~70–100
+   * cols leaves the browser pane nearly blank (only left-edge chrome).
+   */
+  agentType?: string | null;
   onEmptySubmit?: () => void;
   /** Click handler for a viewable file path detected in terminal output. */
   onOpenFile?: (path: string) => void;
+}
+
+/** Grok Build (and similar absolute-position TUIs) paint near this width. */
+const ABSOLUTE_TUI_COLS = 200;
+
+function usesAbsoluteTuiGeometry(agentType: string | null | undefined): boolean {
+  return agentType === 'grok-build';
 }
 
 interface MenuState {
@@ -118,11 +133,13 @@ function shouldHandleEmptyTerminalEnter(
   return true;
 }
 
-export function TerminalPanel({ tmuxName, visible, onEmptySubmit, onOpenFile }: Props) {
+export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onOpenFile }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const absoluteTuiRef = useRef(usesAbsoluteTuiGeometry(agentType));
+  absoluteTuiRef.current = usesAbsoluteTuiGeometry(agentType);
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const controllerRef = useRef<ReconnectingSocket | null>(null);
   const currentTmuxRef = useRef<string | null>(null);
@@ -221,17 +238,33 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit, onOpenFile }: 
     });
   }
 
+  /**
+   * Resolve the size to apply/send. Absolute-position TUIs (Grok) keep a
+   * pinned column count so CUP cells land on-screen; FitAddon only drives rows.
+   */
+  function resolveTerminalSize(dims: { cols: number; rows: number } | undefined | null): { cols: number; rows: number } | null {
+    if (!dims) return null;
+    if (absoluteTuiRef.current) {
+      return getValidatedResize(ABSOLUTE_TUI_COLS, dims.rows);
+    }
+    return getValidatedResize(dims.cols, dims.rows);
+  }
+
   function refitRefreshAndNotifyResize() {
     const terminal = terminalRef.current;
     const fitAddon = fitAddonRef.current;
     if (!terminal || !fitAddon) return;
 
     fitAddon.fit();
+    const dims = fitAddon.proposeDimensions();
+    const resize = resolveTerminalSize(dims);
+    if (resize && absoluteTuiRef.current) {
+      // Pin width after FitAddon may have shrunk it to the container.
+      terminal.resize(resize.cols, resize.rows);
+    }
     if (terminal.rows > 0) {
       terminal.refresh(0, terminal.rows - 1);
     }
-    const dims = fitAddon.proposeDimensions();
-    const resize = getValidatedResize(dims?.cols, dims?.rows);
     if (resize) {
       controllerRef.current?.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
     }
@@ -721,11 +754,17 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit, onOpenFile }: 
         // Send initial size immediately so SessionBridge can size-gate ring
         // replay / live-redraw before dumping historical absolute-position frames.
         const fitAddon = fitAddonRef.current;
+        const terminalForSize = terminalRef.current;
         if (fitAddon) {
           fitAddon.fit();
           const dims = fitAddon.proposeDimensions();
-          const resize = getValidatedResize(dims?.cols, dims?.rows);
+          const resize = absoluteTuiRef.current
+            ? getValidatedResize(ABSOLUTE_TUI_COLS, dims?.rows ?? 0)
+            : getValidatedResize(dims?.cols, dims?.rows);
           if (resize) {
+            if (absoluteTuiRef.current && terminalForSize) {
+              terminalForSize.resize(resize.cols, resize.rows);
+            }
             ws.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
           }
         }
@@ -914,7 +953,10 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit, onOpenFile }: 
           </button>
         </form>
       )}
-      <div className="terminal-xterm" ref={containerRef} />
+      <div
+        className={`terminal-xterm${usesAbsoluteTuiGeometry(agentType) ? ' terminal-xterm--absolute-tui' : ''}`}
+        ref={containerRef}
+      />
       {jumpLatest.visible && (
         <button
           type="button"
