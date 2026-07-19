@@ -15,6 +15,9 @@ import type { WebSocket } from 'ws';
 export type RemoteNodeMode = 'active' | 'degraded';
 export type RemoteNodeConnectionState = 'idle' | 'connecting' | 'connected' | 'backing-off' | 'stopped';
 
+/** Default max `ws.bufferedAmount` before `publish()` drops instead of queuing unboundedly. */
+export const DEFAULT_PUBLISH_BUFFERED_AMOUNT_LIMIT = 1 * 1024 * 1024;
+
 export interface RemoteNodeStatus {
   relayConnected: boolean;
   protocolVersion: number;
@@ -38,11 +41,33 @@ export interface RemoteNodeClientOptions {
   publicBaseUrl?: string;
   reconnectBaseMs?: number;
   reconnectMaxMs?: number;
+  /**
+   * Soft ceiling on the relay WebSocket send buffer. When `ws.bufferedAmount`
+   * exceeds this value, `publish()` returns `false` without calling `send`
+   * so a stalled relay cannot grow node memory unboundedly (live terminal
+   * frames tolerate loss). Default: {@link DEFAULT_PUBLISH_BUFFERED_AMOUNT_LIMIT}.
+   */
+  publishBufferedAmountLimit?: number;
   logger?: Pick<typeof console, 'log' | 'warn' | 'error'>;
   wsImporter?: () => Promise<typeof import('ws')>;
   onCommand?: (command: CommandEnvelope) => Promise<CommandResult>;
   onPolicyMessage?: (message: PolicySyncProtocolMessage) => Promise<void> | void;
   onTerminalDemandProof?: (message: TerminalPublicationDemandMessage) => Promise<void> | void;
+}
+
+/**
+ * True when the socket's outbound buffer is already above the soft limit, so
+ * another `send` would only enlarge an unbounded queue under a slow drain.
+ */
+export function isPublishBufferOverloaded(
+  ws: { bufferedAmount?: number } | null | undefined,
+  limit: number,
+): boolean {
+  if (!ws || !(limit >= 0) || !Number.isFinite(limit)) return false;
+  const bufferedAmount = typeof ws.bufferedAmount === 'number' && Number.isFinite(ws.bufferedAmount)
+    ? Math.max(0, ws.bufferedAmount)
+    : 0;
+  return bufferedAmount > limit;
 }
 
 export interface RemoteNodeClient {
@@ -267,6 +292,7 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
   let connectionObserver: ((state: 'connected' | 'disconnected') => void) | null = null;
   const reconnectBaseMs = opts.reconnectBaseMs ?? 1_000;
   const reconnectMaxMs = opts.reconnectMaxMs ?? 30_000;
+  const publishBufferedAmountLimit = opts.publishBufferedAmountLimit ?? DEFAULT_PUBLISH_BUFFERED_AMOUNT_LIMIT;
 
   const clearReconnect = (): void => {
     if (reconnectTimer) {
@@ -445,9 +471,15 @@ export async function createRemoteNodeClient(opts: RemoteNodeClientOptions): Pro
         current.close(1001, 'node stopped');
       });
     },
-    publish(event: RemoteControlEvent): boolean {
+    publish(event: RemoteControlEvent | TerminalStreamEvent): boolean {
       if (event.nodeId !== status.nodeId || event.nodeEpoch !== status.nodeEpoch) return false;
       if (!ws || ws.readyState !== ws.OPEN || !status.relayConnected) return false;
+      // Lossy soft-limit applies only to high-rate terminal frames so a stalled
+      // relay cannot grow node memory unboundedly. Control-plane events stay
+      // best-effort even while the buffer is elevated (they are small/rare).
+      if (event.kind === 'terminal.bytes' && isPublishBufferOverloaded(ws, publishBufferedAmountLimit)) {
+        return false;
+      }
       ws.send(JSON.stringify(event));
       return true;
     },

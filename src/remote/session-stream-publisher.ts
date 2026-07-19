@@ -21,6 +21,10 @@ interface SessionStreamState {
   sessionId: SessionId;
   sessionEpoch: SessionEpoch;
   nextSeq: number;
+  /** Frames where `remoteNodeClient.publish()` returned false (disconnect or backpressure). */
+  droppedFrames: number;
+  /** Monotonic ms of the last rate-limited drop warning for this session. */
+  lastDropWarnAtMs: number;
   unsubscribe: () => void;
 }
 
@@ -31,6 +35,8 @@ export interface SessionStreamPublisher {
   stop(): void;
   syncSessions(): Promise<void>;
   currentCursor(sessionId: string): { sessionEpoch: SessionEpoch; lastSeq: number } | null;
+  /** Cumulative frames dropped for a session because publish returned false (tests / diagnostics). */
+  droppedFrameCount(sessionId: string): number;
   installPublicationRule(rule: Omit<TerminalPublicationRule, 'minSeqExclusive'>): TerminalPublicationInstallResult;
   recordDemandProof(input: Parameters<TerminalPublicationGate['recordDemandProof']>[0]): boolean;
   revokePublicationScope(publicationScopeId: string): void;
@@ -38,6 +44,8 @@ export interface SessionStreamPublisher {
 }
 
 const DEFAULT_SYNC_INTERVAL_MS = 2_000;
+/** Minimum gap between drop warnings per session so a sustained disconnect cannot flood logs. */
+export const DROP_WARN_MIN_INTERVAL_MS = 10_000;
 
 function asSessionId(value: string): SessionId {
   return value as SessionId;
@@ -62,7 +70,20 @@ export function createSessionStreamPublisher(opts: SessionStreamPublisherOptions
   let syncTimer: ReturnType<typeof setInterval> | null = null;
   let stopped = false;
 
+  const notePublishDrop = (state: SessionStreamState): void => {
+    state.droppedFrames += 1;
+    const nowMs = now().getTime();
+    if (nowMs - state.lastDropWarnAtMs < DROP_WARN_MIN_INTERVAL_MS) return;
+    state.lastDropWarnAtMs = nowMs;
+    logger.warn(
+      `[remote-terminal] dropped terminal frame(s) for session ${state.sessionId}: `
+      + `totalDropped=${state.droppedFrames} (publish returned false; seq still advanced)`,
+    );
+  };
+
   const publishBytes = (state: SessionStreamState, data: Uint8Array): void => {
+    // Sequence advances even when publish fails so reconnecting viewers that
+    // resume from lastSeq can detect a gap. Observability is counter + log only (#1441).
     const seq = state.nextSeq as Seq;
     state.nextSeq += 1;
     const event: TerminalBytesEvent = {
@@ -87,7 +108,7 @@ export function createSessionStreamPublisher(opts: SessionStreamPublisherOptions
           streamKeyId: publication.streamEncryption.streamKeyId,
           aad: `${event.nodeId}:${event.sessionId}:${event.sessionEpoch}:${event.seq}`,
         });
-        opts.remoteNodeClient.publish({
+        const published = opts.remoteNodeClient.publish({
           ...event,
           payload: encrypted.payload,
           publication: {
@@ -97,9 +118,10 @@ export function createSessionStreamPublisher(opts: SessionStreamPublisherOptions
             streamEncryption: encrypted.streamEncryption,
           },
         });
+        if (!published) notePublishDrop(state);
         continue;
       }
-      opts.remoteNodeClient.publish({
+      const published = opts.remoteNodeClient.publish({
         ...event,
         publication: {
           publicationScopeId: publication.publicationScopeId,
@@ -108,6 +130,7 @@ export function createSessionStreamPublisher(opts: SessionStreamPublisherOptions
           ...(publication.streamEncryption ? { streamEncryption: publication.streamEncryption } : {}),
         },
       });
+      if (!published) notePublishDrop(state);
     }
   };
 
@@ -119,6 +142,8 @@ export function createSessionStreamPublisher(opts: SessionStreamPublisherOptions
       sessionId: asSessionId(id),
       sessionEpoch: asSessionEpoch(String(epoch)),
       nextSeq: 1,
+      droppedFrames: 0,
+      lastDropWarnAtMs: Number.NEGATIVE_INFINITY,
       unsubscribe: () => {},
     };
     state.unsubscribe = opts.terminalBackend.onData(id, (data) => {
@@ -175,6 +200,9 @@ export function createSessionStreamPublisher(opts: SessionStreamPublisherOptions
         sessionEpoch: state.sessionEpoch,
         lastSeq: Math.max(0, state.nextSeq - 1),
       };
+    },
+    droppedFrameCount(sessionId: string): number {
+      return states.get(sessionId)?.droppedFrames ?? 0;
     },
     installPublicationRule(rule): TerminalPublicationInstallResult {
       return publicationGate.installRule(
