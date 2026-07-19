@@ -127,7 +127,7 @@ describe('renderCompletion', () => {
     expect(script).toContain('compgen -W "outcome"');
     expect(script).toContain('status pause resume cancel');
     expect(script).toContain('--prompt-file');
-    expect(script).toContain('compgen -W "claude-code codex-cli"');
+    expect(script).toContain('compgen -W "claude-code codex-cli grok-build"');
     expect(script).toContain('compgen -W "none minimal low medium high xhigh max ultra"');
     expect(script).toContain('compgen -W "warn block skip"');
     expect(script).toContain('--dedupe=warn');
@@ -145,7 +145,7 @@ describe('renderCompletion', () => {
     expect(script).toContain('compadd -- $root_commands -h --help -v --version');
     expect(script).toContain('compadd outcome');
     expect(script).toContain('compadd -- status pause resume cancel');
-    expect(script).toContain('compadd claude-code codex-cli');
+    expect(script).toContain('compadd claude-code codex-cli grok-build');
     expect(script).toContain('compadd none minimal low medium high xhigh max ultra');
     expect(script).toContain('compadd warn block skip');
     expect(script).toContain('compadd -- --dedupe=warn --dedupe=block --dedupe=skip');
@@ -174,6 +174,7 @@ describe('bash completion behavior', () => {
     await expect(completeBash(['kookr', 'spawn', '--agent', ''])).resolves.toEqual([
       'claude-code',
       'codex-cli',
+      'grok-build',
     ]);
   });
 
@@ -318,6 +319,7 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
     await expect(completeZsh(['kookr', 'spawn', '--agent', ''], 4)).resolves.toEqual([
       'claude-code',
       'codex-cli',
+      'grok-build',
     ]);
   });
 

@@ -415,22 +415,23 @@ Spawn at most `maxConcurrentTasks` children at a time. For each selected **work 
    # the issue body may contain shell-triggering strings.
    #   $PROMPTS_DIR/<unit-slug>.spec.json:
    #   {
-   #     "issueNumber": <primary N — first issue in the unit>,
-   #     "issueNumbers": [<all issues in the unit>],
+   #     "issueNumber": <primary N — always the lowest issue number in the unit>,
    #     "issueTitle": "<combined or primary title>",
    #     "issueBodyFile": "<path to the raw primary issue body you saved>",
-   #     "issueBodyFiles": { "<N>": "<path>", ... },
    #     "candidateFiles": [<expected_files from the selection matrix>],
    #     "baseBranch": "<defaultBranchRef.name>",
    #     "baseCommit": "<origin/<branch> commit sha>",
    #     "repoFullName": "<owner/repo>"
    #   }
+   # Note: kookr-context-pack currently packs a single issueNumber/body only.
+   # Extra multi-issue keys are ignored. List every issue URL in the child
+   # prompt so the model loads non-primary issue bodies itself.
    node "$KOOKR_REPO/bin/kookr-context-pack.js" \
      --spec "$PROMPTS_DIR/<unit-slug>.spec.json" \
      --out "$PROMPTS_DIR/<unit-slug>.pack.md"
    ```
 
-   The pack bundles the issue title/body (or multi-issue digest), acceptance criteria, candidate file paths (as **non-exhaustive hints**), the base branch/commit, and pre-digested excerpts of the static skills a child needs (commit discipline, pre-PR review checklist, PR workflow). Skill digests are cached and reused across children and runs, and re-generated automatically when a skill file changes. The pack is a **floor, not a ceiling**: the candidate-file list is a starting shortlist, never an authoritative set, and the child must stay free to explore beyond it.
+   The pack bundles the **primary** (lowest-numbered) issue title/body, acceptance criteria, candidate file paths (as **non-exhaustive hints**), the base branch/commit, and pre-digested excerpts of the static skills a child needs (commit discipline, pre-PR review checklist, PR workflow). For multi-issue units the pack is a partial warm-start — non-primary issue bodies are not packed; the child prompt must still list every issue URL. Skill digests are cached and reused across children and runs, and re-generated automatically when a skill file changes. The pack is a **floor, not a ceiling**: the candidate-file list is a starting shortlist, never an authoritative set, and the child must stay free to explore beyond it.
 
 2. Create a prompt file under `$PROMPTS_DIR/<unit-slug>.md` using a file-writing tool, not a shell heredoc when running under hook-scanned shells. **Prepend the generated `<unit-slug>.pack.md`** to the child prompt content below (pack first, then the instructions), so the child opens with the warm-start context. If pack generation failed, fall back to the bare prompt — the pack is an optimization, never a gate.
 3. Include this child prompt content, customized for the work unit:
@@ -505,7 +506,7 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
 
    If `KOOKR_REPO` is not set, derive it from the parent cwd if it contains `bin/kookr-spawn.js`, otherwise use `$HOME/git/kookr`.
 
-5. Parse the returned task ID and append it to `$CHILDREN_FILE`. Prefer the multi-issue shape; keep `issue` as the primary (lowest) number for older tooling:
+5. Parse the returned task ID and append it to `$CHILDREN_FILE`. Prefer the multi-issue shape; keep `issue` as the **primary** number — always the **lowest** issue number in the unit (same rule as unit slug / branch primary-N) — for older tooling:
 
 ```json
 {

@@ -34,7 +34,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
       '--help',
     ],
     flagValues: {
-      '--agent': ['claude-code', 'codex-cli'],
+      '--agent': ['claude-code', 'codex-cli', 'grok-build'],
       '--effort': ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
       '--dedupe': ['warn', 'block', 'skip'],
     },

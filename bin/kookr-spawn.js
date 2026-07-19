@@ -61,7 +61,7 @@ Options:
                            per-agent-type setting, else the agent CLI default).
                            claude-code: low|medium|high|xhigh|max.
                            codex-cli:   none|minimal|low|medium|high|xhigh|max|ultra.
-                           grok-build:  not supported (server ignores effort).
+                           grok-build:  omit --effort (server rejects any value).
       --criteria <text>    Acceptance criteria. Note: this is argv-exposed.
       --dedupe <mode>      warn, block, or skip (default: warn).
       --wait[=<seconds>]   After creating the task, poll until it raises
