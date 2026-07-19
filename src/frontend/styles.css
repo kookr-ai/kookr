@@ -621,6 +621,23 @@ kbd {
   border-left: 3px solid transparent;
 }
 .finding-card:hover { border-color: var(--border); }
+.finding-card,
+.healthy-row,
+.pending-row,
+.snoozed-row,
+.completed-row {
+  position: relative;
+}
+.rail-row-selection-target {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.rail-row-selection-target:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
 .finding-card.selected {
   border-color: var(--teal);
   background: var(--bg-card-selected);
