@@ -1,4 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
+import {
+  detectShortcutPlatform,
+  formatShortcutBinding,
+  getDefaultShortcutBindings,
+  type ShortcutBindingMap,
+} from '../../shared/contracts/shortcut-bindings.js';
 import { useKookrStore } from '../store/useStore.js';
 import {
   describeSwitchCause,
@@ -15,12 +21,19 @@ function timeAgo(ms: number): string {
   return `${hours}h ago`;
 }
 
+interface Props {
+  /** Resolved platform/user binding map; defaults match OverviewEmptyState. */
+  shortcutBindings?: ShortcutBindingMap;
+}
+
 /**
  * TopBar pill that toggles Auto-Advance mode and surfaces its current
  * decision state via a caret popover. Mirrors `DndPill` visually and
  * structurally for consistency. Hidden on mobile via CSS.
  */
-export function FollowPill() {
+export function FollowPill({
+  shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
+}: Props) {
   const enabled = useKookrStore((s) => s.autoAdvanceEnabled);
   const lastReason = useKookrStore((s) => s.lastTickReason);
   const lastSwitch = useKookrStore((s) => s.lastAutoSwitch);
@@ -66,9 +79,10 @@ export function FollowPill() {
   }, [menuOpen]);
 
   const stateClass = enabled ? 'follow-pill-on' : 'follow-pill-off';
+  const shortcutLabel = formatShortcutBinding(shortcutBindings.toggle_auto_advance);
   const title = enabled
-    ? 'Auto-Advance is on. The dashboard may switch to a higher-priority project. Press Alt+F to turn off.'
-    : 'Auto-Advance is off. Press Alt+F to let the dashboard follow priority automatically.';
+    ? `Auto-Advance is on. The dashboard may switch to a higher-priority project. Press ${shortcutLabel} to turn off.`
+    : `Auto-Advance is off. Press ${shortcutLabel} to let the dashboard follow priority automatically.`;
 
   const reasonLabel = enabled ? describeTickReason(lastReason) : 'Off';
   const lastSwitchLabel = lastSwitch

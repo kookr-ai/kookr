@@ -146,4 +146,27 @@ describe('TopBar plugin update UX', () => {
     expect(disconnectedDot?.getAttribute('aria-label')).toBe('Dashboard WebSocket disconnected');
     expect(disconnectedDot?.getAttribute('title')).toBe('Dashboard WebSocket disconnected');
   });
+
+  test('command palette trigger hint matches the detected platform', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(fetchResponse({ configured: false }))));
+    const originalPlatform = navigator.platform;
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'Linux x86_64' });
+
+    renderTopBar();
+    await flush();
+
+    const trigger = container.querySelector<HTMLButtonElement>('[data-testid="command-trigger"]');
+    expect(trigger?.getAttribute('title')).toBe('Search actions & tasks (Ctrl+K)');
+    expect(trigger?.querySelector('.command-trigger-kbd')?.textContent).toBe('Ctrl+K');
+
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' });
+    renderTopBar();
+    await flush();
+
+    const macTrigger = container.querySelector<HTMLButtonElement>('[data-testid="command-trigger"]');
+    expect(macTrigger?.getAttribute('title')).toBe('Search actions & tasks (⌘K)');
+    expect(macTrigger?.querySelector('.command-trigger-kbd')?.textContent).toBe('⌘K');
+
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: originalPlatform });
+  });
 });

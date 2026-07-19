@@ -11,6 +11,12 @@ import {
   type PluginUpdateResult,
   type PluginVersionStatus,
 } from '../../shared/contracts/plugin-version.js';
+import {
+  commandPaletteHint,
+  detectShortcutPlatform,
+  getDefaultShortcutBindings,
+  type ShortcutBindingMap,
+} from '../../shared/contracts/shortcut-bindings.js';
 
 interface Props {
   findings: number;
@@ -37,6 +43,8 @@ interface Props {
   /** When true, spotlight the command-palette trigger (driven by the
    *  scheduled-tasks discovery hint — Schedules now lives in the palette). */
   scheduleHintActive?: boolean;
+  /** Resolved platform/user bindings for FollowPill and related hints. */
+  shortcutBindings?: ShortcutBindingMap;
 }
 
 interface DeployStatus {
@@ -78,8 +86,27 @@ function formatDateTime(isoString: string): string {
   return new Date(isoString).toLocaleString();
 }
 
-export function TopBar({ findings, currentIndex, totalFindings, compact = false, onLaunch, onCommandPalette, onOperations, operationsOpen = false, onCoordinatorFindings, coordinatorFindingsOpen = false, terminalFocusMode = false, terminalFocusAvailable = true, terminalFocusTriggerRef, onTerminalFocusToggle, readOnly = false, scheduleHintActive = false }: Props) {
+export function TopBar({
+  findings,
+  currentIndex,
+  totalFindings,
+  compact = false,
+  onLaunch,
+  onCommandPalette,
+  onOperations,
+  operationsOpen = false,
+  onCoordinatorFindings,
+  coordinatorFindingsOpen = false,
+  terminalFocusMode = false,
+  terminalFocusAvailable = true,
+  terminalFocusTriggerRef,
+  onTerminalFocusToggle,
+  readOnly = false,
+  scheduleHintActive = false,
+  shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
+}: Props) {
   const { connected, buildInfo, serverStartedAt, totalSpendUsd, circuitBreakers, diagnosticReport, coordinator } = useKookrStore();
+  const paletteHint = commandPaletteHint(detectShortcutPlatform());
   const [showPopover, setShowPopover] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
   const [deployLoading, setDeployLoading] = useState(false);
@@ -484,20 +511,20 @@ export function TopBar({ findings, currentIndex, totalFindings, compact = false,
           </span>
         </div>
         <div className="metric-group">
-          <FollowPill />
+          <FollowPill shortcutBindings={shortcutBindings} />
           <DndPill />
           <button
             type="button"
             className={`command-trigger${compact ? ' command-trigger--compact' : ''}${scheduleHintActive ? ' schedule-hint-spotlight' : ''}`}
             onClick={onCommandPalette}
-            title="Search actions & tasks (⌘K)"
+            title={`Search actions & tasks (${paletteHint})`}
             aria-label="Search actions and tasks"
             aria-keyshortcuts="Meta+K Control+K"
             data-testid="command-trigger"
           >
             <span className="command-trigger-mag" aria-hidden="true">🔍</span>
             {!compact && <span className="command-trigger-label">Search actions &amp; tasks</span>}
-            <kbd className="command-trigger-kbd" aria-hidden="true">⌘K</kbd>
+            <kbd className="command-trigger-kbd" aria-hidden="true">{paletteHint}</kbd>
           </button>
           <button
             className={`btn-icon operations-trigger${operationsOpen ? ' active' : ''}`}

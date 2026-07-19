@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest';
 import {
   SHORTCUT_ACTIONS,
+  commandPaletteHint,
+  commandPaletteHintKeys,
   detectShortcutPlatform,
   findShortcutConflicts,
   formatShortcutBinding,
@@ -43,6 +45,13 @@ describe('shortcut bindings', () => {
   test('detects mac platforms without requiring tests to run on macOS', () => {
     expect(detectShortcutPlatform('MacIntel')).toBe('mac');
     expect(detectShortcutPlatform('Linux x86_64')).toBe('default');
+  });
+
+  test('command palette hint is platform-aware and not sourced from SHORTCUT_ACTIONS', () => {
+    expect(commandPaletteHint('mac')).toBe('⌘K');
+    expect(commandPaletteHint('default')).toBe('Ctrl+K');
+    expect(commandPaletteHintKeys('mac')).toEqual(['⌘K']);
+    expect(commandPaletteHintKeys('default')).toEqual(['Ctrl', 'K']);
   });
 
   test('featured shortcuts use the active platform defaults', () => {

@@ -1322,6 +1322,7 @@ export function App() {
           track({ type: 'shortcut_used', key: 'TopBar Terminal Focus', action: 'toggle_terminal_focus', context: 'click' });
           toggleTerminalFocusMode();
         }}
+        shortcutBindings={shortcutBindings}
       />
       {showOperations && (
         <div className="operations-popover-shell" ref={operationsPopoverRef}>
