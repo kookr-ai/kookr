@@ -106,6 +106,9 @@ only when diagnosing slow viewers or unusually high terminal-output volume.
 | `KOOKR_SESSION_BRIDGE_BACKPRESSURE_SOFT_BYTES` | `1048576` | Positive integer bytes | If `ws.bufferedAmount` is above this value, live PTY output stays queued for that socket instead of sending another frame. |
 | `KOOKR_SESSION_BRIDGE_OWNER_BACKPRESSURE_HARD_BYTES` | `67108864` | Positive integer bytes | Hard queued-plus-buffered ceiling for owner terminal sockets. Above this, the bridge closes the socket so the client can reconnect and replay from the backend ring buffer. |
 | `KOOKR_SESSION_BRIDGE_VIEWER_BACKPRESSURE_HARD_BYTES` | `16777216` | Positive integer bytes | Hard queued-plus-buffered ceiling for read-only viewer terminal sockets. Viewers use a lower ceiling so slow remote readers cannot retain unbounded server memory. |
+| `KOOKR_SESSION_BRIDGE_INITIAL_RESIZE_WAIT_MS` | `400` | Non-negative integer milliseconds (`0` disables the wait) | How long an owner terminal bridge waits for the browser's first FitAddon `resize` control frame before deciding whether to replay the ring buffer. Prevents painting 200-col absolute-position TUI history into a narrower xterm. |
+| `KOOKR_SESSION_BRIDGE_RESIZE_DEBOUNCE_MS` | `80` | Non-negative integer milliseconds (`0` applies immediately) | Coalesces subsequent browser resize control frames so FitAddon/layout thrash does not WINCH-storm agent TUIs. |
+| `KOOKR_SESSION_BRIDGE_LIVE_REDRAW_NUDGE_MS` | `40` | Non-negative integer milliseconds | Pause between the two WINCH steps (`cols-1` → `cols`) used when the bridge skips dense absolute-position ring replay (Grok Build) and forces a live repaint. |
 
 ## Recovery And Scheduling
 

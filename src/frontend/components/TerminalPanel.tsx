@@ -693,7 +693,6 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit, onOpenFile }: 
     // open→close forever on a pane showing an ended session. Server restarts
     // close with 1001/1006, which do retry.
     const SESSION_OVER_CLOSE_CODES = [1000, 1011];
-    let hasConnectedOnce = false;
     let notifiedOutage = false;
 
     const controller = createReconnectingSocket<WebSocket>({
@@ -709,19 +708,18 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit, onOpenFile }: 
       shouldReconnect: (event) => !SESSION_OVER_CLOSE_CODES.includes(event.code ?? -1),
       backoff: { initialDelayMs: 1_000, maxDelayMs: 10_000 },
       onOpen: (ws) => {
-        // The server replays the session's ring buffer on every connect, so a
-        // reconnect must reset the terminal first or the replayed scrollback
-        // would be appended twice.
-        if (hasConnectedOnce) {
-          terminal.reset();
-        }
-        hasConnectedOnce = true;
+        // Always reset before the server's ring replay (or live-redraw stream)
+        // arrives. Reconnects used to be the only path that reset — first open
+        // after switching sessions already calls clear(), but a reconnect or a
+        // skip-replay Grok redraw must not paint over stale cells.
+        terminal.reset();
         notifiedOutage = false;
         if (!visibleRef.current) {
           registerTerminalSend(null);
           return;
         }
-        // Send initial size
+        // Send initial size immediately so SessionBridge can size-gate ring
+        // replay / live-redraw before dumping historical absolute-position frames.
         const fitAddon = fitAddonRef.current;
         if (fitAddon) {
           fitAddon.fit();
@@ -788,17 +786,35 @@ export function TerminalPanel({ tmuxName, visible, onEmptySubmit, onOpenFile }: 
       controller.send(data);
     });
 
-    // Terminal resize → WebSocket
+    // Terminal resize → WebSocket. Debounce FitAddon/layout thrash so rapid
+    // panel resizes (and multi-step font changes) do not WINCH-storm the agent
+    // TUI. The initial size is still sent immediately from onOpen.
+    let resizeDebounceTimer: number | null = null;
+    let pendingResize: { cols: number; rows: number } | null = null;
+    const RESIZE_DEBOUNCE_MS = 80;
     const resizeDisposable = terminal.onResize(({ cols, rows }) => {
       if (!visibleRef.current) return;
       const resize = getValidatedResize(cols, rows);
-      if (resize) {
-        controller.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
+      if (!resize) return;
+      pendingResize = resize;
+      if (resizeDebounceTimer !== null) {
+        window.clearTimeout(resizeDebounceTimer);
       }
+      resizeDebounceTimer = window.setTimeout(() => {
+        resizeDebounceTimer = null;
+        const next = pendingResize;
+        pendingResize = null;
+        if (!next || !visibleRef.current) return;
+        controller.send(JSON.stringify({ type: 'resize', cols: next.cols, rows: next.rows }));
+      }, RESIZE_DEBOUNCE_MS);
     });
 
     return () => {
       registerTerminalSend(null);
+      if (resizeDebounceTimer !== null) {
+        window.clearTimeout(resizeDebounceTimer);
+        resizeDebounceTimer = null;
+      }
       inputDisposable.dispose();
       resizeDisposable.dispose();
       controller.stop();
