@@ -19,6 +19,7 @@ export type OperationalAlertMetric =
   | 'cpu'
   | 'memory'
   | 'event_loop_delay'
+  | 'process_rss'
   | 'data_directory_disk_free';
 
 const PERSISTENCE_TARGET_LABELS: Record<PersistenceHealthTarget, string> = {
@@ -74,7 +75,8 @@ interface CircuitBreakerRuleState {
 
 /**
  * Edge-triggered evaluator for operational alerts on already-sampled host
- * signals (CPU, memory, event-loop delay, data-directory disk pressure).
+ * signals (CPU, memory, event-loop delay, process RSS, data-directory disk
+ * pressure).
  *
  * For scalar high-watermark rules it fires a single `warning` alert once the
  * metric stays at or above its threshold for `sustainSamples` consecutive
@@ -131,6 +133,7 @@ export class OperationalAlertEvaluator {
     for (const rule of this.rules) {
       this.states.set(rule.metric, { consecutive: 0, firing: false, configKey: null });
     }
+    this.states.set('process_rss', { consecutive: 0, firing: false, configKey: null });
     this.states.set('data_directory_disk_free', { consecutive: 0, firing: false, configKey: null });
     this.persistenceStates.set('task_state', { firing: false, configKey: null });
     this.persistenceStates.set('detection_stats', { firing: false, configKey: null });
@@ -141,6 +144,7 @@ export class OperationalAlertEvaluator {
     const config = this.getConfig();
     return this.getPersistenceHealth !== null
       || this.rules.some((rule) => rule.threshold(config) > 0)
+      || config.processRssBytes > 0
       || config.dataDirectoryFreePercent > 0
       || config.dataDirectoryFreeBytes > 0
       || config.circuitBreakerOpenMs > 0;
@@ -190,10 +194,61 @@ export class OperationalAlertEvaluator {
         }
       }
     }
+    messages.push(...this.evaluateProcessRss(status, config, sustainSamples));
     messages.push(...this.evaluateDataDirectoryDiskPressure(status, config, sustainSamples));
     messages.push(...this.evaluatePersistenceHealth(sustainSamples));
     messages.push(...this.evaluateCircuitBreakers(status, config));
     return messages;
+  }
+
+  /**
+   * High-watermark rule on the Kookr process resident set size (RSS). Unlike
+   * host `memoryUsedPercent`, this surfaces the supervisor process itself
+   * "fattening" (e.g. retained snapshots/hook state) well before the host is
+   * near OOM. Shares the scalar sustain-sample / edge-trigger contract, but
+   * formats bytes as MiB/GiB and carries remediation hints.
+   */
+  private evaluateProcessRss(
+    status: SystemResourceStatus,
+    config: OperationalAlertConfig,
+    sustainSamples: number,
+  ): ServerMessage[] {
+    const state = this.states.get('process_rss');
+    if (!state) return [];
+    const threshold = config.processRssBytes;
+    if (threshold <= 0) {
+      resetState(state);
+      return [];
+    }
+
+    const configKey = `process-rss:${threshold}:${sustainSamples}`;
+    if (state.configKey !== null && state.configKey !== configKey) {
+      resetState(state);
+    }
+    state.configKey = configKey;
+
+    const value = status.server.processRssBytes;
+    if (value === null || !Number.isFinite(value)) {
+      // No data: leave both the counter and any active alert untouched so
+      // transient sampler errors neither fire nor clear.
+      return [];
+    }
+
+    if (value >= threshold) {
+      state.consecutive += 1;
+      if (!state.firing && state.consecutive >= sustainSamples) {
+        state.firing = true;
+        return [buildProcessRssBreachAlert({ value, threshold, sustainSamples })];
+      }
+      return [];
+    }
+
+    state.consecutive = 0;
+    if (state.firing) {
+      state.firing = false;
+      return [buildProcessRssRecoveryAlert({ value, threshold })];
+    }
+    return [];
   }
 
   private evaluateDataDirectoryDiskPressure(
@@ -419,6 +474,55 @@ function buildRecoveryAlert(
     operationalAlert: {
       key: `resource:${rule.metric}`,
       metric: rule.metric,
+      state: 'recovered',
+    },
+  };
+}
+
+const PROCESS_RSS_REMEDIATION =
+  'Inspect `/api/diagnostics/hook-ingestion` and the active task count for retained ' +
+  'state, run `kookr maintenance prune --dry-run` to review conservative cleanup ' +
+  'candidates, and clear finished tasks (clearCompleted) to release their retained snapshots.';
+
+function buildProcessRssBreachAlert(args: {
+  value: number;
+  threshold: number;
+  sustainSamples: number;
+}): Extract<ServerMessage, { type: 'alert' }> {
+  const severity: AnomalySeverity = 'warning';
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `High Kookr process RSS: ${formatBytes(args.value)} (threshold ${formatBytes(args.threshold)})`,
+    details:
+      `Sustained operational alert: Kookr process RSS at ${formatBytes(args.value)} for ` +
+      `${args.sustainSamples} consecutive samples (threshold ${formatBytes(args.threshold)}). ` +
+      PROCESS_RSS_REMEDIATION,
+    severity,
+    operationalAlert: {
+      key: 'resource:process_rss',
+      metric: 'process_rss',
+      state: 'fired',
+    },
+  };
+}
+
+function buildProcessRssRecoveryAlert(args: {
+  value: number;
+  threshold: number;
+}): Extract<ServerMessage, { type: 'alert' }> {
+  const severity: AnomalySeverity = 'info';
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `Recovered Kookr process RSS: ${formatBytes(args.value)} (below threshold ${formatBytes(args.threshold)})`,
+    details:
+      `Operational alert cleared: Kookr process RSS back below threshold ` +
+      `(${formatBytes(args.threshold)}).`,
+    severity,
+    operationalAlert: {
+      key: 'resource:process_rss',
+      metric: 'process_rss',
       state: 'recovered',
     },
   };

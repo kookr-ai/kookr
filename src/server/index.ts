@@ -1303,6 +1303,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       `[ops-alerts] thresholds: cpu=${operationalAlertConfig.cpuPercent || 'off'}% ` +
         `mem=${operationalAlertConfig.memoryPercent || 'off'}% ` +
         `eventLoopDelay=${operationalAlertConfig.eventLoopDelayMs || 'off'}ms ` +
+        `processRss=${operationalAlertConfig.processRssBytes || 'off'}B ` +
         `dataDirFree=${operationalAlertConfig.dataDirectoryFreePercent || 'off'}%/` +
         `${operationalAlertConfig.dataDirectoryFreeBytes || 'off'}B ` +
         `persistence=on ` +

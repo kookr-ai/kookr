@@ -464,6 +464,7 @@ boot defaults seeded from `KOOKR_ALERT_*` environment variables:
     "cpuPercent": 0,
     "memoryPercent": 0,
     "eventLoopDelayMs": 0,
+    "processRssBytes": 0,
     "dataDirectoryFreePercent": 5,
     "dataDirectoryFreeBytes": 2147483648,
     "circuitBreakerOpenMs": 30000,
@@ -473,6 +474,7 @@ boot defaults seeded from `KOOKR_ALERT_*` environment variables:
     "cpuPercent": 0,
     "memoryPercent": 0,
     "eventLoopDelayMs": 0,
+    "processRssBytes": 0,
     "dataDirectoryFreePercent": 5,
     "dataDirectoryFreeBytes": 2147483648,
     "circuitBreakerOpenMs": 30000,
@@ -483,8 +485,8 @@ boot defaults seeded from `KOOKR_ALERT_*` environment variables:
 
 `POST /api/admin/operational-alert-config` accepts a partial object with one or
 more known fields: `cpuPercent`, `memoryPercent`, `eventLoopDelayMs`,
-`dataDirectoryFreePercent`, `dataDirectoryFreeBytes`, `circuitBreakerOpenMs`,
-and `sustainSamples`. Threshold fields must be finite numbers greater than or
+`processRssBytes`, `dataDirectoryFreePercent`, `dataDirectoryFreeBytes`,
+`circuitBreakerOpenMs`, and `sustainSamples`. Threshold fields must be finite numbers greater than or
 equal to zero. `sustainSamples` must be an integer greater than or equal to one.
 Unknown fields are ignored, but at least one known field must be present.
 Success returns the same shape as `GET`; validation failures return `400` with

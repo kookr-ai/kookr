@@ -22,6 +22,8 @@ export interface OperationalAlertConfig {
   memoryPercent: number;
   /** Event-loop delay p95 threshold in milliseconds (`0` disables). */
   eventLoopDelayMs: number;
+  /** Kookr process resident-set-size (RSS) threshold in bytes (`0` disables). */
+  processRssBytes: number;
   /** Data-directory filesystem free-space percent threshold (`0` disables). */
   dataDirectoryFreePercent: number;
   /** Data-directory filesystem free-space byte threshold (`0` disables). */
@@ -47,10 +49,10 @@ function readPositiveInt(raw: string | undefined, fallback: number): number {
 }
 
 /**
- * Read operational alert thresholds from the environment. CPU, memory, and
- * event-loop thresholds default to `0` (disabled); data-directory disk pressure
- * uses conservative enabled defaults. Invalid or blank values fall back to the
- * documented defaults.
+ * Read operational alert thresholds from the environment. CPU, memory,
+ * event-loop, and process-RSS thresholds default to `0` (disabled);
+ * data-directory disk pressure uses conservative enabled defaults. Invalid or
+ * blank values fall back to the documented defaults.
  */
 export function readOperationalAlertConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
@@ -59,6 +61,7 @@ export function readOperationalAlertConfigFromEnv(
     cpuPercent: readNonNegativeNumber(env.KOOKR_ALERT_CPU_PERCENT, 0),
     memoryPercent: readNonNegativeNumber(env.KOOKR_ALERT_MEMORY_PERCENT, 0),
     eventLoopDelayMs: readNonNegativeNumber(env.KOOKR_ALERT_EVENT_LOOP_DELAY_MS, 0),
+    processRssBytes: readNonNegativeNumber(env.KOOKR_ALERT_PROCESS_RSS_BYTES, 0),
     dataDirectoryFreePercent: readNonNegativeNumber(
       env.KOOKR_ALERT_DATA_DIR_FREE_PERCENT,
       DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
