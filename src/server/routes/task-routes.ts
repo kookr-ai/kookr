@@ -16,7 +16,7 @@ import { TaskLifecycleCommands } from '../use-cases/task-lifecycle-commands.js';
 import { launchTask, DrainModeError, isCwdValidationError, isEffortValidationError } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import { LAUNCH_DEPENDENCIES, type LaunchDependency } from '../../core/playbook.js';
-import type { Task, TaskStore, TokenUsage } from '../../core/tasks.js';
+import type { SessionInfo, Task, TaskStore, TokenUsage } from '../../core/tasks.js';
 import type { TaskDependencyEdge, TaskMetadataIntent } from '../../shared/contracts/task.js';
 import { normalizeTerminalWorktreeHealth } from '../../core/worktree-health.js';
 import { readEvolutionRunProjection } from '../../core/evolution-summary.js';
@@ -86,7 +86,21 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     }));
   }
 
+  // Additive compact list projection (issue: compact GET /api/tasks). Dashboards
+  // and pollers list hundreds of historical tasks but only need list-row fields;
+  // the default full view ships every task's multi-KB `prompt`/`userPrompt`, which
+  // on prod totalled ~8.7 MB for ~213 tasks. `?view=compact` omits those heavy
+  // bodies (prompt, userPrompt, criteria, launchNote, completionDigest,
+  // launchHealthSummary) while keeping the id/status/session-health/token/timeline
+  // fields a list needs. The full detail — including prompt — stays available via
+  // GET /api/tasks/:id. Default remains the full list for backward compatibility.
   app.get('/api/tasks', (c) => {
+    if (c.req.query('view') === 'compact') {
+      const compact = taskStore.listTasks().map((t) => toCompactApiTask(t, taskStore));
+      if (!deps.suppressionTracker) return c.json(compact);
+      const tracker = deps.suppressionTracker;
+      return c.json(compact.map((t) => withSuppressionFlag(t, tracker)));
+    }
     const tasks = taskStore.listTasks()
       .map(normalizeTaskForApi)
       .map((t) => attachAggregateTokenUsage(t, taskStore));
@@ -552,6 +566,112 @@ function attachAggregateTokenUsage(task: ApiTask, store: TaskStore): ApiTask {
   return aggregate ? { ...task, aggregateTokenUsage: aggregate } : task;
 }
 
+/**
+ * Session fields the compact list surfaces. Enough for session-health badges and
+ * for clients that match a task by its `tmuxSession` (e.g. the QuickLaunch CWD
+ * resolver and DetailPanel relaunch lookup). Heavy/rarely-listed session fields
+ * (transcriptPath, childSessionIds, git* identity) are dropped.
+ */
+type CompactApiTaskSession = Pick<
+  SessionInfo,
+  | 'tmuxSession'
+  | 'agentType'
+  | 'lastStatus'
+  | 'lastTurnState'
+  | 'worktreeHealth'
+  | 'lastEventAt'
+  | 'crashRecovered'
+  | 'relaunchCount'
+>;
+
+/**
+ * Compact list-row projection of a task, returned by `GET /api/tasks?view=compact`.
+ * Carries the id/status/timeline/token/session-health fields a dashboard list
+ * needs and deliberately OMITS the heavy bodies (`prompt`, `userPrompt`,
+ * `criteria`, `launchNote`, `completionDigest`, `launchHealthSummary`). Fetch
+ * `GET /api/tasks/:id` for the full detail including the prompt.
+ */
+type CompactApiTask = Pick<
+  Task,
+  | 'id'
+  | 'name'
+  | 'status'
+  | 'cwd'
+  | 'agentType'
+  | 'playbookId'
+  | 'projectId'
+  | 'priority'
+  | 'parentTaskId'
+  | 'childTaskIds'
+  | 'blocks'
+  | 'blocked_by'
+  | 'deliveryAuthorization'
+  | 'autoCloseOnSignal'
+  | 'tokenUsage'
+  | 'pendingSignal'
+  | 'issueClaim'
+  | 'ralphLoop'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'finishedAt'
+  | 'terminatedAt'
+> & {
+  /** Alias of `id`, mirroring the full `ApiTask` surface. */
+  taskId: string;
+  /** Descendant-rolled-up token usage on a parent/batch task (issue #1307). */
+  aggregateTokenUsage?: TokenUsage;
+  sessions: CompactApiTaskSession[];
+};
+
+/**
+ * Build the compact list projection for a task. Rolls up child token usage the
+ * same way `attachAggregateTokenUsage` does for the full view, and normalizes
+ * terminal worktree health per session exactly like `normalizeTaskForApi`.
+ * Undefined optional fields serialize away, so terminal/leaf tasks stay lean.
+ */
+function toCompactApiTask(task: Task, store: TaskStore): CompactApiTask {
+  const aggregateTokenUsage =
+    task.childTaskIds && task.childTaskIds.length > 0
+      ? store.getAggregateTokenUsage(task.id) ?? undefined
+      : undefined;
+  return {
+    id: task.id,
+    taskId: task.id,
+    name: task.name,
+    status: task.status,
+    cwd: task.cwd,
+    agentType: task.agentType,
+    playbookId: task.playbookId,
+    projectId: task.projectId,
+    priority: task.priority,
+    parentTaskId: task.parentTaskId,
+    childTaskIds: task.childTaskIds,
+    blocks: task.blocks,
+    blocked_by: task.blocked_by,
+    deliveryAuthorization: task.deliveryAuthorization,
+    autoCloseOnSignal: task.autoCloseOnSignal,
+    tokenUsage: task.tokenUsage,
+    aggregateTokenUsage,
+    pendingSignal: task.pendingSignal,
+    issueClaim: task.issueClaim,
+    ralphLoop: task.ralphLoop,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+    finishedAt: task.finishedAt,
+    terminatedAt: task.terminatedAt,
+    sessions: task.sessions.map((session) => ({
+      tmuxSession: session.tmuxSession,
+      agentType: session.agentType,
+      lastStatus: session.lastStatus,
+      lastTurnState: session.lastTurnState,
+      worktreeHealth: normalizeTerminalWorktreeHealth(task.status, session.worktreeHealth),
+      lastEventAt: session.lastEventAt,
+      crashRecovered: session.crashRecovered,
+      relaunchCount: session.relaunchCount,
+    })),
+  };
+}
+
 function normalizeTaskForApi(task: Task): ApiTask {
   let changed = false;
   const sessions = task.sessions.map((session) => {
@@ -564,10 +684,12 @@ function normalizeTaskForApi(task: Task): ApiTask {
   return changed ? { ...task, sessions, taskId: task.id } : { ...task, taskId: task.id };
 }
 
-function withSuppressionFlag(
-  task: ApiTask,
+function withSuppressionFlag<
+  T extends { sessions: Array<{ tmuxSession: string; lastStatus?: SessionInfo['lastStatus'] }> },
+>(
+  task: T,
   tracker: { isSuppressed(tmuxSession: string): boolean },
-): ApiTask | (ApiTask & { suppressed: true }) {
+): T | (T & { suppressed: true }) {
   const hasSuppressedSession = task.sessions.some(
     (s) => s.lastStatus !== 'completed' && s.lastStatus !== 'aborted' && tracker.isSuppressed(s.tmuxSession),
   );

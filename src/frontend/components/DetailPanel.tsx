@@ -795,14 +795,14 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
     }
 
     try {
-      const res = await fetch('/api/tasks');
+      // Relaunch needs the full prompt/criteria bodies, so fetch this one task's
+      // detail (GET /api/tasks/:id) rather than the whole list. The list endpoint
+      // now serves a compact projection that omits prompt bodies.
+      if (!agent.taskId) return;
+      const res = await fetch(`/api/tasks/${encodeURIComponent(agent.taskId)}`);
       if (!res.ok) return;
-      const tasks = await res.json();
-      // Find the task that owns this agent (tmux session name matches)
-      const task = tasks.find((t: { sessions: Array<{ tmuxSession: string }> }) =>
-        t.sessions.some((s: { tmuxSession: string }) => s.tmuxSession === agent.agentId)
-      );
-      if (task) {
+      const task = await res.json();
+      if (task && !task.error) {
         setRelaunchTask({ prompt: task.prompt, cwd: task.cwd, criteria: task.criteria, agentType: task.agentType });
       }
     } catch { /* ignore fetch errors */ }
