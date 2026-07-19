@@ -500,10 +500,10 @@ describe('SessionBridge', () => {
     expect(binaryText.includes(cups.slice(0, 40))).toBe(false);
     expect(onReplay).not.toHaveBeenCalled();
 
-    // Live redraw nudge: cols-1 then cols (and the initial apply).
-    const resizeArgs = resizeSpy.mock.calls.map((c) => [c[1], c[2]]);
-    expect(resizeArgs).toContainEqual([100, 40]);
-    expect(resizeArgs).toContainEqual([99, 40]);
+    // Browser size applied; current-frame recovery via reconnectTransport
+    // (FakeTerminalBackend succeeds, so no WINCH fallback).
+    expect(resizeSpy).toHaveBeenCalledWith('s1', 100, 40);
+    expect(backend.lastReconnectOptions?.reason).toBe('absolute-tui-frame-refresh');
   });
 
   it('still replays ordinary ring content when the stream is not absolute-TUI', async () => {
@@ -554,7 +554,7 @@ describe('SessionBridge', () => {
     expect(resizeSpy).toHaveBeenCalledWith('s1', 100, 40);
   });
 
-  it('applies a late FitAddon resize after the wait times out and still nudges live redraw', async () => {
+  it('applies a late FitAddon resize after the wait times out and refreshes the TUI frame', async () => {
     const backend = await makeReadySession('s1');
     const cups = Array.from({ length: 220 }, (_, i) => {
       const row = (i % 40) + 1;
@@ -597,9 +597,8 @@ describe('SessionBridge', () => {
     releaseCapture();
     await startPromise;
 
-    const resizeArgs = resizeSpy.mock.calls.map((c) => [c[1], c[2]]);
-    expect(resizeArgs).toContainEqual([110, 42]);
-    expect(resizeArgs).toContainEqual([109, 42]);
+    expect(resizeSpy).toHaveBeenCalledWith('s1', 110, 42);
+    expect(backend.lastReconnectOptions?.reason).toBe('absolute-tui-frame-refresh');
     const binaryText = ws.sent
       .filter((s): s is Buffer => Buffer.isBuffer(s))
       .map((b) => b.toString('latin1'))
