@@ -136,7 +136,7 @@ The chosen layout is a two-panel "supervisor-first" design. The UI is organized 
 | F5.1 | **Supervisor findings panel** | Left side (340px): rich finding cards ordered by urgency, each with severity badge, supervisor explanation, inline quick-reply input, and skip/snooze/response actions. Healthy agents collapsed into a compact section at the bottom. |
 | F5.2 | **Terminal panel** | Main area shows an interactive xterm.js terminal bridged to the selected agent's dtach session via `SessionBridge` over a binary WebSocket. The terminal is always visible when an agent is selected. |
 | F5.3 | **Status bar** | Bottom: task count, finding count, keyboard shortcut hints. Top bar: queue dots showing triage position, findings/healthy counts, and cost where available. |
-| F5.4 | **Keyboard shortcuts** | Ctrl+Enter: send & advance. Ctrl+N: next finding. Tab: skip. Ctrl+L: quick launch. |
+| F5.4 | **Keyboard shortcuts** | Ctrl+Enter: send & advance. Alt+N: next finding. Alt+L: quick launch. macOS defaults use Cmd+Ctrl instead of Alt. Rebindable in Settings. |
 | F5.5 | **Real-time updates** | All panels update live as agent states change. No manual refresh. |
 | F5.6 | **Respond-and-advance loop** | "Send & Next" as primary action. After responding, a confirmation overlay shows what was sent and where the UI is advancing to. Queue dots track triage progress. |
 | F5.7 | **"All clear" state** | When no findings exist, the findings panel shows a calm "all agents working autonomously" state. |
