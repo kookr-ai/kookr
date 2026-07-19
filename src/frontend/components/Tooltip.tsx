@@ -1,9 +1,7 @@
 import React, { useState, useRef, useCallback, useId } from 'react';
 import { createPortal } from 'react-dom';
 
-type TooltipChildProps = React.HTMLAttributes<HTMLElement> & {
-  'aria-describedby'?: string;
-};
+type TooltipChildProps = React.HTMLAttributes<HTMLElement>;
 
 interface TooltipProps {
   text: string | undefined;
@@ -21,6 +19,8 @@ export function Tooltip({ text, children }: TooltipProps) {
   const [visible, setVisible] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
   const timerRef = useRef<ReturnType<typeof setTimeout>>(null);
+  const hoveredRef = useRef(false);
+  const focusedRef = useRef(false);
   const tooltipId = useId();
   const displayText = text ? compactTooltipText(text) : undefined;
   const childProps = children.props;
@@ -50,19 +50,23 @@ export function Tooltip({ text, children }: TooltipProps) {
         'aria-describedby': describedBy,
         onMouseEnter: (event: React.MouseEvent<HTMLElement>) => {
           childProps.onMouseEnter?.(event);
+          hoveredRef.current = true;
           show(event);
         },
         onMouseLeave: (event: React.MouseEvent<HTMLElement>) => {
           childProps.onMouseLeave?.(event);
-          hide();
+          hoveredRef.current = false;
+          if (!focusedRef.current) hide();
         },
         onFocus: (event: React.FocusEvent<HTMLElement>) => {
           childProps.onFocus?.(event);
+          focusedRef.current = true;
           show(event);
         },
         onBlur: (event: React.FocusEvent<HTMLElement>) => {
           childProps.onBlur?.(event);
-          hide();
+          focusedRef.current = false;
+          if (!hoveredRef.current) hide();
         },
         onKeyDown: (event: React.KeyboardEvent<HTMLElement>) => {
           childProps.onKeyDown?.(event);

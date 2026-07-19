@@ -87,14 +87,16 @@ describe('Tooltip', () => {
     expect(document.querySelector('[role="tooltip"]')).toBeNull();
 
     act(() => {
-      button.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
-      vi.advanceTimersByTime(400);
       button.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+      button.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+      button.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      vi.advanceTimersByTime(400);
     });
+    expect(onKeyDown).toHaveBeenCalledTimes(2);
     expect(document.querySelector('[role="tooltip"]')).toBeNull();
   });
 
-  test('does not reveal after overlapping hover and focus both end', () => {
+  test('stays visible until both overlapping hover and focus end', () => {
     renderTooltip('Mixed-input details');
 
     const button = container.querySelector('button')!;
@@ -108,12 +110,27 @@ describe('Tooltip', () => {
       button.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
     });
     act(() => {
-      button.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
-    });
-    act(() => {
       vi.advanceTimersByTime(400);
     });
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toBe('Mixed-input details');
 
+    act(() => {
+      button.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    });
+
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+
+    act(() => {
+      button.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      button.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+      button.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+      vi.advanceTimersByTime(400);
+    });
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toBe('Mixed-input details');
+
+    act(() => {
+      button.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
+    });
     expect(document.querySelector('[role="tooltip"]')).toBeNull();
   });
 });
