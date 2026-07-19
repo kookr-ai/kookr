@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import packageJson from '../../package.json' with { type: 'json' };
 import { HELP_TEXT, main } from '../../bin/kookr.js';
 import {
+  COMPLETION_SHELLS,
   getRootCompletionCommands,
   KOOKR_COMPLETION_COMMANDS,
   renderCompletion,
@@ -17,6 +18,10 @@ const execFileAsync = promisify(execFile);
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function completeBash(words: string[], cword = words.length - 1): Promise<string[]> {
@@ -126,6 +131,8 @@ describe('renderCompletion', () => {
     expect(script).toContain('compgen -W "spawn signal issue doctor status logs command ralph drain resume maintenance pr-checklist push completion -h --help -v --version"');
     expect(script).toContain('compgen -W "outcome"');
     expect(script).toContain('status pause resume cancel');
+    expect(script).toContain('list claim release owner');
+    expect(script).toContain('verify');
     expect(script).toContain('--prompt-file');
     expect(script).toContain('compgen -W "claude-code codex-cli grok-build"');
     expect(script).toContain('compgen -W "none minimal low medium high xhigh max ultra"');
@@ -145,6 +152,8 @@ describe('renderCompletion', () => {
     expect(script).toContain('compadd -- $root_commands -h --help -v --version');
     expect(script).toContain('compadd outcome');
     expect(script).toContain('compadd -- status pause resume cancel');
+    expect(script).toContain('compadd -- list claim release owner');
+    expect(script).toContain('compadd -- verify');
     expect(script).toContain('compadd claude-code codex-cli grok-build');
     expect(script).toContain('compadd none minimal low medium high xhigh max ultra');
     expect(script).toContain('compadd warn block skip');
@@ -155,6 +164,25 @@ describe('renderCompletion', () => {
     expect(script).toContain('--max-age-days');
     expect(script).toContain('compadd -- $completion_shells');
   });
+
+  it.each(COMPLETION_SHELLS)(
+    'embeds a case branch and declared subcommands for every verb (%s)',
+    (shell) => {
+      const script = renderCompletion(shell);
+      for (const command of KOOKR_COMPLETION_COMMANDS) {
+        // Each metadata verb must have a case arm so declared flags/subcommands are reachable.
+        expect(script, `missing case arm for ${command.name} in ${shell}`).toMatch(
+          new RegExp(`^\\s+${escapeRegExp(command.name)}\\)`, 'm'),
+        );
+        if (command.subcommands !== undefined && command.subcommands.length > 0) {
+          expect(
+            script,
+            `declared subcommands for ${command.name} not embedded in ${shell}`,
+          ).toContain(command.subcommands.join(' '));
+        }
+      }
+    },
+  );
 });
 
 describe('bash completion behavior', () => {
@@ -168,6 +196,45 @@ describe('bash completion behavior', () => {
     await expect(completeBash(['kookr', 'ralph', ''])).resolves.toEqual(
       expect.arrayContaining(['status', 'pause', 'resume', 'cancel']),
     );
+  });
+
+  it('completes issue subcommands and flags', async () => {
+    await expect(completeBash(['kookr', 'issue', ''])).resolves.toEqual(
+      expect.arrayContaining(['list', 'claim', 'release', 'owner', '--repo', '--force']),
+    );
+    await expect(completeBash(['kookr', 'issue', 'claim', ''])).resolves.toEqual([
+      '--repo',
+      '--force',
+      '--task-id',
+      '--json',
+      '-h',
+      '--help',
+    ]);
+  });
+
+  it('completes logs flags', async () => {
+    await expect(completeBash(['kookr', 'logs', ''])).resolves.toEqual([
+      '-n',
+      '--lines',
+      '--json',
+      '--dir',
+      '-h',
+      '--help',
+    ]);
+  });
+
+  it('completes pr-checklist subcommands and flags', async () => {
+    await expect(completeBash(['kookr', 'pr-checklist', ''])).resolves.toEqual(
+      expect.arrayContaining(['verify', '--pr-body', '--base', '--explain']),
+    );
+    await expect(completeBash(['kookr', 'pr-checklist', 'verify', ''])).resolves.toEqual([
+      '--pr-body',
+      '--base',
+      '--json',
+      '--explain',
+      '-h',
+      '--help',
+    ]);
   });
 
   it('completes flag values after a space-form flag', async () => {
@@ -292,6 +359,45 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
   it('completes command subcommands', async () => {
     await expect(completeZsh(['kookr', 'command', ''], 3)).resolves.toEqual(['outcome']);
     await expect(completeZsh(['kookr', 'command', 'outcome', ''], 4)).resolves.toEqual([]);
+  });
+
+  it('completes issue subcommands and flags', async () => {
+    await expect(completeZsh(['kookr', 'issue', ''], 3)).resolves.toEqual(
+      expect.arrayContaining(['list', 'claim', 'release', 'owner', '--repo', '--force']),
+    );
+    await expect(completeZsh(['kookr', 'issue', 'claim', ''], 4)).resolves.toEqual([
+      '--repo',
+      '--force',
+      '--task-id',
+      '--json',
+      '-h',
+      '--help',
+    ]);
+  });
+
+  it('completes logs flags', async () => {
+    await expect(completeZsh(['kookr', 'logs', ''], 3)).resolves.toEqual([
+      '-n',
+      '--lines',
+      '--json',
+      '--dir',
+      '-h',
+      '--help',
+    ]);
+  });
+
+  it('completes pr-checklist subcommands and flags', async () => {
+    await expect(completeZsh(['kookr', 'pr-checklist', ''], 3)).resolves.toEqual(
+      expect.arrayContaining(['verify', '--pr-body', '--base', '--explain']),
+    );
+    await expect(completeZsh(['kookr', 'pr-checklist', 'verify', ''], 4)).resolves.toEqual([
+      '--pr-body',
+      '--base',
+      '--json',
+      '--explain',
+      '-h',
+      '--help',
+    ]);
   });
 
   it('completes signal kinds and flags', async () => {

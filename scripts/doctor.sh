@@ -280,8 +280,10 @@ DOCKER_OK=0
 if command -v docker >/dev/null 2>&1; then
   DOCKER_VERSION="$(docker --version 2>/dev/null | awk '{print $3}' | tr -d ',')"
   # `docker info` exits non-zero if the daemon is not reachable. Probe it
-  # without asking for output we don't need.
-  if docker info >/dev/null 2>&1; then
+  # without asking for output we don't need. Bound the wait: a hung daemon
+  # (common on Linux when dockerd is stopped but the CLI still resolves)
+  # would otherwise stall doctor and any test that shells out to it.
+  if timeout 3 docker info >/dev/null 2>&1; then
     print_row "Docker" "$DOCKER_VERSION" "OK"
     DOCKER_OK=1
   else
