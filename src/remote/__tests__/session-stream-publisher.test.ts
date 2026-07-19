@@ -8,13 +8,19 @@ import WebSocket from 'ws';
 import { describe, expect, it, vi } from 'vitest';
 
 import { FakeTerminalBackend } from '../../adapters/fake-terminal-backend.js';
-import { createSessionStreamPublisher } from '../session-stream-publisher.js';
+import {
+  createSessionStreamPublisher,
+  DROP_WARN_MIN_INTERVAL_MS,
+} from '../session-stream-publisher.js';
 import { asNodeEpoch, asNodeId, asPolicyVersion, asSessionEpoch, asSessionId } from '../ids.js';
 import type { TerminalBytesPayload, TerminalPublicationMetadata, TerminalStreamEvent } from '../stream-events.js';
 import { createRemoteNodeClient } from '../node-client.js';
 import { createRelayServer } from '../../../relay/server.js';
 
-function makeRemoteClient(events: TerminalStreamEvent[] = []) {
+function makeRemoteClient(
+  events: TerminalStreamEvent[] = [],
+  publishImpl?: (event: TerminalStreamEvent) => boolean,
+) {
   return {
     status: {
       relayConnected: true,
@@ -26,10 +32,32 @@ function makeRemoteClient(events: TerminalStreamEvent[] = []) {
       features: { enabled: [], disabled: [] },
     },
     publish(event: TerminalStreamEvent): boolean {
+      if (publishImpl) return publishImpl(event);
       events.push(event);
       return true;
     },
   };
+}
+
+function installGuestRule(
+  publisher: ReturnType<typeof createSessionStreamPublisher>,
+  sessionId: string,
+  scopeId = `scope-${sessionId}`,
+): void {
+  expect(publisher.installPublicationRule({
+    publicationScopeId: scopeId,
+    principal: { kind: 'guest-member', invitationId: 'inv-1', memberSessionId: 'member-1', deviceId: 'device-1' },
+    sessionId: asSessionId(sessionId),
+    sessionEpoch: asSessionEpoch('1'),
+    approvedAt: new Date().toISOString(),
+    policyVersion: asPolicyVersion(1),
+  })).toEqual(expect.objectContaining({ ok: true }));
+  publisher.recordDemandProof({
+    principal: { kind: 'guest-member', invitationId: 'inv-1', memberSessionId: 'member-1', deviceId: 'device-1' },
+    sessionId: asSessionId(sessionId),
+    sessionEpoch: asSessionEpoch('1'),
+    proof: { kind: 'guest-relay-presence', expiresAt: new Date(Date.now() + 60_000).toISOString() },
+  });
 }
 
 describe('SessionStreamPublisher', () => {
@@ -235,6 +263,70 @@ describe('SessionStreamPublisher', () => {
       }
       await relay.close();
     }
+  });
+
+  it('counts dropped frames and rate-limits warnings when publish returns false', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession({ id: 's1', command: 'agent', args: [] });
+    const events: TerminalStreamEvent[] = [];
+    const warn = vi.fn();
+    let clockMs = 1_000;
+    const publisher = createSessionStreamPublisher({
+      terminalBackend: backend,
+      remoteNodeClient: makeRemoteClient(events, () => false),
+      env: { KOOKR_RELAY_TRUSTED: 'true' },
+      logger: { warn },
+      now: () => new Date(clockMs),
+    });
+    await publisher.start();
+    installGuestRule(publisher, 's1');
+
+    backend.emit('s1', 'drop-1');
+    backend.emit('s1', 'drop-2');
+    backend.emit('s1', 'drop-3');
+
+    expect(events).toEqual([]);
+    expect(publisher.droppedFrameCount('s1')).toBe(3);
+    // Seq still advanced for gap detection even though publish failed.
+    expect(publisher.currentCursor('s1')).toEqual({
+      sessionEpoch: asSessionEpoch('1'),
+      lastSeq: 3,
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('totalDropped=1'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('session s1'));
+
+    clockMs += DROP_WARN_MIN_INTERVAL_MS - 1;
+    backend.emit('s1', 'drop-4');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(publisher.droppedFrameCount('s1')).toBe(4);
+
+    clockMs += 1;
+    backend.emit('s1', 'drop-5');
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenLastCalledWith(expect.stringContaining('totalDropped=5'));
+    expect(publisher.droppedFrameCount('s1')).toBe(5);
+    publisher.stop();
+  });
+
+  it('does not count or warn on the successful publish path', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession({ id: 's1', command: 'agent', args: [] });
+    const events: TerminalStreamEvent[] = [];
+    const warn = vi.fn();
+    const publisher = createSessionStreamPublisher({
+      terminalBackend: backend,
+      remoteNodeClient: makeRemoteClient(events),
+      env: { KOOKR_RELAY_TRUSTED: 'true' },
+      logger: { warn },
+    });
+    await publisher.start();
+    installGuestRule(publisher, 's1');
+    backend.emit('s1', 'ok');
+    expect(events).toHaveLength(1);
+    expect(publisher.droppedFrameCount('s1')).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+    publisher.stop();
   });
 
   it('encrypts contact-device terminal frames so only the recipient device key decrypts them', async () => {

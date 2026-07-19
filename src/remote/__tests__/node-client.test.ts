@@ -7,7 +7,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { makeRelayHello, type NodeHello } from '../handshake.js';
 import { asSessionEpoch, asSessionId } from '../ids.js';
-import { createRemoteNodeClient, type RemoteNodeClient } from '../node-client.js';
+import {
+  createRemoteNodeClient,
+  isPublishBufferOverloaded,
+  type RemoteNodeClient,
+} from '../node-client.js';
+import type { TerminalStreamEvent } from '../stream-events.js';
 
 async function listen(wss: WebSocketServer): Promise<number> {
   return await new Promise((resolve) => {
@@ -360,5 +365,123 @@ describe('RemoteNodeClient', () => {
       revokedGrantIds: ['grant-1'],
     });
     expect(acks).not.toContainEqual(expect.objectContaining({ policyVersion: 4 }));
+  });
+
+  it('isPublishBufferOverloaded only trips when bufferedAmount exceeds the limit', () => {
+    expect(isPublishBufferOverloaded(null, 10)).toBe(false);
+    expect(isPublishBufferOverloaded({ bufferedAmount: 0 }, 10)).toBe(false);
+    expect(isPublishBufferOverloaded({ bufferedAmount: 10 }, 10)).toBe(false);
+    expect(isPublishBufferOverloaded({ bufferedAmount: 11 }, 10)).toBe(true);
+    expect(isPublishBufferOverloaded({ bufferedAmount: Number.NaN }, 10)).toBe(false);
+    expect(isPublishBufferOverloaded({ bufferedAmount: 5 }, Number.NaN)).toBe(false);
+  });
+
+  it('returns false from publish without send when bufferedAmount exceeds the limit', async () => {
+    const kookrDir = await mkdtemp(join(tmpdir(), 'kookr-node-client-backpressure-'));
+    const sent: string[] = [];
+    let fakeWs: {
+      readyState: number;
+      bufferedAmount: number;
+      OPEN: number;
+      on: (event: string, handler: (...args: unknown[]) => void) => void;
+      once: (event: string, handler: (...args: unknown[]) => void) => void;
+      close: () => void;
+      send: (data: string) => void;
+    } | null = null;
+    const handlers = new Map<string, Array<(...args: unknown[]) => void>>();
+
+    client = await createRemoteNodeClient({
+      relayUrl: 'http://127.0.0.1:9',
+      token: 'token',
+      kookrDir,
+      softwareVersion: 'test',
+      reconnectBaseMs: 10_000,
+      publishBufferedAmountLimit: 10,
+      wsImporter: async () => {
+        class ControllableWebSocket {
+          static readonly OPEN = 1;
+          static readonly CLOSED = 3;
+          readonly OPEN = 1;
+          readonly CLOSED = 3;
+          readyState = 0;
+          bufferedAmount = 0;
+          constructor() {
+            fakeWs = this;
+            queueMicrotask(() => {
+              this.readyState = ControllableWebSocket.OPEN;
+              for (const handler of handlers.get('open') ?? []) handler();
+            });
+          }
+          on(event: string, handler: (...args: unknown[]) => void): this {
+            const list = handlers.get(event) ?? [];
+            list.push(handler);
+            handlers.set(event, list);
+            return this;
+          }
+          once(event: string, handler: (...args: unknown[]) => void): this {
+            return this.on(event, handler);
+          }
+          close(): void {
+            this.readyState = ControllableWebSocket.CLOSED;
+            for (const handler of handlers.get('close') ?? []) handler(1000, Buffer.from(''));
+          }
+          send(data: string): void {
+            sent.push(data);
+            // After node.hello, the real client expects relay.hello before publish works.
+            if (data.includes('"type":"node.hello"')) {
+              const hello = JSON.parse(data) as NodeHello;
+              queueMicrotask(() => {
+                for (const handler of handlers.get('message') ?? []) {
+                  handler(Buffer.from(JSON.stringify(makeRelayHello({
+                    outcome: 'accepted',
+                    acceptedVersion: 1,
+                    enabledFeatures: [...hello.supportedFeatures, 'scoped-terminal-delivery.v1'],
+                  }))));
+                }
+              });
+            }
+          }
+        }
+        return { WebSocket: ControllableWebSocket } as unknown as typeof import('ws');
+      },
+    });
+    client.start();
+    await waitFor(() => client?.status.relayConnected === true, 'timed out waiting for fake relay connect');
+
+    const terminalEvent = {
+      nodeId: client.status.nodeId,
+      nodeEpoch: client.status.nodeEpoch,
+      sessionId: asSessionId('s1'),
+      sessionEpoch: asSessionEpoch('1'),
+      seq: 1,
+      ts: new Date().toISOString(),
+      kind: 'terminal.bytes',
+      payload: { encoding: 'base64', data: '', byteLength: 0 },
+    } as TerminalStreamEvent;
+
+    const controlEvent = {
+      nodeId: client.status.nodeId,
+      nodeEpoch: client.status.nodeEpoch,
+      serverRevision: 1,
+      ts: new Date().toISOString(),
+      kind: 'snapshot' as const,
+      payload: {},
+    };
+
+    // Below threshold: terminal send proceeds.
+    if (!fakeWs) throw new Error('fake websocket not constructed');
+    fakeWs.bufferedAmount = 10;
+    const before = sent.length;
+    expect(client.publish(terminalEvent)).toBe(true);
+    expect(sent.length).toBe(before + 1);
+
+    // Above threshold: terminal frames are dropped without send.
+    fakeWs.bufferedAmount = 11;
+    expect(client.publish(terminalEvent)).toBe(false);
+    expect(sent.length).toBe(before + 1);
+
+    // Control-plane events still send while the soft limit is elevated.
+    expect(client.publish(controlEvent)).toBe(true);
+    expect(sent.length).toBe(before + 2);
   });
 });
