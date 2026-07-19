@@ -554,12 +554,16 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
     const cbData = sent.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data as string;
     fake.queueUpdates([makeCallback({ update_id: 2, userId: ALLOWED_USER_ID, data: cbData, messageId: 1 })]);
     await waitFor(() => expect(fake.outbound.editMessageText.some((m) => /Spawned: t-test-123/.test(m.text))).toBe(true));
+    // Allow origin persistence + callback settle before firing the outcome (flakes under load).
+    await sleep(200);
 
     await handle!.onTaskOutcome('t-test-123', { kind: 'completed' });
-    const outcomeMessages = fake.outbound.sendMessage.filter((m) => /completed/.test(m.text));
-    expect(outcomeMessages).toHaveLength(1);
-    expect(outcomeMessages[0].chat_id).toBe(ALLOWED_USER_ID);
-    expect(outcomeMessages[0].text).toMatch(/http:\/\/localhost:4800\/\?task=t-test-123/);
+    await waitFor(() => {
+      const outcomeMessages = fake.outbound.sendMessage.filter((m) => /Task t-test-123 completed/.test(m.text));
+      expect(outcomeMessages).toHaveLength(1);
+      expect(outcomeMessages[0].chat_id).toBe(ALLOWED_USER_ID);
+      expect(outcomeMessages[0].text).toMatch(/http:\/\/localhost:4800\/\?task=t-test-123/);
+    });
   });
 
   it('task outcome formats failed messages for remote-spawned tasks', async () => {
@@ -574,9 +578,12 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
     const cbData = sent.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data as string;
     fake.queueUpdates([makeCallback({ update_id: 2, userId: ALLOWED_USER_ID, data: cbData, messageId: 1 })]);
     await waitFor(() => expect(fake.outbound.editMessageText.some((m) => /Spawned: t-failed-123/.test(m.text))).toBe(true));
+    await sleep(200);
 
     await handle!.onTaskOutcome('t-failed-123', { kind: 'failed' });
-    expect(fake.outbound.sendMessage.some((m) => m.chat_id === ALLOWED_USER_ID && /Task t-failed-123 failed/.test(m.text))).toBe(true);
+    await waitFor(() => {
+      expect(fake.outbound.sendMessage.some((m) => m.chat_id === ALLOWED_USER_ID && /Task t-failed-123 failed/.test(m.text))).toBe(true);
+    });
   });
 
   it('task outcome formats cancelled messages for remote-spawned tasks', async () => {
@@ -591,9 +598,12 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
     const cbData = sent.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data as string;
     fake.queueUpdates([makeCallback({ update_id: 2, userId: ALLOWED_USER_ID, data: cbData, messageId: 1 })]);
     await waitFor(() => expect(fake.outbound.editMessageText.some((m) => /Spawned: t-cancelled-123/.test(m.text))).toBe(true));
+    await sleep(200);
 
     await handle!.onTaskOutcome('t-cancelled-123', { kind: 'cancelled' });
-    expect(fake.outbound.sendMessage.some((m) => m.chat_id === ALLOWED_USER_ID && /Task t-cancelled-123 was cancelled/.test(m.text))).toBe(true);
+    await waitFor(() => {
+      expect(fake.outbound.sendMessage.some((m) => m.chat_id === ALLOWED_USER_ID && /Task t-cancelled-123 was cancelled/.test(m.text))).toBe(true);
+    });
   });
 
   it('task outcome redacts completion-ready notes and dedupes later terminal outcomes', async () => {
