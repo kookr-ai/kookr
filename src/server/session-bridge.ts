@@ -91,6 +91,27 @@ function readNonNegativeIntegerEnv(name: string, fallback: number): number {
   return parsed;
 }
 
+/**
+ * dtach's attach client always emits ESC[H ESC[J before replaying its screen.
+ * When the reconstructed screen is only sparse differential cells (common for
+ * Grok --no-alt-screen), that leading clear leaves the browser blank. Strip
+ * only a leading home+clear so any remaining dump still applies.
+ */
+export function stripLeadingTerminalClear(bytes: Uint8Array): Uint8Array {
+  // ESC [ H ESC [ J  or  ESC [ H ESC [ 2 J
+  if (bytes.length >= 6
+    && bytes[0] === 0x1b && bytes[1] === 0x5b && bytes[2] === 0x48
+    && bytes[3] === 0x1b && bytes[4] === 0x5b && bytes[5] === 0x4a) {
+    return bytes.subarray(6);
+  }
+  if (bytes.length >= 7
+    && bytes[0] === 0x1b && bytes[1] === 0x5b && bytes[2] === 0x48
+    && bytes[3] === 0x1b && bytes[4] === 0x5b && bytes[5] === 0x32 && bytes[6] === 0x4a) {
+    return bytes.subarray(7);
+  }
+  return bytes;
+}
+
 /** Construction options for {@link SessionBridge}. */
 export interface SessionBridgeOptions {
   /**
@@ -540,10 +561,13 @@ export class SessionBridge {
   /**
    * Recover a readable frame after skipping absolute-TUI ring history.
    * 1. Apply the browser size (WINCH the agent so subsequent live paints match).
-   * 2. Prefer `captureCurrentFrame` — temporary secondary dtach attach that
-   *    dumps the master's current screen without reconnect-cap pressure.
-   * 3. Fall back to `reconnectTransport` (primary attach recycle; rate-limited).
-   * 4. Last resort: cols±1 WINCH nudge when both are missing/empty/capped.
+   * 2. Prefer `captureCurrentFrame` — temporary secondary dtach attach.
+   * 3. Force a full TUI repaint via Ctrl+L and wait briefly so live paint
+   *    lands in preReplayChunks — attach-replay alone is often only sparse
+   *    differential cells after dtach's leading ESC[H ESC[J clear under
+   *    Grok's --no-alt-screen differential painting.
+   * 4. Fall back to `reconnectTransport` (primary attach recycle; rate-limited).
+   * 5. Last resort: cols±1 WINCH nudge when both are missing/empty/capped.
    *
    * @returns Snapshot bytes to send as the client's initial frame, or null
    *   when recovery relied on reconnect attach-replay / live bytes instead.
@@ -552,6 +576,7 @@ export class SessionBridge {
     if (this.closed) return null;
     this.applyResizeNow(size.cols, size.rows);
 
+    let snapshot: Uint8Array | null = null;
     const captureFrame = this.backend.captureCurrentFrame?.bind(this.backend);
     if (captureFrame) {
       try {
@@ -562,17 +587,35 @@ export class SessionBridge {
           timeoutMs: Math.max(800, this.liveRedrawNudgeMs * 10 || 800),
         });
         if (frame.length > 0) {
-          return frame;
+          // Strip dtach attach's leading clear so a sparse dump after ESC[H ESC[J]
+          // does not wipe a browser that already has useful cells.
+          snapshot = stripLeadingTerminalClear(frame);
+        } else {
+          console.warn(
+            `[session-bridge] absolute-TUI frame snapshot for ${this.sessionId} was empty; forcing live repaint`,
+          );
         }
-        console.warn(
-          `[session-bridge] absolute-TUI frame snapshot for ${this.sessionId} was empty; trying reconnect`,
-        );
       } catch (err) {
         console.warn(
-          `[session-bridge] absolute-TUI frame snapshot failed for ${this.sessionId}; trying reconnect:`,
+          `[session-bridge] absolute-TUI frame snapshot failed for ${this.sessionId}; forcing live repaint:`,
           err,
         );
       }
+    }
+
+    // Ctrl+L: full repaint for TUIs that honor it (and for dtach -r winch
+    // redraw paths). Live bytes fan into preReplayChunks while we wait.
+    // liveRedrawNudgeMs === 0 skips the wait in unit tests.
+    this.safeForwardWrite(new Uint8Array([0x0c]));
+    if (this.liveRedrawNudgeMs > 0) {
+      await this.sleep(Math.max(450, this.liveRedrawNudgeMs * 12));
+    }
+    if (this.closed) return snapshot;
+
+    // Anything beyond a bare clear/home is worth painting; live Ctrl+L bytes
+    // still flush via preReplayChunks regardless.
+    if (snapshot && snapshot.length > 16) {
+      return snapshot;
     }
 
     const reconnect = this.backend.reconnectTransport?.bind(this.backend);
@@ -588,7 +631,7 @@ export class SessionBridge {
         if (result.outcome === 'success' || result.outcome === 'inconclusive') {
           // Attach-replay / live bytes fan out via onData into preReplayChunks
           // (before replaySent) or enqueueOutput (after).
-          return null;
+          return snapshot;
         }
         console.warn(
           `[session-bridge] absolute-TUI reconnect for ${this.sessionId} was ${result.outcome}/${result.reason}; falling back to WINCH nudge`,
@@ -602,7 +645,7 @@ export class SessionBridge {
     }
 
     await this.nudgeLiveRedraw(size.cols, size.rows);
-    return null;
+    return snapshot;
   }
 
   /**
