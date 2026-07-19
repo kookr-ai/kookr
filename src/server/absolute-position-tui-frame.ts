@@ -22,8 +22,12 @@ const MIN_FRAME_CUPS = 40;
 const MIN_FRAME_MAX_COL = 100;
 /** Only scan the tail of large rings. */
 const SAMPLE_TAIL_BYTES = 512 * 1024;
-/** How many trailing sync regions to consider (newest first). */
-const MAX_CANDIDATES = 40;
+/**
+ * How many trailing sync regions to walk (newest first). Grok emits many tiny
+ * spinner frames after a large paint, so the last few dozen starts are often
+ * useless — scan far enough back to still hit a substantial frame.
+ */
+const MAX_CANDIDATES = 800;
 
 function findSyncStarts(bytes: Uint8Array): number[] {
   const starts: number[] = [];
