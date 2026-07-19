@@ -143,6 +143,8 @@ describe('OverviewEmptyState', () => {
   });
 
   test('keyboard hint includes the command palette and quick launch shortcuts', () => {
+    const originalPlatform = navigator.platform;
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'Linux x86_64' });
     render();
 
     const hint = container.querySelector('.detail-empty-hint');
@@ -151,6 +153,17 @@ describe('OverviewEmptyState', () => {
     const keys = Array.from(hint?.querySelectorAll('kbd') ?? []).map((el) => el.textContent);
     expect(keys).toContain('Ctrl');
     expect(keys).toContain('K');
+    expect(keys).not.toContain('⌘K');
+
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' });
+    render();
+    const macHint = container.querySelector('.detail-empty-hint');
+    const macKeys = Array.from(macHint?.querySelectorAll('kbd') ?? []).map((el) => el.textContent);
+    // Palette chord is the single-glyph ⌘K (not Ctrl+K); other bindings may still use Ctrl.
+    expect(macKeys[0]).toBe('⌘K');
+    expect(macHint?.textContent).toMatch(/⌘K.*palette/);
+
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: originalPlatform });
   });
 
   test('voice hint only appears when speech-to-text is configured', () => {

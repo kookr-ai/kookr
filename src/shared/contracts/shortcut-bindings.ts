@@ -376,6 +376,20 @@ export function formatShortcutBinding(
   return parts.join('+');
 }
 
+/**
+ * Compact display label for the command-palette shortcut (⌘K / Ctrl+K).
+ * Deliberately not part of SHORTCUT_ACTIONS — App hardcodes the keydown
+ * handler — so platform-aware UI must use this helper rather than the binding map.
+ */
+export function commandPaletteHint(platform: ShortcutPlatform = detectShortcutPlatform()): string {
+  return platform === 'mac' ? '⌘K' : 'Ctrl+K';
+}
+
+/** Key parts for `<ShortcutKeys keys={…} />` rendering of {@link commandPaletteHint}. */
+export function commandPaletteHintKeys(platform: ShortcutPlatform = detectShortcutPlatform()): readonly string[] {
+  return platform === 'mac' ? ['⌘K'] : ['Ctrl', 'K'];
+}
+
 function isPlatformShortcutOverrides(
   value: PlatformShortcutBindingOverrides | ShortcutBindingOverrides,
 ): value is PlatformShortcutBindingOverrides {

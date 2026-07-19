@@ -1,6 +1,7 @@
 import React from 'react';
 import type { AgentState } from '../../shared/protocol.js';
 import {
+  commandPaletteHintKeys,
   detectShortcutPlatform,
   getDefaultShortcutBindings,
   type ShortcutBindingMap,
@@ -100,8 +101,8 @@ export function OverviewEmptyState({
         <button className="btn-primary" onClick={onLaunch}>Launch New Task</button>
 
         <p className="detail-empty-hint">
-          {/* ⌘K / Ctrl+K is hardcoded in App.tsx's window keydown handler. */}
-          <ShortcutKeys keys={['Ctrl', 'K']} /> palette
+          {/* Palette chord is fixed in App.tsx keydown — not in SHORTCUT_ACTIONS. */}
+          <ShortcutKeys keys={commandPaletteHintKeys(detectShortcutPlatform())} /> palette
           {' · '}
           <ShortcutKeys binding={shortcutBindings.quick_launch} /> quick launch
           {sttUrl !== '' && (
