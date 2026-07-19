@@ -30,7 +30,9 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     async function resolveCwd() {
       if (selectedAgentId) {
         try {
-          const res = await fetch('/api/tasks');
+          // Compact list: this resolver only needs each task's cwd + session
+          // tmuxSession, so it never downloads the full prompt bodies.
+          const res = await fetch('/api/tasks?view=compact');
           if (res.ok) {
             const tasks = await res.json();
             const task = tasks.find((t: { sessions: Array<{ tmuxSession: string }> }) =>
