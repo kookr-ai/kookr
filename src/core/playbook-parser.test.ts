@@ -381,9 +381,24 @@ Body.
     expect(parsed.parameters.map((p) => p.name)).toContain('repoFullName');
     expect(parsed.effectiveLoop?.stopPredicate).toContain('.batch-stop');
     expect(parsed.body).toContain('write-scope matrix');
-    expect(parsed.body).toContain('No two selected issues may have overlapping expected files');
+    expect(parsed.body).toContain('No two selected **work units** may have overlapping expected files');
     expect(parsed.body).toContain('[Pasted text #N +M lines]');
     expect(parsed.body).toContain('node "$KOOKR_REPO/bin/kookr-spawn.js"');
+
+    // Child agent picker includes Grok Build; spawn validation accepts it.
+    const childAgent = parsed.parameters.find((p) => p.name === 'childAgent');
+    expect(childAgent?.options?.map((o) => o.value)).toEqual([
+      'default',
+      'claude-code',
+      'codex-cli',
+      'grok-build',
+    ]);
+    expect(parsed.body).toContain('grok-build');
+
+    // Multi-issue work units: one child/PR may cover several tightly related issues.
+    expect(parsed.body).toContain('work unit');
+    expect(parsed.body).toContain('reason_bundled');
+    expect(parsed.body).toContain('Bundle related issues into multi-issue work units');
   });
 
   test('shipped Repository Idea Scout playbook grounds ideas in the knowledge base', async () => {

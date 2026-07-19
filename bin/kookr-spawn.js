@@ -55,11 +55,13 @@ Usage:
 
 Options:
   -C, --cwd <path>         Working directory for the task (default: cwd).
-  -a, --agent <type>       claude-code or codex-cli (default: server default).
+  -a, --agent <type>       claude-code, codex-cli, or grok-build
+                           (default: server default).
       --effort <level>     Reasoning effort for this task (default: server's
                            per-agent-type setting, else the agent CLI default).
                            claude-code: low|medium|high|xhigh|max.
                            codex-cli:   none|minimal|low|medium|high|xhigh|max|ultra.
+                           grok-build:  omit --effort (server rejects any value).
       --criteria <text>    Acceptance criteria. Note: this is argv-exposed.
       --dedupe <mode>      warn, block, or skip (default: warn).
       --wait[=<seconds>]   After creating the task, poll until it raises
@@ -193,8 +195,11 @@ function parseArgs(argv) {
       out.positional.push(tok);
     }
   }
-  if (out.agent !== null && out.agent !== 'claude-code' && out.agent !== 'codex-cli') {
-    throw new UsageError(`--agent must be "claude-code" or "codex-cli" (got: ${out.agent})`);
+  const ACCEPTED_AGENTS = new Set(['claude-code', 'codex-cli', 'grok-build']);
+  if (out.agent !== null && !ACCEPTED_AGENTS.has(out.agent)) {
+    throw new UsageError(
+      `--agent must be "claude-code", "codex-cli", or "grok-build" (got: ${out.agent})`,
+    );
   }
   if (!DEDUPE_MODES.has(out.dedupe)) {
     throw new UsageError(`--dedupe must be "warn", "block", or "skip" (got: ${out.dedupe})`);

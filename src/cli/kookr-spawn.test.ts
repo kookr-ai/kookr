@@ -135,6 +135,13 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['--agent', 'gpt-4'])).toThrow(UsageError);
   });
 
+  it('accepts claude-code, codex-cli, and grok-build as --agent values', () => {
+    expect(parseArgs(['--agent', 'claude-code']).agent).toBe('claude-code');
+    expect(parseArgs(['-a', 'codex-cli']).agent).toBe('codex-cli');
+    expect(parseArgs(['--agent', 'grok-build']).agent).toBe('grok-build');
+    expect(parseArgs(['-a', 'grok-build']).agent).toBe('grok-build');
+  });
+
   it('parses --effort and --effort=<level>, defaulting to null (#681)', () => {
     expect(parseArgs([]).effort).toBeNull();
     expect(parseArgs(['--effort', 'high']).effort).toBe('high');
