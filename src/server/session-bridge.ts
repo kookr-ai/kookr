@@ -350,16 +350,19 @@ export class SessionBridge {
     let replay: Uint8Array = new Uint8Array(0);
     if (skipRingReplay) {
       // Dense absolute-position TUIs (Grok Build): replaying the ring paints
-      // thousands of historical CUP frames at mixed widths. Skip it and force
-      // the live agent to redraw at the browser geometry instead.
+      // thousands of historical CUP frames at mixed widths. Skip it.
       //
-      // Read-only viewers never WINCH the shared PTY (#807). They still skip
-      // the smashy ring and receive live frames once the agent paints; an idle
-      // agent may leave the viewer blank until the next redraw — intentional.
+      // Prefer a dtach transport reconnect so the master emits its *current*
+      // screen buffer (attach-replay) at the browser geometry — WINCH alone
+      // does not force Grok to full-repaint, which left blank panes after
+      // deploy. Fall back to a WINCH nudge when reconnect is unavailable or
+      // rate-limited. Read-only viewers never resize or reconnect the shared
+      // PTY (#807); they still skip the smashy ring and pick up live frames
+      // (and any attach-replay fan-out from an owner refresh).
       if (!this.readOnly) {
         const size = this.pendingInitialResize ?? this.lastAppliedResize;
         if (size) {
-          await this.nudgeLiveRedraw(size.cols, size.rows);
+          await this.refreshAbsoluteTuiFrame(size);
         } else {
           console.warn(
             `[session-bridge] skipped absolute-TUI ring for ${this.sessionId} without a browser size; waiting for live frames`,
@@ -520,6 +523,45 @@ export class SessionBridge {
     }
     this.lastAppliedResize = { cols, rows };
     this.safeForwardResize(cols, rows);
+  }
+
+  /**
+   * Recover a readable frame after skipping absolute-TUI ring history.
+   * 1. Apply the browser size.
+   * 2. Try `reconnectTransport` so dtach re-attaches and emits its current
+   *    screen buffer (attach-replay) — the only cheap source of a full frame
+   *    when the agent does not full-repaint on WINCH.
+   * 3. Fall back to a cols±1 WINCH nudge if reconnect is missing/capped.
+   */
+  private async refreshAbsoluteTuiFrame(size: TerminalSize): Promise<void> {
+    if (this.closed) return;
+    this.applyResizeNow(size.cols, size.rows);
+
+    const reconnect = this.backend.reconnectTransport?.bind(this.backend);
+    if (reconnect) {
+      try {
+        const result = await reconnect(this.sessionId, {
+          reason: 'absolute-tui-frame-refresh',
+          livenessTimeoutMs: Math.max(200, this.liveRedrawNudgeMs * 5 || 400),
+          actor: 'session-bridge',
+        });
+        if (result.outcome === 'success' || result.outcome === 'inconclusive') {
+          // Attach-replay / live bytes fan out via onData into preReplayChunks
+          // (before replaySent) or enqueueOutput (after).
+          return;
+        }
+        console.warn(
+          `[session-bridge] absolute-TUI reconnect for ${this.sessionId} was ${result.outcome}/${result.reason}; falling back to WINCH nudge`,
+        );
+      } catch (err) {
+        console.warn(
+          `[session-bridge] absolute-TUI reconnect failed for ${this.sessionId}; falling back to WINCH nudge:`,
+          err,
+        );
+      }
+    }
+
+    await this.nudgeLiveRedraw(size.cols, size.rows);
   }
 
   /**
