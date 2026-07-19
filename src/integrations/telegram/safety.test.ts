@@ -112,6 +112,15 @@ describe('StateStore + DailyCap', () => {
     const b = await StateStore.open(path);
     expect(b.get().agentDefaultsByUser['12345']).toBe('codex-cli');
   });
+
+  it('preserves a persisted Grok Build default across reopen', async () => {
+    const path = join(tmp, 'state.json');
+    const a = await StateStore.open(path);
+    await a.update((s) => { s.agentDefaultsByUser['123'] = 'grok-build'; });
+
+    const b = await StateStore.open(path);
+    expect(b.get().agentDefaultsByUser['123']).toBe('grok-build');
+  });
 });
 
 describe('PendingStore', () => {
