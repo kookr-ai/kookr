@@ -661,6 +661,39 @@ function buildFindingDisplayItems(findings: AgentState[]): FindingDisplayItem[] 
   return items;
 }
 
+function handleRailRowKeyDown(
+  event: React.KeyboardEvent<HTMLDivElement>,
+  activate: () => void,
+) {
+  if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
+  event.preventDefault();
+  activate();
+}
+
+function RailRowSelectionTarget({ label, selected, disabled = false, onActivate }: {
+  label: string;
+  selected: boolean;
+  disabled?: boolean;
+  onActivate: () => void;
+}) {
+  return (
+    <div
+      className="rail-row-selection-target"
+      role="button"
+      tabIndex={0}
+      aria-current={selected ? 'true' : undefined}
+      aria-disabled={disabled || undefined}
+      onKeyDown={(event) => handleRailRowKeyDown(event, onActivate)}
+      onClick={(event) => {
+        event.stopPropagation();
+        onActivate();
+      }}
+    >
+      <span className="sr-only">Select {label}</span>
+    </div>
+  );
+}
+
 const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
   agent: AgentState;
   selected: boolean;
@@ -722,18 +755,29 @@ const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
     [coordinator, agent.taskId],
   );
 
+  function selectFinding() {
+    track({ type: 'agent_clicked', agentId: agent.agentId, source: 'finding_card', anomalyType: agent.anomaly?.type ?? null });
+    selectAgent(agent.agentId, agent.taskId);
+  }
+
+  function selectFindingImmediately() {
+    if (clickTimer.current) {
+      clearTimeout(clickTimer.current);
+      clickTimer.current = null;
+    }
+    selectFinding();
+  }
+
   return (
     <Tooltip text={tooltipText}>
       <div
         className={`finding-card ${cls} ${selected ? 'selected' : ''}`}
-        aria-current={selected ? 'true' : undefined}
         onClick={() => {
           if (selected || clickTimer.current) {
             // Already selected or a prior click is pending — no new timer needed.
             // Fire immediately if selected (no layout shift risk).
             if (selected) {
-              track({ type: 'agent_clicked', agentId: agent.agentId, source: 'finding_card', anomalyType: agent.anomaly?.type ?? null });
-              selectAgent(agent.agentId, agent.taskId);
+              selectFinding();
             }
             return;
           }
@@ -741,12 +785,16 @@ const FindingCard = React.memo(function FindingCard({ agent, selected, send }: {
           // Without this, the first click causes a layout shift (detail panel appears)
           // that moves the card, breaking the second click of the dblclick.
           clickTimer.current = setTimeout(() => {
-            track({ type: 'agent_clicked', agentId: agent.agentId, source: 'finding_card', anomalyType: agent.anomaly?.type ?? null });
-            selectAgent(agent.agentId, agent.taskId);
+            selectFinding();
             clickTimer.current = null;
           }, 200);
         }}
       >
+        <RailRowSelectionTarget
+          label={agent.taskName ?? agent.agentId}
+          selected={selected}
+          onActivate={selectFindingImmediately}
+        />
         <div className="finding-header">
           <span className="finding-header-left">
             <AgentProviderMark agent={agent} state="finding" />
@@ -948,17 +996,23 @@ function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
     send({ type: 'snooze', agentId: agent.agentId, taskId: agent.taskId, durationMs });
   }
 
+  function selectHealthyAgent() {
+    track({ type: 'agent_clicked', agentId: agent.agentId, source: 'healthy_row', anomalyType: null });
+    track({ type: 'healthy_agent_inspected', agentId: agent.agentId });
+    useKookrStore.getState().selectAgent(agent.agentId, agent.taskId);
+  }
+
   return (
     <Tooltip text={agent.description}>
       <div
         className={`healthy-row${colorIdx >= 0 ? ` project-color-${colorIdx}` : ''}${selected ? ' selected' : ''}${healthyDotClass(agent.events) === 'running' ? ' running-accent' : ''}`}
-        aria-current={selected ? 'true' : undefined}
-        onClick={() => {
-          track({ type: 'agent_clicked', agentId: agent.agentId, source: 'healthy_row', anomalyType: null });
-          track({ type: 'healthy_agent_inspected', agentId: agent.agentId });
-          useKookrStore.getState().selectAgent(agent.agentId, agent.taskId);
-        }}
+        onClick={selectHealthyAgent}
       >
+        <RailRowSelectionTarget
+          label={agent.taskName ?? agent.agentId}
+          selected={selected}
+          onActivate={selectHealthyAgent}
+        />
         {/* Title Lead: the task name owns its own full-width line; the info row
             below leads with stable-width fields (avatar, project) so the
             live-updating duration/cost that trail never shove them or the
@@ -1252,16 +1306,21 @@ function PendingRow({ agent, selected, send, onSchedulePlaybook }: {
   const projectLabelText = agentProjectLabel(agent);
   const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
   const coordinatorChip = coordinatorChipForTask(useKookrStore((s) => s.coordinator), agent.taskId);
+  function selectPendingAgent() {
+    track({ type: 'agent_clicked', agentId: agent.agentId, source: 'pending_row', anomalyType: null });
+    useKookrStore.getState().selectAgent(agent.agentId, agent.taskId);
+  }
   return (
     <Tooltip text={agent.description}>
       <div
         className={`pending-row${selected ? ' selected' : ''}`}
-        aria-current={selected ? 'true' : undefined}
-        onClick={() => {
-          track({ type: 'agent_clicked', agentId: agent.agentId, source: 'pending_row', anomalyType: null });
-          useKookrStore.getState().selectAgent(agent.agentId, agent.taskId);
-        }}
+        onClick={selectPendingAgent}
       >
+        <RailRowSelectionTarget
+          label={agent.taskName ?? agent.agentId}
+          selected={selected}
+          onActivate={selectPendingAgent}
+        />
         <div className="pending-row-top">
           <AgentProviderMark agent={agent} state="pending" />
           {projectLabelText && (
@@ -1309,16 +1368,22 @@ function SnoozedRow({ agent, selected, send }: {
     return () => clearInterval(id);
   }, []);
 
+  function selectSnoozedAgent() {
+    track({ type: 'agent_clicked', agentId: agent.agentId, source: 'snoozed_row', anomalyType: agent.anomaly?.type ?? null });
+    useKookrStore.getState().selectAgent(agent.agentId, agent.taskId);
+  }
+
   return (
     <Tooltip text={agent.description}>
       <div
         className={`snoozed-row${selected ? ' selected' : ''}`}
-        aria-current={selected ? 'true' : undefined}
-        onClick={() => {
-          track({ type: 'agent_clicked', agentId: agent.agentId, source: 'snoozed_row', anomalyType: agent.anomaly?.type ?? null });
-          useKookrStore.getState().selectAgent(agent.agentId, agent.taskId);
-        }}
+        onClick={selectSnoozedAgent}
       >
+        <RailRowSelectionTarget
+          label={agent.taskName ?? agent.agentId}
+          selected={selected}
+          onActivate={selectSnoozedAgent}
+        />
         <div className="snoozed-row-top">
           <AgentProviderMark agent={agent} state="snoozed" />
           {projectLabelText && (
@@ -1516,17 +1581,24 @@ function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDeleteTas
     ? `${terminalLabel} ${finishedAt}${finishedAgo ? ` (${finishedAgo})` : ''}`
     : terminalLabel;
 
+  function selectCompletedAgent() {
+    if (pendingDeletion) return;
+    track({ type: 'agent_clicked', agentId: agent.agentId, source: 'completed_row', anomalyType: null });
+    useKookrStore.getState().selectAgent(agent.agentId, agent.taskId);
+  }
+
   return (
     <Tooltip text={agent.description}>
       <div
         className={`completed-row${selected ? ' selected' : ''} ${rowVariant}${pendingDeletion ? ' pending-deletion' : ''}`}
-        aria-current={selected ? 'true' : undefined}
-        onClick={() => {
-          if (pendingDeletion) return;
-          track({ type: 'agent_clicked', agentId: agent.agentId, source: 'completed_row', anomalyType: null });
-          useKookrStore.getState().selectAgent(agent.agentId, agent.taskId);
-        }}
+        onClick={selectCompletedAgent}
       >
+        <RailRowSelectionTarget
+          label={agent.taskName ?? agent.agentId}
+          selected={selected}
+          disabled={pendingDeletion}
+          onActivate={selectCompletedAgent}
+        />
         <div className="completed-row-top">
           <AgentProviderMark agent={agent} state={rowVariant} />
           {projectLabelText && (
