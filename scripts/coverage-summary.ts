@@ -4,6 +4,7 @@
 // the exit-code contract; see docs/testing.md for the runbook.
 import { existsSync, readFileSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 interface CoverageMetric {
   total: number;
@@ -43,8 +44,11 @@ const LAYERS: Layer[] = [
     patterns: ['orchestrat', 'event-pipeline', 'event-projection', 'launch-service'],
   },
   {
+    // Intentionally no '/hooks/' — that also matches src/frontend/hooks/**
+    // (React UI hooks) and dilutes the early-warning signal for server hook
+    // ingestion (hook-watcher). Name-anchored patterns only.
     name: 'Hooks',
-    patterns: ['hook-watcher', 'hook-runner', 'hook-event', '/hooks/'],
+    patterns: ['hook-watcher', 'hook-runner', 'hook-event'],
   },
   {
     name: 'Terminal sessions',
@@ -93,7 +97,8 @@ interface LayerTotals {
   branchesCovered: number;
 }
 
-function firstMatchingLayer(path: string): Layer | undefined {
+/** Exported for unit tests that pin risk-layer attribution. */
+export function firstMatchingLayer(path: string): Layer | undefined {
   return LAYERS.find((layer) => layer.patterns.some((p) => path.includes(p)));
 }
 
@@ -222,7 +227,7 @@ function main(): void {
   out.push('### Coverage summary');
   out.push('');
   out.push(
-    '_Current-run coverage (server/core; frontend excluded). Baseline comparison ships in PR 2 of the testing-surfacing RFC._',
+    '_Current-run coverage across all of `src` (server, core, adapters, frontend). Baseline comparison ships in PR 2 of the testing-surfacing RFC._',
   );
   out.push('');
   out.push(renderTotalTable(parsed.total));
@@ -255,14 +260,16 @@ function main(): void {
   process.stdout.write(`${out.join('\n')}\n`);
 }
 
-try {
-  main();
-} catch (err) {
-  emitAnnotation('error', `coverage-summary.ts crashed: ${(err as Error).message}`);
-  // Keep the step summary surface non-empty so reviewers see the crash signal
-  // alongside the annotation in the Checks UI instead of a blank section.
-  process.stdout.write(
-    '### Coverage summary\n\n_Summary script crashed — see the `::error::` annotation in the job log._\n',
-  );
-  process.exit(1);
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+  try {
+    main();
+  } catch (err) {
+    emitAnnotation('error', `coverage-summary.ts crashed: ${(err as Error).message}`);
+    // Keep the step summary surface non-empty so reviewers see the crash signal
+    // alongside the annotation in the Checks UI instead of a blank section.
+    process.stdout.write(
+      '### Coverage summary\n\n_Summary script crashed — see the `::error::` annotation in the job log._\n',
+    );
+    process.exit(1);
+  }
 }

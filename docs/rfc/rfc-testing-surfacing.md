@@ -7,6 +7,14 @@
 **Date:** 2026-05-13
 **Author:** Jean Ibarz (with Codex; second-round revision with Claude)
 
+> **Superseded (post-PR-1 / #1169 / #1426):** `vitest.config.ts` now includes all of
+> `src` (including `src/frontend/**`). Live operator wording lives in
+> `docs/testing.md` and the coverage step-summary subtitle in
+> `scripts/coverage-summary.ts`. Change 6 below is **historical design for the
+> original PR 1 ship**; the Hooks risk layer also dropped the over-broad
+> `/hooks/` pattern so React `src/frontend/hooks/**` does not dilute
+> `hook-watcher` early-warning.
+
 ---
 
 ## Problem
@@ -91,7 +99,7 @@ Create a durable testing overview:
   - Which checks are required before merge.
 - Interpretation rules:
   - Coverage is a trend and gap-finding signal, not a target by itself.
-  - The published number is server/core only — frontend is excluded (see Change 6).
+  - The published number covers all of `src` (frontend included post-PR #1169; see Change 6 supersession note).
   - Branch coverage is usually the most useful early warning for orchestration code.
   - Browser report artifacts are for failed or manually requested E2E runs.
 - **Navigation bridge** — explicit step-by-step instruction so a reader who lands on the README badge can find the live numbers without guessing: "Open the PR's Checks tab → click the `test` job → click `Summary` in the left sidebar → the coverage table is at the bottom." Without this, the README → docs/testing.md → live-numbers path has an invisible third hop that defeats the discoverability goal.
@@ -99,7 +107,7 @@ Create a durable testing overview:
 - **Troubleshooting / operator runbook** (short):
   - **Coverage artifact missing on a PR.** Check the `Run tests with coverage` step; if it exited non-zero, that is the upstream cause. `--coverage.reportOnFailure` is set, so the directory should still exist on test failures.
   - **Step summary is blank but the job is green.** Run the script locally against the artifact's `coverage-summary.json`. If it prints output locally, the issue is in the workflow's redirect to `$GITHUB_STEP_SUMMARY`.
-  - **Coverage numbers look implausibly low or high.** Inspect `vitest.config.ts` include/exclude — the frontend exclusion (see Change 6) is the most common source of "why is this not 100%/0%?" confusion.
+  - **Coverage numbers look implausibly low or high.** Inspect `vitest.config.ts` include/exclude — a new untested directory under `src/` is the most common source of aggregate dilution (frontend is included; see Change 6 supersession note).
   - **`::error::` annotation in the Checks UI.** Read the annotation text; it distinguishes "JSON malformed" from "script crashed" (see Change 3 contract).
 
 This gives agents and humans one stable place to answer "what testing means in this repo" and a short runbook for the next operator who hits a weird CI run.
@@ -202,7 +210,11 @@ Keep the existing explicit unit, E2E, canary, and docs-drift checklist items. Th
 
 ### Change 6 - Lock the frontend-exclusion decision before shipping PR 1
 
-`vitest.config.ts` excludes `src/frontend/**`, `src/**/*.test.ts`, and `src/server/start.ts` from V8 coverage today. The number the step summary prints in PR 1 is therefore a backend/server/core number, not a whole-repo number. This RFC commits to keeping that exclusion for PR 1 and ratchet phases.
+> **Historical (PR 1 ship).** Superseded when frontend entered coverage (#1169);
+> operator copy corrected in #1426. Live include list: all of `src/**/*.{ts,tsx}`
+> minus tests and `src/server/start.ts`.
+
+`vitest.config.ts` **originally** excluded `src/frontend/**`, `src/**/*.test.ts`, and `src/server/start.ts` from V8 coverage. The number the step summary printed in PR 1 was therefore a backend/server/core number, not a whole-repo number. This RFC committed to keeping that exclusion for PR 1 and ratchet phases.
 
 Rationale:
 
@@ -210,7 +222,7 @@ Rationale:
 - Including the frontend would couple two unresolved questions — "do we have backend coverage signal?" and "how do we cover the frontend?" — into one decision and stall both.
 - The exclusion is recorded in code (`vitest.config.ts`) and will be called out in `docs/testing.md` so reviewers do not mistake the number for whole-repo coverage.
 
-A frontend coverage strategy is explicitly out of scope for this RFC. If the team later wants frontend coverage, that work merits its own RFC because it requires a test harness decision (JSDOM, Vitest browser mode, Playwright component tests) before instrumenting anything. Until that exists, PR 1 publishes a backend coverage number with an explicit "(server/core; frontend excluded)" subtitle in the step summary.
+A frontend coverage strategy was explicitly out of scope for this RFC at write time. PR 1 published a backend coverage number with an explicit "(server/core; frontend excluded)" subtitle in the step summary. Frontend later entered the aggregate (#1169); the live subtitle and `docs/testing.md` now describe whole-`src` coverage (#1426).
 
 ### Change 7 - Add a main-branch badge only after there is a generated source
 
@@ -243,7 +255,7 @@ Add `docs/testing.md`, README entry point, PR-template wording, CI coverage arti
 
 Acceptance criteria:
 
-- A PR run shows a "Coverage summary" table in the GitHub Actions job summary, including the named-layer breakdown and the "(server/core; frontend excluded)" subtitle.
+- A PR run shows a "Coverage summary" table in the GitHub Actions job summary, including the named-layer breakdown and the coverage-scope subtitle (originally "(server/core; frontend excluded)"; later whole-`src` after frontend inclusion).
 - The `coverage` artifact contains `coverage-summary.json` and `lcov.info` on both passing and failing test runs (because `--coverage.reportOnFailure` is set).
 - README links readers to `docs/testing.md` via the "Where To Go Next" table row (no new badge).
 - `docs/testing.md` includes the explicit "Checks tab → test job → Summary tab" navigation bridge to the live numbers.
@@ -333,7 +345,7 @@ This is a falsifiable swap point, not a permanent rejection.
 - **Dependabot PRs.** The workflow must not require write permissions or privileged PR comments.
 - **Large LCOV files.** Retention is 14 days; only JSON and LCOV are uploaded by default.
 - **No `node_modules` in a fresh worktree.** Local coverage commands require `pnpm install --frozen-lockfile`; `docs/testing.md` should say so.
-- **Coverage excludes frontend today.** `vitest.config.ts` excludes `src/frontend/**` from V8 coverage. This RFC commits to keeping the exclusion (see Change 6) and the step summary subtitles the number "(server/core; frontend excluded)" so reviewers do not misread it. `docs/testing.md` repeats the exclusion explicitly.
+- **Coverage includes all of `src` (post-#1169).** Risk-layer patterns intentionally avoid `/hooks/` so React `src/frontend/hooks/**` does not pollute the Hooks layer (`scripts/coverage-summary.ts`, #1426). Live wording: `docs/testing.md` + step-summary subtitle.
 - **E2E reports.** Default CI keeps failure-only Playwright report upload; manual `/run-e2e` keeps always-upload behavior.
 
 ## Open questions
@@ -342,7 +354,7 @@ This is a falsifiable swap point, not a permanent rejection.
 - Should `staging.yml` mirror the new coverage step, or stay as plain `pnpm test`? (Default in this RFC: stay plain — staging PRs are infrequent enough that diverging from `ci.yml` is acceptable for PR 1; revisit in PR 2 if staging churn grows.)
 - Is a GitHub Pages badge acceptable if the team wants a no-SaaS public percentage badge? (Resolved enough that PR 3 lists it as Option B; the open part is whether the team wants any public number at all.)
 
-(The earlier "include frontend in coverage?" and "compare against origin/main in PR 1?" questions are resolved in the Design section: keep frontend excluded for PR 1, defer baseline diff to PR 2. See Change 6 and PR 2.)
+(The earlier "include frontend in coverage?" and "compare against origin/main in PR 1?" questions were resolved for PR 1 as: keep frontend excluded, defer baseline diff to PR 2. Frontend later entered coverage in #1169; see Change 6 supersession note and #1426 for operator-copy repair.)
 
 ## Critic feedback incorporated
 

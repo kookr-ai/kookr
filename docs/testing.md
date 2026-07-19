@@ -61,7 +61,7 @@ If the **`test`** job failed before coverage finalized, the summary will say "Co
 ## Interpretation Rules
 
 - **Coverage is a trend and gap-finding signal, not a target.** A high percent does not mean the code is well-tested; it means the lines were executed.
-- **The published number is server/core only.** `vitest.config.ts` excludes `src/frontend/**` from V8 coverage. The step summary subtitles the number `(server/core; frontend excluded)` so reviewers do not read it as whole-repo coverage. A frontend coverage strategy needs its own RFC.
+- **The published number covers all of `src`.** `vitest.config.ts` includes `src/**/*.{ts,tsx}` (tests and `src/server/start.ts` excluded). The step summary subtitles the figure as whole-`src` coverage so reviewers do not under-read it as server/core only.
 - **Branch coverage matters more for orchestration code.** For hooks, lifecycle handlers, and WebSocket dispatch, branch coverage is the earliest warning that a code path is untested.
 - **Browser report artifacts are for failure investigation.** Default CI uploads them only on failure; the manual `/run-e2e` workflow uploads on every requested run.
 
@@ -117,7 +117,7 @@ The script distinguishes three error paths:
 
 ### Coverage numbers look implausibly low or high
 
-Check `vitest.config.ts` `include` and `exclude` lists. The most common cause is the frontend exclusion (`src/frontend/**` is omitted by design); the second most common is a new directory under `src/` that has no `*.test.ts` siblings yet.
+Check `vitest.config.ts` `include` and `exclude` lists. The most common cause is a new directory under `src/` that has no `*.test.ts` siblings yet (untested code dilutes the aggregate); also confirm you are not comparing against an older CI run that excluded the frontend.
 
 ### Preview the summary locally before pushing
 
