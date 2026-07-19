@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 import torch
-from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 
 def load_server_module():
@@ -50,11 +50,10 @@ def test_synthesize_rejects_blank_text_before_model_work(server, text):
     fake_model = FakeModel()
     server.model = fake_model
 
-    with pytest.raises(HTTPException) as exc_info:
-        server.synthesize(server.SynthesisRequest(text=text))
+    response = TestClient(server.app).post("/synthesize", json={"text": text})
 
-    assert exc_info.value.status_code == 400
-    assert "must not be blank" in exc_info.value.detail
+    assert response.status_code == 400
+    assert "must not be blank" in response.json()["detail"]
     assert fake_model.voice_calls == []
     assert fake_model.generate_calls == []
 
@@ -64,11 +63,10 @@ def test_synthesize_rejects_text_above_configured_character_limit(server, monkey
     server.model = fake_model
     monkeypatch.setattr(server, "MAX_TEXT_LENGTH", 4)
 
-    with pytest.raises(HTTPException) as exc_info:
-        server.synthesize(server.SynthesisRequest(text="abcde"))
+    response = TestClient(server.app).post("/synthesize", json={"text": "abcde"})
 
-    assert exc_info.value.status_code == 413
-    assert exc_info.value.detail == "Text exceeds maximum length of 4 characters"
+    assert response.status_code == 413
+    assert response.json()["detail"] == "Text exceeds maximum length of 4 characters"
     assert fake_model.voice_calls == []
     assert fake_model.generate_calls == []
 
@@ -86,8 +84,9 @@ def test_synthesize_accepts_text_at_configured_character_limit(server, monkeypat
     server.model = fake_model
     monkeypatch.setattr(server, "MAX_TEXT_LENGTH", 4)
 
-    response = server.synthesize(server.SynthesisRequest(text="éabc"))
+    response = TestClient(server.app).post("/synthesize", json={"text": "éabc"})
 
-    assert response["audioBase64"]
-    assert response["durationMs"] == pytest.approx(1.0)
+    assert response.status_code == 200
+    assert response.json()["audioBase64"]
+    assert response.json()["durationMs"] == pytest.approx(1.0)
     assert fake_model.generate_calls == [({"voice": "alba"}, "éabc", None)]

@@ -1122,7 +1122,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 - Text longer than `TTS_MAX_TEXT_LENGTH` returns HTTP 413 with a clear client-facing message.
 - Text at or below the configured limit follows the existing synthesis path unchanged.
 
-**Evidence:** `tts/src/server.py`, `tts/tests/test_server.py`.
+**Evidence:** `tts/src/server.py`, `tts/docker-compose.yml`, `tts/tests/test_server.py`.
 
 ## Summary Matrix
 
