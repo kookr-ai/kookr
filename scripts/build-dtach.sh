@@ -17,7 +17,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VENDOR_DIR="$REPO_ROOT/vendor/dtach"
+# KOOKR_DTACH_VENDOR_DIR lets tests inject a temp vendor tree without
+# touching the real checkout (see scripts/build-dtach.test.ts).
+VENDOR_DIR="${KOOKR_DTACH_VENDOR_DIR:-$REPO_ROOT/vendor/dtach}"
 BIN="$VENDOR_DIR/dtach"
 UPSTREAM="https://github.com/crigler/dtach.git"
 # Pin to upstream's last release tag (v0.9). Checkout depth=1 is fine since
@@ -60,11 +62,16 @@ else
 fi
 
 echo "[build-dtach] configuring + building"
-(
-  cd "$SRC_DIR"
-  ./configure --prefix="$VENDOR_DIR" >/dev/null 2>&1
-  make >/dev/null 2>&1
-)
+# Capture configure/make output so a failed prepare/install still prints a
+# useful cause. Success stays quiet (log file is gitignored under vendor/).
+# Use `&&` (not bare newlines under `set -e`): this compound is the LHS of
+# `||`, so bash ignores `set -e` inside the subshell (POSIX/bash rule).
+LOG="$VENDOR_DIR/build.log"
+( cd "$SRC_DIR" && ./configure --prefix="$VENDOR_DIR" && make ) >"$LOG" 2>&1 || {
+  echo "[build-dtach] build failed; last 20 lines of $LOG:" >&2
+  tail -n 20 "$LOG" >&2
+  exit 1
+}
 cp "$SRC_DIR/dtach" "$BIN"
 chmod +x "$BIN"
 
