@@ -55,8 +55,8 @@ IP addresses.
 
 | Endpoint | Description |
 | --- | --- |
-| `GET /api/tasks` | All tasks with sessions |
-| `GET /api/tasks/:id` | A single task by id (404 with `{"error": "Task not found"}` for unknown ids) |
+| `GET /api/tasks` | All tasks with sessions. `?view=compact` returns a lighter list projection (see below) |
+| `GET /api/tasks/:id` | A single task by id — always full detail including `prompt` (404 with `{"error": "Task not found"}` for unknown ids) |
 | `GET /api/tasks/completion-ready/stale` | List stale `completion_ready` signals and whether each can be auto-closed |
 | `POST /api/tasks` | Create and launch a new task |
 | `POST /api/tasks/:id/complete` | Mark a finished task `completed` (non-destructive), tear down its idle session, and apply the saved worktree-cleanup policy |
@@ -75,6 +75,32 @@ Task objects returned by `GET /api/tasks` and `GET /api/tasks/:id` carry both
 can use one field name across the whole API — `/api/projects`
 `recentTasks[]` and `/api/snapshot` agents key tasks by `taskId`. `id`
 remains for backwards compatibility.
+
+### `GET /api/tasks?view=compact`
+
+`GET /api/tasks` defaults to the **full** list — every task carries its complete
+`prompt`/`userPrompt` bodies, `criteria`, `completionDigest`, and launch
+diagnostics. For a busy instance that is multiple megabytes (prod dogfood
+measured ~8.7 MB for ~213 tasks), which is wasteful for a dashboard list that
+only renders row-level metadata.
+
+`?view=compact` returns a lighter projection of the same list. Each row keeps the
+fields a list needs — `id`/`taskId`, `name`, `status`, `cwd`, `agentType`,
+`playbookId`, `projectId`, `priority`, `parentTaskId`/`childTaskIds`,
+`blocks`/`blocked_by`, `deliveryAuthorization`, `autoCloseOnSignal`,
+`tokenUsage` (plus `aggregateTokenUsage` on parents),
+`pendingSignal`, `issueClaim`, `ralphLoop`, the `createdAt`/`updatedAt`/
+`finishedAt`/`terminatedAt` timeline, a `suppressed` flag when applicable, and a
+trimmed `sessions[]` stub (`tmuxSession`, `agentType`, `lastStatus`,
+`lastTurnState`, `worktreeHealth`, `lastEventAt`, `crashRecovered`,
+`relaunchCount`) — and **omits** the heavy bodies: `prompt`, `userPrompt`,
+`criteria`, `launchNote`, `completionDigest`, `launchHealthSummary`, and the
+per-session transcript/child-session/git-identity fields.
+
+The default (no `view` param, or any value other than `compact`) is unchanged, so
+existing clients keep receiving the full list. When a client needs the full
+detail for one task — e.g. to relaunch it with its original prompt — fetch
+`GET /api/tasks/:id`, which always returns the complete task.
 
 ### `POST /api/tasks` body fields
 
