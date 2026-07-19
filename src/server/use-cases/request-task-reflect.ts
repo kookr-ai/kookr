@@ -4,7 +4,10 @@ import { access, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import type { Task, TaskStore } from '../../core/tasks.js';
-import type { LaunchOpts } from '../launch-service.js';
+// Import LaunchOpts from the shared contract — not launch-service — so this
+// use-case does not close a cycle with agent-lifecycle → request-task-reflect
+// → launch-service → agent-lifecycle (#1466).
+import type { LaunchOpts } from '../../shared/contracts/launch.js';
 import { resolvePluginDir } from '../../adapters/claude-code-adapter.js';
 import { gitExecEnv } from '../../core/git-helpers.js';
 import { looksLikeLinkedWorktree, removeRegisteredWorktree } from '../../adapters/worktree-safety.js';

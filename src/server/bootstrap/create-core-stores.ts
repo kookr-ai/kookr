@@ -27,7 +27,10 @@ import { createBasetenLlmClientFromEnv } from '../../adapters/llm/baseten-client
 import { CombinedShadowStrategy } from '../../core/combined-shadow-strategy.js';
 import { HttpPushTracker } from '../../core/http-push-tracker.js';
 import { PaneSemanticsStrategy } from '../../core/pane-patterns.js';
-import { ProcessLivenessStrategy } from '../../core/process-liveness.js';
+import {
+  ProcessLivenessStrategy,
+  type ProcessLivenessProbe,
+} from '../../core/process-liveness.js';
 import {
   JsonlProgressBudgetBurnDiagnosticSink,
   ProgressBudgetBurnDiagnostics,
@@ -39,6 +42,11 @@ export interface CoreStoresDeps {
   hooksDir: string;
   settingsDir: string;
   frontendDir: string;
+  /**
+   * Optional session liveness probe for shadow process_liveness (dtach-backed).
+   * When omitted the strategy is a no-op (safe for tests without a backend).
+   */
+  processLivenessProbe?: ProcessLivenessProbe;
 }
 
 export interface CoreStores {
@@ -158,8 +166,10 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
 
   const shadowRegistry = new ShadowDetectorRegistry();
   shadowRegistry.register(new PaneSemanticsStrategy());
-  shadowRegistry.register(new ProcessLivenessStrategy());
-  shadowRegistry.register(new CombinedShadowStrategy());
+  const processLiveness = new ProcessLivenessStrategy(deps.processLivenessProbe);
+  shadowRegistry.register(processLiveness);
+  // Share the same process strategy (and probe cache) with combined.
+  shadowRegistry.register(new CombinedShadowStrategy(undefined, processLiveness));
   const httpPushTracker = new HttpPushTracker();
 
   const rawLlmClient: LlmClient | null = await createLlmClient({

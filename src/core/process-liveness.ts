@@ -1,11 +1,12 @@
 /**
- * Process liveness detection — checks if the Claude Code process is still
- * running inside a tmux pane.
+ * Process liveness detection for shadow stuck-detection.
  *
- * When Claude Code crashes or exits, the tmux session stays alive (showing
- * bash). This strategy detects that by checking the pane's foreground process.
+ * Post-ADR-014 the product backend is dtach-only. This module no longer shells
+ * `tmux display-message`. Callers inject a {@link ProcessLivenessProbe} that
+ * typically wraps `TerminalBackend.isAlive` (+ optional cmdline inspection).
  *
- * Cross-platform: uses /proc/<pid>/cmdline on Linux, ps on macOS.
+ * When no probe is configured the strategy never fires (safe no-op for tests
+ * and hermetic environments).
  */
 
 import { readFile } from 'node:fs/promises';
@@ -19,6 +20,7 @@ const execFileAsync = promisify(execFile);
 // --- Process info ---
 
 export interface ProcessInfo {
+  /** Best-effort process id (dtach master / agent pid), or null when unknown. */
   panePid: number | null;
   cmdline: string | null;
   isClaude: boolean;
@@ -26,27 +28,18 @@ export interface ProcessInfo {
 }
 
 /**
- * Get the PID of the foreground process in a tmux pane.
- * Returns null if the session doesn't exist or the command fails.
+ * Async probe that maps a session id (legacy agentId / tmuxSession name) to
+ * process liveness. Implemented at the server/adapters boundary so `core`
+ * never imports TerminalBackend.
  */
-async function getPanePid(tmuxSession: string): Promise<number | null> {
-  try {
-    const { stdout } = await execFileAsync('tmux', [
-      'display-message', '-t', tmuxSession, '-p', '#{pane_pid}',
-    ], { timeout: 5_000 });
-    const pid = parseInt(stdout.trim(), 10);
-    return isNaN(pid) ? null : pid;
-  } catch {
-    return null;
-  }
-}
+export type ProcessLivenessProbe = (sessionId: string) => Promise<ProcessInfo>;
 
 /**
  * Get the command line for a PID.
  * Linux: reads /proc/<pid>/cmdline (fast, no subprocess).
  * macOS: falls back to ps (one subprocess).
  */
-async function getProcessCmdline(pid: number): Promise<string | null> {
+export async function getProcessCmdline(pid: number): Promise<string | null> {
   // Try Linux /proc first
   try {
     const cmdline = await readFile(`/proc/${pid}/cmdline`, 'utf-8');
@@ -76,33 +69,25 @@ export function isClaudeProcess(cmdline: string): boolean {
 }
 
 /**
- * Full process liveness check for a tmux session.
+ * Full process liveness check for a managed session.
+ * Requires an injected probe — there is no tmux fallback.
  */
-export async function checkProcessLiveness(tmuxSession: string): Promise<ProcessInfo> {
-  const panePid = await getPanePid(tmuxSession);
-  if (panePid === null) {
-    return { panePid: null, cmdline: null, isClaude: false, isAlive: false };
-  }
-
-  const cmdline = await getProcessCmdline(panePid);
-  if (cmdline === null) {
-    // PID exists in tmux but process is gone — crashed
-    return { panePid, cmdline: null, isClaude: false, isAlive: false };
-  }
-
-  const isClaude = isClaudeProcess(cmdline);
-  return { panePid, cmdline, isClaude, isAlive: true };
+export async function checkProcessLiveness(
+  sessionId: string,
+  probe: ProcessLivenessProbe,
+): Promise<ProcessInfo> {
+  return probe(sessionId);
 }
 
 // --- Shadow strategy ---
 
 /**
- * Shadow strategy that checks process liveness.
+ * Shadow strategy that checks process liveness via an injected probe.
  *
- * Since checkProcessLiveness is async (subprocess calls), this strategy
- * caches the most recent result and updates it asynchronously. The evaluate()
- * method returns the cached result (synchronous), while an async refresh
- * is triggered on each call.
+ * Since probes are async (backend /proc / ps), this strategy caches the most
+ * recent result and updates it asynchronously. The evaluate() method returns
+ * the cached result (synchronous), while an async refresh is triggered on each
+ * call.
  *
  * This is acceptable because:
  * - The watchdog ticks every 5s — one tick of staleness is fine for crash detection
@@ -111,23 +96,30 @@ export async function checkProcessLiveness(tmuxSession: string): Promise<Process
 export class ProcessLivenessStrategy implements ShadowStrategy {
   readonly source = 'process_liveness' as const;
   private cachedResults = new Map<string, ProcessInfo>();
+  private readonly probe: ProcessLivenessProbe | null;
+
+  constructor(probe?: ProcessLivenessProbe | null) {
+    this.probe = probe ?? null;
+  }
 
   evaluate(agentId: string, _inputs: ShadowInputs): Anomaly | null {
-    // Trigger async refresh (fire-and-forget)
-    checkProcessLiveness(agentId)
-      .then((info) => this.cachedResults.set(agentId, info))
-      .catch(() => { /* ignore */ });
+    if (this.probe) {
+      // Trigger async refresh (fire-and-forget)
+      this.probe(agentId)
+        .then((info) => this.cachedResults.set(agentId, info))
+        .catch(() => { /* ignore */ });
+    }
 
     // Use cached result from previous tick
     const info = this.cachedResults.get(agentId);
-    if (!info) return null; // No data yet — first tick
+    if (!info) return null; // No data yet — first tick or no probe
 
     if (!info.isAlive) {
       return {
         agentId,
         type: 'stale_agent',
         severity: 'warning',
-        explanation: `Claude Code process is no longer running (PID ${info.panePid} not found)`,
+        explanation: `Agent session process is no longer running (PID ${info.panePid} not found)`,
         detectedAt: new Date(),
         confidence: 'high',
       };
@@ -138,13 +130,13 @@ export class ProcessLivenessStrategy implements ShadowStrategy {
         agentId,
         type: 'stale_agent',
         severity: 'info',
-        explanation: `Pane process is not Claude Code: "${info.cmdline?.slice(0, 80)}"`,
+        explanation: `Session process is not a known agent binary: "${info.cmdline?.slice(0, 80)}"`,
         detectedAt: new Date(),
         confidence: 'medium',
       };
     }
 
-    return null; // Claude is alive and running
+    return null; // Agent session is alive
   }
 
   /** Clear cached state for an agent (when unregistered). */
