@@ -314,11 +314,10 @@ export class SessionBridge {
 
     // Prefer the browser's FitAddon size before replaying absolute-position
     // history. Without this, a 200-col Grok ring paints into a ~100-col xterm.
-    const initialSize = await this.waitForInitialResize();
+    await this.waitForInitialResize();
     if (this.closed) return;
-    if (initialSize && !this.readOnly) {
-      this.applyResizeNow(initialSize.cols, initialSize.rows);
-    }
+    // Apply the latest pending size (may have been updated after the wait woke).
+    this.applyPendingInitialResizeIfAny();
 
     // The backend owns the single ring buffer; this bridge is a stateless
     // view. `captureBytes` is lock-free and does not force a re-attach.
@@ -343,16 +342,28 @@ export class SessionBridge {
     // already removed the subscriber and there is no client left to replay to.
     if (this.closed) return;
 
+    // A late FitAddon frame may have arrived during capture — re-apply before
+    // deciding on ring replay / live redraw so nudge uses the freshest size.
+    this.applyPendingInitialResizeIfAny();
+
     const skipRingReplay = this.shouldSkipRingReplay(captured);
     let replay: Uint8Array = new Uint8Array(0);
     if (skipRingReplay) {
       // Dense absolute-position TUIs (Grok Build): replaying the ring paints
       // thousands of historical CUP frames at mixed widths. Skip it and force
       // the live agent to redraw at the browser geometry instead.
+      //
+      // Read-only viewers never WINCH the shared PTY (#807). They still skip
+      // the smashy ring and receive live frames once the agent paints; an idle
+      // agent may leave the viewer blank until the next redraw — intentional.
       if (!this.readOnly) {
-        const size = initialSize ?? this.lastAppliedResize;
+        const size = this.pendingInitialResize ?? this.lastAppliedResize;
         if (size) {
           await this.nudgeLiveRedraw(size.cols, size.rows);
+        } else {
+          console.warn(
+            `[session-bridge] skipped absolute-TUI ring for ${this.sessionId} without a browser size; waiting for live frames`,
+          );
         }
       }
       if (this.closed) return;
@@ -455,15 +466,21 @@ export class SessionBridge {
     // Always remember the latest browser size for the startup path.
     this.pendingInitialResize = { cols, rows };
     if (!this.startupComplete) {
-      // Unblock waitForInitialResize; if we have already applied a size
-      // (capture/nudge phase), keep the PTY in lockstep with the browser.
+      // Unblock waitForInitialResize. Apply immediately so a late FitAddon
+      // frame during capture/nudge is not dropped when no size was applied yet
+      // (e.g. the wait timed out with no earlier resize).
       this.initialResizeResolver?.();
-      if (this.lastAppliedResize) {
-        this.applyResizeNow(cols, rows);
-      }
+      this.initialResizeResolver = null;
+      this.applyResizeNow(cols, rows);
       return;
     }
     this.scheduleDebouncedResize(cols, rows);
+  }
+
+  /** Apply `pendingInitialResize` if present and different from last applied. */
+  private applyPendingInitialResizeIfAny(): void {
+    if (this.readOnly || !this.pendingInitialResize) return;
+    this.applyResizeNow(this.pendingInitialResize.cols, this.pendingInitialResize.rows);
   }
 
   private scheduleDebouncedResize(cols: number, rows: number): void {
@@ -821,7 +838,10 @@ export class SessionBridge {
       this.resizeDebounceTimer = null;
     }
     this.debouncedResize = null;
+    // Unblock start() if it is still waiting for the browser FitAddon size.
+    const pendingResolver = this.initialResizeResolver;
     this.initialResizeResolver = null;
+    pendingResolver?.();
     this.pendingOutputChunks = [];
     this.pendingOutputBytes = 0;
     this.pendingOutputHasLiveBytes = false;

@@ -554,6 +554,59 @@ describe('SessionBridge', () => {
     expect(resizeSpy).toHaveBeenCalledWith('s1', 100, 40);
   });
 
+  it('applies a late FitAddon resize after the wait times out and still nudges live redraw', async () => {
+    const backend = await makeReadySession('s1');
+    const cups = Array.from({ length: 220 }, (_, i) => {
+      const row = (i % 40) + 1;
+      const col = 10 + (i % 170);
+      return `\x1b[?2026h\x1b[${row};${col}H·\x1b[?2026l`;
+    }).join('');
+    backend.setCaptureContent('s1', cups);
+    const resizeSpy = vi.spyOn(backend, 'resize');
+    const ws = new FakeWs();
+
+    // Slow capture so a late resize can arrive after the wait window.
+    let releaseCapture!: () => void;
+    const captureGate = new Promise<void>((resolve) => { releaseCapture = resolve; });
+    const originalCapture = backend.captureBytes.bind(backend);
+    backend.captureBytes = async (id) => {
+      await captureGate;
+      return originalCapture(id);
+    };
+
+    const bridge = new SessionBridge(
+      's1',
+      ws as unknown as never,
+      backend,
+      undefined,
+      undefined,
+      undefined,
+      {
+        ringReplay: 'auto',
+        initialResizeWaitMs: 20,
+        liveRedrawNudgeMs: 0,
+        resizeDebounceMs: 0,
+      },
+    );
+
+    const startPromise = bridge.start();
+    // Wait window expires with no size, then the browser FitAddon finally fires
+    // while captureBytes is still gated.
+    await new Promise((r) => setTimeout(r, 35));
+    ws.emit('message', Buffer.from('{"type":"resize","cols":110,"rows":42}'), false);
+    releaseCapture();
+    await startPromise;
+
+    const resizeArgs = resizeSpy.mock.calls.map((c) => [c[1], c[2]]);
+    expect(resizeArgs).toContainEqual([110, 42]);
+    expect(resizeArgs).toContainEqual([109, 42]);
+    const binaryText = ws.sent
+      .filter((s): s is Buffer => Buffer.isBuffer(s))
+      .map((b) => b.toString('latin1'))
+      .join('');
+    expect(binaryText.includes(cups.slice(0, 40))).toBe(false);
+  });
+
   it.each([
     ['null dims', '{"type":"resize","cols":null,"rows":null}'],
     ['zero cols', '{"type":"resize","cols":0,"rows":30}'],
