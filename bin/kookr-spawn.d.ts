@@ -18,7 +18,7 @@ export interface ParsedArgs {
   prompt: string | null;
   positional: string[];
   cwd: string | null;
-  agent: 'claude-code' | 'codex-cli' | null;
+  agent: 'claude-code' | 'codex-cli' | 'grok-build' | null;
   effort: string | null;
   criteria: string | null;
   dedupe: 'warn' | 'block' | 'skip';
@@ -64,7 +64,7 @@ export interface PostTaskArgs {
   baseUrl: string;
   prompt: string;
   cwd: string;
-  agent: 'claude-code' | 'codex-cli' | null;
+  agent: 'claude-code' | 'codex-cli' | 'grok-build' | null;
   effort?: string | null;
   criteria: string | null;
   disableDedup?: boolean;
