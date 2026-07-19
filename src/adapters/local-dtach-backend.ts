@@ -46,6 +46,7 @@ import type { TerminalSessionDataSource } from '../core/ports/terminal-session-s
 import {
   type BackendError,
   type BackendStats,
+  type CaptureCurrentFrameOptions,
   type ReconnectTransportOptions,
   type ReconnectTransportReason,
   type ReconnectTransportResult,
@@ -102,6 +103,15 @@ const DEFAULT_RECONNECT_LIVENESS_TIMEOUT_MS = 1_500;
 const RECONNECT_COOLDOWN_MS = 2_000;
 const RECONNECT_WINDOW_MS = 60_000;
 const RECONNECT_CAP = 3;
+/** Default hard cap for a secondary-attach current-frame snapshot. */
+const DEFAULT_FRAME_SNAPSHOT_TIMEOUT_MS = 800;
+/** Quiet period after the last byte that ends a frame snapshot. */
+const DEFAULT_FRAME_SNAPSHOT_QUIET_MS = 40;
+/**
+ * Minimum time to keep collecting after the first byte. Prevents finishing on
+ * dtach's leading `ESC[H ESC[J` chunk before the rest of the screen dump arrives.
+ */
+const DEFAULT_FRAME_SNAPSHOT_MIN_HOLD_MS = 120;
 /**
  * Post-restart recovery policy (kookr-ai/kookr#1345).
  *
@@ -519,6 +529,149 @@ export class LocalDtachBackend implements TerminalBackend {
     const out = Buffer.alloc(size);
     this.copyFromRing(sess, head, size, out);
     return new Uint8Array(out);
+  }
+
+  /**
+   * Snapshot the master's current screen via a temporary secondary `dtach -a`.
+   * Does not dispose the primary attach, does not write input, and does not
+   * count against the reconnect-transport cap — safe for every browser open
+   * onto a dense absolute-position TUI (Grok).
+   */
+  async captureCurrentFrame(
+    id: SessionId,
+    options: CaptureCurrentFrameOptions = {},
+  ): Promise<Uint8Array> {
+    if (this.closed) return new Uint8Array(0);
+
+    const entry = await this.readEntry(id);
+    if (!entry) throw new SessionGoneError(id);
+    if (!existsSync(entry.sock)) return new Uint8Array(0);
+
+    const remembered = this.attached.get(id)?.currentSize;
+    const cols = options.cols && options.cols > 0
+      ? options.cols
+      : (remembered?.cols ?? 80);
+    const rows = options.rows && options.rows > 0
+      ? options.rows
+      : (remembered?.rows ?? 24);
+    const timeoutMs = options.timeoutMs && options.timeoutMs > 0
+      ? options.timeoutMs
+      : DEFAULT_FRAME_SNAPSHOT_TIMEOUT_MS;
+    const quietMs = options.quietMs && options.quietMs > 0
+      ? options.quietMs
+      : DEFAULT_FRAME_SNAPSHOT_QUIET_MS;
+    const minHoldMs = options.minHoldMs && options.minHoldMs > 0
+      ? options.minHoldMs
+      : DEFAULT_FRAME_SNAPSHOT_MIN_HOLD_MS;
+
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    let quietTimer: ReturnType<typeof setTimeout> | null = null;
+    let minHoldTimer: ReturnType<typeof setTimeout> | null = null;
+    let firstByteAt: number | null = null;
+    let quietSatisfied = false;
+    let minHoldSatisfied = false;
+    let settled = false;
+
+    let resolveDone!: () => void;
+    const done = new Promise<void>((resolve) => {
+      resolveDone = resolve;
+    });
+    const tryFinish = (): void => {
+      if (settled) return;
+      // After first byte: need both quiet + min-hold. Hard timeout / pty exit
+      // call finish() directly and skip this gate.
+      if (firstByteAt === null) return;
+      if (!quietSatisfied || !minHoldSatisfied) return;
+      finish();
+    };
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      if (quietTimer) {
+        clearTimeout(quietTimer);
+        quietTimer = null;
+      }
+      if (minHoldTimer) {
+        clearTimeout(minHoldTimer);
+        minHoldTimer = null;
+      }
+      resolveDone();
+    };
+
+    let pty: IPty;
+    try {
+      pty = spawn(this.dtachBinary, ['-a', entry.sock, '-E'], {
+        name: 'xterm-256color',
+        cols,
+        rows,
+        env: process.env as Record<string, string>,
+        cwd: process.cwd(),
+        encoding: null,
+      });
+    } catch (err) {
+      console.warn(
+        `[local-dtach] captureCurrentFrame spawn failed for ${id}:`,
+        err,
+      );
+      return new Uint8Array(0);
+    }
+
+    const hardTimer = setTimeout(finish, timeoutMs);
+
+    const onDataDisposable = pty.onData((data) => {
+      if (settled) return;
+      const buf = typeof data === 'string' ? Buffer.from(data, 'utf-8') : Buffer.from(data);
+      if (buf.length === 0) return;
+      chunks.push(buf);
+      totalBytes += buf.length;
+      if (firstByteAt === null) {
+        firstByteAt = Date.now();
+        minHoldSatisfied = minHoldMs <= 0;
+        if (!minHoldSatisfied) {
+          minHoldTimer = setTimeout(() => {
+            minHoldSatisfied = true;
+            tryFinish();
+          }, minHoldMs);
+        }
+      }
+      quietSatisfied = false;
+      if (quietTimer) clearTimeout(quietTimer);
+      quietTimer = setTimeout(() => {
+        quietSatisfied = true;
+        tryFinish();
+      }, quietMs);
+    });
+
+    const onExitDisposable = pty.onExit(() => {
+      finish();
+    });
+
+    try {
+      await done;
+    } finally {
+      clearTimeout(hardTimer);
+      if (quietTimer) clearTimeout(quietTimer);
+      if (minHoldTimer) clearTimeout(minHoldTimer);
+      try {
+        onDataDisposable.dispose();
+      } catch {
+        // listener already gone
+      }
+      try {
+        onExitDisposable.dispose();
+      } catch {
+        // listener already gone
+      }
+      try {
+        pty.kill();
+      } catch {
+        // already exited
+      }
+    }
+
+    if (totalBytes === 0) return new Uint8Array(0);
+    return new Uint8Array(Buffer.concat(chunks, totalBytes));
   }
 
   onData(id: SessionId, cb: (data: Uint8Array, source?: TerminalSessionDataSource) => void): () => void {

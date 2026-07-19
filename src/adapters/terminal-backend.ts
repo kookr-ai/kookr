@@ -126,6 +126,33 @@ export interface ReconnectTransportOptions {
   actor?: string;
 }
 
+/**
+ * Options for {@link TerminalBackend.captureCurrentFrame}.
+ *
+ * Used when a browser opens onto a dense absolute-position TUI (Grok Build)
+ * whose ring history must not be replayed. A secondary `dtach -a` dumps the
+ * master's *current* screen without tearing down Kookr's primary attach or
+ * burning the reconnect-transport retry budget.
+ */
+export interface CaptureCurrentFrameOptions {
+  /** Hard cap on how long to wait for the attach-replay burst (ms). */
+  timeoutMs?: number;
+  /**
+   * After the first byte, how long of silence ends the capture (ms).
+   * Defaults short so a spinner tick does not keep the secondary attach open.
+   */
+  quietMs?: number;
+  /**
+   * Minimum collection time after the first byte (ms). Avoids finishing on
+   * dtach's leading clear sequence before the rest of the screen dump arrives.
+   */
+  minHoldMs?: number;
+  /** Preferred cols for the temporary attach client (cosmetic for most masters). */
+  cols?: number;
+  /** Preferred rows for the temporary attach client. */
+  rows?: number;
+}
+
 /** Coarse verdict of a reconnect-transport attempt. */
 export type ReconnectTransportOutcome = 'success' | 'inconclusive' | 'failure';
 
@@ -389,6 +416,25 @@ export interface TerminalBackend extends TerminalSessionStreamPort {
     id: SessionId,
     options?: ReconnectTransportOptions,
   ): Promise<ReconnectTransportResult>;
+
+  /**
+   * Optional. Capture the master's *current* screen via a temporary secondary
+   * attach (multi-client `dtach -a`) without disposing Kookr's primary attach
+   * child, without writing input, and without counting against the reconnect
+   * retry cap.
+   *
+   * Returns the attach-replay bytes (may include a few live ticks collected
+   * during the quiet window), or an empty buffer when the socket is missing /
+   * silent. Throws {@link SessionGoneError} when the session is unknown.
+   *
+   * Preferred over {@link reconnectTransport} for absolute-TUI browser opens
+   * (Grok Build): reconnect is rate-limited (3/min) and leaves blank panes
+   * once the cap is hit.
+   */
+  captureCurrentFrame?(
+    id: SessionId,
+    options?: CaptureCurrentFrameOptions,
+  ): Promise<Uint8Array>;
 
   /**
    * Validate that a session recovered after a Kookr restart is observably live,
