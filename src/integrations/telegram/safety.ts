@@ -20,7 +20,7 @@
 
 import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { AgentType } from '../../core/agent-types.js';
+import { isAgentType, type AgentType } from '../../shared/contracts/agent-types.js';
 
 // ---------------------------------------------------------------------------
 // Token bucket (per-sender, in-memory, simple)
@@ -160,10 +160,6 @@ export interface IntegrationState {
 
 function emptyState(): IntegrationState {
   return { offset: 0, spawnsByMs: [], origin: {}, agentDefaultsByUser: {} };
-}
-
-function isAgentType(value: unknown): value is AgentType {
-  return value === 'claude-code' || value === 'codex-cli';
 }
 
 export class StateStore {
