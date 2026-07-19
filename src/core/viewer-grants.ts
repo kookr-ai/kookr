@@ -25,8 +25,13 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { atomicWriteFile, readJsonFile } from './persistence-utils.js';
-import { canonicalizeScope, type Scope } from '../server/viewer-data-policy.js';
-import type { ViewerTokenResolution } from '../server/auth.js';
+import {
+  canonicalizeScope,
+  type Scope,
+  type ViewerTokenResolution,
+} from './viewer-scope.js';
+
+export type { Scope, ViewerTokenResolution } from './viewer-scope.js';
 
 /**
  * Liveness of a grant by id, the return of {@link ViewerGrantStore.liveness}.

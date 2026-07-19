@@ -4,8 +4,10 @@ import { getConnInfo } from '@hono/node-server/conninfo';
 import type { Context, MiddlewareHandler } from 'hono';
 import { AuthThrottle, type AuthThrottleRejectReason, type AuthThrottleSnapshot } from './auth-throttle.js';
 import { isViewerAllowedRoute, type Scope } from './viewer-data-policy.js';
+import type { ViewerTokenResolution } from '../core/viewer-scope.js';
 
 export type { Scope } from './viewer-data-policy.js';
+export type { ViewerTokenResolution } from '../core/viewer-scope.js';
 
 export const LOCAL_OWNER_ID = 'local-owner';
 
@@ -52,18 +54,7 @@ declare module 'hono' {
   }
 }
 
-/**
- * Result of looking a presented credential up against the viewer-grant store.
- * The store itself lands in #803; `resolveActor` consumes this via the injected
- * {@link ApiAuthConfig.resolveViewer} seam so this issue (#802) is complete and
- * unit-testable without the store. `not-found` means the credential is not a
- * known viewer token (and was already shown not to be the owner token).
- */
-export type ViewerTokenResolution =
-  | { kind: 'valid'; grantId: string; scope: Scope }
-  | { kind: 'revoked'; grantId: string }
-  | { kind: 'expired'; grantId: string }
-  | { kind: 'not-found' };
+// ViewerTokenResolution SSOT: `core/viewer-scope` (re-exported above).
 
 // --- Bind-host classification + API token authentication (issue #708) ---
 //

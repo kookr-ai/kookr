@@ -64,9 +64,36 @@ export function checkCoreLlmProviderBoundary(file: string): Violation[] {
   return violations;
 }
 
+/**
+ * Core must not import outward into server/adapters/frontend/cli/remote/integrations.
+ * Relative import specs like `../server/...` or deep `../../server/...` are violations.
+ * Type-only imports count — compile-time layer leaks still couple core to outer packages.
+ */
+const CORE_OUTWARD_IMPORT_RE =
+  /(?:from\s+|import\s*\(\s*)['"]((?:\.\.\/)+)(server|adapters|frontend|cli|remote|integrations|pr-checklist)(?:\/[^'"]*)?['"]/g;
+
+export function checkCoreLayerBoundary(file: string): Violation[] {
+  const source = readFileSync(file, 'utf8');
+  const violations: Violation[] = [];
+  for (const match of source.matchAll(CORE_OUTWARD_IMPORT_RE)) {
+    const spec = match[0].includes('from')
+      ? match[0].replace(/^[\s\S]*from\s+/, '').replace(/^import\s*\(\s*/, '')
+      : match[0];
+    const importPath = match[1] + match[2];
+    violations.push({
+      file,
+      reason: `core imports outer layer "${importPath}" (${spec.trim()})`,
+    });
+  }
+  return violations;
+}
+
 async function main(): Promise<void> {
   const files = await listTypeScriptFiles(CORE_ROOT);
-  const violations = files.flatMap(checkCoreLlmProviderBoundary);
+  const violations = [
+    ...files.flatMap(checkCoreLlmProviderBoundary),
+    ...files.flatMap(checkCoreLayerBoundary),
+  ];
 
   if (violations.length > 0) {
     console.error('Architecture boundary violations:');
