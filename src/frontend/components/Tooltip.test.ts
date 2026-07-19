@@ -24,13 +24,13 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function renderTooltip(text: string) {
+function renderTooltip(text: string, buttonProps: React.ComponentProps<'button'> = {}) {
   act(() => {
     root.render(
       React.createElement(
         Tooltip,
         { text },
-        React.createElement('button', { type: 'button' }, 'Target'),
+        React.createElement('button', { type: 'button', ...buttonProps }, 'Target'),
       ),
     );
   });
@@ -55,5 +55,96 @@ describe('Tooltip', () => {
       button.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
     });
     expect(document.querySelector('.tooltip-portal')).toBeNull();
+  });
+
+  test('shows an associated tooltip on focus and preserves child handlers', () => {
+    const onFocus = vi.fn();
+    const onKeyDown = vi.fn();
+    renderTooltip('Keyboard-accessible details', {
+      'aria-describedby': 'existing-description',
+      onFocus,
+      onKeyDown,
+    });
+
+    const button = container.querySelector('button')!;
+    act(() => {
+      button.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    });
+    expect(onFocus).toHaveBeenCalledOnce();
+
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+
+    const tooltip = document.querySelector('[role="tooltip"]');
+    expect(tooltip?.textContent).toBe('Keyboard-accessible details');
+    expect(button.getAttribute('aria-describedby')).toBe(`existing-description ${tooltip?.id}`);
+
+    act(() => {
+      button.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(onKeyDown).toHaveBeenCalledOnce();
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+
+    act(() => {
+      button.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+      button.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+      button.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      vi.advanceTimersByTime(400);
+    });
+    expect(onKeyDown).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+  });
+
+  test('stays visible until both overlapping hover and focus end', () => {
+    renderTooltip('Mixed-input details');
+
+    const button = container.querySelector('button')!;
+    act(() => {
+      button.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    });
+    act(() => {
+      button.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    });
+    act(() => {
+      button.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
+    });
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toBe('Mixed-input details');
+
+    act(() => {
+      button.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    });
+
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+
+    act(() => {
+      button.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      button.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+      button.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+      vi.advanceTimersByTime(400);
+    });
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toBe('Mixed-input details');
+
+    act(() => {
+      button.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
+    });
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+  });
+
+  test('cancels a pending reveal when unmounted', () => {
+    renderTooltip('Unmounting details');
+
+    const button = container.querySelector('button')!;
+    act(() => {
+      button.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    });
+    expect(vi.getTimerCount()).toBe(1);
+
+    act(() => root.unmount());
+    expect(vi.getTimerCount()).toBe(0);
+    root = createRoot(container);
   });
 });
