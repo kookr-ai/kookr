@@ -12,9 +12,13 @@
 const SECRET_PATTERNS: RegExp[] = [
   /\bsk-[A-Za-z0-9_-]{16,}\b/g, // OpenAI-style API key (also matches sk-ant-)
   /\bAKIA[A-Z0-9]{16}\b/g, // AWS access key
-  /\bghp_[A-Za-z0-9]{16,}\b/g, // GitHub PAT
+  /\bgithub_pat_[A-Za-z0-9_]{22,}\b/g, // GitHub fine-grained PAT
+  /\bgh[pousr]_[A-Za-z0-9_]{16,}\b/g, // GitHub classic PAT / OAuth / App / refresh tokens
   /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, // JWT
-  /\bxoxb-[A-Za-z0-9-]{16,}\b/g, // Slack bot token
+  /\bxox[bpa]-[A-Za-z0-9-]{16,}\b/g, // Slack bot / user / legacy app token
+  /\bxapp-[A-Za-z0-9-]{16,}\b/g, // Slack app-level token
+  /\bAIza[A-Za-z0-9_-]{20,}\b/g, // Google API key
+  /\b\d{8,10}:[A-Za-z0-9_-]{35}\b/g, // Telegram bot token
   /\bglpat-[A-Za-z0-9_-]{16,}\b/g, // GitLab PAT
   /\bhf_[A-Za-z0-9]{16,}\b/g, // HuggingFace token
   /\bnpm_[A-Za-z0-9]{16,}\b/g, // npm token
