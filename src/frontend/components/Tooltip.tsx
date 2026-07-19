@@ -30,6 +30,7 @@ export function Tooltip({ text, children }: TooltipProps) {
 
   const show = useCallback((e: React.SyntheticEvent<HTMLElement>) => {
     if (!text) return;
+    if (timerRef.current) clearTimeout(timerRef.current);
     const rect = e.currentTarget.getBoundingClientRect();
     setPos({
       top: rect.top - 8,
@@ -62,6 +63,10 @@ export function Tooltip({ text, children }: TooltipProps) {
         onBlur: (event: React.FocusEvent<HTMLElement>) => {
           childProps.onBlur?.(event);
           hide();
+        },
+        onKeyDown: (event: React.KeyboardEvent<HTMLElement>) => {
+          childProps.onKeyDown?.(event);
+          if (event.key === 'Escape') hide();
         },
       })}
       {displayText && visible && createPortal(
