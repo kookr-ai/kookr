@@ -1,6 +1,6 @@
 ---
 name: Parallel Issue Batch
-description: Select several non-conflicting GitHub issues, spawn one Kookr task per issue, and supervise them until PRs are merged
+description: Select non-conflicting GitHub issues, group tightly related ones when efficient, spawn child Kookr tasks (Claude/Codex/Grok), and supervise until PRs are merged
 repo-tags: [github]
 tags: [workflow, loopable]
 deliveryPreAuthorized: true
@@ -20,11 +20,11 @@ parameters:
     type: textarea
     default: ""
   - name: targetIssueCount
-    description: "How many issues to run concurrently"
+    description: "How many issues to cover in this batch (bundled issues still count toward this total)"
     required: true
     default: "4"
   - name: maxConcurrentTasks
-    description: "Maximum child tasks to keep running at once"
+    description: "Maximum child tasks to keep running at once (one task per work unit, not necessarily per issue)"
     required: true
     default: "4"
   - name: mergeAfterImplementation
@@ -59,6 +59,8 @@ parameters:
         value: "claude-code"
       - label: "Codex CLI"
         value: "codex-cli"
+      - label: "Grok Build"
+        value: "grok-build"
   - name: onAmbiguity
     description: "What to do when the issue pool is ambiguous or the selector matches nothing. Autonomous modes never pause to ask."
     required: true
@@ -85,9 +87,11 @@ checklist:
   - Target repo resolved to an existing local checkout
   - Existing prior batch state inspected before selecting work
   - Candidate issues filtered for author trust, duplicates, active PRs, and blocked labels
-  - Selected issues have a documented non-overlapping write-scope matrix
-  - One child Kookr task spawned per selected issue, up to the concurrency cap
-  - Each child prompt prepended with a context pack (issue, non-exhaustive candidate files, base ref, cached skill digests) framed as a floor, not a ceiling
+  - Selected work units have a documented non-overlapping write-scope matrix
+  - Related small issues bundled into multi-issue work units when a single PR is more efficient
+  - One child Kookr task spawned per work unit (not blindly one per issue), up to the concurrency cap
+  - Child agent type may be Claude Code, Codex CLI, Grok Build, or server default
+  - Each child prompt prepended with a context pack (issue(s), non-exhaustive candidate files, base ref, cached skill digests) framed as a floor, not a ceiling
   - Child prompts require fresh git worktrees and no edits in the main checkout
   - Child tasks monitored for idle prompts, pasted-but-unsubmitted messages, permission dialogs, PR creation, CI, and mergeability
   - Interactivity policy honored: autonomous onAmbiguity modes never paused for user input
@@ -98,14 +102,21 @@ checklist:
 
 ## Objective
 
-Run a parallel implementation batch for `{{repoFullName}}`: select several issues that can be implemented concurrently, spawn one Kookr child task per issue, and supervise the children until each issue reaches the requested PR state.
+Run a parallel implementation batch for `{{repoFullName}}`: select several issues that can be implemented concurrently (as work units), spawn one Kookr child task per work unit, and supervise the children until every covered issue reaches the requested PR state.
+
+A **work unit** is either:
+
+- a single issue → one child task → one PR that closes that issue, or
+- a small bundle of tightly related issues → one child task → one PR that closes all issues in the bundle.
+
+Default to one issue per work unit. Bundle only when it is clearly more efficient (see Phase 3).
 
 `{{mergeAfterImplementation}}` controls the terminal policy:
 
 - `true`: every selected issue must have a merged PR, or an explicitly recorded non-code blocker.
 - `false`: every selected issue must have an open PR with local verification and green or pending CI, or an explicitly recorded blocker.
 
-This playbook is a parent/orchestrator. The parent selects and supervises. The child tasks implement one issue each.
+This playbook is a parent/orchestrator. The parent selects, groups, and supervises. Child tasks implement one work unit each (one or more issues, one PR).
 
 If you face a design choice the issue does not settle, pick the smallest implementation that satisfies the issue, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
 
@@ -233,7 +244,7 @@ Validate parameters before assigning them to shell variables:
 - `maxConcurrentTasks` must be an integer from 1 through `targetIssueCount`.
 - `mergeAfterImplementation` must be `true` or `false`.
 - `allowOtherAuthors` must be `true` or `false`.
-- `childAgent` must be `default`, `claude-code`, or `codex-cli`.
+- `childAgent` must be `default`, `claude-code`, `codex-cli`, or `grok-build`.
 - `onAmbiguity` must be `ask`, `auto-safe-subset`, or `auto-stop`.
 - `localPath` may be empty, or an absolute path / `~/...` path containing only `~A-Za-z0-9._/-`. Reject whitespace, quotes, `$`, backticks, semicolons, pipes, redirects, and newlines.
 
@@ -299,9 +310,13 @@ For each candidate, apply these filters before reading the issue body:
 
 Write the filtered list to `$CANDIDATES_FILE`.
 
-## Phase 3: Prove Concurrent Implementability
+## Phase 3: Prove Concurrent Implementability and Optional Bundling
 
-Select up to `targetIssueCount` issues that can safely run at the same time. Do not spawn children until this write-scope matrix is written.
+Select up to `targetIssueCount` **issues** and group them into **work units** that can safely run at the same time. Do not spawn children until this write-scope matrix is written.
+
+`targetIssueCount` counts issues covered, not children spawned. A bundle of three small issues counts as three toward the total but becomes one concurrent task.
+
+### 3.1 Score each candidate issue
 
 For each filtered issue:
 
@@ -315,70 +330,117 @@ For each filtered issue:
 3. Classify risk:
    - `safe`: narrow, likely disjoint files, clear verification.
    - `maybe`: unclear files or shared docs/config.
-   - `unsafe`: broad refactor, global formatting, shared release files, changelog/release notes, dependency lockfile overlap, migration touching many modules, or likely same files as an already selected issue.
+   - `unsafe`: broad refactor, global formatting, shared release files, changelog/release notes, dependency lockfile overlap, migration touching many modules, or likely same files as an already selected **work unit**.
 4. Reject `unsafe`.
-5. Include `maybe` only if the parent can assign a strict child write scope that avoids already selected files.
+5. Include `maybe` only if the parent can assign a strict child write scope that avoids already selected work units' files.
 
-Selection matrix shape:
+### 3.2 Bundle related issues into multi-issue work units (when efficient)
+
+Default is **one issue per work unit**. Bundle two or more issues into a single work unit only when **all** of the following hold:
+
+1. **Size**: each issue is small enough that the combined change still fits a reviewable single PR (rough guide: one coherent feature/fix surface, not a mega-diff across unrelated subsystems). Prefer bundling only when the combined expected files stay focused (typically a handful of modules / one area).
+2. **Affinity** — at least one strong reason:
+   - Shared write scope (same files or the same tight module).
+   - Sequential/tied work (one issue is a natural follow-up, prerequisite, or partial of the other).
+   - Same root cause or API surface where separate PRs would thrash the same files.
+   - Explicit operator note or issue text that they should ship together.
+3. **Efficiency**: one agent + one PR is clearly cheaper than N parallel children (less rebase churn, one review context, one CI run) without hiding independent large features.
+4. **Reviewability**: the resulting PR can still use a clear title/body that lists every closed issue and keeps commits/story coherent.
+
+Do **not** bundle when:
+
+- Issues are large independent features that belong in separate reviews.
+- Bundling would force an unrelated drive-by across subsystems just to "fill" the PR.
+- File overlap is only accidental (e.g. both touch `README.md`) — serialize or forbid the shared file instead of bundling unrelated work.
+- Author trust or labels differ in a way that would mix trusted and untrusted issue bodies into one child prompt without need.
+
+When bundling, record `reason_bundled` so a human can audit the grouping decision.
+
+### 3.3 Selection matrix shape
+
+Each matrix entry is one **work unit** (one future child task / one PR):
 
 ```json
 [
   {
-    "issue": 123,
+    "unit_id": "u-123",
+    "issues": [123],
     "title": "...",
     "risk": "safe",
     "expected_files": ["src/foo.ts", "src/foo.test.ts"],
     "forbidden_files": ["CHANGELOG.md", "README.md"],
     "verification_hint": "pnpm test -- src/foo.test.ts",
-    "reason_selected": "Disjoint from #124 and #125"
+    "reason_selected": "Disjoint from unit covering #124 and #125",
+    "reason_bundled": null
+  },
+  {
+    "unit_id": "u-200-201",
+    "issues": [200, 201],
+    "title": "Wire auth header + fix missing claim on refresh",
+    "risk": "safe",
+    "expected_files": ["src/auth.ts", "src/auth.test.ts"],
+    "forbidden_files": ["CHANGELOG.md", "README.md"],
+    "verification_hint": "pnpm test -- src/auth.test.ts",
+    "reason_selected": "Disjoint from other units",
+    "reason_bundled": "Both touch src/auth.ts; tiny related fixes; one PR avoids dual rebase"
   }
 ]
 ```
 
-Hard concurrency rules:
+Legacy single-issue shape with `"issue": 123` (no `issues` array) may appear in prior-run state; treat it as `issues: [123]`.
 
-- No two selected issues may have overlapping expected files.
-- Avoid shared release files (`CHANGELOG.md`, release notes, package manifests, lockfiles) unless the run has exactly one selected issue or the parent serializes those issues.
-- If a repo habitually requires changelog entries, either select only one issue touching the changelog or add a parent-owned cleanup/serialization plan before spawning.
+Hard concurrency rules (apply **between work units**, not inside a bundle):
+
+- No two selected **work units** may have overlapping expected files.
+- Issues inside one multi-issue unit **may** share files — that is often why they were bundled.
+- Avoid shared release files (`CHANGELOG.md`, release notes, package manifests, lockfiles) unless the run has exactly one work unit or the parent serializes those units.
+- If a repo habitually requires changelog entries, either select only one work unit touching the changelog or add a parent-owned cleanup/serialization plan before spawning.
 - Prefer small, testable issues with clear acceptance criteria over large ambiguous issues.
+- The sum of issue counts across work units must be ≤ `targetIssueCount`.
 
-Write the final matrix to `$SELECTION_FILE`. If fewer than one issue is safe, write `BLOCKED`.
+Write the final matrix to `$SELECTION_FILE`. If fewer than one work unit is safe, write `BLOCKED`.
 
 ## Phase 4: Spawn Child Tasks
 
-Read `$CHILDREN_FILE` first. Do not spawn a second child for an issue that already has a child task ID, open PR, merged PR, or recorded blocker.
+Read `$CHILDREN_FILE` first. Do not spawn a second child for any issue that already has a child task ID (including as a member of a multi-issue unit), open PR, merged PR, or recorded blocker.
 
-Spawn at most `maxConcurrentTasks` children at a time. For each selected issue without a child:
+Spawn at most `maxConcurrentTasks` children at a time. For each selected **work unit** without a child:
 
-1. **Build a context pack** so the child warm-starts instead of cold-reading the issue and the same static skills every run (issue #1306). Write a JSON spec from data you already gathered — never interpolate untrusted issue text into shell — then generate the pack with the hook-safe CLI:
+1. **Build a context pack** so the child warm-starts instead of cold-reading the issue(s) and the same static skills every run (issue #1306). Write a JSON spec from data you already gathered — never interpolate untrusted issue text into shell — then generate the pack with the hook-safe CLI.
+
+   Use a stable unit slug for files: for a single-issue unit, `issue-<N>`; for a multi-issue unit, `unit-<N1>-<N2>-…` (sorted ascending).
 
    ```bash
    # Spec is inert data. Write it with a file-writing tool, not a heredoc, when
    # the issue body may contain shell-triggering strings.
-   #   $PROMPTS_DIR/issue-$N.spec.json:
+   #   $PROMPTS_DIR/<unit-slug>.spec.json:
    #   {
-   #     "issueNumber": <N>,
-   #     "issueTitle": "<title>",
-   #     "issueBodyFile": "<path to the raw issue body you saved>",
+   #     "issueNumber": <primary N — first issue in the unit>,
+   #     "issueNumbers": [<all issues in the unit>],
+   #     "issueTitle": "<combined or primary title>",
+   #     "issueBodyFile": "<path to the raw primary issue body you saved>",
+   #     "issueBodyFiles": { "<N>": "<path>", ... },
    #     "candidateFiles": [<expected_files from the selection matrix>],
    #     "baseBranch": "<defaultBranchRef.name>",
    #     "baseCommit": "<origin/<branch> commit sha>",
    #     "repoFullName": "<owner/repo>"
    #   }
    node "$KOOKR_REPO/bin/kookr-context-pack.js" \
-     --spec "$PROMPTS_DIR/issue-$N.spec.json" \
-     --out "$PROMPTS_DIR/issue-$N.pack.md"
+     --spec "$PROMPTS_DIR/<unit-slug>.spec.json" \
+     --out "$PROMPTS_DIR/<unit-slug>.pack.md"
    ```
 
-   The pack bundles the issue title/body, acceptance criteria, candidate file paths (as **non-exhaustive hints**), the base branch/commit, and pre-digested excerpts of the static skills a child needs (commit discipline, pre-PR review checklist, PR workflow). Skill digests are cached and reused across children and runs, and re-generated automatically when a skill file changes. The pack is a **floor, not a ceiling**: the candidate-file list is a starting shortlist, never an authoritative set, and the child must stay free to explore beyond it.
+   The pack bundles the issue title/body (or multi-issue digest), acceptance criteria, candidate file paths (as **non-exhaustive hints**), the base branch/commit, and pre-digested excerpts of the static skills a child needs (commit discipline, pre-PR review checklist, PR workflow). Skill digests are cached and reused across children and runs, and re-generated automatically when a skill file changes. The pack is a **floor, not a ceiling**: the candidate-file list is a starting shortlist, never an authoritative set, and the child must stay free to explore beyond it.
 
-2. Create a prompt file under `$PROMPTS_DIR/issue-<N>.md` using a file-writing tool, not a shell heredoc when running under hook-scanned shells. **Prepend the generated `issue-<N>.pack.md`** to the child prompt content below (pack first, then the instructions), so the child opens with the warm-start context. If pack generation failed, fall back to the bare prompt — the pack is an optimization, never a gate.
-3. Include this child prompt content, customized for the issue:
+2. Create a prompt file under `$PROMPTS_DIR/<unit-slug>.md` using a file-writing tool, not a shell heredoc when running under hook-scanned shells. **Prepend the generated `<unit-slug>.pack.md`** to the child prompt content below (pack first, then the instructions), so the child opens with the warm-start context. If pack generation failed, fall back to the bare prompt — the pack is an optimization, never a gate.
+3. Include this child prompt content, customized for the work unit:
 
 ```markdown
-Implement issue #<N> in <owner/repo> end-to-end.
+Implement the following GitHub issue(s) in <owner/repo> end-to-end in **one** PR:
+- Issues: #<N1>[, #<N2>, …]
+- Bundle reason (if multi-issue): <reason_bundled or "single-issue unit">
 
-A **context pack** is prepended above: a warm-start digest of the issue, candidate
+A **context pack** is prepended above: a warm-start digest of the issue(s), candidate
 files, base ref, and pre-digested skill excerpts. It is a floor, not a ceiling — the
 file list is a non-exhaustive hint, packed facts can be stale, and you must verify and
 explore beyond it. Never gate real work on "the pack says X".
@@ -388,59 +450,68 @@ Hard constraints:
 - Before tracked-file edits, refresh the PR base and create a fresh git worktree
   from it:
   `git fetch origin <defaultBranchRef.name from Phase 1>`
-  `git worktree add ../<repo-name>-issue-<N>-<short-slug> -b <type>/issue-<N>-<short-slug> origin/<defaultBranchRef.name from Phase 1>`
+  `git worktree add ../<repo-name>-issue-<primary-N>-<short-slug> -b <type>/issue-<primary-N>-<short-slug> origin/<defaultBranchRef.name from Phase 1>`
+  For multi-issue units, primary-N is the lowest issue number; the branch may include
+  additional issue markers if helpful (e.g. `fix/issue-200-201-auth`).
 - Do not edit, commit, or push from the main checkout.
 - Keep write scope narrow. Expected files: <expected_files from selection matrix>.
 - Avoid these files unless absolutely required and explicitly justified: <forbidden_files>.
-- Do not add a changelog/release-note entry unless this issue cannot be accepted without it. If the repo has no changelog or the parent forbids it, do not create one.
+- Do not add a changelog/release-note entry unless this unit cannot be accepted without it. If the repo has no changelog or the parent forbids it, do not create one.
 
-Issue:
-- URL: <issue URL>
-- Title: <issue title>
+Issues (implement every issue in this unit; do not drop any):
+- #<N1>: <URL> — <title>
+- [#<N2>: <URL> — <title>]
+- …
 
 Implementation target:
-- Read the issue and relevant code.
-- Implement only this issue.
-- Add or update focused tests.
+- Read every issue in the unit and the relevant code.
+- Implement the unit as one coherent change set. If multi-issue, keep commits
+  readable (per-issue commits when natural) but open **one** PR.
+- Add or update focused tests covering each issue's acceptance criteria.
 - Run the repo-appropriate build/test checks.
 - Before opening the PR, when running the pre-PR review specialists, feed each one a **review pack** — the staged diff plus the same shared context — instead of letting it re-explore the repo cold. Stage your changes, then, if `$KOOKR_REPO/bin/kookr-context-pack.js` is available, regenerate the pack with a review output:
-  `git diff --cached > /tmp/issue-<N>.diff`
-  add `"stagedDiffFile": "/tmp/issue-<N>.diff"` to the spec, then
-  `node "$KOOKR_REPO/bin/kookr-context-pack.js" --spec <spec.json> --out /tmp/issue-<N>.pack.md --review-out /tmp/issue-<N>.review.md`
-  and pass `/tmp/issue-<N>.review.md` to each reviewer specialist as its context. This is an optimization layered on top of the pre-pr-review skill — do not skip any review step because of it, and treat pack contents as hints to verify against the diff, not facts.
+  `git diff --cached > /tmp/<unit-slug>.diff`
+  add `"stagedDiffFile": "/tmp/<unit-slug>.diff"` to the spec, then
+  `node "$KOOKR_REPO/bin/kookr-context-pack.js" --spec <spec.json> --out /tmp/<unit-slug>.pack.md --review-out /tmp/<unit-slug>.review.md`
+  and pass `/tmp/<unit-slug>.review.md` to each reviewer specialist as its context. This is an optimization layered on top of the pre-pr-review skill — do not skip any review step because of it, and treat pack contents as hints to verify against the diff, not facts.
 - Commit with a conventional message if the repo uses one.
-- Push the branch and open a PR that closes #<N>.
+- Push the branch and open **one** PR that closes every issue in the unit
+  (`Closes #<N1>`, `Closes #<N2>`, … in the body). The PR title/body must list
+  every issue covered.
 - Monitor CI and fix failures.
-- If you face a design choice the issue does not settle, pick the smallest implementation that satisfies the issue, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
+- If you face a design choice the issues do not settle, pick the smallest implementation that satisfies them, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
 - If mergeAfterImplementation is true, merge the PR only after it is mergeable and required checks are green. Use the repo's allowed merge method. Exception: a required check that could not execute because of an external GitHub Actions budget/quota/billing block (e.g. the run failed within seconds with a spending-limit/quota message, not a code error) is a non-code blocker, not a failing check — capture the exact `gh run view` evidence and, if the repo permits admin merge, merge with `--admin` instead of stalling for a human override. Never apply this exception to a check that actually ran and failed on the code; when in doubt, treat the failure as real and report the blocker.
-- Report the PR URL and final state.
+- Report the PR URL and final state for every issue in the unit.
 
 Concurrent-task note:
-Other child tasks are working in the same repo on different issues. Do not revert their branches, do not edit their expected files, and avoid broad formatting.
+Other child tasks are working in the same repo on different work units. Do not revert their branches, do not edit their expected files, and avoid broad formatting.
 
 Supervisor note:
-If you are blocked by conflicts, unclear requirements, missing credentials, or a required shared-file edit, stop and report the blocker rather than widening scope.
+If you are blocked by conflicts, unclear requirements, missing credentials, or a required shared-file edit, stop and report the blocker rather than widening scope. Do not silently drop an issue from a multi-issue unit — report a blocker instead.
 ```
 
-4. Spawn through the hook-safe CLI:
+4. Spawn through the hook-safe CLI. `CHILD_AGENT` may be `default`, `claude-code`, `codex-cli`, or `grok-build`:
 
    ```bash
    AGENT_FLAG=""
    if [ "$CHILD_AGENT" != "default" ]; then AGENT_FLAG="--agent $CHILD_AGENT"; fi
+   # ISSUES_LABEL e.g. "#123" or "#200+#201"
    node "$KOOKR_REPO/bin/kookr-spawn.js" \
      --cwd "$LOCAL" \
-     --prompt-file "$PROMPTS_DIR/issue-$N.md" \
-     --criteria "Issue #$N has a PR matching the requested merge policy" \
+     --prompt-file "$PROMPTS_DIR/<unit-slug>.md" \
+     --criteria "Issues $ISSUES_LABEL have a single PR matching the requested merge policy" \
      $AGENT_FLAG
    ```
 
    If `KOOKR_REPO` is not set, derive it from the parent cwd if it contains `bin/kookr-spawn.js`, otherwise use `$HOME/git/kookr`.
 
-5. Parse the returned task ID and append it to `$CHILDREN_FILE`:
+5. Parse the returned task ID and append it to `$CHILDREN_FILE`. Prefer the multi-issue shape; keep `issue` as the primary (lowest) number for older tooling:
 
 ```json
 {
-  "issue": 123,
+  "unit_id": "u-200-201",
+  "issue": 200,
+  "issues": [200, 201],
   "task_id": "...",
   "agent_id": "kookr-...",
   "status": "spawned",
@@ -474,8 +545,9 @@ For each child:
    - Permission dialog for authorized repo work: send `1` then Enter.
    - `[Pasted text #N +M lines]` at the prompt: send a bare Enter.
    - Idle after reporting a PR URL: verify PR state with `gh`.
-   - Idle with a blocker: record it in `$CHILDREN_FILE` and decide whether another issue can replace it.
-   - Expanding write scope into another selected issue's files: send corrective instruction and record risk.
+   - Idle with a blocker: record it in `$CHILDREN_FILE` and decide whether another work unit can replace it.
+   - Expanding write scope into another selected **work unit's** files: send corrective instruction and record risk.
+   - Multi-issue unit that dropped an issue from the PR: treat as incomplete; instruct the child to cover every issue or record a blocker.
 
 3. Verify PR state:
 
@@ -484,14 +556,14 @@ For each child:
      --json number,title,state,headRefName,url,mergeable,statusCheckRollup,body
    ```
 
-   Match PRs by `Closes #N`, issue number in title/body, or branch name.
+   Match PRs by `Closes #N` for **every** issue in the child's `issues` array (or legacy `issue`), issue numbers in title/body, or branch name. For multi-issue units the same PR must close all listed issues.
 
-4. If `mergeAfterImplementation=true`, a child is complete only when the PR is merged. If CI is green but the child is idle, send a concise instruction to merge using the repo's allowed method.
-5. If `mergeAfterImplementation=false`, a child is complete when the PR is open, local verification is reported, and CI is green or legitimately pending.
+4. If `mergeAfterImplementation=true`, a child is complete only when the PR is merged and covers every issue in its work unit. If CI is green but the child is idle, send a concise instruction to merge using the repo's allowed method.
+5. If `mergeAfterImplementation=false`, a child is complete when the PR is open, covers every issue in its work unit, local verification is reported, and CI is green or legitimately pending.
 
 Update `$MONITOR_FILE` with a compact table:
 
-| Issue | Task | State | PR | Action | Blocker |
+| Issues | Task | State | PR | Action | Blocker |
 | --- | --- | --- | --- | --- | --- |
 
 ## Phase 6: Parent-Owned Conflict Cleanup
@@ -506,11 +578,13 @@ If multiple children create the same shared-file conflict:
 
 ## Phase 7: Completion
 
-The batch is DONE when every selected issue has one of:
+The batch is DONE when every selected **issue** (expand multi-issue work units) has one of:
 
-- `merged=true` and a merged PR URL, when `mergeAfterImplementation=true`.
-- an open PR URL with green checks or accepted pending checks, when `mergeAfterImplementation=false`.
+- `merged=true` and a merged PR URL covering that issue, when `mergeAfterImplementation=true`.
+- an open PR URL covering that issue with green checks or accepted pending checks, when `mergeAfterImplementation=false`.
 - a recorded blocker with enough detail for a human to act.
+
+A multi-issue child that merged a PR missing one of its issues is **not** complete for the missing issue — either instruct a fixup or record a blocker for the gap.
 
 Before writing DONE:
 
@@ -519,7 +593,7 @@ gh issue list -R "$REPO" --state open --limit 100 --json number,title,url
 gh pr list -R "$REPO" --state open --limit 100 --json number,title,url,headRefName
 ```
 
-Confirm there are no accidental duplicate PRs for selected issues. Also record how many open issues were excluded because prior batch state already completed or blocked them, so the next run can continue from the remaining issue pool without re-discovery.
+Confirm there are no accidental duplicate PRs for selected issues (including partial overlaps where one PR closed only a subset of a multi-issue unit). Also record how many open issues were excluded because prior batch state already completed or blocked them, so the next run can continue from the remaining issue pool without re-discovery.
 
 Then:
 
@@ -539,21 +613,24 @@ echo "STOP: BLOCKED - <reason>" > .batch-stop
 
 1. Read prior batch state, `$SELECTION_FILE`, and `$CHILDREN_FILE` before spawning.
 2. Resume active prior runs before selecting replacement or additional issues.
-3. Never spawn a second child for the same issue unless the prior child is terminal and explicitly marked replaced.
+3. Never spawn a second child for the same issue (including when the issue is a member of a multi-issue unit) unless the prior child is terminal and explicitly marked replaced.
 4. Never select an issue that already has an open or merged PR for this run or a prior completed run.
 5. Never treat terminal batch state as repository-wide completion; use it as evidence for exclusions, then gather remaining eligible issues.
 6. Never rely on local zero-diff as batch completion; PR/issue state is the source of truth.
 7. Keep parent state outside the target repo.
-8. If the parent task restarts, reconstruct child state from prior batch state, `$CHILDREN_FILE`, Kookr API task records, and GitHub PR state.
+8. If the parent task restarts, reconstruct child state from prior batch state, `$CHILDREN_FILE`, Kookr API task records, and GitHub PR state. Accept both legacy `{ "issue": N }` and multi-issue `{ "issues": [...] }` child records.
 
 ## Anti-Patterns
 
 - Stopping at a completed prior run when the launch request asks for another batch and open eligible issues remain.
 - Asking the user to find new issues after a terminal prior run instead of carrying completed issues forward as exclusions.
-- Spawning issues first and checking file overlap later.
+- Spawning work units first and checking file overlap later.
+- Forcing one child per issue when two tiny tied issues clearly share one PR-sized change set.
+- Bundling large independent features into a mega-PR just to reduce task count.
 - Letting every child touch `CHANGELOG.md`, release notes, README, or lockfiles in a concurrent batch.
-- Treating a child task's final message as complete without checking PR state.
+- Treating a child task's final message as complete without checking PR state (and multi-issue coverage).
 - Sending a long supervisor instruction and failing to press Enter again when it remains pasted at the prompt.
 - Inline `curl -d` JSON prompts that contain hook-triggering command strings. Use prompt files.
 - Merging a PR just because local tests passed; branch protection and GitHub checks still matter.
 - Closing a blocked issue without a clear explanation and durable evidence.
+- Passing an agent type other than `default` / `claude-code` / `codex-cli` / `grok-build` to `kookr-spawn`.
