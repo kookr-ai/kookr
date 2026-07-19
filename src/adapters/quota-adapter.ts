@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -34,6 +34,8 @@ export class QuotaAdapter {
   private currentIntervalMs: number;
   private maxBackoffMs = 1_800_000; // 30 minutes — the usage endpoint can stay 429'd for a long time
   private lastError: string | null = null;
+  private credentialsMtimeMs: number | null = null;
+  private lastAttemptedToken: string | null = null;
 
   constructor(intervalMs = 120_000) {
     this.baseIntervalMs = intervalMs;
@@ -65,15 +67,16 @@ export class QuotaAdapter {
    * Returns true if quota data was updated.
    */
   async poll(): Promise<boolean> {
-    if (this.state === 'disabled' || this.state === 'auth_failed') {
-      return false;
-    }
-
-    this.state = 'polling';
-
     let token: string | null;
     try {
-      token = await this.readAccessToken();
+      if (this.state === 'disabled' || this.state === 'auth_failed') {
+        const recoveredToken = await this.readChangedAccessToken();
+        // Stay dormant until the credentials file contains a genuinely new token.
+        if (!recoveredToken || recoveredToken === this.lastAttemptedToken) return false;
+        token = recoveredToken;
+      } else {
+        token = await this.readAccessToken();
+      }
     } catch (err) {
       this.state = 'disabled';
       this.lastError = `Cannot read credentials: ${err instanceof Error ? err.message : String(err)}`;
@@ -88,7 +91,10 @@ export class QuotaAdapter {
       return false;
     }
 
+    this.state = 'polling';
+
     try {
+      this.lastAttemptedToken = token;
       const response = await fetch(USAGE_API, {
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -102,6 +108,7 @@ export class QuotaAdapter {
         const refreshedToken = await this.readAccessToken();
         if (refreshedToken && refreshedToken !== token) {
           // Token was refreshed, retry once
+          this.lastAttemptedToken = refreshedToken;
           const retryResponse = await fetch(USAGE_API, {
             headers: {
               'Authorization': `Bearer ${refreshedToken}`,
@@ -110,17 +117,11 @@ export class QuotaAdapter {
             },
           });
           if (retryResponse.status === 401) {
-            this.state = 'auth_failed';
-            this.lastError = 'OAuth token expired and re-read failed';
-            console.warn(`[quota] ${this.lastError}`);
-            return false;
+            return this.handleAuthFailure('OAuth token expired and re-read failed');
           }
           return this.handleResponse(retryResponse);
         }
-        this.state = 'auth_failed';
-        this.lastError = 'OAuth token expired';
-        console.warn(`[quota] ${this.lastError}`);
-        return false;
+        return this.handleAuthFailure('OAuth token expired');
       }
 
       if (response.status === 429) {
@@ -223,8 +224,29 @@ export class QuotaAdapter {
     return { utilization, resetsAt };
   }
 
-  private async readAccessToken(): Promise<string | null> {
+  private handleAuthFailure(message: string): false {
+    this.consecutiveFailures++;
+    this.consecutiveSuccesses = 0;
+    this.currentIntervalMs = Math.min(
+      this.currentIntervalMs * 2,
+      this.maxBackoffMs,
+    );
+    this.state = 'auth_failed';
+    this.lastError = message;
+    console.warn(`[quota] ${this.lastError}`);
+    return false;
+  }
+
+  private async readChangedAccessToken(): Promise<string | null> {
+    const credentialsStat = await stat(CREDENTIALS_PATH);
+    if (credentialsStat.mtimeMs === this.credentialsMtimeMs) return null;
+    return this.readAccessToken(credentialsStat.mtimeMs);
+  }
+
+  private async readAccessToken(knownMtimeMs?: number): Promise<string | null> {
+    const mtimeMs = knownMtimeMs ?? (await stat(CREDENTIALS_PATH)).mtimeMs;
     const content = await readFile(CREDENTIALS_PATH, 'utf-8');
+    this.credentialsMtimeMs = mtimeMs;
     const creds = JSON.parse(content) as CredentialsFile;
     return creds.claudeAiOauth?.accessToken ?? null;
   }
