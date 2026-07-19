@@ -98,7 +98,8 @@ export function describeCron(cron: string): string {
   // Weekly on a specific day
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   if (dom === '*' && month === '*' && !dow.includes('*') && !minute.includes('*') && !hour.includes('*')) {
-    const dayName = dayNames[Number(dow)] ?? dow;
+    const dayIndex = dow === '7' ? 0 : Number(dow);
+    const dayName = dayNames[dayIndex] ?? dow;
     return `Every ${dayName} at ${pad(hour)}:${pad(minute)}`;
   }
 
