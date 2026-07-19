@@ -1109,6 +1109,21 @@ The system SHALL price transcript token usage against the model that produced ea
 
 **Evidence:** `src/core/pricing-tables.ts`, `src/core/token-tracker.ts`, `src/core/usage-types.ts`, `src/core/tasks.ts`, `src/shared/contracts/usage.ts`, `src/core/pricing-tables.test.ts`, `src/core/token-tracker.test.ts`, `src/core/tasks.test.ts`.
 
+---
+
+## R14: Text-to-Speech Input Safety
+
+### R14.1: Bound Synthesis Text [#1445] — SHALL — `done`
+
+The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds the configured character limit before invoking the speech model.
+
+**Acceptance criteria:**
+- Empty or whitespace-only text returns HTTP 400 with a clear client-facing message.
+- Text longer than `TTS_MAX_TEXT_LENGTH` returns HTTP 413 with a clear client-facing message.
+- Text at or below the configured limit follows the existing synthesis path unchanged.
+
+**Evidence:** `tts/src/server.py`, `tts/docker-compose.yml`, `tts/tests/test_server.py`.
+
 ## Summary Matrix
 
 | Req | Feature | Priority | Status | Module(s) |
@@ -1197,6 +1212,7 @@ The system SHALL price transcript token usage against the model that produced ea
 | R12.2 | F15.3 | SHALL | done | session-health, SessionHealthService, diagnostics-routes |
 | R12.3 | F15.3 | SHOULD | done | diagnostics-routes, SessionHealthPanel, FindingsPanel, bug-report-bundle |
 | R13.1 | F4.9 | SHALL | done | pricing-tables, token-tracker, usage-types, tasks |
+| R14.1 | #1445 | SHALL | done | TTS server input validation |
 
 ---
 
