@@ -118,6 +118,17 @@ describe('describeCron', () => {
     expect(describeCron('0 9 * * 1')).toBe('Every Mon at 09:00');
   });
 
+  it('describes both Sunday day-of-week aliases', () => {
+    expect(describeCron('0 9 * * 0')).toBe('Every Sun at 09:00');
+    expect(describeCron('0 9 * * 7')).toBe('Every Sun at 09:00');
+  });
+
+  it('preserves non-alias day-of-week labels', () => {
+    expect(describeCron('0 9 * * 1-5')).toBe('Every 1-5 at 09:00');
+    expect(describeCron('0 9 * * 1,3,5')).toBe('Every 1,3,5 at 09:00');
+    expect(describeCron('0 9 * * 8')).toBe('Every 8 at 09:00');
+  });
+
   it('describes monthly', () => {
     expect(describeCron('0 0 15 * *')).toBe('Monthly on day 15 at 00:00');
   });

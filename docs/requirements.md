@@ -1035,6 +1035,17 @@ The system SHALL persist a per-schedule execution ledger for cron, manual, skipp
 
 **Evidence:** `src/core/schedule.ts`, `src/shared/contracts/schedule.ts`, `src/server/schedule-service.ts`, `src/server/schedule-runner.ts`, `src/server/routes/schedule-routes.ts`, `src/frontend/components/SchedulesDialog.tsx`, `src/core/schedule.test.ts`, `src/server/schedule-runner.test.ts`, `src/server/routes/schedule-routes.test.ts`.
 
+### R10.3: Sunday Cron Alias Labels [F11] — SHALL — `done`
+
+The system SHALL describe both standard Sunday day-of-week values, `0` and `7`, as Sunday in human-readable schedule labels.
+
+**Acceptance criteria:**
+- A weekly schedule with day-of-week `0` is labeled `Every Sun at HH:MM`
+- A weekly schedule with day-of-week `7` is labeled `Every Sun at HH:MM`
+- Range and list day-of-week labels retain their existing rendering
+
+**Evidence:** `src/core/cron.ts`, `src/core/cron.test.ts`.
+
 ---
 
 ## R11: Self-Diagnostic Telemetry
@@ -1108,6 +1119,21 @@ The system SHALL price transcript token usage against the model that produced ea
 - `TokenUsage.pricingQuality` is optional so existing persisted task records remain valid.
 
 **Evidence:** `src/core/pricing-tables.ts`, `src/core/token-tracker.ts`, `src/core/usage-types.ts`, `src/core/tasks.ts`, `src/shared/contracts/usage.ts`, `src/core/pricing-tables.test.ts`, `src/core/token-tracker.test.ts`, `src/core/tasks.test.ts`.
+
+---
+
+## R14: Text-to-Speech Input Safety
+
+### R14.1: Bound Synthesis Text [#1445] — SHALL — `done`
+
+The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds the configured character limit before invoking the speech model.
+
+**Acceptance criteria:**
+- Empty or whitespace-only text returns HTTP 400 with a clear client-facing message.
+- Text longer than `TTS_MAX_TEXT_LENGTH` returns HTTP 413 with a clear client-facing message.
+- Text at or below the configured limit follows the existing synthesis path unchanged.
+
+**Evidence:** `tts/src/server.py`, `tts/docker-compose.yml`, `tts/tests/test_server.py`.
 
 ## Summary Matrix
 
@@ -1192,11 +1218,13 @@ The system SHALL price transcript token usage against the model that produced ea
 | R9.1 | F8.1-F8.3 | SHOULD | done | reflection-recommendation, reflection-task, StatusBar |
 | R10.1 | F11 | SHALL | done | schedule, schedule-service, schedule-runner, schedule-routes |
 | R10.2 | F11 | SHALL | done | schedule execution ledger, schedule-runner, schedule-routes, SchedulesDialog |
+| R10.3 | F11 | SHALL | done | cron description helpers |
 | R11.1 | F15.3 | SHALL | done | anomaly-detector, monitor, DetectionStatsPanel |
 | R12.1 | F15.3 | SHALL | done | session-health, local-dtach-backend, dtach-ring-store, session-bridge, Monitor |
 | R12.2 | F15.3 | SHALL | done | session-health, SessionHealthService, diagnostics-routes |
 | R12.3 | F15.3 | SHOULD | done | diagnostics-routes, SessionHealthPanel, FindingsPanel, bug-report-bundle |
 | R13.1 | F4.9 | SHALL | done | pricing-tables, token-tracker, usage-types, tasks |
+| R14.1 | #1445 | SHALL | done | TTS server input validation |
 
 ---
 
