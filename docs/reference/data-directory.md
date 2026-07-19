@@ -37,7 +37,8 @@ as internal unless this table says they are safe to remove.
 | `tasks.json.predelete.YYYYMMDDTHHMMSS` | task lifecycle | Snapshot taken before `clearCompleted` deletes finished tasks. | Automatic last-5 retention. |
 | `tasks.json.corrupt-<ISO>` | boot recovery | Quarantined corrupt live task file. | Keep until you confirm recovery; then archive or delete manually. |
 | `hooks/*.jsonl` and `hooks/*.jsonl.N` | hook ingestion | Raw Claude Code hook events per terminal session. The active file is size-rotated into numbered generations once it exceeds `KOOKR_HOOK_MAX_BYTES` (`KOOKR_HOOK_ROTATE_KEEP` generations retained — see [environment-variables.md](environment-variables.md); issue #1433). | `kookr maintenance prune` can remove aged completed-task or orphan logs, including rotated generations. |
-| `activity/*.jsonl` and `activity/*.jsonl.1` | activity ledger | Durable parsed hook ledger used for diagnostics and activity views. | Size-rotated per session; preserved by maintenance prune. |
+| `activity/*.jsonl` and `activity/*.jsonl.1` | activity ledger | Durable parsed hook ledger used for diagnostics and activity views. | Size-rotated per session; `kookr maintenance prune` can remove aged completed-task or orphan ledgers (same terminal/orphan-and-aged rules as hook logs). |
+| `playbook-state/<playbook>/<runKey>/` | playbook runner | Durable per-run state for playbook executions (scout runs, batch runs, …). | `kookr maintenance prune` can remove aged run directories; keeps the newest K per playbook (`--playbook-keep-last`) and never removes a run whose key matches an active task. |
 | `sessions/*/interactions.jsonl` | interaction log | User inputs, finding actions, task lifecycle actions, and other operator interaction events. | Preserved by maintenance prune. |
 | `settings.json` | settings API | Dashboard settings saved through the Settings dialog/API. | Keep; copy with backups. |
 | `settings/` | server bootstrap | Settings-related runtime directory threaded to the HTTP/WebSocket bootstrap layer. | Internal; keep. |
@@ -106,17 +107,26 @@ The maintenance prune is intentionally conservative:
 ```bash
 kookr maintenance prune --dry-run --dir "$KOOKR_DATA_DIR"
 kookr maintenance prune --max-age-days 30 --dir "$KOOKR_DATA_DIR"
+kookr maintenance prune --playbook-keep-last 5 --dir "$KOOKR_DATA_DIR"
 ```
 
 It can delete only:
 
 - aged hook logs — including rotated `hooks/*.jsonl.N` generations (issue #1433) — under `hooks/*.jsonl` for terminal tasks
 - aged orphan hook logs
+- aged activity ledgers (`activity/*.jsonl` and the rotated `.jsonl.1` companion) for terminal tasks and aged orphans, under the same active-session safety model as hook logs
+- aged `playbook-state/<playbook>/<runKey>` run directories (keeps the newest `--playbook-keep-last` runs per playbook and never removes a run whose key matches an active task)
 - aged numbered `server.log.N` generations
 
-It deliberately preserves `tasks.json`, snapshot files, dtach runtime state,
-activity ledgers, interaction logs, contribution history, and ambiguous audit
-stores.
+A live/in-progress session's activity ledger and an active task's playbook run
+are never eligible regardless of age. It deliberately preserves `tasks.json`,
+snapshot files, dtach runtime state, interaction logs, contribution history, and
+ambiguous audit stores. When `tasks.json` is unreadable, session-keyed and
+playbook pruning is skipped entirely and only `server.log.N` generations prune.
+
+The prune can also run automatically on a server-side timer — set
+`KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` (off by default); see
+[environment-variables.md](environment-variables.md).
 
 ## Backup
 

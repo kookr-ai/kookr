@@ -29,6 +29,10 @@ import {
   DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
   listStaleCompletionReadyTasks,
 } from '../core/completion-ready-cleanup.js';
+import {
+  planAndPruneMaintenance,
+  type MaintenancePruneResult,
+} from '../core/maintenance-prune.js';
 
 export interface TimerDeps {
   monitor: Monitor;
@@ -96,6 +100,72 @@ export interface TimerDeps {
      */
     getSnapshot(sessionId: string): UserInputDeliverySnapshot[];
   };
+  /**
+   * Optional server-side scheduled data-directory prune (idea-scout rank 4).
+   * Off unless `intervalHours > 0` (default resolved from
+   * `KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS`). Runs {@link planAndPruneMaintenance}
+   * on a timer so disk growth is not operator-manual-only; every sweep is
+   * wrapped so an error is logged and never crashes the server.
+   */
+  maintenancePrune?: MaintenancePruneScheduleConfig;
+}
+
+export interface MaintenancePruneScheduleConfig {
+  /** Absolute path to the Kookr data directory to sweep. */
+  dataDir: string;
+  /** Interval between sweeps, in hours. `<= 0` disables the timer entirely. */
+  intervalHours: number;
+  /** Age threshold forwarded to the prune core. Defaults to the core's default. */
+  maxAgeDays?: number;
+  /** Keep-last-K protection for playbook-state runs, forwarded to the core. */
+  playbookStateKeepLast?: number;
+  /** Test seam for the prune core. */
+  run?: typeof planAndPruneMaintenance;
+  /** Injectable clock forwarded to the prune core (tests). */
+  now?: () => number;
+}
+
+/** Resolve the scheduled-prune interval (hours) from the environment.
+ *  Returns 0 (off) when unset, non-numeric, or non-positive — the safe default:
+ *  scheduling is strictly opt-in. */
+export function resolveMaintenancePruneIntervalHours(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env.KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS?.trim();
+  if (!raw) return 0;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return value;
+}
+
+/**
+ * Run one scheduled maintenance prune. Errors are caught and logged — a failed
+ * sweep must never bubble into the interval callback and crash the process.
+ * Returns the result, or `null` when the sweep threw.
+ */
+export async function runScheduledMaintenancePrune(
+  config: MaintenancePruneScheduleConfig,
+): Promise<MaintenancePruneResult | null> {
+  try {
+    const run = config.run ?? planAndPruneMaintenance;
+    const result = await run({
+      dataDir: config.dataDir,
+      maxAgeDays: config.maxAgeDays,
+      playbookStateKeepLast: config.playbookStateKeepLast,
+      dryRun: false,
+      ...(config.now ? { now: config.now } : {}),
+    });
+    const warn = result.warnings.length > 0 ? `; ${result.warnings.length} warning(s)` : '';
+    console.log(
+      `[maintenance-prune] scheduled sweep reclaimed ${result.reclaimedBytes} byte(s) ` +
+        `across ${result.removed.length} artifact(s)${warn}`,
+    );
+    return result;
+  } catch (err) {
+    // Non-fatal: log and keep the server running.
+    console.error('[maintenance-prune] scheduled sweep failed:', err);
+    return null;
+  }
 }
 
 export interface PersistenceSaveTickDeps {
@@ -117,6 +187,8 @@ export interface TimerHandles {
   snoozeExpiryInterval: ReturnType<typeof setInterval>;
   saveInterval: ReturnType<typeof setInterval>;
   quotaPollTimeout: ReturnType<typeof setTimeout> | null;
+  /** Null unless a scheduled maintenance prune interval was configured. */
+  maintenancePruneInterval: ReturnType<typeof setInterval> | null;
 }
 
 /**
@@ -581,6 +653,24 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     void pollQuota();
   }
 
+  // --- Scheduled data-directory maintenance prune (optional, off by default) ---
+  // Opt-in via KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS. Deliberately does NOT run
+  // at boot (avoids a startup I/O spike); the first sweep fires one interval in.
+  // Each sweep is fully wrapped in runScheduledMaintenancePrune so a failure is
+  // logged and never crashes the server.
+  let maintenancePruneInterval: ReturnType<typeof setInterval> | null = null;
+  const maintenancePrune = deps.maintenancePrune;
+  if (maintenancePrune && maintenancePrune.intervalHours > 0) {
+    const intervalMs = maintenancePrune.intervalHours * 60 * 60 * 1000;
+    console.log(
+      `[maintenance-prune] scheduled sweep enabled every ${maintenancePrune.intervalHours}h ` +
+        `(dir=${maintenancePrune.dataDir})`,
+    );
+    maintenancePruneInterval = setInterval(() => {
+      void runScheduledMaintenancePrune(maintenancePrune);
+    }, intervalMs);
+  }
+
   return {
     tokenScanInterval,
     watchdogInterval,
@@ -588,6 +678,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     snoozeExpiryInterval,
     saveInterval,
     quotaPollTimeout,
+    maintenancePruneInterval,
   };
 }
 
@@ -634,4 +725,5 @@ export function clearAllTimers(handles: TimerHandles): void {
   clearInterval(handles.snoozeExpiryInterval);
   clearInterval(handles.saveInterval);
   if (handles.quotaPollTimeout) clearTimeout(handles.quotaPollTimeout);
+  if (handles.maintenancePruneInterval) clearInterval(handles.maintenancePruneInterval);
 }

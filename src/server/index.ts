@@ -34,6 +34,7 @@ import type { KookrServerInternal } from './server-test-helpers.js';
 import { createSnapshotMessage, getSnapshotAgentsForClient } from './use-cases/get-snapshot.js';
 import { sweepReflectWorktrees } from './use-cases/request-task-reflect.js';
 import { startBackgroundServices } from './bootstrap/start-background-services.js';
+import { resolveMaintenancePruneIntervalHours } from './lifecycle-timers.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
 import {
@@ -1402,6 +1403,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       bypassAllPermissions,
       userInputDeliveries,
       taskStateSaveScheduler,
+      // Scheduled data-directory prune (idea-scout rank 4). Off unless
+      // KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS is set to a positive number.
+      maintenancePrune: {
+        dataDir: kookrDir,
+        intervalHours: resolveMaintenancePruneIntervalHours(process.env),
+      },
     },
   });
 

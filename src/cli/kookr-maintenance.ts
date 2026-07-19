@@ -61,13 +61,15 @@ interface ParsedArgs {
   dryRun: boolean;
   json: boolean;
   maxAgeDays?: number;
+  playbookMaxAgeDays?: number;
+  playbookKeepLast?: number;
   dir?: string;
   outDir?: string;
 }
 
 const USAGE = [
   'Usage:',
-  '  kookr maintenance prune [--dry-run] [--max-age-days N] [--dir PATH] [--json]',
+  '  kookr maintenance prune [--dry-run] [--max-age-days N] [--playbook-max-age-days N] [--playbook-keep-last K] [--dir PATH] [--json]',
   '  kookr maintenance backup [--dir PATH] [--out PATH] [--json]',
 ].join('\n');
 
@@ -103,6 +105,34 @@ function parseArgs(argv: string[]): ParsedArgs {
           return parsed;
         }
         parsed.maxAgeDays = value;
+        break;
+      }
+      case '--playbook-max-age-days': {
+        if (parsed.verb !== 'prune') {
+          parsed.error = '--playbook-max-age-days is only supported for `kookr maintenance prune`.';
+          return parsed;
+        }
+        const raw = argv[++i];
+        const value = Number(raw);
+        if (raw === undefined || raw.startsWith('--') || !Number.isFinite(value) || value <= 0) {
+          parsed.error = `--playbook-max-age-days requires a positive number (got ${JSON.stringify(raw)}).`;
+          return parsed;
+        }
+        parsed.playbookMaxAgeDays = value;
+        break;
+      }
+      case '--playbook-keep-last': {
+        if (parsed.verb !== 'prune') {
+          parsed.error = '--playbook-keep-last is only supported for `kookr maintenance prune`.';
+          return parsed;
+        }
+        const raw = argv[++i];
+        const value = Number(raw);
+        if (raw === undefined || raw.startsWith('--') || !Number.isInteger(value) || value < 0) {
+          parsed.error = `--playbook-keep-last requires a non-negative integer (got ${JSON.stringify(raw)}).`;
+          return parsed;
+        }
+        parsed.playbookKeepLast = value;
         break;
       }
       case '--dir': {
@@ -154,7 +184,16 @@ function formatHuman(result: MaintenancePruneResult): string {
     for (const r of result.planned) {
       if (r.kind === 'hook-log') {
         const owner = r.taskId ? `task ${r.taskId}` : 'orphan';
-        lines.push(`    - ${r.tmuxSession}.jsonl  (${owner}, ${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`);
+        lines.push(`    - ${basename(r.path)}  (${owner}, ${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`);
+        continue;
+      }
+      if (r.kind === 'activity-ledger') {
+        const owner = r.taskId ? `task ${r.taskId}` : 'orphan';
+        lines.push(`    - activity/${basename(r.path)}  (${owner}, ${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`);
+        continue;
+      }
+      if (r.kind === 'playbook-state-run') {
+        lines.push(`    - playbook-state/${r.playbook}/${r.runKey}  (${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`);
         continue;
       }
       lines.push(`    - ${basename(r.path)}  (${r.reason}, ${r.ageDays}d, ${formatBytes(r.bytes)})`);
@@ -218,6 +257,8 @@ export async function runMaintenanceCli(
       dataDir,
       dryRun: parsed.dryRun,
       maxAgeDays: parsed.maxAgeDays,
+      playbookStateMaxAgeDays: parsed.playbookMaxAgeDays,
+      playbookStateKeepLast: parsed.playbookKeepLast,
     });
     out.log(parsed.json ? JSON.stringify(result, null, 2) : formatHuman(result));
     return 0;

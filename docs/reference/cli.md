@@ -401,11 +401,12 @@ Exit behavior:
 
 ## `kookr maintenance prune`
 
-Prune aged completed-task hook logs from a Kookr data directory:
+Prune aged completed-task artifacts (hook logs, activity ledgers, rotated `server.log.N`, and `playbook-state` run directories) from a Kookr data directory:
 
 ```bash
 kookr maintenance prune --dry-run
 kookr maintenance prune --max-age-days 14 --dir ~/.kookr-4801
+kookr maintenance prune --playbook-keep-last 5
 kookr maintenance prune --json
 ```
 
@@ -415,10 +416,12 @@ Options:
 
 - `--dry-run` - print the prune plan without deleting files.
 - `--max-age-days <n>` - prune eligible artifacts older than `n` days; the default is 30.
+- `--playbook-max-age-days <n>` - age threshold (days) for `playbook-state` run directories; defaults to `--max-age-days`.
+- `--playbook-keep-last <k>` - always keep the newest `k` runs per playbook regardless of age; the default is 0 (age-only).
 - `--dir <path>` - use an explicit Kookr data directory.
 - `--json` - print the prune result as JSON.
 
-The prune is intentionally conservative. It removes only hook-event logs under `<dataDir>/hooks/*.jsonl` — including rotated `<session>.jsonl.N` generations (issue #1433) — that belong to terminal tasks older than the age threshold, plus aged orphan hook logs. It preserves task history, crash-recovery data, activity ledgers, interaction logs, contribution history, and other stores whose mapping or audit value is ambiguous.
+The prune is intentionally conservative. It removes hook-event logs under `<dataDir>/hooks/*.jsonl` — including rotated `<session>.jsonl.N` generations (issue #1433) — activity ledgers under `<dataDir>/activity/*.jsonl(.1)`, and `playbook-state/<playbook>/<runKey>` run directories, in every case only for terminal tasks older than the age threshold plus aged orphans, plus aged numbered `server.log.N` generations. A live/in-progress session's artifacts and an active task's playbook run are never eligible. It preserves task history, crash-recovery data, interaction logs, contribution history, and other stores whose mapping or audit value is ambiguous. The same sweep can run automatically on a server-side timer via `KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` (off by default).
 
 Kookr's operational disk-pressure alert points operators here when the
 filesystem containing the data directory stays below the configured free-space
