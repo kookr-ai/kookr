@@ -540,7 +540,7 @@ The system SHOULD allow re-launching a previous task, pre-filling the launch dia
 
 **Rationale:** "Run the same thing again with a tweak" is extremely common. The data already exists in `tasks.ts` — this is purely a UI affordance. The WebSocket protocol already defines a `relaunch` message type.
 
-**Evidence:** `src/frontend/store/useStore.ts` (relaunchTask state, setRelaunchTask/clearRelaunchTask actions), `src/frontend/store/useStore.test.ts` (2 tests), `src/frontend/components/DetailPanel.tsx` (Re-launch button fetches task data from `/api/tasks`), `src/frontend/App.tsx` (opens LaunchTaskDialog pre-filled when relaunchTask is set).
+**Evidence:** `src/frontend/store/useStore.ts` (relaunchTask state, setRelaunchTask/clearRelaunchTask actions), `src/frontend/store/useStore.test.ts` (2 tests), `src/frontend/components/DetailPanel.tsx` (Re-launch button fetches the single task's full detail via `GET /api/tasks/:id`), `src/frontend/App.tsx` (opens LaunchTaskDialog pre-filled when relaunchTask is set).
 
 ### R4b.4: Quick-launch Shortcut — SHOULD — `done`
 

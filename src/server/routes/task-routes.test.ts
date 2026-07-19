@@ -152,6 +152,202 @@ describe('GET /api/tasks aggregate token usage (issue #1307)', () => {
   });
 });
 
+describe('GET /api/tasks?view=compact', () => {
+  const bigPrompt = 'X'.repeat(50_000);
+
+  function seedTaskWithBodies(taskStore: TaskStore) {
+    const task = taskStore.createTask({
+      prompt: bigPrompt,
+      userPrompt: 'Original user prompt body',
+      cwd: '/repo',
+      criteria: 'A moderately long acceptance criteria body '.repeat(20),
+      // Seed the advisory launch bodies so the compact-omission assertions
+      // below are meaningful (an unset field is trivially absent in both views).
+      launchNote: 'Prepended launch warning that should not ship in the list',
+      launchHealthSummary: {
+        degradedDependencies: ['gh'],
+        findings: [{
+          dependency: 'gh', status: 'failed', category: 'auth',
+          summary: 'not logged in', recommendedAction: 'run gh auth login',
+        }],
+      },
+    });
+    taskStore.setCompletionDigest(task.id, {
+      bullets: ['Did the thing', 'Verified the thing'],
+      filesChanged: ['src/a.ts', 'src/b.ts'],
+    });
+    return task;
+  }
+
+  test('omits heavy prompt bodies but keeps list-row fields', async () => {
+    const taskStore = new TaskStore();
+    const task = seedTaskWithBodies(taskStore);
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-compact',
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(),
+      lastStatus: 'working',
+      worktreeHealth: 'healthy',
+    });
+
+    const app = mkApp(mkLoopDeps(taskStore));
+    const rows = await (await app.request('/api/tasks?view=compact')).json();
+    const row = rows.find((t: { id: string }) => t.id === task.id);
+
+    // Heavy bodies are gone.
+    expect(row.prompt).toBeUndefined();
+    expect(row.userPrompt).toBeUndefined();
+    expect(row.criteria).toBeUndefined();
+    expect(row.completionDigest).toBeUndefined();
+    expect(row.launchHealthSummary).toBeUndefined();
+    expect(row.launchNote).toBeUndefined();
+    // The full view carries these seeded bodies — proving the omission above is
+    // the projection dropping them, not a task that never had them.
+    const fullRow = (await (await app.request('/api/tasks')).json())
+      .find((t: { id: string }) => t.id === task.id);
+    expect(fullRow.launchHealthSummary).toBeDefined();
+    expect(fullRow.launchNote).toBeDefined();
+    expect(Object.keys(row)).not.toContain('prompt');
+    expect(Object.keys(row)).not.toContain('userPrompt');
+
+    // List-row fields survive.
+    expect(row.id).toBe(task.id);
+    expect(row.taskId).toBe(task.id);
+    expect(row.status).toBe(taskStore.getTask(task.id)!.status);
+    expect(row.cwd).toBe('/repo');
+    expect(row.agentType).toBe(task.agentType);
+    expect(typeof row.createdAt).toBe('string');
+    expect(typeof row.updatedAt).toBe('string');
+
+    // Session health stub carries tmuxSession + normalized worktree health.
+    expect(row.sessions[0].tmuxSession).toBe('kookr-compact');
+    expect(row.sessions[0].lastStatus).toBe('working');
+    expect(row.sessions[0].worktreeHealth).toBe('healthy');
+    expect(row.sessions[0].transcriptPath).toBeUndefined();
+  });
+
+  test('normalizes terminal worktree health in the compact session stub', async () => {
+    const taskStore = new TaskStore();
+    const completed = taskStore.createTask('Ship PR', '/repo');
+    taskStore.addSession(completed.id, {
+      tmuxSession: 'kookr-done', agentType: 'claude-code', cwd: '/repo-wt',
+      createdAt: new Date(), worktreeHealth: 'missing',
+    });
+    taskStore.completeTask(completed.id);
+
+    const terminated = taskStore.createTask('Lost session', '/repo');
+    taskStore.addSession(terminated.id, {
+      tmuxSession: 'kookr-gone', agentType: 'claude-code', cwd: '/repo-wt',
+      createdAt: new Date(), worktreeHealth: 'missing_unexpectedly',
+    });
+    taskStore.terminateTask(terminated.id);
+
+    const app = mkApp(mkLoopDeps(taskStore));
+    const rows = await (await app.request('/api/tasks?view=compact')).json();
+
+    // completed + missing → cleaned_up; terminated stays actionable — same rule
+    // the full view applies via normalizeTaskForApi.
+    const doneRow = rows.find((t: { id: string }) => t.id === completed.id);
+    expect(doneRow.sessions[0].worktreeHealth).toBe('cleaned_up');
+    const goneRow = rows.find((t: { id: string }) => t.id === terminated.id);
+    expect(goneRow.sessions[0].worktreeHealth).toBe('missing_unexpectedly');
+  });
+
+  test('default (no view param) full list still carries the prompt', async () => {
+    const taskStore = new TaskStore();
+    const task = seedTaskWithBodies(taskStore);
+
+    const app = mkApp(mkLoopDeps(taskStore));
+    const rows = await (await app.request('/api/tasks')).json();
+    const row = rows.find((t: { id: string }) => t.id === task.id);
+
+    expect(row.prompt).toBe(bigPrompt);
+    expect(row.userPrompt).toBe('Original user prompt body');
+    expect(row.criteria).toBeDefined();
+  });
+
+  test('compact payload is dramatically smaller than the full list', async () => {
+    const taskStore = new TaskStore();
+    seedTaskWithBodies(taskStore);
+
+    const app = mkApp(mkLoopDeps(taskStore));
+    const full = await (await app.request('/api/tasks')).text();
+    const compact = await (await app.request('/api/tasks?view=compact')).text();
+
+    expect(compact.length).toBeLessThan(full.length / 10);
+    expect(compact).not.toContain(bigPrompt);
+  });
+
+  test('GET /api/tasks/:id still returns full detail including prompt', async () => {
+    const taskStore = new TaskStore();
+    const task = seedTaskWithBodies(taskStore);
+
+    const app = mkApp(mkLoopDeps(taskStore));
+    const detail = await (await app.request(`/api/tasks/${task.id}`)).json();
+
+    expect(detail.prompt).toBe(bigPrompt);
+    expect(detail.userPrompt).toBe('Original user prompt body');
+  });
+
+  test('compact rolls up child token usage on the parent', async () => {
+    const taskStore = new TaskStore();
+    const parent = taskStore.createTask({ prompt: 'batch', cwd: '/repo' });
+    const child = taskStore.createTask({ prompt: 'child', cwd: '/repo', parentTaskId: parent.id });
+    taskStore.updateTokenUsage(child.id, {
+      inputTokens: 100, outputTokens: 50, cacheReadTokens: 10, cacheWriteTokens: 0, costUsd: 0.5,
+    });
+
+    const app = mkApp(mkLoopDeps(taskStore));
+    const rows = await (await app.request('/api/tasks?view=compact')).json();
+
+    const parentRow = rows.find((t: { id: string }) => t.id === parent.id);
+    expect(parentRow.aggregateTokenUsage).toMatchObject({
+      inputTokens: 100, outputTokens: 50, cacheReadTokens: 10,
+    });
+    expect(parentRow.aggregateTokenUsage.costUsd).toBeCloseTo(0.5);
+    const childRow = rows.find((t: { id: string }) => t.id === child.id);
+    expect(childRow.aggregateTokenUsage).toBeUndefined();
+  });
+
+  test('compact flags only suppressed sessions, not healthy ones', async () => {
+    const taskStore = new TaskStore();
+    const suppressed = taskStore.createTask('Suppressed helper', '/repo');
+    taskStore.addSession(suppressed.id, {
+      tmuxSession: 'kookr-suppressed',
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(),
+      lastStatus: 'working',
+    });
+    const healthy = taskStore.createTask('Healthy helper', '/repo');
+    taskStore.addSession(healthy.id, {
+      tmuxSession: 'kookr-healthy',
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(),
+      lastStatus: 'working',
+    });
+
+    const deps = mkLoopDeps(taskStore);
+    deps.suppressionTracker = {
+      isSuppressed: (s: string) => s === 'kookr-suppressed',
+    } as unknown as TaskRouteDeps['suppressionTracker'];
+
+    const app = mkApp(deps);
+    const rows = await (await app.request('/api/tasks?view=compact')).json();
+
+    const suppressedRow = rows.find((t: { id: string }) => t.id === suppressed.id);
+    expect(suppressedRow.suppressed).toBe(true);
+    expect(suppressedRow.prompt).toBeUndefined();
+
+    // Negative control: a non-suppressed session must NOT carry the flag, so a
+    // projection that unconditionally set `suppressed` would fail here.
+    const healthyRow = rows.find((t: { id: string }) => t.id === healthy.id);
+    expect(healthyRow.suppressed).toBeUndefined();
+  });
+});
+
 describe('GET /api/tasks/completion-ready/stale', () => {
   test('returns stale completion-ready tasks as a cleanup queue', async () => {
     const taskStore = new TaskStore();
