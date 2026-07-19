@@ -11,6 +11,7 @@ import {
 } from '../core/ports/terminal-input-writer-port.js';
 import type { TerminalSessionDataSource } from '../core/ports/terminal-session-stream-port.js';
 import { isAbsolutePositionTuiRing } from './absolute-position-tui-ring.js';
+import { extractLastSubstantialAbsoluteFrame } from './absolute-position-tui-frame.js';
 
 /**
  * SessionBridge — per-WS-client view over the backend's byte stream.
@@ -370,28 +371,31 @@ export class SessionBridge {
     const skipRingReplay = this.shouldSkipRingReplay(captured);
     let replay: Uint8Array = new Uint8Array(0);
     if (skipRingReplay) {
-      // Dense absolute-position TUIs (Grok Build): replaying the ring paints
-      // thousands of historical CUP frames at mixed widths. Skip it.
+      // Dense absolute-position TUIs (Grok Build): replaying the *entire* ring
+      // paints thousands of historical CUP frames at mixed widths. Instead:
       //
-      // Recover a readable current frame without dumping history:
-      //   1. Preferred: non-destructive multi-attach snapshot
-      //      (`captureCurrentFrame`) — no reconnect-cap burn, primary attach
-      //      stays up.
-      //   2. Fallback: `reconnectTransport` so the primary attach re-emits
-      //      attach-replay (rate-limited; counted against the 3/min budget).
-      //   3. Last resort: WINCH nudge (Grok often ignores this for a full
-      //      repaint — may leave a blank pane).
+      //   0. Extract the last substantial DECSET-2026 sync frame from the ring
+      //      (a complete screen paint at the agent's width). With the browser
+      //      xterm pinned to ~200 cols (Grok), this is readable.
+      //   1. multi-attach snapshot + Ctrl+L live repaint (refreshAbsoluteTuiFrame)
+      //   2. reconnectTransport attach-replay (rate-limited)
+      //   3. WINCH nudge last resort
+      //
       // Read-only viewers never resize/snapshot/reconnect the shared PTY
-      // (#807); they skip the smashy ring and pick up live frames (and any
-      // attach-replay fan-out from an owner refresh).
+      // (#807); they still get the ring-extracted frame and live fan-out.
+      const ringFrame = extractLastSubstantialAbsoluteFrame(captured);
+      if (ringFrame && ringFrame.length > 0) {
+        replay = ringFrame;
+      }
       if (!this.readOnly) {
         const size = this.pendingInitialResize ?? this.lastAppliedResize;
         if (size) {
           const frame = await this.refreshAbsoluteTuiFrame(size);
-          if (frame && frame.length > 0) {
+          // Prefer a larger live/snapshot frame over the ring extract when both exist.
+          if (frame && frame.length > replay.length) {
             replay = frame;
           }
-        } else {
+        } else if (!ringFrame) {
           console.warn(
             `[session-bridge] skipped absolute-TUI ring for ${this.sessionId} without a browser size; waiting for live frames`,
           );
