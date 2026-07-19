@@ -1,7 +1,7 @@
-import { appendFile, mkdir } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
 
+import { appendJsonlWithRotation } from './jsonl-rotation.js';
 import type { AgentEvent, TokenUsage } from './types.js';
 import type { Task } from './tasks.js';
 
@@ -109,14 +109,54 @@ export class ProgressBudgetBurnDiagnostics {
   }
 }
 
+/** Rotate budget-burn-diagnostics.jsonl before an append would exceed this size. */
+export const DEFAULT_BUDGET_BURN_MAX_LOG_BYTES = 32 * 1024 * 1024;
+/** Rotated generations retained by default (keeps .1 and .2). */
+export const DEFAULT_BUDGET_BURN_ROTATED_GENERATIONS = 2;
+
+export interface JsonlProgressBudgetBurnDiagnosticSinkOptions {
+  /**
+   * Rotate before an append would exceed this many bytes. Default 32 MiB.
+   * Named `maxLogBytes` to match ShadowDetectorRegistryOptions; the shared
+   * rotation helper spells the same knob `maxBytes`.
+   */
+  maxLogBytes?: number;
+  /** Number of rotated generations to retain. Default 2. */
+  rotatedGenerations?: number;
+}
+
 export class JsonlProgressBudgetBurnDiagnosticSink implements ProgressBudgetBurnDiagnosticSink {
-  constructor(private readonly logFilePath = join(homedir(), '.kookr', 'budget-burn-diagnostics.jsonl')) {}
+  private readonly maxLogBytes: number;
+  private readonly rotatedGenerations: number;
+  private appendQueue: Promise<void> = Promise.resolve();
+
+  constructor(
+    private readonly logFilePath = join(homedir(), '.kookr', 'budget-burn-diagnostics.jsonl'),
+    options: JsonlProgressBudgetBurnDiagnosticSinkOptions = {},
+  ) {
+    this.maxLogBytes = options.maxLogBytes ?? DEFAULT_BUDGET_BURN_MAX_LOG_BYTES;
+    this.rotatedGenerations = options.rotatedGenerations ?? DEFAULT_BUDGET_BURN_ROTATED_GENERATIONS;
+  }
 
   append(record: ProgressBudgetBurnDiagnosticRecord): void {
     const line = `${JSON.stringify(record)}\n`;
-    mkdir(dirname(this.logFilePath), { recursive: true })
-      .then(() => appendFile(this.logFilePath, line, 'utf-8'))
+    // Serialize appends so concurrent samples cannot race the stat/rotate/append.
+    this.appendQueue = this.appendQueue
+      .catch(() => { /* keep the queue alive after an earlier write failure */ })
+      .then(() => appendJsonlWithRotation(this.logFilePath, line, {
+        maxBytes: this.maxLogBytes,
+        rotatedGenerations: this.rotatedGenerations,
+      }))
       .catch(() => { /* diagnostics-only path; never affect supervision */ });
+  }
+
+  /**
+   * Await pending fire-and-forget writes. Used by tests; a shutdown hook may
+   * also await it if one is wired up. Writes are fire-and-forget, so an abrupt
+   * exit without a flush simply drops the un-written diagnostic tail.
+   */
+  async flush(): Promise<void> {
+    await this.appendQueue.catch(() => {});
   }
 }
 
