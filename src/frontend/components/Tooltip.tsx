@@ -1,9 +1,13 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useId } from 'react';
 import { createPortal } from 'react-dom';
+
+type TooltipChildProps = React.HTMLAttributes<HTMLElement> & {
+  'aria-describedby'?: string;
+};
 
 interface TooltipProps {
   text: string | undefined;
-  children: React.ReactElement;
+  children: React.ReactElement<TooltipChildProps>;
 }
 
 const MAX_TOOLTIP_CHARS = 600;
@@ -17,11 +21,16 @@ export function Tooltip({ text, children }: TooltipProps) {
   const [visible, setVisible] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
   const timerRef = useRef<ReturnType<typeof setTimeout>>(null);
+  const tooltipId = useId();
   const displayText = text ? compactTooltipText(text) : undefined;
+  const childProps = children.props;
+  const describedBy = [childProps['aria-describedby'], displayText ? tooltipId : undefined]
+    .filter(Boolean)
+    .join(' ') || undefined;
 
-  const show = useCallback((e: React.MouseEvent) => {
+  const show = useCallback((e: React.SyntheticEvent<HTMLElement>) => {
     if (!text) return;
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const rect = e.currentTarget.getBoundingClientRect();
     setPos({
       top: rect.top - 8,
       left: rect.right + 8,
@@ -37,11 +46,28 @@ export function Tooltip({ text, children }: TooltipProps) {
   return (
     <>
       {React.cloneElement(children, {
-        onMouseEnter: show,
-        onMouseLeave: hide,
+        'aria-describedby': describedBy,
+        onMouseEnter: (event: React.MouseEvent<HTMLElement>) => {
+          childProps.onMouseEnter?.(event);
+          show(event);
+        },
+        onMouseLeave: (event: React.MouseEvent<HTMLElement>) => {
+          childProps.onMouseLeave?.(event);
+          hide();
+        },
+        onFocus: (event: React.FocusEvent<HTMLElement>) => {
+          childProps.onFocus?.(event);
+          show(event);
+        },
+        onBlur: (event: React.FocusEvent<HTMLElement>) => {
+          childProps.onBlur?.(event);
+          hide();
+        },
       })}
       {displayText && visible && createPortal(
         <div
+          id={tooltipId}
+          role="tooltip"
           className="tooltip-portal visible"
           style={{ top: pos.top, left: pos.left, transform: 'translateY(-100%)' }}
         >

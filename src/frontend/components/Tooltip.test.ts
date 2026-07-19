@@ -24,13 +24,13 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function renderTooltip(text: string) {
+function renderTooltip(text: string, buttonProps: React.ComponentProps<'button'> = {}) {
   act(() => {
     root.render(
       React.createElement(
         Tooltip,
         { text },
-        React.createElement('button', { type: 'button' }, 'Target'),
+        React.createElement('button', { type: 'button', ...buttonProps }, 'Target'),
       ),
     );
   });
@@ -55,5 +55,32 @@ describe('Tooltip', () => {
       button.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
     });
     expect(document.querySelector('.tooltip-portal')).toBeNull();
+  });
+
+  test('shows an associated tooltip on focus and preserves child focus handlers', () => {
+    const onFocus = vi.fn();
+    renderTooltip('Keyboard-accessible details', {
+      'aria-describedby': 'existing-description',
+      onFocus,
+    });
+
+    const button = container.querySelector('button')!;
+    act(() => {
+      button.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    });
+    expect(onFocus).toHaveBeenCalledOnce();
+
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+
+    const tooltip = document.querySelector('[role="tooltip"]');
+    expect(tooltip?.textContent).toBe('Keyboard-accessible details');
+    expect(button.getAttribute('aria-describedby')).toBe(`existing-description ${tooltip?.id}`);
+
+    act(() => {
+      button.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    });
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
   });
 });
