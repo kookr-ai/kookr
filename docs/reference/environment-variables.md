@@ -285,7 +285,7 @@ Bundled STT and TTS run via Docker Compose. The default STT config targets an NV
 | `TTS_MODEL_TEMPERATURE` | `0.7` | Positive float | Pocket TTS sampling temperature at model load (`temp=`). Higher values increase voice variation; lower values sound more deterministic. Read by the Python TTS sidecar (`tts/src/server.py`), not the TypeScript process. |
 | `TTS_MODEL_LSD_STEPS` | `1` | Positive integer | Pocket TTS latent spectral decode steps (`lsd_decode_steps=`). More steps can improve quality at the cost of latency. Read by the Python TTS sidecar at model load. |
 | `TTS_MODEL_EOS_THRESHOLD` | `-4.0` | Float | Pocket TTS end-of-speech threshold (`eos_threshold=`). Controls when the model stops generating audio. Read by the Python TTS sidecar at model load. |
-| `TTS_MODEL_NOISE_CLAMP` | unset | Float, or empty to leave unset | Optional Pocket TTS noise clamp (`noise_clamp=`). When unset or empty, the model uses its built-in default (`None`). Read by the Python TTS sidecar at model load. Note: compose passthrough for this var is a separate plumbing concern — set it on the container env if you need it today. |
+| `TTS_MODEL_NOISE_CLAMP` | unset | Float, or empty to leave unset | Optional Pocket TTS noise clamp (`noise_clamp=`). When unset or empty, the model uses its built-in default (`None`). Forwarded from the host by the bundled Docker Compose configuration and read by the Python TTS sidecar at model load. |
 
 ## Diagnostics And Budgeting
 
