@@ -166,6 +166,9 @@ function renderBashCompletion(): string {
   const statusFlags = flagsFor('status');
   const statusFailOnValues = flagValuesFor('status', '--fail-on');
   const statusFailOnEqualsValues = equalsFlagValues('--fail-on', statusFailOnValues);
+  const issueSubcommands = subcommandsFor('issue');
+  const issueFlags = flagsFor('issue');
+  const logsFlags = flagsFor('logs');
   const commandSubcommands = subcommandsFor('command');
   const ralphSubcommands = subcommandsFor('ralph');
   const ralphFlags = flagsFor('ralph');
@@ -174,6 +177,8 @@ function renderBashCompletion(): string {
   const maintenanceSubcommands = subcommandsFor('maintenance');
   const maintenancePruneFlags = shellWords(MAINTENANCE_PRUNE_FLAGS);
   const maintenanceBackupFlags = shellWords(MAINTENANCE_BACKUP_FLAGS);
+  const prChecklistSubcommands = subcommandsFor('pr-checklist');
+  const prChecklistFlags = flagsFor('pr-checklist');
   const pushSubcommands = subcommandsFor('push');
   const completionFlags = flagsFor('completion');
 
@@ -242,11 +247,21 @@ _kookr()
         COMPREPLY=( $(compgen -W "${signalFlags}" -- "\${cur}") )
       fi
       ;;
+    issue)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${issueSubcommands} ${issueFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${issueFlags}" -- "\${cur}") )
+      fi
+      ;;
     status)
       COMPREPLY=( $(compgen -W "${statusFlags}" -- "\${cur}") )
       ;;
     doctor)
       COMPREPLY=( $(compgen -W "${doctorFlags}" -- "\${cur}") )
+      ;;
+    logs)
+      COMPREPLY=( $(compgen -W "${logsFlags}" -- "\${cur}") )
       ;;
     command)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
@@ -283,6 +298,13 @@ _kookr()
         esac
       fi
       ;;
+    pr-checklist)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${prChecklistSubcommands} ${prChecklistFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${prChecklistFlags}" -- "\${cur}") )
+      fi
+      ;;
     push)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
         COMPREPLY=( $(compgen -W "${pushSubcommands}" -- "\${cur}") )
@@ -316,6 +338,9 @@ function renderZshCompletion(): string {
   const statusFlags = flagsFor('status');
   const statusFailOnValues = flagValuesFor('status', '--fail-on');
   const statusFailOnEqualsValues = equalsFlagValues('--fail-on', statusFailOnValues);
+  const issueSubcommands = subcommandsFor('issue');
+  const issueFlags = flagsFor('issue');
+  const logsFlags = flagsFor('logs');
   const commandSubcommands = subcommandsFor('command');
   const ralphSubcommands = subcommandsFor('ralph');
   const ralphFlags = flagsFor('ralph');
@@ -324,6 +349,8 @@ function renderZshCompletion(): string {
   const maintenanceSubcommands = subcommandsFor('maintenance');
   const maintenancePruneFlags = shellWords(MAINTENANCE_PRUNE_FLAGS);
   const maintenanceBackupFlags = shellWords(MAINTENANCE_BACKUP_FLAGS);
+  const prChecklistSubcommands = subcommandsFor('pr-checklist');
+  const prChecklistFlags = flagsFor('pr-checklist');
   const pushSubcommands = subcommandsFor('push');
   const completionFlags = flagsFor('completion');
 
@@ -360,6 +387,13 @@ _kookr()
         compadd -- ${signalFlags}
       fi
       ;;
+    issue)
+      if (( CURRENT == 3 )); then
+        compadd -- ${issueSubcommands} ${issueFlags}
+      else
+        compadd -- ${issueFlags}
+      fi
+      ;;
     status)
       case "$words[CURRENT]" in
         --fail-on=*) compadd -- ${statusFailOnEqualsValues}; return ;;
@@ -371,6 +405,9 @@ _kookr()
       ;;
     doctor)
       compadd -- ${doctorFlags}
+      ;;
+    logs)
+      compadd -- ${logsFlags}
       ;;
     command)
       if (( CURRENT == 3 )); then
@@ -397,6 +434,13 @@ _kookr()
           prune) compadd -- ${maintenancePruneFlags} ;;
           backup) compadd -- ${maintenanceBackupFlags} ;;
         esac
+      fi
+      ;;
+    pr-checklist)
+      if (( CURRENT == 3 )); then
+        compadd -- ${prChecklistSubcommands} ${prChecklistFlags}
+      else
+        compadd -- ${prChecklistFlags}
       fi
       ;;
     push)
