@@ -1,5 +1,10 @@
-import { describe, test, expect } from 'vitest';
-import { isClaudeProcess, ProcessLivenessStrategy, type ProcessInfo } from './process-liveness.js';
+import { describe, test, expect, vi } from 'vitest';
+import {
+  checkProcessLiveness,
+  isClaudeProcess,
+  ProcessLivenessStrategy,
+  type ProcessInfo,
+} from './process-liveness.js';
 
 /**
  * Seed the internal cache for a strategy, avoiding direct `as unknown as` casts
@@ -58,6 +63,34 @@ describe('ProcessLivenessStrategy', () => {
     const strategy = new ProcessLivenessStrategy();
     const anomaly = strategy.evaluate('agent-1', { paneText: '', realAnomaly: null });
     expect(anomaly).toBeNull();
+  });
+
+  test('does not call a missing probe (safe no-op)', () => {
+    const strategy = new ProcessLivenessStrategy(null);
+    expect(strategy.evaluate('agent-1', { paneText: '', realAnomaly: null })).toBeNull();
+  });
+
+  test('checkProcessLiveness delegates to the injected probe', async () => {
+    const probe = vi.fn(async () => ({
+      panePid: 9,
+      cmdline: 'claude',
+      isClaude: true,
+      isAlive: true,
+    }));
+    await expect(checkProcessLiveness('sess-1', probe)).resolves.toMatchObject({ panePid: 9 });
+    expect(probe).toHaveBeenCalledWith('sess-1');
+  });
+
+  test('evaluate schedules probe refresh when configured', async () => {
+    const probe = vi.fn(async () => ({
+      panePid: 1,
+      cmdline: 'claude',
+      isClaude: true,
+      isAlive: true,
+    }));
+    const strategy = new ProcessLivenessStrategy(probe);
+    expect(strategy.evaluate('agent-1', { paneText: '', realAnomaly: null })).toBeNull();
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledWith('agent-1'));
   });
 
   test('returns stale_agent when process is not alive (from cache)', () => {

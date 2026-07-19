@@ -69,6 +69,7 @@ import { migrateLegacyProtectedWorktree } from '../adapters/worktree-marker.js';
 import { createContributionWorkspaceServices } from './bootstrap/create-contribution-workspace-services.js';
 import { createAgentRuntime } from './bootstrap/create-agent-runtime.js';
 import { createCoreStores } from './bootstrap/create-core-stores.js';
+import { createSessionLivenessProbe } from './session-liveness-probe.js';
 import { createGitHubRuntime } from './bootstrap/create-github-runtime.js';
 import { createHookRuntime } from './bootstrap/create-hook-runtime.js';
 import { createOssServices, createOssSourceWatchers } from './bootstrap/create-oss-services.js';
@@ -287,7 +288,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // rebuild) touches it — the port bind only enforces exclusivity later.
   const releaseSingleWriterLock = acquireSingleWriterLock(kookrDir);
 
-  const coreStores = await createCoreStores({ kookrDir, hooksDir, settingsDir, frontendDir });
+  const coreStores = await createCoreStores({
+    kookrDir,
+    hooksDir,
+    settingsDir,
+    frontendDir,
+    processLivenessProbe: createSessionLivenessProbe(terminalBackend),
+  });
   const coordinatorSuppressions = new CoordinatorSuppressionStore(kookrDir);
   let currentSettings = coreStores.currentSettings;
   let settingsLoadedFromDefaults = coreStores.settingsLoadedFromDefaults;
