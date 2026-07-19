@@ -13,6 +13,7 @@ const DISABLED: OperationalAlertConfig = {
   cpuPercent: 0,
   memoryPercent: 0,
   eventLoopDelayMs: 0,
+  processRssBytes: 0,
   dataDirectoryFreePercent: 0,
   dataDirectoryFreeBytes: 0,
   circuitBreakerOpenMs: 0,
@@ -23,6 +24,7 @@ interface SampleOverrides {
   cpuUsagePercent?: number | null;
   memoryUsedPercent?: number | null;
   eventLoopDelayP95Ms?: number | null;
+  processRssBytes?: number | null;
   dataDirectoryDiskFreeBytes?: number | null;
   dataDirectoryDiskTotalBytes?: number | null;
   dataDirectoryDiskFreePercent?: number | null;
@@ -52,7 +54,7 @@ function status(overrides: SampleOverrides = {}): SystemResourceStatus {
     },
     server: {
       eventLoopDelayP95Ms: overrides.eventLoopDelayP95Ms ?? null,
-      processRssBytes: null,
+      processRssBytes: overrides.processRssBytes ?? null,
       processHeapUsedBytes: null,
       processHeapTotalBytes: null,
     },
@@ -314,6 +316,134 @@ describe('OperationalAlertEvaluator', () => {
     }))).toEqual([]);
   });
 
+  test('process RSS fires once after a sustained breach and clears on recovery', () => {
+    const threshold = 2 * 1024 * 1024 * 1024; // 2 GiB
+    const evaluator = createOperationalAlertEvaluator({
+      ...DISABLED,
+      processRssBytes: threshold,
+      sustainSamples: 3,
+    });
+
+    const highRss = status({ processRssBytes: 2.4 * 1024 * 1024 * 1024 });
+
+    // Two breaching samples build toward the sustain count without firing.
+    expect(alertsFor(evaluator, highRss)).toEqual([]);
+    expect(alertsFor(evaluator, highRss)).toEqual([]);
+
+    const fired = alertsFor(evaluator, highRss);
+    expect(fired).toHaveLength(1);
+    expect(fired[0]).toMatchObject({
+      type: 'alert',
+      agentId: OPERATIONAL_ALERT_AGENT_ID,
+      severity: 'warning',
+    });
+    expect(fired[0].summary).toContain('High Kookr process RSS');
+    // Remediation hints reference only real surfaces.
+    expect(fired[0].details).toContain('/api/diagnostics/hook-ingestion');
+    expect(fired[0].details).toContain('kookr maintenance prune --dry-run');
+    expect(fired[0].details).toContain('clearCompleted');
+    expect(fired[0].operationalAlert).toEqual({
+      key: 'resource:process_rss',
+      metric: 'process_rss',
+      state: 'fired',
+    });
+
+    // Already firing: further breaches do not re-alert.
+    expect(alertsFor(evaluator, highRss)).toEqual([]);
+
+    // Drop below threshold: one info recovery, then silence.
+    const cleared = alertsFor(evaluator, status({ processRssBytes: 1 * 1024 * 1024 * 1024 }));
+    expect(cleared).toHaveLength(1);
+    expect(cleared[0]).toMatchObject({ severity: 'info', agentId: OPERATIONAL_ALERT_AGENT_ID });
+    expect(cleared[0].summary).toContain('Recovered Kookr process RSS');
+    expect(cleared[0].operationalAlert).toEqual({
+      key: 'resource:process_rss',
+      metric: 'process_rss',
+      state: 'recovered',
+    });
+    expect(alertsFor(evaluator, status({ processRssBytes: 1 * 1024 * 1024 * 1024 }))).toEqual([]);
+  });
+
+  test('process RSS respects sustainSamples and never fires just under the sustain count', () => {
+    const threshold = 1024 * 1024 * 1024; // 1 GiB
+    const evaluator = createOperationalAlertEvaluator({
+      ...DISABLED,
+      processRssBytes: threshold,
+      sustainSamples: 4,
+    });
+
+    const highRss = status({ processRssBytes: threshold + 1 });
+    for (let i = 0; i < 3; i += 1) {
+      expect(alertsFor(evaluator, highRss)).toEqual([]);
+    }
+    // Fourth consecutive breach finally fires.
+    expect(alertsFor(evaluator, highRss)).toHaveLength(1);
+  });
+
+  test('process RSS breaches at exactly the threshold (>= inclusive)', () => {
+    const threshold = 2 * 1024 * 1024 * 1024;
+    const evaluator = createOperationalAlertEvaluator({
+      ...DISABLED,
+      processRssBytes: threshold,
+      sustainSamples: 2,
+    });
+
+    const atThreshold = status({ processRssBytes: threshold });
+    expect(alertsFor(evaluator, atThreshold)).toEqual([]);
+    expect(alertsFor(evaluator, atThreshold)).toHaveLength(1);
+  });
+
+  test('changing the process RSS threshold resets an accumulated breach streak', () => {
+    let config: OperationalAlertConfig = {
+      ...DISABLED,
+      processRssBytes: 1024 * 1024 * 1024,
+      sustainSamples: 3,
+    };
+    const evaluator = createOperationalAlertEvaluator(() => config);
+
+    const highRss = status({ processRssBytes: 2 * 1024 * 1024 * 1024 });
+    expect(alertsFor(evaluator, highRss)).toEqual([]);
+    expect(alertsFor(evaluator, highRss)).toEqual([]);
+
+    // Operator raises the threshold: the in-flight streak is discarded, so the
+    // next two breaches must not fire until a fresh streak reaches the count.
+    config = { ...config, processRssBytes: 1.5 * 1024 * 1024 * 1024 };
+    expect(alertsFor(evaluator, highRss)).toEqual([]);
+    expect(alertsFor(evaluator, highRss)).toEqual([]);
+    expect(alertsFor(evaluator, highRss)).toHaveLength(1);
+  });
+
+  test('process RSS rule disabled (threshold 0) never fires even on extreme RSS', () => {
+    const evaluator = createOperationalAlertEvaluator({
+      ...DISABLED,
+      processRssBytes: 0,
+      sustainSamples: 1,
+    });
+    expect(evaluator.hasEnabledRules()).toBe(false);
+    for (let i = 0; i < 3; i += 1) {
+      expect(alertsFor(evaluator, status({ processRssBytes: 64 * 1024 * 1024 * 1024 }))).toEqual([]);
+    }
+  });
+
+  test('process RSS enables hasEnabledRules and ignores null readings (no spam)', () => {
+    const evaluator = createOperationalAlertEvaluator({
+      ...DISABLED,
+      processRssBytes: 1024 * 1024 * 1024,
+      sustainSamples: 2,
+    });
+    expect(evaluator.hasEnabledRules()).toBe(true);
+
+    // Sampler-error snapshots (RSS null) neither fire nor advance the counter.
+    for (let i = 0; i < 5; i += 1) {
+      expect(alertsFor(evaluator, status({ processRssBytes: null }))).toEqual([]);
+    }
+    // Two real breaches still fire exactly once.
+    expect(alertsFor(evaluator, status({ processRssBytes: 2 * 1024 * 1024 * 1024 }))).toEqual([]);
+    expect(alertsFor(evaluator, status({ processRssBytes: 2 * 1024 * 1024 * 1024 }))).toHaveLength(1);
+    // A transient null while firing must not emit a spurious recovery.
+    expect(alertsFor(evaluator, status({ processRssBytes: null }))).toEqual([]);
+  });
+
   test('a transient gap does not reset accumulated breaches', () => {
     const evaluator = createOperationalAlertEvaluator({
       ...DISABLED,
@@ -346,6 +476,7 @@ describe('OperationalAlertEvaluator', () => {
       cpuPercent: 80,
       memoryPercent: 90,
       eventLoopDelayMs: 0,
+      processRssBytes: 0,
       dataDirectoryFreePercent: 0,
       dataDirectoryFreeBytes: 0,
       circuitBreakerOpenMs: 0,
