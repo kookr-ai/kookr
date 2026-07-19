@@ -26,6 +26,21 @@ import {
   type SnapshotPayloadSizePolicy,
 } from './snapshot-payload-size-policy.js';
 
+/**
+ * Soft `ws.bufferedAmount` ceiling for dashboard fan-out (#1424).
+ * Above this, skip the frame for that socket only — snapshots are full-state
+ * and self-healing, so a dropped coalesced frame costs nothing once the next
+ * lands. Aligned with session-bridge soft default; unvalidated for heap size.
+ */
+const DEFAULT_BACKPRESSURE_SOFT_BYTES = 1 * 1024 * 1024;
+
+/**
+ * Hard `ws.bufferedAmount` ceiling for dashboard fan-out (#1424).
+ * Above this, unregister + close(1013) so a stalled OPEN socket cannot grow the
+ * send queue without bound. Matches session-bridge viewer hard default.
+ */
+const DEFAULT_BACKPRESSURE_HARD_BYTES = 16 * 1024 * 1024;
+
 /** The slice of the registry the broadcaster depends on. */
 export interface BroadcasterRegistry {
   snapshotDashboardConnections(): { ws: WebSocket; actor: Actor }[];
@@ -43,6 +58,16 @@ export interface ViewerAwareBroadcasterDeps {
    */
   buildScopedSnapshot: (scope: Scope) => SnapshotMessage;
   snapshotPayloadSizePolicy?: SnapshotPayloadSizePolicy;
+  /**
+   * Soft `ws.bufferedAmount` threshold (#1424). Frames are skipped (not
+   * requeued) for that socket only. Defaults to 1 MiB; override in tests.
+   */
+  backpressureSoftBytes?: number;
+  /**
+   * Hard `ws.bufferedAmount` threshold (#1424). Socket is unregistered and
+   * closed with 1013. Defaults to 16 MiB; override in tests.
+   */
+  backpressureHardBytes?: number;
 }
 
 /** The scope a connection's actor sees: owners see `all`; viewers see their grant scope. */
@@ -86,11 +111,17 @@ export class ViewerAwareBroadcaster {
   private readonly registry: BroadcasterRegistry;
   private readonly buildScopedSnapshot: (scope: Scope) => SnapshotMessage;
   private readonly snapshotPayloadSizePolicy: SnapshotPayloadSizePolicy | undefined;
+  private readonly backpressureSoftBytes: number;
+  private readonly backpressureHardBytes: number;
 
   constructor(deps: ViewerAwareBroadcasterDeps) {
     this.registry = deps.registry;
     this.buildScopedSnapshot = deps.buildScopedSnapshot;
     this.snapshotPayloadSizePolicy = normalizeSnapshotPayloadSizePolicy(deps.snapshotPayloadSizePolicy);
+    const soft = Math.max(1, Math.floor(deps.backpressureSoftBytes ?? DEFAULT_BACKPRESSURE_SOFT_BYTES));
+    const hard = Math.max(soft, Math.floor(deps.backpressureHardBytes ?? DEFAULT_BACKPRESSURE_HARD_BYTES));
+    this.backpressureSoftBytes = soft;
+    this.backpressureHardBytes = hard;
   }
 
   /**
@@ -120,7 +151,7 @@ export class ViewerAwareBroadcaster {
         // Default-deny: a `projects` viewer never receives an unscoped delta
         // frame. Owners and `all`-scoped viewers see the world, so they pass.
         if (actor.kind === 'viewer' && actorScope(actor).kind !== 'all') continue;
-        this.send(ws, data, msg.type);
+        this.send(ws, data, msg.type, 'all');
       }
       return;
     }
@@ -135,21 +166,23 @@ export class ViewerAwareBroadcaster {
       try {
         const scope = actorScope(actor);
         let serialized: SerializedSnapshot;
+        let scopeKey: string;
         if (scope.kind === 'all') {
           serialized = allSnapshot;
+          scopeKey = 'all';
         } else {
-          const key = snapshotScopeKey(scope);
-          let cached = scopedCache.get(key);
+          scopeKey = snapshotScopeKey(scope);
+          let cached = scopedCache.get(scopeKey);
           if (!cached) {
-            cached = serializeSnapshot(this.buildScopedSnapshot(scope), key, this.snapshotPayloadSizePolicy);
-            scopedCache.set(key, cached);
+            cached = serializeSnapshot(this.buildScopedSnapshot(scope), scopeKey, this.snapshotPayloadSizePolicy);
+            scopedCache.set(scopeKey, cached);
           }
           serialized = cached;
         }
         if (!serialized.data) continue;
-        const sentPrimary = this.send(ws, serialized.data, 'snapshot');
+        const sentPrimary = this.send(ws, serialized.data, 'snapshot', scopeKey);
         if (sentPrimary && serialized.coordinatorData) {
-          this.send(ws, serialized.coordinatorData, 'coordinator.snapshot');
+          this.send(ws, serialized.coordinatorData, 'coordinator.snapshot', scopeKey);
         }
       } catch (err) {
         console.warn('[viewer-broadcaster] failed to build/send snapshot for one connection; continuing', err);
@@ -161,9 +194,45 @@ export class ViewerAwareBroadcaster {
    * Send one serialized frame to one socket. On failure the socket is dropped
    * from the registry and closed — matching the legacy `sendToClient` semantics
    * the broadcaster replaces. Returns whether the primary send succeeded.
+   *
+   * Backpressure (#1424): `bufferedAmount` above the soft threshold skips this
+   * frame for that socket only (drop, never requeue — snapshots are full-state).
+   * Above the hard threshold the socket is unregistered and closed with 1013.
    */
-  private send(ws: WebSocket, data: string, payloadType: ServerMessage['type']): boolean {
+  private send(
+    ws: WebSocket,
+    data: string,
+    payloadType: ServerMessage['type'],
+    scopeKey = 'all',
+  ): boolean {
     if (ws.readyState !== WebSocket.OPEN) return false;
+
+    const bufferedAmount = getBufferedAmount(ws);
+    if (bufferedAmount > this.backpressureHardBytes) {
+      this.observeBackpressureDrop(payloadType, scopeKey, bufferedAmount);
+      this.registry.unregister(ws);
+      console.warn(
+        `[websocket] dashboard client bufferedAmount exceeded hard backpressure; closing`,
+        {
+          payloadType,
+          bufferedAmount,
+          hardBytes: this.backpressureHardBytes,
+          softBytes: this.backpressureSoftBytes,
+        },
+      );
+      try {
+        ws.close(1013, 'dashboard snapshot backpressure');
+      } catch (closeErr) {
+        console.warn('[websocket] Failed to close client after backpressure', closeErr);
+      }
+      return false;
+    }
+    if (bufferedAmount > this.backpressureSoftBytes) {
+      // Soft: skip this frame only. Do not requeue — next coalesced snapshot heals.
+      this.observeBackpressureDrop(payloadType, scopeKey, bufferedAmount);
+      return false;
+    }
+
     try {
       ws.send(data);
       return true;
@@ -178,4 +247,32 @@ export class ViewerAwareBroadcaster {
       return false;
     }
   }
+
+  /**
+   * Report a backpressure drop through the same observation shape as the
+   * payload-size policy so existing observers see both cap and queue drops.
+   * Non-snapshot payload types have no observation contract — log-only.
+   */
+  private observeBackpressureDrop(
+    payloadType: ServerMessage['type'],
+    scopeKey: string,
+    bufferedAmount: number,
+  ): void {
+    if (payloadType !== 'snapshot' && payloadType !== 'coordinator.snapshot') return;
+    this.snapshotPayloadSizePolicy?.observe?.({
+      payloadType,
+      scopeKey,
+      bytes: bufferedAmount,
+      warnBytes: this.backpressureSoftBytes,
+      maxBytes: this.backpressureHardBytes,
+      action: 'dropped',
+    });
+  }
+}
+
+function getBufferedAmount(ws: WebSocket): number {
+  const bufferedAmount = (ws as WebSocket & { bufferedAmount?: number }).bufferedAmount;
+  return typeof bufferedAmount === 'number' && Number.isFinite(bufferedAmount)
+    ? Math.max(0, bufferedAmount)
+    : 0;
 }

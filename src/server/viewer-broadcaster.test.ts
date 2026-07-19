@@ -7,12 +7,16 @@ import type { ServerMessage, SnapshotMessage } from '../shared/contracts/message
 import { ViewerAwareBroadcaster, type BroadcasterRegistry } from './viewer-broadcaster.js';
 import type { SnapshotPayloadSizeObservation } from './snapshot-payload-size-policy.js';
 
-function fakeSocket(send: (data: string) => void): WebSocket & { close: ReturnType<typeof vi.fn> } {
+function fakeSocket(
+  send: (data: string) => void,
+  bufferedAmount = 0,
+): WebSocket & { close: ReturnType<typeof vi.fn>; bufferedAmount: number } {
   return {
     readyState: WebSocket.OPEN,
     send,
     close: vi.fn(),
-  } as unknown as WebSocket & { close: ReturnType<typeof vi.fn> };
+    bufferedAmount,
+  } as unknown as WebSocket & { close: ReturnType<typeof vi.fn>; bufferedAmount: number };
 }
 
 /** A registry stub that hands out a fixed connection list and records unregisters. */
@@ -240,5 +244,105 @@ describe('ViewerAwareBroadcaster', () => {
     expect(registry.unregistered).toEqual([failing]);
     expect(failing.close).toHaveBeenCalledOnce();
     expect(after.map((d) => (JSON.parse(d) as ServerMessage).type)).toEqual(['snapshot']);
+  });
+
+  test('bufferedAmount above soft threshold skips send for that socket only; healthy sockets still receive', () => {
+    const stalled: string[] = [];
+    const healthy: string[] = [];
+    const observations: SnapshotPayloadSizeObservation[] = [];
+    const stalledWs = fakeSocket((d) => stalled.push(d), 11);
+    const healthyWs = fakeSocket((d) => healthy.push(d), 0);
+    const registry = stubRegistry([
+      { ws: stalledWs, actor: OWNER },
+      { ws: healthyWs, actor: OWNER },
+    ]);
+    const broadcaster = new ViewerAwareBroadcaster({
+      registry,
+      buildScopedSnapshot: () => snapshot(),
+      backpressureSoftBytes: 10,
+      backpressureHardBytes: 1000,
+      snapshotPayloadSizePolicy: {
+        warnBytes: 1_000_000,
+        maxBytes: 8_000_000,
+        observe: (observation) => observations.push(observation),
+      },
+    });
+
+    broadcaster.broadcast(snapshot());
+
+    expect(stalled).toEqual([]);
+    expect(registry.unregistered).toEqual([]);
+    expect(stalledWs.close).not.toHaveBeenCalled();
+    expect(healthy.map((d) => (JSON.parse(d) as ServerMessage).type)).toEqual(['snapshot']);
+    expect(observations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          payloadType: 'snapshot',
+          scopeKey: 'all',
+          bytes: 11,
+          warnBytes: 10,
+          maxBytes: 1000,
+          action: 'dropped',
+        }),
+      ]),
+    );
+  });
+
+  test('bufferedAmount above hard threshold unregisters and closes with 1013 without aborting others', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const healthy: string[] = [];
+    const observations: SnapshotPayloadSizeObservation[] = [];
+    const stalledWs = fakeSocket(() => undefined, 1001);
+    const healthyWs = fakeSocket((d) => healthy.push(d), 0);
+    const registry = stubRegistry([
+      { ws: stalledWs, actor: OWNER },
+      { ws: healthyWs, actor: OWNER },
+    ]);
+    const broadcaster = new ViewerAwareBroadcaster({
+      registry,
+      buildScopedSnapshot: () => snapshot(),
+      backpressureSoftBytes: 10,
+      backpressureHardBytes: 1000,
+      snapshotPayloadSizePolicy: {
+        warnBytes: 1_000_000,
+        maxBytes: 8_000_000,
+        observe: (observation) => observations.push(observation),
+      },
+    });
+
+    broadcaster.broadcast(snapshot());
+
+    expect(registry.unregistered).toEqual([stalledWs]);
+    expect(stalledWs.close).toHaveBeenCalledWith(1013, 'dashboard snapshot backpressure');
+    expect(healthy.map((d) => (JSON.parse(d) as ServerMessage).type)).toEqual(['snapshot']);
+    expect(observations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          payloadType: 'snapshot',
+          action: 'dropped',
+          bytes: 1001,
+          maxBytes: 1000,
+        }),
+      ]),
+    );
+  });
+
+  test('normal-draining sockets at or below soft threshold are unaffected', () => {
+    const sent: string[] = [];
+    // bufferedAmount equal to soft is allowed (strictly greater than soft skips).
+    const ws = fakeSocket((d) => sent.push(d), 10);
+    const registry = stubRegistry([{ ws, actor: OWNER }]);
+    const broadcaster = new ViewerAwareBroadcaster({
+      registry,
+      buildScopedSnapshot: () => snapshot(),
+      backpressureSoftBytes: 10,
+      backpressureHardBytes: 1000,
+    });
+
+    broadcaster.broadcast(snapshot());
+
+    expect(sent.map((d) => (JSON.parse(d) as ServerMessage).type)).toEqual(['snapshot']);
+    expect(registry.unregistered).toEqual([]);
+    expect(ws.close).not.toHaveBeenCalled();
   });
 });
