@@ -133,4 +133,18 @@ describe('Tooltip', () => {
     });
     expect(document.querySelector('[role="tooltip"]')).toBeNull();
   });
+
+  test('cancels a pending reveal when unmounted', () => {
+    renderTooltip('Unmounting details');
+
+    const button = container.querySelector('button')!;
+    act(() => {
+      button.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    });
+    expect(vi.getTimerCount()).toBe(1);
+
+    act(() => root.unmount());
+    expect(vi.getTimerCount()).toBe(0);
+    root = createRoot(container);
+  });
 });

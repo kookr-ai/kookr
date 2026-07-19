@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useId } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useId } from 'react';
 import { createPortal } from 'react-dom';
 
 type TooltipChildProps = React.HTMLAttributes<HTMLElement>;
@@ -36,12 +36,20 @@ export function Tooltip({ text, children }: TooltipProps) {
       top: rect.top - 8,
       left: rect.right + 8,
     });
-    timerRef.current = setTimeout(() => setVisible(true), 400);
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      setVisible(true);
+    }, 400);
   }, [text]);
 
   const hide = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = null;
     setVisible(false);
+  }, []);
+
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
   }, []);
 
   return (
