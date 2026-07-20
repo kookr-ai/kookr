@@ -227,7 +227,9 @@ describe('TokenTracker', () => {
       expect(tracker.getUsage('task-1')!.costUsd).toBeCloseTo(12.405, 6);
     });
 
-    test('marks prefix-priced dated model IDs as fallback quality', async () => {
+    test('marks prefix-priced dated model IDs as exact quality (not Sonnet fallback)', async () => {
+      // Dated Claude ids (e.g. claude-opus-4-8-20260701) are priced via longest-prefix
+      // against the Opus row — cost is correct, so pricingQuality must not claim fallback.
       const path = join(dir, 'transcript.jsonl');
       writeJsonl(path, [
         {
@@ -242,7 +244,7 @@ describe('TokenTracker', () => {
       tracker.register(path, 'task-1');
       await tracker.scanAll();
 
-      expect(tracker.getUsage('task-1')).toMatchObject({ costUsd: 5, pricingQuality: 'fallback' });
+      expect(tracker.getUsage('task-1')).toMatchObject({ costUsd: 5, pricingQuality: 'exact' });
     });
 
     test('handles real-world transcript with cache tokens', async () => {

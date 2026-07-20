@@ -14,6 +14,9 @@ export interface TokenUsage {
   provider?: 'openai' | 'anthropic';
   /** Model name the `costUsd` estimate was priced against (e.g. `gpt-5.3-codex`). */
   model?: string;
-  /** Whether transcript-derived pricing used only strict exact rows; prefix/default estimates are fallback. */
+  /**
+   * Whether transcript-derived pricing used a known model row (exact key or
+   * longest-prefix) vs silent Sonnet substitution (`fallback`).
+   */
   pricingQuality?: 'exact' | 'fallback';
 }

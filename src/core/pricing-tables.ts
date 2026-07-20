@@ -8,9 +8,9 @@
  *   surface (rfc-cost-comparison-panel.md R18). Caller flags the row as
  *   `dataQuality: 'unknown-pricing'`.
  *
- * - `getPricing(model)` — exact-match → prefix-match → silent Sonnet fallback.
- *   Preserves the legacy behavior the existing TokenTracker relied on so live
- *   cost displays don't change as a side effect of this refactor.
+ * - `getPricing(model)` / `resolvePricing(model)` — exact-match → longest
+ *   prefix-match → silent Sonnet fallback. `resolvePricing` also returns the
+ *   match tier so TokenTracker can label honesty without a second lookup path.
  *
  * The dual API is documented in §Pricing-tables of the RFC.
  */
@@ -97,26 +97,60 @@ export function lookupPricing(model: string): ModelPricing | null {
 const DEFAULT_PRICING_LEGACY: ModelPricing = MODEL_PRICING['claude-sonnet-4-6'];
 const warnedUnknownPricingModels = new Set<string>();
 
+/** How a model id was resolved against {@link MODEL_PRICING}. */
+export type PricingMatch = 'exact' | 'prefix' | 'fallback';
+
+export interface ResolvedPricing {
+  pricing: ModelPricing;
+  match: PricingMatch;
+}
+
 /**
- * Legacy lookup for the existing TokenTracker call site. Keeps the
- * exact-match → prefix-match → Sonnet-default behavior so the live cost
- * display does not change shape during the refactor that introduces
- * `lookupPricing`. Warns once per unseen model.
+ * Resolve a model id to a pricing row and an honesty-tier match label.
  *
- * New callers SHOULD use `lookupPricing` instead — it does not silently
- * substitute Sonnet pricing for unknown OpenAI models, which would corrupt
- * cross-vendor comparisons.
+ * Order: exact key → longest prefix whose key is a prefix of `model` →
+ * silent Sonnet default (`fallback`). Longest-prefix avoids binding a more
+ * specific dated id (e.g. `gpt-5.5-pro-…`) to a shorter sibling row
+ * (`gpt-5.5`) when object-key order would otherwise return first-hit.
+ *
+ * Prefer {@link lookupPricing} for surfaces that must not silently substitute
+ * Sonnet for unknown OpenAI models.
  */
-export function getPricing(model: string): ModelPricing {
-  if (MODEL_PRICING[model]) return MODEL_PRICING[model];
-  for (const [prefix, pricing] of Object.entries(MODEL_PRICING)) {
-    if (model.startsWith(prefix)) return pricing;
+export function resolvePricing(model: string): ResolvedPricing {
+  const exact = MODEL_PRICING[model];
+  if (exact) return { pricing: exact, match: 'exact' };
+
+  let bestKey: string | undefined;
+  let bestPricing: ModelPricing | undefined;
+  for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
+    if (!model.startsWith(key)) continue;
+    if (bestKey === undefined || key.length > bestKey.length) {
+      bestKey = key;
+      bestPricing = pricing;
+    }
   }
+  if (bestPricing) return { pricing: bestPricing, match: 'prefix' };
+
   if (!warnedUnknownPricingModels.has(model)) {
     warnedUnknownPricingModels.add(model);
     console.warn(`[pricing-tables] Unknown pricing model ${JSON.stringify(model)}; using default Sonnet pricing`);
   }
-  return DEFAULT_PRICING_LEGACY;
+  return { pricing: DEFAULT_PRICING_LEGACY, match: 'fallback' };
+}
+
+/**
+ * Legacy lookup for the existing TokenTracker call site. Keeps the
+ * exact-match → longest-prefix-match → Sonnet-default behavior so the live
+ * cost display does not change shape during the refactor that introduces
+ * `lookupPricing`. Warns once per unseen model.
+ *
+ * New callers SHOULD use `lookupPricing` instead — it does not silently
+ * substitute Sonnet pricing for unknown OpenAI models, which would corrupt
+ * cross-vendor comparisons. Callers that need match-tier honesty should use
+ * {@link resolvePricing}.
+ */
+export function getPricing(model: string): ModelPricing {
+  return resolvePricing(model).pricing;
 }
 
 /**
