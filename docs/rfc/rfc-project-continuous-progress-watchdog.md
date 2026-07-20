@@ -259,7 +259,7 @@ This is the efficiency requirement that makes daytime unattended work worthwhile
 {
   "name": "Lucy Backtest Progress Watchdog",
   "cron": "0 * * * *",
-  "cwd": "/home/jean/git/lucy",
+  "cwd": "$HOME/git/lucy",
   "agentType": "round-robin",
   "playbook": {
     "path": "backtest-progress-watchdog.md",
