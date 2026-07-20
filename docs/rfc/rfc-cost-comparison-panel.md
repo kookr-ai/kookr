@@ -129,7 +129,7 @@ Single-tenant local. Author + small handful of OSS contributors. ≤ ~1000 Kookr
 
 | Path | Responsibility | Layer |
 |---|---|---|
-| `src/core/pricing-tables.ts` (NEW) | `MODEL_PRICING` table + strict exact-match `lookupPricing(model): ModelPricing \| null`. The legacy `getPricing` path retains prefix matching and Sonnet fallback for transcript estimates; `lookupPricing` drives `pricingQuality`. | core |
+| `src/core/pricing-tables.ts` (NEW) | `MODEL_PRICING` table + strict exact-match `lookupPricing(model): ModelPricing \| null`. Legacy transcript path is `resolvePricing`/`getPricing` (exact → longest-prefix → Sonnet); `resolvePricing.match` drives TokenTracker `pricingQuality` (prefix folded into `'exact'`); `lookupPricing` stays strict exact-only for cost-comparison. | core |
 | `src/core/pricing-tables.test.ts` (NEW) | Empirical fixture: every observed model string on the author's machine resolves to a non-fallback row. Insertion-order bug regression test (`gpt-5.3-codex-spark` must hit the longest matching prefix, not just `gpt-5`). | core test |
 | `src/core/token-tracker.ts` (MODIFY) | Drop local `MODEL_PRICING`. Import from `pricing-tables.ts`, maintain per-model transcript buckets, and expose exact/fallback pricing quality. Re-export `getPricing/estimateCost/ModelPricing` for backward compat (`token-tracker.test.ts` and any external imports keep working — round-2 delivery-pragmatist atomicity). | core |
 | `src/adapters/codex-rollout-scanner.ts` (NEW) | Single file: discovery + scan. `register(taskId, taskCwd, taskCreatedAt)` finds matching rollout via `(cwd, timestamp ± 60 s, UTC, abandoned excluded)` heuristic, then incremental scan with offset bookkeeping. Aggregates `total_token_usage` (last-seen value); rollouts with `forked_from_id` are flagged but chain logic is deferred to post-Phase 0 (round-3). No per-tool latency join in v1 (round-3 design-minimalist). Reads files as `Buffer`, splits on `\n`, parses each line; **last line is skipped if `mtime` < 5 s** (round-2 F27). Asserts presence of canonical token keys (R10). | adapter |
@@ -264,11 +264,14 @@ export function lookupPricing(model: string): ModelPricing | null {
   return p;
 }
 
-/** Backward-compat: prefix-match + silent Sonnet fallback for the existing TokenTracker call site only. */
-export function getPricing(model: string): ModelPricing { /* old behavior — unchanged */ }
+/** Backward-compat: exact → longest-prefix → silent Sonnet fallback for the TokenTracker call site. */
+export function getPricing(model: string): ModelPricing { /* facade over resolvePricing(...).pricing */ }
+
+/** Same resolution as getPricing, plus match tier for honesty labeling. */
+export function resolvePricing(model: string): { pricing: ModelPricing; match: 'exact' | 'prefix' | 'fallback' };
 ```
 
-The `lookupPricing` vs `getPricing` split (round-2 delivery-pragmatist atomicity + operability) is deliberate: `token-tracker.ts` now prices each transcript usage bucket against its producing model, while `getPricing` retains prefix matching and the legacy Sonnet fallback for non-exact rows. `lookupPricing` remains strict and drives the `pricingQuality` field, so callers can distinguish exact rows from legacy fallback estimates. The cost-comparison scanner continues to use strict lookup so users see "—" instead of phantom Sonnet costs on unknown models.
+The `lookupPricing` vs `getPricing`/`resolvePricing` split (round-2 delivery-pragmatist atomicity + operability) is deliberate: `token-tracker.ts` prices each transcript usage bucket against its producing model via `resolvePricing` (exact key or longest-prefix table row, then Sonnet). Transcript honesty uses that match tier: prefix and exact report `pricingQuality: 'exact'`; only silent Sonnet substitution reports `'fallback'`. `lookupPricing` remains strict for cost-comparison so users see "—" instead of phantom Sonnet costs on unknown models.
 
 `lastVerified: 'TBD'` is **not a permitted state in the merged file** — pricing rows ship populated or not at all. The empirical OpenAI model list above is the merge gate.
 
