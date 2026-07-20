@@ -347,7 +347,7 @@ export function renderContinuationPrompt(envelope: ContinuationEnvelope): string
   lines.push('');
   lines.push('Follow the self-continuation-task skill for all invariant rules');
   lines.push('(fresh worktree, one unit only, durable-state selection, record-before-spawn,');
-  lines.push('completion signal, end-of-chain sweep). Do not re-derive them here.');
+  lines.push('immediate parent close after spawn, end-of-chain sweep). Do not re-derive them here.');
   lines.push('');
   lines.push('Cursor:');
   lines.push(`- repo: ${c.repo}`);
