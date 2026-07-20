@@ -1,4 +1,6 @@
+import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createConnection } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -336,7 +338,8 @@ describe('relay SQLite state', () => {
     });
   });
 
-  it('returns 503 and marks health degraded after a Contact Share envelope state write failure', async () => {
+  it('returns 503 after a Contact Share envelope state write failure and recovers health on a successful probe', async () => {
+    let probeOk = false;
     const stateStore = {
       load: (): RelayStateSnapshot => ({
         registrations: [],
@@ -352,7 +355,7 @@ describe('relay SQLite state', () => {
       },
       saveTerminalViewingDisabledTenant: (): void => undefined,
       deleteTerminalViewingDisabledTenant: (): void => undefined,
-      probe: (): boolean => true,
+      probe: (): boolean => probeOk,
       close: (): void => undefined,
     };
     relay = createRelayServer({ adminToken: 'admin', stateStore });
@@ -382,8 +385,8 @@ describe('relay SQLite state', () => {
       operation: 'saveContactShareEnvelope',
     });
 
-    const health = await fetch(`${relay.url()}/health`);
-    await expect(health.json()).resolves.toMatchObject({
+    const degraded = await fetch(`${relay.url()}/health`);
+    await expect(degraded.json()).resolves.toMatchObject({
       status: 'degraded',
       dbReachable: false,
       stateWriteFailure: {
@@ -391,6 +394,12 @@ describe('relay SQLite state', () => {
         message: 'disk full',
       },
     });
+
+    probeOk = true;
+    const recovered = await fetch(`${relay.url()}/health`);
+    const recoveredBody = await recovered.json() as { status: string; dbReachable: boolean; stateWriteFailure?: unknown };
+    expect(recoveredBody).toMatchObject({ status: 'ok', dbReachable: true });
+    expect(recoveredBody.stateWriteFailure).toBeUndefined();
   });
 
   it('fails hard when the state database cannot be opened', async () => {
@@ -409,7 +418,8 @@ describe('relay SQLite state', () => {
     });
   });
 
-  it('returns 503 and marks health degraded after a state write failure', async () => {
+  it('returns 503 after a state write failure and recovers when the probe succeeds', async () => {
+    let probeOk = false;
     const stateStore = {
       load: (): RelayStateSnapshot => ({
         registrations: [],
@@ -425,10 +435,19 @@ describe('relay SQLite state', () => {
       saveContactShareEnvelope: (): void => undefined,
       saveTerminalViewingDisabledTenant: (): void => undefined,
       deleteTerminalViewingDisabledTenant: (): void => undefined,
-      probe: (): boolean => true,
+      probe: (): boolean => probeOk,
       close: (): void => undefined,
     };
-    relay = createRelayServer({ adminToken: 'admin', stateStore });
+    relay = createRelayServer({
+      adminToken: 'admin',
+      stateStore,
+      hostedRelay: {
+        enabled: true,
+        operationalGatesMet: true,
+        mode: 'available',
+      },
+      accountToken: 'account-secret',
+    });
     await listen(relay);
 
     const paired = await fetch(`${relay.url()}/relay/admin/nodes`, {
@@ -442,19 +461,51 @@ describe('relay SQLite state', () => {
       operation: 'saveRegistration',
     });
 
-    const health = await fetch(`${relay.url()}/health`);
-    await expect(health.json()).resolves.toMatchObject({
+    const degraded = await fetch(`${relay.url()}/health`);
+    await expect(degraded.json()).resolves.toMatchObject({
       status: 'degraded',
       dbReachable: false,
       stateWriteFailure: {
         operation: 'saveRegistration',
         message: 'disk full',
       },
+      hostedRelay: {
+        terminalViewing: {
+          enabled: false,
+          blockReason: 'hosted-relay-kill-switch-persistence-unavailable',
+        },
+      },
     });
+
+    // Still-failing probe must leave the latch intact.
+    const stillDegraded = await fetch(`${relay.url()}/health`);
+    await expect(stillDegraded.json()).resolves.toMatchObject({
+      status: 'degraded',
+      dbReachable: false,
+      stateWriteFailure: { operation: 'saveRegistration' },
+    });
+
+    probeOk = true;
+    const recovered = await fetch(`${relay.url()}/health`);
+    const recoveredBody = await recovered.json() as {
+      status: string;
+      dbReachable: boolean;
+      stateWriteFailure?: unknown;
+      hostedRelay: { terminalViewing: { enabled: boolean; blockReason?: string } };
+    };
+    expect(recoveredBody).toMatchObject({
+      status: 'ok',
+      dbReachable: true,
+      hostedRelay: {
+        terminalViewing: { enabled: true },
+      },
+    });
+    expect(recoveredBody.stateWriteFailure).toBeUndefined();
   });
 
-  it('keeps serving after a WebSocket heartbeat state write failure and degrades health', async () => {
+  it('keeps serving after a WebSocket heartbeat state write failure and recovers health on probe success', async () => {
     let throwWrites = false;
+    let probeOk = false;
     const rows = new Map<string, PersistedNodeRegistration>();
     const stateStore = {
       load: (): RelayStateSnapshot => ({
@@ -472,7 +523,7 @@ describe('relay SQLite state', () => {
       saveContactShareEnvelope: (): void => undefined,
       saveTerminalViewingDisabledTenant: (): void => undefined,
       deleteTerminalViewingDisabledTenant: (): void => undefined,
-      probe: (): boolean => true,
+      probe: (): boolean => probeOk,
       close: (): void => undefined,
     };
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -486,12 +537,78 @@ describe('relay SQLite state', () => {
 
     expect(ws.readyState).toBe(WebSocket.OPEN);
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('"event":"relay.state.write_failed"'));
-    const health = await fetch(`${relay.url()}/health`);
-    await expect(health.json()).resolves.toMatchObject({
+    const degraded = await fetch(`${relay.url()}/health`);
+    await expect(degraded.json()).resolves.toMatchObject({
       status: 'degraded',
       dbReachable: false,
       stateWriteFailure: { operation: 'saveRegistration' },
     });
+
+    probeOk = true;
+    const recovered = await fetch(`${relay.url()}/health`);
+    const recoveredBody = await recovered.json() as { status: string; dbReachable: boolean; stateWriteFailure?: unknown };
+    expect(recoveredBody).toMatchObject({ status: 'ok', dbReachable: true });
+    expect(recoveredBody.stateWriteFailure).toBeUndefined();
+  });
+
+  it('survives peer reset during WebSocket upgrade and node socket errors without exiting', async () => {
+    relay = createRelayServer({ adminToken: 'admin', allowInsecureClients: true });
+    await listen(relay);
+    const base = new URL(relay.url());
+    const port = Number(base.port);
+
+    const uncaught: unknown[] = [];
+    const onUncaught = (err: unknown): void => {
+      uncaught.push(err);
+    };
+    process.on('uncaughtException', onUncaught);
+    process.on('unhandledRejection', onUncaught);
+    try {
+      // Unauthenticated upgrade + immediate RST must not kill the process (#1422).
+      await new Promise<void>((resolve, reject) => {
+        const sock = createConnection({ host: '127.0.0.1', port }, () => {
+          sock.write(
+            'GET /relay/node HTTP/1.1\r\n'
+            + 'Host: 127.0.0.1\r\n'
+            + 'Connection: Upgrade\r\n'
+            + 'Upgrade: websocket\r\n'
+            + 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n'
+            + 'Sec-WebSocket-Version: 13\r\n'
+            + '\r\n',
+          );
+          // Destroy mid-handshake / mid-rejection write.
+          sock.destroy();
+          resolve();
+        });
+        sock.on('error', () => resolve());
+        sock.setTimeout(500, () => {
+          sock.destroy();
+          reject(new Error('upgrade RST timed out'));
+        });
+      });
+
+      // Authenticated node path: emit error on the underlying TCP socket after connect.
+      // ws exposes the Node socket as `_socket` (not public API; intentional in this test).
+      const node = relay.registerNode({ displayName: 'desktop' });
+      const ws = await connectNode(relay, node.nodeId, node.nodeToken);
+      sockets.push(ws);
+      const raw = (ws as unknown as { _socket?: { destroy: (err?: Error) => void } })._socket;
+      expect(raw).toBeTruthy();
+      raw?.destroy(new Error('ECONNRESET'));
+      await once(ws, 'close').catch(() => undefined);
+
+      // Allow any delayed uncaught 'error' to surface before asserting process health.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(uncaught).toEqual([]);
+
+      // Relay must still serve /health.
+      const health = await fetch(`${relay.url()}/health`);
+      expect(health.status).toBe(200);
+      await expect(health.json()).resolves.toMatchObject({ status: 'ok', dbReachable: true });
+    } finally {
+      process.off('uncaughtException', onUncaught);
+      process.off('unhandledRejection', onUncaught);
+    }
   });
 
   it('sets Secure on member cookies behind the trusted HTTPS proxy', async () => {

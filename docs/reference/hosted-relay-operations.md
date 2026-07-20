@@ -123,9 +123,13 @@ Synthetic probe coverage is inspectable at `/relay/ops/synthetic-probes` and
 the loopback/admin path `/relay/admin/synthetic-probes`.
 
 Metadata evidence is exported from the loopback/admin-only
-`/relay/admin/metadata-audit` endpoint. Rows include correlation IDs,
-pseudonymous member/session IDs, byte counts, sequence ranges, policy versions,
-and revocation state. They must not include terminal payloads, raw member IDs,
+`/relay/admin/metadata-audit` endpoint. Rows are retained in a fixed-size
+in-memory ring (default 5000; override with `KOOKR_RELAY_METADATA_AUDIT_CAP`).
+The response includes `cap`, `retained`, `droppedCount`, and `truncated` so
+partial history is never presented as complete; pass `?limit=N` to return only
+the newest N rows. Row fields include correlation IDs, pseudonymous
+member/session IDs, byte counts, sequence ranges, policy versions, and
+revocation state. They must not include terminal payloads, raw member IDs,
 device IDs, invitation IDs, or plaintext invite content.
 
 Use the per-tenant kill switch during an incident:
