@@ -559,6 +559,15 @@ function isValidRemainingTriggers(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }
 
+/**
+ * True when the schedule was auto-disabled by hitting its trigger budget.
+ * Exhaustion markers are the only auto-exhaust signal (no separate operator flag);
+ * either marker alone counts so partial persisted state still re-arms.
+ */
+function wasAutoExhausted(existing: Pick<Schedule, 'stopReason' | 'exhaustedAt'>): boolean {
+  return existing.stopReason === 'trigger_limit_reached' || existing.exhaustedAt !== undefined;
+}
+
 function computeUpdatedTriggerState(
   existing: Schedule,
   nextMaxTriggers: number | null | undefined,
@@ -574,11 +583,13 @@ function computeUpdatedTriggerState(
   }
 
   if (nextMaxTriggers === null) {
+    // Unlimited budget — re-enable only if previously auto-exhausted (not operator-disabled).
     return {
       maxTriggers: undefined,
       remainingTriggers: undefined,
       stopReason: undefined,
       exhaustedAt: undefined,
+      ...(wasAutoExhausted(existing) ? { enabled: true } : {}),
     };
   }
 
@@ -586,12 +597,23 @@ function computeUpdatedTriggerState(
     ? 0
     : Math.max(existing.maxTriggers - (existing.remainingTriggers ?? existing.maxTriggers), 0);
   const remainingTriggers = Math.max(nextMaxTriggers - consumed, 0);
+  if (remainingTriggers === 0) {
+    return {
+      maxTriggers: nextMaxTriggers,
+      remainingTriggers,
+      stopReason: 'trigger_limit_reached',
+      exhaustedAt: existing.exhaustedAt ?? now,
+      enabled: false,
+    };
+  }
+
+  // Fresh budget — re-enable only if previously auto-exhausted (not operator-disabled).
   return {
     maxTriggers: nextMaxTriggers,
     remainingTriggers,
-    stopReason: remainingTriggers === 0 ? 'trigger_limit_reached' : undefined,
-    exhaustedAt: remainingTriggers === 0 ? (existing.exhaustedAt ?? now) : undefined,
-    ...(remainingTriggers === 0 ? { enabled: false } : {}),
+    stopReason: undefined,
+    exhaustedAt: undefined,
+    ...(wasAutoExhausted(existing) ? { enabled: true } : {}),
   };
 }
 
