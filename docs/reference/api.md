@@ -325,9 +325,29 @@ The `audit` object contains:
 | `POST /api/projects/untrack` | Remove a tracked project |
 | `GET /api/projects/contributions` | Contributions summary across projects |
 | `GET /api/projects/configs` | Per-project configuration |
-| `POST /api/projects/configs` | Update a project's configuration |
+| `POST /api/projects/configs` | Update a project's configuration (partial patch; see body schema below) |
 | `GET /api/projects/discovery-status` | Background project-discovery progress, warnings, cache status, and per-project scan reasons |
 | `POST /api/projects/rescan-skills` | Re-scan skill-tracked repos, skipping unchanged recon manifests and returning per-project scan reasons |
+
+### `POST /api/projects/configs`
+
+Partial update of one project's configuration. Only fields present in the body
+are applied; omitted fields keep their previous values. Values are sanitized
+before save (`sanitizeProjectConfig`).
+
+**Body schema**
+
+| Field | Required | Type | Notes |
+| --- | --- | --- | --- |
+| `project` | yes | string | Project id |
+| `tracked` | no | boolean | Sidebar tracking flag |
+| `dailyPrLimit` | no | non-negative integer | Invalid values (`Infinity`, `NaN`, negatives, fractions) are dropped rather than clamped; dropped values fall back to `rate-limits.json` |
+| `weeklyPrLimit` | no | non-negative integer | Same reject-and-drop rules as `dailyPrLimit` |
+| `budgetWarnUsd` | no | finite number or `null` | Per-task cost warning in USD; `0` disables alerts for this project; negatives clamp to `0`; `null` clears the override |
+| `notes` | no | string | Free-form notes |
+| `webhook` | no | object | `{ enabled?: boolean, minSeverity?: 'info' \| 'warning' \| 'critical' }` |
+
+Returns the full sanitized config object for that project.
 
 ## Playbooks And Schedules
 

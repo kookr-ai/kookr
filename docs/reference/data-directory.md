@@ -43,8 +43,8 @@ as internal unless this table says they are safe to remove.
 | `settings.json` | settings API | Dashboard settings saved through the Settings dialog/API. | Keep; copy with backups. |
 | `settings/` | server bootstrap | Settings-related runtime directory threaded to the HTTP/WebSocket bootstrap layer. | Internal; keep. |
 | `schedules.json` | scheduler | Persisted scheduled tasks and trigger counters. | Keep if schedules matter. |
-| `project-configs.json` | project config | Per-project tracking and dashboard config. | Keep if project sidebar state matters. |
-| `rate-limits.json` | project config / hooks | Optional manual per-project PR limit overrides read by local hooks. | Keep if configured. |
+| `project-configs.json` | project config | Per-project tracking and dashboard config (`dailyPrLimit`, `weeklyPrLimit`, `budgetWarnUsd`, notes, webhook, …). Manual PR limits take precedence over `rate-limits.json`. See [Per-project configuration](../configuration.md#per-project-configuration). | Keep if project sidebar state matters. |
+| `rate-limits.json` | project config / hooks | Optional per-repo PR limit defaults/overrides and blocked-repo list read by local hooks and as fallback when a project has no manual `dailyPrLimit`. | Keep if configured. |
 | `project-sidebar.json` | project sidebar | Local sidebar preferences and project ordering. | Keep if UI state matters. |
 | `oss-attempts.json` | OSS contribution gate | Contribution attempt counters. | Keep for rate-limit continuity. |
 | `contribution-ledger.jsonl` | OSS contribution gate | Append-only contribution history. | Keep for deduplication and audit history. |

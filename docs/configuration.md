@@ -103,6 +103,27 @@ KOOKR_PLUGIN_DIR=
 
 An empty `KOOKR_PLUGIN_DIR` disables plugin injection for hermetic sessions.
 
+## Per-project configuration
+
+Per-project settings live in `~/.kookr/project-configs.json` (or
+`~/.kookr-<port>/` when not on port `4800`). They are written by the dashboard,
+`POST /api/projects/configs`, and the `setProjectConfig` WebSocket message.
+All three paths run through `sanitizeProjectConfig` before persistence.
+
+| Field | Type | Semantics |
+| --- | --- | --- |
+| `project` | string (required) | Project id, e.g. `github.com/owner/repo` or a local project key |
+| `tracked` | boolean | Whether the project is tracked in the sidebar |
+| `dailyPrLimit` | non-negative integer | Max PRs per calendar day. Manual value **overrides** `rate-limits.json`. Omitted when unset. Invalid values (`Infinity`, `NaN`, negatives, fractions) are **dropped**, not clamped, so a bad write cannot silence the rate-limit fallback |
+| `weeklyPrLimit` | non-negative integer | Max PRs per calendar week. Same reject-and-drop rules as `dailyPrLimit` |
+| `budgetWarnUsd` | finite number ≥ 0 | Per-task cost warning threshold in USD. **`0` disables** budget alerts for this project. Negatives are clamped to `0`; non-finite values are dropped. Overrides the global `KOOKR_BUDGET_WARN_USD` when set |
+| `notes` | string | Free-form operator notes |
+| `localPath` | string | Absolute local checkout path (first-write wins on task start) |
+| `webhook` | object | Optional `{ enabled?: boolean, minSeverity?: 'info' \| 'warning' \| 'critical' }` routing override |
+
+See [Data Directory](reference/data-directory.md) for file location and
+[API Reference](reference/api.md#projects) for the HTTP body shape.
+
 ## Permission Bypass
 
 Permission bypass is off by default. Enable it only for controlled local runs:
