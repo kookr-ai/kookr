@@ -59,6 +59,15 @@ describe('sanitizeProjectConfig', () => {
     });
   });
 
+  test('sanitizes daily and weekly PR limits independently', () => {
+    expect(
+      sanitizeProjectConfig({ project: 'p', dailyPrLimit: 1.5, weeklyPrLimit: 4 }),
+    ).toEqual({ project: 'p', weeklyPrLimit: 4 });
+    expect(
+      sanitizeProjectConfig({ project: 'p', dailyPrLimit: 2, weeklyPrLimit: Infinity }),
+    ).toEqual({ project: 'p', dailyPrLimit: 2 });
+  });
+
   test('clamps negative budgetWarnUsd to 0 and accepts finite values including 0', () => {
     expect(sanitizeProjectConfig({ project: 'p', budgetWarnUsd: 7.5 })?.budgetWarnUsd).toBe(7.5);
     expect(sanitizeProjectConfig({ project: 'p', budgetWarnUsd: 0 })?.budgetWarnUsd).toBe(0);
