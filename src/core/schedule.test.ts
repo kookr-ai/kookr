@@ -173,6 +173,147 @@ describe('ScheduleStore', () => {
     expect(updated.exhaustedAt).toEqual(expect.any(String));
   });
 
+  it('re-enables an auto-exhausted schedule when maxTriggers is cleared', () => {
+    const schedule = store.create({
+      name: 'Exhausted once',
+      cron: '0 0 * * *',
+      playbook: { path: 'a.md', parameters: {} },
+      cwd: '/tmp',
+      maxTriggers: 1,
+    });
+
+    store.replace({
+      ...schedule,
+      enabled: false,
+      remainingTriggers: 0,
+      stopReason: 'trigger_limit_reached',
+      exhaustedAt: '2026-01-01T00:05:00.000Z',
+    });
+
+    const rearmed = store.updateDefinition(schedule.id, { maxTriggers: null });
+
+    expect(rearmed.enabled).toBe(true);
+    expect(rearmed.maxTriggers).toBeUndefined();
+    expect(rearmed.remainingTriggers).toBeUndefined();
+    expect(rearmed.stopReason).toBeUndefined();
+    expect(rearmed.exhaustedAt).toBeUndefined();
+  });
+
+  it('re-enables an auto-exhausted schedule when maxTriggers is raised', () => {
+    const schedule = store.create({
+      name: 'Exhausted once',
+      cron: '0 0 * * *',
+      playbook: { path: 'a.md', parameters: {} },
+      cwd: '/tmp',
+      maxTriggers: 1,
+    });
+
+    store.replace({
+      ...schedule,
+      enabled: false,
+      remainingTriggers: 0,
+      stopReason: 'trigger_limit_reached',
+      exhaustedAt: '2026-01-01T00:05:00.000Z',
+    });
+
+    const rearmed = store.updateDefinition(schedule.id, { maxTriggers: 5 });
+
+    // One prior consumption preserved; 5 - 1 = 4 remaining.
+    expect(rearmed.enabled).toBe(true);
+    expect(rearmed.maxTriggers).toBe(5);
+    expect(rearmed.remainingTriggers).toBe(4);
+    expect(rearmed.stopReason).toBeUndefined();
+    expect(rearmed.exhaustedAt).toBeUndefined();
+  });
+
+  it('keeps an operator-disabled schedule disabled after a limit edit', () => {
+    const schedule = store.create({
+      name: 'Operator off',
+      cron: '0 0 * * *',
+      playbook: { path: 'a.md', parameters: {} },
+      cwd: '/tmp',
+      maxTriggers: 10,
+    });
+
+    // Operator toggle — no exhaustion markers.
+    store.replace({
+      ...schedule,
+      enabled: false,
+      remainingTriggers: 7,
+    });
+
+    const raised = store.updateDefinition(schedule.id, { maxTriggers: 12 });
+    expect(raised.enabled).toBe(false);
+    expect(raised.maxTriggers).toBe(12);
+    expect(raised.remainingTriggers).toBe(9);
+    expect(raised.stopReason).toBeUndefined();
+    expect(raised.exhaustedAt).toBeUndefined();
+
+    const cleared = store.updateDefinition(schedule.id, { maxTriggers: null });
+    expect(cleared.enabled).toBe(false);
+    expect(cleared.maxTriggers).toBeUndefined();
+    expect(cleared.remainingTriggers).toBeUndefined();
+    expect(cleared.stopReason).toBeUndefined();
+    expect(cleared.exhaustedAt).toBeUndefined();
+  });
+
+  it('stays exhausted when a limit edit does not restore budget', () => {
+    const exhaustedAt = '2026-01-01T00:05:00.000Z';
+    const schedule = store.create({
+      name: 'Still out of budget',
+      cron: '0 0 * * *',
+      playbook: { path: 'a.md', parameters: {} },
+      cwd: '/tmp',
+      maxTriggers: 5,
+    });
+
+    store.replace({
+      ...schedule,
+      enabled: false,
+      remainingTriggers: 0,
+      stopReason: 'trigger_limit_reached',
+      exhaustedAt,
+    });
+
+    // Same limit (consumed=5 → remaining still 0) — must not re-arm.
+    const sameLimit = store.updateDefinition(schedule.id, { maxTriggers: 5 });
+    expect(sameLimit.enabled).toBe(false);
+    expect(sameLimit.remainingTriggers).toBe(0);
+    expect(sameLimit.stopReason).toBe('trigger_limit_reached');
+    expect(sameLimit.exhaustedAt).toBe(exhaustedAt);
+
+    // Lower limit still yields remaining 0.
+    const lowered = store.updateDefinition(schedule.id, { maxTriggers: 3 });
+    expect(lowered.enabled).toBe(false);
+    expect(lowered.maxTriggers).toBe(3);
+    expect(lowered.remainingTriggers).toBe(0);
+    expect(lowered.stopReason).toBe('trigger_limit_reached');
+    expect(lowered.exhaustedAt).toBe(exhaustedAt);
+  });
+
+  it('re-enables when only a partial exhaustion marker is present', () => {
+    const schedule = store.create({
+      name: 'Partial marker',
+      cron: '0 0 * * *',
+      playbook: { path: 'a.md', parameters: {} },
+      cwd: '/tmp',
+      maxTriggers: 1,
+    });
+
+    // Half-state: exhaustedAt without stopReason (defensive OR in wasAutoExhausted).
+    store.replace({
+      ...schedule,
+      enabled: false,
+      remainingTriggers: 0,
+      exhaustedAt: '2026-01-01T00:05:00.000Z',
+    });
+
+    const rearmed = store.updateDefinition(schedule.id, { maxTriggers: null });
+    expect(rearmed.enabled).toBe(true);
+    expect(rearmed.stopReason).toBeUndefined();
+    expect(rearmed.exhaustedAt).toBeUndefined();
+  });
+
   it('toggles enabled state', () => {
     const schedule = store.create({
       name: 'Test',
