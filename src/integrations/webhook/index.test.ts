@@ -51,6 +51,8 @@ function setup(
       minSeverity: 'info',
       maxAttempts: 3,
       initialRetryDelayMs: 0,
+      requestTimeoutMs: 10_000,
+      failureCooldownMs: 0,
       dashboardBaseUrl: 'http://127.0.0.1:4801',
       ...configOverrides,
     },
@@ -301,7 +303,186 @@ describe('webhook notifier', () => {
     })).resolves.toBe(false);
 
     expect(clientFetch).toHaveBeenCalledTimes(1);
-    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('webhook returned 400'));
+    expect(logger.warn).toHaveBeenCalledWith(
+      '[webhook] failed to deliver finding',
+      expect.objectContaining({
+        fingerprint: 'permission_blocked::bad request',
+        agentId: 'session-1',
+        severity: 'warning',
+        host: 'receiver.example',
+        attempts: 1,
+        error: 'webhook returned 400',
+      }),
+    );
+  });
+
+  test('times out a never-responding receiver and records failed + dropped outcomes', async () => {
+    const hungFetch = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) return;
+      const onAbort = () => {
+        const err = new Error('This operation was aborted');
+        err.name = 'AbortError';
+        reject(err);
+      };
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }));
+    const { notifier, logger } = setup(hungFetch as typeof fetch, {
+      maxAttempts: 1,
+      requestTimeoutMs: 30,
+      failureCooldownMs: 0,
+    });
+
+    const started = Date.now();
+    await expect(notifier.notifyFinding({
+      agentId: 'session-1',
+      anomaly: anomaly({ severity: 'critical' }),
+      fingerprint: 'permission_blocked::hang',
+    })).resolves.toBe(false);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(hungFetch.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
+    expect(notifier.getDeliveryCounts()).toEqual({
+      success: 0,
+      failed: 1,
+      dropped: 1,
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+      '[webhook] failed to deliver finding',
+      expect.objectContaining({
+        error: 'webhook request timed out after 30ms',
+        attempts: 1,
+      }),
+    );
+  });
+
+  test('releases the dedupe key after permanent failure so a later notify can re-POST', async () => {
+    const failingThenOk = vi.fn()
+      .mockResolvedValueOnce(new Response('nope', { status: 500 }))
+      .mockResolvedValueOnce(new Response('nope', { status: 500 }))
+      .mockResolvedValueOnce(new Response('ok', { status: 200 }));
+    const { notifier } = setup(failingThenOk, {
+      maxAttempts: 2,
+      failureCooldownMs: 0,
+    });
+    const event = {
+      agentId: 'session-1',
+      anomaly: anomaly(),
+      fingerprint: 'permission_blocked::retry after drop',
+    };
+
+    await expect(notifier.notifyFinding(event)).resolves.toBe(false);
+    expect(failingThenOk).toHaveBeenCalledTimes(2);
+    expect(notifier.getDeliveryCounts()).toEqual({
+      success: 0,
+      failed: 2,
+      dropped: 1,
+    });
+
+    await expect(notifier.notifyFinding(event)).resolves.toBe(true);
+    expect(failingThenOk).toHaveBeenCalledTimes(3);
+    expect(notifier.getDeliveryCounts()).toEqual({
+      success: 1,
+      failed: 2,
+      dropped: 1,
+    });
+  });
+
+  test('holds re-delivery during failure cooldown then allows a POST after it expires', async () => {
+    let nowMs = sentAt.getTime();
+    const now = () => new Date(nowMs);
+    const failingFetch = vi.fn(async () => new Response('nope', { status: 500 }));
+    const { notifier } = setup(failingFetch, {
+      maxAttempts: 1,
+      failureCooldownMs: 60_000,
+    }, now);
+    const event = {
+      agentId: 'session-1',
+      anomaly: anomaly(),
+      fingerprint: 'permission_blocked::cooldown',
+    };
+
+    await expect(notifier.notifyFinding(event)).resolves.toBe(false);
+    await expect(notifier.notifyFinding(event)).resolves.toBe(false);
+    expect(failingFetch).toHaveBeenCalledTimes(1);
+
+    nowMs += 60_001;
+    await expect(notifier.notifyFinding(event)).resolves.toBe(false);
+    expect(failingFetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('clearFingerprint prevents a late in-flight failure from re-arming cooldown', async () => {
+    let releaseFail!: (value: Response) => void;
+    const slowFail = vi.fn(() => new Promise<Response>((resolve) => {
+      releaseFail = resolve;
+    }));
+    const okFetch = vi.fn(async () => new Response('ok', { status: 200 }));
+    let fetchImpl: typeof fetch = slowFail as typeof fetch;
+    const { notifier } = setup((...args) => fetchImpl(...args), {
+      maxAttempts: 1,
+      failureCooldownMs: 60_000,
+    });
+    const event = {
+      agentId: 'session-1',
+      anomaly: anomaly(),
+      fingerprint: 'permission_blocked::clear race',
+    };
+
+    const first = notifier.notifyFinding(event);
+    // Wait until the in-flight POST is parked on the deferred.
+    await vi.waitFor(() => {
+      expect(slowFail).toHaveBeenCalledTimes(1);
+    });
+    notifier.clearFingerprint(event);
+    fetchImpl = okFetch;
+    releaseFail(new Response('nope', { status: 500 }));
+    await expect(first).resolves.toBe(false);
+
+    // Cooldown must NOT be armed by the late failure — re-admit should POST now.
+    await expect(notifier.notifyFinding(event)).resolves.toBe(true);
+    expect(okFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('increments success delivery counter on a successful POST', async () => {
+    const { notifier } = setup();
+    await expect(notifier.notifyFinding({
+      agentId: 'session-1',
+      anomaly: anomaly(),
+      fingerprint: 'permission_blocked::counter success',
+    })).resolves.toBe(true);
+    expect(notifier.getDeliveryCounts()).toEqual({
+      success: 1,
+      failed: 0,
+      dropped: 0,
+    });
+  });
+
+  test('structured failure log never includes the full webhook URL', async () => {
+    const clientFetch = vi.fn(async () => new Response('nope', { status: 400 }));
+    const { notifier, logger } = setup(clientFetch, {
+      url: 'https://hooks.pagerduty.example/v1/token-secret-value/enqueue',
+      maxAttempts: 1,
+    });
+    await notifier.notifyFinding({
+      agentId: 'session-1',
+      anomaly: anomaly({ severity: 'critical' }),
+      fingerprint: 'permission_blocked::secret url',
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+      '[webhook] failed to deliver finding',
+      expect.objectContaining({
+        host: 'hooks.pagerduty.example',
+        fingerprint: 'permission_blocked::secret url',
+        agentId: 'session-1',
+        severity: 'critical',
+        attempts: 1,
+      }),
+    );
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('token-secret-value');
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('/v1/');
   });
 
   test('records webhook network errors in delivery trace outcomes', async () => {

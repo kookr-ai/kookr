@@ -75,6 +75,24 @@ describe('metrics routes', () => {
     expect(body).toContain('kookr_audit_append_failures_total{sink="private_network_collaboration"} 2');
   });
 
+  test('serves live webhook delivery outcome counters', async () => {
+    const res = await mkApp({
+      webhookNotifier: {
+        getDeliveryCounts: () => ({
+          success: 3,
+          failed: 5,
+          dropped: 2,
+        }),
+      },
+    }).request('/metrics');
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('kookr_webhook_deliveries_total{outcome="success"} 3');
+    expect(body).toContain('kookr_webhook_deliveries_total{outcome="failed"} 5');
+    expect(body).toContain('kookr_webhook_deliveries_total{outcome="dropped"} 2');
+  });
+
   test('serves live aggregate auth throttle metrics', async () => {
     const authThrottle = new AuthThrottle({ freeFailures: 0, audit: () => {} });
     authThrottle.recordFailure('10.0.0.12', 'bad_token');

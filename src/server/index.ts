@@ -360,8 +360,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     logger: console,
   });
   let stopWebhookObserver: (() => void) | undefined;
+  let webhookNotifier: WebhookNotifier | undefined;
   if (webhookConfig) {
-    const notifier = new WebhookNotifier({ config: webhookConfig, taskStore, deliveryTrace, logger: console });
+    webhookNotifier = new WebhookNotifier({ config: webhookConfig, taskStore, deliveryTrace, logger: console });
     console.log(`[webhook] Outbound finding webhook enabled (minSeverity=${webhookConfig.minSeverity})`);
     stopWebhookObserver = queue.addObserver({
       admitted: (event) => {
@@ -369,13 +370,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         const projectWebhook = task?.projectId
           ? projectConfigStore.getConfig(task.projectId)?.webhook
           : undefined;
-        void notifier.notifyFinding(event, resolveWebhookRouting({
+        void webhookNotifier?.notifyFinding(event, resolveWebhookRouting({
           globalMinSeverity: webhookConfig.minSeverity,
           projectWebhook,
         }));
       },
       resolved: (event) => {
-        notifier.clearFingerprint(event);
+        webhookNotifier?.clearFingerprint(event);
       },
     });
   }
@@ -1168,6 +1169,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         }];
       },
     },
+    ...(webhookNotifier ? {
+      webhookNotifier: {
+        getDeliveryCounts: () => webhookNotifier.getDeliveryCounts(),
+      },
+    } : {}),
     shadowRegistry, httpPushTracker, hookIngestion, activityLedger, launchServiceDeps, sttUrl,
     ttsUrl, ttsVoice: config.ttsVoice, speakFindingEnabled: config.speakFindingEnabled,
     projectConfigStore, projectSidebarStore, circuitBreakerRegistry,

@@ -4,6 +4,7 @@ import { AttentionQueue } from '../core/attention-queue.js';
 import type { Anomaly } from '../core/types.js';
 import type { RequestDurationMetricsSnapshot } from './request-duration-metrics.js';
 import { renderPrometheusExposition } from './prometheus-exposition.js';
+import type { WebhookDeliveryCounts } from '../integrations/webhook/index.js';
 
 const EMPTY_REQUEST_DURATIONS: RequestDurationMetricsSnapshot = {
   schemaVersion: 'request-duration-metrics.v1',
@@ -81,7 +82,30 @@ describe('renderPrometheusExposition', () => {
     expect(output).toContain('kookr_attention_suppressed_total{reason="queue_snoozed"} 0');
     expect(output).toContain('# TYPE kookr_audit_sink_writable gauge');
     expect(output).toContain('# TYPE kookr_audit_append_failures_total counter');
+    expect(output).toContain('# TYPE kookr_webhook_deliveries_total counter');
+    expect(output).toContain('kookr_webhook_deliveries_total{outcome="success"} 0');
+    expect(output).toContain('kookr_webhook_deliveries_total{outcome="failed"} 0');
+    expect(output).toContain('kookr_webhook_deliveries_total{outcome="dropped"} 0');
     expect(output.endsWith('\n')).toBe(true);
+  });
+
+  test('renders webhook delivery outcome counters', () => {
+    const webhookDeliveries: WebhookDeliveryCounts = {
+      success: 4,
+      failed: 2,
+      dropped: 1,
+    };
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      webhookDeliveries,
+    });
+
+    expect(output).toContain('# HELP kookr_webhook_deliveries_total Total outbound finding-webhook delivery outcomes by result.');
+    expect(output).toContain('# TYPE kookr_webhook_deliveries_total counter');
+    expect(output).toContain('kookr_webhook_deliveries_total{outcome="success"} 4');
+    expect(output).toContain('kookr_webhook_deliveries_total{outcome="failed"} 2');
+    expect(output).toContain('kookr_webhook_deliveries_total{outcome="dropped"} 1');
   });
 
   test('increments attention suppression counter for duplicate queue admissions', () => {

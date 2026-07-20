@@ -305,8 +305,10 @@ Example body:
 Kookr posts each new finding with the retry defaults from
 `DEFAULT_MAX_ATTEMPTS` and `DEFAULT_INITIAL_RETRY_DELAY_MS`: 3 attempts with
 exponential backoff starting at 1 second, then 2 seconds before the final
-attempt. Network errors and non-2xx responses outside the 4xx range are retried
-until the attempt budget is exhausted.
+attempt. Each attempt uses `DEFAULT_REQUEST_TIMEOUT_MS` (10 seconds) via
+`AbortController`; timed-out POSTs count as failed attempts and are retried
+while budget remains. Network errors and non-2xx responses outside the 4xx
+range are retried until the attempt budget is exhausted.
 
 Any 4xx response from the receiver is treated as permanent for that finding
 delivery and stops retrying immediately. Kookr sends the request with
@@ -314,12 +316,18 @@ delivery and stops retrying immediately. Kookr sends the request with
 evaluated as the response Kookr received and is retried according to the same
 non-4xx failure path.
 
-Duplicate suppression is keyed by `agentId:fingerprint`. Once a finding reaches
-the webhook delivery path, later re-enqueues with the same key are suppressed
-until the finding resolves and Kookr clears that fingerprint. Receivers should
-still treat repeated `fingerprint` values as idempotent no-ops, because
-operator restarts or future delivery implementations may replay the same logical
-finding.
+Duplicate suppression is keyed by `agentId:fingerprint`. After a **successful**
+POST, later re-enqueues with the same key are suppressed until the finding
+resolves and Kookr clears that fingerprint. After a **permanent delivery
+failure** (retries exhausted or 4xx), Kookr releases the dedupe key and holds
+re-delivery for `DEFAULT_FAILURE_COOLDOWN_MS` (30 seconds) so a still-active
+finding can be re-POSTed without hot-looping. Receivers should still treat
+repeated `fingerprint` values as idempotent no-ops, because operator restarts
+or cooldown-driven retries may replay the same logical finding.
+
+Delivery outcome counters are exported on `GET /metrics` as
+`kookr_webhook_deliveries_total{outcome="success|failed|dropped"}` (see
+[API Reference](reference/api.md#get-metrics)).
 
 Delivery decisions are visible through the owner diagnostics endpoint:
 

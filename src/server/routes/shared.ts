@@ -390,6 +390,10 @@ export interface RouteDeps {
   requestDurationMetrics?: RequestDurationMetrics;
   /** Bounded in-memory notification delivery trace exposed through diagnostics. */
   deliveryTrace?: DeliveryTraceReader;
+  /** Optional outbound finding-webhook notifier; exposes delivery outcome counters on `/metrics`. */
+  webhookNotifier?: {
+    getDeliveryCounts: () => import('../../integrations/webhook/index.js').WebhookDeliveryCounts;
+  };
   /**
    * Owner share control surface (#808): viewer-grant store + connection registry
    * + audit log backing `POST/GET /api/share/viewers`, the revoke route, and the
