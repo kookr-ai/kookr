@@ -1,8 +1,13 @@
 import { readdir } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+// TypeScript 7's stable package root (`import … from 'typescript'`) only exports
+// version metadata. Parsing/AST helpers live under the unstable subpaths — using
+// the root entry yields `TypeError: Cannot read properties of undefined
+// (reading 'Latest')` when code touches `ts.ScriptTarget` / `createSourceFile`.
+// See https://github.com/kookr-ai/kookr/issues/1438.
 import * as ts from 'typescript/unstable/ast';
-import { API } from 'typescript/unstable/sync';
+import { API, type Snapshot } from 'typescript/unstable/sync';
 
 const SOURCE_ROOTS = ['src/server', 'src/core', 'src/adapters', 'src/frontend'];
 const ALLOWED_DYNAMIC_IMPORT_FILES = [
@@ -51,6 +56,28 @@ function isRemoteImport(specifier: string, file: string, root: string): boolean 
 
 function lineOf(source: ts.SourceFile, pos: number): number {
   return source.getLineAndCharacterOfPosition(pos).line + 1;
+}
+
+function isStringLiteralLike(node: ts.Node): node is ts.StringLiteral | ts.NoSubstitutionTemplateLiteral {
+  return ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node);
+}
+
+function requireSourceFile(snapshot: Snapshot, file: string): ts.SourceFile {
+  const project = snapshot.getDefaultProjectForFile(file);
+  if (!project) {
+    throw new Error(
+      `TypeScript 7 API could not assign a project for ${file}. `
+      + `Import boundary checks must use typescript/unstable/* — the package root export is version-only and cannot parse sources.`,
+    );
+  }
+  const source = project.program.getSourceFile(file);
+  if (!source) {
+    throw new Error(
+      `TypeScript 7 API did not produce an AST for ${file}. `
+      + `This usually means the checker resolved the version-only 'typescript' package root instead of typescript/unstable/sync.`,
+    );
+  }
+  return source;
 }
 
 function checkFile(
@@ -108,30 +135,26 @@ function checkFile(
   return violations;
 }
 
-function isStringLiteralLike(node: ts.Node): node is ts.StringLiteral | ts.NoSubstitutionTemplateLiteral {
-  return ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node);
-}
-
 export async function checkRemoteImportBoundaries(root = process.cwd()): Promise<RemoteImportBoundaryResult> {
   const resolvedRoot = resolve(root);
   const allowedDynamicImportFiles = new Set(
     ALLOWED_DYNAMIC_IMPORT_FILES.map((file) => join(resolvedRoot, file)),
   );
-  const files = (await Promise.all(SOURCE_ROOTS.map((sourceRoot) => listTypeScriptFiles(join(resolvedRoot, sourceRoot))))).flat();
+  // Always hand absolute paths to the TypeScript 7 API — relative DocumentIdentifiers
+  // can fail to map onto a project under isolated fixture roots (CI temp dirs).
+  const files = (await Promise.all(
+    SOURCE_ROOTS.map((sourceRoot) => listTypeScriptFiles(join(resolvedRoot, sourceRoot))),
+  )).flat().map((file) => resolve(file));
+
   if (files.length === 0) {
     return { root: resolvedRoot, fileCount: 0, violations: [] };
   }
 
-  // TypeScript 7's stable package entry point only exposes version metadata.
-  // Its synchronous API returns the same AST node surface used by this checker
-  // while keeping parser/server lifecycle management inside this function.
   const api = new API({ cwd: resolvedRoot });
   const snapshot = api.updateSnapshot({ openFiles: files });
   try {
     const violations = files.flatMap((file) => {
-      const project = snapshot.getDefaultProjectForFile(file);
-      const source = project?.program.getSourceFile(file);
-      if (!source) throw new Error(`TypeScript did not produce an AST for ${file}`);
+      const source = requireSourceFile(snapshot, file);
       return checkFile(file, resolvedRoot, allowedDynamicImportFiles, source);
     });
 
