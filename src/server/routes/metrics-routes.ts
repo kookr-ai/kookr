@@ -34,6 +34,7 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
       attentionQueueSuppressions: deps.queue?.getSuppressionCounts(),
       auditSinks: deps.auditSinks?.getAllSnapshots() ?? [],
       authThrottle: getAuthThrottleSnapshot(deps.apiAuth),
+      webhookDeliveries: deps.webhookNotifier?.getDeliveryCounts(),
     }), 200, {
       'Content-Type': PROMETHEUS_CONTENT_TYPE,
     });

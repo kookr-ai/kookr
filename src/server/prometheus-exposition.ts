@@ -3,6 +3,10 @@ import {
   ATTENTION_QUEUE_SUPPRESSION_REASONS,
   type AttentionQueueSuppressionCounts,
 } from '../core/attention-queue.js';
+import {
+  WEBHOOK_DELIVERY_OUTCOMES,
+  type WebhookDeliveryCounts,
+} from '../integrations/webhook/index.js';
 import type { AuthThrottleSnapshot } from './auth-throttle.js';
 import type { RequestDurationMetricsSnapshot } from './request-duration-metrics.js';
 
@@ -14,6 +18,7 @@ export interface PrometheusExpositionSnapshot {
   attentionQueueSuppressions?: AttentionQueueSuppressionCounts;
   auditSinks?: AuditSinkMetricsSnapshot[];
   authThrottle?: AuthThrottleSnapshot;
+  webhookDeliveries?: WebhookDeliveryCounts;
 }
 
 export interface AuditSinkMetricsSnapshot {
@@ -30,6 +35,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendAttentionQueueSuppressionMetrics(lines, snapshot.attentionQueueSuppressions);
   appendAuditSinkMetrics(lines, snapshot.auditSinks ?? []);
   appendAuthThrottleMetrics(lines, snapshot.authThrottle);
+  appendWebhookDeliveryMetrics(lines, snapshot.webhookDeliveries);
 
   return `${lines.join('\n')}\n`;
 }
@@ -159,6 +165,25 @@ function appendAuthThrottleMetrics(lines: string[], snapshot: AuthThrottleSnapsh
     '# TYPE kookr_auth_locked_out_sources gauge',
     metricLine('kookr_auth_locked_out_sources', {}, snapshot.lockedOutSources.length),
   );
+}
+
+const EMPTY_WEBHOOK_DELIVERIES: WebhookDeliveryCounts = {
+  success: 0,
+  failed: 0,
+  dropped: 0,
+};
+
+function appendWebhookDeliveryMetrics(
+  lines: string[],
+  counts: WebhookDeliveryCounts = EMPTY_WEBHOOK_DELIVERIES,
+): void {
+  lines.push(
+    '# HELP kookr_webhook_deliveries_total Total outbound finding-webhook delivery outcomes by result.',
+    '# TYPE kookr_webhook_deliveries_total counter',
+  );
+  for (const outcome of WEBHOOK_DELIVERY_OUTCOMES) {
+    lines.push(metricLine('kookr_webhook_deliveries_total', { outcome }, counts[outcome]));
+  }
 }
 
 const CIRCUIT_BREAKER_STATES: CircuitBreakerState[] = ['closed', 'open', 'half-open'];

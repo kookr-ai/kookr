@@ -9,7 +9,7 @@ Kookr exposes local HTTP and WebSocket endpoints from the Hono server. In develo
 | `GET /api/health` | Server status, agent count, build info, and launch dependency degradation summary |
 | `GET /api/health/stt` | Bundled speech-to-text container health |
 | `GET /api/startup-summary` | Crash-recovery startup summary fetched once on UI mount |
-| `GET /metrics` | Prometheus text exposition for request durations, circuit breakers, attention-queue suppressions, audit-sink health, and aggregate auth-throttle counters |
+| `GET /metrics` | Prometheus text exposition for request durations, circuit breakers, attention-queue suppressions, audit-sink health, aggregate auth-throttle counters, and outbound finding-webhook delivery outcomes |
 
 ### `GET /metrics`
 
@@ -47,6 +47,16 @@ The auth throttle is exported as aggregate process-local metrics:
   attempts rejected while a source was throttled.
 - `kookr_auth_locked_out_sources`: gauge of sources currently locked out by
   the auth throttle.
+
+Outbound finding-webhook delivery is exported (zeros when no deliveries have
+occurred yet):
+
+- `kookr_webhook_deliveries_total{outcome="success"}`: successful POSTs.
+- `kookr_webhook_deliveries_total{outcome="failed"}`: per-attempt failures
+  (non-2xx, network error, or timeout).
+- `kookr_webhook_deliveries_total{outcome="dropped"}`: deliveries that
+  exhausted retries or hit a permanent 4xx and were not accepted by the
+  receiver.
 
 Prometheus auth-throttle metrics intentionally omit raw source labels such as
 IP addresses.
