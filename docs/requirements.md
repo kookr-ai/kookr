@@ -1113,6 +1113,7 @@ The system SHALL price transcript token usage against the model that produced ea
 **Acceptance criteria:**
 - A transcript containing usage from two known models keeps separate token buckets and reports the sum priced at each model's rates with `pricingQuality: 'exact'`.
 - A transcript containing an unknown model does not throw, uses the legacy fallback rate, and reports `pricingQuality: 'fallback'`.
+- A transcript whose model id longest-prefix-matches a known pricing row (e.g. `claude-opus-4-8-20260701`) prices against that row and reports `pricingQuality: 'exact'` (not `'fallback'`).
 - Legacy result-entry totals continue to override estimated cost and authoritative token totals continue to be honored.
 - Corrected transcript cost remains the input to `BudgetChecker`, so the configured threshold is evaluated against the corrected amount.
 - A later corrected task cost adjusts the lifetime spend counter by its delta, including a finite downward correction.
