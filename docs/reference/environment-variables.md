@@ -25,6 +25,7 @@ uncomment only the values you need.
 | `KOOKR_LOG_TASK_SAVE_METRICS` | unset | `1` to enable | Logs each `tasks.json` save with serialized byte count, task/relation counts, and serialize/write/total duration. Intended for short dogfooding measurements of task-state write amplification; leave unset for normal operation. |
 | `KOOKR_PROD_DIR` | Auto-resolved `../kookr-prod` | Absolute or relative path | Overrides the production worktree used by `scripts/prod-update.sh` and deployment routes. |
 | `KOOKR_ENV_ROOT_DIR` | Auto-resolved Kookr main checkout when `prod-update.sh` runs from `kookr-prod`; otherwise current checkout | Absolute or relative path | Overrides the checkout whose `.env` is symlinked into the production worktree by `scripts/prod-update.sh`. |
+| `KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` | unset (off) | Positive number of hours | Enables a server-side scheduled data-directory prune (the same conservative sweep as `kookr maintenance prune`): removes aged hook logs, aged orphan/terminal activity-ledger files, rotated `server.log.N` generations, and aged `playbook-state` run directories. Off by default; unset, `0`, or non-positive keeps it disabled. The first sweep runs one interval after startup (never at boot), reclaimed bytes are logged, and a failing sweep is logged without crashing the server. |
 
 ### Read-Only Shared View
 

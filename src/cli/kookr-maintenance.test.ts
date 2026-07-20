@@ -143,6 +143,57 @@ describe('runMaintenanceCli', () => {
     expect(await exists(join(dataDir, 'hooks', 'kookr-old.jsonl'))).toBe(false);
   });
 
+  test('prune removes aged orphan activity-ledger files and reports them', async () => {
+    await rm(join(dataDir, 'hooks', 'kookr-old.jsonl'), { force: true });
+    const activityDir = join(dataDir, 'activity');
+    await mkdir(activityDir, { recursive: true });
+    const orphan = join(activityDir, 'kookr-ghost.jsonl');
+    await writeFile(orphan, '{"envelope":{"kookrSessionId":"kookr-ghost"}}\n', 'utf8');
+    const old = new Date(Date.now() - 60 * MS_PER_DAY);
+    await utimes(orphan, old, old);
+
+    const c = captureConsole();
+    const code = await runMaintenanceCli(['prune', '--dir', dataDir], { out: c.out });
+    expect(code).toBe(0);
+    expect(c.logs.join('\n')).toMatch(/activity\/kookr-ghost\.jsonl/);
+    expect(await exists(orphan)).toBe(false);
+  });
+
+  test('prune removes aged playbook-state runs and honors --playbook-keep-last', async () => {
+    await rm(join(dataDir, 'hooks', 'kookr-old.jsonl'), { force: true });
+    async function seedRun(runKey: string, daysAgo: number): Promise<string> {
+      const runDir = join(dataDir, 'playbook-state', 'scout', runKey);
+      await mkdir(runDir, { recursive: true });
+      await writeFile(join(runDir, 'state.json'), '{}', 'utf8');
+      const when = new Date(Date.now() - daysAgo * MS_PER_DAY);
+      await utimes(runDir, when, when);
+      return runDir;
+    }
+    const older = await seedRun('run-1', 90);
+    const newer = await seedRun('run-2', 60);
+
+    const c = captureConsole();
+    const code = await runMaintenanceCli(['prune', '--dir', dataDir, '--playbook-keep-last', '1'], { out: c.out });
+    expect(code).toBe(0);
+    expect(c.logs.join('\n')).toMatch(/playbook-state\/scout\/run-1/);
+    expect(await exists(older)).toBe(false);
+    expect(await exists(newer)).toBe(true);
+  });
+
+  test('rejects a negative --playbook-keep-last', async () => {
+    const c = captureConsole();
+    const code = await runMaintenanceCli(['prune', '--dir', dataDir, '--playbook-keep-last', '-1'], { out: c.out });
+    expect(code).toBe(2);
+    expect(c.errors.join('\n')).toMatch(/--playbook-keep-last requires a non-negative integer/);
+  });
+
+  test('rejects a non-positive --playbook-max-age-days', async () => {
+    const c = captureConsole();
+    const code = await runMaintenanceCli(['prune', '--dir', dataDir, '--playbook-max-age-days', '0'], { out: c.out });
+    expect(code).toBe(2);
+    expect(c.errors.join('\n')).toMatch(/--playbook-max-age-days requires a positive number/);
+  });
+
   test('human output includes aged server.log generations', async () => {
     await rm(join(dataDir, 'hooks', 'kookr-old.jsonl'), { force: true });
     const logGeneration = join(dataDir, 'server.log.1');

@@ -3,12 +3,15 @@ import {
   autoCloseStaleCompletionReadyTasks,
   clearAllTimers,
   findFirstActiveSession,
+  resolveMaintenancePruneIntervalHours,
   restoreExpiredSnoozes,
   runBudgetCheck,
   runPersistenceSaveTick,
   runProgressBudgetBurnDiagnosticSample,
+  runScheduledMaintenancePrune,
   startLifecycleTimers,
 } from './lifecycle-timers.js';
+import type { MaintenancePruneResult } from '../core/maintenance-prune.js';
 import { BudgetChecker } from '../core/budget-checker.js';
 import type { Task } from '../core/tasks.js';
 import { TaskStore } from '../core/tasks.js';
@@ -696,6 +699,142 @@ describe('startLifecycleTimers user input delivery retry sweep', () => {
         expect.any(Error),
       );
       expect(broadcastToAll).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'snapshot' }));
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+});
+
+describe('resolveMaintenancePruneIntervalHours', () => {
+  test('is off (0) by default and for invalid values', () => {
+    expect(resolveMaintenancePruneIntervalHours({})).toBe(0);
+    expect(resolveMaintenancePruneIntervalHours({ KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: '' })).toBe(0);
+    expect(resolveMaintenancePruneIntervalHours({ KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: 'nope' })).toBe(0);
+    expect(resolveMaintenancePruneIntervalHours({ KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: '0' })).toBe(0);
+    expect(resolveMaintenancePruneIntervalHours({ KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: '-4' })).toBe(0);
+  });
+  test('parses a positive number of hours', () => {
+    expect(resolveMaintenancePruneIntervalHours({ KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: '24' })).toBe(24);
+    expect(resolveMaintenancePruneIntervalHours({ KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: '0.5' })).toBe(0.5);
+  });
+});
+
+describe('runScheduledMaintenancePrune', () => {
+  const fakeResult = (over: Partial<MaintenancePruneResult> = {}): MaintenancePruneResult => ({
+    dataDir: '/tmp/data',
+    dryRun: false,
+    maxAgeDays: 30,
+    planned: [],
+    removed: [],
+    reclaimedBytes: 0,
+    preserved: [],
+    warnings: [],
+    ...over,
+  });
+
+  test('forwards config to the prune core with dryRun=false and logs the reclaim', async () => {
+    const run = vi.fn(async () => fakeResult({ reclaimedBytes: 4096, removed: [{} as never] }));
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const result = await runScheduledMaintenancePrune({
+      dataDir: '/tmp/data',
+      intervalHours: 24,
+      maxAgeDays: 30,
+      playbookStateKeepLast: 2,
+      run,
+    });
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({ dataDir: '/tmp/data', maxAgeDays: 30, playbookStateKeepLast: 2, dryRun: false }),
+    );
+    expect(result?.reclaimedBytes).toBe(4096);
+    expect(logSpy.mock.calls.flat().join(' ')).toMatch(/reclaimed 4096 byte/);
+  });
+
+  test('never throws — a failing sweep is logged and returns null', async () => {
+    const run = vi.fn(async () => {
+      throw new Error('disk exploded');
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await runScheduledMaintenancePrune({ dataDir: '/tmp/data', intervalHours: 24, run });
+    expect(result).toBeNull();
+    expect(errSpy.mock.calls.flat().join(' ')).toMatch(/scheduled sweep failed/);
+  });
+});
+
+describe('startLifecycleTimers maintenance prune scheduling', () => {
+  function baseTimerDeps(overrides: Record<string, unknown>) {
+    return {
+      monitor: {
+        getSnapshot: () => [],
+        getAgentEvents: () => [],
+        applyWatchdogVerdict: vi.fn(),
+        sampleFindingEvidence: vi.fn(),
+        getCurrentAnomaly: vi.fn(),
+      } as any,
+      taskStore: new TaskStore(),
+      queue: new AttentionQueue(),
+      adapter: { captureDisplay: vi.fn(async () => '') } as any,
+      adapterRegistry: {} as any,
+      tokenTracker: {
+        scanGrowth: vi.fn(async () => []),
+        scanAll: vi.fn(async () => undefined),
+        getTrackedTaskIds: vi.fn(() => []),
+        getUsage: vi.fn(() => undefined),
+      } as any,
+      watchdog: { getTrackedAgents: vi.fn(() => []) } as any,
+      hookWatcher: { drainNow: vi.fn(async () => undefined) } as any,
+      terminalBackend: { listSessions: vi.fn(async () => []) } as any,
+      hooksDir: '/tmp/hooks',
+      tasksFile: '/tmp/tasks.json',
+      serverCwd: '/tmp/repo',
+      saveIntervalMs: 60_000,
+      livenessIntervalMs: 60_000,
+      broadcastToAll: vi.fn(),
+      ...overrides,
+    };
+  }
+
+  test('fires the scheduled prune on its interval and stops on clear', async () => {
+    vi.useFakeTimers();
+    const run = vi.fn(async () => ({
+      dataDir: '/tmp/data', dryRun: false, maxAgeDays: 30,
+      planned: [], removed: [], reclaimedBytes: 0, preserved: [], warnings: [],
+    }));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const handles = startLifecycleTimers(baseTimerDeps({
+      maintenancePrune: { dataDir: '/tmp/data', intervalHours: 0.0005 /* 1.8s */, run },
+    }) as any);
+    try {
+      expect(handles.maintenancePruneInterval).not.toBeNull();
+      expect(run).not.toHaveBeenCalled(); // no boot run
+      await vi.advanceTimersByTimeAsync(1_900);
+      expect(run).toHaveBeenCalledTimes(1);
+    } finally {
+      clearAllTimers(handles);
+    }
+    const callsAfterClear = run.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(run.mock.calls.length).toBe(callsAfterClear); // cleared — no more sweeps
+  });
+
+  test('does not schedule a prune when the interval is 0 (off)', () => {
+    vi.useFakeTimers();
+    const run = vi.fn();
+    const handles = startLifecycleTimers(baseTimerDeps({
+      maintenancePrune: { dataDir: '/tmp/data', intervalHours: 0, run },
+    }) as any);
+    try {
+      expect(handles.maintenancePruneInterval).toBeNull();
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
+  test('omitting maintenancePrune leaves scheduling off', () => {
+    vi.useFakeTimers();
+    const handles = startLifecycleTimers(baseTimerDeps({}) as any);
+    try {
+      expect(handles.maintenancePruneInterval).toBeNull();
     } finally {
       clearAllTimers(handles);
     }
