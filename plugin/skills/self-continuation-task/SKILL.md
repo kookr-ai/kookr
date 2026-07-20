@@ -56,6 +56,9 @@ Every task in the chain must carry these rules in its prompt:
 - Record the outcome before spawning a successor.
 - Stop without spawning when no eligible unit remains or a configured cap is
   reached.
+- After a confirmed successor spawn (or a deliberate no-successor stop),
+  **release this task's slot immediately** — do not leave the parent
+  `inProgress` while the child runs (see Releasing the Task Slot).
 - Include a uniqueness cursor in every successor prompt so Kookr's task
   deduplication does not collapse distinct iterations into one task.
 
@@ -161,10 +164,13 @@ At the end of the current unit:
    - local state file updated atomically if one is used.
 2. Re-read the queue/source of truth and decide whether another eligible unit
    exists.
-3. If none exists, report completion and do not spawn.
+3. If none exists, release this task's slot (see below) and do not spawn.
 4. If another unit exists, write a complete successor prompt to a temp file
    outside the repo, then launch the next Kookr task using the installation's
-   supported task-creation path.
+   supported task-creation path **with this task's id as `parentTaskId`**.
+5. **Immediately release this task's slot** after a confirmed successor spawn
+   (or after a no-successor stop). Do not leave the parent `inProgress` while
+   the child runs — that is how chains burn through `MAX_ACTIVE_TASKS`.
 
 Use a prompt-file or stdin-based launch path when available. Create the prompt
 file with the agent's file-write tool, not with a Bash heredoc or inline shell
@@ -176,20 +182,39 @@ For parent/child linkage, use whatever parent-task field the installed launcher
 or API documents. If the launcher cannot express parentage, keep the durable
 state sufficient for tracing the chain without transcript access.
 
-## Releasing the Task Slot (auto-close on completion signal)
+## Releasing the Task Slot (immediate close; auto-close is backup only)
 
 A long chain only stays healthy if each finished task actually *closes*.
 Otherwise finished-but-still-open tasks accumulate against Kookr's active-task
 cap (`MAX_ACTIVE_TASKS`, default 10) and eventually block the chain from
-launching its successor. Two mechanisms cooperate here:
+launching its successor.
 
-- **The completion signal.** When a task's work is genuinely done — the unit is
-  complete, durable state is recorded, and (if applicable) the successor has
-  been spawned — run `kookr signal completion-ready` (optionally
-  `--note "..."`). This is the agent telling Kookr "this task is finished."
-- **Auto-close.** If the task was launched with `autoCloseOnSignal` enabled,
-  that signal schedules completion after the one-hour grace period instead of
-  waiting indefinitely for a human to review and click Complete.
+**Primary path — free the slot now.** When the unit is done and durable state is
+recorded (and the successor has been spawned when continuing), close *this*
+task immediately. Prefer this order:
+
+1. `kookr signal completion-ready --note "successor <id> spawned"` (or a
+   no-successor stop note) so the dashboard shows the done signal.
+2. **Immediately** complete the task so it leaves the active set:
+
+   ```bash
+   API="${KOOKR_API_BASE_URL:-http://127.0.0.1:4800}"
+   curl -sS -X POST "$API/api/tasks/${KOOKR_TASK_ID}/complete"
+   ```
+
+   `POST /api/tasks/:id/complete` is the documented, non-destructive terminal
+   transition for finished work (history preserved; sessions torn down). It is
+   the correct handoff for a self-continuation parent that has already spawned
+   its child. Do **not** wait for the one-hour auto-close grace.
+
+**Backup path — auto-close on signal.** If the task was launched with
+`autoCloseOnSignal` and something prevents the immediate `POST .../complete`
+(missing `KOOKR_TASK_ID`, transient API error after retries), the
+`completion-ready` signal still schedules completion after the one-hour grace
+period. That grace is a safety net for human review of interactive tasks — it
+is **not** fast enough for dense chains that spawn every few minutes. Relying
+on grace alone is how four parent tasks pile up while only one child should be
+live.
 
 **Inheritance is automatic and server-side.** A task launched with
 `autoCloseOnSignal` set propagates it to any successor spawned with its task id
@@ -199,11 +224,11 @@ policy from durable task state, which is exactly the memory-free guarantee this
 skill relies on. To opt a successor out of an inherited policy, launch it with
 `kookr spawn --no-auto-close-on-signal`.
 
-Only signal completion-ready when work is truly finished: under `autoCloseOnSignal`
-it closes the task after the grace period without another prompt, so signalling
-mid-work would still abort it later. If a task is NOT auto-close enabled, the
-signal is harmless — it just surfaces a banner for manual review. See
-docs/reference/auto-close-on-signal.md for the full model.
+Only signal completion-ready / complete when work is truly finished. Signalling
+or completing mid-unit aborts remaining work. If a task is NOT auto-close
+enabled and you cannot `POST .../complete`, the signal still surfaces a banner
+for manual review. See docs/reference/auto-close-on-signal.md for the full
+model.
 
 ## Successor Prompt Template
 
@@ -219,7 +244,7 @@ Goal: <overall batch goal>
 
 Follow the self-continuation-task skill for all invariant rules
 (fresh worktree, one unit only, durable-state selection, record-before-spawn,
-completion signal, end-of-chain sweep). Do not re-derive them here.
+immediate parent close after spawn, end-of-chain sweep). Do not re-derive them here.
 
 Cursor:
 - repo: <owner/name>
@@ -300,6 +325,9 @@ in the chain's completion-detection logic.
 ## Anti-Patterns
 
 - Spawning the next task before the current unit has durable evidence.
+- Spawning a successor and leaving this parent `inProgress` (or only signalling
+  completion-ready and waiting the one-hour auto-close grace). That stacks N
+  live parents behind one tip and hits `MAX_ACTIVE_TASKS`.
 - Encoding "continue until it feels done" without a mechanical stop condition.
 - Selecting the next unit from conversation memory or a non-persisted TODO list.
 - Letting one task work multiple issues because setup is already warm.

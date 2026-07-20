@@ -18,6 +18,14 @@ the chain stalls.
 Kookr keeps the signal visible for one hour, then completes the task and
 promotes the next queued one if nobody acted first.
 
+**Dense self-continuation chains need an immediate complete.** The one-hour
+grace is a backup for interactive/human-review workflows. Chains that spawn a
+successor every few minutes must free the parent slot **as soon as the child is
+confirmed** — typically `POST /api/tasks/:id/complete` after
+`completion-ready` — or several finished parents stay `inProgress` at once and
+the active-task cap fills. See the `self-continuation-task` skill section
+"Releasing the Task Slot (immediate close; auto-close is backup only)".
+
 ## The completion signal
 
 The signal itself is the existing agent → user channel (see

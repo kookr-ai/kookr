@@ -563,7 +563,12 @@ If `{{selfContinuation}}` is `true` and you are NOT running in Ralph loop mode, 
 1. If `{{mergeAfterImplementation}}` is `true` but you chose **not** to merge, still run the Phase 8 mergeability check (`gh pr view --json state,mergeStateStatus,reviewDecision,statusCheckRollup`) and record one line stating why merge is deferred (gate name, blocking issue, pending review). A deferred merge must be a recorded decision, not a silently skipped step.
 2. Post one concise, task-visible note (a PR comment and/or your final answer) that says the chain is intentionally paused, *why* (which gate or blocked issues), and *what unblocks it*. A memory or PR-body mention alone is not enough — the operator reads the task surface, not your memory files.
 
-**Releasing this task's slot (standard / self-continuation launches only).** This playbook sets `autoCloseOnSignal: true`, so once your work for this task is genuinely finished — the PR is open/merged and (for a chain) the successor task has been spawned — run `kookr signal completion-ready` to schedule delayed auto-completion for *this* task after the one-hour grace period. The successor you spawned inherits `autoCloseOnSignal` automatically (server-side, via `parentTaskId`), so the whole chain keeps releasing slots without piling up open tasks. Do NOT signal completion-ready while work remains — after the grace period it closes the task without another prompt. In Ralph loop mode, ignore this: the loop owns the task lifecycle and writes a verdict instead (Phase 9).
+**Releasing this task's slot (standard / self-continuation launches only).** This playbook sets `autoCloseOnSignal: true`, but that one-hour grace is only a **backup**. Once your work for this task is genuinely finished — the PR is open/merged and (for a chain) the successor task has been **confirmed** spawned — free *this* task's active slot **immediately**:
+
+1. `kookr signal completion-ready --note "successor <id> spawned"` (or a deliberate no-successor stop note).
+2. `curl -sS -X POST "${KOOKR_API_BASE_URL:-http://127.0.0.1:4800}/api/tasks/${KOOKR_TASK_ID}/complete"` so the parent leaves `inProgress` now.
+
+Do **not** leave the parent running while the child works, and do **not** rely on the one-hour auto-close grace alone — dense chains (spawn every few minutes) otherwise stack multiple live parents and hit `MAX_ACTIVE_TASKS`. The successor inherits `autoCloseOnSignal` automatically (server-side, via `parentTaskId`). Do NOT signal or complete while unit work remains. In Ralph loop mode, ignore this: the loop owns the task lifecycle and writes a verdict instead (Phase 9). Full contract: `self-continuation-task` skill → "Releasing the Task Slot".
 
 ## Phase 8.5: Post-task KB lesson decision
 
