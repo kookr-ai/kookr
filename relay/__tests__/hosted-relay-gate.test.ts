@@ -310,6 +310,8 @@ describe('hosted relay terminal viewing production gate', () => {
   });
 
   it('keeps tenant terminal viewing disabled when disable persistence fails', async () => {
+    // Probe stays healthy: write latch clears on the next successful probe (#1423),
+    // but the in-memory tenant disable still blocks terminal viewing.
     relay = createRelayServer({
       adminToken: 'admin-secret',
       accountToken: 'account-secret',
@@ -351,24 +353,26 @@ describe('hosted relay terminal viewing production gate', () => {
     expect(relay.metadataAuditRows()).toContainEqual(expect.objectContaining({
       publicationScopeId: 'scope-disable-persistence-failed',
       outcome: 'rejected',
-      reason: 'hosted-relay-kill-switch-persistence-unavailable',
+      reason: 'tenant-persistence-failed',
     }));
 
     const health = await fetch(new URL('/health', relay.url()));
-    await expect(health.json()).resolves.toMatchObject({
-      status: 'degraded',
-      dbReachable: false,
-      stateWriteFailure: {
-        operation: 'saveTerminalViewingDisabledTenant',
-        message: 'terminal disable persistence failed',
-      },
+    const healthBody = await health.json() as {
+      status: string;
+      dbReachable: boolean;
+      stateWriteFailure?: unknown;
+      hostedRelay: { terminalViewing: { enabled: boolean } };
+    };
+    expect(healthBody).toMatchObject({
+      status: 'ok',
+      dbReachable: true,
       hostedRelay: {
         terminalViewing: {
-          enabled: false,
-          blockReason: 'hosted-relay-kill-switch-persistence-unavailable',
+          enabled: true,
         },
       },
     });
+    expect(healthBody.stateWriteFailure).toBeUndefined();
   });
 
   it('keeps tenant terminal viewing disabled when enable persistence fails', async () => {
@@ -400,15 +404,14 @@ describe('hosted relay terminal viewing production gate', () => {
       reason: 'existing-disable',
     }]);
 
+    // Healthy probe clears the write-failure latch; tenant disable remains in memory.
     const health = await fetch(new URL('/health', relay.url()));
-    await expect(health.json()).resolves.toMatchObject({
-      status: 'degraded',
-      dbReachable: false,
-      stateWriteFailure: {
-        operation: 'deleteTerminalViewingDisabledTenant',
-        message: 'terminal enable persistence failed',
-      },
+    const healthBody = await health.json() as { status: string; dbReachable: boolean; stateWriteFailure?: unknown };
+    expect(healthBody).toMatchObject({
+      status: 'ok',
+      dbReachable: true,
     });
+    expect(healthBody.stateWriteFailure).toBeUndefined();
   });
 
   it.each([

@@ -177,12 +177,16 @@ export interface RelayServerOptions {
     | 'close'
   >;
   stateProbe?: () => boolean;
+  /** In-memory metadata-audit ring capacity (default 5000; env KOOKR_RELAY_METADATA_AUDIT_CAP). */
+  metadataAuditCap?: number;
   bindHost?: string;
   trustedProxy?: boolean;
   shareMaxTtlMs?: number;
   policyAckTimeoutMs?: number;
   memberWebSocketNonceTtlMs?: number;
 }
+
+const DEFAULT_METADATA_AUDIT_CAP = 5000;
 
 type PolicySyncState = 'notSent' | 'sentAwaitingAck' | 'acked' | 'stale' | 'timedOut' | 'failed';
 
@@ -1073,7 +1077,14 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const shareSessionProjections = new Map<string, ShareSessionProjectionEnvelopeV1>();
   const memberWebSocketNonces = new Map<string, MemberWebSocketNonce>();
   const memberRetryTokens = new Map<string, MemberRetryTokenBinding>();
+  const metadataAuditCap = (() => {
+    const raw = opts.metadataAuditCap
+      ?? parseHostedRelayPositiveInt(process.env.KOOKR_RELAY_METADATA_AUDIT_CAP, DEFAULT_METADATA_AUDIT_CAP);
+    const truncated = Math.trunc(Number(raw));
+    return Number.isFinite(truncated) && truncated >= 1 ? truncated : DEFAULT_METADATA_AUDIT_CAP;
+  })();
   const metadataAudit: RelayMetadataAuditRow[] = [];
+  let metadataAuditDroppedCount = 0;
   const terminalViewingDisabledTenants = new Map<string, { reason: string; disabledAt: string }>(
     stateSnapshot.terminalViewingDisabledTenants.map((entry) => [entry.tenantId, {
       reason: entry.reason,
@@ -1263,13 +1274,28 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     return { nodeId, nodeToken };
   };
 
-  const terminalKillSwitchPersistenceOk = (): boolean => {
-    if (!stateStore || stateWriteFailure) return false;
+  /**
+   * Probe state reachability. On an affirmative success, clear the one-way
+   * `stateWriteFailure` latch so a recovered DB restores terminal viewing and
+   * /health without a process restart (#1423).
+   */
+  const probeDbReachable = (): boolean => {
     try {
-      return opts.stateProbe ? opts.stateProbe() : stateStore.probe();
+      const ok = opts.stateProbe
+        ? opts.stateProbe()
+        : (stateStore ? stateStore.probe() : true);
+      if (ok) {
+        stateWriteFailure = null;
+      }
+      return ok;
     } catch {
       return false;
     }
+  };
+
+  const terminalKillSwitchPersistenceOk = (): boolean => {
+    if (!stateStore) return false;
+    return probeDbReachable();
   };
 
   const hostedTerminalViewingGlobalBlockReason = (): string | undefined => {
@@ -1779,8 +1805,8 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     try {
       if (req.method === 'GET' && url.pathname === '/health') {
-        const dbProbeOk = opts.stateProbe ? opts.stateProbe() : (stateStore?.probe() ?? true);
-        const dbReachable = dbProbeOk && stateWriteFailure === null;
+        // Probe first so a recovered DB clears the write-failure latch (#1423).
+        const dbReachable = probeDbReachable();
         sendJson(res, 200, {
           status: currentHostedStatus().mode === 'emergencyDisabled' || !dbReachable ? 'degraded' : 'ok',
           dbReachable,
@@ -1819,7 +1845,25 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           sendJson(res, 401, { error: 'unauthorized' });
           return;
         }
-        sendJson(res, 200, { rows: metadataAudit });
+        const rawLimit = url.searchParams.get('limit');
+        const parsedLimit = rawLimit === null ? null : Number.parseInt(rawLimit, 10);
+        const limitApplied = parsedLimit !== null && Number.isFinite(parsedLimit) && parsedLimit >= 0
+          ? Math.trunc(parsedLimit)
+          : null;
+        const retained = metadataAudit.length;
+        const rows = limitApplied === null
+          ? metadataAudit
+          : metadataAudit.slice(Math.max(0, retained - limitApplied));
+        const responseTruncated = metadataAuditDroppedCount > 0
+          || (limitApplied !== null && rows.length < retained);
+        sendJson(res, 200, {
+          rows,
+          cap: metadataAuditCap,
+          retained,
+          droppedCount: metadataAuditDroppedCount,
+          truncated: responseTruncated,
+          ...(limitApplied !== null ? { limit: limitApplied } : {}),
+        });
         return;
       }
       if (
@@ -2839,6 +2883,12 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   const clientWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: MEMBER_WS_MAX_PAYLOAD_BYTES });
 
   server.on('upgrade', (req, socket, head) => {
+    // Node removes its internal socket error handler before emitting 'upgrade'.
+    // Without a listener, peer reset / EPIPE during rejection writes becomes an
+    // uncaught 'error' and kills the process (#1422).
+    socket.on('error', () => {
+      if (!socket.destroyed) socket.destroy();
+    });
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     if (url.pathname === '/relay/node') {
       const token = bearer(req);
@@ -2919,6 +2969,8 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
   });
 
   nodeWss.on('connection', (ws: WebSocket, _req: IncomingMessage, registration: NodeRegistration) => {
+    // Mirror client-ws: absorb peer resets so they do not become uncaught (#1422).
+    ws.on('error', () => undefined);
     let accepted = false;
     ws.on('message', (data) => {
       let parsed: unknown;
@@ -3387,6 +3439,11 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
 
   function appendMetadataAudit(row: RelayMetadataAuditRow): void {
     metadataAudit.push(row);
+    // Fixed-size ring: drop oldest when over cap so the long-lived relay cannot OOM (#1379).
+    while (metadataAudit.length > metadataAuditCap) {
+      metadataAudit.shift();
+      metadataAuditDroppedCount += 1;
+    }
   }
 
   function appendTerminalPublicationAudit(
