@@ -9,20 +9,44 @@ export const WEBHOOK_PAYLOAD_SCHEMA_VERSION = 'kookr.finding.webhook.v1';
 const DEFAULT_MIN_SEVERITY: AnomalySeverity = 'info';
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_INITIAL_RETRY_DELAY_MS = 1_000;
+/** Default POST timeout; long enough for slow-but-healthy receivers, short enough not to wedge the finding pipeline. */
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+/** After a permanent delivery failure, suppress re-delivery for this long to avoid a hot loop. */
+const DEFAULT_FAILURE_COOLDOWN_MS = 30_000;
 
-const SEVERITY_RANK: Record<AnomalySeverity, number> = {
-  info: 0,
-  warning: 1,
-  critical: 2,
-};
+export const WEBHOOK_DELIVERY_OUTCOMES = ['success', 'failed', 'dropped'] as const;
+export type WebhookDeliveryOutcome = typeof WEBHOOK_DELIVERY_OUTCOMES[number];
+export type WebhookDeliveryCounts = Record<WebhookDeliveryOutcome, number>;
 
-class PermanentWebhookError extends Error {}
+class PermanentWebhookError extends Error {
+  constructor(
+    message: string,
+    readonly attempts: number,
+  ) {
+    super(message);
+    this.name = 'PermanentWebhookError';
+  }
+}
+
+class ExhaustedWebhookError extends Error {
+  constructor(
+    message: string,
+    readonly attempts: number,
+  ) {
+    super(message);
+    this.name = 'ExhaustedWebhookError';
+  }
+}
 
 export interface WebhookConfig {
   url: string;
   minSeverity: AnomalySeverity;
   maxAttempts: number;
   initialRetryDelayMs: number;
+  /** AbortController timeout for each outbound POST attempt. */
+  requestTimeoutMs: number;
+  /** After exhausted retries, hold off re-delivery of the same key for this long. */
+  failureCooldownMs: number;
   dashboardBaseUrl?: string;
   signingSecrets?: readonly string[];
 }
@@ -105,6 +129,8 @@ export function readWebhookConfigFromEnv(
     minSeverity,
     maxAttempts: DEFAULT_MAX_ATTEMPTS,
     initialRetryDelayMs: DEFAULT_INITIAL_RETRY_DELAY_MS,
+    requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    failureCooldownMs: DEFAULT_FAILURE_COOLDOWN_MS,
     ...parseSigningSecrets(env.KOOKR_WEBHOOK_SECRET),
     ...(opts.dashboardBaseUrl ? { dashboardBaseUrl: opts.dashboardBaseUrl } : {}),
   };
@@ -131,6 +157,19 @@ export class WebhookNotifier {
   private readonly now: () => Date;
   private readonly logger: Pick<Console, 'warn'>;
   private readonly notified = new Set<string>();
+  /** Dedupe keys that recently failed permanently; value is epoch-ms when re-delivery is allowed. */
+  private readonly failureCooldownUntil = new Map<string, number>();
+  /**
+   * Monotonic generation per dedupe key. In-flight deliveries capture their
+   * generation at start; late failures must not re-arm cooldown or delete
+   * notified if clearFingerprint / a newer delivery already advanced it.
+   */
+  private readonly deliveryGeneration = new Map<string, number>();
+  private readonly deliveryCounts: WebhookDeliveryCounts = {
+    success: 0,
+    failed: 0,
+    dropped: 0,
+  };
 
   constructor(deps: WebhookNotifierDeps) {
     this.config = deps.config;
@@ -139,6 +178,10 @@ export class WebhookNotifier {
     this.fetchImpl = deps.fetchImpl ?? fetch;
     this.now = deps.now ?? (() => new Date());
     this.logger = deps.logger ?? console;
+  }
+
+  getDeliveryCounts(): WebhookDeliveryCounts {
+    return { ...this.deliveryCounts };
   }
 
   async notifyFinding(event: WebhookFindingEvent, routing?: WebhookRouting): Promise<boolean> {
@@ -154,24 +197,55 @@ export class WebhookNotifier {
       return false;
     }
     const dedupeKey = this.dedupeKey(event);
+    const cooldownUntil = this.failureCooldownUntil.get(dedupeKey);
+    if (cooldownUntil !== undefined) {
+      if (this.now().getTime() < cooldownUntil) {
+        this.deliveryTrace?.recordSuppressed(event, 'webhook_dedupe');
+        return false;
+      }
+      this.failureCooldownUntil.delete(dedupeKey);
+    }
     if (this.notified.has(dedupeKey)) {
       this.deliveryTrace?.recordSuppressed(event, 'webhook_dedupe');
       return false;
     }
 
+    const myGeneration = (this.deliveryGeneration.get(dedupeKey) ?? 0) + 1;
+    this.deliveryGeneration.set(dedupeKey, myGeneration);
     this.notified.add(dedupeKey);
     const payload = this.buildPayload(event);
     try {
       await this.postWithRetry(payload);
       return true;
     } catch (err) {
-      this.logger.warn(`[webhook] failed to deliver finding: ${err instanceof Error ? err.message : String(err)}`);
+      // Only the current generation may release/cooldown — late failures after
+      // clearFingerprint or a newer delivery must not re-arm suppression.
+      if (this.deliveryGeneration.get(dedupeKey) === myGeneration) {
+        this.notified.delete(dedupeKey);
+        if (this.config.failureCooldownMs > 0) {
+          this.failureCooldownUntil.set(dedupeKey, this.now().getTime() + this.config.failureCooldownMs);
+        }
+      }
+      this.incrementDelivery('dropped');
+      const attempts = deliveryAttemptsFromError(err) ?? this.config.maxAttempts;
+      this.logger.warn('[webhook] failed to deliver finding', {
+        fingerprint: event.fingerprint,
+        agentId: event.agentId,
+        severity: event.anomaly.severity,
+        host: webhookHost(this.config.url),
+        attempts,
+        error: err instanceof Error ? err.message : String(err),
+      });
       return false;
     }
   }
 
   clearFingerprint(event: Pick<WebhookFindingEvent, 'agentId' | 'fingerprint'>): void {
-    this.notified.delete(this.dedupeKey(event));
+    const key = this.dedupeKey(event);
+    this.notified.delete(key);
+    this.failureCooldownUntil.delete(key);
+    // Bump generation so an in-flight failure cannot re-arm cooldown.
+    this.deliveryGeneration.set(key, (this.deliveryGeneration.get(key) ?? 0) + 1);
   }
 
   buildPayload(event: WebhookFindingEvent): WebhookFindingPayload {
@@ -214,18 +288,25 @@ export class WebhookNotifier {
     return `${event.agentId}:${event.fingerprint}`;
   }
 
+  private incrementDelivery(outcome: WebhookDeliveryOutcome): void {
+    this.deliveryCounts[outcome] += 1;
+  }
+
   private async postWithRetry(payload: WebhookFindingPayload): Promise<void> {
     let lastError: Error | null = null;
     const body = JSON.stringify(payload);
     const traceEvent = webhookPayloadToTraceEvent(payload);
     for (let attempt = 1; attempt <= this.config.maxAttempts; attempt += 1) {
       this.deliveryTrace?.recordWebhookAttempt(traceEvent, attempt);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.config.requestTimeoutMs);
       try {
         const response = await this.fetchImpl(this.config.url, {
           method: 'POST',
           redirect: 'manual',
           headers: this.buildHeaders(body),
           body,
+          signal: controller.signal,
         });
         if (response.ok) {
           this.deliveryTrace?.recordWebhookResult(traceEvent, {
@@ -233,6 +314,7 @@ export class WebhookNotifier {
             outcome: 'success',
             httpStatus: response.status,
           });
+          this.incrementDelivery('success');
           return;
         }
         this.deliveryTrace?.recordWebhookResult(traceEvent, {
@@ -240,25 +322,37 @@ export class WebhookNotifier {
           outcome: 'failure',
           httpStatus: response.status,
         });
+        this.incrementDelivery('failed');
         if (response.status >= 400 && response.status < 500) {
-          throw new PermanentWebhookError(`webhook returned ${response.status}`);
+          throw new PermanentWebhookError(`webhook returned ${response.status}`, attempt);
         }
         lastError = new Error(`webhook returned ${response.status}`);
       } catch (err) {
         if (err instanceof PermanentWebhookError) throw err;
-        lastError = err instanceof Error ? err : new Error(String(err));
+        lastError = normalizeFetchError(err, this.config.requestTimeoutMs);
         this.deliveryTrace?.recordWebhookResult(traceEvent, {
           attempt,
           outcome: 'failure',
           error: lastError.message,
         });
+        this.incrementDelivery('failed');
+      } finally {
+        clearTimeout(timer);
       }
 
       if (attempt < this.config.maxAttempts) {
         await delay(this.retryDelayMs(attempt));
+      } else {
+        throw new ExhaustedWebhookError(
+          lastError?.message ?? 'unknown webhook delivery failure',
+          attempt,
+        );
       }
     }
-    throw lastError ?? new Error('unknown webhook delivery failure');
+    throw new ExhaustedWebhookError(
+      lastError?.message ?? 'unknown webhook delivery failure',
+      this.config.maxAttempts,
+    );
   }
 
   private retryDelayMs(attempt: number): number {
@@ -289,6 +383,12 @@ export class WebhookNotifier {
   }
 }
 
+const SEVERITY_RANK: Record<AnomalySeverity, number> = {
+  info: 0,
+  warning: 1,
+  critical: 2,
+};
+
 function isSeverity(value: string): value is AnomalySeverity {
   return value === 'info' || value === 'warning' || value === 'critical';
 }
@@ -317,6 +417,32 @@ function webhookPayloadToTraceEvent(payload: WebhookFindingPayload): WebhookFind
       ...(payload.finding.eventId ? { eventId: payload.finding.eventId } : {}),
     },
   };
+}
+
+/** Host only — never the full URL, which may embed a token in the path. */
+function webhookHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return 'invalid-url';
+  }
+}
+
+function deliveryAttemptsFromError(err: unknown): number | undefined {
+  if (err instanceof PermanentWebhookError || err instanceof ExhaustedWebhookError) {
+    return err.attempts;
+  }
+  return undefined;
+}
+
+function normalizeFetchError(err: unknown, requestTimeoutMs: number): Error {
+  if (err instanceof Error) {
+    if (err.name === 'AbortError') {
+      return new Error(`webhook request timed out after ${requestTimeoutMs}ms`);
+    }
+    return err;
+  }
+  return new Error(String(err));
 }
 
 function delay(ms: number): Promise<void> {

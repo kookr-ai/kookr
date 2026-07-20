@@ -211,13 +211,17 @@ local configuration; do not store shared secrets in checked-in `.env` files.
 
 Delivery behavior is part of the receiver contract. Kookr uses
 `DEFAULT_MAX_ATTEMPTS` and `DEFAULT_INITIAL_RETRY_DELAY_MS` for 3 attempts with
-1s, then 2s, exponential backoff. Network errors, 3xx responses, and 5xx
-responses retry until the attempt budget is exhausted. Any 4xx response is
+1s, then 2s, exponential backoff; each POST attempt times out after
+`DEFAULT_REQUEST_TIMEOUT_MS` (10s). Network errors, timeouts, 3xx responses, and
+5xx responses retry until the attempt budget is exhausted. Any 4xx response is
 permanent and stops retrying immediately. Redirects are not followed
-(`redirect: 'manual'`), so the redirect response itself is evaluated by that
-same retry logic. Duplicate deliveries are suppressed by `agentId:fingerprint`
-until the finding resolves; receivers should still make `fingerprint`
-idempotent on their side.
+(`redirect: 'manual'`). After a successful delivery, duplicates are suppressed
+by `agentId:fingerprint` until the finding resolves. After permanent failure,
+the key is released and re-delivery is held for
+`DEFAULT_FAILURE_COOLDOWN_MS` (30s). Receivers should still make `fingerprint`
+idempotent. Outcome counters appear on `GET /metrics` as
+`kookr_webhook_deliveries_total{outcome=…}`. Full contract:
+[Outbound Finding Webhooks](../configuration.md#outbound-finding-webhooks).
 
 The JSON body a receiver must parse — the `kookr.finding.webhook.v1` field
 contract with an example — is documented in
