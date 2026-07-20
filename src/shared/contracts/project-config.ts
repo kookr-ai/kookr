@@ -8,13 +8,27 @@ export interface ProjectWebhookRoutingSettings {
 export interface ProjectConfig {
   project: string;
   tracked?: boolean;
+  /**
+   * Max PRs per calendar day for this project (non-negative integer).
+   * Manual config takes precedence over `rate-limits.json`.
+   * Omitted when unset; invalid values are dropped (fall back to rate-limits).
+   */
   dailyPrLimit?: number;
+  /**
+   * Max PRs per calendar week for this project (non-negative integer).
+   * Omitted when unset; invalid values are dropped.
+   */
   weeklyPrLimit?: number;
   /** Per-task cost warning threshold in USD. 0 disables budget alerts for this project. */
   budgetWarnUsd?: number;
   notes?: string;
   localPath?: string;
   webhook?: ProjectWebhookRoutingSettings;
+}
+
+/** Finite non-negative integer — used for PR rate-limit fields. */
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }
 
 export function isAnomalySeverity(value: unknown): value is AnomalySeverity {
@@ -39,8 +53,10 @@ export function sanitizeProjectConfig(raw: unknown): ProjectConfig | null {
 
   const config: ProjectConfig = { project: input.project };
   if (typeof input.tracked === 'boolean') config.tracked = input.tracked;
-  if (typeof input.dailyPrLimit === 'number') config.dailyPrLimit = input.dailyPrLimit;
-  if (typeof input.weeklyPrLimit === 'number') config.weeklyPrLimit = input.weeklyPrLimit;
+  // Reject Infinity/NaN/negatives/fractions (do not clamp): a bad value must not
+  // override rate-limits.json. budgetWarnUsd below clamps negatives to 0 instead.
+  if (isNonNegativeInteger(input.dailyPrLimit)) config.dailyPrLimit = input.dailyPrLimit;
+  if (isNonNegativeInteger(input.weeklyPrLimit)) config.weeklyPrLimit = input.weeklyPrLimit;
   if (typeof input.budgetWarnUsd === 'number' && Number.isFinite(input.budgetWarnUsd)) {
     config.budgetWarnUsd = Math.max(0, input.budgetWarnUsd);
   }
