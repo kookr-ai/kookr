@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, afterEach } from 'vitest';
-import { MODEL_PRICING, lookupPricing, getPricing, estimateCost } from './pricing-tables.js';
+import { MODEL_PRICING, lookupPricing, getPricing, resolvePricing, estimateCost } from './pricing-tables.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -123,6 +123,15 @@ describe('getPricing — legacy fallback for existing TokenTracker', () => {
     expect(p.outputPerMTok).toBe(25);
   });
 
+  test('longest-prefix wins when a shorter sibling key would also match', () => {
+    // MODEL_PRICING lists `gpt-5.5` before `gpt-5.5-pro`. First-hit prefix would
+    // bind the pro dated id to the cheaper base row; longest-prefix must not.
+    const p = getPricing('gpt-5.5-pro-20260101');
+    expect(p.inputPerMTok).toBe(MODEL_PRICING['gpt-5.5-pro'].inputPerMTok);
+    expect(p.outputPerMTok).toBe(MODEL_PRICING['gpt-5.5-pro'].outputPerMTok);
+    expect(p.inputPerMTok).not.toBe(MODEL_PRICING['gpt-5.5'].inputPerMTok);
+  });
+
   test('unknown model falls back to Sonnet (silent — only warn-once)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const p1 = getPricing('totally-unknown-model-xyz');
@@ -131,6 +140,26 @@ describe('getPricing — legacy fallback for existing TokenTracker', () => {
     expect(p2.inputPerMTok).toBe(3);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0][0]).toContain('totally-unknown-model-xyz');
+  });
+});
+
+describe('resolvePricing — match honesty', () => {
+  test('exact key is exact', () => {
+    expect(resolvePricing('claude-opus-4-8').match).toBe('exact');
+  });
+
+  test('dated id that longest-prefix-matches is prefix, not fallback', () => {
+    const r = resolvePricing('claude-opus-4-8-20260115');
+    expect(r.match).toBe('prefix');
+    expect(r.pricing.inputPerMTok).toBe(MODEL_PRICING['claude-opus-4-8'].inputPerMTok);
+  });
+
+  test('unknown model is fallback Sonnet', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const r = resolvePricing('no-such-model');
+    expect(r.match).toBe('fallback');
+    expect(r.pricing.inputPerMTok).toBe(3);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });
 

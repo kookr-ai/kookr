@@ -1,7 +1,7 @@
 import { readFile, stat } from 'node:fs/promises';
 import { statSync } from 'node:fs';
 import type { TokenUsage } from './types.js';
-import { getPricing, lookupPricing, estimateCost, type ModelPricing } from './pricing-tables.js';
+import { resolvePricing, estimateCost } from './pricing-tables.js';
 
 /**
  * A transcript file that has grown since the last `scanAll`, but whose new bytes
@@ -289,8 +289,11 @@ export class TokenTracker {
         outputTokens += bucket.outputTokens;
         cacheReadTokens += bucket.cacheReadTokens;
         cacheWriteTokens += bucket.cacheWriteTokens;
+        // Honesty flag follows the same resolve path as cost (exact/prefix vs Sonnet).
+        // Prefix-priced dated ids (e.g. claude-opus-4-8-2026…) are non-fallback.
         if (pricingQuality !== 'fallback') {
-          pricingQuality = bucket.model && lookupPricing(bucket.model) ? 'exact' : 'fallback';
+          const match = resolvePricing(bucket.model ?? '').match;
+          pricingQuality = match === 'fallback' ? 'fallback' : 'exact';
         }
       }
 
@@ -301,7 +304,7 @@ export class TokenTracker {
         costUsd += state.explicitCostUsd;
       } else {
         for (const bucket of state.tokenBuckets.values()) {
-          const pricing = getPricing(bucket.model ?? '');
+          const pricing = resolvePricing(bucket.model ?? '').pricing;
           costUsd += estimateCost(
             bucket.inputTokens, bucket.outputTokens,
             bucket.cacheWriteTokens, bucket.cacheReadTokens, pricing,
@@ -469,4 +472,4 @@ export class TokenTracker {
 // Re-export pricing helpers for backward compat — callers historically imported these from
 // `./token-tracker`. New code SHOULD import from `./pricing-tables` directly; in particular,
 // the cost-comparison surface uses `lookupPricing` (strict null) instead of `getPricing`.
-export { estimateCost, getPricing, type ModelPricing };
+export { estimateCost, getPricing, resolvePricing, type ModelPricing } from './pricing-tables.js';
