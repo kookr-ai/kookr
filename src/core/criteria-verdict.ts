@@ -10,6 +10,8 @@ import { redactSecrets } from './redact-secrets.js';
 
 const MAX_EVENT_CHARS = 12_000;
 const MAX_TEXT_FIELD_CHARS = 1_000;
+/** Neutralize in-band envelope closers so agent text cannot escape <<<EVENT_WINDOW>>>…<<<END>>>. */
+const DELIMITER_PATTERN = /<<<\s*(?:EVENT_WINDOW|END)\s*>>>/gi;
 
 export interface CriteriaVerdictEvaluationInput {
   criteria: string | undefined;
@@ -245,35 +247,40 @@ function projectEvent(event: AgentEvent): Record<string, unknown> {
       return {
         type: event.type,
         toolName: event.toolName,
-        error: truncate(event.error, MAX_TEXT_FIELD_CHARS),
+        error: sanitizeUntrustedText(event.error),
       };
     case 'stop':
     case 'stop_failure':
       return {
         type: event.type,
-        lastMessage: truncate(event.lastMessage, MAX_TEXT_FIELD_CHARS),
+        lastMessage: sanitizeUntrustedText(event.lastMessage),
       };
     case 'subagent_stop':
       return {
         type: event.type,
         agentType: event.agentType,
-        lastMessage: truncate(event.lastMessage, MAX_TEXT_FIELD_CHARS),
+        lastMessage: sanitizeUntrustedText(event.lastMessage),
       };
     case 'notification':
       return {
         type: event.type,
         notificationType: event.notificationType,
-        message: truncate(event.message, MAX_TEXT_FIELD_CHARS),
+        message: sanitizeUntrustedText(event.message),
       };
     default:
       return { type: event.type };
   }
 }
 
+/** Redact secrets and strip envelope markers from agent-controlled projection fields. */
+function sanitizeUntrustedText(value: string, max = MAX_TEXT_FIELD_CHARS): string {
+  return truncate(redactSecrets(value).replace(DELIMITER_PATTERN, '[delimiter]'), max);
+}
+
 function truncateUnknown(value: unknown): unknown {
-  if (typeof value === 'string') return truncate(redactSecrets(value), MAX_TEXT_FIELD_CHARS);
+  if (typeof value === 'string') return sanitizeUntrustedText(value);
   if (value === null || value === undefined) return value;
-  return truncate(redactSecrets(JSON.stringify(value)), MAX_TEXT_FIELD_CHARS);
+  return sanitizeUntrustedText(JSON.stringify(value));
 }
 
 function extractJsonObject(raw: string): string {
