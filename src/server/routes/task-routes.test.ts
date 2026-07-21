@@ -1444,6 +1444,28 @@ describe('POST /api/tasks/:id/signal', () => {
       expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
     });
 
+    test('reports the configured auto-close delay via getAutoCloseCompletionReadyDelayMs', async () => {
+      const taskStore = new TaskStore();
+      const id = startActiveTask(taskStore, { autoCloseOnSignal: true });
+      const deps = mkAutoCloseDeps(taskStore);
+      // Wire the live getter the way index.ts does (settings default 30m → ms).
+      (deps as { getAutoCloseCompletionReadyDelayMs?: () => number }).getAutoCloseCompletionReadyDelayMs =
+        () => 45 * 60 * 1000;
+
+      const res = await mkApp(deps).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.autoCloseScheduled).toBe(true);
+      // The configured value wins over the DEFAULT_STALE... fallback.
+      expect(body.autoCloseAfterMs).toBe(45 * 60 * 1000);
+      expect(body.autoCloseAfterMs).not.toBe(DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS);
+    });
+
     test('does not advertise delayed auto-close for an active Ralph-loop task', async () => {
       const taskStore = new TaskStore();
       const id = startActiveTask(taskStore, { autoCloseOnSignal: true });

@@ -94,6 +94,13 @@ export interface TaskRouteDeps {
   onTaskOutcome?: (taskId: string, outcome: TelegramTaskOutcome) => void;
   /** Live default for task completion worktree cleanup. */
   getCleanupWorktreeOnComplete?: () => boolean;
+  /**
+   * Live getter for the completion-ready auto-close delay, in milliseconds.
+   * Used by `POST /api/tasks/:id/signal` to report an accurate
+   * `autoCloseAfterMs` when an opted-in task raises `completion_ready`. Falls
+   * back to {@link DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS} when absent.
+   */
+  getAutoCloseCompletionReadyDelayMs?: () => number;
   kookrDir?: string;
   coordinatorSuppressions?: CoordinatorSuppressionRegistry;
   /**
@@ -300,6 +307,8 @@ export interface RouteDeps {
   getMaxActiveTasks?: () => number;
   /** Live default for task completion worktree cleanup. */
   getCleanupWorktreeOnComplete?: () => boolean;
+  /** Live getter for the completion-ready auto-close delay, in milliseconds. */
+  getAutoCloseCompletionReadyDelayMs?: () => number;
   circuitBreakerRegistry?: CircuitBreakerRegistry;
   suppressionTracker?: SnoozeSuppressionTracker;
   scheduleService?: ScheduleService;

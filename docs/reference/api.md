@@ -119,7 +119,9 @@ detail for one task — e.g. to relaunch it with its original prompt — fetch
 `autoCloseOnSignal`.
 
 `autoCloseOnSignal` (optional, boolean) opts the task into auto-completion after
-its agent's `completion_ready` signal has been pending for one hour (see
+its agent's `completion_ready` signal has been pending for the configured
+Auto-close delay (the `autoCloseCompletionReadyDelayMin` setting, default 30
+minutes) (see
 [`POST /api/tasks/:id/signal`](#post-apitasksidsignal) and the
 [Auto-Close on Completion Signal](./auto-close-on-signal.md) reference). A
 non-boolean value returns `400`. When omitted, the task **inherits the policy of
@@ -208,9 +210,11 @@ secrets are best-effort redacted and over-limit notes are visibly truncated).
 **Auto-close.** When the task opted into the policy (`autoCloseOnSignal` — set at
 launch or inherited from its parent; see
 [Auto-Close on Completion Signal](./auto-close-on-signal.md)), a `completion_ready`
-signal starts a one-hour auto-close grace period. The response includes
-`"autoClosed": false`, `"autoCloseScheduled": true`, and `"autoCloseAfterMs"` for
-active non-Ralph tasks whose policy allows delayed close. When the signal becomes
+signal starts the configured auto-close grace period (the **Auto-close delay**
+setting `autoCloseCompletionReadyDelayMin`, default 30 minutes). The response
+includes `"autoClosed": false`, `"autoCloseScheduled": true`, and
+`"autoCloseAfterMs"` (the live configured delay in milliseconds) for active
+non-Ralph tasks whose policy allows delayed close. When the signal becomes
 stale, the lifecycle timer completes the task through the same lifecycle as
 `POST /api/tasks/:id/complete`, freeing an active slot and promoting the next
 pending task. Active Ralph loops are not swept by delayed auto-close; their

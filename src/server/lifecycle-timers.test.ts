@@ -258,6 +258,30 @@ describe('autoCloseStaleCompletionReadyTasks', () => {
     expect(taskStore.getTask(manual.id)?.status).toBe('inProgress');
   });
 
+  test('honors a configured thresholdMs (30-minute default delay)', async () => {
+    const taskStore = new TaskStore();
+    const eligible = taskStore.createTask({ prompt: 'Eligible', cwd: '/tmp', autoCloseOnSignal: true });
+    const tooFresh = taskStore.createTask({ prompt: 'Too fresh', cwd: '/tmp', autoCloseOnSignal: true });
+    for (const task of [eligible, tooFresh]) startTask(taskStore, task.id);
+
+    // Signal raised exactly 30 minutes before `now` → due at the 30m threshold.
+    taskStore.setPendingSignal(eligible.id, { kind: 'completion_ready', raisedAt: '2026-06-21T00:00:00.000Z' });
+    // Raised 20 minutes before `now` → still within the grace window.
+    taskStore.setPendingSignal(tooFresh.id, { kind: 'completion_ready', raisedAt: '2026-06-21T00:10:00.000Z' });
+
+    const result = await autoCloseStaleCompletionReadyTasks({
+      taskStore,
+      lifecycleDeps: lifecycleDeps(taskStore),
+    }, {
+      now: new Date('2026-06-21T00:30:00.000Z'),
+      thresholdMs: 30 * 60 * 1000,
+    });
+
+    expect(result).toEqual({ closedTaskIds: [eligible.id] });
+    expect(taskStore.getTask(eligible.id)?.status).toBe('completed');
+    expect(taskStore.getTask(tooFresh.id)?.status).toBe('inProgress');
+  });
+
   test('leaves active Ralph loops for the Ralph lifecycle path', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask({ prompt: 'Loop', cwd: '/tmp', autoCloseOnSignal: true });
