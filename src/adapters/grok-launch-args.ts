@@ -60,8 +60,9 @@ export function buildGrokLaunchArgs(opts: BuildGrokLaunchArgsOptions): string[] 
  * (or added explicitly below) is dropped, so unrelated provider/GitHub/deploy
  * secrets in the Kookr server environment never reach the Grok process
  * (RFC: "Child processes receive an allowlisted environment"). Grok's own
- * credential is delivered out-of-band via the composed `GROK_HOME/auth.json`,
- * so NO auth env var is needed or forwarded.
+ * credential is delivered via `GROK_AUTH_PATH` pointing at the operator's real
+ * `~/.grok/auth.json` (shared OIDC refresh token — never a per-session copy).
+ * Pay-per-token API keys (`XAI_API_KEY`) must NOT be forwarded.
  */
 export const GROK_SAFE_ENV_PASSTHROUGH: readonly string[] = [
   'PATH',
@@ -93,6 +94,12 @@ export interface BuildGrokEnvOptions {
   launchContextEnv: Record<string, string>;
   /** The composed per-session GROK_HOME to redirect Grok's config root to. */
   grokHome: string;
+  /**
+   * Absolute path of the operator's shared `auth.json`. Set as `GROK_AUTH_PATH`
+   * so managed sessions share one OIDC credential store (and its flock) instead
+   * of each holding a private copy of a rotating refresh token.
+   */
+  authPath: string;
 }
 
 /**
@@ -100,7 +107,8 @@ export interface BuildGrokEnvOptions {
  * The terminal backend is invoked with `envMode: 'replace'` so THIS object — not
  * the inherited `process.env` — becomes the child environment. `HOME` is
  * preserved (the coding task still needs git/ssh), while `GROK_HOME` redirects
- * Grok's config/state to the isolated session home.
+ * Grok's hooks/plugins/state to the isolated session home and `GROK_AUTH_PATH`
+ * keeps credentials on the operator's real shared file.
  */
 export function buildAllowlistedGrokEnv(opts: BuildGrokEnvOptions): Record<string, string> {
   const env: Record<string, string> = {};
@@ -115,10 +123,11 @@ export function buildAllowlistedGrokEnv(opts: BuildGrokEnvOptions): Record<strin
   Object.assign(env, opts.launchContextEnv);
 
   // 3. Grok control vars (POC-A run-poc.sh:122-124). Redirect config to the
-  //    session home; disable auto-update + workspace data collection for
-  //    managed sessions; auto-trust the cwd so no folder-trust prompt blocks
-  //    byte-level input.
+  //    session home; share the real auth.json for multi-agent OIDC refresh;
+  //    disable auto-update + workspace data collection for managed sessions;
+  //    auto-trust the cwd so no folder-trust prompt blocks byte-level input.
   env.GROK_HOME = opts.grokHome;
+  env.GROK_AUTH_PATH = opts.authPath;
   env.GROK_DISABLE_AUTOUPDATER = '1';
   env.GROK_AUTO_UPDATE = '0';
   env.GROK_WORKSPACE_DATA_COLLECTION_DISABLED = '1';
@@ -130,6 +139,8 @@ export function buildAllowlistedGrokEnv(opts: BuildGrokEnvOptions): Record<strin
   // UserPromptSubmit acknowledgement, stranding launch confirmation behind
   // the adapter's timeout.
   env.GROK_CLAUDE_HOOKS_ENABLED = '0';
+  // Never inherit a pay-per-token key into managed agents (cost hard-rule).
+  delete env.XAI_API_KEY;
   if (!env.TERM) env.TERM = 'xterm-256color';
 
   return env;

@@ -98,18 +98,22 @@ describe('GrokBuildAdapter', () => {
     expect(spec.envMode).toBe('replace');
   });
 
-  test('launch env is allowlisted: GROK_HOME set, server secrets excluded', async () => {
+  test('launch env is allowlisted: GROK_HOME set, shared GROK_AUTH_PATH, server secrets excluded', async () => {
     const adapter = makeAdapter();
     const task = taskStore.createTask('do it', '/workspace');
     const sessionId = await adapter.launch(task.id, 'do it', '/workspace');
     const env = backend.sessions.get(sessionId)!.spec.env!;
 
     expect(env.GROK_HOME).toContain('.grok');
+    expect(env.GROK_AUTH_PATH).toBe(join(sourceGrokHome, 'auth.json'));
+    // Session home must not hold a private auth.json clone (OIDC RT race).
+    expect(existsSync(join(env.GROK_HOME, 'auth.json'))).toBe(false);
     expect(env.GROK_DISABLE_AUTOUPDATER).toBe('1');
     expect(env.GROK_CLAUDE_HOOKS_ENABLED).toBe('0');
     expect(env.KOOKR_TASK_ID).toBe(task.id);
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.XAI_API_KEY).toBeUndefined();
   });
 
   test('the initial prompt is delivered over the terminal, never on argv', async () => {

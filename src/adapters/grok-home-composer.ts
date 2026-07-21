@@ -5,24 +5,30 @@
  * POC-A proved that Kookr must inject its launch-scoped monitoring hooks via a
  * per-session `GROK_HOME` composition, NOT via `--plugin-dir` (which the
  * interactive root `grok` rejects) and NEVER by mutating the operator's real
- * `~/.grok` as a launch side effect. This helper builds an isolated, owned
- * `GROK_HOME` directory for one managed session:
+ * `~/.grok` as a launch side effect for hooks/plugins. This helper builds an
+ * isolated, owned `GROK_HOME` directory for one managed session:
  *
  *   <grokHome>/
  *     hooks/kookr-monitoring.json   ← Kookr's monitoring instrumentation
  *     plugins/<name> -> <real>/plugins/<name>   ← toolkit discovery (read-only links)
- *     auth.json (+ .lock)           ← copied 0600 from the real home, if present
  *
- * The real `~/.grok` is only READ (auth + plugin listing); it is never written.
- * Grok's own config root is redirected here by setting `GROK_HOME` — the
- * process keeps the real `HOME` so git/ssh/etc. still work for the coding task.
+ * Credentials are NOT copied into the session home. Copying `auth.json` clones
+ * a rotating OIDC refresh token into N private files; the first agent refresh
+ * revokes the RT for every other agent and for the operator's real home.
+ * Instead, the adapter points Grok at the operator's real credential via
+ * `GROK_AUTH_PATH` (shared file + shared flock). See
+ * {@link resolveSharedGrokAuthPath}.
+ *
+ * Grok's config root for hooks/plugins is redirected here by setting
+ * `GROK_HOME` — the process keeps the real `HOME` so git/ssh/etc. still work
+ * for the coding task.
  *
  * The Toolkit itself is distributed into the real `~/.grok/plugins/` by the
  * deploy flow (mirroring `~/.claude/plugins`); this composer merely links those
  * plugins into the session home so an isolated `GROK_HOME` can still discover
  * them.
  */
-import { chmod, copyFile, mkdir, readdir, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, readdir, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   buildGrokMonitoringHooksConfig,
@@ -33,8 +39,7 @@ import {
 export interface GrokHomeFs {
   mkdir: (p: string, opts: { recursive: true }) => Promise<unknown>;
   writeFile: (p: string, data: string) => Promise<void>;
-  copyFile: (src: string, dest: string) => Promise<void>;
-  chmod: (p: string, mode: number) => Promise<void>;
+  access: (p: string) => Promise<void>;
   symlink: (target: string, path: string) => Promise<void>;
   readdir: (p: string) => Promise<string[]>;
 }
@@ -42,18 +47,19 @@ export interface GrokHomeFs {
 const defaultFs: GrokHomeFs = {
   mkdir: (p, opts) => mkdir(p, opts),
   writeFile: (p, data) => writeFile(p, data),
-  copyFile: (src, dest) => copyFile(src, dest),
-  chmod: (p, mode) => chmod(p, mode),
+  access: (p) => access(p),
   symlink: (target, path) => symlink(target, path),
   readdir: (p) => readdir(p),
 };
 
 export const GROK_MONITORING_HOOKS_FILENAME = 'kookr-monitoring.json';
+/** File name of the shared OIDC/session credential store inside a Grok home. */
+export const GROK_AUTH_FILENAME = 'auth.json';
 
 export interface ComposeGrokHomeOptions {
   /** Absolute path of the per-session directory to populate as GROK_HOME. */
   grokHome: string;
-  /** The operator's real Grok home (`~/.grok`) to seed auth + plugins from. */
+  /** The operator's real Grok home (`~/.grok`) to seed plugins from + share auth. */
   sourceGrokHome: string;
   /** Monitoring-hook wiring (session id, hook file, writer path, port). */
   monitoring: BuildGrokMonitoringHooksOptions;
@@ -65,16 +71,45 @@ export interface ComposedGrokHome {
   hooksPath: string;
   /** Plugin names linked in from the source home (empty when none present). */
   linkedPlugins: string[];
-  /** Whether an `auth.json` was seeded from the source home. */
+  /**
+   * Absolute path of the operator's real `auth.json` when present. Callers set
+   * `GROK_AUTH_PATH` to this so every managed session shares one rotating RT.
+   * `null` when the source home has no credential file yet.
+   */
+  authPath: string | null;
+  /** @deprecated Prefer {@link authPath}; true when `authPath` is non-null. */
   authSeeded: boolean;
 }
 
 /**
- * Compose the session GROK_HOME. Idempotent per directory. Auth/plugin seeding
- * degrade gracefully: a missing source `auth.json` or `plugins/` is not fatal
- * (auth surfaces later as a launch-readiness diagnostic; missing plugins just
- * means no toolkit that session), so composition never blocks a launch on
- * optional inputs.
+ * Absolute path of the shared credential file under the operator's real Grok
+ * home. Does not check existence — use {@link resolveSharedGrokAuthPath}.
+ */
+export function sharedGrokAuthPath(sourceGrokHome: string): string {
+  return join(sourceGrokHome, GROK_AUTH_FILENAME);
+}
+
+/**
+ * Return the operator's real `auth.json` path if it exists; otherwise `null`.
+ * Used so launches can fail closed before creating a terminal, and so the
+ * child env can set `GROK_AUTH_PATH` to a single shared file.
+ */
+export async function resolveSharedGrokAuthPath(
+  sourceGrokHome: string,
+  fs: Pick<GrokHomeFs, 'access'> = defaultFs,
+): Promise<string | null> {
+  const path = sharedGrokAuthPath(sourceGrokHome);
+  try {
+    await fs.access(path);
+    return path;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Compose the session GROK_HOME. Idempotent per directory. Auth is shared via
+ * the operator's real home (not copied). Missing plugins degrade gracefully.
  */
 export async function composeGrokHome(opts: ComposeGrokHomeOptions): Promise<ComposedGrokHome> {
   const fs: GrokHomeFs = { ...defaultFs, ...opts.fs };
@@ -88,32 +123,19 @@ export async function composeGrokHome(opts: ComposeGrokHomeOptions): Promise<Com
   const hooksPath = join(hooksDir, GROK_MONITORING_HOOKS_FILENAME);
   await fs.writeFile(hooksPath, JSON.stringify(hooksConfig, null, 2));
 
-  // 2. Seed auth (copy 0600, never symlink into the real home so a session
-  //    cannot mutate the operator's credential).
-  const authSeeded = await seedAuth(fs, opts.sourceGrokHome, opts.grokHome);
+  // 2. Resolve shared auth path (no copy — OIDC RT must have a single writer).
+  const authPath = await resolveSharedGrokAuthPath(opts.sourceGrokHome, fs);
 
   // 3. Link toolkit plugins from the real home for discovery (read-only links).
   const linkedPlugins = await linkPlugins(fs, opts.sourceGrokHome, pluginsDir);
 
-  return { grokHome: opts.grokHome, hooksPath, linkedPlugins, authSeeded };
-}
-
-async function seedAuth(fs: GrokHomeFs, sourceGrokHome: string, grokHome: string): Promise<boolean> {
-  const src = join(sourceGrokHome, 'auth.json');
-  const dest = join(grokHome, 'auth.json');
-  try {
-    await fs.copyFile(src, dest);
-    await fs.chmod(dest, 0o600);
-  } catch {
-    return false; // No credential to seed — launch readiness will report the 403/absent auth.
-  }
-  // Best-effort lock file; ignore if absent.
-  try {
-    await fs.copyFile(join(sourceGrokHome, 'auth.json.lock'), join(grokHome, 'auth.json.lock'));
-  } catch {
-    /* optional */
-  }
-  return true;
+  return {
+    grokHome: opts.grokHome,
+    hooksPath,
+    linkedPlugins,
+    authPath,
+    authSeeded: authPath !== null,
+  };
 }
 
 async function linkPlugins(fs: GrokHomeFs, sourceGrokHome: string, destPluginsDir: string): Promise<string[]> {
