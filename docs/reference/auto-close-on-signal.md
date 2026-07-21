@@ -1,8 +1,15 @@
 # Auto-Close on Completion Signal
 
 `autoCloseOnSignal` is a per-task policy that makes a task **complete itself**
-after its agent's `completion_ready` signal has been pending for one hour —
-instead of staying open indefinitely until a human clicks **Complete**.
+after its agent's `completion_ready` signal has been pending for a configurable
+delay (**default 30 minutes**) — instead of staying open indefinitely until a
+human clicks **Complete**.
+
+The delay is the **Auto-close delay** setting (Settings → General,
+`autoCloseCompletionReadyDelayMin`, range 1–1440 minutes). The liveness sweeper
+reads it live, so a change takes effect on the next tick without a restart. It
+governs only the auto-close grace window; the manual-review banner for
+non-opted-in tasks is unaffected.
 
 ## Why it exists
 
@@ -15,10 +22,11 @@ eventually fill every slot, so newly launched tasks are queued (`pending`) and
 the chain stalls.
 
 `autoCloseOnSignal` bounds that human-review window: the agent declares "done,"
-Kookr keeps the signal visible for one hour, then completes the task and
-promotes the next queued one if nobody acted first.
+Kookr keeps the signal visible for the configured Auto-close delay (default 30
+minutes), then completes the task and promotes the next queued one if nobody
+acted first.
 
-**Dense self-continuation chains need an immediate complete.** The one-hour
+**Dense self-continuation chains need an immediate complete.** The auto-close
 grace is a backup for interactive/human-review workflows. Chains that spawn a
 successor every few minutes must free the parent slot **as soon as the child is
 confirmed** — typically `POST /api/tasks/:id/complete` after
@@ -38,11 +46,11 @@ kookr signal completion-ready --note "PR #123 merged"
 - **Without** `autoCloseOnSignal`: the signal only *surfaces* — the dashboard
   shows a banner and emphasizes the **Complete** button. The task stays open; the
   user decides. This is the default, unchanged behavior.
-- **With** `autoCloseOnSignal`: the same signal starts a **one-hour auto-close
-  grace period**. If the task is still in progress after that hour, Kookr runs
-  the normal completion lifecycle (stops sessions, applies the saved
-  worktree-cleanup setting, generates the completion digest), and promotes the
-  next pending task.
+- **With** `autoCloseOnSignal`: the same signal starts the **auto-close grace
+  period** (the configured Auto-close delay, default 30 minutes). If the task is
+  still in progress after the delay, Kookr runs the normal completion lifecycle
+  (stops sessions, applies the saved worktree-cleanup setting, generates the
+  completion digest), and promotes the next pending task.
 
 > **Signal only when work is truly finished.** Under `autoCloseOnSignal` the
 > signal starts the close timer, so signalling mid-work can still close the task

@@ -327,6 +327,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   } = coreStores;
   const getMaxActiveTasks = () => currentSettings.maxActiveTasks;
   const getCleanupWorktreeOnComplete = () => currentSettings.cleanupWorktreeOnComplete;
+  // Live getter for the completion-ready auto-close delay. Reads the live
+  // `currentSettings` binding (reassigned by the settings PUT path) so an
+  // operator's change takes effect on the next liveness tick without a restart.
+  const getAutoCloseCompletionReadyDelayMs = () => currentSettings.autoCloseCompletionReadyDelayMin * 60_000;
   // #681: live getter for the per-agent-type effort defaults. Reads the live
   // `currentSettings` binding so an operator's settings PUT takes effect on the
   // next launch without a restart (the PUT path reassigns `currentSettings`).
@@ -1212,6 +1216,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ralphLoopService,
     worktreeRegistry,
     getMaxActiveTasks,
+    getAutoCloseCompletionReadyDelayMs,
     settings: {
       get: () => currentSettings,
       getLoadedFromDefaults: () => settingsLoadedFromDefaults,
@@ -1400,7 +1405,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       hookWatcher, terminalBackend, hooksDir, tasksFile, serverCwd,
       saveIntervalMs, livenessIntervalMs, broadcastToAll,
       shadowRegistry, agentLifecycleDeps: lifecycleDeps,
-      quotaAdapter, getMaxActiveTasks, suppressionTracker,
+      quotaAdapter, getMaxActiveTasks, getAutoCloseCompletionReadyDelayMs, suppressionTracker,
       budgetChecker, projectConfigStore, progressBudgetBurnDiagnostics,
       detectionStatsStore,
       persistenceHealth,

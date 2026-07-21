@@ -79,5 +79,15 @@ export async function applySettingsSideEffects({
     console.log(`[settings] maxActiveTasks → ${newSettings.maxActiveTasks} (was ${prevSettings.maxActiveTasks})`);
   }
 
+  // --- Auto-close delay side effects ---
+  // No reconfigure needed: the liveness tick reads the delay through a live
+  // getter each pass. Logged for operability so a change is visible in the log.
+  if (prevSettings.autoCloseCompletionReadyDelayMin !== newSettings.autoCloseCompletionReadyDelayMin) {
+    console.log(
+      `[settings] autoCloseCompletionReadyDelayMin → ${newSettings.autoCloseCompletionReadyDelayMin}min `
+      + `(was ${prevSettings.autoCloseCompletionReadyDelayMin}min)`,
+    );
+  }
+
   return warnings;
 }

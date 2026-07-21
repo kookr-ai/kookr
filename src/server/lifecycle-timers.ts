@@ -58,6 +58,13 @@ export interface TimerDeps {
   quotaAdapter?: QuotaAdapter;
   /** Live getter for max concurrent tasks. */
   getMaxActiveTasks?: () => number;
+  /**
+   * Live getter for the completion-ready auto-close delay, in milliseconds.
+   * Read on every liveness tick so a settings change takes effect without a
+   * restart. Falls back to {@link DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS}
+   * when absent (older wiring / tests).
+   */
+  getAutoCloseCompletionReadyDelayMs?: () => number;
   /** Optional suppression tracker for snooze storm auto-suppress. */
   suppressionTracker?: SnoozeSuppressionTracker;
   /** Optional durable store for cumulative detector telemetry (persisted on the save tick). */
@@ -527,7 +534,10 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         await deps.worktreeRegistry.refresh(deps.worktreeRegistryRepoPath);
       }
       const result = await reconcile(taskStore, terminalBackend, deps.worktreeRegistry);
-      const autoCloseResult = await autoCloseStaleCompletionReadyTasks({ taskStore, lifecycleDeps });
+      const autoCloseResult = await autoCloseStaleCompletionReadyTasks(
+        { taskStore, lifecycleDeps },
+        { thresholdMs: deps.getAutoCloseCompletionReadyDelayMs?.() },
+      );
 
       // Release issue-ownership claims for reconcile-driven terminal
       // transitions. reconcile() calls the RAW TaskStore methods, bypassing

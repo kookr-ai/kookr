@@ -67,6 +67,7 @@ describe('Settings API', () => {
       agentEffort: {},
       quietHours: [],
       replySnippets: [],
+      autoCloseCompletionReadyDelayMin: 30,
       loadedFromDefaults: true,
       warnings: [],
     });

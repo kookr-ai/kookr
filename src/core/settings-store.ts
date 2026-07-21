@@ -81,6 +81,14 @@ export interface KookrSettings {
    * inserts these into the draft; it never sends them automatically.
    */
   replySnippets: ReplySnippet[];
+  /**
+   * Delay, in minutes, that an opted-in task's `completion_ready` signal stays
+   * pending before Kookr auto-closes the task (see
+   * docs/reference/auto-close-on-signal.md). Only affects tasks with
+   * `autoCloseOnSignal` enabled; the manual-review banner is unaffected. The
+   * liveness tick reads this live, so a change takes effect without a restart.
+   */
+  autoCloseCompletionReadyDelayMin: number;
 }
 
 export const DEFAULT_SETTINGS: KookrSettings = {
@@ -98,6 +106,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   agentEffort: {},
   quietHours: [],
   replySnippets: [],
+  autoCloseCompletionReadyDelayMin: 30,
 };
 
 const MIN_POLLING_INTERVAL = 15;
@@ -108,6 +117,11 @@ const MIN_ERROR_THRESHOLD = 2;
 const MAX_ERROR_THRESHOLD = 10;
 const MIN_ACTIVE_TASKS = 1;
 const MAX_ACTIVE_TASKS = 25;
+// Auto-close delay bounds (minutes). Floor of 1 keeps at least a brief
+// human-review window; ceiling of 1440 (24h) prevents a fat-fingered value
+// from effectively disabling the sweep forever.
+const MIN_AUTO_CLOSE_DELAY_MIN = 1;
+const MAX_AUTO_CLOSE_DELAY_MIN = 1440;
 
 /** Validate and clamp a raw settings object, filling in defaults for missing/invalid values. */
 export function validateSettings(raw: Record<string, unknown>): KookrSettings {
@@ -141,6 +155,14 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
   let maxTasks = DEFAULT_SETTINGS.maxActiveTasks;
   if (typeof raw.maxActiveTasks === 'number' && Number.isFinite(raw.maxActiveTasks)) {
     maxTasks = Math.max(MIN_ACTIVE_TASKS, Math.min(MAX_ACTIVE_TASKS, Math.round(raw.maxActiveTasks)));
+  }
+
+  let autoCloseDelayMin = DEFAULT_SETTINGS.autoCloseCompletionReadyDelayMin;
+  if (typeof raw.autoCloseCompletionReadyDelayMin === 'number' && Number.isFinite(raw.autoCloseCompletionReadyDelayMin)) {
+    autoCloseDelayMin = Math.max(
+      MIN_AUTO_CLOSE_DELAY_MIN,
+      Math.min(MAX_AUTO_CLOSE_DELAY_MIN, Math.round(raw.autoCloseCompletionReadyDelayMin)),
+    );
   }
 
   const cleanupWorktreeOnComplete = typeof raw.cleanupWorktreeOnComplete === 'boolean'
@@ -214,6 +236,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       agentEffort,
       quietHours: quietHoursValidation.windows,
       replySnippets: replySnippetValidation.snippets,
+      autoCloseCompletionReadyDelayMin: autoCloseDelayMin,
     },
   };
 }

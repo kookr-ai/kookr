@@ -440,7 +440,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       autoClosed: false,
       ...(autoCloseScheduled ? {
         autoCloseScheduled: true,
-        autoCloseAfterMs: DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
+        autoCloseAfterMs: deps.getAutoCloseCompletionReadyDelayMs?.() ?? DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
       } : {}),
       ...(!autoCloseScheduled && !closePolicy.canAutoClose
         ? { manualActionRequiredReason: closePolicy.manualActionRequiredReason }

@@ -51,6 +51,7 @@ interface ServerSettings {
   speakVerbosity?: VerbosityScale;
   quietHours?: QuietHoursWindow[];
   replySnippets?: ReplySnippet[];
+  autoCloseCompletionReadyDelayMin: number;
   loadedFromDefaults?: boolean;
   warnings?: string[];
 }
@@ -1177,6 +1178,31 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                           max={25}
                           step={1}
                         />
+                      </div>
+                    </div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-label">Auto-close delay</span>
+                        <span className="settings-desc">
+                          Minutes a task&apos;s completion-ready signal stays pending before Kookr
+                          auto-closes the task. Only applies to tasks launched with auto-close on
+                          signal (e.g. self-continuation chains and the Implement GitHub Issue
+                          playbook); other tasks keep the signal surfaced for manual review.
+                          Range: 1–1440 minutes.
+                        </span>
+                      </div>
+                      <div className="settings-number-group">
+                        <input
+                          type="number"
+                          className="settings-number"
+                          aria-label="Auto-close delay"
+                          value={settings.autoCloseCompletionReadyDelayMin}
+                          onChange={(e) => handleNumberChange('autoCloseCompletionReadyDelayMin', e.target.value, 1, 1440)}
+                          min={1}
+                          max={1440}
+                          step={5}
+                        />
+                        <span className="settings-unit">min</span>
                       </div>
                     </div>
                     <div className="settings-row">

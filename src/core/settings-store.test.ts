@@ -93,6 +93,31 @@ describe('validateSettings', () => {
     expect(validateSettings({ maxActiveTasks: 100 }).maxActiveTasks).toBe(25);
   });
 
+  it('defaults autoCloseCompletionReadyDelayMin to 30', () => {
+    expect(validateSettings({}).autoCloseCompletionReadyDelayMin).toBe(30);
+    expect(DEFAULT_SETTINGS.autoCloseCompletionReadyDelayMin).toBe(30);
+  });
+
+  it('accepts a valid autoCloseCompletionReadyDelayMin', () => {
+    expect(validateSettings({ autoCloseCompletionReadyDelayMin: 45 }).autoCloseCompletionReadyDelayMin).toBe(45);
+  });
+
+  it('clamps autoCloseCompletionReadyDelayMin below minimum to 1', () => {
+    expect(validateSettings({ autoCloseCompletionReadyDelayMin: 0 }).autoCloseCompletionReadyDelayMin).toBe(1);
+  });
+
+  it('clamps autoCloseCompletionReadyDelayMin above maximum to 1440', () => {
+    expect(validateSettings({ autoCloseCompletionReadyDelayMin: 99999 }).autoCloseCompletionReadyDelayMin).toBe(1440);
+  });
+
+  it('rounds fractional autoCloseCompletionReadyDelayMin', () => {
+    expect(validateSettings({ autoCloseCompletionReadyDelayMin: 30.6 }).autoCloseCompletionReadyDelayMin).toBe(31);
+  });
+
+  it('falls back to the default when autoCloseCompletionReadyDelayMin is not a number', () => {
+    expect(validateSettings({ autoCloseCompletionReadyDelayMin: 'soon' }).autoCloseCompletionReadyDelayMin).toBe(30);
+  });
+
   it('fills missing new fields with defaults', () => {
     const result = validateSettings({ githubPollingEnabled: false, githubPollingIntervalSec: 120 });
     expect(result.autoWatchOssSources).toBe(true);
@@ -104,6 +129,7 @@ describe('validateSettings', () => {
     expect(result.speakVerbosity).toBe('medium');
     expect(result.cleanupWorktreeOnComplete).toBe(true);
     expect(result.replySnippets).toEqual([]);
+    expect(result.autoCloseCompletionReadyDelayMin).toBe(30);
   });
 
   it('defaults replySnippets to an empty list', () => {
@@ -310,6 +336,7 @@ describe('loadSettings / saveSettings', () => {
       agentEffort: { 'claude-code': 'high' as const, 'codex-cli': 'minimal' as const },
       quietHours: [{ start: '22:00', end: '08:00' }],
       replySnippets: [{ label: 'Continue', text: 'continue' }],
+      autoCloseCompletionReadyDelayMin: 45,
     };
     await saveSettings(filePath, settings);
     const result = await loadSettings(filePath);
