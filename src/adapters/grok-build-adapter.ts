@@ -315,8 +315,9 @@ export class GrokBuildAdapter implements AgentAdapter {
       serverPort: this.serverPort,
     });
 
-    // Compose an isolated per-session GROK_HOME: monitoring hooks + seeded auth
-    // + linked toolkit plugins. Never mutates the real ~/.grok.
+    // Compose an isolated per-session GROK_HOME: monitoring hooks + linked
+    // toolkit plugins. Credentials stay on the operator's real ~/.grok/auth.json
+    // (shared via GROK_AUTH_PATH) so N agents do not clone one rotating OIDC RT.
     const sessionRoot = await mkdtemp(join(this.sessionHomeRoot, `kookr-grok-${tmuxName}-`));
     const grokHome = join(sessionRoot, '.grok');
     this.sessionHomes.set(tmuxName, sessionRoot);
@@ -327,14 +328,20 @@ export class GrokBuildAdapter implements AgentAdapter {
       serverPort: this.serverPort,
       writerPath: resolveHookWriterPath(),
     };
+    let authPath: string;
     try {
-      await composeGrokHome({ grokHome, sourceGrokHome: this.sourceGrokHome, monitoring, fs: this.homeFs });
-      const authPreflight = await inspectGrokAuthFile(join(grokHome, 'auth.json'));
+      const composed = await composeGrokHome({
+        grokHome,
+        sourceGrokHome: this.sourceGrokHome,
+        monitoring,
+        fs: this.homeFs,
+      });
+      const sharedAuthPath = composed.authPath ?? join(this.sourceGrokHome, 'auth.json');
+      const authPreflight = await inspectGrokAuthFile(sharedAuthPath);
       if (authPreflight.kind !== 'ok') {
-        throw new GrokAuthPreflightError(
-          formatGrokAuthPreflightFailure(join(this.sourceGrokHome, 'auth.json'), authPreflight),
-        );
+        throw new GrokAuthPreflightError(formatGrokAuthPreflightFailure(sharedAuthPath, authPreflight));
       }
+      authPath = sharedAuthPath;
     } catch (err) {
       await this.cleanupFailedLaunch(tmuxName);
       throw err;
@@ -350,6 +357,7 @@ export class GrokBuildAdapter implements AgentAdapter {
       processEnv: this.env,
       launchContextEnv: launchContext.env,
       grokHome,
+      authPath,
     });
     const args = buildGrokLaunchArgs({ model: this.model, bypassAllPermissions: this.bypassAllPermissions });
 
