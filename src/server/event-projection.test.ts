@@ -2,8 +2,13 @@ import { describe, expect, it } from 'vitest';
 import type { AgentEvent } from '../core/types.js';
 import {
   projectEventForClient,
+  projectAgentFieldsForClient,
+  projectCompletionDigestForClient,
+  projectDescriptionForClient,
   TOOL_INPUT_MAX_BYTES,
   LAST_MESSAGE_MAX_BYTES,
+  DESCRIPTION_MAX_BYTES,
+  COMPLETION_DIGEST_MAX_FILES,
   DESCRIPTOR_KEYS,
 } from './event-projection.js';
 
@@ -529,5 +534,55 @@ describe('projectEventForClient — passthrough events', () => {
       sessionId: 's1',
     };
     expect(projectEventForClient(event)).toEqual(event);
+  });
+});
+
+describe('projectAgentFieldsForClient — description and completionDigest caps', () => {
+  it('short description and compact digest pass through by identity', () => {
+    const agent = {
+      agentId: 'a-1',
+      description: 'short prompt',
+      completionDigest: {
+        bullets: ['Did the thing'],
+        filesChanged: ['src/a.ts'],
+      },
+    };
+    expect(projectAgentFieldsForClient(agent)).toBe(agent);
+  });
+
+  it('truncates huge descriptions used as full task prompts', () => {
+    const description = 'P'.repeat(DESCRIPTION_MAX_BYTES * 4);
+    const projected = projectDescriptionForClient(description)!;
+    expect(Buffer.byteLength(projected, 'utf-8')).toBeLessThan(Buffer.byteLength(description, 'utf-8'));
+    expect(projected).toMatch(/…<\d+ bytes elided>$/);
+  });
+
+  it('caps huge filesChanged lists that dominate real prod snapshots', () => {
+    const digest = {
+      bullets: ['Changed 5000 files: …'],
+      filesChanged: Array.from({ length: 5000 }, (_, i) => `file-${i}.ts`),
+    };
+    const projected = projectCompletionDigestForClient(digest);
+    expect(projected.filesChanged.length).toBe(COMPLETION_DIGEST_MAX_FILES + 1);
+    expect(projected.filesChanged.at(-1)).toMatch(/^…\+\d+ more$/);
+    expect(JSON.stringify(projected).length).toBeLessThan(JSON.stringify(digest).length / 10);
+  });
+
+  it('applies both caps on a combined agent payload', () => {
+    const agent = {
+      agentId: 'a-1',
+      description: 'D'.repeat(DESCRIPTION_MAX_BYTES * 3),
+      completionDigest: {
+        bullets: ['x'.repeat(2000)],
+        filesChanged: Array.from({ length: 200 }, (_, i) => `f${i}`),
+        testSummary: 't'.repeat(2000),
+        verificationCommands: Array.from({ length: 50 }, (_, i) => `cmd ${i} ${'y'.repeat(1000)}`),
+      },
+    };
+    const projected = projectAgentFieldsForClient(agent);
+    expect(projected).not.toBe(agent);
+    expect(projected.description!.length).toBeLessThan(agent.description.length);
+    expect(projected.completionDigest!.filesChanged.length).toBeLessThanOrEqual(COMPLETION_DIGEST_MAX_FILES + 1);
+    expect(projected.completionDigest!.bullets[0]!.length).toBeLessThanOrEqual(501);
   });
 });
