@@ -9,7 +9,7 @@ import type { ProjectSummary, ProjectRepoHealth } from '../../core/project-summa
 import type { GitHubReference } from '../../core/github-types.js';
 import type { DrainStatusSnapshot, SnapshotMessage, WorkspaceSweepProgressSnapshot } from '../../shared/contracts/messages.js';
 import type { CollaborationCapabilities, SpeechCapability } from '../../shared/contracts/speech.js';
-import { projectEventForClient } from '../event-projection.js';
+import { projectAgentFieldsForClient, projectEventForClient } from '../event-projection.js';
 import type { AgentActivityMeta } from '../../core/types.js';
 import { buildGithubTaskOverlay } from './github-task-overlay.js';
 import type { FindingEvidenceAuditRecord } from '../../shared/contracts/anomalies.js';
@@ -210,7 +210,7 @@ export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[
     const userInputDeliveries = deps.userInputDeliveryProvider
       ?.getSnapshot(agent.agentId)
       .map(projectUserInputDeliveryForClient);
-    return {
+    return projectAgentFieldsForClient({
       ...agent,
       events: agent.events.map(projectEventForClient),
       ...(agent.findingEvidenceAudit
@@ -228,7 +228,7 @@ export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[
           promptReady: terminalSnapshot.prompt.kind === 'ready',
         },
       } : {}),
-    };
+    });
   });
 }
 
