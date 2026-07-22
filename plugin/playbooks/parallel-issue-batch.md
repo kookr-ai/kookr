@@ -4,6 +4,12 @@ description: Select non-conflicting GitHub issues, group tightly related ones wh
 repo-tags: [github]
 tags: [workflow, loopable]
 deliveryPreAuthorized: true
+# Auto-complete the task after its `completion_ready` signal has been pending for
+# the grace period, instead of leaving the finished batch supervisor open and
+# filling the active-task cap. Spawned child tasks are launched with
+# `--auto-close-on-signal` (Phase 4) so they release their slots the same way.
+# See docs/reference/auto-close-on-signal.md.
+autoCloseOnSignal: true
 parameters:
   - name: repoFullName
     description: "Target repository (owner/repo)"
@@ -483,6 +489,7 @@ Implementation target:
 - If you face a design choice the issues do not settle, pick the smallest implementation that satisfies them, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
 - If mergeAfterImplementation is true, merge the PR only after it is mergeable and required checks are green. Use the repo's allowed merge method. Exception: a required check that could not execute because of an external GitHub Actions budget/quota/billing block (e.g. the run failed within seconds with a spending-limit/quota message, not a code error) is a non-code blocker, not a failing check — capture the exact `gh run view` evidence and, if the repo permits admin merge, merge with `--admin` instead of stalling for a human override. Never apply this exception to a check that actually ran and failed on the code; when in doubt, treat the failure as real and report the blocker.
 - Report the PR URL and final state for every issue in the unit.
+- Release your slot when done: once every issue in this unit has reached its final state (PR open/merged per the merge policy, or a recorded blocker), run `kookr signal completion-ready` (optionally `--note "<PR urls / blocker>"`). You were launched with `--auto-close-on-signal`, so this schedules your own auto-completion after the grace period instead of leaving the task open. Do NOT signal while work remains; if you stop on a blocker, report it first, then signal.
 
 Concurrent-task note:
 Other child tasks are working in the same repo on different work units. Do not revert their branches, do not edit their expected files, and avoid broad formatting.
@@ -501,8 +508,14 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
      --cwd "$LOCAL" \
      --prompt-file "$PROMPTS_DIR/<unit-slug>.md" \
      --criteria "Issues $ISSUES_LABEL have a single PR matching the requested merge policy" \
+     --auto-close-on-signal \
      $AGENT_FLAG
    ```
+
+   `--auto-close-on-signal` opts each child into delayed auto-completion: once the
+   child signals `completion-ready` (its prompt instructs it to, after the PR
+   reaches the requested state), the server retires it after the grace period, so
+   finished children release their slots instead of lingering `inProgress`.
 
    If `KOOKR_REPO` is not set, derive it from the parent cwd if it contains `bin/kookr-spawn.js`, otherwise use `$HOME/git/kookr`.
 
@@ -609,6 +622,21 @@ If the run cannot make progress because all selected issues are blocked or all r
 printf 'BLOCKED: <reason>\n' >> "$STATE_FILE"
 echo "STOP: BLOCKED - <reason>" > .batch-stop
 ```
+
+**Release the supervisor's own slot (single launch only).** This playbook sets
+`autoCloseOnSignal: true`, so once the batch is terminal (`DONE` or `BLOCKED`
+written above and every child accounted for), run `kookr signal completion-ready`
+(optionally `--note "<merged/open PR count, or blocker>"`) to schedule this
+supervisor task's auto-completion after the grace period, instead of leaving the
+finished batch open and filling the active-task cap:
+
+```bash
+kookr signal completion-ready --note "$(tail -n1 "$STATE_FILE")" || true
+```
+
+Do NOT signal while any child is still running or any issue is unresolved. In
+Ralph loop mode, ignore this — the loop owns the task lifecycle and the
+`.batch-stop` marker is its termination signal; signaling here would fight it.
 
 ## Idempotency Rules
 
