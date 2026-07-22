@@ -159,7 +159,8 @@ export function extractRefsFromEvents(
   const allRefs: ExtractedRef[] = [];
   const seen = new Set<string>();
   const toolUsesById = new Map<string, Extract<AgentEvent, { type: 'tool_use' }>>();
-  let lastToolUse: Extract<AgentEvent, { type: 'tool_use' }> | null = null;
+  /** Last shell tool_use only — non-shell tools must not poison command pairing. */
+  let lastShellToolUse: Extract<AgentEvent, { type: 'tool_use' }> | null = null;
 
   function addRefs(refs: ExtractedRef[], options: { includeIssues: boolean }): void {
     for (const ref of refs) {
@@ -182,14 +183,16 @@ export function extractRefsFromEvents(
 
   for (const event of events) {
     if (event.type === 'tool_use') {
-      lastToolUse = event;
+      if (isShellToolName(event.toolName)) {
+        lastShellToolUse = event;
+      }
       if (event.toolUseId) {
         toolUsesById.set(event.toolUseId, event);
       }
     } else if (event.type === 'tool_result') {
       const response = event.toolResponse;
       if (typeof response !== 'string' && typeof response !== 'object') continue;
-      if (!shouldScanToolResult(event, toolUsesById, lastToolUse)) continue;
+      if (!shouldScanToolResult(event, toolUsesById, lastShellToolUse)) continue;
 
       const text = typeof response === 'string' ? response : JSON.stringify(response);
       addRefs(extractRefsFromText(text), { includeIssues: true });
@@ -201,17 +204,34 @@ export function extractRefsFromEvents(
   return allRefs;
 }
 
+/**
+ * Shell tools whose results may contain incidental PR/issue URLs from read-only
+ * commands (`gh pr list`, `git log`, …). Only mutating gh/API commands from
+ * these tools are scanned. Claude uses `Bash`; Grok Build uses
+ * `run_terminal_command` (see GROK_TOOL_ALIASES). Non-shell tools (`read_file`,
+ * `grep`, …) are never scanned — their bodies routinely mention historical PR
+ * URLs that must not attach to the task.
+ */
+const SHELL_TOOL_NAMES = new Set(['Bash', 'run_terminal_command']);
+
+function isShellToolName(toolName: string | undefined): boolean {
+  return typeof toolName === 'string' && SHELL_TOOL_NAMES.has(toolName);
+}
+
 function shouldScanToolResult(
   event: Extract<AgentEvent, { type: 'tool_result' }>,
   toolUsesById: ReadonlyMap<string, Extract<AgentEvent, { type: 'tool_use' }>>,
-  lastToolUse: Extract<AgentEvent, { type: 'tool_use' }> | null,
+  lastShellToolUse: Extract<AgentEvent, { type: 'tool_use' }> | null,
 ): boolean {
-  if (event.toolName !== 'Bash') {
-    return true;
+  // Non-shell tools: never auto-attach refs from file reads / greps / etc.
+  if (!isShellToolName(event.toolName)) {
+    return false;
   }
 
-  const pairedUse = event.toolUseId ? toolUsesById.get(event.toolUseId) : lastToolUse;
-  const command = extractCommand(pairedUse?.toolInput);
+  const pairedUse = event.toolUseId ? toolUsesById.get(event.toolUseId) : undefined;
+  const shellUse =
+    pairedUse && isShellToolName(pairedUse.toolName) ? pairedUse : lastShellToolUse;
+  const command = extractCommand(shellUse?.toolInput);
 
   if (!command) {
     return false;

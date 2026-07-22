@@ -298,6 +298,96 @@ describe('extractRefsFromEvents', () => {
     expect(refs).toHaveLength(0);
   });
 
+  test('Grok run_terminal_command: extracts refs from gh pr create', () => {
+    const events: AgentEvent[] = [
+      {
+        type: 'tool_use',
+        sessionId: 's1',
+        toolName: 'run_terminal_command',
+        toolInput: { command: 'gh pr create --title "Fix bug" --body "Details"' },
+        toolUseId: 'tool-g1',
+      },
+      {
+        type: 'tool_result',
+        sessionId: 's1',
+        toolName: 'run_terminal_command',
+        toolResponse: 'https://github.com/kookr-ai/kookr/pull/42\n',
+        toolUseId: 'tool-g1',
+      },
+    ];
+
+    const refs = extractRefsFromEvents(events);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({
+      type: 'pr',
+      owner: 'kookr-ai',
+      repo: 'kookr',
+      number: 42,
+      url: 'https://github.com/kookr-ai/kookr/pull/42',
+    });
+  });
+
+  test('Grok run_terminal_command: ignores read-only gh pr list', () => {
+    const events: AgentEvent[] = [
+      {
+        type: 'tool_use',
+        sessionId: 's1',
+        toolName: 'run_terminal_command',
+        toolInput: { command: 'gh pr list -R kookr-ai/kookr --limit 5' },
+        toolUseId: 'tool-g2',
+      },
+      {
+        type: 'tool_result',
+        sessionId: 's1',
+        toolName: 'run_terminal_command',
+        toolResponse: [
+          '1508\tOPEN\tdeps\thttps://github.com/kookr-ai/kookr/pull/1508',
+          '1507\tOPEN\tdev-deps\thttps://github.com/kookr-ai/kookr/pull/1507',
+        ].join('\n'),
+        toolUseId: 'tool-g2',
+      },
+    ];
+
+    const refs = extractRefsFromEvents(events);
+    expect(refs).toHaveLength(0);
+  });
+
+  test('ignores PR URLs from non-shell tools like read_file and grep', () => {
+    const events: AgentEvent[] = [
+      {
+        type: 'tool_use',
+        sessionId: 's1',
+        toolName: 'read_file',
+        toolInput: { target_file: 'docs/reports/old.md' },
+        toolUseId: 'tool-r1',
+      },
+      {
+        type: 'tool_result',
+        sessionId: 's1',
+        toolName: 'read_file',
+        toolResponse: 'See https://github.com/kookr-ai/kookr/pull/1 for context',
+        toolUseId: 'tool-r1',
+      },
+      {
+        type: 'tool_use',
+        sessionId: 's1',
+        toolName: 'grep',
+        toolInput: { pattern: 'pull/' },
+        toolUseId: 'tool-r2',
+      },
+      {
+        type: 'tool_result',
+        sessionId: 's1',
+        toolName: 'grep',
+        toolResponse: 'file.md:https://github.com/kookr-ai/kookr/pull/1508',
+        toolUseId: 'tool-r2',
+      },
+    ];
+
+    const refs = extractRefsFromEvents(events);
+    expect(refs).toHaveLength(0);
+  });
+
   test('ignores PR refs from read-only gh pr view output', () => {
     const events: AgentEvent[] = [
       {
