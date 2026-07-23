@@ -143,7 +143,7 @@ detail for one task — e.g. to relaunch it with its original prompt — fetch
 ### `POST /api/tasks` body fields
 
 `prompt` (required) and `cwd` (required) plus optional `criteria`, `parentTaskId`,
-`agentType`, `effort`, `disableDedup`, `metadata`, `dependencies`, and
+`agentType`, `effort`, `model`, `disableDedup`, `metadata`, `dependencies`, and
 `autoCloseOnSignal`.
 
 `autoCloseOnSignal` (optional, boolean) opts the task into auto-completion after
@@ -175,6 +175,22 @@ missing or empty `agentEffort` maps pass no effort override (model-native
 default). Codex model selection defaults to `gpt-5.6-sol` and can be overridden
 with `KOOKR_CODEX_MODEL`. The `kookr-spawn --effort <level>` flag maps to this
 field.
+
+`model` (optional, string) pins the model for *this one task* (#1518). Validated
+against the **resolved** agent's known-model allowlist after any `round-robin`
+resolution; an invalid id returns `400 {"error", "code": "invalid_model"}` with
+no silent fallback. Allowed base ids for `claude-code`:
+
+- `claude-fable-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`,
+  `claude-sonnet-5`, `claude-sonnet-4-6`, `claude-haiku-4-5`
+- dated suffixes of those bases (e.g. `claude-haiku-4-5-20251001`) are also
+  accepted
+
+`codex-cli` and `grok-build` currently reject a per-task `model` pin (they keep
+`KOOKR_CODEX_MODEL` / `KOOKR_GROK_MODEL`). Omitting `model` leaves the agent
+CLI / env default unchanged. The `kookr-spawn --model <id>` flag maps to this
+field. Resolution order for both `effort` and `model`: **per-task override →
+per-schedule value → global agent-type default → unset**.
 
 ### `POST /api/tasks/:id/complete`
 
@@ -465,9 +481,11 @@ with no effort override (model-native default). Override the model with
 empty, or lacks a `codex-cli` entry, no effort flag is passed. An explicit
 `ultra` request always selects the Sol model because Luna does not advertise
 `ultra`. A per-task `effort` on `POST /api/tasks` (or `kookr-spawn --effort`)
-overrides the settings default for one launch. Resolution order: per-task
-override → per-agent-type setting → unset (CLI/model default). Stock binaries
-skip fork-only model and effort overrides.
+overrides the settings default for one launch. Schedules may also pin
+`effort` / `model` on create/update; those values are forwarded into each
+spawned task. Resolution order: per-task override → per-schedule value →
+per-agent-type setting → unset (CLI/model default). Stock binaries skip
+fork-only model and effort overrides.
 
 ### Admin / runtime control
 

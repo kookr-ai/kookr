@@ -99,6 +99,10 @@ export interface Schedule {
   cwd: string;
   /** Agent for each scheduled run; `round-robin` alternates per run. */
   agentType: AgentSelection;
+  /** Optional per-schedule reasoning-effort pin (#1518). */
+  effort?: string;
+  /** Optional per-schedule model pin (#1518). */
+  model?: string;
   lastRunAt?: string;
   lastRunTaskId?: string;
   lastRunStatus?: 'completed' | 'cancelled' | 'failed';

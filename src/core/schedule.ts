@@ -105,6 +105,18 @@ export interface Schedule {
   cwd: string;
   /** Agent for each scheduled run; `round-robin` alternates per run. */
   agentType: AgentSelection;
+  /**
+   * Optional per-schedule reasoning-effort pin (#1518). Forwarded into each
+   * spawned task as the launch `effort` (wins over the global per-agent-type
+   * default; a per-task override would still win if one were supplied).
+   */
+  effort?: string;
+  /**
+   * Optional per-schedule model pin (#1518). Forwarded into each spawned task
+   * as the launch `model` (e.g. `claude-fable-5`). No-op when omitted — the
+   * agent CLI / env default applies.
+   */
+  model?: string;
   /** Legacy dispatch fields kept for migration compatibility. */
   lastRunAt?: string;
   lastRunTaskId?: string;
@@ -172,6 +184,10 @@ export interface CreateScheduleInput {
   playbook: SchedulePlaybook;
   cwd: string;
   agentType?: AgentSelection;
+  /** Optional reasoning-effort pin for every run of this schedule (#1518). */
+  effort?: string;
+  /** Optional model pin for every run of this schedule (#1518). */
+  model?: string;
   enabled?: boolean;
 }
 
@@ -182,6 +198,10 @@ export interface UpdateScheduleDefinitionInput {
   playbook?: SchedulePlaybook;
   cwd?: string;
   agentType?: AgentSelection;
+  /** Set to a string to pin; omit to leave unchanged. */
+  effort?: string;
+  /** Set to a string to pin; omit to leave unchanged. */
+  model?: string;
 }
 
 export class ScheduleValidationError extends Error {
@@ -313,6 +333,8 @@ export class ScheduleStore {
       },
       cwd: input.cwd,
       agentType: input.agentType ?? DEFAULT_AGENT_TYPE,
+      ...(input.effort !== undefined ? { effort: input.effort } : {}),
+      ...(input.model !== undefined ? { model: input.model } : {}),
       executionLedger: [],
       createdAt: now,
       updatedAt: now,
@@ -440,6 +462,8 @@ function normalizeSchedule(raw: unknown): Schedule | null {
     },
     cwd: String(candidate.cwd),
     agentType: normalizeAgentSelection(candidate.agentType),
+    ...(typeof candidate.effort === 'string' ? { effort: candidate.effort } : {}),
+    ...(typeof candidate.model === 'string' ? { model: candidate.model } : {}),
     createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : new Date().toISOString(),
     updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : new Date().toISOString(),
     ...(typeof candidate.lastRunAt === 'string' ? { lastRunAt: candidate.lastRunAt } : {}),

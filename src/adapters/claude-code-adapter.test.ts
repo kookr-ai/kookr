@@ -1472,3 +1472,56 @@ describe('ClaudeCodeAdapter reasoning effort (#681)', () => {
     expect(spec.args).not.toContain('--effort');
   });
 });
+
+describe('ClaudeCodeAdapter model pin (#1518)', () => {
+  let backend: FakeTerminalBackend;
+  let taskStore: TaskStore;
+
+  beforeEach(() => {
+    backend = new FakeTerminalBackend();
+    taskStore = new TaskStore();
+    mockGetGitInfo.mockReset().mockResolvedValue(null);
+  });
+
+  test('no model override → argv has no --model', async () => {
+    const adapter = new ClaudeCodeAdapter(backend, taskStore);
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd');
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args).not.toContain('--model');
+  });
+
+  test('per-task model pin pushes --model <id>', async () => {
+    const adapter = new ClaudeCodeAdapter(backend, taskStore);
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd', undefined, {
+      model: 'claude-fable-5',
+    });
+    const spec = backend.sessions.get(sessionId)!.spec;
+    const idx = spec.args.indexOf('--model');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(spec.args[idx + 1]).toBe('claude-fable-5');
+  });
+
+  test('model and effort can both be present', async () => {
+    const adapter = new ClaudeCodeAdapter(backend, taskStore);
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd', undefined, {
+      model: 'claude-fable-5',
+      effort: 'max',
+    });
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args[spec.args.indexOf('--model') + 1]).toBe('claude-fable-5');
+    expect(spec.args[spec.args.indexOf('--effort') + 1]).toBe('max');
+  });
+
+  test('an invalid model is skipped (defensive guard), not passed', async () => {
+    const adapter = new ClaudeCodeAdapter(backend, taskStore);
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix bug', '/cwd', undefined, {
+      model: 'not-a-model',
+    });
+    const spec = backend.sessions.get(sessionId)!.spec;
+    expect(spec.args).not.toContain('--model');
+  });
+});

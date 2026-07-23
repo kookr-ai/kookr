@@ -18,6 +18,10 @@ export interface CreateScheduleRequest {
   cwd: string;
   enabled: boolean;
   agentType: AgentSelection;
+  /** Optional per-schedule reasoning-effort pin (#1518). */
+  effort?: string;
+  /** Optional per-schedule model pin (#1518). */
+  model?: string;
   playbook: {
     path: string;
     parameters: Record<string, string>;
