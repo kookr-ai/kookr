@@ -79,6 +79,10 @@ import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
 import {
+  TaskTailStore,
+  readTaskTailConfigFromEnv,
+} from '../core/task-tail-store.js';
+import {
   buildCollaborationDiagnostics,
   startConfiguredPrivateNetworkCollaborationListener,
   type CollaborationListenerHandle,
@@ -288,6 +292,32 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // this data dir BEFORE any boot-time task mutation (reconcile, claim
   // rebuild) touches it — the port bind only enforces exclusivity later.
   const releaseSingleWriterLock = acquireSingleWriterLock(kookrDir);
+
+  // Durable terminal tails for completed tasks (rfc-task-tail-retrieval).
+  const taskTailConfig = readTaskTailConfigFromEnv(process.env, kookrDir);
+  const taskTailStore = new TaskTailStore({
+    dir: taskTailConfig.dir,
+    retentionDays: taskTailConfig.retentionDays,
+    maxBytes: taskTailConfig.maxBytes,
+  });
+  let taskTailPurgeTimer: ReturnType<typeof setInterval> | undefined;
+  if (taskTailConfig.purgeIntervalMs > 0) {
+    // First sweep after one interval (not at boot) so startup stays light.
+    taskTailPurgeTimer = setInterval(() => {
+      void taskTailStore.purgeExpired().then((removed) => {
+        if (removed > 0) {
+          console.log(`[task-tail] purged ${removed} expired terminal tail(s)`);
+        }
+      }).catch((err) => {
+        console.warn(
+          '[task-tail] purge failed:',
+          err instanceof Error ? err.message : err,
+        );
+      });
+    }, taskTailConfig.purgeIntervalMs);
+    // Don't keep the process alive solely for purge ticks.
+    taskTailPurgeTimer.unref?.();
+  }
 
   const coreStores = await createCoreStores({
     kookrDir,
@@ -1126,6 +1156,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     } : {}),
     taskStore, monitor, queue, adapter, hookWatcher, watchdog,
     interactionLog,
+    taskTailStore,
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
     serverCwd, serverPort: port, pluginUpdateBin: agentBin, kookrDir, frontendDir, broadcastToAll,
     getOperationalAlertHistory: () => resourceStatusService.getOperationalAlertHistory(),
@@ -1342,6 +1373,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     serverCwd, sttUrl, ttsUrl, abortPendingSuggestion,
     lifecycleExtras: {
       hookWatcher, watchdog, shadowRegistry, tokenTracker,
+      taskTailStore,
       onTaskOutcome: (taskId, outcome) => {
         onTaskOutcomeHolder?.(taskId, outcome);
       },
@@ -1404,7 +1436,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       monitor, taskStore, queue, adapter, adapterRegistry, tokenTracker, watchdog,
       hookWatcher, terminalBackend, hooksDir, tasksFile, serverCwd,
       saveIntervalMs, livenessIntervalMs, broadcastToAll,
-      shadowRegistry, agentLifecycleDeps: lifecycleDeps,
+      shadowRegistry, agentLifecycleDeps: lifecycleDeps, taskTailStore,
       quotaAdapter, getMaxActiveTasks, getAutoCloseCompletionReadyDelayMs, suppressionTracker,
       budgetChecker, projectConfigStore, progressBudgetBurnDiagnostics,
       detectionStatsStore,
@@ -1508,6 +1540,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   async function close(): Promise<void> {
     if (isClosed) return;
     isClosed = true;
+
+    if (taskTailPurgeTimer) {
+      clearInterval(taskTailPurgeTimer);
+      taskTailPurgeTimer = undefined;
+    }
 
     await backgroundServices.stop();
     try {

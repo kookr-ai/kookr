@@ -26,6 +26,10 @@ uncomment only the values you need.
 | `KOOKR_PROD_DIR` | Auto-resolved `../kookr-prod` | Absolute or relative path | Overrides the production worktree used by `scripts/prod-update.sh` and deployment routes. |
 | `KOOKR_ENV_ROOT_DIR` | Auto-resolved Kookr main checkout when `prod-update.sh` runs from `kookr-prod`; otherwise current checkout | Absolute or relative path | Overrides the checkout whose `.env` is symlinked into the production worktree by `scripts/prod-update.sh`. |
 | `KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS` | unset (off) | Positive number of hours | Enables a server-side scheduled data-directory prune (the same conservative sweep as `kookr maintenance prune`): removes aged hook logs, aged orphan/terminal activity-ledger files, rotated `server.log.N` generations, and aged `playbook-state` run directories. Off by default; unset, `0`, or non-positive keeps it disabled. The first sweep runs one interval after startup (never at boot), reclaimed bytes are logged, and a failing sweep is logged without crashing the server. |
+| `KOOKR_TASK_TAIL_RETENTION_DAYS` | `7` | Positive number of days | How long completed-task terminal tails are kept under `{dataDir}/task-tails/` after capture (default 7 days). Used by `GET /api/tasks/:id/tail` and as a fallback for `GET /api/capture/:sessionId` so Lucy’s `peek_kookr_task_output` still works after session cleanup. See [rfc-task-tail-retrieval](../rfc/rfc-task-tail-retrieval.md). |
+| `KOOKR_TASK_TAIL_DIR` | `{dataDir}/task-tails` | Absolute or relative path | Override the on-disk directory for durable terminal tails. |
+| `KOOKR_TASK_TAIL_MAX_BYTES` | `262144` (256 KiB) | Positive integer bytes | Maximum UTF-8 bytes retained per task tail (suffix-truncated from the live ring capture). |
+| `KOOKR_TASK_TAIL_PURGE_INTERVAL_MS` | `3600000` (1 hour) | Non-negative integer ms | Background purge tick for expired tails. `0` disables the timer (lazy expiry on read still applies). |
 
 ### Read-Only Shared View
 

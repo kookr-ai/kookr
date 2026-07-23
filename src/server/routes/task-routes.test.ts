@@ -1729,3 +1729,91 @@ describe('POST /api/tasks/abort (issue #1325)', () => {
     expect(taskStore.getTask(live.id)!.status).toBe('cancelled');
   });
 });
+
+describe('GET /api/tasks/:id/tail (rfc-task-tail-retrieval)', () => {
+  test('returns live capture for in-progress sessions', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Running work', '/repo');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-live-tail',
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(),
+      lastStatus: 'working',
+    });
+
+    const captureDisplay = vi.fn(async () => 'line1\nline2\nline3\n');
+    const deps = {
+      ...mkLoopDeps(taskStore),
+      adapter: { captureDisplay, stop: vi.fn(async () => {}) } as never,
+    };
+    const res = await mkApp(deps).request(`/api/tasks/${task.id}/tail?lines=2`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.source).toBe('live');
+    expect(body.shownLines).toBe(2);
+    expect(body.text).toBe('line2\nline3');
+    expect(captureDisplay).toHaveBeenCalledWith('kookr-live-tail');
+  });
+
+  test('returns persisted tail for completed tasks', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-tail-route-'));
+    try {
+      const { TaskTailStore } = await import('../../core/task-tail-store.js');
+      const store = new TaskTailStore({ dir, retentionDays: 7, maxBytes: 4096 });
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Done work', '/repo');
+      taskStore.addSession(task.id, {
+        tmuxSession: 'kookr-done',
+        agentType: 'claude-code',
+        cwd: '/repo-wt',
+        createdAt: new Date(),
+        lastStatus: 'completed',
+      });
+      taskStore.completeTask(task.id);
+      await store.save({
+        taskId: task.id,
+        sessionId: 'kookr-done',
+        text: 'done line A\ndone line B\ndone line C\n',
+      });
+
+      const deps = {
+        ...mkLoopDeps(taskStore),
+        taskTailStore: store,
+        adapter: { captureDisplay: vi.fn(async () => { throw new Error('dead'); }), stop: vi.fn() } as never,
+      };
+      const res = await mkApp(deps).request(`/api/tasks/${task.id}/tail?lines=2`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.source).toBe('persisted');
+      expect(body.sessionId).toBe('kookr-done');
+      expect(body.text).toBe('done line B\ndone line C');
+      expect(body.retentionExpiresAt).toBeDefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('404 when no live or persisted tail', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Empty', '/repo');
+    // open -> inProgress -> completed (valid lifecycle)
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-empty',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+      lastStatus: 'completed',
+    });
+    taskStore.completeTask(task.id);
+    const res = await mkApp(mkLoopDeps(taskStore)).request(`/api/tasks/${task.id}/tail`);
+    expect(res.status).toBe(404);
+  });
+
+  test('400 on invalid lines', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('x', '/repo');
+    const res = await mkApp(mkLoopDeps(taskStore)).request(`/api/tasks/${task.id}/tail?lines=abc`);
+    expect(res.status).toBe(400);
+  });
+});

@@ -97,6 +97,8 @@ export interface WsConnectionDeps {
     issueClaimRegistry?: import('./agent-lifecycle.js').LifecycleDeps['issueClaimRegistry'];
     /** Optional remote-chat back-channel for terminal task outcomes. */
     onTaskOutcome?: import('./agent-lifecycle.js').LifecycleDeps['onTaskOutcome'];
+    /** Durable terminal-tail store (rfc-task-tail-retrieval). */
+    taskTailStore?: import('./agent-lifecycle.js').LifecycleDeps['taskTailStore'];
   };
   agentLifecycleDeps: AgentLifecycleDeps;
   broadcastToAll: (msg: ServerMessage) => void;

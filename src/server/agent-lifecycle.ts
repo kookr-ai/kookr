@@ -21,6 +21,7 @@ import { removeReflectWorktree } from './use-cases/request-task-reflect.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { evaluateCriteriaVerdict } from '../core/criteria-verdict.js';
 import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
+import type { TaskTailStore } from '../core/task-tail-store.js';
 
 // ---------------------------------------------------------------------------
 // Post-launch registration (used by WS handler and REST routes)
@@ -194,7 +195,11 @@ export function handleTerminalKeystroke(
  * Uses structural typing so callers can pass any matching objects.
  */
 export interface LifecycleDeps {
-  adapter: { stop(tmuxName: string): Promise<void> };
+  adapter: {
+    stop(tmuxName: string): Promise<void>;
+    /** Optional — when present, session stop paths snapshot a durable tail first. */
+    captureDisplay?(tmuxName: string): Promise<string>;
+  };
   monitor: { unregisterAgent(agentId: string): void; getAgentEvents?(agentId: string): AgentEvent[] };
   taskStore: TaskStore;
   interactionLog?: DeferredInteractionLogWriter;
@@ -230,11 +235,32 @@ export interface LifecycleDeps {
    * must isolate their own failures so lifecycle transitions cannot be blocked.
    */
   onTaskOutcome?: (taskId: string, outcome: TelegramTaskOutcome) => void;
+  /**
+   * Durable terminal-tail store (rfc-task-tail-retrieval). When set, live
+   * sessions are snapshotted before `adapter.stop` so completed tasks remain
+   * peekable for the configured retention window.
+   */
+  taskTailStore?: Pick<TaskTailStore, 'save' | 'removeByTaskId'>;
+}
+
+/** Resolve the owning task for a session without requiring a full TaskStore mock. */
+function findOwningTask(taskStore: TaskStore, tmuxName: string): Task | undefined {
+  const store = taskStore as TaskStore & {
+    findTaskBySession?: (name: string) => Task | undefined;
+    listTasks?: () => Task[];
+  };
+  if (typeof store.findTaskBySession === 'function') {
+    return store.findTaskBySession(tmuxName);
+  }
+  if (typeof store.listTasks === 'function') {
+    return store.listTasks().find((t) => t.sessions.some((s) => s.tmuxSession === tmuxName));
+  }
+  return undefined;
 }
 
 function unregisterTranscript(tmuxName: string, deps: LifecycleDeps): void {
   if (!deps.tokenTracker) return;
-  const task = deps.taskStore.findTaskBySession(tmuxName);
+  const task = findOwningTask(deps.taskStore, tmuxName);
   if (!task) return;
   for (const session of task.sessions) {
     if (session.tmuxSession === tmuxName && session.transcriptPath) {
@@ -253,14 +279,41 @@ function forgetSessionBookkeeping(tmuxName: string, deps: LifecycleDeps): void {
 }
 
 /**
+ * Best-effort snapshot of a session's terminal output into the durable
+ * task-tail store. Never throws — completion must not fail because capture
+ * or disk write failed (rfc-task-tail-retrieval R6).
+ */
+async function persistSessionTailBestEffort(
+  taskId: string,
+  tmuxName: string,
+  deps: LifecycleDeps,
+): Promise<void> {
+  if (!deps.taskTailStore || !deps.adapter.captureDisplay) return;
+  try {
+    const text = await deps.adapter.captureDisplay(tmuxName);
+    await deps.taskTailStore.save({ taskId, sessionId: tmuxName, text });
+  } catch (err) {
+    console.warn(
+      `[lifecycle] task-tail capture failed for ${tmuxName} (task ${taskId}):`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+/**
  * Clean up all resources associated with a single agent session.
  * Stops tmux, unregisters from monitor/watchdog/shadow, and stops hook watcher.
  * Safe to call on already-dead sessions (adapter.stop is a graceful no-op).
+ * When a task id can be resolved, captures a durable terminal tail before stop.
  */
 export async function cleanupSessionResources(
   tmuxName: string,
   deps: LifecycleDeps,
 ): Promise<void> {
+  const owningTask = findOwningTask(deps.taskStore, tmuxName);
+  if (owningTask) {
+    await persistSessionTailBestEffort(owningTask.id, tmuxName, deps);
+  }
   unregisterTranscript(tmuxName, deps);
   await deps.adapter.stop(tmuxName);
   forgetSessionBookkeeping(tmuxName, deps);
@@ -278,6 +331,7 @@ async function stopAllLiveSessions(
 ): Promise<void> {
   for (const session of task.sessions) {
     if (session.lastStatus !== 'completed' && session.lastStatus !== 'aborted') {
+      // cleanupSessionResources snapshots the tail before stop (when store is wired).
       await cleanupSessionResources(session.tmuxSession, deps);
       deps.taskStore.updateSession(task.id, session.tmuxSession, { lastStatus: finalSessionStatus });
     }
@@ -290,7 +344,10 @@ function completeLiveSessionsInBackground(task: Task, deps: LifecycleDeps): void
       deps.taskStore.updateSession(task.id, session.tmuxSession, { lastStatus: 'completed' });
       unregisterTranscript(session.tmuxSession, deps);
       forgetSessionBookkeeping(session.tmuxSession, deps);
-      void deps.adapter.stop(session.tmuxSession).catch((err) => {
+      void (async () => {
+        await persistSessionTailBestEffort(task.id, session.tmuxSession, deps);
+        await deps.adapter.stop(session.tmuxSession);
+      })().catch((err) => {
         console.warn(
           `[lifecycle] background cleanup failed for ${session.tmuxSession}:`,
           err instanceof Error ? err.message : err,
