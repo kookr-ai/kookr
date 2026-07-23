@@ -195,6 +195,12 @@ export async function buildAgentLaunchContext(
   // bundled launcher's `bin/` dir to PATH. (The Stop-hook nudge ran fine because
   // it invokes `node <absolute path>`, not a PATH lookup — hence the inconsistency
   // where the nudge fired but the command it suggested could not run.)
+  //
+  // The same bin dir also exposes the `kb` spool shim (issue #1519): lesson
+  // writes (`kb remember --lesson` / `--kb=agent-task-lessons`) that fail at
+  // runtime are appended to a durable local spool and replayed on recovery.
+  // Non-remember `kb` subcommands pass through to the real binary with no
+  // behavioural change.
   const launcherBinDir =
     opts.agentLauncherBinDir === undefined ? resolveAgentLauncherBinDir() : opts.agentLauncherBinDir;
   if (launcherBinDir) {

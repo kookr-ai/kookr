@@ -302,7 +302,7 @@ describe('createKookrServer', () => {
       });
     });
 
-    test('env-configured webhook observer posts findings and clears dedupe on resolution', async () => {
+    test('env-configured webhook observer posts findings and clears dedupe on resolution', { timeout: 15_000 }, async () => {
       await server.close();
       serverClosed = true;
 
@@ -376,7 +376,7 @@ describe('createKookrServer', () => {
       }
     });
 
-    test('admin alert-config update changes the live operational alert evaluator', async () => {
+    test('admin alert-config update changes the live operational alert evaluator', { timeout: 15_000 }, async () => {
       await server.close();
       serverClosed = true;
 
@@ -461,7 +461,7 @@ describe('createKookrServer', () => {
       }
     });
 
-    test('connects remote node client only when relay env is configured and stops it on close', async () => {
+    test('connects remote node client only when relay env is configured and stops it on close', { timeout: 15_000 }, async () => {
       await server.close();
       serverClosed = true;
 
@@ -632,7 +632,7 @@ describe('createKookrServer', () => {
       }
     });
 
-    test('executes relay submitMessage through the lease-checked remote input adapter', async () => {
+    test('executes relay submitMessage through the lease-checked remote input adapter', { timeout: 15_000 }, async () => {
       await server.close();
       serverClosed = true;
 

@@ -20,6 +20,7 @@ Usage:
   kookr drain|resume [OPTIONS]  Control operator drain mode.
   kookr maintenance prune [OPTIONS]   Prune aged completed-task data-dir artifacts.
   kookr maintenance backup [OPTIONS]  Create a crash-consistent data-dir backup tarball.
+  kookr lesson status|drain|remember  Durable lesson-write spool (kb degraded path).
   kookr pr-checklist verify [OPTIONS] Verify a repo's anti-drift PR checklist against the diff.
   kookr push test <deviceId>    Send a relay push test.
   kookr completion bash|zsh     Print a shell completion script.
@@ -127,6 +128,12 @@ async function main({
     return exit(process.exitCode ?? 0);
   }
 
+  // Durable lesson-write spool (issue #1519). Disk + local `kb` only.
+  if (command === 'lesson') {
+    await runLessonCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
+  }
+
   if (command === 'pr-checklist') {
     await runPrChecklistCommand(rest, { env, out, err });
     return exit(process.exitCode ?? 0);
@@ -174,6 +181,19 @@ async function runMaintenanceCommand(argv) {
   }
   const mod = await import(entry);
   process.exitCode = await mod.runMaintenanceCli(argv);
+}
+
+async function runLessonCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const entry = join(here, '..', 'dist', 'cli', 'kookr-lesson.js');
+  if (!existsSync(entry)) {
+    err.error('[kookr] Build output not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build`) first.');
+    process.exitCode = 1;
+    return;
+  }
+  const mod = await import(pathToFileURL(entry).href);
+  process.exitCode = await mod.runLessonCli(argv, { env, out, err });
 }
 
 async function runCommandOutcomeCommand(argv) {
