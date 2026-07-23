@@ -24,6 +24,9 @@ export default defineConfig({
       KOOKR_SESSION_BRIDGE_INITIAL_RESIZE_WAIT_MS: '0',
       KOOKR_SESSION_BRIDGE_RESIZE_DEBOUNCE_MS: '0',
       KOOKR_SESSION_BRIDGE_LIVE_REDRAW_NUDGE_MS: '0',
+      // Keep the lesson-write spool recovery loop off during unit tests so
+      // createKookrServer does not shell out to `kb doctor` every tick (#1519).
+      KOOKR_LESSON_SPOOL: '0',
     },
     coverage: {
       provider: 'v8',

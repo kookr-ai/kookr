@@ -42,6 +42,8 @@ import {
   type ResourceStatusSampler,
 } from './resource-status-service.js';
 import { createOperationalAlertEvaluator } from './operational-alert-rules.js';
+import { LessonSpoolService } from './lesson-spool-service.js';
+import { defaultSpoolDir } from '../core/lesson-write-spool.js';
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
 import { TaskStateSaveScheduler } from './task-state-save-scheduler.js';
 import { createIssueClaimServices, createUpstreamOfResolver, isIssueClaimsEnabled, type IssueClaimServices } from './issue-claim-wiring.js';
@@ -1364,6 +1366,20 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     intervalMs: resourceStatusIntervalMs,
   });
 
+  // Lesson-write spool recovery + prolonged KB degradation alert (issue #1519).
+  // Spool lives under ~/.kookr/playbook-state (user-scoped, not per-port dataDir)
+  // so lessons survive across prod/dev instances on the same host.
+  // Disabled when KOOKR_LESSON_SPOOL=0 (also set in vitest.config.ts so unit
+  // tests do not shell out to `kb doctor` every 5 minutes or on the 15s boot tick).
+  const lessonSpoolDisabled = process.env.KOOKR_LESSON_SPOOL === '0';
+  const lessonSpoolService = new LessonSpoolService({
+    spoolDir: defaultSpoolDir(process.env),
+    emitAlert: (alert) => broadcastToAll(alert),
+  });
+  if (!lessonSpoolDisabled) {
+    lessonSpoolService.start();
+  }
+
   // --- Quota monitoring (polls Anthropic OAuth usage endpoint) ---
   const quotaAdapter = new QuotaAdapter(120_000); // 120s interval
 
@@ -1546,6 +1562,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       taskTailPurgeTimer = undefined;
     }
 
+    lessonSpoolService.stop();
     await backgroundServices.stop();
     try {
       await taskStateSaveScheduler.close();

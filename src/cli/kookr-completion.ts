@@ -2,6 +2,18 @@ export const COMPLETION_SHELLS = ['bash', 'zsh'] as const;
 const ROOT_FLAGS = ['-h', '--help', '-v', '--version'] as const;
 const MAINTENANCE_PRUNE_FLAGS = ['--dry-run', '--max-age-days', '--dir', '--json'] as const;
 const MAINTENANCE_BACKUP_FLAGS = ['--dir', '--out', '--json'] as const;
+const LESSON_STATUS_FLAGS = ['--json', '--dir', '-h', '--help'] as const;
+const LESSON_DRAIN_FLAGS = ['--json', '--dir', '--dry-run', '-h', '--help'] as const;
+const LESSON_REMEMBER_FLAGS = [
+  '--title',
+  '--kb',
+  '--stdin',
+  '--yes',
+  '--dir',
+  '--json',
+  '-h',
+  '--help',
+] as const;
 const STATUS_FAIL_ON_VALUES = ['critical', 'warning', 'info', 'none'] as const;
 
 export type CompletionShell = (typeof COMPLETION_SHELLS)[number];
@@ -84,6 +96,15 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     name: 'maintenance',
     subcommands: ['prune', 'backup'],
     flags: [...MAINTENANCE_PRUNE_FLAGS, ...MAINTENANCE_BACKUP_FLAGS],
+  },
+  {
+    name: 'lesson',
+    subcommands: ['status', 'drain', 'remember'],
+    flags: [
+      ...LESSON_STATUS_FLAGS,
+      ...LESSON_DRAIN_FLAGS,
+      ...LESSON_REMEMBER_FLAGS,
+    ],
   },
   {
     name: 'pr-checklist',
@@ -177,6 +198,10 @@ function renderBashCompletion(): string {
   const maintenanceSubcommands = subcommandsFor('maintenance');
   const maintenancePruneFlags = shellWords(MAINTENANCE_PRUNE_FLAGS);
   const maintenanceBackupFlags = shellWords(MAINTENANCE_BACKUP_FLAGS);
+  const lessonSubcommands = subcommandsFor('lesson');
+  const lessonStatusFlags = shellWords(LESSON_STATUS_FLAGS);
+  const lessonDrainFlags = shellWords(LESSON_DRAIN_FLAGS);
+  const lessonRememberFlags = shellWords(LESSON_REMEMBER_FLAGS);
   const prChecklistSubcommands = subcommandsFor('pr-checklist');
   const prChecklistFlags = flagsFor('pr-checklist');
   const pushSubcommands = subcommandsFor('push');
@@ -298,6 +323,26 @@ _kookr()
         esac
       fi
       ;;
+    lesson)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${lessonSubcommands}" -- "\${cur}") )
+      else
+        case "\${COMP_WORDS[2]}" in
+          status)
+            COMPREPLY=( $(compgen -W "${lessonStatusFlags}" -- "\${cur}") )
+            ;;
+          drain)
+            COMPREPLY=( $(compgen -W "${lessonDrainFlags}" -- "\${cur}") )
+            ;;
+          remember)
+            COMPREPLY=( $(compgen -W "${lessonRememberFlags}" -- "\${cur}") )
+            ;;
+          *)
+            COMPREPLY=()
+            ;;
+        esac
+      fi
+      ;;
     pr-checklist)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
         COMPREPLY=( $(compgen -W "${prChecklistSubcommands} ${prChecklistFlags}" -- "\${cur}") )
@@ -349,6 +394,10 @@ function renderZshCompletion(): string {
   const maintenanceSubcommands = subcommandsFor('maintenance');
   const maintenancePruneFlags = shellWords(MAINTENANCE_PRUNE_FLAGS);
   const maintenanceBackupFlags = shellWords(MAINTENANCE_BACKUP_FLAGS);
+  const lessonSubcommands = subcommandsFor('lesson');
+  const lessonStatusFlags = shellWords(LESSON_STATUS_FLAGS);
+  const lessonDrainFlags = shellWords(LESSON_DRAIN_FLAGS);
+  const lessonRememberFlags = shellWords(LESSON_REMEMBER_FLAGS);
   const prChecklistSubcommands = subcommandsFor('pr-checklist');
   const prChecklistFlags = flagsFor('pr-checklist');
   const pushSubcommands = subcommandsFor('push');
@@ -433,6 +482,17 @@ _kookr()
         case "$words[3]" in
           prune) compadd -- ${maintenancePruneFlags} ;;
           backup) compadd -- ${maintenanceBackupFlags} ;;
+        esac
+      fi
+      ;;
+    lesson)
+      if (( CURRENT == 3 )); then
+        compadd ${lessonSubcommands}
+      else
+        case "$words[3]" in
+          status) compadd -- ${lessonStatusFlags} ;;
+          drain) compadd -- ${lessonDrainFlags} ;;
+          remember) compadd -- ${lessonRememberFlags} ;;
         esac
       fi
       ;;

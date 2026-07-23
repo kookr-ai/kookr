@@ -1,0 +1,8 @@
+#!/bin/sh
+# kb — PATH shim for Kookr-spawned agents (issue #1519).
+#
+# Prepended via buildAgentLaunchContext so bare `kb remember` gets
+# write-behind spooling when the KB provider is degraded. Non-remember
+# subcommands exec the real `kb` found later on PATH with no behaviour change.
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec node "$dir/kb-spool-shim.js" "$@"
