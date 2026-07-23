@@ -42,6 +42,24 @@ const TERMINAL_TASK_STATUSES = new Set(['completed', 'cancelled', 'terminated'])
 // ALL_EFFORT_LEVELS in
 // src/shared/contracts/agent-types.ts.
 const EFFORT_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+// #1518: known model base ids for CLI fast-fail. Keep in sync with
+// ALL_MODEL_IDS / CLAUDE_CODE_MODEL_IDS in src/shared/contracts/agent-types.ts.
+// Dated suffixes (e.g. claude-haiku-4-5-20251001) are accepted when they start
+// with a known base. Authoritative agent-specific check still runs server-side.
+const MODEL_IDS = [
+  'claude-fable-5',
+  'claude-opus-4-8',
+  'claude-opus-4-7',
+  'claude-opus-4-6',
+  'claude-sonnet-5',
+  'claude-sonnet-4-6',
+  'claude-haiku-4-5',
+];
+function isKnownModelId(model) {
+  if (typeof model !== 'string' || model.length === 0) return false;
+  if (MODEL_IDS.includes(model)) return true;
+  return MODEL_IDS.some((id) => model.startsWith(`${id}-`));
+}
 
 // ---------- arg parsing ----------
 
@@ -62,6 +80,12 @@ Options:
                            claude-code: low|medium|high|xhigh|max.
                            codex-cli:   none|minimal|low|medium|high|xhigh|max|ultra.
                            grok-build:  omit --effort (server rejects any value).
+      --model <id>         Pin the model for this task (default: agent CLI /
+                           env default). claude-code accepts known Claude ids
+                           (e.g. claude-fable-5, claude-opus-4-8,
+                           claude-sonnet-5, claude-haiku-4-5 and dated
+                           suffixes). codex-cli / grok-build reject --model
+                           (use KOOKR_CODEX_MODEL / KOOKR_GROK_MODEL instead).
       --criteria <text>    Acceptance criteria. Note: this is argv-exposed.
       --dedupe <mode>      warn, block, or skip (default: warn).
       --wait[=<seconds>]   After creating the task, poll until it raises
@@ -124,6 +148,7 @@ function parseArgs(argv) {
     cwd: null,
     agent: null,
     effort: null,
+    model: null,
     criteria: null,
     dedupe: 'warn',
     promptFile: null,
@@ -156,6 +181,10 @@ function parseArgs(argv) {
       out.effort = eat();
     } else if (tok.startsWith('--effort=')) {
       out.effort = tok.slice('--effort='.length);
+    } else if (tok === '--model') {
+      out.model = eat();
+    } else if (tok.startsWith('--model=')) {
+      out.model = tok.slice('--model='.length);
     } else if (tok === '--criteria') {
       out.criteria = eat();
     } else if (tok === '--dedupe') {
@@ -207,6 +236,11 @@ function parseArgs(argv) {
   if (out.effort !== null && !EFFORT_LEVELS.has(out.effort)) {
     throw new UsageError(
       `--effort must be one of: ${[...EFFORT_LEVELS].join(', ')} (got: ${out.effort})`,
+    );
+  }
+  if (out.model !== null && !isKnownModelId(out.model)) {
+    throw new UsageError(
+      `--model must be a known model id (e.g. ${MODEL_IDS.slice(0, 4).join(', ')}; got: ${out.model})`,
     );
   }
   if (out.parentTaskId !== null) {
@@ -443,11 +477,12 @@ function apiAuthHeaders(env = process.env) {
 
 // ---------- HTTP POST ----------
 
-async function postTask({ baseUrl, prompt, cwd, agent, effort = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null }) {
+async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null }) {
   const body = { prompt, cwd };
   if (criteria) body.criteria = criteria;
   if (agent) body.agentType = agent;
   if (effort) body.effort = effort;
+  if (model) body.model = model;
   if (disableDedup) body.disableDedup = true;
   if (metadataIntent) body.metadata = { intent: metadataIntent };
   if (parentTaskId) body.parentTaskId = parentTaskId;
@@ -966,6 +1001,7 @@ async function main({
       cwd: cwdAbs,
       agent: args.agent,
       effort: args.effort,
+      model: args.model,
       criteria: args.criteria,
       disableDedup: args.dedupe === 'skip',
       metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
@@ -1065,6 +1101,7 @@ async function main({
         cwd: cwdAbs,
         agent: args.agent,
         effort: args.effort,
+        model: args.model,
         criteria: args.criteria,
         disableDedup: true,
         metadataIntent: 'keep_as_duplicate',

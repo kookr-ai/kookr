@@ -27,6 +27,16 @@ export interface LaunchOpts {
    * unset) applies.
    */
   effort?: string;
+  /**
+   * Optional per-task model pin (#1518). Wins over any per-schedule value and
+   * the agent CLI's own default for this one launch. Validated against the
+   * *resolved* agent's known-model allowlist inside `launchTask` — an invalid
+   * value throws `ModelValidationError` (API → 400). When undefined, the agent
+   * CLI / env default applies (claude-code: user Claude config; codex-cli:
+   * `KOOKR_CODEX_MODEL`; grok-build: `KOOKR_GROK_MODEL`). Resolution order:
+   * per-task → per-schedule → global agent-type default → unset.
+   */
+  model?: string;
   /** When true, always create a new task instead of returning an existing active duplicate. */
   disableDedup?: boolean;
   /** Explicit operator intent for duplicate-preserving launches. */

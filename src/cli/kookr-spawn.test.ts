@@ -156,6 +156,19 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['--effort', ''])).toThrow(UsageError);
   });
 
+  it('parses --model and --model=<id>, defaulting to null (#1518)', () => {
+    expect(parseArgs([]).model).toBeNull();
+    expect(parseArgs(['--model', 'claude-fable-5']).model).toBe('claude-fable-5');
+    expect(parseArgs(['--model=claude-opus-4-8']).model).toBe('claude-opus-4-8');
+    expect(parseArgs(['--model', 'claude-haiku-4-5-20251001']).model).toBe('claude-haiku-4-5-20251001');
+  });
+
+  it('rejects unknown --model values at the CLI (#1518)', () => {
+    expect(() => parseArgs(['--model', 'gpt-5.6-sol'])).toThrow(UsageError);
+    expect(() => parseArgs(['--model', ''])).toThrow(UsageError);
+    expect(() => parseArgs(['--model', 'not-a-model'])).toThrow(UsageError);
+  });
+
   it('rejects invalid --dedupe value', () => {
     expect(() => parseArgs(['--dedupe', 'maybe'])).toThrow(UsageError);
   });
@@ -631,6 +644,29 @@ describe('postTask', () => {
       await postTask({ baseUrl, prompt: 'hi2', cwd: '/tmp', agent: null, criteria: null });
       expect(bodies[0].effort).toBe('max');
       expect(bodies[1]).not.toHaveProperty('effort');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('includes model when provided and omits it otherwise (#1518)', async () => {
+    const bodies: any[] = [];
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodies.push(JSON.parse(bodyText));
+      return { status: 201, body: JSON.stringify({ id: 't' }) };
+    });
+    try {
+      await postTask({
+        baseUrl,
+        prompt: 'hi',
+        cwd: '/tmp',
+        agent: null,
+        model: 'claude-fable-5',
+        criteria: null,
+      });
+      await postTask({ baseUrl, prompt: 'hi2', cwd: '/tmp', agent: null, criteria: null });
+      expect(bodies[0].model).toBe('claude-fable-5');
+      expect(bodies[1]).not.toHaveProperty('model');
     } finally {
       await closeServer(server);
     }

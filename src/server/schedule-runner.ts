@@ -255,6 +255,10 @@ export class ScheduleRunner {
         playbookId: launch.playbookId,
         projectId: launch.projectId,
         agentType: schedule.agentType,
+        // #1518: forward schedule-level effort/model pins into the spawned
+        // task. launchTask still validates them against the resolved agent.
+        ...(schedule.effort ? { effort: schedule.effort } : {}),
+        ...(schedule.model ? { model: schedule.model } : {}),
         disableDedup: true,
       });
 

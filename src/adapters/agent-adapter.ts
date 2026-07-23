@@ -81,6 +81,14 @@ export interface AdapterLaunchOptions {
    * adapter's per-agent default → unset.
    */
   effort?: string;
+  /**
+   * Per-task model pin (#1518). When set, the adapter passes it to the agent
+   * CLI (claude-code: `--model <id>`). When undefined, the CLI / env default
+   * applies. Only the explicit pin is carried here — there is no Kookr global
+   * per-agent model default for claude-code today (codex/grok keep their env
+   * defaults). Resolution order: this override → unset (CLI default).
+   */
+  model?: string;
 }
 
 /**

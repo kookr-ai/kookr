@@ -13,7 +13,7 @@ import {
   type PendingAgentSignal,
 } from '../../shared/contracts/agent-signal.js';
 import { TaskLifecycleCommands } from '../use-cases/task-lifecycle-commands.js';
-import { launchTask, DrainModeError, isCwdValidationError, isEffortValidationError } from '../launch-service.js';
+import { launchTask, DrainModeError, isCwdValidationError, isEffortValidationError, isModelValidationError } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import { LAUNCH_DEPENDENCIES, type LaunchDependency } from '../../core/playbook.js';
 import type { SessionInfo, Task, TaskStore, TokenUsage } from '../../core/tasks.js';
@@ -301,6 +301,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         parentTaskId?: string;
         agentType?: string;
         effort?: unknown;
+        model?: unknown;
         disableDedup?: unknown;
         metadata?: unknown;
         dependencies?: unknown;
@@ -334,11 +335,14 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       if (metadataIntent === 'keep_as_duplicate' && body.disableDedup !== true) {
         return c.json({ error: 'metadata.intent "keep_as_duplicate" requires disableDedup true' }, 400);
       }
-      // #681: shape check only. The agent-specific allowed-set check runs in
-      // launchTask after round-robin resolution and surfaces as a 400 via
-      // EffortValidationError (mapped below).
+      // #681 / #1518: shape check only. The agent-specific allowed-set check
+      // runs in launchTask after round-robin resolution and surfaces as a 400
+      // via EffortValidationError / ModelValidationError (mapped below).
       if (body.effort !== undefined && typeof body.effort !== 'string') {
         return c.json({ error: 'effort must be a string' }, 400);
+      }
+      if (body.model !== undefined && typeof body.model !== 'string') {
+        return c.json({ error: 'model must be a string' }, 400);
       }
       if (body.autoCloseOnSignal !== undefined && typeof body.autoCloseOnSignal !== 'boolean') {
         return c.json({ error: 'autoCloseOnSignal must be a boolean' }, 400);
@@ -354,6 +358,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         parentTaskId: body.parentTaskId,
         agentType: body.agentType ? normalizeAgentSelection(body.agentType) : undefined,
         effort: typeof body.effort === 'string' ? body.effort : undefined,
+        model: typeof body.model === 'string' ? body.model : undefined,
         disableDedup: body.disableDedup === true,
         metadataIntent,
         dependencies: parseLaunchDependencies(body.dependencies),
@@ -372,6 +377,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         return c.json({ error: err.message }, 400);
       }
       if (isEffortValidationError(err)) {
+        return c.json({ error: err.message, code: err.code }, 400);
+      }
+      if (isModelValidationError(err)) {
         return c.json({ error: err.message, code: err.code }, 400);
       }
       // RFC F12: a missing working directory is a client error, surfaced

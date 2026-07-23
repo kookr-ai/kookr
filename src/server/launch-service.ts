@@ -10,6 +10,8 @@ import {
   resolveRoundRobinAgent,
   isValidEffortForAgent,
   effortLevelsForAgent,
+  isValidModelForAgent,
+  modelsForAgent,
 } from '../core/agent-types.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
@@ -112,6 +114,24 @@ export class EffortValidationError extends Error {
 /** Type guard for {@link EffortValidationError}, for callers mapping to 400. */
 export function isEffortValidationError(err: unknown): err is EffortValidationError {
   return err instanceof EffortValidationError;
+}
+
+/**
+ * Thrown by {@link launchTask} when a per-task `model` pin is not on the
+ * resolved agent's known-model allowlist (#1518). Same placement as effort
+ * validation (after round-robin resolves). The API maps this to HTTP 400.
+ */
+export class ModelValidationError extends Error {
+  readonly code = 'invalid_model';
+  constructor(message: string) {
+    super(message);
+    this.name = 'ModelValidationError';
+  }
+}
+
+/** Type guard for {@link ModelValidationError}, for callers mapping to 400. */
+export function isModelValidationError(err: unknown): err is ModelValidationError {
+  return err instanceof ModelValidationError;
 }
 
 /**
@@ -301,6 +321,20 @@ export async function launchTask(
     );
   }
 
+  // Validate a per-task model pin against the *resolved* agent's allowlist
+  // (#1518). Same placement as effort — after round-robin, before side effects.
+  // No silent fallback: unknown models throw rather than launch with the CLI
+  // default. codex-cli / grok-build currently have empty allowlists.
+  if (opts.model !== undefined && !isValidModelForAgent(agentType, opts.model)) {
+    const valid = modelsForAgent(agentType);
+    throw new ModelValidationError(
+      valid.length === 0
+        ? `Invalid model "${opts.model}" for agent ${agentType}; this agent does not accept a per-task model pin`
+        : `Invalid model "${opts.model}" for agent ${agentType}; ` +
+          `valid models: ${valid.join(', ')} (dated suffixes of those bases also accepted)`,
+    );
+  }
+
   // R19 trust-boundary check (rfc-remote-chat-trigger §4): Telegram-spawned
   // Codex is opt-in because its permission model is more permissive than
   // Claude Code's supervised path. The integration checks this before
@@ -383,12 +417,12 @@ export async function launchTask(
   // PR4: ralph-loop launches need verdict env injected so iteration 0 can
   // write a verdict. Subsequent iterations get this via `launchFreshRuntime`;
   // this fills the gap on the first launch.
-  // #681: thread the per-task effort override through to the adapter. The
-  // per-agent-type default is resolved inside the adapter, so this only carries
-  // an explicit override. When neither effort nor ralph verdict env is set,
-  // adapterOpts stays `undefined`; the adapter still selects its default model.
+  // #681 / #1518: thread per-task effort and model pins through to the adapter.
+  // Per-agent-type effort defaults are resolved inside the adapter; model has
+  // no Kookr-global default for claude-code. When none of these are set,
+  // adapterOpts stays `undefined`; the adapter still selects its CLI defaults.
   const adapterOpts: import('../adapters/agent-adapter.js').AdapterLaunchOptions | undefined =
-    (opts.ralphVerdictEnv || opts.effort || opts.sandboxProfile)
+    (opts.ralphVerdictEnv || opts.effort || opts.model || opts.sandboxProfile)
       ? {
           ...(opts.ralphVerdictEnv
             ? {
@@ -399,6 +433,7 @@ export async function launchTask(
               }
             : {}),
           ...(opts.effort ? { effort: opts.effort } : {}),
+          ...(opts.model ? { model: opts.model } : {}),
           ...(opts.sandboxProfile ? { sandboxProfile: opts.sandboxProfile } : {}),
         }
       : undefined;

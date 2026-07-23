@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, type LaunchServiceDeps } from './launch-service.js';
 import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
 
 // Minimal stubs for adapter and lifecycle deps
@@ -295,6 +295,57 @@ describe('launchTask', () => {
         launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'claude-code', effort: '' }),
       ).rejects.toBeInstanceOf(EffortValidationError);
       expect(store.listTasks()).toHaveLength(0);
+    });
+
+    it('threads a valid model pin to the adapter as opts.model (#1518)', async () => {
+      await launchTask(deps, {
+        prompt: 'hello',
+        cwd: '/tmp',
+        model: 'claude-fable-5',
+      });
+      expect(launchOptsFor(deps, 'claude-code')).toMatchObject({ model: 'claude-fable-5' });
+    });
+
+    it('threads model together with effort (#1518)', async () => {
+      await launchTask(deps, {
+        prompt: 'hello',
+        cwd: '/tmp',
+        model: 'claude-fable-5',
+        effort: 'max',
+      });
+      expect(launchOptsFor(deps, 'claude-code')).toMatchObject({
+        model: 'claude-fable-5',
+        effort: 'max',
+      });
+    });
+
+    it('rejects an unknown model for claude-code without creating a task (#1518)', async () => {
+      await expect(
+        launchTask(deps, {
+          prompt: 'hello',
+          cwd: '/tmp',
+          agentType: 'claude-code',
+          model: 'not-a-real-model',
+        }),
+      ).rejects.toBeInstanceOf(ModelValidationError);
+      expect(store.listTasks()).toHaveLength(0);
+    });
+
+    it('rejects any model pin for codex-cli empty allowlist (#1518)', async () => {
+      await expect(
+        launchTask(deps, {
+          prompt: 'hello',
+          cwd: '/tmp',
+          agentType: 'codex-cli',
+          model: 'claude-fable-5',
+        }),
+      ).rejects.toBeInstanceOf(ModelValidationError);
+    });
+
+    it('rejects empty-string model (#1518)', async () => {
+      await expect(
+        launchTask(deps, { prompt: 'hello', cwd: '/tmp', model: '' }),
+      ).rejects.toBeInstanceOf(ModelValidationError);
     });
   });
 

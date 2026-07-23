@@ -19,7 +19,13 @@ describe('ScheduleRunner', () => {
   let store: ScheduleStore;
   let service: ScheduleService;
   let validator: ScheduleValidator;
-  let launched: Array<{ prompt: string; cwd: string }>;
+  let launched: Array<{
+    prompt: string;
+    cwd: string;
+    agentType?: string;
+    effort?: string;
+    model?: string;
+  }>;
   let taskIdCounter: number;
   let activeTaskIds: Set<string>;
   let activeCount: number;
@@ -63,7 +69,13 @@ Do the test thing.
       validator,
       launcher: async (opts) => {
         const taskId = `task-${++taskIdCounter}`;
-        launched.push({ prompt: opts.prompt, cwd: opts.cwd });
+        launched.push({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          agentType: opts.agentType,
+          effort: opts.effort,
+          model: opts.model,
+        });
         activeTaskIds.add(taskId);
         activeCount += 1;
         return { task: { id: taskId } as any, queued: false };
@@ -108,6 +120,31 @@ Do the test thing.
         scheduledFor: expect.any(String),
       }),
     ]);
+  });
+
+  it('forwards schedule effort and model pins into the launcher (#1518)', async () => {
+    const schedule = store.create({
+      name: 'Fable max',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+      agentType: 'claude-code',
+      effort: 'max',
+      model: 'claude-fable-5',
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner();
+    await runner.tick();
+
+    expect(launched).toHaveLength(1);
+    expect(launched[0]).toMatchObject({
+      effort: 'max',
+      model: 'claude-fable-5',
+      agentType: 'claude-code',
+    });
   });
 
   it('skips disabled schedules', async () => {

@@ -147,6 +147,86 @@ export const ALL_EFFORT_LEVELS: readonly string[] = [
   ]),
 ];
 
+/**
+ * Known model ids Kookr accepts as a per-task / per-schedule pin (#1518).
+ *
+ * - `claude-code`: Claude Code CLI `--model` ids. Includes the issue's
+ *   high-stakes pins (`claude-fable-5`, `claude-opus-4-8`, `claude-sonnet-5`)
+ *   plus the other Anthropic ids already priced in `MODEL_PRICING`. Dated
+ *   suffixes (e.g. `claude-haiku-4-5-20251001`) match via prefix against an
+ *   allowlisted base id — see {@link isValidModelForAgent}.
+ * - `codex-cli` / `grok-build`: empty for now. Those agents keep their
+ *   existing model selection (`KOOKR_CODEX_MODEL` / `KOOKR_GROK_MODEL`); a
+ *   per-task model pin for them is rejected until a follow-up adds their
+ *   allowlists. Empty (not Claude inheritance) mirrors the effort pattern.
+ */
+export const CLAUDE_CODE_MODEL_IDS = [
+  'claude-fable-5',
+  'claude-opus-4-8',
+  'claude-opus-4-7',
+  'claude-opus-4-6',
+  'claude-sonnet-5',
+  'claude-sonnet-4-6',
+  'claude-haiku-4-5',
+] as const;
+export const CODEX_CLI_MODEL_IDS = [] as const;
+export const GROK_BUILD_MODEL_IDS = [] as const;
+
+export type ClaudeCodeModel = (typeof CLAUDE_CODE_MODEL_IDS)[number];
+export type CodexCliModel = (typeof CODEX_CLI_MODEL_IDS)[number];
+export type GrokBuildModel = (typeof GROK_BUILD_MODEL_IDS)[number];
+
+/** Any model id. Validity is agent-specific — see {@link isValidModelForAgent}. */
+export type ModelId = ClaudeCodeModel | CodexCliModel | GrokBuildModel | string;
+
+/**
+ * The allowed model ids for a given agent type. Exhaustive switch so a new
+ * agent type cannot silently inherit Claude's allowlist.
+ */
+export function modelsForAgent(agent: AgentType): readonly string[] {
+  switch (agent) {
+    case 'claude-code':
+      return CLAUDE_CODE_MODEL_IDS;
+    case 'codex-cli':
+      return CODEX_CLI_MODEL_IDS;
+    case 'grok-build':
+      return GROK_BUILD_MODEL_IDS;
+    default:
+      return assertNeverAgentType(agent);
+  }
+}
+
+/**
+ * True when `model` is an id the given agent's CLI accepts as a per-task pin.
+ * Exact match against {@link modelsForAgent}, or a dated suffix on an
+ * allowlisted base (e.g. `claude-haiku-4-5-20251001` matches `claude-haiku-4-5`).
+ */
+export function isValidModelForAgent(agent: AgentType, model: string): boolean {
+  if (model.length === 0) return false;
+  const allowed = modelsForAgent(agent);
+  if (allowed.includes(model)) return true;
+  return allowed.some((id) => model.startsWith(`${id}-`));
+}
+
+/**
+ * Union of every agent's known model ids — CLI fast-fail before the concrete
+ * agent is known. Authoritative agent-specific check still runs server-side.
+ */
+export const ALL_MODEL_IDS: readonly string[] = [
+  ...new Set<string>([
+    ...CLAUDE_CODE_MODEL_IDS,
+    ...CODEX_CLI_MODEL_IDS,
+    ...GROK_BUILD_MODEL_IDS,
+  ]),
+];
+
+/** True when `model` is in the cross-agent allowlist (exact or dated suffix). */
+export function isKnownModelId(model: string): boolean {
+  if (model.length === 0) return false;
+  if (ALL_MODEL_IDS.includes(model)) return true;
+  return ALL_MODEL_IDS.some((id) => model.startsWith(`${id}-`));
+}
+
 /** Picker option representing the round-robin selection. */
 export const ROUND_ROBIN_OPTION: AvailableAgentSelection = {
   type: ROUND_ROBIN_AGENT_TYPE,

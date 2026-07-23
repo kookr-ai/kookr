@@ -27,7 +27,7 @@ vi.mock('../use-cases/delete-task.js', async (importActual) => {
   };
 });
 
-import { launchTask, CwdValidationError, DrainModeError, EffortValidationError } from '../launch-service.js';
+import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, ModelValidationError } from '../launch-service.js';
 import { deleteTask } from '../use-cases/delete-task.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
@@ -844,6 +844,54 @@ describe('POST /api/tasks error paths', () => {
     });
     expect(res.status).toBe(201);
     expect(launchTask).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ effort: 'max' }));
+  });
+
+  test('returns 400 when model is not a string (#1518)', async () => {
+    for (const bad of [3, null, ['claude-fable-5'], { id: 'claude-fable-5' }]) {
+      vi.mocked(launchTask).mockClear();
+      const res = await mkApp(mkLoopDeps(new TaskStore())).request('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'p', cwd: '/cwd', model: bad }),
+      });
+      expect(res.status, `model=${JSON.stringify(bad)}`).toBe(400);
+      expect((await res.json()).error).toMatch(/model must be a string/);
+      expect(launchTask).not.toHaveBeenCalled();
+    }
+  });
+
+  test('maps ModelValidationError to 400 with code invalid_model (#1518)', async () => {
+    vi.mocked(launchTask).mockRejectedValueOnce(
+      new ModelValidationError('Invalid model "not-real" for agent claude-code'),
+    );
+    const taskStore = new TaskStore();
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd', model: 'not-real' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'invalid_model' });
+  });
+
+  test('forwards a valid string model to launchTask (#1518)', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: 'p',
+        cwd: '/cwd',
+        model: 'claude-fable-5',
+        effort: 'max',
+      }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ model: 'claude-fable-5', effort: 'max' }),
+    );
   });
 });
 
