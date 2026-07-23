@@ -1,9 +1,12 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { AgentEvent } from './types.js';
-import type { LlmClient } from './llm-types.js';
+import type { LlmClient, LlmCompletionRequest } from './llm-types.js';
 import {
   buildCriteriaVerdictRequest,
+  CRITERIA_COMPLETION_VERDICT_JSON_SCHEMA,
   evaluateCriteriaVerdict,
+  isSchemaValidCriteriaVerdictPayload,
+  isStructuredOutputUnsupportedError,
   parseCriteriaVerdictResponse,
   splitCriteria,
 } from './criteria-verdict.js';
@@ -14,11 +17,25 @@ const events: AgentEvent[] = [
   { type: 'stop', sessionId: 's1', lastMessage: 'Implemented the UI and ran pnpm test.' },
 ];
 
+const validPayload = JSON.stringify({
+  items: [
+    { criterion: 'Run tests', verdict: 'pass', reason: 'Bash output showed 4 passed.' },
+  ],
+});
+
 function llm(text: string | null): LlmClient {
   return {
     provider: 'fake',
     model: 'judge',
     complete: vi.fn(async () => text),
+  };
+}
+
+function llmWithHandler(handler: (req: LlmCompletionRequest) => Promise<string | null>): LlmClient {
+  return {
+    provider: 'fake',
+    model: 'judge',
+    complete: vi.fn(handler),
   };
 }
 
@@ -132,26 +149,7 @@ describe('criteria verdict', () => {
       type: 'json_schema',
       jsonSchema: {
         name: 'criteria_completion_verdict',
-        schema: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['items'],
-          properties: {
-            items: {
-              type: 'array',
-              items: {
-                type: 'object',
-                additionalProperties: false,
-                required: ['criterion', 'verdict', 'reason'],
-                properties: {
-                  criterion: { type: 'string' },
-                  verdict: { type: 'string', enum: ['pass', 'fail', 'unknown'] },
-                  reason: { type: 'string' },
-                },
-              },
-            },
-          },
-        },
+        schema: CRITERIA_COMPLETION_VERDICT_JSON_SCHEMA,
       },
     });
   });
@@ -219,7 +217,7 @@ describe('criteria verdict', () => {
     ]);
   });
 
-  test('returns unknown on LLM errors', async () => {
+  test('returns unknown on LLM errors only after exhausting the structured-output fallback chain', async () => {
     const client: LlmClient = {
       provider: 'fake',
       model: 'judge',
@@ -236,7 +234,195 @@ describe('criteria verdict', () => {
     expect(verdict?.source).toBe('llm-error');
     expect(verdict?.summary).toEqual({ pass: 0, fail: 0, unknown: 1 });
     expect(verdict?.error).toContain('provider down');
-    const call = vi.mocked(client.complete).mock.calls[0][0];
-    expect(call.useCase).toBe('criteria_verdict');
+    // json_schema → tool_call → json_object → plain
+    expect(vi.mocked(client.complete)).toHaveBeenCalledTimes(4);
+    const firstCall = vi.mocked(client.complete).mock.calls[0][0];
+    expect(firstCall.useCase).toBe('criteria_verdict');
+    expect(firstCall.responseFormat).toMatchObject({ type: 'json_schema' });
+  });
+
+  test('falls back from json_schema rejection to tool-call structured output', async () => {
+    const client = llmWithHandler(async (req) => {
+      if (req.responseFormat?.type === 'json_schema') {
+        throw new Error('Baseten request failed: 400 Bad Request - json_schema response_format unsupported');
+      }
+      if (req.tools?.length) {
+        return validPayload;
+      }
+      throw new Error('unexpected mode');
+    });
+
+    const verdict = await evaluateCriteriaVerdict({
+      criteria: 'Run tests',
+      events,
+      llmClient: client,
+      now: () => new Date('2026-06-11T12:00:00.000Z'),
+    });
+
+    expect(verdict?.source).toBe('llm');
+    expect(verdict?.summary).toEqual({ pass: 1, fail: 0, unknown: 0 });
+    expect(verdict?.items[0]).toMatchObject({ criterion: 'Run tests', verdict: 'pass' });
+    expect(vi.mocked(client.complete)).toHaveBeenCalledTimes(2);
+    const toolCall = vi.mocked(client.complete).mock.calls[1][0];
+    expect(toolCall.tools?.[0]?.function.name).toBe('criteria_completion_verdict');
+    expect(toolCall.tools?.[0]?.function.parameters).toBe(CRITERIA_COMPLETION_VERDICT_JSON_SCHEMA);
+    expect(toolCall.toolChoice).toEqual({
+      type: 'function',
+      function: { name: 'criteria_completion_verdict' },
+    });
+    expect(toolCall.responseFormat).toBeUndefined();
+  });
+
+  test('falls back to json_object + local schema validation when tool-call also fails', async () => {
+    const client = llmWithHandler(async (req) => {
+      if (req.responseFormat?.type === 'json_schema') {
+        throw new Error('400 Bad Request: response_format json_schema not supported');
+      }
+      if (req.tools?.length) {
+        throw new Error('400 Bad Request: tools are not supported for this model');
+      }
+      if (req.responseFormat?.type === 'json_object') {
+        return validPayload;
+      }
+      throw new Error('should not reach plain');
+    });
+
+    const verdict = await evaluateCriteriaVerdict({
+      criteria: 'Run tests',
+      events,
+      llmClient: client,
+      now: () => new Date('2026-06-11T12:00:00.000Z'),
+    });
+
+    expect(verdict?.source).toBe('llm');
+    expect(verdict?.items[0]?.verdict).toBe('pass');
+    expect(vi.mocked(client.complete)).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(client.complete).mock.calls[2][0].responseFormat).toEqual({ type: 'json_object' });
+  });
+
+  test('falls back to plain completion when json_object is also rejected', async () => {
+    const client = llmWithHandler(async (req) => {
+      if (req.responseFormat || req.tools?.length) {
+        throw new Error('400 Bad Request: response_format unsupported');
+      }
+      return validPayload;
+    });
+
+    const verdict = await evaluateCriteriaVerdict({
+      criteria: 'Run tests',
+      events,
+      llmClient: client,
+      now: () => new Date('2026-06-11T12:00:00.000Z'),
+    });
+
+    expect(verdict?.source).toBe('llm');
+    expect(verdict?.summary.pass).toBe(1);
+    expect(vi.mocked(client.complete)).toHaveBeenCalledTimes(4);
+    const plain = vi.mocked(client.complete).mock.calls[3][0];
+    expect(plain.responseFormat).toBeUndefined();
+    expect(plain.tools).toBeUndefined();
+  });
+
+  test('re-evaluates on a schema-capable model before accepting unknown', async () => {
+    const primary = llmWithHandler(async () => {
+      throw new Error('400 Bad Request: response_format json_schema rejected by upstream');
+    });
+    const capable: LlmClient = {
+      provider: 'groq',
+      model: 'schema-capable',
+      complete: vi.fn(async (req) => {
+        expect(req.responseFormat).toMatchObject({ type: 'json_schema' });
+        return validPayload;
+      }),
+    };
+
+    const verdict = await evaluateCriteriaVerdict({
+      criteria: 'Run tests',
+      events,
+      llmClient: primary,
+      schemaCapableLlmClient: capable,
+      now: () => new Date('2026-06-11T12:00:00.000Z'),
+    });
+
+    expect(verdict?.source).toBe('llm');
+    expect(verdict?.provider).toBe('groq');
+    expect(verdict?.model).toBe('schema-capable');
+    expect(verdict?.items[0]?.verdict).toBe('pass');
+    expect(vi.mocked(primary.complete)).toHaveBeenCalledTimes(4);
+    expect(vi.mocked(capable.complete)).toHaveBeenCalledTimes(1);
+  });
+
+  test('emits unknown only after primary chain and schema-capable re-eval both fail', async () => {
+    const primary = llmWithHandler(async () => {
+      throw new Error('400 Bad Request: response_format json_schema unsupported');
+    });
+    const capable = llmWithHandler(async () => {
+      throw new Error('still broken');
+    });
+    // override provider identity for the capable client
+    (capable as { provider: string }).provider = 'groq';
+    (capable as { model: string }).model = 'schema-capable';
+
+    const verdict = await evaluateCriteriaVerdict({
+      criteria: 'Run tests',
+      events,
+      llmClient: primary,
+      schemaCapableLlmClient: capable,
+      now: () => new Date('2026-06-11T12:00:00.000Z'),
+    });
+
+    expect(verdict?.source).toBe('llm-error');
+    expect(verdict?.summary.unknown).toBe(1);
+    expect(vi.mocked(primary.complete)).toHaveBeenCalledTimes(4);
+    expect(vi.mocked(capable.complete)).toHaveBeenCalledTimes(1);
+  });
+
+  test('detects structured-output rejection errors for fallback chaining', () => {
+    expect(isStructuredOutputUnsupportedError(
+      new Error('Baseten request failed: 400 Bad Request - response_format json_schema not supported'),
+    )).toBe(true);
+    expect(isStructuredOutputUnsupportedError(new Error('provider down'))).toBe(false);
+    expect(isStructuredOutputUnsupportedError(new Error('401 Unauthorized'))).toBe(false);
+  });
+
+  test('local schema validation reuses the criteria completion schema shape', () => {
+    expect(isSchemaValidCriteriaVerdictPayload({
+      items: [{ criterion: 'Run tests', verdict: 'pass', reason: 'ok' }],
+    })).toBe(true);
+    expect(isSchemaValidCriteriaVerdictPayload({
+      items: [{ criterion: 'Run tests', verdict: 'maybe', reason: 'ok' }],
+    })).toBe(false);
+    expect(isSchemaValidCriteriaVerdictPayload({
+      items: [{ criterion: 'Run tests', verdict: 'pass', reason: 'ok' }],
+      extra: true,
+    })).toBe(false);
+    // Same constant is what json_schema / tool-call modes send to the provider.
+    expect(CRITERIA_COMPLETION_VERDICT_JSON_SCHEMA).toMatchObject({
+      type: 'object',
+      required: ['items'],
+    });
+  });
+
+  test('empty items from json_schema does not short-circuit the fallback chain', async () => {
+    const client = llmWithHandler(async (req) => {
+      if (req.responseFormat?.type === 'json_schema') {
+        return JSON.stringify({ items: [] });
+      }
+      if (req.tools?.length) {
+        return validPayload;
+      }
+      throw new Error('unexpected mode');
+    });
+
+    const verdict = await evaluateCriteriaVerdict({
+      criteria: 'Run tests',
+      events,
+      llmClient: client,
+      now: () => new Date('2026-06-11T12:00:00.000Z'),
+    });
+
+    expect(verdict?.source).toBe('llm');
+    expect(verdict?.items[0]?.verdict).toBe('pass');
+    expect(vi.mocked(client.complete)).toHaveBeenCalledTimes(2);
   });
 });

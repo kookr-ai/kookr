@@ -4,6 +4,10 @@ export default defineConfig({
   test: {
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'relay/**/*.test.ts', 'scripts/**/*.test.ts', 'demo/**/*.test.ts', 'test/**/*.test.ts'],
     exclude: ['src/**/*.integration.test.ts', 'src/**/*-e2e.test.ts'],
+    // Multi-server integration tests (relay + createKookrServerInternal) regularly
+    // need >5s under concurrent suite load on a busy workstation. Unit tests still
+    // finish in ms; this only raises the hang ceiling.
+    testTimeout: 15_000,
     // Fails the run if a test poisons the shared git config (test identity,
     // core.bare flip, or bare-repo debris) and heals it. See test/git-repo-guard.ts.
     globalSetup: ['./test/git-repo-guard.global.ts'],

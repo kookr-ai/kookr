@@ -114,6 +114,70 @@ describe('OpenAiCompatibleLlmClient', () => {
     });
   });
 
+  test('forwards json_object response_format', async () => {
+    const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: '{}' } }] }));
+    const client = new OpenAiCompatibleLlmClient({
+      provider: 'baseten',
+      apiKey: API_KEY,
+      model: 'nvidia/Nemotron-120B-A12B',
+      baseUrl: 'https://inference.baseten.co/v1',
+    });
+
+    await client.complete({
+      ...baseReq,
+      responseFormat: { type: 'json_object' },
+    });
+
+    expect(requestBody(fetchMock).response_format).toEqual({ type: 'json_object' });
+  });
+
+  test('forwards tools/tool_choice and returns function arguments as content', async () => {
+    const fetchMock = stubFetch(jsonResponse({
+      choices: [{
+        message: {
+          content: null,
+          tool_calls: [{
+            function: {
+              name: 'criteria_completion_verdict',
+              arguments: '{"items":[]}',
+            },
+          }],
+        },
+      }],
+    }));
+    const client = new OpenAiCompatibleLlmClient({
+      provider: 'baseten',
+      apiKey: API_KEY,
+      model: 'nvidia/Nemotron-120B-A12B',
+      baseUrl: 'https://inference.baseten.co/v1',
+    });
+
+    const text = await client.complete({
+      ...baseReq,
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'criteria_completion_verdict',
+          parameters: { type: 'object' },
+        },
+      }],
+      toolChoice: { type: 'function', function: { name: 'criteria_completion_verdict' } },
+    });
+
+    expect(text).toBe('{"items":[]}');
+    expect(requestBody(fetchMock).tools).toEqual([{
+      type: 'function',
+      function: {
+        name: 'criteria_completion_verdict',
+        parameters: { type: 'object' },
+      },
+    }]);
+    expect(requestBody(fetchMock).tool_choice).toEqual({
+      type: 'function',
+      function: { name: 'criteria_completion_verdict' },
+    });
+  });
+
   test('turns internal timeout into provider failure, not AbortError', async () => {
     vi.useFakeTimers();
     try {

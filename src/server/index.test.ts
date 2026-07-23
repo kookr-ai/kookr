@@ -538,7 +538,8 @@ describe('createKookrServer', () => {
       }
     });
 
-    test('executes a relay presetReply through the real server command handler', async () => {
+    // Full-suite load regularly pushes this past vitest's 5s default (solo ~4.5s).
+    test('executes a relay presetReply through the real server command handler', { timeout: 20_000 }, async () => {
       await server.close();
       serverClosed = true;
 
