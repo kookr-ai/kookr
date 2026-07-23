@@ -1369,12 +1369,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Lesson-write spool recovery + prolonged KB degradation alert (issue #1519).
   // Spool lives under ~/.kookr/playbook-state (user-scoped, not per-port dataDir)
   // so lessons survive across prod/dev instances on the same host.
-  // Disabled under Vitest (VITEST=true) and when KOOKR_LESSON_SPOOL=0 so unit
-  // tests do not shell out to `kb doctor` every 5 minutes or on the 15s boot tick.
-  const lessonSpoolDisabled =
-    process.env.KOOKR_LESSON_SPOOL === '0'
-    || process.env.VITEST === 'true'
-    || process.env.VITEST === '1';
+  // Disabled when KOOKR_LESSON_SPOOL=0 (also set in vitest.config.ts so unit
+  // tests do not shell out to `kb doctor` every 5 minutes or on the 15s boot tick).
+  const lessonSpoolDisabled = process.env.KOOKR_LESSON_SPOOL === '0';
   const lessonSpoolService = new LessonSpoolService({
     spoolDir: defaultSpoolDir(process.env),
     emitAlert: (alert) => broadcastToAll(alert),
