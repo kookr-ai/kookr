@@ -274,6 +274,18 @@ export function parseCriteriaVerdictResponse(
   }
 
   const rawItems = (normalized as { items: unknown[] }).items;
+  // Empty items is schema-valid but not a useful judgment — treat as parse soft
+  // failure so the structured-output fallback chain can try the next mode.
+  if (rawItems.length === 0) {
+    return unknownVerdict(
+      criteriaItems,
+      'parse-error',
+      meta.evaluatedAt,
+      'Helper LLM returned empty criteria items.',
+      meta,
+    );
+  }
+
   const byCriterion = new Map<string, CriteriaVerdictItem>();
   rawItems.forEach((item, index) => {
     const shaped = item as { criterion: string; verdict: CriteriaVerdictStatus; reason: string };
@@ -377,9 +389,15 @@ async function runStructuredOutputChain(
     } catch (err) {
       if ((err as { name?: string } | null)?.name === 'AbortError') throw err;
       lastError = err instanceof Error ? err.message : String(err);
-      // Structured-output rejections and softer transport failures both advance
-      // the chain: later modes strip the rejected request shape. Abort is the
-      // only non-continuable path (rethrown above).
+      // Advance on every non-abort failure so later modes can strip a rejected
+      // request shape (json_schema / tools). Structured-output rejections are
+      // the common path; auth/5xx still try softer modes once rather than
+      // fail-open to unknown before the ladder is exhausted.
+      if (isStructuredOutputUnsupportedError(err)) {
+        console.warn(
+          `[criteria-verdict] ${client.provider} (${client.model}) rejected structured output mode=${mode}: ${lastError}`,
+        );
+      }
       continue;
     }
   }

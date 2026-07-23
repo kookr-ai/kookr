@@ -402,4 +402,27 @@ describe('criteria verdict', () => {
       required: ['items'],
     });
   });
+
+  test('empty items from json_schema does not short-circuit the fallback chain', async () => {
+    const client = llmWithHandler(async (req) => {
+      if (req.responseFormat?.type === 'json_schema') {
+        return JSON.stringify({ items: [] });
+      }
+      if (req.tools?.length) {
+        return validPayload;
+      }
+      throw new Error('unexpected mode');
+    });
+
+    const verdict = await evaluateCriteriaVerdict({
+      criteria: 'Run tests',
+      events,
+      llmClient: client,
+      now: () => new Date('2026-06-11T12:00:00.000Z'),
+    });
+
+    expect(verdict?.source).toBe('llm');
+    expect(verdict?.items[0]?.verdict).toBe('pass');
+    expect(vi.mocked(client.complete)).toHaveBeenCalledTimes(2);
+  });
 });
