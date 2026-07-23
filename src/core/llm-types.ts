@@ -22,20 +22,54 @@ export type {
   LlmUseCase,
 };
 
+/** OpenAI-style function tool for structured tool-call output. */
+export interface LlmFunctionTool {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+export type LlmToolChoice =
+  | 'auto'
+  | 'none'
+  | 'required'
+  | { type: 'function'; function: { name: string } };
+
+export interface LlmJsonSchemaResponseFormat {
+  type: 'json_schema';
+  jsonSchema: {
+    name: string;
+    schema: Record<string, unknown>;
+  };
+}
+
+export interface LlmJsonObjectResponseFormat {
+  type: 'json_object';
+}
+
+export type LlmResponseFormat = LlmJsonSchemaResponseFormat | LlmJsonObjectResponseFormat;
+
 export interface LlmCompletionRequest {
   maxTokens: number;
   system?: string;
   userMessage: string;
   /** Diagnostics tag for Kookr's own helper-LLM call sites. */
   useCase?: LlmUseCase;
-  /** Optional structured output hint. Providers that don't support it silently ignore it. */
-  responseFormat?: {
-    type: 'json_schema';
-    jsonSchema: {
-      name: string;
-      schema: Record<string, unknown>;
-    };
-  };
+  /**
+   * Optional structured output hint. Providers that don't support a given
+   * mode may ignore it or reject the request (callers should fall back).
+   */
+  responseFormat?: LlmResponseFormat;
+  /**
+   * Optional OpenAI-style tools. Used by structured-output fallbacks that
+   * force a single function call instead of response_format json_schema.
+   * Providers without tool support ignore this field.
+   */
+  tools?: LlmFunctionTool[];
+  toolChoice?: LlmToolChoice;
   timeoutMs?: number;
   signal?: AbortSignal;
 }

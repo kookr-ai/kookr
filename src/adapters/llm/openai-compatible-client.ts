@@ -25,7 +25,14 @@ export interface OpenAiCompatibleClientOptions {
 }
 
 interface ChatCompletionResponse {
-  choices?: Array<{ message?: { content?: string | null } }>;
+  choices?: Array<{
+    message?: {
+      content?: string | null;
+      tool_calls?: Array<{
+        function?: { name?: string; arguments?: string };
+      }>;
+    };
+  }>;
 }
 
 export class LlmProviderFailureError extends Error {
@@ -163,7 +170,7 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
       max_tokens: req.maxTokens,
       messages,
     };
-    if (req.responseFormat) {
+    if (req.responseFormat?.type === 'json_schema') {
       body.response_format = {
         type: 'json_schema' as const,
         json_schema: {
@@ -172,6 +179,14 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
           schema: req.responseFormat.jsonSchema.schema,
         },
       };
+    } else if (req.responseFormat?.type === 'json_object') {
+      body.response_format = { type: 'json_object' as const };
+    }
+    if (req.tools && req.tools.length > 0) {
+      body.tools = req.tools;
+      if (req.toolChoice !== undefined) {
+        body.tool_choice = req.toolChoice;
+      }
     }
 
     const controller = new AbortController();
@@ -238,7 +253,17 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
       );
     }
 
-    const content = data.choices?.[0]?.message?.content;
-    return typeof content === 'string' ? content.trim() || null : null;
+    const message = data.choices?.[0]?.message;
+    const content = message?.content;
+    if (typeof content === 'string' && content.trim()) {
+      return content.trim();
+    }
+    // Structured tool-call path: return the first function arguments blob as JSON text.
+    const toolArgs = message?.tool_calls?.find((call) => typeof call.function?.arguments === 'string')
+      ?.function?.arguments;
+    if (typeof toolArgs === 'string' && toolArgs.trim()) {
+      return toolArgs.trim();
+    }
+    return null;
   }
 }

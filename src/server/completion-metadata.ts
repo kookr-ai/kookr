@@ -33,6 +33,12 @@ export interface CompletionMetadataDeps {
   scanner?: CompletionScanner;
   now?: () => number;
   criteriaVerdictLlmClient?: LlmClient | null;
+  /**
+   * Optional secondary client known to honor json_schema. When unset, production
+   * builds a auto-chain client (groq/gemini/anthropic/openrouter) distinct from
+   * the primary when possible.
+   */
+  schemaCapableLlmClient?: LlmClient | null;
 }
 
 export interface TaskCompletionMetadata {
@@ -41,6 +47,7 @@ export interface TaskCompletionMetadata {
 }
 
 let criteriaVerdictLlmClientPromise: Promise<LlmClient | null> | null = null;
+let schemaCapableCriteriaLlmClientPromise: Promise<LlmClient | null> | null = null;
 
 export async function buildTaskCompletionMetadata(
   task: Task,
@@ -61,10 +68,13 @@ export async function buildTaskCompletionMetadata(
     tokenUsage: codexUsage?.digestUsage,
   });
   if (task.criteria?.trim()) {
+    const llmClient = await resolveCriteriaVerdictLlmClient(deps);
+    const schemaCapableLlmClient = await resolveSchemaCapableCriteriaLlmClient(deps, llmClient);
     const criteriaVerdict = await evaluateCriteriaVerdict({
       criteria: task.criteria,
       events,
-      llmClient: await resolveCriteriaVerdictLlmClient(deps),
+      llmClient,
+      schemaCapableLlmClient,
     });
     if (criteriaVerdict) digest.criteriaVerdict = criteriaVerdict;
   }
@@ -83,6 +93,37 @@ async function resolveCriteriaVerdictLlmClient(deps: CompletionMetadataDeps): Pr
     buildBaseten: createBasetenLlmClientFromEnv,
   });
   return criteriaVerdictLlmClientPromise;
+}
+
+/**
+ * Prefer providers historically known to accept json_schema (auto chain, which
+ * excludes baseten/requesty). Only returned when distinct from the primary.
+ */
+async function resolveSchemaCapableCriteriaLlmClient(
+  deps: CompletionMetadataDeps,
+  primary: LlmClient | null,
+): Promise<LlmClient | null> {
+  if ('schemaCapableLlmClient' in deps) return deps.schemaCapableLlmClient ?? null;
+  // Injected primary without an explicit secondary: tests and custom wiring own
+  // the full chain; do not silently spawn a second env-backed client.
+  if ('criteriaVerdictLlmClient' in deps) return null;
+
+  schemaCapableCriteriaLlmClientPromise ??= createLlmClient({
+    buildOpenRouter: createOpenRouterLlmClientFromEnv,
+    // Intentionally omit baseten/requesty: auto chain already excludes them, and
+    // createLlmClient with provider=auto only uses the builders for openrouter.
+  }, {
+    ...process.env,
+    // Force auto so an explicit KOOKR_LLM_PROVIDER=baseten primary still gets a
+    // schema-capable re-eval path (groq/gemini/anthropic/openrouter).
+    KOOKR_LLM_PROVIDER: 'auto',
+  });
+
+  const capable = await schemaCapableCriteriaLlmClientPromise;
+  if (!capable || !primary) return capable;
+  if (capable === primary) return null;
+  if (capable.provider === primary.provider && capable.model === primary.model) return null;
+  return capable;
 }
 
 async function defaultRunCommand(command: string, args: string[], opts: { cwd: string }): Promise<string> {

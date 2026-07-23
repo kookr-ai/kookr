@@ -27,25 +27,41 @@ export class GroqLlmClient implements LlmClient {
     }
     messages.push({ role: 'user', content: req.userMessage });
 
-    const response = await this.client.chat.completions.create({
-      model: this.model,
-      max_tokens: req.maxTokens,
-      messages,
-      ...(req.responseFormat ? {
-        response_format: {
+    const responseFormat = req.responseFormat?.type === 'json_schema'
+      ? {
           type: 'json_schema' as const,
           json_schema: {
             name: req.responseFormat.jsonSchema.name,
             strict: false,  // best-effort for Llama 4 Scout
             schema: req.responseFormat.jsonSchema.schema,
           },
-        },
-      } : {}),
+        }
+      : req.responseFormat?.type === 'json_object'
+        ? { type: 'json_object' as const }
+        : undefined;
+
+    const response = await this.client.chat.completions.create({
+      model: this.model,
+      max_tokens: req.maxTokens,
+      messages,
+      ...(responseFormat ? { response_format: responseFormat } : {}),
+      ...(req.tools && req.tools.length > 0
+        ? {
+            tools: req.tools,
+            ...(req.toolChoice !== undefined ? { tool_choice: req.toolChoice } : {}),
+          }
+        : {}),
     }, {
       timeout: req.timeoutMs ?? 10_000,
       signal: req.signal ?? undefined,
     });
 
-    return response.choices[0]?.message?.content?.trim() || null;
+    const message = response.choices[0]?.message;
+    const content = message?.content?.trim();
+    if (content) return content;
+    const toolArgs = message?.tool_calls?.find((call) => typeof call.function?.arguments === 'string')
+      ?.function?.arguments;
+    if (typeof toolArgs === 'string' && toolArgs.trim()) return toolArgs.trim();
+    return null;
   }
 }
