@@ -30,6 +30,11 @@ import {
   classifyCompletionReadyClosePolicy,
   listStaleCompletionReadyTasks,
 } from '../../core/completion-ready-cleanup.js';
+import {
+  boundTailText,
+  parseTailLinesQuery,
+  TASK_TAIL_SCHEMA_VERSION,
+} from '../../core/task-tail-store.js';
 
 const MAX_TASK_EDGE_COUNT = 64;
 const MAX_TASK_EDGE_LENGTH = 240;
@@ -54,6 +59,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       watchdog,
       ...(deps.issueClaimRegistry ? { issueClaimRegistry: deps.issueClaimRegistry } : {}),
       ...(deps.onTaskOutcome ? { onTaskOutcome: deps.onTaskOutcome } : {}),
+      ...(deps.taskTailStore ? { taskTailStore: deps.taskTailStore } : {}),
       shadowRegistry: deps.shadowRegistry,
       suppressionTracker: deps.suppressionTracker,
       tokenTracker: deps.tokenTracker,
@@ -138,6 +144,76 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     const normalized = attachAggregateTokenUsage(normalizeTaskForApi(task), taskStore);
     if (!deps.suppressionTracker) return c.json(normalized);
     return c.json(withSuppressionFlag(normalized, deps.suppressionTracker));
+  });
+
+  /**
+   * Bounded terminal tail for a task — live ring when in progress, durable
+   * persisted tail after completion (rfc-task-tail-retrieval).
+   */
+  app.get('/api/tasks/:id/tail', async (c) => {
+    const id = c.req.param('id');
+    const linesOrErr = parseTailLinesQuery(c.req.query('lines'));
+    if (linesOrErr instanceof Error) return c.json({ error: linesOrErr.message }, 400);
+
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+
+    const liveSession = [...task.sessions]
+      .reverse()
+      .find((s) => s.lastStatus !== 'completed' && s.lastStatus !== 'aborted');
+
+    if (liveSession && typeof adapter.captureDisplay === 'function') {
+      try {
+        const raw = await adapter.captureDisplay(liveSession.tmuxSession);
+        const bound = boundTailText(raw, linesOrErr);
+        return c.json({
+          schemaVersion: TASK_TAIL_SCHEMA_VERSION,
+          taskId: task.id,
+          sessionId: liveSession.tmuxSession,
+          taskStatus: task.status,
+          source: 'live' as const,
+          capturedAt: new Date().toISOString(),
+          linesRequested: linesOrErr,
+          totalLines: bound.totalLines,
+          shownLines: bound.shownLines,
+          text: bound.text,
+          truncated: false,
+        });
+      } catch (err) {
+        // Fall through to persisted tail when live capture fails (e.g. race
+        // with session teardown).
+        console.warn(
+          `[task-tail] live capture failed for ${liveSession.tmuxSession}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    const stored = deps.taskTailStore
+      ? await deps.taskTailStore.getByTaskId(task.id)
+      : null;
+    if (!stored) {
+      const reason = isTerminalStatus(task.status)
+        ? 'No persisted terminal tail for this task (never captured, expired, or retention disabled)'
+        : 'No live session output and no persisted terminal tail';
+      return c.json({ error: reason, taskId: task.id }, 404);
+    }
+
+    const bound = boundTailText(stored.text, linesOrErr);
+    return c.json({
+      schemaVersion: TASK_TAIL_SCHEMA_VERSION,
+      taskId: task.id,
+      sessionId: stored.sessionId,
+      taskStatus: task.status,
+      source: 'persisted' as const,
+      capturedAt: stored.capturedAt,
+      retentionExpiresAt: deps.taskTailStore!.retentionExpiresAt(stored.capturedAt),
+      linesRequested: linesOrErr,
+      totalLines: bound.totalLines,
+      shownLines: bound.shownLines,
+      text: bound.text,
+      truncated: stored.truncated,
+    });
   });
 
   app.get('/api/tasks/:id/evolution', async (c) => {

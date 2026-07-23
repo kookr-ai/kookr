@@ -554,8 +554,23 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     const sessionId = c.req.param('sessionId');
     try {
       const output = await adapter.captureDisplay(sessionId);
-      return c.json({ sessionId, output });
+      return c.json({ sessionId, output, source: 'live' as const });
     } catch (err) {
+      // Lucy's peek_kookr_task_output resolves a task then hits this endpoint
+      // with the session id. After completion the ring is gone — fall back to
+      // the durable task-tail store when present (rfc-task-tail-retrieval).
+      const stored = deps.taskTailStore
+        ? await deps.taskTailStore.getBySessionId(sessionId)
+        : null;
+      if (stored) {
+        return c.json({
+          sessionId,
+          output: stored.text,
+          source: 'persisted' as const,
+          taskId: stored.taskId,
+          capturedAt: stored.capturedAt,
+        });
+      }
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message, sessionId }, 404);
     }

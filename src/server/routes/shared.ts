@@ -111,6 +111,11 @@ export interface TaskRouteDeps {
   interactionLog?: DeferredInteractionLogWriter;
   scheduleService?: ScheduleService;
   tokenTracker?: TokenTracker;
+  /**
+   * Durable terminal-tail store for GET /api/tasks/:id/tail and lifecycle
+   * capture (rfc-task-tail-retrieval).
+   */
+  taskTailStore?: import('../../core/task-tail-store.js').TaskTailStore;
 }
 
 /** Narrower deps for coordinator suppression / acknowledgement / mark-prior-done routes. */
@@ -276,6 +281,11 @@ export interface RouteDeps {
    * See rfc-activity-log-reliability §7–§8.
    */
   activityLedger?: ActivityLedger;
+  /**
+   * Durable terminal-tail store (rfc-task-tail-retrieval). Used by
+   * GET /api/tasks/:id/tail and as a fallback for GET /api/capture/:sessionId.
+   */
+  taskTailStore?: import('../../core/task-tail-store.js').TaskTailStore;
   launchServiceDeps: LaunchServiceDeps;
   sttUrl?: string;
   /** Optional Pocket TTS HTTP URL — when set, the speak-finding route is reachable. */

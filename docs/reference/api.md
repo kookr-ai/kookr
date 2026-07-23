@@ -67,6 +67,7 @@ IP addresses.
 | --- | --- |
 | `GET /api/tasks` | All tasks with sessions. `?view=compact` returns a lighter list projection (see below) |
 | `GET /api/tasks/:id` | A single task by id — always full detail including `prompt` (404 with `{"error": "Task not found"}` for unknown ids) |
+| `GET /api/tasks/:id/tail` | Bounded terminal output tail for a task — live ring while in progress, durable persisted tail after completion (see below) |
 | `GET /api/tasks/completion-ready/stale` | List stale `completion_ready` signals and whether each can be auto-closed |
 | `POST /api/tasks` | Create and launch a new task |
 | `POST /api/tasks/:id/complete` | Mark a finished task `completed` (non-destructive), tear down its idle session, and apply the saved worktree-cleanup policy |
@@ -85,6 +86,33 @@ Task objects returned by `GET /api/tasks` and `GET /api/tasks/:id` carry both
 can use one field name across the whole API — `/api/projects`
 `recentTasks[]` and `/api/snapshot` agents key tasks by `taskId`. `id`
 remains for backwards compatibility.
+
+### `GET /api/tasks/:id/tail?lines=N`
+
+Returns a bounded excerpt of the task's terminal/session output. Works for both
+running and completed tasks:
+
+- **In progress** — captures the live dtach ring (`source: "live"`).
+- **Completed / terminated / cancelled** — serves a durable snapshot written
+  just before session teardown (`source: "persisted"`), retained for
+  `KOOKR_TASK_TAIL_RETENTION_DAYS` (default **7**). See
+  [rfc-task-tail-retrieval](../rfc/rfc-task-tail-retrieval.md).
+
+| Query | Default | Clamp |
+| --- | --- | --- |
+| `lines` | `80` | 1–2000 |
+
+`200` body fields: `schemaVersion`, `taskId`, `sessionId`, `taskStatus`,
+`source` (`live` \| `persisted`), `capturedAt`, optional `retentionExpiresAt`
+(persisted only), `linesRequested`, `totalLines`, `shownLines`, `text`,
+`truncated`.
+
+`404` when the task is unknown, or no live session and no non-expired
+persisted tail exist. `400` when `lines` is not a valid integer in range.
+
+Lucy’s `peek_kookr_task_output` tool continues to call
+`GET /api/capture/:sessionId`, which falls back to the same persisted store by
+session id when the live ring is gone.
 
 ### `GET /api/tasks?view=compact`
 
@@ -254,7 +282,7 @@ Present only when the server was started with `KOOKR_ISSUE_CLAIMS` enabled; with
 | `GET /api/snapshot` | Current agent states and anomalies |
 | `GET /api/queue` | Attention queue contents |
 | `GET /api/anomaly-stats` | Anomaly counters and detector stats |
-| `GET /api/capture/:sessionId` | Snapshot of the dtach session ring buffer |
+| `GET /api/capture/:sessionId` | Snapshot of the dtach session ring buffer; falls back to a persisted task tail (`source: "persisted"`) when the live ring is gone |
 | `GET /api/diagnostics/session-health` | Versioned cross-signal health snapshot for tracked sessions, including signal timestamps, attach state, browser bridge state, and coordinated-stall diagnostics |
 | `POST /api/hook-event/:sessionId` | HTTP push surface for hook events, used by Codex CLI hooks |
 

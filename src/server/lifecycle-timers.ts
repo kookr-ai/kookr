@@ -54,6 +54,8 @@ export interface TimerDeps {
   shadowRegistry?: ShadowDetectorRegistry;
   /** Agent lifecycle deps — needed for pending task promotion. */
   agentLifecycleDeps?: AgentLifecycleDeps;
+  /** Durable terminal-tail store for auto-close / liveness completion paths. */
+  taskTailStore?: import('../core/task-tail-store.js').TaskTailStore;
   /** Optional quota adapter for plan usage polling. */
   quotaAdapter?: QuotaAdapter;
   /** Live getter for max concurrent tasks. */
@@ -522,6 +524,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     ...(deps.agentLifecycleDeps?.getCleanupWorktreeOnComplete
       ? { getCleanupWorktreeOnComplete: deps.agentLifecycleDeps.getCleanupWorktreeOnComplete }
       : {}),
+    ...(deps.taskTailStore ? { taskTailStore: deps.taskTailStore } : {}),
   };
 
   const livenessInterval = setInterval(async () => {
