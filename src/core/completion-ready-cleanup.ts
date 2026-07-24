@@ -73,10 +73,6 @@ export function listStaleCompletionReadyTasks(
 ): StaleCompletionReadyTask[] {
   const nowMs = (opts.now ?? new Date()).getTime();
   const thresholdMs = opts.thresholdMs ?? DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS;
-  // A misconfigured TTL shorter than the reporting threshold must not hide
-  // TTL-eligible tasks from the list — surface anything past EITHER bound and
-  // let classifyCompletionReadyClosePolicy make the final call.
-  const listThresholdMs = opts.ttlMs !== undefined ? Math.min(thresholdMs, opts.ttlMs) : thresholdMs;
   const entries: StaleCompletionReadyTask[] = [];
 
   for (const task of tasks) {
@@ -101,7 +97,17 @@ export function listStaleCompletionReadyTasks(
     if (raisedAtMs > nowMs) continue;
 
     const ageMs = nowMs - raisedAtMs;
-    if (ageMs < listThresholdMs) continue;
+    // issue #1526 Phase A: the two populations are gated INDEPENDENTLY.
+    // Opted-in (autoCloseOnSignal === true) entries are gated by their own
+    // thresholdMs (autoCloseCompletionReadyDelayMin) ONLY — a `ttlMs`
+    // shorter than that setting must never sneak an early close past its
+    // documented review window. Everyone else is gated by whichever of
+    // thresholdMs/ttlMs is smaller, so a short TTL can still surface and
+    // escalate an ask-first task before the normal reporting threshold.
+    const applicableThresholdMs = task.autoCloseOnSignal === true
+      ? thresholdMs
+      : (opts.ttlMs !== undefined ? Math.min(thresholdMs, opts.ttlMs) : thresholdMs);
+    if (ageMs < applicableThresholdMs) continue;
 
     const policy = classifyCompletionReadyClosePolicy(task, { ageMs, ttlMs: opts.ttlMs });
     entries.push({

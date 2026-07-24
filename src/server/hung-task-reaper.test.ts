@@ -123,11 +123,21 @@ describe('reapHungTask', () => {
     });
 
     const rows = await readAuditRows(auditLogPath);
-    expect(rows).toEqual([expect.objectContaining({
+    const expectedEvidence = evidence();
+    expect(rows).toEqual([{
       type: 'task.hungTaskReap',
+      timestamp: expect.any(String),
       actor: 'system:hung-task-reaper',
       taskId: task.id,
-    })]);
+      silentForMs: expectedEvidence.silentForMs,
+      thresholdMs: expectedEvidence.thresholdMs,
+      evidence: {
+        lastHookEventAt: expectedEvidence.lastHookEventAt,
+        lastPaneChangeAt: expectedEvidence.lastPaneChangeAt,
+        lastTokenActivityAt: expectedEvidence.lastTokenActivityAt,
+      },
+      // No reportsDir passed to this test — no reportPath key at all.
+    }]);
   });
 
   test('broadcasts a warning alert', async () => {

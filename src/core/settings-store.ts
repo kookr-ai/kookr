@@ -99,6 +99,13 @@ export interface KookrSettings {
    * autoCloseOnSignal tasks", so a short value there must never silently
    * start closing ask-first review-required work. See
    * docs/adr and completion-ready-cleanup.ts `classifyCompletionReadyClosePolicy`.
+   *
+   * Accepted risk (issue #1526 Phase A review): this deliberately overrides
+   * ask-first review for ANY task past the TTL, including one a human
+   * happens to be mid-review on. Accepted for this incident — the operator
+   * explicitly wants the drained tasks closed, and worktree cleanup already
+   * preserves dirty/unmerged worktrees, so no work is lost even if review
+   * hadn't finished.
    */
   completionReadyTtlMinutes: number;
   /**
@@ -108,6 +115,11 @@ export interface KookrSettings {
    * is killed, the task transitions to `terminated`, and its slot is freed.
    * Excludes any task with a pending signal or that the watchdog classifies
    * as waiting on the user/a permission — see hung-task-reaper.ts.
+   *
+   * Accepted risk (issue #1526 Phase A review): this ships enabled-by-default
+   * directly onto the live incident. Accepted — a 3h all-channels-silent bar
+   * is conservative, and the operator wants the hung task (20e2ddbd) reaped
+   * automatically rather than requiring a manual opt-in first.
    */
   hungTaskReapEnabled: boolean;
   /** Minutes of total silence (all liveness channels) before a task is reaped. */

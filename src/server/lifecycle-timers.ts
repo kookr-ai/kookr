@@ -287,21 +287,61 @@ export interface AutoCloseStaleCompletionReadyResult {
 
 /**
  * Cap on how many completion-ready tasks this function will auto-close per
- * invocation (issue #1526 Phase A). The incident this guards against: 11
+ * BATCH (issue #1526 Phase A). The incident this guards against: 11
  * simultaneous session teardowns each broadcast a multi-MB websocket
  * snapshot on an already-loaded server, which re-triggers the overload that
  * caused the original wedge. Draining oldest-first (entries are sorted by
- * signal age) across successive ticks keeps teardown load flat.
+ * signal age) across successive batches keeps teardown load flat.
  */
 export const DEFAULT_MAX_AUTO_CLOSE_PER_TICK = 2;
 
+/**
+ * Minimum spacing between auto-close BATCHES (issue #1526 Phase A). This
+ * function is invoked from the liveness tick, which runs every 5s in
+ * production (`livenessIntervalMs`) — without this throttle, "max 2 per
+ * tick" would still drain 11 tasks in ~30s (~22 multi-MB teardown broadcasts
+ * in half a minute), on the exact server whose overload caused the incident.
+ * With this throttle, 11 tasks drain over ~6 minutes (2 every 60s) instead —
+ * comfortably inside the ≤2h drain bound while actually spreading the load.
+ */
+export const AUTO_CLOSE_SWEEP_MIN_INTERVAL_MS = 60_000;
+
+/**
+ * Mutable cross-tick state for the sweep throttle above. Callers that want
+ * throttling create ONE of these per server instance (e.g. once in
+ * `startLifecycleTimers`) and pass the SAME object on every tick; omitting it
+ * disables throttling (only the per-batch cap applies) — used by tests that
+ * don't care about batch spacing.
+ */
+export interface AutoCloseSweepThrottle {
+  lastSweepAt: number;
+}
+
+export function createAutoCloseSweepThrottle(): AutoCloseSweepThrottle {
+  return { lastSweepAt: 0 };
+}
+
 export async function autoCloseStaleCompletionReadyTasks(
   deps: AutoCloseStaleCompletionReadyDeps,
-  opts: { now?: Date; thresholdMs?: number; ttlMs?: number; maxPerTick?: number } = {},
+  opts: {
+    now?: Date;
+    thresholdMs?: number;
+    ttlMs?: number;
+    maxPerTick?: number;
+    throttle?: AutoCloseSweepThrottle;
+    minIntervalMs?: number;
+  } = {},
 ): Promise<AutoCloseStaleCompletionReadyResult> {
   const closedTaskIds: string[] = [];
   const lifecycleDeps = deps.lifecycleDeps;
   if (!lifecycleDeps) return { closedTaskIds };
+
+  const nowMs = (opts.now ?? new Date()).getTime();
+  if (opts.throttle) {
+    const minIntervalMs = opts.minIntervalMs ?? AUTO_CLOSE_SWEEP_MIN_INTERVAL_MS;
+    if (nowMs - opts.throttle.lastSweepAt < minIntervalMs) return { closedTaskIds };
+    opts.throttle.lastSweepAt = nowMs;
+  }
 
   const entries = listStaleCompletionReadyTasks(deps.taskStore.listTasks(), {
     now: opts.now,
@@ -379,6 +419,8 @@ export async function maybeReapHungTask(
   deps: TimerDeps,
   taskStore: TaskStore,
   lifecycleDeps: LifecycleDeps,
+  /** Injectable clock (issue #1526 Phase A review fix) — mirrors reapHungTask's own `now`, so tests can assert exact threshold boundaries instead of padding with a wall-clock buffer. Defaults to the real clock. */
+  now: () => Date = () => new Date(),
 ): Promise<boolean> {
   if (!(deps.getHungTaskReapEnabled?.() ?? true)) return false;
 
@@ -388,13 +430,14 @@ export async function maybeReapHungTask(
   const state = deps.watchdog.getState(agentId);
   if (!state) return false;
 
+  const nowDate = now();
   const thresholdMs = deps.getHungTaskReapMs?.();
   const liveness = {
     lastHookEventAt: state.lastEventAt,
     lastPaneChangeAt: state.lastPaneChangeAt,
     lastTokenActivityAt: state.lastTokenActivityAt,
   };
-  const verdict = evaluateHungTaskReap(task, liveness, { now: Date.now(), thresholdMs });
+  const verdict = evaluateHungTaskReap(task, liveness, { now: nowDate.getTime(), thresholdMs });
   if (!verdict.eligible) return false;
 
   console.warn(
@@ -418,6 +461,7 @@ export async function maybeReapHungTask(
       reportsDir: deps.reportsDir,
       auditLogPath: deps.auditLogPath,
       broadcastToAll: deps.broadcastToAll,
+      now,
     },
   );
 
@@ -482,6 +526,10 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     saveIntervalMs, livenessIntervalMs, broadcastToAll,
     shadowRegistry,
   } = deps;
+
+  // issue #1526 Phase A: one throttle per server instance, shared across
+  // every liveness tick's auto-close sweep. See AUTO_CLOSE_SWEEP_MIN_INTERVAL_MS.
+  const autoCloseSweepThrottle = createAutoCloseSweepThrottle();
 
   // Permission resolution is detected through authoritative signals:
   // 1. Keystroke detection in the terminal bridge (immediate, for Kookr UI)
@@ -568,99 +616,129 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   // pipeline (monitor.processEvents + watchdog.recordEvents), which is the
   // same path the fs.watch listener uses. One reader, one offset map — the
   // watchdog tick is a trigger, not a parser.
+  //
+  // Re-entrancy guard (issue #1526 Phase A review fix): on a loaded server a
+  // tick can still be mid-flight (awaiting adapter.captureDisplay,
+  // hookWatcher.drainNow, or a hung-task reap's session teardown) when the
+  // next 5s interval fires. Without this guard, overlapping ticks produce
+  // duplicate hung-task reap report files and InvalidTransition log spam
+  // (two ticks both trying to terminate/complete the same task).
+  let watchdogTickRunning = false;
   const watchdogInterval = setInterval(async () => {
-    const agents = watchdog.getTrackedAgents();
-    let changed = false;
+    if (watchdogTickRunning) return;
+    watchdogTickRunning = true;
+    try {
+      const agents = watchdog.getTrackedAgents();
+      let changed = false;
 
-    for (const agentId of agents) {
-      try {
-        // Capture pane output
-        let paneContent = '';
-        let paneCaptureSucceeded = true;
+      for (const agentId of agents) {
         try {
-          paneContent = await adapter.captureDisplay(agentId);
-        } catch {
-          // Session might be dead — liveness check will handle it
-          paneCaptureSucceeded = false;
-        }
+          // Capture pane output
+          let paneContent = '';
+          let paneCaptureSucceeded = true;
+          try {
+            paneContent = await adapter.captureDisplay(agentId);
+          } catch {
+            // Session might be dead — liveness check will handle it
+            paneCaptureSucceeded = false;
+          }
 
-        // Backup read path: hook-watcher already tails the file via fs.watch
-        // and a 3s backup poll, but the watchdog tick forces a drain here so
-        // stuck-detection never waits on a dropped fs.watch event. The drain
-        // updates the single offset map and dispatches any recovered lines
-        // through adapter.onEvent — no parallel parsing, no parallel offset.
-        try {
-          await hookWatcher.drainNow(agentId);
-        } catch {
-          // Drain failures are non-critical — next tick retries.
-        }
+          // Backup read path: hook-watcher already tails the file via fs.watch
+          // and a 3s backup poll, but the watchdog tick forces a drain here so
+          // stuck-detection never waits on a dropped fs.watch event. The drain
+          // updates the single offset map and dispatches any recovered lines
+          // through adapter.onEvent — no parallel parsing, no parallel offset.
+          try {
+            await hookWatcher.drainNow(agentId);
+          } catch {
+            // Drain failures are non-critical — next tick retries.
+          }
 
-        // Hook events have already propagated into watchdog via recordEvents
-        // in the event-pipeline; the tick only evaluates state now.
-        const verdict = watchdog.tick(agentId, paneContent, []);
+          // Hook events have already propagated into watchdog via recordEvents
+          // in the event-pipeline; the tick only evaluates state now.
+          const verdict = watchdog.tick(agentId, paneContent, []);
 
-        // Monitor is the single owner of the Anomaly union. Hand the verdict
-        // to it and let Monitor decide whether to enqueue, suppress, or clear —
-        // this replaces the former in-place reconciliation between Monitor
-        // and Watchdog that lived in this file (issue #367 sub-goal 3).
-        const watchdogActionable = verdict.status === 'needs_input'
-          || verdict.status === 'permission_blocked'
-          || verdict.status === 'stale_agent'
-          || verdict.status === 'hook_disconnected';
+          // Monitor is the single owner of the Anomaly union. Hand the verdict
+          // to it and let Monitor decide whether to enqueue, suppress, or clear —
+          // this replaces the former in-place reconciliation between Monitor
+          // and Watchdog that lived in this file (issue #367 sub-goal 3).
+          const watchdogActionable = verdict.status === 'needs_input'
+            || verdict.status === 'permission_blocked'
+            || verdict.status === 'stale_agent'
+            || verdict.status === 'hook_disconnected';
 
-        if (monitor.applyWatchdogVerdict(agentId, verdict, { paneCaptureSucceeded, paneText: paneContent })) {
-          changed = true;
-        }
-
-        if (
-          !watchdogActionable
-          && monitor.sampleFindingEvidence(agentId, paneCaptureSucceeded ? paneContent : undefined)
-        ) {
-          changed = true;
-        }
-
-        // Run shadow strategies (fire-and-forget, never affects real detection)
-        if (shadowRegistry) {
-          const realAnomaly = monitor.getCurrentAnomaly(agentId);
-          shadowRegistry.evaluate(agentId, { paneText: paneContent, realAnomaly });
-        }
-
-        // Hung-task reaper (issue #1526 Phase A / FM6). Gated on the SAME
-        // `stale_agent` verdict just computed above — that status already
-        // means "no tool in progress, not waiting on input/permission, and
-        // (per the watchdog's own short-timescale thresholds) no recent hook
-        // event / pane change / token activity". Reusing it here means a task
-        // genuinely waiting on the user or a permission prompt is excluded
-        // for free: those verdicts (`needs_input`, `permission_blocked`, …)
-        // never reach this branch. The reaper's OWN, much larger threshold
-        // (hours, not seconds) decides whether that silence has gone on long
-        // enough to act on.
-        if (verdict.status === 'stale_agent' && (deps.getHungTaskReapEnabled?.() ?? true)) {
-          if (await maybeReapHungTask(agentId, paneContent, deps, taskStore, lifecycleDeps)) {
+          if (monitor.applyWatchdogVerdict(agentId, verdict, { paneCaptureSucceeded, paneText: paneContent })) {
             changed = true;
           }
+
+          if (
+            !watchdogActionable
+            && monitor.sampleFindingEvidence(agentId, paneCaptureSucceeded ? paneContent : undefined)
+          ) {
+            changed = true;
+          }
+
+          // Run shadow strategies (fire-and-forget, never affects real detection)
+          if (shadowRegistry) {
+            const realAnomaly = monitor.getCurrentAnomaly(agentId);
+            shadowRegistry.evaluate(agentId, { paneText: paneContent, realAnomaly });
+          }
+
+          // Hung-task reaper (issue #1526 Phase A / FM6). Gated on the SAME
+          // `stale_agent` verdict just computed above.
+          //
+          // What `stale_agent` actually guarantees: no recent hook event
+          // (`timeSinceLastEvent >= staleThresholdMs`, 30s default), not
+          // waiting on input/permission, and not in the MCP-startup/grace
+          // window. It does NOT guarantee "no tool in progress" — watchdog.tick
+          // also returns `stale_agent` for a tool that's been unmatched
+          // (PreToolUse with no PostToolUse) for >= maxToolExecutionTimeMs
+          // (10 min default); that override exists specifically so a hung tool
+          // call doesn't hide behind indefinite `tool_running` suppression.
+          // This is the exact shape of the incident's hung task (20e2ddbd: last
+          // event a PreToolUse, pane frozen mid-`write`, silent for 33h) — a
+          // tool that's been silent past the reap threshold (hours, not
+          // minutes) is correctly treated as hung either way.
+          //
+          // What protects a genuinely-recent tool call: `evaluateHungTaskReap`
+          // checks `lastHookEventAt` (below) against its OWN, much larger
+          // threshold, independent of the watchdog's 10-minute override. A
+          // PreToolUse an hour ago, with a 3h reap threshold, keeps the hook
+          // channel "live" and blocks the reap — regardless of what
+          // `verdict.status` says at this instant.
+          //
+          // Reusing `stale_agent` here means a task genuinely waiting on the
+          // user or a permission prompt is excluded for free: those verdicts
+          // (`needs_input`, `permission_blocked`, …) never reach this branch.
+          if (verdict.status === 'stale_agent' && (deps.getHungTaskReapEnabled?.() ?? true)) {
+            if (await maybeReapHungTask(agentId, paneContent, deps, taskStore, lifecycleDeps)) {
+              changed = true;
+            }
+          }
+        } catch (err) {
+          console.error(`Watchdog error for ${agentId}:`, err);
+        }
+      }
+
+      try {
+        if (await deps.userInputDeliveries?.sweepUnsubmittedDeliveries()) {
+          changed = true;
         }
       } catch (err) {
-        console.error(`Watchdog error for ${agentId}:`, err);
+        console.error('Error sweeping unsubmitted user-input deliveries:', err);
       }
-    }
 
-    try {
-      if (await deps.userInputDeliveries?.sweepUnsubmittedDeliveries()) {
-        changed = true;
+      if (changed) {
+        broadcastToAll(createSnapshotMessage({
+          monitor,
+          serverCwd,
+          activityMetaProvider: deps.activityMetaProvider,
+          relationTaskStore: taskStore,
+          userInputDeliveryProvider: deps.userInputDeliveries,
+        }));
       }
-    } catch (err) {
-      console.error('Error sweeping unsubmitted user-input deliveries:', err);
-    }
-
-    if (changed) {
-      broadcastToAll(createSnapshotMessage({
-        monitor,
-        serverCwd,
-        activityMetaProvider: deps.activityMetaProvider,
-        relationTaskStore: taskStore,
-        userInputDeliveryProvider: deps.userInputDeliveries,
-      }));
+    } finally {
+      watchdogTickRunning = false;
     }
   }, 5_000);
 
@@ -681,7 +759,13 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     ...(deps.taskTailStore ? { taskTailStore: deps.taskTailStore } : {}),
   };
 
+  // Re-entrancy guard (issue #1526 Phase A review fix) — same rationale as
+  // the watchdog interval above: reconcile()/the completion-ready sweep/a
+  // hung-task reap can all still be mid-flight when the next tick fires.
+  let livenessTickRunning = false;
   const livenessInterval = setInterval(async () => {
+    if (livenessTickRunning) return;
+    livenessTickRunning = true;
     try {
       if (
         deps.worktreeRegistry
@@ -701,6 +785,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         {
           thresholdMs: deps.getAutoCloseCompletionReadyDelayMs?.(),
           ttlMs: deps.getCompletionReadyTtlMs?.(),
+          throttle: autoCloseSweepThrottle,
         },
       );
 
@@ -776,6 +861,8 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       }
     } catch (err) {
       console.error('Error during liveness check:', err);
+    } finally {
+      livenessTickRunning = false;
     }
   }, livenessIntervalMs);
 

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { DEFAULT_HUNG_TASK_REAP_MS, evaluateHungTaskReap } from './hung-task-reaper.js';
+import { Watchdog } from './watchdog.js';
 
 const THRESHOLD_MS = 3 * 60 * 60 * 1000; // 3h, matches the default
 const NOW = Date.parse('2026-06-21T00:00:00.000Z');
@@ -104,5 +105,60 @@ describe('evaluateHungTaskReap', () => {
       { now: NOW, thresholdMs: THRESHOLD_MS },
     );
     expect(verdict.eligible).toBe(true);
+  });
+
+  // `stale_agent` does NOT mean "no tool in progress" — watchdog.tick also
+  // returns it for a tool left unmatched (PreToolUse with no PostToolUse)
+  // once it's been silent past the watchdog's own maxToolExecutionTimeMs
+  // (10 min default). These two tests document what actually decides the
+  // reap outcome in that case: this function's OWN, much larger threshold
+  // against `lastHookEventAt` — completely independent of "tool in progress"
+  // as a concept, which this function never looks at.
+  describe('tool-in-progress does not bypass the hook-event channel (issue #1526 Phase A)', () => {
+    const agentId = 'kookr-tool-in-progress';
+
+    test('a tool started 1h ago (3h threshold) is watchdog stale_agent but NOT reaped — the hook channel is still live', () => {
+      const watchdog = new Watchdog(); // default config: maxToolExecutionTimeMs = 10min
+      const toolStartedAt = NOW - 60 * 60_000; // 1h ago
+      watchdog.registerAgent(agentId, toolStartedAt, toolStartedAt);
+      watchdog.recordEvents(agentId, [{ type: 'tool_use', sessionId: agentId, toolName: 'Bash', toolUseId: 'tu-1' }], toolStartedAt);
+
+      // 1h of total silence far exceeds the watchdog's own 10-minute
+      // maxToolExecutionTimeMs override, so the watchdog itself already
+      // reports stale_agent — this is the exact ambiguity the comment warns
+      // about: stale_agent here does NOT mean the tool call went away.
+      const verdict = watchdog.tick(agentId, 'frozen pane', [], NOW);
+      expect(verdict.status).toBe('stale_agent');
+      expect(watchdog.hasToolInProgress(agentId)).toBe(true);
+
+      // The reaper's OWN threshold (3h) is what actually protects this task:
+      // the hook channel (PreToolUse 1h ago) isn't silent long enough yet.
+      const state = watchdog.getState(agentId)!;
+      const reapVerdict = evaluateHungTaskReap(
+        { status: 'inProgress' },
+        { lastHookEventAt: state.lastEventAt, lastPaneChangeAt: state.lastPaneChangeAt, lastTokenActivityAt: state.lastTokenActivityAt },
+        { now: NOW, thresholdMs: THRESHOLD_MS },
+      );
+      expect(reapVerdict).toEqual({ eligible: false, reason: 'not_silent_enough' });
+    });
+
+    test('a tool started 4h ago (3h threshold), all channels silent, IS reaped — this is the incident case', () => {
+      const watchdog = new Watchdog();
+      const toolStartedAt = NOW - 4 * 60 * 60_000; // 4h ago — past the 3h reap threshold
+      watchdog.registerAgent(agentId, toolStartedAt, toolStartedAt);
+      watchdog.recordEvents(agentId, [{ type: 'tool_use', sessionId: agentId, toolName: 'Write', toolUseId: 'tu-2' }], toolStartedAt);
+
+      const verdict = watchdog.tick(agentId, 'frozen pane', [], NOW);
+      expect(verdict.status).toBe('stale_agent');
+      expect(watchdog.hasToolInProgress(agentId)).toBe(true);
+
+      const state = watchdog.getState(agentId)!;
+      const reapVerdict = evaluateHungTaskReap(
+        { status: 'inProgress' },
+        { lastHookEventAt: state.lastEventAt, lastPaneChangeAt: state.lastPaneChangeAt, lastTokenActivityAt: state.lastTokenActivityAt },
+        { now: NOW, thresholdMs: THRESHOLD_MS },
+      );
+      expect(reapVerdict.eligible).toBe(true);
+    });
   });
 });

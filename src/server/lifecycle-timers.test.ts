@@ -3,8 +3,10 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  AUTO_CLOSE_SWEEP_MIN_INTERVAL_MS,
   autoCloseStaleCompletionReadyTasks,
   clearAllTimers,
+  createAutoCloseSweepThrottle,
   findFirstActiveSession,
   maybeReapHungTask,
   resolveMaintenancePruneIntervalHours,
@@ -411,6 +413,56 @@ describe('autoCloseStaleCompletionReadyTasks', () => {
       expect(finalResult.closedTaskIds).toEqual([]);
     });
 
+    test('throttles sweep batches to at most one per AUTO_CLOSE_SWEEP_MIN_INTERVAL_MS', async () => {
+      // The liveness tick runs every 5s in production — without this
+      // throttle, "max 2 per batch" alone would still drain 11 tasks in
+      // ~30s. This proves batches are spaced at least 60s apart regardless
+      // of how often the caller invokes the sweep.
+      const taskStore = new TaskStore();
+      const tasks = Array.from({ length: 4 }, (_, i) => {
+        const task = taskStore.createTask({ prompt: `Task ${i}`, cwd: '/tmp', deliveryAuthorization: 'ask-first' });
+        taskStore.addSession(task.id, {
+          tmuxSession: `kookr-${task.id}`,
+          agentType: 'claude-code',
+          cwd: '/tmp',
+          createdAt: new Date('2026-06-19T00:00:00.000Z'),
+        });
+        taskStore.setPendingSignal(task.id, {
+          kind: 'completion_ready',
+          raisedAt: new Date(Date.parse('2026-06-20T00:00:00.000Z') + i * 1000).toISOString(),
+        });
+        return task;
+      });
+
+      const t0 = Date.parse('2026-06-21T00:00:00.000Z');
+      const throttle = createAutoCloseSweepThrottle();
+      const opts = (now: Date) => ({ now, ttlMs: 2 * 60 * 60 * 1000, throttle });
+
+      // Invocation 1 (t=0): runs, closes the first batch of 2.
+      const result1 = await autoCloseStaleCompletionReadyTasks(
+        { taskStore, lifecycleDeps: lifecycleDeps(taskStore) },
+        opts(new Date(t0)),
+      );
+      expect(result1.closedTaskIds).toEqual([tasks[0].id, tasks[1].id]);
+
+      // Invocation 2 (t=+5s): throttled — closes nothing, even though 2
+      // more eligible tasks remain.
+      const result2 = await autoCloseStaleCompletionReadyTasks(
+        { taskStore, lifecycleDeps: lifecycleDeps(taskStore) },
+        opts(new Date(t0 + 5_000)),
+      );
+      expect(result2.closedTaskIds).toEqual([]);
+      expect(taskStore.getTask(tasks[2].id)?.status).toBe('inProgress');
+
+      // Invocation 3 (t=+65s, i.e. > AUTO_CLOSE_SWEEP_MIN_INTERVAL_MS after
+      // invocation 1): throttle window has elapsed — closes the next batch.
+      const result3 = await autoCloseStaleCompletionReadyTasks(
+        { taskStore, lifecycleDeps: lifecycleDeps(taskStore) },
+        opts(new Date(t0 + AUTO_CLOSE_SWEEP_MIN_INTERVAL_MS + 5_000)),
+      );
+      expect(result3.closedTaskIds).toEqual([tasks[2].id, tasks[3].id]);
+    });
+
     test('a TTL-escalated close writes an audit row and broadcasts an alert', async () => {
       const auditLogPath = join(await mkdtemp(join(tmpdir(), 'kookr-audit-')), 'audit.jsonl');
       const taskStore = new TaskStore();
@@ -428,14 +480,23 @@ describe('autoCloseStaleCompletionReadyTasks', () => {
       expect(taskStore.getTask(task.id)?.status).toBe('completed');
 
       const rows = await readAuditRows(auditLogPath);
-      expect(rows).toEqual([expect.objectContaining({
+      expect(rows).toEqual([{
         type: 'task.completionReadyTtlEscalation',
+        timestamp: expect.any(String),
         actor: 'system:completion-ready-ttl',
         taskId: task.id,
-      })]);
+        signalRaisedAt: '2026-06-21T00:00:00.000Z',
+        ageMs: 2 * 60 * 60 * 1000,
+      }]);
 
       expect(broadcastToAll).toHaveBeenCalledTimes(1);
-      expect(broadcastToAll).toHaveBeenCalledWith(expect.objectContaining({ type: 'alert', severity: 'info' }));
+      expect(broadcastToAll).toHaveBeenCalledWith({
+        type: 'alert',
+        agentId: `kookr-${task.id}`, // per startTask() above
+        summary: 'Auto-closed after TTL: Task',
+        details: 'completion_ready pending 120m with no manual review — closed automatically to free the slot.',
+        severity: 'info',
+      });
     });
 
     test('an opted-in (autoCloseOnSignal) close does NOT write an audit row or broadcast', async () => {
@@ -460,6 +521,13 @@ describe('autoCloseStaleCompletionReadyTasks', () => {
 
 describe('maybeReapHungTask (issue #1526 Phase A)', () => {
   const REAP_THRESHOLD_MS = 3 * 60 * 60 * 1000;
+  // Fixed reference clock (issue #1526 Phase A review fix): maybeReapHungTask
+  // takes an injectable `now`, so every test below uses this instant instead
+  // of the real wall clock — no `+60_000`/`-60_000` fudge buffer needed to
+  // survive test execution latency, and exact threshold boundaries are
+  // actually testable.
+  const NOW = Date.parse('2026-06-21T00:00:00.000Z');
+  const now = () => new Date(NOW);
 
   function makeHungTask(taskStore: TaskStore, agentId: string): Task {
     const task = taskStore.createTask({ prompt: 'Hung agent', cwd: '/tmp' });
@@ -467,15 +535,15 @@ describe('maybeReapHungTask (issue #1526 Phase A)', () => {
       tmuxSession: agentId,
       agentType: 'claude-code',
       cwd: '/tmp',
-      createdAt: new Date(Date.now() - 2 * REAP_THRESHOLD_MS),
+      createdAt: new Date(NOW - 2 * REAP_THRESHOLD_MS),
     });
     return taskStore.getTask(task.id)!;
   }
 
-  /** Registers `agentId` with all three liveness channels last active `ageMs` ago. */
+  /** Registers `agentId` with all three liveness channels last active `ageMs` before NOW. */
   function makeSilentWatchdog(agentId: string, ageMs: number): Watchdog {
     const watchdog = new Watchdog();
-    const lastActivityAt = Date.now() - ageMs;
+    const lastActivityAt = NOW - ageMs;
     watchdog.registerAgent(agentId, lastActivityAt, lastActivityAt);
     // registerAgent seeds lastPaneChangeAt = registeredAt, which is what we want here.
     return watchdog;
@@ -517,7 +585,7 @@ describe('maybeReapHungTask (issue #1526 Phase A)', () => {
     const taskStore = new TaskStore();
     const agentId = 'kookr-hung-1';
     const task = makeHungTask(taskStore, agentId);
-    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 60_000);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
 
     const reaped = await maybeReapHungTask(
       agentId,
@@ -525,6 +593,7 @@ describe('maybeReapHungTask (issue #1526 Phase A)', () => {
       timerDeps({ watchdog, getHungTaskReapMs: () => REAP_THRESHOLD_MS }),
       taskStore,
       lifecycleDeps(taskStore),
+      now,
     );
 
     expect(reaped).toBe(true);
@@ -535,7 +604,7 @@ describe('maybeReapHungTask (issue #1526 Phase A)', () => {
     const taskStore = new TaskStore();
     const agentId = 'kookr-fresh-1';
     const task = makeHungTask(taskStore, agentId);
-    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS - 60_000);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS - 1);
 
     const reaped = await maybeReapHungTask(
       agentId,
@@ -543,6 +612,7 @@ describe('maybeReapHungTask (issue #1526 Phase A)', () => {
       timerDeps({ watchdog, getHungTaskReapMs: () => REAP_THRESHOLD_MS }),
       taskStore,
       lifecycleDeps(taskStore),
+      now,
     );
 
     expect(reaped).toBe(false);
@@ -553,8 +623,8 @@ describe('maybeReapHungTask (issue #1526 Phase A)', () => {
     const taskStore = new TaskStore();
     const agentId = 'kookr-signaled-1';
     const task = makeHungTask(taskStore, agentId);
-    taskStore.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: new Date().toISOString() });
-    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 60_000);
+    taskStore.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: now().toISOString() });
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
 
     const reaped = await maybeReapHungTask(
       agentId,
@@ -562,6 +632,7 @@ describe('maybeReapHungTask (issue #1526 Phase A)', () => {
       timerDeps({ watchdog, getHungTaskReapMs: () => REAP_THRESHOLD_MS }),
       taskStore,
       lifecycleDeps(taskStore),
+      now,
     );
 
     expect(reaped).toBe(false);
@@ -572,7 +643,7 @@ describe('maybeReapHungTask (issue #1526 Phase A)', () => {
     const taskStore = new TaskStore();
     const agentId = 'kookr-disabled-1';
     const task = makeHungTask(taskStore, agentId);
-    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 60_000);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
 
     const reaped = await maybeReapHungTask(
       agentId,
@@ -580,6 +651,7 @@ describe('maybeReapHungTask (issue #1526 Phase A)', () => {
       timerDeps({ watchdog, getHungTaskReapMs: () => REAP_THRESHOLD_MS, getHungTaskReapEnabled: () => false }),
       taskStore,
       lifecycleDeps(taskStore),
+      now,
     );
 
     expect(reaped).toBe(false);
@@ -590,7 +662,7 @@ describe('maybeReapHungTask (issue #1526 Phase A)', () => {
     const taskStore = new TaskStore();
     const agentId = 'kookr-hung-2';
     makeHungTask(taskStore, agentId);
-    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 60_000);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
     const pending = taskStore.createTask({ prompt: 'Waiting in queue', cwd: '/tmp' });
     taskStore.pendTask(pending.id);
     const launch = vi.fn(async () => undefined);
@@ -613,6 +685,7 @@ describe('maybeReapHungTask (issue #1526 Phase A)', () => {
       }),
       taskStore,
       lifecycleDeps(taskStore),
+      now,
     );
 
     expect(launch).toHaveBeenCalledWith(pending.id, pending.prompt, '/tmp');
@@ -874,6 +947,170 @@ describe('startLifecycleTimers budget threshold wiring', () => {
           anomaly: expect.objectContaining({ type: 'budget_exceeded', severity: 'warning' }),
         }),
       ]);
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+});
+
+describe('startLifecycleTimers hung-task reaper wiring (issue #1526 Phase A)', () => {
+  // The production safety property: maybeReapHungTask is only ever invoked
+  // when the SAME watchdog.tick() call this tick already ran returned
+  // 'stale_agent' — so a task the watchdog currently classifies as
+  // needs_input/permission_blocked/etc. is excluded no matter how long its
+  // liveness channels have been silent. Every other reaper test drives
+  // maybeReapHungTask directly and therefore cannot exercise this gate —
+  // this is the one test that does, through a REAL Watchdog and the real
+  // startLifecycleTimers wiring.
+  const STALE_PANE = 'some old tool output\nnothing recognizable here\n';
+  // Matches CLAUDE_INPUT_PROMPT_RE (src/shared/pane-semantics.ts) — a lone
+  // '❯' on its own trailing line is Claude Code's high-confidence input
+  // prompt marker.
+  const NEEDS_INPUT_PANE = 'Some final assistant message.\n❯\n';
+
+  function baseTimerDeps(overrides: Partial<TimerDeps> = {}): { taskStore: TaskStore; deps: TimerDeps } {
+    const taskStore = new TaskStore();
+    const deps: TimerDeps = {
+      monitor: {
+        getSnapshot: () => [],
+        getAgentEvents: () => [],
+        applyWatchdogVerdict: vi.fn(() => false),
+        sampleFindingEvidence: vi.fn(() => false),
+        getCurrentAnomaly: vi.fn(),
+        unregisterAgent: vi.fn(),
+      } as any,
+      taskStore,
+      queue: new AttentionQueue(),
+      adapter: {
+        captureDisplay: vi.fn(async () => STALE_PANE),
+        stop: vi.fn(async () => undefined),
+      } as any,
+      adapterRegistry: {} as any,
+      tokenTracker: {
+        scanGrowth: vi.fn(async () => []),
+        scanAll: vi.fn(async () => undefined),
+        getTrackedTaskIds: vi.fn(() => []),
+        getUsage: vi.fn(() => undefined),
+        unregister: vi.fn(),
+      } as any,
+      watchdog: new Watchdog(),
+      hookWatcher: { drainNow: vi.fn(async () => undefined), stop: vi.fn(), isWatching: vi.fn(() => false), watch: vi.fn() } as any,
+      terminalBackend: { listSessions: vi.fn(async () => []) } as any,
+      hooksDir: '/tmp/hooks',
+      tasksFile: '/tmp/tasks.json',
+      serverCwd: '/tmp/repo',
+      saveIntervalMs: 600_000,
+      // Kept well above the 5s watchdog tick so only the watchdog interval
+      // fires during a single 5s advance — the liveness/auto-close sweep is
+      // out of scope for this test.
+      livenessIntervalMs: 600_000,
+      broadcastToAll: vi.fn(),
+      getHungTaskReapMs: () => 1_000,
+      ...overrides,
+    };
+    return { taskStore, deps };
+  }
+
+  function registerStaleAgent(watchdog: Watchdog, agentId: string): void {
+    // Far enough in the past to already be past the grace period and the
+    // watchdog's own stale threshold by the time the interval first ticks.
+    const longAgo = Date.now() - 20 * 60_000;
+    watchdog.registerAgent(agentId, longAgo, longAgo);
+  }
+
+  test('needs_input (fully silent) is NOT reaped', async () => {
+    vi.useFakeTimers();
+    const agentId = 'agent-needs-input';
+    const { taskStore, deps } = baseTimerDeps({
+      adapter: { captureDisplay: vi.fn(async () => NEEDS_INPUT_PANE), stop: vi.fn(async () => undefined) } as any,
+    });
+    const task = taskStore.createTask({ prompt: 'waiting', cwd: '/tmp' });
+    taskStore.addSession(task.id, { tmuxSession: agentId, agentType: 'claude-code', cwd: '/tmp', createdAt: new Date() });
+    registerStaleAgent(deps.watchdog, agentId);
+
+    const handles = startLifecycleTimers(deps);
+    try {
+      await vi.advanceTimersByTimeAsync(5_000);
+      // Sanity check on the gate itself: the real watchdog tick for this
+      // pane really does classify as needs_input, not stale_agent.
+      expect(deps.watchdog.tick(agentId, NEEDS_INPUT_PANE, []).status).toBe('needs_input');
+      expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
+  test('stale_agent (fully silent) IS reaped', async () => {
+    vi.useFakeTimers();
+    const agentId = 'agent-stale';
+    const { taskStore, deps } = baseTimerDeps();
+    const task = taskStore.createTask({ prompt: 'hung', cwd: '/tmp' });
+    taskStore.addSession(task.id, { tmuxSession: agentId, agentType: 'claude-code', cwd: '/tmp', createdAt: new Date() });
+    registerStaleAgent(deps.watchdog, agentId);
+
+    // Sanity check on the gate itself, on an identically-registered SEPARATE
+    // watchdog instance — the production one gets unregisterAgent'd as part
+    // of the reap teardown below, so it can't be re-ticked afterward.
+    const sanityWatchdog = new Watchdog();
+    registerStaleAgent(sanityWatchdog, agentId);
+    expect(sanityWatchdog.tick(agentId, STALE_PANE, []).status).toBe('stale_agent');
+
+    const handles = startLifecycleTimers(deps);
+    try {
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(taskStore.getTask(task.id)?.status).toBe('terminated');
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+});
+
+describe('startLifecycleTimers watchdog-tick re-entrancy guard (issue #1526 Phase A review fix)', () => {
+  test('a slow tick blocks a second concurrent watchdog tick from starting', async () => {
+    vi.useFakeTimers();
+    const { deps } = (() => {
+      const taskStore = new TaskStore();
+      // captureDisplay never resolves within this test — simulates a tick
+      // still mid-flight when the next 5s interval fires.
+      const captureDisplay = vi.fn(() => new Promise<string>(() => {}));
+      const deps: TimerDeps = {
+        monitor: {
+          getSnapshot: () => [],
+          getAgentEvents: () => [],
+          applyWatchdogVerdict: vi.fn(() => false),
+          sampleFindingEvidence: vi.fn(() => false),
+          getCurrentAnomaly: vi.fn(),
+        } as any,
+        taskStore,
+        queue: new AttentionQueue(),
+        adapter: { captureDisplay, stop: vi.fn(async () => undefined) } as any,
+        adapterRegistry: {} as any,
+        tokenTracker: {
+          scanGrowth: vi.fn(async () => []),
+          scanAll: vi.fn(async () => undefined),
+          getTrackedTaskIds: vi.fn(() => []),
+          getUsage: vi.fn(() => undefined),
+        } as any,
+        watchdog: { getTrackedAgents: vi.fn(() => ['agent-slow']), recordTokenActivity: vi.fn(), tick: vi.fn() } as any,
+        hookWatcher: { drainNow: vi.fn(async () => undefined) } as any,
+        terminalBackend: { listSessions: vi.fn(async () => []) } as any,
+        hooksDir: '/tmp/hooks',
+        tasksFile: '/tmp/tasks.json',
+        serverCwd: '/tmp/repo',
+        saveIntervalMs: 600_000,
+        livenessIntervalMs: 600_000,
+        broadcastToAll: vi.fn(),
+      };
+      return { deps };
+    })();
+
+    const handles = startLifecycleTimers(deps);
+    try {
+      // Two interval periods elapse while captureDisplay is still pending —
+      // without the guard, watchdog.getTrackedAgents/captureDisplay would
+      // fire again on the second tick even though the first never finished.
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(deps.adapter.captureDisplay).toHaveBeenCalledTimes(1);
     } finally {
       clearAllTimers(handles);
     }

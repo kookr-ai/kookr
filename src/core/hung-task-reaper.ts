@@ -31,14 +31,24 @@ export type HungTaskReapVerdict =
  * A task is reap-eligible only when ALL THREE liveness channels have been
  * silent for at least `thresholdMs`: no hook events, no pane-content change,
  * no token-count movement. "Silent for" is computed from the MOST RECENT of
- * the three timestamps — the instant any one of them last moved.
+ * the three timestamps — the instant any one of them last moved. This is
+ * independent of the watchdog's own short-timescale thresholds: a hook event
+ * an hour ago, with a 3h reap threshold, keeps the hook channel "live" and
+ * blocks the reap regardless of anything else.
  *
  * This function does NOT consult the watchdog's live per-tick verdict (e.g.
  * `needs_input` / `permission_blocked`) — callers must only invoke it when
  * the watchdog currently reports `stale_agent` for the agent, so a task
  * genuinely waiting on the user or a permission prompt is never reaped
- * regardless of how long it has been waiting. See hung-task-reaper.ts
- * (server) for the wiring that enforces this.
+ * regardless of how long it has been waiting. Note that `stale_agent` does
+ * NOT mean "no tool in progress": the watchdog also returns it for a tool
+ * left unmatched (PreToolUse with no PostToolUse) once it's been silent past
+ * the watchdog's own maxToolExecutionTimeMs (10 min default) — a tool that's
+ * been silent past THIS function's much larger threshold (hours) is still
+ * correctly reap-eligible; that's exactly the incident's hung task (last
+ * event a PreToolUse, pane frozen mid-write, silent for 33h). See
+ * server/hung-task-reaper.ts and the watchdog-tick wiring in
+ * server/lifecycle-timers.ts for the full gate this function depends on.
  */
 export function evaluateHungTaskReap(
   task: Pick<Task, 'status' | 'pendingSignal'>,

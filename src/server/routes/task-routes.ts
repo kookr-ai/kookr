@@ -121,6 +121,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
 
     const generatedAt = new Date();
     const ttlMs = deps.getCompletionReadyTtlMs?.();
+    // `closeReason` (issue #1526 Phase A) is additive under the existing
+    // schemaVersion below — only present when canAutoClose is true, so an
+    // older client that doesn't know the field simply ignores it.
     const tasks = listStaleCompletionReadyTasks(taskStore.listTasks(), { now: generatedAt, thresholdMs, ttlMs })
       .map((entry) => ({
         task: normalizeTaskForApi(entry.task),
