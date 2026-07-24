@@ -58,6 +58,15 @@ export interface ScheduleRunnerDeps {
    * always-accepting (back-compat).
    */
   isAccepting?: () => boolean;
+  /**
+   * Resolve a blocking task's current status (issue #1526 Phase A). Used
+   * ONLY to split `isTaskBlockingSchedule`'s single boolean into two distinct
+   * ledger outcomes: `pending` → coalesce (`skipped_coalesced`, at most one
+   * outstanding queued fire per schedule); anything else (still active,
+   * e.g. `inProgress`) → the existing `skipped_active` behavior, unchanged.
+   * Absent means every block is reported as `skipped_active` (back-compat).
+   */
+  getBlockingTaskStatus?: (taskId: string) => TaskStatus | undefined;
 }
 
 export class ScheduleRunner {
@@ -209,6 +218,24 @@ export class ScheduleRunner {
 
     const blockingTaskId = schedule.latestExecution?.taskId;
     if (blockingTaskId && this.deps.isTaskBlockingSchedule(blockingTaskId)) {
+      // Coalesce (issue #1526 Phase A): the previous fire's task never got
+      // past `pending` (queued_capacity) — skip this fire rather than
+      // stacking a second pending task behind the first, so at most one
+      // outstanding queued fire per schedule ever exists. A blocking task in
+      // any OTHER active status (e.g. `inProgress`) keeps the existing
+      // skipped_active behavior exactly as before.
+      if (this.deps.getBlockingTaskStatus?.(blockingTaskId) === 'pending') {
+        console.warn(`[schedule] Coalescing "${schedule.name}" — previous fire's task is still pending (task ${blockingTaskId})`);
+        await this.deps.service.markExecutionOutcome(
+          schedule.id,
+          receipt.id,
+          'skipped_coalesced',
+          'previous_run_pending',
+          'Previous fire is still pending launch',
+          { blockingTaskId },
+        );
+        return { error: 'Previous fire is still pending launch' };
+      }
       console.warn(`[schedule] Skipping "${schedule.name}" — previous run still active (task ${blockingTaskId})`);
       await this.deps.service.markExecutionOutcome(
         schedule.id,
@@ -233,18 +260,12 @@ export class ScheduleRunner {
       return { error: 'Server draining' };
     }
 
-    if (this.deps.getActiveCount() >= this.deps.getMaxActiveTasks()) {
-      console.warn(`[schedule] Skipping "${schedule.name}" — at max active tasks (${this.deps.getMaxActiveTasks()})`);
-      await this.deps.service.markExecutionOutcome(
-        schedule.id,
-        receipt.id,
-        'skipped_capacity',
-        'capacity',
-        'Max active tasks reached',
-      );
-      return { error: 'Max active tasks reached' };
-    }
-
+    // #1526 Phase A / FM8: no capacity pre-check here anymore. At capacity,
+    // the launcher (the normal task-submission path) pends the task instead
+    // of launching it — same as any other over-cap POST /api/tasks — so a
+    // scheduled fire is queued rather than silently dropped. The scheduler's
+    // own promotion loop launches it once a slot frees. See
+    // markExecutionAccepted for the resulting `queued_capacity` outcome.
     try {
       const launch = await this.deps.validator.resolveLaunch(schedule);
       const result = await this.deps.launcher({
@@ -263,7 +284,10 @@ export class ScheduleRunner {
       });
 
       await this.deps.service.markExecutionAccepted(schedule.id, receipt.id, result.task.id, result.queued);
-      console.log(`[schedule] Fired "${schedule.name}" → task ${result.task.id}${result.queued ? ' (queued)' : ''}`);
+      console.log(
+        `[schedule] Fired "${schedule.name}" → task ${result.task.id}`
+        + `${result.queued ? ` (queued — at capacity ${this.deps.getActiveCount()}/${this.deps.getMaxActiveTasks()})` : ''}`,
+      );
       return { taskId: result.task.id, queued: result.queued };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

@@ -28,7 +28,10 @@ describe('ScheduleRunner', () => {
   }>;
   let taskIdCounter: number;
   let activeTaskIds: Set<string>;
+  /** Task ids the mock launcher pended instead of launching (issue #1526 Phase A: at-capacity fires queue). */
+  let pendingTaskIds: Set<string>;
   let activeCount: number;
+  let maxActive: number;
   let runners: Set<ScheduleRunner>;
 
   beforeEach(async () => {
@@ -39,7 +42,9 @@ describe('ScheduleRunner', () => {
     launched = [];
     taskIdCounter = 0;
     activeTaskIds = new Set();
+    pendingTaskIds = new Set();
     activeCount = 0;
+    maxActive = 10;
     runners = new Set();
 
     await mkdir(join(dir, '.kookr', 'playbooks'), { recursive: true });
@@ -67,6 +72,10 @@ Do the test thing.
       store,
       service,
       validator,
+      // Mirrors real launchTask semantics (src/server/launch-service.ts): at
+      // or over capacity, the task is created and pended rather than
+      // launched (issue #1526 Phase A) — `queued: true`, no active-count
+      // increment. Below capacity, unchanged: launches immediately.
       launcher: async (opts) => {
         const taskId = `task-${++taskIdCounter}`;
         launched.push({
@@ -76,13 +85,23 @@ Do the test thing.
           effort: opts.effort,
           model: opts.model,
         });
-        activeTaskIds.add(taskId);
-        activeCount += 1;
-        return { task: { id: taskId } as any, queued: false };
+        const queued = activeCount >= maxActive;
+        if (queued) {
+          pendingTaskIds.add(taskId);
+        } else {
+          activeTaskIds.add(taskId);
+          activeCount += 1;
+        }
+        return { task: { id: taskId } as any, queued };
       },
       getActiveCount: () => activeCount,
-      getMaxActiveTasks: () => 10,
-      isTaskBlockingSchedule: (taskId) => activeTaskIds.has(taskId),
+      getMaxActiveTasks: () => maxActive,
+      isTaskBlockingSchedule: (taskId) => activeTaskIds.has(taskId) || pendingTaskIds.has(taskId),
+      getBlockingTaskStatus: (taskId) => {
+        if (activeTaskIds.has(taskId)) return 'inProgress';
+        if (pendingTaskIds.has(taskId)) return 'pending';
+        return undefined;
+      },
       ...overrides,
     });
     runners.add(runner);
@@ -231,7 +250,7 @@ Do the test thing.
     expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
   });
 
-  it('skips when at max active tasks', async () => {
+  it('queues instead of skipping when at max active tasks (issue #1526 Phase A)', async () => {
     activeCount = 10;
 
     const schedule = store.create({
@@ -248,15 +267,72 @@ Do the test thing.
     const runner = createRunner();
     await runner.tick();
 
-    expect(launched).toHaveLength(0);
-    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_capacity');
+    // The fire goes through the normal launcher — a task IS created, just
+    // pended instead of launched. Nothing is silently dropped.
+    expect(launched).toHaveLength(1);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('queued_capacity');
     expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('capacity');
+    expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
     expect(store.get(schedule.id)!.executionLedger.at(-1)).toEqual(expect.objectContaining({
-      outcome: 'skipped_capacity',
+      outcome: 'queued_capacity',
       reasonCode: 'capacity',
+      taskId: 'task-1',
     }));
-    expect(store.get(schedule.id)!.remainingTriggers).toBe(2);
+    // A capacity-queued fire still consumes its cron trigger quota — it DID fire.
+    expect(store.get(schedule.id)!.remainingTriggers).toBe(1);
     expect(store.get(schedule.id)!.enabled).toBe(true);
+  });
+
+  it('coalesces a second fire while the previous fire is still pending (issue #1526 Phase A)', async () => {
+    activeCount = 10; // at capacity — every fire queues instead of launching
+
+    const schedule = store.create({
+      name: 'Coalesce',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner();
+    await runner.tick();
+    expect(launched).toHaveLength(1);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('queued_capacity');
+
+    replaceSchedule(schedule.id, {
+      lastScheduledFor: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+    await runner.tick();
+
+    // No second task created — the first fire's task is still pending.
+    expect(launched).toHaveLength(1);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_coalesced');
+    expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('previous_run_pending');
+    expect(store.get(schedule.id)!.executionLedger.at(-1)).toEqual(expect.objectContaining({
+      outcome: 'skipped_coalesced',
+      reasonCode: 'previous_run_pending',
+      blockingTaskId: 'task-1',
+    }));
+  });
+
+  it('fires normally below capacity — queued_capacity/coalescing do not activate', async () => {
+    const schedule = store.create({
+      name: 'BelowCapacity',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner();
+    await runner.tick();
+
+    expect(launched).toHaveLength(1);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('running');
   });
 
   it('suppresses firing while the server is draining (issue #659)', async () => {

@@ -163,6 +163,33 @@ describe('ScheduleService status', () => {
     });
   });
 
+  it('records queued_capacity/capacity for a capacity-queued execution (issue #1526 Phase A)', async () => {
+    await withService(async (service, store) => {
+      const schedule = store.create({
+        name: 'Capacity',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const receipt = await service.reserveExecution(schedule, 'cron', '2026-01-01T09:00:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, 'task-1', true);
+
+      const updated = store.get(schedule.id)!;
+      expect(updated.latestExecution).toEqual(expect.objectContaining({
+        taskId: 'task-1',
+        outcome: 'queued_capacity',
+        reasonCode: 'capacity',
+      }));
+      expect(updated.executionLedger).toEqual([
+        expect.objectContaining({
+          taskId: 'task-1',
+          outcome: 'queued_capacity',
+          reasonCode: 'capacity',
+        }),
+      ]);
+    });
+  });
+
   it('records deferred catch-up without leaving the stale due slot replayable', async () => {
     await withService(async (service, store) => {
       const schedule = store.create({
@@ -217,6 +244,34 @@ describe('ScheduleService status', () => {
           outcome: 'completed',
           reasonCode: 'reconciled_after_restart',
           completedAt: completedTask.updatedAt.toISOString(),
+        }),
+      ]);
+    });
+  });
+
+  it('startup reconciliation also picks up a queued_capacity execution (issue #1526 Phase A)', async () => {
+    await withService(async (service, store) => {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Run scheduled work', '/tmp');
+      taskStore.startTask(task.id);
+      const completedTask = taskStore.completeTask(task.id);
+      const schedule = store.create({
+        name: 'ReconcileQueued',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const receipt = await service.reserveExecution(schedule, 'cron', '2026-01-01T09:00:00.000Z');
+      // queued=true — the fire was still pending (capacity-queued) at the time of restart.
+      await service.markExecutionAccepted(schedule.id, receipt.id, task.id, true);
+
+      await service.reconcileOnStartup(taskStore);
+
+      expect(store.get(schedule.id)!.executionLedger).toEqual([
+        expect.objectContaining({
+          taskId: completedTask.id,
+          outcome: 'completed',
+          reasonCode: 'reconciled_after_restart',
         }),
       ]);
     });
