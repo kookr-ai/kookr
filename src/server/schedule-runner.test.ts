@@ -214,6 +214,35 @@ Do the test thing.
       reasonCode: 'previous_run_active',
       blockingTaskId: 'task-1',
     }));
+    // The blocking pointer must survive the skipped_active write, or a
+    // second consecutive skip would lose track of the still-active task.
+    expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
+  });
+
+  it('preserves the blocking pointer across two consecutive skipped_active writes', async () => {
+    const schedule = store.create({
+      name: 'ActiveTwice',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner();
+    await runner.tick();
+    expect(launched).toHaveLength(1);
+
+    // Two consecutive skips while the task is still active — before the fix,
+    // the first skip already wiped latestExecution.taskId.
+    for (let i = 0; i < 2; i++) {
+      replaceSchedule(schedule.id, { lastScheduledFor: new Date(Date.now() - 2 * 60_000).toISOString() });
+      await runner.tick();
+      expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_active');
+      expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
+    }
+    expect(launched).toHaveLength(1);
   });
 
   it('fires when previous run is stale (older than threshold)', async () => {
@@ -315,6 +344,79 @@ Do the test thing.
       reasonCode: 'previous_run_pending',
       blockingTaskId: 'task-1',
     }));
+  });
+
+  it('preserves the blocking pointer across THREE fires with distinct prompts — no burst-launch (issue #1526 Phase A regression)', async () => {
+    // Regression for the coalesce-pointer-wipe bug: markExecutionOutcome used
+    // to write latestExecution.taskId from receipt.taskId alone, which is
+    // always undefined for a skip — so a second consecutive skip wiped the
+    // pointer fire() relies on, and a third fire would launch a duplicate.
+    // A schedule with a genuinely dynamic/templated prompt (not a static one
+    // launchTask's prompt-hash dedup could incidentally save) is exactly the
+    // case that bites: each fire below resolves a DIFFERENT literal prompt,
+    // so nothing but the blocking-pointer chain itself can prevent a burst.
+    activeCount = 10; // at capacity — every fire queues instead of launching
+
+    const schedule = store.create({
+      name: 'ThreeFireCoalesce',
+      cron: '* * * * *',
+      playbook: { path: 'dynamic.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    async function writeDynamicPlaybook(marker: string): Promise<void> {
+      await writeFile(join(dir, '.kookr', 'playbooks', 'dynamic.md'), `---
+name: Dynamic Playbook
+description: A playbook whose body changes per fire
+parameters: []
+checklist:
+  - Step 1
+---
+
+Do the test thing (${marker}).
+`);
+    }
+
+    const runner = createRunner();
+
+    // Fire 1: queues task-1 with prompt A.
+    await writeDynamicPlaybook('fire-1');
+    await runner.tick();
+    expect(launched).toHaveLength(1);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('queued_capacity');
+    expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
+
+    // Fire 2: prompt B — must coalesce against task-1, not launch.
+    await writeDynamicPlaybook('fire-2');
+    replaceSchedule(schedule.id, { lastScheduledFor: new Date(Date.now() - 2 * 60_000).toISOString() });
+    await runner.tick();
+    expect(launched).toHaveLength(1);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_coalesced');
+    // The pointer must survive this write for fire 3 to see it.
+    expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
+
+    // Fire 3: prompt C — the bug let this one through and launched task-2.
+    await writeDynamicPlaybook('fire-3');
+    replaceSchedule(schedule.id, { lastScheduledFor: new Date(Date.now() - 2 * 60_000).toISOString() });
+    await runner.tick();
+
+    expect(launched).toHaveLength(1); // still exactly one launcher call
+    expect(launched[0].prompt).toContain('fire-1'); // the one call was fire 1's
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_coalesced');
+    expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
+    expect(store.get(schedule.id)!.executionLedger.at(-1)).toEqual(expect.objectContaining({
+      outcome: 'skipped_coalesced',
+      reasonCode: 'previous_run_pending',
+      blockingTaskId: 'task-1',
+    }));
+
+    // recordTaskTerminalOutcome must still be able to find this schedule by
+    // its (preserved) latestExecution.taskId after two consecutive skips.
+    await service.recordTaskTerminalOutcome('task-1', 'completed');
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('completed');
   });
 
   it('fires normally below capacity — queued_capacity/coalescing do not activate', async () => {

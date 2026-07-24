@@ -276,4 +276,63 @@ describe('ScheduleService status', () => {
       ]);
     });
   });
+
+  it('startup reconciliation also picks up the LEGACY literal outcome "queued" from on-disk state (issue #1526 Phase A)', async () => {
+    // This is the exact case the live drain will hit: on-disk schedule state
+    // persisted BEFORE this change can have latestExecution.outcome === 'queued'
+    // (no code path produces it anymore, but old rows on disk still have it).
+    // Bypasses markExecutionAccepted entirely — seeds the store directly, the
+    // way a pre-deploy tasks.json/schedules.json would already look.
+    await withService(async (service, store) => {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Run scheduled work', '/tmp');
+      taskStore.startTask(task.id);
+      const completedTask = taskStore.completeTask(task.id);
+
+      const schedule = store.create({
+        name: 'LegacyQueued',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const evaluatedAt = '2026-01-01T09:00:00.000Z';
+      store.replace({
+        ...schedule,
+        latestExecution: {
+          executionToken: 'legacy-token',
+          evaluatedAt,
+          triggeredAt: evaluatedAt,
+          trigger: 'cron',
+          taskId: task.id,
+          outcome: 'queued',
+          reasonCode: 'none',
+        },
+        executionLedger: [{
+          id: 'legacy-ledger-entry',
+          scheduleId: schedule.id,
+          trigger: 'cron',
+          decision: 'cron_due',
+          evaluatedAt,
+          taskId: task.id,
+          outcome: 'queued',
+          reasonCode: 'none',
+        }],
+      });
+
+      await service.reconcileOnStartup(taskStore);
+
+      expect(store.get(schedule.id)!.latestExecution).toEqual(expect.objectContaining({
+        taskId: completedTask.id,
+        outcome: 'completed',
+        reasonCode: 'reconciled_after_restart',
+      }));
+      expect(store.get(schedule.id)!.executionLedger).toEqual([
+        expect.objectContaining({
+          taskId: completedTask.id,
+          outcome: 'completed',
+          reasonCode: 'reconciled_after_restart',
+        }),
+      ]);
+    });
+  });
 });

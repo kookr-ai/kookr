@@ -305,6 +305,19 @@ export class ScheduleService {
     const schedule = this.requireSchedule(scheduleId);
     const receipt = this.requireReceipt(schedule, receiptId);
     const evaluatedAt = new Date().toISOString();
+    // issue #1526 Phase A: a skip receipt never carries its own taskId
+    // (reserveExecution creates it before any launch attempt), so writing
+    // `latestExecution.taskId` from `receipt.taskId` alone WIPES the blocking
+    // pointer on every skip. fire() reads `schedule.latestExecution?.taskId`
+    // as `blockingTaskId` on the NEXT tick — wiping it here means a second
+    // skipped_coalesced/skipped_active in a row loses track of the still-
+    // pending/active task and the following fire launches a duplicate
+    // instead of skipping again. It also breaks recordTaskTerminalOutcome's
+    // schedule lookup (`candidate.latestExecution?.taskId === taskId`), which
+    // can no longer find this schedule once the pointer is gone. Falling back
+    // to `details.blockingTaskId` (the task this skip was actually blocked
+    // by) preserves the pointer across any number of consecutive skips.
+    const preservedTaskId = receipt.taskId ?? details.blockingTaskId;
     this.store.replace({
       ...schedule,
       lastRunAt: receipt.evaluatedAt,
@@ -317,7 +330,7 @@ export class ScheduleService {
         ...(receipt.scheduledFor ? { scheduledFor: receipt.scheduledFor } : {}),
         evaluatedAt: receipt.evaluatedAt,
         trigger: receipt.trigger,
-        ...(receipt.taskId ? { taskId: receipt.taskId } : {}),
+        ...(preservedTaskId ? { taskId: preservedTaskId } : {}),
         outcome,
         reasonCode,
         ...(message ? { message } : {}),
@@ -329,7 +342,7 @@ export class ScheduleService {
         reasonCode,
         {
           completedAt: evaluatedAt,
-          ...(receipt.taskId ? { taskId: receipt.taskId } : {}),
+          ...(preservedTaskId ? { taskId: preservedTaskId } : {}),
           ...(details.blockingTaskId ? { blockingTaskId: details.blockingTaskId } : {}),
           ...(message ? { message } : {}),
         },
