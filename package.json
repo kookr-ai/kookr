@@ -97,7 +97,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.111.0",
     "@google/genai": "^2.11.0",
-    "@hono/node-server": "^2.0.9",
+    "@hono/node-server": "^2.0.10",
     "@types/ws": "^8.18.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-search": "^0.16.0",
