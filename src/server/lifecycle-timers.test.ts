@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   autoCloseStaleCompletionReadyTasks,
   clearAllTimers,
   findFirstActiveSession,
+  maybeReapHungTask,
   resolveMaintenancePruneIntervalHours,
   restoreExpiredSnoozes,
   runBudgetCheck,
@@ -10,12 +14,14 @@ import {
   runProgressBudgetBurnDiagnosticSample,
   runScheduledMaintenancePrune,
   startLifecycleTimers,
+  type TimerDeps,
 } from './lifecycle-timers.js';
 import type { MaintenancePruneResult } from '../core/maintenance-prune.js';
 import { BudgetChecker } from '../core/budget-checker.js';
 import type { Task } from '../core/tasks.js';
 import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
+import { Watchdog } from '../core/watchdog.js';
 import type { Anomaly } from '../core/types.js';
 import type { ProgressBudgetBurnDiagnostics } from '../core/progress-budget-burn-diagnostics.js';
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
@@ -348,6 +354,268 @@ describe('autoCloseStaleCompletionReadyTasks', () => {
     expect(result.closedTaskIds).toEqual([task.id]);
     expect(taskStore.getTask(task.id)?.status).toBe('completed');
     expect(safeReleaseAllFor).toHaveBeenCalledWith(task.id, 'released');
+  });
+
+  describe('TTL escalation and stagger (issue #1526 Phase A)', () => {
+    async function readAuditRows(auditLogPath: string): Promise<Record<string, unknown>[]> {
+      try {
+        const content = await readFile(auditLogPath, 'utf-8');
+        return content.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+        throw err;
+      }
+    }
+
+    test('drains at most 2 tasks per call, oldest signal first, across successive ticks', async () => {
+      const taskStore = new TaskStore();
+      const tasks = Array.from({ length: 11 }, (_, i) => {
+        const task = taskStore.createTask({ prompt: `Task ${i}`, cwd: '/tmp', deliveryAuthorization: 'ask-first' });
+        // Session must start before the signal is raised, or the signal reads
+        // as a pre-start manual-review breadcrumb (see listStaleCompletionReadyTasks).
+        taskStore.addSession(task.id, {
+          tmuxSession: `kookr-${task.id}`,
+          agentType: 'claude-code',
+          cwd: '/tmp',
+          createdAt: new Date('2026-06-19T00:00:00.000Z'),
+        });
+        // Stagger raisedAt so drain order (oldest-first) is deterministic and
+        // distinguishable — all are well past the 2h TTL relative to `now`.
+        taskStore.setPendingSignal(task.id, {
+          kind: 'completion_ready',
+          raisedAt: new Date(Date.parse('2026-06-20T00:00:00.000Z') + i * 1000).toISOString(),
+        });
+        return task;
+      });
+
+      const now = new Date('2026-06-21T00:00:00.000Z');
+      const closedInOrder: string[] = [];
+      for (let tick = 0; tick < 6; tick++) {
+        const result = await autoCloseStaleCompletionReadyTasks(
+          { taskStore, lifecycleDeps: lifecycleDeps(taskStore) },
+          { now, ttlMs: 2 * 60 * 60 * 1000 },
+        );
+        expect(result.closedTaskIds.length).toBeLessThanOrEqual(2);
+        closedInOrder.push(...result.closedTaskIds);
+      }
+
+      expect(closedInOrder).toEqual(tasks.map((t) => t.id));
+      for (const task of tasks) {
+        expect(taskStore.getTask(task.id)?.status).toBe('completed');
+      }
+      // A 7th tick finds nothing left to drain.
+      const finalResult = await autoCloseStaleCompletionReadyTasks(
+        { taskStore, lifecycleDeps: lifecycleDeps(taskStore) },
+        { now, ttlMs: 2 * 60 * 60 * 1000 },
+      );
+      expect(finalResult.closedTaskIds).toEqual([]);
+    });
+
+    test('a TTL-escalated close writes an audit row and broadcasts an alert', async () => {
+      const auditLogPath = join(await mkdtemp(join(tmpdir(), 'kookr-audit-')), 'audit.jsonl');
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask({ prompt: 'Stuck ask-first', cwd: '/tmp', deliveryAuthorization: 'ask-first' });
+      startTask(taskStore, task.id); // session createdAt: 2026-06-21T00:00:00.000Z
+      taskStore.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-21T00:00:00.000Z' });
+      const broadcastToAll = vi.fn();
+
+      const result = await autoCloseStaleCompletionReadyTasks(
+        { taskStore, lifecycleDeps: lifecycleDeps(taskStore), auditLogPath, broadcastToAll },
+        { now: new Date('2026-06-21T02:00:00.000Z'), ttlMs: 2 * 60 * 60 * 1000 },
+      );
+
+      expect(result.closedTaskIds).toEqual([task.id]);
+      expect(taskStore.getTask(task.id)?.status).toBe('completed');
+
+      const rows = await readAuditRows(auditLogPath);
+      expect(rows).toEqual([expect.objectContaining({
+        type: 'task.completionReadyTtlEscalation',
+        actor: 'system:completion-ready-ttl',
+        taskId: task.id,
+      })]);
+
+      expect(broadcastToAll).toHaveBeenCalledTimes(1);
+      expect(broadcastToAll).toHaveBeenCalledWith(expect.objectContaining({ type: 'alert', severity: 'info' }));
+    });
+
+    test('an opted-in (autoCloseOnSignal) close does NOT write an audit row or broadcast', async () => {
+      const auditLogPath = join(await mkdtemp(join(tmpdir(), 'kookr-audit-')), 'audit.jsonl');
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask({ prompt: 'Opted-in', cwd: '/tmp', autoCloseOnSignal: true });
+      startTask(taskStore, task.id);
+      taskStore.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-21T00:00:00.000Z' });
+      const broadcastToAll = vi.fn();
+
+      const result = await autoCloseStaleCompletionReadyTasks(
+        { taskStore, lifecycleDeps: lifecycleDeps(taskStore), auditLogPath, broadcastToAll },
+        { now: new Date('2026-06-21T01:00:00.000Z'), ttlMs: 2 * 60 * 60 * 1000 },
+      );
+
+      expect(result.closedTaskIds).toEqual([task.id]);
+      expect(await readAuditRows(auditLogPath)).toEqual([]);
+      expect(broadcastToAll).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('maybeReapHungTask (issue #1526 Phase A)', () => {
+  const REAP_THRESHOLD_MS = 3 * 60 * 60 * 1000;
+
+  function makeHungTask(taskStore: TaskStore, agentId: string): Task {
+    const task = taskStore.createTask({ prompt: 'Hung agent', cwd: '/tmp' });
+    taskStore.addSession(task.id, {
+      tmuxSession: agentId,
+      agentType: 'claude-code',
+      cwd: '/tmp',
+      createdAt: new Date(Date.now() - 2 * REAP_THRESHOLD_MS),
+    });
+    return taskStore.getTask(task.id)!;
+  }
+
+  /** Registers `agentId` with all three liveness channels last active `ageMs` ago. */
+  function makeSilentWatchdog(agentId: string, ageMs: number): Watchdog {
+    const watchdog = new Watchdog();
+    const lastActivityAt = Date.now() - ageMs;
+    watchdog.registerAgent(agentId, lastActivityAt, lastActivityAt);
+    // registerAgent seeds lastPaneChangeAt = registeredAt, which is what we want here.
+    return watchdog;
+  }
+
+  function timerDeps(overrides: Partial<TimerDeps> = {}): TimerDeps {
+    return {
+      monitor: {} as any,
+      taskStore: {} as any,
+      queue: {} as any,
+      adapter: {} as any,
+      adapterRegistry: { get: vi.fn() } as any,
+      tokenTracker: {} as any,
+      watchdog: new Watchdog(),
+      hookWatcher: {} as any,
+      terminalBackend: {} as any,
+      hooksDir: '/tmp/hooks',
+      tasksFile: '/tmp/tasks.json',
+      serverCwd: '/tmp/repo',
+      saveIntervalMs: 60_000,
+      livenessIntervalMs: 60_000,
+      broadcastToAll: vi.fn(),
+      ...overrides,
+    };
+  }
+
+  function lifecycleDeps(taskStore: TaskStore) {
+    return {
+      adapter: { stop: vi.fn(async () => undefined) },
+      monitor: { unregisterAgent: vi.fn(), getAgentEvents: vi.fn(() => []) },
+      taskStore,
+      queue: new AttentionQueue(),
+      hookWatcher: { stop: vi.fn() },
+      watchdog: { unregisterAgent: vi.fn() },
+    };
+  }
+
+  test('reaps a task silent past the threshold and reports true', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-hung-1';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 60_000);
+
+    const reaped = await maybeReapHungTask(
+      agentId,
+      'frozen pane',
+      timerDeps({ watchdog, getHungTaskReapMs: () => REAP_THRESHOLD_MS }),
+      taskStore,
+      lifecycleDeps(taskStore),
+    );
+
+    expect(reaped).toBe(true);
+    expect(taskStore.getTask(task.id)?.status).toBe('terminated');
+  });
+
+  test('does not reap a task not yet silent long enough', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-fresh-1';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS - 60_000);
+
+    const reaped = await maybeReapHungTask(
+      agentId,
+      'pane',
+      timerDeps({ watchdog, getHungTaskReapMs: () => REAP_THRESHOLD_MS }),
+      taskStore,
+      lifecycleDeps(taskStore),
+    );
+
+    expect(reaped).toBe(false);
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+  });
+
+  test('never reaps a task with a pending signal, even if fully silent', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-signaled-1';
+    const task = makeHungTask(taskStore, agentId);
+    taskStore.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: new Date().toISOString() });
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 60_000);
+
+    const reaped = await maybeReapHungTask(
+      agentId,
+      'pane',
+      timerDeps({ watchdog, getHungTaskReapMs: () => REAP_THRESHOLD_MS }),
+      taskStore,
+      lifecycleDeps(taskStore),
+    );
+
+    expect(reaped).toBe(false);
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+  });
+
+  test('respects the disable config flag', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-disabled-1';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 60_000);
+
+    const reaped = await maybeReapHungTask(
+      agentId,
+      'pane',
+      timerDeps({ watchdog, getHungTaskReapMs: () => REAP_THRESHOLD_MS, getHungTaskReapEnabled: () => false }),
+      taskStore,
+      lifecycleDeps(taskStore),
+    );
+
+    expect(reaped).toBe(false);
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+  });
+
+  test('triggers pending-task promotion after reaping', async () => {
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-hung-2';
+    makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 60_000);
+    const pending = taskStore.createTask({ prompt: 'Waiting in queue', cwd: '/tmp' });
+    taskStore.pendTask(pending.id);
+    const launch = vi.fn(async () => undefined);
+
+    await maybeReapHungTask(
+      agentId,
+      'pane',
+      timerDeps({
+        watchdog,
+        getHungTaskReapMs: () => REAP_THRESHOLD_MS,
+        getMaxActiveTasks: () => 1,
+        adapterRegistry: { get: vi.fn(() => ({ launch })) } as any,
+        agentLifecycleDeps: {
+          monitor: { registerAgent: vi.fn(), getSnapshot: vi.fn(() => []) } as any,
+          watchdog: { registerAgent: vi.fn() } as any,
+          hookWatcher: { isWatching: vi.fn(() => false), watch: vi.fn() } as any,
+          githubScanner: { isActive: vi.fn(() => false) } as any,
+          autoNameTask: vi.fn(),
+        },
+      }),
+      taskStore,
+      lifecycleDeps(taskStore),
+    );
+
+    expect(launch).toHaveBeenCalledWith(pending.id, pending.prompt, '/tmp');
   });
 });
 

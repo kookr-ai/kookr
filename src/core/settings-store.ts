@@ -89,6 +89,29 @@ export interface KookrSettings {
    * liveness tick reads this live, so a change takes effect without a restart.
    */
   autoCloseCompletionReadyDelayMin: number;
+  /**
+   * TTL (minutes), issue #1526 Phase A / FM5: how long a `completion_ready`
+   * signal can sit unacknowledged — including ask-first tasks that
+   * {@link autoCloseCompletionReadyDelayMin} deliberately never touches —
+   * before Kookr escalates and closes the task anyway so it stops holding a
+   * concurrency slot forever. Distinct from `autoCloseCompletionReadyDelayMin`
+   * on purpose: that setting's documented contract is "only affects
+   * autoCloseOnSignal tasks", so a short value there must never silently
+   * start closing ask-first review-required work. See
+   * docs/adr and completion-ready-cleanup.ts `classifyCompletionReadyClosePolicy`.
+   */
+  completionReadyTtlMinutes: number;
+  /**
+   * Hung-task reaper (issue #1526 Phase A / FM6). When enabled, a task whose
+   * agent has had zero hook events, zero pane-content change, and zero token
+   * activity for {@link hungTaskReapMinutes} is treated as hung: its session
+   * is killed, the task transitions to `terminated`, and its slot is freed.
+   * Excludes any task with a pending signal or that the watchdog classifies
+   * as waiting on the user/a permission — see hung-task-reaper.ts.
+   */
+  hungTaskReapEnabled: boolean;
+  /** Minutes of total silence (all liveness channels) before a task is reaped. */
+  hungTaskReapMinutes: number;
 }
 
 export const DEFAULT_SETTINGS: KookrSettings = {
@@ -107,6 +130,9 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   quietHours: [],
   replySnippets: [],
   autoCloseCompletionReadyDelayMin: 30,
+  completionReadyTtlMinutes: 120,
+  hungTaskReapEnabled: true,
+  hungTaskReapMinutes: 180,
 };
 
 const MIN_POLLING_INTERVAL = 15;
@@ -122,6 +148,15 @@ const MAX_ACTIVE_TASKS = 25;
 // from effectively disabling the sweep forever.
 const MIN_AUTO_CLOSE_DELAY_MIN = 1;
 const MAX_AUTO_CLOSE_DELAY_MIN = 1440;
+// Completion-ready TTL bounds (minutes). Floor of 5 keeps escalation from
+// firing near-instantly; ceiling of 10080 (7 days) is a generous outer bound.
+const MIN_COMPLETION_READY_TTL_MIN = 5;
+const MAX_COMPLETION_READY_TTL_MIN = 10_080;
+// Hung-task reap bounds (minutes). Floor of 15 stays comfortably above the
+// watchdog's own stale_agent + max-tool-execution thresholds so the reaper
+// never races normal stuck-detection; ceiling of 10080 (7 days) mirrors the TTL.
+const MIN_HUNG_TASK_REAP_MIN = 15;
+const MAX_HUNG_TASK_REAP_MIN = 10_080;
 
 /** Validate and clamp a raw settings object, filling in defaults for missing/invalid values. */
 export function validateSettings(raw: Record<string, unknown>): KookrSettings {
@@ -162,6 +197,26 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     autoCloseDelayMin = Math.max(
       MIN_AUTO_CLOSE_DELAY_MIN,
       Math.min(MAX_AUTO_CLOSE_DELAY_MIN, Math.round(raw.autoCloseCompletionReadyDelayMin)),
+    );
+  }
+
+  let completionReadyTtlMinutes = DEFAULT_SETTINGS.completionReadyTtlMinutes;
+  if (typeof raw.completionReadyTtlMinutes === 'number' && Number.isFinite(raw.completionReadyTtlMinutes)) {
+    completionReadyTtlMinutes = Math.max(
+      MIN_COMPLETION_READY_TTL_MIN,
+      Math.min(MAX_COMPLETION_READY_TTL_MIN, Math.round(raw.completionReadyTtlMinutes)),
+    );
+  }
+
+  const hungTaskReapEnabled = typeof raw.hungTaskReapEnabled === 'boolean'
+    ? raw.hungTaskReapEnabled
+    : DEFAULT_SETTINGS.hungTaskReapEnabled;
+
+  let hungTaskReapMinutes = DEFAULT_SETTINGS.hungTaskReapMinutes;
+  if (typeof raw.hungTaskReapMinutes === 'number' && Number.isFinite(raw.hungTaskReapMinutes)) {
+    hungTaskReapMinutes = Math.max(
+      MIN_HUNG_TASK_REAP_MIN,
+      Math.min(MAX_HUNG_TASK_REAP_MIN, Math.round(raw.hungTaskReapMinutes)),
     );
   }
 
@@ -237,6 +292,9 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       quietHours: quietHoursValidation.windows,
       replySnippets: replySnippetValidation.snippets,
       autoCloseCompletionReadyDelayMin: autoCloseDelayMin,
+      completionReadyTtlMinutes,
+      hungTaskReapEnabled,
+      hungTaskReapMinutes,
     },
   };
 }

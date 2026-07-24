@@ -41,6 +41,17 @@ const DEFAULT_CONFIG: WatchdogConfig = {
 export interface AgentWatchdogState {
   lastEventAt: number; // ms since epoch
   lastPaneHash: string; // fingerprint of pane content after stripping volatile UI chrome
+  /**
+   * Timestamp of the most recent pane-content CHANGE (ms since epoch, issue
+   * #1526 Phase A). Distinct from `lastPaneHash`, which only records the
+   * current fingerprint: this records *when* it last differed from the
+   * previous tick. Initialized to `registeredAt` so a freshly-registered
+   * agent isn't mistaken for "pane silent since epoch". Used by the
+   * hung-task reaper's independent, much-larger silence threshold — kept
+   * separate from `staleThresholdMs` so reap eligibility never depends on
+   * tuning the watchdog's own short-timescale thresholds.
+   */
+  lastPaneChangeAt: number;
   registeredAt: number; // ms since epoch — for grace period
   unmatchedToolUseIds: Set<string>; // PreToolUse ids without matching PostToolUse
   /** Fallback counter: number of tool_use events without matching tool_result (for events without toolUseId). */
@@ -132,6 +143,7 @@ export class Watchdog {
     this.agents.set(agentId, {
       lastEventAt: lastEventAt ?? regAt,
       lastPaneHash: '',
+      lastPaneChangeAt: regAt,
       registeredAt: regAt,
       unmatchedToolUseIds: new Set(),
       unmatchedToolCountFallback: 0,
@@ -283,6 +295,7 @@ export class Watchdog {
     const currentHash = simpleHash(normalizePaneForActivity(currentPaneContent));
     const paneChanged = state.lastPaneHash !== '' && currentHash !== state.lastPaneHash;
     state.lastPaneHash = currentHash;
+    if (paneChanged) state.lastPaneChangeAt = now;
 
     // Grace period: don't flag agents that were just registered
     if (timeSinceRegistration < this.config.gracePeriodMs) {

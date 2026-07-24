@@ -363,6 +363,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // `currentSettings` binding (reassigned by the settings PUT path) so an
   // operator's change takes effect on the next liveness tick without a restart.
   const getAutoCloseCompletionReadyDelayMs = () => currentSettings.autoCloseCompletionReadyDelayMin * 60_000;
+  // Live getter for the completion-ready TTL escalation threshold (issue
+  // #1526 Phase A / FM5). Same live-binding pattern as the delay above.
+  const getCompletionReadyTtlMs = () => currentSettings.completionReadyTtlMinutes * 60_000;
+  // Live getters for the hung-task reaper (issue #1526 Phase A / FM6).
+  const getHungTaskReapEnabled = () => currentSettings.hungTaskReapEnabled;
+  const getHungTaskReapMs = () => currentSettings.hungTaskReapMinutes * 60_000;
   // #681: live getter for the per-agent-type effort defaults. Reads the live
   // `currentSettings` binding so an operator's settings PUT takes effect on the
   // next launch without a restart (the PUT path reassigns `currentSettings`).
@@ -1250,6 +1256,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     worktreeRegistry,
     getMaxActiveTasks,
     getAutoCloseCompletionReadyDelayMs,
+    getCompletionReadyTtlMs,
     settings: {
       get: () => currentSettings,
       getLoadedFromDefaults: () => settingsLoadedFromDefaults,
@@ -1454,6 +1461,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       saveIntervalMs, livenessIntervalMs, broadcastToAll,
       shadowRegistry, agentLifecycleDeps: lifecycleDeps, taskTailStore,
       quotaAdapter, getMaxActiveTasks, getAutoCloseCompletionReadyDelayMs, suppressionTracker,
+      getCompletionReadyTtlMs,
+      auditLogPath: join(kookrDir, 'audit.jsonl'),
+      reportsDir: join(kookrDir, 'reports'),
+      getHungTaskReapEnabled, getHungTaskReapMs,
       budgetChecker, projectConfigStore, progressBudgetBurnDiagnostics,
       detectionStatsStore,
       persistenceHealth,

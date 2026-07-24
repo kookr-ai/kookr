@@ -89,5 +89,26 @@ export async function applySettingsSideEffects({
     );
   }
 
+  // --- Completion-ready TTL escalation side effects (issue #1526 Phase A) ---
+  // No reconfigure needed: the liveness tick reads the TTL through a live
+  // getter each pass, same pattern as the auto-close delay above.
+  if (prevSettings.completionReadyTtlMinutes !== newSettings.completionReadyTtlMinutes) {
+    console.log(
+      `[settings] completionReadyTtlMinutes → ${newSettings.completionReadyTtlMinutes}min `
+      + `(was ${prevSettings.completionReadyTtlMinutes}min)`,
+    );
+  }
+
+  // --- Hung-task reaper side effects (issue #1526 Phase A) ---
+  if (prevSettings.hungTaskReapEnabled !== newSettings.hungTaskReapEnabled) {
+    console.log(`[settings] hungTaskReapEnabled → ${newSettings.hungTaskReapEnabled} (was ${prevSettings.hungTaskReapEnabled})`);
+  }
+  if (prevSettings.hungTaskReapMinutes !== newSettings.hungTaskReapMinutes) {
+    console.log(
+      `[settings] hungTaskReapMinutes → ${newSettings.hungTaskReapMinutes}min `
+      + `(was ${prevSettings.hungTaskReapMinutes}min)`,
+    );
+  }
+
   return warnings;
 }

@@ -1221,4 +1221,34 @@ describe('Watchdog', () => {
       expect(wd.getState(agentId)?.mcpStartupAt).toBe(0);
     });
   });
+
+  describe('lastPaneChangeAt tracking (issue #1526 Phase A)', () => {
+    test('initializes to registeredAt', () => {
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      expect(watchdog.getState(agentId)?.lastPaneChangeAt).toBe(t0);
+    });
+
+    test('the first tick establishes a baseline without counting as a change', () => {
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.tick(agentId, 'initial pane', [], t0 + 5_000);
+      // No prior hash to diff against — lastPaneChangeAt stays at registration.
+      expect(watchdog.getState(agentId)?.lastPaneChangeAt).toBe(t0);
+    });
+
+    test('advances only on a genuine content change, not on every tick', () => {
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.tick(agentId, 'pane v1', [], t0 + 1_000); // baseline
+      watchdog.tick(agentId, 'pane v1', [], t0 + 2_000); // unchanged
+      expect(watchdog.getState(agentId)?.lastPaneChangeAt).toBe(t0);
+
+      watchdog.tick(agentId, 'pane v2', [], t0 + 3_000); // changed
+      expect(watchdog.getState(agentId)?.lastPaneChangeAt).toBe(t0 + 3_000);
+
+      watchdog.tick(agentId, 'pane v2', [], t0 + 4_000); // unchanged again
+      expect(watchdog.getState(agentId)?.lastPaneChangeAt).toBe(t0 + 3_000);
+    });
+  });
 });

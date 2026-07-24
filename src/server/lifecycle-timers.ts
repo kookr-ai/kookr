@@ -33,6 +33,10 @@ import {
   planAndPruneMaintenance,
   type MaintenancePruneResult,
 } from '../core/maintenance-prune.js';
+import { appendAuditRow } from '../core/audit-log.js';
+import { nowISO } from '../core/interaction-log.js';
+import { DEFAULT_HUNG_TASK_REAP_MS, evaluateHungTaskReap } from '../core/hung-task-reaper.js';
+import { reapHungTask } from './hung-task-reaper.js';
 
 export interface TimerDeps {
   monitor: Monitor;
@@ -67,6 +71,20 @@ export interface TimerDeps {
    * when absent (older wiring / tests).
    */
   getAutoCloseCompletionReadyDelayMs?: () => number;
+  /**
+   * Live getter for the completion-ready TTL escalation threshold, in
+   * milliseconds (issue #1526 Phase A). Read on every liveness tick. Falls
+   * back to {@link DEFAULT_COMPLETION_READY_TTL_MS} when absent.
+   */
+  getCompletionReadyTtlMs?: () => number;
+  /** Path to the shared audit.jsonl log — threaded to the completion-ready sweep and hung-task reaper for system-actor audit rows. */
+  auditLogPath?: string;
+  /** Kookr data-dir "reports" directory. Hung-task reap writes a markdown evidence report here. */
+  reportsDir?: string;
+  /** Live getter — hung-task reaper enabled flag (issue #1526 Phase A). Defaults to enabled when absent. */
+  getHungTaskReapEnabled?: () => boolean;
+  /** Live getter — hung-task reap silence threshold, in milliseconds. */
+  getHungTaskReapMs?: () => number;
   /** Optional suppression tracker for snooze storm auto-suppress. */
   suppressionTracker?: SnoozeSuppressionTracker;
   /** Optional durable store for cumulative detector telemetry (persisted on the save tick). */
@@ -257,15 +275,29 @@ export function runProgressBudgetBurnDiagnosticSample(
 export interface AutoCloseStaleCompletionReadyDeps {
   taskStore: TaskStore;
   lifecycleDeps?: LifecycleDeps;
+  /** Path to the shared audit.jsonl log. TTL escalations write a row here; immediate (opted-in) closes do not. */
+  auditLogPath?: string;
+  /** Optional broadcast for the TTL-escalation alert (issue #1526 Phase A) — reuses the existing 'alert' channel, no new notification surface. */
+  broadcastToAll?: (msg: ServerMessage) => void;
 }
 
 export interface AutoCloseStaleCompletionReadyResult {
   closedTaskIds: string[];
 }
 
+/**
+ * Cap on how many completion-ready tasks this function will auto-close per
+ * invocation (issue #1526 Phase A). The incident this guards against: 11
+ * simultaneous session teardowns each broadcast a multi-MB websocket
+ * snapshot on an already-loaded server, which re-triggers the overload that
+ * caused the original wedge. Draining oldest-first (entries are sorted by
+ * signal age) across successive ticks keeps teardown load flat.
+ */
+export const DEFAULT_MAX_AUTO_CLOSE_PER_TICK = 2;
+
 export async function autoCloseStaleCompletionReadyTasks(
   deps: AutoCloseStaleCompletionReadyDeps,
-  opts: { now?: Date; thresholdMs?: number } = {},
+  opts: { now?: Date; thresholdMs?: number; ttlMs?: number; maxPerTick?: number } = {},
 ): Promise<AutoCloseStaleCompletionReadyResult> {
   const closedTaskIds: string[] = [];
   const lifecycleDeps = deps.lifecycleDeps;
@@ -274,7 +306,10 @@ export async function autoCloseStaleCompletionReadyTasks(
   const entries = listStaleCompletionReadyTasks(deps.taskStore.listTasks(), {
     now: opts.now,
     thresholdMs: opts.thresholdMs ?? DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
-  }).filter((entry) => entry.canAutoClose && !isActiveRalphLoop(entry.task));
+    ttlMs: opts.ttlMs,
+  })
+    .filter((entry) => entry.canAutoClose && !isActiveRalphLoop(entry.task))
+    .slice(0, opts.maxPerTick ?? DEFAULT_MAX_AUTO_CLOSE_PER_TICK);
 
   for (const entry of entries) {
     const taskId = entry.task.id;
@@ -282,6 +317,9 @@ export async function autoCloseStaleCompletionReadyTasks(
       await completeTask(taskId, lifecycleDeps);
       deps.taskStore.clearPendingSignal(taskId);
       closedTaskIds.push(taskId);
+      if (entry.closeReason === 'ttl_escalation') {
+        await recordTtlEscalation(entry, deps);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[completion-ready] auto-close failed for task ${taskId}: ${message}`);
@@ -294,8 +332,108 @@ export async function autoCloseStaleCompletionReadyTasks(
   return { closedTaskIds };
 }
 
+/**
+ * Audit + notify a TTL-escalated close (issue #1526 Phase A / FM5). This is
+ * the ONLY branch that writes an audit row and broadcasts an alert — an
+ * opted-in (`autoCloseOnSignal: true`) close keeps its prior silent behavior,
+ * since the operator already asked for exactly that.
+ */
+async function recordTtlEscalation(
+  entry: { task: Task; signal: NonNullable<Task['pendingSignal']>; ageMs: number },
+  deps: AutoCloseStaleCompletionReadyDeps,
+): Promise<void> {
+  const { task, signal, ageMs } = entry;
+  await appendAuditRow(deps.auditLogPath, {
+    type: 'task.completionReadyTtlEscalation',
+    timestamp: nowISO(),
+    actor: 'system:completion-ready-ttl',
+    taskId: task.id,
+    signalRaisedAt: signal.raisedAt,
+    ageMs,
+  });
+  deps.broadcastToAll?.({
+    type: 'alert',
+    agentId: task.sessions[task.sessions.length - 1]?.tmuxSession ?? '',
+    summary: `Auto-closed after TTL: ${task.name ?? 'Task'}`,
+    details: `completion_ready pending ${Math.round(ageMs / 60_000)}m with no manual review — closed automatically to free the slot.`,
+    severity: 'info',
+  });
+}
+
 function isActiveRalphLoop(task: Task): boolean {
   return task.ralphLoop?.status === 'running' || task.ralphLoop?.status === 'paused';
+}
+
+/**
+ * Check one agent for hung-task reap eligibility and act if so (issue #1526
+ * Phase A / FM6). Callers MUST only invoke this when the watchdog's tick for
+ * `agentId` just returned `stale_agent` — see the wiring in
+ * `startLifecycleTimers`'s watchdog interval for why that gate is what makes
+ * needs_input/permission_blocked tasks safe from reaping regardless of how
+ * long they have been waiting. Returns true when a task was reaped (caller
+ * should broadcast a snapshot).
+ */
+export async function maybeReapHungTask(
+  agentId: string,
+  paneContent: string,
+  deps: TimerDeps,
+  taskStore: TaskStore,
+  lifecycleDeps: LifecycleDeps,
+): Promise<boolean> {
+  if (!(deps.getHungTaskReapEnabled?.() ?? true)) return false;
+
+  const task = taskStore.findTaskBySession(agentId);
+  if (!task) return false;
+
+  const state = deps.watchdog.getState(agentId);
+  if (!state) return false;
+
+  const thresholdMs = deps.getHungTaskReapMs?.();
+  const liveness = {
+    lastHookEventAt: state.lastEventAt,
+    lastPaneChangeAt: state.lastPaneChangeAt,
+    lastTokenActivityAt: state.lastTokenActivityAt,
+  };
+  const verdict = evaluateHungTaskReap(task, liveness, { now: Date.now(), thresholdMs });
+  if (!verdict.eligible) return false;
+
+  console.warn(
+    `[hung-task-reaper] reaping task ${task.id} — silent ${Math.round(verdict.silentForMs / 60_000)}m `
+    + `(hook=${new Date(liveness.lastHookEventAt).toISOString()}, `
+    + `pane=${new Date(liveness.lastPaneChangeAt).toISOString()}, `
+    + `tokens=${new Date(liveness.lastTokenActivityAt).toISOString()})`,
+  );
+
+  await reapHungTask(
+    task,
+    {
+      silentForMs: verdict.silentForMs,
+      thresholdMs: thresholdMs ?? DEFAULT_HUNG_TASK_REAP_MS,
+      ...liveness,
+      paneContent,
+    },
+    {
+      taskStore,
+      lifecycleDeps,
+      reportsDir: deps.reportsDir,
+      auditLogPath: deps.auditLogPath,
+      broadcastToAll: deps.broadcastToAll,
+    },
+  );
+
+  if (deps.agentLifecycleDeps) {
+    await promotePendingTasks({
+      taskStore,
+      adapterRegistry: deps.adapterRegistry,
+      lifecycleDeps: deps.agentLifecycleDeps,
+      broadcastToAll: deps.broadcastToAll,
+      serverCwd: deps.serverCwd,
+      getMaxActiveTasks: deps.getMaxActiveTasks,
+      bypassAllPermissions: deps.bypassAllPermissions,
+    });
+  }
+
+  return true;
 }
 
 export function restoreExpiredSnoozes(queue: AttentionQueue, taskStore: TaskStore): boolean {
@@ -486,6 +624,22 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           const realAnomaly = monitor.getCurrentAnomaly(agentId);
           shadowRegistry.evaluate(agentId, { paneText: paneContent, realAnomaly });
         }
+
+        // Hung-task reaper (issue #1526 Phase A / FM6). Gated on the SAME
+        // `stale_agent` verdict just computed above — that status already
+        // means "no tool in progress, not waiting on input/permission, and
+        // (per the watchdog's own short-timescale thresholds) no recent hook
+        // event / pane change / token activity". Reusing it here means a task
+        // genuinely waiting on the user or a permission prompt is excluded
+        // for free: those verdicts (`needs_input`, `permission_blocked`, …)
+        // never reach this branch. The reaper's OWN, much larger threshold
+        // (hours, not seconds) decides whether that silence has gone on long
+        // enough to act on.
+        if (verdict.status === 'stale_agent' && (deps.getHungTaskReapEnabled?.() ?? true)) {
+          if (await maybeReapHungTask(agentId, paneContent, deps, taskStore, lifecycleDeps)) {
+            changed = true;
+          }
+        }
       } catch (err) {
         console.error(`Watchdog error for ${agentId}:`, err);
       }
@@ -538,8 +692,16 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       }
       const result = await reconcile(taskStore, terminalBackend, deps.worktreeRegistry);
       const autoCloseResult = await autoCloseStaleCompletionReadyTasks(
-        { taskStore, lifecycleDeps },
-        { thresholdMs: deps.getAutoCloseCompletionReadyDelayMs?.() },
+        {
+          taskStore,
+          lifecycleDeps,
+          auditLogPath: deps.auditLogPath,
+          broadcastToAll: deps.broadcastToAll,
+        },
+        {
+          thresholdMs: deps.getAutoCloseCompletionReadyDelayMs?.(),
+          ttlMs: deps.getCompletionReadyTtlMs?.(),
+        },
       );
 
       // Release issue-ownership claims for reconcile-driven terminal

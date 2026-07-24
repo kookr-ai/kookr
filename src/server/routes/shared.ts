@@ -101,6 +101,13 @@ export interface TaskRouteDeps {
    * back to {@link DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS} when absent.
    */
   getAutoCloseCompletionReadyDelayMs?: () => number;
+  /**
+   * Live getter for the completion-ready TTL escalation threshold, in
+   * milliseconds (issue #1526 Phase A). Used by `GET
+   * /api/tasks/completion-ready/stale` so the reported `canAutoClose` reflects
+   * TTL-eligible ask-first tasks, not just opted-in ones.
+   */
+  getCompletionReadyTtlMs?: () => number;
   kookrDir?: string;
   coordinatorSuppressions?: CoordinatorSuppressionRegistry;
   /**
@@ -319,6 +326,8 @@ export interface RouteDeps {
   getCleanupWorktreeOnComplete?: () => boolean;
   /** Live getter for the completion-ready auto-close delay, in milliseconds. */
   getAutoCloseCompletionReadyDelayMs?: () => number;
+  /** Live getter for the completion-ready TTL escalation threshold, in milliseconds (issue #1526 Phase A). */
+  getCompletionReadyTtlMs?: () => number;
   circuitBreakerRegistry?: CircuitBreakerRegistry;
   suppressionTracker?: SnoozeSuppressionTracker;
   scheduleService?: ScheduleService;

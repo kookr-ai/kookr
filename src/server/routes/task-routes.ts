@@ -120,13 +120,15 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     if (thresholdMs instanceof Error) return c.json({ error: thresholdMs.message }, 400);
 
     const generatedAt = new Date();
-    const tasks = listStaleCompletionReadyTasks(taskStore.listTasks(), { now: generatedAt, thresholdMs })
+    const ttlMs = deps.getCompletionReadyTtlMs?.();
+    const tasks = listStaleCompletionReadyTasks(taskStore.listTasks(), { now: generatedAt, thresholdMs, ttlMs })
       .map((entry) => ({
         task: normalizeTaskForApi(entry.task),
         signal: entry.signal,
         ageMs: entry.ageMs,
         canAutoClose: entry.canAutoClose,
         ...(entry.manualActionRequiredReason ? { manualActionRequiredReason: entry.manualActionRequiredReason } : {}),
+        ...(entry.closeReason ? { closeReason: entry.closeReason } : {}),
       }));
     return c.json({
       schemaVersion: 'stale-completion-ready-tasks.v1',
