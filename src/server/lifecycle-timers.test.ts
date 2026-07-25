@@ -1287,6 +1287,81 @@ describe('runScheduledMaintenancePrune', () => {
     expect(result).toBeNull();
     expect(errSpy.mock.calls.flat().join(' ')).toMatch(/scheduled sweep failed/);
   });
+
+  test('runs the task-record prune leg on the same tick and fires onTaskRecordsPruned (issue #1526 C2)', async () => {
+    const run = vi.fn(async () => fakeResult());
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const pruneTaskRecords = vi.fn(async () => ({
+      outcome: 'pruned' as const,
+      prunedTaskIds: ['t-1', 't-2'],
+      remainingTasks: 40,
+      maxAgeDays: 7,
+    }));
+    const onTaskRecordsPruned = vi.fn();
+
+    await runScheduledMaintenancePrune({
+      dataDir: '/tmp/data',
+      intervalHours: 24,
+      run,
+      pruneTaskRecords,
+      onTaskRecordsPruned,
+      getPayloadDietStats: () => ({ trackedTasks: 40, terminalTasks: 30, lastSnapshotBytes: 123456 }),
+    });
+
+    expect(pruneTaskRecords).toHaveBeenCalledTimes(1);
+    expect(onTaskRecordsPruned).toHaveBeenCalledWith(
+      expect.objectContaining({ prunedTaskIds: ['t-1', 't-2'], remainingTasks: 40 }),
+    );
+    const logged = logSpy.mock.calls.flat().join('\n');
+    expect(logged).toMatch(/task-record prune removed 2 aged terminal task record\(s\)/);
+    expect(logged).toMatch(/\[payload-diet\] tracked task records=40 \(terminal=30\); last snapshot broadcast=123456 bytes/);
+  });
+
+  test('does not fire onTaskRecordsPruned when nothing was pruned, and still logs the diet line', async () => {
+    const run = vi.fn(async () => fakeResult());
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const onTaskRecordsPruned = vi.fn();
+
+    await runScheduledMaintenancePrune({
+      dataDir: '/tmp/data',
+      intervalHours: 24,
+      run,
+      pruneTaskRecords: async () => ({
+        outcome: 'pruned' as const,
+        prunedTaskIds: [],
+        remainingTasks: 12,
+        maxAgeDays: 7,
+      }),
+      onTaskRecordsPruned,
+      getPayloadDietStats: () => ({ trackedTasks: 12, terminalTasks: 3, lastSnapshotBytes: null }),
+    });
+
+    expect(onTaskRecordsPruned).not.toHaveBeenCalled();
+    expect(logSpy.mock.calls.flat().join('\n')).toMatch(/last snapshot broadcast=none yet/);
+  });
+
+  test('task-record prune leg still runs when the disk sweep throws, and its own failure is isolated', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const pruneTaskRecords = vi.fn(async () => {
+      throw new Error('store hiccup');
+    });
+    const failingDiskSweep = vi.fn(async () => {
+      throw new Error('disk exploded');
+    });
+
+    const result = await runScheduledMaintenancePrune({
+      dataDir: '/tmp/data',
+      intervalHours: 24,
+      run: failingDiskSweep,
+      pruneTaskRecords,
+    });
+
+    expect(result).toBeNull();
+    expect(pruneTaskRecords).toHaveBeenCalledTimes(1);
+    const errors = errSpy.mock.calls.flat().join('\n');
+    expect(errors).toMatch(/scheduled sweep failed/);
+    expect(errors).toMatch(/task-record prune failed/);
+  });
 });
 
 describe('startLifecycleTimers maintenance prune scheduling', () => {

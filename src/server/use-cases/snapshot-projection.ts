@@ -39,6 +39,45 @@ const FINDING_CAUSALITY_SEVERITY_ORDER: Record<Anomaly['severity'], number> = {
   info: 2,
 };
 
+/**
+ * Terminal tasks whose last activity is older than this many days are excluded
+ * from the client-facing WebSocket snapshot (issue #1526 Phase C / C2 payload
+ * diet). The Completed pane keeps rendering the recent window; older history
+ * is available on demand via `GET /api/tasks` (with `status`/`since`/`limit`
+ * filters) and `GET /api/tasks/:id`. Debug/raw snapshot surfaces
+ * (`getSnapshotAgentsRaw`, `/api/snapshot`) are NOT affected.
+ */
+export const SNAPSHOT_TERMINAL_TASK_MAX_AGE_DAYS = 7;
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** Milliseconds equivalent of {@link SNAPSHOT_TERMINAL_TASK_MAX_AGE_DAYS}. */
+export const SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS = SNAPSHOT_TERMINAL_TASK_MAX_AGE_DAYS * MS_PER_DAY;
+
+/**
+ * Latest activity timestamp (ms) attributable to a task for snapshot-age
+ * purposes. `updatedAt` normally dominates (every transition bumps it), but
+ * `finishedAt`/`terminatedAt` are included defensively for legacy records.
+ * Using `updatedAt` means any fresh mutation (rename, feedback, reopen) makes
+ * an aged terminal task reappear in the snapshot — the operator-friendly
+ * behavior.
+ */
+export function taskSnapshotRecencyMs(task: Pick<Task, 'updatedAt' | 'finishedAt' | 'terminatedAt'>): number {
+  return Math.max(
+    task.updatedAt.getTime(),
+    task.finishedAt?.getTime() ?? 0,
+    task.terminatedAt?.getTime() ?? 0,
+  );
+}
+
+/** True when the task is terminal AND its last activity predates `cutoffMs`. */
+export function isAgedTerminalTask(
+  task: Pick<Task, 'status' | 'updatedAt' | 'finishedAt' | 'terminatedAt'>,
+  cutoffMs: number,
+): boolean {
+  return isTerminalStatus(task.status) && taskSnapshotRecencyMs(task) < cutoffMs;
+}
+
 type SnapshotFindingState = AgentState & { anomaly: Anomaly; taskId: string };
 
 /**
@@ -50,6 +89,14 @@ type SnapshotFindingState = AgentState & { anomaly: Anomaly; taskId: string };
 export function buildSnapshotProjection(deps: {
   monitorStates: readonly AgentState[];
   tasks: readonly Task[];
+  /**
+   * When set, synthetic terminal entries are skipped for tasks whose last
+   * activity (see {@link taskSnapshotRecencyMs}) is older than this epoch-ms
+   * cutoff (issue #1526 Phase C / C2). Client snapshot paths pass
+   * `now - SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS`; raw/debug paths leave it unset
+   * so they keep full-fidelity history.
+   */
+  excludeTerminalBeforeMs?: number;
 }): AgentState[] {
   const sessionIndex = new Map<string, SessionSnapshotMeta>();
   for (const task of deps.tasks) {
@@ -106,7 +153,15 @@ export function buildSnapshotProjection(deps: {
     } else if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'terminated') {
       // Terminal-state tasks are synthetic entries for the dashboard Completed
       // pane. Without this, terminated tasks can become invisible before the
-      // user acknowledges them.
+      // user acknowledges them. Aged terminal tasks are excluded from client
+      // snapshots (issue #1526 Phase C / C2) — history stays reachable via
+      // the REST task list/detail endpoints.
+      if (
+        deps.excludeTerminalBeforeMs !== undefined
+        && isAgedTerminalTask(task, deps.excludeTerminalBeforeMs)
+      ) {
+        continue;
+      }
       if (!states.some((state) => state.taskId === task.id)) {
         states.push(buildTerminalTaskEntry(task));
       }

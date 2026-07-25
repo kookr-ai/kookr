@@ -28,6 +28,17 @@ export const LAST_MESSAGE_MAX_BYTES = 4 * 1024;
 /** Max UTF-8 bytes of task prompt (`description`) in client-facing snapshots. */
 export const DESCRIPTION_MAX_BYTES = 4 * 1024;
 
+/**
+ * Max UTF-8 bytes of `description` on a client-facing snapshot entry for a
+ * task in terminal status (issue #1526 Phase C / C2 payload diet). Terminal
+ * rows only surface the description as a hover tooltip in the Completed pane
+ * (`CompletedRow` in FindingsPanel.tsx); the full prompt stays available via
+ * `GET /api/tasks/:id` (the DetailPanel relaunch path already fetches it).
+ * On the 2026-07 prod store, full 4 KiB descriptions across ~650 terminal
+ * rows were the single largest contributor (~2.2 MB) to the ~5 MB snapshot.
+ */
+export const TERMINAL_DESCRIPTION_MAX_BYTES = 1024;
+
 /** Max files listed in a client-facing completion digest. */
 export const COMPLETION_DIGEST_MAX_FILES = 40;
 
@@ -201,11 +212,75 @@ export function projectAgentFieldsForClient<
   };
 }
 
-export function projectDescriptionForClient(description: string | undefined): string | undefined {
+export function projectDescriptionForClient(
+  description: string | undefined,
+  maxBytes: number = DESCRIPTION_MAX_BYTES,
+): string | undefined {
   if (description === undefined) return undefined;
   const bytes = Buffer.byteLength(description, 'utf-8');
-  if (bytes <= DESCRIPTION_MAX_BYTES) return description;
-  return truncateUtf8(description, DESCRIPTION_MAX_BYTES, bytes);
+  if (bytes <= maxBytes) return description;
+  return truncateUtf8(description, maxBytes, bytes);
+}
+
+/**
+ * Slim a terminal-status agent snapshot entry for client transport
+ * (issue #1526 Phase C / C2 payload diet). Applies on top of
+ * {@link projectAgentFieldsForClient}:
+ *
+ *  - `description` is bounded to {@link TERMINAL_DESCRIPTION_MAX_BYTES} — on a
+ *    terminal row it only feeds the Completed-pane hover tooltip; the full
+ *    prompt remains available via `GET /api/tasks/:id`.
+ *  - `completionFeedback` and `launchHealthSummary` are dropped — verified to
+ *    have zero frontend readers on terminal snapshot rows (the DetailPanel
+ *    reads feedback state from the task detail endpoint, not the snapshot).
+ *  - `completionDigest` keeps everything the dashboard renders (bullets,
+ *    filesChanged, criteriaVerdict, testSummary, branch, tokenUsage) and
+ *    sheds the sub-fields with zero frontend readers (`verificationCommands`,
+ *    `commits`, `prUrls`) — on the 2026-07 prod store those alone were
+ *    ~1.9 MB raw. Full digests stay on `GET /api/tasks/:id` and the raw
+ *    snapshot surfaces.
+ *
+ * Identity-preserving when nothing needs clipping.
+ */
+export function projectTerminalAgentFieldsForClient<
+  T extends {
+    description?: string;
+    completionFeedback?: unknown;
+    launchHealthSummary?: unknown;
+    completionDigest?: CompletionDigest;
+  },
+>(agent: T): T {
+  const description = projectDescriptionForClient(agent.description, TERMINAL_DESCRIPTION_MAX_BYTES);
+  const completionDigest = agent.completionDigest
+    ? projectTerminalCompletionDigestForClient(agent.completionDigest)
+    : undefined;
+  const descriptionChanged = description !== agent.description;
+  const digestChanged = completionDigest !== agent.completionDigest;
+  const hasDroppableFields = agent.completionFeedback !== undefined || agent.launchHealthSummary !== undefined;
+  if (!descriptionChanged && !digestChanged && !hasDroppableFields) return agent;
+
+  const next = { ...agent };
+  if (descriptionChanged && description !== undefined) next.description = description;
+  if (digestChanged && completionDigest !== undefined) next.completionDigest = completionDigest;
+  delete next.completionFeedback;
+  delete next.launchHealthSummary;
+  return next;
+}
+
+/**
+ * Drop the completion-digest sub-fields no dashboard surface reads
+ * (issue #1526 Phase C / C2). Identity-preserving when none are present.
+ */
+export function projectTerminalCompletionDigestForClient(digest: CompletionDigest): CompletionDigest {
+  if (
+    digest.verificationCommands === undefined
+    && digest.commits === undefined
+    && digest.prUrls === undefined
+  ) {
+    return digest;
+  }
+  const { verificationCommands: _vc, commits: _c, prUrls: _p, ...kept } = digest;
+  return kept;
 }
 
 export function projectCompletionDigestForClient(digest: CompletionDigest): CompletionDigest {
