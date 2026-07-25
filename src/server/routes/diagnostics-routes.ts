@@ -30,6 +30,9 @@ import type { HookWatcherHealthSnapshot } from '../hook-watcher.js';
 import { getAuthThrottleSnapshot } from '../auth.js';
 import { DELIVERY_TRACE_SCHEMA_VERSION, type DeliveryTraceFilter } from '../../shared/contracts/delivery-trace.js';
 import { SESSION_HEALTH_SCHEMA_VERSION } from '../../shared/contracts/session-health.js';
+import { buildCapacityLedger } from '../../core/capacity-ledger.js';
+import { resolveTaskAttentionSignals } from '../task-attention-signals.js';
+import { MAX_ACTIVE_TASKS } from '../config.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const REVIEW_ADMIN_TOKEN_HEADER = 'x-kookr-admin-token';
@@ -70,6 +73,21 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     const tasks = taskStore.listTasks();
     const launchDependencies = buildLaunchDependencyDiagnostics(tasks);
     const attentionQueueSampledAtMs = Date.now();
+    // Capacity ledger (issue #1526 Phase B / FM9): during the 2026-07-24
+    // deadlock every status surface showed "12 running" while the truth was
+    // 11 finished-awaiting-ack + 1 hung + 0 actually working — nobody could
+    // see WHY capacity was exhausted. `byClass` makes that breakdown visible.
+    // Pure observability: classification never touches scheduling/capacity
+    // behavior, and stays O(active tasks) on in-memory watchdog/queue state
+    // only (no pane captures, no disk reads) so this is safe to poll.
+    const capacitySampledAtMs = Date.now();
+    const capacity = buildCapacityLedger(tasks, {
+      now: capacitySampledAtMs,
+      maxActiveTasks: deps.getMaxActiveTasks?.() ?? MAX_ACTIVE_TASKS,
+      isHungSuspect: (task) =>
+        resolveTaskAttentionSignals(task, { queue, watchdog: deps.watchdog }, capacitySampledAtMs).hungSuspect,
+      isLaunching: (task) => taskStore.hasFreshLaunchReservation(task.id),
+    });
     return c.json({
       status: 'ok',
       agents: tasks.length,
@@ -80,6 +98,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         activeFindingDepth: queue.getDepth(attentionQueueSampledAtMs),
         oldestFindingAgeMs: queue.getOldestFindingAgeMs(attentionQueueSampledAtMs),
       },
+      capacity,
       ...(terminalBackendBlock ? { terminalBackend: terminalBackendBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),

@@ -132,6 +132,17 @@ export class Watchdog {
   }
 
   /**
+   * Read the live threshold configuration (issue #1526 Phase B). Callers that
+   * need to approximate a watchdog verdict without a fresh `tick()` (e.g. the
+   * capacity ledger's O(1) hot-path classification, which must not pane-capture)
+   * use this to reuse the SAME, possibly-user-reconfigured thresholds instead of
+   * hardcoding a duplicate default.
+   */
+  getConfig(): Readonly<WatchdogConfig> {
+    return this.config;
+  }
+
+  /**
    * Register an agent to be tracked. Sets initial timestamps.
    * @param lastEventAt - Override lastEventAt (e.g. from persisted session metadata on restart).
    *                      If provided, watchdog can immediately detect agents that were stale before restart.

@@ -69,3 +69,71 @@ export function evaluateHungTaskReap(
 
   return { eligible: true, silentForMs };
 }
+
+/** Evidence available to {@link isTaskHungSuspect} without a fresh watchdog tick. */
+export interface HungSuspectEvidence {
+  /**
+   * Anomaly type currently queued for this task's agent in the AttentionQueue
+   * (`AttentionQueue.peek(agentId)?.type`), or `null`/`undefined` when nothing
+   * is queued. When this is `'stale_agent'`, it IS the watchdog's own verdict
+   * from its last full-context `tick()` (pane capture + tool-in-progress +
+   * grace-period-aware) — trusted directly, no re-derivation.
+   */
+  queuedAnomalyType?: string | null;
+  /**
+   * Raw liveness timestamps for the agent (`Watchdog.getState(agentId)`).
+   * `undefined` when the watchdog has no state for this agent (never
+   * registered, or unregistered after session end) — callers MUST treat that
+   * as "not hung suspect", never as "silent since epoch".
+   */
+  liveness?: HungTaskLivenessEvidence;
+  /**
+   * `Watchdog.hasToolInProgress(agentId)`. A tool left unmatched keeps the
+   * hook-event channel from advancing even though the agent is genuinely
+   * working — the fallback below must not mistake that for silence (that's
+   * exactly what `tick()`'s own `toolInProgress` gate protects against, and
+   * what `evaluateHungTaskReap` deliberately does NOT check on its own — see
+   * its doc comment).
+   */
+  toolInProgress: boolean;
+  /**
+   * The watchdog's own `unconditionalStaleThresholdMs` (`Watchdog.getConfig()`),
+   * NOT the (much larger) hung-task reap threshold — this flags a suspect
+   * early, well before the reaper would act.
+   */
+  unconditionalStaleThresholdMs: number;
+}
+
+/**
+ * Cheap, in-memory "is this task's agent hung-suspect right now" check (issue
+ * #1526 Phase B). Used by the capacity ledger (`GET /api/health`) and the
+ * per-task `stuckReason` projection — both hot paths that must classify O(active
+ * tasks) tasks per request with no disk reads and no pane captures, so calling
+ * `Watchdog.tick()` directly is not an option.
+ *
+ * Reuses exactly two already-exposed Phase A/watchdog primitives instead of
+ * inventing a new detector:
+ * 1. The watchdog's actual last `stale_agent` verdict, if still queued
+ *    (`queuedAnomalyType`) — the highest-fidelity signal, computed with full
+ *    tick() context (pane capture, tool-in-progress, grace period).
+ * 2. A fallback for when that verdict was never queued or was purged/suppressed
+ *    (e.g. by the subagent or systemic-hook-stall suppressors in
+ *    `Monitor.applyWatchdogVerdict`): `evaluateHungTaskReap`'s own
+ *    all-channels-silent computation, gated on `!toolInProgress` (mirroring
+ *    `tick()`'s own gate) and using the watchdog's short-timescale
+ *    `unconditionalStaleThresholdMs` instead of the reaper's much larger
+ *    reap threshold.
+ */
+export function isTaskHungSuspect(
+  task: Pick<Task, 'status' | 'pendingSignal'>,
+  evidence: HungSuspectEvidence,
+  opts: { now: number },
+): boolean {
+  if (evidence.queuedAnomalyType === 'stale_agent') return true;
+  if (evidence.toolInProgress) return false;
+  if (!evidence.liveness) return false;
+  return evaluateHungTaskReap(task, evidence.liveness, {
+    now: opts.now,
+    thresholdMs: evidence.unconditionalStaleThresholdMs,
+  }).eligible;
+}

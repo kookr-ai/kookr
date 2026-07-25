@@ -11,6 +11,7 @@ import { GitHubStateStore } from '../../core/github-state-store.js';
 import { recordSuppression, resetDetectionStats } from '../../core/detection-stats.js';
 import { extractRawHookHeader, HookParseError, parseHookEvent } from '../../core/hook-parser.js';
 import { Monitor } from '../../core/monitor.js';
+import { Watchdog } from '../../core/watchdog.js';
 import { registerDiagnosticsRoutes } from './diagnostics-routes.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
 import { AuthThrottle } from '../auth-throttle.js';
@@ -622,6 +623,139 @@ describe('diagnostics routes', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — capacity block (issue #1526 Phase B / FM9)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health capacity block', () => {
+    test('classifies a mix of tasks into exact byClass counts, with oldest ages from a fixed clock', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-24T12:00:00.000Z'));
+      try {
+        const taskStore = new TaskStore();
+        const queue = new AttentionQueue();
+        const watchdog = new Watchdog();
+
+        // working: inProgress, no pendingSignal, watchdog reports nothing queued.
+        const working = taskStore.createTask('Working task', '/repo');
+        taskStore.addSession(working.id, {
+          tmuxSession: 'kookr-working', agentType: 'claude-code', cwd: '/repo-wt', createdAt: new Date(),
+        });
+
+        // finishedAwaitingAck: inProgress + pendingSignal completion_ready, raised 5 minutes ago.
+        const awaitingAck = taskStore.createTask('Finished task', '/repo');
+        taskStore.addSession(awaitingAck.id, {
+          tmuxSession: 'kookr-ack', agentType: 'claude-code', cwd: '/repo-wt', createdAt: new Date(),
+        });
+        taskStore.setPendingSignal(awaitingAck.id, {
+          kind: 'completion_ready',
+          raisedAt: '2026-07-24T11:55:00.000Z', // 5 minutes before "now"
+        });
+
+        // hungSuspect: inProgress with a queued stale_agent verdict — this is
+        // the incident's 33h-hung task, made visible instead of showing "running".
+        const hung = taskStore.createTask('Hung task', '/repo');
+        taskStore.addSession(hung.id, {
+          tmuxSession: 'kookr-hung', agentType: 'claude-code', cwd: '/repo-wt', createdAt: new Date(),
+        });
+        queue.enqueue('kookr-hung', anomaly({
+          agentId: 'kookr-hung',
+          type: 'stale_agent',
+          severity: 'warning',
+          detectedAt: new Date('2026-07-24T09:00:00.000Z'),
+        }));
+
+        // launching: open task mid-launch (fresh reservation, no session attached yet).
+        const launching = taskStore.createTask('Launching task', '/repo');
+        taskStore.beginLaunch(launching.id);
+
+        // pending backlog: two tasks queued, no reservation. Oldest is 90s old
+        // ("now" - createdAt), created before the other fixtures above.
+        vi.setSystemTime(new Date('2026-07-24T11:58:30.000Z'));
+        const pendingOlder = taskStore.createTask('Queued older', '/repo');
+        taskStore.pendTask(pendingOlder.id);
+        vi.setSystemTime(new Date('2026-07-24T11:59:00.000Z'));
+        const pendingNewer = taskStore.createTask('Queued newer', '/repo');
+        taskStore.pendTask(pendingNewer.id);
+        vi.setSystemTime(new Date('2026-07-24T12:00:00.000Z'));
+
+        // Terminal task — must not be counted at all.
+        const done = taskStore.createTask('Done task', '/repo');
+        taskStore.addSession(done.id, {
+          tmuxSession: 'kookr-done', agentType: 'claude-code', cwd: '/repo-wt', createdAt: new Date(),
+        });
+        taskStore.completeTask(done.id);
+
+        const res = await mkApp({
+          taskStore,
+          queue,
+          watchdog,
+          buildInfo: {} as never,
+          getMaxActiveTasks: () => 10,
+        }).request('/api/health');
+
+        expect(res.status).toBe(200);
+        const body = await res.json() as {
+          capacity: {
+            maxActiveTasks: number;
+            active: number;
+            free: number;
+            byClass: { working: number; finishedAwaitingAck: number; hungSuspect: number; launching: number };
+            pendingQueueDepth: number;
+            oldestPendingAgeMs: number | null;
+            oldestFinishedAwaitingAckAgeMs: number | null;
+          };
+        };
+
+        expect(body.capacity).toEqual({
+          maxActiveTasks: 10,
+          active: 4,
+          free: 6,
+          byClass: { working: 1, finishedAwaitingAck: 1, hungSuspect: 1, launching: 1 },
+          pendingQueueDepth: 2,
+          oldestPendingAgeMs: 90_000,
+          oldestFinishedAwaitingAckAgeMs: 5 * 60_000,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test('defaults maxActiveTasks to the static config constant when getMaxActiveTasks is not wired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { capacity: { maxActiveTasks: number; active: number; free: number } };
+      expect(body.capacity.maxActiveTasks).toBe(10); // MAX_ACTIVE_TASKS
+      expect(body.capacity.active).toBe(0);
+      expect(body.capacity.free).toBe(10);
+    });
+
+    test('an empty task store reports all-zero counts and null oldest ages', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+
+      const body = await res.json() as {
+        capacity: {
+          byClass: Record<string, number>;
+          pendingQueueDepth: number;
+          oldestPendingAgeMs: number | null;
+          oldestFinishedAwaitingAckAgeMs: number | null;
+        };
+      };
+      expect(body.capacity.byClass).toEqual({ working: 0, finishedAwaitingAck: 0, hungSuspect: 0, launching: 0 });
+      expect(body.capacity.pendingQueueDepth).toBe(0);
+      expect(body.capacity.oldestPendingAgeMs).toBeNull();
+      expect(body.capacity.oldestFinishedAwaitingAckAgeMs).toBeNull();
     });
   });
 

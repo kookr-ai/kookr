@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { DEFAULT_HUNG_TASK_REAP_MS, evaluateHungTaskReap } from './hung-task-reaper.js';
+import { DEFAULT_HUNG_TASK_REAP_MS, evaluateHungTaskReap, isTaskHungSuspect } from './hung-task-reaper.js';
 import { Watchdog } from './watchdog.js';
 
 const THRESHOLD_MS = 3 * 60 * 60 * 1000; // 3h, matches the default
@@ -159,6 +159,131 @@ describe('evaluateHungTaskReap', () => {
         { now: NOW, thresholdMs: THRESHOLD_MS },
       );
       expect(reapVerdict.eligible).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // isTaskHungSuspect (issue #1526 Phase B) — the cheap, in-memory-only "is
+  // this task's agent hung right now" check shared by the capacity ledger and
+  // the per-task stuckReason projection. Deliberately a much shorter fuse than
+  // the reaper above (early warning vs. actual kill).
+  // ---------------------------------------------------------------------------
+  describe('isTaskHungSuspect', () => {
+    const SUSPECT_THRESHOLD_MS = 60_000; // matches Watchdog's default unconditionalStaleThresholdMs
+
+    test('a queued stale_agent verdict is trusted directly, even with fresh liveness', () => {
+      const suspect = isTaskHungSuspect(
+        { status: 'inProgress' },
+        {
+          queuedAnomalyType: 'stale_agent',
+          liveness: silentSince(NOW), // "now" — not silent at all
+          toolInProgress: false,
+          unconditionalStaleThresholdMs: SUSPECT_THRESHOLD_MS,
+        },
+        { now: NOW },
+      );
+      expect(suspect).toBe(true);
+    });
+
+    test('a queued verdict of a different type is not trusted, falls through to the liveness fallback', () => {
+      const suspect = isTaskHungSuspect(
+        { status: 'inProgress' },
+        {
+          queuedAnomalyType: 'needs_input',
+          liveness: silentSince(NOW), // fresh — fallback says not suspect
+          toolInProgress: false,
+          unconditionalStaleThresholdMs: SUSPECT_THRESHOLD_MS,
+        },
+        { now: NOW },
+      );
+      expect(suspect).toBe(false);
+    });
+
+    test('watchdog state absent (no liveness) → not hung suspect, even with no queued verdict', () => {
+      const suspect = isTaskHungSuspect(
+        { status: 'inProgress' },
+        {
+          queuedAnomalyType: null,
+          liveness: undefined,
+          toolInProgress: false,
+          unconditionalStaleThresholdMs: SUSPECT_THRESHOLD_MS,
+        },
+        { now: NOW },
+      );
+      expect(suspect).toBe(false);
+    });
+
+    test('all channels silent past the watchdog stale threshold, no queued verdict → hung suspect (fallback)', () => {
+      const suspect = isTaskHungSuspect(
+        { status: 'inProgress' },
+        {
+          queuedAnomalyType: null,
+          liveness: silentSince(NOW - SUSPECT_THRESHOLD_MS - 1),
+          toolInProgress: false,
+          unconditionalStaleThresholdMs: SUSPECT_THRESHOLD_MS,
+        },
+        { now: NOW },
+      );
+      expect(suspect).toBe(true);
+    });
+
+    test('silent but NOT past the threshold yet → not hung suspect', () => {
+      const suspect = isTaskHungSuspect(
+        { status: 'inProgress' },
+        {
+          queuedAnomalyType: null,
+          liveness: silentSince(NOW - SUSPECT_THRESHOLD_MS + 1_000),
+          toolInProgress: false,
+          unconditionalStaleThresholdMs: SUSPECT_THRESHOLD_MS,
+        },
+        { now: NOW },
+      );
+      expect(suspect).toBe(false);
+    });
+
+    test('a tool left in progress suppresses the liveness fallback — mirrors tick()\'s own toolInProgress gate', () => {
+      // Without this gate, any tool call running longer than the watchdog's
+      // short unconditionalStaleThresholdMs (60s default) would falsely read
+      // as hung — evaluateHungTaskReap alone does not know about tool state.
+      const suspect = isTaskHungSuspect(
+        { status: 'inProgress' },
+        {
+          queuedAnomalyType: null,
+          liveness: silentSince(NOW - SUSPECT_THRESHOLD_MS - 1),
+          toolInProgress: true,
+          unconditionalStaleThresholdMs: SUSPECT_THRESHOLD_MS,
+        },
+        { now: NOW },
+      );
+      expect(suspect).toBe(false);
+    });
+
+    test('a queued stale_agent verdict still wins even while a tool is in progress (the 10-min tool-override case)', () => {
+      const suspect = isTaskHungSuspect(
+        { status: 'inProgress' },
+        {
+          queuedAnomalyType: 'stale_agent',
+          liveness: undefined,
+          toolInProgress: true,
+          unconditionalStaleThresholdMs: SUSPECT_THRESHOLD_MS,
+        },
+        { now: NOW },
+      );
+      expect(suspect).toBe(true);
+    });
+
+    test('a task with a pending signal is never hung suspect via the fallback, even fully silent', () => {
+      const suspect = isTaskHungSuspect(
+        { status: 'inProgress', pendingSignal: { kind: 'completion_ready', raisedAt: '2026-06-20T00:00:00.000Z' } },
+        {
+          queuedAnomalyType: null,
+          liveness: silentSince(0),
+          toolInProgress: false,
+          unconditionalStaleThresholdMs: SUSPECT_THRESHOLD_MS,
+        },
+        { now: NOW },
+      );
+      expect(suspect).toBe(false);
     });
   });
 });
