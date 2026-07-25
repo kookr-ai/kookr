@@ -139,7 +139,7 @@ describe('deterministicTaskName (issue #1526 Phase C4 — no task is ever unname
   });
 
   test('falls back to the cwd basename for a blank prompt, and is never empty', () => {
-    expect(deterministicTaskName('   \n\t\n', '/home/dev/kookr')).toBe('Task in kookr');
+    expect(deterministicTaskName('   \n\t\n', '/srv/checkouts/kookr')).toBe('Task in kookr');
     expect(deterministicTaskName('')).toBe('Unnamed task');
   });
 });
