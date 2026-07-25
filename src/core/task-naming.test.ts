@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from 'vitest';
-import { generateTaskName } from './task-naming.js';
+import { deterministicTaskName, generateTaskName } from './task-naming.js';
 import type { LlmClient } from './llm-client.js';
 
 function mockClient(responseText: string | null): LlmClient {
@@ -117,5 +117,29 @@ describe('generateTaskName', () => {
     };
     const result = await generateTaskName(client, 'Fix bug', '/project');
     expect(result).toBeNull();
+  });
+});
+
+describe('deterministicTaskName (issue #1526 Phase C4 — no task is ever unnamed)', () => {
+  test('uses the first non-empty prompt line', () => {
+    expect(deterministicTaskName('\n\nFix the auth bug\nWith much more detail below', '/p'))
+      .toBe('Fix the auth bug');
+  });
+
+  test('strips leading markdown/list markers and collapses whitespace', () => {
+    expect(deterministicTaskName('## Fix   the auth bug', '/p')).toBe('Fix the auth bug');
+    expect(deterministicTaskName('- Fix the auth bug', '/p')).toBe('Fix the auth bug');
+  });
+
+  test('truncates long prompts to the 80-char cap with an ellipsis', () => {
+    const name = deterministicTaskName(`Implement ${'x'.repeat(200)}`, '/p');
+    expect(name.length).toBeLessThanOrEqual(80);
+    expect(name.endsWith('…')).toBe(true);
+    expect(name.startsWith('Implement')).toBe(true);
+  });
+
+  test('falls back to the cwd basename for a blank prompt, and is never empty', () => {
+    expect(deterministicTaskName('   \n\t\n', '/home/dev/kookr')).toBe('Task in kookr');
+    expect(deterministicTaskName('')).toBe('Unnamed task');
   });
 });

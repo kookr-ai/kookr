@@ -53,7 +53,8 @@ import {
   resolveGrokModel,
   GROK_AGENT_BIN_ENV,
 } from './grok-launch-args.js';
-import { detectGrokBlockingStartupUI } from './grok-readiness.js';
+import { detectGrokBlockingStartupUI, detectGrokPermissionPromptUI } from './grok-readiness.js';
+import { normalizePaneForActivity } from '../shared/pane-semantics.js';
 import {
   resolveGrokInstalledState,
   type GrokInstalledState,
@@ -73,6 +74,15 @@ const DEFAULT_GROK_PROMPT_SUBMIT_RETRIES = 0;
  * resend an already accepted Grok prompt before that acknowledgement arrives.
  */
 export const DEFAULT_GROK_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS = 10_000;
+
+/**
+ * Upper bound on the pane-tail substituted into a Grok stop/stop_failure
+ * event's `lastMessage` (issue #1526 Phase C4). Grok's stop hook payload has
+ * no final-assistant-message field, so the adapter falls back to a bounded
+ * tail of the last captured display; 2000 chars comfortably covers a final
+ * summary while keeping event payloads and fingerprints small.
+ */
+export const GROK_STOP_LAST_MESSAGE_MAX_CHARS = 2000;
 
 /** Minimal, generic supervision status the RFC's Phase-1 slice exposes. */
 export interface GrokSupervisionStatus {
@@ -153,6 +163,13 @@ export class GrokBuildAdapter implements AgentAdapter {
   private hookSettings = new Map<string, { config: GrokMonitoringHooksConfig; path: string }>();
   private sessionHomes = new Map<string, string>();
   private initialPromptSubmitResolvers = new Map<string, () => void>();
+  /**
+   * Last captured display per session, refreshed by {@link captureDisplay}
+   * (the server's 5s watchdog tick calls it for every tracked agent). Used
+   * synchronously by {@link injectHookEvent} to substitute a bounded pane
+   * tail into Grok stop events, whose payloads carry no final message.
+   */
+  private lastDisplays = new Map<string, string>();
 
   private inputWriter: TerminalInputWriterPort;
   private hooksDir: string;
@@ -386,9 +403,22 @@ export class GrokBuildAdapter implements AgentAdapter {
         readyTimeoutMs: this.promptReadyTimeoutMs,
       });
       if (delivery.status === 'unconfirmed') {
+        // Explain a known cause before the generic diagnosis: a permission
+        // row menu (e.g. a startup approval) swallows the composer, so the
+        // prompt can never be acknowledged (issue #1526 Phase C4).
+        let permissionPrompt: string | null = null;
+        try {
+          const display = textDecoder.decode(await this.backend.captureBytes(tmuxName));
+          permissionPrompt = detectGrokPermissionPromptUI(display);
+        } catch {
+          /* diagnosis is best-effort — never mask the delivery failure */
+        }
         throw new Error(
           `[grok-build-adapter] Grok did not acknowledge the initial prompt within ` +
             `${this.promptSubmitConfirmTimeoutMs}ms; refusing to resend it. ` +
+            (permissionPrompt
+              ? `${permissionPrompt} — resolve it in the terminal before relaunching. `
+              : '') +
             `Auth preflight passed; inspect Grok terminal/PTY readiness and hook dispatch ` +
             `(including terminal query handling).`,
         );
@@ -461,6 +491,7 @@ export class GrokBuildAdapter implements AgentAdapter {
     this.initialPromptSubmitResolvers.delete(tmuxName);
     this.hookSettings.delete(tmuxName);
     this.tmuxToTaskId.delete(tmuxName);
+    this.lastDisplays.delete(tmuxName);
     try {
       await this.backend.killSession(tmuxName);
     } catch {
@@ -505,11 +536,31 @@ export class GrokBuildAdapter implements AgentAdapter {
     await this.backend.killSession(tmuxName);
     this.hookSettings.delete(tmuxName);
     this.tmuxToTaskId.delete(tmuxName);
+    this.lastDisplays.delete(tmuxName);
     await this.cleanupSessionHome(tmuxName);
   }
 
   async captureDisplay(tmuxName: string): Promise<string> {
-    return textDecoder.decode(await this.backend.captureBytes(tmuxName));
+    const display = textDecoder.decode(await this.backend.captureBytes(tmuxName));
+    this.lastDisplays.set(tmuxName, display);
+    return display;
+  }
+
+  /**
+   * Bounded pane-tail fallback for Grok stop/stop_failure `lastMessage`
+   * (issue #1526 Phase C4). Grok's Stop hook payload has no
+   * `last_assistant_message` analog, and the hardcoded '' the decoder emits
+   * starved hook-driven completion-signal classification (#1324) for every
+   * Grok task. The best synchronous source is the last captured display
+   * (refreshed at most 5s ago by the watchdog tick): volatile UI rows are
+   * stripped via the shared pane normalizer, then the tail is capped at
+   * {@link GROK_STOP_LAST_MESSAGE_MAX_CHARS}.
+   */
+  private paneTailLastMessage(tmuxName: string): string {
+    const display = this.lastDisplays.get(tmuxName);
+    if (!display) return '';
+    const normalized = normalizePaneForActivity(display);
+    return normalized.slice(-GROK_STOP_LAST_MESSAGE_MAX_CHARS).trim();
   }
 
   onEvent(handler: AdapterEventHandler): void {
@@ -568,6 +619,20 @@ export class GrokBuildAdapter implements AgentAdapter {
         rawHookEventName: header.rawHookEventName,
         parentage: 'unknown',
       };
+    }
+
+    // Live Grok stop/stop_failure events carry no final message in the
+    // payload — substitute the bounded pane tail (issue #1526 Phase C4).
+    // Replays are left untouched: at replay time the pane no longer shows the
+    // original turn, and enriching from the CURRENT pane would change
+    // completion-signal fingerprints across restarts.
+    if (
+      (event.type === 'stop' || event.type === 'stop_failure')
+      && event.lastMessage === ''
+      && options?.origin !== 'replay'
+    ) {
+      const tail = this.paneTailLastMessage(tmuxName);
+      if (tail) event = { ...event, lastMessage: tail };
     }
 
     const taskId = this.tmuxToTaskId.get(tmuxName) ?? this.taskStore.findTaskBySession(tmuxName)?.id;

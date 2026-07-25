@@ -10,7 +10,7 @@ import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
 import type { Scope } from './viewer-data-policy.js';
 import { createTerminalScopeChecker } from './terminal-scope.js';
 import { ContactShareReadModel } from '../core/contact-share.js';
-import { generateTaskName } from '../core/task-naming.js';
+import { deterministicTaskName, generateTaskName } from '../core/task-naming.js';
 import type { BackendError, TerminalBackend } from '../adapters/terminal-backend.js';
 import { wireEventPipeline } from './event-pipeline.js';
 import { drainLifecycles } from '../core/suggestion-telemetry.js';
@@ -854,35 +854,50 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // --- Auto-naming helper ---
 
-  /** Fire-and-forget: generate a short AI name for a task */
+  /**
+   * Fire-and-forget: generate a short AI name for a task. NEVER leaves a task
+   * unnamed (issue #1526 Phase C4): when the LLM is unavailable, returns an
+   * empty name, or fails outright, the deterministic prompt-derived fallback
+   * is applied instead — during the 2026-07-24 grok burst every naming call
+   * logged "LLM returned empty name", leaving whole batches unnamed and
+   * degrading incident triage.
+   */
   function autoNameTask(taskId: string, prompt: string, cwd: string, criteria?: string): void {
-    if (!llmClient) return;
+    const applyName = (name: string): void => {
+      const current = taskStore.getTask(taskId);
+      if (!current || current.name) return;
+      taskStore.renameTask(taskId, name);
+      console.log(`[task-naming] Named task ${taskId}: "${name}"`);
+      broadcastToAll(createSnapshotMessage({
+        monitor,
+        serverCwd,
+        sttUrl,
+        ttsUrl,
+        activityMetaProvider: hookIngestion,
+        coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
+        getMaxActiveTasks,
+        relationTaskStore: taskStore,
+        terminalInputSnapshots: terminalInputCoordinator,
+        userInputDeliveryProvider: userInputDeliveries,
+      }));
+    };
+
+    if (!llmClient) {
+      applyName(deterministicTaskName(prompt, cwd));
+      return;
+    }
     generateTaskName(llmClient, prompt, cwd, criteria)
       .then((name) => {
         if (!name) {
-          console.warn(`[task-naming] LLM returned empty name for task ${taskId}`);
+          console.warn(`[task-naming] LLM returned empty name for task ${taskId}; using deterministic fallback`);
+          applyName(deterministicTaskName(prompt, cwd));
           return;
         }
-        const current = taskStore.getTask(taskId);
-        if (current && !current.name) {
-          taskStore.renameTask(taskId, name);
-          console.log(`[task-naming] Named task ${taskId}: "${name}"`);
-          broadcastToAll(createSnapshotMessage({
-            monitor,
-            serverCwd,
-            sttUrl,
-            ttsUrl,
-            activityMetaProvider: hookIngestion,
-            coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
-            getMaxActiveTasks,
-            relationTaskStore: taskStore,
-            terminalInputSnapshots: terminalInputCoordinator,
-            userInputDeliveryProvider: userInputDeliveries,
-          }));
-        }
+        applyName(name);
       })
       .catch((err) => {
         console.warn(`[task-naming] Failed to name task ${taskId}:`, err instanceof Error ? err.message : err);
+        applyName(deterministicTaskName(prompt, cwd));
       });
   }
 
