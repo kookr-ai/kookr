@@ -416,6 +416,43 @@ describe('GET /api/tasks/completion-ready/stale', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'thresholdMs must be a safe integer' });
   });
+
+  test('threads getCompletionReadyTtlMs and reports closeReason: ttl_escalation (issue #1526 Phase A)', async () => {
+    const taskStore = new TaskStore();
+    // Ask-first, past a 5-minute TTL but well under the 1h thresholdMs query
+    // below — only reachable via the TTL tier, proving ttlMs was threaded in.
+    const ttlEligible = taskStore.createTask({
+      prompt: 'Ask-first past the TTL',
+      cwd: '/repo',
+      deliveryAuthorization: 'ask-first',
+    });
+    taskStore.addSession(ttlEligible.id, {
+      tmuxSession: `kookr-${ttlEligible.id}`,
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(Date.now() - 20 * 60_000),
+    });
+    taskStore.setPendingSignal(ttlEligible.id, {
+      kind: 'completion_ready',
+      raisedAt: new Date(Date.now() - 10 * 60_000).toISOString(), // 10 minutes old
+    });
+
+    const app = mkApp({
+      ...mkLoopDeps(taskStore),
+      getCompletionReadyTtlMs: () => 5 * 60_000, // 5 minutes — past by the 10-minute-old signal
+    });
+    const res = await app.request('/api/tasks/completion-ready/stale?thresholdMs=3600000');
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.tasks).toEqual([
+      expect.objectContaining({
+        task: expect.objectContaining({ id: ttlEligible.id }),
+        canAutoClose: true,
+        closeReason: 'ttl_escalation',
+      }),
+    ]);
+  });
 });
 
 describe('GET /api/tasks/:id', () => {

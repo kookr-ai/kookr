@@ -130,6 +130,49 @@ describe('validateSettings', () => {
     expect(result.cleanupWorktreeOnComplete).toBe(true);
     expect(result.replySnippets).toEqual([]);
     expect(result.autoCloseCompletionReadyDelayMin).toBe(30);
+    expect(result.completionReadyTtlMinutes).toBe(120);
+    expect(result.hungTaskReapEnabled).toBe(true);
+    expect(result.hungTaskReapMinutes).toBe(180);
+  });
+
+  it('defaults completionReadyTtlMinutes to 120', () => {
+    expect(validateSettings({}).completionReadyTtlMinutes).toBe(120);
+    expect(DEFAULT_SETTINGS.completionReadyTtlMinutes).toBe(120);
+  });
+
+  it('accepts a valid completionReadyTtlMinutes', () => {
+    expect(validateSettings({ completionReadyTtlMinutes: 60 }).completionReadyTtlMinutes).toBe(60);
+  });
+
+  it('clamps completionReadyTtlMinutes below minimum to 5', () => {
+    expect(validateSettings({ completionReadyTtlMinutes: 0 }).completionReadyTtlMinutes).toBe(5);
+  });
+
+  it('clamps completionReadyTtlMinutes above maximum to 10080', () => {
+    expect(validateSettings({ completionReadyTtlMinutes: 999_999 }).completionReadyTtlMinutes).toBe(10_080);
+  });
+
+  it('falls back to the default when completionReadyTtlMinutes is not a number', () => {
+    expect(validateSettings({ completionReadyTtlMinutes: 'later' }).completionReadyTtlMinutes).toBe(120);
+  });
+
+  it('defaults hungTaskReapEnabled to true and hungTaskReapMinutes to 180', () => {
+    expect(validateSettings({}).hungTaskReapEnabled).toBe(true);
+    expect(validateSettings({}).hungTaskReapMinutes).toBe(180);
+    expect(DEFAULT_SETTINGS.hungTaskReapEnabled).toBe(true);
+    expect(DEFAULT_SETTINGS.hungTaskReapMinutes).toBe(180);
+  });
+
+  it('accepts hungTaskReapEnabled: false (config flag to disable)', () => {
+    expect(validateSettings({ hungTaskReapEnabled: false }).hungTaskReapEnabled).toBe(false);
+  });
+
+  it('clamps hungTaskReapMinutes below minimum to 15', () => {
+    expect(validateSettings({ hungTaskReapMinutes: 1 }).hungTaskReapMinutes).toBe(15);
+  });
+
+  it('clamps hungTaskReapMinutes above maximum to 10080', () => {
+    expect(validateSettings({ hungTaskReapMinutes: 999_999 }).hungTaskReapMinutes).toBe(10_080);
   });
 
   it('defaults replySnippets to an empty list', () => {
@@ -337,6 +380,9 @@ describe('loadSettings / saveSettings', () => {
       quietHours: [{ start: '22:00', end: '08:00' }],
       replySnippets: [{ label: 'Continue', text: 'continue' }],
       autoCloseCompletionReadyDelayMin: 45,
+      completionReadyTtlMinutes: 90,
+      hungTaskReapEnabled: false,
+      hungTaskReapMinutes: 240,
     };
     await saveSettings(filePath, settings);
     const result = await loadSettings(filePath);

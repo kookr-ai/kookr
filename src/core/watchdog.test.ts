@@ -1221,4 +1221,61 @@ describe('Watchdog', () => {
       expect(wd.getState(agentId)?.mcpStartupAt).toBe(0);
     });
   });
+
+  describe('lastPaneChangeAt tracking (issue #1526 Phase A)', () => {
+    test('initializes to registeredAt', () => {
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      expect(watchdog.getState(agentId)?.lastPaneChangeAt).toBe(t0);
+    });
+
+    test('the first tick establishes a baseline without counting as a change', () => {
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.tick(agentId, 'initial pane', [], t0 + 5_000);
+      // No prior hash to diff against — lastPaneChangeAt stays at registration.
+      expect(watchdog.getState(agentId)?.lastPaneChangeAt).toBe(t0);
+    });
+
+    test('advances only on a genuine content change, not on every tick', () => {
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.tick(agentId, 'pane v1', [], t0 + 1_000); // baseline
+      watchdog.tick(agentId, 'pane v1', [], t0 + 2_000); // unchanged
+      expect(watchdog.getState(agentId)?.lastPaneChangeAt).toBe(t0);
+
+      watchdog.tick(agentId, 'pane v2', [], t0 + 3_000); // changed
+      expect(watchdog.getState(agentId)?.lastPaneChangeAt).toBe(t0 + 3_000);
+
+      watchdog.tick(agentId, 'pane v2', [], t0 + 4_000); // unchanged again
+      expect(watchdog.getState(agentId)?.lastPaneChangeAt).toBe(t0 + 3_000);
+    });
+
+    test('re-registration resets lastPaneChangeAt (and every other liveness field) to the new registration time', () => {
+      // This is what makes "the hung-task reaper's silence clock restarts on
+      // server reboot/reconciliation re-registration" true (issue #1526
+      // Phase A): a task that was already hours silent before a restart does
+      // not immediately become reap-eligible again the moment its agent is
+      // re-registered — the clock starts over.
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.tick(agentId, 'pane v1', [], t0 + 1_000);
+      watchdog.recordTokenActivity(agentId, t0 + 1_000);
+      watchdog.tick(agentId, 'pane v2', [], t0 + 2_000); // pane change → lastPaneChangeAt = t0 + 2_000
+      expect(watchdog.getState(agentId)).toMatchObject({
+        lastEventAt: t0,
+        lastPaneChangeAt: t0 + 2_000,
+        lastTokenActivityAt: t0 + 1_000,
+      });
+
+      const t1 = t0 + 100_000; // e.g. a server restart, much later
+      watchdog.registerAgent(agentId, t1, t1);
+
+      expect(watchdog.getState(agentId)).toMatchObject({
+        lastEventAt: t1,
+        lastPaneChangeAt: t1,
+        lastTokenActivityAt: 0,
+      });
+    });
+  });
 });

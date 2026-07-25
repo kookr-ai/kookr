@@ -68,6 +68,9 @@ describe('Settings API', () => {
       quietHours: [],
       replySnippets: [],
       autoCloseCompletionReadyDelayMin: 30,
+      completionReadyTtlMinutes: 120,
+      hungTaskReapEnabled: true,
+      hungTaskReapMinutes: 180,
       loadedFromDefaults: true,
       warnings: [],
     });

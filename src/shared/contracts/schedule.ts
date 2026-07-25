@@ -16,17 +16,38 @@ export type ScheduleStopReason = 'trigger_limit_reached';
 export type ScheduleExecutionTrigger = 'cron' | 'manual';
 export type ScheduleExecutionDecision = 'cron_due' | 'manual_run' | 'catch_up' | 'manual_catch_up' | 'stale_catch_up';
 export type ScheduleExecutionOutcome =
+  /**
+   * @deprecated No longer produced (issue #1526 Phase A) — a capacity-queued
+   * fire now records {@link queued_capacity} instead. Kept in the type only
+   * so historical ledger rows persisted before this change still render.
+   */
   | 'queued'
+  /**
+   * A schedule fire went through the normal task-submission path and landed
+   * as a pending task because the node was at capacity (issue #1526 Phase A
+   * / FM8), instead of being dropped as `skipped_capacity`.
+   */
+  | 'queued_capacity'
   | 'running'
   | 'completed'
   | 'cancelled'
   | 'deduplicated'
   | 'dispatch_failed'
   | 'skipped_active'
+  /**
+   * @deprecated No longer produced (issue #1526 Phase A) — a capacity fire
+   * now records `queued_capacity` instead of being dropped.
+   */
   | 'skipped_capacity'
   | 'skipped_draining'
   | 'skipped_manual'
   | 'skipped_stale'
+  /**
+   * Coalesced (issue #1526 Phase A): the previous fire's task is still
+   * `pending`. Distinct from `skipped_active` (previous run actively
+   * running) so at most one outstanding queued fire per schedule exists.
+   */
+  | 'skipped_coalesced'
   | 'unknown_after_restart';
 
 export type ScheduleExecutionReasonCode =
@@ -34,6 +55,8 @@ export type ScheduleExecutionReasonCode =
   | 'capacity'
   | 'draining'
   | 'previous_run_active'
+  /** Reason code for `skipped_coalesced`. */
+  | 'previous_run_pending'
   | 'manual_catch_up_required'
   | 'missing_cwd'
   | 'missing_playbook'

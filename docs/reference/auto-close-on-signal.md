@@ -11,6 +11,29 @@ reads it live, so a change takes effect on the next tick without a restart. It
 governs only the auto-close grace window; the manual-review banner for
 non-opted-in tasks is unaffected.
 
+## TTL escalation for non-opted-in tasks (issue #1526)
+
+Tasks that did **not** opt in (`autoCloseOnSignal` unset/false — including
+`ask-first` delivery) used to hold their concurrency slot indefinitely once
+`completion_ready` was pending: the sweep's close policy required
+`autoCloseOnSignal === true`, so nothing ever released them without a human.
+The 2026-07-24 incident wedged all 12 slots exactly this way.
+
+They now have a bounded lifetime too: when a pending `completion_ready` signal
+is older than the **Completion-ready TTL** setting
+(`completionReadyTtlMinutes`, default 120, range 5–10080), the sweep completes
+the task anyway — regardless of delivery authorization — with
+`closeReason: 'ttl_escalation'`. Each TTL escalation (unlike an opted-in close)
+writes an `audit.jsonl` row (actor `system:completion-ready-ttl`) and
+broadcasts an info alert.
+
+The two thresholds are gated independently: opted-in tasks close after the
+Auto-close delay only, and a TTL set below that delay does not accelerate them.
+
+The sweep drains gently: at most 2 auto-closes per batch, at most one batch per
+60 seconds — so a backlog of finished tasks releases its slots over minutes
+rather than tearing down every session at once.
+
 ## Why it exists
 
 Kookr caps the number of concurrently running tasks (`MAX_ACTIVE_TASKS`, default

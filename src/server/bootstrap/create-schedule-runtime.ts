@@ -56,6 +56,10 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
       }
       return blocking;
     },
+    // issue #1526 Phase A: split isTaskBlockingSchedule's boolean into a
+    // status the runner uses to distinguish skipped_coalesced (still
+    // pending) from skipped_active (actively running).
+    getBlockingTaskStatus: (taskId) => deps.taskStore.getTask(taskId)?.status,
   });
 
   return { scheduleStore, scheduleValidator, scheduleService, scheduleRunner };
