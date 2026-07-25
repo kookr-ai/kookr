@@ -1607,6 +1607,31 @@ describe('TaskStore pending agent signal', () => {
     });
   });
 
+  test('setPendingSignal records signalId for pure outbox replays (issue #1541)', () => {
+    const store = new TaskStore();
+    const task = store.createTask('Ship it', '/repo');
+    store.setPendingSignal(task.id, {
+      kind: 'completion_ready',
+      raisedAt: '2026-06-05T12:00:00.000Z',
+      signalId: 'sig-1',
+    });
+    expect(store.getProcessedSignal('sig-1')).toEqual({
+      taskId: task.id,
+      kind: 'completion_ready',
+    });
+    // Same-kind re-raise without signalId keeps the original signalId on the row.
+    store.setPendingSignal(task.id, {
+      kind: 'completion_ready',
+      raisedAt: '2026-06-05T13:00:00.000Z',
+      note: 'again',
+    });
+    expect(store.getPendingSignal(task.id)).toMatchObject({
+      raisedAt: '2026-06-05T12:00:00.000Z',
+      note: 'again',
+      signalId: 'sig-1',
+    });
+  });
+
   test('setPendingSignal re-raise without a note preserves the existing note', () => {
     const store = new TaskStore();
     const task = store.createTask('Ship it', '/repo');

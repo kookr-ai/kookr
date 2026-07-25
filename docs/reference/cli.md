@@ -189,6 +189,12 @@ Kookr completes it and frees its active slot. Only signal when work is truly
 finished — under auto-close the task can close later without another prompt. See
 [auto-close-on-signal](./auto-close-on-signal.md).
 
+**Durability (issue #1541).** Every signal is write-behined to a local outbox
+(`~/.kookr/playbook-state/signal-outbox/`) *before* the HTTP attempt, with a
+client-generated `signalId` for server-side dedup. If the daemon is restarting
+or unreachable the command still exits `0` (signal spooled); a background drain
+delivers it after reconnect. See [signal-outbox](./signal-outbox.md).
+
 Kinds:
 
 - `completion-ready` - tell the user this task appears ready to complete.
@@ -213,13 +219,12 @@ Target selection uses the same local-server discovery as `kookr spawn`: first
 
 Exit behavior:
 
-- `0` when the signal is raised.
+- `0` when the signal is raised **or** durably spooled because the daemon was
+  unreachable (JSON envelope uses `code: "SPOOLED"` in the offline case).
 - `2` for usage errors, including an unknown signal kind, a missing task id,
   bad flags, or an invalid `KOOKR_PORT`.
-- `3` when no Kookr server is reachable. This is advisory so agents can keep
-  finishing their work when the dashboard is unavailable.
 - `4` when the server rejects the signal, for example because the task id is
-  unknown or terminal.
+  unknown or terminal (permanent failures are dropped from the outbox).
 
 ## `kookr issue`
 

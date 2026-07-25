@@ -27,6 +27,9 @@ export default defineConfig({
       // Keep the lesson-write spool recovery loop off during unit tests so
       // createKookrServer does not shell out to `kb doctor` every tick (#1519).
       KOOKR_LESSON_SPOOL: '0',
+      // Keep the signal-outbox drain off during unit tests so createKookrServer
+      // does not poll ~/.kookr/playbook-state/signal-outbox every 30s (#1541).
+      KOOKR_SIGNAL_OUTBOX: '0',
     },
     coverage: {
       provider: 'v8',
