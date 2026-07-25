@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -86,6 +86,48 @@ describe('IdempotencyLedger', () => {
     const reloaded = new IdempotencyLedger(tempDir);
     await reloaded.load();
     expect(reloaded.size()).toBe(0);
+  });
+
+  test('finalize never throws when persist fails — in-memory state is kept (review item 1)', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // A kookrDir that was never created: atomicWriteFile's temp-file open
+      // fails with ENOENT because the parent directory does not exist —
+      // simulating a disk/permissions failure without mocking modules.
+      const brokenDir = join(tempDir, 'does-not-exist-subdir');
+      const brokenLedger = new IdempotencyLedger(brokenDir);
+      await brokenLedger.load(); // tolerates a missing dir/file
+
+      const owner = brokenLedger.reserveOrWait('k1');
+      if (owner.kind !== 'own') throw new Error('expected own');
+      await expect(owner.finalize('task-1')).resolves.toBeUndefined();
+
+      // In-memory state is still finalized — same-process replay still works
+      // even though the write to disk failed.
+      expect(brokenLedger.reserveOrWait('k1')).toEqual({ kind: 'replay', taskId: 'task-1' });
+      expect(errorSpy).toHaveBeenCalled(); // logged loudly, not silently swallowed
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('clear never throws when persist fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const brokenDir = join(tempDir, 'also-does-not-exist');
+      const brokenLedger = new IdempotencyLedger(brokenDir);
+      await brokenLedger.load();
+      const owner = brokenLedger.reserveOrWait('k1');
+      if (owner.kind !== 'own') throw new Error('expected own');
+      await owner.finalize('task-1'); // logs but does not throw (same as above)
+      errorSpy.mockClear();
+
+      await expect(brokenLedger.clear('k1')).resolves.toBeUndefined();
+      expect(brokenLedger.reserveOrWait('k1').kind).toBe('own'); // cleared in memory
+      expect(errorSpy).toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   test('different keys reserve independently', async () => {

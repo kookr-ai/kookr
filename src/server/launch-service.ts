@@ -32,6 +32,7 @@ import { canonicalizeCwd } from './cwd.js';
 import { normalizePromptFileReferences } from './prompt-file-paths.js';
 import { applyWorktreeGuardrails, type DeliveryPolicy } from './worktree-guardrails.js';
 import type { IdempotencyLedger } from '../core/idempotency-ledger.js';
+import { isTerminalStatus } from '../core/task-status.js';
 
 export type { LaunchOpts } from '../shared/contracts/launch.js';
 export type LaunchResult = SharedLaunchResult<Task>;
@@ -301,10 +302,35 @@ export async function launchTask(
 }
 
 /**
+ * Whether a store-resident task should be handed back as a replay, or
+ * treated as though its reservation never happened (issue #1526 Phase B
+ * review item 2).
+ *
+ * A non-terminal task (open/pending/inProgress) is always replayable — it's
+ * the same live task the caller is retrying for.
+ *
+ * A TERMINAL task is replayable only if it actually ran: `sessions.length >
+ * 0` means an agent was launched (it may have completed, or died and been
+ * terminated — either way, real work happened, so replaying it is exactly
+ * the point of this feature — re-launching would duplicate that work). A
+ * terminal task with ZERO sessions never ran at all — e.g. it was queued at
+ * the concurrency cap (`launchTaskCore`'s maxActive branch never calls
+ * `adapter.launch`) and then reaped, cancelled, or TTL-expired before
+ * promotion ever launched it. Replaying that dead reference would hand the
+ * caller a task that will never do the work it's retrying for, so this case
+ * is deliberately NOT a replay: the stale entry is cleared and the caller
+ * competes for ownership again, actually launching the work.
+ */
+function isReplayableTask(task: Task): boolean {
+  return !isTerminalStatus(task.status) || task.sessions.length > 0;
+}
+
+/**
  * Reserve/replay wrapper (see {@link launchTask} docs). Loops rather than
  * recursing when a reservation resolves to "try again" (the owner's launch
- * failed, or a replay pointed at a since-deleted task) — both cases mean this
- * call should now compete for ownership itself.
+ * failed, a replay pointed at a since-deleted task, or a replay pointed at a
+ * terminal task that never actually ran — see {@link isReplayableTask}) —
+ * every case means this call should now compete for ownership itself.
  */
 async function launchTaskIdempotent(
   deps: LaunchServiceDeps,
@@ -318,11 +344,12 @@ async function launchTaskIdempotent(
 
     if (reservation.kind === 'replay') {
       const task = deps.taskStore.getTask(reservation.taskId);
-      if (task) {
-        return { task, queued: false, idempotentReplay: true };
+      if (task && isReplayableTask(task)) {
+        return { task, queued: task.status === 'pending', idempotentReplay: true };
       }
-      // The finalized task no longer exists (e.g. deleted) — the key must
-      // not stay permanently bound to a dead reference.
+      // Either the finalized task no longer exists (e.g. deleted), or it's
+      // terminal-and-never-ran (issue #1526 Phase B review item 2) — the key
+      // must not stay permanently bound to a dead/non-working reference.
       await ledger.clear(idempotencyKey);
       continue;
     }
@@ -331,24 +358,35 @@ async function launchTaskIdempotent(
       const outcome = await reservation.wait();
       if (outcome.ok) {
         const task = deps.taskStore.getTask(outcome.taskId);
-        if (task) {
-          return { task, queued: false, idempotentReplay: true };
+        if (task && isReplayableTask(task)) {
+          return { task, queued: task.status === 'pending', idempotentReplay: true };
         }
-        // Extremely unlikely (task deleted between finalize and this lookup)
-        // — fall through to compete for ownership on the next loop turn.
+        // Task missing, or terminal-and-never-ran. The owner already
+        // finalized this key, so the next `reserveOrWait` call below returns
+        // 'replay' (not 'own') and the branch above clears it — no need to
+        // duplicate the clear() call here.
       }
       continue;
     }
 
     // reservation.kind === 'own'
+    let result: LaunchResult;
     try {
-      const result = await launchTaskCore(deps, opts, serverOpts);
-      await reservation.finalize(result.task.id);
-      return result;
+      result = await launchTaskCore(deps, opts, serverOpts);
     } catch (err) {
+      // launchTaskCore never created a lasting task record (it cleans up its
+      // own on failure) — safe to release so a retry is treated as fresh.
       await reservation.release();
       throw err;
     }
+    // A real task now exists — possibly with a live spawned agent. From here
+    // on we must NEVER throw or release() (issue #1526 Phase B review item
+    // 1): `finalize` is best-effort by design (see IdempotencyLedger docs)
+    // and its returned promise never rejects, so a ledger persist failure
+    // can only cost cross-restart durability, never turn this success into
+    // an error for the caller or drop same-process replay protection.
+    await reservation.finalize(result.task.id);
+    return result;
   }
 }
 

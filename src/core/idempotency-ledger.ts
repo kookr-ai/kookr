@@ -28,12 +28,17 @@
  * A reservation starts `pending` (in-memory only — a mid-flight launch is
  * meaningless after a crash, so it does not need to survive one). The owner
  * must call exactly one of:
- *   - `finalize(taskId)` — the launch produced this task; the entry becomes
- *     `finalized` and is persisted to disk. Every caller currently awaiting
- *     this key resolves with the same task id.
+ *   - `finalize(taskId)` — the launch produced this task; the in-memory entry
+ *     flips to `finalized` and every waiter resolves with the same task id
+ *     BEFORE the disk write is even attempted. Persisting to disk is
+ *     best-effort past that point (see Durability below): `finalize` never
+ *     rejects, so a caller that already has a real, launched task can never
+ *     have that success turned into a thrown error by a failed ledger write.
  *   - `release()` — the launch failed (validation error, adapter launch
  *     failure, etc.); the entry is dropped entirely so a retry with the same
- *     key is treated as a fresh request.
+ *     key is treated as a fresh request. Only called when `launchTaskCore`
+ *     itself threw — never after a real task exists (issue #1526 Phase B
+ *     review item 1).
  *
  * ## Durability + TTL
  *
@@ -43,6 +48,18 @@
  * Entries older than {@link IDEMPOTENCY_TTL_MS} (24h) are compacted both on
  * `load()` (boot) and inline inside `reserveOrWait` (so a key past its TTL is
  * silently treated as never-seen, without needing a background sweep timer).
+ *
+ * Durability is honest, not absolute: (1) a crash strictly inside the
+ * create→finalize window loses the (memory-only) pending reservation, so a
+ * retry after that specific crash can create a duplicate — the same window
+ * that exists for any in-flight work; (2) `finalize`/`clear` persist
+ * best-effort (`persistBestEffort`) — a disk write failure is logged loudly
+ * but does not fail the caller, so same-process replay stays protected while
+ * cross-restart durability for that one entry is not, until the next
+ * successful write; (3) a corrupt on-disk file is quarantined and the ledger
+ * restarts empty (see `readJsonFile`'s `quarantineCorrupt`), which resets
+ * idempotency protection for every previously-finalized key — this is logged
+ * via `console.warn`, not otherwise alerted on.
  */
 import { join } from 'node:path';
 import { atomicWriteFile, readJsonFile } from './persistence-utils.js';
@@ -78,9 +95,19 @@ export type IdempotencyWaitOutcome =
 export type IdempotencyReservation =
   | {
       kind: 'own';
-      /** Persist the winning task id and release every waiter. */
+      /**
+       * Record the winning task id and release every waiter with it. Updates
+       * in-memory state and resolves waiters synchronously before attempting
+       * to persist — the returned promise NEVER rejects (a disk failure is
+       * logged and swallowed), so callers can safely call this after a real
+       * launch without any risk of turning that success into a thrown error.
+       */
       finalize: (taskId: string) => Promise<void>;
-      /** Drop the reservation (launch failed) so a retry is treated as fresh. */
+      /**
+       * Drop the reservation (the launch itself failed) so a retry is
+       * treated as fresh. Only call this when no task was created — never
+       * after `finalize` would apply.
+       */
       release: () => Promise<void>;
     }
   | {
@@ -189,9 +216,15 @@ export class IdempotencyLedger {
     return {
       kind: 'own',
       finalize: async (taskId: string) => {
+        // In-memory state flips to finalized — and every waiter resolves —
+        // BEFORE the persist attempt below, so a disk failure here can only
+        // cost cross-restart durability, never same-process replay
+        // protection or the caller's launch result (issue #1526 Phase B
+        // review item 1: a launch that already spawned an agent must never
+        // become an HTTP error just because the ledger write failed).
         this.state.set(key, { status: 'finalized', createdAtMs, taskId });
         resolve({ ok: true, taskId });
-        await this.persist();
+        await this.persistBestEffort('finalize', key);
       },
       release: async () => {
         this.state.delete(key);
@@ -203,12 +236,13 @@ export class IdempotencyLedger {
 
   /**
    * Drop a finalized entry regardless of TTL. Used when a replay's `taskId`
-   * no longer resolves to a task (e.g. deleted) so the key becomes claimable
-   * again instead of permanently pointing at a dead reference.
+   * no longer resolves to a task (e.g. deleted, or terminal-and-never-ran —
+   * see `isReplayableTask` in `launch-service.ts`) so the key becomes
+   * claimable again instead of permanently pointing at a dead reference.
    */
   async clear(key: string): Promise<void> {
     if (!this.state.delete(key)) return;
-    await this.persist();
+    await this.persistBestEffort('clear', key);
   }
 
   /** Number of entries (pending + finalized) currently held. Test/diagnostic use. */
@@ -222,6 +256,29 @@ export class IdempotencyLedger {
       if (entry.status === 'finalized' && nowMs - entry.createdAtMs > this.ttlMs) {
         this.state.delete(key);
       }
+    }
+  }
+
+  /**
+   * `persist()` wrapped so a disk failure (full disk, permissions, missing
+   * dir) never propagates to `finalize()`/`clear()` callers (issue #1526
+   * Phase B review item 1). Durability is best-effort by design: the
+   * in-memory state (already updated by the caller before this runs) stays
+   * correct regardless, so same-process replay protection is unaffected —
+   * only the on-disk copy (and therefore cross-restart durability) is at
+   * risk. Logged loudly so a persistently-failing disk is visible in
+   * server logs rather than silently degrading protection.
+   */
+  private async persistBestEffort(op: string, key: string): Promise<void> {
+    try {
+      await this.persist();
+    } catch (err) {
+      console.error(
+        `[idempotency-ledger] ${op}(${JSON.stringify(key)}): failed to persist ledger to disk. ` +
+        `In-memory state is unaffected (same-process replay protection still holds), but this ` +
+        `entry will NOT survive a restart until the next successful write:`,
+        err,
+      );
     }
   }
 

@@ -116,12 +116,18 @@ instead identifies the logical **request**: re-running the exact same
 `kookr spawn --idempotency-key <key> ...` invocation (e.g. after a client
 timeout against an overloaded server that had already created the task)
 returns the SAME task instead of creating a duplicate, regardless of prompt
-content. The response prints `↺ Task already exists (idempotent replay)`
-instead of `✓ Task created`, exits `0`, and (in `--json` mode) sets
-`details.idempotentReplay: true`. Reservations live in a durable,
-TTL-bounded ledger on the server (24h) that survives a restart — see
-[`POST /api/tasks` body fields](./api.md#post-apitasks-body-fields) for the
-server-side contract.
+content. A terminal task that never actually ran (e.g. queued at capacity,
+then reaped before it ever launched) is not replayed — the retry launches
+fresh instead; a terminal task that did run (completed or was terminated
+after starting an agent) is still replayed. The response prints `↺ Task
+already exists (idempotent replay)` instead of `✓ Task created`, exits `0`,
+and (in `--json` mode) sets `details.idempotentReplay: true`. Reservations
+live in a TTL-bounded ledger on the server (24h). Durability is best-effort,
+not absolute: a crash strictly between task-creation and the ledger write can
+lose that one reservation, and a ledger persist failure is logged
+server-side without failing the request — see [`POST /api/tasks` body
+fields](./api.md#post-apitasks-body-fields) for the full server-side
+contract and caveats.
 
 Auto-close on completion signal:
 
