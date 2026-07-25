@@ -210,6 +210,25 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['--auto-close-on-signal', '--no-auto-close-on-signal'])).toThrow(UsageError);
     expect(() => parseArgs(['--no-auto-close-on-signal', '--auto-close-on-signal'])).toThrow(UsageError);
   });
+
+  it('parses --idempotency-key and --idempotency-key=<key> (#1526)', () => {
+    expect(parseArgs([]).idempotencyKey).toBeNull();
+    expect(parseArgs(['--idempotency-key', 'repo#42@batch-1']).idempotencyKey).toBe('repo#42@batch-1');
+    expect(parseArgs(['--idempotency-key=repo#42@batch-1']).idempotencyKey).toBe('repo#42@batch-1');
+  });
+
+  it('trims --idempotency-key whitespace', () => {
+    expect(parseArgs(['--idempotency-key', '  k1  ']).idempotencyKey).toBe('k1');
+  });
+
+  it('rejects empty --idempotency-key', () => {
+    expect(() => parseArgs(['--idempotency-key', '   '])).toThrow(UsageError);
+  });
+
+  it('rejects --idempotency-key over 200 characters', () => {
+    expect(() => parseArgs(['--idempotency-key', 'x'.repeat(201)])).toThrow(UsageError);
+    expect(parseArgs(['--idempotency-key', 'x'.repeat(200)]).idempotencyKey).toHaveLength(200);
+  });
 });
 
 // ---------- resolveParentTaskId ----------
@@ -743,6 +762,56 @@ describe('postTask', () => {
       await closeServer(server);
     }
   });
+
+  it('includes idempotencyKey when provided and omits it otherwise (#1526)', async () => {
+    const bodies: any[] = [];
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodies.push(JSON.parse(bodyText));
+      return { status: 201, body: JSON.stringify({ id: 't' }) };
+    });
+    try {
+      await postTask({
+        baseUrl,
+        prompt: 'hi',
+        cwd: '/tmp',
+        agent: null,
+        criteria: null,
+        idempotencyKey: 'repo#42@batch-1',
+      });
+      await postTask({ baseUrl, prompt: 'hi2', cwd: '/tmp', agent: null, criteria: null });
+      expect(bodies[0].idempotencyKey).toBe('repo#42@batch-1');
+      expect(bodies[1]).not.toHaveProperty('idempotencyKey');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('surfaces an idempotent replay as kind=created with task.idempotentReplay set (#1526)', async () => {
+    const { server, baseUrl } = await startFakeApi(() => ({
+      status: 200,
+      body: JSON.stringify({ id: 'task-1', cwd: '/tmp', agentType: 'claude-code', idempotentReplay: true }),
+    }));
+    try {
+      const result = await postTask({
+        baseUrl,
+        prompt: 'hi',
+        cwd: '/tmp',
+        agent: null,
+        criteria: null,
+        idempotencyKey: 'repo#42@batch-1',
+      });
+      // A flattened 200 (no top-level `duplicate`) falls through to the same
+      // "created" branch a 201 does — the CLI distinguishes replay via the
+      // `idempotentReplay` field on the task itself, not a new result kind.
+      expect(result.kind).toBe('created');
+      if (result.kind === 'created') {
+        expect(result.task.id).toBe('task-1');
+        expect(result.task.idempotentReplay).toBe(true);
+      }
+    } finally {
+      await closeServer(server);
+    }
+  });
 });
 
 // ---------- formatSuccess / formatDedup ----------
@@ -766,6 +835,17 @@ describe('output formatting', () => {
       queued: true,
     });
     expect(out).toContain('⌛ Task queued');
+    expect(out).not.toContain('✓ Task created');
+  });
+
+  it('formatSuccess reports an idempotent replay distinctly (#1526)', () => {
+    const out = formatSuccess({
+      task: { id: 'abc', agentType: 'claude-code', cwd: '/tmp/x', idempotentReplay: true },
+      baseUrl: 'http://127.0.0.1:4800',
+      queued: false,
+    });
+    expect(out.split('\n')[0]).toBe('task_id=abc');
+    expect(out).toContain('idempotent replay');
     expect(out).not.toContain('✓ Task created');
   });
 

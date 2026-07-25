@@ -23,6 +23,7 @@ export interface ParsedArgs {
   model: string | null;
   criteria: string | null;
   dedupe: 'warn' | 'block' | 'skip';
+  idempotencyKey: string | null;
   promptFile: string | null;
   parentTaskId: string | null;
   noParentTask: boolean;
@@ -73,6 +74,7 @@ export interface PostTaskArgs {
   metadataIntent?: 'keep_as_duplicate' | null;
   parentTaskId?: string | null;
   autoCloseOnSignal?: boolean | null;
+  idempotencyKey?: string | null;
 }
 
 export interface TaskPayload {
@@ -80,6 +82,8 @@ export interface TaskPayload {
   agentType?: string;
   cwd?: string;
   queued?: boolean;
+  /** True when this task was returned as an idempotency-key replay (#1526 Phase B). */
+  idempotentReplay?: boolean;
   [k: string]: unknown;
 }
 

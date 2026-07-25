@@ -14,6 +14,7 @@ import {
 } from '../../shared/contracts/agent-signal.js';
 import { TaskLifecycleCommands } from '../use-cases/task-lifecycle-commands.js';
 import { launchTask, DrainModeError, isCwdValidationError, isEffortValidationError, isModelValidationError } from '../launch-service.js';
+import { MAX_IDEMPOTENCY_KEY_LENGTH } from '../../shared/contracts/launch.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import { LAUNCH_DEPENDENCIES, type LaunchDependency } from '../../core/playbook.js';
 import type { SessionInfo, Task, TaskStore, TokenUsage } from '../../core/tasks.js';
@@ -311,6 +312,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         metadata?: unknown;
         dependencies?: unknown;
         autoCloseOnSignal?: unknown;
+        idempotencyKey?: unknown;
       };
 
       if (!body.prompt || typeof body.prompt !== 'string') {
@@ -352,11 +354,21 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       if (body.autoCloseOnSignal !== undefined && typeof body.autoCloseOnSignal !== 'boolean') {
         return c.json({ error: 'autoCloseOnSignal must be a boolean' }, 400);
       }
+      // issue #1526 Phase B: bounded, opaque idempotency key. Validated here
+      // (shape only); reserve/replay semantics live in launchTask's wrapper.
+      if (body.idempotencyKey !== undefined) {
+        if (typeof body.idempotencyKey !== 'string' || body.idempotencyKey.length === 0) {
+          return c.json({ error: 'idempotencyKey must be a non-empty string' }, 400);
+        }
+        if (body.idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
+          return c.json({ error: `idempotencyKey must be at most ${MAX_IDEMPOTENCY_KEY_LENGTH} characters` }, 400);
+        }
+      }
 
       const rawSource = c.req.header('X-Kookr-Launch-Source');
       const launchSource: 'cli' | 'ui' | 'api' =
         rawSource === 'cli' || rawSource === 'ui' ? rawSource : 'api';
-      const { task, queued, duplicate } = await launchTask(deps.launchServiceDeps, {
+      const { task, queued, duplicate, idempotentReplay } = await launchTask(deps.launchServiceDeps, {
         prompt: body.prompt,
         cwd: body.cwd,
         criteria: body.criteria,
@@ -369,10 +381,20 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         dependencies: parseLaunchDependencies(body.dependencies),
         launchSource,
         autoCloseOnSignal: typeof body.autoCloseOnSignal === 'boolean' ? body.autoCloseOnSignal : undefined,
+        idempotencyKey: typeof body.idempotencyKey === 'string' ? body.idempotencyKey : undefined,
       });
 
       if (duplicate) {
         return c.json({ task, duplicate: true }, 200);
+      }
+
+      // Idempotent replay (#1526 Phase B): the SAME task an earlier request
+      // with this idempotencyKey already created — flattened like the 201
+      // shape (not wrapped like prompt-dedup's `{task, duplicate:true}`) so
+      // callers that already parse a plain task object need no extra
+      // branching to notice the replay via `idempotentReplay`.
+      if (idempotentReplay) {
+        return c.json({ ...task, idempotentReplay: true }, 200);
       }
 
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));

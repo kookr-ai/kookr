@@ -143,8 +143,8 @@ detail for one task — e.g. to relaunch it with its original prompt — fetch
 ### `POST /api/tasks` body fields
 
 `prompt` (required) and `cwd` (required) plus optional `criteria`, `parentTaskId`,
-`agentType`, `effort`, `model`, `disableDedup`, `metadata`, `dependencies`, and
-`autoCloseOnSignal`.
+`agentType`, `effort`, `model`, `disableDedup`, `metadata`, `dependencies`,
+`autoCloseOnSignal`, and `idempotencyKey`.
 
 `autoCloseOnSignal` (optional, boolean) opts the task into auto-completion after
 its agent's `completion_ready` signal has been pending for the configured
@@ -191,6 +191,31 @@ no silent fallback. Allowed base ids for `claude-code`:
 CLI / env default unchanged. The `kookr-spawn --model <id>` flag maps to this
 field. Resolution order for both `effort` and `model`: **per-task override →
 per-schedule value → global agent-type default → unset**.
+
+`idempotencyKey` (optional, string, ≤200 characters — issue #1526 Phase B)
+protects a retried request from creating a duplicate task. It is a *different*
+mechanism from the existing prompt+cwd+agentType dedup (`disableDedup` /
+`metadata.intent`): that dedup is defeated whenever the prompt varies between
+attempts — for example a spawn helper that embeds a fresh random branch
+suffix in the prompt on every call. An idempotency key instead identifies the
+logical *request*, independent of its prompt content.
+
+- The first `POST /api/tasks` carrying a given key creates the task normally
+  (`201`).
+- Any later request with the SAME key — including one racing concurrently
+  with the first — returns `200` with the body flattened like the `201` shape
+  (not wrapped like the prompt-dedup `{"task", "duplicate": true}` response)
+  plus `"idempotentReplay": true`, referencing the SAME task. No new task is
+  created and no duplicate-confirmation UX is triggered.
+- An empty string or a key over 200 characters returns
+  `400 {"error": "idempotencyKey must be ..."}`.
+- Reservations are held in a durable ledger (`idempotency-ledger.json` under
+  the Kookr data dir) with a 24-hour TTL; a key past its TTL is treated as
+  never seen. The ledger survives a server restart. If the launch that owns a
+  key's reservation fails (validation error, adapter launch failure), the
+  reservation is released so a retry with the same key can succeed.
+- Omitting `idempotencyKey` leaves behavior exactly as before. The
+  `kookr-spawn --idempotency-key <key>` flag maps to this field.
 
 ### `POST /api/tasks/:id/complete`
 

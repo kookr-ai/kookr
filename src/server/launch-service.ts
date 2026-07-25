@@ -31,6 +31,7 @@ import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
 import { canonicalizeCwd } from './cwd.js';
 import { normalizePromptFileReferences } from './prompt-file-paths.js';
 import { applyWorktreeGuardrails, type DeliveryPolicy } from './worktree-guardrails.js';
+import type { IdempotencyLedger } from '../core/idempotency-ledger.js';
 
 export type { LaunchOpts } from '../shared/contracts/launch.js';
 export type LaunchResult = SharedLaunchResult<Task>;
@@ -82,6 +83,14 @@ export interface LaunchServiceDeps {
   validateLaunchCwd?: (cwd: string) => Promise<void>;
   /** True when launches should be audited as running without permission prompts. */
   bypassAllPermissions?: boolean;
+  /**
+   * Durable idempotency ledger (issue #1526 Phase B). When provided AND the
+   * launch request carries `opts.idempotencyKey`, {@link launchTask} routes
+   * through the reserve/replay wrapper instead of launching directly.
+   * Omitted, or a launch with no key, behaves exactly as before (no
+   * idempotency protection) — this keeps every existing caller unaffected.
+   */
+  idempotencyLedger?: IdempotencyLedger;
 }
 
 /**
@@ -270,8 +279,80 @@ async function validateDuplicateCandidate(
  * Unified launch orchestration: create task, check concurrency, launch via
  * adapter, and run post-launch registration. Used by both the WS message
  * router and the REST API.
+ *
+ * Idempotency (issue #1526 Phase B) is a thin wrapper around the core launch
+ * logic ({@link launchTaskCore}) rather than woven through it: when
+ * `opts.idempotencyKey` and `deps.idempotencyLedger` are both present, this
+ * function reserves the key, delegates to `launchTaskCore` for the entire
+ * existing launch pipeline (validation, dedup, concurrency, adapter launch),
+ * and finalizes or releases the reservation based on the outcome. Every
+ * existing caller that never sets `idempotencyKey` is byte-for-byte
+ * unaffected — the wrapper is skipped entirely.
  */
 export async function launchTask(
+  deps: LaunchServiceDeps,
+  opts: LaunchOpts,
+  serverOpts: LaunchTaskServerOptions = {},
+): Promise<LaunchResult> {
+  if (opts.idempotencyKey === undefined || !deps.idempotencyLedger) {
+    return launchTaskCore(deps, opts, serverOpts);
+  }
+  return launchTaskIdempotent(deps, opts, serverOpts, deps.idempotencyLedger, opts.idempotencyKey);
+}
+
+/**
+ * Reserve/replay wrapper (see {@link launchTask} docs). Loops rather than
+ * recursing when a reservation resolves to "try again" (the owner's launch
+ * failed, or a replay pointed at a since-deleted task) — both cases mean this
+ * call should now compete for ownership itself.
+ */
+async function launchTaskIdempotent(
+  deps: LaunchServiceDeps,
+  opts: LaunchOpts,
+  serverOpts: LaunchTaskServerOptions,
+  ledger: IdempotencyLedger,
+  idempotencyKey: string,
+): Promise<LaunchResult> {
+  for (;;) {
+    const reservation = ledger.reserveOrWait(idempotencyKey);
+
+    if (reservation.kind === 'replay') {
+      const task = deps.taskStore.getTask(reservation.taskId);
+      if (task) {
+        return { task, queued: false, idempotentReplay: true };
+      }
+      // The finalized task no longer exists (e.g. deleted) — the key must
+      // not stay permanently bound to a dead reference.
+      await ledger.clear(idempotencyKey);
+      continue;
+    }
+
+    if (reservation.kind === 'wait') {
+      const outcome = await reservation.wait();
+      if (outcome.ok) {
+        const task = deps.taskStore.getTask(outcome.taskId);
+        if (task) {
+          return { task, queued: false, idempotentReplay: true };
+        }
+        // Extremely unlikely (task deleted between finalize and this lookup)
+        // — fall through to compete for ownership on the next loop turn.
+      }
+      continue;
+    }
+
+    // reservation.kind === 'own'
+    try {
+      const result = await launchTaskCore(deps, opts, serverOpts);
+      await reservation.finalize(result.task.id);
+      return result;
+    } catch (err) {
+      await reservation.release();
+      throw err;
+    }
+  }
+}
+
+async function launchTaskCore(
   deps: LaunchServiceDeps,
   opts: LaunchOpts,
   serverOpts: LaunchTaskServerOptions = {},
