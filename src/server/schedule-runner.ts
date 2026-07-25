@@ -67,6 +67,15 @@ export interface ScheduleRunnerDeps {
    * Absent means every block is reported as `skipped_active` (back-compat).
    */
   getBlockingTaskStatus?: (taskId: string) => TaskStatus | undefined;
+  /**
+   * Scheduled-task starvation dead-man switch (issue #1526 Phase C). When
+   * provided, evaluated once per tick — piggybacking the existing 60s
+   * interval, no timer of its own. `check` must never throw (it only reads
+   * ledger state and broadcasts); it is still called inside the tick's
+   * tracked-work error envelope. Absent means no dead-man (back-compat for
+   * older wiring/tests).
+   */
+  deadMan?: { check(schedules: Schedule[]): void };
 }
 
 export class ScheduleRunner {
@@ -155,6 +164,9 @@ export class ScheduleRunner {
         if (!scheduledNextRun || scheduledNextRun > now) continue;
         await this.fire(schedule, 'cron', scheduledNextRun);
       }
+      // Dead-man starvation self-check (issue #1526 Phase C): runs AFTER the
+      // fires above so this tick's outcomes are already in the ledger.
+      this.deps.deadMan?.check(this.deps.store.list());
       this.deps.service.recordTickCompleted();
     } finally {
       this.firing = false;
