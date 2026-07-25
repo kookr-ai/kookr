@@ -570,9 +570,9 @@ If `{{selfContinuation}}` is `true` and you are NOT running in Ralph loop mode, 
 
 Do **not** leave the parent running while the child works, and do **not** rely on the one-hour auto-close grace alone — dense chains (spawn every few minutes) otherwise stack multiple live parents and hit `MAX_ACTIVE_TASKS`. The successor inherits `autoCloseOnSignal` automatically (server-side, via `parentTaskId`). Do NOT signal or complete while unit work remains. In Ralph loop mode, ignore this: the loop owns the task lifecycle and writes a verdict instead (Phase 9). Full contract: `self-continuation-task` skill → "Releasing the Task Slot".
 
-## Phase 8.5: Post-task KB lesson decision
+## Phase 8.5: Post-task KB lesson decision (required before completion-ready)
 
-Before writing the verdict in Phase 9 (or before your final answer in single-shot mode), make the post-task lesson decision visible in the Bash hook trail. Pick exactly one:
+Before writing the verdict in Phase 9 (or before your final answer in single-shot mode), **and always before** `kookr signal completion-ready`, make the post-task lesson decision visible in the Bash hook trail. The server rejects completion-ready with `lesson_decision_required` when neither form appears (issue #1538). Pick exactly one:
 
 - **Wrote a lesson** — when this iteration produced a *generic* lesson a future agent on an unrelated task could reuse, write it to the KB. Generic only — no PR numbers, branch names, file paths, or proper nouns.
 
@@ -584,13 +584,13 @@ Before writing the verdict in Phase 9 (or before your final answer in single-sho
   EOF
   ```
 
-- **Explicit skip** — when no generic lesson came out of the iteration (purely repo-local fact, already-documented gotcha, follow-up of a prior decision), record the skip so the absence is counted, not silent:
+- **Explicit skip** — when no generic lesson came out of the iteration (purely repo-local fact, already-documented gotcha, follow-up of a prior decision, purely mechanical change), record the skip so the absence is counted, not silent:
 
   ```bash
   printf 'No generic KB lesson: %s\n' '<one-line reason>'
   ```
 
-Skip the decision entirely only for *purely mechanical* iterations (e.g. typo-only fix, dependency bump with no surprises). For everything else — implementation, debugging, RFC follow-through, recovery from a stall — emit one of the two markers above. The `pnpm kb:usage` report classifies tasks by the strongest signal in their hook log; running both forms in one iteration is fine and counts as **wrote-lesson**.
+Do **not** signal completion-ready with a silent no-decision — even for mechanical iterations, print the skip marker. The `pnpm kb:usage` report and `kookr lesson yield` classify tasks by the strongest signal in their hook log; running both forms in one iteration is fine and counts as **wrote-lesson**.
 
 ## Phase 9: Report verdict to the engine
 

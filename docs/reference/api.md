@@ -6,7 +6,8 @@ Kookr exposes local HTTP and WebSocket endpoints from the Hono server. In develo
 
 | Endpoint | Description |
 | --- | --- |
-| `GET /api/health` | Server status, agent count, build info, and launch dependency degradation summary |
+| `GET /api/health` | Server status, agent count, build info, launch dependency degradation, capacity ledger, and (when `kookrDir` is set) a cached 24h `lessonYield` snapshot (issue #1538) |
+| `GET /api/diagnostics/lesson-yield` | Per-window lesson yield (`?days=1..30`): decided / completed tasks from hook-log scans (issue #1538) |
 | `GET /api/health/stt` | Bundled speech-to-text container health |
 | `GET /api/startup-summary` | Crash-recovery startup summary fetched once on UI mount |
 | `GET /metrics` | Prometheus text exposition for request durations, circuit breakers, attention-queue suppressions, audit-sink health, aggregate auth-throttle counters, and outbound finding-webhook delivery outcomes |
@@ -345,6 +346,17 @@ Body:
   returns `400`; remote-owned `shared:` ids return `403`.
 - Offline agents should write-behind via the [signal outbox](./signal-outbox.md)
   rather than treating a connection failure as a task failure.
+
+**Lesson-decision gate (issue #1538).** For `kind: "completion_ready"`, when the
+task has launched sessions and neither a `kb remember` / `kookr lesson remember`
+write nor an explicit `No generic KB lesson:` skip appears in its PreToolUse
+Bash hook trail, the server returns `409` with
+`{"code": "lesson_decision_required", "decision": "search-only"|"no-kb-activity",
+"hint": "…", "counts": {…}}` and does **not** record the signal. Fail-open when
+the task has 0 sessions, `kookrDir` is unset, or
+`KOOKR_LESSON_DECISION_GATE=0|false|off|no`. See
+[lesson-decision-gate](./lesson-decision-gate.md). Human Complete
+(`POST /api/tasks/:id/complete`) is not gated.
 
 **Auto-close.** When the task opted into the policy (`autoCloseOnSignal` — set at
 launch or inherited from its parent; see

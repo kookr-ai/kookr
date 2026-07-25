@@ -1921,6 +1921,115 @@ describe('POST /api/tasks/:id/signal', () => {
       expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
     });
   });
+
+  describe('lesson-decision gate (issue #1538)', () => {
+    let kookrDir: string;
+
+    beforeEach(() => {
+      kookrDir = mkdtempSync(join(tmpdir(), 'kookr-lesson-gate-'));
+      mkdirSync(join(kookrDir, 'hooks'), { recursive: true });
+    });
+
+    afterEach(() => {
+      rmSync(kookrDir, { recursive: true, force: true });
+      delete process.env.KOOKR_LESSON_DECISION_GATE;
+    });
+
+    function seedSessionWithHook(
+      taskStore: TaskStore,
+      command: string,
+      tmuxSession = 'kookr-lesson-gate',
+    ): string {
+      const task = taskStore.createTask({ prompt: 'Ship it', cwd: '/repo' });
+      taskStore.addSession(task.id, {
+        tmuxSession,
+        agentType: 'claude-code',
+        cwd: '/repo',
+        createdAt: new Date(),
+      });
+      writeFileSync(
+        join(kookrDir, 'hooks', `${tmuxSession}.jsonl`),
+        `${JSON.stringify({
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Bash',
+          tool_input: { command },
+        })}\n`,
+        'utf8',
+      );
+      return task.id;
+    }
+
+    test('rejects completion_ready when sessions exist but no lesson decision', async () => {
+      const taskStore = new TaskStore();
+      const id = seedSessionWithHook(taskStore, 'ls -la');
+      const deps = { ...mkLoopDeps(taskStore), kookrDir };
+
+      const res = await mkApp(deps).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('lesson_decision_required');
+      expect(body.decision).toBe('no-kb-activity');
+      expect(body.hint).toMatch(/kb remember/);
+      expect(taskStore.getPendingSignal(id)).toBeUndefined();
+    });
+
+    test('allows completion_ready after a kb remember lesson write', async () => {
+      const taskStore = new TaskStore();
+      const id = seedSessionWithHook(
+        taskStore,
+        'kb remember --kb=agent-task-lessons --title="x" --stdin --yes',
+      );
+      const deps = { ...mkLoopDeps(taskStore), kookrDir };
+
+      const res = await mkApp(deps).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready', note: 'done' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
+    });
+
+    test('allows completion_ready after an explicit skip marker', async () => {
+      const taskStore = new TaskStore();
+      const id = seedSessionWithHook(
+        taskStore,
+        "printf 'No generic KB lesson: %s\\n' 'purely mechanical rename'",
+      );
+      const deps = { ...mkLoopDeps(taskStore), kookrDir };
+
+      const res = await mkApp(deps).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
+    });
+
+    test('kill-switch KOOKR_LESSON_DECISION_GATE=off bypasses the gate', async () => {
+      process.env.KOOKR_LESSON_DECISION_GATE = 'off';
+      const taskStore = new TaskStore();
+      const id = seedSessionWithHook(taskStore, 'ls -la');
+      const deps = { ...mkLoopDeps(taskStore), kookrDir };
+
+      const res = await mkApp(deps).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
+    });
+  });
 });
 
 describe('POST /api/tasks/abort (issue #1325)', () => {

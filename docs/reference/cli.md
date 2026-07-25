@@ -223,8 +223,35 @@ Exit behavior:
   unreachable (JSON envelope uses `code: "SPOOLED"` in the offline case).
 - `2` for usage errors, including an unknown signal kind, a missing task id,
   bad flags, or an invalid `KOOKR_PORT`.
-- `4` when the server rejects the signal, for example because the task id is
-  unknown or terminal (permanent failures are dropped from the outbox).
+- `4` when the server permanently rejects the signal: unknown/terminal task id,
+  **or** missing post-task lesson decision (`lesson_decision_required`, issue
+  #1538). Permanent failures are dropped from the outbox. For the lesson gate
+  the CLI prints the server hint and asks you to run `kb remember …` or
+  `printf 'No generic KB lesson: %s\n' '<reason>'` before re-signaling; JSON
+  mode reports `code: "LESSON_DECISION_REQUIRED"`.
+
+**Lesson decision (required before completion-ready).** Agents must leave either
+a `kb remember` write or an explicit skip marker in the Bash hook trail before
+signaling. See [lesson-decision-gate](./lesson-decision-gate.md).
+
+## `kookr lesson`
+
+Operator CLI for the durable lesson-write spool (issue #1519) and the lesson
+yield metric (issue #1538):
+
+```bash
+kookr lesson status [--json] [--dir PATH]
+kookr lesson drain  [--json] [--dir PATH] [--dry-run]
+kookr lesson remember --title=<title> [--kb=agent-task-lessons] --stdin --yes
+kookr lesson yield    [--json] [--days N] [--kookr-dir PATH]
+```
+
+- `status` / `drain` / `remember` — spool health, replay, and write-behind when
+  KB is degraded. See [lesson-write-spool](./lesson-write-spool.md).
+- `yield` — scan recent completed tasks' hook logs and print the lesson-yield
+  rate (`(wrote-lesson + explicit-skip) / completed`). Same metric as
+  `GET /api/diagnostics/lesson-yield?days=N` and the `lessonYield` block on
+  `GET /api/health`. See [lesson-decision-gate](./lesson-decision-gate.md).
 
 ## `kookr issue`
 

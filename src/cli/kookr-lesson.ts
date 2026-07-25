@@ -1,13 +1,16 @@
 /**
- * `kookr lesson` — operator CLI for the durable lesson-write spool (#1519).
+ * `kookr lesson` — operator CLI for the durable lesson-write spool (#1519)
+ * and the lesson-yield flywheel metric (#1538).
  *
  *   kookr lesson status [--json] [--dir PATH]
  *   kookr lesson drain  [--json] [--dir PATH] [--dry-run]
  *   kookr lesson remember --title=… [--kb=agent-task-lessons] [--stdin] [--yes]
+ *   kookr lesson yield [--json] [--days N] [--kookr-dir PATH]
  */
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import {
   appendLessonWrite,
   applyDegradationProbe,
@@ -21,23 +24,32 @@ import {
   type LessonSpoolState,
 } from '../core/lesson-write-spool.js';
 import { createKbRememberWriteFn } from '../core/lesson-write-runner.js';
+import {
+  computeLessonYield,
+  hooksDirFromKookrDir,
+  type TaskLikeForLessonDecision,
+} from '../core/lesson-decision.js';
 
-const USAGE = `kookr lesson — durable lesson-write spool (issue #1519).
+const USAGE = `kookr lesson — durable lesson-write spool (#1519) + yield metric (#1538).
 
 Usage:
   kookr lesson status   [--json] [--dir PATH]
   kookr lesson drain    [--json] [--dir PATH] [--dry-run]
   kookr lesson remember --title=<title> [--kb=agent-task-lessons] --stdin --yes
+  kookr lesson yield    [--json] [--days N] [--kookr-dir PATH]
 
 status   Show pending spool entries and degradation streak state.
 drain    Replay pending lessons via \`kb remember\` (idempotent).
 remember Write a lesson now; on KB failure, append to the spool.
+yield    Lesson yield over recent completed tasks (hook-log scan).
 
 Options:
-  --dir PATH   Spool directory (default: ~/.kookr/playbook-state/lesson-write-spool).
-  --json       Machine-readable output.
-  --dry-run    drain only: list what would be written without calling kb.
-  -h, --help   Show this help.
+  --dir PATH         Spool directory (default: ~/.kookr/playbook-state/lesson-write-spool).
+  --kookr-dir PATH   Kookr state dir for yield (default: ~/.kookr).
+  --days N           Yield window in days (default: 1, max: 30).
+  --json             Machine-readable output.
+  --dry-run          drain only: list what would be written without calling kb.
+  -h, --help         Show this help.
 `;
 
 export interface LessonCliIo {
@@ -74,10 +86,93 @@ export async function runLessonCli(
   if (verb === 'remember') {
     return runRemember(rest, { env, out, err, stdin: io.stdin ?? process.stdin });
   }
+  if (verb === 'yield') {
+    return runYield(rest, { env, out, err, now });
+  }
 
   err.error(`[kookr lesson] Unknown verb: ${verb}`);
   err.error(USAGE);
   return 2;
+}
+
+async function runYield(
+  argv: string[],
+  io: {
+    env: NodeJS.ProcessEnv;
+    out: { log: (...a: unknown[]) => void };
+    err: { error: (...a: unknown[]) => void };
+    now: () => Date;
+  },
+): Promise<number> {
+  let days = 1;
+  let kookrDir: string | undefined;
+  let json = false;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === '--json') json = true;
+    else if (arg === '--days') {
+      const raw = argv[++i];
+      const parsed = Number.parseInt(raw ?? '', 10);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        io.err.error('[kookr lesson] --days must be a positive integer');
+        return 2;
+      }
+      days = Math.min(parsed, 30);
+    } else if (arg.startsWith('--days=')) {
+      const parsed = Number.parseInt(arg.slice('--days='.length), 10);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        io.err.error('[kookr lesson] --days must be a positive integer');
+        return 2;
+      }
+      days = Math.min(parsed, 30);
+    } else if (arg === '--kookr-dir') {
+      kookrDir = argv[++i];
+    } else if (arg.startsWith('--kookr-dir=')) {
+      kookrDir = arg.slice('--kookr-dir='.length);
+    } else if (arg === '-h' || arg === '--help') {
+      io.out.log(USAGE);
+      return 0;
+    } else {
+      io.err.error(`[kookr lesson] Unknown arg: ${arg}`);
+      return 2;
+    }
+  }
+
+  const root = kookrDir
+    ?? (io.env.KOOKR_DIR?.trim() || join(io.env.HOME ?? io.env.USERPROFILE ?? homedir(), '.kookr'));
+  const tasksPath = join(root, 'tasks.json');
+  let tasks: TaskLikeForLessonDecision[] = [];
+  try {
+    const raw = JSON.parse(await readFile(tasksPath, 'utf8')) as { tasks?: TaskLikeForLessonDecision[] };
+    tasks = raw.tasks ?? [];
+  } catch (err) {
+    io.err.error(
+      `[kookr lesson] Could not read ${tasksPath}: ${err instanceof Error ? err.message : err}`,
+    );
+    return 1;
+  }
+
+  const snapshot = await computeLessonYield(tasks, hooksDirFromKookrDir(root), {
+    days,
+    nowMs: io.now().getTime(),
+  });
+
+  if (json) {
+    io.out.log(JSON.stringify(snapshot, null, 2));
+  } else {
+    const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
+    io.out.log(`=== Lesson yield (last ${snapshot.windowDays} day(s)) ===`);
+    io.out.log(`Tasks in window:     ${snapshot.tasksInWindow}`);
+    io.out.log(`Completed in window: ${snapshot.completedInWindow}`);
+    io.out.log(`Decided (write+skip): ${snapshot.decided}`);
+    io.out.log(`Yield rate:          ${pct(snapshot.yieldRate)}  (target ≥ 100%)`);
+    io.out.log(
+      `  wrote-lesson: ${snapshot.buckets.wroteLesson}  explicit-skip: ${snapshot.buckets.explicitSkip}`
+        + `  search-only: ${snapshot.buckets.searchOnly}  no-kb: ${snapshot.buckets.noKbActivity}`,
+    );
+    io.out.log(`Generated: ${snapshot.generatedAt}`);
+  }
+  return 0;
 }
 
 async function runStatus(

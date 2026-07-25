@@ -33,19 +33,32 @@ import { SESSION_HEALTH_SCHEMA_VERSION } from '../../shared/contracts/session-he
 import { buildCapacityLedger } from '../../core/capacity-ledger.js';
 import { resolveTaskAttentionSignals } from '../task-attention-signals.js';
 import { MAX_ACTIVE_TASKS } from '../config.js';
+import {
+  computeLessonYield,
+  hooksDirFromKookrDir,
+  type LessonYieldSnapshot,
+} from '../../core/lesson-decision.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const REVIEW_ADMIN_TOKEN_HEADER = 'x-kookr-admin-token';
 const REVIEW_CSRF_HEADER = 'x-kookr-finding-review-token';
 const DEFAULT_HOOK_INGESTION_LAG_WARNING_THRESHOLD_MS = 2_000;
+/** Cache TTL for the /api/health lessonYield block (hook scans can be heavy). */
+const LESSON_YIELD_HEALTH_CACHE_MS = 60_000;
+const MAX_LESSON_YIELD_DAYS = 30;
 
 export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   const { taskStore, queue, adapter, interactionLog, githubScanner, githubStateStore, buildInfo, serverStartedAt } = deps;
   let findingEvidenceReviewService: FindingEvidenceReviewService | undefined;
   let findingEvidenceReviewConfig: FindingEvidenceReviewServiceConfig | undefined;
   let findingEvidenceReviewLogStore: ReviewLogStore | undefined;
+  // Issue #1538: cache the 24h lesson-yield snapshot for /api/health so a
+  // frequent dashboard poll does not re-scan every hook log every time.
+  let lessonYieldHealthCache:
+    | { expiresAtMs: number; snapshot: LessonYieldSnapshot }
+    | undefined;
 
-  app.get('/api/health', (c) => {
+  app.get('/api/health', async (c) => {
     const terminalBackend = deps.terminalBackend;
     let terminalBackendBlock: object | undefined;
     if (terminalBackend) {
@@ -88,6 +101,33 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         resolveTaskAttentionSignals(task, { queue, watchdog: deps.watchdog }, capacitySampledAtMs).hungSuspect,
       isLaunching: (task) => taskStore.hasFreshLaunchReservation(task.id),
     });
+
+    // Lesson yield (issue #1538) — last-24h flywheel health. Cached; full
+    // per-window queries use GET /api/diagnostics/lesson-yield?days=N.
+    let lessonYieldBlock: LessonYieldSnapshot | undefined;
+    if (deps.kookrDir) {
+      const nowMs = Date.now();
+      if (lessonYieldHealthCache && lessonYieldHealthCache.expiresAtMs > nowMs) {
+        lessonYieldBlock = lessonYieldHealthCache.snapshot;
+      } else {
+        try {
+          const snapshot = await computeLessonYield(
+            tasks,
+            hooksDirFromKookrDir(deps.kookrDir),
+            { days: 1, nowMs },
+          );
+          lessonYieldHealthCache = {
+            expiresAtMs: nowMs + LESSON_YIELD_HEALTH_CACHE_MS,
+            snapshot,
+          };
+          lessonYieldBlock = snapshot;
+        } catch {
+          // Soft: health stays 200 even if hook scans fail.
+          lessonYieldBlock = undefined;
+        }
+      }
+    }
+
     return c.json({
       status: 'ok',
       agents: tasks.length,
@@ -99,6 +139,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         oldestFindingAgeMs: queue.getOldestFindingAgeMs(attentionQueueSampledAtMs),
       },
       capacity,
+      ...(lessonYieldBlock ? { lessonYield: lessonYieldBlock } : {}),
       ...(terminalBackendBlock ? { terminalBackend: terminalBackendBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),
@@ -231,6 +272,45 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       });
     } catch {
       return c.json({ error: 'session health diagnostics unavailable' }, 503);
+    }
+  });
+
+  // Lesson yield (issue #1538): lessons + explicit no-lesson declarations per
+  // completed task, queryable over a recent window. Source: hook logs under
+  // <kookrDir>/hooks/. Complements the durable spool (#1519) which only
+  // covers write durability, not authoring trigger.
+  app.get('/api/diagnostics/lesson-yield', async (c) => {
+    if (!deps.kookrDir) {
+      return c.json({ error: 'kookrDir unavailable; lesson yield requires hook logs' }, 503);
+    }
+    const daysRaw = c.req.query('days');
+    let days = 1;
+    if (daysRaw !== undefined) {
+      const parsed = Number.parseInt(daysRaw, 10);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        return c.json({ error: 'days must be a positive integer' }, 400);
+      }
+      days = Math.min(parsed, MAX_LESSON_YIELD_DAYS);
+    }
+    try {
+      const snapshot = await computeLessonYield(
+        taskStore.listTasks(),
+        hooksDirFromKookrDir(deps.kookrDir),
+        { days },
+      );
+      // Keep the health cache warm when callers ask for the default 1-day window.
+      if (days === 1) {
+        lessonYieldHealthCache = {
+          expiresAtMs: Date.now() + LESSON_YIELD_HEALTH_CACHE_MS,
+          snapshot,
+        };
+      }
+      return c.json(snapshot);
+    } catch (err) {
+      return c.json(
+        { error: err instanceof Error ? err.message : String(err) },
+        500,
+      );
     }
   });
 

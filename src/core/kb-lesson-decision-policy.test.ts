@@ -53,4 +53,10 @@ describe('post-task KB lesson decision policy', () => {
   test('mechanical-task carveout is preserved so the nudge stays low-noise', () => {
     expect(claudeMd).toMatch(/purely mechanical/i);
   });
+
+  test('CLAUDE.md documents the completion-ready lesson-decision gate (issue #1538)', () => {
+    expect(claudeMd).toContain('lesson_decision_required');
+    expect(claudeMd).toMatch(/completion-ready/i);
+    expect(claudeMd).toContain('/api/diagnostics/lesson-yield');
+  });
 });

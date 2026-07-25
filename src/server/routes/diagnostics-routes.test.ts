@@ -627,6 +627,91 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/diagnostics/lesson-yield + health.lessonYield (issue #1538)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/diagnostics/lesson-yield', () => {
+    test('returns lesson-yield.v1 for completed tasks in the window', async () => {
+      const kookrDir = join(tempDir, 'kookr-state');
+      mkdirSync(join(kookrDir, 'hooks'), { recursive: true });
+      writeFileSync(
+        join(kookrDir, 'hooks', 's-write.jsonl'),
+        `${JSON.stringify({
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Bash',
+          tool_input: {
+            command: 'kb remember --kb=agent-task-lessons --title=t --stdin --yes',
+          },
+        })}\n`,
+      );
+
+      const taskStore = new TaskStore();
+      const done = taskStore.createTask('Done', '/repo');
+      taskStore.addSession(done.id, {
+        tmuxSession: 's-write',
+        agentType: 'claude-code',
+        cwd: '/repo',
+        createdAt: new Date(),
+      });
+      taskStore.completeTask(done.id);
+
+      const res = await mkApp({
+        taskStore,
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        kookrDir,
+      }).request('/api/diagnostics/lesson-yield?days=1');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.schemaVersion).toBe('lesson-yield.v1');
+      expect(body.windowDays).toBe(1);
+      expect(body.completedInWindow).toBe(1);
+      expect(body.buckets.wroteLesson).toBe(1);
+      expect(body.decided).toBe(1);
+      expect(body.yieldRate).toBe(1);
+    });
+
+    test('rejects non-positive days', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        kookrDir: tempDir,
+      }).request('/api/diagnostics/lesson-yield?days=0');
+      expect(res.status).toBe(400);
+    });
+
+    test('returns 503 when kookrDir is missing', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/diagnostics/lesson-yield');
+      expect(res.status).toBe(503);
+    });
+  });
+
+  describe('GET /api/health lessonYield block', () => {
+    test('includes a cached 24h lessonYield snapshot when kookrDir is set', async () => {
+      const kookrDir = join(tempDir, 'health-yield');
+      mkdirSync(join(kookrDir, 'hooks'), { recursive: true });
+      const taskStore = new TaskStore();
+      const res = await mkApp({
+        taskStore,
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        kookrDir,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.lessonYield).toMatchObject({
+        schemaVersion: 'lesson-yield.v1',
+        windowDays: 1,
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — capacity block (issue #1526 Phase B / FM9)
   // ---------------------------------------------------------------------------
   describe('GET /api/health capacity block', () => {
