@@ -32,6 +32,9 @@ export const MAX_AGENT_SIGNAL_NOTE_LENGTH = 2_000;
  * while the agent keeps working the surfacing self-gates (the Complete pulse
  * shows only when turnState is `completed_turn`).
  */
+/** Upper bound on an accepted client `signalId` (issue #1541). */
+export const MAX_AGENT_SIGNAL_ID_LENGTH = 200;
+
 export interface PendingAgentSignal {
   kind: AgentSignalKind;
   /**
@@ -44,4 +47,10 @@ export interface PendingAgentSignal {
   note?: string;
   /** ISO timestamp the signal was raised, stamped server-side. */
   raisedAt: string;
+  /**
+   * Optional client-generated idempotency key (issue #1541). When present,
+   * replaying the same `signalId` is a pure no-op (returns the already-recorded
+   * signal) so a durable outbox drain can safely retry after a client timeout.
+   */
+  signalId?: string;
 }

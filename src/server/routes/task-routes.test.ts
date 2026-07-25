@@ -1691,6 +1691,73 @@ describe('POST /api/tasks/:id/signal', () => {
     expect(broadcastToAll).toHaveBeenCalled();
   });
 
+  test('accepts a client signalId and stores it on the pending signal (issue #1541)', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', signalId: 'sig-abc', note: 'done' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.signal.signalId).toBe('sig-abc');
+    expect(taskStore.getPendingSignal(task.id)?.signalId).toBe('sig-abc');
+  });
+
+  test('replays the same signalId as a pure no-op without re-firing outcome hooks', async () => {
+    const taskStore = new TaskStore();
+    const onTaskOutcome = vi.fn();
+    const broadcastToAll = vi.fn();
+    const app = mkApp({ ...mkLoopDeps(taskStore), onTaskOutcome, broadcastToAll });
+    const task = taskStore.createTask('Ship it', '/repo');
+
+    const first = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', signalId: 'sig-1', note: 'first' }),
+    });
+    expect(first.status).toBe(200);
+    const firstBody = await first.json();
+    const raisedAt = firstBody.signal.raisedAt as string;
+    expect(onTaskOutcome).toHaveBeenCalledTimes(1);
+    const broadcastsAfterFirst = broadcastToAll.mock.calls.length;
+
+    const second = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', signalId: 'sig-1', note: 'replay' }),
+    });
+    expect(second.status).toBe(200);
+    const secondBody = await second.json();
+    expect(secondBody.idempotentReplay).toBe(true);
+    expect(secondBody.signal.raisedAt).toBe(raisedAt);
+    expect(onTaskOutcome).toHaveBeenCalledTimes(1);
+    // Pure replay must not re-broadcast.
+    expect(broadcastToAll.mock.calls.length).toBe(broadcastsAfterFirst);
+  });
+
+  test('rejects an empty or oversized signalId', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+
+    const empty = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', signalId: '   ' }),
+    });
+    expect(empty.status).toBe(400);
+
+    const oversized = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', signalId: 'x'.repeat(201) }),
+    });
+    expect(oversized.status).toBe(400);
+  });
+
   describe('autoCloseOnSignal', () => {
     function mkAutoCloseDeps(taskStore: TaskStore): TaskRouteDeps {
       const queue = new AttentionQueue();

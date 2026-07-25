@@ -54,6 +54,8 @@ import {
 import { createOperationalAlertEvaluator } from './operational-alert-rules.js';
 import { LessonSpoolService } from './lesson-spool-service.js';
 import { defaultSpoolDir } from '../core/lesson-write-spool.js';
+import { SignalOutboxService } from './signal-outbox-service.js';
+import { defaultSignalOutboxDir } from '../core/signal-outbox.js';
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
 import { TaskStateSaveScheduler } from './task-state-save-scheduler.js';
 import { createIssueClaimServices, createUpstreamOfResolver, isIssueClaimsEnabled, type IssueClaimServices } from './issue-claim-wiring.js';
@@ -1482,6 +1484,48 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     lessonSpoolService.start();
   }
 
+  // Agent signal outbox drain (issue #1541). When agents raised
+  // `kookr signal` while this daemon was down, entries sit under
+  // ~/.kookr/playbook-state/signal-outbox/; this service applies them on boot
+  // and every 30s. Disabled when KOOKR_SIGNAL_OUTBOX=0 (also set in vitest).
+  const signalOutboxDisabled = process.env.KOOKR_SIGNAL_OUTBOX === '0';
+  const signalOutboxService = new SignalOutboxService({
+    taskStore,
+    spoolDir: defaultSignalOutboxDir(process.env),
+    onTaskOutcome: (taskId, outcome) => {
+      try {
+        onTaskOutcomeHolder?.(taskId, outcome);
+      } catch (err) {
+        console.warn('[signal-outbox] onTaskOutcome threw:', err);
+      }
+    },
+    onDelivered: () => {
+      try {
+        broadcastToAll(createSnapshotMessage({
+          monitor,
+          serverCwd,
+          sttUrl,
+          ttsUrl,
+          activityMetaProvider: hookIngestion,
+          coordinator: {
+            taskStore,
+            auditTailProvider: hookIngestion,
+            suppressions: coordinatorSuppressions,
+          },
+          getMaxActiveTasks,
+          relationTaskStore: taskStore,
+          terminalInputSnapshots: terminalInputCoordinator,
+          userInputDeliveryProvider: userInputDeliveries,
+        }));
+      } catch (err) {
+        console.warn('[signal-outbox] broadcast threw:', err);
+      }
+    },
+  });
+  if (!signalOutboxDisabled) {
+    signalOutboxService.start();
+  }
+
   // --- Quota monitoring (polls Anthropic OAuth usage endpoint) ---
   const quotaAdapter = new QuotaAdapter(120_000); // 120s interval
 
@@ -1698,6 +1742,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }
 
     lessonSpoolService.stop();
+    signalOutboxService.stop();
     await backgroundServices.stop();
     try {
       await taskStateSaveScheduler.close();

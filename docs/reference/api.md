@@ -324,17 +324,27 @@ Raise a non-blocking agent → user signal for a task. The motivating case is
 `completion_ready` — the agent declaring it believes the task is done (raised via
 [`kookr signal`](./cli.md)).
 
-Body: `kind` (required; currently `completion_ready`) and optional `note` (string;
-secrets are best-effort redacted and over-limit notes are visibly truncated).
+Body:
 
-- Success returns `200 {"ok": true, "signal": {...}, "truncated": <bool>}`.
+- `kind` (required; currently `completion_ready`)
+- `note` (optional string; secrets are best-effort redacted and over-limit notes
+  are visibly truncated)
+- `signalId` (optional string, ≤200 chars) — client-generated idempotency key
+  for the durable signal outbox (issue #1541). When supplied, a re-POST of the
+  same id returns `200` with `"idempotentReplay": true` without re-firing
+  outcome hooks or churning `raisedAt`.
+
+- Success returns `200 {"ok": true, "signal": {...}, "truncated": <bool>}`
+  (plus `"idempotentReplay": true` on a pure `signalId` replay).
 - The signal is stored on the task (`pendingSignal`) and surfaced in the
   dashboard (banner + emphasized **Complete** button). Dismiss via the
   `dismissAgentSignal` WebSocket message; it is also cleared on terminal
   transitions.
 - Unknown id returns `404`; a terminal task returns `409`
-  (`{"code": "task_terminal"}`); a malformed body or bad `kind`/`note` returns
-  `400`; remote-owned `shared:` ids return `403`.
+  (`{"code": "task_terminal"}`); a malformed body or bad `kind`/`note`/`signalId`
+  returns `400`; remote-owned `shared:` ids return `403`.
+- Offline agents should write-behind via the [signal outbox](./signal-outbox.md)
+  rather than treating a connection failure as a task failure.
 
 **Auto-close.** When the task opted into the policy (`autoCloseOnSignal` — set at
 launch or inherited from its parent; see

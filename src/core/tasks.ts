@@ -136,6 +136,14 @@ export class TaskStore {
    * reminder, which is the safe default.
    */
   private completionRemediation = new Map<string, string>();
+  /**
+   * Recently processed client signalIds (issue #1541). Lets a durable outbox
+   * drain safely replay the same `signalId` after a client timeout without
+   * re-firing outcome hooks or churning raisedAt — even after the pending
+   * signal was dismissed. In-memory only (24h TTL, capped); a restart simply
+   * re-accepts a replay, which same-kind setPendingSignal still handles safely.
+   */
+  private processedSignalIds = new Map<string, { taskId: string; kind: PendingAgentSignal['kind']; atMs: number }>();
   /** Lifetime spending counter (USD); corrected task costs adjust it, and it survives task deletion. */
   private lifetimeSpendUsd: number = 0;
 
@@ -274,6 +282,10 @@ export class TaskStore {
    * preserved so a re-raise does not churn the review window or the surfacing;
    * only a newly supplied note is merged in. Raising a different kind replaces
    * the prior signal. No-op for unknown tasks. Returns true when a task was found.
+   *
+   * When `signal.signalId` is set (issue #1541), a pure replay of that id is
+   * recorded in {@link processedSignalIds} so later drains short-circuit via
+   * {@link getProcessedSignal}.
    */
   setPendingSignal(taskId: string, signal: PendingAgentSignal): boolean {
     const task = this.tasks.get(taskId);
@@ -295,12 +307,57 @@ export class TaskStore {
       task.pendingSignal = {
         ...existing,
         ...(signal.note !== undefined ? { note: signal.note } : {}),
+        // Keep the first signalId for the pending row; a replay of a *different*
+        // id still lands as same-kind (raisedAt preserved) but is tracked below.
+        ...(existing.signalId ? {} : (signal.signalId ? { signalId: signal.signalId } : {})),
       };
     } else {
       task.pendingSignal = signal;
     }
+    if (signal.signalId) {
+      this.recordProcessedSignal(signal.signalId, taskId, signal.kind);
+    }
     task.updatedAt = new Date();
     return true;
+  }
+
+  /**
+   * Look up a previously processed client signalId (issue #1541). Returns the
+   * recorded task/kind when the id was seen within the TTL window, else undefined.
+   */
+  getProcessedSignal(
+    signalId: string,
+    nowMs: number = Date.now(),
+  ): { taskId: string; kind: PendingAgentSignal['kind'] } | undefined {
+    this.compactProcessedSignalIds(nowMs);
+    const entry = this.processedSignalIds.get(signalId);
+    if (!entry) return undefined;
+    return { taskId: entry.taskId, kind: entry.kind };
+  }
+
+  private recordProcessedSignal(
+    signalId: string,
+    taskId: string,
+    kind: PendingAgentSignal['kind'],
+    nowMs: number = Date.now(),
+  ): void {
+    this.processedSignalIds.set(signalId, { taskId, kind, atMs: nowMs });
+    this.compactProcessedSignalIds(nowMs);
+  }
+
+  private compactProcessedSignalIds(nowMs: number): void {
+    const ttlMs = 24 * 60 * 60 * 1000;
+    const maxEntries = 2_000;
+    for (const [id, entry] of this.processedSignalIds) {
+      if (nowMs - entry.atMs > ttlMs) this.processedSignalIds.delete(id);
+    }
+    if (this.processedSignalIds.size <= maxEntries) return;
+    const ordered = [...this.processedSignalIds.entries()]
+      .sort((a, b) => a[1].atMs - b[1].atMs);
+    const drop = this.processedSignalIds.size - maxEntries;
+    for (let i = 0; i < drop; i++) {
+      this.processedSignalIds.delete(ordered[i]![0]);
+    }
   }
 
   /**

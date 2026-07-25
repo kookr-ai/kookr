@@ -9,6 +9,7 @@ import { redactSecrets } from '../../core/redact-secrets.js';
 import {
   AGENT_SIGNAL_KINDS,
   isAgentSignalKind,
+  MAX_AGENT_SIGNAL_ID_LENGTH,
   MAX_AGENT_SIGNAL_NOTE_LENGTH,
   type PendingAgentSignal,
 } from '../../shared/contracts/agent-signal.js';
@@ -592,7 +593,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       );
     }
 
-    let body: { kind?: unknown; note?: unknown };
+    let body: { kind?: unknown; note?: unknown; signalId?: unknown };
     try {
       body = await c.req.json();
     } catch {
@@ -601,6 +602,46 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     if (!isAgentSignalKind(body.kind)) {
       return c.json({ error: `kind must be one of: ${AGENT_SIGNAL_KINDS.join(', ')}` }, 400);
     }
+
+    // Client-generated idempotency key for the durable signal outbox (issue #1541).
+    // Optional for backward compatibility with pre-outbox CLIs.
+    let signalId: string | undefined;
+    if (body.signalId !== undefined) {
+      if (typeof body.signalId !== 'string' || body.signalId.trim() === '') {
+        return c.json({ error: 'signalId must be a non-empty string when supplied' }, 400);
+      }
+      if (body.signalId.length > MAX_AGENT_SIGNAL_ID_LENGTH) {
+        return c.json(
+          { error: `signalId must be at most ${MAX_AGENT_SIGNAL_ID_LENGTH} characters` },
+          400,
+        );
+      }
+      signalId = body.signalId.trim();
+    }
+
+    // Pure replay of an already-processed signalId: return the current pending
+    // signal (or a synthetic one) without re-firing outcome hooks.
+    if (signalId) {
+      const prior = taskStore.getProcessedSignal(signalId);
+      if (prior && prior.taskId === id && prior.kind === body.kind) {
+        const current = taskStore.getPendingSignal(id);
+        const replaySignal: PendingAgentSignal = current?.kind === body.kind
+          ? current
+          : {
+              kind: body.kind,
+              raisedAt: current?.raisedAt ?? new Date().toISOString(),
+              signalId,
+            };
+        return c.json({
+          ok: true,
+          signal: replaySignal,
+          truncated: false,
+          autoClosed: false,
+          idempotentReplay: true,
+        });
+      }
+    }
+
     let note: string | undefined;
     let truncated = false;
     if (body.note !== undefined) {
@@ -616,6 +657,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       kind: body.kind,
       raisedAt: new Date().toISOString(),
       ...(note ? { note } : {}),
+      ...(signalId ? { signalId } : {}),
     };
     taskStore.setPendingSignal(id, signal);
     if (signal.kind === 'completion_ready') {
@@ -640,9 +682,11 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       !isActiveRalphLoop(task);
 
     broadcastSnapshotWithCoordinator();
+    // Re-read so same-kind re-raises report the preserved raisedAt.
+    const stored = taskStore.getPendingSignal(id) ?? signal;
     return c.json({
       ok: true,
-      signal,
+      signal: stored,
       truncated,
       autoClosed: false,
       ...(autoCloseScheduled ? {

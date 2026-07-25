@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // kookr signal — raise a non-blocking agent → user signal for the current task
-// (RFC: rfc-agent-signal-surface).
+// (RFC: rfc-agent-signal-surface). Durable outbox: issue #1541.
 //
 // Usage:
 //   kookr signal completion-ready
@@ -13,17 +13,28 @@
 // Addressed to the agent's own task via KOOKR_TASK_ID (auto-injected into every
 // managed task) unless --task-id overrides it.
 //
-// Contract: POST {base}/api/tasks/:id/signal with JSON { kind, note? }.
+// Contract: POST {base}/api/tasks/:id/signal with JSON { kind, note?, signalId }.
+//
+// Durability (issue #1541): every signal is write-behined to a local outbox
+// BEFORE the HTTP attempt. On connection/timeout failure the CLI exits 0
+// (signal is durably queued) so agents never burn their final turn reporting a
+// transient daemon outage. A background server drain + opportunistic CLI drain
+// flushes the spool when the daemon is reachable again; the server dedups by
+// signalId.
 //
 // Exit codes (distinct on purpose, so a wrong KOOKR_TASK_ID is visible to the
 // agent rather than silently swallowed):
-//   0  Signal raised.
+//   0  Signal raised OR durably spooled for later delivery.
 //   2  User error (bad flags, unknown kind, missing task id).
-//   3  No Kookr server reachable (advisory — the caller may ignore and continue).
+//   3  Reserved (legacy NO_SERVER). No longer returned for unreachable
+//      daemons once the outbox is available — see exit 0 + spooled.
 //   4  Server rejected the signal (unknown/terminal task, bad request).
 
 import { pathToFileURL } from 'node:url';
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import {
   apiAuthHeaders,
   resolveBaseUrl,
@@ -35,6 +46,7 @@ import {
 } from './kookr-spawn.js';
 
 const POST_TIMEOUT_MS = 10_000;
+const here = dirname(fileURLToPath(import.meta.url));
 
 // Accept the hook-safe hyphenated form on the CLI and normalize to the wire
 // enum. Bare arguments (no shell metacharacters) sidestep PreToolUse command
@@ -60,15 +72,20 @@ Options:
   -h, --help             Show this help.
 
 Environment:
-  KOOKR_TASK_ID        Current task id (auto-injected into managed tasks).
-  KOOKR_API_BASE_URL   Base URL of a running Kookr server (overrides auto-detect).
-  KOOKR_PORT           Specific port on 127.0.0.1 (overrides auto-detect).
+  KOOKR_TASK_ID              Current task id (auto-injected into managed tasks).
+  KOOKR_API_BASE_URL         Base URL of a running Kookr server (overrides auto-detect).
+  KOOKR_PORT                 Specific port on 127.0.0.1 (overrides auto-detect).
+  KOOKR_SIGNAL_OUTBOX_DIR    Override the durable outbox directory
+                             (default: ~/.kookr/playbook-state/signal-outbox).
 
 Exit codes:
-  0  Signal raised.
+  0  Signal raised, or durably spooled because the daemon was unreachable.
   2  User error (bad flags, unknown kind, missing task id).
-  3  No Kookr server reachable.
-  4  Server rejected the signal (unknown/terminal task).`;
+  4  Server rejected the signal (unknown/terminal task).
+
+When the daemon is down the signal is written to the local outbox and this
+command still exits 0 so agents do not burn a turn on a connection error. A
+background drain delivers it after the daemon restarts (issue #1541).`;
 
 class UsageError extends Error {}
 
@@ -124,8 +141,23 @@ function resolveTaskId({ args, env }) {
   return trimmed === '' ? null : trimmed;
 }
 
-async function postSignal({ baseUrl, taskId, kind, note }) {
-  const body = { kind };
+/** Load the TypeScript/compiled signal-outbox module (dist preferred). */
+async function loadOutboxModule() {
+  const dist = join(here, '..', 'dist', 'core', 'signal-outbox.js');
+  if (existsSync(dist)) {
+    return import(pathToFileURL(dist).href);
+  }
+  const src = join(here, '..', 'src', 'core', 'signal-outbox.ts');
+  if (existsSync(src)) {
+    return import(pathToFileURL(src).href);
+  }
+  throw new Error(
+    'signal outbox module not found. Run `pnpm build:server` first.',
+  );
+}
+
+async function postSignal({ baseUrl, taskId, kind, note, signalId }) {
+  const body = { kind, signalId };
   if (note) body.note = note;
   const res = await fetch(`${baseUrl}/api/tasks/${encodeURIComponent(taskId)}/signal`, {
     method: 'POST',
@@ -146,9 +178,26 @@ async function postSignal({ baseUrl, taskId, kind, note }) {
     // fall through
   }
   if (!res.ok) {
-    return { kind: 'rejected', status: res.status, message: json?.error ?? (text || `HTTP ${res.status}`) };
+    return {
+      kind: 'rejected',
+      status: res.status,
+      message: json?.error ?? (text || `HTTP ${res.status}`),
+    };
   }
-  return { kind: 'ok', truncated: json?.truncated === true };
+  return {
+    kind: 'ok',
+    truncated: json?.truncated === true,
+    idempotentReplay: json?.idempotentReplay === true,
+  };
+}
+
+/**
+ * Classify a server rejection as permanent (drop from outbox) vs unexpected.
+ * 404 / 409 are permanent for this signalId; 4xx validation is permanent too.
+ * 5xx is treated as transient so a later drain retries.
+ */
+function isPermanentRejection(status) {
+  return status >= 400 && status < 500;
 }
 
 async function main({
@@ -158,6 +207,10 @@ async function main({
   err = console,
   exit = process.exit,
   sleep,
+  /** Test seam: inject a pre-loaded outbox module. */
+  outboxModule,
+  /** Test seam: override spool dir without env. */
+  spoolDir: spoolDirOverride,
 } = {}) {
   let args;
   try {
@@ -252,6 +305,47 @@ async function main({
     if (trimmed) note = trimmed;
   }
 
+  // --- Durable outbox: enqueue BEFORE any network attempt (issue #1541). ---
+  let outbox;
+  try {
+    outbox = outboxModule ?? await loadOutboxModule();
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_USER_ERROR,
+        ok: false,
+        code: 'USER_ERROR',
+        message: `signal outbox unavailable: ${message}`,
+        details: { subcommand: 'signal' },
+      });
+    }
+    err.error(`kookr signal: signal outbox unavailable: ${message}`);
+    return exit(EXIT_USER_ERROR);
+  }
+
+  const spoolDir = spoolDirOverride
+    ?? outbox.defaultSignalOutboxDir(env);
+  const signalId = randomUUID();
+  const entry = outbox.buildSignalOutboxEntry({
+    signalId,
+    taskId,
+    kind,
+    ...(note ? { note } : {}),
+  });
+  try {
+    await outbox.appendSignalOutbox(spoolDir, entry);
+  } catch (e) {
+    // Spool write failure is rare (disk full / permissions). Fall through to
+    // best-effort live delivery so a healthy daemon still receives the signal,
+    // but report the spool problem when delivery also fails.
+    err.error?.(
+      `kookr signal: warning: could not write outbox (${e instanceof Error ? e.message : e}); attempting live delivery only`,
+    );
+  }
+
   let resolved;
   try {
     resolved = await resolveBaseUrl({ env, ...(sleep ? { sleep } : {}) });
@@ -287,62 +381,126 @@ async function main({
     err.error(`kookr signal: ${message}`);
     return exit(EXIT_USER_ERROR);
   }
+
+  // No server / ambiguous: signal is already spooled → exit 0 (not 3).
   if (resolved.kind === 'ambiguous' || resolved.kind === 'none') {
-    // Advisory: signaling is best-effort. The agent should NOT fail its task
-    // because the dashboard server happens to be unreachable.
-    const message = 'no Kookr server reachable; skipping (advisory, not a task failure).';
+    const message =
+      'no Kookr server reachable; signal durably spooled for delivery on reconnect.';
     if (args.json) {
       return exitJson({
         out,
         exit,
-        exitCode: EXIT_NO_SERVER,
-        ok: false,
-        code: 'NO_SERVER',
+        exitCode: EXIT_OK,
+        ok: true,
+        code: 'SPOOLED',
         message,
-        details: { subcommand: 'signal' },
+        details: { subcommand: 'signal', signalId, spooled: true, spoolDir },
       });
     }
-    err.error(`kookr signal: ${message}`);
-    return exit(EXIT_NO_SERVER);
+    out.log(`✓ Signal spooled (${kind}) for task ${taskId} — daemon unreachable; will deliver on reconnect.`);
+    return exit(EXIT_OK);
   }
 
   const baseUrl = resolved.baseUrl;
+
   let result;
   try {
-    result = await postSignal({ baseUrl, taskId, kind, note });
+    result = await postSignal({ baseUrl, taskId, kind, note, signalId });
   } catch (e) {
-    const message = `request failed: ${e instanceof Error ? e.message : String(e)} (advisory)`;
+    // Transient network/timeout: leave in spool, exit 0.
+    const message =
+      `daemon unreachable (${e instanceof Error ? e.message : String(e)}); `
+      + 'signal durably spooled for delivery on reconnect.';
     if (args.json) {
       return exitJson({
         out,
         exit,
-        exitCode: EXIT_NO_SERVER,
-        ok: false,
-        code: 'NO_SERVER',
+        exitCode: EXIT_OK,
+        ok: true,
+        code: 'SPOOLED',
         message,
-        details: { subcommand: 'signal' },
+        details: { subcommand: 'signal', signalId, spooled: true, spoolDir },
       });
     }
-    err.error(`kookr signal: ${message}`);
-    return exit(EXIT_NO_SERVER);
+    out.log(`✓ Signal spooled (${kind}) for task ${taskId} — ${message}`);
+    return exit(EXIT_OK);
   }
 
   if (result.kind === 'rejected') {
-    const message = `server rejected the signal (HTTP ${result.status}): ${result.message}`;
+    if (isPermanentRejection(result.status)) {
+      // Drop from outbox so we don't retry a doomed signal forever.
+      try {
+        await outbox.removeSignalOutboxEntry(spoolDir, signalId);
+      } catch {
+        // ignore
+      }
+      const message = `server rejected the signal (HTTP ${result.status}): ${result.message}`;
+      if (args.json) {
+        return exitJson({
+          out,
+          exit,
+          exitCode: EXIT_SERVER_ERROR,
+          ok: false,
+          code: 'SERVER_ERROR',
+          message,
+          details: { status: result.status, signalId },
+        });
+      }
+      err.error(`kookr signal: server rejected the signal (HTTP ${result.status}): ${result.message}`);
+      err.error('Your KOOKR_TASK_ID may be wrong or the task may already be finished.');
+      return exit(EXIT_SERVER_ERROR);
+    }
+    // 5xx: keep in spool, exit 0.
+    const message =
+      `server error (HTTP ${result.status}); signal kept in outbox for retry.`;
     if (args.json) {
       return exitJson({
         out,
         exit,
-        exitCode: EXIT_SERVER_ERROR,
-        ok: false,
-        code: 'SERVER_ERROR',
+        exitCode: EXIT_OK,
+        ok: true,
+        code: 'SPOOLED',
         message,
-        details: { status: result.status },
+        details: { subcommand: 'signal', signalId, spooled: true, status: result.status },
       });
     }
-    err.error(`kookr signal: server rejected the signal (HTTP ${result.status}): ${result.message}`);
-    err.error('Your KOOKR_TASK_ID may be wrong or the task may already be finished.');
-    return exit(EXIT_SERVER_ERROR);
+    out.log(`✓ Signal spooled (${kind}) for task ${taskId} — ${message}`);
+    return exit(EXIT_OK);
+  }
+
+  // Delivered — remove this entry, then opportunistically drain siblings.
+  try {
+    await outbox.removeSignalOutboxEntry(spoolDir, signalId);
+  } catch {
+    // ignore; server already has the signal (idempotent by signalId)
+  }
+  try {
+    await outbox.drainSignalOutbox({
+      spoolDir,
+      deliver: async (pending) => {
+        try {
+          const r = await postSignal({
+            baseUrl: pending.baseUrl ?? baseUrl,
+            taskId: pending.taskId,
+            kind: pending.kind,
+            note: pending.note,
+            signalId: pending.signalId,
+          });
+          if (r.kind === 'ok') return { outcome: 'delivered' };
+          if (isPermanentRejection(r.status)) {
+            return { outcome: 'permanent_fail', error: r.message };
+          }
+          return { outcome: 'transient_fail', error: r.message };
+        } catch (e) {
+          return {
+            outcome: 'transient_fail',
+            error: e instanceof Error ? e.message : String(e),
+          };
+        }
+      },
+    });
+  } catch {
+    // Opportunistic drain failure must not fail the primary signal.
   }
 
   if (args.json) {
@@ -352,8 +510,12 @@ async function main({
       exitCode: EXIT_OK,
       ok: true,
       code: 'OK',
-      message: 'Signal raised.',
-      details: { truncated: result.truncated },
+      message: result.idempotentReplay ? 'Signal already recorded (idempotent replay).' : 'Signal raised.',
+      details: {
+        truncated: result.truncated,
+        signalId,
+        ...(result.idempotentReplay ? { idempotentReplay: true } : {}),
+      },
     });
   }
   out.log(`✓ Signal raised: ${kind}${note ? ` (note attached)` : ''} for task ${taskId}`);
@@ -380,4 +542,13 @@ if (isInvokedDirectly()) {
   });
 }
 
-export { HELP_TEXT, UsageError, parseArgs, resolveTaskId, postSignal, main };
+export {
+  HELP_TEXT,
+  UsageError,
+  parseArgs,
+  resolveTaskId,
+  postSignal,
+  main,
+  // Re-export so tests can still reference the legacy constant if needed.
+  EXIT_NO_SERVER,
+};
