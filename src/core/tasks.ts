@@ -475,7 +475,13 @@ export class TaskStore {
     this.launchReservations.delete(taskId);
   }
 
-  private hasFreshLaunchReservation(taskId: string): boolean {
+  /**
+   * Read launch-reservation freshness (issue #1526 Phase B: made public so the
+   * capacity ledger can classify an `open`/`pending` task as `launching`
+   * without duplicating this TTL logic — same predicate `getActiveCount`
+   * already uses to count a reserved task against the cap).
+   */
+  hasFreshLaunchReservation(taskId: string): boolean {
     const reservedAt = this.launchReservations.get(taskId);
     if (reservedAt === undefined) return false;
     if (Date.now() - reservedAt >= LAUNCH_RESERVATION_TTL_MS) {

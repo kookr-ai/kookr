@@ -26,6 +26,11 @@ import { MAX_BATCH_ABORT_TASKS } from '../../shared/contracts/messages.js';
 import { CoordinatorSuppressionStore } from '../coordinator/suppression-store.js';
 import { promotePendingTasks } from '../agent-lifecycle.js';
 import type { TaskRouteDeps } from './shared.js';
+import type { AttentionQueue } from '../../core/attention-queue.js';
+import type { Watchdog } from '../../core/watchdog.js';
+import { resolveTaskAttentionSignals } from '../task-attention-signals.js';
+import { deriveStuckReason } from '../../core/stuck-reason.js';
+import type { TaskStuckReason } from '../../shared/contracts/task-stuck-reason.js';
 import {
   DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
   classifyCompletionReadyClosePolicy,
@@ -115,15 +120,21 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   // fields a list needs. The full detail — including prompt — stays available via
   // GET /api/tasks/:id. Default remains the full list for backward compatibility.
   app.get('/api/tasks', (c) => {
+    const attentionDeps = { queue: deps.queue, watchdog: deps.watchdog };
     if (c.req.query('view') === 'compact') {
-      const compact = taskStore.listTasks().map((t) => toCompactApiTask(t, taskStore));
+      const now = Date.now();
+      const compact = taskStore.listTasks()
+        .map((t) => toCompactApiTask(t, taskStore))
+        .map((t) => attachStuckReason(t, attentionDeps, now));
       if (!deps.suppressionTracker) return c.json(compact);
       const tracker = deps.suppressionTracker;
       return c.json(compact.map((t) => withSuppressionFlag(t, tracker)));
     }
+    const now = Date.now();
     const tasks = taskStore.listTasks()
       .map(normalizeTaskForApi)
-      .map((t) => attachAggregateTokenUsage(t, taskStore));
+      .map((t) => attachAggregateTokenUsage(t, taskStore))
+      .map((t) => attachStuckReason(t, attentionDeps, now));
     if (!deps.suppressionTracker) return c.json(tasks);
     const tracker = deps.suppressionTracker;
     return c.json(tasks.map((t) => withSuppressionFlag(t, tracker)));
@@ -160,7 +171,11 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     const id = c.req.param('id');
     const task = taskStore.getTask(id);
     if (!task) return c.json({ error: 'Task not found' }, 404);
-    const normalized = attachAggregateTokenUsage(normalizeTaskForApi(task), taskStore);
+    const normalized = attachStuckReason(
+      attachAggregateTokenUsage(normalizeTaskForApi(task), taskStore),
+      { queue: deps.queue, watchdog: deps.watchdog },
+      Date.now(),
+    );
     if (!deps.suppressionTracker) return c.json(normalized);
     return c.json(withSuppressionFlag(normalized, deps.suppressionTracker));
   });
@@ -745,7 +760,7 @@ function parseThresholdMs(raw: string | undefined): number | Error {
  * `/api/projects` `recentTasks[]`, and `/api/snapshot` agents (which all key
  * by `taskId`). `id` stays for backwards compatibility.
  */
-type ApiTask = Task & { taskId: string; aggregateTokenUsage?: TokenUsage };
+type ApiTask = Task & { taskId: string; aggregateTokenUsage?: TokenUsage; stuckReason?: TaskStuckReason };
 
 /**
  * Attach the descendant-rolled-up token usage to a parent/batch task so a
@@ -757,6 +772,32 @@ function attachAggregateTokenUsage(task: ApiTask, store: TaskStore): ApiTask {
   if (!task.childTaskIds || task.childTaskIds.length === 0) return task;
   const aggregate = store.getAggregateTokenUsage(task.id);
   return aggregate ? { ...task, aggregateTokenUsage: aggregate } : task;
+}
+
+/**
+ * Attach the optional `stuckReason` field (issue #1526 Phase B) to an
+ * `inProgress` task — why it's occupying a capacity slot without doing
+ * visible work (awaiting the user's completion ack, watchdog-suspected hung,
+ * waiting on input, or permission-blocked). Additive-optional: omitted
+ * entirely for anything not `inProgress`, so existing consumers of this
+ * response shape are byte-identical when nothing is stuck.
+ */
+function attachStuckReason<
+  T extends { status: Task['status']; pendingSignal?: Task['pendingSignal']; sessions: Array<{ tmuxSession: string }> },
+>(
+  task: T,
+  deps: { queue?: Pick<AttentionQueue, 'peek'>; watchdog?: Pick<Watchdog, 'getState' | 'getConfig' | 'hasToolInProgress'> },
+  now: number,
+): T & { stuckReason?: TaskStuckReason } {
+  if (task.status !== 'inProgress') return task;
+  const { hungSuspect, queuedAnomalyType } = resolveTaskAttentionSignals(task, deps, now);
+  const stuckReason = deriveStuckReason({
+    status: task.status,
+    pendingSignal: task.pendingSignal,
+    hungSuspect,
+    anomalyType: queuedAnomalyType,
+  });
+  return stuckReason ? { ...task, stuckReason } : task;
 }
 
 /**
@@ -814,6 +855,8 @@ type CompactApiTask = Pick<
   /** Descendant-rolled-up token usage on a parent/batch task (issue #1307). */
   aggregateTokenUsage?: TokenUsage;
   sessions: CompactApiTaskSession[];
+  /** Why an `inProgress` task is occupying a slot without visible work (issue #1526 Phase B). */
+  stuckReason?: TaskStuckReason;
 };
 
 /**

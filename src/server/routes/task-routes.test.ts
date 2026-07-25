@@ -7,8 +7,10 @@ import { TaskStore } from '../../core/tasks.js';
 import { loadTasks } from '../../core/task-persistence.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { Monitor } from '../../core/monitor.js';
+import { Watchdog } from '../../core/watchdog.js';
 import type { TaskRouteDeps } from './shared.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
+import type { Anomaly } from '../../core/types.js';
 import { DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS } from '../../core/completion-ready-cleanup.js';
 import { SUPERVISOR_TOKEN_ENV } from '../supervisor-auth.js';
 
@@ -346,6 +348,131 @@ describe('GET /api/tasks?view=compact', () => {
     // projection that unconditionally set `suppressed` would fail here.
     const healthyRow = rows.find((t: { id: string }) => t.id === healthy.id);
     expect(healthyRow.suppressed).toBeUndefined();
+  });
+});
+
+describe('stuckReason projection (issue #1526 Phase B)', () => {
+  function anomaly(overrides: Partial<Anomaly> = {}): Anomaly {
+    return {
+      agentId: 'kookr-stuck',
+      type: 'needs_input',
+      severity: 'info',
+      explanation: 'test anomaly',
+      detectedAt: new Date('2026-07-24T10:00:00.000Z'),
+      ...overrides,
+    };
+  }
+
+  function seedInProgressTask(taskStore: TaskStore, tmuxSession: string) {
+    const task = taskStore.createTask('Do the thing', '/repo');
+    taskStore.addSession(task.id, {
+      tmuxSession,
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(),
+      lastStatus: 'working',
+    });
+    return taskStore.getTask(task.id)!;
+  }
+
+  function findRow(rows: Array<{ id: string }>, id: string) {
+    return rows.find((t) => t.id === id);
+  }
+
+  test('pendingSignal completion_ready → stuckReason awaiting_completion_ack, on both full and compact views', async () => {
+    const taskStore = new TaskStore();
+    const task = seedInProgressTask(taskStore, 'kookr-ack');
+    taskStore.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-07-24T10:00:00.000Z' });
+
+    const app = mkApp(mkLoopDeps(taskStore));
+    const full = findRow(await (await app.request('/api/tasks')).json(), task.id);
+    expect(full.stuckReason).toBe('awaiting_completion_ack');
+
+    const compact = findRow(await (await app.request('/api/tasks?view=compact')).json(), task.id);
+    expect(compact.stuckReason).toBe('awaiting_completion_ack');
+
+    const detail = await (await app.request(`/api/tasks/${task.id}`)).json();
+    expect(detail.stuckReason).toBe('awaiting_completion_ack');
+  });
+
+  test('queued needs_input anomaly → stuckReason waiting_on_input', async () => {
+    const taskStore = new TaskStore();
+    const task = seedInProgressTask(taskStore, 'kookr-needs-input');
+    const queue = new AttentionQueue();
+    queue.enqueue('kookr-needs-input', anomaly({ agentId: 'kookr-needs-input', type: 'needs_input' }));
+
+    const deps = mkLoopDeps(taskStore);
+    deps.queue = queue;
+    const app = mkApp(deps);
+    const row = findRow(await (await app.request('/api/tasks')).json(), task.id);
+    expect(row.stuckReason).toBe('waiting_on_input');
+  });
+
+  test('queued permission_blocked anomaly → stuckReason permission_blocked', async () => {
+    const taskStore = new TaskStore();
+    const task = seedInProgressTask(taskStore, 'kookr-perm');
+    const queue = new AttentionQueue();
+    queue.enqueue('kookr-perm', anomaly({ agentId: 'kookr-perm', type: 'permission_blocked', severity: 'warning' }));
+
+    const deps = mkLoopDeps(taskStore);
+    deps.queue = queue;
+    const app = mkApp(deps);
+    const row = findRow(await (await app.request('/api/tasks')).json(), task.id);
+    expect(row.stuckReason).toBe('permission_blocked');
+  });
+
+  test('queued stale_agent anomaly → stuckReason hung_suspect', async () => {
+    const taskStore = new TaskStore();
+    const task = seedInProgressTask(taskStore, 'kookr-hung');
+    const queue = new AttentionQueue();
+    queue.enqueue('kookr-hung', anomaly({ agentId: 'kookr-hung', type: 'stale_agent', severity: 'warning' }));
+
+    const deps = mkLoopDeps(taskStore);
+    deps.queue = queue;
+    deps.watchdog = new Watchdog();
+    const app = mkApp(deps);
+    const row = findRow(await (await app.request('/api/tasks')).json(), task.id);
+    expect(row.stuckReason).toBe('hung_suspect');
+  });
+
+  test('a genuinely healthy inProgress task carries no stuckReason field at all', async () => {
+    const taskStore = new TaskStore();
+    const task = seedInProgressTask(taskStore, 'kookr-healthy-row');
+    const deps = mkLoopDeps(taskStore);
+    deps.queue = new AttentionQueue();
+    deps.watchdog = new Watchdog();
+
+    const app = mkApp(deps);
+    const row = findRow(await (await app.request('/api/tasks')).json(), task.id);
+    expect(row.stuckReason).toBeUndefined();
+    expect(Object.keys(row)).not.toContain('stuckReason');
+  });
+
+  test('a non-inProgress task (pending, no session) never carries stuckReason, even with queue/watchdog wired', async () => {
+    const taskStore = new TaskStore();
+    const pending = taskStore.createTask('Queued task', '/repo');
+    const deps = mkLoopDeps(taskStore);
+    deps.queue = new AttentionQueue();
+    deps.watchdog = new Watchdog();
+
+    const app = mkApp(deps);
+    const row = findRow(await (await app.request('/api/tasks')).json(), pending.id);
+    expect(row.status).toBe('open');
+    expect(row.stuckReason).toBeUndefined();
+  });
+
+  test('watchdog state absent (deps.watchdog omitted) never crashes and treats the task as working', async () => {
+    const taskStore = new TaskStore();
+    const task = seedInProgressTask(taskStore, 'kookr-no-watchdog');
+    const deps = mkLoopDeps(taskStore);
+    deps.queue = new AttentionQueue();
+    // deps.watchdog intentionally left unset.
+
+    const app = mkApp(deps);
+    const res = await app.request('/api/tasks');
+    expect(res.status).toBe(200);
+    const row = findRow(await res.json(), task.id);
+    expect(row.stuckReason).toBeUndefined();
   });
 });
 

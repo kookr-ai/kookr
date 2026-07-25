@@ -14,6 +14,7 @@ import type { AgentActivityMeta } from '../../core/types.js';
 import { buildGithubTaskOverlay } from './github-task-overlay.js';
 import type { FindingEvidenceAuditRecord } from '../../shared/contracts/anomalies.js';
 import type { PendingAgentSignal } from '../../shared/contracts/agent-signal.js';
+import { deriveStuckReason } from '../../core/stuck-reason.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
 import { buildCoordinatorSnapshotState, type CoordinatorAuditTailProvider, type CoordinatorTask } from '../coordinator/detectors.js';
 import type { CoordinatorSuppressionReader } from '../coordinator/suppression-store.js';
@@ -207,6 +208,14 @@ export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[
     const pendingSignal = agent.taskId && typeof deps.pendingSignalProvider?.getPendingSignal === 'function'
       ? deps.pendingSignalProvider.getPendingSignal(agent.taskId)
       : undefined;
+    // stuckReason (issue #1526 Phase B): derived from signals already on the
+    // projected agent — no extra watchdog/queue lookup here. `agent.anomaly`
+    // already reflects the watchdog's queued verdict (Monitor.getCurrentAnomaly
+    // falls back to AttentionQueue.peek), so this stays free — the cost was
+    // already paid building the snapshot regardless of this field.
+    const stuckReason = agent.taskStatus
+      ? deriveStuckReason({ status: agent.taskStatus, pendingSignal, anomalyType: agent.anomaly?.type ?? null })
+      : null;
     const userInputDeliveries = deps.userInputDeliveryProvider
       ?.getSnapshot(agent.agentId)
       .map(projectUserInputDeliveryForClient);
@@ -218,6 +227,7 @@ export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[
         : {}),
       ...(activityMeta ? { activityMeta } : {}),
       ...(pendingSignal ? { pendingSignal } : {}),
+      ...(stuckReason ? { stuckReason } : {}),
       ...(userInputDeliveries && userInputDeliveries.length > 0 ? { userInputDeliveries } : {}),
       ...(terminalSnapshot ? {
         terminalInputSnapshot: {

@@ -1278,4 +1278,15 @@ describe('Watchdog', () => {
       });
     });
   });
+
+  describe('getConfig (issue #1526 Phase B)', () => {
+    test('reflects the constructor config', () => {
+      expect(watchdog.getConfig()).toMatchObject(FAST_CONFIG);
+    });
+
+    test('reflects a live reconfigure — capacity-ledger classification must never read a stale threshold', () => {
+      watchdog.reconfigure({ unconditionalStaleThresholdMs: 999_000 });
+      expect(watchdog.getConfig().unconditionalStaleThresholdMs).toBe(999_000);
+    });
+  });
 });
