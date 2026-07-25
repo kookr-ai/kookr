@@ -92,7 +92,22 @@ export interface LaunchServiceDeps {
    * idempotency protection) — this keeps every existing caller unaffected.
    */
   idempotencyLedger?: IdempotencyLedger;
+  /**
+   * Live getter for the adapter-launch hard timeout, in milliseconds (issue
+   * #1526 Phase C / #1528, `launchTimeoutSeconds` setting). Read per launch so
+   * a settings change applies without a restart. Absent (older wiring/tests)
+   * or non-positive/non-finite values fall back to
+   * {@link DEFAULT_LAUNCH_TIMEOUT_MS}.
+   */
+  getLaunchTimeoutMs?: () => number;
 }
+
+/**
+ * Default hard ceiling on one `adapter.launch()` await (issue #1528). Mirrors
+ * the `launchTimeoutSeconds` settings default (180s); the settings range is
+ * 30–900s.
+ */
+export const DEFAULT_LAUNCH_TIMEOUT_MS = 180_000;
 
 /**
  * Thrown by {@link launchTask} when the server is in operator drain mode and is
@@ -164,6 +179,105 @@ export class CwdValidationError extends Error {
 /** Type guard for {@link CwdValidationError}, for callers mapping to 400. */
 export function isCwdValidationError(err: unknown): err is CwdValidationError {
   return err instanceof CwdValidationError;
+}
+
+/**
+ * Thrown by {@link launchTask} when `adapter.launch()` does not settle within
+ * the configured `launchTimeoutSeconds` (issue #1526 Phase C / #1528). By the
+ * time this propagates, the launch has already been cleaned up exactly like a
+ * thrown launch: reservation released (`endLaunch`) and the task record
+ * deleted, so dedup cannot block a retry and no capacity slot stays held. A
+ * schedule-fired launch that hits this records `dispatch_failed`
+ * (reasonCode `launch_error`) through the runner's normal error path.
+ */
+export class LaunchTimeoutError extends Error {
+  readonly code = 'launch_timeout';
+  constructor(agentType: string, taskId: string, timeoutMs: number) {
+    super(
+      `Agent launch timed out after ${Math.round(timeoutMs / 1000)}s ` +
+      `(agent ${agentType}, task ${taskId}) — launch abandoned and task cleaned up`,
+    );
+    this.name = 'LaunchTimeoutError';
+  }
+}
+
+/** Type guard for {@link LaunchTimeoutError}. */
+export function isLaunchTimeoutError(err: unknown): err is LaunchTimeoutError {
+  return err instanceof LaunchTimeoutError;
+}
+
+/**
+ * Race one adapter launch against the hard timeout (issue #1528).
+ *
+ * On timeout, the caller cleans up (endLaunch + deleteTask) and moves on; the
+ * underlying promise is NOT cancelled — adapters expose no abort hook for an
+ * in-flight launch — so this helper pins down what a LATE settlement can do:
+ *
+ * - Late REJECTION is swallowed (logged). The common case: the task record is
+ *   already deleted, so the adapter's own `taskStore.addSession` throws
+ *   "Task not found" and the launch rejects on its own. NOTE the honest
+ *   caveat: if the adapter got as far as creating a terminal session before
+ *   that throw, the session process leaks until reconcile reports it — boot
+ *   and periodic `reconcile()` list sessions with no owning task as `orphans`
+ *   (logged, not killed). In the #1528 incident the hang was *before* session
+ *   creation (buildAgentLaunchContext), so the typical timeout leaks nothing.
+ * - Late RESOLUTION (a session id came back after we gave up) is neutralized
+ *   with the one cleanup hook adapters do expose: `adapter.stop(sessionId)`
+ *   kills the orphaned terminal session, best-effort. State cannot be
+ *   corrupted either way — the success path (posture stamping, round-robin
+ *   advance, registerNewAgent) only runs when the race resolves in time.
+ */
+async function raceLaunchAgainstTimeout(
+  launchPromise: Promise<string>,
+  timeoutMs: number,
+  ctx: { taskId: string; agentType: AgentType; adapter: Pick<import('../adapters/agent-adapter.js').AgentAdapter, 'stop'> },
+): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  try {
+    return await Promise.race([
+      launchPromise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(new LaunchTimeoutError(ctx.agentType, ctx.taskId, timeoutMs));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (timedOut) {
+      // Settle-once: whatever the abandoned launch does later is observed,
+      // logged, and defused — never allowed back into launch state.
+      launchPromise.then(
+        (sessionId) => {
+          console.warn(
+            `[launch] adapter ${ctx.agentType} settled LATE after timeout for task ${ctx.taskId} ` +
+            `(session ${sessionId}) — stopping orphaned session`,
+          );
+          void Promise.resolve(ctx.adapter.stop(sessionId)).catch((stopErr) => {
+            console.warn(
+              `[launch] failed to stop late-settled session ${sessionId}: ` +
+              `${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
+            );
+          });
+        },
+        (err) => {
+          console.warn(
+            `[launch] abandoned launch for task ${ctx.taskId} rejected after timeout (ignored): ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+          );
+        },
+      );
+    }
+  }
+}
+
+/** Resolve the effective launch timeout from the live getter, defensively. */
+function resolveLaunchTimeoutMs(deps: LaunchServiceDeps): number {
+  const value = deps.getLaunchTimeoutMs?.();
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+  return DEFAULT_LAUNCH_TIMEOUT_MS;
 }
 
 /** Fail fast when the launch cwd is missing or not a directory (RFC F12). */
@@ -562,7 +676,18 @@ async function launchTaskCore(
   // in-flight launch against the cap (audit item 1, second launch site).
   taskStore.beginLaunch(task.id);
   try {
-    await adapterRegistry.get(agentType).launch(task.id, promptWithLaunchNote(task), opts.cwd, undefined, adapterOpts);
+    // Hard timeout around the adapter launch (issue #1526 Phase C / #1528):
+    // a launch that hangs (CPU saturation wedging the spawn path) fails fast
+    // through the SAME catch/cleanup as any thrown launch instead of holding
+    // its beginLaunch reservation — and its schedule's 'reserved' execution —
+    // for hours. Late settlement of the abandoned promise is defused inside
+    // the race helper.
+    const adapter = adapterRegistry.get(agentType);
+    await raceLaunchAgainstTimeout(
+      adapter.launch(task.id, promptWithLaunchNote(task), opts.cwd, undefined, adapterOpts),
+      resolveLaunchTimeoutMs(deps),
+      { taskId: task.id, agentType, adapter },
+    );
     if (bypassAllPermissions) {
       const launchPermissionPosture = {
         bypassAllPermissions: true as const,

@@ -71,6 +71,8 @@ describe('Settings API', () => {
       completionReadyTtlMinutes: 120,
       hungTaskReapEnabled: true,
       hungTaskReapMinutes: 180,
+      launchTimeoutSeconds: 180,
+      deadManScheduleMinutes: 120,
       loadedFromDefaults: true,
       warnings: [],
     });

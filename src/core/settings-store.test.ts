@@ -175,6 +175,24 @@ describe('validateSettings', () => {
     expect(validateSettings({ hungTaskReapMinutes: 999_999 }).hungTaskReapMinutes).toBe(10_080);
   });
 
+  it('defaults launchTimeoutSeconds to 180 and clamps to the 30–900 range (issue #1526 Phase C / #1528)', () => {
+    expect(validateSettings({}).launchTimeoutSeconds).toBe(180);
+    expect(DEFAULT_SETTINGS.launchTimeoutSeconds).toBe(180);
+    expect(validateSettings({ launchTimeoutSeconds: 120 }).launchTimeoutSeconds).toBe(120);
+    expect(validateSettings({ launchTimeoutSeconds: 1 }).launchTimeoutSeconds).toBe(30);
+    expect(validateSettings({ launchTimeoutSeconds: 10_000 }).launchTimeoutSeconds).toBe(900);
+    expect(validateSettings({ launchTimeoutSeconds: 'forever' }).launchTimeoutSeconds).toBe(180);
+  });
+
+  it('defaults deadManScheduleMinutes to 120 and clamps to the 30–1440 range (issue #1526 Phase C)', () => {
+    expect(validateSettings({}).deadManScheduleMinutes).toBe(120);
+    expect(DEFAULT_SETTINGS.deadManScheduleMinutes).toBe(120);
+    expect(validateSettings({ deadManScheduleMinutes: 60 }).deadManScheduleMinutes).toBe(60);
+    expect(validateSettings({ deadManScheduleMinutes: 5 }).deadManScheduleMinutes).toBe(30);
+    expect(validateSettings({ deadManScheduleMinutes: 99_999 }).deadManScheduleMinutes).toBe(1440);
+    expect(validateSettings({ deadManScheduleMinutes: 'never' }).deadManScheduleMinutes).toBe(120);
+  });
+
   it('defaults replySnippets to an empty list', () => {
     expect(validateSettings({}).replySnippets).toEqual([]);
     expect(DEFAULT_SETTINGS.replySnippets).toEqual([]);
@@ -383,6 +401,8 @@ describe('loadSettings / saveSettings', () => {
       completionReadyTtlMinutes: 90,
       hungTaskReapEnabled: false,
       hungTaskReapMinutes: 240,
+      launchTimeoutSeconds: 300,
+      deadManScheduleMinutes: 240,
     };
     await saveSettings(filePath, settings);
     const result = await loadSettings(filePath);
