@@ -1,3 +1,4 @@
+import { basename } from 'node:path';
 import type { LlmClient } from './llm-client.js';
 import { logTaskNaming } from './training-data-logger.js';
 
@@ -69,6 +70,29 @@ function parseTaskName(raw: string): string | null {
   const structuredName = extractStructuredName(raw);
   if (structuredName === null) return null;
   return normalizeTaskName(structuredName ?? raw);
+}
+
+/**
+ * Deterministic, never-empty task name derived from the prompt itself —
+ * the guaranteed fallback when the LLM namer returns nothing (issue #1526
+ * Phase C4: during the 2026-07-24 grok burst every naming call came back
+ * empty, leaving whole batches of unnamed tasks and degrading triage).
+ * Uses the first non-empty prompt line (leading markdown/list markers
+ * stripped, whitespace collapsed), truncated to {@link MAX_NAME_LENGTH};
+ * for a blank prompt, falls back to the cwd basename.
+ */
+export function deterministicTaskName(prompt: string, cwd?: string): string {
+  const firstLine = prompt
+    .split('\n')
+    .map((line) => line.replace(/^[\s#>*-]+/, '').trim())
+    .find((line) => line.length > 0);
+  const collapsed = firstLine?.replace(/\s+/g, ' ') ?? '';
+  if (collapsed.length === 0) {
+    const dir = cwd ? basename(cwd) : '';
+    return dir ? `Task in ${dir}` : 'Unnamed task';
+  }
+  if (collapsed.length <= MAX_NAME_LENGTH) return collapsed;
+  return `${collapsed.slice(0, MAX_NAME_LENGTH - 1).trimEnd()}…`;
 }
 
 /** Generates a short task name via an LLM. Returns null on any failure. */

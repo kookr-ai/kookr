@@ -16,12 +16,17 @@ vi.mock('../adapters/llm/factory.js', () => ({
   createLlmClient: (...args: unknown[]) => mockCreateLlmClient(...args),
 }));
 
-// Mock generateTaskName so we control naming behavior
+// Mock generateTaskName so we control naming behavior. deterministicTaskName
+// stays REAL: it is the guaranteed fallback under test (issue #1526 Phase C4).
 const mockGenerateTaskName = vi.fn();
 
-vi.mock('../core/task-naming.js', () => ({
-  generateTaskName: (...args: unknown[]) => mockGenerateTaskName(...args),
-}));
+vi.mock('../core/task-naming.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../core/task-naming.js')>();
+  return {
+    ...actual,
+    generateTaskName: (...args: unknown[]) => mockGenerateTaskName(...args),
+  };
+});
 
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { createKookrServerInternal } from './index.js';
@@ -220,7 +225,7 @@ describe('AI task naming integration', () => {
     await new Promise<void>((r) => ws.on('close', () => r()));
   });
 
-  test('naming is skipped when llmClient is null (no API key)', async () => {
+  test('deterministic fallback names the task when llmClient is null (no API key)', async () => {
     // Close the default server
     await server.close();
 
@@ -251,14 +256,14 @@ describe('AI task naming integration', () => {
     });
     const task = await res.json();
 
-    // Naming should NOT fire — verify after a short settling period
-    await new Promise((r) => setTimeout(r, 100));
-
-    expect(server.taskStore.getTask(task.id)?.name).toBeUndefined();
+    // The LLM path never fires, but the task still gets the deterministic
+    // prompt-derived name (issue #1526 Phase C4: no task is ever unnamed).
+    const name = await waitForTaskName(server, task.id);
+    expect(name).toBe('Fix bug');
     expect(mockGenerateTaskName).not.toHaveBeenCalled();
   });
 
-  test('naming handles null response gracefully (API failure)', async () => {
+  test('deterministic fallback applies when the LLM returns an empty name (2026-07-24 grok burst regression)', async () => {
     mockGenerateTaskName.mockResolvedValue(null);
 
     const res = await fetch(`${baseUrl}/api/tasks`, {
@@ -273,10 +278,11 @@ describe('AI task naming integration', () => {
       expect(mockGenerateTaskName).toHaveBeenCalledOnce();
     }, { timeout: 3000 });
 
-    expect(server.taskStore.getTask(task.id)?.name).toBeUndefined();
+    const name = await waitForTaskName(server, task.id);
+    expect(name).toBe('Fix bug');
   });
 
-  test('naming handles API rejection gracefully', async () => {
+  test('deterministic fallback applies on API rejection (no crash, task still named)', async () => {
     mockGenerateTaskName.mockRejectedValue(new Error('API error'));
 
     const res = await fetch(`${baseUrl}/api/tasks`, {
@@ -291,8 +297,9 @@ describe('AI task naming integration', () => {
       expect(mockGenerateTaskName).toHaveBeenCalledOnce();
     }, { timeout: 3000 });
 
-    // Server should still be functional — no crash
-    expect(server.taskStore.getTask(task.id)?.name).toBeUndefined();
+    // Server should still be functional — no crash — and the task named.
+    const name = await waitForTaskName(server, task.id);
+    expect(name).toBe('Fix bug');
     const healthRes = await fetch(`${baseUrl}/api/health`);
     expect(healthRes.status).toBe(200);
   });
