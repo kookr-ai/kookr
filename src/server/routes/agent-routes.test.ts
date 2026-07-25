@@ -75,3 +75,52 @@ describe('GET /api/sessions/:sessionId/effective-hook-settings', () => {
     expect(adapter.getEffectiveHookSettings).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /api/agents/:id/message (issue #1526 Phase B actor attribution)', () => {
+  function mkMessageDeps(): { deps: Partial<AgentRouteDeps>; interactionLog: { append: ReturnType<typeof vi.fn> } } {
+    const interactionLog = { append: vi.fn().mockResolvedValue(undefined) };
+    const monitor = {
+      getSnapshot: vi.fn(() => [{ agentId: 'agent-1', events: [], anomaly: null }]),
+    };
+    const adapter = { sendInput: vi.fn().mockResolvedValue(undefined) };
+    const deps: Partial<AgentRouteDeps> = {
+      monitor: monitor as never,
+      adapter: adapter as never,
+      interactionLog: interactionLog as never,
+      broadcastToAll: vi.fn(),
+      serverCwd: '/repo',
+    };
+    return { deps, interactionLog };
+  }
+
+  test('a supplied X-Kookr-Actor header flows into the logged user_input event', async () => {
+    const { deps, interactionLog } = mkMessageDeps();
+    const res = await mkApp(deps).request('/api/agents/agent-1/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-kookr-actor': 'lucy-supervisor' },
+      body: JSON.stringify({ input: 'keep going' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(interactionLog.append).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'user_input',
+      agentId: 'agent-1',
+      content: 'keep going',
+      actor: 'lucy-supervisor',
+    }));
+  });
+
+  test('an omitted header records the actor as unattributed', async () => {
+    const { deps, interactionLog } = mkMessageDeps();
+    const res = await mkApp(deps).request('/api/agents/agent-1/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: 'keep going' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(interactionLog.append).toHaveBeenCalledWith(expect.objectContaining({
+      actor: 'unattributed',
+    }));
+  });
+});

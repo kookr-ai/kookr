@@ -10,6 +10,7 @@ import { Monitor } from '../../core/monitor.js';
 import type { TaskRouteDeps } from './shared.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
 import { DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS } from '../../core/completion-ready-cleanup.js';
+import { SUPERVISOR_TOKEN_ENV } from '../supervisor-auth.js';
 
 vi.mock('../launch-service.js', async (importActual) => {
   const actual = await importActual<typeof import('../launch-service.js')>();
@@ -995,7 +996,7 @@ describe('DELETE /api/tasks/:id error paths', () => {
       };
       expect(row).toEqual(expect.objectContaining({
         type: 'task.deleteTask',
-        actor: { source: 'api' },
+        actor: { source: 'api', actorId: 'unattributed' },
         scope: { kind: 'project', projectId: 'github.com/org/repo' },
         count: 1,
         deletedTaskIds: [task.id],
@@ -1745,7 +1746,7 @@ describe('POST /api/tasks/abort (issue #1325)', () => {
       const row = JSON.parse(readFileSync(join(kookrDir, 'audit.jsonl'), 'utf-8').trim()) as Record<string, unknown>;
       expect(row).toEqual(expect.objectContaining({
         type: 'task.batchAbort',
-        actor: { source: 'api' },
+        actor: { source: 'api', actorId: 'unattributed' },
         reason: 'shutdown',
         count: 1,
         abortedTaskIds: [live.id],
@@ -1812,6 +1813,313 @@ describe('POST /api/tasks/abort (issue #1325)', () => {
     expect(body.summary).toEqual({ total: 1, aborted: 1, already_terminal: 0, not_found: 0, failed: 0 });
     expect(body.results).toEqual([{ taskId: live.id, outcome: 'aborted', status: 'cancelled' }]);
     expect(taskStore.getTask(live.id)!.status).toBe('cancelled');
+  });
+});
+
+describe('X-Kookr-Actor attribution (issue #1526 Phase B)', () => {
+  function mkAttributionDeps(taskStore: TaskStore, kookrDir: string): TaskRouteDeps {
+    const queue = new AttentionQueue();
+    const monitor = new Monitor(taskStore, queue);
+    return {
+      taskStore,
+      monitor,
+      queue,
+      adapter: { stop: vi.fn(async () => {}) } as never,
+      hookWatcher: { stop: vi.fn(), isWatching: () => false, watch: vi.fn() } as never,
+      watchdog: { unregisterAgent: vi.fn() } as never,
+      broadcastToAll: vi.fn(),
+      serverCwd: '/server',
+      kookrDir,
+    } as unknown as TaskRouteDeps;
+  }
+
+  test('a supplied header flows into the batch-abort audit row actor', async () => {
+    const kookrDir = mkdtempSync(join(tmpdir(), 'kookr-actor-abort-'));
+    try {
+      const taskStore = new TaskStore();
+      const live = taskStore.createTask('live', '/repo');
+      taskStore.addSession(live.id, { tmuxSession: 'kookr-live', agentType: 'claude-code', cwd: '/repo-wt', createdAt: new Date() });
+
+      const res = await mkApp(mkAttributionDeps(taskStore, kookrDir)).request('/api/tasks/abort', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-kookr-actor': 'lucy-supervisor' },
+        body: JSON.stringify({ taskIds: [live.id] }),
+      });
+      expect(res.status).toBe(200);
+
+      const row = JSON.parse(readFileSync(join(kookrDir, 'audit.jsonl'), 'utf-8').trim()) as { actor: unknown };
+      expect(row.actor).toEqual({ source: 'api', actorId: 'lucy-supervisor' });
+    } finally {
+      rmSync(kookrDir, { recursive: true, force: true });
+    }
+  });
+
+  test('a supplied header flows into the complete audit row actor', async () => {
+    const kookrDir = mkdtempSync(join(tmpdir(), 'kookr-actor-complete-'));
+    try {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Complete me', '/repo');
+      taskStore.addSession(task.id, { tmuxSession: 'kookr-live', agentType: 'claude-code', cwd: '/repo-wt', createdAt: new Date() });
+
+      const res = await mkApp(mkAttributionDeps(taskStore, kookrDir)).request(`/api/tasks/${task.id}/complete`, {
+        method: 'POST',
+        headers: { 'x-kookr-actor': 'lucy-supervisor' },
+      });
+      expect(res.status).toBe(200);
+
+      const row = JSON.parse(readFileSync(join(kookrDir, 'audit.jsonl'), 'utf-8').trim()) as { actor: unknown };
+      expect(row.actor).toEqual({ source: 'api', actorId: 'lucy-supervisor' });
+    } finally {
+      rmSync(kookrDir, { recursive: true, force: true });
+    }
+  });
+
+  test('an omitted header records the actor as unattributed', async () => {
+    const kookrDir = mkdtempSync(join(tmpdir(), 'kookr-actor-missing-'));
+    try {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Complete me', '/repo');
+      taskStore.addSession(task.id, { tmuxSession: 'kookr-live', agentType: 'claude-code', cwd: '/repo-wt', createdAt: new Date() });
+
+      const res = await mkApp(mkAttributionDeps(taskStore, kookrDir)).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+      expect(res.status).toBe(200);
+
+      const row = JSON.parse(readFileSync(join(kookrDir, 'audit.jsonl'), 'utf-8').trim()) as { actor: unknown };
+      expect(row.actor).toEqual({ source: 'api', actorId: 'unattributed' });
+    } finally {
+      rmSync(kookrDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('KOOKR_SUPERVISOR_TOKEN gate (issue #1526 Phase B)', () => {
+  const originalToken = process.env[SUPERVISOR_TOKEN_ENV];
+
+  afterEach(() => {
+    if (originalToken === undefined) delete process.env[SUPERVISOR_TOKEN_ENV];
+    else process.env[SUPERVISOR_TOKEN_ENV] = originalToken;
+  });
+
+  function mkGateDeps(taskStore: TaskStore): TaskRouteDeps {
+    const queue = new AttentionQueue();
+    const monitor = new Monitor(taskStore, queue);
+    return {
+      taskStore,
+      monitor,
+      queue,
+      adapter: { stop: vi.fn(async () => {}) } as never,
+      hookWatcher: { stop: vi.fn(), isWatching: () => false, watch: vi.fn() } as never,
+      watchdog: { unregisterAgent: vi.fn() } as never,
+      broadcastToAll: vi.fn(),
+      serverCwd: '/server',
+    } as unknown as TaskRouteDeps;
+  }
+
+  function addLiveSession(taskStore: TaskStore, taskId: string, tmuxSession = 'kookr-live'): void {
+    taskStore.addSession(taskId, {
+      tmuxSession,
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(),
+    });
+  }
+
+  test('complete: env unset stays open (200), unchanged from today', async () => {
+    delete process.env[SUPERVISOR_TOKEN_ENV];
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Open by default', '/repo');
+    addLiveSession(taskStore, task.id);
+    const res = await mkApp(mkGateDeps(taskStore)).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+    expect(res.status).toBe(200);
+  });
+
+  test('complete: env set rejects missing/wrong bearer with 401, accepts correct with 200', async () => {
+    process.env[SUPERVISOR_TOKEN_ENV] = 'sup3r-secret';
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Gated', '/repo');
+    addLiveSession(taskStore, task.id);
+    const app = mkApp(mkGateDeps(taskStore));
+
+    const noAuth = await app.request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+    expect(noAuth.status).toBe(401);
+    expect(await noAuth.json()).toEqual({ error: 'supervisor-unauthorized' });
+
+    const wrongAuth = await app.request(`/api/tasks/${task.id}/complete`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer wrong' },
+    });
+    expect(wrongAuth.status).toBe(401);
+
+    const rightAuth = await app.request(`/api/tasks/${task.id}/complete`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer sup3r-secret' },
+    });
+    expect(rightAuth.status).toBe(200);
+  });
+
+  test('abort: gated the same way', async () => {
+    process.env[SUPERVISOR_TOKEN_ENV] = 'sup3r-secret';
+    const app = mkApp(mkGateDeps(new TaskStore()));
+
+    const noAuth = await app.request('/api/tasks/abort', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ taskIds: [] }),
+    });
+    expect(noAuth.status).toBe(401);
+
+    const rightAuth = await app.request('/api/tasks/abort', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer sup3r-secret' },
+      body: JSON.stringify({ taskIds: [] }),
+    });
+    expect(rightAuth.status).toBe(200);
+  });
+
+  test('ack-all: gated the same way', async () => {
+    process.env[SUPERVISOR_TOKEN_ENV] = 'sup3r-secret';
+    const app = mkApp(mkGateDeps(new TaskStore()));
+
+    const noAuth = await app.request('/api/tasks/completion-ready/ack-all', { method: 'POST' });
+    expect(noAuth.status).toBe(401);
+
+    const rightAuth = await app.request('/api/tasks/completion-ready/ack-all', {
+      method: 'POST',
+      headers: { authorization: 'Bearer sup3r-secret' },
+    });
+    expect(rightAuth.status).toBe(200);
+  });
+
+  test('GETs are unaffected by the token either way', async () => {
+    process.env[SUPERVISOR_TOKEN_ENV] = 'sup3r-secret';
+    const openRes = await mkApp(mkGateDeps(new TaskStore())).request('/api/tasks/completion-ready/stale');
+    expect(openRes.status).toBe(200);
+
+    delete process.env[SUPERVISOR_TOKEN_ENV];
+    const stillOpenRes = await mkApp(mkGateDeps(new TaskStore())).request('/api/tasks/completion-ready/stale');
+    expect(stillOpenRes.status).toBe(200);
+  });
+});
+
+describe('POST /api/tasks/completion-ready/ack-all (issue #1526 Phase B)', () => {
+  function mkAckAllDeps(taskStore: TaskStore, overrides: Partial<TaskRouteDeps> = {}): TaskRouteDeps {
+    const queue = new AttentionQueue();
+    const monitor = new Monitor(taskStore, queue);
+    return {
+      taskStore,
+      monitor,
+      queue,
+      adapter: { stop: vi.fn(async () => {}) } as never,
+      hookWatcher: { stop: vi.fn(), isWatching: () => false, watch: vi.fn() } as never,
+      watchdog: { unregisterAgent: vi.fn() } as never,
+      broadcastToAll: vi.fn(),
+      serverCwd: '/server',
+      ...overrides,
+    } as unknown as TaskRouteDeps;
+  }
+
+  function makeStaleTasks(taskStore: TaskStore): { autoCloseId: string; askFirstId: string } {
+    const autoClose = taskStore.createTask({
+      prompt: 'Opted in',
+      cwd: '/repo',
+      autoCloseOnSignal: true,
+    });
+    const askFirst = taskStore.createTask({
+      prompt: 'Ask first',
+      cwd: '/repo',
+      deliveryAuthorization: 'ask-first',
+    });
+    for (const task of [autoClose, askFirst]) {
+      taskStore.addSession(task.id, {
+        tmuxSession: `kookr-${task.id}`,
+        agentType: 'claude-code',
+        cwd: '/repo-wt',
+        createdAt: new Date(Date.now() - 3 * 60 * 60_000),
+      });
+      taskStore.setPendingSignal(task.id, {
+        kind: 'completion_ready',
+        raisedAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+      });
+    }
+    return { autoCloseId: autoClose.id, askFirstId: askFirst.id };
+  }
+
+  test('default scope completes only canAutoClose tasks, per-id results reported', async () => {
+    const taskStore = new TaskStore();
+    const { autoCloseId, askFirstId } = makeStaleTasks(taskStore);
+
+    const res = await mkApp(mkAckAllDeps(taskStore)).request('/api/tasks/completion-ready/ack-all', { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      force: boolean;
+      results: Array<{ taskId: string; outcome: string }>;
+      summary: Record<string, number>;
+    };
+    expect(body.force).toBe(false);
+    expect(body.summary).toMatchObject({ matched: 1, completed: 1 });
+    expect(body.results).toEqual([{ taskId: autoCloseId, outcome: 'completed', status: 'completed' }]);
+    expect(taskStore.getTask(autoCloseId)!.status).toBe('completed');
+    expect(taskStore.getTask(askFirstId)!.status).toBe('inProgress');
+  });
+
+  test('{ force: true } completes every stale task regardless of policy', async () => {
+    const taskStore = new TaskStore();
+    const { autoCloseId, askFirstId } = makeStaleTasks(taskStore);
+
+    const res = await mkApp(mkAckAllDeps(taskStore)).request('/api/tasks/completion-ready/ack-all', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ force: true }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { force: boolean; summary: Record<string, number> };
+    expect(body.force).toBe(true);
+    expect(body.summary).toMatchObject({ matched: 2, completed: 2 });
+    expect(taskStore.getTask(autoCloseId)!.status).toBe('completed');
+    expect(taskStore.getTask(askFirstId)!.status).toBe('completed');
+  });
+
+  test('an empty or omitted body defaults to force: false without erroring', async () => {
+    const taskStore = new TaskStore();
+    makeStaleTasks(taskStore);
+
+    const res = await mkApp(mkAckAllDeps(taskStore)).request('/api/tasks/completion-ready/ack-all', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).force).toBe(false);
+  });
+
+  test('rejects a non-boolean force value', async () => {
+    const res = await mkApp(mkAckAllDeps(new TaskStore())).request('/api/tasks/completion-ready/ack-all', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ force: 'yes' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test('writes an attributed audit row per completed task', async () => {
+    const kookrDir = mkdtempSync(join(tmpdir(), 'kookr-ack-all-audit-'));
+    try {
+      const taskStore = new TaskStore();
+      const { autoCloseId } = makeStaleTasks(taskStore);
+
+      const res = await mkApp(mkAckAllDeps(taskStore, { kookrDir })).request('/api/tasks/completion-ready/ack-all', {
+        method: 'POST',
+        headers: { 'x-kookr-actor': 'lucy-supervisor' },
+      });
+      expect(res.status).toBe(200);
+
+      const rows = readFileSync(join(kookrDir, 'audit.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+      const types = rows.map((r) => r.type).sort();
+      expect(types).toEqual(['task.complete', 'task.completionReadyAckAll']);
+      for (const row of rows) {
+        expect(row.actor).toEqual({ source: 'api', actorId: 'lucy-supervisor' });
+      }
+      const summaryRow = rows.find((r) => r.type === 'task.completionReadyAckAll');
+      expect(summaryRow.results).toEqual([{ taskId: autoCloseId, outcome: 'completed', status: 'completed' }]);
+    } finally {
+      rmSync(kookrDir, { recursive: true, force: true });
+    }
   });
 });
 

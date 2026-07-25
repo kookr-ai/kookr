@@ -1,4 +1,4 @@
-import type { Hono } from 'hono';
+import type { Context, Hono } from 'hono';
 import { join } from 'node:path';
 import { discoverPlaybooks } from '../../core/playbook-discovery.js';
 import { saveTasks, serializeSnoozed } from '../../core/task-persistence.js';
@@ -36,13 +36,26 @@ import {
   parseTailLinesQuery,
   TASK_TAIL_SCHEMA_VERSION,
 } from '../../core/task-tail-store.js';
+import { ACTOR_HEADER, resolveLifecycleActor } from '../actor-attribution.js';
+import { isAuthorizedSupervisorRequest } from '../supervisor-auth.js';
+import { ackAllStaleCompletionReadyTasks } from '../use-cases/ack-all-completion-ready.js';
+import { SUPERVISOR_AUTH_HEADER } from '../../shared/contracts/supervisor-actions.js';
 
 const MAX_TASK_EDGE_COUNT = 64;
 const MAX_TASK_EDGE_LENGTH = 240;
 
+/** 401 response body for a supervisor-token-gated route with a missing/wrong bearer token. */
+function supervisorUnauthorizedResponse(c: Context) {
+  c.header('WWW-Authenticate', 'Bearer');
+  return c.json({ error: 'supervisor-unauthorized' }, 401);
+}
+
 export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   const { taskStore, monitor, adapter, hookWatcher, watchdog, broadcastToAll, serverCwd, hookIngestion } = deps;
   const coordinatorSuppressions = deps.coordinatorSuppressions ?? new CoordinatorSuppressionStore(deps.kookrDir ?? serverCwd);
+  const auditLogPath = deps.kookrDir ? join(deps.kookrDir, 'audit.jsonl') : undefined;
+  /** Resolve the `X-Kookr-Actor` header into an attributed audit-row actor (issue #1526 Phase B). */
+  const actorFromRequest = (c: Context) => resolveLifecycleActor('api', c.req.header(ACTOR_HEADER));
   const lifecycleCommands = new TaskLifecycleCommands({
     taskStore,
     monitor,
@@ -50,7 +63,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     scheduleService: deps.scheduleService,
     broadcastToAll,
     activityMetaProvider: hookIngestion,
-    auditLogPath: deps.kookrDir ? join(deps.kookrDir, 'audit.jsonl') : undefined,
+    auditLogPath,
     getLifecycleDeps: () => ({
       adapter,
       monitor,
@@ -432,7 +445,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     if (!task) return c.json({ error: 'Task not found' }, 404);
 
     try {
-      await lifecycleCommands.deleteTask(id, { actor: { source: 'api' } });
+      await lifecycleCommands.deleteTask(id, { actor: actorFromRequest(c) });
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
       return c.json({ ok: true });
     } catch (err) {
@@ -452,12 +465,19 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   // This route shares the WS completion command. When monitor events are
   // available it may finalize a completion digest; helper tasks with no captured
   // events remain digestless.
+  //
+  // Supervisor endpoint (issue #1526 Phase B / FM12): gated by
+  // `KOOKR_SUPERVISOR_TOKEN` when set (see supervisor-auth.ts), and every
+  // outcome is attributed via `X-Kookr-Actor` into audit.jsonl.
   app.post('/api/tasks/:id/complete', async (c) => {
+    if (!isAuthorizedSupervisorRequest(c.req.header(SUPERVISOR_AUTH_HEADER))) {
+      return supervisorUnauthorizedResponse(c);
+    }
     const id = c.req.param('id');
     if (isSharedTaskId(id)) return c.json({ error: 'SharedTask IDs are remote-owned' }, 403);
 
     try {
-      const result = await lifecycleCommands.completeTask(id);
+      const result = await lifecycleCommands.completeTask(id, { actor: actorFromRequest(c) });
       if (result.outcome === 'not_found') {
         return c.json({ error: 'Task not found' }, 404);
       }
@@ -564,7 +584,15 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   // sessions, and returns a per-task result so callers can report partial
   // failures. Retrying the same request is safe: already-terminal tasks report
   // `already_terminal` without a second transition or audit row.
+  //
+  // Supervisor endpoint (issue #1526 Phase B / FM12, FM16): gated by
+  // `KOOKR_SUPERVISOR_TOKEN` when set, and attributed via `X-Kookr-Actor` —
+  // the 2026-07-24 incident's four 13:39 aborts landed in audit.jsonl as
+  // unattributable `source: 'api'` rows.
   app.post('/api/tasks/abort', async (c) => {
+    if (!isAuthorizedSupervisorRequest(c.req.header(SUPERVISOR_AUTH_HEADER))) {
+      return supervisorUnauthorizedResponse(c);
+    }
     let body: { taskIds?: unknown; reason?: unknown };
     try {
       body = await c.req.json();
@@ -599,9 +627,63 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     try {
       const result = await lifecycleCommands.batchAbortTasks(taskIds, {
         reason: typeof body.reason === 'string' ? body.reason : undefined,
-        actor: { source: 'api' },
+        actor: actorFromRequest(c),
       });
       broadcastSnapshotWithCoordinator();
+      return c.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
+
+  // Drain the completion-ready backlog in one supervisor call (issue #1526
+  // Phase B / FM12). Completes every task `GET /api/tasks/completion-ready/stale`
+  // currently lists as `canAutoClose: true`; `{ "force": true }` widens that to
+  // every stale entry regardless of policy — the "unlock everything" escape
+  // hatch the 2026-07-24 deadlock had no equivalent of (11 wedged tasks, no
+  // caller with both the wiring and the authority to close them). Gated by
+  // `KOOKR_SUPERVISOR_TOKEN` when set; every result is attributed via
+  // `X-Kookr-Actor` and audited as one `task.completionReadyAckAll` row plus
+  // one `task.complete` row per completed task.
+  app.post('/api/tasks/completion-ready/ack-all', async (c) => {
+    if (!isAuthorizedSupervisorRequest(c.req.header(SUPERVISOR_AUTH_HEADER))) {
+      return supervisorUnauthorizedResponse(c);
+    }
+
+    let body: { force?: unknown; thresholdMs?: unknown } = {};
+    const rawBody = await c.req.text();
+    if (rawBody.trim()) {
+      try {
+        body = JSON.parse(rawBody) as { force?: unknown; thresholdMs?: unknown };
+      } catch {
+        return c.json({ error: 'invalid JSON body' }, 400);
+      }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return c.json({ error: 'body must be a JSON object' }, 400);
+      }
+    }
+    if (body.force !== undefined && typeof body.force !== 'boolean') {
+      return c.json({ error: 'force must be a boolean when supplied' }, 400);
+    }
+    const thresholdMs = body.thresholdMs === undefined
+      ? DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS
+      : parseThresholdMs(String(body.thresholdMs));
+    if (thresholdMs instanceof Error) return c.json({ error: thresholdMs.message }, 400);
+
+    try {
+      const result = await ackAllStaleCompletionReadyTasks(
+        { taskStore, lifecycleCommands, auditLogPath },
+        {
+          force: body.force === true,
+          thresholdMs,
+          ttlMs: deps.getCompletionReadyTtlMs?.(),
+          actor: actorFromRequest(c),
+        },
+      );
+      if (result.summary.completed > 0 || result.summary.partial_ralph_completion > 0) {
+        broadcastSnapshotWithCoordinator();
+      }
       return c.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

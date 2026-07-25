@@ -128,6 +128,80 @@ describe('TaskLifecycleCommands.completeTask', () => {
   });
 });
 
+describe('TaskLifecycleCommands.completeTask audit (issue #1526 Phase B)', () => {
+  beforeEach(() => {
+    mockBuildTaskCompletionMetadata.mockReset().mockResolvedValue({
+      digest: { bullets: ['shipped fix'], filesChanged: [] },
+      taskTokenUsage: undefined,
+    });
+    mockCleanupTaskWorktrees.mockReset().mockResolvedValue(undefined);
+  });
+
+  test('writes an audit row carrying the supplied actor on a real completion', async () => {
+    const auditDir = await mkdtemp(join(tmpdir(), 'kookr-complete-audit-'));
+    const auditLogPath = join(auditDir, 'audit.jsonl');
+    try {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Complete me', '/repo');
+      addSession(taskStore, task.id);
+      const { deps } = makeDeps(taskStore, { auditLogPath });
+
+      const result = await new TaskLifecycleCommands(deps).completeTask(task.id, {
+        actor: { source: 'api', actorId: 'lucy-supervisor' },
+      });
+
+      expect(result.outcome).toBe('completed');
+      expect(await readJsonl(auditLogPath)).toEqual([
+        expect.objectContaining({
+          type: 'task.complete',
+          actor: { source: 'api', actorId: 'lucy-supervisor' },
+          taskId: task.id,
+          outcome: 'completed',
+          status: 'completed',
+        }),
+      ]);
+    } finally {
+      await rm(auditDir, { recursive: true, force: true });
+    }
+  });
+
+  test('defaults to an unknown actor and still audits no-op outcomes (not_found)', async () => {
+    const auditDir = await mkdtemp(join(tmpdir(), 'kookr-complete-audit-noop-'));
+    const auditLogPath = join(auditDir, 'audit.jsonl');
+    try {
+      const taskStore = new TaskStore();
+      const { deps } = makeDeps(taskStore, { auditLogPath });
+
+      const result = await new TaskLifecycleCommands(deps).completeTask('missing-task');
+
+      expect(result.outcome).toBe('not_found');
+      expect(await readJsonl(auditLogPath)).toEqual([
+        expect.objectContaining({
+          type: 'task.complete',
+          actor: { source: 'unknown' },
+          taskId: 'missing-task',
+          outcome: 'not_found',
+        }),
+      ]);
+    } finally {
+      await rm(auditDir, { recursive: true, force: true });
+    }
+  });
+
+  test('writes no row when auditLogPath is not configured', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Complete without audit dir', '/repo');
+    addSession(taskStore, task.id);
+    const { deps } = makeDeps(taskStore);
+
+    const result = await new TaskLifecycleCommands(deps).completeTask(task.id);
+
+    expect(result.outcome).toBe('completed');
+    // No assertion possible on a nonexistent file beyond "did not throw" —
+    // absence of `auditLogPath` short-circuits the write entirely.
+  });
+});
+
 describe('TaskLifecycleCommands.cancelTask', () => {
   test('cancels Ralph loop before terminal lifecycle cancellation', async () => {
     const taskStore = new TaskStore();
