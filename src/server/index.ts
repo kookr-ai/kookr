@@ -35,7 +35,13 @@ import type { KookrServerInternal } from './server-test-helpers.js';
 import { createSnapshotMessage, getSnapshotAgentsForClient } from './use-cases/get-snapshot.js';
 import { sweepReflectWorktrees } from './use-cases/request-task-reflect.js';
 import { startBackgroundServices } from './bootstrap/start-background-services.js';
-import { resolveMaintenancePruneIntervalHours } from './lifecycle-timers.js';
+import {
+  formatPayloadDietLogLine,
+  resolveMaintenancePruneIntervalHours,
+  type PayloadDietStats,
+} from './lifecycle-timers.js';
+import { pruneAgedTaskRecords } from './use-cases/prune-aged-task-records.js';
+import { isTerminalStatus } from '../core/task-status.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
 import {
@@ -572,6 +578,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     (sessionName) => taskStore.findTaskBySession(sessionName)?.projectId,
   );
 
+  // Payload-diet observability (issue #1526 Phase C / C2): remember the size
+  // of the most recent `all`-scope snapshot broadcast so the boot / maintenance
+  // stats line can report it alongside the tracked-record count.
+  let lastSnapshotPayloadBytes: number | null = null;
+
   const realtime = await createRealtimeServices({
     kookrDir,
     taskStore,
@@ -581,6 +592,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     serverCwd,
     sttUrl,
     buildScopedSnapshot,
+    observeSnapshotPayloadSize: (observation) => {
+      if (observation.payloadType === 'snapshot' && observation.scopeKey === 'all' && observation.action !== 'dropped') {
+        lastSnapshotPayloadBytes = observation.bytes;
+      }
+    },
     ledgerAnalytics,
     projectConfigStore,
     projectSidebarStore,
@@ -1384,6 +1400,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }
   };
 
+  // Payload-diet stats line (issue #1526 Phase C / C2): logged once at boot
+  // and after every scheduled maintenance sweep.
+  const getPayloadDietStats = (): PayloadDietStats => {
+    const tasks = taskStore.listTasks();
+    return {
+      trackedTasks: tasks.length,
+      terminalTasks: tasks.filter((task) => isTerminalStatus(task.status)).length,
+      lastSnapshotBytes: lastSnapshotPayloadBytes,
+    };
+  };
+
   const operationalAlertConfig = resetOperationalAlertConfig();
   const operationalAlertEvaluator = createOperationalAlertEvaluator(
     getOperationalAlertConfig,
@@ -1519,6 +1546,26 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       maintenancePrune: {
         dataDir: kookrDir,
         intervalHours: resolveMaintenancePruneIntervalHours(process.env),
+        // Aged terminal task-record prune (issue #1526 Phase C / C2): runs on
+        // the same tick; the shrunken store persists on the next periodic save.
+        pruneTaskRecords: () => pruneAgedTaskRecords({
+          taskStore,
+          monitor,
+          takePredeleteSnapshot,
+          auditLogPath: join(kookrDir, 'audit.jsonl'),
+        }),
+        onTaskRecordsPruned: () => {
+          // Push a fresh snapshot so dashboards drop the pruned rows now
+          // rather than on the next tick broadcast.
+          broadcastToAll(createSnapshotMessage({
+            monitor,
+            serverCwd,
+            activityMetaProvider: hookIngestion,
+            coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
+            relationTaskStore: taskStore,
+          }));
+        },
+        getPayloadDietStats,
       },
     },
   });
@@ -1586,6 +1633,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Start background services that should wait for the server to be listening.
   backgroundServices.startAfterListen();
+
+  // Payload-diet boot stats (issue #1526 Phase C / C2): one line so operators
+  // see the tracked-record count and (once broadcast) the snapshot size.
+  console.log(formatPayloadDietLogLine(getPayloadDietStats()));
 
   const remoteChatTrigger = await startRemoteChatTrigger({
     host,

@@ -150,6 +150,49 @@ export interface MaintenancePruneScheduleConfig {
   run?: typeof planAndPruneMaintenance;
   /** Injectable clock forwarded to the prune core (tests). */
   now?: () => number;
+  /**
+   * Aged terminal task-record pruning (issue #1526 Phase C / C2). Wired at
+   * bootstrap to `pruneAgedTaskRecords` over the live TaskStore/Monitor so
+   * the in-memory record map — and, via the next periodic save, `tasks.json`
+   * — sheds terminal tasks older than the retention window on the same
+   * maintenance tick as the disk sweep. Optional so existing wirings and
+   * tests are unchanged.
+   */
+  pruneTaskRecords?: () => Promise<{
+    outcome: 'pruned' | 'snapshot_failed';
+    prunedTaskIds: string[];
+    remainingTasks: number;
+    maxAgeDays: number;
+  }>;
+  /** Fired after ≥1 record was pruned — bootstrap broadcasts a fresh snapshot. */
+  onTaskRecordsPruned?: (result: { prunedTaskIds: string[]; remainingTasks: number }) => void;
+  /**
+   * Payload-diet observability (issue #1526 Phase C / C2): when wired, one
+   * stats line is logged after every sweep so operators can watch the diet
+   * working. Bootstrap also logs the same line once at boot.
+   */
+  getPayloadDietStats?: () => PayloadDietStats;
+}
+
+/** Snapshot of the payload-diet health counters (issue #1526 Phase C / C2). */
+export interface PayloadDietStats {
+  /** Task records currently tracked in the store (the `/api/health` `agents` count). */
+  trackedTasks: number;
+  /** Of which in terminal status. */
+  terminalTasks: number;
+  /** Serialized bytes of the most recent `all`-scope snapshot broadcast, or null before the first. */
+  lastSnapshotBytes: number | null;
+}
+
+/** One-line operator-facing payload-diet stats record. */
+export function formatPayloadDietLogLine(stats: PayloadDietStats): string {
+  const snapshot = stats.lastSnapshotBytes === null
+    ? 'none yet'
+    : `${stats.lastSnapshotBytes} bytes`;
+  return (
+    `[payload-diet] tracked task records=${stats.trackedTasks} `
+    + `(terminal=${stats.terminalTasks}); last snapshot broadcast=${snapshot}`
+  );
 }
 
 /** Resolve the scheduled-prune interval (hours) from the environment.
@@ -187,11 +230,45 @@ export async function runScheduledMaintenancePrune(
       `[maintenance-prune] scheduled sweep reclaimed ${result.reclaimedBytes} byte(s) ` +
         `across ${result.removed.length} artifact(s)${warn}`,
     );
+    await runScheduledTaskRecordPrune(config);
     return result;
   } catch (err) {
     // Non-fatal: log and keep the server running.
     console.error('[maintenance-prune] scheduled sweep failed:', err);
+    await runScheduledTaskRecordPrune(config);
     return null;
+  }
+}
+
+/**
+ * Aged terminal task-record prune leg of the scheduled maintenance sweep
+ * (issue #1526 Phase C / C2). Isolated from the disk sweep so either leg
+ * failing never suppresses the other; always finishes with the payload-diet
+ * stats line when the stats provider is wired.
+ */
+async function runScheduledTaskRecordPrune(config: MaintenancePruneScheduleConfig): Promise<void> {
+  if (config.pruneTaskRecords) {
+    try {
+      const result = await config.pruneTaskRecords();
+      if (result.outcome === 'snapshot_failed') {
+        console.error('[maintenance-prune] task-record prune skipped: predelete snapshot failed');
+      } else {
+        console.log(
+          `[maintenance-prune] task-record prune removed ${result.prunedTaskIds.length} aged ` +
+            `terminal task record(s) (> ${result.maxAgeDays}d); ${result.remainingTasks} remain`,
+        );
+        if (result.prunedTaskIds.length > 0) config.onTaskRecordsPruned?.(result);
+      }
+    } catch (err) {
+      console.error('[maintenance-prune] task-record prune failed:', err);
+    }
+  }
+  if (config.getPayloadDietStats) {
+    try {
+      console.log(formatPayloadDietLogLine(config.getPayloadDietStats()));
+    } catch (err) {
+      console.warn('[payload-diet] failed to compute stats line:', err);
+    }
   }
 }
 
