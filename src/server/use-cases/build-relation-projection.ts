@@ -1,7 +1,7 @@
 import type { AgentState } from '../../core/monitor.js';
 import type { AnomalySeverity } from '../../shared/contracts/anomalies.js';
 import type { TaskRelation, TaskRelationRollup } from '../../shared/contracts/task-relations.js';
-import { isTerminalStatus } from '../../shared/contracts/task-status.js';
+import { isTerminalStatus, type TaskStatus } from '../../shared/contracts/task-status.js';
 
 const SEVERITY_ORDER: Record<AnomalySeverity, number> = {
   critical: 0,
@@ -40,12 +40,20 @@ export interface BuildRelationProjectionResult {
  *   - `completed` if its `taskStatus` is terminal (completed/cancelled/terminated)
  *   - `running` otherwise (in-progress, pending, no agent yet, etc.)
  *
+ * A child with no agent in the snapshot falls back to
+ * `opts.getTaskStatus(childTaskId)` when provided (issue #1526 Phase C / C2):
+ * aged terminal children are excluded from the client snapshot, and without
+ * the fallback they would flip a parent's rollup from `completed` back to
+ * `running`. A child unknown to both the snapshot and the store still counts
+ * as `running` (the pre-existing conservative default).
+ *
  * The `mostUrgentChildFinding` is the highest-severity active anomaly across
  * all children, ranked with `SEVERITY_ORDER` (critical < warning < info).
  */
 export function buildRelationProjection(
   taskStore: RelationStoreLike,
   agents: readonly AgentState[],
+  opts: { getTaskStatus?: (taskId: string) => TaskStatus | undefined } = {},
 ): BuildRelationProjectionResult {
   const activeRelations = taskStore
     .listRelations()
@@ -88,7 +96,7 @@ export function buildRelationProjection(
 
     for (const childTaskId of childIds) {
       const childAgent = agentsByTaskId.get(childTaskId);
-      const childBucket = bucketForChild(childAgent);
+      const childBucket = bucketForChild(childAgent, opts.getTaskStatus?.(childTaskId));
       if (childBucket === 'blocked') blocked += 1;
       else if (childBucket === 'completed') completed += 1;
       else running += 1;
@@ -121,8 +129,12 @@ export function buildRelationProjection(
 
 type ChildBucket = 'running' | 'completed' | 'blocked';
 
-function bucketForChild(agent: AgentState | undefined): ChildBucket {
-  if (!agent) return 'running';
+function bucketForChild(agent: AgentState | undefined, storeStatus?: TaskStatus): ChildBucket {
+  if (!agent) {
+    // Not in the snapshot (e.g. an aged terminal child excluded by the C2
+    // payload diet) — fall back to the task store's status when known.
+    return storeStatus !== undefined && isTerminalStatus(storeStatus) ? 'completed' : 'running';
+  }
   if (agent.anomaly) return 'blocked';
   if (agent.turnState === 'blocked') return 'blocked';
   if (agent.taskStatus && isTerminalStatus(agent.taskStatus)) return 'completed';
