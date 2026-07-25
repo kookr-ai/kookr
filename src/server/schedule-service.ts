@@ -391,10 +391,21 @@ export class ScheduleService {
 
   async reconcileOnStartup(taskStore: TaskStore): Promise<void> {
     let changed = false;
-    for (const schedule of this.store.list()) {
+    for (const listed of this.store.list()) {
+      let schedule = listed;
       if (schedule.currentExecution && (schedule.currentExecution.status === 'reserved' || schedule.currentExecution.status === 'accepted')) {
         const latest = schedule.latestExecution;
-        const taskId = schedule.currentExecution.taskId ?? latest?.taskId;
+        // A 'reserved' receipt never carries its own taskId (only
+        // markExecutionAccepted sets one) — the launch died with the previous
+        // process before being accepted (issue #1526 Phase C / #1528). Do NOT
+        // let a PREVIOUS run's `latestExecution.taskId` mask that: falling
+        // back to it here used to leave the wedged receipt 'reserved'
+        // forever whenever the schedule had any prior accepted run. Only an
+        // 'accepted' receipt may borrow the latest pointer, since for it
+        // that pointer really is this execution's task.
+        const taskId = schedule.currentExecution.status === 'accepted'
+          ? schedule.currentExecution.taskId ?? latest?.taskId
+          : schedule.currentExecution.taskId;
         if (!taskId) {
           this.store.replace({
             ...schedule,
@@ -424,7 +435,15 @@ export class ScheduleService {
             },
           });
           changed = true;
-          continue;
+          // Fall through to the latestExecution reconciliation below with a
+          // REFRESHED read: a stale reference here would let the second
+          // replace clobber the ledger entry the replace above just wrote
+          // (issue #1526 Phase C — a crash between reserveExecution and the
+          // outcome can leave BOTH a dead 'reserved' receipt and a
+          // 'running' latestExecution needing task-based reconciliation).
+          const refreshed = this.store.get(schedule.id);
+          if (!refreshed) continue;
+          schedule = refreshed;
         }
       }
 

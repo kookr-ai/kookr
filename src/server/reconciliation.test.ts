@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach } from 'vitest';
 import { TaskStore } from '../core/tasks.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import type { SessionSpec } from '../adapters/terminal-backend.js';
-import { reconcile } from './reconciliation.js';
+import { reconcile, reconcileStaleOpenLaunches } from './reconciliation.js';
 
 function spec(id: string): SessionSpec {
   return {
@@ -780,5 +780,72 @@ describe('Startup Reconciliation', () => {
     expect(result.tasksCompleted).toHaveLength(0);
     expect(taskStore.getTask(completedTask.id)!.status).toBe('completed');
     expect(taskStore.getTask(cancelledTask.id)!.status).toBe('cancelled');
+  });
+});
+
+describe('reconcileStaleOpenLaunches (issue #1526 Phase C / #1528, boot-only)', () => {
+  let taskStore: TaskStore;
+
+  beforeEach(() => {
+    taskStore = new TaskStore();
+  });
+
+  test('an open task with zero sessions and no launch reservation is terminated', () => {
+    const task = taskStore.createTask('Wedged scheduled fire', '/cwd');
+    expect(task.status).toBe('open');
+
+    const terminated = reconcileStaleOpenLaunches(taskStore);
+
+    expect(terminated).toEqual([task.id]);
+    const after = taskStore.getTask(task.id)!;
+    expect(after.status).toBe('terminated');
+    expect(after.terminatedAt).toBeInstanceOf(Date);
+    // Terminal task no longer occupies a capacity slot.
+    expect(taskStore.getActiveCount()).toBe(0);
+  });
+
+  test('a legitimately mid-flight launch (fresh beginLaunch reservation) is NOT touched', () => {
+    // The discriminator: a live launch holds a fresh in-memory reservation.
+    // At boot the reservation map is empty by construction (it is never
+    // persisted), so nothing is protected then — which is exactly right.
+    const task = taskStore.createTask('Launch in flight', '/cwd');
+    expect(taskStore.beginLaunch(task.id)).toBe(true);
+
+    const terminated = reconcileStaleOpenLaunches(taskStore);
+
+    expect(terminated).toEqual([]);
+    expect(taskStore.getTask(task.id)!.status).toBe('open');
+  });
+
+  test('open tasks WITH sessions and pending tasks are left to their own paths', () => {
+    const withSession = taskStore.createTask('Has session', '/cwd');
+    taskStore.addSession(withSession.id, {
+      tmuxSession: 'kookr-live',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: new Date(),
+    });
+    // addSession flips open→inProgress in some paths; force a task that is
+    // open with a session record via a fresh store state check instead.
+    const pending = taskStore.createTask('Queued at capacity', '/cwd');
+    taskStore.pendTask(pending.id);
+
+    const terminated = reconcileStaleOpenLaunches(taskStore);
+
+    expect(terminated).toEqual([]);
+    expect(taskStore.getTask(pending.id)!.status).toBe('pending');
+    expect(['open', 'inProgress']).toContain(taskStore.getTask(withSession.id)!.status);
+  });
+
+  test('terminal and inProgress tasks are never candidates', () => {
+    const done = taskStore.createTask('Done', '/cwd');
+    taskStore.startTask(done.id);
+    taskStore.completeTask(done.id);
+    const running = taskStore.createTask('Running', '/cwd');
+    taskStore.startTask(running.id);
+
+    expect(reconcileStaleOpenLaunches(taskStore)).toEqual([]);
+    expect(taskStore.getTask(done.id)!.status).toBe('completed');
+    expect(taskStore.getTask(running.id)!.status).toBe('inProgress');
   });
 });
