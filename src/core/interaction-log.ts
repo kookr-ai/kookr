@@ -30,7 +30,7 @@ export type InteractionEvent =
   | { type: 'agent_stopped'; agentId: string; reason: 'user' | 'completed' | 'error'; timestamp: string }
   | { type: 'task_completed'; taskId: string; agentId: string; reason: 'user_marked' | 'user_acked_terminated'; durationMs: number; timestamp: string }
   | { type: 'task_terminated'; taskId: string; agentId: string; reason: 'sessions_died'; durationMs: number; timestamp: string }
-  | { type: 'task_cancelled'; taskId: string; agentId: string; reason: 'user_cancelled'; durationMs: number; timestamp: string }
+  | { type: 'task_cancelled'; taskId: string; agentId: string; reason: 'user_cancelled' | 'pending_ttl_expired'; durationMs: number; timestamp: string }
   | { type: 'reflect_triggered'; timestamp: string }
   | { type: 'task_reflect_requested'; taskId: string; agentId: string; mode: 'snapshot'; hint?: string; timestamp: string }
   | { type: 'worktree_cleaned'; taskId: string; worktreePath: string; branch: string | undefined; timestamp: string }

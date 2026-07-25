@@ -30,7 +30,7 @@ vi.mock('../use-cases/delete-task.js', async (importActual) => {
   };
 });
 
-import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, ModelValidationError } from '../launch-service.js';
+import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, PendingQueueFullError, SpawnBurstLimitError } from '../launch-service.js';
 import { deleteTask } from '../use-cases/delete-task.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
@@ -1037,6 +1037,88 @@ describe('POST /api/tasks error paths', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ code: 'invalid_model' });
+  });
+
+  // --- Server-side backpressure (issue #1526 Phase C / C3) ---
+
+  const backpressureLedger = {
+    maxActiveTasks: 10,
+    active: 10,
+    free: 0,
+    byClass: { working: 2, finishedAwaitingAck: 7, hungSuspect: 1, launching: 0 },
+    pendingQueueDepth: 24,
+    oldestPendingAgeMs: 120_000,
+    oldestFinishedAwaitingAckAgeMs: 3_600_000,
+  };
+
+  test('maps PendingQueueFullError to 429 with code + full capacity ledger body (issue #1526 C3)', async () => {
+    vi.mocked(launchTask).mockRejectedValueOnce(new PendingQueueFullError(backpressureLedger, 24));
+    const res = await mkApp(mkLoopDeps(new TaskStore())).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      code: 'pending_queue_full',
+      maxPendingTasks: 24,
+      capacity: backpressureLedger,
+    });
+    expect(body.error).toMatch(/Pending queue is full/);
+  });
+
+  test('maps SpawnBurstLimitError to 429 with code, ledger, budget fields and Retry-After (issue #1526 C3)', async () => {
+    vi.mocked(launchTask).mockRejectedValueOnce(new SpawnBurstLimitError(
+      { allowed: false, source: 'api:actor:lucy', count: 30, limit: 30, windowMs: 600_000, retryAfterMs: 42_000 },
+      backpressureLedger,
+    ));
+    const res = await mkApp(mkLoopDeps(new TaskStore())).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('42');
+    expect(await res.json()).toMatchObject({
+      code: 'spawn_burst_limit',
+      source: 'api:actor:lucy',
+      limit: 30,
+      windowMs: 600_000,
+      retryAfterMs: 42_000,
+      capacity: backpressureLedger,
+    });
+  });
+
+  test('forwards the X-Kookr-Actor header as launchActorId for actor-qualified budgets (issue #1526 C3)', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Kookr-Actor': 'lucy-supervisor',
+      },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      launchActorId: 'lucy-supervisor',
+    }));
+  });
+
+  test('omits launchActorId when the actor header is absent or blank', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Kookr-Actor': '   ' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      launchActorId: undefined,
+    }));
   });
 
   test('forwards a valid string model to launchTask (#1518)', async () => {

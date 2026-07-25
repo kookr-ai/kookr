@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
 import { GrokAuthPreflightError } from '../../adapters/grok-build-adapter.js';
-import { CwdValidationError } from '../launch-service.js';
+import { CwdValidationError, PendingQueueFullError, SpawnBurstLimitError } from '../launch-service.js';
 import { handleLaunchResult } from './launch-result.js';
 
 function collect(): { send: (msg: ServerMessage) => void; sent: ServerMessage[] } {
@@ -54,5 +54,52 @@ describe('handleLaunchResult', () => {
     expect(alert.details).toContain('before a terminal session was created');
     expect(alert.details).toContain('grok login --device-code');
     expect(alert.summary).toContain('Grok authentication expired');
+  });
+
+  // --- Server-side backpressure (issue #1526 Phase C / C3) ---
+
+  const ledger = {
+    maxActiveTasks: 10,
+    active: 10,
+    free: 0,
+    byClass: { working: 2, finishedAwaitingAck: 7, hungSuspect: 1, launching: 0 },
+    pendingQueueDepth: 24,
+    oldestPendingAgeMs: 120_000,
+    oldestFinishedAwaitingAckAgeMs: 3_600_000,
+  };
+
+  it('renders the capacity breakdown as a warning alert for a pending-queue-full rejection (issue #1526 C3)', () => {
+    const { send, sent } = collect();
+    const err = new PendingQueueFullError(ledger, 24);
+
+    handleLaunchResult(send, 'burst launch', undefined, err);
+
+    const alert = sent[0] as Extract<ServerMessage, { type: 'alert' }>;
+    expect(alert.type).toBe('alert');
+    expect(alert.severity).toBe('warning');
+    expect(alert.summary).toContain('Pending queue is full');
+    // The "why": ledger breakdown, not just an error string.
+    expect(alert.details).toContain('10/10 slots occupied');
+    expect(alert.details).toContain('awaiting-ack 7');
+    expect(alert.details).toContain('hung-suspect 1');
+    expect(alert.details).toContain('24 task(s) (limit 24)');
+    expect(alert.details).toContain('raise maxPendingTasks');
+  });
+
+  it('renders the budget line for a spawn-burst rejection (issue #1526 C3)', () => {
+    const { send, sent } = collect();
+    const err = new SpawnBurstLimitError(
+      { allowed: false, source: 'websocket', count: 30, limit: 30, windowMs: 600_000, retryAfterMs: 42_000 },
+      ledger,
+    );
+
+    handleLaunchResult(send, 'burst launch', undefined, err);
+
+    const alert = sent[0] as Extract<ServerMessage, { type: 'alert' }>;
+    expect(alert.severity).toBe('warning');
+    expect(alert.summary).toContain('Spawn burst limit reached');
+    expect(alert.details).toContain('30 launches per 10m for source "websocket"');
+    expect(alert.details).toContain('retry in ~42s');
+    expect(alert.details).toContain('10/10 slots occupied');
   });
 });

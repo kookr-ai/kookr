@@ -4,7 +4,7 @@ import { nextRun } from '../core/cron.js';
 import { ScheduleValidationError, isTriggerLimitExhausted, scheduleResolutionSignature } from '../core/schedule.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator, resolveSchedulePlaybookSync } from './schedule-validator.js';
-import type { LaunchOpts, LaunchResult } from './launch-service.js';
+import { isPendingQueueFullError, type LaunchOpts, type LaunchResult } from './launch-service.js';
 import type { TaskStatus } from '../core/types.js';
 
 const TICK_INTERVAL_MS = 60_000;
@@ -293,6 +293,12 @@ export class ScheduleRunner {
         ...(schedule.effort ? { effort: schedule.effort } : {}),
         ...(schedule.model ? { model: schedule.model } : {}),
         disableDedup: true,
+        // issue #1526 Phase C / C3: mark schedule provenance. This (a)
+        // exempts the fire from the per-source spawn burst budget — schedules
+        // have their own coalescing + dead-man alerting — and (b) stamps
+        // metadata.launchSource so the promotion posture guard treats a
+        // queued fire as self-releasing.
+        launchSource: 'schedule',
       });
 
       await this.deps.service.markExecutionAccepted(schedule.id, receipt.id, result.task.id, result.queued);
@@ -368,6 +374,10 @@ function mapErrorToReasonCode(err: unknown) {
     if (err.fieldErrors?.playbook) return 'missing_playbook' as const;
     return 'validation' as const;
   }
+  // issue #1526 Phase C / C3: a fire refused by the pending-queue depth limit
+  // is recorded as dispatch_failed with its own reason code — never silently
+  // dropped, and distinguishable from a broken launcher in the ledger.
+  if (isPendingQueueFullError(err)) return 'pending_queue_full' as const;
   return 'launch_error' as const;
 }
 

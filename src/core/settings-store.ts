@@ -144,6 +144,42 @@ export interface KookrSettings {
    * Alert-only by design in this phase: no self-heal action is taken.
    */
   deadManScheduleMinutes: number;
+  /**
+   * Pending-queue depth limit (issue #1526 Phase C / C3, FM3). During the
+   * 2026-07-24 deadlock POST /api/tasks accepted unbounded creation: every
+   * over-cap launch silently pended, so a runaway burst looked successful to
+   * the caller while its tasks starved forever. When a launch would pend at
+   * capacity AND the pending count is already at this limit, the launch is
+   * rejected with HTTP 429 (REST) / a structured error (WS + CLI) carrying
+   * the capacity-ledger snapshot, and a schedule fire records
+   * `dispatch_failed` with reasonCode `pending_queue_full`. Read via a live
+   * getter, so a settings change applies to the next launch.
+   */
+  maxPendingTasks: number;
+  /**
+   * Pending-task TTL (minutes), issue #1526 Phase C / C3. A task that has sat
+   * in `pending` longer than this without ever launching is expired on the
+   * liveness tick: cancelled (existing terminal status) with a structured
+   * reason and an audit row (actor `system:pending-ttl`), freeing queue
+   * depth. Applies equally to parented/chain tasks (`parentTaskId` set) —
+   * a starving child of a live parent still expires.
+   */
+  pendingTaskTtlMinutes: number;
+  /**
+   * Per-source spawn budget (issue #1526 Phase C / C3): max task creations
+   * allowed per launch source (cli/api/websocket/…, actor-qualified when the
+   * `X-Kookr-Actor` header is present) within a sliding
+   * {@link spawnBurstWindowMinutes} window. Exceeding it rejects the launch
+   * with the same 429-with-ledger shape under code `spawn_burst_limit`.
+   * Schedule-fired launches are exempt — they are operator-configured cadence
+   * with their own coalescing (one outstanding queued fire per schedule) and
+   * dead-man alerting, so a burst there indicates schedule config, not a
+   * runaway caller, and rate-limiting them would convert planned periodic
+   * work into dispatch failures.
+   */
+  spawnBurstLimit: number;
+  /** Sliding-window size (minutes) for {@link spawnBurstLimit}. */
+  spawnBurstWindowMinutes: number;
 }
 
 export const DEFAULT_SETTINGS: KookrSettings = {
@@ -167,6 +203,10 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   hungTaskReapMinutes: 180,
   launchTimeoutSeconds: 180,
   deadManScheduleMinutes: 120,
+  maxPendingTasks: 24,
+  pendingTaskTtlMinutes: 240,
+  spawnBurstLimit: 30,
+  spawnBurstWindowMinutes: 10,
 };
 
 const MIN_POLLING_INTERVAL = 15;
@@ -203,6 +243,25 @@ const MAX_LAUNCH_TIMEOUT_SEC = 900;
 // can't trip it; ceiling of 1440 (24h) keeps the switch meaningful.
 const MIN_DEAD_MAN_SCHEDULE_MIN = 30;
 const MAX_DEAD_MAN_SCHEDULE_MIN = 1440;
+// Pending-queue depth bounds (issue #1526 Phase C / C3). Floor of 4 keeps the
+// queue useful (a depth-0/1 queue would reject legitimate short bursts the cap
+// absorbs within minutes); ceiling of 200 stops a fat-fingered value from
+// re-creating the unbounded-queue failure mode this setting exists to fix.
+const MIN_PENDING_TASKS = 4;
+const MAX_PENDING_TASKS = 200;
+// Pending-TTL bounds (minutes). Floor of 15 stays above a normal drain cycle
+// (a healthy queue promotes within minutes) so the TTL never races routine
+// promotion; ceiling of 2880 (48h) bounds how long a starving task can hold
+// queue depth.
+const MIN_PENDING_TTL_MIN = 15;
+const MAX_PENDING_TTL_MIN = 2880;
+// Per-source spawn-budget bounds (issue #1526 Phase C / C3). Limit floor of 5
+// keeps interactive use workable; ceiling of 500 keeps the budget meaningful.
+// Window floor of 1 minute, ceiling of 120 minutes (2h).
+const MIN_SPAWN_BURST_LIMIT = 5;
+const MAX_SPAWN_BURST_LIMIT = 500;
+const MIN_SPAWN_BURST_WINDOW_MIN = 1;
+const MAX_SPAWN_BURST_WINDOW_MIN = 120;
 
 /** Validate and clamp a raw settings object, filling in defaults for missing/invalid values. */
 export function validateSettings(raw: Record<string, unknown>): KookrSettings {
@@ -279,6 +338,38 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     deadManScheduleMinutes = Math.max(
       MIN_DEAD_MAN_SCHEDULE_MIN,
       Math.min(MAX_DEAD_MAN_SCHEDULE_MIN, Math.round(raw.deadManScheduleMinutes)),
+    );
+  }
+
+  let maxPendingTasks = DEFAULT_SETTINGS.maxPendingTasks;
+  if (typeof raw.maxPendingTasks === 'number' && Number.isFinite(raw.maxPendingTasks)) {
+    maxPendingTasks = Math.max(
+      MIN_PENDING_TASKS,
+      Math.min(MAX_PENDING_TASKS, Math.round(raw.maxPendingTasks)),
+    );
+  }
+
+  let pendingTaskTtlMinutes = DEFAULT_SETTINGS.pendingTaskTtlMinutes;
+  if (typeof raw.pendingTaskTtlMinutes === 'number' && Number.isFinite(raw.pendingTaskTtlMinutes)) {
+    pendingTaskTtlMinutes = Math.max(
+      MIN_PENDING_TTL_MIN,
+      Math.min(MAX_PENDING_TTL_MIN, Math.round(raw.pendingTaskTtlMinutes)),
+    );
+  }
+
+  let spawnBurstLimit = DEFAULT_SETTINGS.spawnBurstLimit;
+  if (typeof raw.spawnBurstLimit === 'number' && Number.isFinite(raw.spawnBurstLimit)) {
+    spawnBurstLimit = Math.max(
+      MIN_SPAWN_BURST_LIMIT,
+      Math.min(MAX_SPAWN_BURST_LIMIT, Math.round(raw.spawnBurstLimit)),
+    );
+  }
+
+  let spawnBurstWindowMinutes = DEFAULT_SETTINGS.spawnBurstWindowMinutes;
+  if (typeof raw.spawnBurstWindowMinutes === 'number' && Number.isFinite(raw.spawnBurstWindowMinutes)) {
+    spawnBurstWindowMinutes = Math.max(
+      MIN_SPAWN_BURST_WINDOW_MIN,
+      Math.min(MAX_SPAWN_BURST_WINDOW_MIN, Math.round(raw.spawnBurstWindowMinutes)),
     );
   }
 
@@ -359,6 +450,10 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       hungTaskReapMinutes,
       launchTimeoutSeconds,
       deadManScheduleMinutes,
+      maxPendingTasks,
+      pendingTaskTtlMinutes,
+      spawnBurstLimit,
+      spawnBurstWindowMinutes,
     },
   };
 }

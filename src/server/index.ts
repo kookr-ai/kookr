@@ -17,6 +17,9 @@ import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
 import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
+import { buildCapacityLedger } from '../core/capacity-ledger.js';
+import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
+import { resolveTaskAttentionSignals } from './task-attention-signals.js';
 import { IdempotencyLedger } from '../core/idempotency-ledger.js';
 import { DrainController } from './drain-state.js';
 import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handler.js';
@@ -382,6 +385,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Live getter for the scheduled-task starvation dead-man window (issue
   // #1526 Phase C). Read on every scheduler tick.
   const getDeadManScheduleMs = () => currentSettings.deadManScheduleMinutes * 60_000;
+  // Honest server-side backpressure (issue #1526 Phase C / C3). All read the
+  // live `currentSettings` binding, so a settings PUT applies to the next
+  // launch / liveness tick without a restart.
+  const getMaxPendingTasks = () => currentSettings.maxPendingTasks;
+  const getPendingTaskTtlMs = () => currentSettings.pendingTaskTtlMinutes * 60_000;
+  // Per-source spawn budget — one limiter instance per server so window state
+  // is shared across REST, WS, and internal launch paths.
+  const spawnRateLimiter = new SpawnRateLimiter({
+    getLimit: () => currentSettings.spawnBurstLimit,
+    getWindowMs: () => currentSettings.spawnBurstWindowMinutes * 60_000,
+  });
   // #681: live getter for the per-agent-type effort defaults. Reads the live
   // `currentSettings` binding so an operator's settings PUT takes effect on the
   // next launch without a restart (the PUT path reassigns `currentSettings`).
@@ -956,6 +970,20 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     bypassAllPermissions,
     idempotencyLedger,
     getLaunchTimeoutMs,
+    // issue #1526 Phase C / C3: pending-queue depth limit + per-source spawn
+    // budget, with the SAME watchdog-aware capacity-ledger builder /api/health
+    // uses so a 429 body and the health endpoint tell one story.
+    getMaxPendingTasks,
+    spawnRateLimiter,
+    getCapacityLedger: () => {
+      const now = Date.now();
+      return buildCapacityLedger(taskStore.listTasks(), {
+        now,
+        maxActiveTasks: getMaxActiveTasks(),
+        isHungSuspect: (task) => resolveTaskAttentionSignals(task, { queue, watchdog }, now).hungSuspect,
+        isLaunching: (task) => taskStore.hasFreshLaunchReservation(task.id),
+      });
+    },
   };
 
   let remoteLaunchBroker: import('../remote/launch-broker.js').RemoteLaunchBroker | undefined;
@@ -1471,7 +1499,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
     agentLifecycleDeps: lifecycleDeps, broadcastToAll,
     broadcastProjectSummaries,
-    launchTask: (opts, serverOpts) => launchTask(launchServiceDeps, opts, serverOpts),
+    // issue #1526 Phase C / C3: launches arriving over this wiring come from
+    // the WS transport (dashboard launch/relaunch/playbook messages) — tag
+    // them so the spawn budget buckets them as `websocket`, not anonymous
+    // `api`. An opts-level source (none today on WS paths) would still win.
+    launchTask: (opts, serverOpts) => launchTask(launchServiceDeps, { launchSource: 'websocket', ...opts }, serverOpts),
     githubStateStore, ledgerAnalytics, projectConfigStore, projectSidebarStore,
     skillDiscoveryState, prLessonsState, getRegistryActiveProjects,
     achievementWatcher,
@@ -1529,6 +1561,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       shadowRegistry, agentLifecycleDeps: lifecycleDeps, taskTailStore,
       quotaAdapter, getMaxActiveTasks, getAutoCloseCompletionReadyDelayMs, suppressionTracker,
       getCompletionReadyTtlMs,
+      getPendingTaskTtlMs,
       auditLogPath: join(kookrDir, 'audit.jsonl'),
       reportsDir: join(kookrDir, 'reports'),
       getHungTaskReapEnabled, getHungTaskReapMs,

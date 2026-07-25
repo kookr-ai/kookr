@@ -33,6 +33,8 @@ import { normalizePromptFileReferences } from './prompt-file-paths.js';
 import { applyWorktreeGuardrails, type DeliveryPolicy } from './worktree-guardrails.js';
 import type { IdempotencyLedger } from '../core/idempotency-ledger.js';
 import { isTerminalStatus } from '../core/task-status.js';
+import { buildCapacityLedger, type CapacityLedger } from '../core/capacity-ledger.js';
+import { spawnBudgetKey, type SpawnRateLimiter, type SpawnRateVerdict } from '../core/spawn-rate-limiter.js';
 
 export type { LaunchOpts } from '../shared/contracts/launch.js';
 export type LaunchResult = SharedLaunchResult<Task>;
@@ -100,7 +102,39 @@ export interface LaunchServiceDeps {
    * {@link DEFAULT_LAUNCH_TIMEOUT_MS}.
    */
   getLaunchTimeoutMs?: () => number;
+  /**
+   * Live getter for the pending-queue depth limit (issue #1526 Phase C / C3,
+   * `maxPendingTasks` setting). When a launch would pend at capacity and the
+   * pending count is already at this limit, `launchTask` throws
+   * {@link PendingQueueFullError} instead of silently enqueueing. Absent
+   * falls back to {@link DEFAULT_MAX_PENDING_TASKS}.
+   */
+  getMaxPendingTasks?: () => number;
+  /**
+   * Per-source spawn budget (issue #1526 Phase C / C3, `spawnBurstLimit` /
+   * `spawnBurstWindowMinutes` settings). When provided, task creation is
+   * counted per launch source (actor-qualified via `opts.launchActorId`);
+   * exceeding the sliding-window budget throws {@link SpawnBurstLimitError}.
+   * Schedule-fired launches (`launchSource: 'schedule'`) are exempt — see the
+   * limiter's module docs for why. Absent (older wiring/tests) means no
+   * budget enforcement.
+   */
+  spawnRateLimiter?: SpawnRateLimiter;
+  /**
+   * Rich capacity-ledger snapshot for backpressure error bodies (issue #1526
+   * Phase C / C3). Wired in production to the SAME builder `GET /api/health`
+   * uses (watchdog-aware `hungSuspect` classification) so a 429 body and the
+   * health endpoint tell one story. Absent, a degraded snapshot is built from
+   * the task store alone (hungSuspect always 0).
+   */
+  getCapacityLedger?: () => CapacityLedger;
 }
+
+/**
+ * Default pending-queue depth limit. Mirrors the `maxPendingTasks` settings
+ * default (24); the settings range is 4–200.
+ */
+export const DEFAULT_MAX_PENDING_TASKS = 24;
 
 /**
  * Default hard ceiling on one `adapter.launch()` await (issue #1528). Mirrors
@@ -204,6 +238,91 @@ export class LaunchTimeoutError extends Error {
 /** Type guard for {@link LaunchTimeoutError}. */
 export function isLaunchTimeoutError(err: unknown): err is LaunchTimeoutError {
   return err instanceof LaunchTimeoutError;
+}
+
+/**
+ * Thrown by {@link launchTask} when a launch would pend at capacity but the
+ * pending queue is already at its depth limit (issue #1526 Phase C / C3,
+ * FM3). Carries the capacity-ledger snapshot so every surface can render WHY:
+ * REST maps this to HTTP 429 with the ledger in the body, the WS path renders
+ * the breakdown into its alert, and a schedule fire records `dispatch_failed`
+ * with reasonCode `pending_queue_full` — never a silent drop. Thrown BEFORE
+ * any task record exists, so there is nothing to clean up.
+ */
+export class PendingQueueFullError extends Error {
+  readonly code = 'pending_queue_full';
+  constructor(
+    /** Capacity-ledger snapshot at rejection time (same shape as `GET /api/health` `capacity`). */
+    readonly capacity: CapacityLedger,
+    /** The `maxPendingTasks` limit that was hit. */
+    readonly maxPendingTasks: number,
+  ) {
+    super(
+      `Pending queue is full (${capacity.pendingQueueDepth}/${maxPendingTasks} queued, ` +
+      `${capacity.active}/${capacity.maxActiveTasks} active) — launch rejected. ` +
+      'Retry after capacity frees, or raise maxPendingTasks.',
+    );
+    this.name = 'PendingQueueFullError';
+  }
+}
+
+/** Type guard for {@link PendingQueueFullError}, for callers mapping to 429. */
+export function isPendingQueueFullError(err: unknown): err is PendingQueueFullError {
+  return err instanceof PendingQueueFullError;
+}
+
+/**
+ * Thrown by {@link launchTask} when the caller's per-source spawn budget is
+ * exhausted (issue #1526 Phase C / C3, `spawnBurstLimit` per
+ * `spawnBurstWindowMinutes`). Same 429-with-ledger shape as
+ * {@link PendingQueueFullError}, distinct code so a runaway caller can tell
+ * "you specifically are bursting" apart from "the shared queue is full".
+ * Thrown before any task record exists. Schedule fires never hit this — they
+ * are exempt from the budget.
+ */
+export class SpawnBurstLimitError extends Error {
+  readonly code = 'spawn_burst_limit';
+  /** Budget bucket that was exhausted (launch source, actor-qualified when attributed). */
+  readonly source: string;
+  readonly limit: number;
+  readonly windowMs: number;
+  readonly retryAfterMs: number;
+  constructor(
+    verdict: SpawnRateVerdict,
+    /** Capacity-ledger snapshot at rejection time. */
+    readonly capacity: CapacityLedger,
+  ) {
+    super(
+      `Spawn burst limit reached for source "${verdict.source}": ` +
+      `${verdict.count}/${verdict.limit} launches in the last ${Math.round(verdict.windowMs / 60_000)}m — ` +
+      `launch rejected. Retry in ~${Math.ceil(verdict.retryAfterMs / 1000)}s.`,
+    );
+    this.name = 'SpawnBurstLimitError';
+    this.source = verdict.source;
+    this.limit = verdict.limit;
+    this.windowMs = verdict.windowMs;
+    this.retryAfterMs = verdict.retryAfterMs;
+  }
+}
+
+/** Type guard for {@link SpawnBurstLimitError}, for callers mapping to 429. */
+export function isSpawnBurstLimitError(err: unknown): err is SpawnBurstLimitError {
+  return err instanceof SpawnBurstLimitError;
+}
+
+/**
+ * Capacity-ledger snapshot for backpressure error bodies. Prefers the wired
+ * health-grade builder; falls back to a task-store-only snapshot (no watchdog
+ * ⇒ `hungSuspect` reads 0) so the error body always carries a breakdown.
+ */
+function snapshotCapacityLedger(deps: LaunchServiceDeps, maxActive: number): CapacityLedger {
+  if (deps.getCapacityLedger) return deps.getCapacityLedger();
+  return buildCapacityLedger(deps.taskStore.listTasks(), {
+    now: Date.now(),
+    maxActiveTasks: maxActive,
+    isHungSuspect: () => false,
+    isLaunching: (task) => deps.taskStore.hasFreshLaunchReservation(task.id),
+  });
 }
 
 /**
@@ -621,6 +740,45 @@ async function launchTaskCore(
     }
   }
 
+  // --- Server-side backpressure (issue #1526 Phase C / C3) ---
+  // Both guards run AFTER dedup (an idempotent replay of an existing task
+  // must never be rejected — it creates nothing) and BEFORE createTask (a
+  // rejected launch must leave no task record). No await sits between these
+  // checks and createTask, so the counts they read cannot go stale.
+  //
+  // 1) Per-source spawn budget. Checked first: it identifies the misbehaving
+  //    CALLER, which is more actionable than the shared-queue state — a
+  //    runaway burst should see "you are bursting" even once it has also
+  //    filled the queue. Schedule fires are exempt (see SpawnRateLimiter
+  //    module docs): their cadence is operator-configured and already bounded
+  //    by per-schedule coalescing + dead-man alerting.
+  const launchSourceForBudget = opts.launchSource ?? 'api';
+  if (deps.spawnRateLimiter && launchSourceForBudget !== 'schedule') {
+    const verdict = deps.spawnRateLimiter.tryAcquire(
+      spawnBudgetKey(launchSourceForBudget, opts.launchActorId),
+    );
+    if (!verdict.allowed) {
+      console.warn(
+        `[backpressure] spawn burst limit hit for source "${verdict.source}" ` +
+        `(${verdict.count}/${verdict.limit} in ${Math.round(verdict.windowMs / 60_000)}m)`,
+      );
+      throw new SpawnBurstLimitError(verdict, snapshotCapacityLedger(deps, maxActive));
+    }
+  }
+
+  // 2) Pending-queue depth limit (FM3). Only bites when the launch would
+  //    actually pend (node at capacity): below capacity the task launches
+  //    immediately and queue depth is irrelevant, so behavior is unchanged.
+  if (taskStore.getActiveCount() >= maxActive) {
+    const maxPending = deps.getMaxPendingTasks?.() ?? DEFAULT_MAX_PENDING_TASKS;
+    if (taskStore.getPendingCount() >= maxPending) {
+      console.warn(
+        `[backpressure] pending queue full (${taskStore.getPendingCount()}/${maxPending}) at capacity — rejecting launch`,
+      );
+      throw new PendingQueueFullError(snapshotCapacityLedger(deps, maxActive), maxPending);
+    }
+  }
+
   const task = taskStore.createTask({
     prompt: effectivePrompt,
     userPrompt,
@@ -632,7 +790,15 @@ async function launchTaskCore(
     playbookId: opts.playbookId,
     projectId: opts.projectId,
     playbookParameterValues: opts.playbookParameterValues,
-    metadata: opts.metadataIntent ? { intent: opts.metadataIntent } : undefined,
+    // metadata.launchSource (issue #1526 Phase C / C3): stamp provenance on
+    // the record so the promotion posture guard can recognize schedule-fired
+    // pendings as self-releasing. Additive — absent when no source was given.
+    metadata: (opts.metadataIntent || opts.launchSource)
+      ? {
+          ...(opts.metadataIntent ? { intent: opts.metadataIntent } : {}),
+          ...(opts.launchSource ? { launchSource: opts.launchSource } : {}),
+        }
+      : undefined,
     launchHealthSummary,
     launchNote,
     deliveryAuthorization,

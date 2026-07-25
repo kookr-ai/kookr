@@ -1,0 +1,139 @@
+# Server-side backpressure (issue #1526 Phase C / C3)
+
+During the 2026-07-24 deadlock, `POST /api/tasks` accepted unbounded creation:
+every over-cap launch silently pended, so a runaway burst looked successful to
+the caller while its tasks starved forever (FM3) — and every freed slot was
+instantly refilled by FIFO promotion of same-posture pendings, re-wedging the
+cap (FM11). This page documents the four mechanisms that make the server say
+"no" honestly instead.
+
+All settings live in the normal settings store (`GET/PUT /api/settings`) and
+are read through live getters — a change applies without a restart.
+
+| Setting | Default | Range | Purpose |
+| --- | --- | --- | --- |
+| `maxPendingTasks` | 24 | 4–200 | Pending-queue depth limit |
+| `pendingTaskTtlMinutes` | 240 | 15–2880 | Max time a task may starve in `pending` |
+| `spawnBurstLimit` | 30 | 5–500 | Per-source creations per window |
+| `spawnBurstWindowMinutes` | 10 | 1–120 | Sliding window for `spawnBurstLimit` |
+
+## 1. Pending-queue depth limit (`maxPendingTasks`)
+
+When a launch would pend at capacity (active count ≥ `maxActiveTasks`) AND the
+pending count is already ≥ `maxPendingTasks`, the launch is **rejected before
+any task record is created**:
+
+- **REST** (`POST /api/tasks`): HTTP **429**, body
+  `{ error, code: "pending_queue_full", capacity, maxPendingTasks }`. The
+  `capacity` field is the same capacity-ledger snapshot `GET /api/health`
+  exposes (`maxActiveTasks`, `active`, `free`, `byClass` breakdown of
+  working / finishedAwaitingAck / hungSuspect / launching,
+  `pendingQueueDepth`, oldest ages) so the caller can render *why*.
+- **WebSocket** (dashboard launch/relaunch/playbook): an `alert` with the same
+  breakdown in `details`, severity `warning`.
+- **CLI** (`kookr spawn`): renders the breakdown on stderr and exits non-zero
+  (exit 4, `SERVER_ERROR`); `--json` mode carries the full body under
+  `details.backpressure`.
+- **Schedule fires**: recorded in the schedule's execution ledger as
+  `dispatch_failed` with the distinct reasonCode **`pending_queue_full`** —
+  never silently dropped. (The Phase A coalescing rule still applies first: a
+  schedule with a fire already queued records `skipped_coalesced` and never
+  reaches the depth limit.)
+
+Below capacity, or below the depth limit, behavior is unchanged (launch or
+quietly pend, respectively).
+
+## 2. Pending-task TTL (`pendingTaskTtlMinutes`)
+
+The depth limit bounds how much starving work can accumulate; the TTL bounds
+how *long* any one entry can starve. On the liveness tick, a task that has
+been `pending` for ≥ the TTL without ever launching (zero sessions, no fresh
+launch reservation) is expired:
+
+- transition `pending → cancelled` (existing terminal status — the same one
+  the promotion loop's failure path uses);
+- interaction-log `task_cancelled` row with structured reason
+  `pending_ttl_expired` (not `user_cancelled`);
+- one `audit.jsonl` row, actor **`system:pending-ttl`** (the Phase A
+  `system:completion-ready-ttl` / `system:hung-task-reaper` convention), with
+  `pendingForMs`, the effective TTL, and `parentTaskId` when set;
+- issue-claim release, attention-queue purge, `onTaskOutcome('cancelled')`;
+- one summary `alert` per sweep (severity `warning`), not one per task.
+
+**Parented/chain tasks are NOT exempt.** A queued child (`parentTaskId` set)
+of a live parent expires exactly like a detached task — a starving successor
+holds queue depth just the same. A self-continuation chain that relies on a
+queued successor must treat the `cancelled` outcome as "respawn me": the
+audit row and the `onTaskOutcome` notification both carry the task id, and an
+idempotency-key relaunch is safe (a terminal task that never ran is
+deliberately not replayed — see Phase B's `isReplayableTask`).
+
+## 3. Per-source spawn budget (`spawnBurstLimit` / `spawnBurstWindowMinutes`)
+
+Sliding-window rate limit on task **creation**, bucketed per launch source
+(`cli`, `api`, `ui`, `websocket`, `remote-chat-telegram`, `remote-relay`).
+When the Phase B `X-Kookr-Actor` header is present on `POST /api/tasks`, the
+bucket is actor-qualified (`api:actor:lucy-supervisor`), so an attributed
+supervisor burns its own budget instead of sharing — or exhausting — the
+anonymous `api` bucket.
+
+Exceeding the budget rejects with the same 429-with-ledger shape under the
+distinct code **`spawn_burst_limit`**, plus `source`, `limit`, `windowMs`,
+`retryAfterMs`, and a `Retry-After` header. A rejected attempt does not burn
+budget, so a backed-off caller recovers as soon as the window slides.
+
+**Schedule-fired launches are exempt** (`launchSource: 'schedule'`), on
+purpose: schedules are operator-configured cadence already bounded by
+per-schedule coalescing (at most one outstanding queued fire, Phase A) and
+watched by the dead-man starvation switch (Phase C). A "burst" of schedule
+fires means schedule configuration, not a runaway caller — rate-limiting them
+would convert planned periodic work into `dispatch_failed` noise while the
+real fix is editing the schedules. Dedup / idempotent replays also consume no
+budget (they create nothing).
+
+The limiter is in-memory; a restart resets every window (errs toward
+accepting work, same trade as launch reservations).
+
+## 4. Promotion posture guard (anti-re-wedge, FM11)
+
+`promotePendingTasks` picks FIFO by `createdAt` — unchanged whenever more
+than one slot is free. When a promotion would fill the **last** free slot,
+the pick prefers (stable-sort first — never skips) pendings that can
+**self-release** the slot:
+
+- `autoCloseOnSignal: true` tasks (auto-complete after the completion-ready
+  grace period), or
+- schedule-fired tasks (`metadata.launchSource === 'schedule'` — supervised
+  by schedule coalescing/staleness/dead-man recovery).
+
+Ask-first / no-autoclose tasks park in `finishedAwaitingAck` until a human
+clicks — promoting one into the last slot is exactly how the incident's cap
+re-wedged. This is a pure ordering preference with **no starvation**: if only
+ask-first tasks are pending, the oldest still promotes into the last slot.
+
+## Error shape summary
+
+```jsonc
+// 429, code "pending_queue_full"
+{
+  "error": "Pending queue is full (24/24 queued, 10/10 active) — …",
+  "code": "pending_queue_full",
+  "capacity": { "maxActiveTasks": 10, "active": 10, "free": 0,
+                "byClass": { "working": 2, "finishedAwaitingAck": 7,
+                              "hungSuspect": 1, "launching": 0 },
+                "pendingQueueDepth": 24, "oldestPendingAgeMs": 123456,
+                "oldestFinishedAwaitingAckAgeMs": 654321 },
+  "maxPendingTasks": 24
+}
+
+// 429, code "spawn_burst_limit" (+ Retry-After header)
+{
+  "error": "Spawn burst limit reached for source \"api:actor:lucy\" — …",
+  "code": "spawn_burst_limit",
+  "capacity": { /* same ledger shape */ },
+  "source": "api:actor:lucy",
+  "limit": 30,
+  "windowMs": 600000,
+  "retryAfterMs": 421337
+}
+```

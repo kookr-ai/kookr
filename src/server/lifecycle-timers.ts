@@ -33,6 +33,7 @@ import {
   planAndPruneMaintenance,
   type MaintenancePruneResult,
 } from '../core/maintenance-prune.js';
+import { listExpiredPendingTasks } from '../core/pending-task-ttl.js';
 import { appendAuditRow } from '../core/audit-log.js';
 import { nowISO } from '../core/interaction-log.js';
 import { DEFAULT_HUNG_TASK_REAP_MS, evaluateHungTaskReap } from '../core/hung-task-reaper.js';
@@ -79,6 +80,12 @@ export interface TimerDeps {
   getCompletionReadyTtlMs?: () => number;
   /** Path to the shared audit.jsonl log — threaded to the completion-ready sweep and hung-task reaper for system-actor audit rows. */
   auditLogPath?: string;
+  /**
+   * Live getter for the pending-task TTL, in milliseconds (issue #1526
+   * Phase C / C3, `pendingTaskTtlMinutes` setting). Read on every liveness
+   * tick. Falls back to the module default when absent (older wiring/tests).
+   */
+  getPendingTaskTtlMs?: () => number;
   /** Kookr data-dir "reports" directory. Hung-task reap writes a markdown evidence report here. */
   reportsDir?: string;
   /** Live getter — hung-task reaper enabled flag (issue #1526 Phase A). Defaults to enabled when absent. */
@@ -481,6 +488,113 @@ function isActiveRalphLoop(task: Task): boolean {
   return task.ralphLoop?.status === 'running' || task.ralphLoop?.status === 'paused';
 }
 
+export interface ExpirePendingTasksDeps {
+  taskStore: TaskStore;
+  /** Optional lifecycle context — supplies queue purge, claim release, interaction log, and onTaskOutcome. */
+  lifecycleDeps?: LifecycleDeps;
+  /** Path to the shared audit.jsonl log — every expiry writes a `system:pending-ttl` row. */
+  auditLogPath?: string;
+  /** Optional broadcast for the sweep-summary alert — reuses the existing 'alert' channel. */
+  broadcastToAll?: (msg: ServerMessage) => void;
+}
+
+export interface ExpirePendingTasksResult {
+  expiredTaskIds: string[];
+}
+
+/**
+ * Expire pending tasks past the TTL (issue #1526 Phase C / C3). Runs on the
+ * liveness tick. Each expired task is cancelled through the existing
+ * `pending → cancelled` transition — the same terminal status the promotion
+ * loop's failure path uses — with:
+ *
+ * - an interaction-log `task_cancelled` row, reason `pending_ttl_expired`
+ *   (structured reason; NOT `user_cancelled` — nobody clicked anything);
+ * - an `audit.jsonl` row, actor `system:pending-ttl` (the convention Phase A's
+ *   `system:completion-ready-ttl` / `system:hung-task-reaper` established);
+ * - issue-claim release + attention-queue purge (a pending task holds no
+ *   sessions, leases, or worktrees, so the full lifecycle cancel is not
+ *   needed);
+ * - `onTaskOutcome(id, { kind: 'cancelled' })` so chain supervisors observe
+ *   the drop.
+ *
+ * One summary alert per sweep (not per task) keeps a full-queue expiry from
+ * flooding the alert channel. No per-tick cap: expiring a pending task tears
+ * down no session and broadcasts nothing per-task, so even a maximal sweep
+ * (200 tasks) is cheap — unlike the completion-ready drain this deliberately
+ * does not throttle.
+ */
+export async function expirePendingTasks(
+  deps: ExpirePendingTasksDeps,
+  opts: { now?: Date; ttlMs?: number } = {},
+): Promise<ExpirePendingTasksResult> {
+  const now = opts.now ?? new Date();
+  const entries = listExpiredPendingTasks(deps.taskStore.listTasks(), {
+    now,
+    ttlMs: opts.ttlMs,
+    hasFreshLaunchReservation: (id) => deps.taskStore.hasFreshLaunchReservation(id),
+  });
+
+  const expiredTaskIds: string[] = [];
+  for (const { task, pendingForMs } of entries) {
+    try {
+      deps.taskStore.cancelTask(task.id);
+    } catch (err) {
+      // Raced a promoter or a user cancel — skip; the task is no longer
+      // (only) pending, so it is somebody else's to finish.
+      console.warn(
+        `[pending-ttl] could not expire task ${task.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+      continue;
+    }
+    expiredTaskIds.push(task.id);
+    console.warn(
+      `[pending-ttl] expired pending task ${task.id} — queued ${Math.round(pendingForMs / 60_000)}m without launching`,
+    );
+
+    deps.lifecycleDeps?.queue?.purgeTask(task.id);
+    deps.lifecycleDeps?.issueClaimRegistry?.safeReleaseAllFor(task.id, 'released');
+    try {
+      deps.lifecycleDeps?.onTaskOutcome?.(task.id, { kind: 'cancelled' });
+    } catch (err) {
+      console.warn('[pending-ttl] onTaskOutcome threw:', err);
+    }
+
+    await deps.lifecycleDeps?.interactionLog?.append({
+      type: 'task_cancelled',
+      taskId: task.id,
+      agentId: '',
+      reason: 'pending_ttl_expired',
+      durationMs: pendingForMs,
+      timestamp: nowISO(),
+    });
+    await appendAuditRow(deps.auditLogPath, {
+      type: 'task.pendingTtlExpired',
+      timestamp: nowISO(),
+      actor: 'system:pending-ttl',
+      taskId: task.id,
+      pendingForMs,
+      ...(opts.ttlMs !== undefined ? { ttlMs: opts.ttlMs } : {}),
+      ...(task.parentTaskId ? { parentTaskId: task.parentTaskId } : {}),
+    });
+  }
+
+  if (expiredTaskIds.length > 0) {
+    deps.broadcastToAll?.({
+      type: 'alert',
+      agentId: '',
+      summary: `Expired ${expiredTaskIds.length} pending task(s) (TTL)`,
+      details:
+        'These tasks waited in the pending queue past pendingTaskTtlMinutes without ever launching ' +
+        'and were cancelled to free queue depth. Relaunch any that are still wanted.',
+      severity: 'warning',
+    });
+  }
+
+  return { expiredTaskIds };
+}
+
 /**
  * Check one agent for hung-task reap eligibility and act if so (issue #1526
  * Phase A / FM6). Callers MUST only invoke this when the watchdog's tick for
@@ -866,6 +980,25 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         },
       );
 
+      // Pending-task TTL sweep (issue #1526 Phase C / C3): expire tasks that
+      // have starved in the queue past the TTL, freeing depth for the 429
+      // depth limit. interactionLog rides in from agentLifecycleDeps — the
+      // tick's own lifecycleDeps deliberately omits it for session paths.
+      const pendingTtlResult = await expirePendingTasks(
+        {
+          taskStore,
+          lifecycleDeps: {
+            ...lifecycleDeps,
+            ...(deps.agentLifecycleDeps?.interactionLog
+              ? { interactionLog: deps.agentLifecycleDeps.interactionLog }
+              : {}),
+          },
+          auditLogPath: deps.auditLogPath,
+          broadcastToAll: deps.broadcastToAll,
+        },
+        { ttlMs: deps.getPendingTaskTtlMs?.() },
+      );
+
       // Release issue-ownership claims for reconcile-driven terminal
       // transitions. reconcile() calls the RAW TaskStore methods, bypassing
       // the agent-lifecycle wrappers, so this additive call is where claims
@@ -915,6 +1048,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         || result.worktreesStale.length > 0
         || result.worktreesChanged.length > 0
         || autoCloseResult.closedTaskIds.length > 0
+        || pendingTtlResult.expiredTaskIds.length > 0
       ) {
         // Promote pending tasks when slots open from auto-transitioned sessions
         // (completed via backfill, or terminated via the new dead-session path).

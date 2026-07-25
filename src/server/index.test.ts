@@ -1585,7 +1585,9 @@ describe('createKookrServer', () => {
       expect(res2.status).toBe(201);
       const second = await res2.json();
       expect(second.id).not.toBe(first.id);
-      expect(second.metadata).toEqual({ intent: 'keep_as_duplicate' });
+      // launchSource is stamped alongside the intent (issue #1526 Phase C /
+      // C3) — this request carried X-Kookr-Launch-Source: cli.
+      expect(second.metadata).toEqual({ intent: 'keep_as_duplicate', launchSource: 'cli' });
 
       const listRes = await fetch(`${baseUrl}/api/tasks`);
       const tasks = await listRes.json();
