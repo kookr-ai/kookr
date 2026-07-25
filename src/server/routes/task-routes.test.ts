@@ -2337,3 +2337,96 @@ describe('GET /api/tasks/:id/tail (rfc-task-tail-retrieval)', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('GET /api/tasks list filters & pagination (issue #1526 Phase C / C2)', () => {
+  function seedListStore(): { taskStore: TaskStore; ids: string[] } {
+    const taskStore = new TaskStore();
+    const ids: string[] = [];
+    // t0: completed, old updatedAt
+    const t0 = taskStore.createTask('First task prompt', '/repo');
+    taskStore.addSession(t0.id, { tmuxSession: 'list-0', agentType: 'claude-code', cwd: '/repo', createdAt: new Date() });
+    taskStore.completeTask(t0.id);
+    taskStore.getTaskForMutation(t0.id)!.updatedAt = new Date('2026-07-01T00:00:00Z');
+    ids.push(t0.id);
+    // t1: inProgress, recent updatedAt
+    const t1 = taskStore.createTask('Second task prompt', '/repo');
+    taskStore.addSession(t1.id, { tmuxSession: 'list-1', agentType: 'claude-code', cwd: '/repo', createdAt: new Date() });
+    taskStore.getTaskForMutation(t1.id)!.updatedAt = new Date('2026-07-24T00:00:00Z');
+    ids.push(t1.id);
+    // t2: completed, recent updatedAt
+    const t2 = taskStore.createTask('Third task prompt', '/repo');
+    taskStore.addSession(t2.id, { tmuxSession: 'list-2', agentType: 'claude-code', cwd: '/repo', createdAt: new Date() });
+    taskStore.completeTask(t2.id);
+    taskStore.getTaskForMutation(t2.id)!.updatedAt = new Date('2026-07-25T00:00:00Z');
+    ids.push(t2.id);
+    return { taskStore, ids };
+  }
+
+  test('no params: response is byte-identical to the unfiltered listing and carries no X-Total-Count', async () => {
+    const { taskStore } = seedListStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const res = await app.request('/api/tasks');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('X-Total-Count')).toBeNull();
+    const body = await res.text();
+
+    // Same store, same route, second request — deterministic and full.
+    const again = await (await app.request('/api/tasks')).text();
+    expect(body).toBe(again);
+    expect((JSON.parse(body) as unknown[]).length).toBe(3);
+    // Full view still ships prompts (unchanged default shape).
+    expect(body).toContain('First task prompt');
+  });
+
+  test('status filter keeps only matching tasks, preserving order', async () => {
+    const { taskStore, ids } = seedListStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const rows = await (await app.request('/api/tasks?status=completed')).json();
+    expect(rows.map((r: { id: string }) => r.id)).toEqual([ids[0], ids[2]]);
+  });
+
+  test('since filter keeps tasks with updatedAt >= since', async () => {
+    const { taskStore, ids } = seedListStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const rows = await (await app.request('/api/tasks?since=2026-07-20T00:00:00Z')).json();
+    expect(rows.map((r: { id: string }) => r.id)).toEqual([ids[1], ids[2]]);
+  });
+
+  test('limit/offset slice the listing and expose X-Total-Count', async () => {
+    const { taskStore, ids } = seedListStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const res = await app.request('/api/tasks?limit=1&offset=1');
+    expect(res.headers.get('X-Total-Count')).toBe('3');
+    const rows = await res.json();
+    expect(rows.map((r: { id: string }) => r.id)).toEqual([ids[1]]);
+  });
+
+  test('filters combine (status + since + limit) and count reflects the filtered set', async () => {
+    const { taskStore, ids } = seedListStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const res = await app.request('/api/tasks?status=completed&since=2026-07-20T00:00:00Z&limit=5');
+    expect(res.headers.get('X-Total-Count')).toBe('1');
+    const rows = await res.json();
+    expect(rows.map((r: { id: string }) => r.id)).toEqual([ids[2]]);
+  });
+
+  test('filters apply to the compact view too, and compact=true aliases view=compact', async () => {
+    const { taskStore, ids } = seedListStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const rows = await (await app.request('/api/tasks?compact=true&status=completed')).json();
+    expect(rows.map((r: { id: string }) => r.id)).toEqual([ids[0], ids[2]]);
+    // Compact rows omit the heavy prompt body.
+    expect(JSON.stringify(rows)).not.toContain('First task prompt');
+  });
+
+  test('malformed params return 400 rather than the full listing', async () => {
+    const { taskStore } = seedListStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    for (const qs of ['limit=0', 'limit=abc', 'offset=-1', 'status=bogus', 'since=not-a-date']) {
+      const res = await app.request(`/api/tasks?${qs}`);
+      expect(res.status, qs).toBe(400);
+      const body = await res.json();
+      expect(body.error, qs).toBeDefined();
+    }
+  });
+});

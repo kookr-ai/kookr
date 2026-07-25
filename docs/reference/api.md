@@ -65,7 +65,7 @@ IP addresses.
 
 | Endpoint | Description |
 | --- | --- |
-| `GET /api/tasks` | All tasks with sessions. `?view=compact` returns a lighter list projection (see below) |
+| `GET /api/tasks` | All tasks with sessions. `?view=compact` (alias `?compact=true`) returns a lighter list projection; optional `status`/`since`/`limit`/`offset` filters (see below) |
 | `GET /api/tasks/:id` | A single task by id — always full detail including `prompt` (404 with `{"error": "Task not found"}` for unknown ids) |
 | `GET /api/tasks/:id/tail` | Bounded terminal output tail for a task — live ring while in progress, durable persisted tail after completion (see below) |
 | `GET /api/tasks/completion-ready/stale` | List stale `completion_ready` signals and whether each can be auto-closed |
@@ -140,6 +140,38 @@ The default (no `view` param, or any value other than `compact`) is unchanged, s
 existing clients keep receiving the full list. When a client needs the full
 detail for one task — e.g. to relaunch it with its original prompt — fetch
 `GET /api/tasks/:id`, which always returns the complete task.
+
+`?compact=true` is accepted as an alias for `?view=compact`.
+
+### `GET /api/tasks` list filters & pagination
+
+`GET /api/tasks` (both the full and compact views) accepts optional, additive
+query params (issue #1526 Phase C / C2 payload diet):
+
+| Param | Meaning |
+| --- | --- |
+| `status` | Keep only tasks with this exact status (`open`, `pending`, `inProgress`, `completed`, `terminated`, `cancelled`) |
+| `since` | ISO 8601 date/time — keep only tasks with `updatedAt >= since` |
+| `limit` | Positive integer — return at most this many tasks (applied after filtering) |
+| `offset` | Non-negative integer — skip this many tasks before applying `limit` |
+
+Filters preserve the store's listing order; `offset`/`limit` slice the filtered
+list. When `limit` or `offset` is present, the response carries an
+`X-Total-Count` header with the post-filter, pre-slice match count so pagers can
+render page controls without a second request.
+
+**Backward compatibility:** with none of these params the response is
+byte-identical to the historical full (or compact) listing — Lucy and the CLI
+keep consuming it unpaginated. A malformed value (non-integer `limit`/`offset`,
+unknown `status`, unparseable `since`) returns `400 {"error": ...}` rather than
+silently returning the full multi-megabyte list.
+
+Examples:
+
+```
+GET /api/tasks?status=completed&since=2026-07-18T00:00:00Z&view=compact
+GET /api/tasks?limit=50&offset=100
+```
 
 ### `POST /api/tasks` body fields
 

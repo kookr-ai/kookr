@@ -18,6 +18,7 @@ import { MAX_IDEMPOTENCY_KEY_LENGTH } from '../../shared/contracts/launch.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import { LAUNCH_DEPENDENCIES, type LaunchDependency } from '../../core/playbook.js';
 import type { SessionInfo, Task, TaskStore, TokenUsage } from '../../core/tasks.js';
+import type { TaskStatus } from '../../core/task-status.js';
 import type { TaskDependencyEdge, TaskMetadataIntent } from '../../shared/contracts/task.js';
 import { normalizeTerminalWorktreeHealth } from '../../core/worktree-health.js';
 import { readEvolutionRunProjection } from '../../core/evolution-summary.js';
@@ -119,11 +120,34 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   // launchHealthSummary) while keeping the id/status/session-health/token/timeline
   // fields a list needs. The full detail — including prompt — stays available via
   // GET /api/tasks/:id. Default remains the full list for backward compatibility.
+  //
+  // Optional list filters + pagination (issue #1526 Phase C / C2 payload diet):
+  // `status=<TaskStatus>`, `since=<ISO date>` (updatedAt >= since), `limit`,
+  // `offset`. All additive: with none of them present the response is
+  // byte-identical to the historical full listing (Lucy and the CLI consume it
+  // unpaginated). When `limit`/`offset` are present, the pre-slice match count
+  // is exposed via the `X-Total-Count` response header so pagers can render
+  // page controls without a second request.
   app.get('/api/tasks', (c) => {
     const attentionDeps = { queue: deps.queue, watchdog: deps.watchdog };
-    if (c.req.query('view') === 'compact') {
+    const listQuery = parseTaskListQuery({
+      limit: c.req.query('limit'),
+      offset: c.req.query('offset'),
+      status: c.req.query('status'),
+      since: c.req.query('since'),
+    });
+    if (listQuery instanceof Error) return c.json({ error: listQuery.message }, 400);
+    const paginated = listQuery.limit !== undefined || listQuery.offset !== undefined;
+
+    const selectTasks = (): Task[] => {
+      const filtered = filterTaskList(taskStore.listTasks(), listQuery);
+      if (paginated) c.header('X-Total-Count', String(filtered.length));
+      return sliceTaskList(filtered, listQuery);
+    };
+
+    if (c.req.query('view') === 'compact' || c.req.query('compact') === 'true') {
       const now = Date.now();
-      const compact = taskStore.listTasks()
+      const compact = selectTasks()
         .map((t) => toCompactApiTask(t, taskStore))
         .map((t) => attachStuckReason(t, attentionDeps, now));
       if (!deps.suppressionTracker) return c.json(compact);
@@ -131,7 +155,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       return c.json(compact.map((t) => withSuppressionFlag(t, tracker)));
     }
     const now = Date.now();
-    const tasks = taskStore.listTasks()
+    const tasks = selectTasks()
       .map(normalizeTaskForApi)
       .map((t) => attachAggregateTokenUsage(t, taskStore))
       .map((t) => attachStuckReason(t, attentionDeps, now));
@@ -906,6 +930,80 @@ function toCompactApiTask(task: Task, store: TaskStore): CompactApiTask {
       relaunchCount: session.relaunchCount,
     })),
   };
+}
+
+/** Statuses accepted by the `status` list filter — the full TaskStatus union. */
+const TASK_LIST_STATUSES: ReadonlySet<string> = new Set([
+  'open', 'pending', 'inProgress', 'completed', 'terminated', 'cancelled',
+] satisfies TaskStatus[]);
+
+interface TaskListQuery {
+  limit?: number;
+  offset?: number;
+  status?: TaskStatus;
+  since?: Date;
+}
+
+/**
+ * Parse + validate the optional GET /api/tasks list-filter query params
+ * (issue #1526 Phase C / C2). Returns an Error (mapped to a 400 by the route)
+ * on any malformed value rather than silently ignoring it — a typo'd filter
+ * must not quietly return the full 20+ MB listing.
+ */
+export function parseTaskListQuery(raw: {
+  limit?: string;
+  offset?: string;
+  status?: string;
+  since?: string;
+}): TaskListQuery | Error {
+  const query: TaskListQuery = {};
+  if (raw.limit !== undefined) {
+    if (!/^\d+$/.test(raw.limit) || Number(raw.limit) < 1) {
+      return new Error('limit must be a positive integer');
+    }
+    query.limit = Number(raw.limit);
+  }
+  if (raw.offset !== undefined) {
+    if (!/^\d+$/.test(raw.offset)) {
+      return new Error('offset must be a non-negative integer');
+    }
+    query.offset = Number(raw.offset);
+  }
+  if (raw.status !== undefined) {
+    if (!TASK_LIST_STATUSES.has(raw.status)) {
+      return new Error(`status must be one of: ${[...TASK_LIST_STATUSES].join(', ')}`);
+    }
+    query.status = raw.status as TaskStatus;
+  }
+  if (raw.since !== undefined) {
+    const parsed = Date.parse(raw.since);
+    if (Number.isNaN(parsed)) {
+      return new Error('since must be an ISO 8601 date');
+    }
+    query.since = new Date(parsed);
+  }
+  return query;
+}
+
+/**
+ * Apply the `status` / `since` filters, preserving the store's listing order.
+ * Identity-preserving when no filter is set so the no-params response stays
+ * byte-identical to the historical full listing.
+ */
+export function filterTaskList(tasks: Task[], query: TaskListQuery): Task[] {
+  if (query.status === undefined && query.since === undefined) return tasks;
+  return tasks.filter((task) => {
+    if (query.status !== undefined && task.status !== query.status) return false;
+    if (query.since !== undefined && task.updatedAt.getTime() < query.since.getTime()) return false;
+    return true;
+  });
+}
+
+/** Apply `offset`/`limit` over the (filtered) listing order. */
+export function sliceTaskList(tasks: Task[], query: TaskListQuery): Task[] {
+  if (query.offset === undefined && query.limit === undefined) return tasks;
+  const start = query.offset ?? 0;
+  return tasks.slice(start, query.limit !== undefined ? start + query.limit : undefined);
 }
 
 function normalizeTaskForApi(task: Task): ApiTask {
