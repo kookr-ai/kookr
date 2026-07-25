@@ -558,6 +558,50 @@ export interface PromotionDeps {
 }
 
 /**
+ * Whether a pending task can be expected to release its slot without a human
+ * (issue #1526 Phase C / C3, promotion posture guard). Two shapes qualify:
+ *
+ * - `autoCloseOnSignal: true` — the task auto-completes after its
+ *   completion-ready signal's grace period, no manual ack needed;
+ * - schedule-fired launches (`metadata.launchSource === 'schedule'`) — they
+ *   run under schedule supervision (coalescing, blocking-task staleness gate,
+ *   dead-man alerting), so a wedged one is detected and recovered without a
+ *   human ack.
+ *
+ * Everything else (ask-first / no-autoclose tasks) parks in
+ * `finishedAwaitingAck` until a human clicks — exactly the class that
+ * re-wedged the cap in the 2026-07-24 incident (FM11).
+ */
+function isSelfReleasingPending(task: Pick<Task, 'autoCloseOnSignal' | 'metadata'>): boolean {
+  return task.autoCloseOnSignal === true || task.metadata?.launchSource === 'schedule';
+}
+
+/**
+ * Pick the next pending task to promote (issue #1526 Phase C / C3, FM11
+ * anti-re-wedge). With more than one free slot this is plain FIFO — identical
+ * to the old `getNextPending()` behavior. When promoting would fill the LAST
+ * free slot, self-releasing pendings (see {@link isSelfReleasingPending}) are
+ * PREFERRED: the FIFO order is stable-sorted with self-releasing tasks first,
+ * never skipping anyone. In the incident, freed slots were instantly refilled
+ * by FIFO promotion of ask-first pendings that then parked awaiting ack,
+ * re-wedging the cap; this preference keeps the last slot cycling.
+ *
+ * Pure ordering preference — NO starvation: if only ask-first tasks are
+ * pending, the oldest one still promotes into the last slot exactly as
+ * before.
+ */
+export function pickNextPendingForPromotion(taskStore: TaskStore, freeSlots: number): Task | undefined {
+  if (freeSlots > 1) return taskStore.getNextPending();
+  // Last free slot: FIFO within each posture class, self-releasing first.
+  const eligible = taskStore
+    .listTasks({ status: 'pending' })
+    .filter((task) => !taskStore.hasFreshLaunchReservation(task.id))
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  if (eligible.length === 0) return undefined;
+  return eligible.find(isSelfReleasingPending) ?? eligible[0];
+}
+
+/**
  * Promote pending tasks to inProgress up to the concurrency limit.
  * Called after task completion, cancellation, and on startup after reconciliation.
  * Returns the number of tasks promoted.
@@ -568,8 +612,12 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
   let promoted = 0;
   const seen = new Set<string>();
 
-  while (taskStore.getActiveCount() < maxActive) {
-    const pending = taskStore.getNextPending();
+  for (;;) {
+    const activeCount = taskStore.getActiveCount();
+    if (!(activeCount < maxActive)) break;
+    // Posture guard (issue #1526 Phase C / C3): the pick prefers
+    // self-releasing tasks when this promotion would fill the last free slot.
+    const pending = pickNextPendingForPromotion(taskStore, maxActive - activeCount);
     if (!pending) break;
 
     // Safety: prevent infinite loop if a task stays pending after launch
