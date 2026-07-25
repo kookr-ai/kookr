@@ -6,7 +6,15 @@ import type { UserInputDeliverySource } from '../shared/contracts/user-input-del
 // --- Interaction event types ---
 
 export type InteractionEvent =
-  | { type: 'user_input'; agentId: string; content: string; timestamp: string; source?: UserInputDeliverySource }
+  | {
+      type: 'user_input';
+      agentId: string;
+      content: string;
+      timestamp: string;
+      source?: UserInputDeliverySource;
+      /** Attributed caller id for API-driven input (issue #1526 Phase B — see server/actor-attribution.ts). */
+      actor?: string;
+    }
   | { type: 'agent_selected'; agentId: string; source: 'auto' | 'manual'; timestamp: string }
   | { type: 'finding_skipped'; agentId: string; anomalyType: AnomalyType; timestamp: string }
   | { type: 'finding_snoozed'; agentId: string; durationMs: number; anomalyType?: AnomalyType; timestamp: string }

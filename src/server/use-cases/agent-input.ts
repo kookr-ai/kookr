@@ -15,6 +15,8 @@ export async function sendDirectAgentInput(
   deps: BaseInputDeps,
   agentId: string,
   input: string,
+  /** Attributed caller id (issue #1526 Phase B — see actor-attribution.ts). Optional so existing callers stay unchanged. */
+  actor?: string,
 ): Promise<DirectAgentInputResult> {
   await deps.adapter.sendInput(agentId, input);
 
@@ -24,6 +26,7 @@ export async function sendDirectAgentInput(
     agentId,
     content: input,
     timestamp,
+    ...(actor ? { actor } : {}),
   });
 
   return { timestamp };

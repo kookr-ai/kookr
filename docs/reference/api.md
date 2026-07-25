@@ -70,9 +70,10 @@ IP addresses.
 | `GET /api/tasks/:id/tail` | Bounded terminal output tail for a task — live ring while in progress, durable persisted tail after completion (see below) |
 | `GET /api/tasks/completion-ready/stale` | List stale `completion_ready` signals and whether each can be auto-closed |
 | `POST /api/tasks` | Create and launch a new task |
-| `POST /api/tasks/:id/complete` | Mark a finished task `completed` (non-destructive), tear down its idle session, and apply the saved worktree-cleanup policy |
+| `POST /api/tasks/:id/complete` | Mark a finished task `completed` (non-destructive), tear down its idle session, and apply the saved worktree-cleanup policy. Supervisor endpoint — see below |
 | `POST /api/tasks/:id/signal` | Raise an agent → user signal (e.g. `completion_ready`); schedules delayed auto-completion when the task opted into `autoCloseOnSignal` |
-| `POST /api/tasks/abort` | Idempotent batch abort: cancel the given `taskIds` (with an optional operator `reason`), interrupting each live session. Returns a per-task result (`aborted`/`already_terminal`/`not_found`/`failed`) and a summary; retries are safe |
+| `POST /api/tasks/abort` | Idempotent batch abort: cancel the given `taskIds` (with an optional operator `reason`), interrupting each live session. Returns a per-task result (`aborted`/`already_terminal`/`not_found`/`failed`) and a summary; retries are safe. Supervisor endpoint — see below |
+| `POST /api/tasks/completion-ready/ack-all` | Complete every stale `completion_ready` task in one call (`{"force": true}` to ignore auto-close policy). Supervisor endpoint — see below |
 | `POST /api/tasks/:taskId/sessions/:sessionId/reconnect-transport` | Safely rebuild only Kookr's internal dtach attach child for a session — verifies the dtach master pid + socket identity, preserves the agent + master pids and the ring/subscribers, and never writes terminal input or relaunches the agent. `200` on success/inconclusive, `429` on cooldown/retry-cap, `409` on identity/socket/unknown-session, `501` if the backend has no reconnect support, `502` if the fresh attach cannot be opened |
 | `DELETE /api/tasks/:id` | Stop and remove a task |
 | `POST /api/agents/:id/message` | Send a message or hint to a running agent |
@@ -241,6 +242,11 @@ logical *request*, independent of its prompt content.
 
 ### `POST /api/tasks/:id/complete`
 
+A [supervisor endpoint](#supervisor-surface): gated by `KOOKR_SUPERVISOR_TOKEN`
+when set, and every outcome is attributed via the optional `X-Kookr-Actor`
+header into `audit.jsonl` (see [Actor attribution and the supervisor
+token](#actor-attribution-and-the-supervisor-token)).
+
 Non-destructive way to mark a finished task terminal, distinct from
 `DELETE` (which removes the task) and from cancel/kill (which carries
 abort semantics). Transitions an `inProgress` task to `completed` and
@@ -328,6 +334,58 @@ Success returns `200` with schema
 Each entry includes the task, the stored signal, `ageMs`, `canAutoClose`, and,
 when `canAutoClose` is false, `manualActionRequiredReason`.
 
+### `POST /api/tasks/completion-ready/ack-all`
+
+A [supervisor endpoint](#supervisor-surface) (issue #1526 Phase B): completes
+every task currently listed by
+[`GET /api/tasks/completion-ready/stale`](#get-apitaskscompletion-readystale)
+in one call — the "drain the backlog" verb for an operator or supervising
+agent who needs to unblock several wedged `completion_ready` tasks at once
+instead of calling `POST /api/tasks/:id/complete` one id at a time.
+
+Body (all fields optional):
+
+- `force` (boolean, default `false`): when `false`, only entries the GET
+  endpoint reports as `canAutoClose: true` are completed. When `true`, every
+  stale entry is completed regardless of auto-close policy — an explicit
+  "unlock everything" escape hatch.
+- `thresholdMs`: same meaning as the GET endpoint's query parameter (minimum
+  signal age in milliseconds; defaults to one hour).
+
+An empty or omitted body is valid and defaults to `force: false`.
+
+Success returns `200`:
+
+```json
+{
+  "force": false,
+  "results": [
+    { "taskId": "abc123", "outcome": "completed", "status": "completed" },
+    { "taskId": "def456", "outcome": "already_terminal", "status": "cancelled" }
+  ],
+  "summary": {
+    "matched": 2, "completed": 1, "already_terminal": 1,
+    "partial_ralph_completion": 0, "invalid": 0, "not_found": 0, "failed": 0
+  }
+}
+```
+
+`outcome` per task is one of `completed`, `already_terminal`,
+`partial_ralph_completion` (an active Ralph loop ends its current iteration
+only — see `POST /api/tasks/:id/complete`), `invalid`, `not_found`, or
+`failed` (unexpected error; see `error`). Each completion is audited
+individually (`task.complete` rows via the same path
+`POST /api/tasks/:id/complete` uses) plus one summary
+`task.completionReadyAckAll` audit row for the whole call, all carrying the
+resolved actor.
+
+**Pacing.** Unlike the background TTL-escalation sweep (which spaces
+completions across ticks to avoid a snapshot-broadcast storm — see
+`docs/reports/` issue #1526 Phase A), this endpoint acts immediately on every
+matched task within the request: a supervisor call needs a complete per-task
+result set back in one response. It still broadcasts the dashboard snapshot
+only once for the whole batch, not once per task.
+
 ## Issue Claims
 
 Present only when the server was started with `KOOKR_ISSUE_CLAIMS` enabled; with the flag off all three routes return `404` and clients proceed as pre-lock (RFC `rfc-issue-ownership-lock`).
@@ -340,6 +398,10 @@ Present only when the server was started with `KOOKR_ISSUE_CLAIMS` enabled; with
 
 ## Supervisor Surface
 
+Read-only diagnostics plus the mutating verbs a supervising agent (or an
+operator's emergency "unlock" path) uses to inspect and drain a stuck Kookr
+instance (issue #1526 Phase B / FM12, FM16).
+
 | Endpoint | Description |
 | --- | --- |
 | `GET /api/snapshot` | Current agent states and anomalies |
@@ -348,6 +410,50 @@ Present only when the server was started with `KOOKR_ISSUE_CLAIMS` enabled; with
 | `GET /api/capture/:sessionId` | Snapshot of the dtach session ring buffer; falls back to a persisted task tail (`source: "persisted"`) when the live ring is gone |
 | `GET /api/diagnostics/session-health` | Versioned cross-signal health snapshot for tracked sessions, including signal timestamps, attach state, browser bridge state, and coordinated-stall diagnostics |
 | `POST /api/hook-event/:sessionId` | HTTP push surface for hook events, used by Codex CLI hooks |
+| `GET /api/tasks/completion-ready/stale` | List stale `completion_ready` signals (see [above](#get-apitaskscompletion-readystale)) |
+| `POST /api/tasks/:id/complete` | Mark one task complete (see [above](#post-apitasksidcomplete)) — **token-gated** |
+| `POST /api/tasks/abort` | Idempotent batch abort (see [above](#tasks-and-agents)) — **token-gated** |
+| `POST /api/tasks/completion-ready/ack-all` | Drain the whole completion-ready backlog in one call (see [above](#post-apitaskscompletion-readyack-all)) — **token-gated** |
+
+### Actor attribution and the supervisor token
+
+Every mutating task-lifecycle route — `DELETE /api/tasks/:id`,
+`POST /api/tasks/:id/complete`, `POST /api/tasks/abort`,
+`POST /api/tasks/completion-ready/ack-all`, and `POST /api/agents/:id/message`
+— accepts an optional `X-Kookr-Actor` request header identifying the caller,
+e.g. `lucy-supervisor`, `dashboard`, `agent:<taskId>`, `cli`. The resolved
+actor is recorded in `audit.jsonl` rows (`task.deleteTask`, `task.batchAbort`,
+`task.complete`, `task.completionReadyAckAll`) and, for the message route, in
+the interaction log's `user_input` event. The WebSocket transport attributes
+the same way using its per-connection id instead of a header.
+
+The header is **optional and never rejects the request** — an absent or blank
+value records the actor as `"unattributed"` and logs one deprecation-style
+warning per source (`api` / `websocket`) per process boot, not per request.
+This is the same forensics gap the 2026-07-24 deadlock postmortem found: four
+`task.batchAbort` audit rows recorded `actor: {"source": "api"}` with no
+caller id, so it was impossible to tell from the durable trail alone who
+issued them.
+
+`KOOKR_SUPERVISOR_TOKEN` (env var, unset by default) additionally gates the
+three **token-gated** endpoints above with a bearer token, independent of the
+actor header:
+
+- Unset (default): those endpoints stay exactly as open as the rest of the
+  local-first API — no behavior change.
+- Set: callers must send `Authorization: Bearer <token>` on those routes, or
+  the server returns `401 {"error": "supervisor-unauthorized"}` with a
+  `WWW-Authenticate: Bearer` header. Comparison is constant-time. There is
+  **no loopback bypass** — unlike `KOOKR_ADMIN_TOKEN` (see [Admin / runtime
+  control](#admin--runtime-control)), a caller must present the token even
+  from localhost, since the point of this gate is to stop a misbehaving local
+  process (e.g. the incident's local-model chat loop) from freely driving
+  supervisor verbs just by running on the same box. `GET` routes are never
+  gated by this token.
+
+This is deliberately not a full auth system — no rotation, no per-caller
+tokens, no expiry. See `KOOKR_SUPERVISOR_TOKEN` in
+[Environment Variables](environment-variables.md).
 
 ### `POST /api/hook-event/:sessionId`
 
