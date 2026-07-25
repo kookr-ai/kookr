@@ -24,7 +24,12 @@ export type LessonDecisionState =
   | 'no-kb-activity';
 
 export function classifyKbCommand(command: string): KbLineKind {
-  if (command.includes('kb remember')) return 'lesson-write';
+  // `kookr lesson remember` is the spool-aware operator CLI (#1519); treat it
+  // as a lesson write so agents that use it (or the PATH shim that rewrites
+  // to it) still satisfy the #1538 completion-ready gate.
+  if (command.includes('kb remember') || command.includes('kookr lesson remember')) {
+    return 'lesson-write';
+  }
   if (command.includes(KB_LESSON_SKIP_MARKER)) return 'lesson-skip';
   if (command.includes('kb ')) return 'kb-search';
   return 'none';

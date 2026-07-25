@@ -55,6 +55,12 @@ import { ACTOR_HEADER, resolveLifecycleActor } from '../actor-attribution.js';
 import { isAuthorizedSupervisorRequest } from '../supervisor-auth.js';
 import { ackAllStaleCompletionReadyTasks } from '../use-cases/ack-all-completion-ready.js';
 import { SUPERVISOR_AUTH_HEADER } from '../../shared/contracts/supervisor-actions.js';
+import {
+  evaluateLessonDecisionGate,
+  hooksDirFromKookrDir,
+  isLessonDecisionGateEnabled,
+  resolveTaskLessonDecision,
+} from '../../core/lesson-decision.js';
 
 const MAX_TASK_EDGE_COUNT = 64;
 const MAX_TASK_EDGE_LENGTH = 240;
@@ -651,6 +657,37 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       const normalized = normalizeSignalNote(body.note);
       truncated = normalized.truncated;
       if (normalized.note) note = normalized.note;
+    }
+
+    // Issue #1538: completion-ready is a lifecycle step that requires a
+    // post-task lesson decision (kb remember OR explicit skip marker) visible
+    // in the task's Bash hook trail. Without this gate the learning flywheel
+    // goes silent even when the KB spool is healthy. Fail-open when the task
+    // has never launched (0 sessions) so unit fixtures and pre-launch paths
+    // keep working; fail-closed once a session exists.
+    if (body.kind === 'completion_ready' && isLessonDecisionGateEnabled()) {
+      const hooksDir = deps.kookrDir
+        ? hooksDirFromKookrDir(deps.kookrDir)
+        : undefined;
+      if (hooksDir) {
+        const resolved = await resolveTaskLessonDecision(task, hooksDir);
+        const gate = evaluateLessonDecisionGate({
+          sessionsScanned: resolved.sessionsScanned,
+          decision: resolved.decision,
+        });
+        if (!gate.allow) {
+          return c.json(
+            {
+              error: gate.reason,
+              code: gate.code,
+              decision: gate.decision,
+              hint: gate.hint,
+              counts: resolved.counts,
+            },
+            409,
+          );
+        }
+      }
     }
 
     const signal: PendingAgentSignal = {

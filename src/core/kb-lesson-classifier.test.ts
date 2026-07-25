@@ -11,6 +11,9 @@ describe('classifyKbCommand', () => {
       'lesson-write',
     );
     expect(
+      classifyKbCommand('kookr lesson remember --title="x" --stdin --yes'),
+    ).toBe('lesson-write');
+    expect(
       classifyKbCommand('cat <<EOF | kb remember --kb=agent-task-lessons --stdin --yes\n...\nEOF'),
     ).toBe('lesson-write');
     expect(classifyKbCommand('cd /repo && kb remember --kb=agent-task-lessons --stdin --yes')).toBe(

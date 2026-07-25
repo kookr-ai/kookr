@@ -5,6 +5,10 @@ to evaporate: `kb remember` failed, the playbook moved on, and the
 `agent-task-lessons` flywheel went dark. Kookr now write-behinds those lessons
 to a durable local spool and replays them when KB recovers.
 
+> **Companion:** the spool only covers write durability. The **authoring
+> trigger** — requiring a lesson or explicit skip before `completion-ready` —
+> is issue #1538: see [lesson-decision-gate.md](./lesson-decision-gate.md).
+
 ## Paths
 
 | Path | Role |

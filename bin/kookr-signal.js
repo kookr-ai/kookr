@@ -182,6 +182,9 @@ async function postSignal({ baseUrl, taskId, kind, note, signalId }) {
       kind: 'rejected',
       status: res.status,
       message: json?.error ?? (text || `HTTP ${res.status}`),
+      code: typeof json?.code === 'string' ? json.code : undefined,
+      hint: typeof json?.hint === 'string' ? json.hint : undefined,
+      decision: typeof json?.decision === 'string' ? json.decision : undefined,
     };
   }
   return {
@@ -429,25 +432,43 @@ async function main({
   if (result.kind === 'rejected') {
     if (isPermanentRejection(result.status)) {
       // Drop from outbox so we don't retry a doomed signal forever.
+      // Includes lesson_decision_required (409) — agent must emit a decision
+      // then re-signal; retrying the same outbox entry would loop forever.
       try {
         await outbox.removeSignalOutboxEntry(spoolDir, signalId);
       } catch {
         // ignore
       }
       const message = `server rejected the signal (HTTP ${result.status}): ${result.message}`;
+      const isLessonGate = result.code === 'lesson_decision_required';
       if (args.json) {
         return exitJson({
           out,
           exit,
           exitCode: EXIT_SERVER_ERROR,
           ok: false,
-          code: 'SERVER_ERROR',
+          code: isLessonGate ? 'LESSON_DECISION_REQUIRED' : 'SERVER_ERROR',
           message,
-          details: { status: result.status, signalId },
+          details: {
+            status: result.status,
+            signalId,
+            ...(result.code ? { serverCode: result.code } : {}),
+            ...(result.hint ? { hint: result.hint } : {}),
+            ...(result.decision ? { decision: result.decision } : {}),
+          },
         });
       }
       err.error(`kookr signal: server rejected the signal (HTTP ${result.status}): ${result.message}`);
-      err.error('Your KOOKR_TASK_ID may be wrong or the task may already be finished.');
+      if (isLessonGate) {
+        if (result.hint) err.error(result.hint);
+        err.error(
+          'Post-task lesson decision is required before completion-ready (issue #1538). '
+            + 'Write a lesson with `kb remember` or print '
+            + '`No generic KB lesson: <reason>`, then re-run this command.',
+        );
+      } else {
+        err.error('Your KOOKR_TASK_ID may be wrong or the task may already be finished.');
+      }
       return exit(EXIT_SERVER_ERROR);
     }
     // 5xx: keep in spool, exit 0.
