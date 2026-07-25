@@ -1,6 +1,6 @@
 import type { AgentSelection } from './agent-types.js';
 import type { LaunchDependency } from './playbook.js';
-import type { TaskMetadataIntent } from './task.js';
+import type { TaskLaunchSource, TaskMetadataIntent } from './task.js';
 
 /**
  * Upper bound on an accepted `idempotencyKey` (issue #1526 Phase B). Single
@@ -51,8 +51,22 @@ export interface LaunchOpts {
   metadataIntent?: TaskMetadataIntent;
   /** Explicit project ID (e.g., github.com/owner/repo) — skips CWD-based inference. */
   projectId?: string;
-  /** Where the launch came from — for server-side log provenance. Default: 'api'. */
-  launchSource?: 'cli' | 'ui' | 'api' | 'remote-chat-telegram' | 'remote-relay';
+  /**
+   * Where the launch came from — server-side log provenance, the per-source
+   * spawn-budget bucket (issue #1526 Phase C / C3), and the
+   * `metadata.launchSource` stamp on the created task. Default: 'api'.
+   * `schedule` additionally exempts the launch from the spawn burst budget
+   * (schedules have their own coalescing — see `spawnBurstLimit` docs).
+   */
+  launchSource?: TaskLaunchSource;
+  /**
+   * Attributed caller id for actor-qualified spawn budgets (issue #1526
+   * Phase C / C3). Resolved server-side from the Phase B `X-Kookr-Actor`
+   * header when present — never trusted further than bucketing: with it,
+   * 'lucy' burns her own budget instead of sharing the anonymous `api`
+   * bucket. Absent ⇒ the bare `launchSource` bucket.
+   */
+  launchActorId?: string;
   /** External services the launch should check and surface as launch health. */
   dependencies?: LaunchDependency[];
   /**

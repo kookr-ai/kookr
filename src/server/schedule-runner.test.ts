@@ -11,6 +11,7 @@ import {
 } from './schedule-runner.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator } from './schedule-validator.js';
+import { PendingQueueFullError } from './launch-service.js';
 
 const INVALID_PLAYBOOK_PATH_ERROR = 'Playbook path must stay inside the selected playbooks directory';
 
@@ -25,6 +26,7 @@ describe('ScheduleRunner', () => {
     agentType?: string;
     effort?: string;
     model?: string;
+    launchSource?: string;
   }>;
   let taskIdCounter: number;
   let activeTaskIds: Set<string>;
@@ -84,6 +86,7 @@ Do the test thing.
           agentType: opts.agentType,
           effort: opts.effort,
           model: opts.model,
+          launchSource: opts.launchSource,
         });
         const queued = activeCount >= maxActive;
         if (queued) {
@@ -163,6 +166,9 @@ Do the test thing.
       effort: 'max',
       model: 'claude-fable-5',
       agentType: 'claude-code',
+      // issue #1526 Phase C / C3: schedule provenance — exempts the fire from
+      // the spawn burst budget and stamps metadata.launchSource.
+      launchSource: 'schedule',
     });
   });
 
@@ -1170,6 +1176,48 @@ Do the thing.
     expect(after.latestExecution?.reasonCode).toBe('launch_error');
     expect(after.latestExecution?.message).toContain('timed out');
     // The receipt is terminal — nothing left 'reserved' to wedge the schedule.
+    expect(after.currentExecution?.status).toBe('terminal');
+  });
+
+  it('a fire rejected by the pending-queue depth limit records dispatch_failed / pending_queue_full (issue #1526 C3)', async () => {
+    const schedule = store.create({
+      name: 'Queue full',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    store.replace({
+      ...store.get(schedule.id)!,
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => {
+        throw new PendingQueueFullError({
+          maxActiveTasks: 10,
+          active: 10,
+          free: 0,
+          byClass: { working: 1, finishedAwaitingAck: 8, hungSuspect: 1, launching: 0 },
+          pendingQueueDepth: 24,
+          oldestPendingAgeMs: 60_000,
+          oldestFinishedAwaitingAckAgeMs: null,
+        }, 24);
+      },
+      getActiveCount: () => 10,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+    });
+    await runner.tick();
+
+    const after = store.get(schedule.id)!;
+    // Never silently dropped: the ledger shows the fire AND why it failed,
+    // with a reason distinct from a broken launcher.
+    expect(after.latestExecution?.outcome).toBe('dispatch_failed');
+    expect(after.latestExecution?.reasonCode).toBe('pending_queue_full');
+    expect(after.latestExecution?.message).toContain('Pending queue is full');
     expect(after.currentExecution?.status).toBe('terminal');
   });
 

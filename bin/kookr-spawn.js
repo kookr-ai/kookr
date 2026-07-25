@@ -539,7 +539,10 @@ async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = nu
 
   if (!res.ok && res.status !== 200) {
     const msg = json?.error ?? (text || `HTTP ${res.status}`);
-    return { kind: 'server_error', status: res.status, message: msg };
+    // Keep the parsed body: a 429 backpressure rejection (#1526 Phase C)
+    // carries the capacity ledger, which the error renderer turns into a
+    // "why was this refused" breakdown.
+    return { kind: 'server_error', status: res.status, message: msg, body: json };
   }
 
   if (json?.duplicate === true) {
@@ -767,10 +770,52 @@ function formatTaskAge(createdAt) {
 }
 
 /**
+ * Backpressure rejection codes a 429 body may carry (#1526 Phase C / C3).
+ * Keep in sync with PendingQueueFullError / SpawnBurstLimitError in
+ * src/server/launch-service.ts.
+ */
+const BACKPRESSURE_CODES = new Set(['pending_queue_full', 'spawn_burst_limit']);
+
+/**
+ * Render a 429 backpressure body (#1526 Phase C / C3) as a multi-line "why"
+ * breakdown from the capacity ledger the server attached, so the operator
+ * sees WHAT is occupying the slots (working / awaiting-ack / hung-suspect /
+ * launching) and the queue/budget state instead of a bare error string.
+ * Returns null when the body is not a recognizable backpressure shape.
+ */
+function formatBackpressure429(body) {
+  if (!body || !BACKPRESSURE_CODES.has(body.code)) return null;
+  const lines = [`kookr-spawn: launch refused (${body.code}): ${body.error ?? 'server backpressure'}`];
+  const cap = body.capacity;
+  if (cap && typeof cap === 'object') {
+    const byClass = cap.byClass ?? {};
+    lines.push(
+      `   capacity: ${cap.active}/${cap.maxActiveTasks} slots occupied ` +
+      `(working ${byClass.working ?? '?'}, awaiting-ack ${byClass.finishedAwaitingAck ?? '?'}, ` +
+      `hung-suspect ${byClass.hungSuspect ?? '?'}, launching ${byClass.launching ?? '?'})`,
+    );
+    const queueLimit = typeof body.maxPendingTasks === 'number' ? `/${body.maxPendingTasks}` : '';
+    lines.push(`   pending queue: ${cap.pendingQueueDepth}${queueLimit} task(s)`);
+  }
+  if (body.code === 'spawn_burst_limit') {
+    const windowMin = typeof body.windowMs === 'number' ? Math.round(body.windowMs / 60_000) : '?';
+    const retrySec = typeof body.retryAfterMs === 'number' ? Math.max(1, Math.ceil(body.retryAfterMs / 1000)) : '?';
+    lines.push(
+      `   burst budget: ${body.limit} launches per ${windowMin}m for source "${body.source}"; retry in ~${retrySec}s`,
+    );
+  } else {
+    lines.push('   free a slot (complete/abort a task) or raise maxPendingTasks, then retry');
+  }
+  return lines.join('\n');
+}
+
+/**
  * Print the server-error message. If the server returned 404 and we sent a
  * parentTaskId, surface a targeted hint about --no-parent-task / --parent-task-id
  * instead of the generic "server returned 404: ..." form. Shared between the
  * initial-POST and dedupe-retry call sites so the wording stays in sync.
+ * A 429 backpressure body (#1526 Phase C) renders as the full capacity
+ * breakdown; the caller still exits non-zero (EXIT_SERVER_ERROR).
  */
 function reportServerError({ result, baseUrl, parentTaskId, err }) {
   if (result.status === 404 && parentTaskId) {
@@ -779,6 +824,13 @@ function reportServerError({ result, baseUrl, parentTaskId, err }) {
       `Re-run with --no-parent-task to launch detached, or --parent-task-id <uuid> to override.`,
     );
     return;
+  }
+  if (result.status === 429) {
+    const rendered = formatBackpressure429(result.body);
+    if (rendered) {
+      err.error(rendered);
+      return;
+    }
   }
   err.error(`kookr-spawn: server returned ${result.status}: ${result.message}`);
 }
@@ -1076,7 +1128,16 @@ async function main({
         ok: false,
         code: 'SERVER_ERROR',
         message: result.message,
-        details: { status: result.status, baseUrl, parentTaskId },
+        details: {
+          status: result.status,
+          baseUrl,
+          parentTaskId,
+          // #1526 Phase C: pass the 429 backpressure body (code + capacity
+          // ledger + limits) through so JSON consumers can render "why".
+          ...(result.status === 429 && result.body && BACKPRESSURE_CODES.has(result.body.code)
+            ? { backpressure: result.body }
+            : {}),
+        },
       });
     }
     reportServerError({ result, baseUrl, parentTaskId, err });
@@ -1217,6 +1278,7 @@ export {
   HELP_TEXT,
   UsageError,
   classifyWaitState,
+  formatBackpressure429,
   formatDedup,
   formatSuccess,
   formatWaitOutcome,

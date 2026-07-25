@@ -87,10 +87,34 @@ export interface TaskPayload {
   [k: string]: unknown;
 }
 
+/**
+ * Parsed 429 backpressure body (#1526 Phase C / C3) — the REST projection of
+ * PendingQueueFullError / SpawnBurstLimitError in src/server/launch-service.ts.
+ */
+export interface BackpressureBody {
+  error?: string;
+  code?: 'pending_queue_full' | 'spawn_burst_limit' | string;
+  capacity?: {
+    maxActiveTasks: number;
+    active: number;
+    free: number;
+    byClass: { working: number; finishedAwaitingAck: number; hungSuspect: number; launching: number };
+    pendingQueueDepth: number;
+    oldestPendingAgeMs: number | null;
+    oldestFinishedAwaitingAckAgeMs: number | null;
+  };
+  maxPendingTasks?: number;
+  source?: string;
+  limit?: number;
+  windowMs?: number;
+  retryAfterMs?: number;
+  [k: string]: unknown;
+}
+
 export type PostTaskResult =
   | { kind: 'created'; task: TaskPayload; queued: boolean }
   | { kind: 'duplicate'; task: TaskPayload }
-  | { kind: 'server_error'; status: number; message: string };
+  | { kind: 'server_error'; status: number; message: string; body?: BackpressureBody | null };
 
 export type WaitResult =
   | { kind: 'completion_ready'; status: string | null; agent: Record<string, unknown> }
@@ -152,4 +176,6 @@ export function waitForTaskReady(args: WaitForTaskReadyArgs): Promise<WaitResult
 export function formatWaitOutcome(result: WaitResult): string;
 export function formatSuccess(args: FormatSuccessArgs): string;
 export function formatDedup(args: FormatDedupArgs): string;
+/** Renders a 429 backpressure body as a multi-line breakdown, or null when the body is not backpressure-shaped. */
+export function formatBackpressure429(body: BackpressureBody | null | undefined): string | null;
 export function main(deps?: MainDeps): Promise<void>;

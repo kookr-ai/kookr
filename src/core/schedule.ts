@@ -74,6 +74,15 @@ export type ScheduleExecutionReasonCode =
   | 'validation'
   | 'deduplicated'
   | 'launch_error'
+  /**
+   * Reason code for a `dispatch_failed` fire rejected by the pending-queue
+   * depth limit (issue #1526 Phase C / C3): the node was at capacity AND the
+   * pending queue already held `maxPendingTasks` tasks, so queueing the fire
+   * was refused. Distinct from generic `launch_error` so schedule ledgers
+   * (and the dead-man switch's operator) can see backpressure, not a broken
+   * launcher.
+   */
+  | 'pending_queue_full'
   | 'stale_catch_up'
   | 'reconciled_after_restart'
   | 'unknown_after_restart';

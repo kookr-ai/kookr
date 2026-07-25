@@ -63,6 +63,8 @@ export type ScheduleExecutionReasonCode =
   | 'validation'
   | 'deduplicated'
   | 'launch_error'
+  /** Fire rejected by the pending-queue depth limit (issue #1526 Phase C / C3) — mirrors `core/schedule`. */
+  | 'pending_queue_full'
   | 'stale_catch_up'
   | 'reconciled_after_restart'
   | 'unknown_after_restart';

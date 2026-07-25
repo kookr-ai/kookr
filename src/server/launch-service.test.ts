@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, type PendingQueueFullError, type SpawnBurstLimitError, type LaunchServiceDeps } from './launch-service.js';
+import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
 import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
 import { IdempotencyLedger } from '../core/idempotency-ledger.js';
 
@@ -1780,5 +1781,213 @@ describe('launchTask hard timeout (issue #1526 Phase C / #1528)', () => {
     const result = await launchTask(deps, { prompt: 'default bound', cwd: '/tmp' });
     expect(result.queued).toBe(false);
     expect(taskStore.getTask(result.task.id)).toBeDefined();
+  });
+});
+
+describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
+  describe('pending-queue depth limit', () => {
+    /** Queue `pendingCount` tasks through the normal at-capacity pend path. */
+    async function fillQueue(deps: LaunchServiceDeps, pendingCount: number) {
+      for (let i = 0; i < pendingCount; i++) {
+        const result = await launchTask(deps, { prompt: `queued ${i}`, cwd: '/tmp' });
+        expect(result.queued).toBe(true);
+      }
+    }
+
+    function backpressureDeps(store: TaskStore, maxPending: number): LaunchServiceDeps {
+      return {
+        ...makeDeps(store),
+        getMaxActiveTasks: () => 1,
+        getMaxPendingTasks: () => maxPending,
+      };
+    }
+
+    it('rejects with PendingQueueFullError carrying the capacity ledger when at cap with a full queue', async () => {
+      const store = new TaskStore();
+      const deps = backpressureDeps(store, 2);
+      // Occupy the only active slot.
+      const first = store.createTask({ prompt: 'active', cwd: '/tmp' });
+      store.startTask(first.id);
+      await fillQueue(deps, 2);
+
+      const before = store.listTasks().length;
+      let thrown: unknown;
+      try {
+        await launchTask(deps, { prompt: 'one too many', cwd: '/tmp' });
+      } catch (err) {
+        thrown = err;
+      }
+      expect(isPendingQueueFullError(thrown)).toBe(true);
+      const err = thrown as PendingQueueFullError;
+      expect(err.code).toBe('pending_queue_full');
+      expect(err.maxPendingTasks).toBe(2);
+      expect(err.capacity.pendingQueueDepth).toBe(2);
+      expect(err.capacity.active).toBe(1);
+      expect(err.capacity.maxActiveTasks).toBe(1);
+      expect(err.capacity.byClass).toBeDefined();
+      // No task record was created for the rejected launch.
+      expect(store.listTasks().length).toBe(before);
+    });
+
+    it('below the depth limit, an at-capacity launch still queues (unchanged behavior)', async () => {
+      const store = new TaskStore();
+      const deps = backpressureDeps(store, 3);
+      const first = store.createTask({ prompt: 'active', cwd: '/tmp' });
+      store.startTask(first.id);
+      await fillQueue(deps, 2);
+      const result = await launchTask(deps, { prompt: 'still fits', cwd: '/tmp' });
+      expect(result.queued).toBe(true);
+      expect(store.getTask(result.task.id)?.status).toBe('pending');
+    });
+
+    it('below capacity, a full queue does not block launches', async () => {
+      const store = new TaskStore();
+      const deps: LaunchServiceDeps = {
+        ...makeDeps(store),
+        getMaxActiveTasks: () => 5,
+        getMaxPendingTasks: () => 1,
+      };
+      // Queue is "full" (1/1) but there is active headroom → launch proceeds.
+      const queued = store.createTask({ prompt: 'queued', cwd: '/tmp' });
+      store.pendTask(queued.id);
+      const result = await launchTask(deps, { prompt: 'launches fine', cwd: '/tmp' });
+      expect(result.queued).toBe(false);
+    });
+
+    it('uses the wired getCapacityLedger snapshot when provided', async () => {
+      const store = new TaskStore();
+      const ledger = {
+        maxActiveTasks: 1,
+        active: 1,
+        free: 0,
+        byClass: { working: 0, finishedAwaitingAck: 1, hungSuspect: 0, launching: 0 },
+        pendingQueueDepth: 1,
+        oldestPendingAgeMs: 1234,
+        oldestFinishedAwaitingAckAgeMs: 5678,
+      };
+      const deps: LaunchServiceDeps = {
+        ...makeDeps(store),
+        getMaxActiveTasks: () => 1,
+        getMaxPendingTasks: () => 1,
+        getCapacityLedger: () => ledger,
+      };
+      const first = store.createTask({ prompt: 'active', cwd: '/tmp' });
+      store.startTask(first.id);
+      const queued = store.createTask({ prompt: 'queued', cwd: '/tmp' });
+      store.pendTask(queued.id);
+
+      await expect(launchTask(deps, { prompt: 'rejected', cwd: '/tmp' }))
+        .rejects.toMatchObject({ code: 'pending_queue_full', capacity: ledger });
+    });
+  });
+
+  describe('per-source spawn burst budget', () => {
+    function burstDeps(store: TaskStore, limit: number, windowMs = 10 * 60_000, now?: () => number): LaunchServiceDeps {
+      return {
+        ...makeDeps(store),
+        spawnRateLimiter: new SpawnRateLimiter({
+          getLimit: () => limit,
+          getWindowMs: () => windowMs,
+          ...(now ? { now } : {}),
+        }),
+      };
+    }
+
+    it('rejects an over-limit source with SpawnBurstLimitError (distinct code + ledger)', async () => {
+      const store = new TaskStore();
+      const deps = burstDeps(store, 2);
+      await launchTask(deps, { prompt: 'a', cwd: '/tmp', launchSource: 'cli' });
+      await launchTask(deps, { prompt: 'b', cwd: '/tmp', launchSource: 'cli' });
+
+      let thrown: unknown;
+      try {
+        await launchTask(deps, { prompt: 'c', cwd: '/tmp', launchSource: 'cli' });
+      } catch (err) {
+        thrown = err;
+      }
+      expect(isSpawnBurstLimitError(thrown)).toBe(true);
+      const err = thrown as SpawnBurstLimitError;
+      expect(err.code).toBe('spawn_burst_limit');
+      expect(err.source).toBe('cli');
+      expect(err.limit).toBe(2);
+      expect(err.retryAfterMs).toBeGreaterThan(0);
+      expect(err.capacity.byClass).toBeDefined();
+    });
+
+    it('other sources are unaffected by one source bursting', async () => {
+      const store = new TaskStore();
+      const deps = burstDeps(store, 1);
+      await launchTask(deps, { prompt: 'cli one', cwd: '/tmp', launchSource: 'cli' });
+      await expect(launchTask(deps, { prompt: 'cli two', cwd: '/tmp', launchSource: 'cli' }))
+        .rejects.toMatchObject({ code: 'spawn_burst_limit' });
+      // api + websocket buckets still have budget.
+      await expect(launchTask(deps, { prompt: 'api one', cwd: '/tmp', launchSource: 'api' }))
+        .resolves.toMatchObject({ queued: false });
+      await expect(launchTask(deps, { prompt: 'ws one', cwd: '/tmp', launchSource: 'websocket' }))
+        .resolves.toMatchObject({ queued: false });
+    });
+
+    it('the window slides: the source recovers once its oldest launch ages out', async () => {
+      const store = new TaskStore();
+      let nowMs = 1_000_000;
+      const deps = burstDeps(store, 1, 60_000, () => nowMs);
+      await launchTask(deps, { prompt: 'first', cwd: '/tmp', launchSource: 'cli' });
+      await expect(launchTask(deps, { prompt: 'second', cwd: '/tmp', launchSource: 'cli' }))
+        .rejects.toMatchObject({ code: 'spawn_burst_limit' });
+      nowMs += 60_001;
+      await expect(launchTask(deps, { prompt: 'third', cwd: '/tmp', launchSource: 'cli' }))
+        .resolves.toMatchObject({ queued: false });
+    });
+
+    it('schedule-fired launches are exempt from the budget', async () => {
+      const store = new TaskStore();
+      const deps = burstDeps(store, 1);
+      for (let i = 0; i < 4; i++) {
+        await expect(launchTask(deps, { prompt: `fire ${i}`, cwd: '/tmp', launchSource: 'schedule', disableDedup: true }))
+          .resolves.toBeDefined();
+      }
+    });
+
+    it('an actor-qualified caller has a bucket separate from the bare source', async () => {
+      const store = new TaskStore();
+      const deps = burstDeps(store, 1);
+      await launchTask(deps, { prompt: 'anon', cwd: '/tmp', launchSource: 'api' });
+      // Bare `api` is exhausted…
+      await expect(launchTask(deps, { prompt: 'anon 2', cwd: '/tmp', launchSource: 'api' }))
+        .rejects.toMatchObject({ code: 'spawn_burst_limit', source: 'api' });
+      // …but lucy's attributed bucket is untouched, and vice versa.
+      await expect(launchTask(deps, { prompt: 'lucy 1', cwd: '/tmp', launchSource: 'api', launchActorId: 'lucy' }))
+        .resolves.toBeDefined();
+      await expect(launchTask(deps, { prompt: 'lucy 2', cwd: '/tmp', launchSource: 'api', launchActorId: 'lucy' }))
+        .rejects.toMatchObject({ code: 'spawn_burst_limit', source: 'api:actor:lucy' });
+    });
+
+    it('a dedup replay consumes no budget and is never rejected', async () => {
+      const store = new TaskStore();
+      const deps = burstDeps(store, 1);
+      const first = await launchTask(deps, { prompt: 'same prompt', cwd: '/tmp', launchSource: 'cli' });
+      store.startTask(first.task.id); // keep it active so dedup matches
+      // Identical resubmission: dedup returns the existing task BEFORE the
+      // budget check, so an exhausted bucket does not break retries.
+      const replay = await launchTask(deps, { prompt: 'same prompt', cwd: '/tmp', launchSource: 'cli' });
+      expect(replay.duplicate).toBe(true);
+      expect(replay.task.id).toBe(first.task.id);
+    });
+  });
+
+  describe('metadata.launchSource stamping', () => {
+    it('stamps the launch source onto task metadata', async () => {
+      const store = new TaskStore();
+      const deps = makeDeps(store);
+      const result = await launchTask(deps, { prompt: 'stamped', cwd: '/tmp', launchSource: 'schedule' });
+      expect(store.getTask(result.task.id)?.metadata?.launchSource).toBe('schedule');
+    });
+
+    it('leaves metadata absent when no source is given', async () => {
+      const store = new TaskStore();
+      const deps = makeDeps(store);
+      const result = await launchTask(deps, { prompt: 'unstamped', cwd: '/tmp' });
+      expect(store.getTask(result.task.id)?.metadata).toBeUndefined();
+    });
   });
 });

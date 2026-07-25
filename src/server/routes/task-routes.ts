@@ -13,7 +13,15 @@ import {
   type PendingAgentSignal,
 } from '../../shared/contracts/agent-signal.js';
 import { TaskLifecycleCommands } from '../use-cases/task-lifecycle-commands.js';
-import { launchTask, DrainModeError, isCwdValidationError, isEffortValidationError, isModelValidationError } from '../launch-service.js';
+import {
+  launchTask,
+  DrainModeError,
+  isCwdValidationError,
+  isEffortValidationError,
+  isModelValidationError,
+  isPendingQueueFullError,
+  isSpawnBurstLimitError,
+} from '../launch-service.js';
 import { MAX_IDEMPOTENCY_KEY_LENGTH } from '../../shared/contracts/launch.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import { LAUNCH_DEPENDENCIES, type LaunchDependency } from '../../core/playbook.js';
@@ -420,6 +428,10 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       const rawSource = c.req.header('X-Kookr-Launch-Source');
       const launchSource: 'cli' | 'ui' | 'api' =
         rawSource === 'cli' || rawSource === 'ui' ? rawSource : 'api';
+      // issue #1526 Phase C / C3: actor-qualified spawn budget. Reuses the
+      // Phase B attribution header so 'lucy' burns her own burst budget
+      // instead of sharing the anonymous `api` bucket.
+      const launchActorId = c.req.header(ACTOR_HEADER)?.trim() || undefined;
       const { task, queued, duplicate, idempotentReplay } = await launchTask(deps.launchServiceDeps, {
         prompt: body.prompt,
         cwd: body.cwd,
@@ -432,6 +444,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         metadataIntent,
         dependencies: parseLaunchDependencies(body.dependencies),
         launchSource,
+        launchActorId,
         autoCloseOnSignal: typeof body.autoCloseOnSignal === 'boolean' ? body.autoCloseOnSignal : undefined,
         idempotencyKey: typeof body.idempotencyKey === 'string' ? body.idempotencyKey : undefined,
       });
@@ -471,6 +484,30 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       }
       if (err instanceof DrainModeError) {
         return c.json({ error: err.message, code: err.code }, 503);
+      }
+      // Honest server-side backpressure (issue #1526 Phase C / C3): both
+      // rejections return 429 with the capacity-ledger snapshot so the caller
+      // can render WHY (active/max, byClass breakdown, queue depth) instead
+      // of guessing from a bare error string.
+      if (isPendingQueueFullError(err)) {
+        return c.json({
+          error: err.message,
+          code: err.code,
+          capacity: err.capacity,
+          maxPendingTasks: err.maxPendingTasks,
+        }, 429);
+      }
+      if (isSpawnBurstLimitError(err)) {
+        c.header('Retry-After', String(Math.max(1, Math.ceil(err.retryAfterMs / 1000))));
+        return c.json({
+          error: err.message,
+          code: err.code,
+          capacity: err.capacity,
+          source: err.source,
+          limit: err.limit,
+          windowMs: err.windowMs,
+          retryAfterMs: err.retryAfterMs,
+        }, 429);
       }
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);

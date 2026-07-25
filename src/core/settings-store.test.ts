@@ -193,6 +193,42 @@ describe('validateSettings', () => {
     expect(validateSettings({ deadManScheduleMinutes: 'never' }).deadManScheduleMinutes).toBe(120);
   });
 
+  it('defaults maxPendingTasks to 24 and clamps to the 4–200 range (issue #1526 Phase C / C3)', () => {
+    expect(validateSettings({}).maxPendingTasks).toBe(24);
+    expect(DEFAULT_SETTINGS.maxPendingTasks).toBe(24);
+    expect(validateSettings({ maxPendingTasks: 48 }).maxPendingTasks).toBe(48);
+    expect(validateSettings({ maxPendingTasks: 1 }).maxPendingTasks).toBe(4);
+    expect(validateSettings({ maxPendingTasks: 9_999 }).maxPendingTasks).toBe(200);
+    expect(validateSettings({ maxPendingTasks: 'lots' }).maxPendingTasks).toBe(24);
+  });
+
+  it('defaults pendingTaskTtlMinutes to 240 and clamps to the 15–2880 range (issue #1526 Phase C / C3)', () => {
+    expect(validateSettings({}).pendingTaskTtlMinutes).toBe(240);
+    expect(DEFAULT_SETTINGS.pendingTaskTtlMinutes).toBe(240);
+    expect(validateSettings({ pendingTaskTtlMinutes: 60 }).pendingTaskTtlMinutes).toBe(60);
+    expect(validateSettings({ pendingTaskTtlMinutes: 1 }).pendingTaskTtlMinutes).toBe(15);
+    expect(validateSettings({ pendingTaskTtlMinutes: 99_999 }).pendingTaskTtlMinutes).toBe(2880);
+    expect(validateSettings({ pendingTaskTtlMinutes: 'forever' }).pendingTaskTtlMinutes).toBe(240);
+  });
+
+  it('defaults spawnBurstLimit to 30 and clamps to the 5–500 range (issue #1526 Phase C / C3)', () => {
+    expect(validateSettings({}).spawnBurstLimit).toBe(30);
+    expect(DEFAULT_SETTINGS.spawnBurstLimit).toBe(30);
+    expect(validateSettings({ spawnBurstLimit: 100 }).spawnBurstLimit).toBe(100);
+    expect(validateSettings({ spawnBurstLimit: 0 }).spawnBurstLimit).toBe(5);
+    expect(validateSettings({ spawnBurstLimit: 9_999 }).spawnBurstLimit).toBe(500);
+    expect(validateSettings({ spawnBurstLimit: null }).spawnBurstLimit).toBe(30);
+  });
+
+  it('defaults spawnBurstWindowMinutes to 10 and clamps to the 1–120 range (issue #1526 Phase C / C3)', () => {
+    expect(validateSettings({}).spawnBurstWindowMinutes).toBe(10);
+    expect(DEFAULT_SETTINGS.spawnBurstWindowMinutes).toBe(10);
+    expect(validateSettings({ spawnBurstWindowMinutes: 30 }).spawnBurstWindowMinutes).toBe(30);
+    expect(validateSettings({ spawnBurstWindowMinutes: 0 }).spawnBurstWindowMinutes).toBe(1);
+    expect(validateSettings({ spawnBurstWindowMinutes: 9_999 }).spawnBurstWindowMinutes).toBe(120);
+    expect(validateSettings({ spawnBurstWindowMinutes: false }).spawnBurstWindowMinutes).toBe(10);
+  });
+
   it('defaults replySnippets to an empty list', () => {
     expect(validateSettings({}).replySnippets).toEqual([]);
     expect(DEFAULT_SETTINGS.replySnippets).toEqual([]);
@@ -403,6 +439,10 @@ describe('loadSettings / saveSettings', () => {
       hungTaskReapMinutes: 240,
       launchTimeoutSeconds: 300,
       deadManScheduleMinutes: 240,
+      maxPendingTasks: 48,
+      pendingTaskTtlMinutes: 120,
+      spawnBurstLimit: 60,
+      spawnBurstWindowMinutes: 15,
     };
     await saveSettings(filePath, settings);
     const result = await loadSettings(filePath);

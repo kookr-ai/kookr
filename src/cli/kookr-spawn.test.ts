@@ -13,6 +13,7 @@ import {
   EXIT_WAIT_TIMEOUT,
   UsageError,
   classifyWaitState,
+  formatBackpressure429,
   formatDedup,
   formatSuccess,
   formatWaitOutcome,
@@ -631,6 +632,37 @@ describe('postTask', () => {
     }
   });
 
+  it('keeps the parsed 429 backpressure body on server_error (issue #1526 C3)', async () => {
+    const backpressureBody = {
+      error: 'Pending queue is full (24/24 queued, 10/10 active) — launch rejected.',
+      code: 'pending_queue_full',
+      capacity: {
+        maxActiveTasks: 10,
+        active: 10,
+        free: 0,
+        byClass: { working: 2, finishedAwaitingAck: 7, hungSuspect: 1, launching: 0 },
+        pendingQueueDepth: 24,
+        oldestPendingAgeMs: 120000,
+        oldestFinishedAwaitingAckAgeMs: 360000,
+      },
+      maxPendingTasks: 24,
+    };
+    const { server, baseUrl } = await startFakeApi(() => ({
+      status: 429,
+      body: JSON.stringify(backpressureBody),
+    }));
+    try {
+      const result = await postTask({ baseUrl, prompt: 'hi', cwd: '/tmp/x', agent: null, criteria: null });
+      expect(result.kind).toBe('server_error');
+      if (result.kind === 'server_error') {
+        expect(result.status).toBe(429);
+        expect(result.body).toMatchObject({ code: 'pending_queue_full' });
+      }
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it('includes agent and criteria when provided', async () => {
     let bodySeen: any = null;
     const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
@@ -906,6 +938,45 @@ describe('output formatting', () => {
   });
 });
 
+describe('formatBackpressure429 (issue #1526 C3)', () => {
+  it('returns null for non-backpressure bodies', () => {
+    expect(formatBackpressure429(null)).toBeNull();
+    expect(formatBackpressure429(undefined)).toBeNull();
+    expect(formatBackpressure429({ error: 'nope' })).toBeNull();
+    expect(formatBackpressure429({ code: 'something_else' })).toBeNull();
+  });
+
+  it('renders the spawn-burst budget line with retry hint', () => {
+    const rendered = formatBackpressure429({
+      error: 'Spawn burst limit reached',
+      code: 'spawn_burst_limit',
+      source: 'api:actor:lucy',
+      limit: 30,
+      windowMs: 600000,
+      retryAfterMs: 42000,
+      capacity: {
+        maxActiveTasks: 10,
+        active: 9,
+        free: 1,
+        byClass: { working: 5, finishedAwaitingAck: 3, hungSuspect: 1, launching: 0 },
+        pendingQueueDepth: 3,
+        oldestPendingAgeMs: null,
+        oldestFinishedAwaitingAckAgeMs: null,
+      },
+    });
+    expect(rendered).toContain('launch refused (spawn_burst_limit)');
+    expect(rendered).toContain('9/10 slots occupied');
+    expect(rendered).toContain('30 launches per 10m for source "api:actor:lucy"');
+    expect(rendered).toContain('retry in ~42s');
+  });
+
+  it('renders a queue-full body without a capacity block gracefully', () => {
+    const rendered = formatBackpressure429({ error: 'full', code: 'pending_queue_full' });
+    expect(rendered).toContain('launch refused (pending_queue_full)');
+    expect(rendered).toContain('free a slot');
+  });
+});
+
 describe('waitForTaskReady', () => {
   it('polls /api/snapshot until the task raises completion-ready', async () => {
     let snapshots = 0;
@@ -1040,6 +1111,86 @@ describe('main', () => {
     });
     expect(codes).toEqual([EXIT_USER_ERROR]);
     expect(errBucket.errors.join('\n')).toContain('no prompt');
+  });
+
+  it('renders the 429 backpressure breakdown and exits non-zero (issue #1526 C3)', async () => {
+    const { server, baseUrl } = await startFakeApi(() => ({
+      status: 429,
+      body: JSON.stringify({
+        error: 'Pending queue is full (24/24 queued, 10/10 active) — launch rejected.',
+        code: 'pending_queue_full',
+        capacity: {
+          maxActiveTasks: 10,
+          active: 10,
+          free: 0,
+          byClass: { working: 2, finishedAwaitingAck: 7, hungSuspect: 1, launching: 0 },
+          pendingQueueDepth: 24,
+          oldestPendingAgeMs: 120000,
+          oldestFinishedAwaitingAckAgeMs: 360000,
+        },
+        maxPendingTasks: 24,
+      }),
+    }));
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_SERVER_ERROR]); // non-zero
+      const rendered = errBucket.errors.join('\n');
+      expect(rendered).toContain('launch refused (pending_queue_full)');
+      expect(rendered).toContain('10/10 slots occupied');
+      expect(rendered).toContain('awaiting-ack 7');
+      expect(rendered).toContain('pending queue: 24/24 task(s)');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('carries the 429 backpressure body in --json details (issue #1526 C3)', async () => {
+    const { server, baseUrl } = await startFakeApi(() => ({
+      status: 429,
+      body: JSON.stringify({
+        error: 'Spawn burst limit reached for source "cli"',
+        code: 'spawn_burst_limit',
+        source: 'cli',
+        limit: 30,
+        windowMs: 600000,
+        retryAfterMs: 42000,
+      }),
+    }));
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello', '--json'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_SERVER_ERROR]);
+      const envelope = JSON.parse(logs.join('\n'));
+      expect(envelope.ok).toBe(false);
+      expect(envelope.code).toBe('SERVER_ERROR');
+      expect(envelope.details.status).toBe(429);
+      expect(envelope.details.backpressure).toMatchObject({ code: 'spawn_burst_limit', source: 'cli' });
+    } finally {
+      await closeServer(server);
+    }
   });
 
   it('creates a task end-to-end against a fake API server', async () => {
