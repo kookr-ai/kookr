@@ -60,6 +60,9 @@ function isKnownModelId(model) {
   if (MODEL_IDS.includes(model)) return true;
   return MODEL_IDS.some((id) => model.startsWith(`${id}-`));
 }
+// #1526 Phase B: keep in sync with MAX_IDEMPOTENCY_KEY_LENGTH in
+// src/shared/contracts/launch.ts.
+const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
 
 // ---------- arg parsing ----------
 
@@ -88,6 +91,15 @@ Options:
                            (use KOOKR_CODEX_MODEL / KOOKR_GROK_MODEL instead).
       --criteria <text>    Acceptance criteria. Note: this is argv-exposed.
       --dedupe <mode>      warn, block, or skip (default: warn).
+      --idempotency-key <key>
+                           Opaque retry key (issue #1526). Re-running with the
+                           SAME key returns the task an earlier attempt with
+                           that key already created instead of launching a
+                           second one — protects against retrying after a
+                           client-side timeout against an overloaded server.
+                           Distinct from --dedupe, which compares prompt+cwd;
+                           an idempotency key survives prompt text that varies
+                           between attempts (e.g. an embedded random suffix).
       --wait[=<seconds>]   After creating the task, poll until it raises
                            completion-ready or reaches a terminal state.
       --parent-task-id <uuid>  Override the parent task linkage explicitly.
@@ -151,6 +163,7 @@ function parseArgs(argv) {
     model: null,
     criteria: null,
     dedupe: 'warn',
+    idempotencyKey: null,
     promptFile: null,
     parentTaskId: null,
     noParentTask: false,
@@ -191,6 +204,10 @@ function parseArgs(argv) {
       out.dedupe = eat();
     } else if (tok.startsWith('--dedupe=')) {
       out.dedupe = tok.slice('--dedupe='.length);
+    } else if (tok === '--idempotency-key') {
+      out.idempotencyKey = eat();
+    } else if (tok.startsWith('--idempotency-key=')) {
+      out.idempotencyKey = tok.slice('--idempotency-key='.length);
     } else if (tok === '--wait') {
       out.wait = true;
     } else if (tok.startsWith('--wait=')) {
@@ -242,6 +259,16 @@ function parseArgs(argv) {
     throw new UsageError(
       `--model must be a known model id (e.g. ${MODEL_IDS.slice(0, 4).join(', ')}; got: ${out.model})`,
     );
+  }
+  if (out.idempotencyKey !== null) {
+    const trimmed = out.idempotencyKey.trim();
+    if (trimmed === '') {
+      throw new UsageError('--idempotency-key requires a non-empty value');
+    }
+    if (trimmed.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
+      throw new UsageError(`--idempotency-key must be at most ${MAX_IDEMPOTENCY_KEY_LENGTH} characters`);
+    }
+    out.idempotencyKey = trimmed;
   }
   if (out.parentTaskId !== null) {
     const trimmed = out.parentTaskId.trim();
@@ -477,7 +504,7 @@ function apiAuthHeaders(env = process.env) {
 
 // ---------- HTTP POST ----------
 
-async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null }) {
+async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, idempotencyKey = null }) {
   const body = { prompt, cwd };
   if (criteria) body.criteria = criteria;
   if (agent) body.agentType = agent;
@@ -488,6 +515,7 @@ async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = nu
   if (parentTaskId) body.parentTaskId = parentTaskId;
   // null = unspecified → let the server inherit the parent's policy.
   if (autoCloseOnSignal !== null) body.autoCloseOnSignal = autoCloseOnSignal;
+  if (idempotencyKey) body.idempotencyKey = idempotencyKey;
 
   const res = await fetch(`${baseUrl}/api/tasks`, {
     method: 'POST',
@@ -520,7 +548,11 @@ async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = nu
   }
 
   // Success path — server returns the task object at 201, or the wrapped
-  // { task, duplicate: true } at 200 (handled above).
+  // { task, duplicate: true } at 200 (handled above). An idempotency-key
+  // replay (#1526) is also a 200, but flattened like the 201 shape with an
+  // extra `idempotentReplay: true` field mixed in — it falls through to this
+  // same "created" branch by design, so `formatSuccess`/`--json` output can
+  // read `task.idempotentReplay` without a separate result kind.
   return { kind: 'created', task: json, queued: Boolean(json?.queued) };
 }
 
@@ -683,7 +715,12 @@ function formatSuccess({ task, baseUrl, queued }) {
   const parent = typeof task?.parentTaskId === 'string' && task.parentTaskId.length > 0
     ? task.parentTaskId
     : null;
-  const status = queued ? '⌛ Task queued' : '✓ Task created';
+  // #1526 Phase B: an idempotency-key replay returns the SAME task an
+  // earlier attempt already created — say so, instead of claiming a fresh
+  // "Task created".
+  const status = task?.idempotentReplay
+    ? '↺ Task already exists (idempotent replay)'
+    : queued ? '⌛ Task queued' : '✓ Task created';
   const lines = [`task_id=${id}`];
   if (parent) lines.push(`parent_task_id=${parent}`);
   lines.push(
@@ -782,6 +819,9 @@ function taskDetails({ task = {}, baseUrl, queued = false }) {
     taskId,
     parentTaskId,
     queued,
+    // #1526 Phase B: true when this response replayed an earlier attempt's
+    // task (same --idempotency-key) instead of creating a new one.
+    idempotentReplay: Boolean(task?.idempotentReplay),
     task: {
       id: taskId,
       agentType: task?.agentType ?? null,
@@ -1007,6 +1047,7 @@ async function main({
       metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
       parentTaskId,
       autoCloseOnSignal: args.autoCloseOnSignal,
+      idempotencyKey: args.idempotencyKey,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -1131,7 +1172,9 @@ async function main({
       exitCode: EXIT_OK,
       ok: true,
       code: 'OK',
-      message: result.queued ? 'Task queued' : 'Task created',
+      message: result.task?.idempotentReplay
+        ? 'Task already exists (idempotent replay)'
+        : result.queued ? 'Task queued' : 'Task created',
       details: taskDetails({ task: result.task, baseUrl, queued: result.queued }),
     });
   }

@@ -2,6 +2,14 @@ import type { AgentSelection } from './agent-types.js';
 import type { LaunchDependency } from './playbook.js';
 import type { TaskMetadataIntent } from './task.js';
 
+/**
+ * Upper bound on an accepted `idempotencyKey` (issue #1526 Phase B). Single
+ * source of truth for both route-level body validation
+ * (`routes/task-routes.ts`) and `IdempotencyLedger` — same convention as
+ * `MAX_AGENT_SIGNAL_NOTE_LENGTH` in `agent-signal.ts`.
+ */
+export const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
+
 export interface LaunchOpts {
   prompt: string;
   cwd: string;
@@ -63,6 +71,24 @@ export interface LaunchOpts {
    * See docs/reference/auto-close-on-signal.md.
    */
   autoCloseOnSignal?: boolean;
+  /**
+   * Optional idempotency key (issue #1526 Phase B / FM2, FM3). A caller that
+   * retries an identical launch request — e.g. after its own client timeout
+   * fired against an overloaded server that had already created the task —
+   * passes the SAME key on every attempt. The first request for a key
+   * creates the task as normal; any later request for the same key
+   * (including one racing concurrently with the first) returns the same
+   * task with {@link LaunchResult.idempotentReplay} set instead of creating a
+   * duplicate. Distinct from the prompt+cwd+agentType dedup in
+   * `checkSubmission`: that dedup is defeated when the prompt varies between
+   * attempts (e.g. an embedded random branch suffix); an idempotency key
+   * protects retries of the exact same logical request regardless of prompt
+   * content. Bounded to {@link MAX_IDEMPOTENCY_KEY_LENGTH}. Omitted ⇒ no
+   * idempotency protection (today's behavior, unchanged). See
+   * `IdempotencyLedger` (`core/idempotency-ledger.ts`) for the reserve/TTL
+   * mechanics.
+   */
+  idempotencyKey?: string;
 }
 
 export interface LaunchResult<TaskShape extends { id: string } = { id: string }> {
@@ -70,4 +96,12 @@ export interface LaunchResult<TaskShape extends { id: string } = { id: string }>
   queued: boolean;
   /** True when an active task with the same prompt already exists. */
   duplicate?: boolean;
+  /**
+   * True when `task` was NOT created by this call — an earlier launch with
+   * the same `idempotencyKey` already produced it (issue #1526 Phase B).
+   * Distinct from `duplicate` (prompt+cwd+agentType dedup): a replay is a
+   * retry of the same logical request, not a coincidentally identical new
+   * one, so it never triggers the interactive/CLI duplicate-confirmation UX.
+   */
+  idempotentReplay?: boolean;
 }

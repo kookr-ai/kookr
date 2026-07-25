@@ -143,8 +143,8 @@ detail for one task — e.g. to relaunch it with its original prompt — fetch
 ### `POST /api/tasks` body fields
 
 `prompt` (required) and `cwd` (required) plus optional `criteria`, `parentTaskId`,
-`agentType`, `effort`, `model`, `disableDedup`, `metadata`, `dependencies`, and
-`autoCloseOnSignal`.
+`agentType`, `effort`, `model`, `disableDedup`, `metadata`, `dependencies`,
+`autoCloseOnSignal`, and `idempotencyKey`.
 
 `autoCloseOnSignal` (optional, boolean) opts the task into auto-completion after
 its agent's `completion_ready` signal has been pending for the configured
@@ -191,6 +191,53 @@ no silent fallback. Allowed base ids for `claude-code`:
 CLI / env default unchanged. The `kookr-spawn --model <id>` flag maps to this
 field. Resolution order for both `effort` and `model`: **per-task override →
 per-schedule value → global agent-type default → unset**.
+
+`idempotencyKey` (optional, string, ≤200 characters — issue #1526 Phase B)
+protects a retried request from creating a duplicate task. It is a *different*
+mechanism from the existing prompt+cwd+agentType dedup (`disableDedup` /
+`metadata.intent`): that dedup is defeated whenever the prompt varies between
+attempts — for example a spawn helper that embeds a fresh random branch
+suffix in the prompt on every call. An idempotency key instead identifies the
+logical *request*, independent of its prompt content.
+
+- The first `POST /api/tasks` carrying a given key creates the task normally
+  (`201`).
+- Any later request with the SAME key — including one racing concurrently
+  with the first — returns `200` with the body flattened like the `201` shape
+  (not wrapped like the prompt-dedup `{"task", "duplicate": true}` response)
+  plus `"idempotentReplay": true`, referencing the SAME task, with `queued`
+  preserved if that task is still `pending`. No new task is created and no
+  duplicate-confirmation UX is triggered.
+- If the task the key resolved to is **terminal** (`completed` / `terminated`
+  / `cancelled`) but has **zero sessions** — it was queued at the concurrency
+  cap and then reaped, cancelled, or TTL-expired before ever launching an
+  agent — it is treated as if the key had never been claimed: the stale entry
+  is dropped and the request launches fresh. A terminal task that *did* run
+  (at least one session) is still replayed, since re-launching it would
+  duplicate work that already happened.
+- An empty string or a key over 200 characters returns
+  `400 {"error": "idempotencyKey must be ..."}`.
+- If the launch that owns a key's reservation fails (validation error,
+  adapter launch failure), the reservation is released so a retry with the
+  same key can succeed.
+- **Durability is best-effort, not absolute.** Reservations live in a ledger
+  (`idempotency-ledger.json` under the Kookr data dir, 24h TTL — a key past
+  its TTL is treated as never seen) that is written to disk once a launch has
+  actually produced a task. Three caveats:
+  1. A crash strictly inside the create→persist window (memory-only pending
+     reservation, never yet written) loses that one in-flight reservation —
+     a retry issued after that specific crash can create a duplicate.
+  2. Once a task exists, persisting its ledger entry is best-effort: a disk
+     write failure (full disk, permissions) is logged loudly server-side but
+     never fails the request — the caller still gets its successful task, and
+     same-process replay stays protected via the in-memory entry, but that
+     entry is not guaranteed to survive a subsequent restart until the next
+     successful write.
+  3. A corrupt on-disk ledger file is quarantined and the ledger restarts
+     empty, resetting idempotency protection for every previously-finalized
+     key (server-log warning only, no other alerting).
+- Omitting `idempotencyKey` leaves behavior exactly as before. The
+  `kookr-spawn --idempotency-key <key>` flag maps to this field.
 
 ### `POST /api/tasks/:id/complete`
 

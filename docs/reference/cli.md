@@ -75,6 +75,7 @@ Options:
 | `--model` | known Claude model id (e.g. `claude-fable-5`) | Agent CLI / env default | Pin the model for this task (#1518). `claude-code` accepts known Claude ids and dated suffixes; `codex-cli` / `grok-build` reject `--model` (use `KOOKR_CODEX_MODEL` / `KOOKR_GROK_MODEL`). Server returns 400 for invalid values — no silent fallback. |
 | `--criteria` | text | unset | Acceptance criteria sent with the task request. This value is argv-exposed; use prompt files or stdin for hook-sensitive text. |
 | `--dedupe` | `warn`, `block`, or `skip` | `warn` | Active duplicate-prompt handling. `warn` prompts interactively and blocks in non-interactive shells, `block` exits with code 5, and `skip` creates the task intentionally while suppressing duplicate-cluster findings. |
+| `--idempotency-key` | opaque string, ≤200 chars | unset | Retry key (issue #1526). Re-running `kookr spawn` with the SAME key returns the task an earlier attempt with that key already created, instead of launching a second one. |
 | `--wait` | optional seconds via `--wait=<seconds>` | false | Poll until the spawned task raises `completion-ready` or reaches a terminal state. |
 | `--parent-task-id` | task id | `KOOKR_TASK_ID` when set | Explicit parent task to link in the dashboard. Mutually exclusive with `--no-parent-task`. |
 | `--no-parent-task` | none | false | Launch detached and ignore `KOOKR_TASK_ID`. Mutually exclusive with `--parent-task-id`. |
@@ -101,6 +102,32 @@ kookr spawn --dedupe=skip "fix the auth bug"   # create intentionally and suppre
 In interactive `warn` mode, `show diff` prints the stored active prompt against the requested prompt before asking again.
 
 In `--json` mode, duplicate `warn` prompts are treated as non-interactive and return `DUPLICATE_BLOCKED` instead of asking for confirmation. Use `--dedupe=skip --json` when automation intentionally wants to keep a duplicate.
+
+Idempotent retries (issue #1526):
+
+```bash
+kookr spawn --idempotency-key "kookr-ai/kookr#1526@batch-1" "implement the issue"
+```
+
+`--dedupe` compares prompt **content** (prompt + cwd + agent); it is defeated
+when the prompt varies between attempts — for example a spawn helper that
+embeds a fresh random branch suffix on every call. `--idempotency-key`
+instead identifies the logical **request**: re-running the exact same
+`kookr spawn --idempotency-key <key> ...` invocation (e.g. after a client
+timeout against an overloaded server that had already created the task)
+returns the SAME task instead of creating a duplicate, regardless of prompt
+content. A terminal task that never actually ran (e.g. queued at capacity,
+then reaped before it ever launched) is not replayed — the retry launches
+fresh instead; a terminal task that did run (completed or was terminated
+after starting an agent) is still replayed. The response prints `↺ Task
+already exists (idempotent replay)` instead of `✓ Task created`, exits `0`,
+and (in `--json` mode) sets `details.idempotentReplay: true`. Reservations
+live in a TTL-bounded ledger on the server (24h). Durability is best-effort,
+not absolute: a crash strictly between task-creation and the ledger write can
+lose that one reservation, and a ledger persist failure is logged
+server-side without failing the request — see [`POST /api/tasks` body
+fields](./api.md#post-apitasks-body-fields) for the full server-side
+contract and caveats.
 
 Auto-close on completion signal:
 

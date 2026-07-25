@@ -17,6 +17,7 @@ import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
 import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
+import { IdempotencyLedger } from '../core/idempotency-ledger.js';
 import { DrainController } from './drain-state.js';
 import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handler.js';
 import { QuotaAdapter } from '../adapters/quota-adapter.js';
@@ -887,6 +888,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ...(issueClaimServices ? { issueClaimRegistry: issueClaimServices.registry } : {}),
   };
 
+  // Durable idempotency ledger (issue #1526 Phase B / FM2, FM3): protects
+  // POST /api/tasks retries (e.g. a client timeout against an overloaded
+  // server that had already created the task) from creating a duplicate.
+  // Loaded before the launch service deps are built so the first launch
+  // served can already see replay state from a prior process.
+  const idempotencyLedger = new IdempotencyLedger(kookrDir);
+  await idempotencyLedger.load();
+
   // Launch service deps — shared by WS handler, REST routes, and the Ralph
   // cycler's fresh-runtime launcher inside wireEventPipeline.
   const launchServiceDeps: LaunchServiceDeps = {
@@ -901,6 +910,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     isAccepting: () => drainController.isAccepting(),
     validateLaunchCwd: config.validateLaunchCwd,
     bypassAllPermissions,
+    idempotencyLedger,
   };
 
   let remoteLaunchBroker: import('../remote/launch-broker.js').RemoteLaunchBroker | undefined;

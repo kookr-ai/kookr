@@ -8,6 +8,7 @@ import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import { checkSubmission, launchTask, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, type LaunchServiceDeps } from './launch-service.js';
 import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
+import { IdempotencyLedger } from '../core/idempotency-ledger.js';
 
 // Minimal stubs for adapter and lifecycle deps
 function makeDeps(taskStore: TaskStore): LaunchServiceDeps {
@@ -1476,5 +1477,196 @@ describe('launchTask launch reservation (#700)', () => {
     await expect(launchTask(deps, { prompt: 'will fail', cwd: '/tmp' })).rejects.toThrow('boom');
     expect(taskStore.getActiveCount()).toBe(0); // no leaked slot
     expect(taskStore.getNextPending()).toBeUndefined();
+  });
+});
+
+describe('launchTask idempotency (issue #1526 Phase B)', () => {
+  let store: TaskStore;
+  let ledgerDir: string;
+  let ledger: IdempotencyLedger;
+  let deps: LaunchServiceDeps;
+
+  beforeEach(async () => {
+    store = new TaskStore();
+    ledgerDir = await mkdtemp(join(tmpdir(), 'idempotency-launch-'));
+    ledger = new IdempotencyLedger(ledgerDir);
+    await ledger.load();
+    deps = { ...makeDeps(store), idempotencyLedger: ledger };
+  });
+
+  afterEach(async () => {
+    await rm(ledgerDir, { recursive: true, force: true });
+  });
+
+  it('same key twice sequentially: one task, second response is a replay', async () => {
+    const first = await launchTask(deps, { prompt: 'hello', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(first.idempotentReplay).toBeUndefined();
+
+    const second = await launchTask(deps, { prompt: 'hello', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(second.idempotentReplay).toBe(true);
+    expect(second.task.id).toBe(first.task.id);
+
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+    expect(store.listTasks()).toHaveLength(1);
+  });
+
+  it('two concurrent identical POSTs create exactly one task; both responses reference it', async () => {
+    const [a, b] = await Promise.all([
+      launchTask(deps, { prompt: 'concurrent', cwd: '/tmp', idempotencyKey: 'k1' }),
+      launchTask(deps, { prompt: 'concurrent', cwd: '/tmp', idempotencyKey: 'k1' }),
+    ]);
+
+    expect(a.task.id).toBe(b.task.id);
+    // Exactly one of the two calls actually created the task; the other replayed it.
+    expect([a.idempotentReplay, b.idempotentReplay].filter((v) => v === true)).toHaveLength(1);
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+    expect(store.listTasks()).toHaveLength(1);
+  });
+
+  it('different keys create two distinct tasks', async () => {
+    const first = await launchTask(deps, { prompt: 'first task', cwd: '/tmp', idempotencyKey: 'k1' });
+    const second = await launchTask(deps, { prompt: 'second task', cwd: '/tmp', idempotencyKey: 'k2' });
+
+    expect(second.task.id).not.toBe(first.task.id);
+    expect(second.idempotentReplay).toBeUndefined();
+    expect(store.listTasks()).toHaveLength(2);
+  });
+
+  it('no key: unchanged behavior — two identical no-key posts still hit prompt dedup', async () => {
+    const first = await launchTask(deps, { prompt: 'no key here', cwd: '/tmp' });
+    const second = await launchTask(deps, { prompt: 'no key here', cwd: '/tmp' });
+
+    expect(second.duplicate).toBe(true);
+    expect(second.idempotentReplay).toBeUndefined();
+    expect(second.task.id).toBe(first.task.id);
+    expect(ledger.size()).toBe(0); // ledger never touched when no key is supplied
+  });
+
+  it('reservation released on creation failure — retry with the same key succeeds', async () => {
+    const adapter = deps.adapterRegistry.get('claude-code');
+    (adapter.launch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('boom'));
+
+    await expect(
+      launchTask(deps, { prompt: 'will fail then retry', cwd: '/tmp', idempotencyKey: 'k1' }),
+    ).rejects.toThrow('boom');
+    expect(store.listTasks()).toHaveLength(0); // failed launch cleaned up its task record
+
+    const retry = await launchTask(deps, { prompt: 'will fail then retry', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(retry.idempotentReplay).toBeUndefined();
+    expect(store.listTasks()).toHaveLength(1);
+    expect(adapter.launch).toHaveBeenCalledTimes(2);
+  });
+
+  it('TTL expiry: an entry older than 24h is compacted and the key becomes reusable', async () => {
+    let nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+    const ttlLedger = new IdempotencyLedger(ledgerDir, { ttlMs: 1000, now: () => nowMs });
+    await ttlLedger.load();
+    const ttlDeps: LaunchServiceDeps = { ...makeDeps(store), idempotencyLedger: ttlLedger };
+
+    const first = await launchTask(ttlDeps, { prompt: 'ttl one', cwd: '/tmp', idempotencyKey: 'k1' });
+
+    nowMs += 1001; // advance past the TTL
+    const second = await launchTask(ttlDeps, { prompt: 'ttl two', cwd: '/tmp', idempotencyKey: 'k1' });
+
+    expect(second.idempotentReplay).toBeUndefined();
+    expect(second.task.id).not.toBe(first.task.id);
+    expect(store.listTasks()).toHaveLength(2);
+  });
+
+  it('restart: ledger reloaded from disk still detects a replay', async () => {
+    const first = await launchTask(deps, { prompt: 'survives restart', cwd: '/tmp', idempotencyKey: 'k1' });
+
+    // Simulate a server restart: fresh ledger instance pointed at the same dir.
+    const reloadedLedger = new IdempotencyLedger(ledgerDir);
+    await reloadedLedger.load();
+    const reloadedDeps: LaunchServiceDeps = { ...makeDeps(store), idempotencyLedger: reloadedLedger };
+
+    const second = await launchTask(reloadedDeps, { prompt: 'survives restart', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(second.idempotentReplay).toBe(true);
+    expect(second.task.id).toBe(first.task.id);
+  });
+
+  it('review item 1: a ledger persist failure after a successful launch does not fail the caller, and same-process retry still replays', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // A kookrDir that was never created — atomicWriteFile fails (ENOENT:
+      // parent dir missing) when finalize() tries to persist, simulating a
+      // disk-full/permissions failure without mocking modules.
+      const brokenLedger = new IdempotencyLedger(join(ledgerDir, 'does-not-exist-subdir'));
+      await brokenLedger.load(); // tolerates the missing dir
+      const brokenDeps: LaunchServiceDeps = { ...makeDeps(store), idempotencyLedger: brokenLedger };
+
+      const result = await launchTask(brokenDeps, { prompt: 'disk full', cwd: '/tmp', idempotencyKey: 'k1' });
+      // The caller gets the real, successfully-launched task — no thrown error.
+      expect(result.idempotentReplay).toBeUndefined();
+      expect(result.task.prompt).toBe('disk full');
+      expect(store.listTasks()).toHaveLength(1); // the task really was created
+      expect(errorSpy).toHaveBeenCalled(); // logged loudly
+
+      // Same-process retry with the same key still replays (in-memory state
+      // survived the failed persist) instead of creating a duplicate.
+      const retry = await launchTask(brokenDeps, { prompt: 'disk full', cwd: '/tmp', idempotencyKey: 'k1' });
+      expect(retry.idempotentReplay).toBe(true);
+      expect(retry.task.id).toBe(result.task.id);
+      expect(brokenDeps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('review item 2: a terminal task that never ran (queued then cancelled, zero sessions) is NOT replayed — retry launches fresh', async () => {
+    // Force the very first launch straight into the "queued" (concurrency
+    // cap reached) path so it gets a task record with zero sessions —
+    // launchTaskCore's maxActive branch never calls adapter.launch.
+    const queuedDeps: LaunchServiceDeps = { ...deps, getMaxActiveTasks: () => 0 };
+    const queued = await launchTask(queuedDeps, { prompt: 'never launched', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(queued.queued).toBe(true);
+    expect(queued.task.sessions).toHaveLength(0);
+
+    // Simulate the hung-task reaper / a manual cancel reclaiming it before
+    // promotion ever ran adapter.launch — pending -> cancelled is valid.
+    store.cancelTask(queued.task.id);
+
+    // Retry with the same key, now with capacity — must launch fresh rather
+    // than replay a task that will never do the work being retried for.
+    const retry = await launchTask(deps, { prompt: 'never launched', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(retry.idempotentReplay).toBeUndefined();
+    expect(retry.task.id).not.toBe(queued.task.id);
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('review item 2: a terminal task that DID run (has a session) is still replayed', async () => {
+    const first = await launchTask(deps, { prompt: 'did real work', cwd: '/tmp', idempotencyKey: 'k1' });
+
+    // The mock adapter in this test harness does not attach a session
+    // itself, so simulate the agent having actually run and finished — same
+    // pattern as launch-dedup-integration.test.ts. addSession auto-transitions
+    // open/pending -> inProgress, so a separate startTask() is neither needed
+    // nor valid here.
+    store.addSession(first.task.id, {
+      tmuxSession: 'kookr-ran',
+      agentType: 'claude-code',
+      cwd: '/tmp',
+      createdAt: new Date(),
+      lastStatus: 'completed',
+    });
+    store.completeTask(first.task.id);
+
+    const retry = await launchTask(deps, { prompt: 'did real work', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(retry.idempotentReplay).toBe(true);
+    expect(retry.task.id).toBe(first.task.id);
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce(); // no second launch
+  });
+
+  it('review item 3: replay of a still-pending (queued) task preserves queued:true', async () => {
+    const queuedDeps: LaunchServiceDeps = { ...deps, getMaxActiveTasks: () => 0 };
+    const first = await launchTask(queuedDeps, { prompt: 'stays queued', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(first.queued).toBe(true);
+    expect(first.task.status).toBe('pending');
+
+    const replay = await launchTask(queuedDeps, { prompt: 'stays queued', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(replay.idempotentReplay).toBe(true);
+    expect(replay.queued).toBe(true);
+    expect(replay.task.id).toBe(first.task.id);
   });
 });
