@@ -139,6 +139,70 @@ interface BuildAgentLaunchContextOptions {
    * `{ ...process.env, ...spec.env }` merge.
    */
   basePath?: string;
+  /**
+   * Ceiling on the git-common-dir probe (issue #1526 Phase C / #1528).
+   * Defaults to {@link GIT_COMMON_DIR_TIMEOUT_MS}; tests shrink it.
+   */
+  gitCommonDirTimeoutMs?: number;
+  /**
+   * Test seam for the git-common-dir probe itself — inject a hung/failing
+   * resolver to exercise the degraded (no `KOOKR_GIT_COMMON_DIR`) path.
+   */
+  resolveGitCommonDirImpl?: (cwd: string) => Promise<string | null>;
+}
+
+/**
+ * Hard ceiling on the git-common-dir probe (issue #1526 Phase C / #1528).
+ *
+ * In the 2026-07-25 incident, three schedule-fired launches wedged for hours
+ * inside `buildAgentLaunchContext` under full-core CPU saturation — the only
+ * awaits in that window are this probe's filesystem ops (`stat`/`readFile`
+ * ride the libuv threadpool, which saturates under fork/load pressure; the
+ * probe historically also spawned `git`, hence the issue's framing). Either
+ * way the fix is the same: the probe is an *enhancement* (it only adds
+ * `KOOKR_GIT_COMMON_DIR` + two permission allowlist entries), never a launch
+ * prerequisite, so it gets a bound and degrades to "no git env" on expiry.
+ */
+export const GIT_COMMON_DIR_TIMEOUT_MS = 10_000;
+
+/**
+ * Run {@link resolveGitCommonDir} (or an injected resolver) with settle-once
+ * semantics under a hard timeout. First settlement wins:
+ * - resolver resolves in time → its value;
+ * - resolver rejects in time → `null` (degraded, warned);
+ * - timeout fires first → `null` (degraded, warned); any later settlement of
+ *   the abandoned resolver is ignored (`Promise.race` already subscribed to
+ *   it, so a late rejection can never become an unhandled rejection).
+ */
+export async function resolveGitCommonDirBounded(
+  cwd: string,
+  opts: { timeoutMs?: number; resolver?: (cwd: string) => Promise<string | null> } = {},
+): Promise<string | null> {
+  const timeoutMs = opts.timeoutMs ?? GIT_COMMON_DIR_TIMEOUT_MS;
+  const resolver = opts.resolver ?? resolveGitCommonDir;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      resolver(cwd).catch((err: unknown) => {
+        console.warn(
+          `[launch-context] git-common-dir probe failed for ${cwd} (proceeding without git env): ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+        );
+        return null;
+      }),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => {
+          console.warn(
+            `[launch-context] git-common-dir probe timed out after ${timeoutMs}ms for ${cwd} — ` +
+            'proceeding without KOOKR_GIT_COMMON_DIR (degraded, non-fatal)',
+          );
+          resolve(null);
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 export async function buildAgentLaunchContext(
@@ -180,7 +244,10 @@ export async function buildAgentLaunchContext(
     );
   }
 
-  const gitCommonDir = await resolveGitCommonDir(opts.cwd);
+  const gitCommonDir = await resolveGitCommonDirBounded(opts.cwd, {
+    ...(opts.gitCommonDirTimeoutMs !== undefined ? { timeoutMs: opts.gitCommonDirTimeoutMs } : {}),
+    ...(opts.resolveGitCommonDirImpl ? { resolver: opts.resolveGitCommonDirImpl } : {}),
+  });
   if (gitCommonDir) {
     env.KOOKR_GIT_COMMON_DIR = gitCommonDir;
     permissionAllowlist.push(

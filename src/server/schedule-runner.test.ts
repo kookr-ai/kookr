@@ -1112,3 +1112,84 @@ describe('isTaskBlockingSchedule', () => {
     expect(isTaskBlockingSchedule(task, now)).toBe(true);
   });
 });
+
+describe('ScheduleRunner launch timeout + dead-man wiring (issue #1526 Phase C)', () => {
+  let dir: string;
+  let store: ScheduleStore;
+  let service: ScheduleService;
+  let validator: ScheduleValidator;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'runner-c1-test-'));
+    store = new ScheduleStore(dir);
+    validator = new ScheduleValidator();
+    service = new ScheduleService({ store, validator });
+    await mkdir(join(dir, '.kookr', 'playbooks'), { recursive: true });
+    await writeFile(join(dir, '.kookr', 'playbooks', 'test.md'), `---
+name: Test Playbook
+parameters: []
+---
+
+Do the thing.
+`);
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('a launcher rejection shaped like LaunchTimeoutError records dispatch_failed / launch_error', async () => {
+    const schedule = store.create({
+      name: 'Times out',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    store.replace({
+      ...store.get(schedule.id)!,
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const timeoutError = Object.assign(
+      new Error('Agent launch timed out after 180s (agent claude-code, task t1) — launch abandoned and task cleaned up'),
+      { name: 'LaunchTimeoutError', code: 'launch_timeout' },
+    );
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => { throw timeoutError; },
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+    });
+    await runner.tick();
+
+    const after = store.get(schedule.id)!;
+    expect(after.latestExecution?.outcome).toBe('dispatch_failed');
+    expect(after.latestExecution?.reasonCode).toBe('launch_error');
+    expect(after.latestExecution?.message).toContain('timed out');
+    // The receipt is terminal — nothing left 'reserved' to wedge the schedule.
+    expect(after.currentExecution?.status).toBe('terminal');
+  });
+
+  it('the dead-man switch is evaluated once per tick with the full schedule list', async () => {
+    const check = vi.fn();
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => ({ task: { id: 'unused' } as any, queued: false }),
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+      deadMan: { check },
+    });
+
+    await runner.tick();
+    await runner.tick();
+
+    expect(check).toHaveBeenCalledTimes(2);
+    expect(check).toHaveBeenCalledWith(store.list());
+  });
+});

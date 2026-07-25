@@ -3,6 +3,7 @@ import { ScheduleStore } from '../../core/schedule.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
 import { launchTask, type LaunchServiceDeps } from '../launch-service.js';
 import { isTaskBlockingSchedule, ScheduleRunner } from '../schedule-runner.js';
+import { ScheduleDeadManSwitch } from '../schedule-dead-man.js';
 import { ScheduleService } from '../schedule-service.js';
 import { ScheduleValidator } from '../schedule-validator.js';
 
@@ -14,6 +15,12 @@ export interface ScheduleRuntimeDeps {
   broadcastToAll: (msg: ServerMessage) => void;
   /** Operator drain gate (issue #659): suppress schedule firing while draining. */
   isAccepting?: () => boolean;
+  /**
+   * Live getter for the scheduled-task starvation dead-man window, in ms
+   * (issue #1526 Phase C, `deadManScheduleMinutes` setting). Absent falls
+   * back to the module default (120m).
+   */
+  getDeadManScheduleMs?: () => number;
 }
 
 export interface ScheduleRuntime {
@@ -60,6 +67,12 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     // status the runner uses to distinguish skipped_coalesced (still
     // pending) from skipped_active (actively running).
     getBlockingTaskStatus: (taskId) => deps.taskStore.getTask(taskId)?.status,
+    // issue #1526 Phase C: dead-man switch for scheduled-task starvation,
+    // evaluated on the runner's existing tick. Alert-only.
+    deadMan: new ScheduleDeadManSwitch({
+      broadcast: deps.broadcastToAll,
+      ...(deps.getDeadManScheduleMs ? { getDeadManMs: deps.getDeadManScheduleMs } : {}),
+    }),
   });
 
   return { scheduleStore, scheduleValidator, scheduleService, scheduleRunner };

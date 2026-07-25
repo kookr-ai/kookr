@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, type LaunchServiceDeps } from './launch-service.js';
 import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
 import { IdempotencyLedger } from '../core/idempotency-ledger.js';
 
@@ -1668,5 +1668,117 @@ describe('launchTask idempotency (issue #1526 Phase B)', () => {
     expect(replay.idempotentReplay).toBe(true);
     expect(replay.queued).toBe(true);
     expect(replay.task.id).toBe(first.task.id);
+  });
+});
+
+describe('launchTask hard timeout (issue #1526 Phase C / #1528)', () => {
+  it('a never-settling adapter launch rejects with LaunchTimeoutError and cleans up like a thrown launch', async () => {
+    const taskStore = new TaskStore();
+    const deps: LaunchServiceDeps = { ...makeDeps(taskStore), getLaunchTimeoutMs: () => 40 };
+    const adapter = deps.adapterRegistry.get('claude-code');
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<string>(() => { /* never settles — the #1528 wedge */ }),
+    );
+
+    await expect(launchTask(deps, { prompt: 'wedged launch', cwd: '/tmp' }))
+      .rejects.toBeInstanceOf(LaunchTimeoutError);
+
+    // Same cleanup as a thrown launch: task deleted, reservation released.
+    expect(taskStore.listTasks()).toHaveLength(0);
+    expect(taskStore.getActiveCount()).toBe(0);
+  });
+
+  it('the timeout error is distinguishable via the type guard and code', async () => {
+    const taskStore = new TaskStore();
+    const deps: LaunchServiceDeps = { ...makeDeps(taskStore), getLaunchTimeoutMs: () => 25 };
+    const adapter = deps.adapterRegistry.get('claude-code');
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<string>(() => {}),
+    );
+
+    let caught: unknown;
+    try {
+      await launchTask(deps, { prompt: 'wedged launch', cwd: '/tmp' });
+    } catch (err) {
+      caught = err;
+    }
+    expect(isLaunchTimeoutError(caught)).toBe(true);
+    expect((caught as LaunchTimeoutError).code).toBe('launch_timeout');
+    expect((caught as LaunchTimeoutError).message).toContain('timed out');
+  });
+
+  it('late RESOLUTION after the timeout does not resurrect state and stops the orphaned session', async () => {
+    const taskStore = new TaskStore();
+    const deps: LaunchServiceDeps = { ...makeDeps(taskStore), getLaunchTimeoutMs: () => 30 };
+    const adapter = deps.adapterRegistry.get('claude-code');
+    let settleLate!: (sessionId: string) => void;
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<string>((resolve) => { settleLate = resolve; }),
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await expect(launchTask(deps, { prompt: 'late resolver', cwd: '/tmp' }))
+        .rejects.toBeInstanceOf(LaunchTimeoutError);
+      expect(taskStore.listTasks()).toHaveLength(0);
+
+      // The abandoned promise settles LATE with a real session id.
+      settleLate('tmux-late-1');
+      await vi.waitFor(() => {
+        expect(adapter.stop).toHaveBeenCalledWith('tmux-late-1');
+      });
+
+      // No task record came back, no reservation, no lifecycle registration.
+      expect(taskStore.listTasks()).toHaveLength(0);
+      expect(taskStore.getActiveCount()).toBe(0);
+      expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('settled LATE'))).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('late REJECTION after the timeout is swallowed (logged), never unhandled', async () => {
+    const taskStore = new TaskStore();
+    const deps: LaunchServiceDeps = { ...makeDeps(taskStore), getLaunchTimeoutMs: () => 30 };
+    const adapter = deps.adapterRegistry.get('claude-code');
+    let rejectLate!: (err: Error) => void;
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<string>((_resolve, reject) => { rejectLate = reject; }),
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await expect(launchTask(deps, { prompt: 'late rejecter', cwd: '/tmp' }))
+        .rejects.toBeInstanceOf(LaunchTimeoutError);
+
+      rejectLate(new Error('Task not found: gone'));
+      await vi.waitFor(() => {
+        expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('rejected after timeout'))).toBe(true);
+      });
+      expect(taskStore.listTasks()).toHaveLength(0);
+      expect(adapter.stop).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('a launch that resolves within the timeout is untouched by the wrapper', async () => {
+    const taskStore = new TaskStore();
+    const deps: LaunchServiceDeps = { ...makeDeps(taskStore), getLaunchTimeoutMs: () => 5_000 };
+
+    const result = await launchTask(deps, { prompt: 'fast launch', cwd: '/tmp' });
+    expect(result.queued).toBe(false);
+    expect(taskStore.getTask(result.task.id)).toBeDefined();
+  });
+
+  it('falls back to the default timeout when the getter returns a non-positive value', async () => {
+    // Guard against a broken live getter disabling the bound entirely: the
+    // race must still be armed (we only assert the launch succeeds and no
+    // timer misfires with 0/NaN — a 0ms timeout would kill every launch).
+    const taskStore = new TaskStore();
+    const deps: LaunchServiceDeps = { ...makeDeps(taskStore), getLaunchTimeoutMs: () => 0 };
+    const result = await launchTask(deps, { prompt: 'default bound', cwd: '/tmp' });
+    expect(result.queued).toBe(false);
+    expect(taskStore.getTask(result.task.id)).toBeDefined();
   });
 });

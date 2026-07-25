@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
 import { loadTasksWithRecovery, saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
-import { reconcile, type ReconciliationResult } from './reconciliation.js';
+import { reconcile, reconcileStaleOpenLaunches, type ReconciliationResult } from './reconciliation.js';
 import { type AgentPreflightSnapshot, type PreflightLogger } from './agent-preflight.js';
 import type { ServerMessage, SnapshotMessage } from '../shared/contracts/messages.js';
 import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
@@ -370,6 +370,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Live getters for the hung-task reaper (issue #1526 Phase A / FM6).
   const getHungTaskReapEnabled = () => currentSettings.hungTaskReapEnabled;
   const getHungTaskReapMs = () => currentSettings.hungTaskReapMinutes * 60_000;
+  // Live getter for the adapter-launch hard timeout (issue #1526 Phase C /
+  // #1528). Same live-binding pattern — applies to the next launch.
+  const getLaunchTimeoutMs = () => currentSettings.launchTimeoutSeconds * 1000;
+  // Live getter for the scheduled-task starvation dead-man window (issue
+  // #1526 Phase C). Read on every scheduler tick.
+  const getDeadManScheduleMs = () => currentSettings.deadManScheduleMinutes * 60_000;
   // #681: live getter for the per-agent-type effort defaults. Reads the live
   // `currentSettings` binding so an operator's settings PUT takes effect on the
   // next launch without a restart (the PUT path reassigns `currentSettings`).
@@ -697,6 +703,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Reconcile with live backend sessions
   const reconcileResult = await reconcile(taskStore, terminalBackend, worktreeRegistry);
+  // Boot-only sweep (issue #1526 Phase C / #1528): launches that died with
+  // the previous process leave open/zero-session tasks that reconcile()'s
+  // dead-session logic never touches. Terminate them here and merge into
+  // tasksTerminated so claim release / onTaskOutcome below treat them like
+  // any other boot-terminated task. Runs BEFORE createScheduleRuntime so
+  // scheduleService.reconcileOnStartup sees their terminal status.
+  reconcileResult.tasksTerminated.push(...reconcileStaleOpenLaunches(taskStore));
   if (reconcileResult.resumed.length > 0) {
     console.log(`Resumed monitoring: ${reconcileResult.resumed.join(', ')}`);
   }
@@ -911,6 +924,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     validateLaunchCwd: config.validateLaunchCwd,
     bypassAllPermissions,
     idempotencyLedger,
+    getLaunchTimeoutMs,
   };
 
   let remoteLaunchBroker: import('../remote/launch-broker.js').RemoteLaunchBroker | undefined;
@@ -1034,6 +1048,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getMaxActiveTasks,
     broadcastToAll,
     isAccepting: () => drainController.isAccepting(),
+    getDeadManScheduleMs,
   });
   realtime.setScheduleStore(scheduleStore);
   realtime.setSnapshotAchievementsReady(true);

@@ -219,6 +219,64 @@ export async function reconcile(
 }
 
 /**
+ * BOOT-ONLY sweep for launches that died with the previous process (issue
+ * #1526 Phase C / #1528). A task in `open` status with ZERO sessions exists
+ * only while a launch is in flight (`launchTaskCore` creates it, then awaits
+ * `adapter.launch`, which attaches the first session). A launch cannot
+ * survive a process restart — `beginLaunch` reservations are deliberately
+ * in-memory only — so at boot every open/zero-session task without a fresh
+ * reservation is stale by construction: its launcher is gone, no session will
+ * ever attach, and `reconcile()`'s dead-session logic never touches it
+ * (that path requires `sessions.length > 0`).
+ *
+ * Disposition follows reconcile's existing crash convention: no session ever
+ * attached, so there is no positive completed_turn evidence — the task goes
+ * `open → inProgress → terminated` (user must acknowledge or reopen), the
+ * same terminal status a mid-turn crash gets. Deleting the record instead
+ * (the in-process launch-failure cleanup) would silently erase the evidence
+ * that a scheduled fire died.
+ *
+ * What distinguishes a legitimately mid-flight launch: a FRESH
+ * `beginLaunch` reservation (`taskStore.hasFreshLaunchReservation`). At boot
+ * the reservation map is empty, so nothing is protected — correct, because
+ * no launch survives the restart. The guard is what makes this function safe
+ * against misuse from a periodic path, and it is the tested discriminator.
+ *
+ * Returns the terminated task ids; the caller merges them into
+ * `ReconciliationResult.tasksTerminated` so downstream boot handling (issue
+ * claim release, onTaskOutcome, logging) treats them like any other
+ * boot-terminated task.
+ */
+export function reconcileStaleOpenLaunches(
+  taskStore: TaskStore,
+): string[] {
+  const terminated: string[] = [];
+  for (const task of taskStore.listTasks()) {
+    if (task.status !== 'open') continue;
+    if (task.sessions.length > 0) continue;
+    if (taskStore.hasFreshLaunchReservation(task.id)) continue;
+    try {
+      // open → inProgress → terminated: the status machine has no direct
+      // open→terminated edge; reconcile()'s dead-session path uses the same
+      // two-step transition.
+      taskStore.startTask(task.id);
+      taskStore.terminateTask(task.id);
+      terminated.push(task.id);
+      console.warn(
+        `[startup-reconcile] terminated stale launch task ${task.id} ` +
+        '(open with zero sessions — its launcher died with the previous process)',
+      );
+    } catch (err) {
+      console.error(
+        `[startup-reconcile] failed to terminate stale launch task ${task.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  return terminated;
+}
+
+/**
  * A dead-session task ended on a clean turn boundary when its most recent
  * session reported `completed_turn` as its last turn state — the agent emitted
  * a normal Stop and was idle with nothing pending before the session went away.

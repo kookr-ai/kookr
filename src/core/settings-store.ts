@@ -124,6 +124,26 @@ export interface KookrSettings {
   hungTaskReapEnabled: boolean;
   /** Minutes of total silence (all liveness channels) before a task is reaped. */
   hungTaskReapMinutes: number;
+  /**
+   * Hard ceiling (seconds) on a single adapter launch (issue #1526 Phase C /
+   * #1528). `launchTaskCore` races `adapter.launch()` against this timeout;
+   * on expiry the launch is failed with `LaunchTimeoutError`, the task record
+   * is deleted and its `beginLaunch` reservation released — so a wedged
+   * launcher (e.g. the 2026-07-25 CPU-saturation hang) can never hold a
+   * capacity slot and a schedule's `reserved` execution for hours. Read via a
+   * live getter, so a settings change applies to the next launch without a
+   * restart.
+   */
+  launchTimeoutSeconds: number;
+  /**
+   * Dead-man switch window (minutes) for scheduled-task starvation (issue
+   * #1526 Phase C). If fires were due within this window but no scheduled
+   * execution was dispatched or completed — or any enabled schedule's last 3
+   * consecutive outcomes are capacity/dispatch failures — the scheduler tick
+   * raises one operational `alert` (severity warning) per starvation episode.
+   * Alert-only by design in this phase: no self-heal action is taken.
+   */
+  deadManScheduleMinutes: number;
 }
 
 export const DEFAULT_SETTINGS: KookrSettings = {
@@ -145,6 +165,8 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   completionReadyTtlMinutes: 120,
   hungTaskReapEnabled: true,
   hungTaskReapMinutes: 180,
+  launchTimeoutSeconds: 180,
+  deadManScheduleMinutes: 120,
 };
 
 const MIN_POLLING_INTERVAL = 15;
@@ -169,6 +191,18 @@ const MAX_COMPLETION_READY_TTL_MIN = 10_080;
 // never races normal stuck-detection; ceiling of 10080 (7 days) mirrors the TTL.
 const MIN_HUNG_TASK_REAP_MIN = 15;
 const MAX_HUNG_TASK_REAP_MIN = 10_080;
+// Launch timeout bounds (seconds), issue #1526 Phase C / #1528. Floor of 30
+// keeps a slow-but-working cold launch (dtach spawn + agent boot + prompt
+// delivery, worst observed ~20s) from being killed spuriously; ceiling of 900
+// bounds even the most generous operator override — the incident's launches
+// starved for HOURS, and 15 minutes is already far past any legitimate spawn.
+const MIN_LAUNCH_TIMEOUT_SEC = 30;
+const MAX_LAUNCH_TIMEOUT_SEC = 900;
+// Dead-man schedule-starvation window bounds (minutes). Floor of 30 stays
+// above the runner's 60s tick plus one schedule cadence so a single slow fire
+// can't trip it; ceiling of 1440 (24h) keeps the switch meaningful.
+const MIN_DEAD_MAN_SCHEDULE_MIN = 30;
+const MAX_DEAD_MAN_SCHEDULE_MIN = 1440;
 
 /** Validate and clamp a raw settings object, filling in defaults for missing/invalid values. */
 export function validateSettings(raw: Record<string, unknown>): KookrSettings {
@@ -229,6 +263,22 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     hungTaskReapMinutes = Math.max(
       MIN_HUNG_TASK_REAP_MIN,
       Math.min(MAX_HUNG_TASK_REAP_MIN, Math.round(raw.hungTaskReapMinutes)),
+    );
+  }
+
+  let launchTimeoutSeconds = DEFAULT_SETTINGS.launchTimeoutSeconds;
+  if (typeof raw.launchTimeoutSeconds === 'number' && Number.isFinite(raw.launchTimeoutSeconds)) {
+    launchTimeoutSeconds = Math.max(
+      MIN_LAUNCH_TIMEOUT_SEC,
+      Math.min(MAX_LAUNCH_TIMEOUT_SEC, Math.round(raw.launchTimeoutSeconds)),
+    );
+  }
+
+  let deadManScheduleMinutes = DEFAULT_SETTINGS.deadManScheduleMinutes;
+  if (typeof raw.deadManScheduleMinutes === 'number' && Number.isFinite(raw.deadManScheduleMinutes)) {
+    deadManScheduleMinutes = Math.max(
+      MIN_DEAD_MAN_SCHEDULE_MIN,
+      Math.min(MAX_DEAD_MAN_SCHEDULE_MIN, Math.round(raw.deadManScheduleMinutes)),
     );
   }
 
@@ -307,6 +357,8 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       completionReadyTtlMinutes,
       hungTaskReapEnabled,
       hungTaskReapMinutes,
+      launchTimeoutSeconds,
+      deadManScheduleMinutes,
     },
   };
 }
