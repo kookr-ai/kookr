@@ -6,8 +6,8 @@ Kookr exposes local HTTP and WebSocket endpoints from the Hono server. In develo
 
 | Endpoint | Description |
 | --- | --- |
-| `GET /api/health` | Server status, agent count, build info, launch dependency degradation, capacity ledger, and (when `kookrDir` is set) a cached 24h `lessonYield` snapshot (issue #1538) |
-| `GET /api/diagnostics/lesson-yield` | Per-window lesson yield (`?days=1..30`): decided / completed tasks from hook-log scans (issue #1538) |
+| `GET /api/health` | Server status, agent count, build info, launch dependency degradation, capacity ledger, and (when `kookrDir` is set) a stale-while-revalidate 24h `lessonYield` snapshot served from the last background scan — absent until the first scan completes; the request path never scans hook logs (issues #1538, #1553) |
+| `GET /api/diagnostics/lesson-yield` | Per-window lesson yield (`?days=1..30`): decided / completed tasks from hook-log scans; single-flight per window, `503 lesson_yield_scan_timeout` when the 30s scan bound expires (issues #1538, #1553) |
 | `GET /api/health/stt` | Bundled speech-to-text container health |
 | `GET /api/startup-summary` | Crash-recovery startup summary fetched once on UI mount |
 | `GET /metrics` | Prometheus text exposition for request durations, circuit breakers, attention-queue suppressions, audit-sink health, aggregate auth-throttle counters, and outbound finding-webhook delivery outcomes |
