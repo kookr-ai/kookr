@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readdirSync, writeFileSync, copyFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
@@ -438,5 +439,44 @@ describe('GrokBuildAdapter', () => {
     const sessionId = await adapter.launch(task.id, 'x', '/workspace');
     await adapter.sendInput(sessionId, 'hello grok');
     expect(backend.sessions.get(sessionId)!.keysReceived.join('\n')).toContain('hello grok');
+  });
+
+  describe('token telemetry (issue #1581)', () => {
+    const FIXTURE = fileURLToPath(new URL('./__fixtures__/grok-session-sample.jsonl', import.meta.url));
+
+    function stageTranscript(grokHome: string, cwd: string, sessionId: string): void {
+      const dir = join(grokHome, 'sessions', encodeURIComponent(cwd), sessionId);
+      mkdirSync(dir, { recursive: true });
+      copyFileSync(FIXTURE, join(dir, 'updates.jsonl'));
+    }
+
+    test('records mapped token usage from the session transcript on stop', async () => {
+      const adapter = makeAdapter();
+      const task = taskStore.createTask('meter me', '/workspace');
+      const sessionId = await adapter.launch(task.id, 'meter me', '/workspace');
+      const grokHome = backend.sessions.get(sessionId)!.spec.env!.GROK_HOME!;
+      // Grok writes per-turn usage into <GROK_HOME>/sessions/<enc-cwd>/<sid>/updates.jsonl.
+      stageTranscript(grokHome, '/workspace', '019f0000-0000-0000-0000-000000000001');
+
+      await adapter.stop(sessionId);
+
+      expect(taskStore.getTask(task.id)!.tokenUsage).toEqual({
+        inputTokens: 63287, // 160087 gross − 96800 cached, summed over both turns
+        outputTokens: 1358, // outputTokens already includes reasoning — not re-added
+        cacheReadTokens: 96800,
+        cacheWriteTokens: 0,
+        costUsd: 0,
+        model: 'grok-4.5-build',
+      });
+    });
+
+    test('leaves tokenUsage unset when no transcript exists (missing-source fallback)', async () => {
+      const adapter = makeAdapter();
+      const task = taskStore.createTask('no transcript', '/workspace');
+      const sessionId = await adapter.launch(task.id, 'no transcript', '/workspace');
+
+      await expect(adapter.stop(sessionId)).resolves.toBeUndefined();
+      expect(taskStore.getTask(task.id)!.tokenUsage).toBeUndefined();
+    });
   });
 });

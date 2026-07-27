@@ -44,6 +44,7 @@ import { resolveHookWriterPath } from '../core/hook-writer-paths.js';
 import { withTimeout } from '../core/with-timeout.js';
 import { HookParseError } from '../core/hook-parser.js';
 import { extractGrokHookHeader, parseGrokHookEvent, type RawGrokHookHeader } from './grok-hook-decoder.js';
+import { readGrokHomeUsage, mapGrokUsageToTokenUsage } from './grok-rollout-scanner.js';
 import { composeGrokHome, type GrokHomeFs } from './grok-home-composer.js';
 import { formatGrokAuthPreflightFailure, inspectGrokAuthFile } from './grok-auth-preflight.js';
 import {
@@ -336,7 +337,7 @@ export class GrokBuildAdapter implements AgentAdapter {
     // toolkit plugins. Credentials stay on the operator's real ~/.grok/auth.json
     // (shared via GROK_AUTH_PATH) so N agents do not clone one rotating OIDC RT.
     const sessionRoot = await mkdtemp(join(this.sessionHomeRoot, `kookr-grok-${tmuxName}-`));
-    const grokHome = join(sessionRoot, '.grok');
+    const grokHome = grokHomeFor(sessionRoot);
     this.sessionHomes.set(tmuxName, sessionRoot);
     const hookFile = `${this.hooksDir}/${tmuxName}.jsonl`;
     const monitoring = {
@@ -533,11 +534,41 @@ export class GrokBuildAdapter implements AgentAdapter {
     const resolver = this.initialPromptSubmitResolvers.get(tmuxName);
     if (resolver) resolver();
     this.initialPromptSubmitResolvers.delete(tmuxName);
+    // Extract token telemetry BEFORE the ephemeral GROK_HOME is torn down —
+    // this is the last point at which the session transcript still exists.
+    await this.recordSessionTokenUsage(tmuxName);
     await this.backend.killSession(tmuxName);
     this.hookSettings.delete(tmuxName);
     this.tmuxToTaskId.delete(tmuxName);
     this.lastDisplays.delete(tmuxName);
     await this.cleanupSessionHome(tmuxName);
+  }
+
+  /**
+   * Read Grok's per-turn token telemetry from the session's transcripts and
+   * record it on the owning task (issue #1581). Grok writes `turn_completed`
+   * usage into `<GROK_HOME>/sessions/**​/updates.jsonl`; the managed home is an
+   * ephemeral per-session directory that {@link cleanupSessionHome} deletes on
+   * stop, so this runs at teardown while the transcript is still present. The
+   * mapping mirrors the Codex rollout-metering conversion so the recorded
+   * {@link import('../core/types.js').TokenUsage} shape is identical across
+   * adapters. Best-effort: a missing/unparseable transcript leaves `tokenUsage`
+   * unset (marked unavailable downstream) rather than failing teardown.
+   */
+  private async recordSessionTokenUsage(tmuxName: string): Promise<void> {
+    const sessionRoot = this.sessionHomes.get(tmuxName);
+    if (!sessionRoot) return;
+    const taskId = this.tmuxToTaskId.get(tmuxName) ?? this.taskStore.findTaskBySession(tmuxName)?.id;
+    if (!taskId) return;
+    try {
+      const usage = await readGrokHomeUsage(grokHomeFor(sessionRoot));
+      if (!usage) return;
+      if (!this.taskStore.getTask(taskId)) return;
+      this.taskStore.updateTokenUsage(taskId, mapGrokUsageToTokenUsage(usage));
+      for (const handler of this.refreshHandlers) handler();
+    } catch {
+      /* telemetry is best-effort — never block teardown on a scan failure */
+    }
   }
 
   async captureDisplay(tmuxName: string): Promise<string> {
@@ -752,4 +783,15 @@ export class GrokBuildAdapter implements AgentAdapter {
 
 function sleep(ms: number): Promise<void> {
   return ms > 0 ? new Promise((res) => setTimeout(res, ms)) : Promise.resolve();
+}
+
+/**
+ * The composed `GROK_HOME` inside a per-session root (`<sessionRoot>/.grok`).
+ * `sessionHomes` stores the session root (the whole tree {@link
+ * GrokBuildAdapter.cleanupSessionHome} removes); both the launch composer and
+ * the stop-time metering read the `.grok` subdirectory, so the layout is
+ * derived here once.
+ */
+function grokHomeFor(sessionRoot: string): string {
+  return join(sessionRoot, '.grok');
 }
