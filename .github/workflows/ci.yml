@@ -69,13 +69,16 @@ jobs:
         if: steps.filter.outputs.code != 'false'
         run: pnpm check:e2e
 
-      # The four validators are cheap (<2s each) and cover docs/skills-only
+      # These validators are cheap (<2s each) and cover docs/skills-only
       # changes, so they run unconditionally.
       - name: Validate skill frontmatter
         run: pnpm validate:skills
 
       - name: Validate bundled playbooks parse
         run: pnpm validate:playbooks
+
+      - name: Validate CI-rerun bound present
+        run: pnpm validate:rerun-bound
 
       - name: Validate documented commands
         run: pnpm validate:docs-commands

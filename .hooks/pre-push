@@ -313,6 +313,15 @@ if ! pnpm validate:docs-commands; then
   exit 1
 fi
 
+echo "Validating CI-rerun bound..."
+if ! pnpm validate:rerun-bound; then
+  echo ""
+  echo "Push rejected: CI-rerun-bound validation failed (issue #1561)."
+  echo "The max-2-rerun / report-and-stop bound (with #1198 cross-reference)"
+  echo "must stay present in the pr-lifecycle skill and both implement playbooks."
+  exit 1
+fi
+
 echo "Validating requirements status matrix..."
 if ! pnpm validate:requirements; then
   echo ""
