@@ -91,6 +91,32 @@ describe('agent-launch-context', () => {
     ]);
   });
 
+  // issue #1562: unattended/autonomous tasks hard-deny interactive tools so a
+  // blocking call fails fast instead of hanging on an unanswerable prompt.
+  test('adds interactive-tool deny rules for unattended tasks', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'Autonomous task', cwd: '/repo', unattended: true });
+    const context = await buildAgentLaunchContext({
+      taskStore,
+      taskId: task.id,
+      cwd: makeTempDir(),
+    });
+
+    expect(context.permissionDenylist).toEqual(['AskUserQuestion']);
+  });
+
+  test('does not add deny rules for attended tasks', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'Interactive task', cwd: '/repo' });
+    const context = await buildAgentLaunchContext({
+      taskStore,
+      taskId: task.id,
+      cwd: makeTempDir(),
+    });
+
+    expect(context.permissionDenylist).toEqual([]);
+  });
+
   test('maps linked worktrees back to the shared git common dir', async () => {
     const rootDir = makeTempDir();
     const mainGitDir = join(rootDir, 'repo', '.git');
