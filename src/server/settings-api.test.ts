@@ -77,6 +77,7 @@ describe('Settings API', () => {
       pendingTaskTtlMinutes: 240,
       spawnBurstLimit: 30,
       spawnBurstWindowMinutes: 10,
+      postMergeCleanupBudgetMinutes: 10,
       loadedFromDefaults: true,
       warnings: [],
     });

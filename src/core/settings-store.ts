@@ -180,6 +180,17 @@ export interface KookrSettings {
   spawnBurstLimit: number;
   /** Sliding-window size (minutes) for {@link spawnBurstLimit}. */
   spawnBurstWindowMinutes: number;
+  /**
+   * Post-merge cleanup budget (minutes), issue #1560. A running task whose PR
+   * has merged but whose post-merge cleanup tail (branch-delete push, CI-rerun
+   * loops, waiting on input) drags on is auto-completed once this budget —
+   * measured from when the merge was first observed — is exceeded, by raising
+   * a `completion_ready` signal through the #1541 outbox and running the normal
+   * completion lifecycle. Fires well before the hung-task reaper (~10-15m vs
+   * hours), which stays the backstop. Read via a live getter, so a settings
+   * change applies on the next liveness tick without a restart.
+   */
+  postMergeCleanupBudgetMinutes: number;
 }
 
 export const DEFAULT_SETTINGS: KookrSettings = {
@@ -207,6 +218,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   pendingTaskTtlMinutes: 240,
   spawnBurstLimit: 30,
   spawnBurstWindowMinutes: 10,
+  postMergeCleanupBudgetMinutes: 10,
 };
 
 const MIN_POLLING_INTERVAL = 15;
@@ -262,6 +274,13 @@ const MIN_SPAWN_BURST_LIMIT = 5;
 const MAX_SPAWN_BURST_LIMIT = 500;
 const MIN_SPAWN_BURST_WINDOW_MIN = 1;
 const MAX_SPAWN_BURST_WINDOW_MIN = 120;
+// Post-merge cleanup budget bounds (minutes), issue #1560. Floor of 1 keeps a
+// minimum tail window (a merged PR's branch-delete push + snapshot settle);
+// ceiling of 120 (2h) stays comfortably below the hung-task reaper's 180m
+// default so this delivery-aware completion always fires first, and stops a
+// fat-fingered value from effectively disabling it.
+const MIN_POST_MERGE_CLEANUP_BUDGET_MIN = 1;
+const MAX_POST_MERGE_CLEANUP_BUDGET_MIN = 120;
 
 /** Validate and clamp a raw settings object, filling in defaults for missing/invalid values. */
 export function validateSettings(raw: Record<string, unknown>): KookrSettings {
@@ -373,6 +392,14 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     );
   }
 
+  let postMergeCleanupBudgetMinutes = DEFAULT_SETTINGS.postMergeCleanupBudgetMinutes;
+  if (typeof raw.postMergeCleanupBudgetMinutes === 'number' && Number.isFinite(raw.postMergeCleanupBudgetMinutes)) {
+    postMergeCleanupBudgetMinutes = Math.max(
+      MIN_POST_MERGE_CLEANUP_BUDGET_MIN,
+      Math.min(MAX_POST_MERGE_CLEANUP_BUDGET_MIN, Math.round(raw.postMergeCleanupBudgetMinutes)),
+    );
+  }
+
   const cleanupWorktreeOnComplete = typeof raw.cleanupWorktreeOnComplete === 'boolean'
     ? raw.cleanupWorktreeOnComplete
     : DEFAULT_SETTINGS.cleanupWorktreeOnComplete;
@@ -454,6 +481,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       pendingTaskTtlMinutes,
       spawnBurstLimit,
       spawnBurstWindowMinutes,
+      postMergeCleanupBudgetMinutes,
     },
   };
 }
