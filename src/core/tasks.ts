@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { DEFAULT_AGENT_TYPE, type AgentType } from './agent-types.js';
 import type { CompletionDigest } from './completion-digest.js';
 import { evaluateCompletionSignal, type CompletionSignalDecision } from './completion-signal.js';
+import { deterministicTaskName } from './task-naming.js';
+import { displayPromptForTask } from './prompt-display.js';
 import type { AgentEvent } from './types.js';
 import type { IssueClaim } from './issue-claim-types.js';
 import type { CriteriaCompletionVerdict } from '../shared/contracts/completion-digest.js';
@@ -206,7 +208,22 @@ export class TaskStore {
       createdAt: now,
       updatedAt: now,
     };
-    if (name) task.name = name.trim() || undefined;
+    // Name every task from birth (issue #1554). An explicit name (playbook or
+    // user-supplied) wins and is authoritative; otherwise apply the
+    // deterministic prompt-derived name and mark it `autoNamed` so the async
+    // LLM namer may later upgrade it. This closes the killed-launcher gap where
+    // `reconcileStaleOpenLaunches` terminated a task before post-launch naming
+    // ever ran, leaving it terminal with `name=null`.
+    const explicitName = name?.trim();
+    if (explicitName) {
+      task.name = explicitName;
+    } else {
+      // Derive from the display prompt (launch-context guardrail stripped),
+      // matching what the async LLM namer and snapshot projection use, so the
+      // placeholder is not the injected worktree preamble.
+      task.name = deterministicTaskName(displayPromptForTask({ prompt, userPrompt }), cwd);
+      task.autoNamed = true;
+    }
     if (playbookId) task.playbookId = playbookId;
     if (projectId) task.projectId = projectId;
     if (playbookParameterValues) {
@@ -591,6 +608,10 @@ export class TaskStore {
       throw new Error(`Task not found: ${id}`);
     }
     task.name = name.trim() || undefined;
+    // A rename yields an authoritative name (LLM upgrade, user edit, or the
+    // reconcile backstop); it is no longer the creation-time placeholder, so
+    // the auto-name marker is cleared and future auto-naming will not touch it.
+    delete task.autoNamed;
     task.updatedAt = new Date();
     return cloneTask(task);
   }

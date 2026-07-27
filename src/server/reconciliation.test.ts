@@ -848,4 +848,37 @@ describe('reconcileStaleOpenLaunches (issue #1526 Phase C / #1528, boot-only)', 
     expect(taskStore.getTask(done.id)!.status).toBe('completed');
     expect(taskStore.getTask(running.id)!.status).toBe('inProgress');
   });
+
+  // Issue #1554: the killed-launcher/reconcile path must never leave a task
+  // terminal with name=null.
+  test('a terminated stale-launch task ends terminal with a non-null name', () => {
+    const task = taskStore.createTask('Deploy restart killed this launcher', '/cwd');
+
+    const terminated = reconcileStaleOpenLaunches(taskStore);
+
+    expect(terminated).toEqual([task.id]);
+    const after = taskStore.getTask(task.id)!;
+    expect(after.status).toBe('terminated');
+    expect(after.name).toBe('Deploy restart killed this launcher');
+    expect(after.name).toBeTruthy();
+  });
+
+  test('a legacy unnamed task gets the deterministic fallback name before termination (backstop)', () => {
+    // Simulate a task persisted before creation-time naming existed: force the
+    // stored record back to nameless, as a legacy tasks.json load would.
+    const task = taskStore.createTask('Legacy launch persisted before #1554', '/cwd');
+    const stored = taskStore.getTaskForMutation(task.id)!;
+    delete stored.name;
+    delete stored.autoNamed;
+    expect(taskStore.getTask(task.id)!.name).toBeUndefined();
+
+    const terminated = reconcileStaleOpenLaunches(taskStore);
+
+    expect(terminated).toEqual([task.id]);
+    const after = taskStore.getTask(task.id)!;
+    expect(after.status).toBe('terminated');
+    // No code path reaches a terminal state with name=null.
+    expect(after.name).toBe('Legacy launch persisted before #1554');
+    expect(after.name).toBeTruthy();
+  });
 });

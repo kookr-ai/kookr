@@ -63,6 +63,35 @@ function waitForTaskName(server: KookrServerInternal, taskId: string, timeoutMs 
   });
 }
 
+/**
+ * Poll until a task's name equals `expected`. Tasks are now named from birth
+ * (issue #1554: deterministic placeholder at creation), so `waitForTaskName`
+ * resolves on that placeholder before the async LLM upgrade lands — assertions
+ * that target the upgraded name must wait for the specific value.
+ */
+function waitForTaskNameToBe(
+  server: KookrServerInternal,
+  taskId: string,
+  expected: string,
+  timeoutMs = 3000,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      clearInterval(poll);
+      const actual = server.taskStore.getTask(taskId)?.name;
+      reject(new Error(`Timed out waiting for name "${expected}" (got "${actual}", ${timeoutMs}ms)`));
+    }, timeoutMs);
+
+    const poll = setInterval(() => {
+      if (server.taskStore.getTask(taskId)?.name === expected) {
+        clearTimeout(timer);
+        clearInterval(poll);
+        resolve();
+      }
+    }, 20);
+  });
+}
+
 /** Poll the task store until the expected number of tasks exists. */
 function waitForTaskCount(server: KookrServerInternal, expectedCount: number, timeoutMs = 3000) {
   return new Promise<ReturnType<typeof server.taskStore.listTasks>>((resolve, reject) => {
@@ -136,9 +165,10 @@ describe('AI task naming integration', () => {
     expect(res.status).toBe(201);
     const task = await res.json();
 
-    // Wait for the async naming to complete
-    const name = await waitForTaskName(server, task.id);
-    expect(name).toBe('Fix JWT Token Invalidation');
+    // The task is named from birth (issue #1554: deterministic placeholder at
+    // creation, asserted deterministically in the core unit tests), then
+    // upgraded asynchronously by the LLM namer.
+    await waitForTaskNameToBe(server, task.id, 'Fix JWT Token Invalidation');
 
     // Verify generateTaskName was called with correct args
     expect(mockGenerateTaskName).toHaveBeenCalledOnce();
@@ -174,9 +204,8 @@ describe('AI task naming integration', () => {
     const tasks = await waitForTaskCount(server, 1);
     expect(tasks).toHaveLength(1);
 
-    // Wait for the async naming to complete
-    const name = await waitForTaskName(server, tasks[0].id);
-    expect(name).toBe('Fix JWT Token Invalidation');
+    // Wait for the async LLM upgrade over the creation-time placeholder.
+    await waitForTaskNameToBe(server, tasks[0].id, 'Fix JWT Token Invalidation');
 
     // Verify generateTaskName was called
     expect(mockGenerateTaskName).toHaveBeenCalled();
@@ -359,7 +388,7 @@ describe('AI task naming integration', () => {
     });
     const task = await res.json();
 
-    await waitForTaskName(server, task.id);
+    await waitForTaskNameToBe(server, task.id, 'Fix JWT Token Invalidation');
 
     // Verify the name shows up in the tasks list API
     const listRes = await fetch(`${baseUrl}/api/tasks`);
@@ -412,14 +441,11 @@ describe('AI task naming integration', () => {
     const task1 = await res1.json();
     const task2 = await res2.json();
 
-    // Wait for both naming calls
-    const [name1, name2] = await Promise.all([
-      waitForTaskName(server, task1.id),
-      waitForTaskName(server, task2.id),
+    // Wait for both LLM upgrades over the creation-time placeholders.
+    await Promise.all([
+      waitForTaskNameToBe(server, task1.id, 'Fix Auth Flow'),
+      waitForTaskNameToBe(server, task2.id, 'Add User Pagination'),
     ]);
-
-    expect(name1).toBe('Fix Auth Flow');
-    expect(name2).toBe('Add User Pagination');
     expect(callCount).toBe(2);
   });
 
@@ -459,9 +485,8 @@ describe('AI task naming integration', () => {
       newTaskId = newTask!.id;
     });
 
-    // Wait for naming
-    const name = await waitForTaskName(server, newTaskId!);
-    expect(name).toBe('Fix JWT Token Invalidation');
+    // Wait for the LLM upgrade over the creation-time placeholder.
+    await waitForTaskNameToBe(server, newTaskId!, 'Fix JWT Token Invalidation');
 
     ws.close();
     await new Promise<void>((r) => ws.on('close', () => r()));

@@ -63,7 +63,12 @@ export function projectTaskForRemoteShare(
     schemaVersion: 'remote-task-projection.v1',
     nodeId: opts.nodeId,
     taskId: task.id,
-    taskLabel: sanitizeRemoteTaskLabel(task.name, task.id),
+    // Never expose the deterministic creation-time placeholder in a remote
+    // share (issue #1554): it is the raw prompt's first line, not an LLM
+    // paraphrase, so an `autoNamed` task falls back to the opaque id label —
+    // preserving the "no raw prompt off-node" guarantee. Explicit and
+    // LLM-upgraded names (autoNamed cleared) are shareable.
+    taskLabel: sanitizeRemoteTaskLabel(task.autoNamed ? undefined : task.name, task.id),
     status: toProjectionStatus(task, needsInput),
     hasFinding: hasAnyFinding(task, opts.queue),
     needsInput,

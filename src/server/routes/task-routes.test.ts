@@ -2673,8 +2673,11 @@ describe('GET /api/tasks list filters & pagination (issue #1526 Phase C / C2)', 
     const app = mkApp(mkLoopDeps(taskStore));
     const rows = await (await app.request('/api/tasks?compact=true&status=completed')).json();
     expect(rows.map((r: { id: string }) => r.id)).toEqual([ids[0], ids[2]]);
-    // Compact rows omit the heavy prompt body.
-    expect(JSON.stringify(rows)).not.toContain('First task prompt');
+    // Compact rows omit the heavy prompt body. (A substring check no longer
+    // works: tasks are named from birth off the prompt's first line — issue
+    // #1554 — so the `name` field legitimately echoes it; assert the `prompt`
+    // key itself is absent.)
+    expect(rows.every((r: Record<string, unknown>) => !('prompt' in r))).toBe(true);
   });
 
   test('malformed params return 400 rather than the full listing', async () => {

@@ -332,6 +332,66 @@ describe('TaskStore', () => {
     });
   });
 
+  // Issue #1554: every task is named from birth so no code path can reach a
+  // terminal state with name=null.
+  describe('creation-time naming', () => {
+    test('createTask without a name applies a non-empty deterministic name and marks it autoNamed', () => {
+      const task = store.createTask('Fix the auth bug in login flow', '/workspace/project');
+
+      expect(task.name).toBe('Fix the auth bug in login flow');
+      expect(task.name!.length).toBeGreaterThan(0);
+      expect(task.autoNamed).toBe(true);
+      // Persisted on the stored record, not just the returned snapshot.
+      expect(store.getTask(task.id)!.name).toBe('Fix the auth bug in login flow');
+      expect(store.getTask(task.id)!.autoNamed).toBe(true);
+    });
+
+    test('createTask with an explicit name keeps it and does not mark autoNamed', () => {
+      const task = store.createTask({ prompt: 'Do the thing', cwd: '/cwd', name: 'My Playbook' });
+
+      expect(task.name).toBe('My Playbook');
+      expect(task.autoNamed).toBeUndefined();
+    });
+
+    test('createTask with a whitespace-only name falls back to the deterministic name', () => {
+      const task = store.createTask({ prompt: 'Refactor database layer', cwd: '/cwd', name: '   ' });
+
+      expect(task.name).toBe('Refactor database layer');
+      expect(task.autoNamed).toBe(true);
+    });
+
+    test('names off the display prompt (userPrompt), not the raw launch prompt', () => {
+      // createTask must route the placeholder through displayPromptForTask so
+      // the injected launch-context preamble is stripped — the name is the
+      // user's intent, not the worktree guardrail boilerplate.
+      const task = store.createTask({
+        prompt: 'You are currently in the main checkout `/repo` on branch `main`.\n- Create one: `git worktree add ...`\n\nFix the login bug',
+        userPrompt: 'Fix the login bug',
+        cwd: '/repo',
+      });
+
+      expect(task.name).toBe('Fix the login bug');
+      expect(task.autoNamed).toBe(true);
+    });
+
+    test('a blank prompt still yields a non-empty name from the cwd basename', () => {
+      const task = store.createTask('   ', '/workspace/project');
+
+      expect(task.name).toBe('Task in project');
+      expect(task.autoNamed).toBe(true);
+    });
+
+    test('renameTask clears the autoNamed marker (name becomes authoritative)', () => {
+      const task = store.createTask('Fix bug', '/cwd');
+      expect(task.autoNamed).toBe(true);
+
+      const renamed = store.renameTask(task.id, 'Fix JWT Token Invalidation');
+      expect(renamed.name).toBe('Fix JWT Token Invalidation');
+      expect(renamed.autoNamed).toBeUndefined();
+      expect(store.getTask(task.id)!.autoNamed).toBeUndefined();
+    });
+  });
+
   describe('autoCloseOnSignal policy', () => {
     test('stores the flag when explicitly true', () => {
       const task = store.createTask({ prompt: 'Fix bug', cwd: '/cwd', autoCloseOnSignal: true });
@@ -791,8 +851,10 @@ describe('TaskStore', () => {
 
   describe('Rename task', () => {
     test('renameTask sets the name field', () => {
+      // Named from birth (issue #1554): the deterministic placeholder is the
+      // prompt's first line; renameTask replaces it with an authoritative name.
       const task = store.createTask('Fix auth bug in login flow', '/cwd');
-      expect(task.name).toBeUndefined();
+      expect(task.name).toBe('Fix auth bug in login flow');
 
       const renamed = store.renameTask(task.id, 'Auth fix');
       expect(renamed.name).toBe('Auth fix');

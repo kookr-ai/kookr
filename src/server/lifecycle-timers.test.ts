@@ -493,7 +493,9 @@ describe('autoCloseStaleCompletionReadyTasks', () => {
       expect(broadcastToAll).toHaveBeenCalledWith({
         type: 'alert',
         agentId: `kookr-${task.id}`, // per startTask() above
-        summary: 'Auto-closed after TTL: Task',
+        // Named from birth (issue #1554): the alert now carries the task's
+        // deterministic name instead of the generic 'Task' fallback.
+        summary: 'Auto-closed after TTL: Stuck ask-first',
         details: 'completion_ready pending 120m with no manual review — closed automatically to free the slot.',
         severity: 'info',
       });

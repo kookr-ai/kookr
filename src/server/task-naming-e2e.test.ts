@@ -22,23 +22,28 @@ function getActualPort(server: KookrServerInternal): number {
 }
 
 /**
- * Wait for a WS snapshot where the task has a name set (not just prompt truncation).
- * We detect this by checking the task store directly — the snapshot's taskName falls
- * back to truncated prompt, so we poll the actual task.name field.
+ * Wait for the LLM to upgrade the name away from the deterministic
+ * creation-time placeholder (issue #1554: tasks are named from birth, so the
+ * name is never empty — the real-API upgrade is observed as a change).
  */
-function waitForTaskRename(server: KookrServerInternal, taskId: string, timeoutMs = 10_000): Promise<string> {
+function waitForTaskNameChange(
+  server: KookrServerInternal,
+  taskId: string,
+  placeholder: string,
+  timeoutMs = 10_000,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       clearInterval(pollInterval);
-      reject(new Error(`Timed out waiting for task name (${timeoutMs}ms)`));
+      reject(new Error(`Timed out waiting for name upgrade (${timeoutMs}ms)`));
     }, timeoutMs);
 
     const pollInterval = setInterval(() => {
-      const task = server.taskStore.getTask(taskId);
-      if (task?.name) {
+      const name = server.taskStore.getTask(taskId)?.name;
+      if (name && name !== placeholder) {
         clearTimeout(timer);
         clearInterval(pollInterval);
-        resolve(task.name);
+        resolve(name);
       }
     }, 100);
   });
@@ -88,10 +93,13 @@ describe.skipIf(!hasApiKey)('task naming E2E (real API)', () => {
 
     expect(res.status).toBe(201);
     const task = await res.json();
-    expect(task.name).toBeUndefined(); // No name yet at creation time
+    // Named from birth with the deterministic placeholder (issue #1554); the
+    // LLM name arrives asynchronously as an upgrade.
+    expect(task.name).toBeTruthy();
+    const placeholder: string = task.name;
 
-    // Wait for the async AI name to arrive
-    const name = await waitForTaskRename(server, task.id);
+    // Wait for the async AI name to replace the placeholder
+    const name = await waitForTaskNameChange(server, task.id, placeholder);
     expect(name.length).toBeGreaterThan(0);
     expect(name.length).toBeLessThan(80);
 

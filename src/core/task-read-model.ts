@@ -103,6 +103,14 @@ export interface TaskLaunchHealthFinding {
 export interface Task {
   id: string;
   name?: string;
+  /**
+   * True when `name` is the deterministic creation-time placeholder (issue
+   * #1554), not an explicit name (playbook/user) or an LLM-generated one. The
+   * async LLM namer is allowed to upgrade an auto-named task, but never an
+   * explicit one; any real rename clears this flag. Absent means the name (if
+   * any) is authoritative and must not be auto-overwritten.
+   */
+  autoNamed?: boolean;
   /** Original user-authored prompt before Kookr launch-context injection. */
   userPrompt?: string;
   /** Raw execution prompt sent to the agent. May include Kookr launch-context guidance. */
