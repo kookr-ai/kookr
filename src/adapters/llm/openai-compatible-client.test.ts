@@ -89,6 +89,57 @@ describe('OpenAiCompatibleLlmClient', () => {
     });
   });
 
+  test('completeDetailed surfaces the provider finish reason (issue #1555)', async () => {
+    // Reasoning model burned the whole token budget: empty content, finish_reason=length.
+    stubFetch(jsonResponse({ choices: [{ finish_reason: 'length', message: { content: '' } }] }));
+    const client = new OpenAiCompatibleLlmClient({
+      provider: 'baseten',
+      apiKey: API_KEY,
+      model: 'nvidia/Nemotron-120B-A12B',
+      baseUrl: 'https://inference.baseten.co/v1',
+    });
+
+    await expect(client.completeDetailed(baseReq)).resolves.toEqual({
+      text: null,
+      finishReason: 'length',
+    });
+  });
+
+  test('completeDetailed returns text with its finish reason on success', async () => {
+    stubFetch(jsonResponse({ choices: [{ finish_reason: 'stop', message: { content: '  Fix auth bug  ' } }] }));
+    const client = new OpenAiCompatibleLlmClient({
+      provider: 'baseten',
+      apiKey: API_KEY,
+      model: 'nvidia/Nemotron-120B-A12B',
+      baseUrl: 'https://inference.baseten.co/v1',
+    });
+
+    await expect(client.completeDetailed(baseReq)).resolves.toEqual({
+      text: 'Fix auth bug',
+      finishReason: 'stop',
+    });
+  });
+
+  test('completeDetailed attaches the finish reason to tool-call arguments', async () => {
+    stubFetch(jsonResponse({
+      choices: [{
+        finish_reason: 'tool_calls',
+        message: { content: null, tool_calls: [{ function: { name: 'task_name', arguments: '{"name":"x"}' } }] },
+      }],
+    }));
+    const client = new OpenAiCompatibleLlmClient({
+      provider: 'baseten',
+      apiKey: API_KEY,
+      model: 'nvidia/Nemotron-120B-A12B',
+      baseUrl: 'https://inference.baseten.co/v1',
+    });
+
+    await expect(client.completeDetailed(baseReq)).resolves.toEqual({
+      text: '{"name":"x"}',
+      finishReason: 'tool_calls',
+    });
+  });
+
   test('forwards extra headers and best-effort response_format', async () => {
     const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: '{}' } }] }));
     const client = new OpenAiCompatibleLlmClient({

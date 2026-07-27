@@ -2,10 +2,10 @@
  * LLM client wrapper that routes calls through a circuit breaker.
  * When the breaker is open, calls return null (same as provider failure).
  */
-import type { LlmClient, LlmCompletionAuditResult, LlmCompletionRequest } from './llm-client.js';
+import type { LlmClient, LlmCompletionAuditResult, LlmCompletionDetail, LlmCompletionRequest } from './llm-client.js';
 import type { CircuitBreaker } from './circuit-breaker.js';
 import { CircuitBreakerOpenError } from './circuit-breaker.js';
-import { classifyLlmProviderFailure } from './llm-factory.js';
+import { classifyLlmProviderFailure, completeLlmDetailed } from './llm-factory.js';
 
 export class CircuitBreakerLlmClient implements LlmClient {
   constructor(
@@ -23,6 +23,24 @@ export class CircuitBreakerLlmClient implements LlmClient {
 
   async complete(request: LlmCompletionRequest): Promise<string | null> {
     return (await this.completeWithFailureAudit(request)).text;
+  }
+
+  /**
+   * Forward {@link completeLlmDetailed} through the breaker so callers keep the
+   * provider finish reason (issue #1555). When the breaker is open, report a
+   * synthetic `circuit_open` finish reason rather than an opaque null.
+   */
+  async completeDetailed(request: LlmCompletionRequest): Promise<LlmCompletionDetail> {
+    try {
+      return await this.breaker.call(() => completeLlmDetailed(this.inner, request));
+    } catch (err) {
+      if (err instanceof CircuitBreakerOpenError) {
+        console.warn(`[llm] Circuit breaker open — skipping LLM call`);
+        return { text: null, finishReason: 'circuit_open' };
+      }
+      // Everything else (including AbortError) propagates unchanged.
+      throw err;
+    }
   }
 
   async completeWithFailureAudit(request: LlmCompletionRequest): Promise<LlmCompletionAuditResult> {

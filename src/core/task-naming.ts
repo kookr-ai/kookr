@@ -1,10 +1,16 @@
 import { basename } from 'node:path';
-import type { LlmClient } from './llm-client.js';
+import { completeLlmDetailed } from './llm-client.js';
+import type { LlmClient, LlmCompletionRequest, LlmResponseFormat } from './llm-client.js';
 import { logTaskNaming } from './training-data-logger.js';
 
-// Budget for a single LLM call. OpenRouter floors this up internally, since
-// DeepSeek V4 Flash is slower than the free-tier providers this is tuned for.
 const TIMEOUT_MS = 10_000;
+// Token budget for a single naming call. Reasoning models (e.g. baseten
+// Nemotron) spend hidden reasoning tokens before any JSON is emitted; with the
+// former budget of 30 the reasoning stream consumed the whole allowance and the
+// completion finished with `length` before a single character of the name was
+// produced — 0% success in prod (issue #1555). 512 leaves ample room for
+// reasoning plus the tiny `{"name": "…"}` payload while staying cheap.
+const MAX_TOKENS = 512;
 const MAX_NAME_LENGTH = 80;
 const MAX_NAME_WORDS = 12;
 
@@ -95,6 +101,28 @@ export function deterministicTaskName(prompt: string, cwd?: string): string {
   return `${collapsed.slice(0, MAX_NAME_LENGTH - 1).trimEnd()}…`;
 }
 
+/**
+ * Structured-output request shapes tried in order (issue #1555, mirroring the
+ * #1522 criteria-evaluator chain): a provider that rejects `json_schema` (400)
+ * or honors it but returns unparseable text falls through to the looser
+ * `json_object`, then to a plain completion parsed heuristically — instead of a
+ * single-shot `json_schema` call that fails open on the first hiccup.
+ */
+type NamingMode = 'json_schema' | 'json_object' | 'plain';
+
+const NAMING_MODES: readonly NamingMode[] = ['json_schema', 'json_object', 'plain'];
+
+function namingResponseFormat(mode: NamingMode): LlmResponseFormat | undefined {
+  switch (mode) {
+    case 'json_schema':
+      return { type: 'json_schema', jsonSchema: { name: 'task_name', schema: TASK_NAME_SCHEMA } };
+    case 'json_object':
+      return { type: 'json_object' };
+    case 'plain':
+      return undefined;
+  }
+}
+
 /** Generates a short task name via an LLM. Returns null on any failure. */
 export async function generateTaskName(
   client: LlmClient,
@@ -110,29 +138,43 @@ export async function generateTaskName(
     contextParts.push(`Success criteria: ${criteria}`);
   }
 
-  try {
-    const rawName = await client.complete({
-      useCase: 'task_naming',
-      maxTokens: 30,
-      system: SYSTEM_PROMPT,
-      userMessage: `Generate a task name for this coding task.\n\n${contextParts.join('\n')}`,
-      responseFormat: {
-        type: 'json_schema',
-        jsonSchema: {
-          name: 'task_name',
-          schema: TASK_NAME_SCHEMA,
-        },
-      },
-      timeoutMs: TIMEOUT_MS,
-    });
+  const baseRequest: Omit<LlmCompletionRequest, 'responseFormat'> = {
+    useCase: 'task_naming',
+    maxTokens: MAX_TOKENS,
+    system: SYSTEM_PROMPT,
+    userMessage: `Generate a task name for this coding task.\n\n${contextParts.join('\n')}`,
+    timeoutMs: TIMEOUT_MS,
+  };
 
-    const name = rawName ? parseTaskName(rawName) : null;
-    if (name) {
-      logTaskNaming(prompt, cwd, criteria, name);
+  // Reason recorded from the last unusable attempt so the aggregate failure is
+  // diagnosable from logs (finish_reason=length ⇒ truncated budget) instead of
+  // a bare "empty name".
+  let lastFailure = 'no attempt made';
+
+  for (const mode of NAMING_MODES) {
+    const responseFormat = namingResponseFormat(mode);
+    try {
+      const { text, finishReason } = await completeLlmDetailed(client, {
+        ...baseRequest,
+        ...(responseFormat ? { responseFormat } : {}),
+      });
+      const name = text ? parseTaskName(text) : null;
+      if (name) {
+        logTaskNaming(prompt, cwd, criteria, name);
+        return name;
+      }
+      lastFailure = text === null
+        ? `empty completion (mode=${mode}, finish_reason=${finishReason ?? 'unknown'})`
+        : `unparseable completion (mode=${mode}, finish_reason=${finishReason ?? 'unknown'})`;
+      // A client-level condition (breaker open) fails identically for every
+      // mode. Stop rather than re-trip the breaker — and re-log — once per mode.
+      if (finishReason === 'circuit_open') break;
+    } catch (err) {
+      if ((err as { name?: string } | null)?.name === 'AbortError') throw err;
+      lastFailure = `error (mode=${mode}): ${err instanceof Error ? err.message : String(err)}`;
     }
-    return name;
-  } catch (err) {
-    console.warn(`[task-naming] Failed: ${err instanceof Error ? err.message : err}`);
-    return null;
   }
+
+  console.warn(`[task-naming] No usable name after structured-output fallbacks — ${lastFailure}`);
+  return null;
 }

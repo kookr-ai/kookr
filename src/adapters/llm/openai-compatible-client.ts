@@ -8,6 +8,7 @@
 import {
   classifyLlmProviderHttpStatus,
   type LlmClient,
+  type LlmCompletionDetail,
   type LlmCompletionRequest,
   type LlmProviderFailureCategory,
 } from '../../core/llm-types.js';
@@ -26,6 +27,7 @@ export interface OpenAiCompatibleClientOptions {
 
 interface ChatCompletionResponse {
   choices?: Array<{
+    finish_reason?: string | null;
     message?: {
       content?: string | null;
       tool_calls?: Array<{
@@ -159,6 +161,10 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
   }
 
   async complete(req: LlmCompletionRequest): Promise<string | null> {
+    return (await this.completeDetailed(req)).text;
+  }
+
+  async completeDetailed(req: LlmCompletionRequest): Promise<LlmCompletionDetail> {
     const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
     if (req.system) {
       messages.push({ role: 'system', content: req.system });
@@ -253,17 +259,19 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
       );
     }
 
-    const message = data.choices?.[0]?.message;
+    const choice = data.choices?.[0];
+    const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : null;
+    const message = choice?.message;
     const content = message?.content;
     if (typeof content === 'string' && content.trim()) {
-      return content.trim();
+      return { text: content.trim(), finishReason };
     }
     // Structured tool-call path: return the first function arguments blob as JSON text.
     const toolArgs = message?.tool_calls?.find((call) => typeof call.function?.arguments === 'string')
       ?.function?.arguments;
     if (typeof toolArgs === 'string' && toolArgs.trim()) {
-      return toolArgs.trim();
+      return { text: toolArgs.trim(), finishReason };
     }
-    return null;
+    return { text: null, finishReason };
   }
 }
