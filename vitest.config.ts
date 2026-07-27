@@ -30,6 +30,9 @@ export default defineConfig({
       // Keep the signal-outbox drain off during unit tests so createKookrServer
       // does not poll ~/.kookr/playbook-state/signal-outbox every 30s (#1541).
       KOOKR_SIGNAL_OUTBOX: '0',
+      // Keep the hourly prod smoke tick off during unit tests so a server booted
+      // on port 4800 never starts the interval or fetches endpoints (#1593).
+      KOOKR_PROD_SMOKE_TICK: '0',
     },
     coverage: {
       provider: 'v8',

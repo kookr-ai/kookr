@@ -44,6 +44,7 @@ import {
   type PayloadDietStats,
 } from './lifecycle-timers.js';
 import { pruneAgedTaskRecords } from './use-cases/prune-aged-task-records.js';
+import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';
 import { isTerminalStatus } from '../core/task-status.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
@@ -1650,6 +1651,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         },
         getPayloadDietStats,
       },
+      // Hourly prod smoke tick (issue #1593). Enabled by default only on the
+      // canonical prod port (4800) so a fresh deploy is protected with no
+      // operational change; dev servers and the test suite stay silent unless
+      // KOOKR_PROD_SMOKE_TICK forces it on. Undefined ⇒ no interval started.
+      prodSmokeTick: createProdSmokeTickFromEnv({ env: process.env, port, kookrDir, broadcast: broadcastToAll }),
     },
   });
 
