@@ -100,13 +100,58 @@ Produce a **unified findings report** at `{{reportPath}}` with:
 
 If `{{maxIssues}}` is `0`, skip this phase entirely: deliver the report only and note in the summary that issue creation was disabled by the run parameter.
 
-Otherwise, for the top actionable findings — **at most `{{maxIssues}}`** — create GitHub issues in the current repo:
+Otherwise, resolve the drain-coupled emission budget first (issue #1607), then file at most the allowed count. **Fail closed** if the plan cannot be resolved — do not file without a budget.
+
+```bash
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner) \
+  || { echo "architecture-health-check: cannot resolve repo; skipping issue creation"; exit 0; }
+EMISSION_PLAN=$(kookr emission plan --repo "$REPO" --requested "{{maxIssues}}" --json) \
+  || { echo "architecture-health-check: emission plan failed; refusing to file issues"; exit 0; }
+ALLOWED=$(printf '%s' "$EMISSION_PLAN" | jq -r '.plan.allowedBudget // empty')
+case "$ALLOWED" in
+  ''|*[!0-9]*) echo "architecture-health-check: invalid allowedBudget; refusing to file"; exit 0 ;;
+esac
+echo "emission-budget: $EMISSION_PLAN"
+# Persist netBacklogDelta7d for the daily reflection signal set (stable path).
+mkdir -p "$HOME/.kookr/playbook-state/emission-metrics"
+kookr emission metrics --repo "$REPO" --json \
+  | tee "$HOME/.kookr/playbook-state/emission-metrics/$(printf '%s' "$REPO" | tr '/.' '--').json" \
+  || true
+FILED=0
+```
+
+For the top actionable findings — **at most `min({{maxIssues}}, $ALLOWED)`** — create GitHub issues in the current repo:
 - Title: `arch: [brief description of the smell/violation]`
 - Body: evidence, impact, suggested approach
 - Label: `{{issueLabel}}` (create if it doesn't exist)
 - Assignee: `{{issueAssignee}}` (skip assignment if this is empty)
 
-`{{maxIssues}}` is a ceiling, not a quota. Create fewer if fewer findings clear the bar — never split, pad, or promote a minor/watch-list finding just to reach the number. Any findings above the cap stay in the report's watch-list section.
+Before each `gh issue create`, run the mandatory logged dedupe check and **gate** on the result (do not file twins):
+
+```bash
+if [ "$FILED" -ge "$ALLOWED" ]; then
+  kookr emission defer --repo "$REPO" --title "$ISSUE_TITLE" \
+    --source architecture-health-check --reason "over emission budget (allowed=$ALLOWED)"
+  continue  # keep in report watch-list; do not file
+fi
+
+DEDUPE_JSON=$(kookr emission dedupe --repo "$REPO" --title "$ISSUE_TITLE" --json 2>/tmp/kookr-dedupe-$$.log) \
+  || { echo "dedupe failed; skipping $ISSUE_TITLE"; continue; }
+cat /tmp/kookr-dedupe-$$.log 2>/dev/null || true
+IS_DUP=$(printf '%s' "$DEDUPE_JSON" | jq -r '.isDuplicate')
+if [ "$IS_DUP" = "true" ]; then
+  echo "dedupe hit for $ISSUE_TITLE — update existing issue instead of creating"
+  # Prefer updating/commenting on .match.url; never create a twin.
+  continue
+fi
+
+# ... gh issue create ...
+FILED=$((FILED + 1))
+```
+
+When a finding is selected but over the emission budget, defer it instead of filing (see the `FILED -ge ALLOWED` branch above).
+
+`{{maxIssues}}` is a ceiling, not a quota. The emission budget is a second, drain-coupled ceiling. Create fewer if fewer findings clear the bar — never split, pad, or promote a minor/watch-list finding just to reach the number. Any findings above either cap stay in the report's watch-list section (and, when over emission budget, in the deferred-ideas log).
 
 Skip creating issues for:
 - Minor findings (cosmetic naming, low-severity smells)
@@ -115,12 +160,14 @@ Skip creating issues for:
 
 ## Idempotency
 
-- Before creating issues, search existing open issues for the `arch:` prefix to avoid duplicates
+- Before creating issues, run `kookr emission dedupe` (logged) and search existing open issues for the `arch:` prefix to avoid duplicates
 - If a previous report exists at `{{reportPath}}`, archive it with a timestamp suffix before writing the new one
 - If duplicate issues exist, update them with new evidence instead of creating new ones
+- Never file past the drain-coupled emission budget; defer over-budget candidates
 
 ## Anti-Patterns
 
 - Don't propose massive refactoring plans. Each issue should be a focused, independently shippable improvement.
 - Don't flag V1 simplicity decisions as smells unless they've become actively harmful.
 - Don't create issues for things that are better fixed as drive-by improvements in other PRs.
+- Don't file issues when open backlog is over the emission threshold without consulting `kookr emission plan`.
