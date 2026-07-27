@@ -897,7 +897,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   function autoNameTask(taskId: string, prompt: string, cwd: string, criteria?: string): void {
     const applyName = (name: string): void => {
       const current = taskStore.getTask(taskId);
-      if (!current || current.name) return;
+      // Upgrade a still-unnamed task or one carrying the deterministic
+      // creation-time placeholder (issue #1554: `autoNamed`); never overwrite
+      // an authoritative name (explicit playbook/user name, or a prior upgrade).
+      if (!current || (current.name && !current.autoNamed)) return;
       taskStore.renameTask(taskId, name);
       console.log(`[task-naming] Named task ${taskId}: "${name}"`);
       broadcastToAll(createSnapshotMessage({

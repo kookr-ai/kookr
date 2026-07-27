@@ -188,13 +188,24 @@ describe('registerNewAgent', () => {
     expect(deps.autoNameTask).toHaveBeenCalledWith('task-1', 'Fix the bug in auth', '/workspace/project', 'Must pass all tests');
   });
 
-  test('skips auto-naming when task already has a name (e.g., playbooks)', async () => {
+  test('skips auto-naming when task already has an explicit name (e.g., playbooks)', async () => {
     const deps = makeDeps();
     const task = lifecycleTask({ name: 'My Playbook' });
 
     await registerNewAgent(task, deps);
 
     expect(deps.autoNameTask).not.toHaveBeenCalled();
+  });
+
+  test('auto-names task carrying the deterministic creation-time placeholder (issue #1554)', async () => {
+    const deps = makeDeps();
+    // A task named from birth carries `autoNamed`; the LLM namer must still run
+    // to upgrade the placeholder.
+    const task = lifecycleTask({ name: 'Fix the bug in auth', autoNamed: true });
+
+    await registerNewAgent(task, deps);
+
+    expect(deps.autoNameTask).toHaveBeenCalledWith('task-1', 'Fix the bug in auth', '/workspace/project', undefined);
   });
 
   test('resolves projectId via getProjectId when taskStore is provided', async () => {

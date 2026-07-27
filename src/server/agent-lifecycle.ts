@@ -104,8 +104,11 @@ export async function registerNewAgent(task: Task, deps: AgentLifecycleDeps): Pr
     void githubScanner.processTaskPrompt(task.id);
   }
 
-  // AI-generate a short task name (skip if task already has a name, e.g., playbooks)
-  if (!task.name) {
+  // AI-generate a short task name. Tasks are now named from birth (issue
+  // #1554): a task with no explicit name carries the deterministic placeholder
+  // and `autoNamed=true`, which the LLM namer may upgrade. Skip only when the
+  // name is authoritative (explicit playbook/user name, `autoNamed` absent).
+  if (!task.name || task.autoNamed) {
     autoNameTask(task.id, displayPromptForTask(task), task.cwd, task.criteria);
   }
 

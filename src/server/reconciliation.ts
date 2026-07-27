@@ -1,5 +1,7 @@
 import { stat } from 'node:fs/promises';
 import type { Task, TaskStore } from '../core/tasks.js';
+import { deterministicTaskName } from '../core/task-naming.js';
+import { displayPromptForTask } from '../core/prompt-display.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import { getGitInfo } from '../adapters/git-info.js';
 import type { WorktreeRegistry } from '../adapters/git-worktree-registry.js';
@@ -256,6 +258,14 @@ export function reconcileStaleOpenLaunches(
     if (task.sessions.length > 0) continue;
     if (taskStore.hasFreshLaunchReservation(task.id)) continue;
     try {
+      // Belt-and-braces backstop (issue #1554): tasks created after the
+      // creation-time naming change already carry a name, but a legacy task
+      // persisted before it may still be nameless here. Give it the
+      // deterministic fallback before terminating so no task ever reaches a
+      // terminal state with `name=null`.
+      if (!task.name) {
+        taskStore.renameTask(task.id, deterministicTaskName(displayPromptForTask(task), task.cwd));
+      }
       // open → inProgress → terminated: the status machine has no direct
       // open→terminated edge; reconcile()'s dead-session path uses the same
       // two-step transition.
