@@ -259,6 +259,9 @@ exit 1
           KOOKR_RESTART_RELAY: '1',
           KOOKR_STARTUP_TIMEOUT_SECONDS: '2',
           KOOKR_STARTUP_CHECK_INTERVAL_SECONDS: '0',
+          // This test exercises the relay-restart branch, not the post-deploy
+          // smoke suite (issue #1592), which would fail against a stub server.
+          KOOKR_POST_DEPLOY_SMOKE: '0',
         },
         encoding: 'utf8',
       });
@@ -366,6 +369,9 @@ exit 0
           PATH: `${binDir}:${process.env.PATH ?? ''}`,
           KOOKR_STARTUP_TIMEOUT_SECONDS: '2',
           KOOKR_STARTUP_CHECK_INTERVAL_SECONDS: '0',
+          // Isolate the systemd-delegation assertions from the post-deploy smoke
+          // suite (issue #1592), which has its own dedicated coverage below.
+          KOOKR_POST_DEPLOY_SMOKE: '0',
         },
         encoding: 'utf8',
       });
