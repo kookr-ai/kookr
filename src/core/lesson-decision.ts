@@ -1,18 +1,26 @@
 /**
- * Post-task lesson decision gate + yield metric (issue #1538).
+ * Post-task lesson decision gate + yield metric (issues #1538, #1608).
  *
  * The learning flywheel was offline because lesson authoring was voluntary
  * policy text — agents finished and signaled completion-ready without emitting
  * either a `kb remember` write or the explicit skip marker. This module:
  *
- *  1. Scans a task's PreToolUse Bash hook logs for a lesson decision
+ *  1. Scans a task's pre-tool shell hook logs for a lesson decision
  *     (reuses {@link classifyKbCommand} / {@link aggregateLessonDecision}).
  *  2. Declares whether a `completion_ready` signal may proceed.
  *  3. Aggregates a per-window "lesson yield" (decided / completed tasks) so
  *     reflections can audit the flywheel without grepping the KB shelf.
  *
- * Detection source of truth: `~/.kookr/hooks/<tmuxSession>.jsonl` PreToolUse
- * Bash commands — same as `scripts/kb-usage-report.ts` / issue #227.
+ * Detection source of truth: `~/.kookr/hooks/<tmuxSession>.jsonl` pre-tool
+ * shell commands — same as `scripts/kb-usage-report.ts` / issue #227.
+ *
+ * Dual agent schemas (issue #1608): Claude Code writes snake_case
+ * (`hook_event_name: PreToolUse`, `tool_name: Bash`, `tool_input.command`);
+ * Grok Build writes camelCase (`hookEventName: pre_tool_use`,
+ * `toolName: run_terminal_command`, `toolInput.command`). Scanning only the
+ * Claude shape made every Grok completion look like `noKbActivity` even when
+ * the agent wrote a lesson or printed the skip marker — the silent-bypass
+ * hole that reopened the flywheel gap.
  */
 
 import { createReadStream, existsSync } from 'node:fs';
@@ -32,7 +40,164 @@ export type { LessonDecisionCounts, LessonDecisionState };
 /** Machine-readable 409 body code when completion-ready is refused. */
 export const LESSON_DECISION_REQUIRED_CODE = 'lesson_decision_required' as const;
 
-export const LESSON_YIELD_SCHEMA_VERSION = 'lesson-yield.v1' as const;
+/** v2 adds per-completion-path buckets + gateExempt accounting (issue #1608). */
+export const LESSON_YIELD_SCHEMA_VERSION = 'lesson-yield.v2' as const;
+
+/**
+ * How a task reached terminal-complete. Stamped at completion time so yield
+ * can join decision buckets onto the path that produced them (issue #1608).
+ *
+ * - `normal` — completion_ready via HTTP signal path (gated), then auto-close
+ *   or manual ack.
+ * - `outbox_drained` — completion_ready applied by the #1541 outbox drain
+ *   (in-process, not HTTP), then auto-close/ack.
+ * - `recovery` — system reaper / TTL / hung-task paths.
+ * - `api_complete` — `POST /api/tasks/:id/complete` without a prior signal
+ *   (self-complete / zombie reaps from orchestrating agents).
+ * - `ui_complete` — dashboard/WS Complete.
+ * - `other` / `unknown` — unstamped historical rows or unclassified actors.
+ */
+export const COMPLETION_PATHS = [
+  'normal',
+  'outbox_drained',
+  'recovery',
+  'api_complete',
+  'ui_complete',
+  'other',
+  'unknown',
+] as const;
+export type CompletionPath = (typeof COMPLETION_PATHS)[number];
+
+export function isCompletionPath(value: unknown): value is CompletionPath {
+  return typeof value === 'string' && (COMPLETION_PATHS as readonly string[]).includes(value);
+}
+
+/**
+ * Infer the completion path from actor + pending-signal provenance. Pure —
+ * callers stamp the result onto the task at complete time.
+ */
+export function resolveCompletionPath(input: {
+  explicit?: CompletionPath;
+  hadPendingCompletionReady?: boolean;
+  signalSource?: 'http' | 'outbox';
+  actorSource?: string;
+}): CompletionPath {
+  if (input.explicit && isCompletionPath(input.explicit)) return input.explicit;
+  if (input.hadPendingCompletionReady) {
+    return input.signalSource === 'outbox' ? 'outbox_drained' : 'normal';
+  }
+  const src = (input.actorSource ?? '').toLowerCase();
+  if (src === 'ui' || src === 'websocket' || src.startsWith('ws')) return 'ui_complete';
+  if (src.startsWith('system:') || src === 'recovery' || src === 'reaper') return 'recovery';
+  if (src === 'api' || src.startsWith('api:')) return 'api_complete';
+  if (!src) return 'unknown';
+  return 'other';
+}
+
+/** Default gateExempt reason when a non-signal completion has no lesson decision. */
+export function defaultLessonGateExempt(path: CompletionPath): string {
+  switch (path) {
+    case 'ui_complete':
+      return 'human_complete';
+    case 'recovery':
+      return 'recovery_reap';
+    case 'api_complete':
+      return 'api_complete_ungated';
+    case 'outbox_drained':
+      return 'outbox_drained_undecided';
+    case 'normal':
+      return 'signal_auto_close_undecided';
+    case 'other':
+      return 'other_ungated';
+    case 'unknown':
+    default:
+      return 'unspecified';
+  }
+}
+
+/**
+ * Stamp completionPath (+ optional lessonGateExempt) onto a mutable task
+ * immediately before it transitions to completed. Pure field writes.
+ *
+ * When the task still has a pending `completion_ready` signal, the path is
+ * derived from that signal's provenance (http → normal, outbox →
+ * outbox_drained) and no exempt is stamped (the signal path is gated).
+ * Direct completes without a signal get a path from the actor and a
+ * default exempt reason so yield contractRate can count them as explained
+ * rather than silent bypasses (issue #1608).
+ */
+export function stampTaskCompletionProvenance(
+  task: {
+    pendingSignal?: { kind?: string; source?: 'http' | 'outbox' };
+    completionPath?: CompletionPath | string;
+    lessonGateExempt?: string;
+  },
+  input: {
+    explicitPath?: CompletionPath;
+    actorSource?: string;
+    /**
+     * When true, the caller already verified a lesson decision — never stamp
+     * an exempt reason even if the path is non-signal.
+     */
+    decisionSatisfied?: boolean;
+    /** Override the default exempt reason for non-signal completes. */
+    gateExempt?: string;
+  } = {},
+): { completionPath: CompletionPath; lessonGateExempt?: string } {
+  const hadReady = task.pendingSignal?.kind === 'completion_ready';
+  const path = resolveCompletionPath({
+    explicit: input.explicitPath,
+    hadPendingCompletionReady: hadReady,
+    signalSource: task.pendingSignal?.source,
+    actorSource: input.actorSource,
+  });
+  task.completionPath = path;
+
+  if (hadReady || input.decisionSatisfied === true) {
+    delete task.lessonGateExempt;
+    return { completionPath: path };
+  }
+
+  const exempt = (input.gateExempt?.trim() || defaultLessonGateExempt(path));
+  task.lessonGateExempt = exempt;
+  return { completionPath: path, lessonGateExempt: exempt };
+}
+
+/** Shell tools whose `command` field can carry a lesson decision. */
+const SHELL_TOOL_NAMES = new Set([
+  'Bash', // Claude Code
+  'run_terminal_command', // Grok Build
+  'shell',
+]);
+
+/** Pre-tool hook event names across agent runtimes. */
+const PRE_TOOL_EVENTS = new Set([
+  'PreToolUse', // Claude Code (PascalCase)
+  'pre_tool_use', // Grok Build (snake_case value)
+]);
+
+/**
+ * Extract a shell command from one hook JSONL line, accepting both Claude
+ * Code (snake_case) and Grok Build (camelCase) payload shapes.
+ * Returns null when the line is not a pre-tool shell invocation.
+ */
+export function extractShellCommandFromHookLine(evt: {
+  hook_event_name?: unknown;
+  hookEventName?: unknown;
+  tool_name?: unknown;
+  toolName?: unknown;
+  tool_input?: unknown;
+  toolInput?: unknown;
+}): string | null {
+  const hookEvent = evt.hook_event_name ?? evt.hookEventName;
+  const toolName = evt.tool_name ?? evt.toolName;
+  if (typeof hookEvent !== 'string' || typeof toolName !== 'string') return null;
+  if (!PRE_TOOL_EVENTS.has(hookEvent) || !SHELL_TOOL_NAMES.has(toolName)) return null;
+  const toolInput = evt.tool_input ?? evt.toolInput;
+  if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return null;
+  const command = (toolInput as { command?: unknown }).command;
+  return typeof command === 'string' ? command : null;
+}
 
 /** Env escape hatch for hermetic tests / emergency ops. Values: `0`/`false`/`off`. */
 export const LESSON_DECISION_GATE_ENV = 'KOOKR_LESSON_DECISION_GATE';
@@ -160,10 +325,10 @@ export interface HookLogScanOptions {
 
 /**
  * Scan one hook JSONL file for lesson-decision signals.
- * Only PreToolUse Bash lines are considered (same rule as kb-usage-report).
- * Early-exits once both a write and a skip have been seen is unnecessary —
- * we stop counting after the first decisive write (strongest signal) to
- * bound latency on large rotated-era live files.
+ * Only pre-tool shell lines are considered (Claude `PreToolUse`/`Bash` and
+ * Grok `pre_tool_use`/`run_terminal_command` — issue #1608). Early-exits
+ * after the first decisive write (strongest signal) to bound latency on
+ * large rotated-era live files.
  *
  * The underlying read stream is always destroyed, including on the
  * early-break path — `rl.close()` alone leaves the file descriptor pinned
@@ -194,18 +359,21 @@ export async function scanHookLogForLessonDecision(
       opts.signal?.throwIfAborted();
       if (!line) continue;
       let evt: {
-        hook_event_name?: string;
-        tool_name?: string;
-        tool_input?: { command?: string };
+        hook_event_name?: unknown;
+        hookEventName?: unknown;
+        tool_name?: unknown;
+        toolName?: unknown;
+        tool_input?: unknown;
+        toolInput?: unknown;
       };
       try {
         evt = JSON.parse(line) as typeof evt;
       } catch {
         continue;
       }
-      if (evt.hook_event_name !== 'PreToolUse' || evt.tool_name !== 'Bash') continue;
+      const cmd = extractShellCommandFromHookLine(evt);
+      if (cmd === null) continue;
       bashCalls++;
-      const cmd = evt.tool_input?.command ?? '';
       if (cmd.includes('kb ')) kbCalls++;
       switch (classifyKbCommand(cmd)) {
         case 'lesson-write':
@@ -251,6 +419,14 @@ export interface TaskLikeForLessonDecision {
   createdAt?: string | Date;
   playbookId?: string;
   prompt?: string;
+  /** Stamped at complete time (issue #1608). Absent → counted under `unknown`. */
+  completionPath?: CompletionPath | string;
+  /**
+   * Why an undecided completion was allowed to reach terminal-complete
+   * (issue #1608). Empty when the task decided (wrote/skip) or was never
+   * stamped. Used for the contract-rate denominator alternative.
+   */
+  lessonGateExempt?: string;
 }
 
 export function hooksDirFromKookrDir(kookrDir: string): string {
@@ -326,6 +502,32 @@ export interface LessonYieldBucket {
   noKbActivity: number;
 }
 
+export function emptyLessonYieldBucket(): LessonYieldBucket {
+  return {
+    wroteLesson: 0,
+    explicitSkip: 0,
+    searchOnly: 0,
+    noKbActivity: 0,
+  };
+}
+
+/** Per-path rollup: decision buckets + counts (issue #1608). */
+export interface LessonYieldPathBucket extends LessonYieldBucket {
+  completed: number;
+  decided: number;
+  /** Undecided completions that carry an explicit `lessonGateExempt` reason. */
+  gateExempt: number;
+}
+
+export function emptyLessonYieldPathBucket(): LessonYieldPathBucket {
+  return {
+    ...emptyLessonYieldBucket(),
+    completed: 0,
+    decided: 0,
+    gateExempt: 0,
+  };
+}
+
 export interface LessonYieldSnapshot {
   schemaVersion: typeof LESSON_YIELD_SCHEMA_VERSION;
   /** ISO timestamp when the snapshot was computed. */
@@ -363,6 +565,27 @@ export interface LessonYieldSnapshot {
    * Useful when many completed tasks never launched a session.
    */
   yieldRateAmongLogged: number;
+  /**
+   * Per-completion-path decision buckets (issue #1608). Keys are
+   * {@link CompletionPath} values; only paths observed in the window appear.
+   */
+  byCompletionPath: Record<string, LessonYieldPathBucket>;
+  /**
+   * Counts of undecided completions keyed by `lessonGateExempt` reason code.
+   * Empty object when every undecided row lacks a stamp.
+   */
+  gateExemptReasons: Record<string, number>;
+  /**
+   * Undecided completions that carry any non-empty `lessonGateExempt`.
+   * Together with `decided`, this is the numerator of {@link contractRate}.
+   */
+  explainedExceptions: number;
+  /**
+   * (decided + explainedExceptions) / completedInWindow.
+   * Target after #1608: ≥ 0.9 — every completion either decided or named an
+   * exemption reason rather than silently skipping the gate.
+   */
+  contractRate: number;
 }
 
 export interface ComputeLessonYieldOptions {
@@ -410,17 +633,15 @@ export async function computeLessonYield(
   const windowStartMs = nowMs - days * 86_400_000;
   const completedStatuses = opts.completedStatuses ?? DEFAULT_COMPLETED;
 
-  const buckets: LessonYieldBucket = {
-    wroteLesson: 0,
-    explicitSkip: 0,
-    searchOnly: 0,
-    noKbActivity: 0,
-  };
+  const buckets = emptyLessonYieldBucket();
+  const byCompletionPath: Record<string, LessonYieldPathBucket> = {};
+  const gateExemptReasons: Record<string, number> = {};
 
   let tasksInWindow = 0;
   let completedInWindow = 0;
   let completedWithLogs = 0;
   let decided = 0;
+  let explainedExceptions = 0;
 
   for (const task of tasks) {
     opts.signal?.throwIfAborted();
@@ -440,26 +661,52 @@ export async function computeLessonYield(
       completedWithLogs++;
     }
 
+    const pathKey = isCompletionPath(task.completionPath) ? task.completionPath : 'unknown';
+    const pathBucket = byCompletionPath[pathKey] ?? emptyLessonYieldPathBucket();
+    pathBucket.completed++;
+
+    let taskDecided = false;
     switch (resolved.decision) {
       case 'wrote-lesson':
         buckets.wroteLesson++;
+        pathBucket.wroteLesson++;
         decided++;
+        pathBucket.decided++;
+        taskDecided = true;
         break;
       case 'explicit-skip':
         buckets.explicitSkip++;
+        pathBucket.explicitSkip++;
         decided++;
+        pathBucket.decided++;
+        taskDecided = true;
         break;
       case 'search-only':
         buckets.searchOnly++;
+        pathBucket.searchOnly++;
         break;
       case 'no-kb-activity':
         buckets.noKbActivity++;
+        pathBucket.noKbActivity++;
         break;
     }
+
+    if (!taskDecided) {
+      const exempt = typeof task.lessonGateExempt === 'string' ? task.lessonGateExempt.trim() : '';
+      if (exempt) {
+        explainedExceptions++;
+        pathBucket.gateExempt++;
+        gateExemptReasons[exempt] = (gateExemptReasons[exempt] ?? 0) + 1;
+      }
+    }
+
+    byCompletionPath[pathKey] = pathBucket;
   }
 
   const yieldRate = completedInWindow > 0 ? decided / completedInWindow : 0;
   const yieldRateAmongLogged = completedWithLogs > 0 ? decided / completedWithLogs : 0;
+  const contractRate =
+    completedInWindow > 0 ? (decided + explainedExceptions) / completedInWindow : 0;
 
   return {
     schemaVersion: LESSON_YIELD_SCHEMA_VERSION,
@@ -473,5 +720,9 @@ export async function computeLessonYield(
     decided,
     yieldRate,
     yieldRateAmongLogged,
+    byCompletionPath,
+    gateExemptReasons,
+    explainedExceptions,
+    contractRate,
   };
 }

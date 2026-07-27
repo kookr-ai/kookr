@@ -1495,6 +1495,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const signalOutboxService = new SignalOutboxService({
     taskStore,
     spoolDir: defaultSignalOutboxDir(process.env),
+    // Same hooksDir root the HTTP signal route uses so outbox drains cannot
+    // bypass the lesson-decision gate (issue #1608).
+    kookrDir,
     onTaskOutcome: (taskId, outcome) => {
       try {
         onTaskOutcomeHolder?.(taskId, outcome);

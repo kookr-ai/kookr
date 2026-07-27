@@ -5,12 +5,15 @@ import { tmpdir } from 'node:os';
 import {
   computeLessonYield,
   evaluateLessonDecisionGate,
+  extractShellCommandFromHookLine,
   isLessonDecisionGateEnabled,
   isLessonDecisionSatisfied,
   LESSON_DECISION_GATE_ENV,
   LESSON_DECISION_REQUIRED_CODE,
+  resolveCompletionPath,
   resolveTaskLessonDecision,
   scanHookLogForLessonDecision,
+  stampTaskCompletionProvenance,
   LESSON_YIELD_SCHEMA_VERSION,
 } from './lesson-decision.js';
 import { KB_LESSON_SKIP_MARKER } from './kb-lesson-classifier.js';
@@ -20,6 +23,15 @@ function preToolBash(command: string): string {
     hook_event_name: 'PreToolUse',
     tool_name: 'Bash',
     tool_input: { command },
+  });
+}
+
+/** Grok Build camelCase pre_tool_use / run_terminal_command shape (issue #1608). */
+function preToolGrok(command: string): string {
+  return JSON.stringify({
+    hookEventName: 'pre_tool_use',
+    toolName: 'run_terminal_command',
+    toolInput: { command, description: 'test' },
   });
 }
 
@@ -216,6 +228,103 @@ describe('scanHookLogForLessonDecision + resolveTaskLessonDecision', () => {
     expect(result.decision).toBe('wrote-lesson');
     expect(result.sessionsScanned).toBe(2);
   });
+
+  test('detects Grok Build camelCase pre_tool_use / run_terminal_command (issue #1608)', async () => {
+    const log = join(dir, 'hooks', 'sess-grok.jsonl');
+    writeFileSync(
+      log,
+      [
+        preToolGrok('kb search "topic"'),
+        preToolGrok(`printf '%s\\n' '${KB_LESSON_SKIP_MARKER} scheduled tick'`),
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const stats = await scanHookLogForLessonDecision(log);
+    expect(stats.lessonSkips).toBe(1);
+    expect(stats.kbSearches).toBe(1);
+    const result = await resolveTaskLessonDecision(
+      { id: 't-grok', sessions: [{ tmuxSession: 'sess-grok' }] },
+      join(dir, 'hooks'),
+    );
+    expect(result.decision).toBe('explicit-skip');
+    expect(result.satisfied).toBe(true);
+  });
+
+  test('detects Grok Build kb remember as wrote-lesson (issue #1608)', async () => {
+    const log = join(dir, 'hooks', 'sess-grok-write.jsonl');
+    writeFileSync(
+      log,
+      preToolGrok('kb remember --kb=agent-task-lessons --title=t --stdin --yes') + '\n',
+      'utf8',
+    );
+    const result = await resolveTaskLessonDecision(
+      { id: 't-grok-w', sessions: [{ tmuxSession: 'sess-grok-write' }] },
+      join(dir, 'hooks'),
+    );
+    expect(result.decision).toBe('wrote-lesson');
+  });
+});
+
+describe('extractShellCommandFromHookLine + completion path (issue #1608)', () => {
+  test('accepts Claude and Grok shell pre-tool shapes', () => {
+    expect(
+      extractShellCommandFromHookLine({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'echo hi' },
+      }),
+    ).toBe('echo hi');
+    expect(
+      extractShellCommandFromHookLine({
+        hookEventName: 'pre_tool_use',
+        toolName: 'run_terminal_command',
+        toolInput: { command: 'ls' },
+      }),
+    ).toBe('ls');
+    expect(
+      extractShellCommandFromHookLine({
+        hookEventName: 'pre_tool_use',
+        toolName: 'read_file',
+        toolInput: { target_file: '/x' },
+      }),
+    ).toBeNull();
+  });
+
+  test('resolveCompletionPath maps signal source and actors', () => {
+    expect(resolveCompletionPath({ hadPendingCompletionReady: true, signalSource: 'http' })).toBe('normal');
+    expect(resolveCompletionPath({ hadPendingCompletionReady: true, signalSource: 'outbox' })).toBe(
+      'outbox_drained',
+    );
+    expect(resolveCompletionPath({ actorSource: 'api' })).toBe('api_complete');
+    expect(resolveCompletionPath({ actorSource: 'websocket' })).toBe('ui_complete');
+    expect(resolveCompletionPath({ actorSource: 'system:completion-ready-ttl' })).toBe('recovery');
+  });
+
+  test('stampTaskCompletionProvenance leaves exempt off when signal was pending', () => {
+    const task: {
+      pendingSignal?: { kind?: string; source?: 'http' | 'outbox' };
+      completionPath?: string;
+      lessonGateExempt?: string;
+    } = {
+      pendingSignal: { kind: 'completion_ready', source: 'outbox' },
+    };
+    const stamped = stampTaskCompletionProvenance(task);
+    expect(stamped.completionPath).toBe('outbox_drained');
+    expect(stamped.lessonGateExempt).toBeUndefined();
+    expect(task.lessonGateExempt).toBeUndefined();
+  });
+
+  test('stampTaskCompletionProvenance stamps default exempt for api complete', () => {
+    const task: {
+      pendingSignal?: { kind?: string; source?: 'http' | 'outbox' };
+      completionPath?: string;
+      lessonGateExempt?: string;
+    } = {};
+    const stamped = stampTaskCompletionProvenance(task, { actorSource: 'api' });
+    expect(stamped.completionPath).toBe('api_complete');
+    expect(stamped.lessonGateExempt).toBe('api_complete_ungated');
+  });
 });
 
 describe('scan hardening (issue #1553)', () => {
@@ -372,6 +481,7 @@ describe('computeLessonYield', () => {
 
     const snap = await computeLessonYield(tasks, join(dir, 'hooks'), { days: 1, nowMs });
     expect(snap.schemaVersion).toBe(LESSON_YIELD_SCHEMA_VERSION);
+    expect(snap.schemaVersion).toBe('lesson-yield.v2');
     expect(snap.windowDays).toBe(1);
     expect(snap.tasksInWindow).toBe(4); // excludes id 5
     expect(snap.completedInWindow).toBe(3); // excludes inProgress
@@ -381,6 +491,12 @@ describe('computeLessonYield', () => {
     expect(snap.decided).toBe(2);
     expect(snap.yieldRate).toBeCloseTo(2 / 3, 5);
     expect(snap.completedWithLogs).toBe(3);
+    // Unstamped historical tasks land under `unknown`.
+    expect(snap.byCompletionPath.unknown?.completed).toBe(3);
+    expect(snap.byCompletionPath.unknown?.decided).toBe(2);
+    expect(snap.byCompletionPath.unknown?.noKbActivity).toBe(1);
+    expect(snap.explainedExceptions).toBe(0);
+    expect(snap.contractRate).toBeCloseTo(2 / 3, 5);
   });
 
   test('yieldRate is 0 when no completed tasks', async () => {
@@ -392,5 +508,72 @@ describe('computeLessonYield', () => {
     expect(snap.completedInWindow).toBe(0);
     expect(snap.yieldRate).toBe(0);
     expect(snap.decided).toBe(0);
+    expect(snap.contractRate).toBe(0);
+    expect(snap.byCompletionPath).toEqual({});
+  });
+
+  test('v2 joins decision buckets onto completionPath + gateExempt (issue #1608)', async () => {
+    writeFileSync(
+      join(dir, 'hooks', 'path-write.jsonl'),
+      preToolBash('kb remember --kb=agent-task-lessons --title=a --stdin --yes') + '\n',
+    );
+    writeFileSync(
+      join(dir, 'hooks', 'path-none.jsonl'),
+      preToolBash('ls') + '\n',
+    );
+    writeFileSync(
+      join(dir, 'hooks', 'path-grok.jsonl'),
+      preToolGrok(`echo '${KB_LESSON_SKIP_MARKER} tick'`) + '\n',
+    );
+
+    const tasks = [
+      {
+        id: 'n1',
+        status: 'completed',
+        updatedAt: '2026-07-25T10:00:00.000Z',
+        sessions: [{ tmuxSession: 'path-write' }],
+        completionPath: 'normal' as const,
+      },
+      {
+        id: 'a1',
+        status: 'completed',
+        updatedAt: '2026-07-25T10:30:00.000Z',
+        sessions: [{ tmuxSession: 'path-none' }],
+        completionPath: 'api_complete' as const,
+        lessonGateExempt: 'api_complete_ungated',
+      },
+      {
+        id: 'o1',
+        status: 'completed',
+        updatedAt: '2026-07-25T11:00:00.000Z',
+        sessions: [{ tmuxSession: 'path-grok' }],
+        completionPath: 'outbox_drained' as const,
+      },
+    ];
+
+    const snap = await computeLessonYield(tasks, join(dir, 'hooks'), { days: 1, nowMs });
+    expect(snap.buckets.wroteLesson).toBe(1);
+    expect(snap.buckets.explicitSkip).toBe(1);
+    expect(snap.buckets.noKbActivity).toBe(1);
+    expect(snap.decided).toBe(2);
+    expect(snap.explainedExceptions).toBe(1);
+    expect(snap.contractRate).toBeCloseTo(1, 5); // 2 decided + 1 explained / 3
+    expect(snap.byCompletionPath.normal).toMatchObject({
+      completed: 1,
+      decided: 1,
+      wroteLesson: 1,
+    });
+    expect(snap.byCompletionPath.api_complete).toMatchObject({
+      completed: 1,
+      decided: 0,
+      noKbActivity: 1,
+      gateExempt: 1,
+    });
+    expect(snap.byCompletionPath.outbox_drained).toMatchObject({
+      completed: 1,
+      decided: 1,
+      explicitSkip: 1,
+    });
+    expect(snap.gateExemptReasons).toEqual({ api_complete_ungated: 1 });
   });
 });
