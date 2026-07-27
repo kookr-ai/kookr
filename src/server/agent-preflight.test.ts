@@ -74,6 +74,24 @@ describe('runAdapterPreflights', () => {
     ]);
   });
 
+  test('surfaces the probe path in the ok snapshot and startup log line', async () => {
+    const registry = new AdapterRegistry();
+    registry.register(stubAdapter('claude-code', async () => ({
+      kind: 'ok',
+      resolvedPath: '/usr/bin/claude',
+      version: 'unknown',
+      probePath: '--help',
+    })));
+    const { logger, lines } = recordingLogger();
+
+    const result = await runAdapterPreflights(registry, { onFatal, logger });
+
+    expect(result['claude-code']).toMatchObject({ status: 'ok', version: 'unknown', probePath: '--help' });
+    expect(lines).toEqual([
+      'LOG [startup] adapter=claude-code binary=/usr/bin/claude version=unknown probe=--help',
+    ]);
+  });
+
   test('warns and continues when default-PATH binary is absent', async () => {
     const registry = new AdapterRegistry();
     registry.register(stubAdapter('codex-cli', async () => ({
