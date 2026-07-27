@@ -65,8 +65,11 @@ of a live parent expires exactly like a detached task — a starving successor
 holds queue depth just the same. A self-continuation chain that relies on a
 queued successor must treat the `cancelled` outcome as "respawn me": the
 audit row and the `onTaskOutcome` notification both carry the task id, and an
-idempotency-key relaunch is safe (a terminal task that never ran is
-deliberately not replayed — see Phase B's `isReplayableTask`).
+idempotency-key relaunch is safe (a terminal task that never ran **and carries
+no disposition** is deliberately not replayed — see Phase B's
+`isReplayableTask`; issue #1588 makes disposed pre-session tasks replayable, but
+a pending-TTL `cancelled` task carries no disposition, so this case is
+unchanged).
 
 ## 3. Per-source spawn budget (`spawnBurstLimit` / `spawnBurstWindowMinutes`)
 

@@ -846,7 +846,7 @@ describe('launchTask', () => {
     expect(deps.adapterRegistry.get('codex-cli').launch).not.toHaveBeenCalled();
   });
 
-  it('cleans up task record when adapter.launch throws, allowing retry', async () => {
+  it('disposes (never deletes) the task record when adapter.launch throws, and a no-key retry still launches fresh (issue #1588)', async () => {
     const adapter = deps.adapterRegistry.get('claude-code');
     (adapter.launch as ReturnType<typeof vi.fn>)
       .mockRejectedValueOnce(new Error('tmux unsafe permissions'));
@@ -855,13 +855,22 @@ describe('launchTask', () => {
     await expect(launchTask(deps, { prompt: 'do work', cwd: '/tmp' }))
       .rejects.toThrow('tmux unsafe permissions');
 
-    // Task record should have been deleted
-    expect(store.listTasks()).toHaveLength(0);
+    // Issue #1588: the record is NOT silently deleted. It stays queryable,
+    // terminal, and carries a disposition explaining why it died.
+    const [disposed] = store.listTasks();
+    expect(store.listTasks()).toHaveLength(1);
+    expect(disposed.status).toBe('terminated');
+    expect(disposed.disposition?.reason).toBe('launch_error');
+    expect(disposed.disposition?.source).toBe('launch-service');
+    expect(disposed.disposition?.at).toBeTruthy();
+    expect(disposed.sessions).toHaveLength(0);
 
-    // Retry succeeds — not blocked by dedup
+    // Retry (no idempotency key) is not blocked by dedup — a terminal task
+    // never matches the active-only dedup — so a fresh task launches.
     (adapter.launch as ReturnType<typeof vi.fn>).mockResolvedValueOnce('tmux-session');
     const result = await launchTask(deps, { prompt: 'do work', cwd: '/tmp' });
     expect(result.duplicate).toBeUndefined();
+    expect(result.task.id).not.toBe(disposed.id);
     expect(result.task.prompt).toBe('do work');
   });
 
@@ -1543,19 +1552,78 @@ describe('launchTask idempotency (issue #1526 Phase B)', () => {
     expect(ledger.size()).toBe(0); // ledger never touched when no key is supplied
   });
 
-  it('reservation released on creation failure — retry with the same key succeeds', async () => {
+  it('issue #1588: a launch failure disposes the task, and a same-key retry replays it (no sibling created)', async () => {
     const adapter = deps.adapterRegistry.get('claude-code');
     (adapter.launch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('boom'));
 
     await expect(
       launchTask(deps, { prompt: 'will fail then retry', cwd: '/tmp', idempotencyKey: 'k1' }),
     ).rejects.toThrow('boom');
-    expect(store.listTasks()).toHaveLength(0); // failed launch cleaned up its task record
 
+    // The failed launch is NOT deleted (the old behaviour) — it stays queryable
+    // with a disposition so the retry can return it instead of a duplicate.
+    expect(store.listTasks()).toHaveLength(1);
+    const [disposed] = store.listTasks();
+    expect(disposed.status).toBe('terminated');
+    expect(disposed.disposition?.reason).toBe('launch_error');
+
+    // Retry with the SAME key replays the disposed task — no second launch, no
+    // sibling task — the create-then-lose duplicate bug (#1550) is closed.
     const retry = await launchTask(deps, { prompt: 'will fail then retry', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(retry.idempotentReplay).toBe(true);
+    expect(retry.task.id).toBe(disposed.id);
+    expect(retry.task.disposition?.reason).toBe('launch_error');
+    expect(store.listTasks()).toHaveLength(1);
+    expect(adapter.launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('issue #1588: a launch TIMEOUT disposes the task with reason launch_timeout and a same-key retry replays it', async () => {
+    const adapter = deps.adapterRegistry.get('claude-code');
+    // A launch that never settles trips the hard launch timeout.
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise<string>(() => {}),
+    );
+    const timeoutDeps: LaunchServiceDeps = { ...deps, getLaunchTimeoutMs: () => 20 };
+
+    await expect(
+      launchTask(timeoutDeps, { prompt: 'hangs', cwd: '/tmp', idempotencyKey: 'k1' }),
+    ).rejects.toBeInstanceOf(LaunchTimeoutError);
+
+    const [disposed] = store.listTasks();
+    expect(disposed.status).toBe('terminated');
+    expect(disposed.disposition?.reason).toBe('launch_timeout');
+
+    const retry = await launchTask(timeoutDeps, { prompt: 'hangs', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(retry.idempotentReplay).toBe(true);
+    expect(retry.task.id).toBe(disposed.id);
+    expect(retry.task.disposition?.reason).toBe('launch_timeout');
+    expect(store.listTasks()).toHaveLength(1);
+    // The retry replayed — it did NOT re-invoke the adapter.
+    expect(adapter.launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('a keyed launch rejected BEFORE any task record (backpressure) releases the key — a same-key retry launches fresh, not a bogus replay', async () => {
+    // maxActive=0 + maxPending=0 makes the pending-queue guard reject BEFORE
+    // createTask, so no task record exists and disposedTaskId is undefined.
+    // The wrapper must RELEASE (not finalize) the key — otherwise a retry would
+    // replay a task that never existed. This guards the `else` branch that the
+    // launch-failure disposition path (#1588) sits beside.
+    const rejectDeps: LaunchServiceDeps = { ...deps, getMaxActiveTasks: () => 0, getMaxPendingTasks: () => 0 };
+    let caught: unknown;
+    try {
+      await launchTask(rejectDeps, { prompt: 'rejected then retried', cwd: '/tmp', idempotencyKey: 'k1' });
+    } catch (err) {
+      caught = err;
+    }
+    expect(isPendingQueueFullError(caught)).toBe(true);
+    expect(store.listTasks()).toHaveLength(0);
+
+    // Retry with capacity restored: a fresh launch, never a replay of a
+    // never-created task.
+    const retry = await launchTask(deps, { prompt: 'rejected then retried', cwd: '/tmp', idempotencyKey: 'k1' });
     expect(retry.idempotentReplay).toBeUndefined();
     expect(store.listTasks()).toHaveLength(1);
-    expect(adapter.launch).toHaveBeenCalledTimes(2);
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
   });
 
   it('TTL expiry: an entry older than 24h is compacted and the key becomes reusable', async () => {
@@ -1684,8 +1752,13 @@ describe('launchTask hard timeout (issue #1526 Phase C / #1528)', () => {
     await expect(launchTask(deps, { prompt: 'wedged launch', cwd: '/tmp' }))
       .rejects.toBeInstanceOf(LaunchTimeoutError);
 
-    // Same cleanup as a thrown launch: task deleted, reservation released.
-    expect(taskStore.listTasks()).toHaveLength(0);
+    // Issue #1588: the wedged launch is DISPOSED, not deleted — it stays
+    // queryable with a launch_timeout disposition and is terminal, so it
+    // releases its reservation and no longer holds a capacity slot.
+    const tasks = taskStore.listTasks();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].status).toBe('terminated');
+    expect(tasks[0].disposition?.reason).toBe('launch_timeout');
     expect(taskStore.getActiveCount()).toBe(0);
   });
 
@@ -1721,7 +1794,9 @@ describe('launchTask hard timeout (issue #1526 Phase C / #1528)', () => {
     try {
       await expect(launchTask(deps, { prompt: 'late resolver', cwd: '/tmp' }))
         .rejects.toBeInstanceOf(LaunchTimeoutError);
-      expect(taskStore.listTasks()).toHaveLength(0);
+      // Issue #1588: disposed (terminated) rather than deleted.
+      expect(taskStore.listTasks()).toHaveLength(1);
+      expect(taskStore.listTasks()[0].disposition?.reason).toBe('launch_timeout');
 
       // The abandoned promise settles LATE with a real session id.
       settleLate('tmux-late-1');
@@ -1729,8 +1804,11 @@ describe('launchTask hard timeout (issue #1526 Phase C / #1528)', () => {
         expect(adapter.stop).toHaveBeenCalledWith('tmux-late-1');
       });
 
-      // No task record came back, no reservation, no lifecycle registration.
-      expect(taskStore.listTasks()).toHaveLength(0);
+      // The disposed record is unchanged (still terminal, still holds no slot)
+      // and the orphaned late session was stopped, never resurrected into
+      // launch state.
+      expect(taskStore.listTasks()).toHaveLength(1);
+      expect(taskStore.listTasks()[0].status).toBe('terminated');
       expect(taskStore.getActiveCount()).toBe(0);
       expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('settled LATE'))).toBe(true);
     } finally {
@@ -1756,7 +1834,9 @@ describe('launchTask hard timeout (issue #1526 Phase C / #1528)', () => {
       await vi.waitFor(() => {
         expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('rejected after timeout'))).toBe(true);
       });
-      expect(taskStore.listTasks()).toHaveLength(0);
+      // Issue #1588: the timed-out task remains as a disposed terminal record.
+      expect(taskStore.listTasks()).toHaveLength(1);
+      expect(taskStore.listTasks()[0].disposition?.reason).toBe('launch_timeout');
       expect(adapter.stop).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
@@ -1781,6 +1861,85 @@ describe('launchTask hard timeout (issue #1526 Phase C / #1528)', () => {
     const result = await launchTask(deps, { prompt: 'default bound', cwd: '/tmp' });
     expect(result.queued).toBe(false);
     expect(taskStore.getTask(result.task.id)).toBeDefined();
+  });
+
+  it('issue #1588: a late abandoned launch that tries to attach a session finds the task terminal — no phantom session', async () => {
+    // Real adapters call taskStore.addSession(taskId, ...) internally before
+    // resolving. Model that: fire the attach only when released, AFTER the
+    // timeout has disposed+terminated the task. The terminal guard must refuse.
+    const taskStore = new TaskStore();
+    const deps: LaunchServiceDeps = { ...makeDeps(taskStore), getLaunchTimeoutMs: () => 30 };
+    const adapter = deps.adapterRegistry.get('claude-code');
+    let attachLate!: () => void;
+    let attachThrew = false;
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementation(
+      (taskId: string) => new Promise<string>((resolve, reject) => {
+        attachLate = () => {
+          try {
+            taskStore.addSession(taskId, { tmuxSession: 'tmux-phantom', agentType: 'claude-code', cwd: '/tmp', createdAt: new Date() });
+            resolve('tmux-phantom'); // unreachable — the guard throws first
+          } catch (err) {
+            attachThrew = true;
+            reject(err as Error); // real adapter propagates the attach failure
+          }
+        };
+      }),
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(launchTask(deps, { prompt: 'wedged then late-attach', cwd: '/tmp' }))
+        .rejects.toBeInstanceOf(LaunchTimeoutError);
+      const [disposed] = taskStore.listTasks();
+      expect(disposed.status).toBe('terminated');
+      expect(disposed.disposition?.reason).toBe('launch_timeout');
+
+      // The abandoned launch now tries to attach — refused by the terminal
+      // guard, so the disposed record never gains a phantom session.
+      attachLate();
+      expect(attachThrew).toBe(true);
+      expect(taskStore.getTask(disposed.id)!.sessions).toHaveLength(0);
+      expect(taskStore.getTask(disposed.id)!.status).toBe('terminated');
+      await vi.waitFor(() => {
+        expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('rejected after timeout'))).toBe(true);
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('issue #1588: a post-attach audit-log failure does NOT dispose a launch that already attached a session', async () => {
+    // The launch succeeds (a session attaches, agent is live), but the
+    // best-effort audit append then fails. The task must stay live — never
+    // disposed/terminated on a bookkeeping fault.
+    const taskStore = new TaskStore();
+    const base = makeDeps(taskStore);
+    const adapter = base.adapterRegistry.get('claude-code');
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementation(async (taskId: string) => {
+      taskStore.addSession(taskId, { tmuxSession: 'tmux-live', agentType: 'claude-code', cwd: '/tmp', createdAt: new Date() });
+      return 'tmux-live';
+    });
+    const deps: LaunchServiceDeps = {
+      ...base,
+      bypassAllPermissions: true,
+      interactionLog: { append: vi.fn().mockRejectedValue(new Error('audit disk full')) } as never,
+      // This adapter actually attaches a session, so registerNewAgent runs its
+      // per-session path — give the hookWatcher mock the isWatching probe.
+      lifecycleDeps: {
+        ...base.lifecycleDeps,
+        hookWatcher: { watch: vi.fn(), isWatching: vi.fn().mockReturnValue(false) },
+      } as never,
+    };
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await launchTask(deps, { prompt: 'live then log fails', cwd: '/tmp' });
+      const stored = taskStore.getTask(result.task.id)!;
+      expect(stored.status).toBe('inProgress'); // live, not disposed
+      expect(stored.disposition).toBeUndefined();
+      expect(stored.sessions).toHaveLength(1);
+      expect(errSpy).toHaveBeenCalled(); // audit failure logged best-effort
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 });
 

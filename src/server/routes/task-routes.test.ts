@@ -349,6 +349,35 @@ describe('GET /api/tasks?view=compact', () => {
     const healthyRow = rows.find((t: { id: string }) => t.id === healthy.id);
     expect(healthyRow.suppressed).toBeUndefined();
   });
+
+  test('issue #1588: a pre-session disposition is queryable via both the full and compact API views', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'launch aborted', cwd: '/repo' });
+    // A launch-timeout cleanup disposed it before any session attached.
+    taskStore.setDisposition(task.id, {
+      reason: 'launch_timeout',
+      at: '2026-07-27T00:00:00.000Z',
+      source: 'launch-service',
+      detail: 'adapter launch timed out',
+    });
+    taskStore.terminateTask(task.id);
+
+    const app = mkApp(mkLoopDeps(taskStore));
+
+    // Full detail view surfaces the disposition (reason + timestamp).
+    const detail = await (await app.request(`/api/tasks/${task.id}`)).json();
+    expect(detail.status).toBe('terminated');
+    expect(detail.disposition).toMatchObject({
+      reason: 'launch_timeout',
+      at: '2026-07-27T00:00:00.000Z',
+      source: 'launch-service',
+    });
+
+    // Compact list view carries it too, so a dashboard row can show WHY.
+    const rows = await (await app.request('/api/tasks?view=compact')).json();
+    const row = rows.find((t: { id: string }) => t.id === task.id);
+    expect(row.disposition?.reason).toBe('launch_timeout');
+  });
 });
 
 describe('stuckReason projection (issue #1526 Phase B)', () => {

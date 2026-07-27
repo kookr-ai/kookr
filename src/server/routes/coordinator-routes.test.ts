@@ -221,8 +221,12 @@ describe('POST /api/coordinator/mark-prior-done', () => {
     const parent = taskStore.createTask('Parent task', '/repo');
     const child = taskStore.createTask('Child task', '/repo', undefined, parent.id);
     taskStore.startTask(parent.id);
-    taskStore.terminateTask(parent.id);
+    // Attach any fixture session while the task is still inProgress, THEN
+    // terminate — the realistic ordering. A terminal task cannot gain a new
+    // session (issue #1588 guard), and real terminated-with-session tasks got
+    // their sessions before termination anyway.
     taskPatch(taskStore, parent.id);
+    taskStore.terminateTask(parent.id);
     const chain = buildCoordinatorSnapshotState({
       tasks: buildCoordinatorDetectorTasks(taskStore.listTasks(), []),
     }, []).chains[child.id]!;

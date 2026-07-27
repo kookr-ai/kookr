@@ -10,6 +10,7 @@ import type { CriteriaCompletionVerdict } from '../shared/contracts/completion-d
 import type { PendingAgentSignal } from '../shared/contracts/agent-signal.js';
 import type {
   TaskDependencyEdge,
+  TaskDisposition,
   TaskLaunchPermissionPosture,
   TaskPriorityUpdate,
 } from '../shared/contracts/task.js';
@@ -497,6 +498,26 @@ export class TaskStore {
     return cloneTask(this.transition(id, 'cancelled'));
   }
 
+  /**
+   * Record a pre-session disposition on a task WITHOUT deleting it (issue
+   * #1588). This is the queryable evidence that a launch-timeout cleanup,
+   * boot-time stale-open-launch reconcile, or overload shed disposed of the
+   * task on purpose — replacing the old "silently `deleteTask`" behaviour that
+   * erased the record and let a retry create a duplicate.
+   *
+   * First-write-wins: if several paths race to dispose the same task, the root
+   * cause is preserved. No-op for an unknown task or one already disposed.
+   * Bumps `updatedAt` so the aged-record prune's recency window protects the
+   * freshly-disposed record until it is genuinely old. Does NOT change status —
+   * callers that also want the task terminal call `terminateTask` alongside.
+   */
+  setDisposition(id: string, disposition: TaskDisposition): void {
+    const task = this.tasks.get(id);
+    if (!task || task.disposition) return;
+    task.disposition = { ...disposition };
+    task.updatedAt = new Date();
+  }
+
   pendTask(id: string): Task {
     return cloneTask(this.transition(id, 'pending'));
   }
@@ -649,6 +670,17 @@ export class TaskStore {
     const task = this.tasks.get(taskId);
     if (!task) {
       throw new Error(`Task not found: ${taskId}`);
+    }
+    // A terminal task cannot gain a new live session (issue #1588). The only
+    // caller is an adapter mid-launch; the sole way to reach here on a terminal
+    // task is an abandoned launch that late-settles AFTER a launch-timeout
+    // disposed+terminated the task (see raceLaunchAgainstTimeout). Refusing
+    // keeps the disposed record session-free and makes the late launch reject
+    // on its own — exactly the "Task not found" rejection the old deleteTask
+    // used to produce. Legit relaunch reopens the task first (crash-recovery.ts
+    // reopenTask → open) so this never fires on a live path.
+    if (isTerminalStatus(task.status)) {
+      throw new Error(`Cannot attach session to terminal task ${taskId} (status=${task.status})`);
     }
     // The launch this reservation guarded has landed.
     this.launchReservations.delete(taskId);

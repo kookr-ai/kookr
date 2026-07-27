@@ -1,7 +1,7 @@
 import { stat } from 'node:fs/promises';
 import type { Task, TaskLaunchHealthSummary, TaskStore } from '../core/tasks.js';
 import type { LaunchOpts, LaunchResult as SharedLaunchResult } from '../shared/contracts/launch.js';
-import type { DeliveryAuthorization } from '../shared/contracts/task.js';
+import type { DeliveryAuthorization, TaskDispositionReason } from '../shared/contracts/task.js';
 import {
   type AgentType,
   type AgentSelection,
@@ -219,8 +219,11 @@ export function isCwdValidationError(err: unknown): err is CwdValidationError {
  * Thrown by {@link launchTask} when `adapter.launch()` does not settle within
  * the configured `launchTimeoutSeconds` (issue #1526 Phase C / #1528). By the
  * time this propagates, the launch has already been cleaned up exactly like a
- * thrown launch: reservation released (`endLaunch`) and the task record
- * deleted, so dedup cannot block a retry and no capacity slot stays held. A
+ * thrown launch: reservation released (`endLaunch`) and the task DISPOSED —
+ * marked terminal with a `launch_timeout` {@link Task.disposition} rather than
+ * deleted (issue #1588), so the record stays queryable, a terminal task can't
+ * block dedup, no capacity slot stays held, and a retry with the same
+ * idempotency key replays this task instead of creating a sibling. A
  * schedule-fired launch that hits this records `dispatch_failed`
  * (reasonCode `launch_error`) through the runner's normal error path.
  */
@@ -328,23 +331,29 @@ function snapshotCapacityLedger(deps: LaunchServiceDeps, maxActive: number): Cap
 /**
  * Race one adapter launch against the hard timeout (issue #1528).
  *
- * On timeout, the caller cleans up (endLaunch + deleteTask) and moves on; the
- * underlying promise is NOT cancelled — adapters expose no abort hook for an
- * in-flight launch — so this helper pins down what a LATE settlement can do:
+ * On timeout, the caller cleans up (endLaunch, then DISPOSES the task terminal
+ * with a `launch_timeout` disposition rather than deleting it — issue #1588)
+ * and moves on; the underlying promise is NOT cancelled — adapters expose no
+ * abort hook for an in-flight launch — so this helper pins down what a LATE
+ * settlement can do:
  *
- * - Late REJECTION is swallowed (logged). The common case: the task record is
- *   already deleted, so the adapter's own `taskStore.addSession` throws
- *   "Task not found" and the launch rejects on its own. NOTE the honest
- *   caveat: if the adapter got as far as creating a terminal session before
- *   that throw, the session process leaks until reconcile reports it — boot
- *   and periodic `reconcile()` list sessions with no owning task as `orphans`
+ * - Late REJECTION is swallowed (logged). The common case: the task is now
+ *   terminal, so the adapter's own `taskStore.addSession` throws ("Cannot
+ *   attach session to terminal task") and the launch rejects on its own — the
+ *   same self-clean the old `deleteTask` produced via "Task not found", now via
+ *   the terminal guard (issue #1588) so the disposed record stays session-free.
+ *   NOTE the honest caveat: if the adapter created a terminal session before
+ *   that throw, the session process leaks until reconcile reports it — boot and
+ *   periodic `reconcile()` list sessions with no owning task as `orphans`
  *   (logged, not killed). In the #1528 incident the hang was *before* session
  *   creation (buildAgentLaunchContext), so the typical timeout leaks nothing.
  * - Late RESOLUTION (a session id came back after we gave up) is neutralized
  *   with the one cleanup hook adapters do expose: `adapter.stop(sessionId)`
  *   kills the orphaned terminal session, best-effort. State cannot be
  *   corrupted either way — the success path (posture stamping, round-robin
- *   advance, registerNewAgent) only runs when the race resolves in time.
+ *   advance, registerNewAgent) only runs when the race resolves in time, and a
+ *   late `addSession` onto the terminated disposed task is refused outright, so
+ *   the record never gains a phantom session.
  */
 async function raceLaunchAgainstTimeout(
   launchPromise: Promise<string>,
@@ -542,20 +551,50 @@ export async function launchTask(
  * A non-terminal task (open/pending/inProgress) is always replayable — it's
  * the same live task the caller is retrying for.
  *
- * A TERMINAL task is replayable only if it actually ran: `sessions.length >
- * 0` means an agent was launched (it may have completed, or died and been
- * terminated — either way, real work happened, so replaying it is exactly
- * the point of this feature — re-launching would duplicate that work). A
- * terminal task with ZERO sessions never ran at all — e.g. it was queued at
- * the concurrency cap (`launchTaskCore`'s maxActive branch never calls
- * `adapter.launch`) and then reaped, cancelled, or TTL-expired before
+ * A TERMINAL task is replayable when either:
+ *  - it actually ran (`sessions.length > 0`): an agent was launched (it may
+ *    have completed, or died and been terminated — either way real work
+ *    happened, so replaying it is the point of this feature; re-launching
+ *    would duplicate that work); or
+ *  - it carries a pre-session `disposition` (issue #1588): a launch-timeout /
+ *    launch-error / stale-open-launch path disposed of it before any session.
+ *    Returning it as a replay is exactly the create-then-lose fix — the caller
+ *    gets the original disposed task (with its reason visible) instead of the
+ *    key being cleared and a duplicate task being created.
+ *
+ * A terminal, zero-session task with NO disposition never ran at all — e.g. it
+ * was queued at the concurrency cap (`launchTaskCore`'s maxActive branch never
+ * calls `adapter.launch`) and then reaped, cancelled, or TTL-expired before
  * promotion ever launched it. Replaying that dead reference would hand the
- * caller a task that will never do the work it's retrying for, so this case
- * is deliberately NOT a replay: the stale entry is cleared and the caller
- * competes for ownership again, actually launching the work.
+ * caller a task that will never do the work it's retrying for, so this case is
+ * deliberately NOT a replay: the stale entry is cleared and the caller competes
+ * for ownership again, actually launching the work.
  */
 function isReplayableTask(task: Task): boolean {
-  return !isTerminalStatus(task.status) || task.sessions.length > 0;
+  return !isTerminalStatus(task.status) || task.sessions.length > 0 || task.disposition !== undefined;
+}
+
+/**
+ * Marker linking a thrown launch error back to the persisted, disposed task
+ * `launchTaskCore` left behind (issue #1588). `launchTaskIdempotent` reads it
+ * to finalize the idempotency key to that task — so a retry returns the
+ * disposed task — instead of releasing the key and letting the retry create a
+ * sibling. A Symbol key never shows up in JSON serialization of the error.
+ */
+const DISPOSED_TASK_ID = Symbol('kookr.disposedTaskId');
+
+function markDisposedTask(err: unknown, taskId: string): void {
+  if (err && typeof err === 'object') {
+    (err as Record<symbol, unknown>)[DISPOSED_TASK_ID] = taskId;
+  }
+}
+
+function disposedTaskId(err: unknown): string | undefined {
+  if (err && typeof err === 'object') {
+    const value = (err as Record<symbol, unknown>)[DISPOSED_TASK_ID];
+    if (typeof value === 'string') return value;
+  }
+  return undefined;
 }
 
 /**
@@ -607,9 +646,18 @@ async function launchTaskIdempotent(
     try {
       result = await launchTaskCore(deps, opts, serverOpts);
     } catch (err) {
-      // launchTaskCore never created a lasting task record (it cleans up its
-      // own on failure) — safe to release so a retry is treated as fresh.
-      await reservation.release();
+      const disposedId = disposedTaskId(err);
+      if (disposedId && deps.taskStore.getTask(disposedId)) {
+        // launchTaskCore left a persisted, disposed task behind (issue #1588:
+        // launch timeout / launch error). Finalize the key to it so a retry
+        // returns THIS disposed task (idempotentReplay) with its reason
+        // visible, never a silently-created sibling. finalize() never rejects.
+        await reservation.finalize(disposedId);
+      } else {
+        // No lasting record (a validation/backpressure rejection before
+        // createTask) — release so a retry is treated as fresh.
+        await reservation.release();
+      }
       throw err;
     }
     // A real task now exists — possibly with a live spawned agent. From here
@@ -841,6 +889,10 @@ async function launchTaskCore(
   // concurrent promoter can never race it, and so getActiveCount counts the
   // in-flight launch against the cap (audit item 1, second launch site).
   taskStore.beginLaunch(task.id);
+  // The disposition guard wraps ONLY the launch race — the point before which
+  // no session has attached. Post-attach bookkeeping (posture stamping, audit
+  // append) runs AFTER this block, so a bookkeeping fault can never dispose a
+  // task that already reached a live session (issue #1588 review).
   try {
     // Hard timeout around the adapter launch (issue #1526 Phase C / #1528):
     // a launch that hangs (CPU saturation wedging the spawn path) fails fast
@@ -854,13 +906,50 @@ async function launchTaskCore(
       resolveLaunchTimeoutMs(deps),
       { taskId: task.id, agentType, adapter },
     );
-    if (bypassAllPermissions) {
-      const launchPermissionPosture = {
-        bypassAllPermissions: true as const,
-        mode: 'bypass-all' as const,
-        capturedAt: nowISO(),
-      };
-      taskStore.setLaunchPermissionPosture(task.id, launchPermissionPosture);
+  } catch (err) {
+    // Never silently delete a persisted task (issue #1588). A launch that
+    // timed out or threw before any session attached still left a real record;
+    // deleting it (the old behaviour) erased the evidence AND let a retried
+    // POST with the same idempotency key create a duplicate. Instead, record a
+    // queryable disposition and mark the task terminal so:
+    //   - `GET /api/tasks/:id` shows WHY it died (reason + timestamp), and
+    //   - a retry finalizes on this task (see launchTaskIdempotent) and gets it
+    //     back as an idempotent replay rather than a sibling.
+    // The round-robin cursor was not advanced yet, so the rotation is untouched.
+    // A terminal task never matches the active-only dedup, so future retries
+    // are not blocked (the original goal of the delete) — they simply replay.
+    // A late-settling abandoned launch cannot corrupt this terminal record:
+    // TaskStore.addSession refuses to attach a session to a terminal task.
+    taskStore.endLaunch(task.id);
+    const reason: TaskDispositionReason = isLaunchTimeoutError(err) ? 'launch_timeout' : 'launch_error';
+    taskStore.setDisposition(task.id, {
+      reason,
+      at: nowISO(),
+      source: 'launch-service',
+      detail: err instanceof Error ? err.message : String(err),
+    });
+    try {
+      taskStore.terminateTask(task.id);
+    } catch (terminateErr) {
+      // Best-effort: the disposition (the queryable evidence) is already
+      // written, so a failed terminal transition must not mask the original
+      // launch error the caller needs to see.
+      console.error(`[launch] failed to terminate disposed task ${task.id}:`, terminateErr);
+    }
+    markDisposedTask(err, task.id);
+    throw err;
+  }
+  // --- Launch succeeded: a session is attached and the agent is live. ---
+  if (bypassAllPermissions) {
+    const launchPermissionPosture = {
+      bypassAllPermissions: true as const,
+      mode: 'bypass-all' as const,
+      capturedAt: nowISO(),
+    };
+    taskStore.setLaunchPermissionPosture(task.id, launchPermissionPosture);
+    // Best-effort audit append: an interaction-log I/O fault must NOT fail —
+    // or dispose — a launch that already spawned an agent (issue #1588 review).
+    try {
       await deps.interactionLog?.append({
         type: 'task_launch_permission_posture',
         taskId: task.id,
@@ -869,16 +958,11 @@ async function launchTaskCore(
         mode: 'bypass-all',
         timestamp: launchPermissionPosture.capturedAt,
       });
-    } else {
-      taskStore.setLaunchPermissionPosture(task.id, undefined);
+    } catch (logErr) {
+      console.error(`[launch] failed to append launch-permission-posture audit for task ${task.id}:`, logErr);
     }
-  } catch (err) {
-    // Clean up the task record so dedup doesn't block future retries. The
-    // round-robin cursor was not advanced yet, so a failed launch leaves the
-    // rotation untouched.
-    taskStore.endLaunch(task.id);
-    taskStore.deleteTask(task.id);
-    throw err;
+  } else {
+    taskStore.setLaunchPermissionPosture(task.id, undefined);
   }
   // The launch succeeded — advance the rotation now that the task is live.
   if (isRoundRobin) deps.roundRobinCursor?.advance();

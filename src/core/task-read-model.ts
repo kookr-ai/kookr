@@ -6,7 +6,7 @@ import type { SessionInfo } from './session-read-model.js';
 import type { TaskStatus } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
 import type { RalphLoopState } from '../shared/contracts/ralph.js';
-import type { DeliveryAuthorization, TaskDependencyEdge, TaskMetadata, TaskPriority } from '../shared/contracts/task.js';
+import type { DeliveryAuthorization, TaskDependencyEdge, TaskDisposition, TaskMetadata, TaskPriority } from '../shared/contracts/task.js';
 
 export type {
   BurnedOutTarget,
@@ -177,6 +177,15 @@ export interface Task {
   finishedAt?: Date;
   /** Set when the task transitions to 'terminated' via reconciliation. */
   terminatedAt?: Date;
+  /**
+   * Queryable evidence that a pre-session prune/terminate path disposed of this
+   * task before its first agent session ever attached (issue #1588). Its
+   * presence proves the task was terminated on purpose rather than silently
+   * lost, and makes the task an idempotent-replay target so a retried POST with
+   * the same idempotency key returns it instead of creating a sibling.
+   * Absent on every task that reached a session (the overwhelming majority).
+   */
+  disposition?: TaskDisposition;
   /**
    * Ralph Wiggum-style iteration loop state. Present only when the task was
    * launched (or upgraded) into Ralph mode. Absence = no loop. See issue #440.
