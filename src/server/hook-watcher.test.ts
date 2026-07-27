@@ -528,6 +528,32 @@ describe('HookFileWatcher', () => {
     expect(events.length).toBe(1);
   });
 
+  test('getRetentionMetrics tracks watched sessions and cumulative read volume (#1612)', async () => {
+    const hookFile = join(tempDir, 'kookr-mem.jsonl');
+    writeFileSync(hookFile, '');
+    registerSession('kookr-mem');
+    watcher.watch('kookr-mem');
+
+    const initial = watcher.getRetentionMetrics();
+    expect(initial.watchedSessions).toBe(1);
+    expect(initial.offsets).toBe(1);
+
+    const line = JSON.stringify({
+      session_id: 'sess-mem',
+      transcript_path: '/t.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+    }) + '\n';
+    appendFileSync(hookFile, line);
+    await watcher.drainNow('kookr-mem');
+
+    const after = watcher.getRetentionMetrics();
+    // The whole-file read charged its length to the cumulative counter — the
+    // metric that reveals the re-read volume under a soak.
+    expect(after.cumulativeReadChars).toBeGreaterThanOrEqual(line.length);
+    expect(after.readCount).toBeGreaterThanOrEqual(1);
+  });
+
   test('no record is lost or duplicated when the writer rotates the active file (#1433)', async () => {
     // Models the incremental-read regime that production's fast paths maintain
     // (fs.watch / the 3s poll / the watchdog drain / the HTTP push): each record

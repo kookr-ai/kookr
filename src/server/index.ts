@@ -48,6 +48,7 @@ import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';
 import { isTerminalStatus } from '../core/task-status.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
+import { createMemoryLedger, readMemoryLedgerConfigFromEnv } from './memory-ledger.js';
 import {
   createResourceStatusService,
   type ResourceStatusSampler,
@@ -1488,6 +1489,23 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     intervalMs: resourceStatusIntervalMs,
   });
 
+  // Periodic memory ledger (issue #1612). Opt-in (KOOKR_MEMORY_LEDGER=1) so it
+  // costs nothing by default; when enabled it logs a structured `[mem-ledger]`
+  // line with process memory plus per-subsystem retention counts, letting a
+  // soak bisect the dominant RSS retainer with evidence rather than a guess.
+  const memoryLedgerConfig = readMemoryLedgerConfigFromEnv();
+  const memoryLedger = createMemoryLedger({
+    intervalMs: memoryLedgerConfig.intervalMs,
+    collectSubsystems: () => ({
+      monitor: monitor.getRetentionMetrics(),
+      hookIngestion: hookIngestion.getRetentionMetrics(),
+      hookWatcher: hookWatcher.getRetentionMetrics(),
+    }),
+  });
+  if (memoryLedgerConfig.enabled) {
+    memoryLedger.start();
+  }
+
   // Lesson-write spool recovery + prolonged KB degradation alert (issue #1519).
   // Spool lives under ~/.kookr/playbook-state (user-scoped, not per-port dataDir)
   // so lessons survive across prod/dev instances on the same host.
@@ -1769,6 +1787,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
     lessonSpoolService.stop();
     signalOutboxService.stop();
+    memoryLedger.stop();
     await backgroundServices.stop();
     try {
       await taskStateSaveScheduler.close();
