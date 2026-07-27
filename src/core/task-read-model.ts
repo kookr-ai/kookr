@@ -167,6 +167,27 @@ export interface Task {
    * onto the client-facing AgentState at projection time.
    */
   pendingSignal?: PendingAgentSignal;
+  /**
+   * How this task reached terminal-complete (issue #1608). Stamped at complete
+   * time for lesson-yield v2 per-path buckets. See {@link CompletionPath} in
+   * `lesson-decision.ts`. Absent on historical tasks → counted as `unknown`.
+   */
+  completionPath?:
+    | 'normal'
+    | 'outbox_drained'
+    | 'recovery'
+    | 'api_complete'
+    | 'ui_complete'
+    | 'other'
+    | 'unknown';
+  /**
+   * Explicit reason a completion was allowed without a lesson decision
+   * (issue #1608). Only meaningful when the task's hook trail has neither
+   * wrote-lesson nor explicit-skip. Examples: `human_complete`,
+   * `api_complete_ungated`, `recovery_reap`. Populated so yield `contractRate`
+   * can treat named exceptions as explained rather than silent bypasses.
+   */
+  lessonGateExempt?: string;
   createdAt: Date;
   updatedAt: Date;
   /**

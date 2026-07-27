@@ -695,6 +695,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       raisedAt: new Date().toISOString(),
       ...(note ? { note } : {}),
       ...(signalId ? { signalId } : {}),
+      // HTTP route always tags provenance so yield v2 can distinguish a
+      // normal (gated) signal from an outbox-drained one (issue #1608).
+      source: 'http',
     };
     taskStore.setPendingSignal(id, signal);
     if (signal.kind === 'completion_ready') {

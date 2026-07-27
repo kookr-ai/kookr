@@ -20,6 +20,12 @@ import {
   type DrainSignalResult,
   type SignalOutboxEntry,
 } from '../core/signal-outbox.js';
+import {
+  evaluateLessonDecisionGate,
+  hooksDirFromKookrDir,
+  isLessonDecisionGateEnabled,
+  resolveTaskLessonDecision,
+} from '../core/lesson-decision.js';
 
 /** Default drain interval: 30 seconds — signals are more time-sensitive than lessons. */
 export const DEFAULT_SIGNAL_OUTBOX_DRAIN_INTERVAL_MS = 30_000;
@@ -45,6 +51,12 @@ export interface SignalOutboxServiceOptions {
   ) => void;
   /** Optional snapshot broadcast after any successful deliver. */
   onDelivered?: () => void;
+  /**
+   * Kookr data dir (contains `hooks/`). When set, completion_ready drains
+   * enforce the same lesson-decision gate as the HTTP signal route so the
+   * outbox cannot silently bypass issue #1538 / #1608.
+   */
+  kookrDir?: string;
 }
 
 export interface SignalOutboxTickResult {
@@ -64,6 +76,7 @@ export class SignalOutboxService {
   private readonly log: (msg: string) => void;
   private readonly onTaskOutcome?: SignalOutboxServiceOptions['onTaskOutcome'];
   private readonly onDelivered?: () => void;
+  private readonly kookrDir?: string;
 
   constructor(opts: SignalOutboxServiceOptions) {
     this.taskStore = opts.taskStore;
@@ -74,6 +87,7 @@ export class SignalOutboxService {
     this.log = opts.log ?? ((msg) => console.log(msg));
     this.onTaskOutcome = opts.onTaskOutcome;
     this.onDelivered = opts.onDelivered;
+    this.kookrDir = opts.kookrDir;
   }
 
   start(): void {
@@ -156,7 +170,7 @@ export class SignalOutboxService {
       spoolDir: this.spoolDir,
       now: this.now(),
       deliver: async (entry) => {
-        const result = this.deliverLocal(entry);
+        const result = await this.deliverLocal(entry);
         if (result.outcome === 'delivered') anyDelivered = true;
         return result;
       },
@@ -183,11 +197,16 @@ export class SignalOutboxService {
   /**
    * Apply one outbox entry against the local TaskStore. Pure signalId replays
    * count as delivered (safe to drop from the spool).
+   *
+   * completion_ready entries are subject to the same lesson-decision gate as
+   * the HTTP route (issue #1608) so a daemon-down spool cannot re-open the
+   * silent-bypass hole #1538 closed. A gate rejection is permanent_fail so the
+   * entry is dropped (mirrors the CLI treating 409 as non-retryable).
    */
-  deliverLocal(entry: SignalOutboxEntry): {
+  async deliverLocal(entry: SignalOutboxEntry): Promise<{
     outcome: 'delivered' | 'permanent_fail' | 'transient_fail';
     error?: string;
-  } {
+  }> {
     try {
       const prior = this.taskStore.getProcessedSignal(entry.signalId);
       if (prior && prior.taskId === entry.taskId && prior.kind === entry.kind) {
@@ -205,6 +224,26 @@ export class SignalOutboxService {
         };
       }
 
+      if (entry.kind === 'completion_ready' && isLessonDecisionGateEnabled()) {
+        const hooksDir = this.kookrDir ? hooksDirFromKookrDir(this.kookrDir) : undefined;
+        if (hooksDir) {
+          const resolved = await resolveTaskLessonDecision(task, hooksDir);
+          const gate = evaluateLessonDecisionGate({
+            sessionsScanned: resolved.sessionsScanned,
+            decision: resolved.decision,
+          });
+          if (!gate.allow) {
+            this.log(
+              `[signal-outbox] drop completion_ready for ${entry.taskId}: ${gate.reason}`,
+            );
+            return {
+              outcome: 'permanent_fail',
+              error: gate.reason,
+            };
+          }
+        }
+      }
+
       const alreadyPending = this.taskStore.getPendingSignal(entry.taskId);
       const isSameKindReplay = alreadyPending?.kind === entry.kind;
 
@@ -213,6 +252,7 @@ export class SignalOutboxService {
         raisedAt: this.now().toISOString(),
         ...(entry.note ? { note: entry.note } : {}),
         signalId: entry.signalId,
+        source: 'outbox',
       };
       this.taskStore.setPendingSignal(entry.taskId, signal);
 

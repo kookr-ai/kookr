@@ -53,4 +53,12 @@ export interface PendingAgentSignal {
    * signal) so a durable outbox drain can safely retry after a client timeout.
    */
   signalId?: string;
+  /**
+   * Provenance of this signal application (issue #1608). `http` = agent CLI
+   * POST to `/api/tasks/:id/signal` (lesson gate enforced on the route).
+   * `outbox` = server-side drain of the durable signal outbox (must enforce
+   * the same gate in-process). Used when stamping `task.completionPath` on
+   * auto-close / complete so yield v2 can name the bypass path.
+   */
+  source?: 'http' | 'outbox';
 }

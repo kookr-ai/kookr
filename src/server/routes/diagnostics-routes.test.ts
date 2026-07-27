@@ -630,7 +630,7 @@ describe('diagnostics routes', () => {
   // GET /api/diagnostics/lesson-yield + health.lessonYield (issue #1538)
   // ---------------------------------------------------------------------------
   describe('GET /api/diagnostics/lesson-yield', () => {
-    test('returns lesson-yield.v1 for completed tasks in the window', async () => {
+    test('returns lesson-yield.v2 for completed tasks in the window', async () => {
       const kookrDir = join(tempDir, 'kookr-state');
       mkdirSync(join(kookrDir, 'hooks'), { recursive: true });
       writeFileSync(
@@ -663,9 +663,11 @@ describe('diagnostics routes', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.schemaVersion).toBe('lesson-yield.v1');
+      expect(body.schemaVersion).toBe('lesson-yield.v2');
       expect(body.windowDays).toBe(1);
       expect(body.completedInWindow).toBe(1);
+      expect(body.byCompletionPath).toBeTypeOf('object');
+      expect(body.contractRate).toBeTypeOf('number');
       expect(body.buckets.wroteLesson).toBe(1);
       expect(body.decided).toBe(1);
       expect(body.yieldRate).toBe(1);
@@ -715,7 +717,7 @@ describe('diagnostics routes', () => {
         expect(res.status).toBe(200);
         const body = await res.json() as { lessonYield?: unknown };
         expect(body.lessonYield).toMatchObject({
-          schemaVersion: 'lesson-yield.v1',
+          schemaVersion: 'lesson-yield.v2',
           windowDays: 1,
         });
       });

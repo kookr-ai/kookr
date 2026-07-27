@@ -70,11 +70,11 @@ path for managed agents.
 | `kookr lesson yield [--days N] [--json]` | 1–30 days | Offline operator CLI; reads `~/.kookr/tasks.json` + hooks |
 | `pnpm kb:usage --days N` | existing report | Still has the per-task decision breakdown |
 
-### Snapshot shape (`lesson-yield.v1`)
+### Snapshot shape (`lesson-yield.v2`)
 
 ```json
 {
-  "schemaVersion": "lesson-yield.v1",
+  "schemaVersion": "lesson-yield.v2",
   "generatedAt": "2026-07-25T12:00:00.000Z",
   "windowDays": 1,
   "windowStartMs": 0,
@@ -89,9 +89,43 @@ path for managed agents.
   },
   "decided": 48,
   "yieldRate": 1.0,
-  "yieldRateAmongLogged": 1.0
+  "yieldRateAmongLogged": 1.0,
+  "byCompletionPath": {
+    "normal": {
+      "completed": 40,
+      "decided": 40,
+      "wroteLesson": 10,
+      "explicitSkip": 30,
+      "searchOnly": 0,
+      "noKbActivity": 0,
+      "gateExempt": 0
+    },
+    "api_complete": {
+      "completed": 8,
+      "decided": 8,
+      "wroteLesson": 0,
+      "explicitSkip": 8,
+      "searchOnly": 0,
+      "noKbActivity": 0,
+      "gateExempt": 0
+    }
+  },
+  "gateExemptReasons": {},
+  "explainedExceptions": 0,
+  "contractRate": 1.0
 }
 ```
+
+**v2 additions (issue #1608):**
+
+| Field | Meaning |
+|-------|---------|
+| `byCompletionPath` | Decision buckets split by how the task reached terminal-complete (`normal`, `outbox_drained`, `recovery`, `api_complete`, `ui_complete`, `other`, `unknown`) |
+| `gateExemptReasons` | Counts of undecided completions keyed by `task.lessonGateExempt` |
+| `explainedExceptions` | Undecided completions that carry any non-empty `lessonGateExempt` |
+| `contractRate` | `(decided + explainedExceptions) / completedInWindow` — target ≥ 0.9 |
+
+Completion path is stamped on the task at complete time. Historical tasks without a stamp land under `unknown`.
 
 ## Code map
 
@@ -106,17 +140,29 @@ path for managed agents.
 
 ## Detection notes
 
-- Classification is **presence of the command string** in PreToolUse Bash, not
-  proof that `kb remember` exited 0. A command containing `kb remember` or
-  `kookr lesson remember` counts as wrote-lesson.
+- Classification is **presence of the command string** in a pre-tool shell
+  invocation, not proof that `kb remember` exited 0. A command containing
+  `kb remember` or `kookr lesson remember` counts as wrote-lesson.
+- **Dual agent schemas (issue #1608):** Claude Code writes snake_case
+  (`hook_event_name: PreToolUse`, `tool_name: Bash`, `tool_input.command`);
+  Grok Build writes camelCase (`hookEventName: pre_tool_use`,
+  `toolName: run_terminal_command`, `toolInput.command`). The scanner accepts
+  both. Scanning only the Claude shape was the silent-bypass hole that made
+  every Grok completion look like `noKbActivity` even when the agent wrote a
+  lesson or printed the skip marker.
 - Session names must match `^[A-Za-z0-9_-]{1,128}$`; unsafe names are treated as
   missing logs (no path traversal out of `hooksDir`).
 - Only the live `<session>.jsonl` file is scanned (not rotated `.jsonl.N`
   generations). Emit the decision near the end of the task so it is still in
   the live file when signaling.
-- Human Complete (UI / REST complete) is **not** gated — yield among all
-  completed tasks can therefore stay below 1.0 when operators complete tasks
-  without the agent signal path.
+- Human Complete (UI / REST complete) is **not** hard-gated — those paths stamp
+  `completionPath` + a default `lessonGateExempt` reason (`human_complete` /
+  `api_complete_ungated`) so yield `contractRate` still accounts for them as
+  explained exceptions rather than silent bypasses.
+- The signal outbox drain (issue #1541) enforces the **same** lesson-decision
+  gate as the HTTP route. A gate rejection drops the outbox entry
+  (`permanent_fail`) so it cannot silently re-apply an undecided
+  `completion_ready`.
 
 ## Relation to the spool
 

@@ -22,6 +22,10 @@ import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { evaluateCriteriaVerdict } from '../core/criteria-verdict.js';
 import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
 import type { TaskTailStore } from '../core/task-tail-store.js';
+import {
+  stampTaskCompletionProvenance,
+  type CompletionPath,
+} from '../core/lesson-decision.js';
 
 // ---------------------------------------------------------------------------
 // Post-launch registration (used by WS handler and REST routes)
@@ -430,11 +434,41 @@ function notifyTaskOutcome(deps: LifecycleDeps, taskId: string, outcome: Telegra
 export async function completeTask(
   taskId: string,
   deps: LifecycleDeps,
-  opts: { cleanupWorktree?: boolean } = {},
+  opts: {
+    cleanupWorktree?: boolean;
+    /** Actor source for completionPath stamping (issue #1608). */
+    actorSource?: string;
+    /** Override inferred completion path. */
+    completionPath?: CompletionPath;
+    /** Override default lessonGateExempt when undecided. */
+    lessonGateExempt?: string;
+    /** When true, do not stamp lessonGateExempt (decision already verified). */
+    decisionSatisfied?: boolean;
+  } = {},
 ): Promise<void> {
   const task = deps.taskStore.getTask(taskId);
   if (!task) throw new Error(`Task not found: ${taskId}`);
   const completionEvents = captureCompletionEvents(task, deps);
+
+  // Stamp completion provenance on the live record before the status
+  // transition so yield v2 can join decision buckets onto the path
+  // (issue #1608). Uses getTaskForMutation so the stamp survives.
+  // Optional-call: unit fixtures often mock TaskStore with only the methods
+  // the scenario needs — missing getTaskForMutation must not crash complete.
+  const getForMutation = (
+    deps.taskStore as TaskStore & {
+      getTaskForMutation?: (id: string) => Task | undefined;
+    }
+  ).getTaskForMutation;
+  const mutable = typeof getForMutation === 'function' ? getForMutation.call(deps.taskStore, taskId) : undefined;
+  if (mutable) {
+    stampTaskCompletionProvenance(mutable, {
+      actorSource: opts.actorSource,
+      explicitPath: opts.completionPath,
+      gateExempt: opts.lessonGateExempt,
+      decisionSatisfied: opts.decisionSatisfied,
+    });
+  }
 
   completeLiveSessionsInBackground(task, deps);
   deps.queue?.purgeTask(taskId);
