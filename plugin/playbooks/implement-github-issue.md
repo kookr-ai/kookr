@@ -101,7 +101,7 @@ Implement GitHub issues end-to-end. In standard launch mode, handle the specifie
 
 If you face a design choice the issue does not settle, pick the smallest implementation that satisfies the issue, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
 
-This playbook is delivery-pre-authorized. Once the issue is trusted and implementable, complete the delivery cycle end-to-end without pausing after each stage: implement, verify, commit, run the repo pre-push workflow, push, create or update the PR, report the PR URL, and merge when `{{mergeAfterImplementation}}` allows it. If you show a diff or plan and receive approval, treat that as approval to finish the full cycle. Ask at most once only when the delivery policy is genuinely ambiguous or a required safety gate blocks automation.
+This playbook is delivery-pre-authorized. Once the issue is trusted and implementable, complete the delivery cycle end-to-end without pausing after each stage: implement, verify, commit, run the repo pre-push workflow, push, run the mandatory pre-`gh pr create` duplicate-guard (Phase 7: abort if the issue is already CLOSED or the head branch already has an open/recently-merged PR), create or update the PR, report the PR URL, and merge when `{{mergeAfterImplementation}}` allows it. If you show a diff or plan and receive approval, treat that as approval to finish the full cycle. Ask at most once only when the delivery policy is genuinely ambiguous or a required safety gate blocks automation.
 
 ## Optional run modes
 
@@ -466,7 +466,50 @@ Updating a stale PR often means merging the base branch back in (`git merge --no
 
 ## Phase 7: Create or Update Pull Request
 
-Commit and push the verified branch, then create a PR targeting the appropriate base branch, or update the existing PR with new evidence:
+Commit and push the verified branch, then create a PR targeting the appropriate base branch, or update the existing PR with new evidence.
+
+**Pre-`gh pr create` duplicate-guard (mandatory).** Run this immediately before
+`gh pr create`. It aborts with a non-zero exit (no PR is created) if the issue
+was already auto-closed by an earlier merge, or the head branch already has an
+open PR or one merged in the last 24h — the 2026-07-26 race where PRs were
+opened seconds after their issues had been auto-closed by the first merges
+(task dd1fbcec, a downstream repo — PRs #1672/#1673/#1674). A mechanical stop, not prose:
+
+```bash
+# --- Pre-`gh pr create` duplicate-guard (issue #1569) ----------------------
+# Fails CLOSED: if a gh probe errors (auth / network / rate-limit) the guard
+# aborts rather than green-lighting an unverified PR — a rate-limited parallel
+# batch is exactly when the duplicate race bites.
+pr_create_guard() {
+  local branch abort n state dupes
+  branch="$1"; shift                 # head branch of the PR about to be created
+  abort=0
+  for n in "$@"; do                  # issue number(s) this PR would close
+    if ! state=$(gh issue view "$n" --json state -q .state 2>/dev/null); then
+      echo "PR-CREATE ABORTED: could not verify issue #$n (gh error / auth / rate-limit) — refusing to open a PR unverified." >&2
+      abort=1; continue
+    fi
+    if [ "$state" = "CLOSED" ]; then
+      echo "PR-CREATE ABORTED: issue #$n is CLOSED (likely auto-closed by an earlier merge) — refusing to open a duplicate PR." >&2
+      abort=1
+    fi
+  done
+  if ! dupes=$(gh pr list --head "$branch" --state all --json number,state,mergedAt \
+    -q '.[] | select(.state=="OPEN" or (.mergedAt != null and (now - (.mergedAt|fromdateiso8601) < 86400))) | "#\(.number)/\(.state)"' 2>/dev/null); then
+    echo "PR-CREATE ABORTED: could not verify PRs for '$branch' (gh error / auth / rate-limit) — refusing to open a PR unverified." >&2
+    abort=1
+  elif [ -n "$dupes" ]; then
+    echo "PR-CREATE ABORTED: head branch '$branch' already has PR(s) $dupes (open or merged <24h ago) — refusing to open a duplicate PR." >&2
+    abort=1
+  fi
+  [ "$abort" -eq 0 ] || return 1
+  echo "pr-create guard OK: issue(s) [$*] open, no live/recent PR on '$branch'."
+}
+
+# The guard MUST pass before the PR is created. For cross-fork PRs, edit the two
+# gh calls to add `-R <owner>/<repo>` and use `--head <owner>:<branch>`:
+pr_create_guard "$(git rev-parse --abbrev-ref HEAD)" "<TARGET>" || exit 1
+```
 
 ```bash
 gh pr create --base <base-branch> --title "<type>: <short description>" --body "$(cat <<'EOF'
