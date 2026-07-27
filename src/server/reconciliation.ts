@@ -234,9 +234,11 @@ export async function reconcile(
  * Disposition follows reconcile's existing crash convention: no session ever
  * attached, so there is no positive completed_turn evidence — the task goes
  * `open → inProgress → terminated` (user must acknowledge or reopen), the
- * same terminal status a mid-turn crash gets. Deleting the record instead
- * (the in-process launch-failure cleanup) would silently erase the evidence
- * that a scheduled fire died.
+ * same terminal status a mid-turn crash gets, and it records a queryable
+ * `stale_open_launch` {@link Task.disposition} (issue #1588). Deleting the
+ * record instead would silently erase the evidence that a scheduled fire died
+ * — the same no-silent-loss rule the in-process launch-failure cleanup now
+ * follows (it disposes rather than deletes).
  *
  * What distinguishes a legitimately mid-flight launch: a FRESH
  * `beginLaunch` reservation (`taskStore.hasFreshLaunchReservation`). At boot
@@ -266,6 +268,17 @@ export function reconcileStaleOpenLaunches(
       if (!task.name) {
         taskStore.renameTask(task.id, deterministicTaskName(displayPromptForTask(task), task.cwd));
       }
+      // Never silently terminate a persisted task (issue #1588): record a
+      // queryable disposition first so the terminal record explains WHY it
+      // died (its launcher process is gone), and so a retried POST with the
+      // same idempotency key can replay it. First-write-wins, so a task that
+      // was already disposed in-process keeps its original reason.
+      taskStore.setDisposition(task.id, {
+        reason: 'stale_open_launch',
+        at: new Date().toISOString(),
+        source: 'startup-reconcile',
+        detail: 'open task with zero sessions at boot — its launcher died with the previous process',
+      });
       // open → inProgress → terminated: the status machine has no direct
       // open→terminated edge; reconcile()'s dead-session path uses the same
       // two-step transition.

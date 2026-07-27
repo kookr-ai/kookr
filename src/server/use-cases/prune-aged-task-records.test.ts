@@ -53,6 +53,40 @@ describe('selectPrunableTasks', () => {
     expect(prunable.map((t) => t.id)).toEqual([aged.id]);
   });
 
+  it('issue #1588: protects a YOUNG pre-session disposed task, prunes an AGED one', () => {
+    const store = new TaskStore();
+
+    // A freshly disposed pre-session task (launch timeout): terminal, zero
+    // sessions, disposition set — with a recent updatedAt (set by setDisposition
+    // / terminateTask). The idempotency window (24h) lives well inside the 7-day
+    // prune window, so this must NOT be pruned.
+    const young = store.createTask({ prompt: 'young disposed', cwd: '/repo' });
+    store.setDisposition(young.id, { reason: 'launch_timeout', at: NOW.toISOString(), source: 'launch-service' });
+    store.terminateTask(young.id);
+    // Pin recency to the fixed test clock (deterministic) and confirm this is
+    // genuinely the pre-session case: terminal, disposed, zero sessions.
+    const youngMut = store.getTaskForMutation(young.id)!;
+    youngMut.updatedAt = NOW;
+    youngMut.finishedAt = NOW;
+    youngMut.terminatedAt = NOW;
+    expect(youngMut.sessions).toHaveLength(0);
+    expect(youngMut.disposition?.reason).toBe('launch_timeout');
+
+    // An aged disposed task (>7 days) is genuinely old — safe to prune; its
+    // disposition already served its purpose during the idempotency window.
+    const aged = store.createTask({ prompt: 'aged disposed', cwd: '/repo' });
+    store.setDisposition(aged.id, { reason: 'launch_error', at: AGED.toISOString(), source: 'launch-service' });
+    store.terminateTask(aged.id);
+    const agedMut = store.getTaskForMutation(aged.id)!;
+    agedMut.updatedAt = AGED;
+    agedMut.finishedAt = AGED;
+    agedMut.terminatedAt = AGED;
+
+    const cutoff = NOW.getTime() - DEFAULT_TASK_RECORD_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+    const prunable = selectPrunableTasks(store.listTasks(), cutoff);
+    expect(prunable.map((t) => t.id)).toEqual([aged.id]);
+  });
+
   it('protects an aged terminal parent whose child is not prunable (fixpoint over chains)', () => {
     const store = new TaskStore();
     const grandparent = seedTask(store, { session: 'grandparent', finishedAt: AGED });

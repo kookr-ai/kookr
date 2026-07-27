@@ -47,6 +47,45 @@ export interface TaskCompletionFeedback {
   downReason?: 'agent_behavior' | 'my_prompt';
 }
 
+/**
+ * Why a task was pruned or terminated BEFORE its first agent session ever
+ * attached (issue #1588). Under CPU saturation, `POST /api/tasks` could create
+ * a task that a launch-timeout cleanup, a boot-time stale-open-launch
+ * reconcile, or overload shedding then removed before any session existed —
+ * silently, so the record vanished and a retried POST created a duplicate.
+ *
+ * The invariant this closes: once a task is persisted it is never removed or
+ * terminated without an explicit, queryable disposition. A disposed task stays
+ * in the store (queryable via `GET /api/tasks/:id`), and a retried POST with
+ * the same idempotency key returns THIS task — disposition visible — instead
+ * of a sibling.
+ */
+export type TaskDispositionReason =
+  /** Adapter launch exceeded the hard launch timeout (issue #1528). */
+  | 'launch_timeout'
+  /** Adapter launch threw before any session attached. */
+  | 'launch_error'
+  /** Boot reconcile terminated an `open` zero-session task whose launcher died with the previous process. */
+  | 'stale_open_launch';
+
+/**
+ * Queryable disposition record for a pre-session prune/terminate (issue #1588).
+ *
+ * This is the single disposition mechanism for pre-session prunes — the
+ * recovery work-conservation ledger (#1540) is expected to build ITS
+ * disposition records on this same shape rather than a parallel one.
+ */
+export interface TaskDisposition {
+  /** Why the task was pruned/terminated before its first session. */
+  reason: TaskDispositionReason;
+  /** ISO-8601 timestamp the disposition was recorded. */
+  at: string;
+  /** Subsystem that recorded it (e.g. 'launch-service', 'startup-reconcile'). */
+  source: string;
+  /** Optional human-readable detail (e.g. the underlying launch error message). */
+  detail?: string;
+}
+
 export interface TaskLaunchHealthSummary {
   degradedDependencies: string[];
   findings: TaskLaunchHealthFinding[];

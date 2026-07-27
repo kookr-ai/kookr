@@ -1197,6 +1197,73 @@ describe('TaskStore', () => {
     });
   });
 
+  describe('setDisposition (issue #1588 — never silently prune a persisted task)', () => {
+    test('records a queryable disposition without deleting or changing status', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.setDisposition(task.id, {
+        reason: 'launch_timeout',
+        at: '2026-07-27T00:00:00.000Z',
+        source: 'launch-service',
+        detail: 'adapter hung',
+      });
+      const after = store.getTask(task.id)!;
+      // Still present and still open — disposition is orthogonal to status.
+      expect(after.status).toBe('open');
+      expect(after.disposition).toEqual({
+        reason: 'launch_timeout',
+        at: '2026-07-27T00:00:00.000Z',
+        source: 'launch-service',
+        detail: 'adapter hung',
+      });
+    });
+
+    test('bumps updatedAt so the aged-record prune recency window protects it', () => {
+      const task = store.createTask('Task', '/cwd');
+      // Force a deterministically-old updatedAt so this actually catches a
+      // regression that drops the `updatedAt = new Date()` bump — createTask
+      // and setDisposition otherwise run in the same tick.
+      const oldMs = Date.now() - 60_000;
+      store.getTaskForMutation(task.id)!.updatedAt = new Date(oldMs);
+      store.setDisposition(task.id, { reason: 'launch_error', at: new Date().toISOString(), source: 'launch-service' });
+      expect(store.getTask(task.id)!.updatedAt.getTime()).toBeGreaterThan(oldMs);
+    });
+
+    test('first-write-wins: a second disposition does not overwrite the root cause', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.setDisposition(task.id, { reason: 'launch_error', at: '2026-07-27T00:00:00.000Z', source: 'launch-service' });
+      store.setDisposition(task.id, { reason: 'stale_open_launch', at: '2026-07-27T01:00:00.000Z', source: 'startup-reconcile' });
+      expect(store.getTask(task.id)!.disposition?.reason).toBe('launch_error');
+    });
+
+    test('no-op for an unknown task (does not throw)', () => {
+      expect(() =>
+        store.setDisposition('nonexistent', { reason: 'launch_error', at: new Date().toISOString(), source: 'launch-service' }),
+      ).not.toThrow();
+    });
+
+    test('disposition survives a save/load round-trip', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.setDisposition(task.id, { reason: 'launch_timeout', at: '2026-07-27T00:00:00.000Z', source: 'launch-service' });
+      const dumped = store.getAllTasks();
+      const restored = new TaskStore();
+      restored.loadTasks(dumped);
+      expect(restored.getTask(task.id)!.disposition?.reason).toBe('launch_timeout');
+    });
+
+    test('addSession refuses to attach to a terminal (disposed) task — no phantom session', () => {
+      // A launch-timeout disposed + terminated the task; the abandoned launch
+      // late-settling must not resurrect it with a phantom session.
+      const task = store.createTask('Task', '/cwd');
+      store.setDisposition(task.id, { reason: 'launch_timeout', at: new Date().toISOString(), source: 'launch-service' });
+      store.terminateTask(task.id);
+      expect(() =>
+        store.addSession(task.id, { tmuxSession: 'kookr-late', agentType: 'claude-code', cwd: '/cwd', createdAt: new Date() }),
+      ).toThrow(/terminal task/);
+      expect(store.getTask(task.id)!.sessions).toHaveLength(0);
+      expect(store.getTask(task.id)!.status).toBe('terminated');
+    });
+  });
+
   describe('getAggregateTokenUsage (issue #1307)', () => {
     const usage = (costUsd: number, extra: Partial<TokenUsage> = {}): TokenUsage => ({
       inputTokens: 100, outputTokens: 50, cacheReadTokens: 10, cacheWriteTokens: 0, costUsd, ...extra,

@@ -130,7 +130,8 @@ fields a list needs — `id`/`taskId`, `name`, `status`, `cwd`, `agentType`,
 `blocks`/`blocked_by`, `deliveryAuthorization`, `autoCloseOnSignal`,
 `tokenUsage` (plus `aggregateTokenUsage` on parents),
 `pendingSignal`, `issueClaim`, `ralphLoop`, the `createdAt`/`updatedAt`/
-`finishedAt`/`terminatedAt` timeline, a `suppressed` flag when applicable, and a
+`finishedAt`/`terminatedAt` timeline, a `disposition` record on a task pruned
+before its first session (issue #1588), a `suppressed` flag when applicable, and a
 trimmed `sessions[]` stub (`tmuxSession`, `agentType`, `lastStatus`,
 `lastTurnState`, `worktreeHealth`, `lastEventAt`, `crashRecovered`,
 `relaunchCount`) — and **omits** the heavy bodies: `prompt`, `userPrompt`,
@@ -246,14 +247,21 @@ logical *request*, independent of its prompt content.
   / `cancelled`) but has **zero sessions** — it was queued at the concurrency
   cap and then reaped, cancelled, or TTL-expired before ever launching an
   agent — it is treated as if the key had never been claimed: the stale entry
-  is dropped and the request launches fresh. A terminal task that *did* run
-  (at least one session) is still replayed, since re-launching it would
+  is dropped and the request launches fresh. **Exception (issue #1588):** if
+  that zero-session terminal task carries a `disposition` (a pre-session
+  prune — launch timeout / launch error / stale-open-launch), it **is**
+  replayed, so the retry returns the disposed task with its reason visible
+  instead of silently creating a sibling. A terminal task that *did* run (at
+  least one session) is still replayed too, since re-launching it would
   duplicate work that already happened.
 - An empty string or a key over 200 characters returns
   `400 {"error": "idempotencyKey must be ..."}`.
-- If the launch that owns a key's reservation fails (validation error,
-  adapter launch failure), the reservation is released so a retry with the
-  same key can succeed.
+- If a launch fails **before a task record is created** (validation error,
+  backpressure rejection), the reservation is released so a retry with the same
+  key is treated as fresh. If it fails **after the task was created** (adapter
+  launch error or hard launch timeout), the task is disposed (issue #1588) and
+  the key is finalized to it, so a same-key retry returns that disposed task as
+  an idempotent replay rather than creating a sibling.
 - **Durability is best-effort, not absolute.** Reservations live in a ledger
   (`idempotency-ledger.json` under the Kookr data dir, 24h TTL — a key past
   its TTL is treated as never seen) that is written to disk once a launch has

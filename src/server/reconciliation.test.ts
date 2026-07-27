@@ -804,6 +804,40 @@ describe('reconcileStaleOpenLaunches (issue #1526 Phase C / #1528, boot-only)', 
     expect(taskStore.getActiveCount()).toBe(0);
   });
 
+  test('issue #1588: the terminated task carries a queryable stale_open_launch disposition', () => {
+    const task = taskStore.createTask('Launcher died at boot', '/cwd');
+
+    reconcileStaleOpenLaunches(taskStore);
+
+    const after = taskStore.getTask(task.id)!;
+    expect(after.status).toBe('terminated');
+    // No task reaches a terminal state silently: the disposition explains WHY
+    // (its launcher process died with the previous run) and carries a timestamp.
+    expect(after.disposition?.reason).toBe('stale_open_launch');
+    expect(after.disposition?.source).toBe('startup-reconcile');
+    expect(after.disposition?.at).toBeTruthy();
+    expect(() => new Date(after.disposition!.at).toISOString()).not.toThrow();
+  });
+
+  test('issue #1588: an in-process disposition reason is preserved (first-write-wins) when reconcile later terminates it', () => {
+    const task = taskStore.createTask('Disposed then reconciled', '/cwd');
+    // Simulate the launch-service having already disposed it (e.g. launch_error)
+    // on a task that then survived a restart still in `open` status.
+    taskStore.setDisposition(task.id, {
+      reason: 'launch_error',
+      at: new Date().toISOString(),
+      source: 'launch-service',
+      detail: 'adapter threw',
+    });
+
+    reconcileStaleOpenLaunches(taskStore);
+
+    const after = taskStore.getTask(task.id)!;
+    expect(after.status).toBe('terminated');
+    // First-write-wins: reconcile does not overwrite the original root cause.
+    expect(after.disposition?.reason).toBe('launch_error');
+  });
+
   test('a legitimately mid-flight launch (fresh beginLaunch reservation) is NOT touched', () => {
     // The discriminator: a live launch holds a fresh in-memory reservation.
     // At boot the reservation map is empty by construction (it is never
