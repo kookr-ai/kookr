@@ -17,7 +17,7 @@
  */
 
 import { OpenAiCompatibleLlmClient } from './openai-compatible-client.js';
-import type { LlmClient, LlmCompletionRequest } from '../../core/llm-types.js';
+import type { LlmClient, LlmCompletionDetail, LlmCompletionRequest } from '../../core/llm-types.js';
 
 const DEFAULT_MODEL = 'deepseek/deepseek-v4-flash';
 const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
@@ -107,5 +107,9 @@ export class OpenRouterLlmClient implements LlmClient {
 
   async complete(req: LlmCompletionRequest): Promise<string | null> {
     return this.transport.complete(req);
+  }
+
+  async completeDetailed(req: LlmCompletionRequest): Promise<LlmCompletionDetail> {
+    return this.transport.completeDetailed(req);
   }
 }

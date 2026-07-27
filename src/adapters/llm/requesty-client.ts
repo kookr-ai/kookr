@@ -3,7 +3,7 @@
  */
 
 import { OpenAiCompatibleLlmClient } from './openai-compatible-client.js';
-import type { LlmClient, LlmCompletionRequest } from '../../core/llm-types.js';
+import type { LlmClient, LlmCompletionDetail, LlmCompletionRequest } from '../../core/llm-types.js';
 
 const DEFAULT_MODEL = 'openai/gpt-4o-mini';
 const DEFAULT_BASE_URL = 'https://router.requesty.ai/v1';
@@ -46,5 +46,9 @@ export class RequestyLlmClient implements LlmClient {
 
   async complete(req: LlmCompletionRequest): Promise<string | null> {
     return this.transport.complete(req);
+  }
+
+  async completeDetailed(req: LlmCompletionRequest): Promise<LlmCompletionDetail> {
+    return this.transport.completeDetailed(req);
   }
 }

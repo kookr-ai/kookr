@@ -221,6 +221,56 @@ describe('FallbackLlmClient.complete abort propagation', () => {
   });
 });
 
+// #1555: completeDetailed preserves the finish reason across the provider chain.
+describe('FallbackLlmClient.completeDetailed', () => {
+  function detailedClient(provider: string, detail: { text: string | null; finishReason: string | null }): LlmClient {
+    return {
+      provider,
+      model: `${provider}-model`,
+      complete: vi.fn(),
+      completeDetailed: vi.fn().mockResolvedValue(detail),
+    };
+  }
+
+  test('returns the first provider whose completion has text', async () => {
+    const a = detailedClient('a', { text: null, finishReason: 'length' });
+    const b = detailedClient('b', { text: 'A good name', finishReason: 'stop' });
+    const fb = new FallbackLlmClient([a, b]);
+    await expect(fb.completeDetailed({ maxTokens: 10, userMessage: 'hi' }))
+      .resolves.toEqual({ text: 'A good name', finishReason: 'stop' });
+  });
+
+  test('preserves the last finish reason when every provider is empty', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const a = detailedClient('a', { text: null, finishReason: 'length' });
+    const b = detailedClient('b', { text: null, finishReason: 'content_filter' });
+    const fb = new FallbackLlmClient([a, b]);
+    await expect(fb.completeDetailed({ maxTokens: 10, userMessage: 'hi' }))
+      .resolves.toEqual({ text: null, finishReason: 'content_filter' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('finish_reason=length'));
+    warn.mockRestore();
+  });
+
+  test('falls back to complete() for a provider without completeDetailed', async () => {
+    const a: LlmClient = { provider: 'a', model: 'a-model', complete: vi.fn().mockResolvedValue('legacy name') };
+    const fb = new FallbackLlmClient([a]);
+    await expect(fb.completeDetailed({ maxTokens: 10, userMessage: 'hi' }))
+      .resolves.toEqual({ text: 'legacy name', finishReason: null });
+  });
+
+  test('re-throws AbortError instead of advancing to the next provider', async () => {
+    const abortErr = Object.assign(new Error('abort'), { name: 'AbortError' });
+    const a: LlmClient = {
+      provider: 'a', model: 'a-model', complete: vi.fn(),
+      completeDetailed: vi.fn().mockRejectedValue(abortErr),
+    };
+    const b = detailedClient('b', { text: 'unreached', finishReason: 'stop' });
+    const fb = new FallbackLlmClient([a, b]);
+    await expect(fb.completeDetailed({ maxTokens: 10, userMessage: 'hi' })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(b.completeDetailed).not.toHaveBeenCalled();
+  });
+});
+
 describe('completeLlmWithFailureAudit', () => {
   test('classifies a single raw provider failure without fallback wrapper', async () => {
     const raw: LlmClient = {

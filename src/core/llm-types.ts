@@ -108,9 +108,31 @@ export interface LlmCompletionAuditResult {
   failureCategory: LlmProviderFailureCategory | null;
 }
 
+/**
+ * Completion text plus the provider's finish reason. Surfaced so callers can
+ * tell an empty/unparseable completion caused by a truncated budget
+ * (`finishReason === 'length'`) apart from a genuine `stop`, which is otherwise
+ * indistinguishable once `complete()` collapses both to `null` (issue #1555:
+ * reasoning tokens on Nemotron consumed the whole 30-token namer budget, so the
+ * model finished with `length` before emitting any JSON and every call logged a
+ * bare "empty name").
+ */
+export interface LlmCompletionDetail {
+  /** Text content (or tool-call arguments), trimmed; null when empty. */
+  text: string | null;
+  /** Provider finish reason, e.g. 'stop' | 'length' | 'tool_calls'; null if unreported. */
+  finishReason: string | null;
+}
+
 export interface LlmClient {
   /** Returns the text content of the first message, or null on failure. */
   complete(request: LlmCompletionRequest): Promise<string | null>;
+  /**
+   * Like {@link complete}, but also reports the provider finish reason so
+   * empty/truncated completions are diagnosable. Optional: callers should fall
+   * back to {@link complete} (via `completeLlmDetailed`) when unimplemented.
+   */
+  completeDetailed?(request: LlmCompletionRequest): Promise<LlmCompletionDetail>;
   /** Returns completion text plus categorized provider-failure details. */
   completeWithFailureAudit?(request: LlmCompletionRequest): Promise<LlmCompletionAuditResult>;
   /** Human-readable provider name for logging (e.g. "groq", "anthropic"). */

@@ -10,6 +10,7 @@ import {
   type HelperLlmDiagnosticsSnapshot,
   type LlmClient,
   type LlmCompletionAuditResult,
+  type LlmCompletionDetail,
   type LlmCompletionRequest,
   type LlmProviderFailureCategory,
   type LlmProviderFailureRecord,
@@ -260,6 +261,24 @@ export async function completeLlmWithFailureAudit(
   }
 }
 
+/**
+ * Complete and report the provider finish reason. Uses {@link LlmClient.completeDetailed}
+ * when the client implements it; otherwise falls back to {@link LlmClient.complete}
+ * and reports `finishReason: null` (unknown). Lets callers diagnose empty/truncated
+ * completions (`finishReason === 'length'`) without every client having to implement
+ * the richer method.
+ */
+export async function completeLlmDetailed(
+  client: LlmClient,
+  request: LlmCompletionRequest,
+): Promise<LlmCompletionDetail> {
+  if (client.completeDetailed) {
+    return client.completeDetailed(request);
+  }
+  const text = await client.complete(request);
+  return { text, finishReason: null };
+}
+
 export function withHelperLlmAccounting(client: LlmClient): LlmClient {
   if ((client as LlmClient & { [ACCOUNTING_WRAPPED]?: true })[ACCOUNTING_WRAPPED]) return client;
   return new HelperLlmAccountingClient(client);
@@ -286,6 +305,27 @@ class HelperLlmAccountingClient implements LlmClient {
         ? { kind: 'null_response', category: 'malformed_response' }
         : { kind: 'success' });
       return text;
+    } catch (err) {
+      if ((err as { name?: string } | null)?.name === 'AbortError') {
+        recordHelperLlmOutcome(this.inner, request, startedAt, { kind: 'aborted' });
+        throw err;
+      }
+      recordHelperLlmOutcome(this.inner, request, startedAt, {
+        kind: 'error',
+        category: classifyLlmProviderFailure(err),
+      });
+      throw err;
+    }
+  }
+
+  async completeDetailed(request: LlmCompletionRequest): Promise<LlmCompletionDetail> {
+    const startedAt = Date.now();
+    try {
+      const detail = await completeLlmDetailed(this.inner, request);
+      recordHelperLlmOutcome(this.inner, request, startedAt, detail.text === null
+        ? { kind: 'null_response', category: 'malformed_response' }
+        : { kind: 'success' });
+      return detail;
     } catch (err) {
       if ((err as { name?: string } | null)?.name === 'AbortError') {
         recordHelperLlmOutcome(this.inner, request, startedAt, { kind: 'aborted' });
@@ -383,5 +423,37 @@ export class FallbackLlmClient implements LlmClient {
 
   async complete(request: LlmCompletionRequest): Promise<string | null> {
     return (await this.completeWithFailureAudit(request)).text;
+  }
+
+  /**
+   * Like {@link complete} but preserves the finish reason of the last attempt so
+   * an all-providers-empty outcome stays diagnosable (issue #1555). Returns the
+   * first provider whose completion has text; otherwise the last attempt's
+   * detail (which carries its finish reason).
+   */
+  async completeDetailed(request: LlmCompletionRequest): Promise<LlmCompletionDetail> {
+    let lastDetail: LlmCompletionDetail = { text: null, finishReason: null };
+    for (const client of this.clients) {
+      if (request.signal?.aborted) {
+        const err = new Error('Request aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
+      try {
+        const detail = await completeLlmDetailed(client, request);
+        if (detail.text !== null) return detail;
+        lastDetail = detail;
+        console.warn(
+          `[llm] ${client.provider} (${client.model}) returned empty response (finish_reason=${detail.finishReason ?? 'unknown'}), trying next provider`,
+        );
+      } catch (err) {
+        if ((err as { name?: string } | null)?.name === 'AbortError') throw err;
+        const failure = caughtFailure(client, err);
+        console.warn(
+          `[llm] ${client.provider} (${client.model}) failed category=${failure.category}: ${failure.message}, trying next provider`,
+        );
+      }
+    }
+    return lastDetail;
   }
 }

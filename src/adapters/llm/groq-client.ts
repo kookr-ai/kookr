@@ -6,7 +6,7 @@
  */
 
 import Groq from 'groq-sdk';
-import type { LlmClient, LlmCompletionRequest } from '../../core/llm-types.js';
+import type { LlmClient, LlmCompletionDetail, LlmCompletionRequest } from '../../core/llm-types.js';
 
 const DEFAULT_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
 
@@ -21,6 +21,10 @@ export class GroqLlmClient implements LlmClient {
   }
 
   async complete(req: LlmCompletionRequest): Promise<string | null> {
+    return (await this.completeDetailed(req)).text;
+  }
+
+  async completeDetailed(req: LlmCompletionRequest): Promise<LlmCompletionDetail> {
     const messages: Groq.Chat.ChatCompletionMessageParam[] = [];
     if (req.system) {
       messages.push({ role: 'system', content: req.system });
@@ -56,12 +60,14 @@ export class GroqLlmClient implements LlmClient {
       signal: req.signal ?? undefined,
     });
 
-    const message = response.choices[0]?.message;
+    const choice = response.choices[0];
+    const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : null;
+    const message = choice?.message;
     const content = message?.content?.trim();
-    if (content) return content;
+    if (content) return { text: content, finishReason };
     const toolArgs = message?.tool_calls?.find((call) => typeof call.function?.arguments === 'string')
       ?.function?.arguments;
-    if (typeof toolArgs === 'string' && toolArgs.trim()) return toolArgs.trim();
-    return null;
+    if (typeof toolArgs === 'string' && toolArgs.trim()) return { text: toolArgs.trim(), finishReason };
+    return { text: null, finishReason };
   }
 }
