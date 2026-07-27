@@ -233,4 +233,13 @@ describe('deferred idea helpers', () => {
       '/tmp/.kookr/playbook-state/deferred-ideas/kookr-ai-kookr.jsonl',
     );
   });
+
+  it('refuses with a clear reason when requested is 0 over threshold', () => {
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 100,
+      requestedBudget: 0,
+    });
+    expect(plan.action).toBe('refuse');
+    expect(plan.reason).toMatch(/Requested budget is 0/i);
+  });
 });

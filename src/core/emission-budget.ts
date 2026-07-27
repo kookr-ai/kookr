@@ -361,8 +361,12 @@ export function buildDeferredIdeaRecord(input: {
   };
 }
 
-/** Default on-disk path for deferred ideas of a repo (`owner/repo` → slug). */
-export function deferredIdeasPath(repo: string, kookrDir = `${process.env.HOME ?? ''}/.kookr`): string {
+/**
+ * Default on-disk path for deferred ideas of a repo (`owner/repo` → slug).
+ * Callers must pass an absolute `kookrDir` (CLI defaults to `~/.kookr` via
+ * `homedir()`); the pure core does not read process.env.
+ */
+export function deferredIdeasPath(repo: string, kookrDir: string): string {
   const slug = repo.replace(/[/.]/g, '-');
   return `${kookrDir.replace(/\/$/, '')}/playbook-state/deferred-ideas/${slug}.jsonl`;
 }
