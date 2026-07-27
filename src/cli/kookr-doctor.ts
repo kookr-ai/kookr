@@ -272,7 +272,15 @@ async function checkAgentBinary(args: {
   explicitlyConfigured: boolean;
   probeExec: ProbeExecRunner;
 }): Promise<DoctorCheck> {
-  const probe = await probeAgentBinary(args.bin, { exec: args.probeExec, timeoutMs: AGENT_PROBE_TIMEOUT_MS });
+  // Doctor is an interactive diagnostic: keep both probe attempts bounded by the
+  // same short budget rather than inheriting the boot preflight's longer
+  // --version cold-start window. Passing versionTimeoutMs explicitly preserves
+  // the pre-#1557 total budget instead of silently widening to the 5 s default.
+  const probe = await probeAgentBinary(args.bin, {
+    exec: args.probeExec,
+    timeoutMs: AGENT_PROBE_TIMEOUT_MS,
+    versionTimeoutMs: AGENT_PROBE_TIMEOUT_MS,
+  });
   if (probe.kind === 'ok') {
     return {
       id: args.id,

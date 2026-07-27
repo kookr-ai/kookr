@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
 import { ClaudeCodeAdapter, resolvePluginDir } from './claude-code-adapter.js';
+import type { ProbeExecRunner } from './probe-agent-binary.js';
 import { DEFAULT_PROMPT_SUBMIT_DELAY_MS } from './agent-launch-context.js';
 import { TaskStore } from '../core/tasks.js';
 import type { AgentEvent } from '../core/types.js';
@@ -1523,5 +1524,28 @@ describe('ClaudeCodeAdapter model pin (#1518)', () => {
     });
     const spec = backend.sessions.get(sessionId)!.spec;
     expect(spec.args).not.toContain('--model');
+  });
+
+  describe('preflight', () => {
+    test('reports the extracted version and --version probe path when --version succeeds', async () => {
+      const probeExec: ProbeExecRunner = async (_file, args) => {
+        if (args.join(' ') === '--version') return { stdout: '2.1.220 (Claude Code)\n', stderr: '' };
+        throw new Error(`unexpected probe: ${args.join(' ')}`);
+      };
+      const pfAdapter = new ClaudeCodeAdapter(backend, taskStore, { probeExec });
+      const result = await pfAdapter.preflight();
+      expect(result).toMatchObject({ kind: 'ok', version: '2.1.220', probePath: '--version' });
+    });
+
+    test('reports unknown (never usage text) and --help path when --version fails and --help is usage text', async () => {
+      const probeExec: ProbeExecRunner = async (_file, args) => {
+        if (args.join(' ') === '--version') throw Object.assign(new Error('cold'), { code: 'ETIMEDOUT' });
+        return { stdout: 'Usage: claude [options] [command] [prompt]\n', stderr: '' };
+      };
+      const pfAdapter = new ClaudeCodeAdapter(backend, taskStore, { probeExec });
+      const result = await pfAdapter.preflight();
+      expect(result).toMatchObject({ kind: 'ok', version: 'unknown', probePath: '--help' });
+      if (result.kind === 'ok') expect(result.version).not.toContain('Usage');
+    });
   });
 });
