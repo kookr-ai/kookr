@@ -1,0 +1,439 @@
+// scripts/prod-smoke.ts — post-deploy smoke suite (issue #1592).
+//
+// Invoked at the end of scripts/prod-restart.sh (and transitively
+// scripts/prod-update.sh) once the freshly-restarted server has passed the
+// liveness gate. It validates the things the startup health gate cannot see:
+//
+//   1. /api/ready responds within a bound (no hang; degraded 503 is tolerated)
+//   2. /api/health responds within a bound (the #1543 regression was a hung
+//      /api/health that ran ~21h before a human noticed)
+//   3. /api/tasks?limit=1 responds under a latency-sanity bound
+//   4. every adapter version the server logged at boot is semver-shaped or the
+//      literal "unknown" — never `--help` usage text (a prod boot once logged
+//      `version=Usage: claude [options] [command] [prompt]`)
+//   5. the outgoing server did not go silent for an unexplained multi-hour
+//      window before this deploy (the 07-25 18:46–21:36 ~2h50m log gap)
+//
+// On ANY check failure the process exits non-zero (so the deploy command
+// fails and a human investigates — the new server is already live, so this is
+// an alarm, not a rollback) and writes an operational alert artifact. The whole
+// suite is bounded by per-check timeouts and a hard overall deadline so it can
+// never hang a deploy.
+
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+// ---------------------------------------------------------------------------
+// Pure check logic (unit-tested in scripts/prod-smoke.test.ts).
+// ---------------------------------------------------------------------------
+
+/**
+ * A version string reported by the running server is acceptable iff it is the
+ * literal `unknown` or is semver-shaped (1–3 dot-separated numeric groups with
+ * an optional pre-release suffix, e.g. `1.2.3`, `0.145.0-alpha.4`). Anything
+ * else — most importantly `--help` usage text that leaked through the probe
+ * fallback — fails. Mirrors the accepted output space of
+ * `src/adapters/probe-agent-binary.ts`'s `extractVersion`.
+ */
+export function isValidAdapterVersion(version: string): boolean {
+  const trimmed = version.trim();
+  if (trimmed === 'unknown') return true;
+  return /^\d+(?:\.\d+){1,3}(?:-[A-Za-z0-9.]+)?$/.test(trimmed);
+}
+
+export interface AdapterVersionEntry {
+  agentType: string;
+  version: string;
+}
+
+/**
+ * Parse `[startup] adapter=<name> binary=<path> version=<v>` lines out of a
+ * server log. The version is everything after `version=` (it may contain
+ * spaces — that is precisely the `Usage: ...` failure we want to catch). When
+ * an adapter appears more than once (e.g. a systemd Restart=on-failure loop
+ * appends to the same log), the LAST occurrence wins so we judge the current
+ * boot.
+ */
+export function parseAdapterVersionsFromLog(logText: string): AdapterVersionEntry[] {
+  const byAdapter = new Map<string, string>();
+  const line = /\[startup\] adapter=(\S+) binary=(\S+) version=(.*)$/;
+  for (const raw of logText.split('\n')) {
+    const match = raw.match(line);
+    if (!match) continue;
+    byAdapter.set(match[1]!, match[3]!.trim());
+  }
+  return [...byAdapter.entries()].map(([agentType, version]) => ({ agentType, version }));
+}
+
+export interface VersionSanityResult {
+  ok: boolean;
+  checked: number;
+  invalid: AdapterVersionEntry[];
+}
+
+/** Validate every parsed adapter version; report the offenders. */
+export function checkAdapterVersionSanity(entries: AdapterVersionEntry[]): VersionSanityResult {
+  const invalid = entries.filter((entry) => !isValidAdapterVersion(entry.version));
+  return { ok: invalid.length === 0, checked: entries.length, invalid };
+}
+
+export interface LogContinuityResult {
+  ok: boolean;
+  gapMs: number | null;
+  reason?: string;
+}
+
+/**
+ * A wedged server stops logging. If the outgoing server's log was last written
+ * more than `maxGapMs` before this boot, that silence is anomalous — flag it.
+ * When the pre-deploy mtime is unavailable (first deploy, systemd path without
+ * a rotated generation) the check passes: absence of evidence is not evidence.
+ */
+export function evaluateLogContinuity(input: {
+  previousLogMtimeMs: number | null;
+  bootTimeMs: number;
+  maxGapMs: number;
+}): LogContinuityResult {
+  const { previousLogMtimeMs, bootTimeMs, maxGapMs } = input;
+  if (previousLogMtimeMs === null || !Number.isFinite(previousLogMtimeMs)) {
+    return { ok: true, gapMs: null };
+  }
+  const gapMs = bootTimeMs - previousLogMtimeMs;
+  if (gapMs <= maxGapMs) return { ok: true, gapMs };
+  return {
+    ok: false,
+    gapMs,
+    reason:
+      `outgoing server log went silent for ${formatDuration(gapMs)} before this boot ` +
+      `(threshold ${formatDuration(maxGapMs)}) — a wedged server stops logging`,
+  };
+}
+
+/** True iff `durationMs` is within the inclusive latency bound. */
+export function isWithinLatencyBound(durationMs: number, boundMs: number): boolean {
+  return durationMs <= boundMs;
+}
+
+export function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rem = Math.round(seconds % 60);
+  return `${minutes}m${rem.toString().padStart(2, '0')}s`;
+}
+
+// ---------------------------------------------------------------------------
+// Check-result model + alert artifact.
+// ---------------------------------------------------------------------------
+
+export interface CheckResult {
+  name: string;
+  ok: boolean;
+  detail: string;
+  durationMs?: number;
+}
+
+export const ALERT_SCHEMA_VERSION = 'prod-smoke-alert.v1';
+
+export interface AlertArtifact {
+  schemaVersion: typeof ALERT_SCHEMA_VERSION;
+  status: 'ok' | 'alert';
+  generatedAt: string;
+  failingChecks: string[];
+  checks: CheckResult[];
+}
+
+export function buildAlertArtifact(checks: CheckResult[], generatedAt: string): AlertArtifact {
+  const failing = checks.filter((c) => !c.ok);
+  return {
+    schemaVersion: ALERT_SCHEMA_VERSION,
+    status: failing.length === 0 ? 'ok' : 'alert',
+    generatedAt,
+    failingChecks: failing.map((c) => c.name),
+    checks,
+  };
+}
+
+/** Write the alert artifact, creating its parent directory. Never throws. */
+export function writeAlertArtifact(path: string, artifact: AlertArtifact): void {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${JSON.stringify(artifact, null, 2)}\n`);
+  } catch (err) {
+    console.error(`[prod-smoke] failed to write alert artifact ${path}: ${describeErr(err)}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime configuration (env-driven, standalone-runnable defaults).
+// ---------------------------------------------------------------------------
+
+export interface SmokeConfig {
+  healthUrl: string;
+  readyUrl: string;
+  tasksUrl: string;
+  logFile: string;
+  alertPath: string;
+  authToken: string | undefined;
+  healthMaxTimeMs: number;
+  readyMaxTimeMs: number;
+  tasksLatencyBoundMs: number;
+  maxLogGapMs: number;
+  overallTimeoutMs: number;
+  previousLogMtimeMs: number | null;
+  bootTimeMs: number;
+}
+
+function envInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function defaultKookrDir(port: string): string {
+  return port === '4800' ? join(homedir(), '.kookr') : join(homedir(), `.kookr-${port}`);
+}
+
+export function resolveConfig(env: NodeJS.ProcessEnv = process.env): SmokeConfig {
+  const port = env.KOOKR_PORT ?? '4800';
+  const base = `http://127.0.0.1:${port}`;
+  const kookrDir = env.KOOKR_SMOKE_KOOKR_DIR ?? defaultKookrDir(port);
+  const rawPrevMtime = env.KOOKR_SMOKE_PREDEPLOY_LOG_MTIME_MS;
+  const previousLogMtimeMs =
+    rawPrevMtime !== undefined && rawPrevMtime.trim() !== '' && Number.isFinite(Number(rawPrevMtime))
+      ? Number(rawPrevMtime)
+      : null;
+  // The smoke suite runs seconds after boot, so "now" is a faithful boot anchor
+  // for the log-continuity gap measurement — no separate deploy-start timestamp
+  // needs threading in from the shell.
+  const bootTimeMs = Date.now();
+
+  return {
+    healthUrl: env.KOOKR_SMOKE_HEALTH_URL ?? env.KOOKR_HEALTH_URL ?? `${base}/api/health`,
+    readyUrl: env.KOOKR_SMOKE_READY_URL ?? env.KOOKR_READY_URL ?? `${base}/api/ready`,
+    tasksUrl: env.KOOKR_SMOKE_TASKS_URL ?? `${base}/api/tasks?limit=1`,
+    logFile: env.KOOKR_SMOKE_LOG_FILE ?? join(kookrDir, 'server.log'),
+    alertPath: env.KOOKR_SMOKE_ALERT_PATH ?? join(kookrDir, 'prod-smoke-alert.json'),
+    authToken: env.KOOKR_API_TOKEN,
+    healthMaxTimeMs: envInt('KOOKR_SMOKE_HEALTH_MAX_TIME_SECONDS', 10) * 1000,
+    readyMaxTimeMs: envInt('KOOKR_SMOKE_READY_MAX_TIME_SECONDS', 5) * 1000,
+    tasksLatencyBoundMs: envInt('KOOKR_SMOKE_TASKS_LATENCY_BOUND_MS', 3000),
+    maxLogGapMs: envInt('KOOKR_SMOKE_MAX_LOG_GAP_SECONDS', 7200) * 1000,
+    overallTimeoutMs: envInt('KOOKR_SMOKE_OVERALL_TIMEOUT_SECONDS', 45) * 1000,
+    previousLogMtimeMs,
+    bootTimeMs,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Individual checks (I/O — exercised via integration tests against stubs).
+// ---------------------------------------------------------------------------
+
+function authHeaders(config: SmokeConfig): Record<string, string> {
+  return config.authToken ? { authorization: `Bearer ${config.authToken}` } : {};
+}
+
+/** Bounded GET that resolves to a status + elapsed time, or throws on timeout. */
+async function timedGet(
+  url: string,
+  timeoutMs: number,
+  headers: Record<string, string>,
+): Promise<{ status: number; durationMs: number }> {
+  const startedMs = Date.now();
+  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), headers });
+  return { status: res.status, durationMs: Date.now() - startedMs };
+}
+
+async function checkReady(config: SmokeConfig): Promise<CheckResult> {
+  try {
+    const { status, durationMs } = await timedGet(config.readyUrl, config.readyMaxTimeMs, authHeaders(config));
+    // 503 is a known degraded-but-responsive state (issue #660); the existing
+    // post-restart nag only warns on it, so we do not fail the deploy — we only
+    // fail if the endpoint does not respond within the bound.
+    return {
+      name: 'ready',
+      ok: true,
+      detail: `${config.readyUrl} responded ${status} in ${formatDuration(durationMs)}`,
+      durationMs,
+    };
+  } catch (err) {
+    return {
+      name: 'ready',
+      ok: false,
+      detail: `${config.readyUrl} did not respond within ${formatDuration(config.readyMaxTimeMs)}: ${describeErr(err)}`,
+    };
+  }
+}
+
+async function checkHealth(config: SmokeConfig): Promise<CheckResult> {
+  try {
+    const { status, durationMs } = await timedGet(config.healthUrl, config.healthMaxTimeMs, authHeaders(config));
+    if (status >= 500) {
+      return { name: 'health', ok: false, detail: `${config.healthUrl} returned ${status}`, durationMs };
+    }
+    return {
+      name: 'health',
+      ok: true,
+      detail: `${config.healthUrl} responded ${status} in ${formatDuration(durationMs)}`,
+      durationMs,
+    };
+  } catch (err) {
+    return {
+      name: 'health',
+      ok: false,
+      detail: `${config.healthUrl} did not respond within ${formatDuration(config.healthMaxTimeMs)}: ${describeErr(err)}`,
+    };
+  }
+}
+
+/** Headroom above the latency bound before the request itself is aborted, so a
+ * slow-but-responsive endpoint (fails the bound with a measured time) is
+ * distinguished from a hung one (aborts) in the operator alert. */
+const TASKS_LATENCY_HEADROOM_MS = 5000;
+
+async function checkTasksLatency(config: SmokeConfig): Promise<CheckResult> {
+  const fetchTimeoutMs = config.tasksLatencyBoundMs + TASKS_LATENCY_HEADROOM_MS;
+  try {
+    const { status, durationMs } = await timedGet(config.tasksUrl, fetchTimeoutMs, authHeaders(config));
+    if (status !== 200) {
+      return { name: 'tasks-latency', ok: false, detail: `${config.tasksUrl} returned ${status}`, durationMs };
+    }
+    if (!isWithinLatencyBound(durationMs, config.tasksLatencyBoundMs)) {
+      return {
+        name: 'tasks-latency',
+        ok: false,
+        detail: `${config.tasksUrl} responded 200 in ${formatDuration(durationMs)}, exceeding the latency bound of ${formatDuration(config.tasksLatencyBoundMs)}`,
+        durationMs,
+      };
+    }
+    return {
+      name: 'tasks-latency',
+      ok: true,
+      detail: `${config.tasksUrl} responded 200 in ${formatDuration(durationMs)} (bound ${formatDuration(config.tasksLatencyBoundMs)})`,
+      durationMs,
+    };
+  } catch (err) {
+    return {
+      name: 'tasks-latency',
+      ok: false,
+      detail: `${config.tasksUrl} did not respond within ${formatDuration(fetchTimeoutMs)}: ${describeErr(err)}`,
+    };
+  }
+}
+
+function checkAdapterVersions(config: SmokeConfig): CheckResult {
+  let logText: string;
+  try {
+    logText = readFileSync(config.logFile, 'utf8');
+  } catch (err) {
+    // No readable log ⇒ nothing to verify. Do not block the deploy on a log
+    // that has not been written yet (rotation race); report it as passing.
+    return {
+      name: 'version-probe',
+      ok: true,
+      detail: `no readable server log at ${config.logFile} (${describeErr(err)}); skipped`,
+    };
+  }
+  const entries = parseAdapterVersionsFromLog(logText);
+  const result = checkAdapterVersionSanity(entries);
+  if (result.checked === 0) {
+    return { name: 'version-probe', ok: true, detail: `no [startup] adapter lines in ${config.logFile}; skipped` };
+  }
+  if (result.ok) {
+    return { name: 'version-probe', ok: true, detail: `${result.checked} adapter version(s) sane` };
+  }
+  const offenders = result.invalid.map((e) => `${e.agentType}="${e.version}"`).join(', ');
+  return { name: 'version-probe', ok: false, detail: `invalid adapter version(s): ${offenders}` };
+}
+
+function checkLogContinuity(config: SmokeConfig): CheckResult {
+  const result = evaluateLogContinuity({
+    previousLogMtimeMs: config.previousLogMtimeMs,
+    bootTimeMs: config.bootTimeMs,
+    maxGapMs: config.maxLogGapMs,
+  });
+  if (config.previousLogMtimeMs === null) {
+    return { name: 'log-continuity', ok: true, detail: 'no pre-deploy log mtime provided; skipped' };
+  }
+  if (result.ok) {
+    return {
+      name: 'log-continuity',
+      ok: true,
+      detail: `outgoing log silent for ${formatDuration(result.gapMs ?? 0)} (threshold ${formatDuration(config.maxLogGapMs)})`,
+    };
+  }
+  return { name: 'log-continuity', ok: false, detail: result.reason ?? 'log continuity gap exceeded threshold' };
+}
+
+// ---------------------------------------------------------------------------
+// Orchestration.
+// ---------------------------------------------------------------------------
+
+export async function runSmokeChecks(config: SmokeConfig): Promise<CheckResult[]> {
+  const [ready, health, tasks] = await Promise.all([
+    checkReady(config),
+    checkHealth(config),
+    checkTasksLatency(config),
+  ]);
+  return [ready, health, tasks, checkAdapterVersions(config), checkLogContinuity(config)];
+}
+
+async function main(): Promise<void> {
+  const config = resolveConfig();
+
+  // Hard overall deadline — a last-resort backstop so a check that somehow
+  // escapes its own timeout can never wedge the deploy. Cross-platform (no
+  // dependency on GNU `timeout`, which macOS lacks).
+  const deadline = setTimeout(() => {
+    console.error(
+      `[prod-smoke] FAILED: overall deadline of ${formatDuration(config.overallTimeoutMs)} exceeded`,
+    );
+    writeAlertArtifact(config.alertPath, {
+      schemaVersion: ALERT_SCHEMA_VERSION,
+      status: 'alert',
+      generatedAt: new Date().toISOString(),
+      failingChecks: ['overall-timeout'],
+      checks: [{ name: 'overall-timeout', ok: false, detail: 'suite exceeded its hard overall deadline' }],
+    });
+    process.exit(1);
+  }, config.overallTimeoutMs);
+
+  let checks: CheckResult[];
+  try {
+    checks = await runSmokeChecks(config);
+  } finally {
+    clearTimeout(deadline);
+  }
+
+  for (const check of checks) {
+    const tag = check.ok ? 'PASS' : 'FAIL';
+    console.log(`[prod-smoke] ${tag} ${check.name}: ${check.detail}`);
+  }
+
+  const artifact = buildAlertArtifact(checks, new Date().toISOString());
+  writeAlertArtifact(config.alertPath, artifact);
+
+  if (artifact.failingChecks.length > 0) {
+    console.error(`[prod-smoke] FAILED checks: ${artifact.failingChecks.join(', ')}`);
+    console.error(`[prod-smoke] operational alert written to ${config.alertPath}`);
+    process.exit(1);
+  }
+  console.log('[prod-smoke] all checks passed');
+}
+
+function describeErr(err: unknown): string {
+  if (err instanceof Error) {
+    // AbortSignal.timeout surfaces as a TimeoutError / AbortError; normalize.
+    if (err.name === 'TimeoutError' || err.name === 'AbortError') return 'timed out';
+    return err.message;
+  }
+  return String(err);
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+  void main();
+}
