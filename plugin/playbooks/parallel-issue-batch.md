@@ -482,6 +482,52 @@ Implementation target:
   `node "$KOOKR_REPO/bin/kookr-context-pack.js" --spec <spec.json> --out /tmp/<unit-slug>.pack.md --review-out /tmp/<unit-slug>.review.md`
   and pass `/tmp/<unit-slug>.review.md` to each reviewer specialist as its context. This is an optimization layered on top of the pre-pr-review skill — do not skip any review step because of it, and treat pack contents as hints to verify against the diff, not facts.
 - Commit with a conventional message if the repo uses one.
+- **Pre-`gh pr create` duplicate-guard (mandatory).** Immediately before opening
+  the PR, run this guard for the unit's branch and *every* issue it closes. It
+  aborts with a non-zero exit (no PR created) if any issue was already
+  auto-closed by an earlier merge, or the head branch already has an open PR or
+  one merged in the last 24h — the 2026-07-26 race where child tasks opened PRs
+  seconds after their issues had been auto-closed by the first merges (task
+  dd1fbcec, a downstream repo — PRs #1672/#1673/#1674). This is a mechanical stop, not
+  prose:
+
+  ```bash
+  # --- Pre-`gh pr create` duplicate-guard (issue #1569) ----------------------
+  # Fails CLOSED: if a gh probe errors (auth / network / rate-limit) the guard
+  # aborts rather than green-lighting an unverified PR — a rate-limited parallel
+  # batch is exactly when the duplicate race bites.
+  pr_create_guard() {
+    local branch abort n state dupes
+    branch="$1"; shift                 # head branch of the PR about to be created
+    abort=0
+    for n in "$@"; do                  # issue number(s) this PR would close
+      if ! state=$(gh issue view "$n" --json state -q .state 2>/dev/null); then
+        echo "PR-CREATE ABORTED: could not verify issue #$n (gh error / auth / rate-limit) — refusing to open a PR unverified." >&2
+        abort=1; continue
+      fi
+      if [ "$state" = "CLOSED" ]; then
+        echo "PR-CREATE ABORTED: issue #$n is CLOSED (likely auto-closed by an earlier merge) — refusing to open a duplicate PR." >&2
+        abort=1
+      fi
+    done
+    if ! dupes=$(gh pr list --head "$branch" --state all --json number,state,mergedAt \
+      -q '.[] | select(.state=="OPEN" or (.mergedAt != null and (now - (.mergedAt|fromdateiso8601) < 86400))) | "#\(.number)/\(.state)"' 2>/dev/null); then
+      echo "PR-CREATE ABORTED: could not verify PRs for '$branch' (gh error / auth / rate-limit) — refusing to open a PR unverified." >&2
+      abort=1
+    elif [ -n "$dupes" ]; then
+      echo "PR-CREATE ABORTED: head branch '$branch' already has PR(s) $dupes (open or merged <24h ago) — refusing to open a duplicate PR." >&2
+      abort=1
+    fi
+    [ "$abort" -eq 0 ] || return 1
+    echo "pr-create guard OK: issue(s) [$*] open, no live/recent PR on '$branch'."
+  }
+
+  # The guard MUST pass before the PR is created. For cross-fork PRs, edit the
+  # two gh calls to add `-R <owner>/<repo>` and use `--head <owner>:<branch>`:
+  pr_create_guard "$(git rev-parse --abbrev-ref HEAD)" <N1> [<N2> ...] || exit 1
+  ```
+  If the guard aborts, do **not** create the PR: record the abort reason as the
+  unit's blocker and report it instead.
 - Push the branch and open **one** PR that closes every issue in the unit
   (`Closes #<N1>`, `Closes #<N2>`, … in the body). The PR title/body must list
   every issue covered.
