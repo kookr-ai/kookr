@@ -13,7 +13,37 @@ End-to-end workflow for creating a GitHub issue and immediately setting up for i
 
 ### 1. Create the issue
 
-Use `gh issue create` with a structured body:
+**Before any `gh issue create`** (issue #1607 — drain-coupled emission budget + mandatory dedupe):
+
+```bash
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+# 1) Budget: when open backlog ≥ 60, new filings per run collapse to 2.
+#    Fail closed — do not file if plan fails or allowedBudget is 0.
+PLAN=$(kookr emission plan --repo "$REPO" --requested 1 --json) || {
+  echo "emission plan failed; do not file"; exit 1; }
+ALLOWED=$(printf '%s' "$PLAN" | jq -r '.plan.allowedBudget')
+if [ "${ALLOWED:-0}" -lt 1 ]; then
+  kookr emission defer --repo "$REPO" --title "Short descriptive title" \
+    --source github-issue-workflow --reason "over emission budget"
+  echo "budget refused filing"; exit 0
+fi
+# 2) Mandatory logged dedupe. --json → one JSON on stdout; audit line on stderr.
+DEDUPE=$(kookr emission dedupe --repo "$REPO" --title "Short descriptive title" --json 2>/tmp/kookr-dedupe.log) \
+  || { echo "dedupe failed; do not file"; exit 1; }
+cat /tmp/kookr-dedupe.log 2>/dev/null || true
+if [ "$(printf '%s' "$DEDUPE" | jq -r '.isDuplicate')" = "true" ]; then
+  echo "duplicate of $(printf '%s' "$DEDUPE" | jq -r '.match.url') — update it, do not create a twin"
+  exit 0
+fi
+# 3) Observability for daily reflection (netBacklogDelta7d = opened7d − closed7d).
+#    Stable path: ~/.kookr/playbook-state/emission-metrics/<repoSlug>.json
+mkdir -p "$HOME/.kookr/playbook-state/emission-metrics"
+kookr emission metrics --repo "$REPO" --json \
+  | tee "$HOME/.kookr/playbook-state/emission-metrics/$(printf '%s' "$REPO" | tr '/.' '--').json" \
+  || true
+```
+
+Use `gh issue create` with a structured body only when the budget allows and dedupe is OK:
 
 ```bash
 gh issue create --title "Short descriptive title" --body "$(cat <<'EOF'

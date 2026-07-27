@@ -107,6 +107,24 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     ],
   },
   {
+    name: 'emission',
+    subcommands: ['plan', 'dedupe', 'metrics', 'defer'],
+    flags: [
+      '--repo',
+      '--requested',
+      '--title',
+      '--source',
+      '--reason',
+      '--threshold',
+      '--constrained',
+      '--body-preview',
+      '--kookr-dir',
+      '--json',
+      '-h',
+      '--help',
+    ],
+  },
+  {
     name: 'pr-checklist',
     subcommands: ['verify'],
     flags: ['--pr-body', '--base', '--json', '--explain', '-h', '--help'],
@@ -202,6 +220,8 @@ function renderBashCompletion(): string {
   const lessonStatusFlags = shellWords(LESSON_STATUS_FLAGS);
   const lessonDrainFlags = shellWords(LESSON_DRAIN_FLAGS);
   const lessonRememberFlags = shellWords(LESSON_REMEMBER_FLAGS);
+  const emissionSubcommands = subcommandsFor('emission');
+  const emissionFlags = flagsFor('emission');
   const prChecklistSubcommands = subcommandsFor('pr-checklist');
   const prChecklistFlags = flagsFor('pr-checklist');
   const pushSubcommands = subcommandsFor('push');
@@ -343,6 +363,13 @@ _kookr()
         esac
       fi
       ;;
+    emission)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${emissionSubcommands} ${emissionFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${emissionFlags}" -- "\${cur}") )
+      fi
+      ;;
     pr-checklist)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
         COMPREPLY=( $(compgen -W "${prChecklistSubcommands} ${prChecklistFlags}" -- "\${cur}") )
@@ -398,6 +425,8 @@ function renderZshCompletion(): string {
   const lessonStatusFlags = shellWords(LESSON_STATUS_FLAGS);
   const lessonDrainFlags = shellWords(LESSON_DRAIN_FLAGS);
   const lessonRememberFlags = shellWords(LESSON_REMEMBER_FLAGS);
+  const emissionSubcommands = subcommandsFor('emission');
+  const emissionFlags = flagsFor('emission');
   const prChecklistSubcommands = subcommandsFor('pr-checklist');
   const prChecklistFlags = flagsFor('pr-checklist');
   const pushSubcommands = subcommandsFor('push');
@@ -494,6 +523,13 @@ _kookr()
           drain) compadd -- ${lessonDrainFlags} ;;
           remember) compadd -- ${lessonRememberFlags} ;;
         esac
+      fi
+      ;;
+    emission)
+      if (( CURRENT == 3 )); then
+        compadd -- ${emissionSubcommands} ${emissionFlags}
+      else
+        compadd -- ${emissionFlags}
       fi
       ;;
     pr-checklist)
