@@ -31,6 +31,10 @@ vi.mock('../core/task-naming.js', async (importOriginal) => {
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { createKookrServerInternal } from './index.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
+import {
+  JSON_SPAWN_PAYLOAD_EMBEDDED_NAME,
+  JSON_SPAWN_PAYLOAD_PROMPT,
+} from '../core/__fixtures__/prompt-intake-fixtures.js';
 
 // RFC F12: launchTask validates that the working directory exists before
 // spawning, so launch cwds used by these integration tests must be real
@@ -177,6 +181,28 @@ describe('AI task naming integration', () => {
     expect(prompt).toBe('Fix the auth bug in login flow');
     expect(cwd).toBe(PROJECT_DIR);
     expect(criteria).toBe('Tests pass');
+  });
+
+  // Issue #1556 (task a5a89a9a): a JSON spawn payload pasted as the prompt
+  // carries the intended name in an embedded `name` field. The intake lifts it
+  // into task.name at creation, so the task is never named `"{"` and the LLM
+  // namer is skipped (a preset name wins).
+  test('POST /api/tasks lifts an embedded name from a JSON spawn payload', async () => {
+    const res = await fetch(`${baseUrl}/api/tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: JSON_SPAWN_PAYLOAD_PROMPT, cwd: PROJECT_DIR }),
+    });
+
+    expect(res.status).toBe(201);
+    const task = await res.json();
+    expect(task.name).toBe(JSON_SPAWN_PAYLOAD_EMBEDDED_NAME);
+    expect(task.name).not.toBe('{');
+
+    // A preset name skips the async LLM namer entirely.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(mockGenerateTaskName).not.toHaveBeenCalled();
+    expect(server.taskStore.getTask(task.id)?.name).toBe(JSON_SPAWN_PAYLOAD_EMBEDDED_NAME);
   });
 
   test('WS launch triggers auto-naming and sets task name', async () => {

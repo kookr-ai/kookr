@@ -1,6 +1,7 @@
 import type { Context, Hono } from 'hono';
 import { join } from 'node:path';
 import { discoverPlaybooks } from '../../core/playbook-discovery.js';
+import { extractEmbeddedTaskName } from '../../core/task-naming.js';
 import { saveTasks, serializeSnoozed } from '../../core/task-persistence.js';
 import { normalizeAgentSelection } from '../../core/agent-types.js';
 import { createSnapshotMessage } from '../use-cases/get-snapshot.js';
@@ -460,9 +461,16 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       // Phase B attribution header so 'lucy' burns her own burst budget
       // instead of sharing the anonymous `api` bucket.
       const launchActorId = c.req.header(ACTOR_HEADER)?.trim() || undefined;
+      // #1556: a CLI caller that pastes a whole JSON spawn payload as the
+      // prompt (a5a89a9a) carries its intended name in an embedded `name`
+      // field — lift it so the task is named that instead of the payload's
+      // opening brace. Ordinary prose prompts return undefined and are
+      // unaffected; a set name skips AI naming (see LaunchOpts.name).
+      const embeddedName = extractEmbeddedTaskName(body.prompt);
       const { task, queued, duplicate, idempotentReplay } = await launchTask(deps.launchServiceDeps, {
         prompt: body.prompt,
         cwd: body.cwd,
+        name: embeddedName,
         criteria: body.criteria,
         parentTaskId: body.parentTaskId,
         agentType: body.agentType ? normalizeAgentSelection(body.agentType) : undefined,
