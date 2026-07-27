@@ -692,21 +692,32 @@ describe('diagnostics routes', () => {
   });
 
   describe('GET /api/health lessonYield block', () => {
-    test('includes a cached 24h lessonYield snapshot when kookrDir is set', async () => {
+    test('serves lessonYield stale-while-revalidate without awaiting a scan (issue #1553)', async () => {
       const kookrDir = join(tempDir, 'health-yield');
       mkdirSync(join(kookrDir, 'hooks'), { recursive: true });
       const taskStore = new TaskStore();
-      const res = await mkApp({
+      const app = mkApp({
         taskStore,
         queue: new AttentionQueue(),
         buildInfo: {} as never,
         kookrDir,
-      }).request('/api/health');
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.lessonYield).toMatchObject({
-        schemaVersion: 'lesson-yield.v1',
-        windowDays: 1,
+      });
+      // Cold cache: the response returns immediately WITHOUT the block — the
+      // request path never awaits a hook-log scan — and triggers a bounded
+      // background refresh.
+      const first = await app.request('/api/health');
+      expect(first.status).toBe(200);
+      const firstBody = await first.json() as { lessonYield?: unknown };
+      expect(firstBody.lessonYield).toBeUndefined();
+      // Once the background scan lands, later polls serve the cached block.
+      await vi.waitFor(async () => {
+        const res = await app.request('/api/health');
+        expect(res.status).toBe(200);
+        const body = await res.json() as { lessonYield?: unknown };
+        expect(body.lessonYield).toMatchObject({
+          schemaVersion: 'lesson-yield.v1',
+          windowDays: 1,
+        });
       });
     });
   });

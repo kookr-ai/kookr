@@ -18,6 +18,10 @@ else
 fi
 STARTUP_TIMEOUT_SECONDS="${KOOKR_STARTUP_TIMEOUT_SECONDS:-720}"
 CHECK_INTERVAL_SECONDS="${KOOKR_STARTUP_CHECK_INTERVAL_SECONDS:-2}"
+# Per-probe curl bound for the liveness gate (issue #1553). The deadline loop
+# only re-checks BETWEEN curls, so one unbounded curl against a hung
+# /api/health defeats STARTUP_TIMEOUT_SECONDS and wedges the deploy forever.
+HEALTH_CURL_MAX_TIME_SECONDS="${KOOKR_HEALTH_CURL_MAX_TIME_SECONDS:-10}"
 APP_DIR="$(pwd -P)"
 PID_FILE="/tmp/kookr-prod-${PORT}.pid"
 SYSTEMD_ENV_FILE="${HOME}/.config/kookr/kookr.env"
@@ -332,7 +336,7 @@ wait_for_health() {
       tail -n 100 "$LOG_FILE" || true
       exit 1
     fi
-    if curl -sf "$HEALTH_URL"; then
+    if curl -sf --max-time "$HEALTH_CURL_MAX_TIME_SECONDS" "$HEALTH_URL"; then
       rm -f "$PID_FILE"
       echo " Kookr prod restarted successfully"
       return 0
@@ -364,7 +368,7 @@ wait_for_systemd_health() {
       systemctl --user status kookr.service --no-pager || true
       exit 1
     fi
-    if curl -sf "$HEALTH_URL"; then
+    if curl -sf --max-time "$HEALTH_CURL_MAX_TIME_SECONDS" "$HEALTH_URL"; then
       echo " Kookr systemd service restarted successfully"
       return 0
     fi

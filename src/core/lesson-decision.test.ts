@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -216,6 +216,98 @@ describe('scanHookLogForLessonDecision + resolveTaskLessonDecision', () => {
     expect(result.decision).toBe('wrote-lesson');
     expect(result.sessionsScanned).toBe(2);
   });
+});
+
+describe('scan hardening (issue #1553)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = join(tmpdir(), `kookr-lesson-scan-hardening-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    mkdirSync(join(dir, 'hooks'), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('a pre-aborted signal rejects the scan with the abort reason', async () => {
+    const log = join(dir, 'hooks', 'sess-abort.jsonl');
+    writeFileSync(log, preToolBash('kb search x') + '\n', 'utf8');
+    const controller = new AbortController();
+    controller.abort(new Error('scan-cancelled'));
+    await expect(
+      scanHookLogForLessonDecision(log, { signal: controller.signal }),
+    ).rejects.toThrow('scan-cancelled');
+  });
+
+  test('an abort mid-scan interrupts a large in-progress scan', async () => {
+    const log = join(dir, 'hooks', 'sess-midscan.jsonl');
+    const lines: string[] = [];
+    for (let i = 0; i < 50_000; i++) lines.push(preToolBash(`echo filler ${i}`));
+    writeFileSync(log, lines.join('\n') + '\n', 'utf8');
+
+    const controller = new AbortController();
+    const scan = scanHookLogForLessonDecision(log, { signal: controller.signal });
+    // Fires while the ~4MB scan is still iterating (parsing 50k JSON lines
+    // takes far longer than one timer tick). Depending on where the abort
+    // lands it surfaces as the abort reason (between lines) or as the
+    // stream's AbortError (mid-chunk) — both are interruptions.
+    setTimeout(() => controller.abort(new Error('mid-scan-abort')), 5);
+    await expect(scan).rejects.toThrow(/mid-scan-abort|abort/i);
+  });
+
+  test('computeLessonYield propagates an aborted signal', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('yield-cancelled'));
+    await expect(
+      computeLessonYield([], join(dir, 'hooks'), { signal: controller.signal }),
+    ).rejects.toThrow('yield-cancelled');
+  });
+
+  test('resolveTaskLessonDecision propagates an aborted signal', async () => {
+    writeFileSync(
+      join(dir, 'hooks', 'sess-x.jsonl'),
+      preToolBash('kb search x') + '\n',
+      'utf8',
+    );
+    const controller = new AbortController();
+    controller.abort(new Error('resolve-cancelled'));
+    await expect(
+      resolveTaskLessonDecision(
+        { id: 't-abort', sessions: [{ tmuxSession: 'sess-x' }] },
+        join(dir, 'hooks'),
+        { signal: controller.signal },
+      ),
+    ).rejects.toThrow('resolve-cancelled');
+  });
+
+  // The 2026-07-26 prod OOM regression: the scanner breaks early on the first
+  // decisive lesson write, and `rl.close()` alone left the underlying read
+  // stream's file descriptor pinned open. /proc-based, so Linux-only.
+  test.runIf(process.platform === 'linux')(
+    'early-break scans do not leak file descriptors',
+    async () => {
+      const log = join(dir, 'hooks', 'sess-fd.jsonl');
+      const lines = [preToolBash('kb remember --kb=agent-task-lessons --title=x --stdin --yes')];
+      for (let i = 0; i < 5000; i++) lines.push(preToolBash(`echo filler ${i}`));
+      writeFileSync(log, lines.join('\n') + '\n', 'utf8');
+
+      const countFds = (): number => readdirSync('/proc/self/fd').length;
+      const before = countFds();
+      for (let i = 0; i < 20; i++) {
+        const stats = await scanHookLogForLessonDecision(log);
+        expect(stats.lessonWrites).toBe(1);
+      }
+      // Let destroyed streams finish closing before counting — poll instead
+      // of one fixed sleep so CI thread-pool contention cannot false-fail.
+      let after = countFds();
+      for (let i = 0; i < 40 && after - before > 1; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        after = countFds();
+      }
+      expect(after - before).toBeLessThanOrEqual(1);
+    },
+  );
 });
 
 describe('computeLessonYield', () => {

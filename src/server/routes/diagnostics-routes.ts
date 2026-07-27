@@ -46,6 +46,14 @@ const DEFAULT_HOOK_INGESTION_LAG_WARNING_THRESHOLD_MS = 2_000;
 /** Cache TTL for the /api/health lessonYield block (hook scans can be heavy). */
 const LESSON_YIELD_HEALTH_CACHE_MS = 60_000;
 const MAX_LESSON_YIELD_DAYS = 30;
+/**
+ * Hard ceiling for one lesson-yield hook-log scan (issue #1553). The hooks
+ * corpus can reach gigabytes; an unbounded scan on the health hot path
+ * saturated the main thread and OOM-crashed prod on 2026-07-26.
+ */
+const LESSON_YIELD_SCAN_TIMEOUT_MS = 30_000;
+/** After a failed/timed-out background refresh, do not retry before this. */
+const LESSON_YIELD_REFRESH_FAILURE_BACKOFF_MS = 5 * 60_000;
 
 export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   const { taskStore, queue, adapter, interactionLog, githubScanner, githubStateStore, buildInfo, serverStartedAt } = deps;
@@ -54,9 +62,46 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   let findingEvidenceReviewLogStore: ReviewLogStore | undefined;
   // Issue #1538: cache the 24h lesson-yield snapshot for /api/health so a
   // frequent dashboard poll does not re-scan every hook log every time.
+  // Issue #1553: the request path NEVER awaits a scan — /api/health serves
+  // this cache stale-while-revalidate and a single-flight background scan
+  // repopulates it. Awaiting the scan inline pinned the event loop against a
+  // multi-GB hooks dir and OOM-crashed prod on 2026-07-26.
   let lessonYieldHealthCache:
     | { expiresAtMs: number; snapshot: LessonYieldSnapshot }
     | undefined;
+  let lessonYieldRefreshNotBeforeMs = 0;
+  const lessonYieldScansInFlight = new Map<number, Promise<LessonYieldSnapshot>>();
+
+  /**
+   * Single-flight lesson-yield scan per window length, hard-bounded by
+   * LESSON_YIELD_SCAN_TIMEOUT_MS. Shared by the /api/health background
+   * refresh and GET /api/diagnostics/lesson-yield so concurrent callers can
+   * never stack duplicate scans. A completed 1-day scan warms the health
+   * cache as a side effect.
+   */
+  function runLessonYieldScan(days: number): Promise<LessonYieldSnapshot> {
+    const inFlight = lessonYieldScansInFlight.get(days);
+    if (inFlight) return inFlight;
+    const kookrDir = deps.kookrDir;
+    if (!kookrDir) return Promise.reject(new Error('kookrDir unavailable'));
+    const scan = computeLessonYield(
+      taskStore.listTasks(),
+      hooksDirFromKookrDir(kookrDir),
+      { days, signal: AbortSignal.timeout(LESSON_YIELD_SCAN_TIMEOUT_MS) },
+    ).then((snapshot) => {
+      if (days === 1) {
+        lessonYieldHealthCache = {
+          expiresAtMs: Date.now() + LESSON_YIELD_HEALTH_CACHE_MS,
+          snapshot,
+        };
+      }
+      return snapshot;
+    }).finally(() => {
+      lessonYieldScansInFlight.delete(days);
+    });
+    lessonYieldScansInFlight.set(days, scan);
+    return scan;
+  }
 
   app.get('/api/health', async (c) => {
     const terminalBackend = deps.terminalBackend;
@@ -102,29 +147,24 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       isLaunching: (task) => taskStore.hasFreshLaunchReservation(task.id),
     });
 
-    // Lesson yield (issue #1538) — last-24h flywheel health. Cached; full
-    // per-window queries use GET /api/diagnostics/lesson-yield?days=N.
+    // Lesson yield (issue #1538) — last-24h flywheel health. Served
+    // stale-while-revalidate (issue #1553): the response uses whatever
+    // snapshot the last background scan produced (staleness is visible via
+    // `generatedAt`), and an expired cache only *triggers* a bounded
+    // fire-and-forget refresh. The request path never awaits a hook-log scan.
+    // Full per-window queries use GET /api/diagnostics/lesson-yield?days=N.
     let lessonYieldBlock: LessonYieldSnapshot | undefined;
     if (deps.kookrDir) {
       const nowMs = Date.now();
-      if (lessonYieldHealthCache && lessonYieldHealthCache.expiresAtMs > nowMs) {
-        lessonYieldBlock = lessonYieldHealthCache.snapshot;
-      } else {
-        try {
-          const snapshot = await computeLessonYield(
-            tasks,
-            hooksDirFromKookrDir(deps.kookrDir),
-            { days: 1, nowMs },
-          );
-          lessonYieldHealthCache = {
-            expiresAtMs: nowMs + LESSON_YIELD_HEALTH_CACHE_MS,
-            snapshot,
-          };
-          lessonYieldBlock = snapshot;
-        } catch {
-          // Soft: health stays 200 even if hook scans fail.
-          lessonYieldBlock = undefined;
-        }
+      lessonYieldBlock = lessonYieldHealthCache?.snapshot;
+      const cacheFresh = lessonYieldHealthCache !== undefined
+        && lessonYieldHealthCache.expiresAtMs > nowMs;
+      if (!cacheFresh && nowMs >= lessonYieldRefreshNotBeforeMs) {
+        runLessonYieldScan(1).catch(() => {
+          // Soft: health stays 200 even if hook scans fail — but back off so
+          // a persistently failing corpus cannot restart a scan per poll.
+          lessonYieldRefreshNotBeforeMs = Date.now() + LESSON_YIELD_REFRESH_FAILURE_BACKOFF_MS;
+        });
       }
     }
 
@@ -293,20 +333,21 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       days = Math.min(parsed, MAX_LESSON_YIELD_DAYS);
     }
     try {
-      const snapshot = await computeLessonYield(
-        taskStore.listTasks(),
-        hooksDirFromKookrDir(deps.kookrDir),
-        { days },
-      );
-      // Keep the health cache warm when callers ask for the default 1-day window.
-      if (days === 1) {
-        lessonYieldHealthCache = {
-          expiresAtMs: Date.now() + LESSON_YIELD_HEALTH_CACHE_MS,
-          snapshot,
-        };
-      }
+      // Single-flight + hard timeout (issue #1553): concurrent callers share
+      // one scan, and a scan can never outlive LESSON_YIELD_SCAN_TIMEOUT_MS.
+      // A 1-day result warms the /api/health cache inside the helper.
+      const snapshot = await runLessonYieldScan(days);
       return c.json(snapshot);
     } catch (err) {
+      // `AbortSignal.timeout` rejects with a DOMException — match by name so
+      // the verdict does not depend on DOMException's Error inheritance.
+      const name = (err as { name?: string } | null)?.name;
+      if (name === 'TimeoutError' || name === 'AbortError') {
+        return c.json(
+          { error: 'lesson_yield_scan_timeout', message: `Hook-log scan exceeded ${LESSON_YIELD_SCAN_TIMEOUT_MS}ms` },
+          503,
+        );
+      }
       return c.json(
         { error: err instanceof Error ? err.message : String(err) },
         500,

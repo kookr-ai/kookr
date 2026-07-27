@@ -148,16 +148,33 @@ export function emptyHookLogLessonStats(): HookLogLessonStats {
   };
 }
 
+/** Options accepted by the hook-log scanners (issue #1553). */
+export interface HookLogScanOptions {
+  /**
+   * Aborts the scan (rejecting with `signal.reason`, e.g. a TimeoutError from
+   * `AbortSignal.timeout`). The scan result is incomplete on abort, so callers
+   * must treat the rejection as "unknown", never as "no decision".
+   */
+  signal?: AbortSignal;
+}
+
 /**
  * Scan one hook JSONL file for lesson-decision signals.
  * Only PreToolUse Bash lines are considered (same rule as kb-usage-report).
  * Early-exits once both a write and a skip have been seen is unnecessary —
  * we stop counting after the first decisive write (strongest signal) to
  * bound latency on large rotated-era live files.
+ *
+ * The underlying read stream is always destroyed, including on the
+ * early-break path — `rl.close()` alone leaves the file descriptor pinned
+ * open, which leaked fds on every health-poll scan (issue #1553 / prod OOM
+ * of 2026-07-26).
  */
 export async function scanHookLogForLessonDecision(
   path: string,
+  opts: HookLogScanOptions = {},
 ): Promise<HookLogLessonStats> {
+  opts.signal?.throwIfAborted();
   if (!existsSync(path)) return emptyHookLogLessonStats();
 
   let kbCalls = 0;
@@ -166,9 +183,15 @@ export async function scanHookLogForLessonDecision(
   let lessonSkips = 0;
   let kbSearches = 0;
 
-  const rl = createInterface({ input: createReadStream(path, { encoding: 'utf8' }) });
+  // The signal is wired into the stream itself, not only the per-line check:
+  // readline buffers a whole line before yielding, so one pathological line
+  // (corrupt log, giant tool_input) would otherwise be read in full — and
+  // blow the scan bound — before the loop ever sees the abort.
+  const stream = createReadStream(path, { encoding: 'utf8', signal: opts.signal });
+  const rl = createInterface({ input: stream });
   try {
     for await (const line of rl) {
+      opts.signal?.throwIfAborted();
       if (!line) continue;
       let evt: {
         hook_event_name?: string;
@@ -203,6 +226,7 @@ export async function scanHookLogForLessonDecision(
     }
   } finally {
     rl.close();
+    stream.destroy();
   }
 
   return {
@@ -257,6 +281,7 @@ export function hookLogPath(hooksDir: string, tmuxSession: string): string | nul
 export async function resolveTaskLessonDecision(
   task: TaskLikeForLessonDecision,
   hooksDir: string,
+  opts: HookLogScanOptions = {},
 ): Promise<TaskLessonDecisionResult> {
   let lessonWrites = 0;
   let lessonSkips = 0;
@@ -265,6 +290,7 @@ export async function resolveTaskLessonDecision(
   let sessionsScanned = 0;
 
   for (const session of task.sessions ?? []) {
+    opts.signal?.throwIfAborted();
     const name = session.tmuxSession?.trim();
     if (!name) continue;
     sessionsScanned++;
@@ -275,7 +301,7 @@ export async function resolveTaskLessonDecision(
       missingLogs++;
       continue;
     }
-    const stats = await scanHookLogForLessonDecision(path);
+    const stats = await scanHookLogForLessonDecision(path, opts);
     if (!stats.exists) missingLogs++;
     lessonWrites += stats.lessonWrites;
     lessonSkips += stats.lessonSkips;
@@ -348,6 +374,12 @@ export interface ComputeLessonYieldOptions {
    * Default: completed + completed_with_errors.
    */
   completedStatuses?: ReadonlySet<string>;
+  /**
+   * Aborts the aggregation (rejecting with `signal.reason`). Callers on
+   * request paths MUST bound the scan — e.g. `AbortSignal.timeout(...)` —
+   * because the corpus under `hooksDir` can be gigabytes (issue #1553).
+   */
+  signal?: AbortSignal;
 }
 
 const DEFAULT_COMPLETED = new Set(['completed', 'completed_with_errors']);
@@ -372,6 +404,7 @@ export async function computeLessonYield(
   hooksDir: string,
   opts: ComputeLessonYieldOptions = {},
 ): Promise<LessonYieldSnapshot> {
+  opts.signal?.throwIfAborted();
   const days = Math.max(1, Math.floor(opts.days ?? 1));
   const nowMs = opts.nowMs ?? Date.now();
   const windowStartMs = nowMs - days * 86_400_000;
@@ -390,6 +423,7 @@ export async function computeLessonYield(
   let decided = 0;
 
   for (const task of tasks) {
+    opts.signal?.throwIfAborted();
     const ts = taskTimestampMs(task);
     if (!Number.isFinite(ts) || ts < windowStartMs) continue;
     tasksInWindow++;
@@ -398,7 +432,7 @@ export async function computeLessonYield(
     if (!completedStatuses.has(status)) continue;
     completedInWindow++;
 
-    const resolved = await resolveTaskLessonDecision(task, hooksDir);
+    const resolved = await resolveTaskLessonDecision(task, hooksDir, { signal: opts.signal });
     // Count "has log" when any session log existed, or when sessionsScanned==0
     // we still attribute the decision (no-kb-activity) but do not inflate
     // completedWithLogs.

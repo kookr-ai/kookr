@@ -2,6 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createServer, type AddressInfo, type Socket } from 'node:net';
 import { describe, expect, it } from 'vitest';
 
 describe('production server systemd unit', () => {
@@ -274,6 +275,54 @@ exit 1
   });
 });
 
+describe('prod-restart wait_for_health bounded liveness gate (issue #1553)', () => {
+  it('fails at the deadline instead of wedging when /api/health hangs', async () => {
+    // A TCP server that accepts connections and never responds — the exact
+    // shape of the hung /api/health that wedged deploys on 2026-07-26. The
+    // deadline check only runs between curls, so without --max-time one
+    // hanging curl defeats STARTUP_TIMEOUT_SECONDS entirely.
+    const sockets: Socket[] = [];
+    const server = createServer((socket) => { sockets.push(socket); });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as AddressInfo).port;
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-restart-'));
+    try {
+      const pidFile = join(dir, 'server.pid');
+      const startedMs = Date.now();
+      const result = spawnSync(
+        'bash',
+        ['-c', [
+          `KOOKR_PROD_RESTART_TEST_ONLY=1 source ${JSON.stringify(join(process.cwd(), 'scripts/prod-restart.sh'))}`,
+          `PID_FILE=${JSON.stringify(pidFile)}`,
+          'LOG_FILE=/dev/null',
+          'echo $$ > "$PID_FILE"',
+          'wait_for_health',
+        ].join('; ')],
+        {
+          env: {
+            ...process.env,
+            KOOKR_HEALTH_URL: `http://127.0.0.1:${port}/api/health`,
+            KOOKR_STARTUP_TIMEOUT_SECONDS: '3',
+            KOOKR_STARTUP_CHECK_INTERVAL_SECONDS: '0',
+            KOOKR_HEALTH_CURL_MAX_TIME_SECONDS: '1',
+          },
+          encoding: 'utf8',
+          // Without the per-curl bound the gate hangs forever; this kill
+          // deadline is what would fail the test in that regression.
+          timeout: 20_000,
+        },
+      );
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('Health check failed after 3s');
+      expect(Date.now() - startedMs).toBeLessThan(15_000);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 30_000);
+});
+
 describe('prod-restart systemd delegation', () => {
   it('delegates to systemctl when the user unit is active', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-restart-'));
@@ -328,7 +377,7 @@ exit 0
       expect(result.stdout).toContain('Kookr systemd service restarted successfully');
       expect(readFileSync(systemctlLog, 'utf8')).toContain('--user is-active --quiet kookr.service');
       expect(readFileSync(systemctlLog, 'utf8')).toContain('--user restart kookr.service');
-      expect(readFileSync(curlLog, 'utf8')).toContain('-sf http://127.0.0.1:4999/api/health');
+      expect(readFileSync(curlLog, 'utf8')).toContain('-sf --max-time 10 http://127.0.0.1:4999/api/health');
       expect(readFileSync(curlLog, 'utf8')).toContain('-sf --max-time 5 http://127.0.0.1:4999/api/ready');
     } finally {
       rmSync(dir, { recursive: true, force: true });

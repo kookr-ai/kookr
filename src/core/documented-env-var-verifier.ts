@@ -141,6 +141,7 @@ export const DOCUMENTED_ONLY_ENV_VARS: ReadonlySet<string> = new Set([
   // Consumed by ops shell scripts (prod restart/update, dtach rollback).
   'KOOKR_DTACH_SOCK_DIR',
   'KOOKR_ENV_ROOT_DIR',
+  'KOOKR_HEALTH_CURL_MAX_TIME_SECONDS',
   'KOOKR_HEALTH_URL',
   'KOOKR_PROD_DIR',
   'KOOKR_STARTUP_CHECK_INTERVAL_SECONDS',
