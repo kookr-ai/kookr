@@ -533,7 +533,7 @@ Implementation target:
   every issue covered.
 - Monitor CI and fix failures.
 - If you face a design choice the issues do not settle, pick the smallest implementation that satisfies them, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
-- If mergeAfterImplementation is true, merge the PR only after it is mergeable and required checks are green. Use the repo's allowed merge method. Exception: a required check that could not execute because of an external GitHub Actions budget/quota/billing block (e.g. the run failed within seconds with a spending-limit/quota message, not a code error) is a non-code blocker, not a failing check — capture the exact `gh run view` evidence and, if the repo permits admin merge, merge with `--admin` instead of stalling for a human override. Never apply this exception to a check that actually ran and failed on the code; when in doubt, treat the failure as real and report the blocker.
+- If mergeAfterImplementation is true, merge the PR only after it is mergeable and required checks are green. Use the repo's allowed merge method, and **always delete the head branch as part of the merge** (`gh pr merge <PR> --delete-branch`, or an explicit `git push origin --delete <head>` immediately after the merge when the branch is checked out in a linked worktree so `--delete-branch` would fail locally). A surviving squash-merged branch is a non-ancestor of the base and is PR-able a second time, producing net-no-op duplicate PRs (issue #1572). Exception: a required check that could not execute because of an external GitHub Actions budget/quota/billing block (e.g. the run failed within seconds with a spending-limit/quota message, not a code error) is a non-code blocker, not a failing check — capture the exact `gh run view` evidence and, if the repo permits admin merge, merge with `--admin --delete-branch` instead of stalling for a human override. Never apply this exception to a check that actually ran and failed on the code; when in doubt, treat the failure as real and report the blocker.
 - Report the PR URL and final state for every issue in the unit.
 - Release your slot when done: once every issue in this unit has reached its final state (PR open/merged per the merge policy, or a recorded blocker), first emit a post-task lesson decision (`kb remember …` or `printf 'No generic KB lesson: %s\n' '<reason>'`), then run `kookr signal completion-ready` (optionally `--note "<PR urls / blocker>"`). Completion-ready is rejected without that decision (issue #1538). You were launched with `--auto-close-on-signal`, so a successful signal schedules your own auto-completion after the grace period. Do NOT signal while work remains; if you stop on a blocker, report it first, then emit the decision and signal.
 
@@ -618,7 +618,7 @@ For each child:
 
    Match PRs by `Closes #N` for **every** issue in the child's `issues` array (or legacy `issue`), issue numbers in title/body, or branch name. For multi-issue units the same PR must close all listed issues.
 
-4. If `mergeAfterImplementation=true`, a child is complete only when the PR is merged and covers every issue in its work unit. If CI is green but the child is idle, send a concise instruction to merge using the repo's allowed method.
+4. If `mergeAfterImplementation=true`, a child is complete only when the PR is merged and covers every issue in its work unit. If CI is green but the child is idle, send a concise instruction to merge using the repo's allowed method **with head-branch deletion** (`gh pr merge <PR> --delete-branch`, or an explicit `git push origin --delete <head>` when a linked worktree holds the branch). Confirm the branch is gone (`gh api repos/<r>/branches/<head>` returns 404) before treating the child as complete — a surviving branch produces net-no-op duplicate PRs (issue #1572).
 5. If `mergeAfterImplementation=false`, a child is complete when the PR is open, covers every issue in its work unit, local verification is reported, and CI is green or legitimately pending.
 
 Update `$MONITOR_FILE` with a compact table:
@@ -631,7 +631,7 @@ Update `$MONITOR_FILE` with a compact table:
 If multiple children create the same shared-file conflict:
 
 1. Stop new spawns.
-2. Let the most complete implementation PR merge first if safe.
+2. Let the most complete implementation PR merge first if safe — merge it with head-branch deletion (`--delete-branch`, or an explicit `git push origin --delete <head>` when a linked worktree holds the branch), same as every merge in this playbook (issue #1572).
 3. For remaining branches, instruct child tasks to rebase and remove the shared-file edits.
 4. If a repository-wide cleanup is better, create a separate parent-owned cleanup task/branch after the implementation PRs merge. Do not let every child edit the same cleanup file.
 5. Close any redundant cleanup PR that is superseded by a broader merged cleanup PR.

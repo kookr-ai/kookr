@@ -9,7 +9,8 @@ import { AttentionQueue } from '../../core/attention-queue.js';
 import { Monitor } from '../../core/monitor.js';
 import { Watchdog } from '../../core/watchdog.js';
 import type { TaskRouteDeps } from './shared.js';
-import type { ServerMessage } from '../../shared/contracts/messages.js';
+import type { ServerMessage, SystemResourceStatus } from '../../shared/contracts/messages.js';
+import { performance } from 'node:perf_hooks';
 import type { Anomaly } from '../../core/types.js';
 import { DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS } from '../../core/completion-ready-cleanup.js';
 import { SUPERVISOR_TOKEN_ENV } from '../supervisor-auth.js';
@@ -1168,6 +1169,160 @@ describe('POST /api/tasks error paths', () => {
       expect.anything(),
       expect.objectContaining({ model: 'claude-fable-5', effort: 'max' }),
     );
+  });
+});
+
+// --- Load-based admission control (issue #1590) ---
+describe('POST /api/tasks event-loop saturation admission (issue #1590)', () => {
+  beforeEach(() => {
+    vi.mocked(launchTask).mockReset();
+  });
+
+  /** Minimal resource snapshot carrying a chosen event-loop delay p95 (ms). */
+  function statusWithEventLoopP95(p95Ms: number | null) {
+    return {
+      source: { kind: 'server-host' as const },
+      server: { eventLoopDelayP95Ms: p95Ms },
+    } as unknown as SystemResourceStatus;
+  }
+
+  function admissionDeps(
+    taskStore: TaskStore,
+    p95Ms: number | null,
+    over: Partial<TaskRouteDeps> = {},
+  ): TaskRouteDeps {
+    return {
+      ...mkLoopDeps(taskStore),
+      getLatestResourceStatus: () => statusWithEventLoopP95(p95Ms),
+      admissionControlConfig: { eventLoopDelayThresholdMs: 1_000, retryAfterSeconds: 2 },
+      ...over,
+    };
+  }
+
+  test('sheds with 503 + Retry-After + saturation code in <2s when p95 exceeds the threshold, without launching', async () => {
+    const taskStore = new TaskStore();
+    // launchTask must never be reached — assert on the mock, not just the body.
+    vi.mocked(launchTask).mockImplementation(async () => {
+      throw new Error('launchTask must not run when the event loop is saturated');
+    });
+    const started = performance.now();
+    const res = await mkApp(admissionDeps(taskStore, 4_000)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    const elapsedMs = performance.now() - started;
+    expect(res.status).toBe(503);
+    // Timing bound (acceptance criterion). This is a smoke bound: the reject
+    // path is a synchronous short-circuit, so a regression that instead moved
+    // admission *after* `await c.req.json()` / into the launch path is caught by
+    // the `launchTask` not-called assertion below, not by the clock. The bound
+    // guards only against the reject path itself gaining an unexpected await.
+    expect(elapsedMs).toBeLessThan(2_000);
+    expect(res.headers.get('Retry-After')).toBe('2');
+    const body = await res.json();
+    expect(body).toMatchObject({
+      code: 'event_loop_saturated',
+      observedEventLoopDelayP95Ms: 4_000,
+      thresholdMs: 1_000,
+      retryAfterSeconds: 2,
+    });
+    // Distinguishable from the #1536 depth 429.
+    expect(body.code).not.toBe('pending_queue_full');
+    expect(body.code).not.toBe('spawn_burst_limit');
+    expect(body.error).toMatch(/saturat/i);
+    expect(launchTask).not.toHaveBeenCalled();
+  });
+
+  test('the Retry-After header tracks the configured value, not a hardcoded default', async () => {
+    const res = await mkApp(
+      admissionDeps(new TaskStore(), 4_000, {
+        admissionControlConfig: { eventLoopDelayThresholdMs: 1_000, retryAfterSeconds: 5 },
+      }),
+    ).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Retry-After')).toBe('5');
+    expect(await res.json()).toMatchObject({ retryAfterSeconds: 5 });
+  });
+
+  test('provider wired but returning a null snapshot (pre-first-sample) fails open', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(
+      admissionDeps(taskStore, 4_000, { getLatestResourceStatus: () => null }),
+    ).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledTimes(1);
+  });
+
+  test('at exactly the threshold, sheds (boundary is >=)', async () => {
+    const res = await mkApp(admissionDeps(new TaskStore(), 1_000)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(503);
+  });
+
+  test('below the threshold, POST is unchanged — proceeds to launch (201)', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(admissionDeps(taskStore, 50)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledTimes(1);
+  });
+
+  test('unavailable saturation signal (null) fails open — POST proceeds', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(admissionDeps(taskStore, null)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledTimes(1);
+  });
+
+  test('disabled gate (threshold 0) admits even under extreme lag', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(
+      admissionDeps(taskStore, 99_999, {
+        admissionControlConfig: { eventLoopDelayThresholdMs: 0, retryAfterSeconds: 2 },
+      }),
+    ).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledTimes(1);
+  });
+
+  test('no resource-status provider wired (deps omit it) fails open', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    // mkLoopDeps has no getLatestResourceStatus; env fallback config applies.
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledTimes(1);
   });
 });
 
