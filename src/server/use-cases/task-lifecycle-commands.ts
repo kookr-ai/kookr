@@ -149,6 +149,10 @@ export class TaskLifecycleCommands {
       feedback?: TaskCompletionFeedback;
       requestReflect?: boolean;
       cleanupWorktree?: boolean;
+      /** Override completionPath (issue #1608). */
+      completionPath?: import('../../core/lesson-decision.js').CompletionPath;
+      lessonGateExempt?: string;
+      decisionSatisfied?: boolean;
     } & TaskDeletionAuditOpts = {},
   ): Promise<TaskLifecycleCommandResult> {
     const result = await this.completeTaskInner(taskId, opts);
@@ -162,6 +166,10 @@ export class TaskLifecycleCommands {
       feedback?: TaskCompletionFeedback;
       requestReflect?: boolean;
       cleanupWorktree?: boolean;
+      completionPath?: import('../../core/lesson-decision.js').CompletionPath;
+      lessonGateExempt?: string;
+      decisionSatisfied?: boolean;
+      actor?: TaskDeletionAuditOpts['actor'];
     },
   ): Promise<TaskLifecycleCommandResult> {
     const task = this.deps.taskStore.getTask(taskId);
@@ -192,11 +200,19 @@ export class TaskLifecycleCommands {
 
     const preEvents = this.captureTaskEvents(task);
 
+    // Infer actor source for completionPath. Stamp runs inside completeTaskImpl
+    // before the pending signal is cleared, so signal provenance is still visible.
+    const actorSource = opts.actor?.source;
+
     try {
-      this.deps.taskStore.clearPendingSignal(taskId);
       await completeTaskImpl(taskId, this.deps.getLifecycleDeps(), {
         cleanupWorktree: opts.cleanupWorktree,
+        actorSource,
+        completionPath: opts.completionPath,
+        lessonGateExempt: opts.lessonGateExempt,
+        decisionSatisfied: opts.decisionSatisfied,
       });
+      this.deps.taskStore.clearPendingSignal(taskId);
     } catch (err) {
       if (err instanceof InvalidTransitionError) {
         const current = this.deps.taskStore.getTask(taskId);

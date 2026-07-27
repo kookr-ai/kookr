@@ -328,6 +328,9 @@ export class TaskStore {
         // Keep the first signalId for the pending row; a replay of a *different*
         // id still lands as same-kind (raisedAt preserved) but is tracked below.
         ...(existing.signalId ? {} : (signal.signalId ? { signalId: signal.signalId } : {})),
+        // Preserve the first provenance stamp (http vs outbox) so later
+        // complete-path inference stays stable across same-kind re-raises.
+        ...(existing.source ? {} : (signal.source ? { source: signal.source } : {})),
       };
     } else {
       task.pendingSignal = signal;

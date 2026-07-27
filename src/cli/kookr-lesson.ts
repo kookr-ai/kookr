@@ -170,6 +170,29 @@ async function runYield(
       `  wrote-lesson: ${snapshot.buckets.wroteLesson}  explicit-skip: ${snapshot.buckets.explicitSkip}`
         + `  search-only: ${snapshot.buckets.searchOnly}  no-kb: ${snapshot.buckets.noKbActivity}`,
     );
+    io.out.log(
+      `Contract rate:        ${(snapshot.contractRate * 100).toFixed(1)}%`
+        + `  (decided+explained ${snapshot.decided + snapshot.explainedExceptions}/${snapshot.completedInWindow})`,
+    );
+    const pathKeys = Object.keys(snapshot.byCompletionPath).sort();
+    if (pathKeys.length > 0) {
+      io.out.log('By completion path:');
+      for (const key of pathKeys) {
+        const b = snapshot.byCompletionPath[key]!;
+        io.out.log(
+          `  ${key}: completed=${b.completed} decided=${b.decided}`
+            + ` wrote=${b.wroteLesson} skip=${b.explicitSkip}`
+            + ` search=${b.searchOnly} no-kb=${b.noKbActivity}`
+            + (b.gateExempt ? ` exempt=${b.gateExempt}` : ''),
+        );
+      }
+    }
+    const exemptKeys = Object.keys(snapshot.gateExemptReasons).sort();
+    if (exemptKeys.length > 0) {
+      io.out.log(
+        `Gate-exempt reasons: ${exemptKeys.map((k) => `${k}=${snapshot.gateExemptReasons[k]}`).join(' ')}`,
+      );
+    }
     io.out.log(`Generated: ${snapshot.generatedAt}`);
   }
   return 0;

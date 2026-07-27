@@ -34,7 +34,12 @@ dev instances on the same host share one queue. Override with
 
 - **Server-side:** `SignalOutboxService` drains the outbox ~5s after boot and
   every 30s. Entries are applied in-process against the local `TaskStore`
-  (no HTTP hop). Pure `signalId` replays are no-ops.
+  (no HTTP hop). Pure `signalId` replays are no-ops. `completion_ready`
+  entries still run the lesson-decision gate against hook logs (issue #1608)
+  before `setPendingSignal`; a rejection is `permanent_fail` (entry dropped),
+  matching the CLI's treatment of HTTP 409 `lesson_decision_required`.
+  Applied signals are stamped `source: "outbox"` so yield v2 can attribute
+  auto-close to the `outbox_drained` completion path.
 - **CLI-side:** a successful live POST also drains any remaining siblings
   against the same base URL.
 - **HTTP idempotency:** the server records each processed `signalId` (24h TTL,
