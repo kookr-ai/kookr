@@ -176,3 +176,7 @@ vendor/
 
 # Graphify per-session artifact directory.
 graphify-out/
+
+# TTS build stamp (written by src/server/tts-manager.ts to tts/.kookr-tts-build.hash
+# to cache the Docker build-input hash; never committed). See #1579.
+tts/.kookr-tts-build.hash
