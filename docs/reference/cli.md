@@ -727,6 +727,40 @@ failed**, not bad arguments:
 | `64` | Usage error |
 | `70` | Kookr-internal fault (only this class may be treated as fail-open by a hook) |
 
+## `kookr context-pack`
+
+Build a spawn-time **context pack** from a JSON spec — a warm-start digest of an
+issue (title/body/acceptance criteria), candidate file hints, base ref, and
+pre-digested skill excerpts that a spawned issue-implementation task can open
+with instead of re-retrieving the repo cold. Used by the parallel-issue-batch
+playbook to cut cold-retrieval cost for child tasks.
+
+```bash
+kookr context-pack --spec spec.json --out pack.md
+kookr context-pack --spec spec.json --out pack.md --review-out review.md
+```
+
+The compiled CLI is loaded with a `dist`→`src` fallback, so the verb works from
+an `npm`/`npx` install and a source checkout alike. The historical by-path form
+(`node "$KOOKR_REPO/bin/kookr-context-pack.js" …`) keeps working unchanged.
+
+Options:
+
+| Option | Argument | Default | Description |
+| --- | --- | --- | --- |
+| `--spec` | `<path>` | — | JSON spec describing the issue, candidate files, base branch/commit, and optionally skills + a staged-diff file. Required. |
+| `--out` | `<path>` | — | Write the child-task context pack (markdown) here. Required. |
+| `--review-out` | `<path>` | none | Also write a pre-PR review pack (pack + staged diff). Requires `"stagedDiffFile"` in the spec. |
+| `--plugin-dir` | `<path>` | auto | Override the `kookr-toolkit` plugin dir (skill source root). |
+| `--cache-dir` | `<path>` | auto | Override the skill-digest cache dir. |
+| `--json` | none | false | Emit one machine-readable JSON envelope on stdout. |
+| `-h`, `--help` | none | false | Print command help (including the full spec shape) and exit. |
+
+The pack is a **floor, not a ceiling**: `candidateFiles` are non-exhaustive
+hints and packed facts can be stale, so a child must verify and explore beyond
+it. Exit `0` on success; `2` on any failure — a usage error (missing
+`--spec`/`--out`), a malformed spec, or a failed write of the output pack.
+
 ## `kookr push test`
 
 Send a synthetic relay push notification to a registered device:
