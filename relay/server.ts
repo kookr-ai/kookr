@@ -53,6 +53,7 @@ import { createPushSubscriptionStore, isPushSubscription, type PushSubscriptionS
 import { createVapidKeyStore, type VapidKeyStore } from './src/push/vapid.js';
 import { RelaySqliteStateStore, type PersistedNodeRegistration } from './src/state/sqlite.js';
 import { InMemoryContactShareEnvelopeStore } from './src/contact-share/envelopes.js';
+import { createRelayShutdownHandler, installRelayProcessSignalHandlers } from './shutdown.js';
 
 interface NodeRegistration extends PersistedNodeRegistration {}
 
@@ -1806,6 +1807,8 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
     try {
       if (req.method === 'GET' && url.pathname === '/health') {
         // Probe first so a recovered DB clears the write-failure latch (#1423).
+        // Liveness: always 200 so k8s does not restart a degraded-but-alive
+        // process; readiness lives on /ready (#1393).
         const dbReachable = probeDbReachable();
         sendJson(res, 200, {
           status: currentHostedStatus().mode === 'emergencyDisabled' || !dbReachable ? 'degraded' : 'ok',
@@ -1815,6 +1818,21 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           version: process.env.KOOKR_BUILD_VERSION ?? process.env.npm_package_version ?? 'dev',
           hostedRelay: currentHostedStatus(),
         });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/ready') {
+        // Readiness for k8s/ALB: non-2xx when the instance must not receive
+        // traffic (unreachable state DB or emergency-disabled mode). #1393
+        const dbReachable = probeDbReachable();
+        if (!dbReachable) {
+          sendJson(res, 503, { ready: false, reason: 'db-unreachable' });
+          return;
+        }
+        if (currentHostedStatus().mode === 'emergencyDisabled') {
+          sendJson(res, 503, { ready: false, reason: 'emergency-disabled' });
+          return;
+        }
+        sendJson(res, 200, { ready: true });
         return;
       }
       if (
@@ -5311,6 +5329,10 @@ if (process.argv[1]?.endsWith('/relay/server.ts') || process.argv[1]?.endsWith('
       bindHost,
       stateDbPath,
     });
+    // Issue #1391: wire the existing close() teardown (WS 1001 + SQLite
+    // close/WAL checkpoint) to SIGTERM/SIGINT so deploys drain cleanly.
+    const shutdown = createRelayShutdownHandler({ close: () => relay.close() });
+    installRelayProcessSignalHandlers(shutdown);
     relay.httpServer.listen(port, bindHost, () => {
       console.log(`[relay] listening on http://${bindHost}:${port}`);
     });
