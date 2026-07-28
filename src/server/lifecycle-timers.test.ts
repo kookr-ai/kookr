@@ -1445,4 +1445,41 @@ describe('startLifecycleTimers maintenance prune scheduling', () => {
       clearAllTimers(handles);
     }
   });
+
+  // --- Hourly prod smoke tick wiring (issue #1593) ---
+  function stubSmokeTick() {
+    return {
+      hostIntervalMs: 2_000,
+      alertArtifactPath: '/tmp/data/prod-smoke-tick-alert.json',
+      maybeRun: vi.fn(async () => null),
+    };
+  }
+
+  test('fires the prod smoke tick on its interval and stops on clear', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const smoke = stubSmokeTick();
+    const handles = startLifecycleTimers(baseTimerDeps({ prodSmokeTick: smoke }) as any);
+    try {
+      expect(handles.prodSmokeTickInterval).not.toBeNull();
+      expect(smoke.maybeRun).not.toHaveBeenCalled(); // no boot run
+      await vi.advanceTimersByTimeAsync(2_100);
+      expect(smoke.maybeRun).toHaveBeenCalledTimes(1);
+    } finally {
+      clearAllTimers(handles);
+    }
+    const callsAfterClear = smoke.maybeRun.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(smoke.maybeRun.mock.calls.length).toBe(callsAfterClear); // cleared — no more ticks
+  });
+
+  test('omitting prodSmokeTick leaves the tick off', () => {
+    vi.useFakeTimers();
+    const handles = startLifecycleTimers(baseTimerDeps({}) as any);
+    try {
+      expect(handles.prodSmokeTickInterval).toBeNull();
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
 });
