@@ -146,6 +146,15 @@ export const INTERNAL_ENV_VARS: ReadonlySet<string> = new Set([
   'KOOKR_SMOKE_READY_URL',
   'KOOKR_SMOKE_TASKS_LATENCY_BOUND_MS',
   'KOOKR_SMOKE_TASKS_URL',
+  // Deploy-lag detector internal override knobs (issue #1594). The
+  // operator-facing knobs (KOOKR_DEPLOY_LAG_DETECTOR/_INTERVAL_MINUTES/
+  // _THRESHOLD_HOURS and the lucy target's _LUCY_STATUS_URL/_LUCY_REPO) ARE in
+  // the main reference; these are test/override internals (repo-path override,
+  // fetch toggle, SHA field name) documented in the detector's own module
+  // header rather than the day-to-day operator reference.
+  'KOOKR_DEPLOY_LAG_KOOKR_REPO',
+  'KOOKR_DEPLOY_LAG_FETCH',
+  'KOOKR_DEPLOY_LAG_LUCY_SHA_FIELD',
 ]);
 
 /**
