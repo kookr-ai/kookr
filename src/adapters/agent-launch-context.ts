@@ -1,6 +1,7 @@
 import { readFile, stat } from 'node:fs/promises';
 import { delimiter, join, resolve } from 'node:path';
 import { resolveAgentLauncherBinDir } from '../core/hook-writer-paths.js';
+import { INTERACTIVE_TOOL_DENY_RULES } from '../shared/contracts/operator-needed.js';
 import type { TaskStore } from '../core/tasks.js';
 import { ENTER_BYTES } from './keystroke.js';
 import type { SessionId, TerminalBackend } from './terminal-backend.js';
@@ -119,6 +120,13 @@ export function resolveBracketedPasteSubmit(
 export interface AgentLaunchContext {
   env: Record<string, string>;
   permissionAllowlist: string[];
+  /**
+   * Permission deny rules for the spawned agent (issue #1562). Non-empty only
+   * for unattended/autonomous tasks, where interactive tools (`AskUserQuestion`
+   * and equivalents) are hard-denied so a blocking call fails fast instead of
+   * hanging. Empty for attended tasks — their generated settings are unchanged.
+   */
+  permissionDenylist: string[];
 }
 
 interface BuildAgentLaunchContextOptions {
@@ -214,6 +222,12 @@ export async function buildAgentLaunchContext(
   };
   const permissionAllowlist = ['Bash(git *)'];
 
+  // Unattended/autonomous tasks (issue #1562): hard-deny interactive tools so a
+  // blocking call fails fast (and flags the task operator-needed via the server
+  // event pipeline) rather than hanging on an unanswerable prompt. Attended
+  // tasks get an empty denylist, leaving their generated settings unchanged.
+  const permissionDenylist = task?.unattended ? [...INTERACTIVE_TOOL_DENY_RULES] : [];
+
   if (task?.parentTaskId) {
     env.KOOKR_PARENT_TASK_ID = task.parentTaskId;
   }
@@ -275,7 +289,7 @@ export async function buildAgentLaunchContext(
     env.PATH = basePath ? `${launcherBinDir}${delimiter}${basePath}` : launcherBinDir;
   }
 
-  return { env, permissionAllowlist };
+  return { env, permissionAllowlist, permissionDenylist };
 }
 
 export interface DeliverInitialPromptOptions {

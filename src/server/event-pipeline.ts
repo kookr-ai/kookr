@@ -15,6 +15,7 @@ import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import type { RalphCycler } from '../core/ralph-cycler.js';
 import type { RalphLoopService } from './ralph-loop-service.js';
 import { createGitHubEventProcessor } from './event-processors/github-event-processor.js';
+import { createInteractiveDenyProcessor } from './event-processors/interactive-deny-processor.js';
 import { createPermissionBlockAlertProcessor } from './event-processors/permission-block-alert-processor.js';
 import { createPermissionQuickActionsProcessor } from './event-processors/permission-quick-actions-processor.js';
 import { createRalphStopProcessor } from './ralph/stop-event-processor.js';
@@ -168,6 +169,13 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
     onPermissionBlocked: deps.onPermissionBlocked,
     permissionAlertBreaker: deps.permissionAlertBreaker,
   });
+  // issue #1562: flag unattended tasks operator-needed when their agent attempts
+  // a (deny-blocked) interactive tool, so the block is operator-visible instead
+  // of an open-ended hang.
+  const interactiveDenyProcessor = createInteractiveDenyProcessor({
+    taskStore,
+    log: (line) => console.debug(line),
+  });
   const stopTokenScanProcessor = createStopTokenScanProcessor({
     tokenUsageWriter: taskStore,
     tokenScanner: tokenTracker,
@@ -303,6 +311,9 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
     }
 
     permissionBlockAlertProcessor.process({ tmuxName, preState, postState });
+    // Runs before broadcastSnapshot/publishTaskProjection below so a newly set
+    // operator-needed flag rides out on this event's broadcast (issue #1562).
+    interactiveDenyProcessor.process({ tmuxName, event: pipelineEvent });
 
     const ownerTask = taskStore.findTaskBySession(tmuxName);
     // Persist the agent's latest turn state on its session as the durable signal
