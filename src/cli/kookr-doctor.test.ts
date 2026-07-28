@@ -1,5 +1,22 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { buildDoctorJsonReport, runDoctorCli } from './kookr-doctor.js';
+
+/** Stable happy-path check ids plus KB failure-mode ids that can replace `launch.kb`. */
+const DOCUMENTED_DOCTOR_CHECK_IDS = [
+  'runtime.node',
+  'runtime.pnpm',
+  'runtime.git',
+  'runtime.dtach',
+  'github.gh-auth',
+  'launch.kb',
+  'launch.kb-doctor',
+  'launch.kb-search',
+  'agent.claude',
+  'agent.codex',
+  'agent.codex-plugin-dir',
+] as const;
 
 function commandRunner(fixtures: Record<string, { stdout?: string; stderr?: string; exitCode?: number }>) {
   return vi.fn(async (file: string, args: readonly string[]) => {
@@ -157,5 +174,24 @@ describe('kookr doctor --json', () => {
 
     expect(code).toBe(1);
     expect(JSON.parse(logs[0]!)).toMatchObject({ ok: false, status: 'fail' });
+  });
+
+  it('documents every doctor check id in docs/reference/cli.md (anti-drift)', async () => {
+    const cliMd = readFileSync(join(process.cwd(), 'docs/reference/cli.md'), 'utf8');
+    expect(cliMd).toContain('## `kookr doctor`');
+
+    const run = commandRunner(happyFixtures());
+    const report = await buildDoctorJsonReport({
+      env: {},
+      commandRunner: run,
+      access: async () => {},
+    });
+
+    for (const check of report.checks) {
+      expect(cliMd, `missing doctor check id ${check.id} in docs/reference/cli.md`).toContain(check.id);
+    }
+    for (const id of DOCUMENTED_DOCTOR_CHECK_IDS) {
+      expect(cliMd, `missing documented doctor check id ${id} in docs/reference/cli.md`).toContain(id);
+    }
   });
 });

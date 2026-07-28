@@ -132,7 +132,9 @@ describe('renderCompletion', () => {
     expect(script).toContain('compgen -W "outcome"');
     expect(script).toContain('status pause resume cancel');
     expect(script).toContain('list claim release owner');
-    expect(script).toContain('verify');
+    expect(script).toContain('verify doctor');
+    expect(script).toContain('--from-command');
+    expect(script).toContain('--run-commands');
     expect(script).toContain('--prompt-file');
     expect(script).toContain('compgen -W "claude-code codex-cli grok-build"');
     expect(script).toContain('compgen -W "none minimal low medium high xhigh max ultra"');
@@ -153,7 +155,9 @@ describe('renderCompletion', () => {
     expect(script).toContain('compadd outcome');
     expect(script).toContain('compadd -- status pause resume cancel');
     expect(script).toContain('compadd -- list claim release owner');
-    expect(script).toContain('compadd -- verify');
+    expect(script).toContain('compadd -- verify doctor');
+    expect(script).toContain('--from-command');
+    expect(script).toContain('--run-commands');
     expect(script).toContain('compadd claude-code codex-cli grok-build');
     expect(script).toContain('compadd none minimal low medium high xhigh max ultra');
     expect(script).toContain('compadd warn block skip');
@@ -225,10 +229,30 @@ describe('bash completion behavior', () => {
 
   it('completes pr-checklist subcommands and flags', async () => {
     await expect(completeBash(['kookr', 'pr-checklist', ''])).resolves.toEqual(
-      expect.arrayContaining(['verify', '--pr-body', '--base', '--explain']),
+      expect.arrayContaining([
+        'verify',
+        'doctor',
+        '--pr-body',
+        '--from-command',
+        '--run-commands',
+        '--base',
+        '--explain',
+      ]),
     );
     await expect(completeBash(['kookr', 'pr-checklist', 'verify', ''])).resolves.toEqual([
       '--pr-body',
+      '--from-command',
+      '--run-commands',
+      '--base',
+      '--json',
+      '--explain',
+      '-h',
+      '--help',
+    ]);
+    await expect(completeBash(['kookr', 'pr-checklist', 'doctor', ''])).resolves.toEqual([
+      '--pr-body',
+      '--from-command',
+      '--run-commands',
       '--base',
       '--json',
       '--explain',
@@ -388,10 +412,30 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
 
   it('completes pr-checklist subcommands and flags', async () => {
     await expect(completeZsh(['kookr', 'pr-checklist', ''], 3)).resolves.toEqual(
-      expect.arrayContaining(['verify', '--pr-body', '--base', '--explain']),
+      expect.arrayContaining([
+        'verify',
+        'doctor',
+        '--pr-body',
+        '--from-command',
+        '--run-commands',
+        '--base',
+        '--explain',
+      ]),
     );
     await expect(completeZsh(['kookr', 'pr-checklist', 'verify', ''], 4)).resolves.toEqual([
       '--pr-body',
+      '--from-command',
+      '--run-commands',
+      '--base',
+      '--json',
+      '--explain',
+      '-h',
+      '--help',
+    ]);
+    await expect(completeZsh(['kookr', 'pr-checklist', 'doctor', ''], 4)).resolves.toEqual([
+      '--pr-body',
+      '--from-command',
+      '--run-commands',
       '--base',
       '--json',
       '--explain',
