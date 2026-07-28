@@ -83,6 +83,9 @@ jobs:
       - name: Validate delivery-ownership contract present
         run: pnpm validate:delivery-ownership
 
+      - name: Validate parent-implementer fallback contract present
+        run: pnpm validate:parent-fallback
+
       - name: Validate documented commands
         run: pnpm validate:docs-commands
 
