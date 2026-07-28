@@ -8,6 +8,7 @@ import type { ScheduleRunner } from '../schedule-runner.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
 import type { ResourceStatusService } from '../resource-status-service.js';
 import type { FindingEvidenceReviewSampler } from '../finding-evidence-review-sampler.js';
+import type { ScheduledWorktreeReclaimRunner } from '../scheduled-worktree-reclaim-runner.js';
 
 export interface BackgroundServicesDeps {
   ossAttemptStore: OssAttemptStore;
@@ -23,6 +24,8 @@ export interface BackgroundServicesDeps {
   timerDeps: TimerDeps;
   resourceStatusService?: ResourceStatusService;
   findingEvidenceReviewSampler?: Pick<FindingEvidenceReviewSampler, 'start' | 'stop'>;
+  /** Unattended worktree-reclaim scheduler (issue #1578). No-op unless configured. */
+  scheduledWorktreeReclaimRunner?: Pick<ScheduledWorktreeReclaimRunner, 'start' | 'stop'>;
 }
 
 export interface BackgroundServices {
@@ -56,6 +59,7 @@ export function startBackgroundServices(deps: BackgroundServicesDeps): Backgroun
     startAfterListen(): void {
       deps.scheduleRunner.start();
       deps.findingEvidenceReviewSampler?.start();
+      deps.scheduledWorktreeReclaimRunner?.start();
     },
     async stop(): Promise<void> {
       clearAllTimers(timerHandles);
@@ -63,6 +67,7 @@ export function startBackgroundServices(deps: BackgroundServicesDeps): Backgroun
       deps.githubScanner.stop();
       deps.resourceStatusService?.stop();
       deps.findingEvidenceReviewSampler?.stop();
+      await deps.scheduledWorktreeReclaimRunner?.stop();
       ledgerWatcher.close();
     },
   };

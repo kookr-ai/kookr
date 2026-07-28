@@ -136,6 +136,8 @@ only when diagnosing slow viewers or unusually high terminal-output volume.
 | `KOOKR_AUTO_RELAUNCH` | enabled | `false` to disable | Disables startup crash recovery and automatic relaunch/resume of tasks marked completed by reconciliation. |
 | `KOOKR_AUTO_CATCHUP` | unset | Any non-empty value | Opts in to automatic schedule catch-up on scheduler startup. By default, missed startup runs are recorded in the execution ledger and can be launched manually with Run Now. |
 | `KOOKR_NO_CATCHUP` | unset | Any non-empty value | Legacy kill switch for startup catch-up. Takes precedence over `KOOKR_AUTO_CATCHUP`; future cron ticks still run. |
+| `KOOKR_WORKTREE_RECLAIM_CRON` | unset (off) | 5-field cron expression | Enables an unattended, scheduled worktree reclaim (issue #1578). Each run regenerates the candidate list fresh, removes only `merged`/`patch_equivalent` worktrees (via `canSweepRemove`), removes the path while KEEPING the branch, hard-excludes `kookr-prod` / `.kookr-protected` / protected-branch worktrees, and appends an audit trail to `~/.kookr/audit.jsonl`. Off by default; unset or an invalid expression keeps it disabled. |
+| `KOOKR_WORKTREE_RECLAIM_DRY_RUN` | unset (live) | `1`/`true`/`yes`/`on` | When the reclaim schedule is enabled, forces dry-run mode: candidates are classified and logged (`would_remove`) but nothing is removed. |
 
 ## Context Window
 
