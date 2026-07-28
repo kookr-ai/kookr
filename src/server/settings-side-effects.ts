@@ -110,5 +110,15 @@ export async function applySettingsSideEffects({
     );
   }
 
+  // --- Post-merge cleanup budget side effects (issue #1560) ---
+  // No reconfigure needed: the liveness tick reads the budget through a live
+  // getter each pass, same pattern as the auto-close delay above.
+  if (prevSettings.postMergeCleanupBudgetMinutes !== newSettings.postMergeCleanupBudgetMinutes) {
+    console.log(
+      `[settings] postMergeCleanupBudgetMinutes → ${newSettings.postMergeCleanupBudgetMinutes}min `
+      + `(was ${prevSettings.postMergeCleanupBudgetMinutes}min)`,
+    );
+  }
+
   return warnings;
 }

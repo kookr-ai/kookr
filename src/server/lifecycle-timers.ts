@@ -39,6 +39,12 @@ import { nowISO } from '../core/interaction-log.js';
 import { DEFAULT_HUNG_TASK_REAP_MS, evaluateHungTaskReap } from '../core/hung-task-reaper.js';
 import { reapHungTask } from './hung-task-reaper.js';
 import type { ProdSmokeTick } from './prod-smoke-tick.js';
+import {
+  autoCompleteDeliveredTasks,
+  createDeliveredCompletionTracker,
+  type DeliveredCompletionTracker,
+} from './delivered-task-completion-sweep.js';
+import type { MergedPrAttribution } from '../core/delivered-task-completion.js';
 
 export interface TimerDeps {
   monitor: Monitor;
@@ -79,6 +85,20 @@ export interface TimerDeps {
    * back to {@link DEFAULT_COMPLETION_READY_TTL_MS} when absent.
    */
   getCompletionReadyTtlMs?: () => number;
+  /**
+   * Live getter for the post-merge cleanup budget, in milliseconds (issue
+   * #1560, `postMergeCleanupBudgetMinutes` setting). Read on every liveness
+   * tick. Falls back to the module default when absent (older wiring/tests).
+   */
+  getPostMergeCleanupBudgetMs?: () => number;
+  /**
+   * Delivery attribution for the delivered-completion sweep (issue #1560):
+   * a task's attributable merged PR, or null. Wired at bootstrap to read
+   * `GitHubStateStore`. Absent → the delivered-completion sweep is skipped.
+   */
+  resolveMergedPr?: (task: Task) => MergedPrAttribution | null;
+  /** Durable signal-outbox spool dir (#1541), threaded so delivered completions raise through it. */
+  signalOutboxSpoolDir?: string;
   /** Path to the shared audit.jsonl log — threaded to the completion-ready sweep and hung-task reaper for system-actor audit rows. */
   auditLogPath?: string;
   /**
@@ -735,6 +755,10 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   // every liveness tick's auto-close sweep. See AUTO_CLOSE_SWEEP_MIN_INTERVAL_MS.
   const autoCloseSweepThrottle = createAutoCloseSweepThrottle();
 
+  // issue #1560: one tracker per server instance — the delivered-completion
+  // budget clock (first-observed-merge per task) + batch throttle.
+  const deliveredCompletionTracker: DeliveredCompletionTracker = createDeliveredCompletionTracker();
+
   // Permission resolution is detected through authoritative signals:
   // 1. Keystroke detection in the terminal bridge (immediate, for Kookr UI)
   // 2. PostToolUse hook events via the event pipeline (definitive proof)
@@ -743,7 +767,16 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   // (multi-frame rendering, cursor changes, scrolling output).
 
   // --- Periodic token usage scan ---
+  //
+  // Re-entrancy guard (issue #1620, change c — same pattern as the watchdog and
+  // liveness ticks below): under load a scan can still be awaiting scanGrowth /
+  // scanAll disk I/O when the next 5s interval fires. Without this guard,
+  // overlapping ticks stack concurrent full-corpus reads on the same
+  // transcripts, compounding the very allocation churn this issue bounds.
+  let tokenScanTickRunning = false;
   const tokenScanInterval = setInterval(async () => {
+    if (tokenScanTickRunning) return;
+    tokenScanTickRunning = true;
     try {
       // Freshness probe: ask which transcripts grew on disk since the last
       // scanAll. Used to keep the watchdog from minting stale_agent during a
@@ -810,6 +843,8 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       }
     } catch (err) {
       console.error('Error scanning token usage:', err);
+    } finally {
+      tokenScanTickRunning = false;
     }
   }, 5_000);
 
@@ -993,6 +1028,32 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         },
       );
 
+      // Delivery-aware self-completion (issue #1560): a running task whose PR
+      // merged but which never raised a completion signal self-completes once
+      // its post-merge cleanup budget is exceeded. Raises through the #1541
+      // outbox / autoCloseOnSignal path; the hung-task reaper stays the
+      // backstop. Skipped when no merge-attribution resolver is wired.
+      const deliveredResult = deps.resolveMergedPr
+        ? await autoCompleteDeliveredTasks(
+          {
+            taskStore,
+            lifecycleDeps,
+            resolveMergedPr: deps.resolveMergedPr,
+            tracker: deliveredCompletionTracker,
+            ...(deps.signalOutboxSpoolDir ? { signalOutboxSpoolDir: deps.signalOutboxSpoolDir } : {}),
+            ...(deps.agentLifecycleDeps?.onTaskOutcome
+              ? { onTaskOutcome: deps.agentLifecycleDeps.onTaskOutcome }
+              : {}),
+            auditLogPath: deps.auditLogPath,
+            broadcastToAll: deps.broadcastToAll,
+          },
+          {
+            budgetMs: deps.getPostMergeCleanupBudgetMs?.(),
+            throttle: true,
+          },
+        )
+        : { completedTaskIds: [] };
+
       // Pending-task TTL sweep (issue #1526 Phase C / C3): expire tasks that
       // have starved in the queue past the TTL, freeing depth for the 429
       // depth limit. interactionLog rides in from agentLifecycleDeps — the
@@ -1061,6 +1122,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         || result.worktreesStale.length > 0
         || result.worktreesChanged.length > 0
         || autoCloseResult.closedTaskIds.length > 0
+        || deliveredResult.completedTaskIds.length > 0
         || pendingTtlResult.expiredTaskIds.length > 0
       ) {
         // Promote pending tasks when slots open from auto-transitioned sessions

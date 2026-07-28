@@ -49,6 +49,29 @@ function makeStubAdapter(): HookEventInjector & { calls: Array<{ tmux: string; r
   };
 }
 
+describe('HookIngestion — retention metrics (issue #1612)', () => {
+  it('reports cheap per-session buffer sizes for the memory ledger', () => {
+    const adapter = makeStubAdapter();
+    const ingestion = new HookIngestion({ adapter });
+
+    expect(ingestion.getRetentionMetrics()).toMatchObject({
+      cacheEntries: 0,
+      sequenceCounters: 0,
+      metaSessions: 0,
+      coordinatorAuditTail: 0,
+    });
+
+    ingestion.ingestFromHttp('kookr-1', JSON.stringify({ session_id: 'x', hook_event_name: 'SessionStart' }));
+    ingestion.ingestFromHttp('kookr-2', JSON.stringify({ session_id: 'y', hook_event_name: 'SessionStart' }));
+
+    const metrics = ingestion.getRetentionMetrics();
+    expect(metrics.sequenceCounters).toBe(2);
+    // Two distinct sessions × one event each → two dedup-cache entries (within
+    // the 5s TTL window), up from 0 before ingest.
+    expect(metrics.cacheEntries).toBe(2);
+  });
+});
+
 describe('HookIngestion — dual-delivery dedup (rfc-activity-log-reliability §5)', () => {
   it('HTTP-only delivery still reaches the monitor', () => {
     const adapter = makeStubAdapter();

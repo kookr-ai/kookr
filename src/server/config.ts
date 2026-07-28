@@ -6,6 +6,15 @@ export const DEFAULT_OPERATIONAL_ALERT_SUSTAIN_SAMPLES = 3;
 export const DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT = 5;
 export const DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES = 2 * 1024 * 1024 * 1024;
 export const DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS = 30 * 1000;
+/**
+ * Default Kookr process RSS alert threshold (issue #1612). The 2026-07-26/27
+ * OOMs crashed near a ~3.9 GB heap ceiling; a 3 GiB threshold fires the #1497
+ * operational alert ~900 MB below that danger line while sustained multi-agent
+ * load still climbs, giving an operator lead time to restart before HTTP
+ * starvation. Set `KOOKR_ALERT_PROCESS_RSS_BYTES=0` to disable, or raise it for
+ * hosts with a larger heap budget.
+ */
+export const DEFAULT_OPERATIONAL_ALERT_PROCESS_RSS_BYTES = 3 * 1024 * 1024 * 1024;
 
 /** Default maximum JSON request body size accepted by the dashboard server. */
 export const DEFAULT_REQUEST_BODY_LIMIT_BYTES = 1_000_000;
@@ -49,9 +58,9 @@ function readPositiveInt(raw: string | undefined, fallback: number): number {
 }
 
 /**
- * Read operational alert thresholds from the environment. CPU, memory,
- * event-loop, and process-RSS thresholds default to `0` (disabled);
- * data-directory disk pressure uses conservative enabled defaults. Invalid or
+ * Read operational alert thresholds from the environment. CPU, memory, and
+ * event-loop thresholds default to `0` (disabled); process-RSS and
+ * data-directory disk pressure use conservative enabled defaults. Invalid or
  * blank values fall back to the documented defaults.
  */
 export function readOperationalAlertConfigFromEnv(
@@ -61,7 +70,10 @@ export function readOperationalAlertConfigFromEnv(
     cpuPercent: readNonNegativeNumber(env.KOOKR_ALERT_CPU_PERCENT, 0),
     memoryPercent: readNonNegativeNumber(env.KOOKR_ALERT_MEMORY_PERCENT, 0),
     eventLoopDelayMs: readNonNegativeNumber(env.KOOKR_ALERT_EVENT_LOOP_DELAY_MS, 0),
-    processRssBytes: readNonNegativeNumber(env.KOOKR_ALERT_PROCESS_RSS_BYTES, 0),
+    processRssBytes: readNonNegativeNumber(
+      env.KOOKR_ALERT_PROCESS_RSS_BYTES,
+      DEFAULT_OPERATIONAL_ALERT_PROCESS_RSS_BYTES,
+    ),
     dataDirectoryFreePercent: readNonNegativeNumber(
       env.KOOKR_ALERT_DATA_DIR_FREE_PERCENT,
       DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,

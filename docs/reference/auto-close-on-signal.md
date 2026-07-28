@@ -34,6 +34,52 @@ The sweep drains gently: at most 2 auto-closes per batch, at most one batch per
 60 seconds — so a backlog of finished tasks releases its slots over minutes
 rather than tearing down every session at once.
 
+## Delivery-aware auto-completion (issue #1560)
+
+Autonomous implement-tasks routinely **deliver** — open and merge their PR —
+and then hang for hours in the post-merge tail: the branch-delete push triggers
+the heavy pre-push gate, CI-rerun loops run unbounded, or the agent waits on
+input nobody will give. These tasks had `autoCloseOnSignal` but never raised a
+`completion_ready` signal, so nothing closed them until the hung-task reaper
+eventually recorded `terminated` — masking a successful delivery as failure
+(umbrella #1545; prod tasks faf7902b / 3a7039c5).
+
+The liveness tick now closes that gap. For a running task that **opted into
+`autoCloseOnSignal`**, whose **own PR is merged**, and which has **not** raised a
+completion signal, once the **post-merge cleanup budget** is exceeded Kookr:
+
+1. raises a `completion_ready` signal through the #1541 signal outbox (durable
+   spool write, applied as `source: 'outbox'`), and
+2. runs the normal completion lifecycle (`completeTask`) — stamping
+   `completionPath: 'outbox_drained'` and generating a digest that **names the
+   merged PR number**.
+
+There is no parallel completion surface: the signal rides the existing outbox /
+`autoCloseOnSignal` machinery and completion goes through the same `completeTask`
+the auto-close sweep uses. Because a merged PR is definitive delivery evidence,
+the raise is applied directly rather than through the lesson-decision-gated
+outbox drain (#1608), which would otherwise drop a hung agent's signal.
+
+**Attribution is the task's own PR.** Delivery counts only a merged PR
+**discovered from the agent's own activity** — a PR the task opened during its
+run. A merged PR merely **referenced in the task prompt** (e.g. a prompt "port
+the fix from PR #1500") is excluded (`detectedFrom === 'prompt'`), so a live task
+that mentions an already-merged PR is never force-completed.
+
+**Only opted-in tasks.** This path fires only for tasks with
+`autoCloseOnSignal` — the same population the signal path serves. An ask-first /
+human-review task (no `autoCloseOnSignal`) is left to the existing
+completion-ready TTL escalation instead, preserving its human-review gate.
+
+The budget is the **Post-merge cleanup budget** setting
+(`postMergeCleanupBudgetMinutes`, default **10 minutes**, range 1–120), read live
+each tick. Its clock starts when the sweep first observes the merge, so a
+just-delivered task always gets one full budget window of cleanup. A simulated
+post-merge hang self-completes within ~15 minutes (10 min budget + polling
+slack) — well before the hung-task reaper's hours-long threshold, which stays
+the backstop. The sweep drains gently (≤2 completions per batch, ≥60 s between
+batches), matching the completion-ready auto-close sweep.
+
 ## Why it exists
 
 Kookr caps the number of concurrently running tasks (`MAX_ACTIVE_TASKS`, default

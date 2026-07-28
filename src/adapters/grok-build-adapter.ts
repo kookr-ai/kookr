@@ -153,6 +153,18 @@ export class GrokAuthPreflightError extends GrokLaunchRefusedError {
  * allowlisted child environment; the exact resolved canonical binary path
  * re-checked immediately before launch; and advisory build qualification
  * derived from the reviewed compatibility manifest.
+ *
+ * Unattended interactive-tool denial (issue #1562): NOT YET IMPLEMENTED here.
+ * Grok composes hooks via `GROK_HOME` rather than a Claude-style
+ * `permissions.deny` block, so the deterministic settings deny used by the
+ * Claude Code adapter has no direct analogue; the equivalent would be a
+ * PreToolUse-style deny hook in the composed `GROK_HOME` that refuses Grok's
+ * interactive-prompt tool for `task.unattended` spawns. The server-side
+ * operator-needed flag (interactive-deny-processor) is adapter-agnostic in
+ * mechanism, but only matches tool names listed in `INTERACTIVE_TOOL_NAMES`
+ * (`operator-needed.ts`) — currently just Claude's `AskUserQuestion`. To cover
+ * Grok, add its interactive-prompt tool name to that single-source list
+ * alongside implementing the deny above.
  */
 export class GrokBuildAdapter implements AgentAdapter {
   readonly agentType = 'grok-build';
