@@ -98,6 +98,7 @@ not user configuration knobs.
 | `KOOKR_ISSUE_CLAIMS` | `off` | `1`/`true`/`on` to enable | Feature flag for the issue-ownership claim registry (RFC rfc-issue-ownership-lock). Read once at startup — restart to change; the boot log prints the resolved value. Off: no registry, claim routes 404 (clients proceed as pre-lock), release calls no-op. |
 | `KOOKR_SPAWN_MAX_PROMPT_BYTES` | `1048576` | Positive integer bytes | Maximum prompt size accepted from `kookr spawn` stdin or `--prompt-file`. |
 | `KOOKR_SPAWN_CONNECT_RETRIES` | `3` | Integer `1` through `10` | Number of `kookr spawn` connectivity sweeps before reporting no server. |
+| `KOOKR_SPAWN_AUTO_IDEMPOTENCY` | unset (off) | `1`/`true`/`yes`/`on` to enable | Default for `kookr spawn --auto-idempotency`: when no `--idempotency-key` is given, derive a key (`auto-<hash>`) from prompt+cwd+criteria+agent so a client-timeout retry of the identical spawn replays instead of stranding a duplicate (bounded by the server's rolling 24h idempotency TTL). Only helps stable-prompt retries; regenerated-prompt retries need an explicit `--idempotency-key`. `--no-auto-idempotency` overrides it per-invocation; no effect under `--dedupe=skip`. |
 
 ## Terminal Backend
 
