@@ -1698,6 +1698,70 @@ describe('status classification helpers', () => {
   });
 });
 
+describe('TaskStore unattended + operator-needed (issue #1562)', () => {
+  test('createTask stamps unattended when requested', () => {
+    const store = new TaskStore();
+    const task = store.createTask({ prompt: 'Autonomous work', cwd: '/repo', unattended: true });
+    expect(store.getTask(task.id)!.unattended).toBe(true);
+  });
+
+  test('createTask leaves unattended undefined by default', () => {
+    const store = new TaskStore();
+    const task = store.createTask({ prompt: 'Interactive work', cwd: '/repo' });
+    expect(store.getTask(task.id)!.unattended).toBeUndefined();
+  });
+
+  test('unattended is inherited by a child task from an unattended parent', () => {
+    const store = new TaskStore();
+    const parent = store.createTask({ prompt: 'Autonomous parent', cwd: '/repo', unattended: true });
+    const child = store.createTask({ prompt: 'Autonomous child', cwd: '/repo', parentTaskId: parent.id });
+    expect(store.getTask(child.id)!.unattended).toBe(true);
+  });
+
+  test('a child can opt out of an inherited unattended policy with explicit false', () => {
+    const store = new TaskStore();
+    const parent = store.createTask({ prompt: 'Autonomous parent', cwd: '/repo', unattended: true });
+    const child = store.createTask({
+      prompt: 'Attended child',
+      cwd: '/repo',
+      parentTaskId: parent.id,
+      unattended: false,
+    });
+    expect(store.getTask(child.id)!.unattended).toBeUndefined();
+  });
+
+  test('setOperatorNeeded records the marker and is first-write-wins', () => {
+    const store = new TaskStore();
+    const task = store.createTask({ prompt: 'Autonomous work', cwd: '/repo', unattended: true });
+    const first = {
+      reason: 'interactive_tool_denied' as const,
+      toolName: 'AskUserQuestion',
+      detectedAt: new Date('2026-07-28T00:00:00.000Z'),
+      message: 'blocked',
+    };
+
+    expect(store.setOperatorNeeded(task.id, first)).toBe(true);
+    expect(store.getTask(task.id)!.operatorNeeded).toEqual(first);
+
+    // A second denied call does not overwrite or churn the marker.
+    const second = { ...first, detectedAt: new Date('2026-07-28T01:00:00.000Z') };
+    expect(store.setOperatorNeeded(task.id, second)).toBe(false);
+    expect(store.getTask(task.id)!.operatorNeeded).toEqual(first);
+  });
+
+  test('setOperatorNeeded returns false for an unknown task', () => {
+    const store = new TaskStore();
+    expect(
+      store.setOperatorNeeded('missing', {
+        reason: 'interactive_tool_denied',
+        toolName: 'AskUserQuestion',
+        detectedAt: new Date(),
+        message: 'blocked',
+      }),
+    ).toBe(false);
+  });
+});
+
 describe('TaskStore pending agent signal', () => {
   test('set/get/clear round-trips a pending signal', () => {
     const store = new TaskStore();

@@ -1,6 +1,7 @@
 import type { CompletionDigest } from './completion-digest.js';
 import type { IssueClaim } from './issue-claim-types.js';
 import type { PendingAgentSignal } from '../shared/contracts/agent-signal.js';
+import type { OperatorNeeded } from '../shared/contracts/operator-needed.js';
 import type { AgentType } from './agent-types.js';
 import type { SessionInfo } from './session-read-model.js';
 import type { TaskStatus } from './task-status.js';
@@ -84,6 +85,15 @@ export interface CreateTaskOptions {
    * successor unless explicitly overridden. See docs/reference/auto-close-on-signal.md.
    */
   autoCloseOnSignal?: boolean;
+  /**
+   * Marks this task as unattended/autonomous (issue #1562): spawned with nobody
+   * watching to answer an interactive prompt. When true, the spawned agent's
+   * settings gain permission `deny` rules for interactive tools so a blocking
+   * call fails fast (and flags the task operator-needed) instead of hanging.
+   * Inherited from the parent task unless explicitly overridden, like
+   * {@link autoCloseOnSignal}; set `false` to opt a successor back out.
+   */
+  unattended?: boolean;
 }
 
 export interface TaskLaunchHealthSummary {
@@ -188,6 +198,19 @@ export interface Task {
    * can treat named exceptions as explained rather than silent bypasses.
    */
   lessonGateExempt?: string;
+  /**
+   * Marks this task as unattended/autonomous (issue #1562). Set at launch from
+   * {@link CreateTaskOptions.unattended}; drives interactive-tool deny-rule
+   * injection into the spawned agent's settings and gates the operator-needed
+   * flag below. Absent/false ⇒ attended, unchanged behavior.
+   */
+  unattended?: boolean;
+  /**
+   * Set when an unattended agent's interactive-tool call was denied (issue
+   * #1562). Makes the block operator-visible (tasks API + dashboard task
+   * detail) instead of leaving the agent hung on an unanswerable prompt.
+   */
+  operatorNeeded?: OperatorNeeded;
   createdAt: Date;
   updatedAt: Date;
   /**

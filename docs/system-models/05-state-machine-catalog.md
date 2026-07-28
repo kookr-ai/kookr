@@ -26,6 +26,7 @@ stateDiagram-v2
   Pending --> Cancelled: Launch failure
   InProgress --> Open: Agent session ended without completing the task
   InProgress --> Completed: Developer marks task as done
+  InProgress --> Completed: System auto-completes (auto-close on signal / delivered PR)
   InProgress --> Terminated: Reconciliation detects all sessions dead without user ack
   InProgress --> Cancelled: Developer cancels task
 
@@ -53,6 +54,7 @@ stateDiagram-v2
 | InProgress | all_sessions_dead | Terminated | Reconciliation (all sessions dead; no user ack yet) | Since rfc-task-loss-prevention the auto-path lands in `terminated`, not `completed`. `reconciliation.ts:147-157` |
 | Open | all_sessions_dead | Terminated | Reconciliation backfill (`open` task with only dead sessions is transitioned via `startTask` then `terminateTask` in one pass — `reconciliation.ts:152-156`) | Covers the edge case where a task reverted to Open but all sessions subsequently died. Updated 2026-04-22 |
 | InProgress | mark_complete | Completed | Developer via GUI (`completeTask`) | Developer reviewed the work and is satisfied |
+| InProgress | system_auto_complete | Completed | Server liveness tick, without developer action | Family of system-driven completions on the liveness tick: (a) **auto-close on signal** / **TTL escalation** — a pending `completion_ready` signal past its delay/TTL (`autoCloseStaleCompletionReadyTasks`, issue #1526); (b) **delivery-aware completion** (issue #1560) — an `autoCloseOnSignal` task whose own (agent-authored) PR merged but which never signaled, once the post-merge cleanup budget (`postMergeCleanupBudgetMinutes`, default 10m) is exceeded: the sweep raises `completion_ready` through the #1541 outbox, then `completeTask` (`src/server/delivered-task-completion-sweep.ts`). The hung-task reaper (→ `Terminated`) remains the backstop. |
 | InProgress | cancel | Cancelled | Developer via GUI | Kills active agent if running |
 | Terminated | ack_terminated | Completed | Developer via GUI (`ackTerminatedTask`) | User has seen the terminated task and accepts it as done |
 | Terminated | reopen | Open | Developer via GUI | User wants to continue — a new session can be launched |
