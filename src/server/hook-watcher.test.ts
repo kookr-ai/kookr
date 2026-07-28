@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, appendFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, appendFileSync, readFileSync, existsSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { HookFileWatcher } from './hook-watcher.js';
@@ -561,10 +561,8 @@ describe('HookFileWatcher', () => {
     // only ever moves already-ingested history out. Under that regime — the
     // common one — every record reaches ingestion exactly once via the file path
     // and the active file the watcher re-reads on each event stays under the cap.
-    // (If a reader lagged more than a full cap behind, rotation could move an
-    // un-read tail into `.N`, which the file path would not re-read; recovery
-    // then rests on the HTTP-push + ledger paths. That fallback is out of scope
-    // for this watcher-level test.)
+    // (The lagging-reader regime — where rotation moves an un-read tail into
+    // `<file>.1` — is covered by the dedicated recovery test below, issue #1566.)
     const session = 'kookr-rotate';
     const hookFile = join(tempDir, `${session}.jsonl`);
     writeFileSync(hookFile, '');
@@ -612,6 +610,161 @@ describe('HookFileWatcher', () => {
     } finally {
       rotatingWatcher.stopAll();
     }
+  });
+
+  // INV-1 (no silent skip): a live reader that lags more than a full cap behind
+  // recovers the un-read tail the writer rotation moved into `<file>.1`, so every
+  // appended record still reaches ingestion — issue #1566, the residual of #1433.
+  test('recovers the un-read tail a writer rotation moved into <file>.1 (#1566)', async () => {
+    const session = 'kookr-rotate-lag';
+    const hookFile = join(tempDir, `${session}.jsonl`);
+    writeFileSync(hookFile, '');
+
+    const dispatched: number[] = [];
+    let seq = 0;
+    const stub: HookEventInjector = {
+      injectHookEvent(_tmux, raw, sequence) {
+        dispatched.push((JSON.parse(raw) as { n: number }).n);
+        return { parseStatus: 'ok', agentType: 'claude-code', parentage: 'parent', sequence: sequence ?? ++seq };
+      },
+    };
+    const ingestion = new HookIngestion({ adapter: stub });
+    const laggingWatcher = new HookFileWatcher(tempDir, ingestion);
+    const cap = 400;
+    const rec = (n: number): string => JSON.stringify({ session_id: session, n, pad: 'x'.repeat(90) });
+
+    // Consume record 0, recording the active file's inode + a non-zero offset,
+    // WITHOUT starting fs.watch/poll — so the lag set up below is deterministic
+    // and never raced by a background read. Reaching into private state mirrors
+    // the adapter['tmuxToTaskId'] pattern used throughout this suite.
+    await appendRecord(hookFile, rec(0), { maxBytes: cap, keep: 4 });
+    laggingWatcher['offsets'].set(session, readFileSync(hookFile, 'utf-8').length);
+    laggingWatcher['inodes'].set(session, statSync(hookFile).ino);
+
+    try {
+      // Lag: append (no draining) until the first rotation appears. `<file>.1`
+      // then holds records the reader never saw, and the fresh `<file>` holds
+      // the record that triggered the rotation.
+      const appended: number[] = [];
+      let n = 0;
+      while (!existsSync(`${hookFile}.1`)) {
+        n += 1;
+        await appendRecord(hookFile, rec(n), { maxBytes: cap, keep: 4 });
+        appended.push(n);
+      }
+      // Guard the single-rotation regime this test asserts against: a second
+      // rotation would age record 1's generation past `.1`, out of recovery range.
+      expect(existsSync(`${hookFile}.2`)).toBe(false);
+      expect(appended.length).toBeGreaterThan(1); // at least one record is in the rotated tail
+
+      // A single drain must recover EVERY lagged record — the tail in `.1` plus
+      // the fresh active file — with none silently skipped.
+      await laggingWatcher.drainNow(session);
+      expect(dispatched.slice().sort((a, b) => a - b)).toEqual(appended);
+
+      // The recovery is surfaced for operators, not silent.
+      const health = laggingWatcher.getHealthSnapshot().sessions.find((s) => s.tmuxName === session);
+      expect(health?.rotatedTailRecoveredCount).toBeGreaterThan(0);
+    } finally {
+      laggingWatcher.stopAll();
+    }
+  });
+
+  // INV-2 (rotation vs truncation): an in-place truncation keeps the inode, so a
+  // leftover generation from an EARLIER rotation must NOT be re-read — otherwise a
+  // plain truncate would replay stale history as phantom events (issue #1566).
+  test('does not re-read a stale <file>.1 on an in-place truncation', async () => {
+    const session = 'kookr-trunc-stale';
+    const hookFile = join(tempDir, `${session}.jsonl`);
+    writeFileSync(hookFile, '');
+
+    const dispatched: string[] = [];
+    let seq = 0;
+    const stub: HookEventInjector = {
+      injectHookEvent(_tmux, raw, sequence) {
+        dispatched.push((JSON.parse(raw) as { tag: string }).tag);
+        return { parseStatus: 'ok', agentType: 'claude-code', parentage: 'parent', sequence: sequence ?? ++seq };
+      },
+    };
+    const w = new HookFileWatcher(tempDir, new HookIngestion({ adapter: stub }));
+
+    // A stale rotated generation sits on disk (already drained by a prior read).
+    writeFileSync(`${hookFile}.1`, `${JSON.stringify({ tag: 'stale-from-old-rotation' })}\n`);
+    // The active file was read to a non-zero offset; its inode is recorded and
+    // matches the current file (NO rotation happened for this file).
+    const big = `${JSON.stringify({ tag: 'live', pad: 'x'.repeat(300) })}\n`;
+    writeFileSync(hookFile, big);
+    w['offsets'].set(session, big.length);
+    w['inodes'].set(session, statSync(hookFile).ino);
+
+    try {
+      // In-place truncate-and-replace with shorter content: same inode, smaller
+      // than the offset → the shrink branch fires but must be classified as a
+      // truncation, so the stale `.1` is left untouched.
+      const fresh = `${JSON.stringify({ tag: 'post-truncate' })}\n`;
+      writeFileSync(hookFile, fresh);
+      expect(fresh.length).toBeLessThan(big.length);
+      expect(statSync(hookFile).ino).toBe(w['inodes'].get(session)); // in-place → inode unchanged
+
+      await w.drainNow(session);
+      // Only the fresh record — never the stale `.1` content.
+      expect(dispatched).toEqual(['post-truncate']);
+      const health = w.getHealthSnapshot().sessions.find((s) => s.tmuxName === session);
+      expect(health?.rotatedTailRecoveredCount ?? 0).toBe(0);
+    } finally {
+      w.stopAll();
+    }
+  });
+
+  // INV-4 (replay-checkpoint invalidates across rotation): after a rotation the
+  // active file is a fresh inode, so a restart's replay checkpoint (dev/ino match)
+  // invalidates and replays the fresh file from offset 0 — never resuming a stale
+  // offset into unrelated bytes (issue #1566; same contract as the truncation
+  // invalidation tests above).
+  test('replay checkpoint invalidates when the hook file is rotated', async () => {
+    const hookFile = join(tempDir, 'kookr-checkpoint-rotate.jsonl');
+    const checkpointPath = join(tempDir, 'hook-replay-checkpoints.json');
+
+    const event1 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      note: 'x'.repeat(400),
+    });
+    writeFileSync(hookFile, `${event1}\n`);
+    registerSession('kookr-checkpoint-rotate');
+
+    watcher.stopAll();
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    watcher.watch('kookr-checkpoint-rotate', { replayExisting: true, useReplayCheckpoint: true });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(events).toHaveLength(1);
+
+    watcher.stopAll();
+    events = [];
+
+    // Rotate the way the writer does: rename the active file out to `.1`, then
+    // create a brand-new active file (new inode) with a later record.
+    renameSync(hookFile, `${hookFile}.1`);
+    const event2 = JSON.stringify({
+      session_id: 'sess-1',
+      transcript_path: '/path/to/transcript.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'Notification',
+      message: 'fresh generation after rotation',
+    });
+    writeFileSync(hookFile, `${event2}\n`);
+
+    watcher = new HookFileWatcher(tempDir, adapter, { replayCheckpointPath: checkpointPath });
+    watcher.watch('kookr-checkpoint-rotate', { replayExisting: true, useReplayCheckpoint: true });
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Inode mismatch invalidates the checkpoint → replay the fresh file from 0,
+    // not from the stale offset. Exactly the post-rotation record, no phantom.
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('notification');
+    expect(watcher.getOffset('kookr-checkpoint-rotate')).toBe(`${event2}\n`.length);
   });
 
   test('health snapshot reports watcher mode, replay records, and drain latency', async () => {
