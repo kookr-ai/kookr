@@ -247,6 +247,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     const tmuxName = opts?.tmuxName ?? `kookr-${randomUUID().slice(0, 8)}`;
     this.tmuxToTaskId.set(tmuxName, taskId);
 
+    // Phase instrumentation (issue #1589): session-create covers launch-context
+    // build, settings generation/write, and the terminal createSession.
+    opts?.onPhase?.('session-create');
     const launchContext = await buildAgentLaunchContext({
       taskStore: this.taskStore,
       taskId,
@@ -350,6 +353,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       cwd,
       size: { cols: 200, rows: 50 },
     });
+    // Phase instrumentation (issue #1589): agent-boot covers readiness and the
+    // initial-prompt delivery/submit-confirmation loop below.
+    opts?.onPhase?.('agent-boot');
     if (!useResume) {
       // Register a deferred BEFORE delivery so a fast UserPromptSubmit hook
       // is not missed. The resolver fires from `injectHookEvent` on the
@@ -402,6 +408,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       }
     }
 
+    // Phase instrumentation (issue #1589): ack — the prompt was acknowledged
+    // (or resume needs none); register the session.
+    opts?.onPhase?.('ack');
     // Register session with task store
     this.taskStore.addSession(taskId, {
       tmuxSession: tmuxName,

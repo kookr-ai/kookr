@@ -17,6 +17,7 @@ import {
 } from '../core/schedule.js';
 import type { ScheduleRollup } from '../core/schedule-rollup.js';
 import type { TokenUsage } from '../core/usage-types.js';
+import type { LaunchPhaseTimings } from '../core/launch-phase-timings.js';
 import { ScheduleValidator, validateCron } from './schedule-validator.js';
 
 /**
@@ -359,7 +360,7 @@ export class ScheduleService {
     outcome: Exclude<ScheduleExecutionOutcome, 'completed' | 'cancelled' | 'running' | 'queued' | 'queued_capacity'>,
     reasonCode: ScheduleExecutionReasonCode,
     message?: string,
-    details: { blockingTaskId?: string } = {},
+    details: { blockingTaskId?: string; launchPhaseTimings?: LaunchPhaseTimings } = {},
   ): Promise<void> {
     const schedule = this.requireSchedule(scheduleId);
     const receipt = this.requireReceipt(schedule, receiptId);
@@ -404,6 +405,7 @@ export class ScheduleService {
           ...(preservedTaskId ? { taskId: preservedTaskId } : {}),
           ...(details.blockingTaskId ? { blockingTaskId: details.blockingTaskId } : {}),
           ...(message ? { message } : {}),
+          ...(details.launchPhaseTimings ? { launchPhaseTimings: details.launchPhaseTimings } : {}),
         },
       )),
       currentExecution: {
@@ -671,6 +673,7 @@ function ledgerEntryFromReceipt(
     taskId?: string;
     blockingTaskId?: string;
     message?: string;
+    launchPhaseTimings?: LaunchPhaseTimings;
   },
 ): ScheduleExecutionLedgerEntry {
   return {
@@ -688,6 +691,7 @@ function ledgerEntryFromReceipt(
     ...(details.taskId ? { taskId: details.taskId } : {}),
     ...(details.blockingTaskId ? { blockingTaskId: details.blockingTaskId } : {}),
     ...(details.message ? { message: details.message } : {}),
+    ...(details.launchPhaseTimings ? { launchPhaseTimings: details.launchPhaseTimings } : {}),
   };
 }
 

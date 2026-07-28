@@ -337,6 +337,12 @@ export class GrokBuildAdapter implements AgentAdapter {
     const tmuxName = opts?.tmuxName ?? `kookr-${randomUUID().slice(0, 8)}`;
     this.tmuxToTaskId.set(tmuxName, taskId);
 
+    // Phase instrumentation (issue #1589): session-create spans the whole
+    // pre-terminal setup — launch-context build, the per-session GROK_HOME
+    // composition (mkdtemp + composeGrokHome copy) and auth preflight, and the
+    // terminal createSession. If the grok-build `POST /api/tasks` >90s hang is
+    // in this setup rather than in Grok's boot, the timings pin it to this phase.
+    opts?.onPhase?.('session-create');
     // Task-context env (KOOKR_* + launcher PATH), reused from the shared helper.
     const launchContext = await buildAgentLaunchContext({
       taskStore: this.taskStore,
@@ -401,6 +407,10 @@ export class GrokBuildAdapter implements AgentAdapter {
       size: { cols: 200, rows: 50 },
     });
 
+    // Phase instrumentation (issue #1589): agent-boot covers Grok's TUI
+    // readiness wait (waitForReadyOrAbort polls up to promptReadyTimeoutMs) and
+    // the byte-level prompt delivery below.
+    opts?.onPhase?.('agent-boot');
     // Ready-state probe + abort-on-unexpected-UI, THEN byte-level prompt delivery.
     const submitConfirmed = this.armInitialPromptSubmitSignal(tmuxName);
     try {
@@ -443,6 +453,8 @@ export class GrokBuildAdapter implements AgentAdapter {
       this.initialPromptSubmitResolvers.delete(tmuxName);
     }
 
+    // Phase instrumentation (issue #1589): ack — Grok acknowledged the prompt.
+    opts?.onPhase?.('ack');
     this.taskStore.addSession(taskId, {
       tmuxSession: tmuxName,
       agentType: 'grok-build',

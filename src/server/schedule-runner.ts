@@ -4,7 +4,7 @@ import { nextRun } from '../core/cron.js';
 import { ScheduleValidationError, isTriggerLimitExhausted, scheduleResolutionSignature } from '../core/schedule.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator, resolveSchedulePlaybookSync } from './schedule-validator.js';
-import { isPendingQueueFullError, type LaunchOpts, type LaunchResult } from './launch-service.js';
+import { isPendingQueueFullError, launchPhaseTimingsOf, type LaunchOpts, type LaunchResult } from './launch-service.js';
 import type { TaskStatus } from '../core/types.js';
 
 const TICK_INTERVAL_MS = 60_000;
@@ -313,6 +313,12 @@ export class ScheduleRunner {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const reasonCode = mapErrorToReasonCode(err);
+      // issue #1589: a launch that reached the adapter and then timed out/threw
+      // carries its per-phase timings on the error. Stamp them onto the
+      // dispatch_failed ledger row so the failed fire is diagnosable straight
+      // from the ledger — the row would otherwise have no taskId link, since a
+      // failed fire never calls markExecutionAccepted.
+      const launchPhaseTimings = launchPhaseTimingsOf(err);
       console.error(`[schedule] Error firing "${schedule.name}":`, message);
       await this.deps.service.markExecutionOutcome(
         schedule.id,
@@ -320,6 +326,7 @@ export class ScheduleRunner {
         'dispatch_failed',
         reasonCode,
         message,
+        launchPhaseTimings ? { launchPhaseTimings } : {},
       );
       return { error: message };
     }

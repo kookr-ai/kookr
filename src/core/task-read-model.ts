@@ -7,6 +7,7 @@ import type { SessionInfo } from './session-read-model.js';
 import type { TaskStatus } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
 import type { RalphLoopState } from '../shared/contracts/ralph.js';
+import type { LaunchPhaseTimings } from './launch-phase-timings.js';
 import type { DeliveryAuthorization, TaskDependencyEdge, TaskDisposition, TaskLaunchSource, TaskMetadata, TaskPriority, TaskProvenance } from '../shared/contracts/task.js';
 
 export type {
@@ -251,6 +252,15 @@ export interface Task {
    * Absent on every task that reached a session (the overwhelming majority).
    */
   disposition?: TaskDisposition;
+  /**
+   * Per-phase launch instrumentation (issue #1589). Recorded on EVERY launch
+   * attempt that reaches the adapter — successful or not — so a failed launch
+   * (`launch_timeout`/`launch_error`) is diagnosable without server logs: the
+   * {@link LaunchPhaseTimings.incompletePhase} field names the phase that
+   * consumed the time. Absent on queued/deduplicated launches (no adapter call)
+   * and on historical tasks persisted before this field existed.
+   */
+  launchPhaseTimings?: LaunchPhaseTimings;
   /**
    * Ralph Wiggum-style iteration loop state. Present only when the task was
    * launched (or upgraded) into Ralph mode. Absence = no loop. See issue #440.

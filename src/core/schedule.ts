@@ -6,6 +6,7 @@ import { DEFAULT_AGENT_TYPE, normalizeAgentSelection } from './agent-types.js';
 import { isValidCron, nextRun, describeCron } from './cron.js';
 import type { PlaybookScope } from './playbook.js';
 import type { TokenUsage } from './usage-types.js';
+import type { LaunchPhaseTimings } from './launch-phase-timings.js';
 import { ScheduleRollupStore, type ScheduleRollup } from './schedule-rollup.js';
 
 export interface SchedulePlaybook {
@@ -118,6 +119,14 @@ export interface ScheduleExecutionLedgerEntry {
    * ledger-write time (issue #1582). Absent/empty when the task recorded none.
    */
   artifacts?: string[];
+  /**
+   * Per-phase launch timings for a `dispatch_failed` fire (issue #1589), so a
+   * failed launch is diagnosable straight from the ledger without server logs:
+   * {@link LaunchPhaseTimings.incompletePhase} names the phase that consumed the
+   * time (e.g. the 180s `launch_error` class). Absent on fires that never hit a
+   * launch (validation/backpressure rejections) or that succeeded.
+   */
+  launchPhaseTimings?: LaunchPhaseTimings;
 }
 
 export interface ScheduleExecutionReceipt {

@@ -1,5 +1,6 @@
 import type { AgentEvent, EventMeta, EventOrigin, InjectHookEventResult } from '../core/types.js';
 import type { AgentType } from '../core/agent-types.js';
+import type { LaunchPhase } from '../core/launch-phase-timings.js';
 import type { AgentInteractionPort } from '../core/ports/agent-interaction-port.js';
 import type { InstalledBinaryIdentity, ProbePath } from './probe-agent-binary.js';
 
@@ -89,6 +90,18 @@ export interface AdapterLaunchOptions {
    * defaults). Resolution order: this override → unset (CLI default).
    */
   model?: string;
+  /**
+   * Per-phase launch instrumentation callback (issue #1589). The launch service
+   * injects this so the adapter can mark the boundaries that live INSIDE
+   * `launch()` — `session-create` (context build + `createSession`),
+   * `agent-boot` (readiness wait + prompt delivery), and `ack` (prompt-submit
+   * confirmed). Adapters call it at those points; the tracker records how long
+   * each phase took and which one was in-flight if the launch is abandoned.
+   * Optional and side-effect-free: a launch that never calls it still records
+   * the launch-service-owned phases, and the callback never throws. Adapters
+   * that don't instrument phases simply omit the calls.
+   */
+  onPhase?: (phase: LaunchPhase) => void;
 }
 
 /**

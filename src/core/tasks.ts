@@ -17,6 +17,7 @@ import type {
   TaskPriorityUpdate,
 } from '../shared/contracts/task.js';
 import type { ChildSessionInfo, GitInfo, SessionInfo, WorktreeHealth } from './session-read-model.js';
+import type { LaunchPhaseTimings } from './launch-phase-timings.js';
 import type { TokenUsage } from './usage-types.js';
 import type {
   CreateTaskOptions,
@@ -553,6 +554,23 @@ export class TaskStore {
     if (!task || task.disposition) return;
     task.disposition = { ...disposition };
     task.updatedAt = new Date();
+  }
+
+  /**
+   * Record per-phase launch timings on a task (issue #1589). Written by the
+   * launch service on every launch attempt that reaches the adapter — on
+   * success (the full `preflight → … → ack` sequence) and on
+   * timeout/error (with {@link LaunchPhaseTimings.incompletePhase} naming the
+   * phase that consumed the time). Last-write-wins so the failure snapshot,
+   * written after the success attempt's would-be value, is authoritative. Does
+   * NOT change status or bump `updatedAt` on its own — callers pair it with
+   * setDisposition/terminateTask, which already bump recency. No-op for an
+   * unknown task.
+   */
+  setLaunchPhaseTimings(id: string, timings: LaunchPhaseTimings): void {
+    const task = this.tasks.get(id);
+    if (!task) return;
+    task.launchPhaseTimings = structuredClone(timings);
   }
 
   pendTask(id: string): Task {
