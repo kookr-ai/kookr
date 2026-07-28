@@ -13,6 +13,7 @@ Operator and developer references for Kookr:
 - [Findings](findings.md)
 - [Hosted Relay Operations](hosted-relay-operations.md)
 - [Kookr Self-Batch Schedule](kookr-self-batch-schedule.md)
+- [Lucy Prod Update Watchdog](lucy-prod-update-watchdog.md)
 - [Playbooks](playbooks.md)
 - [Self-Hosted Relay Runbook](self-hosted-relay-runbook.md)
 - [Session Sharing](session-sharing.md)
