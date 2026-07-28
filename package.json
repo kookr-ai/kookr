@@ -60,6 +60,7 @@
     "validate:skills": "node --import tsx scripts/validate-skills.ts",
     "validate:playbooks": "node --import tsx scripts/validate-playbooks.ts",
     "validate:rerun-bound": "node --import tsx scripts/validate-rerun-bound.ts",
+    "validate:delivery-ownership": "node --import tsx scripts/delivery-ownership-rehearsal.ts validate",
     "validate:requirements": "node scripts/validate-requirements-status.mjs",
     "test:hooks": "bash scripts/run-hook-tests.sh",
     "validate:docs-commands": "node --import tsx scripts/verify-documented-commands.ts",

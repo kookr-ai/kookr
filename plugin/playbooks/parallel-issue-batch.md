@@ -491,6 +491,16 @@ Implementation target:
   `node "$KOOKR_REPO/bin/kookr-context-pack.js" --spec <spec.json> --out /tmp/<unit-slug>.pack.md --review-out /tmp/<unit-slug>.review.md`
   and pass `/tmp/<unit-slug>.review.md` to each reviewer specialist as its context. This is an optimization layered on top of the pre-pr-review skill — do not skip any review step because of it, and treat pack contents as hints to verify against the diff, not facts.
 - Commit with a conventional message if the repo uses one.
+- **Delivery-ownership claim (mandatory, read-before-push).** Before you push or
+  open the PR, claim single-writer delivery ownership for this unit and re-read
+  `children.json` to confirm you own it (schema: **Durable State → Delivery
+  Ownership**). Claim the `<unit_id>.delivery.lock` in the batch state dir; on
+  success record `"delivery": { "owner": "<your task id>", "at": "<ISO ts>" }`
+  on this unit and fsync **before** any `git push` / `gh pr create`. If the lock
+  is already held (the parent sweep or another actor owns delivery), **stand
+  down** — do not push — and log the owner, e.g.
+  `delivery owned by parent since <ts>; standing down`. This blocks the
+  2026-07-26 same-task double-delivery race (task dd1fbcec).
 - **Pre-`gh pr create` duplicate-guard (mandatory).** Immediately before opening
   the PR, run this guard for the unit's branch and *every* issue it closes. It
   aborts with a non-zero exit (no PR created) if any issue was already
@@ -586,8 +596,58 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
   "status": "spawned",
   "pr": null,
   "merged": false,
-  "blocker": null
+  "blocker": null,
+  "delivery": null
 }
+```
+
+### Delivery Ownership (single-writer)
+
+`delivery` records **who owns delivery** (push + `gh pr create` + merge) for the
+unit. It is either `null` (unclaimed) or an object:
+
+```json
+"delivery": { "owner": "parent", "at": "2026-07-26T10:00:00Z" }
+```
+
+- `owner`: the literal string `parent` when the parent sweep takes over
+  delivery, or the child **task id** when a spawned child owns it.
+- `at`: ISO-8601 timestamp when ownership was claimed.
+
+This closes the 2026-07-26 same-task double-delivery race (task dd1fbcec): the
+parent's fast-track merge sweep delivered u-1656/u-1659/u-1660, then a second
+in-session actor re-ran `gh pr create` on the same branches minutes later. Both
+actors belonged to the **same task**, so #1230's task-scoped auto-claim did not
+apply and nothing forced the second actor to stand down. `delivery` gives every
+unit a durable single-writer owner.
+
+**Write ordering (mandatory).** The `delivery` record MUST land durably in
+`children.json` **before any `git push` / `gh pr create`** for the unit. Claim
+first, persist (write children.json and fsync), then push. Never push and then
+record ownership — a crash between the two reopens the race.
+
+**Read-before-push rule (mandatory).** Every delivery actor — the parent sweep
+**and** every spawned child — MUST re-read `children.json` immediately before
+push/PR and confirm it owns `delivery` for the unit. If it does not own the
+unit, it MUST stand down without pushing and log an explicit line, e.g.:
+
+```
+delivery owned by parent since 2026-07-26T10:00:00Z; standing down
+```
+
+The claim itself is a single-writer gate (an O_EXCL lock on
+`<unit_id>.delivery.lock` in the state dir): exactly one actor can create the
+lock and become `owner`; every other actor reads the winner's identity and
+stands down. The executable rehearsal of this protocol — two scripted actors
+racing one unit, the loser standing down, and a jq check that every delivered
+unit carries a non-null `delivery` owner — lives in
+`scripts/delivery-ownership-rehearsal.ts` (+ its test), and the doc-guard
+`pnpm validate:delivery-ownership` fails CI if this contract is dropped here.
+
+Completeness check over a rehearsal / live `children.json` (AC #1570):
+
+```bash
+jq -e '[.[] | select(.delivery == null)] | length == 0' "$CHILDREN_FILE"
 ```
 
 ## Phase 5: Monitor and Advance
@@ -627,7 +687,7 @@ For each child:
 
    Match PRs by `Closes #N` for **every** issue in the child's `issues` array (or legacy `issue`), issue numbers in title/body, or branch name. For multi-issue units the same PR must close all listed issues.
 
-4. If `mergeAfterImplementation=true`, a child is complete only when the PR is merged and covers every issue in its work unit. If CI is green but the child is idle, send a concise instruction to merge using the repo's allowed method **with head-branch deletion** (`gh pr merge <PR> --delete-branch`, or an explicit `git push origin --delete <head>` when a linked worktree holds the branch). Confirm the branch is gone (`gh api repos/<r>/branches/<head>` returns 404) before treating the child as complete — a surviving branch produces net-no-op duplicate PRs (issue #1572).
+4. If `mergeAfterImplementation=true`, a child is complete only when the PR is merged and covers every issue in its work unit. **Before the parent takes over delivery of a unit itself** — pushing, opening, or fast-tracking a PR/merge instead of letting the child do it — it MUST first claim single-writer `delivery` ownership (`owner: "parent"`) durably in `children.json` per **Durable State → Delivery Ownership**, then re-read to confirm ownership (read-before-push) before any `git push` / `gh pr create`. If a child already owns `delivery` for the unit, the parent does **not** re-deliver — it lets the owner finish or records a blocker. If CI is green but the child is idle, send a concise instruction to merge using the repo's allowed method **with head-branch deletion** (`gh pr merge <PR> --delete-branch`, or an explicit `git push origin --delete <head>` when a linked worktree holds the branch). Confirm the branch is gone (`gh api repos/<r>/branches/<head>` returns 404) before treating the child as complete — a surviving branch produces net-no-op duplicate PRs (issue #1572).
 5. If `mergeAfterImplementation=false`, a child is complete when the PR is open, covers every issue in its work unit, local verification is reported, and CI is green or legitimately pending.
 
 Update `$MONITOR_FILE` with a compact table:
