@@ -33,6 +33,10 @@ export default defineConfig({
       // Keep the hourly prod smoke tick off during unit tests so a server booted
       // on port 4800 never starts the interval or fetches endpoints (#1593).
       KOOKR_PROD_SMOKE_TICK: '0',
+      // Keep the deploy-lag detector off during unit tests so a server booted on
+      // port 4800 never starts the interval, shells out to git, or fetches a
+      // status surface (#1594).
+      KOOKR_DEPLOY_LAG_DETECTOR: '0',
     },
     coverage: {
       provider: 'v8',

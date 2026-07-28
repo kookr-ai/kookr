@@ -39,6 +39,7 @@ import { nowISO } from '../core/interaction-log.js';
 import { DEFAULT_HUNG_TASK_REAP_MS, evaluateHungTaskReap } from '../core/hung-task-reaper.js';
 import { reapHungTask } from './hung-task-reaper.js';
 import type { ProdSmokeTick } from './prod-smoke-tick.js';
+import type { DeployLagDetector } from './deploy-lag-detector.js';
 import {
   autoCompleteDeliveredTasks,
   createDeliveredCompletionTracker,
@@ -173,6 +174,17 @@ export interface TimerDeps {
    * `maybeRun()` never throws and guards against pile-up itself.
    */
   prodSmokeTick?: ProdSmokeTick;
+  /**
+   * Optional deploy-lag detector (issue #1594). When provided, a dedicated
+   * interval compares each monitored prod's running SHA against `origin/main`
+   * on `deployLagDetector.hostIntervalMs` and files/updates a single
+   * operational-alert artifact when merged commits sit undeployed past the
+   * threshold — so an undeployed-merge gap (lucy #1653) is surfaced instead of
+   * sitting silent. It never triggers a deploy. Undefined (dev/test, or
+   * explicitly disabled) starts no interval. `maybeRun()` never throws and
+   * guards against pile-up itself.
+   */
+  deployLagDetector?: DeployLagDetector;
 }
 
 export interface MaintenancePruneScheduleConfig {
@@ -333,6 +345,8 @@ export interface TimerHandles {
   maintenancePruneInterval: ReturnType<typeof setInterval> | null;
   /** Null unless the hourly prod smoke tick (issue #1593) was configured. */
   prodSmokeTickInterval: ReturnType<typeof setInterval> | null;
+  /** Null unless the deploy-lag detector (issue #1594) was configured. */
+  deployLagDetectorInterval: ReturnType<typeof setInterval> | null;
 }
 
 /**
@@ -1238,6 +1252,25 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     }, intervalMs);
   }
 
+  // --- Deploy-lag detector (issue #1594), optional ---
+  // Compares each monitored prod's running SHA against origin/main on its own
+  // cadence and files/updates one operational-alert artifact when merged
+  // commits sit undeployed past the threshold. Read-only: it never triggers a
+  // deploy. maybeRun() guards pile-up and never throws, so the interval callback
+  // is a one-liner. Undefined unless bootstrap enabled it (default: prod 4800).
+  let deployLagDetectorInterval: ReturnType<typeof setInterval> | null = null;
+  const deployLagDetector = deps.deployLagDetector;
+  if (deployLagDetector) {
+    const intervalMs = deployLagDetector.hostIntervalMs;
+    console.log(
+      `[deploy-lag] detector enabled (every ${Math.round(intervalMs / 60_000)}m; ` +
+        `artifact=${deployLagDetector.alertArtifactPath})`,
+    );
+    deployLagDetectorInterval = setInterval(() => {
+      void deployLagDetector.maybeRun();
+    }, intervalMs);
+  }
+
   return {
     tokenScanInterval,
     watchdogInterval,
@@ -1247,6 +1280,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     quotaPollTimeout,
     maintenancePruneInterval,
     prodSmokeTickInterval,
+    deployLagDetectorInterval,
   };
 }
 
@@ -1295,4 +1329,5 @@ export function clearAllTimers(handles: TimerHandles): void {
   if (handles.quotaPollTimeout) clearTimeout(handles.quotaPollTimeout);
   if (handles.maintenancePruneInterval) clearInterval(handles.maintenancePruneInterval);
   if (handles.prodSmokeTickInterval) clearInterval(handles.prodSmokeTickInterval);
+  if (handles.deployLagDetectorInterval) clearInterval(handles.deployLagDetectorInterval);
 }

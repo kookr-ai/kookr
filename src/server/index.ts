@@ -48,6 +48,7 @@ import {
 } from './lifecycle-timers.js';
 import { pruneAgedTaskRecords } from './use-cases/prune-aged-task-records.js';
 import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';
+import { createDeployLagDetectorFromEnv } from './deploy-lag-detector.js';
 import { isTerminalStatus } from '../core/task-status.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
@@ -1713,6 +1714,21 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       // operational change; dev servers and the test suite stay silent unless
       // KOOKR_PROD_SMOKE_TICK forces it on. Undefined ⇒ no interval started.
       prodSmokeTick: createProdSmokeTickFromEnv({ env: process.env, port, kookrDir, broadcast: broadcastToAll }),
+      // Deploy-lag detector (issue #1594). Compares each monitored prod's
+      // running SHA against origin/main and alerts when merged commits sit
+      // undeployed past the threshold (default 6h); it never triggers a deploy.
+      // The kookr running SHA is the build-info commit hash (the server's own
+      // API surface); the lucy target is added only when its status URL + local
+      // clone are configured. Enabled by default only on the canonical prod port
+      // (4800), like the smoke tick; undefined ⇒ no interval started.
+      deployLagDetector: createDeployLagDetectorFromEnv({
+        env: process.env,
+        port,
+        kookrDir,
+        kookrRepoPath: serverCwd,
+        getRunningSha: () => (buildInfo.commitHash && buildInfo.commitHash !== 'dev' ? buildInfo.commitHash : null),
+        broadcast: broadcastToAll,
+      }),
     },
   });
 
