@@ -314,7 +314,9 @@ kookr ralph status <taskId> --json
 
 ## Exit Codes
 
-`kookr spawn`, `kookr ralph`, and their compatible aliases use stable exit codes for scripts:
+Exit codes are stable for scripts, but **not all verbs share one table**. Branch on the command family below — treating every `2` as “user error” is wrong for `kookr pr-checklist`.
+
+### `kookr spawn` / `kookr ralph` (and deprecated aliases)
 
 | Exit code | Name | Meaning | Commands |
 | --- | --- | --- | --- |
@@ -326,6 +328,41 @@ kookr ralph status <taskId> --json
 | exit 6 | Wait timeout | `kookr spawn --wait=<seconds>` timed out before the task reached `completion-ready` or a terminal state. | `kookr spawn` |
 
 The deprecated `kookr-spawn` and `kookr-ralph` aliases return the same codes as their `kookr <subcommand>` forms.
+
+### `kookr doctor`
+
+| Exit code | Meaning |
+| --- | --- |
+| exit 0 | All required checks passed (`ok` may still include advisory `warn` checks). |
+| exit 1 | One or more required checks failed (`ok: false` in the JSON report). |
+| exit 2 | Usage error (missing `--json`, unknown flag, or help-only path when help is not requested). |
+
+### `kookr logs`
+
+| Exit code | Meaning |
+| --- | --- |
+| exit 0 | Records printed, or the task exists but has no hook activity yet. |
+| exit 1 | Argument matches neither a known task nor an existing hook log. |
+| exit 2 | Usage error (unknown option, non-positive `--lines`, missing/extra args). |
+
+### `kookr maintenance` (`prune` / `backup`)
+
+| Exit code | Meaning |
+| --- | --- |
+| exit 0 | Prune or backup succeeded. |
+| exit 1 | Operation failed (e.g. data directory unreadable, backup archive already exists). |
+| exit 2 | Usage error (unknown flag, missing verb, invalid option values). |
+
+### `kookr pr-checklist` (sysexits-style — **do not reuse the spawn/ralph meaning of 2**)
+
+| Exit code | Meaning |
+| --- | --- |
+| exit 0 | Pass (verify succeeded, or doctor completed). |
+| exit **2** | **Verification failure** (checklist findings or fail-closed repo-input error) — **not** a usage error. |
+| exit 64 | Usage error (bad arguments, unknown subcommand). |
+| exit 70 | Kookr-internal fault (the only class a local hook may treat as fail-open). |
+
+Callers that wire `kookr pr-checklist verify` into CI must treat exit `2` as “gate failed — fix the PR”, not “retry with better args”.
 
 ## `kookr status`
 
@@ -354,6 +391,81 @@ Exit behavior:
 - `1` for invalid `KOOKR_PORT`, unreachable servers, or unexpected server responses.
 - `2` for usage errors such as an unknown argument or invalid `--fail-on` value.
 - `5` when `--fail-on` is set and active findings meet or exceed the requested severity.
+
+## `kookr doctor`
+
+Run machine-readable launch preflight checks — the CI/bootstrap counterpart to the human-readable shell report from `pnpm doctor` (see [Related Commands](#related-commands)).
+
+```bash
+kookr doctor --json
+```
+
+`--json` is **required**. Without it the command prints a short usage note pointing at `pnpm doctor` and exits `2`. Use this form in scripts and CI; use `pnpm doctor` for an interactive human report.
+
+JSON envelope shape:
+
+```json
+{
+  "ok": true,
+  "status": "ok",
+  "generatedAt": "2026-06-21T07:30:00.000Z",
+  "checks": [
+    {
+      "id": "runtime.node",
+      "label": "Node.js",
+      "category": "runtime",
+      "status": "ok",
+      "required": true,
+      "summary": "v24.11.1 satisfies >= 22"
+    }
+  ]
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `ok` | boolean | `true` when no required check has `status: "fail"`. Advisory `warn` checks still allow `ok: true`. |
+| `status` | `"ok"` \| `"warn"` \| `"fail"` | Aggregate severity across all checks (`fail` > `warn` > `ok`). |
+| `generatedAt` | ISO-8601 string | Report timestamp. |
+| `checks` | array | Individual checks (see table below). |
+
+Each check object has `id`, `label`, `category`, `status` (`ok` / `warn` / `fail`), `required`, `summary`, and optional `detail` / `recommendedAction`.
+
+### Check ids
+
+Stable `checks[].id` values on a healthy machine:
+
+| Check id | Category | Required | What it verifies |
+| --- | --- | --- | --- |
+| `runtime.node` | runtime | yes | Node.js ≥ 22 on `PATH` |
+| `runtime.pnpm` | runtime | yes | pnpm ≥ 10 on `PATH` |
+| `runtime.git` | runtime | yes | `git` available |
+| `runtime.dtach` | runtime | yes | Vendored `vendor/dtach/dtach` executable, or system `dtach` on `PATH` |
+| `github.gh-auth` | github | no | `gh auth status` succeeds (advisory warn when not configured) |
+| `launch.kb` | launch-dependency | no | `kb doctor --format=json` and a smoke `kb search` both succeed |
+| `agent.claude` | agent | yes if `KOOKR_AGENT_BIN` set; else advisory | Claude Code binary (`KOOKR_AGENT_BIN` or `claude`) |
+| `agent.codex` | agent | yes if `KOOKR_CODEX_BIN` set; else advisory | Codex CLI binary (`KOOKR_CODEX_BIN` or `codex`) |
+| `agent.codex-plugin-dir` | agent | no | Codex advertises `--plugin-dir` (only emitted when `agent.codex` is `ok`) |
+
+When the KB path fails, the single KB row is replaced by a more specific id:
+
+| Check id | When it appears |
+| --- | --- |
+| `launch.kb-doctor` | `kb doctor --format=json` failed or is unavailable |
+| `launch.kb-search` | `kb doctor` passed but the smoke search failed |
+
+Options:
+
+| Option | Argument | Default | Description |
+| --- | --- | --- | --- |
+| `--json` | none | required | Print one machine-readable JSON report to stdout. |
+| `-h`, `--help` | none | false | Print command help and exit `0`. |
+
+Exit behavior:
+
+- `0` when all required checks pass (`ok: true`; advisory warnings allowed).
+- `1` when one or more required checks fail (`ok: false`).
+- `2` for usage errors, including missing `--json` or an unknown argument.
 
 ## `kookr logs`
 
@@ -557,6 +669,98 @@ Exit behavior:
   cannot be read or the output archive already exists.
 - `2` for usage errors such as an unknown flag or missing `--out` path.
 
+## `kookr pr-checklist`
+
+Machine-verify a repository's anti-drift PR checklist against the working-tree
+diff. Deterministic and AI-free — the local pre-`gh pr create` gate and a
+CI-friendly verifier for the same contract. See
+[PR Checklist Contract](../rfc/rfc-pr-checklist-contract.md).
+
+```bash
+kookr pr-checklist verify [--pr-body <file|->] [--base <ref>] [--json]
+kookr pr-checklist verify --from-command <raw gh pr create …> [--run-commands none]
+kookr pr-checklist verify --explain
+kookr pr-checklist doctor [--json]
+```
+
+### `verify`
+
+Collect changed paths against `--base` (default `main`) and check structural
+rules plus optional PR-body attestation boxes.
+
+| Option | Argument | Default | Description |
+| --- | --- | --- | --- |
+| `--pr-body` | path or `-` | unset | PR body to check attestation boxes against (`-` reads stdin). Omit for structural checks only (typical local preflight; CI supplies the body). Mutually exclusive with `--from-command`. |
+| `--from-command` | raw shell string | unset | Derive body + base from a raw `gh pr create …` command (used by the local hook). A `--fill` / `$(…)` / stdin body is unverifiable — attestation is skipped locally and CI stays authoritative (never a silent pass). |
+| `--run-commands` | `none` or `ci` | `none` | `none` runs no repo commands. `ci` is reserved and currently rejected. |
+| `--base` | git ref | `main` | Diff base branch (`--from-command`'s base wins when present). |
+| `--json` | none | false | Emit one machine-readable JSON report to stdout. |
+| `--explain` | none | false | Print the resolved built-in checklist rules as JSON and exit `0`. |
+| `-h`, `--help` | none | false | Print command help and exit `0`. |
+
+### `doctor`
+
+Report the local hook's recent fail-open / degrade rate from the on-disk degrade
+log. Use this when you need to know whether the anti-drift PR gate has silently
+stopped gating (fail-open history), not for launch preflight — that is
+[`kookr doctor --json`](#kookr-doctor).
+
+```bash
+kookr pr-checklist doctor
+kookr pr-checklist doctor --json
+```
+
+With `--json`, prints a summary object (`status`, `logPath`, `total`, `last24h`,
+`last7d`, `malformedLines`, `recent`). Without `--json`, prints a short human
+report. Exit is always `0` when the log can be read (including “no events”);
+unreadable log path → `70`.
+
+### Exit codes
+
+Sysexits-style — **not** the spawn/ralph table. Exit `2` means **verification
+failed**, not bad arguments:
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | Pass |
+| `2` | Verification failure (findings, or a fail-closed repo-input error) |
+| `64` | Usage error |
+| `70` | Kookr-internal fault (only this class may be treated as fail-open by a hook) |
+
+## `kookr context-pack`
+
+Build a spawn-time **context pack** from a JSON spec — a warm-start digest of an
+issue (title/body/acceptance criteria), candidate file hints, base ref, and
+pre-digested skill excerpts that a spawned issue-implementation task can open
+with instead of re-retrieving the repo cold. Used by the parallel-issue-batch
+playbook to cut cold-retrieval cost for child tasks.
+
+```bash
+kookr context-pack --spec spec.json --out pack.md
+kookr context-pack --spec spec.json --out pack.md --review-out review.md
+```
+
+The compiled CLI is loaded with a `dist`→`src` fallback, so the verb works from
+an `npm`/`npx` install and a source checkout alike. The historical by-path form
+(`node "$KOOKR_REPO/bin/kookr-context-pack.js" …`) keeps working unchanged.
+
+Options:
+
+| Option | Argument | Default | Description |
+| --- | --- | --- | --- |
+| `--spec` | `<path>` | — | JSON spec describing the issue, candidate files, base branch/commit, and optionally skills + a staged-diff file. Required. |
+| `--out` | `<path>` | — | Write the child-task context pack (markdown) here. Required. |
+| `--review-out` | `<path>` | none | Also write a pre-PR review pack (pack + staged diff). Requires `"stagedDiffFile"` in the spec. |
+| `--plugin-dir` | `<path>` | auto | Override the `kookr-toolkit` plugin dir (skill source root). |
+| `--cache-dir` | `<path>` | auto | Override the skill-digest cache dir. |
+| `--json` | none | false | Emit one machine-readable JSON envelope on stdout. |
+| `-h`, `--help` | none | false | Print command help (including the full spec shape) and exit. |
+
+The pack is a **floor, not a ceiling**: `candidateFiles` are non-exhaustive
+hints and packed facts can be stale, so a child must verify and explore beyond
+it. Exit `0` on success; `2` on any failure — a usage error (missing
+`--spec`/`--out`), a malformed spec, or a failed write of the output pack.
+
 ## `kookr push test`
 
 Send a synthetic relay push notification to a registered device:
@@ -632,5 +836,6 @@ Options:
 pnpm dev             # backend on 4801 and Vite frontend on 5173
 pnpm prod:update     # update, build, restart, and health-check ../kookr-prod
 pnpm prod:restart    # restart the production-style instance without rebuilding
-pnpm doctor          # diagnose local setup problems
+pnpm doctor          # human-readable shell report (scripts/doctor.sh)
+kookr doctor --json  # machine-readable launch preflight (CI/bootstrap) — see `kookr doctor`
 ```

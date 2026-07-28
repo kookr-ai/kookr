@@ -126,8 +126,33 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
   },
   {
     name: 'pr-checklist',
-    subcommands: ['verify'],
-    flags: ['--pr-body', '--base', '--json', '--explain', '-h', '--help'],
+    subcommands: ['verify', 'doctor'],
+    flags: [
+      '--pr-body',
+      '--from-command',
+      '--run-commands',
+      '--base',
+      '--json',
+      '--explain',
+      '-h',
+      '--help',
+    ],
+    flagValues: {
+      '--run-commands': ['none', 'ci'],
+    },
+  },
+  {
+    name: 'context-pack',
+    flags: [
+      '--spec',
+      '--out',
+      '--review-out',
+      '--plugin-dir',
+      '--cache-dir',
+      '--json',
+      '-h',
+      '--help',
+    ],
   },
   {
     name: 'push',
@@ -224,6 +249,7 @@ function renderBashCompletion(): string {
   const emissionFlags = flagsFor('emission');
   const prChecklistSubcommands = subcommandsFor('pr-checklist');
   const prChecklistFlags = flagsFor('pr-checklist');
+  const contextPackFlags = flagsFor('context-pack');
   const pushSubcommands = subcommandsFor('push');
   const completionFlags = flagsFor('completion');
 
@@ -377,6 +403,9 @@ _kookr()
         COMPREPLY=( $(compgen -W "${prChecklistFlags}" -- "\${cur}") )
       fi
       ;;
+    context-pack)
+      COMPREPLY=( $(compgen -W "${contextPackFlags}" -- "\${cur}") )
+      ;;
     push)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
         COMPREPLY=( $(compgen -W "${pushSubcommands}" -- "\${cur}") )
@@ -429,6 +458,7 @@ function renderZshCompletion(): string {
   const emissionFlags = flagsFor('emission');
   const prChecklistSubcommands = subcommandsFor('pr-checklist');
   const prChecklistFlags = flagsFor('pr-checklist');
+  const contextPackFlags = flagsFor('context-pack');
   const pushSubcommands = subcommandsFor('push');
   const completionFlags = flagsFor('completion');
 
@@ -538,6 +568,9 @@ _kookr()
       else
         compadd -- ${prChecklistFlags}
       fi
+      ;;
+    context-pack)
+      compadd -- ${contextPackFlags}
       ;;
     push)
       if (( CURRENT == 3 )); then

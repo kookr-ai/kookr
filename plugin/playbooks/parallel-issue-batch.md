@@ -441,9 +441,17 @@ Spawn at most `maxConcurrentTasks` children at a time. For each selected **work 
    # Note: kookr-context-pack currently packs a single issueNumber/body only.
    # Extra multi-issue keys are ignored. List every issue URL in the child
    # prompt so the model loads non-primary issue bodies itself.
-   node "$KOOKR_REPO/bin/kookr-context-pack.js" \
-     --spec "$PROMPTS_DIR/<unit-slug>.spec.json" \
-     --out "$PROMPTS_DIR/<unit-slug>.pack.md"
+   # Prefer the `kookr context-pack` verb (works from an npm/npx install); fall
+   # back to the by-path binary for source checkouts where $KOOKR_REPO is set.
+   if command -v kookr >/dev/null 2>&1; then
+     kookr context-pack \
+       --spec "$PROMPTS_DIR/<unit-slug>.spec.json" \
+       --out "$PROMPTS_DIR/<unit-slug>.pack.md"
+   else
+     node "$KOOKR_REPO/bin/kookr-context-pack.js" \
+       --spec "$PROMPTS_DIR/<unit-slug>.spec.json" \
+       --out "$PROMPTS_DIR/<unit-slug>.pack.md"
+   fi
    ```
 
    The pack bundles the **primary** (lowest-numbered) issue title/body, acceptance criteria, candidate file paths (as **non-exhaustive hints**), the base branch/commit, and pre-digested excerpts of the static skills a child needs (commit discipline, pre-PR review checklist, PR workflow). For multi-issue units the pack is a partial warm-start — non-primary issue bodies are not packed; the child prompt must still list every issue URL. Skill digests are cached and reused across children and runs, and re-generated automatically when a skill file changes. The pack is a **floor, not a ceiling**: the candidate-file list is a starting shortlist, never an authoritative set, and the child must stay free to explore beyond it.
@@ -485,10 +493,10 @@ Implementation target:
   readable (per-issue commits when natural) but open **one** PR.
 - Add or update focused tests covering each issue's acceptance criteria.
 - Run the repo-appropriate build/test checks.
-- Before opening the PR, when running the pre-PR review specialists, feed each one a **review pack** — the staged diff plus the same shared context — instead of letting it re-explore the repo cold. Stage your changes, then, if `$KOOKR_REPO/bin/kookr-context-pack.js` is available, regenerate the pack with a review output:
+- Before opening the PR, when running the pre-PR review specialists, feed each one a **review pack** — the staged diff plus the same shared context — instead of letting it re-explore the repo cold. Stage your changes, then regenerate the pack with a review output (prefer the `kookr context-pack` verb; fall back to `node "$KOOKR_REPO/bin/kookr-context-pack.js"` for source checkouts):
   `git diff --cached > /tmp/<unit-slug>.diff`
   add `"stagedDiffFile": "/tmp/<unit-slug>.diff"` to the spec, then
-  `node "$KOOKR_REPO/bin/kookr-context-pack.js" --spec <spec.json> --out /tmp/<unit-slug>.pack.md --review-out /tmp/<unit-slug>.review.md`
+  `kookr context-pack --spec <spec.json> --out /tmp/<unit-slug>.pack.md --review-out /tmp/<unit-slug>.review.md`
   and pass `/tmp/<unit-slug>.review.md` to each reviewer specialist as its context. This is an optimization layered on top of the pre-pr-review skill — do not skip any review step because of it, and treat pack contents as hints to verify against the diff, not facts.
 - Commit with a conventional message if the repo uses one.
 - **Delivery-ownership claim (mandatory, read-before-push).** Before you push or

@@ -22,7 +22,8 @@ Usage:
   kookr maintenance backup [OPTIONS]  Create a crash-consistent data-dir backup tarball.
   kookr lesson status|drain|remember  Durable lesson-write spool (kb degraded path).
   kookr emission plan|dedupe|metrics|defer  Drain-coupled issue filing budget + dedupe.
-  kookr pr-checklist verify [OPTIONS] Verify a repo's anti-drift PR checklist against the diff.
+  kookr pr-checklist verify|doctor [OPTIONS]  Verify PR checklist or report local gate fail-open rate.
+  kookr context-pack --spec <f> --out <f>  Build a spawn-time context pack from a JSON spec.
   kookr push test <deviceId>    Send a relay push test.
   kookr completion bash|zsh     Print a shell completion script.
 
@@ -146,6 +147,14 @@ async function main({
     return exit(process.exitCode ?? 0);
   }
 
+  // Spawn-time context pack builder (issue #1385). Loads the compiled CLI with a
+  // dist→src fallback so it works from an npm install and a source checkout
+  // alike; the by-path bin/kookr-context-pack.js form keeps working too.
+  if (command === 'context-pack') {
+    await runContextPackCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
+  }
+
   if (command !== undefined) {
     err.error(`[kookr] Unknown command: ${command}`);
     err.error('Run `kookr --help` for usage.');
@@ -240,6 +249,20 @@ async function runLogsCommand(argv, { env = process.env, out = console, err = co
   }
   const mod = await import(pathToFileURL(entry).href);
   process.exitCode = await mod.runLogsCli(argv, { env, out, err });
+}
+
+async function runContextPackCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-context-pack.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-context-pack.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] context-pack module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exit(1);
+  }
+  const mod = await import(pathToFileURL(entry).href);
+  process.exitCode = await mod.runContextPackCli(argv, { env, out });
 }
 
 async function runDoctorCommand(argv, { env = process.env, out = console, err = console } = {}) {

@@ -127,12 +127,15 @@ describe('renderCompletion', () => {
   it('renders a bash completion with root commands, subcommands, and flags', () => {
     const script = renderCompletion('bash');
     expect(script).toContain('complete -F _kookr kookr');
-    expect(script).toContain('spawn signal issue doctor status logs command ralph drain resume maintenance lesson emission pr-checklist push completion');
-    expect(script).toContain('compgen -W "spawn signal issue doctor status logs command ralph drain resume maintenance lesson emission pr-checklist push completion -h --help -v --version"');
+    expect(script).toContain('spawn signal issue doctor status logs command ralph drain resume maintenance lesson emission pr-checklist context-pack push completion');
+    expect(script).toContain('compgen -W "spawn signal issue doctor status logs command ralph drain resume maintenance lesson emission pr-checklist context-pack push completion -h --help -v --version"');
     expect(script).toContain('compgen -W "outcome"');
     expect(script).toContain('status pause resume cancel');
     expect(script).toContain('list claim release owner');
-    expect(script).toContain('verify');
+    expect(script).toContain('verify doctor');
+    expect(script).toContain('--from-command');
+    expect(script).toContain('--run-commands');
+    expect(script).toContain('compgen -W "--spec --out --review-out --plugin-dir --cache-dir --json -h --help"');
     expect(script).toContain('--prompt-file');
     expect(script).toContain('compgen -W "claude-code codex-cli grok-build"');
     expect(script).toContain('compgen -W "none minimal low medium high xhigh max ultra"');
@@ -148,12 +151,15 @@ describe('renderCompletion', () => {
   it('renders a zsh completion with root commands, subcommands, and flags', () => {
     const script = renderCompletion('zsh');
     expect(script).toContain('#compdef kookr');
-    expect(script).toContain('root_commands=(spawn signal issue doctor status logs command ralph drain resume maintenance lesson emission pr-checklist push completion)');
+    expect(script).toContain('root_commands=(spawn signal issue doctor status logs command ralph drain resume maintenance lesson emission pr-checklist context-pack push completion)');
     expect(script).toContain('compadd -- $root_commands -h --help -v --version');
     expect(script).toContain('compadd outcome');
     expect(script).toContain('compadd -- status pause resume cancel');
     expect(script).toContain('compadd -- list claim release owner');
-    expect(script).toContain('compadd -- verify');
+    expect(script).toContain('compadd -- verify doctor');
+    expect(script).toContain('--from-command');
+    expect(script).toContain('--run-commands');
+    expect(script).toContain('compadd -- --spec --out --review-out --plugin-dir --cache-dir --json -h --help');
     expect(script).toContain('compadd claude-code codex-cli grok-build');
     expect(script).toContain('compadd none minimal low medium high xhigh max ultra');
     expect(script).toContain('compadd warn block skip');
@@ -225,10 +231,30 @@ describe('bash completion behavior', () => {
 
   it('completes pr-checklist subcommands and flags', async () => {
     await expect(completeBash(['kookr', 'pr-checklist', ''])).resolves.toEqual(
-      expect.arrayContaining(['verify', '--pr-body', '--base', '--explain']),
+      expect.arrayContaining([
+        'verify',
+        'doctor',
+        '--pr-body',
+        '--from-command',
+        '--run-commands',
+        '--base',
+        '--explain',
+      ]),
     );
     await expect(completeBash(['kookr', 'pr-checklist', 'verify', ''])).resolves.toEqual([
       '--pr-body',
+      '--from-command',
+      '--run-commands',
+      '--base',
+      '--json',
+      '--explain',
+      '-h',
+      '--help',
+    ]);
+    await expect(completeBash(['kookr', 'pr-checklist', 'doctor', ''])).resolves.toEqual([
+      '--pr-body',
+      '--from-command',
+      '--run-commands',
       '--base',
       '--json',
       '--explain',
@@ -388,10 +414,30 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
 
   it('completes pr-checklist subcommands and flags', async () => {
     await expect(completeZsh(['kookr', 'pr-checklist', ''], 3)).resolves.toEqual(
-      expect.arrayContaining(['verify', '--pr-body', '--base', '--explain']),
+      expect.arrayContaining([
+        'verify',
+        'doctor',
+        '--pr-body',
+        '--from-command',
+        '--run-commands',
+        '--base',
+        '--explain',
+      ]),
     );
     await expect(completeZsh(['kookr', 'pr-checklist', 'verify', ''], 4)).resolves.toEqual([
       '--pr-body',
+      '--from-command',
+      '--run-commands',
+      '--base',
+      '--json',
+      '--explain',
+      '-h',
+      '--help',
+    ]);
+    await expect(completeZsh(['kookr', 'pr-checklist', 'doctor', ''], 4)).resolves.toEqual([
+      '--pr-body',
+      '--from-command',
+      '--run-commands',
       '--base',
       '--json',
       '--explain',
@@ -496,5 +542,28 @@ describe('kookr dispatcher completion command', () => {
     });
     expect(stderr).toBe('');
     expect(stdout).toContain('complete -F _kookr kookr');
+  });
+});
+
+describe('kookr dispatcher context-pack command', () => {
+  it('dispatches context-pack --help through the main binary', async () => {
+    const deps = makeDeps();
+    await main({
+      argv: ['context-pack', '--help'],
+      env: {},
+      out: deps.out,
+      err: deps.err,
+      exit: deps.exit,
+    });
+    expect(deps.codes).toEqual([0]);
+    expect(deps.logs.join('\n')).toContain('kookr context-pack — build a spawn-time context pack');
+  });
+
+  it('prints context-pack help through bin/kookr.js', async () => {
+    const { stdout } = await execFileAsync(process.execPath, ['bin/kookr.js', 'context-pack', '--help'], {
+      cwd: process.cwd(),
+    });
+    expect(stdout).toContain('kookr context-pack — build a spawn-time context pack');
+    expect(stdout).toContain('--review-out');
   });
 });
