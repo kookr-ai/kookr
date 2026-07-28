@@ -132,6 +132,16 @@ gh pr checks {number}
 
 If checks fail, investigate and fix before moving on.
 
+### CI-rerun bound — max 2 attempts, then report and stop
+
+Do **not** loop on CI reruns waiting for a flaky check to go green. The bound:
+
+- **max 2 CI rerun attempts** per PR. Re-run a failing check at most twice.
+- After the **second** failed rerun, **report the CI state** — the failing check names and their run links (`gh pr checks {number}`, `gh run view <run-id>`) — and stop. **Never loop.** Do not sit at "waiting for CI" indefinitely; hand the failing state back rather than re-running a third time.
+- Before you spend a rerun, **classify the failure first**. Infra-red CI — a check that failed only because CI budget/quota/runner capacity was unavailable and the run never executed your code — is non-blocking and should be classified non-blocking rather than rerun (see #1198). Infra-red failures do **not** consume one of the 2 rerun attempts; reserve reruns for genuinely flaky runs that actually executed.
+
+Rationale: an unbounded rerun/merge loop once left a delivery task stuck at "waiting for response" for ~3h until it was reaped (PR #1542 / task faf7902b). The bound caps attempts; #1198 removes the false blockers.
+
 ## 6. Review Thread Resolution
 
 When fixing issues raised in PR review comments, **resolve the thread immediately after pushing the fix**:
