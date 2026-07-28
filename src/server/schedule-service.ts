@@ -30,12 +30,14 @@ import { ScheduleValidator, validateCron } from './schedule-validator.js';
 export interface ScheduleLedgerEnrichment {
   tokenUsage?: TokenUsage;
   artifacts?: string[];
+  /** Merge commit SHA of the fire's merged delivery unit (issue #1596), when its PR merged. */
+  mergeCommit?: string;
 }
 
 /** Minimal task shape the ledger join reads — decouples the service from the full task model. */
 export interface LedgerEnrichmentTaskLike {
   tokenUsage?: TokenUsage;
-  completionDigest?: { prUrls?: string[] };
+  completionDigest?: { prUrls?: string[]; mergeCommit?: string };
 }
 
 /**
@@ -50,6 +52,8 @@ export function deriveLedgerEnrichment(task: LedgerEnrichmentTaskLike | undefine
   if (task.tokenUsage) enrichment.tokenUsage = task.tokenUsage;
   const artifacts = (task.completionDigest?.prUrls ?? []).filter((url) => typeof url === 'string' && url.length > 0);
   if (artifacts.length > 0) enrichment.artifacts = [...artifacts];
+  const mergeCommit = task.completionDigest?.mergeCommit;
+  if (typeof mergeCommit === 'string' && mergeCommit.length > 0) enrichment.mergeCommit = mergeCommit;
   return enrichment;
 }
 
@@ -444,6 +448,7 @@ export class ScheduleService {
         completedAt: new Date().toISOString(),
         ...(enrichment.tokenUsage ? { tokenUsage: enrichment.tokenUsage } : {}),
         ...(enrichment.artifacts ? { artifacts: enrichment.artifacts } : {}),
+        ...(enrichment.mergeCommit ? { mergeCommit: enrichment.mergeCommit } : {}),
       }),
       ...(currentReceipt ? {
         currentExecution: {
@@ -574,6 +579,7 @@ export class ScheduleService {
             completedAt: task.updatedAt.toISOString(),
             ...(enrichment.tokenUsage ? { tokenUsage: enrichment.tokenUsage } : {}),
             ...(enrichment.artifacts ? { artifacts: enrichment.artifacts } : {}),
+            ...(enrichment.mergeCommit ? { mergeCommit: enrichment.mergeCommit } : {}),
           }),
           ...(schedule.currentExecution ? {
             currentExecution: {
@@ -698,7 +704,7 @@ function ledgerEntryFromReceipt(
 function updateLedgerEntryForTask(
   ledger: ScheduleExecutionLedgerEntry[],
   taskId: string,
-  patch: Pick<ScheduleExecutionLedgerEntry, 'outcome' | 'reasonCode' | 'completedAt'> & Partial<Pick<ScheduleExecutionLedgerEntry, 'message' | 'tokenUsage' | 'artifacts'>>,
+  patch: Pick<ScheduleExecutionLedgerEntry, 'outcome' | 'reasonCode' | 'completedAt'> & Partial<Pick<ScheduleExecutionLedgerEntry, 'message' | 'tokenUsage' | 'artifacts' | 'mergeCommit'>>,
 ): ScheduleExecutionLedgerEntry[] {
   let updated = false;
   const next = ledger.map((entry) => {

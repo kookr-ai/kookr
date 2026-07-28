@@ -34,16 +34,25 @@ const OUTCOMES: ScheduleExecutionOutcome[] = [
 ];
 
 /** Independent recount of a schedule's ledger — the oracle the rollup must match. */
-function recount(schedule: Pick<Schedule, 'id' | 'executionLedger'>): Omit<ScheduleRollup, 'updatedAt'> {
+function recount(
+  schedule: Pick<Schedule, 'id' | 'executionLedger'>,
+  liveVerifiedCommits: ReadonlySet<string> = new Set(),
+): Omit<ScheduleRollup, 'updatedAt'> {
   const outcomes: Partial<Record<ScheduleExecutionOutcome, number>> = {};
   let measuredFires = 0;
   let costUsd = 0;
   let tokens = 0;
   let artifacts = 0;
+  let merged = 0;
+  let liveVerified = 0;
   let windowStart: string | undefined;
   let windowEnd: string | undefined;
   for (const e of schedule.executionLedger) {
     outcomes[e.outcome] = (outcomes[e.outcome] ?? 0) + 1;
+    if (e.mergeCommit) {
+      merged += 1;
+      if (liveVerifiedCommits.has(e.mergeCommit)) liveVerified += 1;
+    }
     if (e.tokenUsage) {
       measuredFires += 1;
       costUsd += e.tokenUsage.costUsd;
@@ -59,6 +68,8 @@ function recount(schedule: Pick<Schedule, 'id' | 'executionLedger'>): Omit<Sched
     fires: schedule.executionLedger.length,
     outcomes,
     measuredFires,
+    merged,
+    liveVerified,
     costUsd,
     tokens,
     artifacts,
@@ -104,6 +115,8 @@ describe('computeScheduleRollup (pure recount)', () => {
       fires: 0,
       outcomes: {},
       measuredFires: 0,
+      merged: 0,
+      liveVerified: 0,
       costUsd: 0,
       tokens: 0,
       artifacts: 0,
@@ -272,9 +285,195 @@ describe('ScheduleStore rollup invariants', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// merged vs live-verified delivery accounting (issue #1596).
+// ---------------------------------------------------------------------------
+
+/** A merged-unit ledger entry carrying a merge commit SHA (the containment key). */
+function mergedEntry(scheduleId: string, index: number, mergeCommit: string): ScheduleExecutionLedgerEntry {
+  const evaluatedAt = `2026-07-2${index % 9}T10:00:00.000Z`;
+  return {
+    id: `${scheduleId}:cron:${mergeCommit}`,
+    scheduleId,
+    trigger: 'cron',
+    decision: 'cron_due',
+    evaluatedAt,
+    completedAt: evaluatedAt,
+    outcome: 'completed',
+    artifacts: [`https://github.com/kookr-ai/kookr/pull/${1500 + index}`],
+    mergeCommit,
+  };
+}
+
+describe('computeScheduleRollup — merged vs live-verified (issue #1596)', () => {
+  test('AC1/AC2: a merged unit whose commit is not in the live set counts as merged but NOT live-verified', () => {
+    const ledger = [mergedEntry('s1', 0, 'a'.repeat(40)), mergedEntry('s1', 1, 'b'.repeat(40))];
+    // No deploy verified yet (empty live set) — the pre-deploy default.
+    const rollup = computeScheduleRollup({ id: 's1', executionLedger: ledger }, '2026-07-28T00:00:00.000Z');
+    expect(rollup.merged).toBe(2);
+    expect(rollup.liveVerified).toBe(0);
+  });
+
+  test('a merged unit whose commit IS in the live set is live-verified; a sibling not yet deployed is not', () => {
+    const live = 'a'.repeat(40);
+    const pending = 'b'.repeat(40);
+    const ledger = [mergedEntry('s1', 0, live), mergedEntry('s1', 1, pending)];
+    const rollup = computeScheduleRollup(
+      { id: 's1', executionLedger: ledger },
+      '2026-07-28T00:00:00.000Z',
+      new Set([live]),
+    );
+    expect(rollup.merged).toBe(2);
+    expect(rollup.liveVerified).toBe(1);
+  });
+
+  test('a non-merged fire (no mergeCommit) contributes to neither count', () => {
+    const ledger: ScheduleExecutionLedgerEntry[] = [
+      makeEntry('s1', 0, true, 1), // has artifacts + tokenUsage but no mergeCommit
+      mergedEntry('s1', 1, 'c'.repeat(40)),
+    ];
+    const rollup = computeScheduleRollup({ id: 's1', executionLedger: ledger }, '2026-07-28T00:00:00.000Z');
+    expect(rollup.merged).toBe(1);
+    expect(rollup.liveVerified).toBe(0);
+  });
+});
+
+describe('ScheduleStore live-verification flip (issue #1596)', () => {
+  let tempDir: string;
+  let store: ScheduleStore;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'sched-live-verify-'));
+    store = new ScheduleStore(tempDir);
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function seedMergedSchedule(id: string, commits: string[]): Schedule {
+    const now = '2026-07-01T00:00:00.000Z';
+    const schedule: Schedule = {
+      id,
+      name: id,
+      enabled: true,
+      cron: '0 9 * * *',
+      playbook: { path: 'daily.md', parameters: {} },
+      cwd: tempDir,
+      agentType: 'claude',
+      executionLedger: commits.map((c, i) => mergedEntry(id, i, c)),
+      createdAt: now,
+      updatedAt: now,
+    };
+    store.replace(schedule);
+    return store.get(id)!;
+  }
+
+  // AC5 — the #1653 shape: N units merged, prod SHA behind → merged=N, live=0.
+  test('AC5: N units merged with prod behind shows merged=N, live-verified=0', () => {
+    const commits = Array.from({ length: 65 }, (_, i) => i.toString(16).padStart(40, '0'));
+    seedMergedSchedule('lucy', commits);
+    const rollup = store.getRollup('lucy')!;
+    expect(rollup.merged).toBe(65);
+    expect(rollup.liveVerified).toBe(0);
+  });
+
+  // AC3 — a passing smoke gate flips live-verified mechanically (single call, no bookkeeping).
+  test('AC3: recordDeployVerification flips exactly the merged units the deployed SHA contains', async () => {
+    const deployed = 'd'.repeat(40);
+    const undeployed = 'e'.repeat(40);
+    seedMergedSchedule('kookr', [deployed, undeployed]);
+    expect(store.getRollup('kookr')!.liveVerified).toBe(0);
+
+    // Smoke gate passed at a SHA that contains `deployed` but not `undeployed`.
+    await store.recordDeployVerification('deadbeef'.repeat(5), (commit) => commit === deployed);
+
+    const after = store.getRollup('kookr')!;
+    expect(after.merged).toBe(2);
+    expect(after.liveVerified).toBe(1);
+  });
+
+  test('AC3: a later deploy that covers the remaining unit flips it too', async () => {
+    const c0 = 'a'.repeat(40);
+    const c1 = 'b'.repeat(40);
+    seedMergedSchedule('kookr', [c0, c1]);
+    await store.recordDeployVerification('sha1'.repeat(10), (commit) => commit === c0);
+    expect(store.getRollup('kookr')!.liveVerified).toBe(1);
+    // A newer deploy now contains both.
+    await store.recordDeployVerification('sha2'.repeat(10), () => true);
+    expect(store.getRollup('kookr')!.liveVerified).toBe(2);
+  });
+
+  // AC4 — a failed smoke gate flips nothing: it simply never calls record, even
+  // as newer units merge, so live-verified is frozen at the last PASSING deploy.
+  test('AC4: a failed smoke gate leaves live-verified unchanged even as newer units merge', async () => {
+    const c0 = 'a'.repeat(40);
+    const schedule = seedMergedSchedule('kookr', [c0]);
+    // First deploy passed and verified c0.
+    await store.recordDeployVerification('sha1'.repeat(10), () => true);
+    expect(store.getRollup('kookr')!.liveVerified).toBe(1);
+
+    // A new unit merges, THEN a deploy attempt whose smoke gate FAILS. The
+    // failed gate never calls recordDeployVerification, so c1 stays merged-only
+    // and live-verified is unchanged from before the failed attempt.
+    const c1 = 'b'.repeat(40);
+    store.replace({ ...schedule, executionLedger: [mergedEntry('kookr', 0, c0), mergedEntry('kookr', 1, c1)] });
+
+    const after = store.getRollup('kookr')!;
+    expect(after.merged).toBe(2);
+    expect(after.liveVerified).toBe(1); // frozen at the last passing deploy
+  });
+
+  test('a newly-merged unit after a verified deploy counts as merged, not yet live-verified', async () => {
+    const c0 = 'a'.repeat(40);
+    const schedule = seedMergedSchedule('kookr', [c0]);
+    await store.recordDeployVerification('sha1'.repeat(10), () => true);
+    expect(store.getRollup('kookr')!.liveVerified).toBe(1);
+
+    // A new unit merges AFTER that deploy — its commit is not in the verified SHA.
+    const c1 = 'b'.repeat(40);
+    store.replace({ ...schedule, executionLedger: [mergedEntry('kookr', 0, c0), mergedEntry('kookr', 1, c1)] });
+    const rollup = store.getRollup('kookr')!;
+    expect(rollup.merged).toBe(2);
+    expect(rollup.liveVerified).toBe(1); // c0 still live, c1 not yet
+  });
+
+  test('a converged deploy to one prod does not un-verify another prods already-live units', async () => {
+    const cKookr = 'a'.repeat(40);
+    const cLucy = 'b'.repeat(40);
+    seedMergedSchedule('kookr', [cKookr]);
+    seedMergedSchedule('lucy', [cLucy]);
+
+    // kookr deploy: its SHA contains kookr's commit but not lucy's.
+    await store.recordDeployVerification('kookrsha'.repeat(5), (commit) => commit === cKookr);
+    expect(store.getRollup('kookr')!.liveVerified).toBe(1);
+    expect(store.getRollup('lucy')!.liveVerified).toBe(0);
+
+    // lucy deploy: its SHA contains lucy's commit but not kookr's. kookr's unit
+    // must stay live — the two prods are independent.
+    await store.recordDeployVerification('lucysha0'.repeat(5), (commit) => commit === cLucy);
+    expect(store.getRollup('kookr')!.liveVerified).toBe(1);
+    expect(store.getRollup('lucy')!.liveVerified).toBe(1);
+  });
+
+  test('live-verified survives persist -> reload (durable, no re-deploy needed)', async () => {
+    const c0 = 'a'.repeat(40);
+    const c1 = 'b'.repeat(40);
+    seedMergedSchedule('kookr', [c0, c1]);
+    await store.recordDeployVerification('sha1'.repeat(10), (commit) => commit === c0);
+    await store.persist();
+
+    const reloaded = new ScheduleStore(tempDir);
+    await reloaded.load();
+    const rollup = reloaded.getRollup('kookr')!;
+    expect(rollup.merged).toBe(2);
+    expect(rollup.liveVerified).toBe(1);
+  });
+});
+
 describe('rollupsEqual', () => {
   const base: ScheduleRollup = {
-    scheduleId: 's', fires: 2, outcomes: { completed: 2 }, measuredFires: 1,
+    scheduleId: 's', fires: 2, outcomes: { completed: 2 }, measuredFires: 1, merged: 1, liveVerified: 0,
     costUsd: 0.5, tokens: 10, artifacts: 1, windowStart: 'a', windowEnd: 'b', updatedAt: 'x',
   };
   test('ignores updatedAt', () => {
@@ -285,5 +484,11 @@ describe('rollupsEqual', () => {
   });
   test('detects a cost divergence', () => {
     expect(rollupsEqual(base, { ...base, costUsd: 0.6 })).toBe(false);
+  });
+  test('detects a merged-count divergence', () => {
+    expect(rollupsEqual(base, { ...base, merged: 2 })).toBe(false);
+  });
+  test('detects a live-verified divergence', () => {
+    expect(rollupsEqual(base, { ...base, liveVerified: 1 })).toBe(false);
   });
 });
