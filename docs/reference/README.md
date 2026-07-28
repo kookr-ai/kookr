@@ -12,6 +12,7 @@ Operator and developer references for Kookr:
 - [Environment Variables](environment-variables.md)
 - [Findings](findings.md)
 - [Hosted Relay Operations](hosted-relay-operations.md)
+- [Kookr Self-Batch Schedule](kookr-self-batch-schedule.md)
 - [Playbooks](playbooks.md)
 - [Self-Hosted Relay Runbook](self-hosted-relay-runbook.md)
 - [Session Sharing](session-sharing.md)
