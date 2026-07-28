@@ -26,6 +26,10 @@ import {
   parseRetries,
   parseWaitTimeoutSeconds,
   postTask,
+  postTaskWithReconcile,
+  parseRetryAfterMs,
+  reconcileDelayMs,
+  isReconcilableStatus,
   probeHealth,
   resolveBaseUrl,
   resolveCwd,
@@ -899,6 +903,211 @@ describe('postTask', () => {
   });
 });
 
+// ---------- ambiguous-outcome reconciliation (#1591) ----------
+
+describe('parseRetryAfterMs (#1591)', () => {
+  it('prefers the body retryAfterMs field', () => {
+    expect(parseRetryAfterMs('99', { retryAfterMs: 1500 })).toBe(1500);
+  });
+  it('falls back to body retryAfterSeconds (503 saturation shape)', () => {
+    expect(parseRetryAfterMs(null, { retryAfterSeconds: 2 })).toBe(2000);
+  });
+  it('reads the numeric Retry-After header (seconds) when no body hint', () => {
+    expect(parseRetryAfterMs('3', {})).toBe(3000);
+    expect(parseRetryAfterMs('0', {})).toBe(0);
+  });
+  it('returns null when no usable hint is present', () => {
+    expect(parseRetryAfterMs(null, {})).toBeNull();
+    expect(parseRetryAfterMs('not-a-number', null)).toBeNull();
+    expect(parseRetryAfterMs('', { retryAfterMs: 0 })).toBeNull();
+  });
+});
+
+describe('reconcileDelayMs (#1591)', () => {
+  it('honors a Retry-After hint, capped at the max', () => {
+    expect(reconcileDelayMs(0, 1500)).toBe(1500);
+    expect(reconcileDelayMs(0, 999999)).toBe(8000);
+  });
+  it('uses exponential backoff (capped) when no hint is given', () => {
+    expect(reconcileDelayMs(0, null)).toBe(500);
+    expect(reconcileDelayMs(1, null)).toBe(1000);
+    expect(reconcileDelayMs(2, null)).toBe(2000);
+    expect(reconcileDelayMs(10, null)).toBe(8000);
+  });
+});
+
+describe('isReconcilableStatus (#1591)', () => {
+  it('treats 5xx as reconcilable and 4xx/429/2xx as definitive', () => {
+    expect(isReconcilableStatus(500)).toBe(true);
+    expect(isReconcilableStatus(503)).toBe(true);
+    expect(isReconcilableStatus(429)).toBe(false);
+    expect(isReconcilableStatus(400)).toBe(false);
+    expect(isReconcilableStatus(200)).toBe(false);
+  });
+});
+
+describe('postTaskWithReconcile (#1591)', () => {
+  function basePostArgs(baseUrl: string, idempotencyKey: string | null = null) {
+    return { baseUrl, prompt: 'hi', cwd: '/tmp/x', agent: null, criteria: null, idempotencyKey };
+  }
+
+  it('re-POSTs with the same key after a 5xx and returns the idempotent replay', async () => {
+    let calls = 0;
+    const seenKeys: unknown[] = [];
+    const { server, baseUrl } = await startFakeApi((_req, body) => {
+      calls += 1;
+      seenKeys.push(JSON.parse(body).idempotencyKey);
+      if (calls === 1) return { status: 500, body: JSON.stringify({ error: 'boom' }) };
+      return { status: 200, body: JSON.stringify({ id: 't-recon', idempotentReplay: true }) };
+    });
+    try {
+      const result = await postTaskWithReconcile({
+        postArgs: basePostArgs(baseUrl, 'recon-key'),
+        idempotencyKey: 'recon-key',
+        sleep: async () => {},
+      });
+      expect(calls).toBe(2);
+      expect(seenKeys).toEqual(['recon-key', 'recon-key']);
+      expect(result.kind).toBe('created');
+      if (result.kind === 'created') expect(result.task.idempotentReplay).toBe(true);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('honors a 503 Retry-After hint before re-POSTing', async () => {
+    let calls = 0;
+    const delays: number[] = [];
+    const { server, baseUrl } = await startFakeApi(() => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          status: 503,
+          headers: { 'Retry-After': '2' },
+          body: JSON.stringify({ code: 'event_loop_saturated', retryAfterSeconds: 2 }),
+        };
+      }
+      return { status: 201, body: JSON.stringify({ id: 't-503' }) };
+    });
+    try {
+      const result = await postTaskWithReconcile({
+        postArgs: basePostArgs(baseUrl, 'k'),
+        idempotencyKey: 'k',
+        sleep: async (ms: number) => { delays.push(ms); },
+      });
+      expect(result.kind).toBe('created');
+      expect(delays).toEqual([2000]);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('does NOT reconcile a 5xx when no idempotency key is available', async () => {
+    let calls = 0;
+    const { server, baseUrl } = await startFakeApi(() => {
+      calls += 1;
+      return { status: 500, body: JSON.stringify({ error: 'boom' }) };
+    });
+    try {
+      const result = await postTaskWithReconcile({
+        postArgs: basePostArgs(baseUrl, null),
+        idempotencyKey: null,
+        sleep: async () => {},
+      });
+      expect(calls).toBe(1);
+      expect(result.kind).toBe('server_error');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('does NOT reconcile a 429 backpressure rejection (definitive, task not created)', async () => {
+    let calls = 0;
+    const { server, baseUrl } = await startFakeApi(() => {
+      calls += 1;
+      return { status: 429, body: JSON.stringify({ code: 'pending_queue_full', error: 'full' }) };
+    });
+    try {
+      const result = await postTaskWithReconcile({
+        postArgs: basePostArgs(baseUrl, 'k'),
+        idempotencyKey: 'k',
+        sleep: async () => {},
+      });
+      expect(calls).toBe(1);
+      expect(result.kind).toBe('server_error');
+      if (result.kind === 'server_error') expect(result.status).toBe(429);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('gives up after the retry budget and returns the last 5xx', async () => {
+    let calls = 0;
+    const onRetry = vi.fn();
+    const { server, baseUrl } = await startFakeApi(() => {
+      calls += 1;
+      return { status: 502, body: JSON.stringify({ error: 'bad gateway' }) };
+    });
+    try {
+      const result = await postTaskWithReconcile({
+        postArgs: basePostArgs(baseUrl, 'k'),
+        idempotencyKey: 'k',
+        sleep: async () => {},
+        retries: 2,
+        onRetry,
+      });
+      expect(calls).toBe(3); // first attempt + 2 reconcile re-POSTs
+      expect(onRetry).toHaveBeenCalledTimes(2);
+      expect(result.kind).toBe('server_error');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('reconciles a network error (dropped connection) when a key is available', async () => {
+    let calls = 0;
+    const server = createServer((req, res) => {
+      calls += 1;
+      if (calls === 1) {
+        req.socket.destroy(); // ambiguous: connection dropped mid-request
+        return;
+      }
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id: 't-net', idempotentReplay: true }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    if (!addr || typeof addr !== 'object') throw new Error('no address');
+    const baseUrl = `http://127.0.0.1:${addr.port}`;
+    try {
+      const result = await postTaskWithReconcile({
+        postArgs: basePostArgs(baseUrl, 'k'),
+        idempotencyKey: 'k',
+        sleep: async () => {},
+      });
+      expect(calls).toBe(2);
+      expect(result.kind).toBe('created');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('propagates a network error unchanged when no key is available', async () => {
+    // Unreachable port: connection is refused, and with no key we do not retry.
+    await expect(
+      postTaskWithReconcile({
+        postArgs: basePostArgs('http://127.0.0.1:1', null),
+        idempotencyKey: null,
+        sleep: async () => {},
+      }),
+    ).rejects.toBeTruthy();
+  });
+});
+
 // ---------- formatSuccess / formatDedup ----------
 
 describe('output formatting', () => {
@@ -1241,6 +1450,70 @@ describe('main', () => {
       expect(envelope.code).toBe('SERVER_ERROR');
       expect(envelope.details.status).toBe(429);
       expect(envelope.details.backpressure).toMatchObject({ code: 'spawn_burst_limit', source: 'cli' });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('reconciles an ambiguous 5xx by re-POSTing with the same key (#1591)', async () => {
+    let calls = 0;
+    const seenKeys: unknown[] = [];
+    const { server, baseUrl } = await startFakeApi((_req, body) => {
+      calls += 1;
+      seenKeys.push(JSON.parse(body).idempotencyKey);
+      if (calls === 1) return { status: 500, body: JSON.stringify({ error: 'transient' }) };
+      return {
+        status: 200,
+        body: JSON.stringify({ id: 'recon-e2e', agentType: 'claude-code', cwd: tmpCwd, idempotentReplay: true }),
+      };
+    });
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello', '--idempotency-key', 'recon-e2e-key'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(calls).toBe(2);
+      expect(seenKeys).toEqual(['recon-e2e-key', 'recon-e2e-key']);
+      expect(logs.join('\n')).toContain('task_id=recon-e2e');
+      expect(logs.join('\n')).toContain('idempotent replay');
+      expect(errBucket.errors.join('\n')).toContain('re-POSTing with idempotency key');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('does not reconcile an ambiguous 5xx without a key — surfaces the failure (#1591)', async () => {
+    let calls = 0;
+    const { server, baseUrl } = await startFakeApi(() => {
+      calls += 1;
+      return { status: 500, body: JSON.stringify({ error: 'transient' }) };
+    });
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_SERVER_ERROR]);
+      expect(calls).toBe(1);
     } finally {
       await closeServer(server);
     }
