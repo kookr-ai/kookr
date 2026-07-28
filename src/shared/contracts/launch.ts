@@ -86,6 +86,17 @@ export interface LaunchOpts {
    */
   autoCloseOnSignal?: boolean;
   /**
+   * Marks the launch as unattended/autonomous (issue #1562). When true, the
+   * spawned agent's injected `--settings` gain permission `deny` rules for
+   * interactive tools (`AskUserQuestion` and equivalents) so a blocking call
+   * fails fast and flags the task operator-needed, instead of hanging forever
+   * on an unanswerable prompt. Inherited from the parent task when spawning a
+   * successor unless explicitly overridden (so it propagates down a
+   * self-continuation chain); set `false` to opt a successor back out. Default
+   * (undefined, no unattended parent) ⇒ attended, unchanged.
+   */
+  unattended?: boolean;
+  /**
    * Optional idempotency key (issue #1526 Phase B / FM2, FM3). A caller that
    * retries an identical launch request — e.g. after its own client timeout
    * fired against an overloaded server that had already created the task —

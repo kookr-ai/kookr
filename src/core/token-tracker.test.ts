@@ -395,6 +395,173 @@ describe('TokenTracker', () => {
     });
   });
 
+  describe('stat-first read avoidance (issue #1620)', () => {
+    test('does not re-read the file when it has not grown', async () => {
+      const path = join(dir, 'transcript.jsonl');
+      writeJsonl(path, [
+        { type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 100, output_tokens: 50 } } },
+      ]);
+
+      tracker.register(path, 'task-1');
+      await tracker.scanAll();
+
+      // First scan parsed the file exactly once.
+      expect(tracker.readCount).toBe(1);
+      const charsAfterFirst = tracker.cumulativeReadChars;
+      expect(charsAfterFirst).toBeGreaterThan(0);
+
+      // Several no-growth ticks must NOT read the file again — this is the
+      // allocation-churn fix. Before the stat-first guard, every tick did a
+      // full readFile of the whole (potentially multi-MB) transcript.
+      await tracker.scanAll();
+      await tracker.scanAll();
+      await tracker.scanAll();
+
+      expect(tracker.readCount).toBe(1);
+      expect(tracker.cumulativeReadChars).toBe(charsAfterFirst);
+      // Accounting is unchanged by the skipped reads.
+      expect(tracker.getUsage('task-1')!.inputTokens).toBe(100);
+    });
+
+    test('reads exactly once more per append, and only the new bytes', async () => {
+      const path = join(dir, 'transcript.jsonl');
+      writeJsonl(path, [
+        { type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 100, output_tokens: 50 } } },
+      ]);
+      tracker.register(path, 'task-1');
+      await tracker.scanAll();
+      const charsAfterFirst = tracker.cumulativeReadChars;
+
+      // No-op tick — skipped.
+      await tracker.scanAll();
+      expect(tracker.readCount).toBe(1);
+
+      const appendedEntry = { type: 'assistant', message: { model: 'claude-fable-5', usage: { input_tokens: 200, output_tokens: 100 } } };
+      appendJsonl(path, [appendedEntry]);
+
+      await tracker.scanAll();
+      expect(tracker.readCount).toBe(2);
+      // The incremental read decoded only the appended line, not the whole file.
+      const appendedChars = tracker.cumulativeReadChars - charsAfterFirst;
+      const appendedText = JSON.stringify(appendedEntry) + '\n';
+      expect(appendedChars).toBe(appendedText.length);
+      expect(tracker.getUsage('task-1')!.inputTokens).toBe(300);
+    });
+
+    test('incremental byte-offset reads stay correct across multi-byte UTF-8 appends', async () => {
+      // The offset is tracked in bytes; a naive char-index seek would drift on
+      // any non-ASCII content and split a line or a multi-byte character.
+      const path = join(dir, 'transcript.jsonl');
+      writeJsonl(path, [
+        { type: 'assistant', note: 'em — dash 🚀', message: { model: 'claude-opus-4-8', usage: { input_tokens: 10, output_tokens: 5 } } },
+      ]);
+      tracker.register(path, 'task-1');
+      await tracker.scanAll();
+      expect(tracker.getUsage('task-1')!.inputTokens).toBe(10);
+
+      // Append two more lines, each carrying multi-byte characters, in two ticks.
+      // Assert the cumulativeReadChars DELTA equals exactly the appended line's
+      // length: a char-unit (rather than byte-unit) offset would seek a few
+      // bytes early, re-reading part of the previous line — the unparseable
+      // fragment leaves TOTALS correct (silently skipped JSON), so only the
+      // read-delta catches the drift.
+      const line2 = { type: 'assistant', note: 'smart "quote" ✅', message: { model: 'claude-opus-4-8', usage: { input_tokens: 20, output_tokens: 7 } } };
+      const before2 = tracker.cumulativeReadChars;
+      appendJsonl(path, [line2]);
+      await tracker.scanAll();
+      expect(tracker.getUsage('task-1')!.inputTokens).toBe(30);
+      expect(tracker.cumulativeReadChars - before2).toBe((JSON.stringify(line2) + '\n').length);
+
+      const line3 = { type: 'assistant', note: 'accents éàü and emoji 🎉🔥', message: { model: 'claude-opus-4-8', usage: { input_tokens: 33, output_tokens: 3 } } };
+      const before3 = tracker.cumulativeReadChars;
+      appendJsonl(path, [line3]);
+      await tracker.scanAll();
+      const usage = tracker.getUsage('task-1')!;
+      expect(usage.inputTokens).toBe(63);
+      expect(usage.outputTokens).toBe(15);
+      expect(tracker.cumulativeReadChars - before3).toBe((JSON.stringify(line3) + '\n').length);
+    });
+
+    test('rotation to a smaller file re-parses from scratch without double-counting', async () => {
+      // A transcript replaced in place by a shorter, different file (rotation)
+      // must reconstruct totals from the NEW content only — not add the new
+      // file's usage on top of the pre-rotation totals.
+      const path = join(dir, 'transcript.jsonl');
+      writeJsonl(path, [
+        { type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 1000, output_tokens: 100 } } },
+        { type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 2000, output_tokens: 200 } } },
+      ]);
+      tracker.register(path, 'task-1');
+      await tracker.scanAll();
+      expect(tracker.getUsage('task-1')!.inputTokens).toBe(3000);
+
+      // Replace with a shorter file (size < prior byteOffset) carrying different usage.
+      writeJsonl(path, [
+        { type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 10, output_tokens: 5 } } },
+      ]);
+      await tracker.scanAll();
+
+      const usage = tracker.getUsage('task-1')!;
+      expect(usage.inputTokens).toBe(10);
+      expect(usage.outputTokens).toBe(5);
+    });
+
+    test('defers a mid-write partial line until it is newline-terminated', async () => {
+      const path = join(dir, 'transcript.jsonl');
+      writeJsonl(path, [
+        { type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 100, output_tokens: 50 } } },
+      ]);
+      tracker.register(path, 'task-1');
+      await tracker.scanAll();
+
+      // A partial line with no trailing newline (writer mid-append).
+      const full = { type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 200, output_tokens: 20 } } };
+      const line = JSON.stringify(full);
+      appendFileSync(path, line.slice(0, line.length - 10), 'utf-8');
+      await tracker.scanAll();
+      // Partial line must not be counted yet.
+      expect(tracker.getUsage('task-1')!.inputTokens).toBe(100);
+
+      // Complete the line + newline; now it lands.
+      appendFileSync(path, line.slice(line.length - 10) + '\n', 'utf-8');
+      await tracker.scanAll();
+      expect(tracker.getUsage('task-1')!.inputTokens).toBe(300);
+    });
+  });
+
+  describe('unregisterTask (terminal cleanup, issue #1620 change d)', () => {
+    test('removes every transcript for a task, including subagent transcripts', async () => {
+      const parentPath = join(dir, 'parent.jsonl');
+      const subagentPath = join(dir, 'subagent-sidechain.jsonl');
+      writeJsonl(parentPath, [
+        { type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 1000, output_tokens: 100 } } },
+      ]);
+      writeJsonl(subagentPath, [
+        { type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 2000, output_tokens: 200 } } },
+      ]);
+
+      // Both the parent session transcript and a subagent (sidechain) transcript
+      // are registered under the same parent task id.
+      tracker.register(parentPath, 'task-1');
+      tracker.register(subagentPath, 'task-1');
+      await tracker.scanAll();
+      expect(tracker.getUsage('task-1')!.inputTokens).toBe(3000);
+
+      tracker.unregisterTask('task-1');
+
+      expect(tracker.getUsage('task-1')).toBeUndefined();
+      expect(tracker.getTrackedTaskIds()).toEqual([]);
+      // A follow-up scan must not resurrect or re-read the dropped transcripts.
+      const readsBefore = tracker.readCount;
+      await tracker.scanAll();
+      expect(tracker.readCount).toBe(readsBefore);
+    });
+
+    test('is a no-op for an unknown task id', () => {
+      expect(() => tracker.unregisterTask('nonexistent')).not.toThrow();
+    });
+  });
+
   describe('multi-session aggregation', () => {
     test('aggregates across multiple sessions for same task', async () => {
       const path1 = join(dir, 'session1.jsonl');
