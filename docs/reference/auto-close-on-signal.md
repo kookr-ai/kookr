@@ -41,8 +41,12 @@ and then hang for hours in the post-merge tail: the branch-delete push triggers
 the heavy pre-push gate, CI-rerun loops run unbounded, or the agent waits on
 input nobody will give. These tasks had `autoCloseOnSignal` but never raised a
 `completion_ready` signal, so nothing closed them until the hung-task reaper
-eventually recorded `terminated` — masking a successful delivery as failure
-(umbrella #1545; prod tasks faf7902b / 3a7039c5).
+eventually recorded `terminated` — which masked a successful delivery as failure
+(umbrella #1545; prod tasks faf7902b / 3a7039c5). The reaper no longer masks
+delivery: when it does fire on a delivered-but-hung task it now records the
+disposition outcome `delivered_then_hung` instead of a plain `terminated`
+(issue #1559). This liveness-tick path is the primary fix; the reaper stays the
+hours-later backstop.
 
 The liveness tick now closes that gap. For a running task that **opted into
 `autoCloseOnSignal`**, whose **own PR is merged**, and which has **not** raised a

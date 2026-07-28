@@ -325,6 +325,53 @@ describe('snapshot projection', () => {
     expect(pendingEntry?.operatorNeeded).toBeUndefined();
   });
 
+  it('projects reapOutcome from a delivered_then_hung disposition, and omits it for a plain terminate (issue #1559)', () => {
+    const taskStore = new TaskStore();
+
+    const delivered = createTaskForMutation(taskStore, { prompt: 'Delivered then hung', cwd: '/workspace/app' });
+    taskStore.addSession(delivered.id, {
+      tmuxSession: 'agent-delivered',
+      agentType: 'claude-code',
+      cwd: '/workspace/app',
+      createdAt: new Date('2026-07-25T17:43:00Z'),
+    });
+    taskStore.terminateTask(delivered.id);
+    taskStore.setDisposition(delivered.id, {
+      reason: 'hung_reap',
+      at: '2026-07-25T21:13:18.000Z',
+      source: 'hung-task-reaper',
+      outcome: 'delivered_then_hung',
+      deliveredPr: { number: 1542, url: 'https://github.com/kookr-ai/kookr/pull/1542' },
+    });
+
+    const plain = createTaskForMutation(taskStore, { prompt: 'Plain hung reap', cwd: '/workspace/app' });
+    taskStore.addSession(plain.id, {
+      tmuxSession: 'agent-plain',
+      agentType: 'claude-code',
+      cwd: '/workspace/app',
+      createdAt: new Date('2026-07-25T17:43:00Z'),
+    });
+    taskStore.terminateTask(plain.id);
+    taskStore.setDisposition(plain.id, {
+      reason: 'hung_reap',
+      at: '2026-07-25T21:13:18.000Z',
+      source: 'hung-task-reaper',
+      outcome: 'terminated',
+    });
+
+    const snapshot = project(taskStore);
+
+    // The delivered-then-hung reap surfaces the outcome the dashboard reads.
+    const deliveredEntry = snapshot.find((s) => s.taskId === delivered.id);
+    expect(deliveredEntry?.taskStatus).toBe('terminated');
+    expect(deliveredEntry?.reapOutcome).toBe('delivered_then_hung');
+
+    // A plain terminate carries outcome `terminated` — no distinct dashboard badge.
+    const plainEntry = snapshot.find((s) => s.taskId === plain.id);
+    expect(plainEntry?.taskStatus).toBe('terminated');
+    expect(plainEntry?.reapOutcome).toBe('terminated');
+  });
+
   it('replaces terminal live sessions with clean synthetic terminal entries', () => {
     const taskStore = new TaskStore();
     const task = createTaskForMutation(taskStore, 'Run database migration', '/workspace/app');

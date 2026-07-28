@@ -1,7 +1,49 @@
 import type { Task } from './task-read-model.js';
+import type { MergedPrAttribution } from './delivered-task-completion.js';
+import type { TaskDisposition, TaskReapOutcome } from '../shared/contracts/task.js';
 
 /** Default silence threshold (issue #1526 Phase A / FM6): 3 hours. */
 export const DEFAULT_HUNG_TASK_REAP_MS = 180 * 60 * 1000;
+
+/**
+ * Classify a hung-task reap outcome (issue #1559) from its delivery attribution.
+ *
+ * `delivered_then_hung` iff the task has an attributable merged PR — the same
+ * attribution the delivered-completion sweep reads (#1560,
+ * `selectDeliveredMergedPr` over `GitHubStateStore`). Otherwise `terminated`,
+ * so a reaped task that produced nothing never falsely reads as delivered.
+ */
+export function classifyReapOutcome(merged: MergedPrAttribution | null | undefined): TaskReapOutcome {
+  return merged ? 'delivered_then_hung' : 'terminated';
+}
+
+/**
+ * Build the disposition entry the hung-task reaper writes (issue #1559),
+ * reusing the shared {@link TaskDisposition} schema (#1588/#1540) — one
+ * mechanism, no parallel ledger. Carries the reap `outcome` and, on delivery,
+ * the attributable merged PR so the API and dashboard can surface
+ * `delivered_then_hung` distinctly from a plain `terminated`.
+ */
+export function buildReapDisposition(
+  merged: MergedPrAttribution | null | undefined,
+  at: string,
+): TaskDisposition {
+  const outcome = classifyReapOutcome(merged);
+  const disposition: TaskDisposition = {
+    reason: 'hung_reap',
+    at,
+    source: 'hung-task-reaper',
+    outcome,
+  };
+  if (merged) {
+    disposition.deliveredPr = {
+      number: merged.prNumber,
+      ...(merged.prUrl ? { url: merged.prUrl } : {}),
+    };
+    disposition.detail = `Delivered PR #${merged.prNumber} before hanging; reaped after prolonged silence.`;
+  }
+  return disposition;
+}
 
 /** Raw liveness timestamps for a single agent session (ms since epoch, 0 = never recorded). */
 export interface HungTaskLivenessEvidence {
