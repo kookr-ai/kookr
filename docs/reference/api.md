@@ -131,7 +131,9 @@ fields a list needs — `id`/`taskId`, `name`, `status`, `cwd`, `agentType`,
 `unattended`, `operatorNeeded`, `tokenUsage` (plus `aggregateTokenUsage` on parents),
 `pendingSignal`, `issueClaim`, `ralphLoop`, the `createdAt`/`updatedAt`/
 `finishedAt`/`terminatedAt` timeline, a `disposition` record on a task pruned
-before its first session (issue #1588), a `suppressed` flag when applicable, and a
+before its first session (issue #1588) or reaped while hung (issue #1559 — a
+`hung_reap` disposition whose `outcome` is `delivered_then_hung` when the reaped
+task had already merged its PR), a `suppressed` flag when applicable, and a
 trimmed `sessions[]` stub (`tmuxSession`, `agentType`, `lastStatus`,
 `lastTurnState`, `worktreeHealth`, `lastEventAt`, `crashRecovered`,
 `relaunchCount`) — and **omits** the heavy bodies: `prompt`, `userPrompt`,

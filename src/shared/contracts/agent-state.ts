@@ -14,6 +14,7 @@ import type {
   TaskLaunchHealthSummary,
   TaskLaunchPermissionPosture,
   TaskPriority,
+  TaskReapOutcome,
 } from './task.js';
 import type { TaskStatus, TurnState } from './task-status.js';
 import type { TaskRelationRollup } from './task-relations.js';
@@ -121,6 +122,13 @@ export interface AgentState {
    * no interactive call has been denied.
    */
   operatorNeeded?: OperatorNeeded;
+  /**
+   * Reap outcome projected from the task's disposition (issue #1559). Present
+   * only on a reaped `terminated` entry; `delivered_then_hung` when the reaper
+   * found an attributable merged PR, so the dashboard renders it distinctly
+   * from a plain `terminated` instead of masking the delivery as failure.
+   */
+  reapOutcome?: TaskReapOutcome;
   /**
    * Why an `inProgress` task is occupying a capacity slot without visible work
    * (issue #1526 Phase B / FM9) — awaiting the user's completion ack,
