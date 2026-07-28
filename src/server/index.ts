@@ -36,6 +36,7 @@ import {
 } from './startup-recovery.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
 import { createSnapshotMessage, getSnapshotAgentsForClient } from './use-cases/get-snapshot.js';
+import { collectBootTranscriptRegistrations } from './boot-transcript-registration.js';
 import { sweepReflectWorktrees } from './use-cases/request-task-reflect.js';
 import { startBackgroundServices } from './bootstrap/start-background-services.js';
 import {
@@ -801,13 +802,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
   realtime.setCoordinatorAuditTailProvider(hookIngestion);
 
-  // Register transcripts for resumed sessions so token tracker picks up existing data
-  for (const task of taskStore.getAllTasks()) {
-    for (const session of task.sessions) {
-      if (session.transcriptPath) {
-        tokenTracker.register(session.transcriptPath, task.id);
-      }
-    }
+  // Register transcripts for resumed sessions so token tracker picks up existing
+  // data. Filtered to non-terminal Claude Code sessions (issue #1620, change a):
+  // terminal tasks never grow again, and non-Claude rollout files are metered
+  // elsewhere — registering them was the dominant RSS allocation-churn driver.
+  for (const { transcriptPath, taskId } of collectBootTranscriptRegistrations(taskStore.getAllTasks())) {
+    tokenTracker.register(transcriptPath, taskId);
   }
 
   // Late-bound R16 block-alert callback. The Telegram integration is started
