@@ -5,6 +5,7 @@ import type { AgentSelection } from './agent-types.js';
 import { DEFAULT_AGENT_TYPE, normalizeAgentSelection } from './agent-types.js';
 import { isValidCron, nextRun, describeCron } from './cron.js';
 import type { PlaybookScope } from './playbook.js';
+import type { TokenUsage } from './usage-types.js';
 
 export interface SchedulePlaybook {
   path: string;
@@ -102,6 +103,20 @@ export interface ScheduleExecutionLedgerEntry {
   outcome: ScheduleExecutionOutcome;
   reasonCode?: ScheduleExecutionReasonCode;
   message?: string;
+  /**
+   * Cost/token closeout joined from the fire's task at ledger-write time
+   * (issue #1582), so schedule ROI is readable straight off the ledger.
+   * Absent when the task carried no `tokenUsage` (e.g. `dispatch_failed`, or a
+   * task whose transcript never yielded usage) — never a fabricated zero, so a
+   * missing field means "not measured", not "$0 spent".
+   */
+  tokenUsage?: TokenUsage;
+  /**
+   * Links to artifacts the fire produced — PR URLs today, extensible to issue
+   * URLs / receipt paths — joined from the task's completion digest at
+   * ledger-write time (issue #1582). Absent/empty when the task recorded none.
+   */
+  artifacts?: string[];
 }
 
 export interface ScheduleExecutionReceipt {
@@ -537,6 +552,11 @@ function normalizeExecutionLedgerEntry(raw: unknown): ScheduleExecutionLedgerEnt
   ) {
     return undefined;
   }
+  // Optional enrichment (issue #1582). Legacy ledgers predate these fields, so
+  // both must load cleanly when absent and be dropped rather than trusted when
+  // malformed — no migration, no fabricated cost.
+  const tokenUsage = normalizeLedgerTokenUsage(candidate.tokenUsage);
+  const artifacts = normalizeLedgerArtifacts(candidate.artifacts);
   return {
     id: String(candidate.id),
     scheduleId: String(candidate.scheduleId),
@@ -552,7 +572,50 @@ function normalizeExecutionLedgerEntry(raw: unknown): ScheduleExecutionLedgerEnt
     ...(candidate.blockingTaskId ? { blockingTaskId: candidate.blockingTaskId } : {}),
     ...(candidate.reasonCode ? { reasonCode: candidate.reasonCode } : {}),
     ...(candidate.message ? { message: candidate.message } : {}),
+    ...(tokenUsage ? { tokenUsage } : {}),
+    ...(artifacts ? { artifacts } : {}),
   };
+}
+
+/**
+ * Coerce a persisted ledger `tokenUsage` blob (issue #1582). Returns undefined
+ * unless every required numeric field is present and numeric — a partial or
+ * malformed record is dropped, never patched with zeros that would read as a
+ * measured $0 cost.
+ */
+function normalizeLedgerTokenUsage(raw: unknown): TokenUsage | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const c = raw as Partial<TokenUsage>;
+  if (
+    typeof c.inputTokens !== 'number'
+    || typeof c.outputTokens !== 'number'
+    || typeof c.cacheReadTokens !== 'number'
+    || typeof c.cacheWriteTokens !== 'number'
+    || typeof c.costUsd !== 'number'
+  ) {
+    return undefined;
+  }
+  return {
+    inputTokens: c.inputTokens,
+    outputTokens: c.outputTokens,
+    cacheReadTokens: c.cacheReadTokens,
+    cacheWriteTokens: c.cacheWriteTokens,
+    costUsd: c.costUsd,
+    ...(c.provider === 'openai' || c.provider === 'anthropic' ? { provider: c.provider } : {}),
+    ...(typeof c.model === 'string' ? { model: c.model } : {}),
+    ...(c.pricingQuality === 'exact' || c.pricingQuality === 'fallback' ? { pricingQuality: c.pricingQuality } : {}),
+  };
+}
+
+/**
+ * Coerce a persisted ledger `artifacts` list (issue #1582). Keeps only
+ * non-empty strings; returns undefined when nothing survives so the field
+ * stays absent rather than an empty array.
+ */
+function normalizeLedgerArtifacts(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const artifacts = raw.filter((v): v is string => typeof v === 'string' && v.length > 0);
+  return artifacts.length > 0 ? artifacts : undefined;
 }
 
 function normalizeLatestExecution(raw: unknown): ScheduleLatestExecutionStatus | undefined {

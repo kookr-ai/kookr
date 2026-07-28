@@ -15,18 +15,61 @@ import {
   ScheduleStore,
   ScheduleValidationError,
 } from '../core/schedule.js';
+import type { TokenUsage } from '../core/usage-types.js';
 import { ScheduleValidator, validateCron } from './schedule-validator.js';
+
+/**
+ * Cost/tokens + artifact links joined onto a ledger row from its task at
+ * write time (issue #1582). Both fields are optional and only ever populated
+ * from real task state — a task with no `tokenUsage` yields no `tokenUsage`
+ * here (no fabricated zero) and a task with no recorded artifacts yields no
+ * `artifacts`.
+ */
+export interface ScheduleLedgerEnrichment {
+  tokenUsage?: TokenUsage;
+  artifacts?: string[];
+}
+
+/** Minimal task shape the ledger join reads — decouples the service from the full task model. */
+export interface LedgerEnrichmentTaskLike {
+  tokenUsage?: TokenUsage;
+  completionDigest?: { prUrls?: string[] };
+}
+
+/**
+ * Derive a fire's ledger enrichment from its task (issue #1582). Pure: cost
+ * comes from `task.tokenUsage` verbatim (absent when the task never measured
+ * usage), artifact links come from the completion digest's PR URLs. Returns an
+ * empty object for an absent task so callers can spread it unconditionally.
+ */
+export function deriveLedgerEnrichment(task: LedgerEnrichmentTaskLike | undefined): ScheduleLedgerEnrichment {
+  if (!task) return {};
+  const enrichment: ScheduleLedgerEnrichment = {};
+  if (task.tokenUsage) enrichment.tokenUsage = task.tokenUsage;
+  const artifacts = (task.completionDigest?.prUrls ?? []).filter((url) => typeof url === 'string' && url.length > 0);
+  if (artifacts.length > 0) enrichment.artifacts = [...artifacts];
+  return enrichment;
+}
 
 export interface ScheduleServiceDeps {
   store: ScheduleStore;
   validator: ScheduleValidator;
   broadcast?: (payload: ScheduleListResponse) => void;
+  /**
+   * Joins a fire's `taskId` to its cost/artifact enrichment at ledger-write
+   * time (issue #1582). Optional: when absent, ledger rows write exactly as
+   * before with no cost/artifacts. Kept as a narrow lookup rather than a full
+   * `TaskStore` handle so the service stays decoupled and the join is trivially
+   * stubbed in tests.
+   */
+  resolveLedgerEnrichment?: (taskId: string) => ScheduleLedgerEnrichment | undefined;
 }
 
 export class ScheduleService {
   private readonly store: ScheduleStore;
   private readonly validator: ScheduleValidator;
   private readonly broadcast?: (payload: ScheduleListResponse) => void;
+  private readonly resolveLedgerEnrichment?: (taskId: string) => ScheduleLedgerEnrichment | undefined;
   private runnerStartedAt?: string;
   private lastTickCompletedAt?: string;
   private lastError?: string;
@@ -37,6 +80,7 @@ export class ScheduleService {
     this.store = deps.store;
     this.validator = deps.validator;
     this.broadcast = deps.broadcast;
+    this.resolveLedgerEnrichment = deps.resolveLedgerEnrichment;
   }
 
   listResponse(): ScheduleListResponse {
@@ -363,6 +407,10 @@ export class ScheduleService {
     const currentReceipt = schedule.currentExecution;
     if (currentReceipt?.taskId && currentReceipt.taskId !== taskId) return;
 
+    // Join cost/artifacts onto the row at write time (issue #1582). A null
+    // resolver or a task with no measured usage leaves the fields absent.
+    const enrichment = this.resolveLedgerEnrichment?.(taskId) ?? {};
+
     this.store.replace({
       ...schedule,
       lastRunAt: new Date().toISOString(),
@@ -377,6 +425,8 @@ export class ScheduleService {
         outcome: status,
         reasonCode: 'none',
         completedAt: new Date().toISOString(),
+        ...(enrichment.tokenUsage ? { tokenUsage: enrichment.tokenUsage } : {}),
+        ...(enrichment.artifacts ? { artifacts: enrichment.artifacts } : {}),
       }),
       ...(currentReceipt ? {
         currentExecution: {
@@ -488,6 +538,9 @@ export class ScheduleService {
         // schedule's perspective. Map it to the 'completed' outcome so the
         // schedule unblocks for the next cron firing.
         const scheduleOutcome = task.status === 'terminated' ? 'completed' : task.status;
+        // Enrich the reconciled-completion row too (issue #1582) — the task is
+        // already in hand here, so join its cost/artifacts directly.
+        const enrichment = deriveLedgerEnrichment(task);
         this.store.replace({
           ...schedule,
           lastRunAt: task.updatedAt.toISOString(),
@@ -502,6 +555,8 @@ export class ScheduleService {
             outcome: scheduleOutcome,
             reasonCode: 'reconciled_after_restart',
             completedAt: task.updatedAt.toISOString(),
+            ...(enrichment.tokenUsage ? { tokenUsage: enrichment.tokenUsage } : {}),
+            ...(enrichment.artifacts ? { artifacts: enrichment.artifacts } : {}),
           }),
           ...(schedule.currentExecution ? {
             currentExecution: {
@@ -624,7 +679,7 @@ function ledgerEntryFromReceipt(
 function updateLedgerEntryForTask(
   ledger: ScheduleExecutionLedgerEntry[],
   taskId: string,
-  patch: Pick<ScheduleExecutionLedgerEntry, 'outcome' | 'reasonCode' | 'completedAt'> & Partial<Pick<ScheduleExecutionLedgerEntry, 'message'>>,
+  patch: Pick<ScheduleExecutionLedgerEntry, 'outcome' | 'reasonCode' | 'completedAt'> & Partial<Pick<ScheduleExecutionLedgerEntry, 'message' | 'tokenUsage' | 'artifacts'>>,
 ): ScheduleExecutionLedgerEntry[] {
   let updated = false;
   const next = ledger.map((entry) => {
