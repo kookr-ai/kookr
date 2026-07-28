@@ -160,6 +160,19 @@ export const CODEX_AGENT_BIN_ENV = 'KOOKR_CODEX_BIN';
  *   SessionStart so Kookr can distinguish legacy mode from real capability.
  * - Extra fields: turn_id, model, permission_mode (ignored by our parser)
  * - Hook config injected via --settings flag (same format as Claude Code)
+ *
+ * Unattended interactive-tool denial (issue #1562): NOT YET IMPLEMENTED here.
+ * The Claude Code adapter injects `permissions.deny` for interactive tools on
+ * `task.unattended` spawns (see `generateSettings` +
+ * `buildAgentLaunchContext.permissionDenylist`). Because Codex consumes the
+ * same `--settings` format, the equivalent is to plumb the same
+ * `permissionDenylist` into whatever config this adapter writes and deny the
+ * Codex interactive-prompt tool once its exact tool name is confirmed. The
+ * server-side operator-needed flag (interactive-deny-processor) is
+ * adapter-agnostic in mechanism, but only matches tool names listed in
+ * `INTERACTIVE_TOOL_NAMES` (`operator-needed.ts`) — currently just Claude's
+ * `AskUserQuestion`. To cover Codex, add its interactive-prompt tool name to
+ * that single-source list alongside implementing the deny above.
  */
 export class CodexCliAdapter implements AgentAdapter {
   readonly agentType = 'codex-cli';

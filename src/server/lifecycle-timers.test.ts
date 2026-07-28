@@ -1119,6 +1119,56 @@ describe('startLifecycleTimers watchdog-tick re-entrancy guard (issue #1526 Phas
   });
 });
 
+describe('startLifecycleTimers token-scan-tick re-entrancy guard (issue #1620 change c)', () => {
+  test('a slow in-flight token scan blocks the next tick from starting a second scan', async () => {
+    vi.useFakeTimers();
+    const taskStore = new TaskStore();
+    // scanGrowth never resolves within this test — simulates a full-corpus
+    // scan still mid-flight (awaiting disk I/O) when the next 5s interval fires.
+    const scanGrowth = vi.fn(() => new Promise<[]>(() => {}));
+    const scanAll = vi.fn(async () => undefined);
+    const deps: TimerDeps = {
+      monitor: {
+        getSnapshot: () => [],
+        getAgentEvents: () => [],
+        applyWatchdogVerdict: vi.fn(() => false),
+        sampleFindingEvidence: vi.fn(() => false),
+        getCurrentAnomaly: vi.fn(),
+      } as any,
+      taskStore,
+      queue: new AttentionQueue(),
+      adapter: { captureDisplay: vi.fn(async () => ''), stop: vi.fn(async () => undefined) } as any,
+      adapterRegistry: {} as any,
+      tokenTracker: {
+        scanGrowth,
+        scanAll,
+        getTrackedTaskIds: vi.fn(() => []),
+        getUsage: vi.fn(() => undefined),
+      } as any,
+      watchdog: { getTrackedAgents: vi.fn(() => []), recordTokenActivity: vi.fn(), tick: vi.fn() } as any,
+      hookWatcher: { drainNow: vi.fn(async () => undefined) } as any,
+      terminalBackend: { listSessions: vi.fn(async () => []) } as any,
+      hooksDir: '/tmp/hooks',
+      tasksFile: '/tmp/tasks.json',
+      serverCwd: '/tmp/repo',
+      saveIntervalMs: 600_000,
+      livenessIntervalMs: 600_000,
+      broadcastToAll: vi.fn(),
+    };
+
+    const handles = startLifecycleTimers(deps);
+    try {
+      // Two 5s interval periods elapse while scanGrowth is still pending —
+      // without the guard, a second scanGrowth would fire on the next tick.
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(scanGrowth).toHaveBeenCalledTimes(1);
+      expect(scanAll).not.toHaveBeenCalled();
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+});
+
 describe('startLifecycleTimers user input delivery retry sweep', () => {
   test('runs the sweep on watchdog cadence and broadcasts when it nudges input', async () => {
     vi.useFakeTimers();

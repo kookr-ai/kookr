@@ -70,6 +70,14 @@ export interface AgentState {
   completionDigest?: CompletionDigest;
   completionFeedback?: import('./tasks.js').TaskCompletionFeedback;
   ralphLoop?: import('./tasks.js').RalphLoopState;
+  /** True when the task was launched unattended/autonomous (issue #1562). */
+  unattended?: boolean;
+  /**
+   * Operator-needed marker (issue #1562): set when an unattended agent's
+   * interactive-tool call was denied. Projected from the task record so the
+   * dashboard can surface the block instead of an open-ended hang.
+   */
+  operatorNeeded?: import('../shared/contracts/operator-needed.js').OperatorNeeded;
   /** Activity-panel disclosure counters; populated at snapshot time from
    *  {@link HookIngestion}. See rfc-activity-log-reliability §9. */
   activityMeta?: AgentActivityMeta;

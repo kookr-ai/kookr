@@ -213,7 +213,16 @@ export interface LifecycleDeps {
   hookWatcher?: { stop(tmuxName: string): void };
   watchdog?: { unregisterAgent(agentId: string): void };
   shadowRegistry?: { unregisterAgent(agentId: string): void };
-  tokenTracker?: { unregister(transcriptPath: string): void };
+  tokenTracker?: {
+    unregister(transcriptPath: string): void;
+    /**
+     * Drop every transcript for a task on terminal transition (issue #1620,
+     * change d). Covers subagent (sidechain) transcripts registered under the
+     * parent task id, which the per-session {@link unregister} path never
+     * reached — leaving them re-scanned every 5s for the process lifetime.
+     */
+    unregisterTask?(taskId: string): void;
+  };
   suppressionTracker?: { reset(agentId: string): void };
   /** Optional queue — used to clear task-keyed snoozes on terminal transitions. */
   queue?: Pick<AttentionQueue, 'purgeTask'>;
@@ -343,6 +352,10 @@ async function stopAllLiveSessions(
       deps.taskStore.updateSession(task.id, session.tmuxSession, { lastStatus: finalSessionStatus });
     }
   }
+  // The task is now terminal: drop any remaining transcripts for it — notably
+  // subagent (sidechain) transcripts, which per-session unregister never
+  // touched (issue #1620, change d).
+  deps.tokenTracker?.unregisterTask?.(task.id);
 }
 
 function completeLiveSessionsInBackground(task: Task, deps: LifecycleDeps): void {
@@ -362,6 +375,9 @@ function completeLiveSessionsInBackground(task: Task, deps: LifecycleDeps): void
       });
     }
   }
+  // Terminal transition: drop remaining transcripts (incl. subagent sidechains)
+  // so they stop being re-scanned every 5s (issue #1620, change d).
+  deps.tokenTracker?.unregisterTask?.(task.id);
 }
 
 /**

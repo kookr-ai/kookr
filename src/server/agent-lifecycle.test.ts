@@ -890,6 +890,53 @@ describe('terminateTask', () => {
 
     expect(onTaskOutcome).toHaveBeenCalledWith('task-99', { kind: 'failed' });
   });
+
+  test('unregisters all token-tracker transcripts for the task (issue #1620 change d)', async () => {
+    const task = lifecycleTask({
+      id: 'task-99',
+      status: 'inProgress',
+      sessions: [{ tmuxSession: 'kookr-s1', lastStatus: 'inProgress' }] as any,
+    });
+    const unregisterTask = vi.fn();
+    const deps = makeLifecycleDeps({ tokenTracker: { unregister: vi.fn(), unregisterTask } });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await terminateTask('task-99', deps);
+
+    expect(unregisterTask).toHaveBeenCalledWith('task-99');
+  });
+});
+
+describe('terminal transitions unregister token transcripts (issue #1620 change d)', () => {
+  test('cancelTask drops every transcript for the task (incl. subagent sidechains)', async () => {
+    const task = lifecycleTask({
+      id: 'task-77',
+      status: 'inProgress',
+      sessions: [{ tmuxSession: 'kookr-s1', lastStatus: 'inProgress' }] as any,
+    });
+    const unregisterTask = vi.fn();
+    const deps = makeLifecycleDeps({ tokenTracker: { unregister: vi.fn(), unregisterTask } });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await cancelTask('task-77', deps);
+
+    expect(unregisterTask).toHaveBeenCalledWith('task-77');
+  });
+
+  test('completeTask drops every transcript for the task', async () => {
+    const task = lifecycleTask({
+      id: 'task-88',
+      status: 'inProgress',
+      sessions: [{ tmuxSession: 'kookr-s1', lastStatus: 'inProgress' }] as any,
+    });
+    const unregisterTask = vi.fn();
+    const deps = makeLifecycleDeps({ tokenTracker: { unregister: vi.fn(), unregisterTask } });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await completeTask('task-88', deps);
+
+    expect(unregisterTask).toHaveBeenCalledWith('task-88');
+  });
 });
 
 // ---------------------------------------------------------------------------

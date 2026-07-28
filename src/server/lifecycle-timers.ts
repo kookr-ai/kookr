@@ -767,7 +767,16 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   // (multi-frame rendering, cursor changes, scrolling output).
 
   // --- Periodic token usage scan ---
+  //
+  // Re-entrancy guard (issue #1620, change c — same pattern as the watchdog and
+  // liveness ticks below): under load a scan can still be awaiting scanGrowth /
+  // scanAll disk I/O when the next 5s interval fires. Without this guard,
+  // overlapping ticks stack concurrent full-corpus reads on the same
+  // transcripts, compounding the very allocation churn this issue bounds.
+  let tokenScanTickRunning = false;
   const tokenScanInterval = setInterval(async () => {
+    if (tokenScanTickRunning) return;
+    tokenScanTickRunning = true;
     try {
       // Freshness probe: ask which transcripts grew on disk since the last
       // scanAll. Used to keep the watchdog from minting stale_agent during a
@@ -834,6 +843,8 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       }
     } catch (err) {
       console.error('Error scanning token usage:', err);
+    } finally {
+      tokenScanTickRunning = false;
     }
   }, 5_000);
 

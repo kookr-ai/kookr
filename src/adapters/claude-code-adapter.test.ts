@@ -476,6 +476,24 @@ describe('ClaudeCodeAdapter', () => {
     expect(spec.args).not.toContain('--setting-sources');
   });
 
+  // issue #1562: an unattended/autonomous spawn's injected settings hard-deny
+  // interactive tools so a blocking call fails fast instead of hanging.
+  test('launch injects interactive-tool deny rules for unattended tasks', async () => {
+    const task = taskStore.createTask({ prompt: 'Autonomous work', cwd: '/cwd', unattended: true });
+    const sessionId = await adapter.launch(task.id, 'Autonomous work', '/cwd');
+    const settings = adapter.getGeneratedSettings(sessionId);
+    expect(settings?.permissions?.deny).toEqual(['AskUserQuestion']);
+  });
+
+  test('launch does NOT inject deny rules for attended tasks', async () => {
+    const task = taskStore.createTask({ prompt: 'Interactive work', cwd: '/cwd' });
+    const sessionId = await adapter.launch(task.id, 'Interactive work', '/cwd');
+    const settings = adapter.getGeneratedSettings(sessionId);
+    expect(settings?.permissions?.deny).toBeUndefined();
+    // The allowlist is still present — only the deny key is unattended-gated.
+    expect(settings?.permissions?.allow).toContain('Bash(git *)');
+  });
+
   test('launch includes --dangerously-skip-permissions when bypassAllPermissions is true', async () => {
     const bypassAdapter = new ClaudeCodeAdapter(backend, taskStore, {
       bypassAllPermissions: true,
