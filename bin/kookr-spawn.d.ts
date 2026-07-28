@@ -10,6 +10,8 @@ export const EXIT_NO_SERVER: 3;
 export const EXIT_SERVER_ERROR: 4;
 export const EXIT_DUPLICATE_BLOCKED: 5;
 export const EXIT_WAIT_TIMEOUT: 6;
+/** Bounded reconcile budget for an ambiguous create-POST outcome (#1573). */
+export const RECONCILE_MAX_ATTEMPTS: number;
 export const HELP_TEXT: string;
 
 export class UsageError extends Error {}
@@ -74,6 +76,7 @@ export interface PostTaskArgs {
   metadataIntent?: 'keep_as_duplicate' | null;
   parentTaskId?: string | null;
   autoCloseOnSignal?: boolean | null;
+  unattended?: boolean;
   idempotencyKey?: string | null;
 }
 
@@ -116,6 +119,27 @@ export type PostTaskResult =
   | { kind: 'duplicate'; task: TaskPayload }
   | { kind: 'server_error'; status: number; message: string; body?: BackpressureBody | null };
 
+/**
+ * Result of reconciling an ambiguous create-POST outcome (#1573). Success
+ * shapes mirror PostTaskResult but carry `reconciled: true`; `not_found` means
+ * the bounded budget was spent without confirming a task.
+ */
+export type ReconcileResult =
+  | { kind: 'created'; task: TaskPayload; queued: boolean; reconciled: true }
+  | { kind: 'duplicate'; task: TaskPayload; reconciled: true }
+  | { kind: 'server_error'; status: number; message: string; body?: BackpressureBody | null }
+  | { kind: 'not_found'; attempts: number; lastReason: string | null };
+
+export interface ReconcileSpawnArgs {
+  baseUrl: string;
+  postParams: PostTaskArgs;
+  prompt: string;
+  cwd: string;
+  sleep?: (ms: number) => Promise<void>;
+  maxAttempts?: number;
+  backoffMs?: number;
+}
+
 export type WaitResult =
   | { kind: 'completion_ready'; status: string | null; agent: Record<string, unknown> }
   | { kind: 'terminal'; status: string; agent: Record<string, unknown> }
@@ -140,11 +164,15 @@ export interface FormatSuccessArgs {
   task: TaskPayload;
   baseUrl: string;
   queued: boolean;
+  /** #1573: mark output as recovered via reconcile of an ambiguous create. */
+  reconciled?: boolean;
 }
 
 export interface FormatDedupArgs {
   task: TaskPayload;
   baseUrl: string;
+  /** #1573: mark the dedup line as recovered via reconcile of an ambiguous create. */
+  reconciled?: boolean;
 }
 
 export interface MainDeps {
@@ -171,6 +199,10 @@ export function probeHealth(baseUrl: string, timeoutMs: number): Promise<boolean
 export function resolveBaseUrl(deps: ResolveBaseUrlDeps): Promise<BaseUrlResolution>;
 export function resolveParentTaskId(inputs: ResolveParentTaskIdInputs): string | null;
 export function postTask(args: PostTaskArgs): Promise<PostTaskResult>;
+/** Reconcile an ambiguous create-POST outcome (timeout/5xx) with a bounded budget (#1573). */
+export function reconcileSpawn(args: ReconcileSpawnArgs): Promise<ReconcileResult>;
+/** Best-effort GET /api/tasks probe: newest non-terminal task matching prompt+cwd (#1573). */
+export function findReconcilableTask(args: { baseUrl: string; prompt: string; cwd: string }): Promise<TaskPayload | null>;
 export function classifyWaitState(agent: Record<string, unknown> | undefined | null): WaitState;
 export function waitForTaskReady(args: WaitForTaskReadyArgs): Promise<WaitResult>;
 export function formatWaitOutcome(result: WaitResult): string;

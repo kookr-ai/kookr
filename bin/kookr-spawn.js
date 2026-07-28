@@ -65,6 +65,15 @@ function isKnownModelId(model) {
 // src/shared/contracts/launch.ts.
 const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
 
+// #1573: bounded reconcile budget for an ambiguous create-POST outcome (a
+// client timeout or a server 5xx, where the task may or may not have been
+// created). Small and finite so a genuinely-down server surfaces a
+// deterministic "no task was created" instead of hanging or bailing to the
+// dashboard. Total worst-case added latency is bounded by
+// RECONCILE_MAX_ATTEMPTS × (POST_TIMEOUT_MS + linear backoff).
+const RECONCILE_MAX_ATTEMPTS = 4;
+const RECONCILE_BACKOFF_MS = 500;
+
 /** Truthy env parse for boolean opt-in flags (`1`/`true`/`yes`/`on`, case-insensitive). */
 function isTruthyEnv(value) {
   return /^(1|true|yes|on)$/i.test(String(value ?? '').trim());
@@ -682,6 +691,128 @@ async function fetchTasks(baseUrl) {
   return { kind: 'ok', tasks: json };
 }
 
+// ---------- reconcile (issue #1573) ----------
+
+/**
+ * Find the newest non-terminal task matching this spawn's prompt+cwd via
+ * GET /api/tasks. Best-effort reconcile probe (read-only, so it can never
+ * create a duplicate): returns the matching task, or null when the list can't
+ * be read or nothing matches. The default /api/tasks view carries the full
+ * task (including `prompt`/`cwd`/`status`/`createdAt`), which is what this
+ * match needs — see normalizeTaskForApi in src/server/routes/task-routes.ts.
+ *
+ * @param {{ baseUrl: string, prompt: string, cwd: string }} input
+ */
+async function findReconcilableTask({ baseUrl, prompt, cwd }) {
+  const res = await fetchTasks(baseUrl);
+  if (res.kind !== 'ok') return null;
+  let best = null;
+  let bestTs = -Infinity;
+  for (const task of res.tasks) {
+    if (task?.prompt !== prompt || task?.cwd !== cwd) continue;
+    if (typeof task?.status === 'string' && TERMINAL_TASK_STATUSES.has(task.status)) continue;
+    const ts = task?.createdAt ? new Date(task.createdAt).getTime() : 0;
+    if (Number.isFinite(ts) && ts >= bestTs) {
+      bestTs = ts;
+      best = task;
+    }
+  }
+  return best;
+}
+
+/**
+ * Reconcile an ambiguous create-POST outcome (#1573). On a client timeout or a
+ * server 5xx the task may or may not have been created; the old code bailed
+ * with "check the dashboard", pushing that ambiguity onto the caller. Instead,
+ * resolve it deterministically with a bounded retry budget, and — critically —
+ * only ever claim success when the outcome is *provably* this spawn's own task:
+ *
+ *   - `created` (a fresh 201, or an idempotency-key `idempotentReplay`) is
+ *     PROVABLE: a re-POST created the task now, or the server's key ledger
+ *     confirms an earlier attempt with *our* key created it. Returned as
+ *     `created` — the caller renders a normal success.
+ *   - `duplicate` (a prompt+cwd dedup hit, or a final GET /api/tasks match) is
+ *     AMBIGUOUS: a matching active task exists, but prompt+cwd is NOT proof
+ *     *this* spawn created it (a foreign task with the same prompt+cwd would
+ *     match too). Returned as `duplicate` for the caller to resolve per dedupe
+ *     mode (honor `--dedupe=block`; otherwise report the existing task, never
+ *     fabricate a "created").
+ *   - `--dedupe=skip` with no key cannot be reconciled at all: a blind re-POST
+ *     would create a real second task, and a prompt+cwd GET match is almost
+ *     always a pre-existing sibling (skip is used precisely when siblings
+ *     exist). We report `not_found` rather than confirm an unrelated task.
+ *
+ * Transient failures (timeout / 5xx) retry with linear backoff until the budget
+ * is spent, then one final GET probe. A non-5xx server error (4xx/429) is
+ * definitive — the server has spoken — so it is returned immediately.
+ *
+ * @returns {Promise<
+ *   | { kind: 'created', task: object, queued: boolean, reconciled: true }
+ *   | { kind: 'duplicate', task: object, reconciled: true }
+ *   | { kind: 'server_error', status: number, message: string, body: object|null }
+ *   | { kind: 'not_found', attempts: number, lastReason: string|null }
+ * >}
+ */
+async function reconcileSpawn({
+  baseUrl,
+  postParams,
+  prompt,
+  cwd,
+  sleep = defaultSleep,
+  maxAttempts = RECONCILE_MAX_ATTEMPTS,
+  backoffMs = RECONCILE_BACKOFF_MS,
+}) {
+  // A re-POST only replays (rather than duplicating) when the server will
+  // dedup it: dedup on (disableDedup falsy), or an idempotency key present.
+  // `--dedupe=skip` with no key is the sole non-idempotent case — and there is
+  // no sound way to confirm an intentional duplicate's create from prompt+cwd
+  // alone, so we do not fabricate one.
+  const canRepost = !postParams.disableDedup || Boolean(postParams.idempotencyKey);
+  if (!canRepost) {
+    return {
+      kind: 'not_found',
+      attempts: 0,
+      lastReason:
+        'intentional duplicate (--dedupe=skip) cannot be reconciled from prompt+cwd — pass --idempotency-key to make retries confirmable',
+    };
+  }
+  let lastReason = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) await sleep(backoffMs * attempt);
+    let res;
+    try {
+      res = await postTask(postParams);
+    } catch (e) {
+      lastReason = `request failed: ${e instanceof Error ? e.message : String(e)}`;
+      continue; // re-POST timed out again → retry within budget
+    }
+    if (res.kind === 'created') {
+      // Provable: the re-POST created the task now (no matching active task
+      // existed) — or it is an idempotency-key replay of our own earlier
+      // create (task.idempotentReplay). Either way it is unambiguously ours.
+      return { ...res, reconciled: true };
+    }
+    if (res.kind === 'duplicate') {
+      // Ambiguous: a matching active task exists, but prompt+cwd dedup is not
+      // proof THIS spawn created it. Surface for mode-aware handling.
+      return { ...res, reconciled: true };
+    }
+    if (res.kind === 'server_error') {
+      if (res.status >= 500) {
+        lastReason = `server returned ${res.status}: ${res.message}`;
+        continue; // transient server error → retry
+      }
+      return res; // 4xx/429 → definitive answer, surface it unchanged
+    }
+  }
+  // Budget spent. A final GET probe may find a matching active task, but that
+  // match is ambiguous (it could pre-date this spawn), so classify it as a
+  // `duplicate` for mode-aware handling — never an unconditional success.
+  const task = await findReconcilableTask({ baseUrl, prompt, cwd });
+  if (task) return { kind: 'duplicate', task, reconciled: true };
+  return { kind: 'not_found', attempts: maxAttempts, lastReason };
+}
+
 function classifyWaitState(agent) {
   const taskStatus = typeof agent?.taskStatus === 'string'
     ? agent.taskStatus
@@ -778,9 +909,33 @@ async function waitAndExit({ args, task, baseUrl, out, err, exit, sleep, now }) 
   return exit(EXIT_SERVER_ERROR);
 }
 
+/**
+ * Render a successful spawn (fresh create, idempotent replay, or a #1573
+ * reconciled recovery) and hand off to --wait. `reconciled` flags a recovery
+ * from an ambiguous create-POST outcome; a reconciled duplicate is the task
+ * our own timed-out POST created, so it is a success — not a dedupe block.
+ */
+function successExit({ args, task, baseUrl, queued = false, reconciled = false, out, err, exit, sleep, now }) {
+  if (args.json) {
+    return exitJson({
+      out,
+      exit,
+      exitCode: EXIT_OK,
+      ok: true,
+      code: 'OK',
+      message: task?.idempotentReplay
+        ? 'Task already exists (idempotent replay)'
+        : queued ? 'Task queued' : 'Task created',
+      details: taskDetails({ task, baseUrl, queued, reconciled }),
+    });
+  }
+  out.log(formatSuccess({ task, baseUrl, queued, reconciled }));
+  return waitAndExit({ args, task, baseUrl, out, err, exit, sleep, now });
+}
+
 // ---------- output rendering ----------
 
-function formatSuccess({ task, baseUrl, queued }) {
+function formatSuccess({ task, baseUrl, queued, reconciled = false }) {
   const id = task?.id ?? '';
   const agent = task?.agentType ?? '';
   const cwd = task?.cwd ?? '';
@@ -805,14 +960,22 @@ function formatSuccess({ task, baseUrl, queued }) {
   if (parent) {
     lines.push(`   parent: ${baseUrl}/#/tasks/${parent}`);
   }
+  // #1573: the create POST timed out or 5xx'd but the task turned out to exist
+  // (or was created on a bounded re-POST). Note the recovery so the outcome
+  // isn't mistaken for a clean first-try create.
+  if (reconciled) {
+    lines.push('   note:   recovered via reconcile after an ambiguous create response');
+  }
   return lines.join('\n');
 }
 
-function formatDedup({ task, baseUrl }) {
+function formatDedup({ task, baseUrl, reconciled = false }) {
   const id = task?.id ?? '';
   return [
     `task_id=${id}`,
-    'ℹ active task already exists for this prompt + cwd',
+    reconciled
+      ? 'ℹ active task already exists for this prompt + cwd (recovered via reconcile)'
+      : 'ℹ active task already exists for this prompt + cwd',
     `   open: ${baseUrl}/#/tasks/${id}`,
   ].join('\n');
 }
@@ -931,7 +1094,7 @@ function exitJson({ out, exit, exitCode, ok, code, message, details }) {
   return exit(exitCode);
 }
 
-function taskDetails({ task = {}, baseUrl, queued = false }) {
+function taskDetails({ task = {}, baseUrl, queued = false, reconciled = false }) {
   const taskId = task?.id ?? null;
   const parentTaskId = typeof task?.parentTaskId === 'string' && task.parentTaskId.length > 0
     ? task.parentTaskId
@@ -940,6 +1103,9 @@ function taskDetails({ task = {}, baseUrl, queued = false }) {
     taskId,
     parentTaskId,
     queued,
+    // #1573: true when this success was recovered by reconciling an ambiguous
+    // create-POST outcome (timeout/5xx) rather than a clean first-try create.
+    reconciled: Boolean(reconciled),
     // #1526 Phase B: true when this response replayed an earlier attempt's
     // task (same --idempotency-key) instead of creating a new one.
     idempotentReplay: Boolean(task?.idempotentReplay),
@@ -1175,25 +1341,46 @@ async function main({
     });
   }
 
+  const postParams = {
+    baseUrl,
+    prompt,
+    cwd: cwdAbs,
+    agent: args.agent,
+    effort: args.effort,
+    model: args.model,
+    criteria: args.criteria,
+    disableDedup: args.dedupe === 'skip',
+    metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
+    parentTaskId,
+    autoCloseOnSignal: args.autoCloseOnSignal,
+    unattended: args.unattended,
+    idempotencyKey: effectiveIdempotencyKey,
+  };
+
   let result;
   try {
-    result = await postTask({
-      baseUrl,
-      prompt,
-      cwd: cwdAbs,
-      agent: args.agent,
-      effort: args.effort,
-      model: args.model,
-      criteria: args.criteria,
-      disableDedup: args.dedupe === 'skip',
-      metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
-      parentTaskId,
-      autoCloseOnSignal: args.autoCloseOnSignal,
-      unattended: args.unattended,
-      idempotencyKey: effectiveIdempotencyKey,
-    });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    result = await postTask(postParams);
+  } catch {
+    // #1573: a client timeout / network failure is AMBIGUOUS — the task may
+    // already exist server-side. Reconcile deterministically (bounded re-POST
+    // relying on server idempotency, or a GET /api/tasks probe) instead of
+    // bailing to the dashboard and stranding the create-or-not question.
+    result = await reconcileSpawn({ baseUrl, postParams, prompt, cwd: cwdAbs, sleep });
+  }
+
+  // #1573: a 5xx (incl. 503 admission shedding) is equally ambiguous — the
+  // create may have landed just before the error. Reconcile before surfacing
+  // it as a hard failure. 4xx/429 are definitive answers and skip this.
+  if (result.kind === 'server_error' && result.status >= 500) {
+    result = await reconcileSpawn({ baseUrl, postParams, prompt, cwd: cwdAbs, sleep });
+  }
+
+  // #1573: reconcile exhausted its budget with no matching task — the create
+  // genuinely failed. Report it unambiguously (never "check the dashboard").
+  if (result.kind === 'not_found') {
+    const reasonSuffix = result.lastReason ? ` (last error: ${result.lastReason})` : '';
+    const message =
+      `create request failed and no matching task was found after ${result.attempts} reconcile attempts — no task was created${reasonSuffix}.`;
     if (args.json) {
       return exitJson({
         out,
@@ -1201,13 +1388,68 @@ async function main({
         exitCode: EXIT_SERVER_ERROR,
         ok: false,
         code: 'SERVER_ERROR',
-        message: `request failed: ${msg}`,
-        details: { baseUrl },
+        message,
+        details: { baseUrl, reconciled: true, attempts: result.attempts },
       });
     }
-    err.error(`kookr-spawn: request failed: ${msg}`);
-    err.error(`Check the dashboard at ${baseUrl} before re-running to avoid duplicate launches.`);
+    err.error(`kookr-spawn: ${message}`);
     return exit(EXIT_SERVER_ERROR);
+  }
+
+  // #1573: a reconciled `created` is PROVABLE — the re-POST created the task
+  // now, or an idempotency-key replay confirms our own earlier create. Render
+  // it as a normal success.
+  if (result.reconciled && result.kind === 'created') {
+    return successExit({
+      args,
+      task: result.task,
+      baseUrl,
+      queued: Boolean(result.queued),
+      reconciled: true,
+      out,
+      err,
+      exit,
+      sleep,
+      now,
+    });
+  }
+
+  // #1573: a reconciled `duplicate` is AMBIGUOUS — a matching active task
+  // exists, but prompt+cwd dedup is not proof THIS spawn created it (a foreign
+  // task with the same prompt+cwd matches too). So we must NOT unconditionally
+  // succeed: honor an explicit `--dedupe=block` (the flag exists precisely to
+  // stop on a matching active task), and otherwise report the existing task
+  // honestly — "already exists", exit 0 — rather than claim "created".
+  if (result.reconciled && result.kind === 'duplicate') {
+    if (args.dedupe === 'block') {
+      if (args.json) {
+        return exitJson({
+          out,
+          exit,
+          exitCode: EXIT_DUPLICATE_BLOCKED,
+          ok: false,
+          code: 'DUPLICATE_BLOCKED',
+          message: 'Duplicate active prompt blocked by --dedupe=block (found while reconciling an ambiguous create outcome)',
+          details: taskDetails({ task: result.task, baseUrl, reconciled: true }),
+        });
+      }
+      err.error(formatDuplicateWarning({ task: result.task }));
+      err.error('kookr-spawn: duplicate active prompt blocked by --dedupe=block (found while reconciling an ambiguous create outcome).');
+      return exit(EXIT_DUPLICATE_BLOCKED);
+    }
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_OK,
+        ok: true,
+        code: 'OK',
+        message: 'Active task already exists for this prompt and cwd (recovered via reconcile)',
+        details: taskDetails({ task: result.task, baseUrl, reconciled: true }),
+      });
+    }
+    out.log(formatDedup({ task: result.task, baseUrl, reconciled: true }));
+    return waitAndExit({ args, task: result.task, baseUrl, out, err, exit, sleep, now });
   }
 
   if (result.kind === 'server_error') {
@@ -1303,9 +1545,13 @@ async function main({
         unattended: args.unattended,
       });
     } catch (e) {
+      // #1573: this is the confirmed-duplicate re-POST (disableDedup, no key),
+      // which is deliberately non-idempotent — a blind re-POST could create a
+      // second duplicate, so we do NOT reconcile it. Report unambiguously
+      // instead of the old "check the dashboard" bail.
       const msg = e instanceof Error ? e.message : String(e);
-      err.error(`kookr-spawn: request failed: ${msg}`);
-      err.error(`Check the dashboard at ${baseUrl} before re-running to avoid duplicate launches.`);
+      err.error(`kookr-spawn: duplicate re-launch failed: ${msg}`);
+      err.error('kookr-spawn: no task creation was confirmed. Re-run with --dedupe=skip if you still intend the duplicate.');
       return exit(EXIT_SERVER_ERROR);
     }
     if (result.kind === 'server_error') {
@@ -1318,21 +1564,18 @@ async function main({
     }
   }
 
-  if (args.json) {
-    return exitJson({
-      out,
-      exit,
-      exitCode: EXIT_OK,
-      ok: true,
-      code: 'OK',
-      message: result.task?.idempotentReplay
-        ? 'Task already exists (idempotent replay)'
-        : result.queued ? 'Task queued' : 'Task created',
-      details: taskDetails({ task: result.task, baseUrl, queued: result.queued }),
-    });
-  }
-  out.log(formatSuccess({ task: result.task, baseUrl, queued: result.queued }));
-  return waitAndExit({ args, task: result.task, baseUrl, out, err, exit, sleep, now });
+  return successExit({
+    args,
+    task: result.task,
+    baseUrl,
+    queued: Boolean(result.queued),
+    reconciled: Boolean(result.reconciled),
+    out,
+    err,
+    exit,
+    sleep,
+    now,
+  });
 }
 
 // ---------- entry guard (so tests can import without running) ----------
@@ -1368,9 +1611,11 @@ export {
   EXIT_USER_ERROR,
   EXIT_WAIT_TIMEOUT,
   HELP_TEXT,
+  RECONCILE_MAX_ATTEMPTS,
   UsageError,
   classifyWaitState,
   deriveAutoIdempotencyKey,
+  findReconcilableTask,
   formatBackpressure429,
   formatDedup,
   formatSuccess,
@@ -1384,6 +1629,7 @@ export {
   parseWaitTimeoutSeconds,
   postTask,
   probeHealth,
+  reconcileSpawn,
   resolveBaseUrl,
   resolveCwd,
   resolveParentTaskId,

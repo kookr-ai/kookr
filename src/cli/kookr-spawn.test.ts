@@ -27,6 +27,9 @@ import {
   parseWaitTimeoutSeconds,
   postTask,
   probeHealth,
+  reconcileSpawn,
+  findReconcilableTask,
+  RECONCILE_MAX_ATTEMPTS,
   resolveBaseUrl,
   resolveCwd,
   resolveParentTaskId,
@@ -1119,6 +1122,285 @@ describe('waitForTaskReady', () => {
   });
 });
 
+// ---------- findReconcilableTask (issue #1573) ----------
+
+describe('findReconcilableTask', () => {
+  it('returns the newest non-terminal task matching prompt+cwd', async () => {
+    const tasks = [
+      { id: 'old', prompt: 'p', cwd: '/c', status: 'inProgress', createdAt: '2026-01-01T00:00:00.000Z' },
+      { id: 'new', prompt: 'p', cwd: '/c', status: 'inProgress', createdAt: '2026-01-02T00:00:00.000Z' },
+      { id: 'other-prompt', prompt: 'q', cwd: '/c', status: 'inProgress', createdAt: '2026-01-03T00:00:00.000Z' },
+      { id: 'other-cwd', prompt: 'p', cwd: '/d', status: 'inProgress', createdAt: '2026-01-03T00:00:00.000Z' },
+      { id: 'terminal', prompt: 'p', cwd: '/c', status: 'completed', createdAt: '2026-01-04T00:00:00.000Z' },
+    ];
+    const { server, baseUrl } = await startFakeApi(
+      () => ({ status: 201, body: '{}' }),
+      undefined,
+      () => ({ status: 200, body: JSON.stringify(tasks) }),
+    );
+    try {
+      const found = await findReconcilableTask({ baseUrl, prompt: 'p', cwd: '/c' });
+      expect(found?.id).toBe('new');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('returns null when nothing matches or the list read fails', async () => {
+    const { server, baseUrl } = await startFakeApi(
+      () => ({ status: 201, body: '{}' }),
+      undefined,
+      () => ({ status: 200, body: JSON.stringify([]) }),
+    );
+    try {
+      expect(await findReconcilableTask({ baseUrl, prompt: 'p', cwd: '/c' })).toBeNull();
+    } finally {
+      await closeServer(server);
+    }
+    // An unreachable server is a null (best-effort probe), never a throw.
+    expect(await findReconcilableTask({ baseUrl: 'http://127.0.0.1:9', prompt: 'p', cwd: '/c' })).toBeNull();
+  });
+});
+
+// ---------- reconcileSpawn (issue #1573) ----------
+
+describe('reconcileSpawn', () => {
+  const postParams = (over: Record<string, unknown> = {}) => ({
+    prompt: 'p', cwd: '/c', agent: null, criteria: null, ...over,
+  });
+
+  it('reconciles a created-but-timed-out POST via the server duplicate answer (AC1/AC3)', async () => {
+    let posts = 0;
+    const { server, baseUrl } = await startFakeApi(() => {
+      posts += 1;
+      // The task already exists server-side (our timed-out POST created it):
+      // the server dedups this identical re-POST rather than making a second.
+      return { status: 200, body: JSON.stringify({ duplicate: true, task: { id: 'task-1' } }) };
+    });
+    try {
+      const res = await reconcileSpawn({
+        baseUrl,
+        postParams: { baseUrl, ...postParams() },
+        prompt: 'p',
+        cwd: '/c',
+        sleep: async () => {},
+      });
+      expect(res).toEqual({ kind: 'duplicate', task: { id: 'task-1' }, reconciled: true });
+      expect(posts).toBe(1); // resolved on the first re-POST; no duplicate ever created
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('creates the task on re-POST when the original POST never landed', async () => {
+    const { server, baseUrl } = await startFakeApi(() => ({
+      status: 201, body: JSON.stringify({ id: 'task-2', cwd: '/c' }),
+    }));
+    try {
+      const res = await reconcileSpawn({
+        baseUrl, postParams: { baseUrl, ...postParams() }, prompt: 'p', cwd: '/c', sleep: async () => {},
+      });
+      expect(res.kind).toBe('created');
+      if (res.kind === 'created') {
+        expect(res.task.id).toBe('task-2');
+        expect(res.reconciled).toBe(true);
+      }
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('retries transient 5xx with backoff and resolves once the server recovers', async () => {
+    let posts = 0;
+    const backoffs: number[] = [];
+    const { server, baseUrl } = await startFakeApi(() => {
+      posts += 1;
+      if (posts <= 2) return { status: 503, body: JSON.stringify({ error: 'overloaded' }) };
+      return { status: 201, body: JSON.stringify({ id: 'task-3' }) };
+    });
+    try {
+      const res = await reconcileSpawn({
+        baseUrl, postParams: { baseUrl, ...postParams() }, prompt: 'p', cwd: '/c',
+        sleep: async (ms: number) => { backoffs.push(ms); },
+      });
+      expect(res.kind).toBe('created');
+      if (res.kind === 'created') expect(res.task.id).toBe('task-3');
+      expect(posts).toBe(3);
+      // Linear backoff between attempts (attempt 1 and 2 slept before retrying).
+      expect(backoffs).toEqual([500, 1000]);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('surfaces a definitive 4xx immediately without retrying', async () => {
+    let posts = 0;
+    const { server, baseUrl } = await startFakeApi(() => {
+      posts += 1;
+      return { status: 400, body: JSON.stringify({ error: 'prompt too long' }) };
+    });
+    try {
+      const res = await reconcileSpawn({
+        baseUrl, postParams: { baseUrl, ...postParams() }, prompt: 'p', cwd: '/c', sleep: async () => {},
+      });
+      expect(res.kind).toBe('server_error');
+      if (res.kind === 'server_error') expect(res.status).toBe(400);
+      expect(posts).toBe(1); // 4xx is definitive — never retried
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('is bounded: exhausts exactly the retry budget then reports not_found (AC2)', async () => {
+    let posts = 0;
+    const { server, baseUrl } = await startFakeApi(
+      () => { posts += 1; return { status: 500, body: JSON.stringify({ error: 'down' }) }; },
+      undefined,
+      () => ({ status: 200, body: JSON.stringify([]) }),
+    );
+    try {
+      const res = await reconcileSpawn({
+        baseUrl, postParams: { baseUrl, ...postParams() }, prompt: 'p', cwd: '/c', sleep: async () => {},
+      });
+      expect(res.kind).toBe('not_found');
+      if (res.kind === 'not_found') {
+        expect(res.attempts).toBe(RECONCILE_MAX_ATTEMPTS);
+        expect(res.lastReason).toContain('server returned 500');
+      }
+      expect(posts).toBe(RECONCILE_MAX_ATTEMPTS); // bounded — no infinite loop
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('surfaces the final GET /api/tasks match as an AMBIGUOUS duplicate, not a confident create', async () => {
+    // After the budget of 5xxs, a matching active task may exist — but a
+    // prompt+cwd match is not proof THIS spawn created it, so it comes back as
+    // `duplicate` (mode-aware handling) rather than an unconditional `created`.
+    const { server, baseUrl } = await startFakeApi(
+      () => ({ status: 500, body: JSON.stringify({ error: 'still down' }) }),
+      undefined,
+      () => ({ status: 200, body: JSON.stringify([
+        { id: 'landed', prompt: 'p', cwd: '/c', status: 'inProgress', createdAt: '2026-01-01T00:00:00.000Z' },
+      ]) }),
+    );
+    try {
+      const res = await reconcileSpawn({
+        baseUrl, postParams: { baseUrl, ...postParams() }, prompt: 'p', cwd: '/c', sleep: async () => {},
+      });
+      expect(res.kind).toBe('duplicate');
+      if (res.kind === 'duplicate') {
+        expect(res.task.id).toBe('landed');
+        expect(res.reconciled).toBe(true);
+      }
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('does NOT reconcile an intentional duplicate (--dedupe=skip, no key): returns not_found without POST or GET', async () => {
+    let posts = 0;
+    let gets = 0;
+    const { server, baseUrl } = await startFakeApi(
+      () => { posts += 1; return { status: 201, body: JSON.stringify({ id: 'should-not-happen' }) }; },
+      undefined,
+      () => { gets += 1; return { status: 200, body: JSON.stringify([
+        { id: 'foreign-sibling', prompt: 'p', cwd: '/c', status: 'inProgress', createdAt: '2026-01-01T00:00:00.000Z' },
+      ]) }; },
+    );
+    try {
+      const res = await reconcileSpawn({
+        baseUrl,
+        postParams: { baseUrl, ...postParams({ disableDedup: true, metadataIntent: 'keep_as_duplicate' }) },
+        prompt: 'p', cwd: '/c', sleep: async () => {},
+      });
+      expect(res.kind).toBe('not_found'); // a prompt+cwd sibling is NOT proof our skip-launch landed
+      if (res.kind === 'not_found') {
+        expect(res.attempts).toBe(0);
+        expect(res.lastReason).toContain('--idempotency-key');
+      }
+      expect(posts).toBe(0); // a non-idempotent re-POST would risk a real duplicate — never done
+      expect(gets).toBe(0);  // and a prompt+cwd GET match is not confirmation — never consulted
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('treats an idempotency-key replay as a PROVABLE created success', async () => {
+    let posts = 0;
+    const { server, baseUrl } = await startFakeApi(() => {
+      posts += 1;
+      if (posts === 1) return { status: 500, body: JSON.stringify({ error: 'overloaded' }) };
+      // The server key-ledger confirms OUR earlier create → flattened replay.
+      return { status: 200, body: JSON.stringify({ id: 'keyed-1', idempotentReplay: true }) };
+    });
+    try {
+      const res = await reconcileSpawn({
+        baseUrl,
+        postParams: { baseUrl, ...postParams({ idempotencyKey: 'k-42' }) },
+        prompt: 'p', cwd: '/c', sleep: async () => {},
+      });
+      expect(res.kind).toBe('created');
+      if (res.kind === 'created') {
+        expect(res.task.id).toBe('keyed-1');
+        expect(res.task.idempotentReplay).toBe(true);
+        expect(res.reconciled).toBe(true);
+      }
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('returns not_found with a request-failed reason when every re-POST throws', async () => {
+    // Unreachable base: postTask throws each attempt, and the final GET probe
+    // also fails → bounded not_found carrying the network reason.
+    const dead = 'http://127.0.0.1:9';
+    const res = await reconcileSpawn({
+      baseUrl: dead,
+      postParams: { baseUrl: dead, ...postParams() },
+      prompt: 'p', cwd: '/c', sleep: async () => {},
+    });
+    expect(res.kind).toBe('not_found');
+    if (res.kind === 'not_found') {
+      expect(res.attempts).toBe(RECONCILE_MAX_ATTEMPTS);
+      expect(res.lastReason).toContain('request failed');
+    }
+  });
+
+  it('INVARIANT (no-duplicate under contention): concurrent reconciles yield exactly one task', async () => {
+    // NOTE: the fake server's handler mutates `store` synchronously, so the
+    // event loop serializes requests — the "exactly one task" guarantee here is
+    // enforced by the server's dedup (an idealized-atomic stand-in), not by any
+    // client-side interleaving. What this asserts about the CLIENT is that N
+    // concurrent reconciles each issue exactly one POST and all collapse to the
+    // same id — it would fail if reconcileSpawn double-POSTed or fabricated ids.
+    const store = new Map<string, string>();
+    let seq = 0;
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      const body = JSON.parse(bodyText);
+      const key = `${body.prompt}|${body.cwd}`;
+      if (store.has(key)) {
+        return { status: 200, body: JSON.stringify({ duplicate: true, task: { id: store.get(key) } }) };
+      }
+      const id = `task-${++seq}`;
+      store.set(key, id);
+      return { status: 201, body: JSON.stringify({ id, cwd: body.cwd }) };
+    });
+    try {
+      const pp = { baseUrl, ...postParams() };
+      const results = await Promise.all(
+        Array.from({ length: 5 }, () =>
+          reconcileSpawn({ baseUrl, postParams: pp, prompt: 'p', cwd: '/c', sleep: async () => {} })),
+      );
+      const ids = results.map((r) => (r.kind === 'created' || r.kind === 'duplicate' ? r.task.id : null));
+      expect(new Set(ids)).toEqual(new Set(['task-1'])); // all resolve to the same single task
+      expect(seq).toBe(1); // the server created exactly one task despite 5 concurrent reconciles
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
 // ---------- main (end-to-end against a fake API server) ----------
 
 describe('main', () => {
@@ -2184,6 +2466,299 @@ describe('main', () => {
       const combined = errBucket.errors.join('\n');
       expect(combined).toContain('parent task stale-parent not found');
       expect(combined).toContain('--no-parent-task');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  // ---------- #1573: reconcile ambiguous create-POST outcomes ----------
+
+  it('reconciles a 5xx-after-create outcome end-to-end and exits 0 reporting the task id (AC1/AC3)', async () => {
+    let posts = 0;
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      const body = JSON.parse(bodyText);
+      posts += 1;
+      // First POST 5xxs AFTER the task landed server-side (the incident shape);
+      // the reconcile re-POST is deduped to the same task — never a second one.
+      if (posts === 1) return { status: 500, body: JSON.stringify({ error: 'kookr CPU spin' }) };
+      return {
+        status: 200,
+        body: JSON.stringify({ duplicate: true, task: { id: 'landed-1', agentType: 'claude-code', cwd: body.cwd } }),
+      };
+    });
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'], // default dedupe=warn
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]); // recovered, not blocked
+      const printed = logs.join('\n');
+      expect(printed).toContain('task_id=landed-1');
+      // Reported honestly as "already exists (recovered via reconcile)" — the
+      // prompt+cwd match is not proof we created it, so it is not claimed as a
+      // fresh "✓ Task created".
+      expect(printed).toContain('already exists');
+      expect(printed).toContain('recovered via reconcile');
+      expect(posts).toBe(2); // exactly one create + one reconcile re-POST
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('blocks (exit 5) a reconciled ambiguous duplicate under --dedupe=block, not silent success', async () => {
+    // Finding: a prompt+cwd match found while reconciling could be a FOREIGN
+    // active task; --dedupe=block exists precisely to stop on that, so the
+    // ambiguous reconcile must honor it rather than exit 0.
+    let posts = 0;
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      const body = JSON.parse(bodyText);
+      posts += 1;
+      if (posts === 1) return { status: 503, body: JSON.stringify({ error: 'overloaded' }) };
+      return {
+        status: 200,
+        body: JSON.stringify({ duplicate: true, task: { id: 'existing-1', status: 'inProgress', cwd: body.cwd } }),
+      };
+    });
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--dedupe=block', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_DUPLICATE_BLOCKED]); // exit 5, not 0
+      expect(errBucket.errors.join('\n')).toContain('--dedupe=block');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('does not fabricate success for an intentional duplicate (--dedupe=skip) whose create is unconfirmed', async () => {
+    // Finding: under --dedupe=skip a prompt+cwd sibling almost always
+    // pre-exists, so a GET match is NOT proof this skip-launch landed. An
+    // ambiguous outcome must report "no task created" (exit 4), never report a
+    // foreign sibling as success.
+    let posts = 0;
+    const { server, baseUrl } = await startFakeApi(
+      () => { posts += 1; return { status: 500, body: JSON.stringify({ error: 'overloaded' }) }; },
+      undefined,
+      () => ({ status: 200, body: JSON.stringify([
+        { id: 'foreign-sibling', prompt: 'hello', cwd: tmpCwd, status: 'inProgress', createdAt: '2026-01-01T00:00:00.000Z' },
+      ]) }),
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--dedupe=skip', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_SERVER_ERROR]); // exit 4, NOT exit 0
+      expect(logs.join('\n')).not.toContain('foreign-sibling'); // never reported as ours
+      const combined = errBucket.errors.join('\n');
+      expect(combined).toContain('no task was created');
+      expect(combined).toContain('--idempotency-key'); // actionable hint
+      expect(posts).toBe(1); // skip cannot re-POST; only the original create attempt
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('reconciles a client-timeout (network reset) after create and exits 0 with the id (AC1)', async () => {
+    let posts = 0;
+    // Custom server: reset the socket on the first POST (client fetch throws,
+    // mimicking a client-side timeout on a slow/overloaded server), then answer
+    // the reconcile re-POST with the task that actually landed.
+    const server = createServer((req, res) => {
+      if (req.method === 'POST' && req.url === '/api/tasks') {
+        posts += 1;
+        if (posts === 1) { res.destroy(); return; }
+        const chunks: Buffer[] = [];
+        req.on('data', (c: Buffer) => chunks.push(c));
+        req.on('end', () => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ duplicate: true, task: { id: 'reset-1', agentType: 'claude-code', cwd: tmpCwd } }));
+        });
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    if (!addr || typeof addr !== 'object') throw new Error('no address');
+    const baseUrl = `http://127.0.0.1:${addr.port}`;
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(logs.join('\n')).toContain('task_id=reset-1');
+      expect(posts).toBe(2);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('exits non-zero with an unambiguous "no task created" message — never the dashboard bail (AC2/AC4)', async () => {
+    let posts = 0;
+    const { server, baseUrl } = await startFakeApi(
+      () => { posts += 1; return { status: 500, body: JSON.stringify({ error: 'server down' }) }; },
+      undefined,
+      () => ({ status: 200, body: JSON.stringify([]) }), // GET probe finds nothing
+    );
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_SERVER_ERROR]);
+      const combined = errBucket.errors.join('\n');
+      expect(combined).toContain('no task was created');
+      expect(combined).toContain('no matching task was found');
+      expect(combined).not.toContain('Check the dashboard'); // the old bail-out is gone (AC4)
+      expect(posts).toBe(RECONCILE_MAX_ATTEMPTS + 1); // bounded: initial POST + reconcile budget
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('emits a --json SERVER_ERROR envelope with reconciled:true when reconcile finds no task', async () => {
+    const { server, baseUrl } = await startFakeApi(
+      () => ({ status: 500, body: JSON.stringify({ error: 'down' }) }),
+      undefined,
+      () => ({ status: 200, body: JSON.stringify([]) }),
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--json', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      const envelope = parseSingleJsonLog(logs);
+      expect(codes).toEqual([EXIT_SERVER_ERROR]);
+      expect(envelope).toMatchObject({
+        ok: false,
+        code: 'SERVER_ERROR',
+        details: { baseUrl, reconciled: true, attempts: RECONCILE_MAX_ATTEMPTS },
+      });
+      expect(envelope.message).toContain('no task was created');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('marks a reconciled create with reconciled:true in the --json success envelope', async () => {
+    let posts = 0;
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      const body = JSON.parse(bodyText);
+      posts += 1;
+      if (posts === 1) return { status: 502, body: JSON.stringify({ error: 'bad gateway' }) };
+      return { status: 201, body: JSON.stringify({ id: 'json-recovered', agentType: 'claude-code', cwd: body.cwd }) };
+    });
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--json', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      const envelope = parseSingleJsonLog(logs);
+      expect(codes).toEqual([EXIT_OK]);
+      expect(envelope).toMatchObject({
+        ok: true,
+        code: 'OK',
+        message: 'Task created',
+        details: { taskId: 'json-recovered', reconciled: true },
+      });
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('does NOT reconcile a 429 backpressure rejection (definitive, not ambiguous)', async () => {
+    let posts = 0;
+    const { server, baseUrl } = await startFakeApi(() => {
+      posts += 1;
+      return {
+        status: 429,
+        body: JSON.stringify({ error: 'Spawn burst limit reached', code: 'spawn_burst_limit', source: 'cli', limit: 30, windowMs: 600000, retryAfterMs: 42000 }),
+      };
+    });
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_SERVER_ERROR]);
+      expect(errBucket.errors.join('\n')).toContain('launch refused (spawn_burst_limit)');
+      expect(posts).toBe(1); // 429 is a deliberate rejection — no reconcile re-POST
     } finally {
       await closeServer(server);
     }
