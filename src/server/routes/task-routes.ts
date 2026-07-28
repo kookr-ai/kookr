@@ -401,6 +401,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         metadata?: unknown;
         dependencies?: unknown;
         autoCloseOnSignal?: unknown;
+        unattended?: unknown;
         idempotencyKey?: unknown;
       };
 
@@ -443,6 +444,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       if (body.autoCloseOnSignal !== undefined && typeof body.autoCloseOnSignal !== 'boolean') {
         return c.json({ error: 'autoCloseOnSignal must be a boolean' }, 400);
       }
+      if (body.unattended !== undefined && typeof body.unattended !== 'boolean') {
+        return c.json({ error: 'unattended must be a boolean' }, 400);
+      }
       // issue #1526 Phase B: bounded, opaque idempotency key. Validated here
       // (shape only); reserve/replay semantics live in launchTask's wrapper.
       if (body.idempotencyKey !== undefined) {
@@ -482,6 +486,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         launchSource,
         launchActorId,
         autoCloseOnSignal: typeof body.autoCloseOnSignal === 'boolean' ? body.autoCloseOnSignal : undefined,
+        unattended: typeof body.unattended === 'boolean' ? body.unattended : undefined,
         idempotencyKey: typeof body.idempotencyKey === 'string' ? body.idempotencyKey : undefined,
       });
 
@@ -1015,6 +1020,8 @@ type CompactApiTask = Pick<
   | 'blocked_by'
   | 'deliveryAuthorization'
   | 'autoCloseOnSignal'
+  | 'unattended'
+  | 'operatorNeeded'
   | 'tokenUsage'
   | 'pendingSignal'
   | 'issueClaim'
@@ -1061,6 +1068,8 @@ function toCompactApiTask(task: Task, store: TaskStore): CompactApiTask {
     blocked_by: task.blocked_by,
     deliveryAuthorization: task.deliveryAuthorization,
     autoCloseOnSignal: task.autoCloseOnSignal,
+    unattended: task.unattended,
+    operatorNeeded: task.operatorNeeded,
     tokenUsage: task.tokenUsage,
     aggregateTokenUsage,
     pendingSignal: task.pendingSignal,

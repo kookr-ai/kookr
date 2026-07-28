@@ -128,7 +128,7 @@ only renders row-level metadata.
 fields a list needs — `id`/`taskId`, `name`, `status`, `cwd`, `agentType`,
 `playbookId`, `projectId`, `priority`, `parentTaskId`/`childTaskIds`,
 `blocks`/`blocked_by`, `deliveryAuthorization`, `autoCloseOnSignal`,
-`tokenUsage` (plus `aggregateTokenUsage` on parents),
+`unattended`, `operatorNeeded`, `tokenUsage` (plus `aggregateTokenUsage` on parents),
 `pendingSignal`, `issueClaim`, `ralphLoop`, the `createdAt`/`updatedAt`/
 `finishedAt`/`terminatedAt` timeline, a `disposition` record on a task pruned
 before its first session (issue #1588), a `suppressed` flag when applicable, and a
@@ -179,7 +179,7 @@ GET /api/tasks?limit=50&offset=100
 
 `prompt` (required) and `cwd` (required) plus optional `criteria`, `parentTaskId`,
 `agentType`, `effort`, `model`, `disableDedup`, `metadata`, `dependencies`,
-`autoCloseOnSignal`, and `idempotencyKey`.
+`autoCloseOnSignal`, `unattended`, and `idempotencyKey`.
 
 `autoCloseOnSignal` (optional, boolean) opts the task into auto-completion after
 its agent's `completion_ready` signal has been pending for the configured
@@ -190,6 +190,14 @@ minutes) (see
 non-boolean value returns `400`. When omitted, the task **inherits the policy of
 its `parentTaskId`**, so the behavior propagates down self-continuation chains;
 set it explicitly to `false` to opt a successor out.
+
+`unattended` (optional, boolean) marks the task as autonomous — launched with
+nobody watching to answer an interactive prompt. When `true`, the spawned Claude
+Code agent's injected `--settings` gain permission `deny` rules for interactive
+tools (`AskUserQuestion` and equivalents), so a blocking call fails fast and the
+task is flagged **operator-needed** (`operatorNeeded` on the task, surfaced in the
+tasks API and dashboard) instead of hanging forever. A non-boolean value returns
+`400`. Omitted/`false` ⇒ attended, unchanged behavior. See issue #1562.
 
 `cwd` must name an existing directory on the server's machine — it is
 validated before any task record or session is created, and a missing or

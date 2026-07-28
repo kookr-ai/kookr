@@ -8,6 +8,7 @@ import type { AgentEvent } from './types.js';
 import type { IssueClaim } from './issue-claim-types.js';
 import type { CriteriaCompletionVerdict } from '../shared/contracts/completion-digest.js';
 import type { PendingAgentSignal } from '../shared/contracts/agent-signal.js';
+import type { OperatorNeeded } from '../shared/contracts/operator-needed.js';
 import type {
   TaskDependencyEdge,
   TaskDisposition,
@@ -178,6 +179,7 @@ export class TaskStore {
       priority,
       deliveryAuthorization,
       autoCloseOnSignal,
+      unattended,
     } = opts;
 
     // Validate parent exists if specified
@@ -194,6 +196,15 @@ export class TaskStore {
     const effectiveAutoCloseOnSignal = autoCloseOnSignal !== undefined
       ? autoCloseOnSignal
       : parentForInherit?.autoCloseOnSignal === true;
+
+    // Resolve the unattended/autonomous policy the same way (issue #1562). A
+    // child spawned by an autonomous agent that does not forward `unattended`
+    // still needs interactive-tool protection — the failure mode #1562 targets
+    // lives in self-continuation chains where "nobody can answer" propagates
+    // down. Explicit `false` on the launch opts opts a successor back out.
+    const effectiveUnattended = unattended !== undefined
+      ? unattended
+      : parentForInherit?.unattended === true;
 
     const now = new Date();
     const task: Task = {
@@ -238,6 +249,7 @@ export class TaskStore {
     if (priority === 'high') task.priority = priority;
     if (deliveryAuthorization) task.deliveryAuthorization = deliveryAuthorization;
     if (effectiveAutoCloseOnSignal) task.autoCloseOnSignal = true;
+    if (effectiveUnattended) task.unattended = true;
     this.tasks.set(task.id, task);
 
     // Link child to parent
@@ -448,6 +460,22 @@ export class TaskStore {
     const task = this.tasks.get(taskId);
     if (!task?.pendingSignal) return false;
     delete task.pendingSignal;
+    task.updatedAt = new Date();
+    return true;
+  }
+
+  /**
+   * Flag a task operator-needed after an unattended agent's interactive-tool
+   * call was denied (issue #1562). First-write-wins: a repeated denied call on
+   * the same task keeps the original marker rather than churning `updatedAt`
+   * (and the snapshot broadcast) on every retry. Returns true only when the
+   * marker was newly set, so callers can log/broadcast exactly once.
+   */
+  setOperatorNeeded(taskId: string, flag: OperatorNeeded): boolean {
+    const task = this.tasks.get(taskId);
+    if (!task) return false;
+    if (task.operatorNeeded) return false;
+    task.operatorNeeded = structuredClone(flag);
     task.updatedAt = new Date();
     return true;
   }

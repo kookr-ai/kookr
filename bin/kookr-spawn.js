@@ -109,6 +109,10 @@ Options:
                            "kookr signal completion-ready" (frees a slot).
       --no-auto-close-on-signal
                            Opt this task out, overriding any inherited policy.
+      --unattended         Mark the task autonomous: deny interactive tools
+                           (AskUserQuestion and equivalents) so a blocking call
+                           fails fast and flags the task operator-needed instead
+                           of hanging with nobody to answer.
   -f, --prompt-file <path> Read prompt from a file (hook-safe).
       --json               Print one machine-readable JSON envelope to stdout.
   -h, --help               Show this help.
@@ -168,6 +172,7 @@ function parseArgs(argv) {
     parentTaskId: null,
     noParentTask: false,
     autoCloseOnSignal: null,
+    unattended: false,
     json: false,
     wait: false,
     waitTimeoutSeconds: null,
@@ -229,6 +234,8 @@ function parseArgs(argv) {
         throw new UsageError('--auto-close-on-signal and --no-auto-close-on-signal are mutually exclusive');
       }
       out.autoCloseOnSignal = false;
+    } else if (tok === '--unattended') {
+      out.unattended = true;
     } else if (tok === '-f' || tok === '--prompt-file') {
       out.promptFile = eat();
     } else if (tok === '--') {
@@ -504,7 +511,7 @@ function apiAuthHeaders(env = process.env) {
 
 // ---------- HTTP POST ----------
 
-async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, idempotencyKey = null }) {
+async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, unattended = false, idempotencyKey = null }) {
   const body = { prompt, cwd };
   if (criteria) body.criteria = criteria;
   if (agent) body.agentType = agent;
@@ -515,6 +522,7 @@ async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = nu
   if (parentTaskId) body.parentTaskId = parentTaskId;
   // null = unspecified → let the server inherit the parent's policy.
   if (autoCloseOnSignal !== null) body.autoCloseOnSignal = autoCloseOnSignal;
+  if (unattended) body.unattended = true;
   if (idempotencyKey) body.idempotencyKey = idempotencyKey;
 
   const res = await fetch(`${baseUrl}/api/tasks`, {
@@ -1099,6 +1107,7 @@ async function main({
       metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
       parentTaskId,
       autoCloseOnSignal: args.autoCloseOnSignal,
+      unattended: args.unattended,
       idempotencyKey: args.idempotencyKey,
     });
   } catch (e) {
@@ -1209,6 +1218,7 @@ async function main({
         metadataIntent: 'keep_as_duplicate',
         parentTaskId,
         autoCloseOnSignal: args.autoCloseOnSignal,
+        unattended: args.unattended,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

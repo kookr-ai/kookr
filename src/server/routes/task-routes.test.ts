@@ -294,6 +294,33 @@ describe('GET /api/tasks?view=compact', () => {
     expect(detail.userPrompt).toBe('Original user prompt body');
   });
 
+  // issue #1562 AC2: the operator-needed flag (and the unattended marker) must be
+  // visible via the tasks API — both the full list/detail and the compact list.
+  test('surfaces unattended + operatorNeeded in the compact and full tasks API', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'Autonomous work', cwd: '/repo', unattended: true });
+    taskStore.setOperatorNeeded(task.id, {
+      reason: 'interactive_tool_denied',
+      toolName: 'AskUserQuestion',
+      detectedAt: new Date('2026-07-28T10:00:00Z'),
+      message: 'blocked',
+    });
+
+    const app = mkApp(mkLoopDeps(taskStore));
+
+    const compactRow = (await (await app.request('/api/tasks?view=compact')).json())
+      .find((t: { id: string }) => t.id === task.id);
+    expect(compactRow.unattended).toBe(true);
+    expect(compactRow.operatorNeeded).toMatchObject({
+      reason: 'interactive_tool_denied',
+      toolName: 'AskUserQuestion',
+    });
+
+    const detail = await (await app.request(`/api/tasks/${task.id}`)).json();
+    expect(detail.unattended).toBe(true);
+    expect(detail.operatorNeeded).toMatchObject({ reason: 'interactive_tool_denied', toolName: 'AskUserQuestion' });
+  });
+
   test('compact rolls up child token usage on the parent', async () => {
     const taskStore = new TaskStore();
     const parent = taskStore.createTask({ prompt: 'batch', cwd: '/repo' });
