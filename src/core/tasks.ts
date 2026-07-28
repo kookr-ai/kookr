@@ -3,6 +3,7 @@ import { DEFAULT_AGENT_TYPE, type AgentType } from './agent-types.js';
 import type { CompletionDigest } from './completion-digest.js';
 import { evaluateCompletionSignal, type CompletionSignalDecision } from './completion-signal.js';
 import { deterministicTaskName } from './task-naming.js';
+import { deriveTaskProvenance } from './task-provenance.js';
 import { displayPromptForTask } from './prompt-display.js';
 import type { AgentEvent } from './types.js';
 import type { IssueClaim } from './issue-claim-types.js';
@@ -168,6 +169,8 @@ export class TaskStore {
       cwd,
       criteria,
       parentTaskId,
+      launchSource,
+      scheduleId,
       agentType,
       name,
       playbookId,
@@ -215,6 +218,9 @@ export class TaskStore {
       criteria,
       agentType: agentType ?? DEFAULT_AGENT_TYPE,
       parentTaskId,
+      // Immutable launch provenance (issue #1583). Derived once from the
+      // launch signals present at creation; never mutated afterward.
+      provenance: deriveTaskProvenance({ parentTaskId, launchSource, scheduleId }),
       status: 'open',
       sessions: [],
       createdAt: now,

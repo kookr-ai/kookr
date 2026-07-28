@@ -299,6 +299,9 @@ export class ScheduleRunner {
         // metadata.launchSource so the promotion posture guard treats a
         // queued fire as self-releasing.
         launchSource: 'schedule',
+        // issue #1583: carry the scheduleId so the created task's immutable
+        // `schedule` provenance points back to this schedule for rollups.
+        scheduleId: schedule.id,
       });
 
       await this.deps.service.markExecutionAccepted(schedule.id, receipt.id, result.task.id, result.queued);

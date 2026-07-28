@@ -91,6 +91,42 @@ describe('Task Persistence', () => {
     expect(tasks[0].status).toBe('inProgress');
   });
 
+  test('legacy tasks without provenance read back with explicit unknown provenance (issue #1583)', async () => {
+    // A tasks.json written before the provenance field existed: a v1 plain
+    // array plus a v2 envelope, neither carrying `provenance`.
+    const legacyTask = {
+      id: 'legacy-1',
+      prompt: 'legacy work',
+      cwd: '/cwd',
+      agentType: 'claude-code',
+      status: 'open',
+      sessions: [],
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-01T00:00:00.000Z',
+    };
+    writeFileSync(filePath, JSON.stringify([legacyTask]));
+
+    const { tasks } = await loadTasks(filePath);
+
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].provenance).toEqual({ kind: 'unknown' });
+  });
+
+  test('load preserves provenance already present on persisted tasks (issue #1583)', async () => {
+    const store = new TaskStore();
+    const task = store.createTask({
+      prompt: 'scheduled work',
+      cwd: '/cwd',
+      launchSource: 'schedule',
+      scheduleId: 'sched-9',
+    });
+    await saveTasks(store.getAllTasks(), filePath);
+
+    const { tasks } = await loadTasks(filePath);
+    const loaded = tasks.find((t) => t.id === task.id);
+    expect(loaded?.provenance).toEqual({ kind: 'schedule', sourceId: 'sched-9' });
+  });
+
   test('load with missing file returns empty result', async () => {
     const result = await loadTasks(join(tempDir, 'nonexistent.json'));
     expect(result.tasks).toEqual([]);

@@ -887,6 +887,11 @@ async function launchTaskCore(
     cwd: opts.cwd,
     criteria: opts.criteria,
     parentTaskId: opts.parentTaskId,
+    // Launch provenance signals (issue #1583). createTask derives the immutable
+    // Task.provenance from these plus parentTaskId; the metadata.launchSource
+    // stamp below stays for the backpressure/promotion-guard consumers.
+    launchSource: opts.launchSource,
+    scheduleId: opts.scheduleId,
     agentType,
     name: opts.name,
     playbookId: opts.playbookId,

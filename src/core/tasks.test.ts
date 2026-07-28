@@ -23,6 +23,46 @@ describe('TaskStore', () => {
       expect(task.updatedAt).toBeInstanceOf(Date);
     });
 
+    describe('launch provenance (issue #1583)', () => {
+      test('schedule-fired task carries schedule provenance with the scheduleId', () => {
+        const task = store.createTask({
+          prompt: 'nightly sweep',
+          cwd: '/cwd',
+          launchSource: 'schedule',
+          scheduleId: 'sched-7',
+        });
+        expect(task.provenance).toEqual({ kind: 'schedule', sourceId: 'sched-7' });
+      });
+
+      test('plain API creation carries manual provenance', () => {
+        const task = store.createTask({ prompt: 'do work', cwd: '/cwd', launchSource: 'api' });
+        expect(task.provenance).toEqual({ kind: 'manual', sourceId: 'api' });
+      });
+
+      test('API-created batch task (no schedule, no parent) carries manual provenance a rollup can attribute', () => {
+        // Mirrors the six 07-26 'Parallel Issue Batch' tasks.
+        const task = store.createTask({ prompt: 'Parallel Issue Batch', cwd: '/cwd', launchSource: 'api' });
+        expect(task.provenance?.kind).toBe('manual');
+        expect(task.provenance?.sourceId).toBe('api');
+      });
+
+      test('child spawn carries parent provenance with the parent task id', () => {
+        const parent = store.createTask({ prompt: 'parent', cwd: '/cwd', launchSource: 'api' });
+        const child = store.createTask({
+          prompt: 'child',
+          cwd: '/cwd',
+          launchSource: 'api',
+          parentTaskId: parent.id,
+        });
+        expect(child.provenance).toEqual({ kind: 'parent', sourceId: parent.id });
+      });
+
+      test('a creation with no launch signal defaults to explicit unknown provenance', () => {
+        const task = store.createTask('bare', '/cwd');
+        expect(task.provenance).toEqual({ kind: 'unknown' });
+      });
+    });
+
     test('getTask returns existing task', () => {
       const created = store.createTask('Fix bug', '/cwd');
       const retrieved = store.getTask(created.id);

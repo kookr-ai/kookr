@@ -7,7 +7,7 @@ import type { SessionInfo } from './session-read-model.js';
 import type { TaskStatus } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
 import type { RalphLoopState } from '../shared/contracts/ralph.js';
-import type { DeliveryAuthorization, TaskDependencyEdge, TaskDisposition, TaskMetadata, TaskPriority } from '../shared/contracts/task.js';
+import type { DeliveryAuthorization, TaskDependencyEdge, TaskDisposition, TaskLaunchSource, TaskMetadata, TaskPriority, TaskProvenance } from '../shared/contracts/task.js';
 
 export type {
   BurnedOutTarget,
@@ -61,6 +61,19 @@ export interface CreateTaskOptions {
   cwd: string;
   criteria?: string;
   parentTaskId?: string;
+  /**
+   * Where this launch originated (issue #1583). Drives the immutable
+   * {@link Task.provenance} marker: `schedule` ⇒ schedule provenance,
+   * anything else ⇒ `manual`. Absent (no declared source, no parent) ⇒
+   * `unknown`. Threaded from `LaunchOpts.launchSource`.
+   */
+  launchSource?: TaskLaunchSource;
+  /**
+   * scheduleId for a schedule-fired launch (issue #1583), used as the
+   * `sourceId` of `schedule` provenance. Only meaningful when
+   * `launchSource === 'schedule'`.
+   */
+  scheduleId?: string;
   agentType?: AgentType;
   name?: string;
   playbookId?: string;
@@ -136,6 +149,14 @@ export interface Task {
   /** Warning text prepended to the actual launch prompt, but not part of `prompt`. */
   launchNote?: string;
   parentTaskId?: string;
+  /**
+   * Immutable launch provenance (issue #1583): how this task was created —
+   * schedule fire, parent spawn, manual API/UI creation, or unknown. Set once
+   * at {@link TaskStore.createTask} and never mutated. Legacy tasks persisted
+   * before this field existed read back as `{ kind: 'unknown' }`. Exposed in
+   * the tasks API so a rollup query can group output by origin.
+   */
+  provenance?: TaskProvenance;
   childTaskIds?: string[];
   /** User-declared dependency edges for tasks this task blocks. */
   blocks?: TaskDependencyEdge[];
