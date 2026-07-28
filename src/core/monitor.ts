@@ -106,6 +106,16 @@ const DEFAULT_WINDOW_SIZE = 50;
 const SUBAGENT_TTL_MS = 30 * 60 * 1000;
 
 /**
+ * Cap on the per-agent set of suppressed completion-signal ids (issue #1612).
+ * A long-lived agent that repeatedly ends a turn behind a background subagent
+ * adds one id per completion signal with no natural eviction, so the set grew
+ * unbounded within a single session. Only the newest signal is ever re-queried
+ * (older turns are superseded), so keeping the most recent N ids preserves the
+ * suppression contract while bounding retention.
+ */
+const MAX_SUPPRESSED_COMPLETION_SIGNAL_IDS = 128;
+
+/**
  * Anomaly types (and watchdog verdict statuses) whose lifecycle is owned by
  * the watchdog tick path. Centralized so the actionable filter, the
  * non-actionable purge guard, and the suppressed-verdict purge guard all
@@ -579,6 +589,31 @@ export class Monitor {
   }
 
   /**
+   * Read-only retention counts for the memory ledger (issue #1612). Cheap map
+   * sizes and a summed retained-event count — no payload copies — so a soak can
+   * attribute RSS growth to the monitor's per-agent windows and Maps.
+   */
+  getRetentionMetrics(): Record<string, number> {
+    let retainedEvents = 0;
+    for (const events of this.agentEvents.values()) retainedEvents += events.length;
+    let suppressedCompletionSignalIds = 0;
+    for (const ids of this.suppressedCompletionSignalIds.values()) suppressedCompletionSignalIds += ids.size;
+    let outstandingSubagents = 0;
+    for (const map of this.outstandingSubagents.values()) outstandingSubagents += map.size;
+    return {
+      agents: this.agentEvents.size,
+      retainedEvents,
+      stoppedAgents: this.stoppedAgents.size,
+      transcriptPaths: this.agentTranscriptPaths.size,
+      suppressedCompletionSignalAgents: this.suppressedCompletionSignalIds.size,
+      suppressedCompletionSignalIds,
+      outstandingSubagentParents: this.outstandingSubagents.size,
+      outstandingSubagents,
+      ttlEvictedSubagentCounts: this.ttlEvictedSubagentEventCounts.size,
+    };
+  }
+
+  /**
    * Expose raw task records for server-side snapshot projection.
    * Monitor deliberately does not turn these into dashboard AgentState entries.
    */
@@ -613,6 +648,11 @@ export class Monitor {
     this.agentTranscriptPaths.delete(agentId);
     this.attentionQueue.purge(agentId);
     this.flushAndDeleteSubagents(agentId);
+    // Per-agent retention that no other path cleans up (issue #1612): both are
+    // only ever read for the same agentId, so dropping them at teardown cannot
+    // affect any surviving agent's projection.
+    this.suppressedCompletionSignalIds.delete(agentId);
+    this.ttlEvictedSubagentEventCounts.delete(agentId);
     this.stoppedAgents.add(agentId);
   }
 
@@ -929,6 +969,13 @@ export class Monitor {
       this.suppressedCompletionSignalIds.set(agentId, ids);
     }
     ids.add(signalId);
+    // Bound the set: evict oldest ids (Set preserves insertion order) so a
+    // long-lived agent cannot accumulate them without limit (issue #1612).
+    while (ids.size > MAX_SUPPRESSED_COMPLETION_SIGNAL_IDS) {
+      const oldest = ids.values().next().value;
+      if (oldest === undefined) break;
+      ids.delete(oldest);
+    }
   }
 
   private isSuppressedCompletionSignal(agentId: string, signalId: string): boolean {

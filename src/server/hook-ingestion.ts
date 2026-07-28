@@ -245,6 +245,22 @@ export class HookIngestion implements HookEventInjector {
     this.lagWarningThresholdMs = deps.lagWarningThresholdMs ?? DEFAULT_LAG_WARNING_THRESHOLD_MS;
   }
 
+  /**
+   * Read-only retention counts for the memory ledger (issue #1612). Cheap map
+   * and array sizes only — no payload copies — so a soak can attribute RSS
+   * growth to the hook-ingestion per-session buffers.
+   */
+  getRetentionMetrics(): Record<string, number> {
+    return {
+      cacheEntries: this.cache.size,
+      sequenceCounters: this.sequenceCounters.size,
+      metaSessions: this.metaByKookrSession.size,
+      coordinatorAuditTail: this.coordinatorAuditTail.length,
+      coordinatorPostToolUseRows: this.latestCoordinatorPostToolUseRows.size,
+      diagnosticsSessions: this.diagnosticsBySession.size,
+    };
+  }
+
   /** HookFileWatcher-compatible alias. Treats the call as file-source. */
   injectHookEvent(
     tmuxName: string,

@@ -3,6 +3,7 @@ import {
   DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
   DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
   DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
+  DEFAULT_OPERATIONAL_ALERT_PROCESS_RSS_BYTES,
   DEFAULT_OPERATIONAL_ALERT_SUSTAIN_SAMPLES,
   DEFAULT_REQUEST_BODY_LIMIT_BYTES,
   readOperationalAlertConfigFromEnv,
@@ -10,12 +11,12 @@ import {
 } from './config.js';
 
 describe('readOperationalAlertConfigFromEnv', () => {
-  test('defaults CPU, memory, and event-loop thresholds off with conservative disk thresholds', () => {
+  test('defaults CPU, memory, and event-loop thresholds off with conservative process-RSS and disk thresholds', () => {
     expect(readOperationalAlertConfigFromEnv({})).toEqual({
       cpuPercent: 0,
       memoryPercent: 0,
       eventLoopDelayMs: 0,
-      processRssBytes: 0,
+      processRssBytes: DEFAULT_OPERATIONAL_ALERT_PROCESS_RSS_BYTES,
       dataDirectoryFreePercent: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
       dataDirectoryFreeBytes: DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES,
       circuitBreakerOpenMs: DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS,
@@ -71,6 +72,7 @@ describe('readOperationalAlertConfigFromEnv', () => {
       KOOKR_ALERT_CPU_PERCENT: '   ',
       KOOKR_ALERT_MEMORY_PERCENT: 'abc',
       KOOKR_ALERT_EVENT_LOOP_DELAY_MS: 'Infinity',
+      KOOKR_ALERT_PROCESS_RSS_BYTES: '   ',
       KOOKR_ALERT_DATA_DIR_FREE_PERCENT: 'abc',
       KOOKR_ALERT_DATA_DIR_FREE_BYTES: 'Infinity',
       KOOKR_ALERT_CIRCUIT_BREAKER_OPEN_MS: 'abc',
@@ -78,9 +80,14 @@ describe('readOperationalAlertConfigFromEnv', () => {
     expect(config.cpuPercent).toBe(0);
     expect(config.memoryPercent).toBe(0);
     expect(config.eventLoopDelayMs).toBe(0);
+    expect(config.processRssBytes).toBe(DEFAULT_OPERATIONAL_ALERT_PROCESS_RSS_BYTES);
     expect(config.dataDirectoryFreePercent).toBe(DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT);
     expect(config.dataDirectoryFreeBytes).toBe(DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_BYTES);
     expect(config.circuitBreakerOpenMs).toBe(DEFAULT_OPERATIONAL_ALERT_CIRCUIT_BREAKER_OPEN_MS);
+  });
+
+  test('honors explicit KOOKR_ALERT_PROCESS_RSS_BYTES=0 opt-out', () => {
+    expect(readOperationalAlertConfigFromEnv({ KOOKR_ALERT_PROCESS_RSS_BYTES: '0' }).processRssBytes).toBe(0);
   });
 
   test('rejects fractional, zero, negative, or non-numeric sustainSamples', () => {

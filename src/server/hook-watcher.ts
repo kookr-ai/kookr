@@ -116,6 +116,21 @@ export class HookFileWatcher {
   private offsets = new Map<string, number>();
   private reading = new Set<string>(); // Mutex: prevent concurrent reads for same agent
   private healthBySession = new Map<string, MutableHookWatcherSessionHealth>();
+  /**
+   * Cumulative characters pulled off disk by readNewLines (issue #1612).
+   * readNewLines re-reads the entire (unboundedly growing) hook file on every
+   * fs.watch fire and every backup poll, so this counter divided by the read
+   * count is the average whole-file size re-read — the smoking-gun metric for
+   * the whole-file-re-read allocation-churn hypothesis under a memory soak.
+   */
+  private cumulativeReadChars = 0;
+  /**
+   * Monotonic count of readNewLines whole-file reads across the process
+   * lifetime (issue #1612). Global, unlike per-session `health.readCount` which
+   * is dropped on unwatch — so `cumulativeReadChars / cumulativeReadCount` stays
+   * a meaningful "average file size re-read" even as sessions come and go.
+   */
+  private cumulativeReadCount = 0;
   private pollIntervalMs: number;
   private adapter: HookEventInjector;
   private replayCheckpointPath: string | null;
@@ -268,6 +283,22 @@ export class HookFileWatcher {
     this.healthBySession.clear();
   }
 
+  /**
+   * Read-only retention/throughput counts for the memory ledger (issue #1612).
+   * `cumulativeReadChars / readCount` is the average whole-file size re-read per
+   * event. Both counters are process-lifetime monotonic (not per-session, which
+   * is dropped on unwatch) so the ratio stays meaningful across session churn.
+   */
+  getRetentionMetrics(): Record<string, number> {
+    return {
+      watchedSessions: this.watchers.size,
+      pollIntervals: this.pollIntervals.size,
+      offsets: this.offsets.size,
+      readCount: this.cumulativeReadCount,
+      cumulativeReadChars: this.cumulativeReadChars,
+    };
+  }
+
   getHealthSnapshot(): HookWatcherHealthSnapshot {
     const sessions = [...this.healthBySession.values()]
       .map((health) => projectWatcherHealth(health, this.offsets.get(health.tmuxName) ?? 0))
@@ -301,6 +332,8 @@ export class HookFileWatcher {
     try {
       const fileStat = await stat(filePath).catch(() => undefined);
       const content = await readFile(filePath, 'utf-8');
+      this.cumulativeReadChars += content.length;
+      this.cumulativeReadCount += 1;
       let offset = this.offsets.get(tmuxName) ?? 0;
 
       // Truncation / rotation recovery. The offset only ever grows, so if it
