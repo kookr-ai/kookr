@@ -3,6 +3,13 @@ name: PR checklist
 # Machine-verifies the anti-drift checklist in the PR description against the
 # actual diff. The verifier is checked out from the PR base SHA so a pull
 # request cannot silently weaken its own checklist gate.
+#
+# Bot-authored PRs (e.g. dependabot[bot]) cannot fill a human-authored
+# checklist, so they get an author-scoped bypass: the job still runs and
+# concludes SUCCESS (the required status context stays satisfied) but the
+# verification step is skipped. The bypass gates on the real PR author
+# (github.event.pull_request.user.*), never on PR-body content, so a human PR
+# merely mentioning dependabot cannot spoof it.
 
 on:
   pull_request:
@@ -22,17 +29,37 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Determine bot-author bypass
+        id: gate
+        # Gate on the actual PR author (login + account type), never body
+        # content, so the bypass cannot be spoofed by a human PR that merely
+        # mentions dependabot. GitHub sets user.type to "Bot" for bot accounts.
+        env:
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+        run: |
+          if [ "$PR_AUTHOR_LOGIN" = "dependabot[bot]" ] || [ "$PR_AUTHOR_TYPE" = "Bot" ]; then
+            echo "bypass=true" >> "$GITHUB_OUTPUT"
+            echo "Bot-authored PR by ${PR_AUTHOR_LOGIN} (type ${PR_AUTHOR_TYPE}); skipping checklist verification and reporting success."
+          else
+            echo "bypass=false" >> "$GITHUB_OUTPUT"
+            echo "Human-authored PR by ${PR_AUTHOR_LOGIN} (type ${PR_AUTHOR_TYPE}); checklist verification will run."
+          fi
+
       - name: Checkout PR
+        if: steps.gate.outputs.bypass != 'true'
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Setup Node
+        if: steps.gate.outputs.bypass != 'true'
         uses: actions/setup-node@v7
         with:
           node-version: 22
 
       - name: Checkout verifier from base
+        if: steps.gate.outputs.bypass != 'true'
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.sha }}
@@ -40,6 +67,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify checklist against diff
+        if: steps.gate.outputs.bypass != 'true'
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
