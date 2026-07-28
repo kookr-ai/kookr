@@ -80,6 +80,9 @@ jobs:
       - name: Validate CI-rerun bound present
         run: pnpm validate:rerun-bound
 
+      - name: Validate delivery-ownership contract present
+        run: pnpm validate:delivery-ownership
+
       - name: Validate documented commands
         run: pnpm validate:docs-commands
 
