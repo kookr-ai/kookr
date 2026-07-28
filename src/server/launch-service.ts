@@ -851,6 +851,7 @@ async function launchTaskCore(
     launchNote,
     deliveryAuthorization,
     autoCloseOnSignal: opts.autoCloseOnSignal,
+    unattended: opts.unattended,
   });
 
   if (taskStore.getActiveCount() >= maxActive) {

@@ -199,6 +199,8 @@ function enrichLiveState(state: AgentState, meta: SessionSnapshotMeta): void {
   state.blocks = task.blocks;
   state.blocked_by = task.blocked_by;
   state.ralphLoop = task.ralphLoop;
+  state.unattended = task.unattended;
+  if (task.operatorNeeded) state.operatorNeeded = task.operatorNeeded;
   if (task.tokenUsage) {
     state.tokenUsage = task.tokenUsage;
   }
@@ -239,6 +241,8 @@ function buildPendingTaskEntry(task: Task): AgentState {
     projectDisplayLabel: projectDisplayLabel({ projectId: task.projectId, cwd: task.cwd }),
     priority: task.priority,
     ralphLoop: task.ralphLoop,
+    unattended: task.unattended,
+    ...(task.operatorNeeded ? { operatorNeeded: task.operatorNeeded } : {}),
   };
 }
 
@@ -280,6 +284,8 @@ function buildTerminalTaskEntry(task: Task): AgentState {
     completionDigest: task.completionDigest,
     completionFeedback: task.completionFeedback,
     ralphLoop: task.ralphLoop,
+    unattended: task.unattended,
+    ...(task.operatorNeeded ? { operatorNeeded: task.operatorNeeded } : {}),
   };
 }
 

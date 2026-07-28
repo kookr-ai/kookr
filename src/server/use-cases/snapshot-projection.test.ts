@@ -282,6 +282,49 @@ describe('snapshot projection', () => {
     });
   });
 
+  // issue #1562: the unattended + operator-needed flags must cross the
+  // store→AgentState projection so the dashboard/tasks API can render the block.
+  it('projects unattended + operatorNeeded onto live and pending entries', () => {
+    const taskStore = new TaskStore();
+    const live = createTaskForMutation(taskStore, {
+      prompt: 'Autonomous work',
+      cwd: '/workspace/app',
+      unattended: true,
+    });
+    taskStore.addSession(live.id, {
+      tmuxSession: 'agent-unattended',
+      agentType: 'claude-code',
+      cwd: '/workspace/app',
+      createdAt: new Date('2026-07-28T10:00:00Z'),
+    });
+    taskStore.setOperatorNeeded(live.id, {
+      reason: 'interactive_tool_denied',
+      toolName: 'AskUserQuestion',
+      detectedAt: new Date('2026-07-28T10:05:00Z'),
+      message: 'blocked',
+    });
+
+    const pending = createTaskForMutation(taskStore, {
+      prompt: 'Pending autonomous work',
+      cwd: '/workspace/app',
+      unattended: true,
+    });
+    taskStore.pendTask(pending.id);
+
+    const snapshot = project(taskStore, [liveAgent('agent-unattended')]);
+
+    const liveEntry = snapshot.find((s) => s.agentId === 'agent-unattended');
+    expect(liveEntry?.unattended).toBe(true);
+    expect(liveEntry?.operatorNeeded).toMatchObject({
+      reason: 'interactive_tool_denied',
+      toolName: 'AskUserQuestion',
+    });
+
+    const pendingEntry = snapshot.find((s) => s.agentId === `pending-${pending.id}`);
+    expect(pendingEntry?.unattended).toBe(true);
+    expect(pendingEntry?.operatorNeeded).toBeUndefined();
+  });
+
   it('replaces terminal live sessions with clean synthetic terminal entries', () => {
     const taskStore = new TaskStore();
     const task = createTaskForMutation(taskStore, 'Run database migration', '/workspace/app');
