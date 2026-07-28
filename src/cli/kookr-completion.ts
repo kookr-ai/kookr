@@ -126,8 +126,20 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
   },
   {
     name: 'pr-checklist',
-    subcommands: ['verify'],
-    flags: ['--pr-body', '--base', '--json', '--explain', '-h', '--help'],
+    subcommands: ['verify', 'doctor'],
+    flags: [
+      '--pr-body',
+      '--from-command',
+      '--run-commands',
+      '--base',
+      '--json',
+      '--explain',
+      '-h',
+      '--help',
+    ],
+    flagValues: {
+      '--run-commands': ['none', 'ci'],
+    },
   },
   {
     name: 'push',

@@ -22,7 +22,7 @@ Usage:
   kookr maintenance backup [OPTIONS]  Create a crash-consistent data-dir backup tarball.
   kookr lesson status|drain|remember  Durable lesson-write spool (kb degraded path).
   kookr emission plan|dedupe|metrics|defer  Drain-coupled issue filing budget + dedupe.
-  kookr pr-checklist verify [OPTIONS] Verify a repo's anti-drift PR checklist against the diff.
+  kookr pr-checklist verify|doctor [OPTIONS]  Verify PR checklist or report local gate fail-open rate.
   kookr push test <deviceId>    Send a relay push test.
   kookr completion bash|zsh     Print a shell completion script.
 
