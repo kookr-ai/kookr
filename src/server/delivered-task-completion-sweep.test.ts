@@ -3,6 +3,11 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+vi.mock('./dirty-worktree-completion-finding.js', () => ({
+  surfaceDirtyWorktreeOnHeadlessCompletion: vi.fn(async () => false),
+}));
+import { surfaceDirtyWorktreeOnHeadlessCompletion } from './dirty-worktree-completion-finding.js';
+const mockSurfaceDirty = vi.mocked(surfaceDirtyWorktreeOnHeadlessCompletion);
 import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { signalOutboxPendingPath } from '../core/signal-outbox.js';
@@ -105,6 +110,29 @@ describe('autoCompleteDeliveredTasks (issue #1560)', () => {
     expect(taskStore.getTask(id)?.status).toBe('completed');
     // The completion tick (budget + polling slack) is within the 15-minute bound.
     expect(at.getTime() - T0.getTime()).toBeLessThanOrEqual(15 * 60_000);
+  });
+
+  test('surfaces a dirty-worktree finding before completing a delivered task (issue #1580)', async () => {
+    mockSurfaceDirty.mockClear();
+    mockSurfaceDirty.mockResolvedValue(true);
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    const tracker = createDeliveredCompletionTracker();
+    const past = plus(T0, DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS + 5_000);
+    const broadcastToAll = vi.fn();
+
+    // Prime the clock, then complete past the budget.
+    await autoCompleteDeliveredTasks(baseDeps(taskStore, () => MERGED, { tracker, now: () => T0, broadcastToAll }));
+    const r = await autoCompleteDeliveredTasks(
+      baseDeps(taskStore, () => MERGED, { tracker, now: () => past, broadcastToAll }),
+    );
+
+    expect(r.completedTaskIds).toEqual([id]);
+    expect(taskStore.getTask(id)?.status).toBe('completed');
+    // The finding is surfaced for the delivered task before completion.
+    expect(mockSurfaceDirty).toHaveBeenCalledTimes(1);
+    expect(mockSurfaceDirty.mock.calls[0]![0].id).toBe(id);
+    expect(mockSurfaceDirty.mock.calls[0]![1]).toMatchObject({ taskStore, broadcastToAll });
   });
 
   test('AC: the completion digest names the merged PR number', async () => {
