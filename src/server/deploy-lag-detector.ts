@@ -55,6 +55,43 @@ export const DEFAULT_STATUS_FETCH_TIMEOUT_MS = 8_000;
 export type DeployLagTargetResolver = () => Promise<DeployLagTargetSnapshot>;
 
 /**
+ * Answers "is `ancestor` contained in `descendant`?" for a repo — a
+ * `git merge-base --is-ancestor` check. Injected so the containment resolution
+ * of the live-verification flip (issue #1596) is trivially stubbed in tests.
+ */
+export type CommitAncestryChecker = (repoPath: string, ancestor: string, descendant: string) => Promise<boolean>;
+
+/**
+ * Default {@link CommitAncestryChecker}: exit 0 from `merge-base --is-ancestor`
+ * ⇒ contained. Every other outcome — not an ancestor (exit 1), an unknown
+ * commit (exit 128), or any error — resolves to `false`, so a merged unit is
+ * only ever flipped to live-verified on a positive containment proof, never on
+ * an ambiguous git result.
+ */
+export async function defaultCommitAncestryChecker(
+  repoPath: string,
+  ancestor: string,
+  descendant: string,
+): Promise<boolean> {
+  const { runGitIn } = await import('../core/git-helpers.js');
+  const result = await runGitIn(repoPath, ['merge-base', '--is-ancestor', ancestor, descendant]);
+  return result.kind === 'ok';
+}
+
+/**
+ * Fired on a converged (`up-to-date`) tick for a target whose repo is known
+ * (issue #1596): the deployed SHA has caught up to origin/main, so every merged
+ * unit it contains is now live. The handler receives the deployed SHA and an
+ * `isContained` predicate (bound to that SHA) it uses to resolve which merged
+ * units the SHA covers. This is the deploy-lag detector's "converged"
+ * observation named in issue #1596 as the mechanical flip signal.
+ */
+export type DeployVerifiedHandler = (
+  deployedSha: string,
+  isContained: (mergeCommit: string) => Promise<boolean>,
+) => void | Promise<void>;
+
+/**
  * A named monitored prod. The name is carried ALONGSIDE the resolver (not only
  * inside its returned snapshot) so a resolver that times out or throws — the
  * failure path most likely during a real incident — still yields a
@@ -63,6 +100,13 @@ export type DeployLagTargetResolver = () => Promise<DeployLagTargetSnapshot>;
 export interface DeployLagTarget {
   name: string;
   resolve: DeployLagTargetResolver;
+  /**
+   * Local checkout of this prod's repo, used to resolve merge-commit containment
+   * for the live-verification flip (issue #1596). Optional: a target without a
+   * repo path never drives the flip (its convergence is still alerted on as
+   * before), so the feature is purely additive.
+   */
+  repoPath?: string;
 }
 
 /** Path of the deploy-lag alert artifact (distinct from the smoke ticks' artifacts). */
@@ -125,6 +169,14 @@ export interface DeployLagDetectorDeps {
   broadcast?: (msg: ServerMessage) => void;
   /** Explicit alert-artifact path override. */
   alertPath?: string;
+  /**
+   * Called on a converged (`up-to-date`) tick for a target with a `repoPath`,
+   * once per newly-converged deployed SHA (issue #1596). Drives the ROI rollup's
+   * live-verified flip. Absent ⇒ the detector only alerts, exactly as before.
+   */
+  onDeployVerified?: DeployVerifiedHandler;
+  /** Resolves merge-commit containment for {@link onDeployVerified}. */
+  ancestryChecker?: CommitAncestryChecker;
   // --- test seams (all default to the real implementations) ---
   readArtifact?: (path: string) => AlertArtifact | null;
   writeArtifact?: (path: string, artifact: AlertArtifact) => void;
@@ -152,6 +204,10 @@ export class DeployLagDetector {
   private readonly overallTimeoutMs: number;
   private readonly alertPath: string;
   private readonly broadcast?: (msg: ServerMessage) => void;
+  private readonly onDeployVerified?: DeployVerifiedHandler;
+  private readonly ancestryChecker: CommitAncestryChecker;
+  /** Last deployed SHA a converged tick fired {@link onDeployVerified} for, per target — dedups repeat fires for an unchanged SHA. */
+  private readonly lastVerifiedShaByTarget = new Map<string, string>();
   private readonly readArtifact: (path: string) => AlertArtifact | null;
   private readonly writeArtifact: (path: string, artifact: AlertArtifact) => void;
   private readonly now: () => number;
@@ -164,6 +220,8 @@ export class DeployLagDetector {
     this.overallTimeoutMs = deps.overallTimeoutMs ?? DEFAULT_DEPLOY_LAG_OVERALL_TIMEOUT_MS;
     this.alertPath = deps.alertPath ?? deployLagAlertPath(deps.kookrDir);
     this.broadcast = deps.broadcast;
+    this.onDeployVerified = deps.onDeployVerified;
+    this.ancestryChecker = deps.ancestryChecker ?? defaultCommitAncestryChecker;
     this.readArtifact = deps.readArtifact ?? readAlertArtifact;
     this.writeArtifact = deps.writeArtifact ?? writeAlertArtifact;
     this.now = deps.now ?? Date.now;
@@ -272,7 +330,42 @@ export class DeployLagDetector {
         this.broadcast?.(buildDeployLagAlertMessage(artifact, 'recovered', this.alertPath));
       }
     }
+
+    // Live-verification flip (issue #1596): a converged target means its
+    // deployed SHA has caught up to origin/main, so every merged unit that SHA
+    // contains is now live. Runs independently of the alert edge above — a
+    // steady-state converged prod fires this once per newly-converged SHA. A
+    // lagging/unknown result never reaches here, so a failed/incomplete deploy
+    // flips nothing.
+    await this.maybeFireDeployVerified(results);
     return artifact;
+  }
+
+  /**
+   * For each target that CONVERGED (`up-to-date`) this tick and has a known
+   * repo, fire {@link onDeployVerified} once per newly-converged deployed SHA.
+   * The dedup (per-target last SHA) keeps a steady converged prod from
+   * re-flipping every hour; a genuinely new deploy (new SHA) fires again.
+   */
+  private async maybeFireDeployVerified(results: DeployLagTargetResult[]): Promise<void> {
+    if (!this.onDeployVerified) return;
+    const repoByTarget = new Map(this.targets.map((t) => [t.name, t.repoPath]));
+    for (const result of results) {
+      if (result.status !== 'up-to-date' || !result.deployedSha) continue;
+      const repoPath = repoByTarget.get(result.target);
+      if (!repoPath) continue;
+      if (this.lastVerifiedShaByTarget.get(result.target) === result.deployedSha) continue;
+      this.lastVerifiedShaByTarget.set(result.target, result.deployedSha);
+      const deployedSha = result.deployedSha;
+      try {
+        await this.onDeployVerified(
+          deployedSha,
+          (mergeCommit) => this.ancestryChecker(repoPath, mergeCommit, deployedSha),
+        );
+      } catch (err) {
+        this.logger.error('[deploy-lag] onDeployVerified handler failed:', err);
+      }
+    }
   }
 
   /**
@@ -443,13 +536,20 @@ export function createDeployLagDetectorFromEnv(deps: {
   kookrRepoPath: string;
   getRunningSha: () => string | null;
   broadcast?: (msg: ServerMessage) => void;
+  /** Drives the ROI rollup live-verified flip on a converged tick (issue #1596). */
+  onDeployVerified?: DeployVerifiedHandler;
 }): DeployLagDetector | undefined {
   const { enabled, intervalMs } = resolveDeployLagDetectorSettings(deps.env, deps.port);
   if (!enabled) return undefined;
 
   const config = resolveDeployLagConfig(deps.env, deps.kookrRepoPath);
   const targets: DeployLagTarget[] = [
-    { name: 'kookr', resolve: createKookrTargetResolver({ config, getRunningSha: deps.getRunningSha }) },
+    {
+      name: 'kookr',
+      resolve: createKookrTargetResolver({ config, getRunningSha: deps.getRunningSha }),
+      // The repo whose merge commits a converged kookr deploy makes live (#1596).
+      repoPath: config.kookrRepoPath,
+    },
   ];
   if (config.lucyStatusUrl && config.lucyRepoPath) {
     targets.push({
@@ -457,6 +557,7 @@ export function createDeployLagDetectorFromEnv(deps: {
       resolve: createLucyTargetResolver({
         config: { ...config, lucyStatusUrl: config.lucyStatusUrl, lucyRepoPath: config.lucyRepoPath },
       }),
+      repoPath: config.lucyRepoPath,
     });
   } else {
     console.log(
@@ -471,5 +572,6 @@ export function createDeployLagDetectorFromEnv(deps: {
     thresholdMs: config.thresholdMs,
     intervalMs,
     ...(deps.broadcast ? { broadcast: deps.broadcast } : {}),
+    ...(deps.onDeployVerified ? { onDeployVerified: deps.onDeployVerified } : {}),
   });
 }

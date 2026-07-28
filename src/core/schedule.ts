@@ -127,6 +127,15 @@ export interface ScheduleExecutionLedgerEntry {
    * launch (validation/backpressure rejections) or that succeeded.
    */
   launchPhaseTimings?: LaunchPhaseTimings;
+  /**
+   * Merge commit SHA of the delivery unit this fire produced (issue #1596),
+   * joined from the task's completion digest at ledger-write time. Present only
+   * for a fire whose PR MERGED — its absence means "not a merged unit", never a
+   * fabricated value. This is the containment key the ROI rollup tests against
+   * the last smoke-gate-passed prod SHA to distinguish `merged` from
+   * `live-verified` delivery.
+   */
+  mergeCommit?: string;
 }
 
 export interface ScheduleExecutionReceipt {
@@ -348,6 +357,35 @@ export class ScheduleStore {
   /** Materialized ROI rollups for the whole fleet (O(n); no ledger scan). */
   listRollups(): ScheduleRollup[] {
     return this.rollupStore.list();
+  }
+
+  /**
+   * Record a passed post-deploy smoke gate at `deployedSha` (issue #1596),
+   * flipping every merged unit whose merge commit that SHA contains to
+   * live-verified. The `isContained` predicate answers "is this merge commit an
+   * ancestor of the deployed SHA?" — resolved by the caller via git ancestry,
+   * OFF the request path (a deploy event, not a hot-path read). This store owns
+   * the schedule ledgers, so it enumerates every merged unit's commit here and
+   * hands the resolved live set to the rollup store; a failed smoke gate never
+   * calls this, so counts stay unchanged (the failed-deploy invariant).
+   */
+  async recordDeployVerification(
+    deployedSha: string,
+    isContained: (mergeCommit: string) => boolean | Promise<boolean>,
+  ): Promise<void> {
+    // Unique merge commits across the fleet — each tested for containment once.
+    const candidates = new Set<string>();
+    for (const schedule of this.schedules.values()) {
+      for (const entry of schedule.executionLedger) {
+        if (entry.mergeCommit) candidates.add(entry.mergeCommit);
+      }
+    }
+    const verified: string[] = [];
+    for (const commit of candidates) {
+      if (await isContained(commit)) verified.push(commit);
+    }
+    this.rollupStore.applyDeployVerification(this.list(), deployedSha, verified);
+    this.bumpRevision();
   }
 
   getLoadError(): string | undefined {
@@ -601,6 +639,9 @@ function normalizeExecutionLedgerEntry(raw: unknown): ScheduleExecutionLedgerEnt
   // malformed — no migration, no fabricated cost.
   const tokenUsage = normalizeLedgerTokenUsage(candidate.tokenUsage);
   const artifacts = normalizeLedgerArtifacts(candidate.artifacts);
+  const mergeCommit = typeof candidate.mergeCommit === 'string' && candidate.mergeCommit.length > 0
+    ? candidate.mergeCommit
+    : undefined;
   return {
     id: String(candidate.id),
     scheduleId: String(candidate.scheduleId),
@@ -618,6 +659,7 @@ function normalizeExecutionLedgerEntry(raw: unknown): ScheduleExecutionLedgerEnt
     ...(candidate.message ? { message: candidate.message } : {}),
     ...(tokenUsage ? { tokenUsage } : {}),
     ...(artifacts ? { artifacts } : {}),
+    ...(mergeCommit ? { mergeCommit } : {}),
   };
 }
 
