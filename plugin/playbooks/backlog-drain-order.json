@@ -1,0 +1,13 @@
+{
+  "description": "Canonical drain order for the kookr issue-batch selectors. Read by the selection step of parallel-issue-batch.md and implement-github-issue.md so a blank-shape scan proposes the safe no-gate tier before any gated (invariant-gate) issue, instead of picking arbitrarily.",
+  "rationale": "The 2026-07-26 two-day retro (umbrella #1546) split the seeded backlog into a no-gate tier (docs/tests/small localized changes, safe to drain in any order) and a gated tier whose durable-state / concurrency semantics require the invariant-spec step defined in #1539. Until that gate workflow exists, the selector must drain the no-gate tier first and defer gated issues. Gated membership is expressed by the invariant-gate label on the issue (source of truth); this file additionally lists the seeded gated numbers so the simulation and audits can cross-check.",
+  "gateLabel": "invariant-gate",
+  "howToJoinATier": "No-gate tier: append the issue number to noGateTier at the position you want it drained (order is significance-ranked, earliest first). Gated tier: add the invariant-gate label to the issue (gh issue edit <n> --add-label invariant-gate) and, for the seeded set, add its number to gatedTier. An issue carrying the invariant-gate label is always treated as gated even if it is not listed here, so future gated issues need only the label. A number must not appear in both tiers.",
+  "references": {
+    "umbrella": 1546,
+    "gateDefinition": 1539,
+    "seedIssue": 1568
+  },
+  "noGateTier": [1400, 1373, 1386, 1397, 1372, 1391, 1393, 1367, 1385, 1399],
+  "gatedTier": [1392, 1398, 1371, 1433]
+}
