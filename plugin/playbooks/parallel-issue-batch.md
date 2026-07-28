@@ -650,6 +650,76 @@ Completeness check over a rehearsal / live `children.json` (AC #1570):
 jq -e '[.[] | select(.delivery == null)] | length == 0' "$CHILDREN_FILE"
 ```
 
+### Parent-implementer fallback
+
+Sometimes a child cannot be spawned at all — the server is overloaded, the spawn
+call times out or returns a 500, or the task is created then lost/pruned before
+it ever opens a session. When that happens the parent may **implement the work
+unit itself in-session** (directly or via an implementer subagent) rather than
+strand the unit. This is the *parent-implementer fallback*. It is a legitimate
+path, but it MUST run through the same bookkeeping a spawned child would — the
+2026-07-26 incident (batch dd1fbcec) took this fallback with **no** bookkeeping,
+leaving units marked "parent implementer" with `task_id: null` and no delivery
+owner, which fed the duplicate-PR incident.
+
+**Trigger conditions.** Enter the fallback only when a spawn genuinely failed:
+
+- `kookr-spawn` timed out or returned a 500 / non-2xx under server load, or
+- the task id came back but the task was lost before its session started (never
+  appeared in `/api/tasks`, or was pruned before first activity).
+
+A child that spawned and is merely slow is **not** a trigger — supervise it per
+Phase 5. Do not race a live child with a parent takeover; that is exactly the
+same-task double-delivery this scheme forbids.
+
+**Required `children.json` bookkeeping.** A fallback unit is never spawned, so
+its `task_id` stays `null` — that is expected. What it must NOT be is an orphan.
+Every fallback-delivered unit records both:
+
+1. **A status transition trail.** Append each transition to a `status_trail`
+   array on the unit so a human can audit why the parent took over and when. The
+   canonical trail is:
+
+   `spawned → spawn-failed → parent-takeover → delivering → delivered → merged`
+
+   Record the trigger reason as a `note` on the `spawn-failed` (and
+   `parent-takeover`) entry.
+
+2. **A single-writer delivery owner.** Before the parent pushes or opens the PR
+   it MUST claim `delivery` ownership as `owner: "parent"` and obey the
+   read-before-push rule, exactly as in **Durable State → Delivery Ownership**
+   (#1570). The fallback reuses that single-writer gate; it does not invent a
+   second delivery path. The pre-`gh pr create` duplicate-guard (#1569) still
+   runs unchanged before the PR is opened.
+
+**Forbidden.** Do **not** deliver a unit outside this bookkeeping. Every
+fallback-delivered unit must have a recorded delivery owner **and** a status
+transition trail. A delivered unit with `task_id: null` **and** `delivery: null`
+is the orphan state that caused the incident and is a hard accounting violation.
+
+**Merge-sweep participation.** Because a fallback unit has `task_id: null`, the
+Phase 5 monitor and the merge sweep must match it by its `delivery` owner (and
+its PR / `Closes #N`), **not** by a child task id — otherwise the sweep silently
+drops it. A fallback unit that is `delivered` and owned by `parent` is merged by
+the same sweep, with head-branch deletion, as any child-delivered unit.
+
+**Phase 4 idempotency accounting.** Fallback units count toward the batch the
+same as spawned units: never take the fallback for a unit that already has a
+child task id, an open/merged PR, or a recorded blocker (Idempotency Rule 3/9).
+The accounting invariant over a rehearsal / live `children.json` is:
+
+```bash
+# No delivered unit may be an orphan (task_id: null AND no delivery owner).
+jq -e '[.[] | select(.delivered == true and .task_id == null and .delivery == null)] | length == 0' "$CHILDREN_FILE"
+```
+
+The executable rehearsal of this fallback — a simulated spawn failure driven
+through parent takeover with bookkeeping, delivery, and a merge sweep, plus the
+jq accounting assertion above — lives in
+`scripts/parent-implementer-fallback-rehearsal.ts` (+ its test), and the
+doc-guard `pnpm validate:parent-fallback` fails CI if this contract is dropped
+here.
+
 ## Phase 5: Monitor and Advance
 
 Run one monitoring sweep per Ralph iteration. If launched outside Ralph mode, repeat this phase with sleeps until terminal.
