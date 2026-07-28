@@ -32,7 +32,7 @@ import {
 } from '../core/hook-parentage.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { inferGitInfoPathFromEvent } from './git-path-inference.js';
-import { isValidEffortForAgent } from '../shared/contracts/agent-types.js';
+import { isValidEffortForAgent, isValidModelForAgent } from '../shared/contracts/agent-types.js';
 import {
   buildAgentLaunchContext,
   DEFAULT_PROMPT_SUBMIT_DELAY_MS,
@@ -302,6 +302,19 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         console.warn(
           `[claude-code-adapter] ignoring invalid effort "${effort}" for ${this.agentType}; ` +
           `valid: low, medium, high, xhigh, max`,
+        );
+      }
+    }
+    // Model pin (#1518). Resolution order: per-task override (opts.model) →
+    // unset (Claude Code's own default). No Kookr-global per-agent model
+    // default for claude-code. Upstream validation rejects unknown ids, so a
+    // stray bad value is skipped (+ warn) rather than passed to break launch.
+    if (opts?.model) {
+      if (isValidModelForAgent(this.agentType, opts.model)) {
+        args.push('--model', opts.model);
+      } else {
+        console.warn(
+          `[claude-code-adapter] ignoring invalid model "${opts.model}" for ${this.agentType}`,
         );
       }
     }

@@ -7,9 +7,13 @@ import { TaskStore } from '../../core/tasks.js';
 import { loadTasks } from '../../core/task-persistence.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { Monitor } from '../../core/monitor.js';
+import { Watchdog } from '../../core/watchdog.js';
 import type { TaskRouteDeps } from './shared.js';
-import type { ServerMessage } from '../../shared/contracts/messages.js';
+import type { ServerMessage, SystemResourceStatus } from '../../shared/contracts/messages.js';
+import { performance } from 'node:perf_hooks';
+import type { Anomaly } from '../../core/types.js';
 import { DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS } from '../../core/completion-ready-cleanup.js';
+import { SUPERVISOR_TOKEN_ENV } from '../supervisor-auth.js';
 
 vi.mock('../launch-service.js', async (importActual) => {
   const actual = await importActual<typeof import('../launch-service.js')>();
@@ -27,7 +31,7 @@ vi.mock('../use-cases/delete-task.js', async (importActual) => {
   };
 });
 
-import { launchTask, CwdValidationError, DrainModeError, EffortValidationError } from '../launch-service.js';
+import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, PendingQueueFullError, SpawnBurstLimitError } from '../launch-service.js';
 import { deleteTask } from '../use-cases/delete-task.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
@@ -346,6 +350,160 @@ describe('GET /api/tasks?view=compact', () => {
     const healthyRow = rows.find((t: { id: string }) => t.id === healthy.id);
     expect(healthyRow.suppressed).toBeUndefined();
   });
+
+  test('issue #1588: a pre-session disposition is queryable via both the full and compact API views', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'launch aborted', cwd: '/repo' });
+    // A launch-timeout cleanup disposed it before any session attached.
+    taskStore.setDisposition(task.id, {
+      reason: 'launch_timeout',
+      at: '2026-07-27T00:00:00.000Z',
+      source: 'launch-service',
+      detail: 'adapter launch timed out',
+    });
+    taskStore.terminateTask(task.id);
+
+    const app = mkApp(mkLoopDeps(taskStore));
+
+    // Full detail view surfaces the disposition (reason + timestamp).
+    const detail = await (await app.request(`/api/tasks/${task.id}`)).json();
+    expect(detail.status).toBe('terminated');
+    expect(detail.disposition).toMatchObject({
+      reason: 'launch_timeout',
+      at: '2026-07-27T00:00:00.000Z',
+      source: 'launch-service',
+    });
+
+    // Compact list view carries it too, so a dashboard row can show WHY.
+    const rows = await (await app.request('/api/tasks?view=compact')).json();
+    const row = rows.find((t: { id: string }) => t.id === task.id);
+    expect(row.disposition?.reason).toBe('launch_timeout');
+  });
+});
+
+describe('stuckReason projection (issue #1526 Phase B)', () => {
+  function anomaly(overrides: Partial<Anomaly> = {}): Anomaly {
+    return {
+      agentId: 'kookr-stuck',
+      type: 'needs_input',
+      severity: 'info',
+      explanation: 'test anomaly',
+      detectedAt: new Date('2026-07-24T10:00:00.000Z'),
+      ...overrides,
+    };
+  }
+
+  function seedInProgressTask(taskStore: TaskStore, tmuxSession: string) {
+    const task = taskStore.createTask('Do the thing', '/repo');
+    taskStore.addSession(task.id, {
+      tmuxSession,
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(),
+      lastStatus: 'working',
+    });
+    return taskStore.getTask(task.id)!;
+  }
+
+  function findRow(rows: Array<{ id: string }>, id: string) {
+    return rows.find((t) => t.id === id);
+  }
+
+  test('pendingSignal completion_ready → stuckReason awaiting_completion_ack, on both full and compact views', async () => {
+    const taskStore = new TaskStore();
+    const task = seedInProgressTask(taskStore, 'kookr-ack');
+    taskStore.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-07-24T10:00:00.000Z' });
+
+    const app = mkApp(mkLoopDeps(taskStore));
+    const full = findRow(await (await app.request('/api/tasks')).json(), task.id);
+    expect(full.stuckReason).toBe('awaiting_completion_ack');
+
+    const compact = findRow(await (await app.request('/api/tasks?view=compact')).json(), task.id);
+    expect(compact.stuckReason).toBe('awaiting_completion_ack');
+
+    const detail = await (await app.request(`/api/tasks/${task.id}`)).json();
+    expect(detail.stuckReason).toBe('awaiting_completion_ack');
+  });
+
+  test('queued needs_input anomaly → stuckReason waiting_on_input', async () => {
+    const taskStore = new TaskStore();
+    const task = seedInProgressTask(taskStore, 'kookr-needs-input');
+    const queue = new AttentionQueue();
+    queue.enqueue('kookr-needs-input', anomaly({ agentId: 'kookr-needs-input', type: 'needs_input' }));
+
+    const deps = mkLoopDeps(taskStore);
+    deps.queue = queue;
+    const app = mkApp(deps);
+    const row = findRow(await (await app.request('/api/tasks')).json(), task.id);
+    expect(row.stuckReason).toBe('waiting_on_input');
+  });
+
+  test('queued permission_blocked anomaly → stuckReason permission_blocked', async () => {
+    const taskStore = new TaskStore();
+    const task = seedInProgressTask(taskStore, 'kookr-perm');
+    const queue = new AttentionQueue();
+    queue.enqueue('kookr-perm', anomaly({ agentId: 'kookr-perm', type: 'permission_blocked', severity: 'warning' }));
+
+    const deps = mkLoopDeps(taskStore);
+    deps.queue = queue;
+    const app = mkApp(deps);
+    const row = findRow(await (await app.request('/api/tasks')).json(), task.id);
+    expect(row.stuckReason).toBe('permission_blocked');
+  });
+
+  test('queued stale_agent anomaly → stuckReason hung_suspect', async () => {
+    const taskStore = new TaskStore();
+    const task = seedInProgressTask(taskStore, 'kookr-hung');
+    const queue = new AttentionQueue();
+    queue.enqueue('kookr-hung', anomaly({ agentId: 'kookr-hung', type: 'stale_agent', severity: 'warning' }));
+
+    const deps = mkLoopDeps(taskStore);
+    deps.queue = queue;
+    deps.watchdog = new Watchdog();
+    const app = mkApp(deps);
+    const row = findRow(await (await app.request('/api/tasks')).json(), task.id);
+    expect(row.stuckReason).toBe('hung_suspect');
+  });
+
+  test('a genuinely healthy inProgress task carries no stuckReason field at all', async () => {
+    const taskStore = new TaskStore();
+    const task = seedInProgressTask(taskStore, 'kookr-healthy-row');
+    const deps = mkLoopDeps(taskStore);
+    deps.queue = new AttentionQueue();
+    deps.watchdog = new Watchdog();
+
+    const app = mkApp(deps);
+    const row = findRow(await (await app.request('/api/tasks')).json(), task.id);
+    expect(row.stuckReason).toBeUndefined();
+    expect(Object.keys(row)).not.toContain('stuckReason');
+  });
+
+  test('a non-inProgress task (pending, no session) never carries stuckReason, even with queue/watchdog wired', async () => {
+    const taskStore = new TaskStore();
+    const pending = taskStore.createTask('Queued task', '/repo');
+    const deps = mkLoopDeps(taskStore);
+    deps.queue = new AttentionQueue();
+    deps.watchdog = new Watchdog();
+
+    const app = mkApp(deps);
+    const row = findRow(await (await app.request('/api/tasks')).json(), pending.id);
+    expect(row.status).toBe('open');
+    expect(row.stuckReason).toBeUndefined();
+  });
+
+  test('watchdog state absent (deps.watchdog omitted) never crashes and treats the task as working', async () => {
+    const taskStore = new TaskStore();
+    const task = seedInProgressTask(taskStore, 'kookr-no-watchdog');
+    const deps = mkLoopDeps(taskStore);
+    deps.queue = new AttentionQueue();
+    // deps.watchdog intentionally left unset.
+
+    const app = mkApp(deps);
+    const res = await app.request('/api/tasks');
+    expect(res.status).toBe(200);
+    const row = findRow(await res.json(), task.id);
+    expect(row.stuckReason).toBeUndefined();
+  });
 });
 
 describe('GET /api/tasks/completion-ready/stale', () => {
@@ -415,6 +573,43 @@ describe('GET /api/tasks/completion-ready/stale', () => {
     const res = await app.request('/api/tasks/completion-ready/stale?thresholdMs=9007199254740992');
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'thresholdMs must be a safe integer' });
+  });
+
+  test('threads getCompletionReadyTtlMs and reports closeReason: ttl_escalation (issue #1526 Phase A)', async () => {
+    const taskStore = new TaskStore();
+    // Ask-first, past a 5-minute TTL but well under the 1h thresholdMs query
+    // below — only reachable via the TTL tier, proving ttlMs was threaded in.
+    const ttlEligible = taskStore.createTask({
+      prompt: 'Ask-first past the TTL',
+      cwd: '/repo',
+      deliveryAuthorization: 'ask-first',
+    });
+    taskStore.addSession(ttlEligible.id, {
+      tmuxSession: `kookr-${ttlEligible.id}`,
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(Date.now() - 20 * 60_000),
+    });
+    taskStore.setPendingSignal(ttlEligible.id, {
+      kind: 'completion_ready',
+      raisedAt: new Date(Date.now() - 10 * 60_000).toISOString(), // 10 minutes old
+    });
+
+    const app = mkApp({
+      ...mkLoopDeps(taskStore),
+      getCompletionReadyTtlMs: () => 5 * 60_000, // 5 minutes — past by the 10-minute-old signal
+    });
+    const res = await app.request('/api/tasks/completion-ready/stale?thresholdMs=3600000');
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.tasks).toEqual([
+      expect.objectContaining({
+        task: expect.objectContaining({ id: ttlEligible.id }),
+        canAutoClose: true,
+        closeReason: 'ttl_escalation',
+      }),
+    ]);
   });
 });
 
@@ -845,6 +1040,290 @@ describe('POST /api/tasks error paths', () => {
     expect(res.status).toBe(201);
     expect(launchTask).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ effort: 'max' }));
   });
+
+  test('returns 400 when model is not a string (#1518)', async () => {
+    for (const bad of [3, null, ['claude-fable-5'], { id: 'claude-fable-5' }]) {
+      vi.mocked(launchTask).mockClear();
+      const res = await mkApp(mkLoopDeps(new TaskStore())).request('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'p', cwd: '/cwd', model: bad }),
+      });
+      expect(res.status, `model=${JSON.stringify(bad)}`).toBe(400);
+      expect((await res.json()).error).toMatch(/model must be a string/);
+      expect(launchTask).not.toHaveBeenCalled();
+    }
+  });
+
+  test('maps ModelValidationError to 400 with code invalid_model (#1518)', async () => {
+    vi.mocked(launchTask).mockRejectedValueOnce(
+      new ModelValidationError('Invalid model "not-real" for agent claude-code'),
+    );
+    const taskStore = new TaskStore();
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd', model: 'not-real' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'invalid_model' });
+  });
+
+  // --- Server-side backpressure (issue #1526 Phase C / C3) ---
+
+  const backpressureLedger = {
+    maxActiveTasks: 10,
+    active: 10,
+    free: 0,
+    byClass: { working: 2, finishedAwaitingAck: 7, hungSuspect: 1, launching: 0 },
+    pendingQueueDepth: 24,
+    oldestPendingAgeMs: 120_000,
+    oldestFinishedAwaitingAckAgeMs: 3_600_000,
+  };
+
+  test('maps PendingQueueFullError to 429 with code + full capacity ledger body (issue #1526 C3)', async () => {
+    vi.mocked(launchTask).mockRejectedValueOnce(new PendingQueueFullError(backpressureLedger, 24));
+    const res = await mkApp(mkLoopDeps(new TaskStore())).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      code: 'pending_queue_full',
+      maxPendingTasks: 24,
+      capacity: backpressureLedger,
+    });
+    expect(body.error).toMatch(/Pending queue is full/);
+  });
+
+  test('maps SpawnBurstLimitError to 429 with code, ledger, budget fields and Retry-After (issue #1526 C3)', async () => {
+    vi.mocked(launchTask).mockRejectedValueOnce(new SpawnBurstLimitError(
+      { allowed: false, source: 'api:actor:lucy', count: 30, limit: 30, windowMs: 600_000, retryAfterMs: 42_000 },
+      backpressureLedger,
+    ));
+    const res = await mkApp(mkLoopDeps(new TaskStore())).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('42');
+    expect(await res.json()).toMatchObject({
+      code: 'spawn_burst_limit',
+      source: 'api:actor:lucy',
+      limit: 30,
+      windowMs: 600_000,
+      retryAfterMs: 42_000,
+      capacity: backpressureLedger,
+    });
+  });
+
+  test('forwards the X-Kookr-Actor header as launchActorId for actor-qualified budgets (issue #1526 C3)', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Kookr-Actor': 'lucy-supervisor',
+      },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      launchActorId: 'lucy-supervisor',
+    }));
+  });
+
+  test('omits launchActorId when the actor header is absent or blank', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Kookr-Actor': '   ' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      launchActorId: undefined,
+    }));
+  });
+
+  test('forwards a valid string model to launchTask (#1518)', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: 'p',
+        cwd: '/cwd',
+        model: 'claude-fable-5',
+        effort: 'max',
+      }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ model: 'claude-fable-5', effort: 'max' }),
+    );
+  });
+});
+
+// --- Load-based admission control (issue #1590) ---
+describe('POST /api/tasks event-loop saturation admission (issue #1590)', () => {
+  beforeEach(() => {
+    vi.mocked(launchTask).mockReset();
+  });
+
+  /** Minimal resource snapshot carrying a chosen event-loop delay p95 (ms). */
+  function statusWithEventLoopP95(p95Ms: number | null) {
+    return {
+      source: { kind: 'server-host' as const },
+      server: { eventLoopDelayP95Ms: p95Ms },
+    } as unknown as SystemResourceStatus;
+  }
+
+  function admissionDeps(
+    taskStore: TaskStore,
+    p95Ms: number | null,
+    over: Partial<TaskRouteDeps> = {},
+  ): TaskRouteDeps {
+    return {
+      ...mkLoopDeps(taskStore),
+      getLatestResourceStatus: () => statusWithEventLoopP95(p95Ms),
+      admissionControlConfig: { eventLoopDelayThresholdMs: 1_000, retryAfterSeconds: 2 },
+      ...over,
+    };
+  }
+
+  test('sheds with 503 + Retry-After + saturation code in <2s when p95 exceeds the threshold, without launching', async () => {
+    const taskStore = new TaskStore();
+    // launchTask must never be reached — assert on the mock, not just the body.
+    vi.mocked(launchTask).mockImplementation(async () => {
+      throw new Error('launchTask must not run when the event loop is saturated');
+    });
+    const started = performance.now();
+    const res = await mkApp(admissionDeps(taskStore, 4_000)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    const elapsedMs = performance.now() - started;
+    expect(res.status).toBe(503);
+    // Timing bound (acceptance criterion). This is a smoke bound: the reject
+    // path is a synchronous short-circuit, so a regression that instead moved
+    // admission *after* `await c.req.json()` / into the launch path is caught by
+    // the `launchTask` not-called assertion below, not by the clock. The bound
+    // guards only against the reject path itself gaining an unexpected await.
+    expect(elapsedMs).toBeLessThan(2_000);
+    expect(res.headers.get('Retry-After')).toBe('2');
+    const body = await res.json();
+    expect(body).toMatchObject({
+      code: 'event_loop_saturated',
+      observedEventLoopDelayP95Ms: 4_000,
+      thresholdMs: 1_000,
+      retryAfterSeconds: 2,
+    });
+    // Distinguishable from the #1536 depth 429.
+    expect(body.code).not.toBe('pending_queue_full');
+    expect(body.code).not.toBe('spawn_burst_limit');
+    expect(body.error).toMatch(/saturat/i);
+    expect(launchTask).not.toHaveBeenCalled();
+  });
+
+  test('the Retry-After header tracks the configured value, not a hardcoded default', async () => {
+    const res = await mkApp(
+      admissionDeps(new TaskStore(), 4_000, {
+        admissionControlConfig: { eventLoopDelayThresholdMs: 1_000, retryAfterSeconds: 5 },
+      }),
+    ).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Retry-After')).toBe('5');
+    expect(await res.json()).toMatchObject({ retryAfterSeconds: 5 });
+  });
+
+  test('provider wired but returning a null snapshot (pre-first-sample) fails open', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(
+      admissionDeps(taskStore, 4_000, { getLatestResourceStatus: () => null }),
+    ).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledTimes(1);
+  });
+
+  test('at exactly the threshold, sheds (boundary is >=)', async () => {
+    const res = await mkApp(admissionDeps(new TaskStore(), 1_000)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(503);
+  });
+
+  test('below the threshold, POST is unchanged — proceeds to launch (201)', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(admissionDeps(taskStore, 50)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledTimes(1);
+  });
+
+  test('unavailable saturation signal (null) fails open — POST proceeds', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(admissionDeps(taskStore, null)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledTimes(1);
+  });
+
+  test('disabled gate (threshold 0) admits even under extreme lag', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const res = await mkApp(
+      admissionDeps(taskStore, 99_999, {
+        admissionControlConfig: { eventLoopDelayThresholdMs: 0, retryAfterSeconds: 2 },
+      }),
+    ).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledTimes(1);
+  });
+
+  test('no resource-status provider wired (deps omit it) fails open', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    // mkLoopDeps has no getLatestResourceStatus; env fallback config applies.
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(201);
+    expect(launchTask).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('DELETE /api/tasks/:id error paths', () => {
@@ -910,7 +1389,7 @@ describe('DELETE /api/tasks/:id error paths', () => {
       };
       expect(row).toEqual(expect.objectContaining({
         type: 'task.deleteTask',
-        actor: { source: 'api' },
+        actor: { source: 'api', actorId: 'unattributed' },
         scope: { kind: 'project', projectId: 'github.com/org/repo' },
         count: 1,
         deletedTaskIds: [task.id],
@@ -1396,6 +1875,73 @@ describe('POST /api/tasks/:id/signal', () => {
     expect(broadcastToAll).toHaveBeenCalled();
   });
 
+  test('accepts a client signalId and stores it on the pending signal (issue #1541)', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+    const res = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', signalId: 'sig-abc', note: 'done' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.signal.signalId).toBe('sig-abc');
+    expect(taskStore.getPendingSignal(task.id)?.signalId).toBe('sig-abc');
+  });
+
+  test('replays the same signalId as a pure no-op without re-firing outcome hooks', async () => {
+    const taskStore = new TaskStore();
+    const onTaskOutcome = vi.fn();
+    const broadcastToAll = vi.fn();
+    const app = mkApp({ ...mkLoopDeps(taskStore), onTaskOutcome, broadcastToAll });
+    const task = taskStore.createTask('Ship it', '/repo');
+
+    const first = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', signalId: 'sig-1', note: 'first' }),
+    });
+    expect(first.status).toBe(200);
+    const firstBody = await first.json();
+    const raisedAt = firstBody.signal.raisedAt as string;
+    expect(onTaskOutcome).toHaveBeenCalledTimes(1);
+    const broadcastsAfterFirst = broadcastToAll.mock.calls.length;
+
+    const second = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', signalId: 'sig-1', note: 'replay' }),
+    });
+    expect(second.status).toBe(200);
+    const secondBody = await second.json();
+    expect(secondBody.idempotentReplay).toBe(true);
+    expect(secondBody.signal.raisedAt).toBe(raisedAt);
+    expect(onTaskOutcome).toHaveBeenCalledTimes(1);
+    // Pure replay must not re-broadcast.
+    expect(broadcastToAll.mock.calls.length).toBe(broadcastsAfterFirst);
+  });
+
+  test('rejects an empty or oversized signalId', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const task = taskStore.createTask('Ship it', '/repo');
+
+    const empty = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', signalId: '   ' }),
+    });
+    expect(empty.status).toBe(400);
+
+    const oversized = await app.request(`/api/tasks/${task.id}/signal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'completion_ready', signalId: 'x'.repeat(201) }),
+    });
+    expect(oversized.status).toBe(400);
+  });
+
   describe('autoCloseOnSignal', () => {
     function mkAutoCloseDeps(taskStore: TaskStore): TaskRouteDeps {
       const queue = new AttentionQueue();
@@ -1442,6 +1988,28 @@ describe('POST /api/tasks/:id/signal', () => {
       expect(body).not.toHaveProperty('outcome');
       expect(taskStore.getTask(id)!.status).toBe('inProgress');
       expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
+    });
+
+    test('reports the configured auto-close delay via getAutoCloseCompletionReadyDelayMs', async () => {
+      const taskStore = new TaskStore();
+      const id = startActiveTask(taskStore, { autoCloseOnSignal: true });
+      const deps = mkAutoCloseDeps(taskStore);
+      // Wire the live getter the way index.ts does (settings default 30m → ms).
+      (deps as { getAutoCloseCompletionReadyDelayMs?: () => number }).getAutoCloseCompletionReadyDelayMs =
+        () => 45 * 60 * 1000;
+
+      const res = await mkApp(deps).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.autoCloseScheduled).toBe(true);
+      // The configured value wins over the DEFAULT_STALE... fallback.
+      expect(body.autoCloseAfterMs).toBe(45 * 60 * 1000);
+      expect(body.autoCloseAfterMs).not.toBe(DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS);
     });
 
     test('does not advertise delayed auto-close for an active Ralph-loop task', async () => {
@@ -1535,6 +2103,115 @@ describe('POST /api/tasks/:id/signal', () => {
       expect(body.autoCloseScheduled).toBe(true);
       expect(body.autoCloseAfterMs).toBe(DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS);
       expect(taskStore.getTask(task.id)!.status).toBe('inProgress');
+    });
+  });
+
+  describe('lesson-decision gate (issue #1538)', () => {
+    let kookrDir: string;
+
+    beforeEach(() => {
+      kookrDir = mkdtempSync(join(tmpdir(), 'kookr-lesson-gate-'));
+      mkdirSync(join(kookrDir, 'hooks'), { recursive: true });
+    });
+
+    afterEach(() => {
+      rmSync(kookrDir, { recursive: true, force: true });
+      delete process.env.KOOKR_LESSON_DECISION_GATE;
+    });
+
+    function seedSessionWithHook(
+      taskStore: TaskStore,
+      command: string,
+      tmuxSession = 'kookr-lesson-gate',
+    ): string {
+      const task = taskStore.createTask({ prompt: 'Ship it', cwd: '/repo' });
+      taskStore.addSession(task.id, {
+        tmuxSession,
+        agentType: 'claude-code',
+        cwd: '/repo',
+        createdAt: new Date(),
+      });
+      writeFileSync(
+        join(kookrDir, 'hooks', `${tmuxSession}.jsonl`),
+        `${JSON.stringify({
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Bash',
+          tool_input: { command },
+        })}\n`,
+        'utf8',
+      );
+      return task.id;
+    }
+
+    test('rejects completion_ready when sessions exist but no lesson decision', async () => {
+      const taskStore = new TaskStore();
+      const id = seedSessionWithHook(taskStore, 'ls -la');
+      const deps = { ...mkLoopDeps(taskStore), kookrDir };
+
+      const res = await mkApp(deps).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('lesson_decision_required');
+      expect(body.decision).toBe('no-kb-activity');
+      expect(body.hint).toMatch(/kb remember/);
+      expect(taskStore.getPendingSignal(id)).toBeUndefined();
+    });
+
+    test('allows completion_ready after a kb remember lesson write', async () => {
+      const taskStore = new TaskStore();
+      const id = seedSessionWithHook(
+        taskStore,
+        'kb remember --kb=agent-task-lessons --title="x" --stdin --yes',
+      );
+      const deps = { ...mkLoopDeps(taskStore), kookrDir };
+
+      const res = await mkApp(deps).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready', note: 'done' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
+    });
+
+    test('allows completion_ready after an explicit skip marker', async () => {
+      const taskStore = new TaskStore();
+      const id = seedSessionWithHook(
+        taskStore,
+        "printf 'No generic KB lesson: %s\\n' 'purely mechanical rename'",
+      );
+      const deps = { ...mkLoopDeps(taskStore), kookrDir };
+
+      const res = await mkApp(deps).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
+    });
+
+    test('kill-switch KOOKR_LESSON_DECISION_GATE=off bypasses the gate', async () => {
+      process.env.KOOKR_LESSON_DECISION_GATE = 'off';
+      const taskStore = new TaskStore();
+      const id = seedSessionWithHook(taskStore, 'ls -la');
+      const deps = { ...mkLoopDeps(taskStore), kookrDir };
+
+      const res = await mkApp(deps).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
     });
   });
 });
@@ -1638,7 +2315,7 @@ describe('POST /api/tasks/abort (issue #1325)', () => {
       const row = JSON.parse(readFileSync(join(kookrDir, 'audit.jsonl'), 'utf-8').trim()) as Record<string, unknown>;
       expect(row).toEqual(expect.objectContaining({
         type: 'task.batchAbort',
-        actor: { source: 'api' },
+        actor: { source: 'api', actorId: 'unattributed' },
         reason: 'shutdown',
         count: 1,
         abortedTaskIds: [live.id],
@@ -1705,5 +2382,496 @@ describe('POST /api/tasks/abort (issue #1325)', () => {
     expect(body.summary).toEqual({ total: 1, aborted: 1, already_terminal: 0, not_found: 0, failed: 0 });
     expect(body.results).toEqual([{ taskId: live.id, outcome: 'aborted', status: 'cancelled' }]);
     expect(taskStore.getTask(live.id)!.status).toBe('cancelled');
+  });
+});
+
+describe('X-Kookr-Actor attribution (issue #1526 Phase B)', () => {
+  function mkAttributionDeps(taskStore: TaskStore, kookrDir: string): TaskRouteDeps {
+    const queue = new AttentionQueue();
+    const monitor = new Monitor(taskStore, queue);
+    return {
+      taskStore,
+      monitor,
+      queue,
+      adapter: { stop: vi.fn(async () => {}) } as never,
+      hookWatcher: { stop: vi.fn(), isWatching: () => false, watch: vi.fn() } as never,
+      watchdog: { unregisterAgent: vi.fn() } as never,
+      broadcastToAll: vi.fn(),
+      serverCwd: '/server',
+      kookrDir,
+    } as unknown as TaskRouteDeps;
+  }
+
+  test('a supplied header flows into the batch-abort audit row actor', async () => {
+    const kookrDir = mkdtempSync(join(tmpdir(), 'kookr-actor-abort-'));
+    try {
+      const taskStore = new TaskStore();
+      const live = taskStore.createTask('live', '/repo');
+      taskStore.addSession(live.id, { tmuxSession: 'kookr-live', agentType: 'claude-code', cwd: '/repo-wt', createdAt: new Date() });
+
+      const res = await mkApp(mkAttributionDeps(taskStore, kookrDir)).request('/api/tasks/abort', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-kookr-actor': 'lucy-supervisor' },
+        body: JSON.stringify({ taskIds: [live.id] }),
+      });
+      expect(res.status).toBe(200);
+
+      const row = JSON.parse(readFileSync(join(kookrDir, 'audit.jsonl'), 'utf-8').trim()) as { actor: unknown };
+      expect(row.actor).toEqual({ source: 'api', actorId: 'lucy-supervisor' });
+    } finally {
+      rmSync(kookrDir, { recursive: true, force: true });
+    }
+  });
+
+  test('a supplied header flows into the complete audit row actor', async () => {
+    const kookrDir = mkdtempSync(join(tmpdir(), 'kookr-actor-complete-'));
+    try {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Complete me', '/repo');
+      taskStore.addSession(task.id, { tmuxSession: 'kookr-live', agentType: 'claude-code', cwd: '/repo-wt', createdAt: new Date() });
+
+      const res = await mkApp(mkAttributionDeps(taskStore, kookrDir)).request(`/api/tasks/${task.id}/complete`, {
+        method: 'POST',
+        headers: { 'x-kookr-actor': 'lucy-supervisor' },
+      });
+      expect(res.status).toBe(200);
+
+      const row = JSON.parse(readFileSync(join(kookrDir, 'audit.jsonl'), 'utf-8').trim()) as { actor: unknown };
+      expect(row.actor).toEqual({ source: 'api', actorId: 'lucy-supervisor' });
+    } finally {
+      rmSync(kookrDir, { recursive: true, force: true });
+    }
+  });
+
+  test('an omitted header records the actor as unattributed', async () => {
+    const kookrDir = mkdtempSync(join(tmpdir(), 'kookr-actor-missing-'));
+    try {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Complete me', '/repo');
+      taskStore.addSession(task.id, { tmuxSession: 'kookr-live', agentType: 'claude-code', cwd: '/repo-wt', createdAt: new Date() });
+
+      const res = await mkApp(mkAttributionDeps(taskStore, kookrDir)).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+      expect(res.status).toBe(200);
+
+      const row = JSON.parse(readFileSync(join(kookrDir, 'audit.jsonl'), 'utf-8').trim()) as { actor: unknown };
+      expect(row.actor).toEqual({ source: 'api', actorId: 'unattributed' });
+    } finally {
+      rmSync(kookrDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('KOOKR_SUPERVISOR_TOKEN gate (issue #1526 Phase B)', () => {
+  const originalToken = process.env[SUPERVISOR_TOKEN_ENV];
+
+  afterEach(() => {
+    if (originalToken === undefined) delete process.env[SUPERVISOR_TOKEN_ENV];
+    else process.env[SUPERVISOR_TOKEN_ENV] = originalToken;
+  });
+
+  function mkGateDeps(taskStore: TaskStore): TaskRouteDeps {
+    const queue = new AttentionQueue();
+    const monitor = new Monitor(taskStore, queue);
+    return {
+      taskStore,
+      monitor,
+      queue,
+      adapter: { stop: vi.fn(async () => {}) } as never,
+      hookWatcher: { stop: vi.fn(), isWatching: () => false, watch: vi.fn() } as never,
+      watchdog: { unregisterAgent: vi.fn() } as never,
+      broadcastToAll: vi.fn(),
+      serverCwd: '/server',
+    } as unknown as TaskRouteDeps;
+  }
+
+  function addLiveSession(taskStore: TaskStore, taskId: string, tmuxSession = 'kookr-live'): void {
+    taskStore.addSession(taskId, {
+      tmuxSession,
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(),
+    });
+  }
+
+  test('complete: env unset stays open (200), unchanged from today', async () => {
+    delete process.env[SUPERVISOR_TOKEN_ENV];
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Open by default', '/repo');
+    addLiveSession(taskStore, task.id);
+    const res = await mkApp(mkGateDeps(taskStore)).request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+    expect(res.status).toBe(200);
+  });
+
+  test('complete: env set rejects missing/wrong bearer with 401, accepts correct with 200', async () => {
+    process.env[SUPERVISOR_TOKEN_ENV] = 'sup3r-secret';
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Gated', '/repo');
+    addLiveSession(taskStore, task.id);
+    const app = mkApp(mkGateDeps(taskStore));
+
+    const noAuth = await app.request(`/api/tasks/${task.id}/complete`, { method: 'POST' });
+    expect(noAuth.status).toBe(401);
+    expect(await noAuth.json()).toEqual({ error: 'supervisor-unauthorized' });
+
+    const wrongAuth = await app.request(`/api/tasks/${task.id}/complete`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer wrong' },
+    });
+    expect(wrongAuth.status).toBe(401);
+
+    const rightAuth = await app.request(`/api/tasks/${task.id}/complete`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer sup3r-secret' },
+    });
+    expect(rightAuth.status).toBe(200);
+  });
+
+  test('abort: gated the same way', async () => {
+    process.env[SUPERVISOR_TOKEN_ENV] = 'sup3r-secret';
+    const app = mkApp(mkGateDeps(new TaskStore()));
+
+    const noAuth = await app.request('/api/tasks/abort', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ taskIds: [] }),
+    });
+    expect(noAuth.status).toBe(401);
+
+    const rightAuth = await app.request('/api/tasks/abort', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer sup3r-secret' },
+      body: JSON.stringify({ taskIds: [] }),
+    });
+    expect(rightAuth.status).toBe(200);
+  });
+
+  test('ack-all: gated the same way', async () => {
+    process.env[SUPERVISOR_TOKEN_ENV] = 'sup3r-secret';
+    const app = mkApp(mkGateDeps(new TaskStore()));
+
+    const noAuth = await app.request('/api/tasks/completion-ready/ack-all', { method: 'POST' });
+    expect(noAuth.status).toBe(401);
+
+    const rightAuth = await app.request('/api/tasks/completion-ready/ack-all', {
+      method: 'POST',
+      headers: { authorization: 'Bearer sup3r-secret' },
+    });
+    expect(rightAuth.status).toBe(200);
+  });
+
+  test('GETs are unaffected by the token either way', async () => {
+    process.env[SUPERVISOR_TOKEN_ENV] = 'sup3r-secret';
+    const openRes = await mkApp(mkGateDeps(new TaskStore())).request('/api/tasks/completion-ready/stale');
+    expect(openRes.status).toBe(200);
+
+    delete process.env[SUPERVISOR_TOKEN_ENV];
+    const stillOpenRes = await mkApp(mkGateDeps(new TaskStore())).request('/api/tasks/completion-ready/stale');
+    expect(stillOpenRes.status).toBe(200);
+  });
+});
+
+describe('POST /api/tasks/completion-ready/ack-all (issue #1526 Phase B)', () => {
+  function mkAckAllDeps(taskStore: TaskStore, overrides: Partial<TaskRouteDeps> = {}): TaskRouteDeps {
+    const queue = new AttentionQueue();
+    const monitor = new Monitor(taskStore, queue);
+    return {
+      taskStore,
+      monitor,
+      queue,
+      adapter: { stop: vi.fn(async () => {}) } as never,
+      hookWatcher: { stop: vi.fn(), isWatching: () => false, watch: vi.fn() } as never,
+      watchdog: { unregisterAgent: vi.fn() } as never,
+      broadcastToAll: vi.fn(),
+      serverCwd: '/server',
+      ...overrides,
+    } as unknown as TaskRouteDeps;
+  }
+
+  function makeStaleTasks(taskStore: TaskStore): { autoCloseId: string; askFirstId: string } {
+    const autoClose = taskStore.createTask({
+      prompt: 'Opted in',
+      cwd: '/repo',
+      autoCloseOnSignal: true,
+    });
+    const askFirst = taskStore.createTask({
+      prompt: 'Ask first',
+      cwd: '/repo',
+      deliveryAuthorization: 'ask-first',
+    });
+    for (const task of [autoClose, askFirst]) {
+      taskStore.addSession(task.id, {
+        tmuxSession: `kookr-${task.id}`,
+        agentType: 'claude-code',
+        cwd: '/repo-wt',
+        createdAt: new Date(Date.now() - 3 * 60 * 60_000),
+      });
+      taskStore.setPendingSignal(task.id, {
+        kind: 'completion_ready',
+        raisedAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+      });
+    }
+    return { autoCloseId: autoClose.id, askFirstId: askFirst.id };
+  }
+
+  test('default scope completes only canAutoClose tasks, per-id results reported', async () => {
+    const taskStore = new TaskStore();
+    const { autoCloseId, askFirstId } = makeStaleTasks(taskStore);
+
+    const res = await mkApp(mkAckAllDeps(taskStore)).request('/api/tasks/completion-ready/ack-all', { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      force: boolean;
+      results: Array<{ taskId: string; outcome: string }>;
+      summary: Record<string, number>;
+    };
+    expect(body.force).toBe(false);
+    expect(body.summary).toMatchObject({ matched: 1, completed: 1 });
+    expect(body.results).toEqual([{ taskId: autoCloseId, outcome: 'completed', status: 'completed' }]);
+    expect(taskStore.getTask(autoCloseId)!.status).toBe('completed');
+    expect(taskStore.getTask(askFirstId)!.status).toBe('inProgress');
+  });
+
+  test('{ force: true } completes every stale task regardless of policy', async () => {
+    const taskStore = new TaskStore();
+    const { autoCloseId, askFirstId } = makeStaleTasks(taskStore);
+
+    const res = await mkApp(mkAckAllDeps(taskStore)).request('/api/tasks/completion-ready/ack-all', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ force: true }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { force: boolean; summary: Record<string, number> };
+    expect(body.force).toBe(true);
+    expect(body.summary).toMatchObject({ matched: 2, completed: 2 });
+    expect(taskStore.getTask(autoCloseId)!.status).toBe('completed');
+    expect(taskStore.getTask(askFirstId)!.status).toBe('completed');
+  });
+
+  test('an empty or omitted body defaults to force: false without erroring', async () => {
+    const taskStore = new TaskStore();
+    makeStaleTasks(taskStore);
+
+    const res = await mkApp(mkAckAllDeps(taskStore)).request('/api/tasks/completion-ready/ack-all', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).force).toBe(false);
+  });
+
+  test('rejects a non-boolean force value', async () => {
+    const res = await mkApp(mkAckAllDeps(new TaskStore())).request('/api/tasks/completion-ready/ack-all', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ force: 'yes' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test('writes an attributed audit row per completed task', async () => {
+    const kookrDir = mkdtempSync(join(tmpdir(), 'kookr-ack-all-audit-'));
+    try {
+      const taskStore = new TaskStore();
+      const { autoCloseId } = makeStaleTasks(taskStore);
+
+      const res = await mkApp(mkAckAllDeps(taskStore, { kookrDir })).request('/api/tasks/completion-ready/ack-all', {
+        method: 'POST',
+        headers: { 'x-kookr-actor': 'lucy-supervisor' },
+      });
+      expect(res.status).toBe(200);
+
+      const rows = readFileSync(join(kookrDir, 'audit.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+      const types = rows.map((r) => r.type).sort();
+      expect(types).toEqual(['task.complete', 'task.completionReadyAckAll']);
+      for (const row of rows) {
+        expect(row.actor).toEqual({ source: 'api', actorId: 'lucy-supervisor' });
+      }
+      const summaryRow = rows.find((r) => r.type === 'task.completionReadyAckAll');
+      expect(summaryRow.results).toEqual([{ taskId: autoCloseId, outcome: 'completed', status: 'completed' }]);
+    } finally {
+      rmSync(kookrDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('GET /api/tasks/:id/tail (rfc-task-tail-retrieval)', () => {
+  test('returns live capture for in-progress sessions', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Running work', '/repo');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-live-tail',
+      agentType: 'claude-code',
+      cwd: '/repo-wt',
+      createdAt: new Date(),
+      lastStatus: 'working',
+    });
+
+    const captureDisplay = vi.fn(async () => 'line1\nline2\nline3\n');
+    const deps = {
+      ...mkLoopDeps(taskStore),
+      adapter: { captureDisplay, stop: vi.fn(async () => {}) } as never,
+    };
+    const res = await mkApp(deps).request(`/api/tasks/${task.id}/tail?lines=2`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.source).toBe('live');
+    expect(body.shownLines).toBe(2);
+    expect(body.text).toBe('line2\nline3');
+    expect(captureDisplay).toHaveBeenCalledWith('kookr-live-tail');
+  });
+
+  test('returns persisted tail for completed tasks', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-tail-route-'));
+    try {
+      const { TaskTailStore } = await import('../../core/task-tail-store.js');
+      const store = new TaskTailStore({ dir, retentionDays: 7, maxBytes: 4096 });
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Done work', '/repo');
+      taskStore.addSession(task.id, {
+        tmuxSession: 'kookr-done',
+        agentType: 'claude-code',
+        cwd: '/repo-wt',
+        createdAt: new Date(),
+        lastStatus: 'completed',
+      });
+      taskStore.completeTask(task.id);
+      await store.save({
+        taskId: task.id,
+        sessionId: 'kookr-done',
+        text: 'done line A\ndone line B\ndone line C\n',
+      });
+
+      const deps = {
+        ...mkLoopDeps(taskStore),
+        taskTailStore: store,
+        adapter: { captureDisplay: vi.fn(async () => { throw new Error('dead'); }), stop: vi.fn() } as never,
+      };
+      const res = await mkApp(deps).request(`/api/tasks/${task.id}/tail?lines=2`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.source).toBe('persisted');
+      expect(body.sessionId).toBe('kookr-done');
+      expect(body.text).toBe('done line B\ndone line C');
+      expect(body.retentionExpiresAt).toBeDefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('404 when no live or persisted tail', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Empty', '/repo');
+    // open -> inProgress -> completed (valid lifecycle)
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-empty',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+      lastStatus: 'completed',
+    });
+    taskStore.completeTask(task.id);
+    const res = await mkApp(mkLoopDeps(taskStore)).request(`/api/tasks/${task.id}/tail`);
+    expect(res.status).toBe(404);
+  });
+
+  test('400 on invalid lines', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('x', '/repo');
+    const res = await mkApp(mkLoopDeps(taskStore)).request(`/api/tasks/${task.id}/tail?lines=abc`);
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /api/tasks list filters & pagination (issue #1526 Phase C / C2)', () => {
+  function seedListStore(): { taskStore: TaskStore; ids: string[] } {
+    const taskStore = new TaskStore();
+    const ids: string[] = [];
+    // t0: completed, old updatedAt
+    const t0 = taskStore.createTask('First task prompt', '/repo');
+    taskStore.addSession(t0.id, { tmuxSession: 'list-0', agentType: 'claude-code', cwd: '/repo', createdAt: new Date() });
+    taskStore.completeTask(t0.id);
+    taskStore.getTaskForMutation(t0.id)!.updatedAt = new Date('2026-07-01T00:00:00Z');
+    ids.push(t0.id);
+    // t1: inProgress, recent updatedAt
+    const t1 = taskStore.createTask('Second task prompt', '/repo');
+    taskStore.addSession(t1.id, { tmuxSession: 'list-1', agentType: 'claude-code', cwd: '/repo', createdAt: new Date() });
+    taskStore.getTaskForMutation(t1.id)!.updatedAt = new Date('2026-07-24T00:00:00Z');
+    ids.push(t1.id);
+    // t2: completed, recent updatedAt
+    const t2 = taskStore.createTask('Third task prompt', '/repo');
+    taskStore.addSession(t2.id, { tmuxSession: 'list-2', agentType: 'claude-code', cwd: '/repo', createdAt: new Date() });
+    taskStore.completeTask(t2.id);
+    taskStore.getTaskForMutation(t2.id)!.updatedAt = new Date('2026-07-25T00:00:00Z');
+    ids.push(t2.id);
+    return { taskStore, ids };
+  }
+
+  test('no params: response is byte-identical to the unfiltered listing and carries no X-Total-Count', async () => {
+    const { taskStore } = seedListStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const res = await app.request('/api/tasks');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('X-Total-Count')).toBeNull();
+    const body = await res.text();
+
+    // Same store, same route, second request — deterministic and full.
+    const again = await (await app.request('/api/tasks')).text();
+    expect(body).toBe(again);
+    expect((JSON.parse(body) as unknown[]).length).toBe(3);
+    // Full view still ships prompts (unchanged default shape).
+    expect(body).toContain('First task prompt');
+  });
+
+  test('status filter keeps only matching tasks, preserving order', async () => {
+    const { taskStore, ids } = seedListStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const rows = await (await app.request('/api/tasks?status=completed')).json();
+    expect(rows.map((r: { id: string }) => r.id)).toEqual([ids[0], ids[2]]);
+  });
+
+  test('since filter keeps tasks with updatedAt >= since', async () => {
+    const { taskStore, ids } = seedListStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const rows = await (await app.request('/api/tasks?since=2026-07-20T00:00:00Z')).json();
+    expect(rows.map((r: { id: string }) => r.id)).toEqual([ids[1], ids[2]]);
+  });
+
+  test('limit/offset slice the listing and expose X-Total-Count', async () => {
+    const { taskStore, ids } = seedListStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const res = await app.request('/api/tasks?limit=1&offset=1');
+    expect(res.headers.get('X-Total-Count')).toBe('3');
+    const rows = await res.json();
+    expect(rows.map((r: { id: string }) => r.id)).toEqual([ids[1]]);
+  });
+
+  test('filters combine (status + since + limit) and count reflects the filtered set', async () => {
+    const { taskStore, ids } = seedListStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const res = await app.request('/api/tasks?status=completed&since=2026-07-20T00:00:00Z&limit=5');
+    expect(res.headers.get('X-Total-Count')).toBe('1');
+    const rows = await res.json();
+    expect(rows.map((r: { id: string }) => r.id)).toEqual([ids[2]]);
+  });
+
+  test('filters apply to the compact view too, and compact=true aliases view=compact', async () => {
+    const { taskStore, ids } = seedListStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    const rows = await (await app.request('/api/tasks?compact=true&status=completed')).json();
+    expect(rows.map((r: { id: string }) => r.id)).toEqual([ids[0], ids[2]]);
+    // Compact rows omit the heavy prompt body. (A substring check no longer
+    // works: tasks are named from birth off the prompt's first line — issue
+    // #1554 — so the `name` field legitimately echoes it; assert the `prompt`
+    // key itself is absent.)
+    expect(rows.every((r: Record<string, unknown>) => !('prompt' in r))).toBe(true);
+  });
+
+  test('malformed params return 400 rather than the full listing', async () => {
+    const { taskStore } = seedListStore();
+    const app = mkApp(mkLoopDeps(taskStore));
+    for (const qs of ['limit=0', 'limit=abc', 'offset=-1', 'status=bogus', 'since=not-a-date']) {
+      const res = await app.request(`/api/tasks?${qs}`);
+      expect(res.status, qs).toBe(400);
+      const body = await res.json();
+      expect(body.error, qs).toBeDefined();
+    }
   });
 });

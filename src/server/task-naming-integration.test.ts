@@ -16,16 +16,25 @@ vi.mock('../adapters/llm/factory.js', () => ({
   createLlmClient: (...args: unknown[]) => mockCreateLlmClient(...args),
 }));
 
-// Mock generateTaskName so we control naming behavior
+// Mock generateTaskName so we control naming behavior. deterministicTaskName
+// stays REAL: it is the guaranteed fallback under test (issue #1526 Phase C4).
 const mockGenerateTaskName = vi.fn();
 
-vi.mock('../core/task-naming.js', () => ({
-  generateTaskName: (...args: unknown[]) => mockGenerateTaskName(...args),
-}));
+vi.mock('../core/task-naming.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../core/task-naming.js')>();
+  return {
+    ...actual,
+    generateTaskName: (...args: unknown[]) => mockGenerateTaskName(...args),
+  };
+});
 
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { createKookrServerInternal } from './index.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
+import {
+  JSON_SPAWN_PAYLOAD_EMBEDDED_NAME,
+  JSON_SPAWN_PAYLOAD_PROMPT,
+} from '../core/__fixtures__/prompt-intake-fixtures.js';
 
 // RFC F12: launchTask validates that the working directory exists before
 // spawning, so launch cwds used by these integration tests must be real
@@ -53,6 +62,35 @@ function waitForTaskName(server: KookrServerInternal, taskId: string, timeoutMs 
         clearTimeout(timer);
         clearInterval(poll);
         resolve(task.name);
+      }
+    }, 20);
+  });
+}
+
+/**
+ * Poll until a task's name equals `expected`. Tasks are now named from birth
+ * (issue #1554: deterministic placeholder at creation), so `waitForTaskName`
+ * resolves on that placeholder before the async LLM upgrade lands — assertions
+ * that target the upgraded name must wait for the specific value.
+ */
+function waitForTaskNameToBe(
+  server: KookrServerInternal,
+  taskId: string,
+  expected: string,
+  timeoutMs = 3000,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      clearInterval(poll);
+      const actual = server.taskStore.getTask(taskId)?.name;
+      reject(new Error(`Timed out waiting for name "${expected}" (got "${actual}", ${timeoutMs}ms)`));
+    }, timeoutMs);
+
+    const poll = setInterval(() => {
+      if (server.taskStore.getTask(taskId)?.name === expected) {
+        clearTimeout(timer);
+        clearInterval(poll);
+        resolve();
       }
     }, 20);
   });
@@ -131,9 +169,10 @@ describe('AI task naming integration', () => {
     expect(res.status).toBe(201);
     const task = await res.json();
 
-    // Wait for the async naming to complete
-    const name = await waitForTaskName(server, task.id);
-    expect(name).toBe('Fix JWT Token Invalidation');
+    // The task is named from birth (issue #1554: deterministic placeholder at
+    // creation, asserted deterministically in the core unit tests), then
+    // upgraded asynchronously by the LLM namer.
+    await waitForTaskNameToBe(server, task.id, 'Fix JWT Token Invalidation');
 
     // Verify generateTaskName was called with correct args
     expect(mockGenerateTaskName).toHaveBeenCalledOnce();
@@ -142,6 +181,28 @@ describe('AI task naming integration', () => {
     expect(prompt).toBe('Fix the auth bug in login flow');
     expect(cwd).toBe(PROJECT_DIR);
     expect(criteria).toBe('Tests pass');
+  });
+
+  // Issue #1556 (task a5a89a9a): a JSON spawn payload pasted as the prompt
+  // carries the intended name in an embedded `name` field. The intake lifts it
+  // into task.name at creation, so the task is never named `"{"` and the LLM
+  // namer is skipped (a preset name wins).
+  test('POST /api/tasks lifts an embedded name from a JSON spawn payload', async () => {
+    const res = await fetch(`${baseUrl}/api/tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: JSON_SPAWN_PAYLOAD_PROMPT, cwd: PROJECT_DIR }),
+    });
+
+    expect(res.status).toBe(201);
+    const task = await res.json();
+    expect(task.name).toBe(JSON_SPAWN_PAYLOAD_EMBEDDED_NAME);
+    expect(task.name).not.toBe('{');
+
+    // A preset name skips the async LLM namer entirely.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(mockGenerateTaskName).not.toHaveBeenCalled();
+    expect(server.taskStore.getTask(task.id)?.name).toBe(JSON_SPAWN_PAYLOAD_EMBEDDED_NAME);
   });
 
   test('WS launch triggers auto-naming and sets task name', async () => {
@@ -169,9 +230,8 @@ describe('AI task naming integration', () => {
     const tasks = await waitForTaskCount(server, 1);
     expect(tasks).toHaveLength(1);
 
-    // Wait for the async naming to complete
-    const name = await waitForTaskName(server, tasks[0].id);
-    expect(name).toBe('Fix JWT Token Invalidation');
+    // Wait for the async LLM upgrade over the creation-time placeholder.
+    await waitForTaskNameToBe(server, tasks[0].id, 'Fix JWT Token Invalidation');
 
     // Verify generateTaskName was called
     expect(mockGenerateTaskName).toHaveBeenCalled();
@@ -220,7 +280,7 @@ describe('AI task naming integration', () => {
     await new Promise<void>((r) => ws.on('close', () => r()));
   });
 
-  test('naming is skipped when llmClient is null (no API key)', async () => {
+  test('deterministic fallback names the task when llmClient is null (no API key)', async () => {
     // Close the default server
     await server.close();
 
@@ -251,14 +311,14 @@ describe('AI task naming integration', () => {
     });
     const task = await res.json();
 
-    // Naming should NOT fire — verify after a short settling period
-    await new Promise((r) => setTimeout(r, 100));
-
-    expect(server.taskStore.getTask(task.id)?.name).toBeUndefined();
+    // The LLM path never fires, but the task still gets the deterministic
+    // prompt-derived name (issue #1526 Phase C4: no task is ever unnamed).
+    const name = await waitForTaskName(server, task.id);
+    expect(name).toBe('Fix bug');
     expect(mockGenerateTaskName).not.toHaveBeenCalled();
   });
 
-  test('naming handles null response gracefully (API failure)', async () => {
+  test('deterministic fallback applies when the LLM returns an empty name (2026-07-24 grok burst regression)', async () => {
     mockGenerateTaskName.mockResolvedValue(null);
 
     const res = await fetch(`${baseUrl}/api/tasks`, {
@@ -273,10 +333,11 @@ describe('AI task naming integration', () => {
       expect(mockGenerateTaskName).toHaveBeenCalledOnce();
     }, { timeout: 3000 });
 
-    expect(server.taskStore.getTask(task.id)?.name).toBeUndefined();
+    const name = await waitForTaskName(server, task.id);
+    expect(name).toBe('Fix bug');
   });
 
-  test('naming handles API rejection gracefully', async () => {
+  test('deterministic fallback applies on API rejection (no crash, task still named)', async () => {
     mockGenerateTaskName.mockRejectedValue(new Error('API error'));
 
     const res = await fetch(`${baseUrl}/api/tasks`, {
@@ -291,8 +352,9 @@ describe('AI task naming integration', () => {
       expect(mockGenerateTaskName).toHaveBeenCalledOnce();
     }, { timeout: 3000 });
 
-    // Server should still be functional — no crash
-    expect(server.taskStore.getTask(task.id)?.name).toBeUndefined();
+    // Server should still be functional — no crash — and the task named.
+    const name = await waitForTaskName(server, task.id);
+    expect(name).toBe('Fix bug');
     const healthRes = await fetch(`${baseUrl}/api/health`);
     expect(healthRes.status).toBe(200);
   });
@@ -352,7 +414,7 @@ describe('AI task naming integration', () => {
     });
     const task = await res.json();
 
-    await waitForTaskName(server, task.id);
+    await waitForTaskNameToBe(server, task.id, 'Fix JWT Token Invalidation');
 
     // Verify the name shows up in the tasks list API
     const listRes = await fetch(`${baseUrl}/api/tasks`);
@@ -405,14 +467,11 @@ describe('AI task naming integration', () => {
     const task1 = await res1.json();
     const task2 = await res2.json();
 
-    // Wait for both naming calls
-    const [name1, name2] = await Promise.all([
-      waitForTaskName(server, task1.id),
-      waitForTaskName(server, task2.id),
+    // Wait for both LLM upgrades over the creation-time placeholders.
+    await Promise.all([
+      waitForTaskNameToBe(server, task1.id, 'Fix Auth Flow'),
+      waitForTaskNameToBe(server, task2.id, 'Add User Pagination'),
     ]);
-
-    expect(name1).toBe('Fix Auth Flow');
-    expect(name2).toBe('Add User Pagination');
     expect(callCount).toBe(2);
   });
 
@@ -452,9 +511,8 @@ describe('AI task naming integration', () => {
       newTaskId = newTask!.id;
     });
 
-    // Wait for naming
-    const name = await waitForTaskName(server, newTaskId!);
-    expect(name).toBe('Fix JWT Token Invalidation');
+    // Wait for the LLM upgrade over the creation-time placeholder.
+    await waitForTaskNameToBe(server, newTaskId!, 'Fix JWT Token Invalidation');
 
     ws.close();
     await new Promise<void>((r) => ws.on('close', () => r()));

@@ -9,7 +9,7 @@
  */
 
 import { OpenAiCompatibleLlmClient } from './openai-compatible-client.js';
-import type { LlmClient, LlmCompletionRequest } from '../../core/llm-types.js';
+import type { LlmClient, LlmCompletionDetail, LlmCompletionRequest } from '../../core/llm-types.js';
 
 const DEFAULT_MODEL = 'nvidia/Nemotron-120B-A12B';
 const DEFAULT_BASE_URL = 'https://inference.baseten.co/v1';
@@ -61,5 +61,9 @@ export class BasetenLlmClient implements LlmClient {
 
   async complete(req: LlmCompletionRequest): Promise<string | null> {
     return this.transport.complete(req);
+  }
+
+  async completeDetailed(req: LlmCompletionRequest): Promise<LlmCompletionDetail> {
+    return this.transport.completeDetailed(req);
   }
 }

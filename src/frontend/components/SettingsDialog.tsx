@@ -51,6 +51,10 @@ interface ServerSettings {
   speakVerbosity?: VerbosityScale;
   quietHours?: QuietHoursWindow[];
   replySnippets?: ReplySnippet[];
+  autoCloseCompletionReadyDelayMin: number;
+  completionReadyTtlMinutes: number;
+  hungTaskReapEnabled: boolean;
+  hungTaskReapMinutes: number;
   loadedFromDefaults?: boolean;
   warnings?: string[];
 }
@@ -1177,6 +1181,97 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                           max={25}
                           step={1}
                         />
+                      </div>
+                    </div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-label">Auto-close delay</span>
+                        <span className="settings-desc">
+                          Minutes a task&apos;s completion-ready signal stays pending before Kookr
+                          auto-closes the task. Only applies to tasks launched with auto-close on
+                          signal (e.g. self-continuation chains and the Implement GitHub Issue
+                          playbook); other tasks keep the signal surfaced for manual review.
+                          Range: 1–1440 minutes.
+                        </span>
+                      </div>
+                      <div className="settings-number-group">
+                        <input
+                          type="number"
+                          className="settings-number"
+                          aria-label="Auto-close delay"
+                          value={settings.autoCloseCompletionReadyDelayMin}
+                          onChange={(e) => handleNumberChange('autoCloseCompletionReadyDelayMin', e.target.value, 1, 1440)}
+                          min={1}
+                          max={1440}
+                          step={5}
+                        />
+                        <span className="settings-unit">min</span>
+                      </div>
+                    </div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-label">Completion-ready TTL escalation</span>
+                        <span className="settings-desc">
+                          Minutes a completion_ready signal can sit unacknowledged — including
+                          ask-first tasks that never auto-close — before Kookr closes the task
+                          anyway so it stops holding a concurrency slot. A notification and audit
+                          record are always emitted when this fires. Range: 5–10080 minutes (7 days).
+                        </span>
+                      </div>
+                      <div className="settings-number-group">
+                        <input
+                          type="number"
+                          className="settings-number"
+                          aria-label="Completion-ready TTL escalation"
+                          value={settings.completionReadyTtlMinutes}
+                          onChange={(e) => handleNumberChange('completionReadyTtlMinutes', e.target.value, 5, 10_080)}
+                          min={5}
+                          max={10_080}
+                          step={15}
+                        />
+                        <span className="settings-unit">min</span>
+                      </div>
+                    </div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-label">Hung-task reaper</span>
+                        <span className="settings-desc">
+                          Terminate a task whose agent has had zero hook events, zero pane-content
+                          change, and zero token activity for the configured duration. Tasks with a
+                          pending signal, or that the watchdog classifies as waiting on you or a
+                          permission, are never reaped.
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className={`settings-toggle ${settings.hungTaskReapEnabled ? 'active' : ''}`}
+                        onClick={() => handleToggle('hungTaskReapEnabled')}
+                        aria-label="Toggle hung-task reaper"
+                        aria-pressed={settings.hungTaskReapEnabled}
+                      >
+                        <span className="settings-toggle-knob" />
+                      </button>
+                    </div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-label">Hung-task reap threshold</span>
+                        <span className="settings-desc">
+                          Minutes of total silence on all liveness channels before a task is
+                          reaped. Range: 15–10080 minutes (7 days).
+                        </span>
+                      </div>
+                      <div className="settings-number-group">
+                        <input
+                          type="number"
+                          className="settings-number"
+                          aria-label="Hung-task reap threshold"
+                          value={settings.hungTaskReapMinutes}
+                          onChange={(e) => handleNumberChange('hungTaskReapMinutes', e.target.value, 15, 10_080)}
+                          min={15}
+                          max={10_080}
+                          step={15}
+                        />
+                        <span className="settings-unit">min</span>
                       </div>
                     </div>
                     <div className="settings-row">

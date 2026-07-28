@@ -169,6 +169,15 @@ describe('snapshot projection', () => {
       cwd: '/cwd',
       createdAt: new Date(),
     });
+    // This test exercises the projection's `promptTitle` fallback, which now
+    // only applies to legacy tasks with no name — tasks are named from birth
+    // (issue #1554) and named tasks short-circuit the fallback. Clear the
+    // creation-time placeholder to reach the fallback path.
+    for (const id of [long.id, huge.id]) {
+      const stored = taskStore.getTaskForMutation(id)!;
+      delete stored.name;
+      delete stored.autoNamed;
+    }
 
     const snapshot = project(taskStore, [liveAgent('agent-named'), liveAgent('agent-long'), liveAgent('agent-huge')]);
 

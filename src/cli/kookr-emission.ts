@@ -1,0 +1,416 @@
+/**
+ * `kookr emission` — drain-coupled issue-filing budget + mandatory dedupe
+ * (issue #1607).
+ *
+ *   kookr emission plan    --repo owner/repo --requested N [--json]
+ *   kookr emission dedupe  --repo owner/repo --title "..." [--json]
+ *   kookr emission metrics --repo owner/repo [--json]
+ *   kookr emission defer   --repo owner/repo --title "..." --source <playbook> [--json]
+ *
+ * Playbooks (idea-scout, architecture-health-check, reflection/retro) call
+ * these before any `gh issue create`. Pure budget/dedupe math lives in
+ * `core/emission-budget.ts`; this CLI shells out to `gh` for live counts and
+ * writes the deferred-ideas JSONL.
+ */
+
+import { spawnSync } from 'node:child_process';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { homedir } from 'node:os';
+import {
+  DEFAULT_CONSTRAINED_BUDGET,
+  DEFAULT_DEDUPE_SIMILARITY_THRESHOLD,
+  DEFAULT_OPEN_BACKLOG_THRESHOLD,
+  NET_BACKLOG_DELTA_WINDOW_DAYS,
+  buildDeferredIdeaRecord,
+  checkDedupe,
+  computeNetBacklogDelta7d,
+  deferredIdeasPath,
+  resolveEmissionBudget,
+  utcDayKeyDaysAgo,
+  type EmissionBudgetPlan,
+  type IssueRef,
+  type NetBacklogDelta7d,
+} from '../core/emission-budget.js';
+
+export const USAGE = `kookr emission — drain-coupled issue filing budget + dedupe (#1607).
+
+Usage:
+  kookr emission plan    --repo <owner/repo> --requested <N> [OPTIONS]
+  kookr emission dedupe  --repo <owner/repo> --title <text> [OPTIONS]
+  kookr emission metrics --repo <owner/repo> [OPTIONS]
+  kookr emission defer   --repo <owner/repo> --title <text> --source <name> [OPTIONS]
+
+plan     Resolve how many new issues this run may file given live open backlog.
+dedupe   Mandatory pre-filing duplicate check; always prints a log line.
+metrics  Open backlog + 7-day netBacklogDelta7d + current constrained budget.
+defer    Append a candidate to the deferred-ideas JSONL instead of filing.
+
+Options:
+  --repo <owner/repo>     Target GitHub repository (required).
+  --requested <N>         How many issues this run wants to file (plan).
+  --title <text>          Candidate issue title (dedupe / defer).
+  --source <name>         Emitting playbook id (defer).
+  --reason <text>         Defer reason (default: over emission budget).
+  --threshold <N>         Open-backlog threshold (default: ${DEFAULT_OPEN_BACKLOG_THRESHOLD}).
+  --constrained <N>       Budget when over threshold (default: ${DEFAULT_CONSTRAINED_BUDGET}).
+  --body-preview <text>   Optional body snippet stored on defer.
+  --kookr-dir <PATH>      State root for deferred-ideas (default: ~/.kookr).
+  --json                  Machine-readable envelope on stdout.
+  -h, --help              Show this help.
+
+Environment:
+  GH_TOKEN / gh auth      Required for live GitHub counts (plan/dedupe/metrics).
+
+Exit codes:
+  0  Success.
+  2  User error (bad flags / missing required args).
+  4  GitHub query failed.
+`;
+
+export interface EmissionCliIo {
+  env?: NodeJS.ProcessEnv;
+  out?: { log: (...args: unknown[]) => void };
+  err?: { error: (...args: unknown[]) => void };
+  now?: () => Date;
+  /** Injectable gh runner for tests. Returns stdout text; throws on failure. */
+  runGh?: (args: string[]) => string;
+  /** Injectable append for defer (tests). */
+  appendLine?: (path: string, line: string) => void;
+}
+
+interface ParsedArgs {
+  verb: string | null;
+  repo: string | null;
+  requested: number | null;
+  title: string | null;
+  source: string | null;
+  reason: string | null;
+  bodyPreview: string | null;
+  threshold: number;
+  constrained: number;
+  kookrDir: string;
+  json: boolean;
+  help: boolean;
+}
+
+export class EmissionUsageError extends Error {}
+
+export function parseEmissionArgs(argv: string[]): ParsedArgs {
+  const out: ParsedArgs = {
+    verb: null,
+    repo: null,
+    requested: null,
+    title: null,
+    source: null,
+    reason: null,
+    bodyPreview: null,
+    threshold: DEFAULT_OPEN_BACKLOG_THRESHOLD,
+    constrained: DEFAULT_CONSTRAINED_BUDGET,
+    kookrDir: `${homedir()}/.kookr`,
+    json: false,
+    help: false,
+  };
+
+  for (let i = 0; i < argv.length; i++) {
+    const tok = argv[i]!;
+    const eat = (): string => {
+      const v = argv[++i];
+      if (v === undefined) throw new EmissionUsageError(`option ${tok} requires a value`);
+      return v;
+    };
+    const eatNum = (label: string): number => {
+      const raw = eat();
+      const n = Number(raw);
+      if (!Number.isFinite(n)) throw new EmissionUsageError(`${label} must be a number (got ${raw})`);
+      return n;
+    };
+
+    if (tok === '-h' || tok === '--help' || tok === 'help') {
+      out.help = true;
+    } else if (tok === '--json') {
+      out.json = true;
+    } else if (tok === '--repo' || tok.startsWith('--repo=')) {
+      out.repo = tok.includes('=') ? tok.slice('--repo='.length) : eat();
+    } else if (tok === '--requested' || tok.startsWith('--requested=')) {
+      out.requested = tok.includes('=')
+        ? Number(tok.slice('--requested='.length))
+        : eatNum('--requested');
+      if (!Number.isFinite(out.requested)) throw new EmissionUsageError('--requested must be a number');
+    } else if (tok === '--title' || tok.startsWith('--title=')) {
+      out.title = tok.includes('=') ? tok.slice('--title='.length) : eat();
+    } else if (tok === '--source' || tok.startsWith('--source=')) {
+      out.source = tok.includes('=') ? tok.slice('--source='.length) : eat();
+    } else if (tok === '--reason' || tok.startsWith('--reason=')) {
+      out.reason = tok.includes('=') ? tok.slice('--reason='.length) : eat();
+    } else if (tok === '--body-preview' || tok.startsWith('--body-preview=')) {
+      out.bodyPreview = tok.includes('=') ? tok.slice('--body-preview='.length) : eat();
+    } else if (tok === '--threshold' || tok.startsWith('--threshold=')) {
+      out.threshold = tok.includes('=')
+        ? Number(tok.slice('--threshold='.length))
+        : eatNum('--threshold');
+      if (!Number.isFinite(out.threshold)) throw new EmissionUsageError('--threshold must be a number');
+    } else if (tok === '--constrained' || tok.startsWith('--constrained=')) {
+      out.constrained = tok.includes('=')
+        ? Number(tok.slice('--constrained='.length))
+        : eatNum('--constrained');
+      if (!Number.isFinite(out.constrained)) {
+        throw new EmissionUsageError('--constrained must be a number');
+      }
+    } else if (tok === '--kookr-dir' || tok.startsWith('--kookr-dir=')) {
+      out.kookrDir = tok.includes('=') ? tok.slice('--kookr-dir='.length) : eat();
+    } else if (tok.startsWith('-')) {
+      throw new EmissionUsageError(`unknown option: ${tok}`);
+    } else if (out.verb === null) {
+      out.verb = tok;
+    } else {
+      throw new EmissionUsageError(`unexpected argument: ${tok}`);
+    }
+  }
+
+  return out;
+}
+
+function defaultRunGh(args: string[], env: NodeJS.ProcessEnv): string {
+  const result = spawnSync('gh', args, {
+    encoding: 'utf8',
+    env,
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  if (result.error) throw new Error(`gh failed to start: ${result.error.message}`);
+  if (result.status !== 0) {
+    const msg = (result.stderr || result.stdout || `gh exit ${result.status}`).trim();
+    throw new Error(msg);
+  }
+  return result.stdout ?? '';
+}
+
+function requireRepo(repo: string | null): string {
+  if (!repo || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
+    throw new EmissionUsageError('--repo must be owner/repo');
+  }
+  return repo;
+}
+
+function searchTotalCount(runGh: (args: string[]) => string, query: string): number {
+  // gh api search encodes the q= query; use --method GET with -f for safety.
+  const raw = runGh([
+    'api',
+    '-X',
+    'GET',
+    'search/issues',
+    '-f',
+    `q=${query}`,
+    '-f',
+    'per_page=1',
+    '--jq',
+    '.total_count',
+  ]);
+  const n = Number(String(raw).trim());
+  if (!Number.isFinite(n)) throw new Error(`unexpected search total_count: ${raw}`);
+  return Math.max(0, Math.floor(n));
+}
+
+function listOpenIssues(runGh: (args: string[]) => string, repo: string): IssueRef[] {
+  const raw = runGh([
+    'issue',
+    'list',
+    '-R',
+    repo,
+    '--state',
+    'open',
+    '--limit',
+    '200',
+    '--json',
+    'number,title,url,state',
+  ]);
+  const parsed = JSON.parse(raw || '[]') as IssueRef[];
+  if (!Array.isArray(parsed)) throw new Error('gh issue list returned non-array JSON');
+  return parsed;
+}
+
+function printPlanHuman(out: { log: (...a: unknown[]) => void }, plan: EmissionBudgetPlan): void {
+  out.log(`openBacklogCount=${plan.openBacklogCount}`);
+  out.log(`openBacklogThreshold=${plan.openBacklogThreshold}`);
+  out.log(`overThreshold=${plan.overThreshold}`);
+  out.log(`requestedBudget=${plan.requestedBudget}`);
+  out.log(`allowedBudget=${plan.allowedBudget}`);
+  out.log(`deferredCount=${plan.deferredCount}`);
+  out.log(`action=${plan.action}`);
+  out.log(`reason=${plan.reason}`);
+}
+
+export async function runEmissionCli(
+  argv: string[],
+  io: EmissionCliIo = {},
+): Promise<number> {
+  const env = io.env ?? process.env;
+  const out = io.out ?? console;
+  const err = io.err ?? console;
+  const now = io.now ?? (() => new Date());
+  const runGh = io.runGh ?? ((args: string[]) => defaultRunGh(args, env));
+  const appendLine =
+    io.appendLine ??
+    ((path: string, line: string) => {
+      mkdirSync(dirname(path), { recursive: true });
+      appendFileSync(path, line.endsWith('\n') ? line : `${line}\n`, 'utf8');
+    });
+
+  let args: ParsedArgs;
+  try {
+    args = parseEmissionArgs(argv);
+  } catch (e) {
+    err.error(`[kookr emission] ${e instanceof Error ? e.message : String(e)}`);
+    err.error('Run `kookr emission --help` for usage.');
+    return 2;
+  }
+
+  if (args.help || args.verb === null) {
+    out.log(USAGE);
+    return 0;
+  }
+
+  try {
+    if (args.verb === 'plan') {
+      const repo = requireRepo(args.repo);
+      if (args.requested === null) throw new EmissionUsageError('--requested is required for plan');
+      // Prefer search total_count so backlog >200 is not under-counted by list --limit.
+      let openBacklogCount: number;
+      try {
+        openBacklogCount = searchTotalCount(runGh, `repo:${repo} is:issue is:open`);
+      } catch {
+        openBacklogCount = listOpenIssues(runGh, repo).length;
+      }
+      const openIssues = listOpenIssues(runGh, repo);
+      const plan = resolveEmissionBudget({
+        openBacklogCount,
+        requestedBudget: args.requested,
+        openBacklogThreshold: args.threshold,
+        constrainedBudget: args.constrained,
+      });
+      const payload = {
+        ok: true,
+        repo,
+        plan,
+        openIssueSample: openIssues.slice(0, 5).map((i) => ({ number: i.number, title: i.title })),
+        note:
+          plan.deferredCount > 0
+            ? `With allowedBudget=${plan.allowedBudget}, ${plan.deferredCount} of the requested filings must be deferred/redirected.`
+            : undefined,
+      };
+      if (args.json) {
+        out.log(JSON.stringify(payload));
+      } else {
+        printPlanHuman(out, plan);
+        if (payload.note) out.log(payload.note);
+      }
+      return 0;
+    }
+
+    if (args.verb === 'dedupe') {
+      const repo = requireRepo(args.repo);
+      if (!args.title) throw new EmissionUsageError('--title is required for dedupe');
+      const openIssues = listOpenIssues(runGh, repo);
+      const result = checkDedupe(args.title, openIssues, DEFAULT_DEDUPE_SIMILARITY_THRESHOLD);
+      // Always surface the audit line: stderr when --json (so stdout stays one
+      // JSON document), otherwise stdout. Playbooks must keep the line in logs.
+      if (args.json) {
+        err.error(result.logLine);
+        out.log(
+          JSON.stringify({
+            ok: true,
+            repo,
+            ...result,
+            match: result.match
+              ? {
+                  number: result.match.number,
+                  title: result.match.title,
+                  url: result.match.url,
+                }
+              : null,
+          }),
+        );
+      } else {
+        out.log(result.logLine);
+      }
+      return 0;
+    }
+
+    if (args.verb === 'metrics') {
+      const repo = requireRepo(args.repo);
+      const since = utcDayKeyDaysAgo(NET_BACKLOG_DELTA_WINDOW_DAYS, now());
+      const openBacklogCount = searchTotalCount(runGh, `repo:${repo} is:issue is:open`);
+      const opened7d = searchTotalCount(runGh, `repo:${repo} is:issue created:>=${since}`);
+      const closed7d = searchTotalCount(runGh, `repo:${repo} is:issue is:closed closed:>=${since}`);
+      const delta = computeNetBacklogDelta7d(opened7d, closed7d);
+      const plan = resolveEmissionBudget({
+        openBacklogCount,
+        requestedBudget: 10,
+        openBacklogThreshold: args.threshold,
+        constrainedBudget: args.constrained,
+      });
+      const payload: {
+        ok: true;
+        repo: string;
+        openBacklogCount: number;
+        since: string;
+      } & NetBacklogDelta7d & {
+          emissionBudgetIfRequested10: EmissionBudgetPlan;
+        } = {
+        ok: true,
+        repo,
+        openBacklogCount,
+        since,
+        ...delta,
+        emissionBudgetIfRequested10: plan,
+      };
+      if (args.json) {
+        out.log(JSON.stringify(payload));
+      } else {
+        out.log(`repo=${repo}`);
+        out.log(`openBacklogCount=${openBacklogCount}`);
+        out.log(`opened7d=${delta.opened7d}`);
+        out.log(`closed7d=${delta.closed7d}`);
+        out.log(`netBacklogDelta7d=${delta.netBacklogDelta7d}`);
+        out.log(`since=${since}`);
+        out.log(
+          `emissionBudget(if requested=10): allowed=${plan.allowedBudget} action=${plan.action}`,
+        );
+      }
+      return 0;
+    }
+
+    if (args.verb === 'defer') {
+      const repo = requireRepo(args.repo);
+      if (!args.title) throw new EmissionUsageError('--title is required for defer');
+      if (!args.source) throw new EmissionUsageError('--source is required for defer');
+      const path = deferredIdeasPath(repo, args.kookrDir);
+      const record = buildDeferredIdeaRecord({
+        repo,
+        title: args.title,
+        reason: args.reason ?? 'over emission budget',
+        source: args.source,
+        bodyPreview: args.bodyPreview ?? undefined,
+        now: now(),
+      });
+      appendLine(path, JSON.stringify(record));
+      if (args.json) {
+        out.log(JSON.stringify({ ok: true, path, record }));
+      } else {
+        out.log(`deferred → ${path}`);
+        out.log(JSON.stringify(record));
+      }
+      return 0;
+    }
+
+    throw new EmissionUsageError(`unknown verb: ${args.verb}`);
+  } catch (e) {
+    if (e instanceof EmissionUsageError) {
+      err.error(`[kookr emission] ${e.message}`);
+      err.error('Run `kookr emission --help` for usage.');
+      return 2;
+    }
+    err.error(`[kookr emission] ${e instanceof Error ? e.message : String(e)}`);
+    return 4;
+  }
+}

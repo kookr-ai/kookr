@@ -6,7 +6,7 @@ import type { SessionInfo } from './session-read-model.js';
 import type { TaskStatus } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
 import type { RalphLoopState } from '../shared/contracts/ralph.js';
-import type { DeliveryAuthorization, TaskDependencyEdge, TaskMetadata, TaskPriority } from '../shared/contracts/task.js';
+import type { DeliveryAuthorization, TaskDependencyEdge, TaskDisposition, TaskMetadata, TaskPriority } from '../shared/contracts/task.js';
 
 export type {
   BurnedOutTarget,
@@ -103,6 +103,14 @@ export interface TaskLaunchHealthFinding {
 export interface Task {
   id: string;
   name?: string;
+  /**
+   * True when `name` is the deterministic creation-time placeholder (issue
+   * #1554), not an explicit name (playbook/user) or an LLM-generated one. The
+   * async LLM namer is allowed to upgrade an auto-named task, but never an
+   * explicit one; any real rename clears this flag. Absent means the name (if
+   * any) is authoritative and must not be auto-overwritten.
+   */
+  autoNamed?: boolean;
   /** Original user-authored prompt before Kookr launch-context injection. */
   userPrompt?: string;
   /** Raw execution prompt sent to the agent. May include Kookr launch-context guidance. */
@@ -159,6 +167,27 @@ export interface Task {
    * onto the client-facing AgentState at projection time.
    */
   pendingSignal?: PendingAgentSignal;
+  /**
+   * How this task reached terminal-complete (issue #1608). Stamped at complete
+   * time for lesson-yield v2 per-path buckets. See {@link CompletionPath} in
+   * `lesson-decision.ts`. Absent on historical tasks → counted as `unknown`.
+   */
+  completionPath?:
+    | 'normal'
+    | 'outbox_drained'
+    | 'recovery'
+    | 'api_complete'
+    | 'ui_complete'
+    | 'other'
+    | 'unknown';
+  /**
+   * Explicit reason a completion was allowed without a lesson decision
+   * (issue #1608). Only meaningful when the task's hook trail has neither
+   * wrote-lesson nor explicit-skip. Examples: `human_complete`,
+   * `api_complete_ungated`, `recovery_reap`. Populated so yield `contractRate`
+   * can treat named exceptions as explained rather than silent bypasses.
+   */
+  lessonGateExempt?: string;
   createdAt: Date;
   updatedAt: Date;
   /**
@@ -169,6 +198,15 @@ export interface Task {
   finishedAt?: Date;
   /** Set when the task transitions to 'terminated' via reconciliation. */
   terminatedAt?: Date;
+  /**
+   * Queryable evidence that a pre-session prune/terminate path disposed of this
+   * task before its first agent session ever attached (issue #1588). Its
+   * presence proves the task was terminated on purpose rather than silently
+   * lost, and makes the task an idempotent-replay target so a retried POST with
+   * the same idempotency key returns it instead of creating a sibling.
+   * Absent on every task that reached a session (the overwhelming majority).
+   */
+  disposition?: TaskDisposition;
   /**
    * Ralph Wiggum-style iteration loop state. Present only when the task was
    * launched (or upgraded) into Ralph mode. Absence = no loop. See issue #440.

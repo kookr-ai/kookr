@@ -50,6 +50,24 @@ Also fetch task store data:
 curl -s http://localhost:4800/api/tasks
 ```
 
+Also gather the **issue-backlog inflation signal** (issue #1607) so the reflection can see whether emitters are outrunning drain:
+
+```bash
+# Prefer the stable path emitters write after each publish run:
+#   ~/.kookr/playbook-state/emission-metrics/<repoSlug>.json
+# Fall back to a live query. Field of record: netBacklogDelta7d (opened7d − closed7d).
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "kookr-ai/kookr")
+REPO_SLUG=$(printf '%s' "$REPO" | tr '/.' '--')
+METRICS_FILE="$HOME/.kookr/playbook-state/emission-metrics/${REPO_SLUG}.json"
+if [ -s "$METRICS_FILE" ]; then
+  cat "$METRICS_FILE"
+else
+  kookr emission metrics --repo "$REPO" --json 2>/dev/null || true
+fi
+# Include netBacklogDelta7d, openBacklogCount, and the current emission budget
+# action in the reflection report's signal summary (Signal: backlog).
+```
+
 The script outputs:
 - Per-session summaries (events, agents, interventions, findings, user input classifications)
 - Aggregate stats (totals, ratios, averages)

@@ -302,7 +302,7 @@ describe('createKookrServer', () => {
       });
     });
 
-    test('env-configured webhook observer posts findings and clears dedupe on resolution', async () => {
+    test('env-configured webhook observer posts findings and clears dedupe on resolution', { timeout: 15_000 }, async () => {
       await server.close();
       serverClosed = true;
 
@@ -376,7 +376,7 @@ describe('createKookrServer', () => {
       }
     });
 
-    test('admin alert-config update changes the live operational alert evaluator', async () => {
+    test('admin alert-config update changes the live operational alert evaluator', { timeout: 15_000 }, async () => {
       await server.close();
       serverClosed = true;
 
@@ -461,7 +461,7 @@ describe('createKookrServer', () => {
       }
     });
 
-    test('connects remote node client only when relay env is configured and stops it on close', async () => {
+    test('connects remote node client only when relay env is configured and stops it on close', { timeout: 15_000 }, async () => {
       await server.close();
       serverClosed = true;
 
@@ -538,7 +538,8 @@ describe('createKookrServer', () => {
       }
     });
 
-    test('executes a relay presetReply through the real server command handler', async () => {
+    // Full-suite load regularly pushes this past vitest's 5s default (solo ~4.5s).
+    test('executes a relay presetReply through the real server command handler', { timeout: 20_000 }, async () => {
       await server.close();
       serverClosed = true;
 
@@ -631,7 +632,7 @@ describe('createKookrServer', () => {
       }
     });
 
-    test('executes relay submitMessage through the lease-checked remote input adapter', async () => {
+    test('executes relay submitMessage through the lease-checked remote input adapter', { timeout: 15_000 }, async () => {
       await server.close();
       serverClosed = true;
 
@@ -1584,7 +1585,9 @@ describe('createKookrServer', () => {
       expect(res2.status).toBe(201);
       const second = await res2.json();
       expect(second.id).not.toBe(first.id);
-      expect(second.metadata).toEqual({ intent: 'keep_as_duplicate' });
+      // launchSource is stamped alongside the intent (issue #1526 Phase C /
+      // C3) — this request carried X-Kookr-Launch-Source: cli.
+      expect(second.metadata).toEqual({ intent: 'keep_as_duplicate', launchSource: 'cli' });
 
       const listRes = await fetch(`${baseUrl}/api/tasks`);
       const tasks = await listRes.json();

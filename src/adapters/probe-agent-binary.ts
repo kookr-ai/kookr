@@ -9,13 +9,30 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 
 /**
+ * Which probe flag produced an accepted outcome. `--version` is an authentic
+ * version read; `--help` is a liveness fallback whose version is best-effort
+ * (usage text usually carries no version, so it reports {@link UNKNOWN_VERSION}).
+ * Surfaced so logs can distinguish a real version read from a fallback check.
+ */
+export type ProbePath = '--version' | '--help';
+
+/**
+ * Explicit marker reported when probe stdout carries no version-shaped
+ * substring (e.g. `--help` usage text). Guarantees usage/help text is never
+ * surfaced verbatim as a version string.
+ */
+export const UNKNOWN_VERSION = 'unknown';
+
+/**
  * Outcome of {@link probeAgentBinary}. The "absent" branch carries a
  * human-readable reason; configuredVia / envVarName are bolted on by the
  * caller (the adapter knows its own env var; the probe only knows whether
- * the binary actually responded).
+ * the binary actually responded). The "ok" branch records which probe path
+ * ({@link ProbePath}) succeeded so a fallback liveness check is distinguishable
+ * from a genuine version read.
  */
 export type ProbeOutcome =
-  | { kind: 'ok'; resolvedPath: string; version: string }
+  | { kind: 'ok'; resolvedPath: string; version: string; probePath: ProbePath }
   | { kind: 'absent'; reason: string };
 
 /**
@@ -33,27 +50,42 @@ export type ProbeExecRunner = (
   options: { timeout: number },
 ) => Promise<ProbeRunResult>;
 
+/** Timeout for the `--help` liveness fallback (matches the dtach preflight). */
+export const DEFAULT_PROBE_TIMEOUT_MS = 2000;
+/**
+ * The `--version` attempt gets a longer budget than the `--help` fallback: a
+ * slow cold start (the binary being loaded/JIT-warmed) previously timed out at
+ * 2 s and demoted the boot onto the `--help` fallback, which reports no real
+ * version. A wider window lets the authentic read win before falling back.
+ */
+export const DEFAULT_VERSION_PROBE_TIMEOUT_MS = 5000;
+
 /**
  * Probe an agent binary by spawning `<bin> --version`, falling back to
  * `<bin> --help` if `--version` fails or returns nothing useful. Any non-empty
  * stdout under exit 0 is accepted; the version string is the first numeric
- * sequence (e.g. `1.0.86`) found in stdout, or the trimmed first line if no
- * version-shaped substring is present.
+ * sequence (e.g. `1.0.86`) found on the first line of stdout, or the explicit
+ * {@link UNKNOWN_VERSION} marker if no version-shaped substring is present (so
+ * `--help` usage text is never surfaced verbatim as a version).
  *
- * Spawn is bounded by a 2 s timeout per probe (matching the dtach preflight
- * in `start.ts:54-58`). On any failure path the probe returns `{kind:'absent',
- * reason}` so the caller can decide fatal-vs-warn from policy.
+ * The `--version` attempt is bounded by {@link DEFAULT_VERSION_PROBE_TIMEOUT_MS}
+ * (overridable via `versionTimeoutMs`) to survive slow cold starts; the `--help`
+ * fallback uses the shorter {@link DEFAULT_PROBE_TIMEOUT_MS} (`timeoutMs`). On
+ * any failure path the probe returns `{kind:'absent', reason}` so the caller can
+ * decide fatal-vs-warn from policy. The accepted outcome records which
+ * {@link ProbePath} won.
  */
 export async function probeAgentBinary(
   bin: string,
-  options: { exec?: ProbeExecRunner; timeoutMs?: number } = {},
+  options: { exec?: ProbeExecRunner; timeoutMs?: number; versionTimeoutMs?: number } = {},
 ): Promise<ProbeOutcome> {
   const exec = options.exec ?? defaultExec;
-  const timeoutMs = options.timeoutMs ?? 2000;
+  const helpTimeoutMs = options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+  const versionTimeoutMs = options.versionTimeoutMs ?? DEFAULT_VERSION_PROBE_TIMEOUT_MS;
 
-  const versionAttempt = await tryProbe(exec, bin, ['--version'], timeoutMs);
+  const versionAttempt = await tryProbe(exec, bin, '--version', versionTimeoutMs);
   if (versionAttempt.kind === 'ok') return versionAttempt;
-  const helpAttempt = await tryProbe(exec, bin, ['--help'], timeoutMs);
+  const helpAttempt = await tryProbe(exec, bin, '--help', helpTimeoutMs);
   if (helpAttempt.kind === 'ok') return helpAttempt;
   return { kind: 'absent', reason: versionAttempt.reason };
 }
@@ -61,25 +93,32 @@ export async function probeAgentBinary(
 async function tryProbe(
   exec: ProbeExecRunner,
   bin: string,
-  args: string[],
+  probePath: ProbePath,
   timeoutMs: number,
 ): Promise<ProbeOutcome> {
   try {
-    const { stdout } = await exec(bin, args, { timeout: timeoutMs });
+    const { stdout } = await exec(bin, [probePath], { timeout: timeoutMs });
     const trimmed = stdout.trim();
     if (!trimmed) {
-      return { kind: 'absent', reason: `${bin} ${args.join(' ')} produced empty output` };
+      return { kind: 'absent', reason: `${bin} ${probePath} produced empty output` };
     }
-    return { kind: 'ok', resolvedPath: bin, version: extractVersion(trimmed) };
+    return { kind: 'ok', resolvedPath: bin, version: extractVersion(trimmed), probePath };
   } catch (err) {
     return { kind: 'absent', reason: describeProbeError(bin, err) };
   }
 }
 
+/**
+ * Extract a version from probe stdout, scanning only the first line for a
+ * semver-shaped substring. Returns {@link UNKNOWN_VERSION} when none matches —
+ * never the raw first line — so `--help` usage text (e.g.
+ * `Usage: claude [options] [command] [prompt]`) can never be reported as a
+ * version.
+ */
 function extractVersion(stdout: string): string {
   const firstLine = stdout.split('\n')[0]!.trim();
   const match = firstLine.match(/[\d]+(?:\.[\d]+){1,3}(?:-[A-Za-z0-9.]+)?/);
-  return match ? match[0] : firstLine;
+  return match ? match[0] : UNKNOWN_VERSION;
 }
 
 function describeProbeError(bin: string, err: unknown): string {

@@ -44,6 +44,7 @@ import { resolveHookWriterPath } from '../core/hook-writer-paths.js';
 import { withTimeout } from '../core/with-timeout.js';
 import { HookParseError } from '../core/hook-parser.js';
 import { extractGrokHookHeader, parseGrokHookEvent, type RawGrokHookHeader } from './grok-hook-decoder.js';
+import { readGrokHomeUsage, mapGrokUsageToTokenUsage } from './grok-rollout-scanner.js';
 import { composeGrokHome, type GrokHomeFs } from './grok-home-composer.js';
 import { formatGrokAuthPreflightFailure, inspectGrokAuthFile } from './grok-auth-preflight.js';
 import {
@@ -53,7 +54,8 @@ import {
   resolveGrokModel,
   GROK_AGENT_BIN_ENV,
 } from './grok-launch-args.js';
-import { detectGrokBlockingStartupUI } from './grok-readiness.js';
+import { detectGrokBlockingStartupUI, detectGrokPermissionPromptUI } from './grok-readiness.js';
+import { normalizePaneForActivity } from '../shared/pane-semantics.js';
 import {
   resolveGrokInstalledState,
   type GrokInstalledState,
@@ -73,6 +75,15 @@ const DEFAULT_GROK_PROMPT_SUBMIT_RETRIES = 0;
  * resend an already accepted Grok prompt before that acknowledgement arrives.
  */
 export const DEFAULT_GROK_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS = 10_000;
+
+/**
+ * Upper bound on the pane-tail substituted into a Grok stop/stop_failure
+ * event's `lastMessage` (issue #1526 Phase C4). Grok's stop hook payload has
+ * no final-assistant-message field, so the adapter falls back to a bounded
+ * tail of the last captured display; 2000 chars comfortably covers a final
+ * summary while keeping event payloads and fingerprints small.
+ */
+export const GROK_STOP_LAST_MESSAGE_MAX_CHARS = 2000;
 
 /** Minimal, generic supervision status the RFC's Phase-1 slice exposes. */
 export interface GrokSupervisionStatus {
@@ -153,6 +164,13 @@ export class GrokBuildAdapter implements AgentAdapter {
   private hookSettings = new Map<string, { config: GrokMonitoringHooksConfig; path: string }>();
   private sessionHomes = new Map<string, string>();
   private initialPromptSubmitResolvers = new Map<string, () => void>();
+  /**
+   * Last captured display per session, refreshed by {@link captureDisplay}
+   * (the server's 5s watchdog tick calls it for every tracked agent). Used
+   * synchronously by {@link injectHookEvent} to substitute a bounded pane
+   * tail into Grok stop events, whose payloads carry no final message.
+   */
+  private lastDisplays = new Map<string, string>();
 
   private inputWriter: TerminalInputWriterPort;
   private hooksDir: string;
@@ -315,10 +333,11 @@ export class GrokBuildAdapter implements AgentAdapter {
       serverPort: this.serverPort,
     });
 
-    // Compose an isolated per-session GROK_HOME: monitoring hooks + seeded auth
-    // + linked toolkit plugins. Never mutates the real ~/.grok.
+    // Compose an isolated per-session GROK_HOME: monitoring hooks + linked
+    // toolkit plugins. Credentials stay on the operator's real ~/.grok/auth.json
+    // (shared via GROK_AUTH_PATH) so N agents do not clone one rotating OIDC RT.
     const sessionRoot = await mkdtemp(join(this.sessionHomeRoot, `kookr-grok-${tmuxName}-`));
-    const grokHome = join(sessionRoot, '.grok');
+    const grokHome = grokHomeFor(sessionRoot);
     this.sessionHomes.set(tmuxName, sessionRoot);
     const hookFile = `${this.hooksDir}/${tmuxName}.jsonl`;
     const monitoring = {
@@ -327,14 +346,20 @@ export class GrokBuildAdapter implements AgentAdapter {
       serverPort: this.serverPort,
       writerPath: resolveHookWriterPath(),
     };
+    let authPath: string;
     try {
-      await composeGrokHome({ grokHome, sourceGrokHome: this.sourceGrokHome, monitoring, fs: this.homeFs });
-      const authPreflight = await inspectGrokAuthFile(join(grokHome, 'auth.json'));
+      const composed = await composeGrokHome({
+        grokHome,
+        sourceGrokHome: this.sourceGrokHome,
+        monitoring,
+        fs: this.homeFs,
+      });
+      const sharedAuthPath = composed.authPath ?? join(this.sourceGrokHome, 'auth.json');
+      const authPreflight = await inspectGrokAuthFile(sharedAuthPath);
       if (authPreflight.kind !== 'ok') {
-        throw new GrokAuthPreflightError(
-          formatGrokAuthPreflightFailure(join(this.sourceGrokHome, 'auth.json'), authPreflight),
-        );
+        throw new GrokAuthPreflightError(formatGrokAuthPreflightFailure(sharedAuthPath, authPreflight));
       }
+      authPath = sharedAuthPath;
     } catch (err) {
       await this.cleanupFailedLaunch(tmuxName);
       throw err;
@@ -350,6 +375,7 @@ export class GrokBuildAdapter implements AgentAdapter {
       processEnv: this.env,
       launchContextEnv: launchContext.env,
       grokHome,
+      authPath,
     });
     const args = buildGrokLaunchArgs({ model: this.model, bypassAllPermissions: this.bypassAllPermissions });
 
@@ -378,9 +404,22 @@ export class GrokBuildAdapter implements AgentAdapter {
         readyTimeoutMs: this.promptReadyTimeoutMs,
       });
       if (delivery.status === 'unconfirmed') {
+        // Explain a known cause before the generic diagnosis: a permission
+        // row menu (e.g. a startup approval) swallows the composer, so the
+        // prompt can never be acknowledged (issue #1526 Phase C4).
+        let permissionPrompt: string | null = null;
+        try {
+          const display = textDecoder.decode(await this.backend.captureBytes(tmuxName));
+          permissionPrompt = detectGrokPermissionPromptUI(display);
+        } catch {
+          /* diagnosis is best-effort — never mask the delivery failure */
+        }
         throw new Error(
           `[grok-build-adapter] Grok did not acknowledge the initial prompt within ` +
             `${this.promptSubmitConfirmTimeoutMs}ms; refusing to resend it. ` +
+            (permissionPrompt
+              ? `${permissionPrompt} — resolve it in the terminal before relaunching. `
+              : '') +
             `Auth preflight passed; inspect Grok terminal/PTY readiness and hook dispatch ` +
             `(including terminal query handling).`,
         );
@@ -453,6 +492,7 @@ export class GrokBuildAdapter implements AgentAdapter {
     this.initialPromptSubmitResolvers.delete(tmuxName);
     this.hookSettings.delete(tmuxName);
     this.tmuxToTaskId.delete(tmuxName);
+    this.lastDisplays.delete(tmuxName);
     try {
       await this.backend.killSession(tmuxName);
     } catch {
@@ -494,14 +534,64 @@ export class GrokBuildAdapter implements AgentAdapter {
     const resolver = this.initialPromptSubmitResolvers.get(tmuxName);
     if (resolver) resolver();
     this.initialPromptSubmitResolvers.delete(tmuxName);
+    // Extract token telemetry BEFORE the ephemeral GROK_HOME is torn down —
+    // this is the last point at which the session transcript still exists.
+    await this.recordSessionTokenUsage(tmuxName);
     await this.backend.killSession(tmuxName);
     this.hookSettings.delete(tmuxName);
     this.tmuxToTaskId.delete(tmuxName);
+    this.lastDisplays.delete(tmuxName);
     await this.cleanupSessionHome(tmuxName);
   }
 
+  /**
+   * Read Grok's per-turn token telemetry from the session's transcripts and
+   * record it on the owning task (issue #1581). Grok writes `turn_completed`
+   * usage into `<GROK_HOME>/sessions/**​/updates.jsonl`; the managed home is an
+   * ephemeral per-session directory that {@link cleanupSessionHome} deletes on
+   * stop, so this runs at teardown while the transcript is still present. The
+   * mapping mirrors the Codex rollout-metering conversion so the recorded
+   * {@link import('../core/types.js').TokenUsage} shape is identical across
+   * adapters. Best-effort: a missing/unparseable transcript leaves `tokenUsage`
+   * unset (marked unavailable downstream) rather than failing teardown.
+   */
+  private async recordSessionTokenUsage(tmuxName: string): Promise<void> {
+    const sessionRoot = this.sessionHomes.get(tmuxName);
+    if (!sessionRoot) return;
+    const taskId = this.tmuxToTaskId.get(tmuxName) ?? this.taskStore.findTaskBySession(tmuxName)?.id;
+    if (!taskId) return;
+    try {
+      const usage = await readGrokHomeUsage(grokHomeFor(sessionRoot));
+      if (!usage) return;
+      if (!this.taskStore.getTask(taskId)) return;
+      this.taskStore.updateTokenUsage(taskId, mapGrokUsageToTokenUsage(usage));
+      for (const handler of this.refreshHandlers) handler();
+    } catch {
+      /* telemetry is best-effort — never block teardown on a scan failure */
+    }
+  }
+
   async captureDisplay(tmuxName: string): Promise<string> {
-    return textDecoder.decode(await this.backend.captureBytes(tmuxName));
+    const display = textDecoder.decode(await this.backend.captureBytes(tmuxName));
+    this.lastDisplays.set(tmuxName, display);
+    return display;
+  }
+
+  /**
+   * Bounded pane-tail fallback for Grok stop/stop_failure `lastMessage`
+   * (issue #1526 Phase C4). Grok's Stop hook payload has no
+   * `last_assistant_message` analog, and the hardcoded '' the decoder emits
+   * starved hook-driven completion-signal classification (#1324) for every
+   * Grok task. The best synchronous source is the last captured display
+   * (refreshed at most 5s ago by the watchdog tick): volatile UI rows are
+   * stripped via the shared pane normalizer, then the tail is capped at
+   * {@link GROK_STOP_LAST_MESSAGE_MAX_CHARS}.
+   */
+  private paneTailLastMessage(tmuxName: string): string {
+    const display = this.lastDisplays.get(tmuxName);
+    if (!display) return '';
+    const normalized = normalizePaneForActivity(display);
+    return normalized.slice(-GROK_STOP_LAST_MESSAGE_MAX_CHARS).trim();
   }
 
   onEvent(handler: AdapterEventHandler): void {
@@ -560,6 +650,20 @@ export class GrokBuildAdapter implements AgentAdapter {
         rawHookEventName: header.rawHookEventName,
         parentage: 'unknown',
       };
+    }
+
+    // Live Grok stop/stop_failure events carry no final message in the
+    // payload — substitute the bounded pane tail (issue #1526 Phase C4).
+    // Replays are left untouched: at replay time the pane no longer shows the
+    // original turn, and enriching from the CURRENT pane would change
+    // completion-signal fingerprints across restarts.
+    if (
+      (event.type === 'stop' || event.type === 'stop_failure')
+      && event.lastMessage === ''
+      && options?.origin !== 'replay'
+    ) {
+      const tail = this.paneTailLastMessage(tmuxName);
+      if (tail) event = { ...event, lastMessage: tail };
     }
 
     const taskId = this.tmuxToTaskId.get(tmuxName) ?? this.taskStore.findTaskBySession(tmuxName)?.id;
@@ -679,4 +783,15 @@ export class GrokBuildAdapter implements AgentAdapter {
 
 function sleep(ms: number): Promise<void> {
   return ms > 0 ? new Promise((res) => setTimeout(res, ms)) : Promise.resolve();
+}
+
+/**
+ * The composed `GROK_HOME` inside a per-session root (`<sessionRoot>/.grok`).
+ * `sessionHomes` stores the session root (the whole tree {@link
+ * GrokBuildAdapter.cleanupSessionHome} removes); both the launch composer and
+ * the stop-time metering read the `.grok` subdirectory, so the layout is
+ * derived here once.
+ */
+function grokHomeFor(sessionRoot: string): string {
+  return join(sessionRoot, '.grok');
 }

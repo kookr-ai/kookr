@@ -1,4 +1,5 @@
 import type { AgentEvent } from '../core/types.js';
+import type { CompletionDigest } from '../core/completion-digest.js';
 import { isSecretFieldName, redactSecrets } from '../core/redact-secrets.js';
 
 /**
@@ -10,6 +11,11 @@ import { isSecretFieldName, redactSecrets } from '../core/redact-secrets.js';
  * directly, not from the projected snapshot. Method naming in
  * src/server/use-cases/get-snapshot.ts (ForClient vs Raw) documents intent at the seam.
  *
+ * Agent-level fields (`description`, `completionDigest`) are projected separately via
+ * {@link projectAgentFieldsForClient} — with hundreds of historical tasks those two
+ * fields alone can push the WebSocket snapshot over the 8 MiB hard cap, which drops
+ * the entire frame and leaves the dashboard empty (looks like "dev mode").
+ *
  * See docs/rfc/rfc-snapshot-payload-slimming.md.
  */
 
@@ -18,6 +24,32 @@ export const TOOL_INPUT_MAX_BYTES = 2 * 1024;
 
 /** Max UTF-8 bytes of lastMessage included in client-facing events. */
 export const LAST_MESSAGE_MAX_BYTES = 4 * 1024;
+
+/** Max UTF-8 bytes of task prompt (`description`) in client-facing snapshots. */
+export const DESCRIPTION_MAX_BYTES = 4 * 1024;
+
+/**
+ * Max UTF-8 bytes of `description` on a client-facing snapshot entry for a
+ * task in terminal status (issue #1526 Phase C / C2 payload diet). Terminal
+ * rows only surface the description as a hover tooltip in the Completed pane
+ * (`CompletedRow` in FindingsPanel.tsx); the full prompt stays available via
+ * `GET /api/tasks/:id` (the DetailPanel relaunch path already fetches it).
+ * On the 2026-07 prod store, full 4 KiB descriptions across ~650 terminal
+ * rows were the single largest contributor (~2.2 MB) to the ~5 MB snapshot.
+ */
+export const TERMINAL_DESCRIPTION_MAX_BYTES = 1024;
+
+/** Max files listed in a client-facing completion digest. */
+export const COMPLETION_DIGEST_MAX_FILES = 40;
+
+/** Max bullets listed in a client-facing completion digest. */
+export const COMPLETION_DIGEST_MAX_BULLETS = 8;
+
+/** Max characters per bullet / testSummary / verification command. */
+export const COMPLETION_DIGEST_TEXT_MAX_CHARS = 500;
+
+/** Max verification commands listed in a client-facing completion digest. */
+export const COMPLETION_DIGEST_MAX_COMMANDS = 20;
 
 /**
  * Keys on toolInput consumed by core/activity-summary.ts for label/category.
@@ -150,4 +182,146 @@ function truncateUtf8(s: string, maxBytes: number, totalBytes: number): string {
   let end = maxBytes;
   while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
   return buf.subarray(0, end).toString('utf-8') + `…<${totalBytes} bytes elided>`;
+}
+
+function truncateChars(s: string, maxChars: number): string {
+  if (s.length <= maxChars) return s;
+  return `${s.slice(0, maxChars)}…`;
+}
+
+/**
+ * Cap unbounded agent-level fields for the dashboard WebSocket snapshot.
+ * Identity-preserving when nothing needs clipping.
+ */
+export function projectAgentFieldsForClient<
+  T extends { description?: string; completionDigest?: CompletionDigest },
+>(agent: T): T {
+  const description = projectDescriptionForClient(agent.description);
+  const completionDigest = agent.completionDigest
+    ? projectCompletionDigestForClient(agent.completionDigest)
+    : undefined;
+
+  const descriptionChanged = description !== agent.description;
+  const digestChanged = completionDigest !== agent.completionDigest;
+  if (!descriptionChanged && !digestChanged) return agent;
+
+  return {
+    ...agent,
+    ...(descriptionChanged ? { description } : {}),
+    ...(digestChanged && completionDigest !== undefined ? { completionDigest } : {}),
+  };
+}
+
+export function projectDescriptionForClient(
+  description: string | undefined,
+  maxBytes: number = DESCRIPTION_MAX_BYTES,
+): string | undefined {
+  if (description === undefined) return undefined;
+  const bytes = Buffer.byteLength(description, 'utf-8');
+  if (bytes <= maxBytes) return description;
+  return truncateUtf8(description, maxBytes, bytes);
+}
+
+/**
+ * Slim a terminal-status agent snapshot entry for client transport
+ * (issue #1526 Phase C / C2 payload diet). Applies on top of
+ * {@link projectAgentFieldsForClient}:
+ *
+ *  - `description` is bounded to {@link TERMINAL_DESCRIPTION_MAX_BYTES} — on a
+ *    terminal row it only feeds the Completed-pane hover tooltip; the full
+ *    prompt remains available via `GET /api/tasks/:id`.
+ *  - `completionFeedback` and `launchHealthSummary` are dropped — verified to
+ *    have zero frontend readers on terminal snapshot rows (the DetailPanel
+ *    reads feedback state from the task detail endpoint, not the snapshot).
+ *  - `completionDigest` keeps everything the dashboard renders (bullets,
+ *    filesChanged, criteriaVerdict, testSummary, branch, tokenUsage) and
+ *    sheds the sub-fields with zero frontend readers (`verificationCommands`,
+ *    `commits`, `prUrls`) — on the 2026-07 prod store those alone were
+ *    ~1.9 MB raw. Full digests stay on `GET /api/tasks/:id` and the raw
+ *    snapshot surfaces.
+ *
+ * Identity-preserving when nothing needs clipping.
+ */
+export function projectTerminalAgentFieldsForClient<
+  T extends {
+    description?: string;
+    completionFeedback?: unknown;
+    launchHealthSummary?: unknown;
+    completionDigest?: CompletionDigest;
+  },
+>(agent: T): T {
+  const description = projectDescriptionForClient(agent.description, TERMINAL_DESCRIPTION_MAX_BYTES);
+  const completionDigest = agent.completionDigest
+    ? projectTerminalCompletionDigestForClient(agent.completionDigest)
+    : undefined;
+  const descriptionChanged = description !== agent.description;
+  const digestChanged = completionDigest !== agent.completionDigest;
+  const hasDroppableFields = agent.completionFeedback !== undefined || agent.launchHealthSummary !== undefined;
+  if (!descriptionChanged && !digestChanged && !hasDroppableFields) return agent;
+
+  const next = { ...agent };
+  if (descriptionChanged && description !== undefined) next.description = description;
+  if (digestChanged && completionDigest !== undefined) next.completionDigest = completionDigest;
+  delete next.completionFeedback;
+  delete next.launchHealthSummary;
+  return next;
+}
+
+/**
+ * Drop the completion-digest sub-fields no dashboard surface reads
+ * (issue #1526 Phase C / C2). Identity-preserving when none are present.
+ */
+export function projectTerminalCompletionDigestForClient(digest: CompletionDigest): CompletionDigest {
+  if (
+    digest.verificationCommands === undefined
+    && digest.commits === undefined
+    && digest.prUrls === undefined
+  ) {
+    return digest;
+  }
+  const { verificationCommands: _vc, commits: _c, prUrls: _p, ...kept } = digest;
+  return kept;
+}
+
+export function projectCompletionDigestForClient(digest: CompletionDigest): CompletionDigest {
+  const bullets = digest.bullets
+    .slice(0, COMPLETION_DIGEST_MAX_BULLETS)
+    .map((b) => truncateChars(b, COMPLETION_DIGEST_TEXT_MAX_CHARS));
+  const filesChanged = digest.filesChanged.slice(0, COMPLETION_DIGEST_MAX_FILES);
+  const verificationCommands = digest.verificationCommands
+    ?.slice(0, COMPLETION_DIGEST_MAX_COMMANDS)
+    .map((c) => truncateChars(c, COMPLETION_DIGEST_TEXT_MAX_CHARS));
+  const testSummary = digest.testSummary
+    ? truncateChars(digest.testSummary, COMPLETION_DIGEST_TEXT_MAX_CHARS)
+    : undefined;
+
+  const filesClipped = filesChanged.length < digest.filesChanged.length;
+  const bulletsClipped = bullets.length < digest.bullets.length
+    || bullets.some((b, i) => b !== digest.bullets[i]);
+  const commandsClipped = verificationCommands !== undefined
+    && (
+      verificationCommands.length < (digest.verificationCommands?.length ?? 0)
+      || verificationCommands.some((c, i) => c !== digest.verificationCommands?.[i])
+    );
+  const testClipped = testSummary !== digest.testSummary;
+
+  if (!filesClipped && !bulletsClipped && !commandsClipped && !testClipped) {
+    return digest;
+  }
+
+  const next: CompletionDigest = {
+    ...digest,
+    bullets,
+    filesChanged,
+    ...(testSummary !== undefined ? { testSummary } : {}),
+    ...(verificationCommands !== undefined ? { verificationCommands } : {}),
+  };
+
+  // Surface elided file volume so the UI still reflects scale when we clip.
+  if (filesClipped) {
+    const omitted = digest.filesChanged.length - filesChanged.length;
+    next.filesChanged = [...filesChanged, `…+${omitted} more`];
+  }
+
+  return next;
 }

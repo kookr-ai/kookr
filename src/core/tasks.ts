@@ -2,12 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { DEFAULT_AGENT_TYPE, type AgentType } from './agent-types.js';
 import type { CompletionDigest } from './completion-digest.js';
 import { evaluateCompletionSignal, type CompletionSignalDecision } from './completion-signal.js';
+import { deterministicTaskName } from './task-naming.js';
+import { displayPromptForTask } from './prompt-display.js';
 import type { AgentEvent } from './types.js';
 import type { IssueClaim } from './issue-claim-types.js';
 import type { CriteriaCompletionVerdict } from '../shared/contracts/completion-digest.js';
 import type { PendingAgentSignal } from '../shared/contracts/agent-signal.js';
 import type {
   TaskDependencyEdge,
+  TaskDisposition,
   TaskLaunchPermissionPosture,
   TaskPriorityUpdate,
 } from '../shared/contracts/task.js';
@@ -136,6 +139,14 @@ export class TaskStore {
    * reminder, which is the safe default.
    */
   private completionRemediation = new Map<string, string>();
+  /**
+   * Recently processed client signalIds (issue #1541). Lets a durable outbox
+   * drain safely replay the same `signalId` after a client timeout without
+   * re-firing outcome hooks or churning raisedAt — even after the pending
+   * signal was dismissed. In-memory only (24h TTL, capped); a restart simply
+   * re-accepts a replay, which same-kind setPendingSignal still handles safely.
+   */
+  private processedSignalIds = new Map<string, { taskId: string; kind: PendingAgentSignal['kind']; atMs: number }>();
   /** Lifetime spending counter (USD); corrected task costs adjust it, and it survives task deletion. */
   private lifetimeSpendUsd: number = 0;
 
@@ -198,7 +209,22 @@ export class TaskStore {
       createdAt: now,
       updatedAt: now,
     };
-    if (name) task.name = name.trim() || undefined;
+    // Name every task from birth (issue #1554). An explicit name (playbook or
+    // user-supplied) wins and is authoritative; otherwise apply the
+    // deterministic prompt-derived name and mark it `autoNamed` so the async
+    // LLM namer may later upgrade it. This closes the killed-launcher gap where
+    // `reconcileStaleOpenLaunches` terminated a task before post-launch naming
+    // ever ran, leaving it terminal with `name=null`.
+    const explicitName = name?.trim();
+    if (explicitName) {
+      task.name = explicitName;
+    } else {
+      // Derive from the display prompt (launch-context guardrail stripped),
+      // matching what the async LLM namer and snapshot projection use, so the
+      // placeholder is not the injected worktree preamble.
+      task.name = deterministicTaskName(displayPromptForTask({ prompt, userPrompt }), cwd);
+      task.autoNamed = true;
+    }
     if (playbookId) task.playbookId = playbookId;
     if (projectId) task.projectId = projectId;
     if (playbookParameterValues) {
@@ -274,6 +300,10 @@ export class TaskStore {
    * preserved so a re-raise does not churn the review window or the surfacing;
    * only a newly supplied note is merged in. Raising a different kind replaces
    * the prior signal. No-op for unknown tasks. Returns true when a task was found.
+   *
+   * When `signal.signalId` is set (issue #1541), a pure replay of that id is
+   * recorded in {@link processedSignalIds} so later drains short-circuit via
+   * {@link getProcessedSignal}.
    */
   setPendingSignal(taskId: string, signal: PendingAgentSignal): boolean {
     const task = this.tasks.get(taskId);
@@ -295,12 +325,60 @@ export class TaskStore {
       task.pendingSignal = {
         ...existing,
         ...(signal.note !== undefined ? { note: signal.note } : {}),
+        // Keep the first signalId for the pending row; a replay of a *different*
+        // id still lands as same-kind (raisedAt preserved) but is tracked below.
+        ...(existing.signalId ? {} : (signal.signalId ? { signalId: signal.signalId } : {})),
+        // Preserve the first provenance stamp (http vs outbox) so later
+        // complete-path inference stays stable across same-kind re-raises.
+        ...(existing.source ? {} : (signal.source ? { source: signal.source } : {})),
       };
     } else {
       task.pendingSignal = signal;
     }
+    if (signal.signalId) {
+      this.recordProcessedSignal(signal.signalId, taskId, signal.kind);
+    }
     task.updatedAt = new Date();
     return true;
+  }
+
+  /**
+   * Look up a previously processed client signalId (issue #1541). Returns the
+   * recorded task/kind when the id was seen within the TTL window, else undefined.
+   */
+  getProcessedSignal(
+    signalId: string,
+    nowMs: number = Date.now(),
+  ): { taskId: string; kind: PendingAgentSignal['kind'] } | undefined {
+    this.compactProcessedSignalIds(nowMs);
+    const entry = this.processedSignalIds.get(signalId);
+    if (!entry) return undefined;
+    return { taskId: entry.taskId, kind: entry.kind };
+  }
+
+  private recordProcessedSignal(
+    signalId: string,
+    taskId: string,
+    kind: PendingAgentSignal['kind'],
+    nowMs: number = Date.now(),
+  ): void {
+    this.processedSignalIds.set(signalId, { taskId, kind, atMs: nowMs });
+    this.compactProcessedSignalIds(nowMs);
+  }
+
+  private compactProcessedSignalIds(nowMs: number): void {
+    const ttlMs = 24 * 60 * 60 * 1000;
+    const maxEntries = 2_000;
+    for (const [id, entry] of this.processedSignalIds) {
+      if (nowMs - entry.atMs > ttlMs) this.processedSignalIds.delete(id);
+    }
+    if (this.processedSignalIds.size <= maxEntries) return;
+    const ordered = [...this.processedSignalIds.entries()]
+      .sort((a, b) => a[1].atMs - b[1].atMs);
+    const drop = this.processedSignalIds.size - maxEntries;
+    for (let i = 0; i < drop; i++) {
+      this.processedSignalIds.delete(ordered[i]![0]);
+    }
   }
 
   /**
@@ -423,6 +501,26 @@ export class TaskStore {
     return cloneTask(this.transition(id, 'cancelled'));
   }
 
+  /**
+   * Record a pre-session disposition on a task WITHOUT deleting it (issue
+   * #1588). This is the queryable evidence that a launch-timeout cleanup,
+   * boot-time stale-open-launch reconcile, or overload shed disposed of the
+   * task on purpose — replacing the old "silently `deleteTask`" behaviour that
+   * erased the record and let a retry create a duplicate.
+   *
+   * First-write-wins: if several paths race to dispose the same task, the root
+   * cause is preserved. No-op for an unknown task or one already disposed.
+   * Bumps `updatedAt` so the aged-record prune's recency window protects the
+   * freshly-disposed record until it is genuinely old. Does NOT change status —
+   * callers that also want the task terminal call `terminateTask` alongside.
+   */
+  setDisposition(id: string, disposition: TaskDisposition): void {
+    const task = this.tasks.get(id);
+    if (!task || task.disposition) return;
+    task.disposition = { ...disposition };
+    task.updatedAt = new Date();
+  }
+
   pendTask(id: string): Task {
     return cloneTask(this.transition(id, 'pending'));
   }
@@ -475,7 +573,13 @@ export class TaskStore {
     this.launchReservations.delete(taskId);
   }
 
-  private hasFreshLaunchReservation(taskId: string): boolean {
+  /**
+   * Read launch-reservation freshness (issue #1526 Phase B: made public so the
+   * capacity ledger can classify an `open`/`pending` task as `launching`
+   * without duplicating this TTL logic — same predicate `getActiveCount`
+   * already uses to count a reserved task against the cap).
+   */
+  hasFreshLaunchReservation(taskId: string): boolean {
     const reservedAt = this.launchReservations.get(taskId);
     if (reservedAt === undefined) return false;
     if (Date.now() - reservedAt >= LAUNCH_RESERVATION_TTL_MS) {
@@ -528,6 +632,10 @@ export class TaskStore {
       throw new Error(`Task not found: ${id}`);
     }
     task.name = name.trim() || undefined;
+    // A rename yields an authoritative name (LLM upgrade, user edit, or the
+    // reconcile backstop); it is no longer the creation-time placeholder, so
+    // the auto-name marker is cleared and future auto-naming will not touch it.
+    delete task.autoNamed;
     task.updatedAt = new Date();
     return cloneTask(task);
   }
@@ -565,6 +673,17 @@ export class TaskStore {
     const task = this.tasks.get(taskId);
     if (!task) {
       throw new Error(`Task not found: ${taskId}`);
+    }
+    // A terminal task cannot gain a new live session (issue #1588). The only
+    // caller is an adapter mid-launch; the sole way to reach here on a terminal
+    // task is an abandoned launch that late-settles AFTER a launch-timeout
+    // disposed+terminated the task (see raceLaunchAgainstTimeout). Refusing
+    // keeps the disposed record session-free and makes the late launch reject
+    // on its own — exactly the "Task not found" rejection the old deleteTask
+    // used to produce. Legit relaunch reopens the task first (crash-recovery.ts
+    // reopenTask → open) so this never fires on a live path.
+    if (isTerminalStatus(task.status)) {
+      throw new Error(`Cannot attach session to terminal task ${taskId} (status=${task.status})`);
     }
     // The launch this reservation guarded has landed.
     this.launchReservations.delete(taskId);

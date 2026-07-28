@@ -1,7 +1,7 @@
 import type { AgentEvent, EventMeta, EventOrigin, InjectHookEventResult } from '../core/types.js';
 import type { AgentType } from '../core/agent-types.js';
 import type { AgentInteractionPort } from '../core/ports/agent-interaction-port.js';
-import type { InstalledBinaryIdentity } from './probe-agent-binary.js';
+import type { InstalledBinaryIdentity, ProbePath } from './probe-agent-binary.js';
 
 /**
  * Handler signature for adapter hook events. The optional third argument is
@@ -81,6 +81,14 @@ export interface AdapterLaunchOptions {
    * adapter's per-agent default → unset.
    */
   effort?: string;
+  /**
+   * Per-task model pin (#1518). When set, the adapter passes it to the agent
+   * CLI (claude-code: `--model <id>`). When undefined, the CLI / env default
+   * applies. Only the explicit pin is carried here — there is no Kookr global
+   * per-agent model default for claude-code today (codex/grok keep their env
+   * defaults). Resolution order: this override → unset (CLI default).
+   */
+  model?: string;
 }
 
 /**
@@ -95,6 +103,13 @@ export type PreflightResult =
       kind: 'ok';
       resolvedPath: string;
       version: string;
+      /**
+       * Which probe flag produced the version (`--version` = authentic read,
+       * `--help` = liveness fallback). Present for adapters that probe via
+       * {@link probeAgentBinary}; absent for adapters that resolve identity
+       * another way (Grok Build).
+       */
+      probePath?: ProbePath;
       /**
        * realpath of the executable actually launched, when the adapter resolves
        * it (Grok Build). Distinct from {@link resolvedPath}, which may be the

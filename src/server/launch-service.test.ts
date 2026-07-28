@@ -6,8 +6,10 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, type PendingQueueFullError, type SpawnBurstLimitError, type LaunchServiceDeps } from './launch-service.js';
+import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
 import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
+import { IdempotencyLedger } from '../core/idempotency-ledger.js';
 
 // Minimal stubs for adapter and lifecycle deps
 function makeDeps(taskStore: TaskStore): LaunchServiceDeps {
@@ -295,6 +297,57 @@ describe('launchTask', () => {
         launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'claude-code', effort: '' }),
       ).rejects.toBeInstanceOf(EffortValidationError);
       expect(store.listTasks()).toHaveLength(0);
+    });
+
+    it('threads a valid model pin to the adapter as opts.model (#1518)', async () => {
+      await launchTask(deps, {
+        prompt: 'hello',
+        cwd: '/tmp',
+        model: 'claude-fable-5',
+      });
+      expect(launchOptsFor(deps, 'claude-code')).toMatchObject({ model: 'claude-fable-5' });
+    });
+
+    it('threads model together with effort (#1518)', async () => {
+      await launchTask(deps, {
+        prompt: 'hello',
+        cwd: '/tmp',
+        model: 'claude-fable-5',
+        effort: 'max',
+      });
+      expect(launchOptsFor(deps, 'claude-code')).toMatchObject({
+        model: 'claude-fable-5',
+        effort: 'max',
+      });
+    });
+
+    it('rejects an unknown model for claude-code without creating a task (#1518)', async () => {
+      await expect(
+        launchTask(deps, {
+          prompt: 'hello',
+          cwd: '/tmp',
+          agentType: 'claude-code',
+          model: 'not-a-real-model',
+        }),
+      ).rejects.toBeInstanceOf(ModelValidationError);
+      expect(store.listTasks()).toHaveLength(0);
+    });
+
+    it('rejects any model pin for codex-cli empty allowlist (#1518)', async () => {
+      await expect(
+        launchTask(deps, {
+          prompt: 'hello',
+          cwd: '/tmp',
+          agentType: 'codex-cli',
+          model: 'claude-fable-5',
+        }),
+      ).rejects.toBeInstanceOf(ModelValidationError);
+    });
+
+    it('rejects empty-string model (#1518)', async () => {
+      await expect(
+        launchTask(deps, { prompt: 'hello', cwd: '/tmp', model: '' }),
+      ).rejects.toBeInstanceOf(ModelValidationError);
     });
   });
 
@@ -793,7 +846,7 @@ describe('launchTask', () => {
     expect(deps.adapterRegistry.get('codex-cli').launch).not.toHaveBeenCalled();
   });
 
-  it('cleans up task record when adapter.launch throws, allowing retry', async () => {
+  it('disposes (never deletes) the task record when adapter.launch throws, and a no-key retry still launches fresh (issue #1588)', async () => {
     const adapter = deps.adapterRegistry.get('claude-code');
     (adapter.launch as ReturnType<typeof vi.fn>)
       .mockRejectedValueOnce(new Error('tmux unsafe permissions'));
@@ -802,13 +855,22 @@ describe('launchTask', () => {
     await expect(launchTask(deps, { prompt: 'do work', cwd: '/tmp' }))
       .rejects.toThrow('tmux unsafe permissions');
 
-    // Task record should have been deleted
-    expect(store.listTasks()).toHaveLength(0);
+    // Issue #1588: the record is NOT silently deleted. It stays queryable,
+    // terminal, and carries a disposition explaining why it died.
+    const [disposed] = store.listTasks();
+    expect(store.listTasks()).toHaveLength(1);
+    expect(disposed.status).toBe('terminated');
+    expect(disposed.disposition?.reason).toBe('launch_error');
+    expect(disposed.disposition?.source).toBe('launch-service');
+    expect(disposed.disposition?.at).toBeTruthy();
+    expect(disposed.sessions).toHaveLength(0);
 
-    // Retry succeeds — not blocked by dedup
+    // Retry (no idempotency key) is not blocked by dedup — a terminal task
+    // never matches the active-only dedup — so a fresh task launches.
     (adapter.launch as ReturnType<typeof vi.fn>).mockResolvedValueOnce('tmux-session');
     const result = await launchTask(deps, { prompt: 'do work', cwd: '/tmp' });
     expect(result.duplicate).toBeUndefined();
+    expect(result.task.id).not.toBe(disposed.id);
     expect(result.task.prompt).toBe('do work');
   });
 
@@ -1425,5 +1487,666 @@ describe('launchTask launch reservation (#700)', () => {
     await expect(launchTask(deps, { prompt: 'will fail', cwd: '/tmp' })).rejects.toThrow('boom');
     expect(taskStore.getActiveCount()).toBe(0); // no leaked slot
     expect(taskStore.getNextPending()).toBeUndefined();
+  });
+});
+
+describe('launchTask idempotency (issue #1526 Phase B)', () => {
+  let store: TaskStore;
+  let ledgerDir: string;
+  let ledger: IdempotencyLedger;
+  let deps: LaunchServiceDeps;
+
+  beforeEach(async () => {
+    store = new TaskStore();
+    ledgerDir = await mkdtemp(join(tmpdir(), 'idempotency-launch-'));
+    ledger = new IdempotencyLedger(ledgerDir);
+    await ledger.load();
+    deps = { ...makeDeps(store), idempotencyLedger: ledger };
+  });
+
+  afterEach(async () => {
+    await rm(ledgerDir, { recursive: true, force: true });
+  });
+
+  it('same key twice sequentially: one task, second response is a replay', async () => {
+    const first = await launchTask(deps, { prompt: 'hello', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(first.idempotentReplay).toBeUndefined();
+
+    const second = await launchTask(deps, { prompt: 'hello', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(second.idempotentReplay).toBe(true);
+    expect(second.task.id).toBe(first.task.id);
+
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+    expect(store.listTasks()).toHaveLength(1);
+  });
+
+  it('two concurrent identical POSTs create exactly one task; both responses reference it', async () => {
+    const [a, b] = await Promise.all([
+      launchTask(deps, { prompt: 'concurrent', cwd: '/tmp', idempotencyKey: 'k1' }),
+      launchTask(deps, { prompt: 'concurrent', cwd: '/tmp', idempotencyKey: 'k1' }),
+    ]);
+
+    expect(a.task.id).toBe(b.task.id);
+    // Exactly one of the two calls actually created the task; the other replayed it.
+    expect([a.idempotentReplay, b.idempotentReplay].filter((v) => v === true)).toHaveLength(1);
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+    expect(store.listTasks()).toHaveLength(1);
+  });
+
+  it('different keys create two distinct tasks', async () => {
+    const first = await launchTask(deps, { prompt: 'first task', cwd: '/tmp', idempotencyKey: 'k1' });
+    const second = await launchTask(deps, { prompt: 'second task', cwd: '/tmp', idempotencyKey: 'k2' });
+
+    expect(second.task.id).not.toBe(first.task.id);
+    expect(second.idempotentReplay).toBeUndefined();
+    expect(store.listTasks()).toHaveLength(2);
+  });
+
+  it('no key: unchanged behavior — two identical no-key posts still hit prompt dedup', async () => {
+    const first = await launchTask(deps, { prompt: 'no key here', cwd: '/tmp' });
+    const second = await launchTask(deps, { prompt: 'no key here', cwd: '/tmp' });
+
+    expect(second.duplicate).toBe(true);
+    expect(second.idempotentReplay).toBeUndefined();
+    expect(second.task.id).toBe(first.task.id);
+    expect(ledger.size()).toBe(0); // ledger never touched when no key is supplied
+  });
+
+  it('issue #1588: a launch failure disposes the task, and a same-key retry replays it (no sibling created)', async () => {
+    const adapter = deps.adapterRegistry.get('claude-code');
+    (adapter.launch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('boom'));
+
+    await expect(
+      launchTask(deps, { prompt: 'will fail then retry', cwd: '/tmp', idempotencyKey: 'k1' }),
+    ).rejects.toThrow('boom');
+
+    // The failed launch is NOT deleted (the old behaviour) — it stays queryable
+    // with a disposition so the retry can return it instead of a duplicate.
+    expect(store.listTasks()).toHaveLength(1);
+    const [disposed] = store.listTasks();
+    expect(disposed.status).toBe('terminated');
+    expect(disposed.disposition?.reason).toBe('launch_error');
+
+    // Retry with the SAME key replays the disposed task — no second launch, no
+    // sibling task — the create-then-lose duplicate bug (#1550) is closed.
+    const retry = await launchTask(deps, { prompt: 'will fail then retry', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(retry.idempotentReplay).toBe(true);
+    expect(retry.task.id).toBe(disposed.id);
+    expect(retry.task.disposition?.reason).toBe('launch_error');
+    expect(store.listTasks()).toHaveLength(1);
+    expect(adapter.launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('issue #1588: a launch TIMEOUT disposes the task with reason launch_timeout and a same-key retry replays it', async () => {
+    const adapter = deps.adapterRegistry.get('claude-code');
+    // A launch that never settles trips the hard launch timeout.
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise<string>(() => {}),
+    );
+    const timeoutDeps: LaunchServiceDeps = { ...deps, getLaunchTimeoutMs: () => 20 };
+
+    await expect(
+      launchTask(timeoutDeps, { prompt: 'hangs', cwd: '/tmp', idempotencyKey: 'k1' }),
+    ).rejects.toBeInstanceOf(LaunchTimeoutError);
+
+    const [disposed] = store.listTasks();
+    expect(disposed.status).toBe('terminated');
+    expect(disposed.disposition?.reason).toBe('launch_timeout');
+
+    const retry = await launchTask(timeoutDeps, { prompt: 'hangs', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(retry.idempotentReplay).toBe(true);
+    expect(retry.task.id).toBe(disposed.id);
+    expect(retry.task.disposition?.reason).toBe('launch_timeout');
+    expect(store.listTasks()).toHaveLength(1);
+    // The retry replayed — it did NOT re-invoke the adapter.
+    expect(adapter.launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('a keyed launch rejected BEFORE any task record (backpressure) releases the key — a same-key retry launches fresh, not a bogus replay', async () => {
+    // maxActive=0 + maxPending=0 makes the pending-queue guard reject BEFORE
+    // createTask, so no task record exists and disposedTaskId is undefined.
+    // The wrapper must RELEASE (not finalize) the key — otherwise a retry would
+    // replay a task that never existed. This guards the `else` branch that the
+    // launch-failure disposition path (#1588) sits beside.
+    const rejectDeps: LaunchServiceDeps = { ...deps, getMaxActiveTasks: () => 0, getMaxPendingTasks: () => 0 };
+    let caught: unknown;
+    try {
+      await launchTask(rejectDeps, { prompt: 'rejected then retried', cwd: '/tmp', idempotencyKey: 'k1' });
+    } catch (err) {
+      caught = err;
+    }
+    expect(isPendingQueueFullError(caught)).toBe(true);
+    expect(store.listTasks()).toHaveLength(0);
+
+    // Retry with capacity restored: a fresh launch, never a replay of a
+    // never-created task.
+    const retry = await launchTask(deps, { prompt: 'rejected then retried', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(retry.idempotentReplay).toBeUndefined();
+    expect(store.listTasks()).toHaveLength(1);
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('TTL expiry: an entry older than 24h is compacted and the key becomes reusable', async () => {
+    let nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+    const ttlLedger = new IdempotencyLedger(ledgerDir, { ttlMs: 1000, now: () => nowMs });
+    await ttlLedger.load();
+    const ttlDeps: LaunchServiceDeps = { ...makeDeps(store), idempotencyLedger: ttlLedger };
+
+    const first = await launchTask(ttlDeps, { prompt: 'ttl one', cwd: '/tmp', idempotencyKey: 'k1' });
+
+    nowMs += 1001; // advance past the TTL
+    const second = await launchTask(ttlDeps, { prompt: 'ttl two', cwd: '/tmp', idempotencyKey: 'k1' });
+
+    expect(second.idempotentReplay).toBeUndefined();
+    expect(second.task.id).not.toBe(first.task.id);
+    expect(store.listTasks()).toHaveLength(2);
+  });
+
+  it('restart: ledger reloaded from disk still detects a replay', async () => {
+    const first = await launchTask(deps, { prompt: 'survives restart', cwd: '/tmp', idempotencyKey: 'k1' });
+
+    // Simulate a server restart: fresh ledger instance pointed at the same dir.
+    const reloadedLedger = new IdempotencyLedger(ledgerDir);
+    await reloadedLedger.load();
+    const reloadedDeps: LaunchServiceDeps = { ...makeDeps(store), idempotencyLedger: reloadedLedger };
+
+    const second = await launchTask(reloadedDeps, { prompt: 'survives restart', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(second.idempotentReplay).toBe(true);
+    expect(second.task.id).toBe(first.task.id);
+  });
+
+  it('review item 1: a ledger persist failure after a successful launch does not fail the caller, and same-process retry still replays', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // A kookrDir that was never created — atomicWriteFile fails (ENOENT:
+      // parent dir missing) when finalize() tries to persist, simulating a
+      // disk-full/permissions failure without mocking modules.
+      const brokenLedger = new IdempotencyLedger(join(ledgerDir, 'does-not-exist-subdir'));
+      await brokenLedger.load(); // tolerates the missing dir
+      const brokenDeps: LaunchServiceDeps = { ...makeDeps(store), idempotencyLedger: brokenLedger };
+
+      const result = await launchTask(brokenDeps, { prompt: 'disk full', cwd: '/tmp', idempotencyKey: 'k1' });
+      // The caller gets the real, successfully-launched task — no thrown error.
+      expect(result.idempotentReplay).toBeUndefined();
+      expect(result.task.prompt).toBe('disk full');
+      expect(store.listTasks()).toHaveLength(1); // the task really was created
+      expect(errorSpy).toHaveBeenCalled(); // logged loudly
+
+      // Same-process retry with the same key still replays (in-memory state
+      // survived the failed persist) instead of creating a duplicate.
+      const retry = await launchTask(brokenDeps, { prompt: 'disk full', cwd: '/tmp', idempotencyKey: 'k1' });
+      expect(retry.idempotentReplay).toBe(true);
+      expect(retry.task.id).toBe(result.task.id);
+      expect(brokenDeps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('review item 2: a terminal task that never ran (queued then cancelled, zero sessions) is NOT replayed — retry launches fresh', async () => {
+    // Force the very first launch straight into the "queued" (concurrency
+    // cap reached) path so it gets a task record with zero sessions —
+    // launchTaskCore's maxActive branch never calls adapter.launch.
+    const queuedDeps: LaunchServiceDeps = { ...deps, getMaxActiveTasks: () => 0 };
+    const queued = await launchTask(queuedDeps, { prompt: 'never launched', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(queued.queued).toBe(true);
+    expect(queued.task.sessions).toHaveLength(0);
+
+    // Simulate the hung-task reaper / a manual cancel reclaiming it before
+    // promotion ever ran adapter.launch — pending -> cancelled is valid.
+    store.cancelTask(queued.task.id);
+
+    // Retry with the same key, now with capacity — must launch fresh rather
+    // than replay a task that will never do the work being retried for.
+    const retry = await launchTask(deps, { prompt: 'never launched', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(retry.idempotentReplay).toBeUndefined();
+    expect(retry.task.id).not.toBe(queued.task.id);
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('review item 2: a terminal task that DID run (has a session) is still replayed', async () => {
+    const first = await launchTask(deps, { prompt: 'did real work', cwd: '/tmp', idempotencyKey: 'k1' });
+
+    // The mock adapter in this test harness does not attach a session
+    // itself, so simulate the agent having actually run and finished — same
+    // pattern as launch-dedup-integration.test.ts. addSession auto-transitions
+    // open/pending -> inProgress, so a separate startTask() is neither needed
+    // nor valid here.
+    store.addSession(first.task.id, {
+      tmuxSession: 'kookr-ran',
+      agentType: 'claude-code',
+      cwd: '/tmp',
+      createdAt: new Date(),
+      lastStatus: 'completed',
+    });
+    store.completeTask(first.task.id);
+
+    const retry = await launchTask(deps, { prompt: 'did real work', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(retry.idempotentReplay).toBe(true);
+    expect(retry.task.id).toBe(first.task.id);
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce(); // no second launch
+  });
+
+  it('review item 3: replay of a still-pending (queued) task preserves queued:true', async () => {
+    const queuedDeps: LaunchServiceDeps = { ...deps, getMaxActiveTasks: () => 0 };
+    const first = await launchTask(queuedDeps, { prompt: 'stays queued', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(first.queued).toBe(true);
+    expect(first.task.status).toBe('pending');
+
+    const replay = await launchTask(queuedDeps, { prompt: 'stays queued', cwd: '/tmp', idempotencyKey: 'k1' });
+    expect(replay.idempotentReplay).toBe(true);
+    expect(replay.queued).toBe(true);
+    expect(replay.task.id).toBe(first.task.id);
+  });
+});
+
+describe('launchTask hard timeout (issue #1526 Phase C / #1528)', () => {
+  it('a never-settling adapter launch rejects with LaunchTimeoutError and cleans up like a thrown launch', async () => {
+    const taskStore = new TaskStore();
+    const deps: LaunchServiceDeps = { ...makeDeps(taskStore), getLaunchTimeoutMs: () => 40 };
+    const adapter = deps.adapterRegistry.get('claude-code');
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<string>(() => { /* never settles — the #1528 wedge */ }),
+    );
+
+    await expect(launchTask(deps, { prompt: 'wedged launch', cwd: '/tmp' }))
+      .rejects.toBeInstanceOf(LaunchTimeoutError);
+
+    // Issue #1588: the wedged launch is DISPOSED, not deleted — it stays
+    // queryable with a launch_timeout disposition and is terminal, so it
+    // releases its reservation and no longer holds a capacity slot.
+    const tasks = taskStore.listTasks();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].status).toBe('terminated');
+    expect(tasks[0].disposition?.reason).toBe('launch_timeout');
+    expect(taskStore.getActiveCount()).toBe(0);
+  });
+
+  it('the timeout error is distinguishable via the type guard and code', async () => {
+    const taskStore = new TaskStore();
+    const deps: LaunchServiceDeps = { ...makeDeps(taskStore), getLaunchTimeoutMs: () => 25 };
+    const adapter = deps.adapterRegistry.get('claude-code');
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<string>(() => {}),
+    );
+
+    let caught: unknown;
+    try {
+      await launchTask(deps, { prompt: 'wedged launch', cwd: '/tmp' });
+    } catch (err) {
+      caught = err;
+    }
+    expect(isLaunchTimeoutError(caught)).toBe(true);
+    expect((caught as LaunchTimeoutError).code).toBe('launch_timeout');
+    expect((caught as LaunchTimeoutError).message).toContain('timed out');
+  });
+
+  it('late RESOLUTION after the timeout does not resurrect state and stops the orphaned session', async () => {
+    const taskStore = new TaskStore();
+    const deps: LaunchServiceDeps = { ...makeDeps(taskStore), getLaunchTimeoutMs: () => 30 };
+    const adapter = deps.adapterRegistry.get('claude-code');
+    let settleLate!: (sessionId: string) => void;
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<string>((resolve) => { settleLate = resolve; }),
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await expect(launchTask(deps, { prompt: 'late resolver', cwd: '/tmp' }))
+        .rejects.toBeInstanceOf(LaunchTimeoutError);
+      // Issue #1588: disposed (terminated) rather than deleted.
+      expect(taskStore.listTasks()).toHaveLength(1);
+      expect(taskStore.listTasks()[0].disposition?.reason).toBe('launch_timeout');
+
+      // The abandoned promise settles LATE with a real session id.
+      settleLate('tmux-late-1');
+      await vi.waitFor(() => {
+        expect(adapter.stop).toHaveBeenCalledWith('tmux-late-1');
+      });
+
+      // The disposed record is unchanged (still terminal, still holds no slot)
+      // and the orphaned late session was stopped, never resurrected into
+      // launch state.
+      expect(taskStore.listTasks()).toHaveLength(1);
+      expect(taskStore.listTasks()[0].status).toBe('terminated');
+      expect(taskStore.getActiveCount()).toBe(0);
+      expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('settled LATE'))).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('late REJECTION after the timeout is swallowed (logged), never unhandled', async () => {
+    const taskStore = new TaskStore();
+    const deps: LaunchServiceDeps = { ...makeDeps(taskStore), getLaunchTimeoutMs: () => 30 };
+    const adapter = deps.adapterRegistry.get('claude-code');
+    let rejectLate!: (err: Error) => void;
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<string>((_resolve, reject) => { rejectLate = reject; }),
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await expect(launchTask(deps, { prompt: 'late rejecter', cwd: '/tmp' }))
+        .rejects.toBeInstanceOf(LaunchTimeoutError);
+
+      rejectLate(new Error('Task not found: gone'));
+      await vi.waitFor(() => {
+        expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('rejected after timeout'))).toBe(true);
+      });
+      // Issue #1588: the timed-out task remains as a disposed terminal record.
+      expect(taskStore.listTasks()).toHaveLength(1);
+      expect(taskStore.listTasks()[0].disposition?.reason).toBe('launch_timeout');
+      expect(adapter.stop).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('a launch that resolves within the timeout is untouched by the wrapper', async () => {
+    const taskStore = new TaskStore();
+    const deps: LaunchServiceDeps = { ...makeDeps(taskStore), getLaunchTimeoutMs: () => 5_000 };
+
+    const result = await launchTask(deps, { prompt: 'fast launch', cwd: '/tmp' });
+    expect(result.queued).toBe(false);
+    expect(taskStore.getTask(result.task.id)).toBeDefined();
+  });
+
+  it('falls back to the default timeout when the getter returns a non-positive value', async () => {
+    // Guard against a broken live getter disabling the bound entirely: the
+    // race must still be armed (we only assert the launch succeeds and no
+    // timer misfires with 0/NaN — a 0ms timeout would kill every launch).
+    const taskStore = new TaskStore();
+    const deps: LaunchServiceDeps = { ...makeDeps(taskStore), getLaunchTimeoutMs: () => 0 };
+    const result = await launchTask(deps, { prompt: 'default bound', cwd: '/tmp' });
+    expect(result.queued).toBe(false);
+    expect(taskStore.getTask(result.task.id)).toBeDefined();
+  });
+
+  it('issue #1588: a late abandoned launch that tries to attach a session finds the task terminal — no phantom session', async () => {
+    // Real adapters call taskStore.addSession(taskId, ...) internally before
+    // resolving. Model that: fire the attach only when released, AFTER the
+    // timeout has disposed+terminated the task. The terminal guard must refuse.
+    const taskStore = new TaskStore();
+    const deps: LaunchServiceDeps = { ...makeDeps(taskStore), getLaunchTimeoutMs: () => 30 };
+    const adapter = deps.adapterRegistry.get('claude-code');
+    let attachLate!: () => void;
+    let attachThrew = false;
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementation(
+      (taskId: string) => new Promise<string>((resolve, reject) => {
+        attachLate = () => {
+          try {
+            taskStore.addSession(taskId, { tmuxSession: 'tmux-phantom', agentType: 'claude-code', cwd: '/tmp', createdAt: new Date() });
+            resolve('tmux-phantom'); // unreachable — the guard throws first
+          } catch (err) {
+            attachThrew = true;
+            reject(err as Error); // real adapter propagates the attach failure
+          }
+        };
+      }),
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(launchTask(deps, { prompt: 'wedged then late-attach', cwd: '/tmp' }))
+        .rejects.toBeInstanceOf(LaunchTimeoutError);
+      const [disposed] = taskStore.listTasks();
+      expect(disposed.status).toBe('terminated');
+      expect(disposed.disposition?.reason).toBe('launch_timeout');
+
+      // The abandoned launch now tries to attach — refused by the terminal
+      // guard, so the disposed record never gains a phantom session.
+      attachLate();
+      expect(attachThrew).toBe(true);
+      expect(taskStore.getTask(disposed.id)!.sessions).toHaveLength(0);
+      expect(taskStore.getTask(disposed.id)!.status).toBe('terminated');
+      await vi.waitFor(() => {
+        expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('rejected after timeout'))).toBe(true);
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('issue #1588: a post-attach audit-log failure does NOT dispose a launch that already attached a session', async () => {
+    // The launch succeeds (a session attaches, agent is live), but the
+    // best-effort audit append then fails. The task must stay live — never
+    // disposed/terminated on a bookkeeping fault.
+    const taskStore = new TaskStore();
+    const base = makeDeps(taskStore);
+    const adapter = base.adapterRegistry.get('claude-code');
+    (adapter.launch as ReturnType<typeof vi.fn>).mockImplementation(async (taskId: string) => {
+      taskStore.addSession(taskId, { tmuxSession: 'tmux-live', agentType: 'claude-code', cwd: '/tmp', createdAt: new Date() });
+      return 'tmux-live';
+    });
+    const deps: LaunchServiceDeps = {
+      ...base,
+      bypassAllPermissions: true,
+      interactionLog: { append: vi.fn().mockRejectedValue(new Error('audit disk full')) } as never,
+      // This adapter actually attaches a session, so registerNewAgent runs its
+      // per-session path — give the hookWatcher mock the isWatching probe.
+      lifecycleDeps: {
+        ...base.lifecycleDeps,
+        hookWatcher: { watch: vi.fn(), isWatching: vi.fn().mockReturnValue(false) },
+      } as never,
+    };
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await launchTask(deps, { prompt: 'live then log fails', cwd: '/tmp' });
+      const stored = taskStore.getTask(result.task.id)!;
+      expect(stored.status).toBe('inProgress'); // live, not disposed
+      expect(stored.disposition).toBeUndefined();
+      expect(stored.sessions).toHaveLength(1);
+      expect(errSpy).toHaveBeenCalled(); // audit failure logged best-effort
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+});
+
+describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
+  describe('pending-queue depth limit', () => {
+    /** Queue `pendingCount` tasks through the normal at-capacity pend path. */
+    async function fillQueue(deps: LaunchServiceDeps, pendingCount: number) {
+      for (let i = 0; i < pendingCount; i++) {
+        const result = await launchTask(deps, { prompt: `queued ${i}`, cwd: '/tmp' });
+        expect(result.queued).toBe(true);
+      }
+    }
+
+    function backpressureDeps(store: TaskStore, maxPending: number): LaunchServiceDeps {
+      return {
+        ...makeDeps(store),
+        getMaxActiveTasks: () => 1,
+        getMaxPendingTasks: () => maxPending,
+      };
+    }
+
+    it('rejects with PendingQueueFullError carrying the capacity ledger when at cap with a full queue', async () => {
+      const store = new TaskStore();
+      const deps = backpressureDeps(store, 2);
+      // Occupy the only active slot.
+      const first = store.createTask({ prompt: 'active', cwd: '/tmp' });
+      store.startTask(first.id);
+      await fillQueue(deps, 2);
+
+      const before = store.listTasks().length;
+      let thrown: unknown;
+      try {
+        await launchTask(deps, { prompt: 'one too many', cwd: '/tmp' });
+      } catch (err) {
+        thrown = err;
+      }
+      expect(isPendingQueueFullError(thrown)).toBe(true);
+      const err = thrown as PendingQueueFullError;
+      expect(err.code).toBe('pending_queue_full');
+      expect(err.maxPendingTasks).toBe(2);
+      expect(err.capacity.pendingQueueDepth).toBe(2);
+      expect(err.capacity.active).toBe(1);
+      expect(err.capacity.maxActiveTasks).toBe(1);
+      expect(err.capacity.byClass).toBeDefined();
+      // No task record was created for the rejected launch.
+      expect(store.listTasks().length).toBe(before);
+    });
+
+    it('below the depth limit, an at-capacity launch still queues (unchanged behavior)', async () => {
+      const store = new TaskStore();
+      const deps = backpressureDeps(store, 3);
+      const first = store.createTask({ prompt: 'active', cwd: '/tmp' });
+      store.startTask(first.id);
+      await fillQueue(deps, 2);
+      const result = await launchTask(deps, { prompt: 'still fits', cwd: '/tmp' });
+      expect(result.queued).toBe(true);
+      expect(store.getTask(result.task.id)?.status).toBe('pending');
+    });
+
+    it('below capacity, a full queue does not block launches', async () => {
+      const store = new TaskStore();
+      const deps: LaunchServiceDeps = {
+        ...makeDeps(store),
+        getMaxActiveTasks: () => 5,
+        getMaxPendingTasks: () => 1,
+      };
+      // Queue is "full" (1/1) but there is active headroom → launch proceeds.
+      const queued = store.createTask({ prompt: 'queued', cwd: '/tmp' });
+      store.pendTask(queued.id);
+      const result = await launchTask(deps, { prompt: 'launches fine', cwd: '/tmp' });
+      expect(result.queued).toBe(false);
+    });
+
+    it('uses the wired getCapacityLedger snapshot when provided', async () => {
+      const store = new TaskStore();
+      const ledger = {
+        maxActiveTasks: 1,
+        active: 1,
+        free: 0,
+        byClass: { working: 0, finishedAwaitingAck: 1, hungSuspect: 0, launching: 0 },
+        pendingQueueDepth: 1,
+        oldestPendingAgeMs: 1234,
+        oldestFinishedAwaitingAckAgeMs: 5678,
+      };
+      const deps: LaunchServiceDeps = {
+        ...makeDeps(store),
+        getMaxActiveTasks: () => 1,
+        getMaxPendingTasks: () => 1,
+        getCapacityLedger: () => ledger,
+      };
+      const first = store.createTask({ prompt: 'active', cwd: '/tmp' });
+      store.startTask(first.id);
+      const queued = store.createTask({ prompt: 'queued', cwd: '/tmp' });
+      store.pendTask(queued.id);
+
+      await expect(launchTask(deps, { prompt: 'rejected', cwd: '/tmp' }))
+        .rejects.toMatchObject({ code: 'pending_queue_full', capacity: ledger });
+    });
+  });
+
+  describe('per-source spawn burst budget', () => {
+    function burstDeps(store: TaskStore, limit: number, windowMs = 10 * 60_000, now?: () => number): LaunchServiceDeps {
+      return {
+        ...makeDeps(store),
+        spawnRateLimiter: new SpawnRateLimiter({
+          getLimit: () => limit,
+          getWindowMs: () => windowMs,
+          ...(now ? { now } : {}),
+        }),
+      };
+    }
+
+    it('rejects an over-limit source with SpawnBurstLimitError (distinct code + ledger)', async () => {
+      const store = new TaskStore();
+      const deps = burstDeps(store, 2);
+      await launchTask(deps, { prompt: 'a', cwd: '/tmp', launchSource: 'cli' });
+      await launchTask(deps, { prompt: 'b', cwd: '/tmp', launchSource: 'cli' });
+
+      let thrown: unknown;
+      try {
+        await launchTask(deps, { prompt: 'c', cwd: '/tmp', launchSource: 'cli' });
+      } catch (err) {
+        thrown = err;
+      }
+      expect(isSpawnBurstLimitError(thrown)).toBe(true);
+      const err = thrown as SpawnBurstLimitError;
+      expect(err.code).toBe('spawn_burst_limit');
+      expect(err.source).toBe('cli');
+      expect(err.limit).toBe(2);
+      expect(err.retryAfterMs).toBeGreaterThan(0);
+      expect(err.capacity.byClass).toBeDefined();
+    });
+
+    it('other sources are unaffected by one source bursting', async () => {
+      const store = new TaskStore();
+      const deps = burstDeps(store, 1);
+      await launchTask(deps, { prompt: 'cli one', cwd: '/tmp', launchSource: 'cli' });
+      await expect(launchTask(deps, { prompt: 'cli two', cwd: '/tmp', launchSource: 'cli' }))
+        .rejects.toMatchObject({ code: 'spawn_burst_limit' });
+      // api + websocket buckets still have budget.
+      await expect(launchTask(deps, { prompt: 'api one', cwd: '/tmp', launchSource: 'api' }))
+        .resolves.toMatchObject({ queued: false });
+      await expect(launchTask(deps, { prompt: 'ws one', cwd: '/tmp', launchSource: 'websocket' }))
+        .resolves.toMatchObject({ queued: false });
+    });
+
+    it('the window slides: the source recovers once its oldest launch ages out', async () => {
+      const store = new TaskStore();
+      let nowMs = 1_000_000;
+      const deps = burstDeps(store, 1, 60_000, () => nowMs);
+      await launchTask(deps, { prompt: 'first', cwd: '/tmp', launchSource: 'cli' });
+      await expect(launchTask(deps, { prompt: 'second', cwd: '/tmp', launchSource: 'cli' }))
+        .rejects.toMatchObject({ code: 'spawn_burst_limit' });
+      nowMs += 60_001;
+      await expect(launchTask(deps, { prompt: 'third', cwd: '/tmp', launchSource: 'cli' }))
+        .resolves.toMatchObject({ queued: false });
+    });
+
+    it('schedule-fired launches are exempt from the budget', async () => {
+      const store = new TaskStore();
+      const deps = burstDeps(store, 1);
+      for (let i = 0; i < 4; i++) {
+        await expect(launchTask(deps, { prompt: `fire ${i}`, cwd: '/tmp', launchSource: 'schedule', disableDedup: true }))
+          .resolves.toBeDefined();
+      }
+    });
+
+    it('an actor-qualified caller has a bucket separate from the bare source', async () => {
+      const store = new TaskStore();
+      const deps = burstDeps(store, 1);
+      await launchTask(deps, { prompt: 'anon', cwd: '/tmp', launchSource: 'api' });
+      // Bare `api` is exhausted…
+      await expect(launchTask(deps, { prompt: 'anon 2', cwd: '/tmp', launchSource: 'api' }))
+        .rejects.toMatchObject({ code: 'spawn_burst_limit', source: 'api' });
+      // …but lucy's attributed bucket is untouched, and vice versa.
+      await expect(launchTask(deps, { prompt: 'lucy 1', cwd: '/tmp', launchSource: 'api', launchActorId: 'lucy' }))
+        .resolves.toBeDefined();
+      await expect(launchTask(deps, { prompt: 'lucy 2', cwd: '/tmp', launchSource: 'api', launchActorId: 'lucy' }))
+        .rejects.toMatchObject({ code: 'spawn_burst_limit', source: 'api:actor:lucy' });
+    });
+
+    it('a dedup replay consumes no budget and is never rejected', async () => {
+      const store = new TaskStore();
+      const deps = burstDeps(store, 1);
+      const first = await launchTask(deps, { prompt: 'same prompt', cwd: '/tmp', launchSource: 'cli' });
+      store.startTask(first.task.id); // keep it active so dedup matches
+      // Identical resubmission: dedup returns the existing task BEFORE the
+      // budget check, so an exhausted bucket does not break retries.
+      const replay = await launchTask(deps, { prompt: 'same prompt', cwd: '/tmp', launchSource: 'cli' });
+      expect(replay.duplicate).toBe(true);
+      expect(replay.task.id).toBe(first.task.id);
+    });
+  });
+
+  describe('metadata.launchSource stamping', () => {
+    it('stamps the launch source onto task metadata', async () => {
+      const store = new TaskStore();
+      const deps = makeDeps(store);
+      const result = await launchTask(deps, { prompt: 'stamped', cwd: '/tmp', launchSource: 'schedule' });
+      expect(store.getTask(result.task.id)?.metadata?.launchSource).toBe('schedule');
+    });
+
+    it('leaves metadata absent when no source is given', async () => {
+      const store = new TaskStore();
+      const deps = makeDeps(store);
+      const result = await launchTask(deps, { prompt: 'unstamped', cwd: '/tmp' });
+      expect(store.getTask(result.task.id)?.metadata).toBeUndefined();
+    });
   });
 });

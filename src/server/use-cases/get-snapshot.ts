@@ -9,18 +9,27 @@ import type { ProjectSummary, ProjectRepoHealth } from '../../core/project-summa
 import type { GitHubReference } from '../../core/github-types.js';
 import type { DrainStatusSnapshot, SnapshotMessage, WorkspaceSweepProgressSnapshot } from '../../shared/contracts/messages.js';
 import type { CollaborationCapabilities, SpeechCapability } from '../../shared/contracts/speech.js';
-import { projectEventForClient } from '../event-projection.js';
+import {
+  projectAgentFieldsForClient,
+  projectEventForClient,
+  projectTerminalAgentFieldsForClient,
+} from '../event-projection.js';
 import type { AgentActivityMeta } from '../../core/types.js';
 import { buildGithubTaskOverlay } from './github-task-overlay.js';
 import type { FindingEvidenceAuditRecord } from '../../shared/contracts/anomalies.js';
 import type { PendingAgentSignal } from '../../shared/contracts/agent-signal.js';
+import { deriveStuckReason } from '../../core/stuck-reason.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
 import { buildCoordinatorSnapshotState, type CoordinatorAuditTailProvider, type CoordinatorTask } from '../coordinator/detectors.js';
 import type { CoordinatorSuppressionReader } from '../coordinator/suppression-store.js';
 import { buildRelationProjection, deriveEffectiveAttentionSeverity } from './build-relation-projection.js';
 import type { TaskRelation } from '../../shared/contracts/task-relations.js';
 import type { PromptStatus } from '../../shared/contracts/terminal-input.js';
-import { buildSnapshotProjection } from './snapshot-projection.js';
+import {
+  buildSnapshotProjection,
+  SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS,
+} from './snapshot-projection.js';
+import { isTerminalStatus } from '../../core/task-status.js';
 import {
   projectUserInputDeliveryForClient,
   type UserInputDeliverySnapshot,
@@ -64,6 +73,8 @@ export interface SnapshotQueryDeps {
    * this through {@link createSnapshotMessage}/{@link getProjectSummaries}.
    */
   scope?: Scope;
+  /** Injectable clock (tests). Drives the aged-terminal-task snapshot cutoff. */
+  now?: () => Date;
 }
 
 export interface SnapshotMessageDeps extends SnapshotQueryDeps {
@@ -107,8 +118,12 @@ export interface SnapshotMessageDeps extends SnapshotQueryDeps {
    * and per-agent `childRollup` (#601). When omitted the snapshot ships
    * without relation data — existing consumers continue working unchanged
    * because the new fields are all optional.
+   *
+   * `getTask` is optional (production passes the full TaskStore): when
+   * present it supplies the child-status fallback for rollups over aged
+   * terminal children that the C2 payload diet excludes from the snapshot.
    */
-  relationTaskStore?: Pick<TaskStore, 'listRelations' | 'getPendingSignal'>;
+  relationTaskStore?: Pick<TaskStore, 'listRelations' | 'getPendingSignal'> & Partial<Pick<TaskStore, 'getTask'>>;
 }
 
 const LOCAL_NODE_DEVICE_ID = 'local-node';
@@ -195,11 +210,18 @@ export interface ProjectSummaryQueryDeps extends SnapshotQueryDeps {
 /**
  * Get agents with events projected for browser transport.
  * toolResponse is omitted; toolInput and lastMessage are capped.
+ * Terminal-status entries are additionally slimmed (bounded `description`,
+ * dropped dead-weight fields) and terminal tasks older than
+ * {@link SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS} are excluded entirely
+ * (issue #1526 Phase C / C2 payload diet) — REST keeps serving them.
  * Use this for WebSocket snapshot/update broadcasts.
  * See docs/rfc/rfc-snapshot-payload-slimming.md.
  */
 export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[] {
-  return getProjectedSnapshotAgents(deps).map((agent) => {
+  const nowMs = (deps.now?.() ?? new Date()).getTime();
+  return getProjectedSnapshotAgents(deps, {
+    excludeTerminalBeforeMs: nowMs - SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS,
+  }).map((agent) => {
     const activityMeta = deps.activityMetaProvider?.getActivityMeta(agent.agentId);
     const terminalSnapshot = agent.taskId
       ? deps.terminalInputSnapshots?.getSnapshot(agent.agentId)
@@ -207,10 +229,18 @@ export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[
     const pendingSignal = agent.taskId && typeof deps.pendingSignalProvider?.getPendingSignal === 'function'
       ? deps.pendingSignalProvider.getPendingSignal(agent.taskId)
       : undefined;
+    // stuckReason (issue #1526 Phase B): derived from signals already on the
+    // projected agent — no extra watchdog/queue lookup here. `agent.anomaly`
+    // already reflects the watchdog's queued verdict (Monitor.getCurrentAnomaly
+    // falls back to AttentionQueue.peek), so this stays free — the cost was
+    // already paid building the snapshot regardless of this field.
+    const stuckReason = agent.taskStatus
+      ? deriveStuckReason({ status: agent.taskStatus, pendingSignal, anomalyType: agent.anomaly?.type ?? null })
+      : null;
     const userInputDeliveries = deps.userInputDeliveryProvider
       ?.getSnapshot(agent.agentId)
       .map(projectUserInputDeliveryForClient);
-    return {
+    const projected = projectAgentFieldsForClient({
       ...agent,
       events: agent.events.map(projectEventForClient),
       ...(agent.findingEvidenceAudit
@@ -218,6 +248,7 @@ export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[
         : {}),
       ...(activityMeta ? { activityMeta } : {}),
       ...(pendingSignal ? { pendingSignal } : {}),
+      ...(stuckReason ? { stuckReason } : {}),
       ...(userInputDeliveries && userInputDeliveries.length > 0 ? { userInputDeliveries } : {}),
       ...(terminalSnapshot ? {
         terminalInputSnapshot: {
@@ -228,7 +259,12 @@ export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[
           promptReady: terminalSnapshot.prompt.kind === 'ready',
         },
       } : {}),
-    };
+    });
+    // Terminal rows carry no live event window and only feed the Completed
+    // pane — bound their heavy fields harder (issue #1526 Phase C / C2).
+    return agent.taskStatus && isTerminalStatus(agent.taskStatus)
+      ? projectTerminalAgentFieldsForClient(projected)
+      : projected;
   });
 }
 
@@ -267,7 +303,10 @@ export function getSnapshotAgentsRaw(deps: SnapshotQueryDeps): AgentState[] {
   });
 }
 
-function getProjectedSnapshotAgents(deps: SnapshotQueryDeps): AgentState[] {
+function getProjectedSnapshotAgents(
+  deps: SnapshotQueryDeps,
+  opts: { excludeTerminalBeforeMs?: number } = {},
+): AgentState[] {
   const rawMonitorStates = deps.monitor.getSnapshot();
   const taskSnapshot = deps.monitor.getTaskSnapshot?.();
   // Lightweight tests and legacy mocks may provide only raw monitor state.
@@ -278,6 +317,9 @@ function getProjectedSnapshotAgents(deps: SnapshotQueryDeps): AgentState[] {
     : buildSnapshotProjection({
         monitorStates: rawMonitorStates,
         tasks: taskSnapshot,
+        ...(opts.excludeTerminalBeforeMs !== undefined
+          ? { excludeTerminalBeforeMs: opts.excludeTerminalBeforeMs }
+          : {}),
       });
   return filterAgentsToScope(projected, deps.scope);
 }
@@ -355,7 +397,14 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
     const relationStore = projectsScope
       ? scopedRelationStore(deps.relationTaskStore, baseAgents)
       : deps.relationTaskStore;
-    const projection = buildRelationProjection(relationStore, baseAgents);
+    const getTask = deps.relationTaskStore.getTask;
+    const projection = buildRelationProjection(relationStore, baseAgents, {
+      // Child-status fallback for aged terminal children excluded from the
+      // snapshot (C2 payload diet) so parent rollups stay `completed`.
+      ...(typeof getTask === 'function'
+        ? { getTaskStatus: (taskId: string) => getTask.call(deps.relationTaskStore, taskId)?.status }
+        : {}),
+    });
     taskRelations = projection.taskRelations;
     if (projection.rollupsByParentTaskId.size > 0) {
       agents = baseAgents.map((agent) => {

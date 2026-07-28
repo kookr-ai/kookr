@@ -188,13 +188,24 @@ describe('registerNewAgent', () => {
     expect(deps.autoNameTask).toHaveBeenCalledWith('task-1', 'Fix the bug in auth', '/workspace/project', 'Must pass all tests');
   });
 
-  test('skips auto-naming when task already has a name (e.g., playbooks)', async () => {
+  test('skips auto-naming when task already has an explicit name (e.g., playbooks)', async () => {
     const deps = makeDeps();
     const task = lifecycleTask({ name: 'My Playbook' });
 
     await registerNewAgent(task, deps);
 
     expect(deps.autoNameTask).not.toHaveBeenCalled();
+  });
+
+  test('auto-names task carrying the deterministic creation-time placeholder (issue #1554)', async () => {
+    const deps = makeDeps();
+    // A task named from birth carries `autoNamed`; the LLM namer must still run
+    // to upgrade the placeholder.
+    const task = lifecycleTask({ name: 'Fix the bug in auth', autoNamed: true });
+
+    await registerNewAgent(task, deps);
+
+    expect(deps.autoNameTask).toHaveBeenCalledWith('task-1', 'Fix the bug in auth', '/workspace/project', undefined);
   });
 
   test('resolves projectId via getProjectId when taskStore is provided', async () => {
@@ -953,6 +964,10 @@ describe('promotePendingTasks', () => {
       getNextPending: vi.fn()
         .mockReturnValueOnce(pendingTask)
         .mockReturnValueOnce(undefined),
+      // Second iteration has one free slot left (MAX=2, active=1), so the
+      // posture-guard pick reads the pending list directly (issue #1526 C3).
+      listTasks: vi.fn().mockReturnValue([]),
+      hasFreshLaunchReservation: vi.fn().mockReturnValue(false),
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
       beginLaunch: vi.fn().mockReturnValue(true),
@@ -990,6 +1005,9 @@ describe('promotePendingTasks', () => {
       getNextPending: vi.fn()
         .mockReturnValueOnce(pendingTask)
         .mockReturnValueOnce(undefined),
+      // See note above — last-free-slot iteration uses the posture-guard pick.
+      listTasks: vi.fn().mockReturnValue([]),
+      hasFreshLaunchReservation: vi.fn().mockReturnValue(false),
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
       beginLaunch: vi.fn().mockReturnValue(true),
@@ -1283,6 +1301,115 @@ describe('promotePendingTasks (integration)', () => {
     expect(promoted).toBe(0);
     expect(adapter.launch).not.toHaveBeenCalled();
     expect(taskStore.getTask(t3.id)!.status).toBe('pending');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Promotion posture guard (issue #1526 Phase C / C3, FM11 anti-re-wedge)
+// MAX_ACTIVE_TASKS is mocked to 2 for this file.
+// ---------------------------------------------------------------------------
+
+describe('promotePendingTasks posture guard (issue #1526 C3 / FM11)', () => {
+  let taskStore: TaskStore;
+  let adapter: AgentAdapter;
+  let deps: PromotionDeps;
+
+  beforeEach(() => {
+    taskStore = new TaskStore();
+    adapter = createMockAdapter(taskStore);
+    deps = createPromotionDeps(taskStore, adapter);
+  });
+
+  /** Pend a task and force a distinct, ordered createdAt (FIFO key). */
+  function seedPending(
+    prompt: string,
+    ageMs: number,
+    opts: { autoCloseOnSignal?: boolean; scheduleFired?: boolean } = {},
+  ): string {
+    const task = taskStore.createTask({
+      prompt,
+      cwd: '/cwd',
+      autoCloseOnSignal: opts.autoCloseOnSignal,
+      metadata: opts.scheduleFired ? { launchSource: 'schedule' } : undefined,
+    });
+    taskStore.pendTask(task.id);
+    const mutable = taskStore.getTaskForMutation(task.id)!;
+    mutable.createdAt = new Date(Date.now() - ageMs);
+    return task.id;
+  }
+
+  test('last free slot prefers an autoCloseOnSignal pending over an OLDER ask-first pending', async () => {
+    // One of two slots occupied → the promotion fills the LAST slot.
+    const active = taskStore.createTask('Active', '/cwd');
+    taskStore.startTask(active.id);
+
+    const askFirstId = seedPending('ask-first, older', 60_000);
+    const autoCloseId = seedPending('self-releasing, newer', 30_000, { autoCloseOnSignal: true });
+
+    const promoted = await promotePendingTasks(deps);
+
+    expect(promoted).toBe(1);
+    expect(taskStore.getTask(autoCloseId)!.status).toBe('inProgress');
+    expect(taskStore.getTask(askFirstId)!.status).toBe('pending');
+  });
+
+  test('last free slot prefers a schedule-fired pending (metadata.launchSource) over an older ask-first pending', async () => {
+    const active = taskStore.createTask('Active', '/cwd');
+    taskStore.startTask(active.id);
+
+    const askFirstId = seedPending('ask-first, older', 60_000);
+    const scheduleId = seedPending('schedule fire, newer', 30_000, { scheduleFired: true });
+
+    const promoted = await promotePendingTasks(deps);
+
+    expect(promoted).toBe(1);
+    expect(taskStore.getTask(scheduleId)!.status).toBe('inProgress');
+    expect(taskStore.getTask(askFirstId)!.status).toBe('pending');
+  });
+
+  test('no starvation: when only ask-first pendings exist, the oldest still fills the last slot', async () => {
+    const active = taskStore.createTask('Active', '/cwd');
+    taskStore.startTask(active.id);
+
+    const olderId = seedPending('ask-first older', 60_000);
+    const newerId = seedPending('ask-first newer', 30_000);
+
+    const promoted = await promotePendingTasks(deps);
+
+    expect(promoted).toBe(1);
+    expect(taskStore.getTask(olderId)!.status).toBe('inProgress');
+    expect(taskStore.getTask(newerId)!.status).toBe('pending');
+  });
+
+  test('multi-slot promotion stays FIFO until the last slot (ordering preference only)', async () => {
+    // Both slots free. Oldest is ask-first: with >1 free slot the pick is
+    // plain FIFO, so the ask-first task promotes FIRST — the preference only
+    // applies to the final slot.
+    const askFirstId = seedPending('ask-first oldest', 90_000);
+    const autoCloseId = seedPending('self-releasing newer', 30_000, { autoCloseOnSignal: true });
+
+    const promoted = await promotePendingTasks(deps);
+
+    expect(promoted).toBe(2);
+    const launchOrder = vi.mocked(adapter.launch).mock.calls.map(([taskId]) => taskId);
+    expect(launchOrder).toEqual([askFirstId, autoCloseId]);
+    expect(taskStore.getTask(askFirstId)!.status).toBe('inProgress');
+    expect(taskStore.getTask(autoCloseId)!.status).toBe('inProgress');
+  });
+
+  test('ties within the self-releasing class stay FIFO (oldest self-releasing wins the last slot)', async () => {
+    const active = taskStore.createTask('Active', '/cwd');
+    taskStore.startTask(active.id);
+
+    seedPending('ask-first oldest', 90_000);
+    const olderAutoId = seedPending('self-releasing older', 60_000, { autoCloseOnSignal: true });
+    const newerAutoId = seedPending('self-releasing newer', 30_000, { autoCloseOnSignal: true });
+
+    const promoted = await promotePendingTasks(deps);
+
+    expect(promoted).toBe(1);
+    expect(taskStore.getTask(olderAutoId)!.status).toBe('inProgress');
+    expect(taskStore.getTask(newerAutoId)!.status).toBe('pending');
   });
 });
 

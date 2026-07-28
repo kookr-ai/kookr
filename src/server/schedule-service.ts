@@ -243,10 +243,20 @@ export class ScheduleService {
     this.broadcastSchedules();
   }
 
+  /**
+   * `queued` reports whether the launcher pended the task instead of
+   * launching it immediately — for the schedule runner's launcher (which
+   * routes through the normal task-submission path, issue #1526 Phase A /
+   * FM8), that only ever happens because the node was at capacity, so it is
+   * recorded as `queued_capacity` (reasonCode `capacity`) rather than the
+   * legacy generic `queued`.
+   */
   async markExecutionAccepted(scheduleId: string, receiptId: string, taskId: string, queued: boolean): Promise<void> {
     const schedule = this.requireSchedule(scheduleId);
     const receipt = this.requireReceipt(schedule, receiptId);
     const triggeredAt = new Date().toISOString();
+    const outcome = queued ? 'queued_capacity' : 'running';
+    const reasonCode = queued ? 'capacity' : 'none';
     const latestExecution: ScheduleLatestExecutionStatus = {
       receiptId,
       executionToken: receipt.executionToken,
@@ -255,8 +265,8 @@ export class ScheduleService {
       triggeredAt,
       trigger: receipt.trigger,
       taskId,
-      outcome: queued ? 'queued' : 'running',
-      reasonCode: 'none',
+      outcome,
+      reasonCode,
     };
     this.store.replace({
       ...schedule,
@@ -268,7 +278,7 @@ export class ScheduleService {
         schedule,
         receipt,
         latestExecution.outcome,
-        'none',
+        reasonCode,
         {
           completedAt: triggeredAt,
           taskId,
@@ -287,7 +297,7 @@ export class ScheduleService {
   async markExecutionOutcome(
     scheduleId: string,
     receiptId: string,
-    outcome: Exclude<ScheduleExecutionOutcome, 'completed' | 'cancelled' | 'running' | 'queued'>,
+    outcome: Exclude<ScheduleExecutionOutcome, 'completed' | 'cancelled' | 'running' | 'queued' | 'queued_capacity'>,
     reasonCode: ScheduleExecutionReasonCode,
     message?: string,
     details: { blockingTaskId?: string } = {},
@@ -295,6 +305,19 @@ export class ScheduleService {
     const schedule = this.requireSchedule(scheduleId);
     const receipt = this.requireReceipt(schedule, receiptId);
     const evaluatedAt = new Date().toISOString();
+    // issue #1526 Phase A: a skip receipt never carries its own taskId
+    // (reserveExecution creates it before any launch attempt), so writing
+    // `latestExecution.taskId` from `receipt.taskId` alone WIPES the blocking
+    // pointer on every skip. fire() reads `schedule.latestExecution?.taskId`
+    // as `blockingTaskId` on the NEXT tick — wiping it here means a second
+    // skipped_coalesced/skipped_active in a row loses track of the still-
+    // pending/active task and the following fire launches a duplicate
+    // instead of skipping again. It also breaks recordTaskTerminalOutcome's
+    // schedule lookup (`candidate.latestExecution?.taskId === taskId`), which
+    // can no longer find this schedule once the pointer is gone. Falling back
+    // to `details.blockingTaskId` (the task this skip was actually blocked
+    // by) preserves the pointer across any number of consecutive skips.
+    const preservedTaskId = receipt.taskId ?? details.blockingTaskId;
     this.store.replace({
       ...schedule,
       lastRunAt: receipt.evaluatedAt,
@@ -307,7 +330,7 @@ export class ScheduleService {
         ...(receipt.scheduledFor ? { scheduledFor: receipt.scheduledFor } : {}),
         evaluatedAt: receipt.evaluatedAt,
         trigger: receipt.trigger,
-        ...(receipt.taskId ? { taskId: receipt.taskId } : {}),
+        ...(preservedTaskId ? { taskId: preservedTaskId } : {}),
         outcome,
         reasonCode,
         ...(message ? { message } : {}),
@@ -319,7 +342,7 @@ export class ScheduleService {
         reasonCode,
         {
           completedAt: evaluatedAt,
-          ...(receipt.taskId ? { taskId: receipt.taskId } : {}),
+          ...(preservedTaskId ? { taskId: preservedTaskId } : {}),
           ...(details.blockingTaskId ? { blockingTaskId: details.blockingTaskId } : {}),
           ...(message ? { message } : {}),
         },
@@ -368,10 +391,21 @@ export class ScheduleService {
 
   async reconcileOnStartup(taskStore: TaskStore): Promise<void> {
     let changed = false;
-    for (const schedule of this.store.list()) {
+    for (const listed of this.store.list()) {
+      let schedule = listed;
       if (schedule.currentExecution && (schedule.currentExecution.status === 'reserved' || schedule.currentExecution.status === 'accepted')) {
         const latest = schedule.latestExecution;
-        const taskId = schedule.currentExecution.taskId ?? latest?.taskId;
+        // A 'reserved' receipt never carries its own taskId (only
+        // markExecutionAccepted sets one) — the launch died with the previous
+        // process before being accepted (issue #1526 Phase C / #1528). Do NOT
+        // let a PREVIOUS run's `latestExecution.taskId` mask that: falling
+        // back to it here used to leave the wedged receipt 'reserved'
+        // forever whenever the schedule had any prior accepted run. Only an
+        // 'accepted' receipt may borrow the latest pointer, since for it
+        // that pointer really is this execution's task.
+        const taskId = schedule.currentExecution.status === 'accepted'
+          ? schedule.currentExecution.taskId ?? latest?.taskId
+          : schedule.currentExecution.taskId;
         if (!taskId) {
           this.store.replace({
             ...schedule,
@@ -401,13 +435,24 @@ export class ScheduleService {
             },
           });
           changed = true;
-          continue;
+          // Fall through to the latestExecution reconciliation below with a
+          // REFRESHED read: a stale reference here would let the second
+          // replace clobber the ledger entry the replace above just wrote
+          // (issue #1526 Phase C — a crash between reserveExecution and the
+          // outcome can leave BOTH a dead 'reserved' receipt and a
+          // 'running' latestExecution needing task-based reconciliation).
+          const refreshed = this.store.get(schedule.id);
+          if (!refreshed) continue;
+          schedule = refreshed;
         }
       }
 
       const latest = schedule.latestExecution;
       if (!latest) continue;
-      if (latest.outcome !== 'running' && latest.outcome !== 'queued') continue;
+      // 'queued' is legacy (issue #1526 Phase A retired it in favor of
+      // 'queued_capacity') — both mean "mid-flight when the server
+      // restarted" and need the same post-restart reconciliation.
+      if (latest.outcome !== 'running' && latest.outcome !== 'queued' && latest.outcome !== 'queued_capacity') continue;
       if (!latest.taskId) continue;
 
       const task = taskStore.getTask(latest.taskId);

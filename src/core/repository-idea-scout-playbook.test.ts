@@ -279,6 +279,23 @@ describe('repository-idea-scout playbook', () => {
       // And no run-local state variable is echoed into the published body.
       expect(phase7).not.toMatch(/\$(STATE_DIR|RECS_DIR|IDEA_DIR)[^\n]*"\$ISSUE_BODY_FILE"/);
     });
+
+    test('Phase 7 applies drain-coupled emission budget + logged dedupe (issue #1607)', () => {
+      const phase7 = pb.body.slice(pb.body.indexOf('## Phase 7: Selective GitHub Issue Creation'));
+      expect(phase7).toContain('kookr emission plan');
+      expect(phase7).toContain('kookr emission dedupe');
+      expect(phase7).toContain('kookr emission defer');
+      expect(phase7).toContain('kookr emission metrics');
+      expect(phase7).toMatch(/netBacklogDelta7d/);
+      expect(phase7).toMatch(/allowedBudget|ALLOWED/);
+      expect(phase7).toMatch(/dedupe-check/);
+      // Runtime gate: once FILED reaches ALLOWED, remaining candidates defer.
+      expect(phase7).toMatch(/FILED.*-ge.*"\$ALLOWED"|FILED=0/);
+      expect(phase7).toContain('FILED=$((FILED + 1))');
+      expect(phase7).toContain('deferred-over-budget');
+      // Stable reflection signal path for netBacklogDelta7d.
+      expect(phase7).toContain('playbook-state/emission-metrics');
+    });
   });
 
   describe('portfolio ranking and parallel-conflict information', () => {

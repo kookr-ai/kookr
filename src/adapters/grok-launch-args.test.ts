@@ -58,6 +58,7 @@ describe('buildAllowlistedGrokEnv', () => {
     processEnv,
     launchContextEnv: { KOOKR_TASK_ID: 't1', PATH: '/launcher:/usr/bin:/bin' },
     grokHome: '/tmp/session/.grok',
+    authPath: '/tmp/fake-home/.grok/auth.json',
   });
 
   it('excludes unrelated provider/GitHub/deploy secrets (allowlist, not blocklist)', () => {
@@ -79,8 +80,9 @@ describe('buildAllowlistedGrokEnv', () => {
     expect(env.PATH).toBe('/launcher:/usr/bin:/bin');
   });
 
-  it('redirects GROK_HOME and disables auto-update + data collection', () => {
+  it('redirects GROK_HOME, shares auth via GROK_AUTH_PATH, disables auto-update + data collection', () => {
     expect(env.GROK_HOME).toBe('/tmp/session/.grok');
+    expect(env.GROK_AUTH_PATH).toBe('/tmp/fake-home/.grok/auth.json');
     expect(env.GROK_DISABLE_AUTOUPDATER).toBe('1');
     expect(env.GROK_AUTO_UPDATE).toBe('0');
     expect(env.GROK_WORKSPACE_DATA_COLLECTION_DISABLED).toBe('1');
@@ -96,8 +98,19 @@ describe('buildAllowlistedGrokEnv', () => {
       processEnv: { PATH: '/bin' } as NodeJS.ProcessEnv,
       launchContextEnv: {},
       grokHome: '/g',
+      authPath: '/tmp/fake-home/.grok/auth.json',
     });
     expect(e.TERM).toBe('xterm-256color');
+  });
+
+  it('strips XAI_API_KEY even if launchContextEnv tried to inject it', () => {
+    const e = buildAllowlistedGrokEnv({
+      processEnv,
+      launchContextEnv: { XAI_API_KEY: 'xai-must-not-reach-agent' },
+      grokHome: '/tmp/session/.grok',
+      authPath: '/tmp/fake-home/.grok/auth.json',
+    });
+    expect(e.XAI_API_KEY).toBeUndefined();
   });
 });
 

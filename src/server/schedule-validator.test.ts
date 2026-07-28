@@ -228,4 +228,74 @@ describe('ScheduleValidator (tier-aware resolution)', () => {
       });
     });
   });
+
+  describe('effort and model pins (#1518)', () => {
+    it('accepts claude-code Fable at max', async () => {
+      await expect(validator.validateCreate({
+        name: 'Reflect',
+        cron: '0 9 * * *',
+        cwd: projectCwd,
+        agentType: 'claude-code',
+        effort: 'max',
+        model: 'claude-fable-5',
+        playbook: { path: 'proj.md', parameters: {}, scope: 'project' },
+      })).resolves.toBeUndefined();
+    });
+
+    it('rejects invalid effort for the agent', async () => {
+      await expect(validator.validateCreate({
+        name: 'Bad effort',
+        cron: '0 9 * * *',
+        cwd: projectCwd,
+        agentType: 'claude-code',
+        effort: 'ultra',
+        playbook: { path: 'proj.md', parameters: {}, scope: 'project' },
+      })).rejects.toMatchObject({
+        name: 'ScheduleValidationError',
+        fieldErrors: { effort: expect.stringMatching(/low|medium|high/) },
+      });
+    });
+
+    it('rejects invalid model for claude-code', async () => {
+      await expect(validator.validateCreate({
+        name: 'Bad model',
+        cron: '0 9 * * *',
+        cwd: projectCwd,
+        agentType: 'claude-code',
+        model: 'gpt-5.6-sol',
+        playbook: { path: 'proj.md', parameters: {}, scope: 'project' },
+      })).rejects.toMatchObject({
+        name: 'ScheduleValidationError',
+        fieldErrors: { model: expect.stringMatching(/claude-fable-5|Must be one of/) },
+      });
+    });
+
+    it('rejects model pin for round-robin agent selection', async () => {
+      await expect(validator.validateCreate({
+        name: 'RR model',
+        cron: '0 9 * * *',
+        cwd: projectCwd,
+        agentType: 'round-robin',
+        model: 'claude-fable-5',
+        playbook: { path: 'proj.md', parameters: {}, scope: 'project' },
+      })).rejects.toMatchObject({
+        name: 'ScheduleValidationError',
+        fieldErrors: { model: expect.stringMatching(/round-robin/) },
+      });
+    });
+
+    it('rejects model pin for codex-cli (empty allowlist)', async () => {
+      await expect(validator.validateCreate({
+        name: 'Codex model',
+        cron: '0 9 * * *',
+        cwd: projectCwd,
+        agentType: 'codex-cli',
+        model: 'claude-fable-5',
+        playbook: { path: 'proj.md', parameters: {}, scope: 'project' },
+      })).rejects.toMatchObject({
+        name: 'ScheduleValidationError',
+        fieldErrors: { model: expect.stringMatching(/does not accept/) },
+      });
+    });
+  });
 });

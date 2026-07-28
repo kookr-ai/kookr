@@ -163,6 +163,33 @@ describe('ScheduleService status', () => {
     });
   });
 
+  it('records queued_capacity/capacity for a capacity-queued execution (issue #1526 Phase A)', async () => {
+    await withService(async (service, store) => {
+      const schedule = store.create({
+        name: 'Capacity',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const receipt = await service.reserveExecution(schedule, 'cron', '2026-01-01T09:00:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, 'task-1', true);
+
+      const updated = store.get(schedule.id)!;
+      expect(updated.latestExecution).toEqual(expect.objectContaining({
+        taskId: 'task-1',
+        outcome: 'queued_capacity',
+        reasonCode: 'capacity',
+      }));
+      expect(updated.executionLedger).toEqual([
+        expect.objectContaining({
+          taskId: 'task-1',
+          outcome: 'queued_capacity',
+          reasonCode: 'capacity',
+        }),
+      ]);
+    });
+  });
+
   it('records deferred catch-up without leaving the stale due slot replayable', async () => {
     await withService(async (service, store) => {
       const schedule = store.create({
@@ -219,6 +246,171 @@ describe('ScheduleService status', () => {
           completedAt: completedTask.updatedAt.toISOString(),
         }),
       ]);
+    });
+  });
+
+  it('startup reconciliation also picks up a queued_capacity execution (issue #1526 Phase A)', async () => {
+    await withService(async (service, store) => {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Run scheduled work', '/tmp');
+      taskStore.startTask(task.id);
+      const completedTask = taskStore.completeTask(task.id);
+      const schedule = store.create({
+        name: 'ReconcileQueued',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const receipt = await service.reserveExecution(schedule, 'cron', '2026-01-01T09:00:00.000Z');
+      // queued=true — the fire was still pending (capacity-queued) at the time of restart.
+      await service.markExecutionAccepted(schedule.id, receipt.id, task.id, true);
+
+      await service.reconcileOnStartup(taskStore);
+
+      expect(store.get(schedule.id)!.executionLedger).toEqual([
+        expect.objectContaining({
+          taskId: completedTask.id,
+          outcome: 'completed',
+          reasonCode: 'reconciled_after_restart',
+        }),
+      ]);
+    });
+  });
+
+  it('startup reconciliation also picks up the LEGACY literal outcome "queued" from on-disk state (issue #1526 Phase A)', async () => {
+    // This is the exact case the live drain will hit: on-disk schedule state
+    // persisted BEFORE this change can have latestExecution.outcome === 'queued'
+    // (no code path produces it anymore, but old rows on disk still have it).
+    // Bypasses markExecutionAccepted entirely — seeds the store directly, the
+    // way a pre-deploy tasks.json/schedules.json would already look.
+    await withService(async (service, store) => {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Run scheduled work', '/tmp');
+      taskStore.startTask(task.id);
+      const completedTask = taskStore.completeTask(task.id);
+
+      const schedule = store.create({
+        name: 'LegacyQueued',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const evaluatedAt = '2026-01-01T09:00:00.000Z';
+      store.replace({
+        ...schedule,
+        latestExecution: {
+          executionToken: 'legacy-token',
+          evaluatedAt,
+          triggeredAt: evaluatedAt,
+          trigger: 'cron',
+          taskId: task.id,
+          outcome: 'queued',
+          reasonCode: 'none',
+        },
+        executionLedger: [{
+          id: 'legacy-ledger-entry',
+          scheduleId: schedule.id,
+          trigger: 'cron',
+          decision: 'cron_due',
+          evaluatedAt,
+          taskId: task.id,
+          outcome: 'queued',
+          reasonCode: 'none',
+        }],
+      });
+
+      await service.reconcileOnStartup(taskStore);
+
+      expect(store.get(schedule.id)!.latestExecution).toEqual(expect.objectContaining({
+        taskId: completedTask.id,
+        outcome: 'completed',
+        reasonCode: 'reconciled_after_restart',
+      }));
+      expect(store.get(schedule.id)!.executionLedger).toEqual([
+        expect.objectContaining({
+          taskId: completedTask.id,
+          outcome: 'completed',
+          reasonCode: 'reconciled_after_restart',
+        }),
+      ]);
+    });
+  });
+
+  it('finalizes a wedged RESERVED receipt even when a PREVIOUS run left latestExecution.taskId (issue #1526 Phase C / #1528)', async () => {
+    // The live #1528 shape: a schedule with a healthy prior run (latest
+    // outcome 'completed', taskId set) reserved a new execution, then the
+    // launch wedged and the process restarted. The old fallback
+    // `currentExecution.taskId ?? latest?.taskId` borrowed the PREVIOUS
+    // run's taskId, skipped the unknown_after_restart branch, and left the
+    // receipt 'reserved' forever.
+    await withService(async (service, store) => {
+      const taskStore = new TaskStore();
+      const oldTask = taskStore.createTask('Previous healthy run', '/tmp');
+      taskStore.startTask(oldTask.id);
+      taskStore.completeTask(oldTask.id);
+
+      const schedule = store.create({
+        name: 'WedgedReserved',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      // Healthy prior run: accepted then completed.
+      const firstReceipt = await service.reserveExecution(schedule, 'cron', '2026-01-01T08:00:00.000Z');
+      await service.markExecutionAccepted(schedule.id, firstReceipt.id, oldTask.id, false);
+      await service.recordTaskTerminalOutcome(oldTask.id, 'completed');
+
+      // New fire reserved, launch wedged, process died before accept/fail.
+      const wedgedReceipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', '2026-01-01T09:00:00.000Z');
+      expect(store.get(schedule.id)!.currentExecution!.status).toBe('reserved');
+
+      await service.reconcileOnStartup(taskStore);
+
+      const after = store.get(schedule.id)!;
+      // The dead receipt is finalized — no longer 'reserved'.
+      expect(after.currentExecution!.id).toBe(wedgedReceipt.id);
+      expect(after.currentExecution!.status).toBe('unknown_after_restart');
+      // The PREVIOUS run's latestExecution is preserved, not clobbered.
+      expect(after.latestExecution).toEqual(expect.objectContaining({
+        taskId: oldTask.id,
+        outcome: 'completed',
+      }));
+      // The wedged fire got its own terminal ledger row.
+      expect(after.executionLedger).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          receiptId: wedgedReceipt.id,
+          outcome: 'unknown_after_restart',
+          reasonCode: 'unknown_after_restart',
+        }),
+      ]));
+    });
+  });
+
+  it('an ACCEPTED receipt still reconciles through its task after restart (unchanged behavior)', async () => {
+    await withService(async (service, store) => {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Accepted then restarted', '/tmp');
+      taskStore.startTask(task.id);
+      const completedTask = taskStore.completeTask(task.id);
+
+      const schedule = store.create({
+        name: 'AcceptedSurvives',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const receipt = await service.reserveExecution(schedule, 'cron', '2026-01-01T09:00:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, task.id, false);
+
+      await service.reconcileOnStartup(taskStore);
+
+      const after = store.get(schedule.id)!;
+      expect(after.currentExecution!.status).toBe('terminal');
+      expect(after.latestExecution).toEqual(expect.objectContaining({
+        taskId: completedTask.id,
+        outcome: 'completed',
+        reasonCode: 'reconciled_after_restart',
+      }));
     });
   });
 });

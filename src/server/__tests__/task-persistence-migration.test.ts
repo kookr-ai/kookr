@@ -16,6 +16,10 @@ interface MainCompatibleTaskFile {
 
 const TASK_KEYS = new Set([
   'id',
+  // Tasks are named from birth (issue #1554): createTask now persists a
+  // deterministic `name` plus the `autoNamed` marker on nameless launches.
+  'name',
+  'autoNamed',
   'prompt',
   'cwd',
   'criteria',

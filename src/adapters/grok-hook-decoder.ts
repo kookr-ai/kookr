@@ -49,12 +49,21 @@ export const GROK_TOOL_ALIASES: Readonly<Record<string, string>> = {
 /**
  * Grok runtime `hookEventName` values (snake_case) recognized by the decoder.
  * A superset of Claude's set (POC-A "Hook schema"). Events we recognize but do
- * not (yet) normalize into the AgentEvent union — `permission_denied`,
- * `pre_compact`, `post_compact` — are listed so the decoder can return a clean
- * `null` (a "dropped", known-but-unmapped event) rather than treating them as
- * malformed. `permission_denied` is intentionally NOT normalized: POC-A found
- * it does not fire reliably for rule/hook denials in headless `-p`, so Kookr
- * must detect blocks via PreToolUse-without-PostToolUse, not this event.
+ * not (yet) normalize into the AgentEvent union — `pre_compact`,
+ * `post_compact` — are listed so the decoder can return a clean `null` (a
+ * "dropped", known-but-unmapped event) rather than treating them as malformed.
+ *
+ * `permission_denied` IS normalized (issue #1526 Phase C4): it decodes into
+ * `permission_request`, the same AgentEvent the Claude Code `PermissionRequest`
+ * hook produces, so the anomaly detector / watchdog classify the session as
+ * `permission_blocked` and Phase B's `stuckReason: 'permission_blocked'` fires
+ * for Grok tasks. POC-A found the event unreliable for rule/hook denials in
+ * headless `-p`, so it must never be the ONLY block signal — the
+ * `notification(permission_prompt)` mapping below and the watchdog's pane-
+ * semantics rescan (`analyzePaneSemantics` → `permission_dialog`) are the
+ * belt-and-braces paths — but when it DOES fire, dropping it made a
+ * permission-stuck Grok task read as "running" (2026-07-24 incident, task
+ * 20e2ddbd: 33h hung mid-`write` right after a dropped `permission_denied`).
  */
 export const GROK_KNOWN_HOOK_EVENTS: ReadonlySet<string> = new Set([
   'session_start',
@@ -154,9 +163,8 @@ export function parseGrokHookEvent(raw: string): AgentEvent | null {
 
   const hookName = str(parsed.hookEventName);
   if (!hookName || !GROK_KNOWN_HOOK_EVENTS.has(hookName)) {
-    // Unknown or additive-but-unmapped event (permission_denied, pre_compact,
-    // post_compact). Drop cleanly; the RFC forbids guessing it into an
-    // existing event type.
+    // Unknown or additive-but-unmapped event (pre_compact, post_compact).
+    // Drop cleanly; the RFC forbids guessing it into an existing event type.
     return null;
   }
 
@@ -216,6 +224,11 @@ export function parseGrokHookEvent(raw: string): AgentEvent | null {
       };
 
     case 'stop':
+      // Grok's stop payload carries NO final-assistant-message field (POC-A
+      // fixture), so the pure decoder cannot populate lastMessage. The
+      // GrokBuildAdapter substitutes a bounded pane tail for live events
+      // (issue #1526 Phase C4) so hook-driven completion-signal
+      // classification (#1324) is not starved by a hardcoded ''.
       return {
         type: 'stop',
         sessionId,
@@ -238,14 +251,48 @@ export function parseGrokHookEvent(raw: string): AgentEvent | null {
         ...(str(parsed.promptId) ? { turnId: str(parsed.promptId) } : {}),
       };
 
-    case 'notification':
+    case 'permission_denied':
+      // Normalized into the same AgentEvent Claude Code's PermissionRequest
+      // hook produces, so the shared anomaly detector / watchdog mark the
+      // session `permission_blocked` (see GROK_KNOWN_HOOK_EVENTS doc). No
+      // POC-A payload capture exists for this event (it did not fire in the
+      // headless runs), so every field is decoded defensively with the same
+      // camelCase keys the other tool events carry.
+      return {
+        type: 'permission_request',
+        sessionId,
+        toolName: str(parsed.toolName) ?? '',
+        toolInput: parsed.toolInput,
+        ...(cwd ? { cwd } : {}),
+      };
+
+    case 'notification': {
+      const notificationType = str(parsed.notificationType) ?? '';
+      // Grok's interactive permission prompt surfaces as
+      // `notification{notificationType:"permission_prompt"}` (POC-A capture:
+      // hook-payloads.redacted.json, message "Tool permission requested") and
+      // Grok has NO PermissionRequest hook event, so this notification is the
+      // only reliable structured signal that the agent is parked on a
+      // permission menu. Normalize it to `permission_request` — Claude Code
+      // emits its permission_prompt notification IN ADDITION to a structured
+      // PermissionRequest hook, Grok does not.
+      if (notificationType === 'permission_prompt') {
+        return {
+          type: 'permission_request',
+          sessionId,
+          toolName: str(parsed.toolName) ?? '',
+          toolInput: parsed.toolInput,
+          ...(cwd ? { cwd } : {}),
+        };
+      }
       return {
         type: 'notification',
         sessionId,
-        notificationType: str(parsed.notificationType) ?? '',
+        notificationType,
         message: str(parsed.message) ?? '',
         ...(cwd ? { cwd } : {}),
       };
+    }
 
     case 'subagent_start':
       return {
@@ -275,8 +322,8 @@ export function parseGrokHookEvent(raw: string): AgentEvent | null {
       };
 
     default:
-      // permission_denied / pre_compact / post_compact — recognized but not
-      // normalized (see GROK_KNOWN_HOOK_EVENTS doc). Dropped, not guessed.
+      // pre_compact / post_compact — recognized but not normalized (see
+      // GROK_KNOWN_HOOK_EVENTS doc). Dropped, not guessed.
       return null;
   }
 }

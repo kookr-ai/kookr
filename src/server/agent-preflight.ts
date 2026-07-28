@@ -1,5 +1,6 @@
 import type { AgentAdapter, PreflightResult } from '../adapters/agent-adapter.js';
 import type { AdapterRegistry } from '../adapters/agent-adapter.js';
+import type { ProbePath } from '../adapters/probe-agent-binary.js';
 import type { AgentType } from '../core/agent-types.js';
 
 /**
@@ -8,7 +9,14 @@ import type { AgentType } from '../core/agent-types.js';
  * type so callers can index by it without correlating arrays.
  */
 export type AgentPreflightSnapshot =
-  | { agentType: AgentType; status: 'ok'; resolvedPath: string; version: string }
+  | {
+      agentType: AgentType;
+      status: 'ok';
+      resolvedPath: string;
+      version: string;
+      /** Which probe flag produced the version (`--version` vs `--help` fallback). */
+      probePath?: ProbePath;
+    }
   | {
       agentType: AgentType;
       status: 'absent';
@@ -73,8 +81,9 @@ export async function runAdapterPreflights(
     if (!snapshot) continue;
     out[snapshot.agentType] = snapshot;
     if (snapshot.status === 'ok') {
+      const via = snapshot.probePath ? ` probe=${snapshot.probePath}` : '';
       logger.log(
-        `[startup] adapter=${snapshot.agentType} binary=${snapshot.resolvedPath} version=${snapshot.version}`,
+        `[startup] adapter=${snapshot.agentType} binary=${snapshot.resolvedPath} version=${snapshot.version}${via}`,
       );
       continue;
     }
@@ -118,6 +127,7 @@ async function runOneAdapterPreflight(
       status: 'ok',
       resolvedPath: result.resolvedPath,
       version: result.version,
+      probePath: result.probePath,
     };
   }
   return {

@@ -233,6 +233,7 @@ export class LifecycleHandler {
           feedback: msg.feedback,
           requestReflect: msg.requestReflect,
           cleanupWorktree: msg.cleanupWorktree,
+          actor: this.deps.deletionAuditActor?.(),
         }));
         return { duplicate: false };
       }

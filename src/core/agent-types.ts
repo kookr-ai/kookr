@@ -8,6 +8,10 @@ export type {
   GrokBuildEffort,
   EffortLevel,
   AgentEffortMap,
+  ClaudeCodeModel,
+  CodexCliModel,
+  GrokBuildModel,
+  ModelId,
 } from '../shared/contracts/agent-types.js';
 
 export {
@@ -27,4 +31,11 @@ export {
   effortLevelsForAgent,
   isAgentType,
   isValidEffortForAgent,
+  CLAUDE_CODE_MODEL_IDS,
+  CODEX_CLI_MODEL_IDS,
+  GROK_BUILD_MODEL_IDS,
+  ALL_MODEL_IDS,
+  modelsForAgent,
+  isValidModelForAgent,
+  isKnownModelId,
 } from '../shared/contracts/agent-types.js';

@@ -3,6 +3,7 @@ import type { AgentEvent } from './agent-events.js';
 import type { AgentActivityMeta } from './hook-events.js';
 import type { Anomaly, AnomalySeverity, FindingEvidenceAuditRecord } from './anomalies.js';
 import type { PendingAgentSignal } from './agent-signal.js';
+import type { TaskStuckReason } from './task-stuck-reason.js';
 import type { CompletionDigest } from './completion-digest.js';
 import type { LatestCompletionSignal } from './completion-signal.js';
 import type {
@@ -106,6 +107,15 @@ export interface AgentState {
    * raw Monitor AgentState never carries it. Absent when no signal is raised.
    */
   pendingSignal?: PendingAgentSignal;
+  /**
+   * Why an `inProgress` task is occupying a capacity slot without visible work
+   * (issue #1526 Phase B / FM9) — awaiting the user's completion ack,
+   * watchdog-suspected hung, waiting on input, or permission-blocked. Derived
+   * from `pendingSignal` and `anomaly` at projection time (see
+   * `core/stuck-reason.ts`); absent when the task isn't `inProgress` or isn't
+   * stuck. Companion to `GET /api/health`'s `capacity.byClass` aggregate.
+   */
+  stuckReason?: TaskStuckReason;
   /** Cross-signal terminal/session health, projected when the session is live. */
   sessionHealth?: SessionHealthSnapshot;
 }

@@ -81,6 +81,105 @@ export interface KookrSettings {
    * inserts these into the draft; it never sends them automatically.
    */
   replySnippets: ReplySnippet[];
+  /**
+   * Delay, in minutes, that an opted-in task's `completion_ready` signal stays
+   * pending before Kookr auto-closes the task (see
+   * docs/reference/auto-close-on-signal.md). Only affects tasks with
+   * `autoCloseOnSignal` enabled; the manual-review banner is unaffected. The
+   * liveness tick reads this live, so a change takes effect without a restart.
+   */
+  autoCloseCompletionReadyDelayMin: number;
+  /**
+   * TTL (minutes), issue #1526 Phase A / FM5: how long a `completion_ready`
+   * signal can sit unacknowledged — including ask-first tasks that
+   * {@link autoCloseCompletionReadyDelayMin} deliberately never touches —
+   * before Kookr escalates and closes the task anyway so it stops holding a
+   * concurrency slot forever. Distinct from `autoCloseCompletionReadyDelayMin`
+   * on purpose: that setting's documented contract is "only affects
+   * autoCloseOnSignal tasks", so a short value there must never silently
+   * start closing ask-first review-required work. See
+   * docs/adr and completion-ready-cleanup.ts `classifyCompletionReadyClosePolicy`.
+   *
+   * Accepted risk (issue #1526 Phase A review): this deliberately overrides
+   * ask-first review for ANY task past the TTL, including one a human
+   * happens to be mid-review on. Accepted for this incident — the operator
+   * explicitly wants the drained tasks closed, and worktree cleanup already
+   * preserves dirty/unmerged worktrees, so no work is lost even if review
+   * hadn't finished.
+   */
+  completionReadyTtlMinutes: number;
+  /**
+   * Hung-task reaper (issue #1526 Phase A / FM6). When enabled, a task whose
+   * agent has had zero hook events, zero pane-content change, and zero token
+   * activity for {@link hungTaskReapMinutes} is treated as hung: its session
+   * is killed, the task transitions to `terminated`, and its slot is freed.
+   * Excludes any task with a pending signal or that the watchdog classifies
+   * as waiting on the user/a permission — see hung-task-reaper.ts.
+   *
+   * Accepted risk (issue #1526 Phase A review): this ships enabled-by-default
+   * directly onto the live incident. Accepted — a 3h all-channels-silent bar
+   * is conservative, and the operator wants the hung task (20e2ddbd) reaped
+   * automatically rather than requiring a manual opt-in first.
+   */
+  hungTaskReapEnabled: boolean;
+  /** Minutes of total silence (all liveness channels) before a task is reaped. */
+  hungTaskReapMinutes: number;
+  /**
+   * Hard ceiling (seconds) on a single adapter launch (issue #1526 Phase C /
+   * #1528). `launchTaskCore` races `adapter.launch()` against this timeout;
+   * on expiry the launch is failed with `LaunchTimeoutError`, the task record
+   * is deleted and its `beginLaunch` reservation released — so a wedged
+   * launcher (e.g. the 2026-07-25 CPU-saturation hang) can never hold a
+   * capacity slot and a schedule's `reserved` execution for hours. Read via a
+   * live getter, so a settings change applies to the next launch without a
+   * restart.
+   */
+  launchTimeoutSeconds: number;
+  /**
+   * Dead-man switch window (minutes) for scheduled-task starvation (issue
+   * #1526 Phase C). If fires were due within this window but no scheduled
+   * execution was dispatched or completed — or any enabled schedule's last 3
+   * consecutive outcomes are capacity/dispatch failures — the scheduler tick
+   * raises one operational `alert` (severity warning) per starvation episode.
+   * Alert-only by design in this phase: no self-heal action is taken.
+   */
+  deadManScheduleMinutes: number;
+  /**
+   * Pending-queue depth limit (issue #1526 Phase C / C3, FM3). During the
+   * 2026-07-24 deadlock POST /api/tasks accepted unbounded creation: every
+   * over-cap launch silently pended, so a runaway burst looked successful to
+   * the caller while its tasks starved forever. When a launch would pend at
+   * capacity AND the pending count is already at this limit, the launch is
+   * rejected with HTTP 429 (REST) / a structured error (WS + CLI) carrying
+   * the capacity-ledger snapshot, and a schedule fire records
+   * `dispatch_failed` with reasonCode `pending_queue_full`. Read via a live
+   * getter, so a settings change applies to the next launch.
+   */
+  maxPendingTasks: number;
+  /**
+   * Pending-task TTL (minutes), issue #1526 Phase C / C3. A task that has sat
+   * in `pending` longer than this without ever launching is expired on the
+   * liveness tick: cancelled (existing terminal status) with a structured
+   * reason and an audit row (actor `system:pending-ttl`), freeing queue
+   * depth. Applies equally to parented/chain tasks (`parentTaskId` set) —
+   * a starving child of a live parent still expires.
+   */
+  pendingTaskTtlMinutes: number;
+  /**
+   * Per-source spawn budget (issue #1526 Phase C / C3): max task creations
+   * allowed per launch source (cli/api/websocket/…, actor-qualified when the
+   * `X-Kookr-Actor` header is present) within a sliding
+   * {@link spawnBurstWindowMinutes} window. Exceeding it rejects the launch
+   * with the same 429-with-ledger shape under code `spawn_burst_limit`.
+   * Schedule-fired launches are exempt — they are operator-configured cadence
+   * with their own coalescing (one outstanding queued fire per schedule) and
+   * dead-man alerting, so a burst there indicates schedule config, not a
+   * runaway caller, and rate-limiting them would convert planned periodic
+   * work into dispatch failures.
+   */
+  spawnBurstLimit: number;
+  /** Sliding-window size (minutes) for {@link spawnBurstLimit}. */
+  spawnBurstWindowMinutes: number;
 }
 
 export const DEFAULT_SETTINGS: KookrSettings = {
@@ -98,6 +197,16 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   agentEffort: {},
   quietHours: [],
   replySnippets: [],
+  autoCloseCompletionReadyDelayMin: 30,
+  completionReadyTtlMinutes: 120,
+  hungTaskReapEnabled: true,
+  hungTaskReapMinutes: 180,
+  launchTimeoutSeconds: 180,
+  deadManScheduleMinutes: 120,
+  maxPendingTasks: 24,
+  pendingTaskTtlMinutes: 240,
+  spawnBurstLimit: 30,
+  spawnBurstWindowMinutes: 10,
 };
 
 const MIN_POLLING_INTERVAL = 15;
@@ -108,6 +217,51 @@ const MIN_ERROR_THRESHOLD = 2;
 const MAX_ERROR_THRESHOLD = 10;
 const MIN_ACTIVE_TASKS = 1;
 const MAX_ACTIVE_TASKS = 25;
+// Auto-close delay bounds (minutes). Floor of 1 keeps at least a brief
+// human-review window; ceiling of 1440 (24h) prevents a fat-fingered value
+// from effectively disabling the sweep forever.
+const MIN_AUTO_CLOSE_DELAY_MIN = 1;
+const MAX_AUTO_CLOSE_DELAY_MIN = 1440;
+// Completion-ready TTL bounds (minutes). Floor of 5 keeps escalation from
+// firing near-instantly; ceiling of 10080 (7 days) is a generous outer bound.
+const MIN_COMPLETION_READY_TTL_MIN = 5;
+const MAX_COMPLETION_READY_TTL_MIN = 10_080;
+// Hung-task reap bounds (minutes). Floor of 15 stays comfortably above the
+// watchdog's own stale_agent + max-tool-execution thresholds so the reaper
+// never races normal stuck-detection; ceiling of 10080 (7 days) mirrors the TTL.
+const MIN_HUNG_TASK_REAP_MIN = 15;
+const MAX_HUNG_TASK_REAP_MIN = 10_080;
+// Launch timeout bounds (seconds), issue #1526 Phase C / #1528. Floor of 30
+// keeps a slow-but-working cold launch (dtach spawn + agent boot + prompt
+// delivery, worst observed ~20s) from being killed spuriously; ceiling of 900
+// bounds even the most generous operator override — the incident's launches
+// starved for HOURS, and 15 minutes is already far past any legitimate spawn.
+const MIN_LAUNCH_TIMEOUT_SEC = 30;
+const MAX_LAUNCH_TIMEOUT_SEC = 900;
+// Dead-man schedule-starvation window bounds (minutes). Floor of 30 stays
+// above the runner's 60s tick plus one schedule cadence so a single slow fire
+// can't trip it; ceiling of 1440 (24h) keeps the switch meaningful.
+const MIN_DEAD_MAN_SCHEDULE_MIN = 30;
+const MAX_DEAD_MAN_SCHEDULE_MIN = 1440;
+// Pending-queue depth bounds (issue #1526 Phase C / C3). Floor of 4 keeps the
+// queue useful (a depth-0/1 queue would reject legitimate short bursts the cap
+// absorbs within minutes); ceiling of 200 stops a fat-fingered value from
+// re-creating the unbounded-queue failure mode this setting exists to fix.
+const MIN_PENDING_TASKS = 4;
+const MAX_PENDING_TASKS = 200;
+// Pending-TTL bounds (minutes). Floor of 15 stays above a normal drain cycle
+// (a healthy queue promotes within minutes) so the TTL never races routine
+// promotion; ceiling of 2880 (48h) bounds how long a starving task can hold
+// queue depth.
+const MIN_PENDING_TTL_MIN = 15;
+const MAX_PENDING_TTL_MIN = 2880;
+// Per-source spawn-budget bounds (issue #1526 Phase C / C3). Limit floor of 5
+// keeps interactive use workable; ceiling of 500 keeps the budget meaningful.
+// Window floor of 1 minute, ceiling of 120 minutes (2h).
+const MIN_SPAWN_BURST_LIMIT = 5;
+const MAX_SPAWN_BURST_LIMIT = 500;
+const MIN_SPAWN_BURST_WINDOW_MIN = 1;
+const MAX_SPAWN_BURST_WINDOW_MIN = 120;
 
 /** Validate and clamp a raw settings object, filling in defaults for missing/invalid values. */
 export function validateSettings(raw: Record<string, unknown>): KookrSettings {
@@ -141,6 +295,82 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
   let maxTasks = DEFAULT_SETTINGS.maxActiveTasks;
   if (typeof raw.maxActiveTasks === 'number' && Number.isFinite(raw.maxActiveTasks)) {
     maxTasks = Math.max(MIN_ACTIVE_TASKS, Math.min(MAX_ACTIVE_TASKS, Math.round(raw.maxActiveTasks)));
+  }
+
+  let autoCloseDelayMin = DEFAULT_SETTINGS.autoCloseCompletionReadyDelayMin;
+  if (typeof raw.autoCloseCompletionReadyDelayMin === 'number' && Number.isFinite(raw.autoCloseCompletionReadyDelayMin)) {
+    autoCloseDelayMin = Math.max(
+      MIN_AUTO_CLOSE_DELAY_MIN,
+      Math.min(MAX_AUTO_CLOSE_DELAY_MIN, Math.round(raw.autoCloseCompletionReadyDelayMin)),
+    );
+  }
+
+  let completionReadyTtlMinutes = DEFAULT_SETTINGS.completionReadyTtlMinutes;
+  if (typeof raw.completionReadyTtlMinutes === 'number' && Number.isFinite(raw.completionReadyTtlMinutes)) {
+    completionReadyTtlMinutes = Math.max(
+      MIN_COMPLETION_READY_TTL_MIN,
+      Math.min(MAX_COMPLETION_READY_TTL_MIN, Math.round(raw.completionReadyTtlMinutes)),
+    );
+  }
+
+  const hungTaskReapEnabled = typeof raw.hungTaskReapEnabled === 'boolean'
+    ? raw.hungTaskReapEnabled
+    : DEFAULT_SETTINGS.hungTaskReapEnabled;
+
+  let hungTaskReapMinutes = DEFAULT_SETTINGS.hungTaskReapMinutes;
+  if (typeof raw.hungTaskReapMinutes === 'number' && Number.isFinite(raw.hungTaskReapMinutes)) {
+    hungTaskReapMinutes = Math.max(
+      MIN_HUNG_TASK_REAP_MIN,
+      Math.min(MAX_HUNG_TASK_REAP_MIN, Math.round(raw.hungTaskReapMinutes)),
+    );
+  }
+
+  let launchTimeoutSeconds = DEFAULT_SETTINGS.launchTimeoutSeconds;
+  if (typeof raw.launchTimeoutSeconds === 'number' && Number.isFinite(raw.launchTimeoutSeconds)) {
+    launchTimeoutSeconds = Math.max(
+      MIN_LAUNCH_TIMEOUT_SEC,
+      Math.min(MAX_LAUNCH_TIMEOUT_SEC, Math.round(raw.launchTimeoutSeconds)),
+    );
+  }
+
+  let deadManScheduleMinutes = DEFAULT_SETTINGS.deadManScheduleMinutes;
+  if (typeof raw.deadManScheduleMinutes === 'number' && Number.isFinite(raw.deadManScheduleMinutes)) {
+    deadManScheduleMinutes = Math.max(
+      MIN_DEAD_MAN_SCHEDULE_MIN,
+      Math.min(MAX_DEAD_MAN_SCHEDULE_MIN, Math.round(raw.deadManScheduleMinutes)),
+    );
+  }
+
+  let maxPendingTasks = DEFAULT_SETTINGS.maxPendingTasks;
+  if (typeof raw.maxPendingTasks === 'number' && Number.isFinite(raw.maxPendingTasks)) {
+    maxPendingTasks = Math.max(
+      MIN_PENDING_TASKS,
+      Math.min(MAX_PENDING_TASKS, Math.round(raw.maxPendingTasks)),
+    );
+  }
+
+  let pendingTaskTtlMinutes = DEFAULT_SETTINGS.pendingTaskTtlMinutes;
+  if (typeof raw.pendingTaskTtlMinutes === 'number' && Number.isFinite(raw.pendingTaskTtlMinutes)) {
+    pendingTaskTtlMinutes = Math.max(
+      MIN_PENDING_TTL_MIN,
+      Math.min(MAX_PENDING_TTL_MIN, Math.round(raw.pendingTaskTtlMinutes)),
+    );
+  }
+
+  let spawnBurstLimit = DEFAULT_SETTINGS.spawnBurstLimit;
+  if (typeof raw.spawnBurstLimit === 'number' && Number.isFinite(raw.spawnBurstLimit)) {
+    spawnBurstLimit = Math.max(
+      MIN_SPAWN_BURST_LIMIT,
+      Math.min(MAX_SPAWN_BURST_LIMIT, Math.round(raw.spawnBurstLimit)),
+    );
+  }
+
+  let spawnBurstWindowMinutes = DEFAULT_SETTINGS.spawnBurstWindowMinutes;
+  if (typeof raw.spawnBurstWindowMinutes === 'number' && Number.isFinite(raw.spawnBurstWindowMinutes)) {
+    spawnBurstWindowMinutes = Math.max(
+      MIN_SPAWN_BURST_WINDOW_MIN,
+      Math.min(MAX_SPAWN_BURST_WINDOW_MIN, Math.round(raw.spawnBurstWindowMinutes)),
+    );
   }
 
   const cleanupWorktreeOnComplete = typeof raw.cleanupWorktreeOnComplete === 'boolean'
@@ -214,6 +444,16 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       agentEffort,
       quietHours: quietHoursValidation.windows,
       replySnippets: replySnippetValidation.snippets,
+      autoCloseCompletionReadyDelayMin: autoCloseDelayMin,
+      completionReadyTtlMinutes,
+      hungTaskReapEnabled,
+      hungTaskReapMinutes,
+      launchTimeoutSeconds,
+      deadManScheduleMinutes,
+      maxPendingTasks,
+      pendingTaskTtlMinutes,
+      spawnBurstLimit,
+      spawnBurstWindowMinutes,
     },
   };
 }

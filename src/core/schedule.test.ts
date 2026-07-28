@@ -32,6 +32,45 @@ describe('ScheduleStore', () => {
     expect(schedule.agentType).toBe('claude-code');
   });
 
+  it('persists optional effort and model pins (#1518)', async () => {
+    const schedule = store.create({
+      name: 'Fable daily reflect',
+      cron: '0 8 * * *',
+      playbook: { path: 'reflect.md', parameters: {} },
+      cwd: '/tmp',
+      agentType: 'claude-code',
+      effort: 'max',
+      model: 'claude-fable-5',
+    });
+    expect(schedule.effort).toBe('max');
+    expect(schedule.model).toBe('claude-fable-5');
+
+    await store.persist();
+    const reloaded = new ScheduleStore(dir);
+    await reloaded.load();
+    const loaded = reloaded.get(schedule.id);
+    expect(loaded?.effort).toBe('max');
+    expect(loaded?.model).toBe('claude-fable-5');
+
+    const updated = reloaded.updateDefinition(schedule.id, {
+      effort: 'high',
+      model: 'claude-opus-4-8',
+    });
+    expect(updated.effort).toBe('high');
+    expect(updated.model).toBe('claude-opus-4-8');
+  });
+
+  it('omits effort/model when not provided (no global default side effect) (#1518)', () => {
+    const schedule = store.create({
+      name: 'Plain',
+      cron: '0 0 * * *',
+      playbook: { path: 'a.md', parameters: {} },
+      cwd: '/tmp',
+    });
+    expect(schedule.effort).toBeUndefined();
+    expect(schedule.model).toBeUndefined();
+  });
+
   it('creates a schedule with a finite cron trigger limit', () => {
     const schedule = store.create({
       name: 'Finite',

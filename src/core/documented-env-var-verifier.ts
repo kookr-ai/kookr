@@ -125,6 +125,27 @@ export const INTERNAL_ENV_VARS: ReadonlySet<string> = new Set([
   // idiom as src/server/index.test.ts.
   `KOOKR_RELAY_${'TRUSTED'}`,
   'KOOKR_RELAY_URL',
+  // Post-deploy smoke-suite tuning/override knobs (issues #1592/#1593). Each is
+  // documented in the suite's own module header (`src/server/prod-smoke.ts`) and
+  // the restart script (`scripts/prod-restart.sh`) rather than the main env
+  // reference — they are deploy-tooling internals (URL/path/timeout overrides,
+  // mostly for tests and the restart wrapper), not day-to-day operator config.
+  // The hourly-tick's operator-facing knobs (KOOKR_PROD_SMOKE_TICK[_INTERVAL_
+  // MINUTES]) ARE in the main reference. These surfaced here when the suite core
+  // moved from scripts/ (unscanned) into src/ for reuse by the hourly tick.
+  'KOOKR_READY_URL',
+  'KOOKR_SMOKE_ALERT_PATH',
+  'KOOKR_SMOKE_HEALTH_MAX_TIME_SECONDS',
+  'KOOKR_SMOKE_HEALTH_URL',
+  'KOOKR_SMOKE_KOOKR_DIR',
+  'KOOKR_SMOKE_LOG_FILE',
+  'KOOKR_SMOKE_MAX_LOG_GAP_SECONDS',
+  'KOOKR_SMOKE_OVERALL_TIMEOUT_SECONDS',
+  'KOOKR_SMOKE_PREDEPLOY_LOG_MTIME_MS',
+  'KOOKR_SMOKE_READY_MAX_TIME_SECONDS',
+  'KOOKR_SMOKE_READY_URL',
+  'KOOKR_SMOKE_TASKS_LATENCY_BOUND_MS',
+  'KOOKR_SMOKE_TASKS_URL',
 ]);
 
 /**
@@ -141,6 +162,7 @@ export const DOCUMENTED_ONLY_ENV_VARS: ReadonlySet<string> = new Set([
   // Consumed by ops shell scripts (prod restart/update, dtach rollback).
   'KOOKR_DTACH_SOCK_DIR',
   'KOOKR_ENV_ROOT_DIR',
+  'KOOKR_HEALTH_CURL_MAX_TIME_SECONDS',
   'KOOKR_HEALTH_URL',
   'KOOKR_PROD_DIR',
   'KOOKR_STARTUP_CHECK_INTERVAL_SECONDS',

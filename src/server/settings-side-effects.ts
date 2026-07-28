@@ -79,5 +79,36 @@ export async function applySettingsSideEffects({
     console.log(`[settings] maxActiveTasks → ${newSettings.maxActiveTasks} (was ${prevSettings.maxActiveTasks})`);
   }
 
+  // --- Auto-close delay side effects ---
+  // No reconfigure needed: the liveness tick reads the delay through a live
+  // getter each pass. Logged for operability so a change is visible in the log.
+  if (prevSettings.autoCloseCompletionReadyDelayMin !== newSettings.autoCloseCompletionReadyDelayMin) {
+    console.log(
+      `[settings] autoCloseCompletionReadyDelayMin → ${newSettings.autoCloseCompletionReadyDelayMin}min `
+      + `(was ${prevSettings.autoCloseCompletionReadyDelayMin}min)`,
+    );
+  }
+
+  // --- Completion-ready TTL escalation side effects (issue #1526 Phase A) ---
+  // No reconfigure needed: the liveness tick reads the TTL through a live
+  // getter each pass, same pattern as the auto-close delay above.
+  if (prevSettings.completionReadyTtlMinutes !== newSettings.completionReadyTtlMinutes) {
+    console.log(
+      `[settings] completionReadyTtlMinutes → ${newSettings.completionReadyTtlMinutes}min `
+      + `(was ${prevSettings.completionReadyTtlMinutes}min)`,
+    );
+  }
+
+  // --- Hung-task reaper side effects (issue #1526 Phase A) ---
+  if (prevSettings.hungTaskReapEnabled !== newSettings.hungTaskReapEnabled) {
+    console.log(`[settings] hungTaskReapEnabled → ${newSettings.hungTaskReapEnabled} (was ${prevSettings.hungTaskReapEnabled})`);
+  }
+  if (prevSettings.hungTaskReapMinutes !== newSettings.hungTaskReapMinutes) {
+    console.log(
+      `[settings] hungTaskReapMinutes → ${newSettings.hungTaskReapMinutes}min `
+      + `(was ${prevSettings.hungTaskReapMinutes}min)`,
+    );
+  }
+
   return warnings;
 }

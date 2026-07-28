@@ -332,6 +332,66 @@ describe('TaskStore', () => {
     });
   });
 
+  // Issue #1554: every task is named from birth so no code path can reach a
+  // terminal state with name=null.
+  describe('creation-time naming', () => {
+    test('createTask without a name applies a non-empty deterministic name and marks it autoNamed', () => {
+      const task = store.createTask('Fix the auth bug in login flow', '/workspace/project');
+
+      expect(task.name).toBe('Fix the auth bug in login flow');
+      expect(task.name!.length).toBeGreaterThan(0);
+      expect(task.autoNamed).toBe(true);
+      // Persisted on the stored record, not just the returned snapshot.
+      expect(store.getTask(task.id)!.name).toBe('Fix the auth bug in login flow');
+      expect(store.getTask(task.id)!.autoNamed).toBe(true);
+    });
+
+    test('createTask with an explicit name keeps it and does not mark autoNamed', () => {
+      const task = store.createTask({ prompt: 'Do the thing', cwd: '/cwd', name: 'My Playbook' });
+
+      expect(task.name).toBe('My Playbook');
+      expect(task.autoNamed).toBeUndefined();
+    });
+
+    test('createTask with a whitespace-only name falls back to the deterministic name', () => {
+      const task = store.createTask({ prompt: 'Refactor database layer', cwd: '/cwd', name: '   ' });
+
+      expect(task.name).toBe('Refactor database layer');
+      expect(task.autoNamed).toBe(true);
+    });
+
+    test('names off the display prompt (userPrompt), not the raw launch prompt', () => {
+      // createTask must route the placeholder through displayPromptForTask so
+      // the injected launch-context preamble is stripped — the name is the
+      // user's intent, not the worktree guardrail boilerplate.
+      const task = store.createTask({
+        prompt: 'You are currently in the main checkout `/repo` on branch `main`.\n- Create one: `git worktree add ...`\n\nFix the login bug',
+        userPrompt: 'Fix the login bug',
+        cwd: '/repo',
+      });
+
+      expect(task.name).toBe('Fix the login bug');
+      expect(task.autoNamed).toBe(true);
+    });
+
+    test('a blank prompt still yields a non-empty name from the cwd basename', () => {
+      const task = store.createTask('   ', '/workspace/project');
+
+      expect(task.name).toBe('Task in project');
+      expect(task.autoNamed).toBe(true);
+    });
+
+    test('renameTask clears the autoNamed marker (name becomes authoritative)', () => {
+      const task = store.createTask('Fix bug', '/cwd');
+      expect(task.autoNamed).toBe(true);
+
+      const renamed = store.renameTask(task.id, 'Fix JWT Token Invalidation');
+      expect(renamed.name).toBe('Fix JWT Token Invalidation');
+      expect(renamed.autoNamed).toBeUndefined();
+      expect(store.getTask(task.id)!.autoNamed).toBeUndefined();
+    });
+  });
+
   describe('autoCloseOnSignal policy', () => {
     test('stores the flag when explicitly true', () => {
       const task = store.createTask({ prompt: 'Fix bug', cwd: '/cwd', autoCloseOnSignal: true });
@@ -791,8 +851,10 @@ describe('TaskStore', () => {
 
   describe('Rename task', () => {
     test('renameTask sets the name field', () => {
+      // Named from birth (issue #1554): the deterministic placeholder is the
+      // prompt's first line; renameTask replaces it with an authoritative name.
       const task = store.createTask('Fix auth bug in login flow', '/cwd');
-      expect(task.name).toBeUndefined();
+      expect(task.name).toBe('Fix auth bug in login flow');
 
       const renamed = store.renameTask(task.id, 'Auth fix');
       expect(renamed.name).toBe('Auth fix');
@@ -1132,6 +1194,73 @@ describe('TaskStore', () => {
       ];
       store.loadTasks(tasks);
       expect(store.getLifetimeSpendUsd()).toBeCloseTo(3.50);
+    });
+  });
+
+  describe('setDisposition (issue #1588 — never silently prune a persisted task)', () => {
+    test('records a queryable disposition without deleting or changing status', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.setDisposition(task.id, {
+        reason: 'launch_timeout',
+        at: '2026-07-27T00:00:00.000Z',
+        source: 'launch-service',
+        detail: 'adapter hung',
+      });
+      const after = store.getTask(task.id)!;
+      // Still present and still open — disposition is orthogonal to status.
+      expect(after.status).toBe('open');
+      expect(after.disposition).toEqual({
+        reason: 'launch_timeout',
+        at: '2026-07-27T00:00:00.000Z',
+        source: 'launch-service',
+        detail: 'adapter hung',
+      });
+    });
+
+    test('bumps updatedAt so the aged-record prune recency window protects it', () => {
+      const task = store.createTask('Task', '/cwd');
+      // Force a deterministically-old updatedAt so this actually catches a
+      // regression that drops the `updatedAt = new Date()` bump — createTask
+      // and setDisposition otherwise run in the same tick.
+      const oldMs = Date.now() - 60_000;
+      store.getTaskForMutation(task.id)!.updatedAt = new Date(oldMs);
+      store.setDisposition(task.id, { reason: 'launch_error', at: new Date().toISOString(), source: 'launch-service' });
+      expect(store.getTask(task.id)!.updatedAt.getTime()).toBeGreaterThan(oldMs);
+    });
+
+    test('first-write-wins: a second disposition does not overwrite the root cause', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.setDisposition(task.id, { reason: 'launch_error', at: '2026-07-27T00:00:00.000Z', source: 'launch-service' });
+      store.setDisposition(task.id, { reason: 'stale_open_launch', at: '2026-07-27T01:00:00.000Z', source: 'startup-reconcile' });
+      expect(store.getTask(task.id)!.disposition?.reason).toBe('launch_error');
+    });
+
+    test('no-op for an unknown task (does not throw)', () => {
+      expect(() =>
+        store.setDisposition('nonexistent', { reason: 'launch_error', at: new Date().toISOString(), source: 'launch-service' }),
+      ).not.toThrow();
+    });
+
+    test('disposition survives a save/load round-trip', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.setDisposition(task.id, { reason: 'launch_timeout', at: '2026-07-27T00:00:00.000Z', source: 'launch-service' });
+      const dumped = store.getAllTasks();
+      const restored = new TaskStore();
+      restored.loadTasks(dumped);
+      expect(restored.getTask(task.id)!.disposition?.reason).toBe('launch_timeout');
+    });
+
+    test('addSession refuses to attach to a terminal (disposed) task — no phantom session', () => {
+      // A launch-timeout disposed + terminated the task; the abandoned launch
+      // late-settling must not resurrect it with a phantom session.
+      const task = store.createTask('Task', '/cwd');
+      store.setDisposition(task.id, { reason: 'launch_timeout', at: new Date().toISOString(), source: 'launch-service' });
+      store.terminateTask(task.id);
+      expect(() =>
+        store.addSession(task.id, { tmuxSession: 'kookr-late', agentType: 'claude-code', cwd: '/cwd', createdAt: new Date() }),
+      ).toThrow(/terminal task/);
+      expect(store.getTask(task.id)!.sessions).toHaveLength(0);
+      expect(store.getTask(task.id)!.status).toBe('terminated');
     });
   });
 
@@ -1604,6 +1733,31 @@ describe('TaskStore pending agent signal', () => {
       kind: 'completion_ready',
       raisedAt: '2026-06-05T12:00:00.000Z',
       note: 'now with PR',
+    });
+  });
+
+  test('setPendingSignal records signalId for pure outbox replays (issue #1541)', () => {
+    const store = new TaskStore();
+    const task = store.createTask('Ship it', '/repo');
+    store.setPendingSignal(task.id, {
+      kind: 'completion_ready',
+      raisedAt: '2026-06-05T12:00:00.000Z',
+      signalId: 'sig-1',
+    });
+    expect(store.getProcessedSignal('sig-1')).toEqual({
+      taskId: task.id,
+      kind: 'completion_ready',
+    });
+    // Same-kind re-raise without signalId keeps the original signalId on the row.
+    store.setPendingSignal(task.id, {
+      kind: 'completion_ready',
+      raisedAt: '2026-06-05T13:00:00.000Z',
+      note: 'again',
+    });
+    expect(store.getPendingSignal(task.id)).toMatchObject({
+      raisedAt: '2026-06-05T12:00:00.000Z',
+      note: 'again',
+      signalId: 'sig-1',
     });
   });
 

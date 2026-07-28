@@ -67,3 +67,41 @@ describe('CircuitBreakerLlmClient.complete', () => {
     expect(breaker.getState()).toBe('open');
   });
 });
+
+// #1555: completeDetailed forwards the provider finish reason through the breaker.
+describe('CircuitBreakerLlmClient.completeDetailed', () => {
+  test('forwards the inner finish reason on success', async () => {
+    const inner: LlmClient = {
+      provider: 'inner',
+      model: 'm',
+      complete: vi.fn(),
+      completeDetailed: vi.fn().mockResolvedValue({ text: 'A name', finishReason: 'stop' }),
+    };
+    const wrapper = new CircuitBreakerLlmClient(inner, mkBreaker());
+    await expect(wrapper.completeDetailed({ maxTokens: 10, userMessage: 'hi' }))
+      .resolves.toEqual({ text: 'A name', finishReason: 'stop' });
+  });
+
+  test('reports a synthetic circuit_open finish reason when the breaker is open', async () => {
+    const breaker = mkBreaker();
+    const breakerSpy = vi.spyOn(breaker, 'call').mockImplementation(async () => { throw new CircuitBreakerOpenError('test'); });
+    const inner = mkInner(async () => 'never');
+    const wrapper = new CircuitBreakerLlmClient(inner, breaker);
+    await expect(wrapper.completeDetailed({ maxTokens: 10, userMessage: 'hi' }))
+      .resolves.toEqual({ text: null, finishReason: 'circuit_open' });
+    breakerSpy.mockRestore();
+  });
+
+  test('re-throws AbortError instead of masking it', async () => {
+    const abortErr = Object.assign(new Error('aborted'), { name: 'AbortError' });
+    const inner: LlmClient = {
+      provider: 'inner',
+      model: 'm',
+      complete: vi.fn(),
+      completeDetailed: vi.fn().mockRejectedValue(abortErr),
+    };
+    const wrapper = new CircuitBreakerLlmClient(inner, mkBreaker());
+    await expect(wrapper.completeDetailed({ maxTokens: 10, userMessage: 'hi' }))
+      .rejects.toMatchObject({ name: 'AbortError' });
+  });
+});

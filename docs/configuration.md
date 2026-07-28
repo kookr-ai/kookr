@@ -20,6 +20,14 @@ State directory:
 - Port `4800`: `~/.kookr/`
 - Other ports: `~/.kookr-<port>/`
 
+Completed-task terminal tails (for Lucy peeks and `GET /api/tasks/:id/tail`) live under `{stateDir}/task-tails/` for 7 days by default. Tune with:
+
+```bash
+KOOKR_TASK_TAIL_RETENTION_DAYS=7
+# KOOKR_TASK_TAIL_DIR=/custom/path/task-tails
+# KOOKR_TASK_TAIL_MAX_BYTES=262144
+```
+
 ## AI Suggestions
 
 AI task naming, response suggestions, and remote-chat rephrase run through a

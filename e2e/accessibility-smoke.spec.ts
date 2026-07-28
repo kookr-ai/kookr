@@ -78,7 +78,7 @@ test.describe('Accessibility smoke scans', () => {
 
     await expectNoA11yViolations(page, 'launch dialog', '[role="dialog"]');
 
-    const closeButton = dialog.getByLabel('Close');
+    const closeButton = dialog.getByLabel('Close', { exact: true });
     const cancelButton = dialog.getByRole('button', { name: 'Cancel' });
     await closeButton.focus();
     await page.keyboard.press('Shift+Tab');
@@ -94,7 +94,7 @@ test.describe('Accessibility smoke scans', () => {
     await runCommandAction(page, 'settings', 'settings');
 
     const dialog = page.getByRole('dialog', { name: 'Settings' });
-    const closeButton = dialog.getByLabel('Close');
+    const closeButton = dialog.getByLabel('Close', { exact: true });
     await expect(dialog).toBeVisible();
     await expect(dialog).toHaveAttribute('aria-modal', 'true');
     await expect(closeButton).toBeFocused();

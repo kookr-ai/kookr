@@ -1,5 +1,12 @@
 import type { ServerMessage } from '../../shared/contracts/messages.js';
-import { isCwdValidationError, type LaunchResult } from '../launch-service.js';
+import {
+  isCwdValidationError,
+  isPendingQueueFullError,
+  isSpawnBurstLimitError,
+  type LaunchResult,
+  type PendingQueueFullError,
+  type SpawnBurstLimitError,
+} from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 
 const GENERIC_LAUNCH_RECOVERY_DETAILS = [
@@ -30,6 +37,35 @@ function isGrokAuthPreflightError(err: unknown): boolean {
 }
 
 /**
+ * Render the capacity-ledger snapshot carried by a backpressure rejection
+ * (issue #1526 Phase C / C3) so the WS alert shows WHY the launch was
+ * refused — the same breakdown the REST 429 body and `GET /api/health`
+ * `capacity` carry, not just a bare error string.
+ */
+function describeBackpressure(err: PendingQueueFullError | SpawnBurstLimitError): string {
+  const cap = err.capacity;
+  const lines = [
+    err.code === 'pending_queue_full'
+      ? 'The pending queue is full — nothing was launched.'
+      : 'This caller\'s spawn burst budget is exhausted — nothing was launched.',
+    `- Capacity: ${cap.active}/${cap.maxActiveTasks} slots occupied ` +
+      `(working ${cap.byClass.working}, awaiting-ack ${cap.byClass.finishedAwaitingAck}, ` +
+      `hung-suspect ${cap.byClass.hungSuspect}, launching ${cap.byClass.launching}).`,
+    `- Pending queue: ${cap.pendingQueueDepth} task(s)` +
+      (isPendingQueueFullError(err) ? ` (limit ${err.maxPendingTasks}).` : '.'),
+  ];
+  if (isSpawnBurstLimitError(err)) {
+    lines.push(
+      `- Burst budget: ${err.limit} launches per ${Math.round(err.windowMs / 60_000)}m for source "${err.source}"; ` +
+      `retry in ~${Math.max(1, Math.ceil(err.retryAfterMs / 1000))}s.`,
+    );
+  } else {
+    lines.push('- Free a slot (complete/abort a task) or raise maxPendingTasks in Settings, then retry.');
+  }
+  return lines.join('\n');
+}
+
+/**
  * Emit result-aware feedback after a launch/relaunch/launchPlaybook attempt.
  *
  * Sends a targeted alert to the originator describing the outcome. The
@@ -52,7 +88,9 @@ export function handleLaunchResult(
   if (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[launch] failed prompt="${promptExcerpt}" err=${message}`);
-    const details = isCwdValidationError(err)
+    const details = isPendingQueueFullError(err) || isSpawnBurstLimitError(err)
+      ? describeBackpressure(err)
+      : isCwdValidationError(err)
       ? CWD_LAUNCH_RECOVERY_DETAILS
       : isGrokAuthPreflightError(err)
       ? GROK_AUTH_LAUNCH_RECOVERY_DETAILS
@@ -71,7 +109,9 @@ export function handleLaunchResult(
       agentId: '',
       summary: `Error starting "${promptExcerpt}": ${message}`,
       details,
-      severity: 'critical',
+      // Backpressure rejections are deliberate policy refusals with a retry
+      // path, not launch failures — warn, don't page (issue #1526 Phase C).
+      severity: isPendingQueueFullError(err) || isSpawnBurstLimitError(err) ? 'warning' : 'critical',
     });
     return { duplicate: false };
   }

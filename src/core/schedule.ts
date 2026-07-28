@@ -22,17 +22,43 @@ export type ScheduleStopReason = 'trigger_limit_reached';
 export type ScheduleExecutionTrigger = 'cron' | 'manual';
 export type ScheduleExecutionDecision = 'cron_due' | 'manual_run' | 'catch_up' | 'manual_catch_up' | 'stale_catch_up';
 export type ScheduleExecutionOutcome =
+  /**
+   * @deprecated No longer produced (issue #1526 Phase A) — a capacity-queued
+   * fire now records {@link queued_capacity} instead, which carries the same
+   * meaning plus an explicit reason. Kept in the type only so historical
+   * ledger rows persisted before this change still deserialize/render.
+   */
   | 'queued'
+  /**
+   * A schedule fire went through the normal task-submission path and landed
+   * as a pending task because the node was at capacity (issue #1526 Phase A
+   * / FM8). It queues instead of being dropped — the scheduler's promotion
+   * loop launches it once a slot frees.
+   */
+  | 'queued_capacity'
   | 'running'
   | 'completed'
   | 'cancelled'
   | 'deduplicated'
   | 'dispatch_failed'
   | 'skipped_active'
+  /**
+   * @deprecated No longer produced (issue #1526 Phase A) — a capacity fire
+   * now goes through the launcher and records `queued_capacity` instead of
+   * being dropped. Kept in the type only for historical ledger rows.
+   */
   | 'skipped_capacity'
   | 'skipped_draining'
   | 'skipped_manual'
   | 'skipped_stale'
+  /**
+   * Coalesced (issue #1526 Phase A): the previous fire's task is still
+   * `pending` (queued_capacity, not yet launched). Distinct from
+   * `skipped_active` (previous run actively running) so at most one
+   * outstanding queued fire per schedule ever exists — a second fire is
+   * skipped rather than stacking another pending task behind the first.
+   */
+  | 'skipped_coalesced'
   | 'unknown_after_restart';
 
 export type ScheduleExecutionReasonCode =
@@ -40,12 +66,23 @@ export type ScheduleExecutionReasonCode =
   | 'capacity'
   | 'draining'
   | 'previous_run_active'
+  /** Reason code for {@link ScheduleExecutionOutcome.skipped_coalesced}. */
+  | 'previous_run_pending'
   | 'manual_catch_up_required'
   | 'missing_cwd'
   | 'missing_playbook'
   | 'validation'
   | 'deduplicated'
   | 'launch_error'
+  /**
+   * Reason code for a `dispatch_failed` fire rejected by the pending-queue
+   * depth limit (issue #1526 Phase C / C3): the node was at capacity AND the
+   * pending queue already held `maxPendingTasks` tasks, so queueing the fire
+   * was refused. Distinct from generic `launch_error` so schedule ledgers
+   * (and the dead-man switch's operator) can see backpressure, not a broken
+   * launcher.
+   */
+  | 'pending_queue_full'
   | 'stale_catch_up'
   | 'reconciled_after_restart'
   | 'unknown_after_restart';
@@ -105,6 +142,18 @@ export interface Schedule {
   cwd: string;
   /** Agent for each scheduled run; `round-robin` alternates per run. */
   agentType: AgentSelection;
+  /**
+   * Optional per-schedule reasoning-effort pin (#1518). Forwarded into each
+   * spawned task as the launch `effort` (wins over the global per-agent-type
+   * default; a per-task override would still win if one were supplied).
+   */
+  effort?: string;
+  /**
+   * Optional per-schedule model pin (#1518). Forwarded into each spawned task
+   * as the launch `model` (e.g. `claude-fable-5`). No-op when omitted — the
+   * agent CLI / env default applies.
+   */
+  model?: string;
   /** Legacy dispatch fields kept for migration compatibility. */
   lastRunAt?: string;
   lastRunTaskId?: string;
@@ -172,6 +221,10 @@ export interface CreateScheduleInput {
   playbook: SchedulePlaybook;
   cwd: string;
   agentType?: AgentSelection;
+  /** Optional reasoning-effort pin for every run of this schedule (#1518). */
+  effort?: string;
+  /** Optional model pin for every run of this schedule (#1518). */
+  model?: string;
   enabled?: boolean;
 }
 
@@ -182,6 +235,10 @@ export interface UpdateScheduleDefinitionInput {
   playbook?: SchedulePlaybook;
   cwd?: string;
   agentType?: AgentSelection;
+  /** Set to a string to pin; omit to leave unchanged. */
+  effort?: string;
+  /** Set to a string to pin; omit to leave unchanged. */
+  model?: string;
 }
 
 export class ScheduleValidationError extends Error {
@@ -313,6 +370,8 @@ export class ScheduleStore {
       },
       cwd: input.cwd,
       agentType: input.agentType ?? DEFAULT_AGENT_TYPE,
+      ...(input.effort !== undefined ? { effort: input.effort } : {}),
+      ...(input.model !== undefined ? { model: input.model } : {}),
       executionLedger: [],
       createdAt: now,
       updatedAt: now,
@@ -440,6 +499,8 @@ function normalizeSchedule(raw: unknown): Schedule | null {
     },
     cwd: String(candidate.cwd),
     agentType: normalizeAgentSelection(candidate.agentType),
+    ...(typeof candidate.effort === 'string' ? { effort: candidate.effort } : {}),
+    ...(typeof candidate.model === 'string' ? { model: candidate.model } : {}),
     createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : new Date().toISOString(),
     updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : new Date().toISOString(),
     ...(typeof candidate.lastRunAt === 'string' ? { lastRunAt: candidate.lastRunAt } : {}),

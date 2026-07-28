@@ -8,6 +8,17 @@ import { parsePlaybook, interpolateParameters, PlaybookParseError } from '../cor
 import type { PlaybookScope } from '../core/playbook.js';
 import { isPathInside, playbookScopeDir, resolvePlaybookInScope } from '../core/playbook-paths.js';
 import { projectIdFromRepoSpecifier } from '../core/project-identity.js';
+import {
+  DEFAULT_AGENT_TYPE,
+  ROUND_ROBIN_AGENT_TYPE,
+  isAgentType,
+  isValidEffortForAgent,
+  isValidModelForAgent,
+  effortLevelsForAgent,
+  modelsForAgent,
+  ALL_EFFORT_LEVELS,
+  type AgentSelection,
+} from '../core/agent-types.js';
 import { expandConfiguredCwd } from './cwd-paths.js';
 
 export interface ResolvedScheduleLaunch {
@@ -34,6 +45,9 @@ export class ScheduleValidator {
       fieldErrors.maxTriggers = 'Must be a positive integer';
     }
 
+    const agentType = input.agentType ?? DEFAULT_AGENT_TYPE;
+    Object.assign(fieldErrors, validateScheduleEffortModel(agentType, input.effort, input.model));
+
     if (Object.keys(fieldErrors).length > 0) {
       throw new ScheduleValidationError('Invalid schedule definition', fieldErrors);
     }
@@ -55,6 +69,14 @@ export class ScheduleValidator {
     }
     if (patch.maxTriggers !== undefined && patch.maxTriggers !== null && !isValidMaxTriggers(patch.maxTriggers)) {
       throw new ScheduleValidationError('Invalid schedule definition', { maxTriggers: 'Must be a positive integer' });
+    }
+
+    const agentType = patch.agentType ?? existing.agentType;
+    const effort = patch.effort !== undefined ? patch.effort : existing.effort;
+    const model = patch.model !== undefined ? patch.model : existing.model;
+    const effortModelErrors = validateScheduleEffortModel(agentType, effort, model);
+    if (Object.keys(effortModelErrors).length > 0) {
+      throw new ScheduleValidationError('Invalid schedule definition', effortModelErrors);
     }
 
     const effective = {
@@ -189,6 +211,54 @@ export function validateCron(cron: string): string | undefined {
   if (!isValidCron(cron)) return 'Invalid cron expression';
   if (!isPracticalCron(cron)) return 'Cron expression must not fire more often than every 5 minutes';
   return undefined;
+}
+
+/**
+ * Validate optional schedule-level effort/model pins (#1518).
+ *
+ * For a concrete agent, use the agent-specific allowlists. For `round-robin`,
+ * use the cross-agent union (authoritative check still runs at launch once a
+ * concrete agent is resolved). Empty allowlists (codex/grok model) reject any
+ * model pin with an explicit message rather than silently ignoring it.
+ */
+export function validateScheduleEffortModel(
+  agentType: AgentSelection,
+  effort: string | undefined,
+  model: string | undefined,
+): Record<string, string> {
+  const fieldErrors: Record<string, string> = {};
+  if (effort !== undefined) {
+    if (typeof effort !== 'string' || effort.length === 0) {
+      fieldErrors.effort = 'Must be a non-empty string';
+    } else if (agentType === ROUND_ROBIN_AGENT_TYPE) {
+      if (!ALL_EFFORT_LEVELS.includes(effort)) {
+        fieldErrors.effort = `Must be one of: ${ALL_EFFORT_LEVELS.join(', ')}`;
+      }
+    } else if (isAgentType(agentType)) {
+      if (!isValidEffortForAgent(agentType, effort)) {
+        const levels = effortLevelsForAgent(agentType);
+        fieldErrors.effort = levels.length === 0
+          ? `Agent ${agentType} does not accept an effort pin`
+          : `Must be one of: ${levels.join(', ')}`;
+      }
+    }
+  }
+  if (model !== undefined) {
+    if (typeof model !== 'string' || model.length === 0) {
+      fieldErrors.model = 'Must be a non-empty string';
+    } else if (agentType === ROUND_ROBIN_AGENT_TYPE) {
+      // Model pins require a concrete agent so the allowlist is meaningful.
+      fieldErrors.model = 'model requires a concrete agentType (not round-robin)';
+    } else if (isAgentType(agentType)) {
+      if (!isValidModelForAgent(agentType, model)) {
+        const models = modelsForAgent(agentType);
+        fieldErrors.model = models.length === 0
+          ? `Agent ${agentType} does not accept a per-schedule model pin`
+          : `Must be one of: ${models.join(', ')} (dated suffixes of those bases also accepted)`;
+      }
+    }
+  }
+  return fieldErrors;
 }
 
 async function resolveSchedulePlaybook(

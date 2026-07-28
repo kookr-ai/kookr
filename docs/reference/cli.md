@@ -72,8 +72,10 @@ Options:
 | `-C`, `--cwd` | path | Current shell directory | Working directory for the task. Relative paths are resolved from the invoking process's cwd. |
 | `-a`, `--agent` | `claude-code`, `codex-cli`, or `grok-build` | Server default | Agent type to launch for this task. |
 | `--effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra` | Kookr per-agent setting; Codex defaults to GPT-5.6 Sol with no effort override | Reasoning effort override for this task. `claude-code` accepts `low`, `medium`, `high`, `xhigh`, and `max`; `codex-cli` accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`; `grok-build` does not support effort — omit `--effort` (the server rejects any value). |
+| `--model` | known Claude model id (e.g. `claude-fable-5`) | Agent CLI / env default | Pin the model for this task (#1518). `claude-code` accepts known Claude ids and dated suffixes; `codex-cli` / `grok-build` reject `--model` (use `KOOKR_CODEX_MODEL` / `KOOKR_GROK_MODEL`). Server returns 400 for invalid values — no silent fallback. |
 | `--criteria` | text | unset | Acceptance criteria sent with the task request. This value is argv-exposed; use prompt files or stdin for hook-sensitive text. |
 | `--dedupe` | `warn`, `block`, or `skip` | `warn` | Active duplicate-prompt handling. `warn` prompts interactively and blocks in non-interactive shells, `block` exits with code 5, and `skip` creates the task intentionally while suppressing duplicate-cluster findings. |
+| `--idempotency-key` | opaque string, ≤200 chars | unset | Retry key (issue #1526). Re-running `kookr spawn` with the SAME key returns the task an earlier attempt with that key already created, instead of launching a second one. |
 | `--wait` | optional seconds via `--wait=<seconds>` | false | Poll until the spawned task raises `completion-ready` or reaches a terminal state. |
 | `--parent-task-id` | task id | `KOOKR_TASK_ID` when set | Explicit parent task to link in the dashboard. Mutually exclusive with `--no-parent-task`. |
 | `--no-parent-task` | none | false | Launch detached and ignore `KOOKR_TASK_ID`. Mutually exclusive with `--parent-task-id`. |
@@ -101,6 +103,32 @@ In interactive `warn` mode, `show diff` prints the stored active prompt against 
 
 In `--json` mode, duplicate `warn` prompts are treated as non-interactive and return `DUPLICATE_BLOCKED` instead of asking for confirmation. Use `--dedupe=skip --json` when automation intentionally wants to keep a duplicate.
 
+Idempotent retries (issue #1526):
+
+```bash
+kookr spawn --idempotency-key "kookr-ai/kookr#1526@batch-1" "implement the issue"
+```
+
+`--dedupe` compares prompt **content** (prompt + cwd + agent); it is defeated
+when the prompt varies between attempts — for example a spawn helper that
+embeds a fresh random branch suffix on every call. `--idempotency-key`
+instead identifies the logical **request**: re-running the exact same
+`kookr spawn --idempotency-key <key> ...` invocation (e.g. after a client
+timeout against an overloaded server that had already created the task)
+returns the SAME task instead of creating a duplicate, regardless of prompt
+content. A terminal task that never actually ran (e.g. queued at capacity,
+then reaped before it ever launched) is not replayed — the retry launches
+fresh instead; a terminal task that did run (completed or was terminated
+after starting an agent) is still replayed. The response prints `↺ Task
+already exists (idempotent replay)` instead of `✓ Task created`, exits `0`,
+and (in `--json` mode) sets `details.idempotentReplay: true`. Reservations
+live in a TTL-bounded ledger on the server (24h). Durability is best-effort,
+not absolute: a crash strictly between task-creation and the ledger write can
+lose that one reservation, and a ledger persist failure is logged
+server-side without failing the request — see [`POST /api/tasks` body
+fields](./api.md#post-apitasks-body-fields) for the full server-side
+contract and caveats.
+
 Auto-close on completion signal:
 
 ```bash
@@ -108,7 +136,7 @@ kookr spawn --auto-close-on-signal "implement issue #42 then signal completion-r
 kookr spawn --no-auto-close-on-signal "..."   # opt out of an inherited policy
 ```
 
-With `--auto-close-on-signal`, the task auto-completes after its `kookr signal completion-ready` signal has been pending for one hour, instead of waiting indefinitely for manual review — freeing an active slot so queued tasks can run. If the flag is omitted, the new task **inherits the policy of its parent task** (the `parentTaskId` linkage, which `kookr spawn` sets from `KOOKR_TASK_ID` by default). That makes the policy propagate automatically down a self-continuation chain. Pass `--no-auto-close-on-signal` to opt a successor out of an inherited policy. See [auto-close-on-signal](./auto-close-on-signal.md).
+With `--auto-close-on-signal`, the task auto-completes after its `kookr signal completion-ready` signal has been pending for the configured Auto-close delay (the `autoCloseCompletionReadyDelayMin` setting, default 30 minutes), instead of waiting indefinitely for manual review — freeing an active slot so queued tasks can run. If the flag is omitted, the new task **inherits the policy of its parent task** (the `parentTaskId` linkage, which `kookr spawn` sets from `KOOKR_TASK_ID` by default). That makes the policy propagate automatically down a self-continuation chain. Pass `--no-auto-close-on-signal` to opt a successor out of an inherited policy. See [auto-close-on-signal](./auto-close-on-signal.md).
 
 ## Hook-Safe Prompts
 
@@ -154,11 +182,18 @@ by itself; the user still decides what to do in the dashboard.
 
 **Exception — auto-close.** If the task was launched with the `autoCloseOnSignal`
 policy (via `kookr spawn --auto-close-on-signal`, an `autoCloseOnSignal: true`
-playbook, or inherited from a parent task), a `completion-ready` signal starts a
-one-hour auto-close grace period. If the task is still in progress after that,
+playbook, or inherited from a parent task), a `completion-ready` signal starts
+the configured auto-close grace period (the **Auto-close delay** setting, default
+30 minutes). If the task is still in progress after that,
 Kookr completes it and frees its active slot. Only signal when work is truly
 finished — under auto-close the task can close later without another prompt. See
 [auto-close-on-signal](./auto-close-on-signal.md).
+
+**Durability (issue #1541).** Every signal is write-behined to a local outbox
+(`~/.kookr/playbook-state/signal-outbox/`) *before* the HTTP attempt, with a
+client-generated `signalId` for server-side dedup. If the daemon is restarting
+or unreachable the command still exits `0` (signal spooled); a background drain
+delivers it after reconnect. See [signal-outbox](./signal-outbox.md).
 
 Kinds:
 
@@ -184,13 +219,39 @@ Target selection uses the same local-server discovery as `kookr spawn`: first
 
 Exit behavior:
 
-- `0` when the signal is raised.
+- `0` when the signal is raised **or** durably spooled because the daemon was
+  unreachable (JSON envelope uses `code: "SPOOLED"` in the offline case).
 - `2` for usage errors, including an unknown signal kind, a missing task id,
   bad flags, or an invalid `KOOKR_PORT`.
-- `3` when no Kookr server is reachable. This is advisory so agents can keep
-  finishing their work when the dashboard is unavailable.
-- `4` when the server rejects the signal, for example because the task id is
-  unknown or terminal.
+- `4` when the server permanently rejects the signal: unknown/terminal task id,
+  **or** missing post-task lesson decision (`lesson_decision_required`, issue
+  #1538). Permanent failures are dropped from the outbox. For the lesson gate
+  the CLI prints the server hint and asks you to run `kb remember …` or
+  `printf 'No generic KB lesson: %s\n' '<reason>'` before re-signaling; JSON
+  mode reports `code: "LESSON_DECISION_REQUIRED"`.
+
+**Lesson decision (required before completion-ready).** Agents must leave either
+a `kb remember` write or an explicit skip marker in the Bash hook trail before
+signaling. See [lesson-decision-gate](./lesson-decision-gate.md).
+
+## `kookr lesson`
+
+Operator CLI for the durable lesson-write spool (issue #1519) and the lesson
+yield metric (issue #1538):
+
+```bash
+kookr lesson status [--json] [--dir PATH]
+kookr lesson drain  [--json] [--dir PATH] [--dry-run]
+kookr lesson remember --title=<title> [--kb=agent-task-lessons] --stdin --yes
+kookr lesson yield    [--json] [--days N] [--kookr-dir PATH]
+```
+
+- `status` / `drain` / `remember` — spool health, replay, and write-behind when
+  KB is degraded. See [lesson-write-spool](./lesson-write-spool.md).
+- `yield` — scan recent completed tasks' hook logs and print the lesson-yield
+  rate (`(wrote-lesson + explicit-skip) / completed`). Same metric as
+  `GET /api/diagnostics/lesson-yield?days=N` and the `lessonYield` block on
+  `GET /api/health`. See [lesson-decision-gate](./lesson-decision-gate.md).
 
 ## `kookr issue`
 

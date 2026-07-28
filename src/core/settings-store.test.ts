@@ -93,6 +93,31 @@ describe('validateSettings', () => {
     expect(validateSettings({ maxActiveTasks: 100 }).maxActiveTasks).toBe(25);
   });
 
+  it('defaults autoCloseCompletionReadyDelayMin to 30', () => {
+    expect(validateSettings({}).autoCloseCompletionReadyDelayMin).toBe(30);
+    expect(DEFAULT_SETTINGS.autoCloseCompletionReadyDelayMin).toBe(30);
+  });
+
+  it('accepts a valid autoCloseCompletionReadyDelayMin', () => {
+    expect(validateSettings({ autoCloseCompletionReadyDelayMin: 45 }).autoCloseCompletionReadyDelayMin).toBe(45);
+  });
+
+  it('clamps autoCloseCompletionReadyDelayMin below minimum to 1', () => {
+    expect(validateSettings({ autoCloseCompletionReadyDelayMin: 0 }).autoCloseCompletionReadyDelayMin).toBe(1);
+  });
+
+  it('clamps autoCloseCompletionReadyDelayMin above maximum to 1440', () => {
+    expect(validateSettings({ autoCloseCompletionReadyDelayMin: 99999 }).autoCloseCompletionReadyDelayMin).toBe(1440);
+  });
+
+  it('rounds fractional autoCloseCompletionReadyDelayMin', () => {
+    expect(validateSettings({ autoCloseCompletionReadyDelayMin: 30.6 }).autoCloseCompletionReadyDelayMin).toBe(31);
+  });
+
+  it('falls back to the default when autoCloseCompletionReadyDelayMin is not a number', () => {
+    expect(validateSettings({ autoCloseCompletionReadyDelayMin: 'soon' }).autoCloseCompletionReadyDelayMin).toBe(30);
+  });
+
   it('fills missing new fields with defaults', () => {
     const result = validateSettings({ githubPollingEnabled: false, githubPollingIntervalSec: 120 });
     expect(result.autoWatchOssSources).toBe(true);
@@ -104,6 +129,104 @@ describe('validateSettings', () => {
     expect(result.speakVerbosity).toBe('medium');
     expect(result.cleanupWorktreeOnComplete).toBe(true);
     expect(result.replySnippets).toEqual([]);
+    expect(result.autoCloseCompletionReadyDelayMin).toBe(30);
+    expect(result.completionReadyTtlMinutes).toBe(120);
+    expect(result.hungTaskReapEnabled).toBe(true);
+    expect(result.hungTaskReapMinutes).toBe(180);
+  });
+
+  it('defaults completionReadyTtlMinutes to 120', () => {
+    expect(validateSettings({}).completionReadyTtlMinutes).toBe(120);
+    expect(DEFAULT_SETTINGS.completionReadyTtlMinutes).toBe(120);
+  });
+
+  it('accepts a valid completionReadyTtlMinutes', () => {
+    expect(validateSettings({ completionReadyTtlMinutes: 60 }).completionReadyTtlMinutes).toBe(60);
+  });
+
+  it('clamps completionReadyTtlMinutes below minimum to 5', () => {
+    expect(validateSettings({ completionReadyTtlMinutes: 0 }).completionReadyTtlMinutes).toBe(5);
+  });
+
+  it('clamps completionReadyTtlMinutes above maximum to 10080', () => {
+    expect(validateSettings({ completionReadyTtlMinutes: 999_999 }).completionReadyTtlMinutes).toBe(10_080);
+  });
+
+  it('falls back to the default when completionReadyTtlMinutes is not a number', () => {
+    expect(validateSettings({ completionReadyTtlMinutes: 'later' }).completionReadyTtlMinutes).toBe(120);
+  });
+
+  it('defaults hungTaskReapEnabled to true and hungTaskReapMinutes to 180', () => {
+    expect(validateSettings({}).hungTaskReapEnabled).toBe(true);
+    expect(validateSettings({}).hungTaskReapMinutes).toBe(180);
+    expect(DEFAULT_SETTINGS.hungTaskReapEnabled).toBe(true);
+    expect(DEFAULT_SETTINGS.hungTaskReapMinutes).toBe(180);
+  });
+
+  it('accepts hungTaskReapEnabled: false (config flag to disable)', () => {
+    expect(validateSettings({ hungTaskReapEnabled: false }).hungTaskReapEnabled).toBe(false);
+  });
+
+  it('clamps hungTaskReapMinutes below minimum to 15', () => {
+    expect(validateSettings({ hungTaskReapMinutes: 1 }).hungTaskReapMinutes).toBe(15);
+  });
+
+  it('clamps hungTaskReapMinutes above maximum to 10080', () => {
+    expect(validateSettings({ hungTaskReapMinutes: 999_999 }).hungTaskReapMinutes).toBe(10_080);
+  });
+
+  it('defaults launchTimeoutSeconds to 180 and clamps to the 30–900 range (issue #1526 Phase C / #1528)', () => {
+    expect(validateSettings({}).launchTimeoutSeconds).toBe(180);
+    expect(DEFAULT_SETTINGS.launchTimeoutSeconds).toBe(180);
+    expect(validateSettings({ launchTimeoutSeconds: 120 }).launchTimeoutSeconds).toBe(120);
+    expect(validateSettings({ launchTimeoutSeconds: 1 }).launchTimeoutSeconds).toBe(30);
+    expect(validateSettings({ launchTimeoutSeconds: 10_000 }).launchTimeoutSeconds).toBe(900);
+    expect(validateSettings({ launchTimeoutSeconds: 'forever' }).launchTimeoutSeconds).toBe(180);
+  });
+
+  it('defaults deadManScheduleMinutes to 120 and clamps to the 30–1440 range (issue #1526 Phase C)', () => {
+    expect(validateSettings({}).deadManScheduleMinutes).toBe(120);
+    expect(DEFAULT_SETTINGS.deadManScheduleMinutes).toBe(120);
+    expect(validateSettings({ deadManScheduleMinutes: 60 }).deadManScheduleMinutes).toBe(60);
+    expect(validateSettings({ deadManScheduleMinutes: 5 }).deadManScheduleMinutes).toBe(30);
+    expect(validateSettings({ deadManScheduleMinutes: 99_999 }).deadManScheduleMinutes).toBe(1440);
+    expect(validateSettings({ deadManScheduleMinutes: 'never' }).deadManScheduleMinutes).toBe(120);
+  });
+
+  it('defaults maxPendingTasks to 24 and clamps to the 4–200 range (issue #1526 Phase C / C3)', () => {
+    expect(validateSettings({}).maxPendingTasks).toBe(24);
+    expect(DEFAULT_SETTINGS.maxPendingTasks).toBe(24);
+    expect(validateSettings({ maxPendingTasks: 48 }).maxPendingTasks).toBe(48);
+    expect(validateSettings({ maxPendingTasks: 1 }).maxPendingTasks).toBe(4);
+    expect(validateSettings({ maxPendingTasks: 9_999 }).maxPendingTasks).toBe(200);
+    expect(validateSettings({ maxPendingTasks: 'lots' }).maxPendingTasks).toBe(24);
+  });
+
+  it('defaults pendingTaskTtlMinutes to 240 and clamps to the 15–2880 range (issue #1526 Phase C / C3)', () => {
+    expect(validateSettings({}).pendingTaskTtlMinutes).toBe(240);
+    expect(DEFAULT_SETTINGS.pendingTaskTtlMinutes).toBe(240);
+    expect(validateSettings({ pendingTaskTtlMinutes: 60 }).pendingTaskTtlMinutes).toBe(60);
+    expect(validateSettings({ pendingTaskTtlMinutes: 1 }).pendingTaskTtlMinutes).toBe(15);
+    expect(validateSettings({ pendingTaskTtlMinutes: 99_999 }).pendingTaskTtlMinutes).toBe(2880);
+    expect(validateSettings({ pendingTaskTtlMinutes: 'forever' }).pendingTaskTtlMinutes).toBe(240);
+  });
+
+  it('defaults spawnBurstLimit to 30 and clamps to the 5–500 range (issue #1526 Phase C / C3)', () => {
+    expect(validateSettings({}).spawnBurstLimit).toBe(30);
+    expect(DEFAULT_SETTINGS.spawnBurstLimit).toBe(30);
+    expect(validateSettings({ spawnBurstLimit: 100 }).spawnBurstLimit).toBe(100);
+    expect(validateSettings({ spawnBurstLimit: 0 }).spawnBurstLimit).toBe(5);
+    expect(validateSettings({ spawnBurstLimit: 9_999 }).spawnBurstLimit).toBe(500);
+    expect(validateSettings({ spawnBurstLimit: null }).spawnBurstLimit).toBe(30);
+  });
+
+  it('defaults spawnBurstWindowMinutes to 10 and clamps to the 1–120 range (issue #1526 Phase C / C3)', () => {
+    expect(validateSettings({}).spawnBurstWindowMinutes).toBe(10);
+    expect(DEFAULT_SETTINGS.spawnBurstWindowMinutes).toBe(10);
+    expect(validateSettings({ spawnBurstWindowMinutes: 30 }).spawnBurstWindowMinutes).toBe(30);
+    expect(validateSettings({ spawnBurstWindowMinutes: 0 }).spawnBurstWindowMinutes).toBe(1);
+    expect(validateSettings({ spawnBurstWindowMinutes: 9_999 }).spawnBurstWindowMinutes).toBe(120);
+    expect(validateSettings({ spawnBurstWindowMinutes: false }).spawnBurstWindowMinutes).toBe(10);
   });
 
   it('defaults replySnippets to an empty list', () => {
@@ -310,6 +433,16 @@ describe('loadSettings / saveSettings', () => {
       agentEffort: { 'claude-code': 'high' as const, 'codex-cli': 'minimal' as const },
       quietHours: [{ start: '22:00', end: '08:00' }],
       replySnippets: [{ label: 'Continue', text: 'continue' }],
+      autoCloseCompletionReadyDelayMin: 45,
+      completionReadyTtlMinutes: 90,
+      hungTaskReapEnabled: false,
+      hungTaskReapMinutes: 240,
+      launchTimeoutSeconds: 300,
+      deadManScheduleMinutes: 240,
+      maxPendingTasks: 48,
+      pendingTaskTtlMinutes: 120,
+      spawnBurstLimit: 60,
+      spawnBurstWindowMinutes: 15,
     };
     await saveSettings(filePath, settings);
     const result = await loadSettings(filePath);

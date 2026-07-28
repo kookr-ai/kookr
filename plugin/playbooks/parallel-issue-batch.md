@@ -4,6 +4,12 @@ description: Select non-conflicting GitHub issues, group tightly related ones wh
 repo-tags: [github]
 tags: [workflow, loopable]
 deliveryPreAuthorized: true
+# Auto-complete the task after its `completion_ready` signal has been pending for
+# the grace period, instead of leaving the finished batch supervisor open and
+# filling the active-task cap. Spawned child tasks are launched with
+# `--auto-close-on-signal` (Phase 4) so they release their slots the same way.
+# See docs/reference/auto-close-on-signal.md.
+autoCloseOnSignal: true
 parameters:
   - name: repoFullName
     description: "Target repository (owner/repo)"
@@ -476,13 +482,60 @@ Implementation target:
   `node "$KOOKR_REPO/bin/kookr-context-pack.js" --spec <spec.json> --out /tmp/<unit-slug>.pack.md --review-out /tmp/<unit-slug>.review.md`
   and pass `/tmp/<unit-slug>.review.md` to each reviewer specialist as its context. This is an optimization layered on top of the pre-pr-review skill — do not skip any review step because of it, and treat pack contents as hints to verify against the diff, not facts.
 - Commit with a conventional message if the repo uses one.
+- **Pre-`gh pr create` duplicate-guard (mandatory).** Immediately before opening
+  the PR, run this guard for the unit's branch and *every* issue it closes. It
+  aborts with a non-zero exit (no PR created) if any issue was already
+  auto-closed by an earlier merge, or the head branch already has an open PR or
+  one merged in the last 24h — the 2026-07-26 race where child tasks opened PRs
+  seconds after their issues had been auto-closed by the first merges (task
+  dd1fbcec, a downstream repo — PRs #1672/#1673/#1674). This is a mechanical stop, not
+  prose:
+
+  ```bash
+  # --- Pre-`gh pr create` duplicate-guard (issue #1569) ----------------------
+  # Fails CLOSED: if a gh probe errors (auth / network / rate-limit) the guard
+  # aborts rather than green-lighting an unverified PR — a rate-limited parallel
+  # batch is exactly when the duplicate race bites.
+  pr_create_guard() {
+    local branch abort n state dupes
+    branch="$1"; shift                 # head branch of the PR about to be created
+    abort=0
+    for n in "$@"; do                  # issue number(s) this PR would close
+      if ! state=$(gh issue view "$n" --json state -q .state 2>/dev/null); then
+        echo "PR-CREATE ABORTED: could not verify issue #$n (gh error / auth / rate-limit) — refusing to open a PR unverified." >&2
+        abort=1; continue
+      fi
+      if [ "$state" = "CLOSED" ]; then
+        echo "PR-CREATE ABORTED: issue #$n is CLOSED (likely auto-closed by an earlier merge) — refusing to open a duplicate PR." >&2
+        abort=1
+      fi
+    done
+    if ! dupes=$(gh pr list --head "$branch" --state all --json number,state,mergedAt \
+      -q '.[] | select(.state=="OPEN" or (.mergedAt != null and (now - (.mergedAt|fromdateiso8601) < 86400))) | "#\(.number)/\(.state)"' 2>/dev/null); then
+      echo "PR-CREATE ABORTED: could not verify PRs for '$branch' (gh error / auth / rate-limit) — refusing to open a PR unverified." >&2
+      abort=1
+    elif [ -n "$dupes" ]; then
+      echo "PR-CREATE ABORTED: head branch '$branch' already has PR(s) $dupes (open or merged <24h ago) — refusing to open a duplicate PR." >&2
+      abort=1
+    fi
+    [ "$abort" -eq 0 ] || return 1
+    echo "pr-create guard OK: issue(s) [$*] open, no live/recent PR on '$branch'."
+  }
+
+  # The guard MUST pass before the PR is created. For cross-fork PRs, edit the
+  # two gh calls to add `-R <owner>/<repo>` and use `--head <owner>:<branch>`:
+  pr_create_guard "$(git rev-parse --abbrev-ref HEAD)" <N1> [<N2> ...] || exit 1
+  ```
+  If the guard aborts, do **not** create the PR: record the abort reason as the
+  unit's blocker and report it instead.
 - Push the branch and open **one** PR that closes every issue in the unit
   (`Closes #<N1>`, `Closes #<N2>`, … in the body). The PR title/body must list
   every issue covered.
 - Monitor CI and fix failures.
 - If you face a design choice the issues do not settle, pick the smallest implementation that satisfies them, note the choice and alternatives in the PR description, and continue. Do not stop to ask.
-- If mergeAfterImplementation is true, merge the PR only after it is mergeable and required checks are green. Use the repo's allowed merge method. Exception: a required check that could not execute because of an external GitHub Actions budget/quota/billing block (e.g. the run failed within seconds with a spending-limit/quota message, not a code error) is a non-code blocker, not a failing check — capture the exact `gh run view` evidence and, if the repo permits admin merge, merge with `--admin` instead of stalling for a human override. Never apply this exception to a check that actually ran and failed on the code; when in doubt, treat the failure as real and report the blocker.
+- If mergeAfterImplementation is true, merge the PR only after it is mergeable and required checks are green. Use the repo's allowed merge method, and **always delete the head branch as part of the merge** (`gh pr merge <PR> --delete-branch`, or an explicit `git push origin --delete <head>` immediately after the merge when the branch is checked out in a linked worktree so `--delete-branch` would fail locally). A surviving squash-merged branch is a non-ancestor of the base and is PR-able a second time, producing net-no-op duplicate PRs (issue #1572). Exception: a required check that could not execute because of an external GitHub Actions budget/quota/billing block (e.g. the run failed within seconds with a spending-limit/quota message, not a code error) is a non-code blocker, not a failing check — capture the exact `gh run view` evidence and, if the repo permits admin merge, merge with `--admin --delete-branch` instead of stalling for a human override. Never apply this exception to a check that actually ran and failed on the code; when in doubt, treat the failure as real and report the blocker.
 - Report the PR URL and final state for every issue in the unit.
+- Release your slot when done: once every issue in this unit has reached its final state (PR open/merged per the merge policy, or a recorded blocker), first emit a post-task lesson decision (`kb remember …` or `printf 'No generic KB lesson: %s\n' '<reason>'`), then run `kookr signal completion-ready` (optionally `--note "<PR urls / blocker>"`). Completion-ready is rejected without that decision (issue #1538). You were launched with `--auto-close-on-signal`, so a successful signal schedules your own auto-completion after the grace period. Do NOT signal while work remains; if you stop on a blocker, report it first, then emit the decision and signal.
 
 Concurrent-task note:
 Other child tasks are working in the same repo on different work units. Do not revert their branches, do not edit their expected files, and avoid broad formatting.
@@ -501,8 +554,14 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
      --cwd "$LOCAL" \
      --prompt-file "$PROMPTS_DIR/<unit-slug>.md" \
      --criteria "Issues $ISSUES_LABEL have a single PR matching the requested merge policy" \
+     --auto-close-on-signal \
      $AGENT_FLAG
    ```
+
+   `--auto-close-on-signal` opts each child into delayed auto-completion: once the
+   child signals `completion-ready` (its prompt instructs it to, after the PR
+   reaches the requested state), the server retires it after the grace period, so
+   finished children release their slots instead of lingering `inProgress`.
 
    If `KOOKR_REPO` is not set, derive it from the parent cwd if it contains `bin/kookr-spawn.js`, otherwise use `$HOME/git/kookr`.
 
@@ -559,7 +618,7 @@ For each child:
 
    Match PRs by `Closes #N` for **every** issue in the child's `issues` array (or legacy `issue`), issue numbers in title/body, or branch name. For multi-issue units the same PR must close all listed issues.
 
-4. If `mergeAfterImplementation=true`, a child is complete only when the PR is merged and covers every issue in its work unit. If CI is green but the child is idle, send a concise instruction to merge using the repo's allowed method.
+4. If `mergeAfterImplementation=true`, a child is complete only when the PR is merged and covers every issue in its work unit. If CI is green but the child is idle, send a concise instruction to merge using the repo's allowed method **with head-branch deletion** (`gh pr merge <PR> --delete-branch`, or an explicit `git push origin --delete <head>` when a linked worktree holds the branch). Confirm the branch is gone (`gh api repos/<r>/branches/<head>` returns 404) before treating the child as complete — a surviving branch produces net-no-op duplicate PRs (issue #1572).
 5. If `mergeAfterImplementation=false`, a child is complete when the PR is open, covers every issue in its work unit, local verification is reported, and CI is green or legitimately pending.
 
 Update `$MONITOR_FILE` with a compact table:
@@ -572,7 +631,7 @@ Update `$MONITOR_FILE` with a compact table:
 If multiple children create the same shared-file conflict:
 
 1. Stop new spawns.
-2. Let the most complete implementation PR merge first if safe.
+2. Let the most complete implementation PR merge first if safe — merge it with head-branch deletion (`--delete-branch`, or an explicit `git push origin --delete <head>` when a linked worktree holds the branch), same as every merge in this playbook (issue #1572).
 3. For remaining branches, instruct child tasks to rebase and remove the shared-file edits.
 4. If a repository-wide cleanup is better, create a separate parent-owned cleanup task/branch after the implementation PRs merge. Do not let every child edit the same cleanup file.
 5. Close any redundant cleanup PR that is superseded by a broader merged cleanup PR.
@@ -609,6 +668,31 @@ If the run cannot make progress because all selected issues are blocked or all r
 printf 'BLOCKED: <reason>\n' >> "$STATE_FILE"
 echo "STOP: BLOCKED - <reason>" > .batch-stop
 ```
+
+**Release the supervisor's own slot (single launch only).** This playbook sets
+`autoCloseOnSignal: true`, so once the batch is terminal (`DONE` or `BLOCKED`
+written above and every child accounted for), free this supervisor task's slot
+after the grace period instead of leaving the finished batch open and filling
+the active-task cap.
+
+Issue #1538: `completion-ready` is rejected unless a post-task lesson decision
+is visible in the Bash hook trail. Emit one **before** signaling — do not
+swallow a 409 with `|| true` (that silently strands the slot):
+
+```bash
+# Pick exactly one — write a generic lesson, or declare skip.
+printf 'No generic KB lesson: %s\n' 'batch supervisor: per-issue lessons live in child tasks'
+# or: cat <<'EOF' | kb remember --kb=agent-task-lessons --title="<headline>" --stdin --yes …
+
+kookr signal completion-ready --note "$(tail -n1 "$STATE_FILE")"
+# If this exits non-zero with lesson_decision_required, emit the decision above
+# and re-run the signal. Do NOT `|| true` — a failed signal leaves the task
+# holding an active slot until a human completes it.
+```
+
+Do NOT signal while any child is still running or any issue is unresolved. In
+Ralph loop mode, ignore this — the loop owns the task lifecycle and the
+`.batch-stop` marker is its termination signal; signaling here would fight it.
 
 ## Idempotency Rules
 

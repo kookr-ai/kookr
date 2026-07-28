@@ -8,6 +8,7 @@
 import {
   classifyLlmProviderHttpStatus,
   type LlmClient,
+  type LlmCompletionDetail,
   type LlmCompletionRequest,
   type LlmProviderFailureCategory,
 } from '../../core/llm-types.js';
@@ -25,7 +26,15 @@ export interface OpenAiCompatibleClientOptions {
 }
 
 interface ChatCompletionResponse {
-  choices?: Array<{ message?: { content?: string | null } }>;
+  choices?: Array<{
+    finish_reason?: string | null;
+    message?: {
+      content?: string | null;
+      tool_calls?: Array<{
+        function?: { name?: string; arguments?: string };
+      }>;
+    };
+  }>;
 }
 
 export class LlmProviderFailureError extends Error {
@@ -152,6 +161,10 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
   }
 
   async complete(req: LlmCompletionRequest): Promise<string | null> {
+    return (await this.completeDetailed(req)).text;
+  }
+
+  async completeDetailed(req: LlmCompletionRequest): Promise<LlmCompletionDetail> {
     const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
     if (req.system) {
       messages.push({ role: 'system', content: req.system });
@@ -163,7 +176,7 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
       max_tokens: req.maxTokens,
       messages,
     };
-    if (req.responseFormat) {
+    if (req.responseFormat?.type === 'json_schema') {
       body.response_format = {
         type: 'json_schema' as const,
         json_schema: {
@@ -172,6 +185,14 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
           schema: req.responseFormat.jsonSchema.schema,
         },
       };
+    } else if (req.responseFormat?.type === 'json_object') {
+      body.response_format = { type: 'json_object' as const };
+    }
+    if (req.tools && req.tools.length > 0) {
+      body.tools = req.tools;
+      if (req.toolChoice !== undefined) {
+        body.tool_choice = req.toolChoice;
+      }
     }
 
     const controller = new AbortController();
@@ -238,7 +259,19 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
       );
     }
 
-    const content = data.choices?.[0]?.message?.content;
-    return typeof content === 'string' ? content.trim() || null : null;
+    const choice = data.choices?.[0];
+    const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : null;
+    const message = choice?.message;
+    const content = message?.content;
+    if (typeof content === 'string' && content.trim()) {
+      return { text: content.trim(), finishReason };
+    }
+    // Structured tool-call path: return the first function arguments blob as JSON text.
+    const toolArgs = message?.tool_calls?.find((call) => typeof call.function?.arguments === 'string')
+      ?.function?.arguments;
+    if (typeof toolArgs === 'string' && toolArgs.trim()) {
+      return { text: toolArgs.trim(), finishReason };
+    }
+    return { text: null, finishReason };
   }
 }

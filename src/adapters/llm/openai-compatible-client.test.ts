@@ -89,6 +89,57 @@ describe('OpenAiCompatibleLlmClient', () => {
     });
   });
 
+  test('completeDetailed surfaces the provider finish reason (issue #1555)', async () => {
+    // Reasoning model burned the whole token budget: empty content, finish_reason=length.
+    stubFetch(jsonResponse({ choices: [{ finish_reason: 'length', message: { content: '' } }] }));
+    const client = new OpenAiCompatibleLlmClient({
+      provider: 'baseten',
+      apiKey: API_KEY,
+      model: 'nvidia/Nemotron-120B-A12B',
+      baseUrl: 'https://inference.baseten.co/v1',
+    });
+
+    await expect(client.completeDetailed(baseReq)).resolves.toEqual({
+      text: null,
+      finishReason: 'length',
+    });
+  });
+
+  test('completeDetailed returns text with its finish reason on success', async () => {
+    stubFetch(jsonResponse({ choices: [{ finish_reason: 'stop', message: { content: '  Fix auth bug  ' } }] }));
+    const client = new OpenAiCompatibleLlmClient({
+      provider: 'baseten',
+      apiKey: API_KEY,
+      model: 'nvidia/Nemotron-120B-A12B',
+      baseUrl: 'https://inference.baseten.co/v1',
+    });
+
+    await expect(client.completeDetailed(baseReq)).resolves.toEqual({
+      text: 'Fix auth bug',
+      finishReason: 'stop',
+    });
+  });
+
+  test('completeDetailed attaches the finish reason to tool-call arguments', async () => {
+    stubFetch(jsonResponse({
+      choices: [{
+        finish_reason: 'tool_calls',
+        message: { content: null, tool_calls: [{ function: { name: 'task_name', arguments: '{"name":"x"}' } }] },
+      }],
+    }));
+    const client = new OpenAiCompatibleLlmClient({
+      provider: 'baseten',
+      apiKey: API_KEY,
+      model: 'nvidia/Nemotron-120B-A12B',
+      baseUrl: 'https://inference.baseten.co/v1',
+    });
+
+    await expect(client.completeDetailed(baseReq)).resolves.toEqual({
+      text: '{"name":"x"}',
+      finishReason: 'tool_calls',
+    });
+  });
+
   test('forwards extra headers and best-effort response_format', async () => {
     const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: '{}' } }] }));
     const client = new OpenAiCompatibleLlmClient({
@@ -111,6 +162,70 @@ describe('OpenAiCompatibleLlmClient', () => {
     expect(requestBody(fetchMock).response_format).toEqual({
       type: 'json_schema',
       json_schema: { name: 'task_name', strict: false, schema: { type: 'object' } },
+    });
+  });
+
+  test('forwards json_object response_format', async () => {
+    const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: '{}' } }] }));
+    const client = new OpenAiCompatibleLlmClient({
+      provider: 'baseten',
+      apiKey: API_KEY,
+      model: 'nvidia/Nemotron-120B-A12B',
+      baseUrl: 'https://inference.baseten.co/v1',
+    });
+
+    await client.complete({
+      ...baseReq,
+      responseFormat: { type: 'json_object' },
+    });
+
+    expect(requestBody(fetchMock).response_format).toEqual({ type: 'json_object' });
+  });
+
+  test('forwards tools/tool_choice and returns function arguments as content', async () => {
+    const fetchMock = stubFetch(jsonResponse({
+      choices: [{
+        message: {
+          content: null,
+          tool_calls: [{
+            function: {
+              name: 'criteria_completion_verdict',
+              arguments: '{"items":[]}',
+            },
+          }],
+        },
+      }],
+    }));
+    const client = new OpenAiCompatibleLlmClient({
+      provider: 'baseten',
+      apiKey: API_KEY,
+      model: 'nvidia/Nemotron-120B-A12B',
+      baseUrl: 'https://inference.baseten.co/v1',
+    });
+
+    const text = await client.complete({
+      ...baseReq,
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'criteria_completion_verdict',
+          parameters: { type: 'object' },
+        },
+      }],
+      toolChoice: { type: 'function', function: { name: 'criteria_completion_verdict' } },
+    });
+
+    expect(text).toBe('{"items":[]}');
+    expect(requestBody(fetchMock).tools).toEqual([{
+      type: 'function',
+      function: {
+        name: 'criteria_completion_verdict',
+        parameters: { type: 'object' },
+      },
+    }]);
+    expect(requestBody(fetchMock).tool_choice).toEqual({
+      type: 'function',
+      function: { name: 'criteria_completion_verdict' },
     });
   });
 

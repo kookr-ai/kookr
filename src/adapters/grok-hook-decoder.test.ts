@@ -66,12 +66,32 @@ describe('parseGrokHookEvent — POC-A fixtures', () => {
     expect(e && e.type === 'stop_failure' ? e.error : '').toContain('401');
   });
 
-  it('decodes notification', () => {
+  it('normalizes the permission_prompt notification into permission_request (issue #1526 Phase C4)', () => {
+    // POC-A capture: Grok's interactive permission prompt surfaces as
+    // notification{notificationType:"permission_prompt"} and Grok has no
+    // PermissionRequest hook event, so this is the structured signal that the
+    // agent is parked on a permission menu. It must decode into the same
+    // AgentEvent Claude's PermissionRequest produces, so the anomaly detector
+    // classifies the session permission_blocked and Phase B's
+    // stuckReason: 'permission_blocked' fires for Grok tasks.
     const e = parseGrokHookEvent(line('notification'));
     expect(e).toMatchObject({
+      type: 'permission_request',
+      sessionId: '019f6783-5c28-7210-a98e-0be0aa657627',
+    });
+  });
+
+  it('decodes non-permission notifications as plain notification', () => {
+    const e = parseGrokHookEvent(JSON.stringify({
+      hookEventName: 'notification',
+      sessionId: 's1',
+      notificationType: 'idle_prompt',
+      message: 'waiting for input',
+    }));
+    expect(e).toMatchObject({
       type: 'notification',
-      notificationType: 'permission_prompt',
-      message: 'Tool permission requested',
+      notificationType: 'idle_prompt',
+      message: 'waiting for input',
     });
   });
 
@@ -100,9 +120,34 @@ describe('parseGrokHookEvent — robustness', () => {
     expect(parseGrokHookEvent(JSON.stringify({ hookEventName: 'made_up', sessionId: 's1' }))).toBeNull();
   });
 
-  it('drops recognized-but-unmapped events (permission_denied, pre_compact)', () => {
-    expect(parseGrokHookEvent(JSON.stringify({ hookEventName: 'permission_denied', sessionId: 's1' }))).toBeNull();
+  it('drops recognized-but-unmapped events (pre_compact, post_compact)', () => {
     expect(parseGrokHookEvent(JSON.stringify({ hookEventName: 'pre_compact', sessionId: 's1' }))).toBeNull();
+    expect(parseGrokHookEvent(JSON.stringify({ hookEventName: 'post_compact', sessionId: 's1' }))).toBeNull();
+  });
+
+  it('decodes permission_denied into permission_request (2026-07-24 incident: was dropped, hiding a 33h permission-stuck task)', () => {
+    // No POC-A payload capture exists for permission_denied (it did not fire
+    // in the headless runs), so the shape mirrors the camelCase tool-event
+    // conventions of every other captured Grok payload.
+    const e = parseGrokHookEvent(JSON.stringify({
+      hookEventName: 'permission_denied',
+      sessionId: 's1',
+      cwd: '/repo',
+      toolName: 'search_replace',
+      toolInput: { file_path: '/repo/a.ts' },
+    }));
+    expect(e).toMatchObject({
+      type: 'permission_request',
+      sessionId: 's1',
+      toolName: 'search_replace',
+      toolInput: { file_path: '/repo/a.ts' },
+      cwd: '/repo',
+    });
+  });
+
+  it('decodes a field-less permission_denied defensively rather than dropping it', () => {
+    const e = parseGrokHookEvent(JSON.stringify({ hookEventName: 'permission_denied', sessionId: 's1' }));
+    expect(e).toMatchObject({ type: 'permission_request', sessionId: 's1', toolName: '' });
   });
 
   it('drops an event missing its sessionId correlation key', () => {

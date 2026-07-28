@@ -30,19 +30,80 @@ import type { HookWatcherHealthSnapshot } from '../hook-watcher.js';
 import { getAuthThrottleSnapshot } from '../auth.js';
 import { DELIVERY_TRACE_SCHEMA_VERSION, type DeliveryTraceFilter } from '../../shared/contracts/delivery-trace.js';
 import { SESSION_HEALTH_SCHEMA_VERSION } from '../../shared/contracts/session-health.js';
+import { buildCapacityLedger } from '../../core/capacity-ledger.js';
+import { resolveTaskAttentionSignals } from '../task-attention-signals.js';
+import { MAX_ACTIVE_TASKS } from '../config.js';
+import {
+  computeLessonYield,
+  hooksDirFromKookrDir,
+  type LessonYieldSnapshot,
+} from '../../core/lesson-decision.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const REVIEW_ADMIN_TOKEN_HEADER = 'x-kookr-admin-token';
 const REVIEW_CSRF_HEADER = 'x-kookr-finding-review-token';
 const DEFAULT_HOOK_INGESTION_LAG_WARNING_THRESHOLD_MS = 2_000;
+/** Cache TTL for the /api/health lessonYield block (hook scans can be heavy). */
+const LESSON_YIELD_HEALTH_CACHE_MS = 60_000;
+const MAX_LESSON_YIELD_DAYS = 30;
+/**
+ * Hard ceiling for one lesson-yield hook-log scan (issue #1553). The hooks
+ * corpus can reach gigabytes; an unbounded scan on the health hot path
+ * saturated the main thread and OOM-crashed prod on 2026-07-26.
+ */
+const LESSON_YIELD_SCAN_TIMEOUT_MS = 30_000;
+/** After a failed/timed-out background refresh, do not retry before this. */
+const LESSON_YIELD_REFRESH_FAILURE_BACKOFF_MS = 5 * 60_000;
 
 export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   const { taskStore, queue, adapter, interactionLog, githubScanner, githubStateStore, buildInfo, serverStartedAt } = deps;
   let findingEvidenceReviewService: FindingEvidenceReviewService | undefined;
   let findingEvidenceReviewConfig: FindingEvidenceReviewServiceConfig | undefined;
   let findingEvidenceReviewLogStore: ReviewLogStore | undefined;
+  // Issue #1538: cache the 24h lesson-yield snapshot for /api/health so a
+  // frequent dashboard poll does not re-scan every hook log every time.
+  // Issue #1553: the request path NEVER awaits a scan — /api/health serves
+  // this cache stale-while-revalidate and a single-flight background scan
+  // repopulates it. Awaiting the scan inline pinned the event loop against a
+  // multi-GB hooks dir and OOM-crashed prod on 2026-07-26.
+  let lessonYieldHealthCache:
+    | { expiresAtMs: number; snapshot: LessonYieldSnapshot }
+    | undefined;
+  let lessonYieldRefreshNotBeforeMs = 0;
+  const lessonYieldScansInFlight = new Map<number, Promise<LessonYieldSnapshot>>();
 
-  app.get('/api/health', (c) => {
+  /**
+   * Single-flight lesson-yield scan per window length, hard-bounded by
+   * LESSON_YIELD_SCAN_TIMEOUT_MS. Shared by the /api/health background
+   * refresh and GET /api/diagnostics/lesson-yield so concurrent callers can
+   * never stack duplicate scans. A completed 1-day scan warms the health
+   * cache as a side effect.
+   */
+  function runLessonYieldScan(days: number): Promise<LessonYieldSnapshot> {
+    const inFlight = lessonYieldScansInFlight.get(days);
+    if (inFlight) return inFlight;
+    const kookrDir = deps.kookrDir;
+    if (!kookrDir) return Promise.reject(new Error('kookrDir unavailable'));
+    const scan = computeLessonYield(
+      taskStore.listTasks(),
+      hooksDirFromKookrDir(kookrDir),
+      { days, signal: AbortSignal.timeout(LESSON_YIELD_SCAN_TIMEOUT_MS) },
+    ).then((snapshot) => {
+      if (days === 1) {
+        lessonYieldHealthCache = {
+          expiresAtMs: Date.now() + LESSON_YIELD_HEALTH_CACHE_MS,
+          snapshot,
+        };
+      }
+      return snapshot;
+    }).finally(() => {
+      lessonYieldScansInFlight.delete(days);
+    });
+    lessonYieldScansInFlight.set(days, scan);
+    return scan;
+  }
+
+  app.get('/api/health', async (c) => {
     const terminalBackend = deps.terminalBackend;
     let terminalBackendBlock: object | undefined;
     if (terminalBackend) {
@@ -70,6 +131,43 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     const tasks = taskStore.listTasks();
     const launchDependencies = buildLaunchDependencyDiagnostics(tasks);
     const attentionQueueSampledAtMs = Date.now();
+    // Capacity ledger (issue #1526 Phase B / FM9): during the 2026-07-24
+    // deadlock every status surface showed "12 running" while the truth was
+    // 11 finished-awaiting-ack + 1 hung + 0 actually working — nobody could
+    // see WHY capacity was exhausted. `byClass` makes that breakdown visible.
+    // Pure observability: classification never touches scheduling/capacity
+    // behavior, and stays O(active tasks) on in-memory watchdog/queue state
+    // only (no pane captures, no disk reads) so this is safe to poll.
+    const capacitySampledAtMs = Date.now();
+    const capacity = buildCapacityLedger(tasks, {
+      now: capacitySampledAtMs,
+      maxActiveTasks: deps.getMaxActiveTasks?.() ?? MAX_ACTIVE_TASKS,
+      isHungSuspect: (task) =>
+        resolveTaskAttentionSignals(task, { queue, watchdog: deps.watchdog }, capacitySampledAtMs).hungSuspect,
+      isLaunching: (task) => taskStore.hasFreshLaunchReservation(task.id),
+    });
+
+    // Lesson yield (issue #1538) — last-24h flywheel health. Served
+    // stale-while-revalidate (issue #1553): the response uses whatever
+    // snapshot the last background scan produced (staleness is visible via
+    // `generatedAt`), and an expired cache only *triggers* a bounded
+    // fire-and-forget refresh. The request path never awaits a hook-log scan.
+    // Full per-window queries use GET /api/diagnostics/lesson-yield?days=N.
+    let lessonYieldBlock: LessonYieldSnapshot | undefined;
+    if (deps.kookrDir) {
+      const nowMs = Date.now();
+      lessonYieldBlock = lessonYieldHealthCache?.snapshot;
+      const cacheFresh = lessonYieldHealthCache !== undefined
+        && lessonYieldHealthCache.expiresAtMs > nowMs;
+      if (!cacheFresh && nowMs >= lessonYieldRefreshNotBeforeMs) {
+        runLessonYieldScan(1).catch(() => {
+          // Soft: health stays 200 even if hook scans fail — but back off so
+          // a persistently failing corpus cannot restart a scan per poll.
+          lessonYieldRefreshNotBeforeMs = Date.now() + LESSON_YIELD_REFRESH_FAILURE_BACKOFF_MS;
+        });
+      }
+    }
+
     return c.json({
       status: 'ok',
       agents: tasks.length,
@@ -80,6 +178,8 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         activeFindingDepth: queue.getDepth(attentionQueueSampledAtMs),
         oldestFindingAgeMs: queue.getOldestFindingAgeMs(attentionQueueSampledAtMs),
       },
+      capacity,
+      ...(lessonYieldBlock ? { lessonYield: lessonYieldBlock } : {}),
       ...(terminalBackendBlock ? { terminalBackend: terminalBackendBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),
@@ -212,6 +312,46 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       });
     } catch {
       return c.json({ error: 'session health diagnostics unavailable' }, 503);
+    }
+  });
+
+  // Lesson yield (issue #1538): lessons + explicit no-lesson declarations per
+  // completed task, queryable over a recent window. Source: hook logs under
+  // <kookrDir>/hooks/. Complements the durable spool (#1519) which only
+  // covers write durability, not authoring trigger.
+  app.get('/api/diagnostics/lesson-yield', async (c) => {
+    if (!deps.kookrDir) {
+      return c.json({ error: 'kookrDir unavailable; lesson yield requires hook logs' }, 503);
+    }
+    const daysRaw = c.req.query('days');
+    let days = 1;
+    if (daysRaw !== undefined) {
+      const parsed = Number.parseInt(daysRaw, 10);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        return c.json({ error: 'days must be a positive integer' }, 400);
+      }
+      days = Math.min(parsed, MAX_LESSON_YIELD_DAYS);
+    }
+    try {
+      // Single-flight + hard timeout (issue #1553): concurrent callers share
+      // one scan, and a scan can never outlive LESSON_YIELD_SCAN_TIMEOUT_MS.
+      // A 1-day result warms the /api/health cache inside the helper.
+      const snapshot = await runLessonYieldScan(days);
+      return c.json(snapshot);
+    } catch (err) {
+      // `AbortSignal.timeout` rejects with a DOMException — match by name so
+      // the verdict does not depend on DOMException's Error inheritance.
+      const name = (err as { name?: string } | null)?.name;
+      if (name === 'TimeoutError' || name === 'AbortError') {
+        return c.json(
+          { error: 'lesson_yield_scan_timeout', message: `Hook-log scan exceeded ${LESSON_YIELD_SCAN_TIMEOUT_MS}ms` },
+          503,
+        );
+      }
+      return c.json(
+        { error: err instanceof Error ? err.message : String(err) },
+        500,
+      );
     }
   });
 
@@ -554,8 +694,23 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     const sessionId = c.req.param('sessionId');
     try {
       const output = await adapter.captureDisplay(sessionId);
-      return c.json({ sessionId, output });
+      return c.json({ sessionId, output, source: 'live' as const });
     } catch (err) {
+      // Lucy's peek_kookr_task_output resolves a task then hits this endpoint
+      // with the session id. After completion the ring is gone — fall back to
+      // the durable task-tail store when present (rfc-task-tail-retrieval).
+      const stored = deps.taskTailStore
+        ? await deps.taskTailStore.getBySessionId(sessionId)
+        : null;
+      if (stored) {
+        return c.json({
+          sessionId,
+          output: stored.text,
+          source: 'persisted' as const,
+          taskId: stored.taskId,
+          capturedAt: stored.capturedAt,
+        });
+      }
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message, sessionId }, 404);
     }

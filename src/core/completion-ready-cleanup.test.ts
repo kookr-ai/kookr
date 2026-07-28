@@ -6,6 +6,8 @@ import {
   listStaleCompletionReadyTasks,
 } from './completion-ready-cleanup.js';
 
+const ONE_HOUR_MS = 60 * 60 * 1000;
+
 function startTask(store: TaskStore, id: string): void {
   store.addSession(id, {
     tmuxSession: `kookr-${id}`,
@@ -17,7 +19,10 @@ function startTask(store: TaskStore, id: string): void {
 
 describe('classifyCompletionReadyClosePolicy', () => {
   test('allows auto-close for opted-in tasks', () => {
-    expect(classifyCompletionReadyClosePolicy({ autoCloseOnSignal: true })).toEqual({ canAutoClose: true });
+    expect(classifyCompletionReadyClosePolicy({ autoCloseOnSignal: true })).toEqual({
+      canAutoClose: true,
+      closeReason: 'auto_close_on_signal',
+    });
   });
 
   test('requires manual action when auto-close is not enabled', () => {
@@ -31,7 +36,7 @@ describe('classifyCompletionReadyClosePolicy', () => {
     expect(classifyCompletionReadyClosePolicy({
       autoCloseOnSignal: true,
       deliveryAuthorization: 'ask-first',
-    })).toEqual({ canAutoClose: true });
+    })).toEqual({ canAutoClose: true, closeReason: 'auto_close_on_signal' });
   });
 
   test('ask-first tasks without auto-close require delivery review before completion', () => {
@@ -41,6 +46,37 @@ describe('classifyCompletionReadyClosePolicy', () => {
       canAutoClose: false,
       manualActionRequiredReason: 'delivery_authorization_required',
     });
+  });
+
+  test('young ask-first tasks stay manual even when a TTL is configured', () => {
+    expect(classifyCompletionReadyClosePolicy(
+      { deliveryAuthorization: 'ask-first' },
+      { ageMs: ONE_HOUR_MS, ttlMs: 2 * ONE_HOUR_MS },
+    )).toEqual({
+      canAutoClose: false,
+      manualActionRequiredReason: 'delivery_authorization_required',
+    });
+  });
+
+  test('old ask-first tasks escalate past the TTL with a distinct close reason', () => {
+    expect(classifyCompletionReadyClosePolicy(
+      { deliveryAuthorization: 'ask-first' },
+      { ageMs: 2 * ONE_HOUR_MS, ttlMs: 2 * ONE_HOUR_MS },
+    )).toEqual({ canAutoClose: true, closeReason: 'ttl_escalation' });
+  });
+
+  test('TTL escalation applies even without an explicit ask-first stamp', () => {
+    expect(classifyCompletionReadyClosePolicy(
+      {},
+      { ageMs: 3 * ONE_HOUR_MS, ttlMs: 2 * ONE_HOUR_MS },
+    )).toEqual({ canAutoClose: true, closeReason: 'ttl_escalation' });
+  });
+
+  test('opted-in tasks keep the immediate close reason regardless of TTL', () => {
+    expect(classifyCompletionReadyClosePolicy(
+      { autoCloseOnSignal: true },
+      { ageMs: 0, ttlMs: 2 * ONE_HOUR_MS },
+    )).toEqual({ canAutoClose: true, closeReason: 'auto_close_on_signal' });
   });
 });
 
@@ -99,5 +135,123 @@ describe('listStaleCompletionReadyTasks', () => {
       now: new Date('2026-06-21T00:00:00.000Z'),
       thresholdMs: 0,
     })).toEqual([]);
+  });
+
+  describe('TTL escalation (issue #1526 Phase A)', () => {
+    test('an ask-first task younger than the TTL stays manual', () => {
+      const store = new TaskStore();
+      const task = store.createTask({ prompt: 'Young', cwd: '/repo', deliveryAuthorization: 'ask-first' });
+      startTask(store, task.id);
+      // 90 minutes old — past the 30m reporting threshold, short of a 2h TTL.
+      store.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-20T22:30:00.000Z' });
+
+      const entries = listStaleCompletionReadyTasks(store.listTasks(), {
+        now: new Date('2026-06-21T00:00:00.000Z'),
+        thresholdMs: 30 * 60 * 1000,
+        ttlMs: 2 * 60 * 60 * 1000,
+      });
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        canAutoClose: false,
+        manualActionRequiredReason: 'delivery_authorization_required',
+      });
+      expect(entries[0].closeReason).toBeUndefined();
+    });
+
+    test('an ask-first task past the TTL escalates to auto-closable', () => {
+      const store = new TaskStore();
+      const task = store.createTask({ prompt: 'Old', cwd: '/repo', deliveryAuthorization: 'ask-first' });
+      startTask(store, task.id);
+      store.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-20T22:00:00.000Z' });
+
+      const entries = listStaleCompletionReadyTasks(store.listTasks(), {
+        now: new Date('2026-06-21T00:00:00.000Z'),
+        thresholdMs: 30 * 60 * 1000,
+        ttlMs: 2 * 60 * 60 * 1000,
+      });
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ canAutoClose: true, closeReason: 'ttl_escalation' });
+    });
+
+    test('treats the boundary (age === ttlMs) as escalated', () => {
+      const store = new TaskStore();
+      const task = store.createTask({ prompt: 'Boundary', cwd: '/repo', deliveryAuthorization: 'ask-first' });
+      startTask(store, task.id);
+      store.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-20T22:00:00.000Z' });
+
+      const entries = listStaleCompletionReadyTasks(store.listTasks(), {
+        now: new Date('2026-06-21T00:00:00.000Z'),
+        thresholdMs: 30 * 60 * 1000,
+        ttlMs: 2 * 60 * 60 * 1000, // exactly 2h, matches the signal age exactly
+      });
+
+      expect(entries[0]).toMatchObject({ canAutoClose: true, closeReason: 'ttl_escalation' });
+    });
+
+    test('opted-in tasks are unaffected by TTL — same immediate close reason', () => {
+      const store = new TaskStore();
+      const task = store.createTask({ prompt: 'Opted-in', cwd: '/repo', autoCloseOnSignal: true });
+      startTask(store, task.id);
+      store.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-20T23:29:00.000Z' });
+
+      const entries = listStaleCompletionReadyTasks(store.listTasks(), {
+        now: new Date('2026-06-21T00:00:00.000Z'),
+        thresholdMs: 30 * 60 * 1000,
+        ttlMs: 2 * 60 * 60 * 1000,
+      });
+
+      expect(entries[0]).toMatchObject({ canAutoClose: true, closeReason: 'auto_close_on_signal' });
+    });
+
+    test('a TTL shorter than the reporting threshold still surfaces and escalates the task', () => {
+      const store = new TaskStore();
+      const task = store.createTask({ prompt: 'Short TTL', cwd: '/repo', deliveryAuthorization: 'ask-first' });
+      startTask(store, task.id);
+      // 10 minutes old: below the 30m reporting threshold, but past a 5m TTL.
+      store.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-20T23:50:00.000Z' });
+
+      const entries = listStaleCompletionReadyTasks(store.listTasks(), {
+        now: new Date('2026-06-21T00:00:00.000Z'),
+        thresholdMs: 30 * 60 * 1000,
+        ttlMs: 5 * 60 * 1000,
+      });
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ canAutoClose: true, closeReason: 'ttl_escalation' });
+    });
+
+    test('a short TTL never shortens the opted-in auto-close delay (issue #1526 Phase A review fix)', () => {
+      // ttl=5min < delay=30min. Before the fix, the outer list filter used
+      // min(thresholdMs, ttlMs) for EVERY task, so a 10-minute-old opted-in
+      // task would sneak past the 5m gate and classify() would close it
+      // immediately via autoCloseOnSignal — 20 minutes before its documented
+      // 30-minute review window. The two populations must be gated
+      // independently: opted-in by its own thresholdMs only; everyone else
+      // by whichever of thresholdMs/ttlMs is smaller.
+      const store = new TaskStore();
+      const optedIn = store.createTask({ prompt: 'Opted-in, too young for its own delay', cwd: '/repo', autoCloseOnSignal: true });
+      const askFirst = store.createTask({ prompt: 'Ask-first, past the short TTL', cwd: '/repo', deliveryAuthorization: 'ask-first' });
+      startTask(store, optedIn.id);
+      startTask(store, askFirst.id);
+      // Both signals are 10 minutes old.
+      store.setPendingSignal(optedIn.id, { kind: 'completion_ready', raisedAt: '2026-06-20T23:50:00.000Z' });
+      store.setPendingSignal(askFirst.id, { kind: 'completion_ready', raisedAt: '2026-06-20T23:50:00.000Z' });
+
+      const entries = listStaleCompletionReadyTasks(store.listTasks(), {
+        now: new Date('2026-06-21T00:00:00.000Z'),
+        thresholdMs: 30 * 60 * 1000, // autoCloseCompletionReadyDelayMin
+        ttlMs: 5 * 60 * 1000, // completionReadyTtlMinutes, deliberately shorter
+      });
+
+      // Opted-in: NOT listed at all (10min < its own 30min delay) — not
+      // auto-closable, not even surfaced as a stale row yet.
+      expect(entries.find((e) => e.task.id === optedIn.id)).toBeUndefined();
+
+      // Ask-first: listed and escalated via the TTL tier (10min >= 5min TTL).
+      const askFirstEntry = entries.find((e) => e.task.id === askFirst.id);
+      expect(askFirstEntry).toMatchObject({ canAutoClose: true, closeReason: 'ttl_escalation' });
+    });
   });
 });

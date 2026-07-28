@@ -1,9 +1,15 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readdirSync, writeFileSync, copyFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
-import { GrokBuildAdapter, GrokLaunchRefusedError } from './grok-build-adapter.js';
+import {
+  GrokBuildAdapter,
+  GrokLaunchRefusedError,
+  GROK_STOP_LAST_MESSAGE_MAX_CHARS,
+} from './grok-build-adapter.js';
+import type { AgentEvent } from '../core/agent-events.js';
 import type { GrokInstalledState } from './grok-build-preflight.js';
 import { GROK_BUILD_KILL_SWITCH_ENV } from './grok-launch-args.js';
 import { TaskStore } from '../core/tasks.js';
@@ -98,18 +104,22 @@ describe('GrokBuildAdapter', () => {
     expect(spec.envMode).toBe('replace');
   });
 
-  test('launch env is allowlisted: GROK_HOME set, server secrets excluded', async () => {
+  test('launch env is allowlisted: GROK_HOME set, shared GROK_AUTH_PATH, server secrets excluded', async () => {
     const adapter = makeAdapter();
     const task = taskStore.createTask('do it', '/workspace');
     const sessionId = await adapter.launch(task.id, 'do it', '/workspace');
     const env = backend.sessions.get(sessionId)!.spec.env!;
 
     expect(env.GROK_HOME).toContain('.grok');
+    expect(env.GROK_AUTH_PATH).toBe(join(sourceGrokHome, 'auth.json'));
+    // Session home must not hold a private auth.json clone (OIDC RT race).
+    expect(existsSync(join(env.GROK_HOME, 'auth.json'))).toBe(false);
     expect(env.GROK_DISABLE_AUTOUPDATER).toBe('1');
     expect(env.GROK_CLAUDE_HOOKS_ENABLED).toBe('0');
     expect(env.KOOKR_TASK_ID).toBe(task.id);
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.XAI_API_KEY).toBeUndefined();
   });
 
   test('the initial prompt is delivered over the terminal, never on argv', async () => {
@@ -337,6 +347,90 @@ describe('GrokBuildAdapter', () => {
       const r = adapter.injectHookEvent(sessionId, JSON.stringify({ hook_event_name: 'PreToolUse', session_id: 'X', tool_name: 'Bash' }));
       expect(r.parseStatus).toBe('dropped');
     });
+
+    test('dispatches permission_denied as permission_request (permission-blocked visibility, issue #1526 Phase C4)', async () => {
+      const { adapter, sessionId } = await launched();
+      const events: AgentEvent[] = [];
+      adapter.onEvent((_id, e) => events.push(e));
+      adapter.injectHookEvent(sessionId, JSON.stringify({ hookEventName: 'session_start', sessionId: 'S1', cwd: '/workspace' }));
+      const r = adapter.injectHookEvent(
+        sessionId,
+        JSON.stringify({ hookEventName: 'permission_denied', sessionId: 'S1', toolName: 'search_replace', toolInput: { file_path: '/workspace/a.ts' } }),
+      );
+      expect(r.parseStatus).toBe('ok');
+      const perm = events.find((e) => e.type === 'permission_request');
+      expect(perm).toMatchObject({ type: 'permission_request', toolName: 'search_replace' });
+    });
+
+    test('stop lastMessage falls back to a bounded tail of the last captured display', async () => {
+      const { adapter, sessionId } = await launched();
+      const events: AgentEvent[] = [];
+      adapter.onEvent((_id, e) => events.push(e));
+      backend.setCaptureContent(sessionId, 'intermediate output…\nAll tests pass — task complete.');
+      // The server's watchdog tick calls captureDisplay every 5s; model one tick.
+      await adapter.captureDisplay(sessionId);
+      adapter.injectHookEvent(sessionId, JSON.stringify({ hookEventName: 'stop', sessionId: 'S1', reason: 'end_turn' }));
+      const stop = events.find((e) => e.type === 'stop');
+      expect(stop && 'lastMessage' in stop ? stop.lastMessage : '').toContain('All tests pass — task complete.');
+    });
+
+    test('the pane-tail lastMessage is bounded', async () => {
+      const { adapter, sessionId } = await launched();
+      const events: AgentEvent[] = [];
+      adapter.onEvent((_id, e) => events.push(e));
+      backend.setCaptureContent(sessionId, 'x'.repeat(3 * GROK_STOP_LAST_MESSAGE_MAX_CHARS));
+      await adapter.captureDisplay(sessionId);
+      adapter.injectHookEvent(sessionId, JSON.stringify({ hookEventName: 'stop', sessionId: 'S1', reason: 'end_turn' }));
+      const stop = events.find((e) => e.type === 'stop');
+      const lastMessage = stop && 'lastMessage' in stop ? stop.lastMessage : '';
+      expect(lastMessage.length).toBeGreaterThan(0);
+      expect(lastMessage.length).toBeLessThanOrEqual(GROK_STOP_LAST_MESSAGE_MAX_CHARS);
+    });
+
+    test('replayed stop events are NOT enriched from the current pane (stable fingerprints)', async () => {
+      const { adapter, sessionId } = await launched();
+      const events: AgentEvent[] = [];
+      adapter.onEvent((_id, e) => events.push(e));
+      backend.setCaptureContent(sessionId, 'post-restart pane content that did not exist at stop time');
+      await adapter.captureDisplay(sessionId);
+      adapter.injectHookEvent(
+        sessionId,
+        JSON.stringify({ hookEventName: 'stop', sessionId: 'S1', reason: 'end_turn' }),
+        7,
+        { origin: 'replay' },
+      );
+      const stop = events.find((e) => e.type === 'stop');
+      expect(stop && 'lastMessage' in stop ? stop.lastMessage : 'MISSING').toBe('');
+    });
+
+    test('stop lastMessage stays empty when no display was ever captured', async () => {
+      const { adapter, sessionId } = await launched();
+      const events: AgentEvent[] = [];
+      adapter.onEvent((_id, e) => events.push(e));
+      adapter.injectHookEvent(sessionId, JSON.stringify({ hookEventName: 'stop', sessionId: 'S1', reason: 'end_turn' }));
+      const stop = events.find((e) => e.type === 'stop');
+      expect(stop && 'lastMessage' in stop ? stop.lastMessage : 'MISSING').toBe('');
+    });
+  });
+
+  test('an unacknowledged initial prompt is diagnosed with the visible Grok permission menu', async () => {
+    const adapter = new GrokBuildAdapter(backend, taskStore, {
+      env: { ...baseEnv },
+      installedStateOverride: testedState(),
+      sourceGrokHome,
+      sessionHomeRoot,
+      promptBracketedPaste: true,
+      promptReadyTimeoutMs: 0,
+      promptSubmitConfirmTimeoutMs: 0,
+      promptSubmitRetries: 0,
+    });
+    // Ready DECSET present, but the composer is covered by the permission row
+    // menu (labels verbatim from the grok 0.2.111 binary's prompter).
+    const pane = '\x1b[?2004h\nGrok wants to run run_terminal_command\n❯ Allow once\n  Always allow this command\n  Reject\n';
+    vi.spyOn(backend, 'captureBytes').mockResolvedValue(new TextEncoder().encode(pane));
+
+    const task = taskStore.createTask('x', '/workspace');
+    await expect(adapter.launch(task.id, 'x', '/workspace')).rejects.toThrow(/permission prompt.*Allow once/);
   });
 
   test('sendInput clears the line, pastes, and submits', async () => {
@@ -345,5 +439,44 @@ describe('GrokBuildAdapter', () => {
     const sessionId = await adapter.launch(task.id, 'x', '/workspace');
     await adapter.sendInput(sessionId, 'hello grok');
     expect(backend.sessions.get(sessionId)!.keysReceived.join('\n')).toContain('hello grok');
+  });
+
+  describe('token telemetry (issue #1581)', () => {
+    const FIXTURE = fileURLToPath(new URL('./__fixtures__/grok-session-sample.jsonl', import.meta.url));
+
+    function stageTranscript(grokHome: string, cwd: string, sessionId: string): void {
+      const dir = join(grokHome, 'sessions', encodeURIComponent(cwd), sessionId);
+      mkdirSync(dir, { recursive: true });
+      copyFileSync(FIXTURE, join(dir, 'updates.jsonl'));
+    }
+
+    test('records mapped token usage from the session transcript on stop', async () => {
+      const adapter = makeAdapter();
+      const task = taskStore.createTask('meter me', '/workspace');
+      const sessionId = await adapter.launch(task.id, 'meter me', '/workspace');
+      const grokHome = backend.sessions.get(sessionId)!.spec.env!.GROK_HOME!;
+      // Grok writes per-turn usage into <GROK_HOME>/sessions/<enc-cwd>/<sid>/updates.jsonl.
+      stageTranscript(grokHome, '/workspace', '019f0000-0000-0000-0000-000000000001');
+
+      await adapter.stop(sessionId);
+
+      expect(taskStore.getTask(task.id)!.tokenUsage).toEqual({
+        inputTokens: 63287, // 160087 gross − 96800 cached, summed over both turns
+        outputTokens: 1358, // outputTokens already includes reasoning — not re-added
+        cacheReadTokens: 96800,
+        cacheWriteTokens: 0,
+        costUsd: 0,
+        model: 'grok-4.5-build',
+      });
+    });
+
+    test('leaves tokenUsage unset when no transcript exists (missing-source fallback)', async () => {
+      const adapter = makeAdapter();
+      const task = taskStore.createTask('no transcript', '/workspace');
+      const sessionId = await adapter.launch(task.id, 'no transcript', '/workspace');
+
+      await expect(adapter.stop(sessionId)).resolves.toBeUndefined();
+      expect(taskStore.getTask(task.id)!.tokenUsage).toBeUndefined();
+    });
   });
 });

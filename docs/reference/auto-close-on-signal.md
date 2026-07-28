@@ -1,8 +1,38 @@
 # Auto-Close on Completion Signal
 
 `autoCloseOnSignal` is a per-task policy that makes a task **complete itself**
-after its agent's `completion_ready` signal has been pending for one hour —
-instead of staying open indefinitely until a human clicks **Complete**.
+after its agent's `completion_ready` signal has been pending for a configurable
+delay (**default 30 minutes**) — instead of staying open indefinitely until a
+human clicks **Complete**.
+
+The delay is the **Auto-close delay** setting (Settings → General,
+`autoCloseCompletionReadyDelayMin`, range 1–1440 minutes). The liveness sweeper
+reads it live, so a change takes effect on the next tick without a restart. It
+governs only the auto-close grace window; the manual-review banner for
+non-opted-in tasks is unaffected.
+
+## TTL escalation for non-opted-in tasks (issue #1526)
+
+Tasks that did **not** opt in (`autoCloseOnSignal` unset/false — including
+`ask-first` delivery) used to hold their concurrency slot indefinitely once
+`completion_ready` was pending: the sweep's close policy required
+`autoCloseOnSignal === true`, so nothing ever released them without a human.
+The 2026-07-24 incident wedged all 12 slots exactly this way.
+
+They now have a bounded lifetime too: when a pending `completion_ready` signal
+is older than the **Completion-ready TTL** setting
+(`completionReadyTtlMinutes`, default 120, range 5–10080), the sweep completes
+the task anyway — regardless of delivery authorization — with
+`closeReason: 'ttl_escalation'`. Each TTL escalation (unlike an opted-in close)
+writes an `audit.jsonl` row (actor `system:completion-ready-ttl`) and
+broadcasts an info alert.
+
+The two thresholds are gated independently: opted-in tasks close after the
+Auto-close delay only, and a TTL set below that delay does not accelerate them.
+
+The sweep drains gently: at most 2 auto-closes per batch, at most one batch per
+60 seconds — so a backlog of finished tasks releases its slots over minutes
+rather than tearing down every session at once.
 
 ## Why it exists
 
@@ -15,8 +45,17 @@ eventually fill every slot, so newly launched tasks are queued (`pending`) and
 the chain stalls.
 
 `autoCloseOnSignal` bounds that human-review window: the agent declares "done,"
-Kookr keeps the signal visible for one hour, then completes the task and
-promotes the next queued one if nobody acted first.
+Kookr keeps the signal visible for the configured Auto-close delay (default 30
+minutes), then completes the task and promotes the next queued one if nobody
+acted first.
+
+**Dense self-continuation chains need an immediate complete.** The auto-close
+grace is a backup for interactive/human-review workflows. Chains that spawn a
+successor every few minutes must free the parent slot **as soon as the child is
+confirmed** — typically `POST /api/tasks/:id/complete` after
+`completion-ready` — or several finished parents stay `inProgress` at once and
+the active-task cap fills. See the `self-continuation-task` skill section
+"Releasing the Task Slot (immediate close; auto-close is backup only)".
 
 ## The completion signal
 
@@ -30,11 +69,11 @@ kookr signal completion-ready --note "PR #123 merged"
 - **Without** `autoCloseOnSignal`: the signal only *surfaces* — the dashboard
   shows a banner and emphasizes the **Complete** button. The task stays open; the
   user decides. This is the default, unchanged behavior.
-- **With** `autoCloseOnSignal`: the same signal starts a **one-hour auto-close
-  grace period**. If the task is still in progress after that hour, Kookr runs
-  the normal completion lifecycle (stops sessions, applies the saved
-  worktree-cleanup setting, generates the completion digest), and promotes the
-  next pending task.
+- **With** `autoCloseOnSignal`: the same signal starts the **auto-close grace
+  period** (the configured Auto-close delay, default 30 minutes). If the task is
+  still in progress after the delay, Kookr runs the normal completion lifecycle
+  (stops sessions, applies the saved worktree-cleanup setting, generates the
+  completion digest), and promotes the next pending task.
 
 > **Signal only when work is truly finished.** Under `autoCloseOnSignal` the
 > signal starts the close timer, so signalling mid-work can still close the task

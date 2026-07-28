@@ -401,9 +401,11 @@ test.describe('Rename task', () => {
     // Original name should remain
     await expect(page.locator('.finding-task')).toContainText('Keep original');
 
-    // API should not have the new name
+    // API should not have the new name. Since the never-unnamed contract
+    // (#1526 Phase C/C4), a stopped task always carries a name — here the
+    // deterministic fallback (first prompt line), which Escape must preserve.
     const tasks = await getTasks(request);
-    expect(tasks[0].name).toBeUndefined();
+    expect(tasks[0].name).toBe('Keep original');
   });
 
   test('rename in detail panel heading', async ({ page, request }) => {

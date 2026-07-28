@@ -946,7 +946,37 @@ If `publishBehavior` is `report-only`, stop after validating these documents and
 
 Run this phase only when `PUBLISH = publish-safe`.
 
-Create exactly one GitHub issue for every candidate whose `publishDecision` is `publish` (equivalently, whose `authority` is `autonomous`). This is the deterministic barrier: the loop selects only `authority == "autonomous"` entries from `<ideasLogFile>`, so review-required and protected candidates are structurally excluded from `gh issue create`.
+Create exactly one GitHub issue for every candidate whose `publishDecision` is `publish` (equivalently, whose `authority` is `autonomous`), **subject to the drain-coupled emission budget** (issue #1607). This is the deterministic barrier: the loop selects only `authority == "autonomous"` entries from `<ideasLogFile>`, so review-required and protected candidates are structurally excluded from `gh issue create`.
+
+### Phase 7.0 — Emission budget (mandatory before any `gh issue create`)
+
+Before filing, resolve how many new issues this run may open. When open backlog ≥ 60, the budget collapses to 2 regardless of `PUBLISH_TARGET`. Over-budget candidates are deferred to `~/.kookr/playbook-state/deferred-ideas/<repoSlug>.jsonl` (or appended to an existing umbrella issue) — never filed.
+
+```bash
+if [ "$PUBLISH" = "publish-safe" ]; then
+  # How many autonomous candidates are actually publishable this run.
+  REQUESTED=$(jq '[.[] | select(.authority == "autonomous" and .publishDecision == "publish")] | length' "$IDEAS_LOG")
+  EMISSION_PLAN=$(kookr emission plan --repo "$REPO" --requested "$REQUESTED" --json) \
+    || { block "kookr emission plan failed for $REPO"; exit 0; }
+  ALLOWED=$(printf '%s' "$EMISSION_PLAN" | jq -r '.plan.allowedBudget')
+  ACTION=$(printf '%s' "$EMISSION_PLAN" | jq -r '.plan.action')
+  OPEN_BACKLOG=$(printf '%s' "$EMISSION_PLAN" | jq -r '.plan.openBacklogCount')
+  printf '%s\n' "$EMISSION_PLAN" > "$STATE_DIR/emission-plan.json"
+  echo "emission-budget: action=$ACTION allowed=$ALLOWED requested=$REQUESTED openBacklog=$OPEN_BACKLOG"
+fi
+```
+
+Also capture the 7-day net backlog delta for this run **and** the stable daily-reflection signal path (opened7d − closed7d):
+
+```bash
+mkdir -p "$HOME/.kookr/playbook-state/emission-metrics"
+kookr emission metrics --repo "$REPO" --json \
+  | tee "$STATE_DIR/net-backlog-delta.json" \
+        "$HOME/.kookr/playbook-state/emission-metrics/${REPO_SLUG}.json" \
+  || true
+# Daily reflection (session-self-reflect / Lucy workflow-reflection) reads
+# ~/.kookr/playbook-state/emission-metrics/<repoSlug>.json → netBacklogDelta7d.
+```
 
 Use the reader-first `issue-body.md` as the body — never the local `report.md`, and never a state path. If `issue-created.json` already exists with a valid `url`, do not create another issue.
 
@@ -956,6 +986,7 @@ if [ "$PUBLISH" = "publish-safe" ]; then
   jq -r '.[] | select(.authority == "autonomous" and .publishDecision == "publish") | "\(.idx)\t\(.slug)"' \
     "$IDEAS_LOG" > "$STATE_DIR/publishable.tsv"
 
+  FILED=0
   while IFS="$(printf '\t')" read -r IDX SLUG; do
     [ -n "$IDX" ] || continue
     IDEA_DIR="$RECS_DIR/$IDX-$SLUG"
@@ -977,18 +1008,54 @@ if [ "$PUBLISH" = "publish-safe" ]; then
     fi
     ISSUE_TITLE="Repository idea: $RAW_TITLE"
 
-    EXISTING_URL=$(gh issue list -R "$REPO" \
-      --search "in:title \"$ISSUE_TITLE\"" \
-      --author "@me" \
-      --state all \
-      --json number,title,url \
-      --limit 5 \
-      | jq -r --arg t "$ISSUE_TITLE" '[.[] | select(.title == $t)][0].url // empty')
-    if [ -n "$EXISTING_URL" ]; then
-      ISSUE_URL="$EXISTING_URL"
+    # Drain-coupled budget: once ALLOWED filings are done, defer the rest.
+    if [ "$FILED" -ge "$ALLOWED" ]; then
+      kookr emission defer \
+        --repo "$REPO" \
+        --title "$ISSUE_TITLE" \
+        --source repository-idea-scout \
+        --reason "over emission budget (allowed=$ALLOWED openBacklog=$OPEN_BACKLOG)" \
+        --json >> "$STATE_DIR/deferred.jsonl" || true
+      jq --arg idx "$IDX" \
+        '(.[] | select(.idx == $idx) | .publishDecision) |= "deferred-over-budget"' \
+        "$IDEAS_LOG" > "$IDEAS_LOG.tmp" && mv "$IDEAS_LOG.tmp" "$IDEAS_LOG"
+      continue
+    fi
+
+    # Mandatory logged dedupe check (issue #1607). --json → one JSON on stdout;
+    # the `dedupe-check:` audit line goes to stderr (captured in the run log).
+    DEDUPE_JSON=$(kookr emission dedupe --repo "$REPO" --title "$ISSUE_TITLE" --json 2>"$STATE_DIR/dedupe-last.log") \
+      || { block "kookr emission dedupe failed for $ISSUE_TITLE"; exit 0; }
+    cat "$STATE_DIR/dedupe-last.log" 2>/dev/null || true
+    IS_DUP=$(printf '%s' "$DEDUPE_JSON" | jq -r '.isDuplicate')
+    if [ "$IS_DUP" = "true" ]; then
+      EXISTING_URL=$(printf '%s' "$DEDUPE_JSON" | jq -r '.match.url // empty')
+      if [ -n "$EXISTING_URL" ]; then
+        ISSUE_URL="$EXISTING_URL"
+      else
+        kookr emission defer \
+          --repo "$REPO" \
+          --title "$ISSUE_TITLE" \
+          --source repository-idea-scout \
+          --reason "dedupe match without URL; skipped filing" \
+          --json >> "$STATE_DIR/deferred.jsonl" || true
+        continue
+      fi
     else
-      ISSUE_URL=$(gh issue create -R "$REPO" --title "$ISSUE_TITLE" --body-file "$ISSUE_BODY_FILE") \
-        || { block "issue creation failed for $IDEA_DIR"; exit 0; }
+      EXISTING_URL=$(gh issue list -R "$REPO" \
+        --search "in:title \"$ISSUE_TITLE\"" \
+        --author "@me" \
+        --state all \
+        --json number,title,url \
+        --limit 5 \
+        | jq -r --arg t "$ISSUE_TITLE" '[.[] | select(.title == $t)][0].url // empty')
+      if [ -n "$EXISTING_URL" ]; then
+        ISSUE_URL="$EXISTING_URL"
+      else
+        ISSUE_URL=$(gh issue create -R "$REPO" --title "$ISSUE_TITLE" --body-file "$ISSUE_BODY_FILE") \
+          || { block "issue creation failed for $IDEA_DIR"; exit 0; }
+        FILED=$((FILED + 1))
+      fi
     fi
 
     gh issue view -R "$REPO" "$ISSUE_URL" --json number,title,url \
@@ -1007,7 +1074,7 @@ if [ "$PUBLISH" = "publish-safe" ]; then
 fi
 ```
 
-The deterministic `Repository idea: <title>` prefix combined with the `--author @me` filter makes the search-by-title check idempotent across retries: if issue creation succeeded but the metadata file was not written, the next run recovers the existing URL instead of creating a duplicate. Never create an issue for a review-required or protected candidate, even if the user note asks for it.
+The deterministic `Repository idea: <title>` prefix combined with the `--author @me` filter makes the search-by-title check idempotent across retries: if issue creation succeeded but the metadata file was not written, the next run recovers the existing URL instead of creating a duplicate. Never create an issue for a review-required or protected candidate, even if the user note asks for it. Never file more than the emission budget allows when the open backlog is over the drain-coupled threshold.
 
 ## Phase 8: Final Validation
 
@@ -1035,15 +1102,16 @@ If validation passes, write `<promise>DONE</promise>` to `<stateFile>`. If valid
 1. State is scoped to `<repoSlug>/<runKey>`, not just the repository.
 2. Reuse `<stateDir>` only when its `<runManifest>` matches the current repo, work profile, workload size, publish behavior, scan limit, knowledge-base mode, task id or run key, and local path.
 3. Do not post comments, create branches, labels, PRs, or edit tracked files in the target repository.
-4. Create GitHub issues only when `publishBehavior` is `publish-safe`, exactly one issue per **autonomous** candidate, never more, and never for a review-required or protected candidate.
+4. Create GitHub issues only when `publishBehavior` is `publish-safe`, exactly one issue per **autonomous** candidate, never more, never for a review-required or protected candidate, and never above the drain-coupled emission budget (`kookr emission plan`).
 5. Do not duplicate issue API work unnecessarily; use saved snapshots from this run unless they are missing, invalid JSON, or older than 24 hours.
 6. Refresh feature inventory if the checkout `HEAD` changed from `<runManifest>`.
 7. Do not claim a candidate is novel until per-candidate all-state issue and PR searches plus adjacent comment fetches have been run for that candidate.
 8. Do not append a candidate whose `category` and `angle` substantially match an existing portfolio entry; consolidate overlaps in Phase 5 instead.
-9. Never exceed `PUBLISH_TARGET` published ideas.
+9. Never exceed `min(PUBLISH_TARGET, emission allowedBudget)` published ideas. Over-budget autonomous candidates go to the deferred-ideas log via `kookr emission defer`, not to GitHub.
 10. Keep report-only mode local: when `publishBehavior` is `report-only`, the portfolio and proposals documents are the deliverable.
-11. When `USE_KB` is `auto`, run the Phase 3.5 survey once; reuse `<kbSeedsFile>` for every candidate instead of re-surveying.
-12. KB grounding is augmentation only: a missing, empty, or off-domain KB never blocks the run and never reduces the publish target.
+11. Log a `dedupe-check:` line (via `kookr emission dedupe`) before every `gh issue create`.
+12. When `USE_KB` is `auto`, run the Phase 3.5 survey once; reuse `<kbSeedsFile>` for every candidate instead of re-surveying.
+13. KB grounding is augmentation only: a missing, empty, or off-domain KB never blocks the run and never reduces the publish target.
 
 ## Anti-Patterns
 
@@ -1059,6 +1127,8 @@ If validation passes, write `<promise>DONE</promise>` to `<stateFile>`. If valid
 - Do not infer that low or absent usage means a capability is unnecessary; missing usage evidence is unknown.
 - Do not fabricate marginal ideas to hit the publish target; report the shortfall honestly.
 - Do not publish the local audit report, portfolio scoring, `kb` internals, or state paths in a GitHub issue; publish only the reader-first `issue-body.md`.
+- Do not file past the drain-coupled emission budget when open backlog is inflated — defer or umbrella-append instead of growing the backlog further.
+- Do not skip the logged `kookr emission dedupe` check before `gh issue create`.
 - Do not let KB grounding originate an idea's dimension; the diversity rotation stays authoritative and KB seeds only inform the angle.
 - Do not present model recall as a KB citation; every KB-derived claim must quote a real `<kb>/<path>` passage seen in `kb` output.
 - Do not skip the codebase capability check because a KB passage exists; the KB shows what is possible, the repo shows what is missing.

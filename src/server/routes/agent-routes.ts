@@ -1,6 +1,7 @@
 import type { Hono } from 'hono';
 import { createSnapshotMessage, getSnapshotAgentsRaw } from '../use-cases/get-snapshot.js';
 import { sendDirectAgentInput } from '../use-cases/agent-input.js';
+import { ACTOR_HEADER, resolveLifecycleActor } from '../actor-attribution.js';
 import type { AgentRouteDeps } from './shared.js';
 
 /** Shape of the /api/agents/:id/edit-events/:toolUseId response.
@@ -110,10 +111,14 @@ export function registerAgentRoutes(app: Hono, deps: AgentRouteDeps): void {
         return c.json({ error: `Agent not found: ${agentId}` }, 404);
       }
 
+      // Actor attribution (issue #1526 Phase B / FM12): send-text was already
+      // part of Lucy's mutation surface during the 2026-07-24 incident, but
+      // carried no caller id in the interaction log.
+      const actor = resolveLifecycleActor('api', c.req.header(ACTOR_HEADER));
       await sendDirectAgentInput({
         adapter,
         interactionLog,
-      }, agentId, body.input);
+      }, agentId, body.input, actor.actorId);
 
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, ...(deps.taskStore ? { relationTaskStore: deps.taskStore } : {}) }));
       return c.json({ ok: true, agentId, delivered: true });

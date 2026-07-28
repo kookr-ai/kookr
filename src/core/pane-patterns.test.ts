@@ -147,6 +147,53 @@ describe('analyzePaneSemantics', () => {
       expect(result.confidence).toBe('high');
     });
 
+    test('detects the Grok Build permission row menu (labels from the grok 0.2.111 binary)', () => {
+      const pane = [
+        'Grok wants to run run_terminal_command',
+        '',
+        '❯ Allow once',
+        '  Always allow this command',
+        '  Reject',
+      ].join('\n');
+
+      const result = analyzePaneSemantics(pane);
+      expect(result.state).toBe('permission_dialog');
+      expect(result.confidence).toBe('high');
+      expect(result.matchedText).toBe('❯ Allow once');
+    });
+
+    test('detects the Grok bash-command Yes/No permission phrasing', () => {
+      const pane = [
+        '❯ Yes, and don\'t ask again for bash commands',
+        '  No, and don\'t run bash commands',
+      ].join('\n');
+
+      const result = analyzePaneSemantics(pane);
+      expect(result.state).toBe('permission_dialog');
+      expect(result.confidence).toBe('high');
+    });
+
+    test('detects the Grok edit-approval phrasing with the "tell Grok" reject row', () => {
+      const pane = [
+        '❯ Yes, allow all edits during this session',
+        '  No, and tell Grok what to do differently',
+      ].join('\n');
+
+      const result = analyzePaneSemantics(pane);
+      expect(result.state).toBe('permission_dialog');
+      expect(result.confidence).toBe('high');
+    });
+
+    test('an allow-row label quoted mid-sentence without a reject row is not a Grok dialog', () => {
+      const pane = [
+        'The docs mention the "Allow once" row in passing',
+        '❯ ',
+      ].join('\n');
+
+      const result = analyzePaneSemantics(pane);
+      expect(result.state).not.toBe('permission_dialog');
+    });
+
     test('does not classify generic Codex confirmation popups as permission dialogs', () => {
       const pane = [
         '  Implement this plan?',

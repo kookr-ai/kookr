@@ -2,6 +2,7 @@
 // Both sides import from here; neither imports directly from the other.
 
 export type { AgentState } from './contracts/agent-state.js';
+export type { TaskStuckReason } from './contracts/task-stuck-reason.js';
 export {
   COORDINATED_STALL_ROOT_CAUSES,
   SESSION_HEALTH_CLASSIFICATIONS,

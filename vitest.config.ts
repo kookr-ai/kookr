@@ -4,6 +4,10 @@ export default defineConfig({
   test: {
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'relay/**/*.test.ts', 'scripts/**/*.test.ts', 'demo/**/*.test.ts', 'test/**/*.test.ts'],
     exclude: ['src/**/*.integration.test.ts', 'src/**/*-e2e.test.ts'],
+    // Multi-server integration tests (relay + createKookrServerInternal) regularly
+    // need >5s under concurrent suite load on a busy workstation. Unit tests still
+    // finish in ms; this only raises the hang ceiling.
+    testTimeout: 15_000,
     // Fails the run if a test poisons the shared git config (test identity,
     // core.bare flip, or bare-repo debris) and heals it. See test/git-repo-guard.ts.
     globalSetup: ['./test/git-repo-guard.global.ts'],
@@ -20,6 +24,15 @@ export default defineConfig({
       KOOKR_SESSION_BRIDGE_INITIAL_RESIZE_WAIT_MS: '0',
       KOOKR_SESSION_BRIDGE_RESIZE_DEBOUNCE_MS: '0',
       KOOKR_SESSION_BRIDGE_LIVE_REDRAW_NUDGE_MS: '0',
+      // Keep the lesson-write spool recovery loop off during unit tests so
+      // createKookrServer does not shell out to `kb doctor` every tick (#1519).
+      KOOKR_LESSON_SPOOL: '0',
+      // Keep the signal-outbox drain off during unit tests so createKookrServer
+      // does not poll ~/.kookr/playbook-state/signal-outbox every 30s (#1541).
+      KOOKR_SIGNAL_OUTBOX: '0',
+      // Keep the hourly prod smoke tick off during unit tests so a server booted
+      // on port 4800 never starts the interval or fetches endpoints (#1593).
+      KOOKR_PROD_SMOKE_TICK: '0',
     },
     coverage: {
       provider: 'v8',
