@@ -418,6 +418,36 @@ describe('relay SQLite state', () => {
     });
   });
 
+  it('serves /readyz with 503 when the DB probe fails while /health stays 200', async () => {
+    relay = createRelayServer({ adminToken: 'admin', stateProbe: () => false });
+    await listen(relay);
+
+    // Liveness route keeps answering 200 so infra does not restart the process.
+    const liveness = await fetch(`${relay.url()}/health`);
+    expect(liveness.status).toBe(200);
+
+    // Readiness route cordons the degraded instance with 503.
+    const readiness = await fetch(`${relay.url()}/readyz`);
+    expect(readiness.status).toBe(503);
+    await expect(readiness.json()).resolves.toMatchObject({
+      status: 'not-ready',
+      dbReachable: false,
+      emergencyDisabled: false,
+    });
+  });
+
+  it('serves /readyz with 200 when the DB probe succeeds', async () => {
+    relay = createRelayServer({ adminToken: 'admin', stateProbe: () => true });
+    await listen(relay);
+    const readiness = await fetch(`${relay.url()}/readyz`);
+    expect(readiness.status).toBe(200);
+    await expect(readiness.json()).resolves.toMatchObject({
+      status: 'ready',
+      dbReachable: true,
+      emergencyDisabled: false,
+    });
+  });
+
   it('returns 503 after a state write failure and recovers when the probe succeeds', async () => {
     let probeOk = false;
     const stateStore = {

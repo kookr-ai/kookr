@@ -1817,6 +1817,23 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
         });
         return;
       }
+      if (req.method === 'GET' && url.pathname === '/readyz') {
+        // Readiness (cordon) signal, distinct from the /health liveness route:
+        // report 503 when the relay cannot persist state so infra probes
+        // (k8s readiness, ALB target health) drain traffic away from a
+        // degraded instance instead of routing writes it cannot serve (#1393).
+        // Probe first so a recovered DB clears the write-failure latch (#1423),
+        // matching /health's behaviour.
+        const dbReachable = probeDbReachable();
+        const emergencyDisabled = currentHostedStatus().mode === 'emergencyDisabled';
+        const ready = dbReachable && !emergencyDisabled;
+        sendJson(res, ready ? 200 : 503, {
+          status: ready ? 'ready' : 'not-ready',
+          dbReachable,
+          emergencyDisabled,
+        });
+        return;
+      }
       if (
         url.pathname.startsWith('/relay/admin/')
         && !opts.allowInsecureAdmin

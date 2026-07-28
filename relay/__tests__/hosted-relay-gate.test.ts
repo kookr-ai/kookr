@@ -468,6 +468,36 @@ describe('hosted relay terminal viewing production gate', () => {
     }));
   });
 
+  it('cordons via /readyz (503) when emergency-disabled while /health stays 200', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'kookr-hosted-relay-gate-'));
+    relay = createRelayServer({
+      adminToken: 'admin-secret',
+      accountToken: 'account-secret',
+      stateDbPath: join(tmp, 'relay.sqlite'),
+      allowInsecureClients: true,
+      hostedRelay: {
+        enabled: true,
+        operationalGatesMet: true,
+        mode: 'emergencyDisabled',
+      },
+    });
+    await listen(relay);
+
+    // Liveness stays 200 so infra does not restart an otherwise-live process.
+    const health = await fetch(new URL('/health', relay.url()));
+    expect(health.status).toBe(200);
+    await expect(health.json()).resolves.toMatchObject({ status: 'degraded' });
+
+    // Readiness cordons the emergency-disabled instance with 503.
+    const readiness = await fetch(new URL('/readyz', relay.url()));
+    expect(readiness.status).toBe(503);
+    await expect(readiness.json()).resolves.toMatchObject({
+      status: 'not-ready',
+      dbReachable: true,
+      emergencyDisabled: true,
+    });
+  });
+
   it('persists per-tenant terminal viewing disables and enables across relay restarts', async () => {
     tmp = await mkdtemp(join(tmpdir(), 'kookr-hosted-relay-gate-'));
     const stateDbPath = join(tmp, 'relay.sqlite');
