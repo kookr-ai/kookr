@@ -146,6 +146,24 @@ describe('implement-github-issue playbook', () => {
     expect(phase9Idx).toBeGreaterThan(phase85Idx);
   });
 
+  test('self-continuation handoff is terminal-agnostic with a mandatory pre-completion gate', () => {
+    // Regression guard: a self-continuation chain must not die on the first
+    // non-implementable / low-value / stalled target. The handoff must fire on
+    // ANY durable terminal outcome (not merge-only), and a completion gate must
+    // force the agent to hand off (or record no-eligible-candidates) before it
+    // completes — the failure that stranded a live chain after one merged PR.
+    expect(pb.body).toContain('Self-continuation handoff');
+    expect(pb.body).toContain('on **every** terminal outcome for this target');
+    expect(pb.body).toContain('Self-continuation completion gate (mandatory)');
+    expect(pb.body).toContain('MUST NOT signal completion-ready / complete this task until');
+    expect(pb.body).toContain('must **never** end the chain while other eligible issues remain');
+    // The handoff lives in Phase 8, before the Phase 8.5 lesson decision / completion-ready.
+    const handoffIdx = pb.body.indexOf('Self-continuation handoff');
+    const phase85Idx = pb.body.indexOf('Phase 8.5: Post-task KB lesson decision');
+    expect(handoffIdx).toBeGreaterThan(0);
+    expect(phase85Idx).toBeGreaterThan(handoffIdx);
+  });
+
   test('propagates Idea Scout provenance labels onto the PR (issue #1587)', () => {
     // The scouted-idea -> merged-PR conversion must be computable from labels
     // alone, so a PR implementing a scouted issue inherits its idea-scout /
