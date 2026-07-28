@@ -25,6 +25,10 @@ const TASK_KEYS = new Set([
   'criteria',
   'agentType',
   'parentTaskId',
+  // Immutable launch provenance (issue #1583): createTask stamps this on every
+  // task and it round-trips through persistence, so it is part of the
+  // main-compatible on-disk shape.
+  'provenance',
   'status',
   'sessions',
   'createdAt',
