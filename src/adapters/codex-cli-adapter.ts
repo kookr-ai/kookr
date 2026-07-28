@@ -295,6 +295,9 @@ export class CodexCliAdapter implements AgentAdapter {
     const tmuxName = `kookr-${randomUUID().slice(0, 8)}`;
     this.tmuxToTaskId.set(tmuxName, taskId);
 
+    // Phase instrumentation (issue #1589): session-create covers launch-context
+    // build, settings/prompt-file write, and the terminal createSession.
+    opts?.onPhase?.('session-create');
     const launchContext = await buildAgentLaunchContext({
       taskStore: this.taskStore,
       taskId,
@@ -430,6 +433,11 @@ export class CodexCliAdapter implements AgentAdapter {
       cwd,
       size: { cols: 200, rows: 50 },
     });
+    // Phase instrumentation (issue #1589): Codex folds the initial prompt into
+    // its startup argv (--prompt-file / positional), so there is no separate
+    // terminal delivery loop — agent-boot and ack collapse onto session start.
+    opts?.onPhase?.('agent-boot');
+    opts?.onPhase?.('ack');
 
     this.taskStore.addSession(taskId, {
       tmuxSession: tmuxName,

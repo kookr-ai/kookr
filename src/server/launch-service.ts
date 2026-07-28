@@ -35,6 +35,7 @@ import type { IdempotencyLedger } from '../core/idempotency-ledger.js';
 import { isTerminalStatus } from '../core/task-status.js';
 import { buildCapacityLedger, isReservedSlotLaunch, type CapacityLedger } from '../core/capacity-ledger.js';
 import { spawnBudgetKey, type SpawnRateLimiter, type SpawnRateVerdict } from '../core/spawn-rate-limiter.js';
+import { LaunchPhaseTracker, type LaunchPhaseTimings } from '../core/launch-phase-timings.js';
 
 export type { LaunchOpts } from '../shared/contracts/launch.js';
 export type LaunchResult = SharedLaunchResult<Task>;
@@ -641,6 +642,32 @@ function disposedTaskId(err: unknown): string | undefined {
 }
 
 /**
+ * Marker carrying the per-phase launch timings (issue #1589) back to the
+ * schedule runner on a thrown launch. A schedule fire that fails records
+ * `dispatch_failed` WITHOUT ever calling `markExecutionAccepted`, so its ledger
+ * row has no taskId to link the disposed task by — the runner reads this off
+ * the error instead and stamps the timings onto the `dispatch_failed` row, so a
+ * failed fire is diagnosable straight from the ledger. A Symbol key never shows
+ * up in JSON serialization of the error.
+ */
+const LAUNCH_PHASE_TIMINGS = Symbol('kookr.launchPhaseTimings');
+
+function attachLaunchPhaseTimings(err: unknown, timings: LaunchPhaseTimings): void {
+  if (err && typeof err === 'object') {
+    (err as Record<symbol, unknown>)[LAUNCH_PHASE_TIMINGS] = timings;
+  }
+}
+
+/** Read the per-phase launch timings attached to a thrown launch error (issue #1589). */
+export function launchPhaseTimingsOf(err: unknown): LaunchPhaseTimings | undefined {
+  if (err && typeof err === 'object') {
+    const value = (err as Record<symbol, unknown>)[LAUNCH_PHASE_TIMINGS];
+    if (value && typeof value === 'object') return value as LaunchPhaseTimings;
+  }
+  return undefined;
+}
+
+/**
  * Reserve/replay wrapper (see {@link launchTask} docs). Loops rather than
  * recursing when a reservation resolves to "try again" (the owner's launch
  * failed, a replay pointed at a since-deleted task, or a replay pointed at a
@@ -720,6 +747,15 @@ async function launchTaskCore(
   serverOpts: LaunchTaskServerOptions = {},
 ): Promise<LaunchResult> {
   const { taskStore, adapterRegistry, lifecycleDeps } = deps;
+  // Per-phase launch instrumentation (issue #1589). Timing starts at the top of
+  // the launch pipeline so the `preflight` phase captures the pre-reservation
+  // work (cwd check, advisory dependency preflight, worktree guardrails, dedup,
+  // backpressure, createTask) — the reported symptom is `POST /api/tasks` held
+  // >90s, which includes exactly that window. The tracker is only persisted once
+  // a launch actually reaches the adapter; a dedup hit or a queued-at-capacity
+  // return is not a launch attempt and records nothing.
+  const phaseTracker = new LaunchPhaseTracker();
+  phaseTracker.enter('preflight');
   // Operator drain gate (issue #659): refuse new launches while draining, before
   // any task record or side effect is created. In-flight agents are untouched.
   if (deps.isAccepting && !deps.isAccepting()) {
@@ -928,26 +964,29 @@ async function launchTaskCore(
   // Per-agent-type effort defaults are resolved inside the adapter; model has
   // no Kookr-global default for claude-code. When none of these are set,
   // adapterOpts stays `undefined`; the adapter still selects its CLI defaults.
-  const adapterOpts: import('../adapters/agent-adapter.js').AdapterLaunchOptions | undefined =
-    (opts.ralphVerdictEnv || opts.effort || opts.model || opts.sandboxProfile)
+  // Always carries the per-phase instrumentation callback (issue #1589) so the
+  // adapter can mark the `session-create`/`agent-boot`/`ack` boundaries that
+  // live inside `adapter.launch()`; the other fields stay conditional so a
+  // launch with none of them is byte-identical to pre-#1589 apart from onPhase.
+  const adapterOpts: import('../adapters/agent-adapter.js').AdapterLaunchOptions = {
+    onPhase: (phase) => phaseTracker.enter(phase),
+    ...(opts.ralphVerdictEnv
       ? {
-          ...(opts.ralphVerdictEnv
-            ? {
-                extraEnv: {
-                  RALPH_VERDICT_FILE: defaultVerdictPath(opts.cwd, task.id),
-                  RALPH_ITERATION: '0',
-                },
-              }
-            : {}),
-          ...(opts.effort ? { effort: opts.effort } : {}),
-          ...(opts.model ? { model: opts.model } : {}),
-          ...(opts.sandboxProfile ? { sandboxProfile: opts.sandboxProfile } : {}),
+          extraEnv: {
+            RALPH_VERDICT_FILE: defaultVerdictPath(opts.cwd, task.id),
+            RALPH_ITERATION: '0',
+          },
         }
-      : undefined;
+      : {}),
+    ...(opts.effort ? { effort: opts.effort } : {}),
+    ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.sandboxProfile ? { sandboxProfile: opts.sandboxProfile } : {}),
+  };
 
   // #700 defense-in-depth: reserve the just-created task for this launch so a
   // concurrent promoter can never race it, and so getActiveCount counts the
   // in-flight launch against the cap (audit item 1, second launch site).
+  phaseTracker.enter('reserve');
   taskStore.beginLaunch(task.id);
   // The disposition guard wraps ONLY the launch race — the point before which
   // no session has attached. Post-attach bookkeeping (posture stamping, audit
@@ -981,6 +1020,16 @@ async function launchTaskCore(
     // A late-settling abandoned launch cannot corrupt this terminal record:
     // TaskStore.addSession refuses to attach a session to a terminal task.
     taskStore.endLaunch(task.id);
+    // Instrumentation (issue #1589): the launch was abandoned mid-phase. abort()
+    // flags the in-flight phase as `incompletePhase` — the phase that consumed
+    // the time. Persist it on the disposed task (so `GET /api/tasks/:id` shows
+    // WHERE it hung) and attach it to the error so a schedule fire's
+    // `dispatch_failed` ledger row can carry the same breakdown without a taskId
+    // link. Both are best-effort and must never mask the original launch error.
+    phaseTracker.abort();
+    const phaseTimings = phaseTracker.snapshot();
+    taskStore.setLaunchPhaseTimings(task.id, phaseTimings);
+    attachLaunchPhaseTimings(err, phaseTimings);
     const reason: TaskDispositionReason = isLaunchTimeoutError(err) ? 'launch_timeout' : 'launch_error';
     taskStore.setDisposition(task.id, {
       reason,
@@ -1000,6 +1049,11 @@ async function launchTaskCore(
     throw err;
   }
   // --- Launch succeeded: a session is attached and the agent is live. ---
+  // Instrumentation (issue #1589): finalize and persist the full
+  // `preflight → reserve → session-create → agent-boot → ack` breakdown on the
+  // task so a slow-but-successful launch is as diagnosable as a failed one.
+  phaseTracker.complete();
+  taskStore.setLaunchPhaseTimings(task.id, phaseTracker.snapshot());
   if (bypassAllPermissions) {
     const launchPermissionPosture = {
       bypassAllPermissions: true as const,

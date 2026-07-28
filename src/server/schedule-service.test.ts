@@ -317,6 +317,44 @@ describe('ScheduleService status', () => {
     });
   });
 
+  it('stamps launch phase timings onto a dispatch_failed ledger row (issue #1589)', async () => {
+    await withService(async (service, store) => {
+      const schedule = store.create({
+        name: 'GrokSync',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const receipt = await service.reserveExecution(schedule, 'cron', '2026-01-01T09:00:00.000Z');
+
+      const launchPhaseTimings = {
+        phases: [
+          { phase: 'preflight' as const, durationMs: 12, completed: true },
+          { phase: 'reserve' as const, durationMs: 1, completed: true },
+          { phase: 'session-create' as const, durationMs: 180_000, completed: false },
+        ],
+        totalMs: 180_013,
+        incompletePhase: 'session-create' as const,
+      };
+
+      await service.markExecutionOutcome(
+        schedule.id,
+        receipt.id,
+        'dispatch_failed',
+        'launch_error',
+        'Agent launch timed out after 180s',
+        { launchPhaseTimings },
+      );
+
+      const row = store.get(schedule.id)!.executionLedger[0];
+      expect(row.outcome).toBe('dispatch_failed');
+      expect(row.launchPhaseTimings).toEqual(launchPhaseTimings);
+      // The diagnosis is now readable straight off the persisted API projection.
+      const apiRow = service.listResponse().schedules[0].executionLedger[0];
+      expect(apiRow.launchPhaseTimings?.incompletePhase).toBe('session-create');
+    });
+  });
+
   it('updates the execution ledger when startup reconciliation finds a completed task', async () => {
     await withService(async (service, store) => {
       const taskStore = new TaskStore();

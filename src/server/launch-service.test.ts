@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, type PendingQueueFullError, type SpawnBurstLimitError, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, type PendingQueueFullError, type SpawnBurstLimitError, type LaunchServiceDeps } from './launch-service.js';
 import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
 import { buildCapacityLedger } from '../core/capacity-ledger.js';
 import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
@@ -246,8 +246,14 @@ describe('launchTask', () => {
 
     it('with no effort, passes no effort override', async () => {
       await launchTask(deps, { prompt: 'hello', cwd: '/tmp' });
-      // 5th arg is undefined (no ralph env, no effort override).
-      expect(launchOptsFor(deps, 'claude-code')).toBeUndefined();
+      // adapterOpts always carries the phase-instrumentation callback (issue
+      // #1589), but no effort/model/extraEnv when none were requested.
+      const opts = launchOptsFor(deps, 'claude-code');
+      expect(opts).toBeDefined();
+      expect(typeof opts.onPhase).toBe('function');
+      expect(opts.effort).toBeUndefined();
+      expect(opts.model).toBeUndefined();
+      expect(opts.extraEnv).toBeUndefined();
     });
 
     it('threads a valid override to the adapter as opts.effort', async () => {
@@ -413,14 +419,14 @@ describe('launchTask', () => {
       expect.stringContaining('KB unavailable'),
       '/tmp',
       undefined,
-      undefined,
+      expect.objectContaining({ onPhase: expect.any(Function) }),
     );
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledWith(
       result.task.id,
       expect.stringContaining('needs kb'),
       '/tmp',
       undefined,
-      undefined,
+      expect.objectContaining({ onPhase: expect.any(Function) }),
     );
   });
 
@@ -875,6 +881,116 @@ describe('launchTask', () => {
     expect(result.task.prompt).toBe('do work');
   });
 
+  describe('per-phase launch timings (issue #1589)', () => {
+    /** Make the claude adapter report the given phases (in order) then resolve. */
+    function reportPhasesThenResolve(phases: Array<'session-create' | 'agent-boot' | 'ack'>) {
+      const adapter = deps.adapterRegistry.get('claude-code');
+      (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+        async (_id: string, _prompt: string, _cwd: string, _resume: unknown, opts: any) => {
+          for (const p of phases) opts?.onPhase?.(p);
+          return 'tmux-claude';
+        },
+      );
+    }
+
+    it('persists the full phase sequence on a successful launch, with no incomplete phase', async () => {
+      reportPhasesThenResolve(['session-create', 'agent-boot', 'ack']);
+      const result = await launchTask(deps, { prompt: 'hello', cwd: '/tmp' });
+
+      const timings = store.getTask(result.task.id)?.launchPhaseTimings;
+      expect(timings).toBeDefined();
+      expect(timings!.phases.map((p) => p.phase)).toEqual([
+        'preflight', 'reserve', 'session-create', 'agent-boot', 'ack',
+      ]);
+      expect(timings!.phases.every((p) => p.completed)).toBe(true);
+      expect(timings!.incompletePhase).toBeUndefined();
+      expect(timings!.totalMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it('a launch that times out in a simulated phase records that phase as incomplete (AC#3)', async () => {
+      const adapter = deps.adapterRegistry.get('claude-code');
+      // Report session-create, then hang forever inside that phase.
+      (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+        (_id: string, _prompt: string, _cwd: string, _resume: unknown, opts: any) => {
+          opts?.onPhase?.('session-create');
+          return new Promise<string>(() => { /* never settles → times out */ });
+        },
+      );
+      deps.getLaunchTimeoutMs = () => 20;
+
+      await expect(launchTask(deps, { prompt: 'do work', cwd: '/tmp' }))
+        .rejects.toBeInstanceOf(LaunchTimeoutError);
+
+      const [disposed] = store.listTasks();
+      expect(disposed.disposition?.reason).toBe('launch_timeout');
+      const timings = disposed.launchPhaseTimings;
+      expect(timings).toBeDefined();
+      expect(timings!.incompletePhase).toBe('session-create');
+      const phase = timings!.phases.find((p) => p.phase === 'session-create');
+      expect(phase?.completed).toBe(false);
+      // Earlier phases handed off cleanly.
+      expect(timings!.phases.find((p) => p.phase === 'reserve')?.completed).toBe(true);
+    });
+
+    it('localizes a hang to a later phase (agent-boot) when earlier phases completed', async () => {
+      const adapter = deps.adapterRegistry.get('claude-code');
+      (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+        (_id: string, _prompt: string, _cwd: string, _resume: unknown, opts: any) => {
+          opts?.onPhase?.('session-create');
+          opts?.onPhase?.('agent-boot');
+          return new Promise<string>(() => { /* hangs in agent-boot */ });
+        },
+      );
+      deps.getLaunchTimeoutMs = () => 20;
+
+      await expect(launchTask(deps, { prompt: 'boot hang', cwd: '/tmp' }))
+        .rejects.toBeInstanceOf(LaunchTimeoutError);
+
+      const [disposed] = store.listTasks();
+      expect(disposed.launchPhaseTimings?.incompletePhase).toBe('agent-boot');
+      expect(disposed.launchPhaseTimings?.phases.find((p) => p.phase === 'session-create')?.completed).toBe(true);
+    });
+
+    it('attaches phase timings to the thrown error so a dispatch_failed ledger row can carry them (AC#2)', async () => {
+      const adapter = deps.adapterRegistry.get('claude-code');
+      (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+        (_id: string, _prompt: string, _cwd: string, _resume: unknown, opts: any) => {
+          opts?.onPhase?.('session-create');
+          return new Promise<string>(() => { /* hangs → timeout */ });
+        },
+      );
+      deps.getLaunchTimeoutMs = () => 20;
+
+      let caught: unknown;
+      try {
+        await launchTask(deps, { prompt: 'ledger work', cwd: '/tmp' });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(LaunchTimeoutError);
+      const timings = launchPhaseTimingsOf(caught);
+      expect(timings).toBeDefined();
+      expect(timings!.incompletePhase).toBe('session-create');
+    });
+
+    it('records timings on a launch that throws (not just timeouts)', async () => {
+      const adapter = deps.adapterRegistry.get('claude-code');
+      (adapter.launch as ReturnType<typeof vi.fn>).mockImplementationOnce(
+        (_id: string, _prompt: string, _cwd: string, _resume: unknown, opts: any) => {
+          opts?.onPhase?.('session-create');
+          throw new Error('createSession failed');
+        },
+      );
+
+      await expect(launchTask(deps, { prompt: 'boom', cwd: '/tmp' }))
+        .rejects.toThrow('createSession failed');
+
+      const [disposed] = store.listTasks();
+      expect(disposed.disposition?.reason).toBe('launch_error');
+      expect(disposed.launchPhaseTimings?.incompletePhase).toBe('session-create');
+    });
+  });
+
   it('does not deduplicate across agent types', async () => {
     const first = await launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'claude-code' });
     const second = await launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'codex-cli' });
@@ -971,14 +1087,14 @@ describe('launchTask', () => {
 
     expect(result.task.prompt).toBe(`Read ${filePath} before coding.`);
     // PR4: launchTask now always passes 5 args (taskId, prompt, cwd, resume,
-    // adapterOpts). For non-ralph launches `resume` and `adapterOpts` are
-    // both undefined.
+    // adapterOpts). For non-ralph launches `resume` is undefined and adapterOpts
+    // carries only the phase-instrumentation callback (issue #1589).
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledWith(
       result.task.id,
       `Read ${filePath} before coding.`,
       repoDir,
       undefined,
-      undefined,
+      expect.objectContaining({ onPhase: expect.any(Function) }),
     );
   });
 
@@ -1128,35 +1244,42 @@ describe('launchTask', () => {
       const adapter = deps.adapterRegistry.get('claude-code');
       // Path is absolute and uses the per-task suffix (taskId.slice(0, 12)).
       const expectedSuffix = result.task.id.slice(0, 12);
+      // adapterOpts always carries the phase-instrumentation onPhase callback
+      // (issue #1589); objectContaining keeps this focused on the ralph env.
       expect(adapter.launch).toHaveBeenCalledWith(
         result.task.id,
         'iterate',
         '/tmp',
         undefined,
-        {
+        expect.objectContaining({
           extraEnv: {
             RALPH_VERDICT_FILE: expect.stringMatching(new RegExp(`/\\.ralph-verdict-${expectedSuffix}\\.json$`)),
             RALPH_ITERATION: '0',
           },
-        },
+        }),
       );
+      const opts = (adapter.launch as ReturnType<typeof vi.fn>).mock.calls[0]![4];
+      expect(typeof opts.onPhase).toBe('function');
     });
 
-    it('omits adapter opts entirely when ralphVerdictEnv is unset (no regression for non-ralph launches)', async () => {
+    it('omits env/effort/model adapter opts when ralphVerdictEnv is unset (no regression for non-ralph launches)', async () => {
       await launchTask(deps, { prompt: 'hello', cwd: '/tmp' });
       const adapter = deps.adapterRegistry.get('claude-code');
       const launchCall = (adapter.launch as ReturnType<typeof vi.fn>).mock.calls[0];
-      // The adapter is called as launch(id, prompt, cwd, undefined, undefined)
-      // so the 5th arg is undefined — preserves the legacy 3-arg call shape
-      // semantically (no env override).
-      expect(launchCall![4]).toBeUndefined();
+      // adapterOpts carries only the phase-instrumentation callback (issue
+      // #1589) — no extraEnv/effort/model when none were requested.
+      const opts = launchCall![4];
+      expect(typeof opts.onPhase).toBe('function');
+      expect(opts.extraEnv).toBeUndefined();
+      expect(opts.effort).toBeUndefined();
+      expect(opts.model).toBeUndefined();
     });
 
-    it('omits adapter opts when ralphVerdictEnv is explicit false', async () => {
+    it('omits env adapter opts when ralphVerdictEnv is explicit false', async () => {
       await launchTask(deps, { prompt: 'hello-explicit-false', cwd: '/tmp', ralphVerdictEnv: false });
       const adapter = deps.adapterRegistry.get('claude-code');
       const launchCall = (adapter.launch as ReturnType<typeof vi.fn>).mock.calls[0];
-      expect(launchCall![4]).toBeUndefined();
+      expect(launchCall![4].extraEnv).toBeUndefined();
     });
   });
 });
