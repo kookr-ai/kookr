@@ -1015,6 +1015,7 @@ type CompactApiTask = Pick<
   | 'projectId'
   | 'priority'
   | 'parentTaskId'
+  | 'provenance'
   | 'childTaskIds'
   | 'blocks'
   | 'blocked_by'
@@ -1063,6 +1064,7 @@ function toCompactApiTask(task: Task, store: TaskStore): CompactApiTask {
     projectId: task.projectId,
     priority: task.priority,
     parentTaskId: task.parentTaskId,
+    provenance: task.provenance,
     childTaskIds: task.childTaskIds,
     blocks: task.blocks,
     blocked_by: task.blocked_by,

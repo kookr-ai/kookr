@@ -19,6 +19,33 @@ export type TaskLaunchSource =
   | 'remote-relay';
 export type TaskPriority = 'high';
 export type TaskPriorityUpdate = TaskPriority | 'normal';
+
+/**
+ * How a task was launched (issue #1583). A first-class, immutable provenance
+ * marker set at creation so rollups can attribute output (merged PRs, tokens)
+ * back to its origin:
+ *  - `schedule`: fired by the schedule runner. `sourceId` is the scheduleId.
+ *  - `parent`: spawned by another task (incl. the `kookr-spawn-child-task`
+ *    HTTP path that forwards `KOOKR_PARENT_TASK_ID`). `sourceId` is the parent
+ *    task id.
+ *  - `manual`: a plain API/UI/CLI/websocket/remote creation. `sourceId` is the
+ *    launcher identity (the {@link TaskLaunchSource}). This covers the six
+ *    07-26 'Parallel Issue Batch' tasks (API-created, no schedule, no parent).
+ *  - `unknown`: legacy tasks persisted before this field existed, defaulted at
+ *    read time, and any creation path that supplied no launch signal.
+ */
+export type TaskProvenanceKind = 'schedule' | 'manual' | 'parent' | 'unknown';
+
+export interface TaskProvenance {
+  kind: TaskProvenanceKind;
+  /**
+   * Origin identifier the {@link kind} points at: scheduleId for `schedule`,
+   * parent task id for `parent`, launcher identity ({@link TaskLaunchSource})
+   * for `manual`. Absent for `unknown` and for a `schedule` fire that carried
+   * no scheduleId.
+   */
+  sourceId?: string;
+}
 export type DeliveryAuthorization = 'pre-authorized' | 'ask-first';
 
 export interface TaskLaunchPermissionPosture {

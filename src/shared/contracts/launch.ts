@@ -60,6 +60,13 @@ export interface LaunchOpts {
    */
   launchSource?: TaskLaunchSource;
   /**
+   * scheduleId of the firing schedule (issue #1583). Set only by the schedule
+   * runner alongside `launchSource: 'schedule'`; becomes the `sourceId` of the
+   * created task's `schedule` provenance so a rollup can attribute output back
+   * to the schedule. Ignored for non-schedule launches.
+   */
+  scheduleId?: string;
+  /**
    * Attributed caller id for actor-qualified spawn budgets (issue #1526
    * Phase C / C3). Resolved server-side from the Phase B `X-Kookr-Actor`
    * header when present — never trusted further than bucketing: with it,

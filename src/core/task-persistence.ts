@@ -7,6 +7,7 @@ import type { AttentionQueue, SnoozeEntry } from './attention-queue.js';
 import type { TaskStore } from './tasks.js';
 import type { PersistedSuppressionEntry } from './snooze-suppression.js';
 import { normalizeAgentType } from './agent-types.js';
+import { UNKNOWN_PROVENANCE } from './task-provenance.js';
 import { atomicWriteFile } from './persistence-utils.js';
 import { createLogger } from './logger.js';
 import {
@@ -337,6 +338,9 @@ export async function loadTasks(filePath: string): Promise<LoadTasksResult> {
     // Restore Date objects from JSON strings
     for (const task of tasks) {
       task.agentType = normalizeAgentType(task.agentType);
+      // Legacy tasks persisted before launch provenance (issue #1583) read back
+      // with an explicit `unknown` marker rather than a silently absent field.
+      if (!task.provenance) task.provenance = { ...UNKNOWN_PROVENANCE };
       task.createdAt = new Date(task.createdAt);
       task.updatedAt = new Date(task.updatedAt);
       if (task.finishedAt) task.finishedAt = new Date(task.finishedAt);
