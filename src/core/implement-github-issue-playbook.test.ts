@@ -145,4 +145,15 @@ describe('implement-github-issue playbook', () => {
     expect(phase85Idx).toBeGreaterThan(0);
     expect(phase9Idx).toBeGreaterThan(phase85Idx);
   });
+
+  test('propagates Idea Scout provenance labels onto the PR (issue #1587)', () => {
+    // The scouted-idea -> merged-PR conversion must be computable from labels
+    // alone, so a PR implementing a scouted issue inherits its idea-scout /
+    // idea:<n> labels. It must be a guarded no-op for non-scouted issues.
+    expect(pb.body).toMatch(/provenance labels/i);
+    expect(pb.body).toContain('gh issue view <TARGET> -R "$REPO" --json labels');
+    expect(pb.body).toMatch(/select\(\. == "idea-scout" or startswith\("idea:"\)\)/);
+    expect(pb.body).toMatch(/if \[ -n "\$IDEA_LABELS" \]; then/);
+    expect(pb.body).toMatch(/no-op for issues that were not scouted/i);
+  });
 });
