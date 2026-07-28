@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { buildCapacityLedger, classifyTaskCapacity, type TaskCapacityClass } from './capacity-ledger.js';
+import { buildCapacityLedger, classifyTaskCapacity, isReservedSlotLaunch, type TaskCapacityClass } from './capacity-ledger.js';
 import type { Task } from './task-read-model.js';
 
 const NOW = Date.parse('2026-07-24T12:00:00.000Z');
@@ -171,5 +171,89 @@ describe('buildCapacityLedger', () => {
     expect(ledger.byClass).toEqual({ working: 0, finishedAwaitingAck: 0, hungSuspect: 0, launching: 0 });
     expect(ledger.active).toBe(0);
     expect(ledger.free).toBe(10);
+  });
+
+  describe('reserved self-maintenance capacity (issue #1564)', () => {
+    test('omits the reservation block entirely when no reservation is configured', () => {
+      const ledger = byClassOf([task({ id: 'w1' })]);
+      expect(ledger.reservedActiveSlots).toBeUndefined();
+      expect(ledger.reservedSlotSources).toBeUndefined();
+      expect(ledger.freeForReservedSources).toBeUndefined();
+      expect(ledger.freeForGeneralSources).toBeUndefined();
+    });
+
+    test('reports the reservation and the general-vs-reserved free split', () => {
+      // 2 active of 3, with 1 slot reserved for kookr.
+      const tasks = [task({ id: 'w1' }), task({ id: 'w2' })];
+      const ledger = buildCapacityLedger(tasks, {
+        now: NOW,
+        maxActiveTasks: 3,
+        isHungSuspect: () => false,
+        isLaunching: () => false,
+        reservedActiveSlots: 1,
+        reservedSlotSources: ['kookr'],
+      });
+      expect(ledger.active).toBe(2);
+      expect(ledger.free).toBe(1);
+      expect(ledger.reservedActiveSlots).toBe(1);
+      expect(ledger.reservedSlotSources).toEqual(['kookr']);
+      // A privileged source can still use the whole pool → 1 free slot.
+      expect(ledger.freeForReservedSources).toBe(1);
+      // A general source is capped at maxActive - reserved = 2, already full → 0.
+      expect(ledger.freeForGeneralSources).toBe(0);
+    });
+
+    test('clamps a reservation larger than the pool to maxActiveTasks', () => {
+      const ledger = buildCapacityLedger([], {
+        now: NOW,
+        maxActiveTasks: 3,
+        isHungSuspect: () => false,
+        isLaunching: () => false,
+        reservedActiveSlots: 99,
+      });
+      expect(ledger.reservedActiveSlots).toBe(3);
+      // Whole pool reserved: a general source has 0 headroom even when idle.
+      expect(ledger.freeForGeneralSources).toBe(0);
+      expect(ledger.freeForReservedSources).toBe(3);
+    });
+
+    test('a zero reservation still reports the (empty) block without holding slots back', () => {
+      const ledger = buildCapacityLedger([task({ id: 'w1' })], {
+        now: NOW,
+        maxActiveTasks: 3,
+        isHungSuspect: () => false,
+        isLaunching: () => false,
+        reservedActiveSlots: 0,
+        reservedSlotSources: [],
+      });
+      expect(ledger.reservedActiveSlots).toBe(0);
+      expect(ledger.freeForGeneralSources).toBe(ledger.freeForReservedSources);
+      expect(ledger.freeForGeneralSources).toBe(2);
+    });
+  });
+});
+
+describe('isReservedSlotLaunch (issue #1564)', () => {
+  test('privileged by launch source', () => {
+    expect(isReservedSlotLaunch('kookr', undefined, ['kookr'])).toBe(true);
+  });
+
+  test('privileged by attributed actor id', () => {
+    expect(isReservedSlotLaunch('api', 'kookr', ['kookr'])).toBe(true);
+    // Actor id is trimmed before matching.
+    expect(isReservedSlotLaunch('api', '  kookr  ', ['kookr'])).toBe(true);
+  });
+
+  test('a non-privileged source/actor (e.g. lucy) is not reserved', () => {
+    expect(isReservedSlotLaunch('api', 'lucy', ['kookr'])).toBe(false);
+    expect(isReservedSlotLaunch('cli', undefined, ['kookr'])).toBe(false);
+  });
+
+  test('an empty reserved-source list privileges no one', () => {
+    expect(isReservedSlotLaunch('kookr', 'kookr', [])).toBe(false);
+  });
+
+  test('blank actor id is ignored', () => {
+    expect(isReservedSlotLaunch('api', '   ', ['kookr'])).toBe(false);
   });
 });

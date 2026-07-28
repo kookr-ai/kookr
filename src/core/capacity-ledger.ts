@@ -52,6 +52,50 @@ export interface CapacityLedger {
   pendingQueueDepth: number;
   oldestPendingAgeMs: number | null;
   oldestFinishedAwaitingAckAgeMs: number | null;
+  /**
+   * Reserved self-maintenance capacity (issue #1564). Additive-optional (no
+   * schema version bump): absent on ledgers built without a reservation
+   * configured, always present once `buildCapacityLedger` is given a
+   * reservation. Makes the guarantee — that a lucy-style burst cannot consume
+   * the last {@link reservedActiveSlots} slots — verifiable from `/api/health`.
+   */
+  reservedActiveSlots?: number;
+  /** Source/actor identifiers privileged to consume the reserved slots. */
+  reservedSlotSources?: readonly string[];
+  /**
+   * Free slots a privileged (reserved) source may still launch into. Equals
+   * {@link free}: privileged launches see the whole pool.
+   */
+  freeForReservedSources?: number;
+  /**
+   * Free slots a general (non-privileged) source may still launch into —
+   * `maxActiveTasks - reservedActiveSlots - active`, floored at 0. When this
+   * hits 0 while {@link freeForReservedSources} is still positive, the
+   * reservation is actively protecting kookr self-maintenance headroom.
+   */
+  freeForGeneralSources?: number;
+}
+
+/**
+ * Whether a launch attributed to `source` (its `launchSource`) and optional
+ * `actorId` (the `X-Kookr-Actor` attribution) is privileged to consume the
+ * reserved self-maintenance slots (issue #1564). Privileged when EITHER the
+ * bare launch source or the attributed actor id is listed in
+ * `reservedSlotSources` — so a reservation can be expressed against a launch
+ * source (e.g. a future dedicated source) or, as configured by default,
+ * against the `kookr` actor.
+ */
+export function isReservedSlotLaunch(
+  source: string | undefined,
+  actorId: string | undefined,
+  reservedSlotSources: readonly string[],
+): boolean {
+  if (reservedSlotSources.length === 0) return false;
+  const trimmedActor = actorId?.trim();
+  return (
+    (source !== undefined && reservedSlotSources.includes(source)) ||
+    (trimmedActor !== undefined && trimmedActor.length > 0 && reservedSlotSources.includes(trimmedActor))
+  );
 }
 
 export interface BuildCapacityLedgerDeps {
@@ -61,6 +105,14 @@ export interface BuildCapacityLedgerDeps {
   isHungSuspect: (task: Task) => boolean;
   /** Per-task launch-reservation check — see {@link CapacityClassifyDeps.isLaunching}. */
   isLaunching: (task: Task) => boolean;
+  /**
+   * Reserved self-maintenance slot count (issue #1564). When present and > 0,
+   * the ledger reports the reservation so operators can verify the guarantee.
+   * Clamped to `[0, maxActiveTasks]`. Absent ⇒ no reservation is reported.
+   */
+  reservedActiveSlots?: number;
+  /** Source/actor identifiers privileged to consume the reserved slots. */
+  reservedSlotSources?: readonly string[];
 }
 
 /**
@@ -106,14 +158,32 @@ export function buildCapacityLedger(tasks: readonly Task[], deps: BuildCapacityL
   }
 
   const active = byClass.working + byClass.finishedAwaitingAck + byClass.hungSuspect + byClass.launching;
+  const free = Math.max(0, deps.maxActiveTasks - active);
+
+  // Reserved self-maintenance capacity (issue #1564). Reported only when a
+  // reservation is configured, keeping the block additive-optional.
+  const reservedActiveSlots =
+    deps.reservedActiveSlots !== undefined
+      ? Math.max(0, Math.min(deps.maxActiveTasks, deps.reservedActiveSlots))
+      : undefined;
+  const reservation =
+    reservedActiveSlots !== undefined
+      ? {
+          reservedActiveSlots,
+          reservedSlotSources: deps.reservedSlotSources ?? [],
+          freeForReservedSources: free,
+          freeForGeneralSources: Math.max(0, deps.maxActiveTasks - reservedActiveSlots - active),
+        }
+      : undefined;
 
   return {
     maxActiveTasks: deps.maxActiveTasks,
     active,
-    free: Math.max(0, deps.maxActiveTasks - active),
+    free,
     byClass,
     pendingQueueDepth,
     oldestPendingAgeMs: oldestPendingAt !== undefined ? deps.now - oldestPendingAt : null,
     oldestFinishedAwaitingAckAgeMs: oldestFinishedAwaitingAckAt !== undefined ? deps.now - oldestFinishedAwaitingAckAt : null,
+    ...(reservation ?? {}),
   };
 }

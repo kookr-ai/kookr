@@ -153,12 +153,22 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // behavior, and stays O(active tasks) on in-memory watchdog/queue state
     // only (no pane captures, no disk reads) so this is safe to poll.
     const capacitySampledAtMs = Date.now();
+    // Reserved self-maintenance capacity (issue #1564): surface the reservation
+    // in the ledger so an operator can verify at any time that a lucy-style
+    // burst cannot consume the slots held back for kookr self-maintenance.
+    const reservationSettings = deps.settings?.get();
     const capacity = buildCapacityLedger(tasks, {
       now: capacitySampledAtMs,
       maxActiveTasks: deps.getMaxActiveTasks?.() ?? MAX_ACTIVE_TASKS,
       isHungSuspect: (task) =>
         resolveTaskAttentionSignals(task, { queue, watchdog: deps.watchdog }, capacitySampledAtMs).hungSuspect,
       isLaunching: (task) => taskStore.hasFreshLaunchReservation(task.id),
+      ...(reservationSettings
+        ? {
+            reservedActiveSlots: reservationSettings.reservedActiveSlots,
+            reservedSlotSources: reservationSettings.reservedSlotSources,
+          }
+        : {}),
     });
 
     // Lesson yield (issue #1538) — last-24h flywheel health. Served

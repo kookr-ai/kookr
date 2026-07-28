@@ -33,7 +33,7 @@ import { normalizePromptFileReferences } from './prompt-file-paths.js';
 import { applyWorktreeGuardrails, type DeliveryPolicy } from './worktree-guardrails.js';
 import type { IdempotencyLedger } from '../core/idempotency-ledger.js';
 import { isTerminalStatus } from '../core/task-status.js';
-import { buildCapacityLedger, type CapacityLedger } from '../core/capacity-ledger.js';
+import { buildCapacityLedger, isReservedSlotLaunch, type CapacityLedger } from '../core/capacity-ledger.js';
 import { spawnBudgetKey, type SpawnRateLimiter, type SpawnRateVerdict } from '../core/spawn-rate-limiter.js';
 
 export type { LaunchOpts } from '../shared/contracts/launch.js';
@@ -120,6 +120,23 @@ export interface LaunchServiceDeps {
    * budget enforcement.
    */
   spawnRateLimiter?: SpawnRateLimiter;
+  /**
+   * Reserved self-maintenance slot count (issue #1564, `reservedActiveSlots`
+   * setting). When provided and > 0, a launch whose source/actor is NOT in
+   * {@link getReservedSlotSources} is admitted only while the active count is
+   * below `maxActiveTasks - reservedActiveSlots`; at or above that it pends
+   * instead of consuming a reserved slot. Privileged launches use the full
+   * `maxActiveTasks`. Absent (older wiring/tests) ⇒ no reservation, unchanged.
+   */
+  getReservedActiveSlots?: () => number;
+  /**
+   * Live getter for the privileged reserved-slot source/actor identifiers
+   * (issue #1564, `reservedSlotSources` setting). A launch is privileged when
+   * its `launchSource` or attributed `launchActorId` matches an entry. Absent
+   * ⇒ empty list (no launch is privileged, so the reservation, if any, holds
+   * slots back from everyone — the conservative default).
+   */
+  getReservedSlotSources?: () => readonly string[];
   /**
    * Rich capacity-ledger snapshot for backpressure error bodies (issue #1526
    * Phase C / C3). Wired in production to the SAME builder `GET /api/health`
@@ -320,12 +337,38 @@ export function isSpawnBurstLimitError(err: unknown): err is SpawnBurstLimitErro
  */
 function snapshotCapacityLedger(deps: LaunchServiceDeps, maxActive: number): CapacityLedger {
   if (deps.getCapacityLedger) return deps.getCapacityLedger();
+  const reservedActiveSlots = deps.getReservedActiveSlots?.();
   return buildCapacityLedger(deps.taskStore.listTasks(), {
     now: Date.now(),
     maxActiveTasks: maxActive,
     isHungSuspect: () => false,
     isLaunching: (task) => deps.taskStore.hasFreshLaunchReservation(task.id),
+    // Issue #1564: reflect the reservation in the degraded snapshot too, so a
+    // backpressure error body carries the same guarantee /api/health shows.
+    ...(reservedActiveSlots !== undefined
+      ? { reservedActiveSlots, reservedSlotSources: deps.getReservedSlotSources?.() ?? [] }
+      : {}),
   });
+}
+
+/**
+ * Effective active-task cap for THIS launch (issue #1564). Privileged
+ * (reserved-slot) launches see the full `maxActive`; every other launch is
+ * capped at `maxActive - reservedActiveSlots` so it cannot consume a slot the
+ * reservation is holding for kookr self-maintenance. Absent reservation
+ * (`getReservedActiveSlots` unset or 0) ⇒ `maxActive` for everyone, unchanged.
+ */
+function effectiveMaxActiveForLaunch(
+  deps: LaunchServiceDeps,
+  maxActive: number,
+  launchSource: string,
+  launchActorId: string | undefined,
+): number {
+  const reserved = deps.getReservedActiveSlots?.() ?? 0;
+  if (reserved <= 0) return maxActive;
+  const reservedSources = deps.getReservedSlotSources?.() ?? [];
+  if (isReservedSlotLaunch(launchSource, launchActorId, reservedSources)) return maxActive;
+  return Math.max(0, maxActive - reserved);
 }
 
 /**
@@ -801,6 +844,17 @@ async function launchTaskCore(
   //    module docs): their cadence is operator-configured and already bounded
   //    by per-schedule coalescing + dead-man alerting.
   const launchSourceForBudget = opts.launchSource ?? 'api';
+  // Reserved self-maintenance capacity (issue #1564): a non-privileged launch
+  // (e.g. a lucy burst) is capped below the full pool so the last
+  // `reservedActiveSlots` slots stay available for kookr self-maintenance.
+  // Privileged launches (source/actor in `reservedSlotSources`) see the full
+  // cap. Absent reservation ⇒ `effectiveMaxActive === maxActive`, unchanged.
+  const effectiveMaxActive = effectiveMaxActiveForLaunch(
+    deps,
+    maxActive,
+    launchSourceForBudget,
+    opts.launchActorId,
+  );
   if (deps.spawnRateLimiter && launchSourceForBudget !== 'schedule') {
     const verdict = deps.spawnRateLimiter.tryAcquire(
       spawnBudgetKey(launchSourceForBudget, opts.launchActorId),
@@ -817,7 +871,7 @@ async function launchTaskCore(
   // 2) Pending-queue depth limit (FM3). Only bites when the launch would
   //    actually pend (node at capacity): below capacity the task launches
   //    immediately and queue depth is irrelevant, so behavior is unchanged.
-  if (taskStore.getActiveCount() >= maxActive) {
+  if (taskStore.getActiveCount() >= effectiveMaxActive) {
     const maxPending = deps.getMaxPendingTasks?.() ?? DEFAULT_MAX_PENDING_TASKS;
     if (taskStore.getPendingCount() >= maxPending) {
       console.warn(
@@ -854,7 +908,7 @@ async function launchTaskCore(
     unattended: opts.unattended,
   });
 
-  if (taskStore.getActiveCount() >= maxActive) {
+  if (taskStore.getActiveCount() >= effectiveMaxActive) {
     const queuedTask = taskStore.pendTask(task.id);
     // The task record is committed (queued for promotion), so the round-robin
     // launch consumed its slot — advance the rotation.

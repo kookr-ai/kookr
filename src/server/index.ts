@@ -402,6 +402,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // launch / liveness tick without a restart.
   const getMaxPendingTasks = () => currentSettings.maxPendingTasks;
   const getPendingTaskTtlMs = () => currentSettings.pendingTaskTtlMinutes * 60_000;
+  // Reserved self-maintenance capacity (issue #1564). Same live-binding
+  // pattern — applies to the next launch without a restart.
+  const getReservedActiveSlots = () => currentSettings.reservedActiveSlots;
+  const getReservedSlotSources = () => currentSettings.reservedSlotSources;
   // Per-source spawn budget — one limiter instance per server so window state
   // is shared across REST, WS, and internal launch paths.
   const spawnRateLimiter = new SpawnRateLimiter({
@@ -1006,6 +1010,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // uses so a 429 body and the health endpoint tell one story.
     getMaxPendingTasks,
     spawnRateLimiter,
+    getReservedActiveSlots,
+    getReservedSlotSources,
     getCapacityLedger: () => {
       const now = Date.now();
       return buildCapacityLedger(taskStore.listTasks(), {
@@ -1013,6 +1019,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         maxActiveTasks: getMaxActiveTasks(),
         isHungSuspect: (task) => resolveTaskAttentionSignals(task, { queue, watchdog }, now).hungSuspect,
         isLaunching: (task) => taskStore.hasFreshLaunchReservation(task.id),
+        reservedActiveSlots: getReservedActiveSlots(),
+        reservedSlotSources: getReservedSlotSources(),
       });
     },
   };

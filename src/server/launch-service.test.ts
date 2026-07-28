@@ -8,6 +8,7 @@ import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import { checkSubmission, launchTask, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, type PendingQueueFullError, type SpawnBurstLimitError, type LaunchServiceDeps } from './launch-service.js';
 import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
+import { buildCapacityLedger } from '../core/capacity-ledger.js';
 import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
 import { IdempotencyLedger } from '../core/idempotency-ledger.js';
 
@@ -2131,6 +2132,91 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
       const replay = await launchTask(deps, { prompt: 'same prompt', cwd: '/tmp', launchSource: 'cli' });
       expect(replay.duplicate).toBe(true);
       expect(replay.task.id).toBe(first.task.id);
+    });
+  });
+
+  describe('reserved self-maintenance slots (issue #1564)', () => {
+    function reservedDeps(
+      store: TaskStore,
+      maxActive: number,
+      reservedActiveSlots: number,
+      reservedSlotSources: string[] = ['kookr'],
+    ): LaunchServiceDeps {
+      return {
+        ...makeDeps(store),
+        getMaxActiveTasks: () => maxActive,
+        getReservedActiveSlots: () => reservedActiveSlots,
+        getReservedSlotSources: () => reservedSlotSources,
+      };
+    }
+
+    it('a lucy-source burst at its reduced cap cannot starve a kookr batch spawn', async () => {
+      const store = new TaskStore();
+      // 3 slots, 1 reserved for kookr → lucy is effectively capped at 2.
+      const deps = reservedDeps(store, 3, 1);
+
+      // Lucy saturates her allotment: two launches admitted…
+      const lucy1 = await launchTask(deps, { prompt: 'lucy 1', cwd: '/tmp', launchSource: 'api', launchActorId: 'lucy' });
+      const lucy2 = await launchTask(deps, { prompt: 'lucy 2', cwd: '/tmp', launchSource: 'api', launchActorId: 'lucy' });
+      expect(lucy1.queued).toBe(false);
+      expect(lucy2.queued).toBe(false);
+      expect(store.getActiveCount()).toBe(2);
+
+      // …and her third launch pends rather than consuming the reserved slot.
+      const lucy3 = await launchTask(deps, { prompt: 'lucy 3', cwd: '/tmp', launchSource: 'api', launchActorId: 'lucy' });
+      expect(lucy3.queued).toBe(true);
+      expect(store.getActiveCount()).toBe(2);
+
+      // The reserved slot is still available: a kookr batch spawn is admitted.
+      const kookr = await launchTask(deps, { prompt: 'kookr batch', cwd: '/tmp', launchSource: 'api', launchActorId: 'kookr' });
+      expect(kookr.queued).toBe(false);
+      expect(store.getActiveCount()).toBe(3);
+    });
+
+    it('surfaces the reservation in the capacity ledger so the guarantee is observable', async () => {
+      const store = new TaskStore();
+      const deps = reservedDeps(store, 3, 1);
+      await launchTask(deps, { prompt: 'lucy 1', cwd: '/tmp', launchSource: 'api', launchActorId: 'lucy' });
+      await launchTask(deps, { prompt: 'lucy 2', cwd: '/tmp', launchSource: 'api', launchActorId: 'lucy' });
+
+      // Same builder the /api/health ledger uses.
+      const ledger = buildCapacityLedger(store.listTasks(), {
+        now: Date.now(),
+        maxActiveTasks: 3,
+        isHungSuspect: () => false,
+        isLaunching: (task) => store.hasFreshLaunchReservation(task.id),
+        reservedActiveSlots: 1,
+        reservedSlotSources: ['kookr'],
+      });
+      expect(ledger.reservedActiveSlots).toBe(1);
+      expect(ledger.reservedSlotSources).toEqual(['kookr']);
+      expect(ledger.active).toBe(2);
+      // A general source is out of headroom; a reserved source still has 1 slot.
+      expect(ledger.freeForGeneralSources).toBe(0);
+      expect(ledger.freeForReservedSources).toBe(1);
+    });
+
+    it('privileges by bare launch source too, not just the actor id', async () => {
+      const store = new TaskStore();
+      // Reserve for the `cli` source directly (no actor attribution needed).
+      const deps = reservedDeps(store, 2, 1, ['cli']);
+      await launchTask(deps, { prompt: 'api 1', cwd: '/tmp', launchSource: 'api' });
+      // api is capped at 1 → its second launch pends.
+      const api2 = await launchTask(deps, { prompt: 'api 2', cwd: '/tmp', launchSource: 'api' });
+      expect(api2.queued).toBe(true);
+      // …but a cli launch takes the reserved slot.
+      const cli = await launchTask(deps, { prompt: 'cli 1', cwd: '/tmp', launchSource: 'cli' });
+      expect(cli.queued).toBe(false);
+    });
+
+    it('with no reservation configured, behavior is unchanged (all sources share the full pool)', async () => {
+      const store = new TaskStore();
+      const deps: LaunchServiceDeps = { ...makeDeps(store), getMaxActiveTasks: () => 2, getReservedActiveSlots: () => 0 };
+      const a = await launchTask(deps, { prompt: 'a', cwd: '/tmp', launchSource: 'api', launchActorId: 'lucy' });
+      const b = await launchTask(deps, { prompt: 'b', cwd: '/tmp', launchSource: 'api', launchActorId: 'lucy' });
+      expect(a.queued).toBe(false);
+      expect(b.queued).toBe(false); // fills the full pool — reservation is off
+      expect(store.getActiveCount()).toBe(2);
     });
   });
 
