@@ -1,5 +1,6 @@
 import type { AgentSelection } from './agent-types.js';
 import type { PlaybookScope } from './playbook.js';
+import type { TokenUsage } from './usage.js';
 
 export interface SchedulePlaybook {
   path: string;
@@ -84,6 +85,18 @@ export interface ScheduleExecutionLedgerEntry {
   outcome: ScheduleExecutionOutcome;
   reasonCode?: ScheduleExecutionReasonCode;
   message?: string;
+  /**
+   * Cost/token closeout joined from the fire's task at ledger-write time
+   * (issue #1582). Absent when the task carried no `tokenUsage` — never a
+   * fabricated zero. Mirrors the `core/schedule` definition.
+   */
+  tokenUsage?: TokenUsage;
+  /**
+   * Links to artifacts the fire produced (PR URLs today; extensible to issue
+   * URLs / receipt paths), joined from the task's completion digest at
+   * ledger-write time (issue #1582). Mirrors the `core/schedule` definition.
+   */
+  artifacts?: string[];
 }
 
 export interface ScheduleExecutionReceipt {

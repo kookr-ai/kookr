@@ -734,4 +734,110 @@ describe('ScheduleStore', () => {
       expect(store.getWithComputed(schedule.id)!.playbookResolution).toBe('unknown');
     });
   });
+
+  // issue #1582: cost/artifact enrichment on executionLedger rows.
+  describe('executionLedger cost/artifact enrichment (#1582)', () => {
+    function baseLedgerEntry(overrides: Record<string, unknown>): Record<string, unknown> {
+      return {
+        id: 's1:cron:2026-01-01T00:00:00.000Z',
+        scheduleId: 's1',
+        trigger: 'cron',
+        decision: 'cron_due',
+        evaluatedAt: '2026-01-01T00:00:01.000Z',
+        outcome: 'completed',
+        ...overrides,
+      };
+    }
+
+    async function loadWithLedger(entries: Record<string, unknown>[]) {
+      const raw = [{
+        id: 's1',
+        name: 'Enriched',
+        enabled: true,
+        cron: '0 0 * * *',
+        playbook: { path: 'a.md', parameters: {} },
+        cwd: '/tmp',
+        agentType: 'claude',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        executionLedger: entries,
+      }];
+      await writeFile(join(dir, 'schedules.json'), JSON.stringify(raw), 'utf-8');
+      const reloaded = new ScheduleStore(dir);
+      await reloaded.load();
+      return reloaded.list()[0].executionLedger;
+    }
+
+    it('loads a legacy entry with no cost/artifact fields unchanged (no migration)', async () => {
+      const ledger = await loadWithLedger([baseLedgerEntry({ taskId: 'task-legacy' })]);
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0]).not.toHaveProperty('tokenUsage');
+      expect(ledger[0]).not.toHaveProperty('artifacts');
+      expect(ledger[0].taskId).toBe('task-legacy');
+    });
+
+    it('round-trips a well-formed tokenUsage + artifacts entry', async () => {
+      const ledger = await loadWithLedger([baseLedgerEntry({
+        taskId: 'task-1',
+        tokenUsage: {
+          inputTokens: 10, outputTokens: 20, cacheReadTokens: 5, cacheWriteTokens: 2,
+          costUsd: 0.42, provider: 'anthropic', model: 'claude-opus-4-8', pricingQuality: 'exact',
+        },
+        artifacts: ['https://github.com/kookr-ai/kookr/pull/1', ''],
+      })]);
+      expect(ledger[0].tokenUsage).toEqual({
+        inputTokens: 10, outputTokens: 20, cacheReadTokens: 5, cacheWriteTokens: 2,
+        costUsd: 0.42, provider: 'anthropic', model: 'claude-opus-4-8', pricingQuality: 'exact',
+      });
+      // Empty-string artifact is dropped by normalization.
+      expect(ledger[0].artifacts).toEqual(['https://github.com/kookr-ai/kookr/pull/1']);
+    });
+
+    // Invariant: a malformed/partial tokenUsage never survives normalization —
+    // it is dropped rather than patched with zeros, so a missing field always
+    // means "not measured", never a fabricated $0. Property-checked over a
+    // table of malformed shapes.
+    it('drops malformed tokenUsage instead of fabricating a partial/zero cost', async () => {
+      const malformed: unknown[] = [
+        { inputTokens: 1 }, // missing the rest
+        { inputTokens: '1', outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4, costUsd: 5 }, // wrong type
+        { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4 }, // missing costUsd
+        'not-an-object',
+        null,
+        42,
+      ];
+      for (const tokenUsage of malformed) {
+        const ledger = await loadWithLedger([baseLedgerEntry({ taskId: 't', tokenUsage })]);
+        expect(ledger).toHaveLength(1);
+        expect(ledger[0]).not.toHaveProperty('tokenUsage');
+      }
+    });
+
+    // Invariant: normalization is idempotent — persisting a normalized ledger
+    // and reloading it yields an identical row (no field churn across reloads).
+    it('is idempotent across a persist + reload of the normalized ledger', async () => {
+      await loadWithLedger([baseLedgerEntry({
+        taskId: 'task-1',
+        completedAt: '2026-01-01T00:00:02.000Z',
+        tokenUsage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.01 },
+        artifacts: ['https://github.com/kookr-ai/kookr/pull/2', ''],
+      })]);
+      // Store A loads the raw file, then re-persists its NORMALIZED form.
+      const storeA = new ScheduleStore(dir);
+      await storeA.load();
+      const first = storeA.list()[0].executionLedger;
+      await storeA.persist();
+      // Store B reloads the persisted normalized form — must match byte-for-byte.
+      const storeB = new ScheduleStore(dir);
+      await storeB.load();
+      const second = storeB.list()[0].executionLedger;
+      expect(second).toEqual(first);
+      expect(second[0].artifacts).toEqual(['https://github.com/kookr-ai/kookr/pull/2']);
+    });
+
+    it('drops a non-array artifacts field', async () => {
+      const ledger = await loadWithLedger([baseLedgerEntry({ taskId: 't', artifacts: 'not-an-array' })]);
+      expect(ledger[0]).not.toHaveProperty('artifacts');
+    });
+  });
 });

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ScheduleStore } from '../core/schedule.js';
 import { TaskStore } from '../core/tasks.js';
-import { ScheduleService } from './schedule-service.js';
+import { deriveLedgerEnrichment, ScheduleService, type ScheduleLedgerEnrichment } from './schedule-service.js';
 import { ScheduleValidator } from './schedule-validator.js';
 
 function withService(testFn: (service: ScheduleService, store: ScheduleStore, dir: string) => void | Promise<void>): Promise<void> | void {
@@ -160,6 +160,102 @@ describe('ScheduleService status', () => {
           completedAt: expect.any(String),
         }),
       ]);
+    });
+  });
+
+  // issue #1582: cost/artifacts are joined onto the ledger row at write time.
+  describe('ledger cost/artifact enrichment on completion (#1582)', () => {
+    function withEnrichedService(
+      resolveLedgerEnrichment: (taskId: string) => ScheduleLedgerEnrichment | undefined,
+      testFn: (service: ScheduleService, store: ScheduleStore) => Promise<void>,
+    ): Promise<void> {
+      const dir = mkdtempSync(join(tmpdir(), 'schedule-service-enrich-'));
+      const store = new ScheduleStore(dir);
+      const service = new ScheduleService({ store, validator: new ScheduleValidator(), resolveLedgerEnrichment });
+      return testFn(service, store).finally(() => rmSync(dir, { recursive: true, force: true }));
+    }
+
+    it('joins cost + artifact links onto the completed row', async () => {
+      const enrichment: ScheduleLedgerEnrichment = {
+        tokenUsage: { inputTokens: 10, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.5 },
+        artifacts: ['https://github.com/kookr-ai/kookr/pull/42'],
+      };
+      await withEnrichedService((taskId) => (taskId === 'task-1' ? enrichment : undefined), async (service, store) => {
+        const schedule = store.create({ name: 'Enriched', cron: '* * * * *', playbook: { path: 'daily.md', parameters: {} }, cwd: '/tmp' });
+        const receipt = await service.reserveExecution(schedule, 'cron', '2026-01-01T09:00:00.000Z');
+        await service.markExecutionAccepted(schedule.id, receipt.id, 'task-1', false);
+
+        await service.recordTaskTerminalOutcome('task-1', 'completed');
+
+        const row = store.get(schedule.id)!.executionLedger[0];
+        expect(row.outcome).toBe('completed');
+        expect(row.tokenUsage).toEqual(enrichment.tokenUsage);
+        expect(row.artifacts).toEqual(['https://github.com/kookr-ai/kookr/pull/42']);
+
+        // AC #1: the enriched row is exposed through the schedule API response.
+        const apiRow = service.listResponse().schedules[0].executionLedger[0];
+        expect(apiRow.tokenUsage).toEqual(enrichment.tokenUsage);
+        expect(apiRow.artifacts).toEqual(['https://github.com/kookr-ai/kookr/pull/42']);
+      });
+    });
+
+    // Invariant: a task with tokenUsage=null writes a clean row with NO cost
+    // field — never a fabricated zero presented as measured cost.
+    it('writes cleanly with no cost field when the task measured no usage', async () => {
+      await withEnrichedService(() => ({}), async (service, store) => {
+        const schedule = store.create({ name: 'NullUsage', cron: '* * * * *', playbook: { path: 'daily.md', parameters: {} }, cwd: '/tmp' });
+        const receipt = await service.reserveExecution(schedule, 'cron', '2026-01-01T09:00:00.000Z');
+        await service.markExecutionAccepted(schedule.id, receipt.id, 'task-2', false);
+
+        await service.recordTaskTerminalOutcome('task-2', 'completed');
+
+        const row = store.get(schedule.id)!.executionLedger[0];
+        expect(row.outcome).toBe('completed');
+        expect(row).not.toHaveProperty('tokenUsage');
+        expect(row).not.toHaveProperty('artifacts');
+      });
+    });
+
+    it('writes cleanly with no cost field when no resolver is wired at all', async () => {
+      await withService(async (service, store) => {
+        const schedule = store.create({ name: 'NoResolver', cron: '* * * * *', playbook: { path: 'daily.md', parameters: {} }, cwd: '/tmp' });
+        const receipt = await service.reserveExecution(schedule, 'cron', '2026-01-01T09:00:00.000Z');
+        await service.markExecutionAccepted(schedule.id, receipt.id, 'task-3', false);
+
+        await service.recordTaskTerminalOutcome('task-3', 'completed');
+
+        const row = store.get(schedule.id)!.executionLedger[0];
+        expect(row.outcome).toBe('completed');
+        expect(row).not.toHaveProperty('tokenUsage');
+        expect(row).not.toHaveProperty('artifacts');
+      });
+    });
+  });
+
+  describe('deriveLedgerEnrichment (#1582)', () => {
+    it('returns an empty object for an absent task (no fabricated cost)', () => {
+      expect(deriveLedgerEnrichment(undefined)).toEqual({});
+    });
+
+    it('omits tokenUsage when the task measured none', () => {
+      expect(deriveLedgerEnrichment({ completionDigest: { prUrls: ['https://x/pr/1'] } })).toEqual({
+        artifacts: ['https://x/pr/1'],
+      });
+    });
+
+    it('joins tokenUsage and digest PR URLs, dropping empty strings', () => {
+      expect(deriveLedgerEnrichment({
+        tokenUsage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.1 },
+        completionDigest: { prUrls: ['https://x/pr/1', ''] },
+      })).toEqual({
+        tokenUsage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.1 },
+        artifacts: ['https://x/pr/1'],
+      });
+    });
+
+    it('omits artifacts when the digest has no PR URLs', () => {
+      expect(deriveLedgerEnrichment({ completionDigest: { prUrls: [] } })).toEqual({});
+      expect(deriveLedgerEnrichment({ completionDigest: {} })).toEqual({});
     });
   });
 
