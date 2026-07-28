@@ -41,6 +41,11 @@ import { createSnapshotMessage, getSnapshotAgentsForClient } from './use-cases/g
 import { collectBootTranscriptRegistrations } from './boot-transcript-registration.js';
 import { sweepReflectWorktrees } from './use-cases/request-task-reflect.js';
 import { startBackgroundServices } from './bootstrap/start-background-services.js';
+import { resolveWorkspaceContext } from './use-cases/workspace-context.js';
+import {
+  ScheduledWorktreeReclaimRunner,
+  resolveReclaimScheduleConfig,
+} from './scheduled-worktree-reclaim-runner.js';
 import {
   formatPayloadDietLogLine,
   resolveMaintenancePruneIntervalHours,
@@ -1656,6 +1661,29 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     snapshotPayloadSizePolicy: DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS,
   };
 
+  // Unattended worktree-reclaim scheduler (issue #1578). Disabled unless
+  // KOOKR_WORKTREE_RECLAIM_CRON is a valid cron expression, so unconfigured
+  // servers see no behavior change. Reuses the same workspace deps the
+  // interactive sweep uses and the shared audit log.
+  const reclaimScheduleConfig = resolveReclaimScheduleConfig(process.env);
+  const scheduledWorktreeReclaimRunner = new ScheduledWorktreeReclaimRunner({
+    config: reclaimScheduleConfig,
+    cleanupDeps: { policyResolver, leaseService, attemptRepository },
+    projectConfigStore,
+    taskStore,
+    resolveRepoPath: async (projectId) => {
+      const context = await resolveWorkspaceContext(projectId, {
+        taskStore,
+        serverCwd,
+        serverProjectId,
+        projectConfigStore,
+      });
+      return context.repoPath;
+    },
+    auditLogPath: join(kookrDir, 'audit.jsonl'),
+    logger: console,
+  });
+
   const backgroundServices = startBackgroundServices({
     ossAttemptStore,
     ledgerAnalytics,
@@ -1668,6 +1696,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     scheduleRunner,
     resourceStatusService,
     findingEvidenceReviewSampler,
+    scheduledWorktreeReclaimRunner,
     timerDeps: {
       monitor, taskStore, queue, adapter, adapterRegistry, tokenTracker, watchdog,
       hookWatcher, terminalBackend, hooksDir, tasksFile, serverCwd,
