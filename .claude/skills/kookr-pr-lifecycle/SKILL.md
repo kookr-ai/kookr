@@ -189,6 +189,54 @@ EOF
 )"
 ```
 
+## 8. Merge & Head-Branch Cleanup
+
+**Every merge of an issue/feature head branch must delete that branch.** Squash
+merges leave the branch tip a non-ancestor of `main`; if the branch survives it
+still shows a full stale diff and is PR-able a second time, producing net-no-op
+duplicate PRs — the 2026-07-26 duplicate-PR incident (issue #1572). Branch
+survival, not the merge method, is the root cause, so deletion is part of the
+merge step, never an optional follow-up. (This does **not** apply to the
+long-lived `staging` branch in §7's staging→main merge — never delete `staging`.)
+
+On this repo (private + Free plan, no auto-merge — issue #29) use the wrapper,
+which squash-merges **and deletes the branch** once checks pass:
+
+```bash
+pnpm merge <PR_NUMBER>            # = bash scripts/kookr-merge.sh <PR_NUMBER>
+                                 # squash-merges with --delete-branch
+```
+
+For any other repo, delete the branch as part of the merge:
+
+```bash
+gh pr merge <PR_NUMBER> --squash --delete-branch
+```
+
+### Linked-worktree edge case (deletion must never silently fail)
+
+`--delete-branch` also deletes the **local** branch, which fails if that branch is
+checked out in a linked worktree (e.g. the worktree you merged from). Pick one so
+the deletion never silently no-ops:
+
+- **Merge from the primary checkout**, not the merging worktree, so no linked
+  worktree holds the branch — then `--delete-branch` removes remote and local cleanly.
+- **Or delete explicitly** when `--delete-branch` reports a local-delete failure
+  (the remote may already be gone, so make each step idempotent):
+
+```bash
+gh pr merge <PR_NUMBER> --squash                              # merge; local --delete-branch may fail
+git push origin --delete <head-branch> 2>/dev/null || true    # ensure the REMOTE branch is gone
+git worktree remove <worktree-path> 2>/dev/null || true       # drop the linked worktree holding it
+git branch -D <head-branch> 2>/dev/null || true               # then the local branch
+```
+
+Verify the remote head branch is gone before calling the merge done:
+
+```bash
+gh api "repos/<owner>/<repo>/branches/<head-branch>"   # expect: HTTP 404
+```
+
 ## Common Mistakes to Avoid
 
 - **Never use `gh pr edit --body` or `gh pr edit --title`** — it fails with a GraphQL Projects Classic deprecation error
@@ -196,6 +244,7 @@ EOF
 - **Never skip thread resolution** after pushing a review fix
 - **Never create a PR without running the repo checks first**
 - **Never run `gh pr create` without passing the pre-create duplicate-guard** (§1) — a CLOSED issue or an already-open/recently-merged head branch means the work already shipped
+- **Never leave a merged issue/feature head branch alive** (§8) — a surviving squash-merged branch is re-PR-able and produces net-no-op duplicate PRs (issue #1572); the long-lived `staging` branch is the sole exception
 
 ## See Also
 

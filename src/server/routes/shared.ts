@@ -11,7 +11,8 @@ import type { DeferredInteractionLogWriter } from '../../core/interaction-log.js
 import type { GitHubScannerService } from '../../core/github-scanner-service.js';
 import type { GitHubStateStore } from '../../core/github-state-store.js';
 import type { BuildInfo } from '../../core/build-info.js';
-import type { ServerMessage } from '../../shared/contracts/messages.js';
+import type { ServerMessage, SystemResourceStatus } from '../../shared/contracts/messages.js';
+import type { AdmissionControlConfig } from '../task-admission.js';
 import type { ShadowDetectorRegistry } from '../../core/shadow-detector.js';
 import type { HttpPushTracker } from '../../core/http-push-tracker.js';
 import type { ProjectConfigStore } from '../../core/project-config-store.js';
@@ -86,6 +87,20 @@ export interface TaskRouteDeps {
   shadowRegistry?: ShadowDetectorRegistry;
   activityLedger?: ActivityLedger;
   launchServiceDeps: LaunchServiceDeps;
+  /**
+   * Latest already-sampled host/server resource snapshot (issue #1590). The
+   * `POST /api/tasks` admission gate reads
+   * `server.eventLoopDelayP95Ms` from it to fast-fail with 503 when the event
+   * loop is saturated. Flows through from the full RouteDeps; tests may omit it
+   * (absence fails open — admission proceeds).
+   */
+  getLatestResourceStatus?: () => SystemResourceStatus | null;
+  /**
+   * Load-based admission thresholds (issue #1590). Falls back to
+   * {@link readAdmissionControlConfigFromEnv} at route registration when
+   * absent, so production picks up env config without explicit threading.
+   */
+  admissionControlConfig?: AdmissionControlConfig;
   suppressionTracker?: SnoozeSuppressionTracker;
   tasksFile?: string;
   /** Coalesced task-state saver for bursty mutation paths. */
@@ -395,6 +410,12 @@ export interface RouteDeps {
   drainController?: DrainController;
   /** Recent operational-alert fire/recovery history for admin introspection. */
   getOperationalAlertHistory?: () => OperationalAlertHistorySnapshot;
+  /**
+   * Latest already-sampled resource snapshot (issue #1590). Threaded to
+   * task-routes so the `POST /api/tasks` admission gate can read the sampled
+   * event-loop delay p95 without standing up a second monitor.
+   */
+  getLatestResourceStatus?: () => SystemResourceStatus | null;
   /** Optional snapshot enrichers used by admin-triggered drain/resume broadcasts. */
   terminalInputCoordinator?: TerminalInputCoordinator;
   userInputDeliveries?: UserInputDeliveryService;

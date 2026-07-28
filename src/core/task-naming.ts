@@ -1,6 +1,7 @@
 import { basename } from 'node:path';
 import { completeLlmDetailed } from './llm-client.js';
 import type { LlmClient, LlmCompletionRequest, LlmResponseFormat } from './llm-client.js';
+import { stripWorktreeGuardrailPrefix } from './prompt-display.js';
 import { logTaskNaming } from './training-data-logger.js';
 
 const TIMEOUT_MS = 10_000;
@@ -78,20 +79,37 @@ function parseTaskName(raw: string): string | null {
   return normalizeTaskName(structuredName ?? raw);
 }
 
+// A line that, once leading markers are stripped, is nothing but JSON
+// structural punctuation — `{`, `}`, `[`, `]`, optionally with a trailing
+// comma/colon. These are the opening lines of a spawn payload pasted in as the
+// prompt (issue #1556, task a5a89a9a named `"{"`) and must never become a task
+// name; the namer falls through to the first line with real content.
+const STRUCTURAL_JUNK_LINE_RE = /^[{}[\]()][{}[\]()\s,:]*$/;
+
+function isNameWorthyLine(line: string): boolean {
+  return line.length > 0 && !STRUCTURAL_JUNK_LINE_RE.test(line);
+}
+
 /**
  * Deterministic, never-empty task name derived from the prompt itself —
  * the guaranteed fallback when the LLM namer returns nothing (issue #1526
  * Phase C4: during the 2026-07-24 grok burst every naming call came back
  * empty, leaving whole batches of unnamed tasks and degrading triage).
- * Uses the first non-empty prompt line (leading markdown/list markers
+ * Uses the first meaningful prompt line (leading markdown/list markers
  * stripped, whitespace collapsed), truncated to {@link MAX_NAME_LENGTH};
  * for a blank prompt, falls back to the cwd basename.
+ *
+ * Junk first lines are skipped rather than taken literally (issue #1556):
+ * the worktree-guardrail preamble is stripped up front, and lone/leading JSON
+ * braces-brackets never become the name — so a JSON spawn payload pasted as the
+ * prompt no longer yields a name of `"{"`, and a guardrail-prefixed prompt no
+ * longer yields the boilerplate first line.
  */
 export function deterministicTaskName(prompt: string, cwd?: string): string {
-  const firstLine = prompt
+  const firstLine = stripWorktreeGuardrailPrefix(prompt)
     .split('\n')
     .map((line) => line.replace(/^[\s#>*-]+/, '').trim())
-    .find((line) => line.length > 0);
+    .find(isNameWorthyLine);
   const collapsed = firstLine?.replace(/\s+/g, ' ') ?? '';
   if (collapsed.length === 0) {
     const dir = cwd ? basename(cwd) : '';
@@ -99,6 +117,34 @@ export function deterministicTaskName(prompt: string, cwd?: string): string {
   }
   if (collapsed.length <= MAX_NAME_LENGTH) return collapsed;
   return `${collapsed.slice(0, MAX_NAME_LENGTH - 1).trimEnd()}…`;
+}
+
+/**
+ * When a JSON spawn payload is pasted in as the prompt (a CLI caller sending
+ * the whole `{prompt, cwd, name, …}` body as the prompt string — issue #1556,
+ * task a5a89a9a), lift the embedded `name` field so the task is named with the
+ * caller's intended name instead of the payload's first brace. Returns the
+ * trimmed name when the prompt parses as a JSON object carrying a non-empty
+ * string `name`; otherwise undefined (ordinary prose prompts are untouched).
+ */
+export function extractEmbeddedTaskName(prompt: string): string | undefined {
+  const trimmed = prompt.trim();
+  if (!trimmed.startsWith('{')) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  if (!('name' in parsed)) return undefined;
+  const name = (parsed as { name: unknown }).name;
+  if (typeof name !== 'string') return undefined;
+  const cleaned = name.trim().replace(/\s+/g, ' ');
+  if (cleaned.length === 0) return undefined;
+  return cleaned.length <= MAX_NAME_LENGTH
+    ? cleaned
+    : `${cleaned.slice(0, MAX_NAME_LENGTH - 1).trimEnd()}…`;
 }
 
 /**

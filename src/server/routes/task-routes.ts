@@ -1,6 +1,7 @@
 import type { Context, Hono } from 'hono';
 import { join } from 'node:path';
 import { discoverPlaybooks } from '../../core/playbook-discovery.js';
+import { extractEmbeddedTaskName } from '../../core/task-naming.js';
 import { saveTasks, serializeSnoozed } from '../../core/task-persistence.js';
 import { normalizeAgentSelection } from '../../core/agent-types.js';
 import { createSnapshotMessage } from '../use-cases/get-snapshot.js';
@@ -24,6 +25,10 @@ import {
   isSpawnBurstLimitError,
 } from '../launch-service.js';
 import { MAX_IDEMPOTENCY_KEY_LENGTH } from '../../shared/contracts/launch.js';
+import {
+  evaluateTaskAdmission,
+  readAdmissionControlConfigFromEnv,
+} from '../task-admission.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import { LAUNCH_DEPENDENCIES, type LaunchDependency } from '../../core/playbook.js';
 import type { SessionInfo, Task, TaskStore, TokenUsage } from '../../core/tasks.js';
@@ -73,6 +78,10 @@ function supervisorUnauthorizedResponse(c: Context) {
 
 export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   const { taskStore, monitor, adapter, hookWatcher, watchdog, broadcastToAll, serverCwd, hookIngestion } = deps;
+  // Load-based admission gate for POST /api/tasks (issue #1590). Read env once
+  // at registration (env config, like the operational-alert thresholds), unless
+  // a config was threaded explicitly (tests).
+  const admissionControlConfig = deps.admissionControlConfig ?? readAdmissionControlConfigFromEnv();
   const coordinatorSuppressions = deps.coordinatorSuppressions ?? new CoordinatorSuppressionStore(deps.kookrDir ?? serverCwd);
   const auditLogPath = deps.kookrDir ? join(deps.kookrDir, 'audit.jsonl') : undefined;
   /** Resolve the `X-Kookr-Actor` header into an attributed audit-row actor (issue #1526 Phase B). */
@@ -366,6 +375,19 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   });
 
   app.post('/api/tasks', async (c) => {
+    // Load-based admission (issue #1590): shed the request BEFORE parsing the
+    // body or touching the launch path, so a saturated event loop fast-fails
+    // with 503 + Retry-After in ≤2s instead of hanging into a client timeout.
+    // Reuses the already-sampled health-snapshot p95 (no second monitor); fails
+    // open when the signal is missing or the gate is disabled.
+    const admission = evaluateTaskAdmission({
+      config: admissionControlConfig,
+      eventLoopDelayP95Ms: deps.getLatestResourceStatus?.()?.server.eventLoopDelayP95Ms ?? null,
+    });
+    if (!admission.admit) {
+      c.header('Retry-After', String(admission.rejection.retryAfterSeconds));
+      return c.json(admission.rejection, 503);
+    }
     try {
       const body = await c.req.json() as {
         prompt?: string;
@@ -439,9 +461,16 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       // Phase B attribution header so 'lucy' burns her own burst budget
       // instead of sharing the anonymous `api` bucket.
       const launchActorId = c.req.header(ACTOR_HEADER)?.trim() || undefined;
+      // #1556: a CLI caller that pastes a whole JSON spawn payload as the
+      // prompt (a5a89a9a) carries its intended name in an embedded `name`
+      // field — lift it so the task is named that instead of the payload's
+      // opening brace. Ordinary prose prompts return undefined and are
+      // unaffected; a set name skips AI naming (see LaunchOpts.name).
+      const embeddedName = extractEmbeddedTaskName(body.prompt);
       const { task, queued, duplicate, idempotentReplay } = await launchTask(deps.launchServiceDeps, {
         prompt: body.prompt,
         cwd: body.cwd,
+        name: embeddedName,
         criteria: body.criteria,
         parentTaskId: body.parentTaskId,
         agentType: body.agentType ? normalizeAgentSelection(body.agentType) : undefined,

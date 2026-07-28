@@ -68,6 +68,7 @@ import {
   getOperationalAlertConfig,
   resetOperationalAlertConfig,
 } from './operational-alert-config.js';
+import { readAdmissionControlConfigFromEnv } from './task-admission.js';
 import {
   FindingEvidenceReviewQueueStore,
   FindingEvidenceReviewSampler,
@@ -1258,6 +1259,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
     serverCwd, serverPort: port, pluginUpdateBin: agentBin, kookrDir, frontendDir, broadcastToAll,
     getOperationalAlertHistory: () => resourceStatusService.getOperationalAlertHistory(),
+    // issue #1590: feed the load-based POST /api/tasks admission gate the same
+    // already-sampled event-loop p95 the health snapshot exposes.
+    getLatestResourceStatus: () => resourceStatusService.getLatest(),
     llmClient,
     sessionHealthService,
     ...(findingEvidenceReviewEnabled ? { findingEvidenceReviewHmacKey } : {}),
@@ -1466,6 +1470,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   } else {
     console.log('[ops-alerts] Operational alerts disabled (set KOOKR_ALERT_* thresholds to enable)');
   }
+  // Load-based admission for POST /api/tasks (issue #1590): shed spawn POSTs
+  // with 503 + Retry-After when the sampled event-loop delay p95 is saturated.
+  const admissionControlConfig = readAdmissionControlConfigFromEnv();
+  console.log(
+    admissionControlConfig.eventLoopDelayThresholdMs > 0
+      ? `[admission] POST /api/tasks sheds at event-loop p95 >= ` +
+          `${admissionControlConfig.eventLoopDelayThresholdMs}ms ` +
+          `(503, Retry-After ${admissionControlConfig.retryAfterSeconds}s)`
+      : '[admission] Load-based POST /api/tasks admission disabled (set KOOKR_ADMISSION_EVENT_LOOP_DELAY_MS to enable)',
+  );
   const resourceStatusService = createResourceStatusService({
     sampler: resourceStatusSampler ?? createSystemResourceSampler({ dataDirectoryPath: kookrDir }),
     broadcastToAll,
