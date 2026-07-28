@@ -61,6 +61,10 @@ parameters:
     description: "(Advanced) Minimum number of open issues to inspect before proposing ideas."
     required: false
     default: "100"
+  - name: spendCapUsd
+    description: "(Advanced) Per-run spend cap in USD. The run records its accrued cost against this cap at phase boundaries; when the cap is reached it stops generating and publishing further candidates and flags a cap breach in the completion output. Blank or 0 disables the cap. Enforcement needs the Kookr task API (KOOKR_API_BASE_URL + KOOKR_TASK_ID); when that surface is absent the cap is recorded as unenforced and the run proceeds."
+    required: false
+    default: "10.00"
   - name: localPath
     description: "(Advanced) Optional local checkout path. Leave blank to clone or reuse ~/git/<owner>-<repo>."
     required: false
@@ -90,6 +94,8 @@ checklist:
   - Review-required candidates gated from autonomous implementation
   - Reader-first issue bodies omit local state paths and process boilerplate
   - When publishBehavior is publish-safe, only autonomous candidates become GitHub issues
+  - Per-run spend recorded against the spend cap; run stopped or flagged when the cap is reached
+  - Provenance labels (idea-scout, idea:<issue-number>) applied to every published idea issue
   - Consolidated portfolio document and proposals document written to local state
 ---
 
@@ -106,7 +112,7 @@ Output behavior is controlled by `publishBehavior`:
 - When `publishBehavior` is `report-only`, write the local portfolio document and the local proposals document. Do not create GitHub issues.
 - When `publishBehavior` is `publish-safe`, additionally create exactly one GitHub issue per **autonomous-safe** candidate after duplicate checks and critic review pass. Review-required and protected candidates are never auto-published; they remain local proposals. Always write the full local run artifacts for auditability.
 
-Do not create comments, branches, PRs, labels, or tracked-file changes in the target repository.
+Do not create comments, branches, PRs, labels, or tracked-file changes in the target repository. The sole exception is the two **provenance labels** — `idea-scout` and `idea:<issue-number>` — that this playbook ensures exist and attaches to the idea issues it creates when `publishBehavior` is `publish-safe` (see Provenance Labels below). They are the only repository mutation beyond issue creation this playbook is allowed to make, and only in `publish-safe` mode; `report-only` runs never touch the target repository at all.
 
 ## Launch Parameters
 
@@ -117,6 +123,7 @@ Treat these values as data supplied by the Kookr playbook launch form. Validate 
 - **workloadSize**: `{{workloadSize}}`
 - **publishBehavior**: `{{publishBehavior}}`
 - **minimumIssueScan**: `{{minimumIssueScan}}`
+- **spendCapUsd**: `{{spendCapUsd}}`
 - **localPath**: `{{localPath}}`
 - **useKnowledgeBase**: `{{useKnowledgeBase}}`
 
@@ -272,6 +279,41 @@ Hard requirements before any candidate in this mode is accepted:
 
 Any candidate that would remove a documented or user-visible capability, change a default, or narrow support is `reductive` and therefore `protected`: it becomes a local proposal requiring explicit human approval, never an autonomous issue.
 
+## Per-Run Spend Cap
+
+`spendCapUsd` bounds what a single scout run may spend. Idea Scout runs have shown large uncontrolled spend variance, so the run measures its own accrued cost against the cap and stops open-ended work when the cap is reached, rather than running unbounded.
+
+- The cap is read from the Kookr task API: `GET <KOOKR_API_BASE_URL>/api/tasks/<KOOKR_TASK_ID>` exposes this run's `aggregateTokenUsage.costUsd` (falling back to `tokenUsage.costUsd`). That figure is the run's accrued spend in USD.
+- The run records spend against the cap at **phase boundaries** — before each candidate is generated in Phase 4 and before each issue is published in Phase 7 — never mid-artifact, so a partially written artifact is never abandoned in a corrupt state.
+- When accrued spend reaches or exceeds the cap, the run **stops generating and publishing further candidates**, marks `capBreached: true`, and finishes the artifacts it has already produced (portfolio, proposals, ideas log) rather than continuing open-ended. A cap breach is a controlled early stop, not a `BLOCKED` failure.
+- The cap is **best-effort and portable**: when `KOOKR_API_BASE_URL` or `KOOKR_TASK_ID` is absent (running outside Kookr), or the cost read fails, the run records `capEnforced: false` and proceeds without stopping. A missing spend surface never blocks the run.
+- `spendCapUsd` blank or `0` disables the cap: `capEnforced: false`, no early stop.
+- The run always records `spendUsd`, `spendCapUsd`, `capBreached`, and `capEnforced` in `<spendLedgerFile>` and `<runManifest>`, and surfaces them in the completion output (Phase 8) so the schedule ledger/rollup can pick up per-run spend and cap breaches.
+
+## Provenance Labels
+
+To make scout ROI measurable, every idea issue this playbook creates carries two provenance labels so the chain **idea issue → context pack → downstream PR** is computable from labels alone:
+
+- `idea-scout` — marks the issue as originating from an Idea Scout run.
+- `idea:<issue-number>` — the per-idea join key, where `<issue-number>` is the created idea issue's own number. A downstream context pack or PR that implements the idea carries the same `idea:<issue-number>` label, so a single label query joins the idea issue to the merged PR that converted it.
+
+Rules:
+
+- Labels are applied **only** when `publishBehavior` is `publish-safe`, and **only** to the idea issues this run creates. `report-only` runs create no issues and apply no labels.
+- The join-key number is the created issue's own number, always an integer parsed from the `gh issue create` result — never repo-derived free text pasted into shell source.
+- Applying provenance labels is the one repository mutation this playbook makes beyond issue creation. It never labels pre-existing issues, PRs, or any artifact it did not create this run.
+- Downstream conversion is computed from labels alone. Example `gh` query for a day's conversion ratio (idea issues → merged PRs):
+
+  ```bash
+  # idea issues this scout created on a given UTC day
+  gh issue list -R "$REPO" --label idea-scout --state all \
+    --search "created:$DAY" --json number > ideas.json
+  # merged PRs that carry the matching idea:<n> join label
+  gh pr list -R "$REPO" --state merged --label idea-scout \
+    --json number,labels > merged.json
+  # ratio = (# idea:<n> join keys present on a merged PR) / (# idea issues created)
+  ```
+
 ## Derived Values
 
 Resolve **repoFullName** before computing other values:
@@ -287,6 +329,7 @@ Compute these from the resolved **repoFullName**:
 - **runKey**: use `$KOOKR_TASK_ID` when set; otherwise use `manual-<UTC timestamp>`.
 - **stateDir**: `~/.kookr/playbook-state/repository-idea-scout/<repoSlug>/<runKey>`.
 - **runManifest**: `<stateDir>/run.json`.
+- **spendLedgerFile**: `<stateDir>/spend.json` — this run's accrued spend, the configured cap, and whether the cap was breached or enforced; picked up in the completion output.
 - **stateFile**: `<stateDir>/state.md`.
 - **recommendationsDoc**: `<stateDir>/recommendations.md` — the consolidated portfolio document.
 - **proposalsDoc**: `<stateDir>/proposals.md` — review-required and protected candidates, clearly labeled, never auto-published.
@@ -340,6 +383,7 @@ Treat the launch parameters above as prose until they are validated. Do not past
 - `workloadSize`: must be one of `quick-shortlist`, `half-day`, `full-day`, or `deep-backlog`
 - `publishBehavior`: must be `report-only` or `publish-safe`
 - `minimumIssueScan`: must be an integer from 20 through 500
+- `spendCapUsd`: may be empty, or must match `^[0-9]+(\.[0-9]{1,2})?$` (a non-negative USD amount with at most two decimals); `0`, `0.00`, and empty all disable the cap
 - `useKnowledgeBase`: must be `auto` or `off`
 - `localPath`: may be empty, or must start with `/` or `~/` and contain only `A-Za-z0-9._/-`; reject quotes, whitespace, `$`, backticks, semicolons, pipes, redirects, and newlines
 
@@ -351,6 +395,7 @@ PROFILE='<validated work profile>'
 WORKLOAD='<validated workload size>'
 PUBLISH='<validated report-only|publish-safe>'
 SCAN_LIMIT='<validated integer 20..500>'
+SPEND_CAP_USD='<validated non-negative amount, or empty>'
 USE_KB='<validated auto|off>'
 LOCAL_INPUT='<validated path or empty string>'
 
@@ -374,8 +419,60 @@ RECOMMENDATIONS_DOC="$STATE_DIR/recommendations.md"
 PROPOSALS_DOC="$STATE_DIR/proposals.md"
 CONFLICT_MATRIX="$STATE_DIR/conflict-matrix.md"
 DUPLICATE_MATRIX="$STATE_DIR/duplicate-search-matrix.md"
+SPEND_LEDGER="$STATE_DIR/spend.json"
 mkdir -p "$STATE_DIR" "$RECS_DIR"
 [ -f "$IDEAS_LOG" ] || printf '[]\n' > "$IDEAS_LOG"
+```
+
+Initialize the spend ledger. The cap is enforced only when it is a positive amount and the Kookr task API is reachable; otherwise it is recorded as unenforced and the run proceeds normally:
+
+```bash
+# CAP_ENFORCED is "true" only when a positive cap is set AND the task API is present.
+CAP_ENFORCED=false
+case "$SPEND_CAP_USD" in
+  ''|0|0.0|0.00) SPEND_CAP_USD=0 ;;
+  *) [ -n "${KOOKR_API_BASE_URL:-}" ] && [ -n "${KOOKR_TASK_ID:-}" ] && CAP_ENFORCED=true ;;
+esac
+
+write_spend_ledger() {
+  # $1 = accrued spend (decimal USD or empty), $2 = capBreached (true|false)
+  local spend="${1:-}" breached="${2:-false}"
+  jq -n \
+    --arg spend "$spend" \
+    --argjson cap "$SPEND_CAP_USD" \
+    --argjson enforced "$CAP_ENFORCED" \
+    --argjson breached "$breached" \
+    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{spendUsd: ($spend|if . == "" then null else tonumber end),
+      spendCapUsd: $cap, capEnforced: $enforced, capBreached: $breached,
+      updatedAt: $at}' > "$SPEND_LEDGER.tmp" \
+    && mv "$SPEND_LEDGER.tmp" "$SPEND_LEDGER"
+}
+
+read_spend_usd() {
+  # Print this run's accrued cost in USD from the Kookr task API, or nothing
+  # when the surface is absent or the read fails. Best-effort; never blocks.
+  [ -n "${KOOKR_API_BASE_URL:-}" ] && [ -n "${KOOKR_TASK_ID:-}" ] || return 0
+  curl -fsS --max-time 5 "$KOOKR_API_BASE_URL/api/tasks/$KOOKR_TASK_ID" 2>/dev/null \
+    | jq -r '(.aggregateTokenUsage.costUsd // .tokenUsage.costUsd // empty)' 2>/dev/null || true
+}
+
+# Record accrued spend against the cap at a phase boundary. Refreshes the
+# ledger and returns 1 when the cap is enforced and reached (so the caller
+# stops open-ended work), 0 otherwise.
+spend_gate() {
+  [ "$CAP_ENFORCED" = true ] || return 0
+  local spend; spend=$(read_spend_usd)
+  [ -n "$spend" ] || { return 0; }  # transient read failure: do not stop
+  if awk -v s="$spend" -v c="$SPEND_CAP_USD" 'BEGIN{exit !(s+0 >= c+0)}'; then
+    write_spend_ledger "$spend" true
+    return 1
+  fi
+  write_spend_ledger "$spend" false
+  return 0
+}
+
+write_spend_ledger "$(read_spend_usd)" false
 ```
 
 Preflight:
@@ -458,6 +555,8 @@ jq -n \
   --arg minimumIssueScan "$SCAN_LIMIT" \
   --argjson publishTarget "$PUBLISH_TARGET" \
   --argjson candidatePool "$CANDIDATE_POOL" \
+  --argjson spendCapUsd "$SPEND_CAP_USD" \
+  --argjson capEnforced "$CAP_ENFORCED" \
   --arg taskId "${KOOKR_TASK_ID:-}" \
   --arg defaultBranch "$DEFAULT_BRANCH" \
   --arg head "$HEAD_SHA" \
@@ -474,6 +573,9 @@ jq -n \
     minimumIssueScan: $minimumIssueScan,
     publishTarget: $publishTarget,
     candidatePool: $candidatePool,
+    spendCapUsd: $spendCapUsd,
+    capEnforced: $capEnforced,
+    capBreached: false,
     taskId: $taskId,
     defaultBranch: $defaultBranch,
     head: $head,
@@ -626,6 +728,15 @@ Rules:
 ## Phase 4: Generate The Candidate Pool
 
 Generate candidates toward `CANDIDATE_POOL` (roughly 1.5–2x the publish target) so Phase 5 has enough material to consolidate and rank down to `PUBLISH_TARGET`. Stop generating early only when there genuinely are not enough novel, non-duplicate, in-scope angles; never fabricate marginal candidates.
+
+**Spend gate.** Candidate generation is the run's most expensive phase, so measure spend against the cap at its boundary. Before starting each new candidate, call `spend_gate`. When it returns non-zero the cap has been reached: stop generating further candidates, record the cap breach as the shortfall reason in `<recommendationsDoc>`, and proceed to Phase 5 with the candidates already accepted. Never abandon a half-written candidate — the gate is checked only between candidates.
+
+```bash
+if ! spend_gate; then
+  echo "Spend cap reached (\$$SPEND_CAP_USD); stopping candidate generation early." >> "$STATE_FILE"
+  # proceed to Phase 5 with the candidates accepted so far
+fi
+```
 
 For each candidate:
 
@@ -912,7 +1023,7 @@ Write `<recommendationsDoc>` (the portfolio) and `<proposalsDoc>` (gated candida
 ```markdown
 # Repository Idea Scout Portfolio: <repo>
 
-## Summary (publish target, pool size, how many selected, any shortfall)
+## Summary (publish target, pool size, how many selected, any shortfall, and the `Run spend: $X / cap $Y` line with any cap breach)
 ## Scope filter (only when extraInstruction is non-empty)
 ## Issue inventory summary
 ## Codebase and capability inventory summary
@@ -1001,6 +1112,12 @@ if [ "$PUBLISH" = "publish-safe" ]; then
       continue
     fi
 
+    # Spend gate: stop opening new issues once this run's cap is reached.
+    if ! spend_gate; then
+      echo "Spend cap reached (\$$SPEND_CAP_USD); stopping issue creation before $IDEA_DIR." >> "$STATE_FILE"
+      break
+    fi
+
     RAW_TITLE=$(jq -r --arg idx "$IDX" '.[] | select(.idx == $idx) | .title' "$IDEAS_LOG")
     if [ -z "$RAW_TITLE" ] || [ "$RAW_TITLE" = "null" ]; then
       block "could not derive issue title for $IDEA_DIR"
@@ -1066,13 +1183,40 @@ if [ "$PUBLISH" = "publish-safe" ]; then
     mv "$ISSUE_CREATED.tmp" "$ISSUE_CREATED" \
       || { block "created issue metadata write failed for $IDEA_DIR"; exit 0; }
 
-    jq --arg idx "$IDX" --arg url "$ISSUE_URL" \
-      '(.[] | select(.idx == $idx) | .issueUrl) |= $url' \
+    # Provenance labels (issue #1587): link idea issue -> context pack -> PR so
+    # conversion is computable from labels alone. ISSUE_NUM is the created
+    # issue's own number, always an integer parsed from GitHub's own metadata —
+    # never repo-derived free text pasted into shell source.
+    ISSUE_NUM=$(jq -r '.number' "$ISSUE_CREATED")
+    case "$ISSUE_NUM" in
+      ''|*[!0-9]*) block "invalid created issue number for $IDEA_DIR"; exit 0 ;;
+    esac
+    # Idempotent: --force upserts the label; re-adding an existing label is a no-op.
+    gh label create idea-scout -R "$REPO" \
+      --color 5319e7 --description "Originated from a Repository Idea Scout run" \
+      --force >/dev/null 2>&1 || true
+    gh label create "idea:$ISSUE_NUM" -R "$REPO" \
+      --color 5319e7 --description "Conversion join key for scouted idea #$ISSUE_NUM" \
+      --force >/dev/null 2>&1 || true
+    gh issue edit "$ISSUE_NUM" -R "$REPO" \
+      --add-label idea-scout --add-label "idea:$ISSUE_NUM" >/dev/null \
+      || { block "provenance label application failed for $IDEA_DIR"; exit 0; }
+
+    # Refresh metadata so the audit record captures the applied labels.
+    gh issue view -R "$REPO" "$ISSUE_URL" --json number,title,url,labels \
+      > "$ISSUE_CREATED.tmp" 2>/dev/null \
+      && jq . "$ISSUE_CREATED.tmp" >/dev/null \
+      && mv "$ISSUE_CREATED.tmp" "$ISSUE_CREATED" || true
+
+    jq --arg idx "$IDX" --arg url "$ISSUE_URL" --arg join "idea:$ISSUE_NUM" \
+      '(.[] | select(.idx == $idx)) |= (.issueUrl = $url | .provenanceLabels = ["idea-scout", $join])' \
       "$IDEAS_LOG" > "$IDEAS_LOG.tmp" \
       && mv "$IDEAS_LOG.tmp" "$IDEAS_LOG"
   done < "$STATE_DIR/publishable.tsv"
 fi
 ```
+
+Every published idea issue therefore carries `idea-scout` and `idea:<issue-number>`. The `idea:<issue-number>` label is the join key: a downstream context pack or PR that implements the idea carries the same label, so a day's conversion ratio (idea issues → merged PRs) is computable from labels alone — see Provenance Labels for the `gh` query.
 
 The deterministic `Repository idea: <title>` prefix combined with the `--author @me` filter makes the search-by-title check idempotent across retries: if issue creation succeeded but the metadata file was not written, the next run recovers the existing URL instead of creating a duplicate. Never create an issue for a review-required or protected candidate, even if the user note asks for it. Never file more than the emission budget allows when the open backlog is over the drain-coupled threshold.
 
@@ -1093,15 +1237,34 @@ Before finishing, validate:
 - When `PUBLISH = report-only`: every entry has `issueUrl: null` and no GitHub issue was created.
 - `<kbSeedsFile>` exists and is valid JSON with a `status` of `ok` or `skipped`; every entry has a `groundedIn` array and a boolean `kbStale`.
 - When `workProfile = simplification-preserving`, `<capabilityInventoryFile>` enumerates in-scope capabilities and no accepted candidate removes a documented/user-visible capability as an autonomous issue.
+- `<spendLedgerFile>` exists and is valid JSON with numeric `spendCapUsd`, boolean `capEnforced`, and boolean `capBreached`; when `PUBLISH = publish-safe`, every published entry in `<ideasLogFile>` has a `provenanceLabels` array containing `idea-scout` and `idea:<issue-number>`.
 - The target checkout's `git status --short` still matches the initial status captured in `<runManifest>`.
 
-If validation passes, write `<promise>DONE</promise>` to `<stateFile>`. If validation fails or an unrecoverable setup/evidence blocker occurs, write `<promise>BLOCKED</promise>` with a concrete reason.
+Record the final spend and surface it, then mark the run. The completion output must carry per-run spend and any cap breach so the schedule ledger/rollup can pick them up:
+
+```bash
+FINAL_SPEND=$(read_spend_usd)
+BREACHED=$(jq -r '.capBreached // false' "$SPEND_LEDGER" 2>/dev/null || echo false)
+write_spend_ledger "$FINAL_SPEND" "$BREACHED"
+# Mirror the final spend/breach flag into the run manifest for the rollup.
+jq --argjson breached "$BREACHED" \
+   '.capBreached = $breached' "$STATE_DIR/run.json" > "$STATE_DIR/run.json.tmp" \
+  && mv "$STATE_DIR/run.json.tmp" "$STATE_DIR/run.json" || true
+# One machine-readable spend line in the completion output.
+printf 'Run spend: $%s / cap $%s (enforced: %s; breached: %s)\n' \
+  "${FINAL_SPEND:-unknown}" "$SPEND_CAP_USD" "$CAP_ENFORCED" "$BREACHED" \
+  | tee -a "$STATE_FILE"
+```
+
+Also include that `Run spend: …` line and, when `capBreached` is true, an explicit "spend cap reached — stopped early" note in both the `<recommendationsDoc>` Summary and the run's final completion message (and the `kookr signal completion-ready --note …` digest), so the schedule ledger/rollup captures per-run spend and cap breaches.
+
+If validation passes, write `<promise>DONE</promise>` to `<stateFile>`. If validation fails or an unrecoverable setup/evidence blocker occurs, write `<promise>BLOCKED</promise>` with a concrete reason. A spend cap breach is **not** a `BLOCKED` condition: it is a controlled early stop; the run still finishes `DONE` with the breach recorded.
 
 ## Idempotency Rules
 
 1. State is scoped to `<repoSlug>/<runKey>`, not just the repository.
 2. Reuse `<stateDir>` only when its `<runManifest>` matches the current repo, work profile, workload size, publish behavior, scan limit, knowledge-base mode, task id or run key, and local path.
-3. Do not post comments, create branches, labels, PRs, or edit tracked files in the target repository.
+3. Do not post comments, create branches, PRs, or edit tracked files in the target repository. The only allowed mutation beyond issue creation is the two provenance labels (`idea-scout`, `idea:<issue-number>`) applied to the idea issues this run creates in `publish-safe` mode; label creation and application are idempotent (`gh label create --force`, `gh issue edit --add-label`).
 4. Create GitHub issues only when `publishBehavior` is `publish-safe`, exactly one issue per **autonomous** candidate, never more, never for a review-required or protected candidate, and never above the drain-coupled emission budget (`kookr emission plan`).
 5. Do not duplicate issue API work unnecessarily; use saved snapshots from this run unless they are missing, invalid JSON, or older than 24 hours.
 6. Refresh feature inventory if the checkout `HEAD` changed from `<runManifest>`.
@@ -1125,6 +1288,9 @@ If validation passes, write `<promise>DONE</promise>` to `<stateFile>`. If valid
 - Do not emit a reductive idea as an autonomous implementation issue. Reductive is always protected.
 - Do not promote a review-required or protected candidate to an autonomous issue on the strength of a user note.
 - Do not infer that low or absent usage means a capability is unnecessary; missing usage evidence is unknown.
+- Do not apply provenance labels to pre-existing issues, PRs, or any artifact this run did not create; label only the idea issues this run opens in `publish-safe` mode.
+- Do not treat a spend cap breach as a `BLOCKED` failure; it is a controlled early stop, and the run still finishes `DONE` with the breach recorded in the completion output.
+- Do not run open-ended after the spend cap is reached; stop generating and publishing further candidates once `spend_gate` reports the cap is breached.
 - Do not fabricate marginal ideas to hit the publish target; report the shortfall honestly.
 - Do not publish the local audit report, portfolio scoring, `kb` internals, or state paths in a GitHub issue; publish only the reader-first `issue-body.md`.
 - Do not file past the drain-coupled emission budget when open backlog is inflated — defer or umbrella-append instead of growing the backlog further.
