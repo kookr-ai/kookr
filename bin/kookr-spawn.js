@@ -14,6 +14,7 @@
 import { pathToFileURL } from 'node:url';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { resolve as pathResolve } from 'node:path';
+import { createHash } from 'node:crypto';
 
 const PORTS_TO_TRY = [4800, 4801];
 const PROBE_TIMEOUT_MS = 1500;
@@ -64,6 +65,50 @@ function isKnownModelId(model) {
 // src/shared/contracts/launch.ts.
 const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
 
+/** Truthy env parse for boolean opt-in flags (`1`/`true`/`yes`/`on`, case-insensitive). */
+function isTruthyEnv(value) {
+  return /^(1|true|yes|on)$/i.test(String(value ?? '').trim());
+}
+
+/**
+ * Derive a stable idempotency key from the spawn's identity when the caller
+ * opts in (`--auto-idempotency` / `KOOKR_SPAWN_AUTO_IDEMPOTENCY`) but supplies no
+ * explicit `--idempotency-key`.
+ *
+ * Why: the client POST aborts at POST_TIMEOUT_MS (10s) but the server may take up
+ * to DEFAULT_LAUNCH_TIMEOUT_MS (180s) to finish launching. A client timeout can
+ * therefore land the task server-side and strand a duplicate on the operator's
+ * retry. A key keyed on the spawn's identity turns that retry into an idempotent
+ * replay (the server ledger has a 24h TTL — see core/idempotency-ledger.ts).
+ *
+ * The server ledger's rolling 24h TTL (core/idempotency-ledger.ts) bounds replay
+ * on its own, so this key carries NO time component: a fixed calendar bucket
+ * would double-launch a retry that crosses the bucket boundary while the ledger
+ * entry is still live (a real midnight bug); the rolling TTL is the correct and
+ * only sound window.
+ *
+ * SCOPE — read before relying on this: the key is derived from the prompt (plus
+ * cwd/criteria/agent), so it only replays retries that re-issue the *identical*
+ * spawn. A caller whose retry regenerates the prompt (an embedded random branch
+ * suffix, a timestamp, etc.) computes a *different* key and will NOT replay — for
+ * those, pass an explicit `--idempotency-key` that encodes the logical intent
+ * (e.g. the issue number), which survives prompt entropy. The prompt cannot be
+ * dropped from the identity either: without it, two different spawns in the same
+ * cwd would collide. This is an opt-in convenience for stable-prompt spawns, not
+ * a general orphan cure for entropy-prompt orchestrators.
+ *
+ * @param {{ prompt: string, cwd: string, criteria?: string|null, agent?: string|null }} input
+ * @returns {string} an `auto-<16-hex>` key, always ≤ MAX_IDEMPOTENCY_KEY_LENGTH.
+ */
+function deriveAutoIdempotencyKey({ prompt, cwd, criteria = null, agent = null }) {
+  // JSON.stringify gives unambiguous, printable field separation (no control
+  // chars in the source) so distinct field splits can't collide.
+  const identity = JSON.stringify([prompt ?? '', cwd ?? '', criteria ?? '', agent ?? '']);
+  // 64-bit digest — collision-negligible at any realistic spawn rate.
+  const digest = createHash('sha256').update(identity, 'utf8').digest('hex').slice(0, 16);
+  return `auto-${digest}`;
+}
+
 // ---------- arg parsing ----------
 
 const HELP_TEXT = `kookr spawn — create a Kookr task from the current working directory.
@@ -100,6 +145,17 @@ Options:
                            Distinct from --dedupe, which compares prompt+cwd;
                            an idempotency key survives prompt text that varies
                            between attempts (e.g. an embedded random suffix).
+      --auto-idempotency   When no --idempotency-key is given, derive one
+                           (auto-<hash>) from prompt+cwd+criteria+agent so a
+                           client-timeout retry of the IDENTICAL spawn replays
+                           instead of stranding a duplicate (bounded by the
+                           server's 24h idempotency TTL). Only helps retries with
+                           a stable prompt — if your retry regenerates the prompt
+                           (random suffix, timestamp), pass an explicit
+                           --idempotency-key instead. Also enabled by
+                           KOOKR_SPAWN_AUTO_IDEMPOTENCY=1. No effect under
+                           --dedupe=skip (intentional duplicate).
+      --no-auto-idempotency  Force it off, overriding the env default.
       --wait[=<seconds>]   After creating the task, poll until it raises
                            completion-ready or reaches a terminal state.
       --parent-task-id <uuid>  Override the parent task linkage explicitly.
@@ -168,6 +224,7 @@ function parseArgs(argv) {
     criteria: null,
     dedupe: 'warn',
     idempotencyKey: null,
+    autoIdempotency: null,
     promptFile: null,
     parentTaskId: null,
     noParentTask: false,
@@ -213,6 +270,10 @@ function parseArgs(argv) {
       out.idempotencyKey = eat();
     } else if (tok.startsWith('--idempotency-key=')) {
       out.idempotencyKey = tok.slice('--idempotency-key='.length);
+    } else if (tok === '--auto-idempotency') {
+      out.autoIdempotency = true;
+    } else if (tok === '--no-auto-idempotency') {
+      out.autoIdempotency = false;
     } else if (tok === '--wait') {
       out.wait = true;
     } else if (tok.startsWith('--wait=')) {
@@ -1093,6 +1154,27 @@ async function main({
   const baseUrl = resolved.baseUrl;
   const parentTaskId = resolveParentTaskId({ args, env });
 
+  // Effective idempotency key: an explicit --idempotency-key always wins.
+  // Otherwise, if auto-idempotency is opted into (flag or env) and the caller
+  // isn't deliberately keeping a duplicate (--dedupe=skip), derive a stable key
+  // from the spawn's identity so a client-timeout retry replays instead of
+  // stranding a duplicate.
+  const autoIdempotency =
+    args.autoIdempotency ?? isTruthyEnv(env.KOOKR_SPAWN_AUTO_IDEMPOTENCY);
+  let effectiveIdempotencyKey = args.idempotencyKey;
+  if (
+    effectiveIdempotencyKey === null &&
+    autoIdempotency &&
+    args.dedupe !== 'skip'
+  ) {
+    effectiveIdempotencyKey = deriveAutoIdempotencyKey({
+      prompt,
+      cwd: cwdAbs,
+      criteria: args.criteria,
+      agent: args.agent,
+    });
+  }
+
   let result;
   try {
     result = await postTask({
@@ -1108,7 +1190,7 @@ async function main({
       parentTaskId,
       autoCloseOnSignal: args.autoCloseOnSignal,
       unattended: args.unattended,
-      idempotencyKey: args.idempotencyKey,
+      idempotencyKey: effectiveIdempotencyKey,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -1288,10 +1370,12 @@ export {
   HELP_TEXT,
   UsageError,
   classifyWaitState,
+  deriveAutoIdempotencyKey,
   formatBackpressure429,
   formatDedup,
   formatSuccess,
   formatWaitOutcome,
+  isTruthyEnv,
   main,
   parseArgs,
   parseMaxBytes,

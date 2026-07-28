@@ -13,10 +13,12 @@ import {
   EXIT_WAIT_TIMEOUT,
   UsageError,
   classifyWaitState,
+  deriveAutoIdempotencyKey,
   formatBackpressure429,
   formatDedup,
   formatSuccess,
   formatWaitOutcome,
+  isTruthyEnv,
   main,
   parseArgs,
   parseMaxBytes,
@@ -109,6 +111,12 @@ describe('parseArgs', () => {
   it('parses --dedupe=<mode> and defaults to warn', () => {
     expect(parseArgs([]).dedupe).toBe('warn');
     expect(parseArgs(['--dedupe=skip']).dedupe).toBe('skip');
+  });
+
+  it('parses --auto-idempotency / --no-auto-idempotency (default null defers to env)', () => {
+    expect(parseArgs([]).autoIdempotency).toBeNull();
+    expect(parseArgs(['--auto-idempotency']).autoIdempotency).toBe(true);
+    expect(parseArgs(['--no-auto-idempotency']).autoIdempotency).toBe(false);
   });
 
   it('parses --wait with an optional timeout in seconds', () => {
@@ -229,6 +237,51 @@ describe('parseArgs', () => {
   it('rejects --idempotency-key over 200 characters', () => {
     expect(() => parseArgs(['--idempotency-key', 'x'.repeat(201)])).toThrow(UsageError);
     expect(parseArgs(['--idempotency-key', 'x'.repeat(200)]).idempotencyKey).toHaveLength(200);
+  });
+});
+
+// ---------- auto-idempotency ----------
+
+describe('deriveAutoIdempotencyKey', () => {
+  const base = { prompt: 'implement #42', cwd: '/repo/one', criteria: 'PR open', agent: 'claude-code' };
+
+  it('is deterministic for the same identity and carries no time component', () => {
+    const a = deriveAutoIdempotencyKey({ ...base });
+    const b = deriveAutoIdempotencyKey({ ...base });
+    expect(a).toBe(b);
+    // No calendar component — the server's rolling 24h TTL bounds replay.
+    expect(a).toMatch(/^auto-[0-9a-f]{16}$/);
+  });
+
+  it('differs when any identity component differs', () => {
+    const ref = deriveAutoIdempotencyKey({ ...base });
+    for (const patch of [{ prompt: 'implement #43' }, { cwd: '/repo/two' }, { criteria: 'other' }, { agent: 'codex-cli' }]) {
+      expect(deriveAutoIdempotencyKey({ ...base, ...patch })).not.toBe(ref);
+    }
+  });
+
+  it('is insensitive to field-boundary reshuffling (JSON-delimited identity)', () => {
+    // Without unambiguous delimiting, ["ab","c"] and ["a","bc"] would collide.
+    const a = deriveAutoIdempotencyKey({ prompt: 'ab', cwd: 'c', criteria: null, agent: null });
+    const b = deriveAutoIdempotencyKey({ prompt: 'a', cwd: 'bc', criteria: null, agent: null });
+    expect(a).not.toBe(b);
+  });
+
+  it('output length is independent of input size and well under the 200-char cap', () => {
+    const short = deriveAutoIdempotencyKey({ prompt: 'x', cwd: '/tmp' });
+    const huge = deriveAutoIdempotencyKey({ prompt: 'x'.repeat(100_000), cwd: '/tmp' });
+    expect(short.length).toBe(huge.length);
+    expect(huge.length).toBe('auto-'.length + 16); // fixed 21 chars
+    expect(huge.length).toBeLessThanOrEqual(200);
+  });
+});
+
+describe('isTruthyEnv', () => {
+  it('accepts common truthy spellings (case-insensitive, trimmed)', () => {
+    for (const v of ['1', 'true', 'TRUE', 'yes', 'On', '  true  ']) expect(isTruthyEnv(v)).toBe(true);
+  });
+  it('rejects everything else', () => {
+    for (const v of ['', '0', 'false', 'no', 'off', undefined, null, '2']) expect(isTruthyEnv(v as string)).toBe(false);
   });
 });
 
@@ -1849,6 +1902,152 @@ describe('main', () => {
       });
       expect(codes).toEqual([EXIT_OK]);
       expect(bodySeen.parentTaskId).toBe('explicit-parent');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('by default (no flag, no env) sends NO idempotency key — strict no-op', async () => {
+    let bodySeen: any = null;
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodySeen = JSON.parse(bodyText);
+      return { status: 201, body: JSON.stringify({ id: 't1', agentType: 'claude-code', cwd: tmpCwd }) };
+    });
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['implement #42'],
+        env: { KOOKR_API_BASE_URL: baseUrl }, // no --auto-idempotency, no KOOKR_SPAWN_AUTO_IDEMPOTENCY
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(bodySeen.idempotencyKey).toBeUndefined();
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('--auto-idempotency derives the EXACT key from prompt+cwd+criteria+agent', async () => {
+    let bodySeen: any = null;
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodySeen = JSON.parse(bodyText);
+      return { status: 201, body: JSON.stringify({ id: 't1', agentType: 'claude-code', cwd: tmpCwd }) };
+    });
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--auto-idempotency', 'implement #42'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      // Exact-value assertion pins the identity fields main() actually passes
+      // (prompt, resolved cwd, criteria=null, agent=null) — a wrong-field wiring
+      // bug would still match the format regex but fail this. cwd is not realpath'd
+      // (resolveCwd uses pathResolve), so tmpCwd is the resolved cwd here.
+      const expected = deriveAutoIdempotencyKey({ prompt: 'implement #42', cwd: tmpCwd, criteria: null, agent: null });
+      expect(bodySeen.idempotencyKey).toBe(expected);
+      expect(bodySeen.idempotencyKey).toMatch(/^auto-[0-9a-f]{16}$/);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('KOOKR_SPAWN_AUTO_IDEMPOTENCY=1 enables it; --no-auto-idempotency overrides the env', async () => {
+    const bodies: any[] = [];
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodies.push(JSON.parse(bodyText));
+      return { status: 201, body: JSON.stringify({ id: 't1', agentType: 'claude-code', cwd: tmpCwd }) };
+    });
+    try {
+      const run = async (argv: string[]) => {
+        const { io } = makeConsoleCapture();
+        const errBucket = makeConsoleCapture();
+        const { codes, exit } = makeExitCapture();
+        await main({
+          argv,
+          env: { KOOKR_API_BASE_URL: baseUrl, KOOKR_SPAWN_AUTO_IDEMPOTENCY: '1' },
+          stdin: ttyStdin(),
+          cwd: tmpCwd,
+          out: io,
+          err: errBucket.io,
+          exit,
+          sleep: async () => {},
+        });
+        expect(codes).toEqual([EXIT_OK]);
+      };
+      await run(['env-on']);
+      await run(['--no-auto-idempotency', 'flag-off']);
+      expect(bodies[0].idempotencyKey).toMatch(/^auto-[0-9a-f]{16}$/);
+      expect(bodies[1].idempotencyKey).toBeUndefined();
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('explicit --idempotency-key wins over --auto-idempotency', async () => {
+    let bodySeen: any = null;
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodySeen = JSON.parse(bodyText);
+      return { status: 201, body: JSON.stringify({ id: 't1', agentType: 'claude-code', cwd: tmpCwd }) };
+    });
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--auto-idempotency', '--idempotency-key', 'explicit-key', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(bodySeen.idempotencyKey).toBe('explicit-key');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('--dedupe=skip suppresses auto-idempotency (intentional duplicate)', async () => {
+    let bodySeen: any = null;
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodySeen = JSON.parse(bodyText);
+      return { status: 201, body: JSON.stringify({ id: 't1', agentType: 'claude-code', cwd: tmpCwd }) };
+    });
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['--auto-idempotency', '--dedupe=skip', 'hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(bodySeen.idempotencyKey).toBeUndefined();
     } finally {
       await closeServer(server);
     }
