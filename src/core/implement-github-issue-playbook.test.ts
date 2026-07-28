@@ -69,7 +69,9 @@ describe('implement-github-issue playbook', () => {
   test('Phase 0 skips non-automatable labels before implementation', () => {
     expect(pb.body).toContain('automation-blocked');
     expect(pb.body).toContain('question');
-    expect(pb.body).toMatch(/skip issues with labels.*automation-blocked.*question/i);
+    // `architecture` marks design-document issues (RFCs, decision docs) that are
+    // not one-PR implementation units — the selector must never auto-pick them (#1565).
+    expect(pb.body).toMatch(/skip issues with labels.*automation-blocked.*architecture.*question/i);
   });
 
   test('uses the deployed issue-claim API contract', () => {
@@ -142,5 +144,16 @@ describe('implement-github-issue playbook', () => {
     const phase9Idx = pb.body.indexOf('Phase 9: Report verdict to the engine');
     expect(phase85Idx).toBeGreaterThan(0);
     expect(phase9Idx).toBeGreaterThan(phase85Idx);
+  });
+
+  test('propagates Idea Scout provenance labels onto the PR (issue #1587)', () => {
+    // The scouted-idea -> merged-PR conversion must be computable from labels
+    // alone, so a PR implementing a scouted issue inherits its idea-scout /
+    // idea:<n> labels. It must be a guarded no-op for non-scouted issues.
+    expect(pb.body).toMatch(/provenance labels/i);
+    expect(pb.body).toContain('gh issue view <TARGET> -R "$REPO" --json labels');
+    expect(pb.body).toMatch(/select\(\. == "idea-scout" or startswith\("idea:"\)\)/);
+    expect(pb.body).toMatch(/if \[ -n "\$IDEA_LABELS" \]; then/);
+    expect(pb.body).toMatch(/no-op for issues that were not scouted/i);
   });
 });

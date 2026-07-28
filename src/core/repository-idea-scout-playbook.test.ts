@@ -332,4 +332,123 @@ describe('repository-idea-scout playbook', () => {
       expect(pb.body).toMatch(/idempotent/i);
     });
   });
+
+  // Slice a `## <heading>` section bounded to the next `## ` heading so an
+  // assertion nominally scoped to a section cannot be satisfied by text that
+  // later migrated to a different section.
+  const section = (heading: string) => {
+    const start = pb.body.indexOf(heading);
+    expect(start).toBeGreaterThan(-1);
+    const rest = pb.body.slice(start + heading.length);
+    const nextIdx = rest.indexOf('\n## ');
+    return nextIdx === -1 ? rest : rest.slice(0, nextIdx);
+  };
+
+  describe('per-run spend cap (issue #1587)', () => {
+    test('spendCapUsd is an optional parameter with a non-empty default', () => {
+      const p = param('spendCapUsd');
+      expect(p).toBeDefined();
+      expect(p!.required).toBe(false);
+      // Must be non-empty so renders stay clean when the launcher omits it.
+      expect(p!.default).toBeTruthy();
+      // The placeholder is wired into the Launch Parameters block.
+      expect(pb.body).toContain('{{spendCapUsd}}');
+    });
+
+    test('spendCapUsd is validated and 0/blank disable the cap', () => {
+      // The value flows into `jq --argjson` and `awk`, so its grammar is a
+      // value-injection surface — lock the validation pattern and disable rule.
+      const rules = pb.body.slice(pb.body.indexOf('Copy each value into a shell variable'));
+      expect(rules).toMatch(/`spendCapUsd`:.*\^\[0-9\]\+\(\\\.\[0-9\]\{1,2\}\)\?\$/);
+      expect(rules).toMatch(/`0`, `0\.00`, and empty all disable the cap/);
+    });
+
+    test('the run records spend against the cap and stops when it is reached', () => {
+      const sec = section('## Per-Run Spend Cap');
+      expect(sec).toMatch(/records? (its )?spend against the cap/i);
+      expect(sec).toMatch(/aggregateTokenUsage\.costUsd/);
+      // Cap enforcement is gated on the Kookr task API being present.
+      expect(pb.body).toMatch(/read_spend_usd\(\)/);
+      expect(pb.body).toMatch(/spend_gate\(\)/);
+      // Phase 4 and Phase 7 both invoke the gate at their boundaries.
+      const phase4 = pb.body.slice(pb.body.indexOf('## Phase 4:'), pb.body.indexOf('## Phase 5:'));
+      const phase7 = pb.body.slice(pb.body.indexOf('## Phase 7:'), pb.body.indexOf('## Phase 8:'));
+      expect(phase4).toMatch(/spend_gate/);
+      expect(phase7).toMatch(/spend_gate/);
+    });
+
+    test('a cap breach is a controlled early stop, not a BLOCKED failure', () => {
+      expect(pb.body).toMatch(/cap breach is \*\*not\*\* a `BLOCKED`|not a `BLOCKED` condition/i);
+      expect(pb.body).toMatch(/capBreached/);
+    });
+
+    test('the run manifest carries the spend cap fields and Phase 8 mirrors the breach', () => {
+      // The schedule rollup reads per-run spend off run.json — a refactor that
+      // dropped the manifest fields would silently lose the feature's point.
+      const preflight = pb.body.slice(pb.body.indexOf('Write `<runManifest>`'), pb.body.indexOf('## Phase 2:'));
+      for (const field of ['spendCapUsd:', 'capEnforced:', 'capBreached:']) {
+        expect(preflight).toContain(field);
+      }
+      const phase8 = pb.body.slice(pb.body.indexOf('## Phase 8:'), pb.body.indexOf('## Idempotency Rules'));
+      expect(phase8).toMatch(/\.capBreached = \$breached.*run\.json|run\.json.*capBreached/s);
+    });
+
+    test('the spend ledger schema is validated in Phase 8', () => {
+      expect(pb.body).toMatch(/write_spend_ledger\(\)/);
+      const phase8 = pb.body.slice(pb.body.indexOf('## Phase 8:'), pb.body.indexOf('## Idempotency Rules'));
+      // The validation clause names the ledger's numeric/boolean field set.
+      expect(phase8).toMatch(/`<spendLedgerFile>` exists and is valid JSON with numeric `spendCapUsd`, boolean `capEnforced`, and boolean `capBreached`/);
+    });
+
+    test('per-run spend and cap breaches are surfaced in the completion output', () => {
+      const phase8 = pb.body.slice(pb.body.indexOf('## Phase 8:'), pb.body.indexOf('## Idempotency Rules'));
+      expect(phase8).toMatch(/Run spend: \$/);
+      expect(phase8).toMatch(/schedule ledger\/rollup/i);
+      expect(pb.body).toMatch(/spendLedgerFile/);
+    });
+
+    test('the cap is best-effort: absent task API means unenforced, not blocked', () => {
+      const sec = section('## Per-Run Spend Cap');
+      expect(sec).toMatch(/capEnforced:? ?false|unenforced/i);
+      expect(sec).toMatch(/never blocks the run|proceeds without stopping/i);
+    });
+  });
+
+  describe('provenance labels for conversion tracking (issue #1587)', () => {
+    test('the label prohibition carves an explicit provenance exception', () => {
+      // The original hard prohibition is retained verbatim (security guard),
+      // with a narrow, explicit exception for the two provenance labels.
+      expect(pb.body).toMatch(/Do not create comments, branches, PRs, labels, or tracked-file changes/);
+      expect(pb.body).toMatch(/sole exception is the two \*\*provenance labels\*\*/);
+    });
+
+    test('idea issues get idea-scout and idea:<issue-number> labels at creation', () => {
+      const sec = section('## Provenance Labels');
+      expect(sec).toMatch(/`idea-scout`/);
+      expect(sec).toMatch(/`idea:<issue-number>`/);
+      const phase7 = pb.body.slice(pb.body.indexOf('## Phase 7:'), pb.body.indexOf('## Phase 8:'));
+      expect(phase7).toMatch(/gh label create idea-scout/);
+      expect(phase7).toMatch(/--add-label idea-scout --add-label "idea:\$ISSUE_NUM"/);
+    });
+
+    test('labels are applied only in publish-safe mode and only to issues this run creates', () => {
+      const sec = section('## Provenance Labels');
+      expect(sec).toMatch(/\*\*only\*\* when `publishBehavior` is `publish-safe`/);
+      expect(sec).toMatch(/never labels pre-existing issues, PRs, or any artifact it did not create/i);
+    });
+
+    test('the join key is an integer parsed from GitHub, never repo-derived text', () => {
+      const phase7 = pb.body.slice(pb.body.indexOf('## Phase 7:'), pb.body.indexOf('## Phase 8:'));
+      // ISSUE_NUM is validated as an integer before it reaches shell interpolation.
+      expect(phase7).toMatch(/\$\{?ISSUE_NUM\}?/);
+      expect(phase7).toMatch(/\*\[!0-9\]\*\)/);
+    });
+
+    test('conversion is documented as computable from labels alone via gh', () => {
+      const sec = section('## Provenance Labels');
+      expect(sec).toMatch(/computable from labels alone/i);
+      expect(sec).toMatch(/gh issue list -R "\$REPO" --label idea-scout/);
+      expect(sec).toMatch(/gh pr list -R "\$REPO" --state merged --label idea-scout/);
+    });
+  });
 });

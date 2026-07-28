@@ -308,6 +308,121 @@ describe('DeployLagDetector.maybeRun', () => {
   });
 });
 
+describe('DeployLagDetector live-verified flip (issue #1596)', () => {
+  const convergedTarget = (name: string, repoPath: string, deployedSha = 'c'.repeat(40)): DeployLagTarget => ({
+    name,
+    repoPath,
+    resolve: async () => ({ target: name, deployedSha, mainSha: deployedSha, pendingCommits: [] }),
+  });
+
+  it('fires onDeployVerified on a converged tick with isContained bound to the deployed SHA', async () => {
+    const calls: Array<{ sha: string; contained: string[] }> = [];
+    // Ancestry stub: only "live" is contained in the deployed SHA.
+    const ancestry = vi.fn(async (_repo: string, ancestor: string, _descendant: string) => ancestor === 'live');
+    const detector = new DeployLagDetector({
+      kookrDir: '/tmp/kookr',
+      targets: [convergedTarget('kookr', '/repo/kookr')],
+      now: () => NOW,
+      readArtifact: () => null,
+      writeArtifact: () => {},
+      logger: silentLogger,
+      ancestryChecker: ancestry,
+      onDeployVerified: async (sha, isContained) => {
+        const contained: string[] = [];
+        for (const commit of ['live', 'pending']) {
+          if (await isContained(commit)) contained.push(commit);
+        }
+        calls.push({ sha, contained });
+      },
+    });
+
+    await detector.maybeRun();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.sha).toBe('c'.repeat(40));
+    expect(calls[0]?.contained).toEqual(['live']);
+    // Ancestry resolved against the target's repo path and the deployed SHA.
+    expect(ancestry).toHaveBeenCalledWith('/repo/kookr', 'live', 'c'.repeat(40));
+  });
+
+  it('does NOT fire on a lagging tick — a failed/incomplete deploy flips nothing', async () => {
+    const onDeployVerified = vi.fn();
+    const detector = new DeployLagDetector({
+      kookrDir: '/tmp/kookr',
+      // Lagging target, WITH a repo path — proving it is the lagging status, not
+      // a missing repo, that withholds the flip.
+      targets: [{ ...laggingTarget('kookr'), repoPath: '/repo/kookr' }],
+      now: () => NOW,
+      readArtifact: () => null,
+      writeArtifact: () => {},
+      logger: silentLogger,
+      onDeployVerified,
+    });
+
+    await detector.maybeRun();
+    expect(onDeployVerified).not.toHaveBeenCalled();
+  });
+
+  it('does not fire for a converged target without a repo path (additive: opt-in per target)', async () => {
+    const onDeployVerified = vi.fn();
+    const detector = new DeployLagDetector({
+      kookrDir: '/tmp/kookr',
+      targets: [healthyTarget('kookr')], // no repoPath
+      now: () => NOW,
+      readArtifact: () => null,
+      writeArtifact: () => {},
+      logger: silentLogger,
+      onDeployVerified,
+    });
+
+    await detector.maybeRun();
+    expect(onDeployVerified).not.toHaveBeenCalled();
+  });
+
+  it('dedups per target: an unchanged converged SHA fires once; a new SHA fires again', async () => {
+    let clock = NOW;
+    let sha = 'a'.repeat(40);
+    const onDeployVerified = vi.fn();
+    const detector = new DeployLagDetector({
+      kookrDir: '/tmp/kookr',
+      targets: [{ name: 'kookr', repoPath: '/repo/kookr', resolve: async () => ({ target: 'kookr', deployedSha: sha, mainSha: sha, pendingCommits: [] }) }],
+      intervalMs: HOUR_MS,
+      now: () => clock,
+      readArtifact: () => null,
+      writeArtifact: () => {},
+      logger: silentLogger,
+      onDeployVerified,
+    });
+
+    await detector.maybeRun(); // converged @ a… → fire
+    clock += HOUR_MS;
+    await detector.maybeRun(); // same SHA → deduped, no fire
+    expect(onDeployVerified).toHaveBeenCalledTimes(1);
+
+    clock += HOUR_MS;
+    sha = 'b'.repeat(40); // a genuinely new deploy
+    await detector.maybeRun();
+    expect(onDeployVerified).toHaveBeenCalledTimes(2);
+  });
+
+  it('a throwing onDeployVerified handler never crashes the tick', async () => {
+    const detector = new DeployLagDetector({
+      kookrDir: '/tmp/kookr',
+      targets: [convergedTarget('kookr', '/repo/kookr')],
+      now: () => NOW,
+      readArtifact: () => null,
+      writeArtifact: () => {},
+      logger: silentLogger,
+      onDeployVerified: async () => {
+        throw new Error('rollup store blew up');
+      },
+    });
+
+    const artifact = await detector.maybeRun();
+    expect(artifact?.status).toBe('ok');
+  });
+});
+
 describe('buildDeployLagAlertMessage', () => {
   const lagging = buildAlertArtifact(
     [{ name: 'deploy-lag:lucy', ok: false, detail: 'lucy: deployed abc behind; Pending: 2437099 fix: model' }],

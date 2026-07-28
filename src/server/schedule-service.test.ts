@@ -257,6 +257,20 @@ describe('ScheduleService status', () => {
       expect(deriveLedgerEnrichment({ completionDigest: { prUrls: [] } })).toEqual({});
       expect(deriveLedgerEnrichment({ completionDigest: {} })).toEqual({});
     });
+
+    it('joins the digest merge commit as the live-verification containment key (#1596)', () => {
+      expect(deriveLedgerEnrichment({
+        completionDigest: { prUrls: ['https://x/pr/1'], mergeCommit: 'a'.repeat(40) },
+      })).toEqual({
+        artifacts: ['https://x/pr/1'],
+        mergeCommit: 'a'.repeat(40),
+      });
+    });
+
+    it('omits mergeCommit when the digest has none or it is empty (#1596)', () => {
+      expect(deriveLedgerEnrichment({ completionDigest: { prUrls: ['https://x/pr/1'] } }).mergeCommit).toBeUndefined();
+      expect(deriveLedgerEnrichment({ completionDigest: { mergeCommit: '' } }).mergeCommit).toBeUndefined();
+    });
   });
 
   it('records queued_capacity/capacity for a capacity-queued execution (issue #1526 Phase A)', async () => {
