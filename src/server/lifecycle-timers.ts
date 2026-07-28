@@ -38,6 +38,7 @@ import { appendAuditRow } from '../core/audit-log.js';
 import { nowISO } from '../core/interaction-log.js';
 import { DEFAULT_HUNG_TASK_REAP_MS, evaluateHungTaskReap } from '../core/hung-task-reaper.js';
 import { reapHungTask } from './hung-task-reaper.js';
+import type { ProdSmokeTick } from './prod-smoke-tick.js';
 
 export interface TimerDeps {
   monitor: Monitor;
@@ -142,6 +143,16 @@ export interface TimerDeps {
    * wrapped so an error is logged and never crashes the server.
    */
   maintenancePrune?: MaintenancePruneScheduleConfig;
+  /**
+   * Optional hourly prod smoke tick (issue #1593). When provided, a dedicated
+   * interval fires the bounded smoke suite against the live prod instance on
+   * `prodSmokeTick.hostIntervalMs` and files/updates an operational alert
+   * artifact on failure — so a wedge that develops while the server runs (the
+   * #1543 /api/health hang) is caught within an hour instead of sitting
+   * undetected. Undefined (dev/test, or explicitly disabled) starts no interval.
+   * `maybeRun()` never throws and guards against pile-up itself.
+   */
+  prodSmokeTick?: ProdSmokeTick;
 }
 
 export interface MaintenancePruneScheduleConfig {
@@ -300,6 +311,8 @@ export interface TimerHandles {
   quotaPollTimeout: ReturnType<typeof setTimeout> | null;
   /** Null unless a scheduled maintenance prune interval was configured. */
   maintenancePruneInterval: ReturnType<typeof setInterval> | null;
+  /** Null unless the hourly prod smoke tick (issue #1593) was configured. */
+  prodSmokeTickInterval: ReturnType<typeof setInterval> | null;
 }
 
 /**
@@ -1144,6 +1157,25 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     }, intervalMs);
   }
 
+  // --- Hourly prod smoke tick (issue #1593), optional ---
+  // A cheap in-process liveness check: runs the same bounded smoke suite the
+  // deploy gate uses against the live instance, on the tick's own cadence, and
+  // files/updates an operational alert artifact on failure. No agent spawn.
+  // maybeRun() guards pile-up and never throws, so the interval callback is a
+  // one-liner. Undefined unless bootstrap enabled it (default: prod port 4800).
+  let prodSmokeTickInterval: ReturnType<typeof setInterval> | null = null;
+  const prodSmokeTick = deps.prodSmokeTick;
+  if (prodSmokeTick) {
+    const intervalMs = prodSmokeTick.hostIntervalMs;
+    console.log(
+      `[prod-smoke-tick] hourly liveness tick enabled (every ${Math.round(intervalMs / 60_000)}m; ` +
+        `artifact=${prodSmokeTick.alertArtifactPath})`,
+    );
+    prodSmokeTickInterval = setInterval(() => {
+      void prodSmokeTick.maybeRun();
+    }, intervalMs);
+  }
+
   return {
     tokenScanInterval,
     watchdogInterval,
@@ -1152,6 +1184,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     saveInterval,
     quotaPollTimeout,
     maintenancePruneInterval,
+    prodSmokeTickInterval,
   };
 }
 
@@ -1199,4 +1232,5 @@ export function clearAllTimers(handles: TimerHandles): void {
   clearInterval(handles.saveInterval);
   if (handles.quotaPollTimeout) clearTimeout(handles.quotaPollTimeout);
   if (handles.maintenancePruneInterval) clearInterval(handles.maintenancePruneInterval);
+  if (handles.prodSmokeTickInterval) clearInterval(handles.prodSmokeTickInterval);
 }
