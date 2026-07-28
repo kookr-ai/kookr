@@ -179,3 +179,24 @@ export interface ScheduleListResponse {
   schedules: ScheduleResponse[];
   status: ScheduleStatusSnapshot;
 }
+
+/**
+ * Materialized per-schedule ROI rollup (issue #1584). Mirrors
+ * `core/schedule-rollup` — served by `GET /api/schedules/:id/rollup` and
+ * `GET /api/schedules/rollups`, derived incrementally from the execution ledger
+ * with no on-request tasks.json / hook-log scan. `costUsd`/`tokens` sum only
+ * MEASURED fires (those carrying a joined `tokenUsage`); `measuredFires` is the
+ * denominator so an unmeasured fire never reads as a $0 spend.
+ */
+export interface ScheduleRollup {
+  scheduleId: string;
+  fires: number;
+  outcomes: Partial<Record<ScheduleExecutionOutcome, number>>;
+  measuredFires: number;
+  costUsd: number;
+  tokens: number;
+  artifacts: number;
+  windowStart?: string;
+  windowEnd?: string;
+  updatedAt: string;
+}

@@ -88,6 +88,100 @@ describe('schedule routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/schedules/:id/rollup + /api/schedules/rollups (issue #1584)
+  // ---------------------------------------------------------------------------
+  describe('rollup endpoints', () => {
+    function seedLedger(scheduleId: string) {
+      store.replace({
+        ...store.get(scheduleId)!,
+        executionLedger: [
+          {
+            id: `${scheduleId}:cron:a`, scheduleId, trigger: 'cron', decision: 'cron_due',
+            evaluatedAt: '2026-02-01T09:00:00.000Z', completedAt: '2026-02-01T09:05:00.000Z',
+            outcome: 'completed',
+            tokenUsage: { inputTokens: 100, outputTokens: 40, cacheReadTokens: 10, cacheWriteTokens: 0, costUsd: 0.25 },
+            artifacts: ['https://github.com/o/r/pull/1'],
+          },
+          {
+            id: `${scheduleId}:cron:b`, scheduleId, trigger: 'cron', decision: 'cron_due',
+            evaluatedAt: '2026-02-01T10:00:00.000Z', completedAt: '2026-02-01T10:02:00.000Z',
+            outcome: 'dispatch_failed',
+          },
+        ],
+      });
+    }
+
+    test('GET /api/schedules/:id/rollup matches a manual recount of the ledger', async () => {
+      const schedule = await seedSchedule(service, tempDir);
+      seedLedger(schedule.id);
+
+      const res = await mkApp({ scheduleService: service }).request(`/api/schedules/${schedule.id}/rollup`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toMatchObject({
+        scheduleId: schedule.id,
+        fires: 2,
+        outcomes: { completed: 1, dispatch_failed: 1 },
+        measuredFires: 1,
+        costUsd: 0.25,
+        tokens: 150,
+        artifacts: 1,
+        windowStart: '2026-02-01T09:00:00.000Z',
+        windowEnd: '2026-02-01T10:02:00.000Z',
+      });
+    });
+
+    test('performs NO on-request scan — responds with taskStore/hookWatcher absent from deps', async () => {
+      const schedule = await seedSchedule(service, tempDir);
+      seedLedger(schedule.id);
+
+      // The app is built with ONLY scheduleService wired — no taskStore, no
+      // hookWatcher, no tasksFile. A handler that scanned tasks.json/hook logs
+      // would need one of those; this proves the rollup path reads only the
+      // materialized store.
+      const start = Date.now();
+      const res = await mkApp({ scheduleService: service }).request(`/api/schedules/${schedule.id}/rollup`);
+      const elapsed = Date.now() - start;
+      expect(res.status).toBe(200);
+      expect(elapsed).toBeLessThan(500);
+    });
+
+    test('GET /api/schedules/:id/rollup returns 404 for an unknown schedule', async () => {
+      const res = await mkApp({ scheduleService: service }).request('/api/schedules/does-not-exist/rollup');
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Schedule not found' });
+    });
+
+    test('GET /api/schedules/:id/rollup returns 500 when scheduling is not configured', async () => {
+      const res = await mkApp({}).request('/api/schedules/x/rollup');
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'Scheduling not configured' });
+    });
+
+    test('GET /api/schedules/rollups returns the fleet-wide list', async () => {
+      const a = await seedSchedule(service, tempDir, 'A');
+      const b = await seedSchedule(service, tempDir, 'B');
+      seedLedger(a.id);
+
+      const res = await mkApp({ scheduleService: service }).request('/api/schedules/rollups');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.rollups).toHaveLength(2);
+      const byId = new Map<string, { scheduleId: string; fires: number }>(
+        body.rollups.map((r: { scheduleId: string; fires: number }) => [r.scheduleId, r]),
+      );
+      expect(byId.get(a.id)!.fires).toBe(2);
+      expect(byId.get(b.id)!.fires).toBe(0);
+    });
+
+    test('GET /api/schedules/rollups returns empty when scheduling is not configured', async () => {
+      const res = await mkApp({}).request('/api/schedules/rollups');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ rollups: [] });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // POST /api/schedules
   // ---------------------------------------------------------------------------
   describe('POST /api/schedules', () => {

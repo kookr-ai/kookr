@@ -80,6 +80,7 @@ function assertKookrDiff(before: FileSnapshot, after: FileSnapshot): void {
       || entry === 'project-configs.json'
       || entry === 'detection-stats.json'
       || entry === 'schedules.json'
+      || entry === 'schedule-rollups.json'
       || entry === 'hook-replay-checkpoints.json'
       || entry === 'activity'
       || entry.startsWith('activity/')
