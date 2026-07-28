@@ -50,6 +50,8 @@ export interface HookWatcherSessionHealth {
   readCount: number;
   recordCount: number;
   replayRecordCount: number;
+  /** Records recovered from a rotated-out generation (`<file>.1`), issue #1566. */
+  rotatedTailRecoveredCount: number;
   pollTickCount: number;
   pollChangeDetectedCount: number;
   drainNowCount: number;
@@ -82,6 +84,7 @@ interface MutableHookWatcherSessionHealth {
   readCount: number;
   recordCount: number;
   replayRecordCount: number;
+  rotatedTailRecoveredCount: number;
   pollTickCount: number;
   pollChangeDetectedCount: number;
   drainNowCount: number;
@@ -114,6 +117,15 @@ export class HookFileWatcher {
   private watchers = new Map<string, FSWatcher>();
   private pollIntervals = new Map<string, ReturnType<typeof setInterval>>();
   private offsets = new Map<string, number>();
+  /**
+   * Last-observed inode of each session's ACTIVE hook file (issue #1566). The
+   * writer bounds file growth by rotating `<file>` to `<file>.1` and creating a
+   * fresh `<file>` (bin/kookr-hook-writer.js). Rotation renames, so the active
+   * inode changes while `<file>.1` inherits the old one. Tracking the inode lets
+   * readNewLines tell a rotation (recover the unread tail from `<file>.1`) apart
+   * from an in-place truncation (same inode → plain reset-to-0, issue #703).
+   */
+  private inodes = new Map<string, number>();
   private reading = new Set<string>(); // Mutex: prevent concurrent reads for same agent
   private healthBySession = new Map<string, MutableHookWatcherSessionHealth>();
   /**
@@ -264,6 +276,7 @@ export class HookFileWatcher {
       this.pollIntervals.delete(tmuxName);
     }
     this.offsets.delete(tmuxName);
+    this.inodes.delete(tmuxName);
     this.reading.delete(tmuxName);
     this.healthBySession.delete(tmuxName);
   }
@@ -279,6 +292,7 @@ export class HookFileWatcher {
       clearInterval(poll);
     }
     this.pollIntervals.clear();
+    this.inodes.clear();
     this.reading.clear();
     this.healthBySession.clear();
   }
@@ -330,27 +344,42 @@ export class HookFileWatcher {
     this.reading.add(tmuxName);
 
     try {
+      const prevInode = this.inodes.get(tmuxName);
       const fileStat = await stat(filePath).catch(() => undefined);
       const content = await readFile(filePath, 'utf-8');
       this.cumulativeReadChars += content.length;
       this.cumulativeReadCount += 1;
       let offset = this.offsets.get(tmuxName) ?? 0;
 
-      // Truncation / rotation recovery. The offset only ever grows, so if it
-      // now sits past end-of-file the hook file was truncated, rotated, or
-      // replaced with a smaller one. Left unhandled, `slice(offset)` returns
-      // '' forever and every record written below the stale offset is silently
-      // dropped until the process restarts (issue #703). Reset to 0 and
-      // re-read from the start of the new file. Overlap with already-consumed
-      // records is absorbed by HookIngestion's content-hash dedup; the common
-      // truncate-to-0 / rotate-to-fresh-file case has no overlap at all.
+      // Truncation / rotation recovery.
       //
-      // Size-based shrink is the portable baseline. Inode-identity detection
-      // for a same-size rotation is intentionally out of scope: a rotated file
-      // is born at size 0, which trips this guard on its first observation.
-      if (offset > content.length) {
+      // A ROTATION is the writer renaming the active <file> to <file>.1 and
+      // creating a fresh <file> (bin/kookr-hook-writer.js). rename changes the
+      // active inode, so an inode change is the definitive rotation signal —
+      // more robust than a size compare, which misses the case where the fresh
+      // generation already regrew past our old offset before this read (then
+      // `slice(offset)` would cut into the middle of unrelated new bytes).
+      // Records in [offset..oldEnd] left with the rotated generation unread, so
+      // recover that tail from <file>.1 before dropping to the fresh file — a
+      // reader lagging more than a cap behind would otherwise silently skip them
+      // (issue #1566, the residual of #1433).
+      //
+      // A same-inode shrink is an in-place TRUNCATION/replace: the offset now
+      // sits past end-of-file and `slice(offset)` would return '' forever,
+      // silently dropping every later record until restart (issue #703). Reset
+      // to 0 and re-read the new file — no stale generation is re-read, so no
+      // phantom re-injection. HookIngestion content-hash dedup absorbs any
+      // boundary overlap; the common truncate-to-0 case has none at all.
+      if (prevInode !== undefined && fileStat !== undefined && fileStat.ino !== prevInode) {
+        await this.recoverRotatedTail(tmuxName, filePath, offset, prevInode, options);
+        offset = 0;
+      } else if (offset > content.length) {
         offset = 0;
       }
+
+      // Record the active inode so the next read can classify a shrink as a
+      // rotation (inode changed) vs an in-place truncation (inode unchanged).
+      if (fileStat !== undefined) this.inodes.set(tmuxName, fileStat.ino);
 
       const newContent = content.slice(offset);
       const { records, consumedChars } = splitHookRecords(newContent);
@@ -384,6 +413,72 @@ export class HookFileWatcher {
       console.error(`Error reading hook file for ${tmuxName}:`, err);
     } finally {
       this.reading.delete(tmuxName);
+    }
+  }
+
+  /**
+   * Recover the unread tail a writer rotation moved out of the active file
+   * (issue #1566). When the writer rotates, it renames the active `<file>` to
+   * `<file>.1` and starts a fresh `<file>` (bin/kookr-hook-writer.js
+   * rotateHookFile). A reader that had consumed only `offset` chars of the old
+   * file would otherwise never observe records in `[offset..end]` — they left
+   * with the rotated generation, which the live tail never reads. Read
+   * `<file>.1`, confirm it carries the pre-rotation inode (so an older,
+   * already-drained generation is never re-read), and inject the `[offset..end]`
+   * tail. HookIngestion content-hash dedup absorbs any boundary overlap.
+   *
+   * Bounded to the single most-recent generation (`<file>.1`). If more than one
+   * cap of data was written between reads (multiple rotations), older
+   * generations are not walked: that would cost O(keep) whole-file re-reads on
+   * every shrink, and the HTTP-push + ledger paths remain the backstop for that
+   * rare regime — the same recovery contract the incremental fast paths already
+   * rely on.
+   */
+  private async recoverRotatedTail(
+    tmuxName: string,
+    filePath: string,
+    offset: number,
+    prevInode: number,
+    options?: { startupReplay?: boolean; replay?: boolean },
+  ): Promise<void> {
+    const rotatedPath = `${filePath}.1`;
+    try {
+      const rotatedStat = await stat(rotatedPath).catch(() => undefined);
+      // Only the generation carrying the pre-rotation inode is the file whose
+      // tail we lagged behind. A mismatch means either no rotation produced this
+      // shrink or several rotations elapsed (the wanted generation aged past
+      // `.1`); either way, re-reading would risk replaying stale history.
+      if (rotatedStat === undefined || rotatedStat.ino !== prevInode) return;
+      const rotatedContent = await readFile(rotatedPath, 'utf-8');
+      this.cumulativeReadChars += rotatedContent.length;
+      this.cumulativeReadCount += 1;
+      if (rotatedContent.length <= offset) return; // caught up at rotation time — nothing unread
+
+      const { records } = splitHookRecords(rotatedContent.slice(offset));
+      let recovered = 0;
+      for (const line of records) {
+        if (!line.trim()) continue;
+        try {
+          this.adapter.injectHookEvent(tmuxName, line, undefined, {
+            startupReplay: options?.startupReplay === true,
+            fileMtimeMs: rotatedStat.mtimeMs,
+          });
+          recovered += 1;
+        } catch (err) {
+          this.recordHealthError(tmuxName, err);
+          console.error(`Error parsing rotated hook event for ${tmuxName}:`, err);
+        }
+      }
+
+      if (recovered > 0) {
+        const health = this.getOrCreateHealth(tmuxName);
+        health.recordCount += recovered;
+        health.rotatedTailRecoveredCount += recovered;
+        console.info('[hook-watcher] recovered rotated tail', { tmuxName, recovered });
+      }
+    } catch (err) {
+      this.recordHealthError(tmuxName, err);
+      console.error(`Error recovering rotated tail for ${tmuxName}:`, err);
     }
   }
 
@@ -473,6 +568,7 @@ export class HookFileWatcher {
       readCount: 0,
       recordCount: 0,
       replayRecordCount: 0,
+      rotatedTailRecoveredCount: 0,
       pollTickCount: 0,
       pollChangeDetectedCount: 0,
       drainNowCount: 0,
@@ -617,6 +713,7 @@ function projectWatcherHealth(
     readCount: health.readCount,
     recordCount: health.recordCount,
     replayRecordCount: health.replayRecordCount,
+    rotatedTailRecoveredCount: health.rotatedTailRecoveredCount,
     pollTickCount: health.pollTickCount,
     pollChangeDetectedCount: health.pollChangeDetectedCount,
     drainNowCount: health.drainNowCount,
