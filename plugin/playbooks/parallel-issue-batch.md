@@ -322,6 +322,15 @@ Select up to `targetIssueCount` **issues** and group them into **work units** th
 
 `targetIssueCount` counts issues covered, not children spawned. A bundle of three small issues counts as three toward the total but becomes one concurrent task.
 
+### 3.0 Apply the backlog drain order (issue #1568)
+
+Before scoring, order the filtered candidate pool with the committed drain order so a blank-shape scan drains the safe tier first instead of picking arbitrarily. The canonical source is `backlog-drain-order.json` alongside these playbooks (`plugin/playbooks/backlog-drain-order.json` in the repo):
+
+- **No-gate tier** (`noGateTier`): drain these first, in the listed order. They are docs/tests/small localized changes that need no gate.
+- **Gated tier**: any candidate carrying the `gateLabel` (`invariant-gate`) is deferred — its durable-state / concurrency semantics require the invariant-spec step of #1539, which must exist before it is drained. `gatedTier` lists the seeded gated numbers as a cross-check, but the label is the source of truth, so a future gated issue joins the tier with the label alone.
+
+Ordering rule (matches `orderCandidatesByDrainTier` in `src/core/backlog-drain-order.ts`, which the selection-simulation test in `src/core/backlog-drain-order.test.ts` verifies): propose no-gate-tier issues first (in `noGateTier` order), then unclassified issues in their existing order, then gated issues last. Do not select a gated issue while any no-gate-tier or unclassified issue remains eligible. A number must never appear in both tiers; add future issues per the file's `howToJoinATier`.
+
 ### 3.1 Score each candidate issue
 
 For each filtered issue:
