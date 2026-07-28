@@ -11,6 +11,9 @@ export default defineConfig({
     // Fails the run if a test poisons the shared git config (test identity,
     // core.bare flip, or bare-repo debris) and heals it. See test/git-repo-guard.ts.
     globalSetup: ['./test/git-repo-guard.global.ts'],
+    // Scrub ambient KOOKR_*/CLAUDE_*/ANTHROPIC_* so local (live daemon) == CI.
+    // Allowlist lives in test/setup-env.ts and mirrors `env` below. See #1372.
+    setupFiles: ['./test/setup-env.ts'],
     env: {
       // Claude Code launches submit the prompt via bracketed paste so the
       // trailing Enter is parsed as a keystroke (see

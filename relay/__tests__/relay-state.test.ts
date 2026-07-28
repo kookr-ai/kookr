@@ -418,6 +418,36 @@ describe('relay SQLite state', () => {
     });
   });
 
+  it('returns 503 on /ready when the DB probe fails while /health stays 200', async () => {
+    // Issue #1393: liveness (/health) stays 200 so k8s does not restart;
+    // readiness (/ready) goes non-2xx so ALB/k8s stop routing traffic.
+    relay = createRelayServer({ adminToken: 'admin', stateProbe: () => false });
+    await listen(relay);
+
+    const health = await fetch(`${relay.url()}/health`);
+    expect(health.status).toBe(200);
+    await expect(health.json()).resolves.toMatchObject({
+      status: 'degraded',
+      dbReachable: false,
+    });
+
+    const ready = await fetch(`${relay.url()}/ready`);
+    expect(ready.status).toBe(503);
+    await expect(ready.json()).resolves.toEqual({
+      ready: false,
+      reason: 'db-unreachable',
+    });
+  });
+
+  it('returns 200 on /ready when the DB is reachable and mode is not emergency-disabled', async () => {
+    relay = createRelayServer({ adminToken: 'admin', stateProbe: () => true });
+    await listen(relay);
+
+    const ready = await fetch(`${relay.url()}/ready`);
+    expect(ready.status).toBe(200);
+    await expect(ready.json()).resolves.toEqual({ ready: true });
+  });
+
   it('returns 503 after a state write failure and recovers when the probe succeeds', async () => {
     let probeOk = false;
     const stateStore = {

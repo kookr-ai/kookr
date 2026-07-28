@@ -17,12 +17,14 @@ Usage:
   kookr logs <taskId> [OPTIONS]   Tail a task's recent hook-event activity.
   kookr command outcome [commandId] Inspect local/remote command outcomes as JSONL.
   kookr ralph <command> <taskId> [--json] Inspect or control a Ralph loop.
+  kookr schedule <verb> [OPTIONS]  List/run/enable/disable schedules.
   kookr drain|resume [OPTIONS]  Control operator drain mode.
   kookr maintenance prune [OPTIONS]   Prune aged completed-task data-dir artifacts.
   kookr maintenance backup [OPTIONS]  Create a crash-consistent data-dir backup tarball.
   kookr lesson status|drain|remember  Durable lesson-write spool (kb degraded path).
   kookr emission plan|dedupe|metrics|defer  Drain-coupled issue filing budget + dedupe.
-  kookr pr-checklist verify [OPTIONS] Verify a repo's anti-drift PR checklist against the diff.
+  kookr pr-checklist verify|doctor [OPTIONS]  Verify PR checklist or report local gate fail-open rate.
+  kookr context-pack --spec <f> --out <f>  Build a spawn-time context pack from a JSON spec.
   kookr push test <deviceId>    Send a relay push test.
   kookr completion bash|zsh     Print a shell completion script.
 
@@ -95,6 +97,14 @@ async function main({
     return runRalphCli({ argv: rest, env, out, err, exit });
   }
 
+  // Schedule list/run/enable/disable (issue #1399). Thin HTTP client against
+  // the running server's /api/schedules routes, so it dispatches here rather
+  // than booting a server.
+  if (command === 'schedule') {
+    const { main: runScheduleCli } = await import('./kookr-schedule.js');
+    return runScheduleCli({ argv: rest, env, out, err, exit });
+  }
+
   if (command === 'logs') {
     await runLogsCommand(rest, { env, out, err });
     return exit(process.exitCode ?? 0);
@@ -143,6 +153,14 @@ async function main({
 
   if (command === 'pr-checklist') {
     await runPrChecklistCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
+  }
+
+  // Spawn-time context pack builder (issue #1385). Loads the compiled CLI with a
+  // dist→src fallback so it works from an npm install and a source checkout
+  // alike; the by-path bin/kookr-context-pack.js form keeps working too.
+  if (command === 'context-pack') {
+    await runContextPackCommand(rest, { env, out, err });
     return exit(process.exitCode ?? 0);
   }
 
@@ -240,6 +258,20 @@ async function runLogsCommand(argv, { env = process.env, out = console, err = co
   }
   const mod = await import(pathToFileURL(entry).href);
   process.exitCode = await mod.runLogsCli(argv, { env, out, err });
+}
+
+async function runContextPackCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-context-pack.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-context-pack.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] context-pack module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exit(1);
+  }
+  const mod = await import(pathToFileURL(entry).href);
+  process.exitCode = await mod.runContextPackCli(argv, { env, out });
 }
 
 async function runDoctorCommand(argv, { env = process.env, out = console, err = console } = {}) {
