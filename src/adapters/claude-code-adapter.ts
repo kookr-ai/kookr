@@ -32,7 +32,7 @@ import {
 } from '../core/hook-parentage.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { inferGitInfoPathFromEvent } from './git-path-inference.js';
-import { isValidEffortForAgent } from '../shared/contracts/agent-types.js';
+import { isValidEffortForAgent, isValidModelForAgent } from '../shared/contracts/agent-types.js';
 import {
   buildAgentLaunchContext,
   DEFAULT_PROMPT_SUBMIT_DELAY_MS,
@@ -51,7 +51,14 @@ const textDecoder = new TextDecoder('utf-8', { fatal: false });
 export interface HookSettings {
   hooks: Record<string, Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>>;
   permissions?: {
-    allow: string[];
+    allow?: string[];
+    /**
+     * Permission deny rules (issue #1562). Injected for unattended/autonomous
+     * spawns to hard-deny interactive tools (`AskUserQuestion` and equivalents)
+     * so a blocking call fails fast instead of hanging on an unanswerable
+     * prompt. Empty/absent for attended tasks.
+     */
+    deny?: string[];
   };
 }
 
@@ -247,8 +254,14 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       serverPort: this.serverPort,
     });
 
-    // Generate hook settings
-    const settings = this.generateSettings(tmuxName, this.hooksDir, launchContext.permissionAllowlist);
+    // Generate hook settings. Unattended spawns also carry interactive-tool
+    // deny rules (issue #1562) from the launch context.
+    const settings = this.generateSettings(
+      tmuxName,
+      this.hooksDir,
+      launchContext.permissionAllowlist,
+      launchContext.permissionDenylist,
+    );
     this.settingsMap.set(tmuxName, settings);
 
     // Write settings file to disk if writeFile is available (production)
@@ -302,6 +315,19 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         console.warn(
           `[claude-code-adapter] ignoring invalid effort "${effort}" for ${this.agentType}; ` +
           `valid: low, medium, high, xhigh, max`,
+        );
+      }
+    }
+    // Model pin (#1518). Resolution order: per-task override (opts.model) →
+    // unset (Claude Code's own default). No Kookr-global per-agent model
+    // default for claude-code. Upstream validation rejects unknown ids, so a
+    // stray bad value is skipped (+ warn) rather than passed to break launch.
+    if (opts?.model) {
+      if (isValidModelForAgent(this.agentType, opts.model)) {
+        args.push('--model', opts.model);
+      } else {
+        console.warn(
+          `[claude-code-adapter] ignoring invalid model "${opts.model}" for ${this.agentType}`,
         );
       }
     }
@@ -751,7 +777,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     };
   }
 
-  private generateSettings(tmuxName: string, hookOutputDir: string, permissionAllowlist: string[]): HookSettings {
+  private generateSettings(
+    tmuxName: string,
+    hookOutputDir: string,
+    permissionAllowlist: string[],
+    permissionDenylist: string[] = [],
+  ): HookSettings {
     const hookFile = `${hookOutputDir}/${tmuxName}.jsonl`;
 
     // Dual-write: JSONL file (durable) + HTTP POST (fast). The Kookr hook
@@ -801,7 +832,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         SubagentStop: [{ matcher: '', hooks: [cmd] }],
         SessionEnd: [{ matcher: '', hooks: [cmd] }],
       },
-      permissions: permissionAllowlist.length > 0 ? { allow: permissionAllowlist } : undefined,
+      // deny wins over allow in Claude Code's permission evaluation, so the
+      // interactive-tool deny rules (issue #1562, unattended spawns only) hold
+      // even alongside the always-present allowlist. Both keys are omitted when
+      // empty so attended settings stay byte-identical to pre-#1562.
+      permissions:
+        permissionAllowlist.length > 0 || permissionDenylist.length > 0
+          ? {
+              ...(permissionAllowlist.length > 0 ? { allow: permissionAllowlist } : {}),
+              ...(permissionDenylist.length > 0 ? { deny: permissionDenylist } : {}),
+            }
+          : undefined,
     };
   }
 }

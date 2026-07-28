@@ -1,5 +1,11 @@
 import { describe, test, expect } from 'vitest';
-import { probeAgentBinary, type ProbeExecRunner } from './probe-agent-binary.js';
+import {
+  probeAgentBinary,
+  UNKNOWN_VERSION,
+  DEFAULT_PROBE_TIMEOUT_MS,
+  DEFAULT_VERSION_PROBE_TIMEOUT_MS,
+  type ProbeExecRunner,
+} from './probe-agent-binary.js';
 
 function fakeExec(behavior: Record<string, () => Promise<{ stdout: string; stderr: string }>>): ProbeExecRunner {
   return async (file, args) => {
@@ -23,6 +29,7 @@ describe('probeAgentBinary', () => {
     if (result.kind === 'ok') {
       expect(result.resolvedPath).toBe('claude');
       expect(result.version).toBe('1.0.86');
+      expect(result.probePath).toBe('--version');
     }
   });
 
@@ -37,6 +44,41 @@ describe('probeAgentBinary', () => {
     expect(result.kind).toBe('ok');
     if (result.kind === 'ok') {
       expect(result.version).toBe('0.2.1');
+      expect(result.probePath).toBe('--help');
+    }
+  });
+
+  test('real version outputs still extract correctly', async () => {
+    const cases: Array<[string, string]> = [
+      ['2.1.220 (Claude Code)\n', '2.1.220'],
+      ['1.2.3', '1.2.3'],
+      ['1.2.3-beta.1', '1.2.3-beta.1'],
+    ];
+    for (const [stdout, expected] of cases) {
+      const exec = fakeExec({ 'claude --version': async () => ({ stdout, stderr: '' }) });
+      const result = await probeAgentBinary('claude', { exec });
+      expect(result.kind).toBe('ok');
+      if (result.kind === 'ok') {
+        expect(result.version).toBe(expected);
+        expect(result.probePath).toBe('--version');
+      }
+    }
+  });
+
+  test('--help usage text yields the explicit unknown marker, never the usage line', async () => {
+    const usage = 'Usage: claude [options] [command] [prompt]\n\nOptions:\n  --version';
+    const exec = fakeExec({
+      'claude --version': async () => {
+        throw Object.assign(new Error('boom'), { code: 'ETIMEDOUT' });
+      },
+      'claude --help': async () => ({ stdout: usage, stderr: '' }),
+    });
+    const result = await probeAgentBinary('claude', { exec });
+    expect(result.kind).toBe('ok');
+    if (result.kind === 'ok') {
+      expect(result.version).toBe(UNKNOWN_VERSION);
+      expect(result.version).not.toContain('Usage');
+      expect(result.probePath).toBe('--help');
     }
   });
 
@@ -69,34 +111,53 @@ describe('probeAgentBinary', () => {
     expect(result.kind).toBe('absent');
   });
 
-  test('falls back to first line when no numeric version is in stdout', async () => {
+  test('reports unknown marker when no numeric version is in stdout', async () => {
     const exec = fakeExec({
       'claude --version': async () => ({ stdout: 'Claude Code (development build)\n', stderr: '' }),
     });
     const result = await probeAgentBinary('claude', { exec });
     expect(result.kind).toBe('ok');
     if (result.kind === 'ok') {
-      expect(result.version).toBe('Claude Code (development build)');
+      expect(result.version).toBe(UNKNOWN_VERSION);
+      expect(result.probePath).toBe('--version');
     }
   });
 
-  test('uses default 2 s timeout via injected runner', async () => {
-    const seen: number[] = [];
-    const exec: ProbeExecRunner = async (_file, _args, options) => {
-      seen.push(options.timeout);
+  test('--version attempt uses the longer default timeout for slow cold starts', async () => {
+    const seen: Array<{ args: string; timeout: number }> = [];
+    const exec: ProbeExecRunner = async (_file, args, options) => {
+      seen.push({ args: args.join(' '), timeout: options.timeout });
       return { stdout: '1.0.0', stderr: '' };
     };
     await probeAgentBinary('claude', { exec });
-    expect(seen[0]).toBe(2000);
+    expect(seen[0]).toEqual({ args: '--version', timeout: DEFAULT_VERSION_PROBE_TIMEOUT_MS });
   });
 
-  test('respects timeoutMs override', async () => {
-    const seen: number[] = [];
-    const exec: ProbeExecRunner = async (_file, _args, options) => {
-      seen.push(options.timeout);
+  test('--help fallback uses the shorter default timeout', async () => {
+    const seen: Array<{ args: string; timeout: number }> = [];
+    const exec: ProbeExecRunner = async (_file, args, options) => {
+      seen.push({ args: args.join(' '), timeout: options.timeout });
+      if (args.join(' ') === '--version') throw Object.assign(new Error('nope'), { code: 1 });
       return { stdout: '1.0.0', stderr: '' };
     };
-    await probeAgentBinary('claude', { exec, timeoutMs: 500 });
-    expect(seen[0]).toBe(500);
+    await probeAgentBinary('claude', { exec });
+    expect(seen).toEqual([
+      { args: '--version', timeout: DEFAULT_VERSION_PROBE_TIMEOUT_MS },
+      { args: '--help', timeout: DEFAULT_PROBE_TIMEOUT_MS },
+    ]);
+  });
+
+  test('respects timeoutMs and versionTimeoutMs overrides', async () => {
+    const seen: Array<{ args: string; timeout: number }> = [];
+    const exec: ProbeExecRunner = async (_file, args, options) => {
+      seen.push({ args: args.join(' '), timeout: options.timeout });
+      if (args.join(' ') === '--version') throw Object.assign(new Error('nope'), { code: 1 });
+      return { stdout: '1.0.0', stderr: '' };
+    };
+    await probeAgentBinary('claude', { exec, timeoutMs: 500, versionTimeoutMs: 750 });
+    expect(seen).toEqual([
+      { args: '--version', timeout: 750 },
+      { args: '--help', timeout: 500 },
+    ]);
   });
 });

@@ -36,6 +36,7 @@ function latestExecutionLabel(schedule: ScheduleResponse): string {
 function latestExecutionOutcomeLabel(outcome: NonNullable<ScheduleResponse['latestExecution']>['outcome']): string {
   switch (outcome) {
     case 'queued':
+    case 'queued_capacity':
       return 'queued';
     case 'running':
       return 'running';
@@ -51,6 +52,8 @@ function latestExecutionOutcomeLabel(outcome: NonNullable<ScheduleResponse['late
       return 'skipped: active run';
     case 'skipped_capacity':
       return 'skipped: capacity';
+    case 'skipped_coalesced':
+      return 'skipped: already queued';
     case 'skipped_draining':
       return 'skipped: draining';
     case 'skipped_manual':
@@ -82,6 +85,7 @@ function statusClass(schedule: ScheduleResponse): string {
     case 'dispatch_failed':
     case 'skipped_active':
     case 'skipped_capacity':
+    case 'skipped_coalesced':
     case 'skipped_draining':
     case 'skipped_manual':
     case 'skipped_stale':

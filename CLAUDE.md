@@ -149,7 +149,9 @@ Before your final answer for any non-trivial task (investigation, debugging, wor
 - **Wrote a lesson** — run the `kb remember --kb=agent-task-lessons --title="<short headline>" --stdin --yes` command above with the **Mistake / Why it happened / Better next time** body, generic only.
 - **Explicit skip** — run `printf 'No generic KB lesson: %s\n' '<one-line reason>'`. Use this when nothing reusably generic came out of the task (purely repo-local fact, already-documented gotcha, follow-up of a prior decision).
 
-Skip the decision entirely only for the *purely mechanical* carveout above (rename, typo, single known command, direct terminal question). The `pnpm kb:usage` report classifies tasks by the strongest signal in their hook log — `kb remember` → wrote-lesson, `No generic KB lesson:` → explicit-skip, otherwise search-only or no-kb-activity — so the explicit-skip marker is what turns "no lesson" from a metric blind spot into a counted, reviewable signal.
+**Lifecycle gate (issue #1538):** `kookr signal completion-ready` is rejected with HTTP 409 / `lesson_decision_required` when the task has launched sessions but neither a lesson write nor an explicit skip appears in its hook trail. Emit the decision *before* signaling completion-ready. Purely mechanical tasks still need the explicit skip marker if they signal completion-ready — silent no-decision is no longer allowed at the lifecycle boundary. Yield is auditable via `GET /api/diagnostics/lesson-yield?days=N`, the `lessonYield` block on `GET /api/health`, or `kookr lesson yield --days N`.
+
+The `pnpm kb:usage` report classifies tasks by the strongest signal in their hook log — `kb remember` → wrote-lesson, `No generic KB lesson:` → explicit-skip, otherwise search-only or no-kb-activity — so the explicit-skip marker is what turns "no lesson" from a metric blind spot into a counted, reviewable signal.
 
 ## Persistence Mechanism Picker
 

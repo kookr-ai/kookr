@@ -21,6 +21,11 @@ import { removeReflectWorktree } from './use-cases/request-task-reflect.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { evaluateCriteriaVerdict } from '../core/criteria-verdict.js';
 import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
+import type { TaskTailStore } from '../core/task-tail-store.js';
+import {
+  stampTaskCompletionProvenance,
+  type CompletionPath,
+} from '../core/lesson-decision.js';
 
 // ---------------------------------------------------------------------------
 // Post-launch registration (used by WS handler and REST routes)
@@ -103,8 +108,11 @@ export async function registerNewAgent(task: Task, deps: AgentLifecycleDeps): Pr
     void githubScanner.processTaskPrompt(task.id);
   }
 
-  // AI-generate a short task name (skip if task already has a name, e.g., playbooks)
-  if (!task.name) {
+  // AI-generate a short task name. Tasks are now named from birth (issue
+  // #1554): a task with no explicit name carries the deterministic placeholder
+  // and `autoNamed=true`, which the LLM namer may upgrade. Skip only when the
+  // name is authoritative (explicit playbook/user name, `autoNamed` absent).
+  if (!task.name || task.autoNamed) {
     autoNameTask(task.id, displayPromptForTask(task), task.cwd, task.criteria);
   }
 
@@ -194,7 +202,11 @@ export function handleTerminalKeystroke(
  * Uses structural typing so callers can pass any matching objects.
  */
 export interface LifecycleDeps {
-  adapter: { stop(tmuxName: string): Promise<void> };
+  adapter: {
+    stop(tmuxName: string): Promise<void>;
+    /** Optional — when present, session stop paths snapshot a durable tail first. */
+    captureDisplay?(tmuxName: string): Promise<string>;
+  };
   monitor: { unregisterAgent(agentId: string): void; getAgentEvents?(agentId: string): AgentEvent[] };
   taskStore: TaskStore;
   interactionLog?: DeferredInteractionLogWriter;
@@ -230,11 +242,32 @@ export interface LifecycleDeps {
    * must isolate their own failures so lifecycle transitions cannot be blocked.
    */
   onTaskOutcome?: (taskId: string, outcome: TelegramTaskOutcome) => void;
+  /**
+   * Durable terminal-tail store (rfc-task-tail-retrieval). When set, live
+   * sessions are snapshotted before `adapter.stop` so completed tasks remain
+   * peekable for the configured retention window.
+   */
+  taskTailStore?: Pick<TaskTailStore, 'save' | 'removeByTaskId'>;
+}
+
+/** Resolve the owning task for a session without requiring a full TaskStore mock. */
+function findOwningTask(taskStore: TaskStore, tmuxName: string): Task | undefined {
+  const store = taskStore as TaskStore & {
+    findTaskBySession?: (name: string) => Task | undefined;
+    listTasks?: () => Task[];
+  };
+  if (typeof store.findTaskBySession === 'function') {
+    return store.findTaskBySession(tmuxName);
+  }
+  if (typeof store.listTasks === 'function') {
+    return store.listTasks().find((t) => t.sessions.some((s) => s.tmuxSession === tmuxName));
+  }
+  return undefined;
 }
 
 function unregisterTranscript(tmuxName: string, deps: LifecycleDeps): void {
   if (!deps.tokenTracker) return;
-  const task = deps.taskStore.findTaskBySession(tmuxName);
+  const task = findOwningTask(deps.taskStore, tmuxName);
   if (!task) return;
   for (const session of task.sessions) {
     if (session.tmuxSession === tmuxName && session.transcriptPath) {
@@ -253,14 +286,41 @@ function forgetSessionBookkeeping(tmuxName: string, deps: LifecycleDeps): void {
 }
 
 /**
+ * Best-effort snapshot of a session's terminal output into the durable
+ * task-tail store. Never throws — completion must not fail because capture
+ * or disk write failed (rfc-task-tail-retrieval R6).
+ */
+async function persistSessionTailBestEffort(
+  taskId: string,
+  tmuxName: string,
+  deps: LifecycleDeps,
+): Promise<void> {
+  if (!deps.taskTailStore || !deps.adapter.captureDisplay) return;
+  try {
+    const text = await deps.adapter.captureDisplay(tmuxName);
+    await deps.taskTailStore.save({ taskId, sessionId: tmuxName, text });
+  } catch (err) {
+    console.warn(
+      `[lifecycle] task-tail capture failed for ${tmuxName} (task ${taskId}):`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+/**
  * Clean up all resources associated with a single agent session.
  * Stops tmux, unregisters from monitor/watchdog/shadow, and stops hook watcher.
  * Safe to call on already-dead sessions (adapter.stop is a graceful no-op).
+ * When a task id can be resolved, captures a durable terminal tail before stop.
  */
 export async function cleanupSessionResources(
   tmuxName: string,
   deps: LifecycleDeps,
 ): Promise<void> {
+  const owningTask = findOwningTask(deps.taskStore, tmuxName);
+  if (owningTask) {
+    await persistSessionTailBestEffort(owningTask.id, tmuxName, deps);
+  }
   unregisterTranscript(tmuxName, deps);
   await deps.adapter.stop(tmuxName);
   forgetSessionBookkeeping(tmuxName, deps);
@@ -278,6 +338,7 @@ async function stopAllLiveSessions(
 ): Promise<void> {
   for (const session of task.sessions) {
     if (session.lastStatus !== 'completed' && session.lastStatus !== 'aborted') {
+      // cleanupSessionResources snapshots the tail before stop (when store is wired).
       await cleanupSessionResources(session.tmuxSession, deps);
       deps.taskStore.updateSession(task.id, session.tmuxSession, { lastStatus: finalSessionStatus });
     }
@@ -290,7 +351,10 @@ function completeLiveSessionsInBackground(task: Task, deps: LifecycleDeps): void
       deps.taskStore.updateSession(task.id, session.tmuxSession, { lastStatus: 'completed' });
       unregisterTranscript(session.tmuxSession, deps);
       forgetSessionBookkeeping(session.tmuxSession, deps);
-      void deps.adapter.stop(session.tmuxSession).catch((err) => {
+      void (async () => {
+        await persistSessionTailBestEffort(task.id, session.tmuxSession, deps);
+        await deps.adapter.stop(session.tmuxSession);
+      })().catch((err) => {
         console.warn(
           `[lifecycle] background cleanup failed for ${session.tmuxSession}:`,
           err instanceof Error ? err.message : err,
@@ -370,11 +434,41 @@ function notifyTaskOutcome(deps: LifecycleDeps, taskId: string, outcome: Telegra
 export async function completeTask(
   taskId: string,
   deps: LifecycleDeps,
-  opts: { cleanupWorktree?: boolean } = {},
+  opts: {
+    cleanupWorktree?: boolean;
+    /** Actor source for completionPath stamping (issue #1608). */
+    actorSource?: string;
+    /** Override inferred completion path. */
+    completionPath?: CompletionPath;
+    /** Override default lessonGateExempt when undecided. */
+    lessonGateExempt?: string;
+    /** When true, do not stamp lessonGateExempt (decision already verified). */
+    decisionSatisfied?: boolean;
+  } = {},
 ): Promise<void> {
   const task = deps.taskStore.getTask(taskId);
   if (!task) throw new Error(`Task not found: ${taskId}`);
   const completionEvents = captureCompletionEvents(task, deps);
+
+  // Stamp completion provenance on the live record before the status
+  // transition so yield v2 can join decision buckets onto the path
+  // (issue #1608). Uses getTaskForMutation so the stamp survives.
+  // Optional-call: unit fixtures often mock TaskStore with only the methods
+  // the scenario needs — missing getTaskForMutation must not crash complete.
+  const getForMutation = (
+    deps.taskStore as TaskStore & {
+      getTaskForMutation?: (id: string) => Task | undefined;
+    }
+  ).getTaskForMutation;
+  const mutable = typeof getForMutation === 'function' ? getForMutation.call(deps.taskStore, taskId) : undefined;
+  if (mutable) {
+    stampTaskCompletionProvenance(mutable, {
+      actorSource: opts.actorSource,
+      explicitPath: opts.completionPath,
+      gateExempt: opts.lessonGateExempt,
+      decisionSatisfied: opts.decisionSatisfied,
+    });
+  }
 
   completeLiveSessionsInBackground(task, deps);
   deps.queue?.purgeTask(taskId);
@@ -501,6 +595,50 @@ export interface PromotionDeps {
 }
 
 /**
+ * Whether a pending task can be expected to release its slot without a human
+ * (issue #1526 Phase C / C3, promotion posture guard). Two shapes qualify:
+ *
+ * - `autoCloseOnSignal: true` — the task auto-completes after its
+ *   completion-ready signal's grace period, no manual ack needed;
+ * - schedule-fired launches (`metadata.launchSource === 'schedule'`) — they
+ *   run under schedule supervision (coalescing, blocking-task staleness gate,
+ *   dead-man alerting), so a wedged one is detected and recovered without a
+ *   human ack.
+ *
+ * Everything else (ask-first / no-autoclose tasks) parks in
+ * `finishedAwaitingAck` until a human clicks — exactly the class that
+ * re-wedged the cap in the 2026-07-24 incident (FM11).
+ */
+function isSelfReleasingPending(task: Pick<Task, 'autoCloseOnSignal' | 'metadata'>): boolean {
+  return task.autoCloseOnSignal === true || task.metadata?.launchSource === 'schedule';
+}
+
+/**
+ * Pick the next pending task to promote (issue #1526 Phase C / C3, FM11
+ * anti-re-wedge). With more than one free slot this is plain FIFO — identical
+ * to the old `getNextPending()` behavior. When promoting would fill the LAST
+ * free slot, self-releasing pendings (see {@link isSelfReleasingPending}) are
+ * PREFERRED: the FIFO order is stable-sorted with self-releasing tasks first,
+ * never skipping anyone. In the incident, freed slots were instantly refilled
+ * by FIFO promotion of ask-first pendings that then parked awaiting ack,
+ * re-wedging the cap; this preference keeps the last slot cycling.
+ *
+ * Pure ordering preference — NO starvation: if only ask-first tasks are
+ * pending, the oldest one still promotes into the last slot exactly as
+ * before.
+ */
+export function pickNextPendingForPromotion(taskStore: TaskStore, freeSlots: number): Task | undefined {
+  if (freeSlots > 1) return taskStore.getNextPending();
+  // Last free slot: FIFO within each posture class, self-releasing first.
+  const eligible = taskStore
+    .listTasks({ status: 'pending' })
+    .filter((task) => !taskStore.hasFreshLaunchReservation(task.id))
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  if (eligible.length === 0) return undefined;
+  return eligible.find(isSelfReleasingPending) ?? eligible[0];
+}
+
+/**
  * Promote pending tasks to inProgress up to the concurrency limit.
  * Called after task completion, cancellation, and on startup after reconciliation.
  * Returns the number of tasks promoted.
@@ -511,8 +649,12 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
   let promoted = 0;
   const seen = new Set<string>();
 
-  while (taskStore.getActiveCount() < maxActive) {
-    const pending = taskStore.getNextPending();
+  for (;;) {
+    const activeCount = taskStore.getActiveCount();
+    if (!(activeCount < maxActive)) break;
+    // Posture guard (issue #1526 Phase C / C3): the pick prefers
+    // self-releasing tasks when this promotion would fill the last free slot.
+    const pending = pickNextPendingForPromotion(taskStore, maxActive - activeCount);
     if (!pending) break;
 
     // Safety: prevent infinite loop if a task stays pending after launch

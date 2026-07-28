@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { TaskStore } from '../../core/tasks.js';
 import { Monitor } from '../../core/monitor.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
@@ -64,6 +67,32 @@ describe('LifecycleHandler lifecycle commands', () => {
     await handler.handle({ type: 'completeTask', taskId: task.id, cleanupWorktree: false });
 
     expect(mockCleanupTaskWorktrees).not.toHaveBeenCalled();
+  });
+
+  test('completeTask threads the connection actor into its audit row (issue #1526 Phase B)', async () => {
+    const auditDir = await mkdtemp(join(tmpdir(), 'kookr-ws-complete-audit-'));
+    const auditLogPath = join(auditDir, 'audit.jsonl');
+    try {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Complete via WS', '/repo');
+      addSession(taskStore, task.id);
+      const { deps } = makeDeps(taskStore, {
+        auditLogPath,
+        deletionAuditActor: () => ({ source: 'websocket', actorId: 'conn-1' }),
+      });
+      const handler = new LifecycleHandler(deps);
+
+      await handler.handle({ type: 'completeTask', taskId: task.id });
+
+      const row = JSON.parse((await readFile(auditLogPath, 'utf-8')).trim()) as { actor: unknown; outcome: string };
+      expect(row).toEqual(expect.objectContaining({
+        type: 'task.complete',
+        actor: { source: 'websocket', actorId: 'conn-1' },
+        outcome: 'completed',
+      }));
+    } finally {
+      await rm(auditDir, { recursive: true, force: true });
+    }
   });
 
   test('completeTask delegates active Ralph completion to shared partial policy', async () => {

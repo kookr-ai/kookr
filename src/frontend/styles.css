@@ -976,6 +976,43 @@ kbd {
   color: var(--amber);
   border-color: rgba(251,191,36,0.45);
 }
+/* stuckReason badge (issue #1526 Phase B / FM9) — distinguishes a task that
+   only LOOKS like it's still running (healthy row, no active finding) from
+   one genuinely doing work. Base layout matches .task-priority-badge; color
+   varies by reason so "done, needs you" (green) reads differently from
+   "may be hung" (red). */
+.stuck-reason-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+}
+.stuck-reason-badge--awaiting_completion_ack {
+  border: 1px solid rgba(52,211,153,0.35);
+  background: rgba(52,211,153,0.12);
+  color: var(--green);
+}
+.stuck-reason-badge--hung_suspect {
+  border: 1px solid rgba(248,113,113,0.35);
+  background: rgba(248,113,113,0.12);
+  color: var(--red);
+}
+.stuck-reason-badge--waiting_on_input {
+  border: 1px solid rgba(96,165,250,0.35);
+  background: rgba(96,165,250,0.12);
+  color: var(--blue);
+}
+.stuck-reason-badge--permission_blocked {
+  border: 1px solid rgba(251,146,60,0.35);
+  background: rgba(251,146,60,0.12);
+  color: #fb923c;
+}
 .btn-xs {
   background: none;
   border: 1px solid var(--border-dim);
@@ -1806,8 +1843,12 @@ kbd {
   font-size: 13px;
 }
 .detail-signal-banner--ready { background: rgba(74,222,128,0.12); }
+/* Attention variant (issue #1562): operator-needed is a problem state, so it
+   reads red — matching its red header badge — not the green "ready" success hue. */
+.detail-signal-banner--attention { border-left-color: var(--red); background: rgba(248,113,113,0.1); }
 .detail-signal-banner__text { color: var(--text, #ddd); overflow: hidden; text-overflow: ellipsis; }
 .detail-signal-banner__text strong { color: var(--green); }
+.detail-signal-banner--attention .detail-signal-banner__text strong { color: var(--red); }
 .detail-transcript-context {
   margin: 8px 16px 0;
   padding: 8px 10px;

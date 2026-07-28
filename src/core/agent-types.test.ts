@@ -13,6 +13,11 @@ import {
   GROK_BUILD_EFFORT_LEVELS,
   ALL_EFFORT_LEVELS,
   effortLevelsForAgent,
+  modelsForAgent,
+  isValidModelForAgent,
+  isKnownModelId,
+  CLAUDE_CODE_MODEL_IDS,
+  ALL_MODEL_IDS,
   isValidEffortForAgent,
 } from './agent-types.js';
 
@@ -203,5 +208,40 @@ describe('reasoning-effort levels (#681)', () => {
     expect([...ALL_EFFORT_LEVELS].sort()).toEqual(
       ['high', 'low', 'max', 'medium', 'minimal', 'none', 'ultra', 'xhigh'],
     );
+  });
+});
+
+describe('per-task model allowlist (#1518)', () => {
+  test('claude-code allowlist includes Fable and issue-listed pins', () => {
+    expect(CLAUDE_CODE_MODEL_IDS).toContain('claude-fable-5');
+    expect(CLAUDE_CODE_MODEL_IDS).toContain('claude-opus-4-8');
+    expect(CLAUDE_CODE_MODEL_IDS).toContain('claude-sonnet-5');
+    expect(CLAUDE_CODE_MODEL_IDS).toContain('claude-haiku-4-5');
+    expect(modelsForAgent('claude-code')).toEqual(CLAUDE_CODE_MODEL_IDS);
+  });
+
+  test('codex-cli and grok-build expose no per-task model pins (no Claude inheritance)', () => {
+    expect(modelsForAgent('codex-cli')).toEqual([]);
+    expect(modelsForAgent('grok-build')).toEqual([]);
+    for (const id of CLAUDE_CODE_MODEL_IDS) {
+      expect(isValidModelForAgent('codex-cli', id)).toBe(false);
+      expect(isValidModelForAgent('grok-build', id)).toBe(false);
+    }
+  });
+
+  test('isValidModelForAgent accepts exact ids and dated suffixes', () => {
+    expect(isValidModelForAgent('claude-code', 'claude-fable-5')).toBe(true);
+    expect(isValidModelForAgent('claude-code', 'claude-haiku-4-5-20251001')).toBe(true);
+    expect(isValidModelForAgent('claude-code', 'claude-opus-4-8-20260701')).toBe(true);
+    expect(isValidModelForAgent('claude-code', 'gpt-5.6-sol')).toBe(false);
+    expect(isValidModelForAgent('claude-code', '')).toBe(false);
+    expect(isValidModelForAgent('claude-code', 'claude')).toBe(false);
+  });
+
+  test('isKnownModelId is the cross-agent CLI fast-fail', () => {
+    expect(isKnownModelId('claude-fable-5')).toBe(true);
+    expect(isKnownModelId('claude-haiku-4-5-20251001')).toBe(true);
+    expect(isKnownModelId('not-a-model')).toBe(false);
+    expect(ALL_MODEL_IDS).toEqual(expect.arrayContaining([...CLAUDE_CODE_MODEL_IDS]));
   });
 });

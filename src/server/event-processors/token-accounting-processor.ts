@@ -1,7 +1,7 @@
 import type { Task } from '../../core/tasks.js';
 import type { AgentEvent } from '../../core/types.js';
 
-type TokenOwnerTask = Pick<Task, 'id'>;
+type TokenOwnerTask = Pick<Task, 'id' | 'agentType'>;
 
 interface TaskSessionLookup {
   findTaskBySession(tmuxName: string): TokenOwnerTask | null | undefined;
@@ -33,6 +33,17 @@ export function createTokenAccountingProcessor({
   // is findable (race between hook event and task creation), retry on next event.
   const pendingTranscriptRegistrations = new Map<string, string>();
 
+  // The shared TokenTracker parses the Claude Code transcript schema
+  // (`message.usage` with `input_tokens`/`output_tokens`/…). Grok Build writes a
+  // different JSONL schema and is metered by its own adapter at stop time
+  // (issue #1581); registering a Grok transcript here would only yield phantom
+  // all-zero usage (empty Claude-format buckets), which the periodic/stop token
+  // scans then write over the adapter's real counts. Skip non-Claude transcripts.
+  const registerClaudeTranscript = (task: TokenOwnerTask, transcriptPath: string): void => {
+    if (task.agentType === 'grok-build') return;
+    transcriptRegistry.register(transcriptPath, task.id);
+  };
+
   return {
     process({ tmuxName, event }) {
       // Token tracking runs for ALL parentages: a cross-session child writing to
@@ -44,7 +55,7 @@ export function createTokenAccountingProcessor({
       if (event.type === 'session_start' && event.transcriptPath) {
         const task = taskLookup.findTaskBySession(tmuxName);
         if (task) {
-          transcriptRegistry.register(event.transcriptPath, task.id);
+          registerClaudeTranscript(task, event.transcriptPath);
         } else {
           pendingTranscriptRegistrations.set(tmuxName, event.transcriptPath);
         }
@@ -57,7 +68,7 @@ export function createTokenAccountingProcessor({
       if (event.type === 'subagent_stop' && event.agentTranscriptPath) {
         const parentTask = taskLookup.findTaskBySession(tmuxName);
         if (parentTask) {
-          transcriptRegistry.register(event.agentTranscriptPath, parentTask.id);
+          registerClaudeTranscript(parentTask, event.agentTranscriptPath);
         }
       }
 
@@ -65,7 +76,7 @@ export function createTokenAccountingProcessor({
       if (pendingTranscriptRegistrations.has(tmuxName)) {
         const task = taskLookup.findTaskBySession(tmuxName);
         if (task) {
-          transcriptRegistry.register(pendingTranscriptRegistrations.get(tmuxName)!, task.id);
+          registerClaudeTranscript(task, pendingTranscriptRegistrations.get(tmuxName)!);
           pendingTranscriptRegistrations.delete(tmuxName);
         }
       }

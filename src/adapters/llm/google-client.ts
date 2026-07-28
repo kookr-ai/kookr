@@ -32,9 +32,11 @@ export class GoogleLlmClient implements LlmClient {
       config.systemInstruction = req.system;
     }
 
-    if (req.responseFormat) {
+    if (req.responseFormat?.type === 'json_schema') {
       config.responseMimeType = 'application/json';
       config.responseJsonSchema = req.responseFormat.jsonSchema.schema;
+    } else if (req.responseFormat?.type === 'json_object') {
+      config.responseMimeType = 'application/json';
     }
 
     const timeoutMs = req.timeoutMs ?? 10_000;

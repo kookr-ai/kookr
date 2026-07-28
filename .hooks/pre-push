@@ -10,6 +10,44 @@ set -u
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT" || exit 1
 
+# --- Delete-only push fast-path -------------------------------------------
+# git feeds the hook one line per pushed ref on stdin:
+#   <local ref> <local sha> <remote ref> <remote sha>
+# A branch deletion (`git push origin --delete <b>` / `git push origin :b`)
+# produces an all-zeros LOCAL sha. When EVERY refspec is a delete there is no
+# ref content to type-check, test, or build, yet the old hook ran the entire
+# multi-minute gate for a ref being removed — the exact stall that hung task
+# 3a7039c5 for hours after its PR had already merged (issue #1558). Detect
+# that here and exit before any gate work runs.
+#
+# Only read stdin when it is a pipe (git). Under an interactive terminal
+# `read` would block forever, and the hook-test harness may invoke the hook
+# with no refspec input — in both cases we fall through to the full gate,
+# preserving existing behavior. A missing/malformed sha field also falls
+# through (fail-safe: run the gate rather than skip it).
+if [ ! -t 0 ]; then
+  REFSPEC_INPUT=$(cat)
+  if [ -n "$REFSPEC_INPUT" ]; then
+    DELETE_ONLY=1
+    HAVE_REFSPEC=0
+    while read -r local_ref local_sha _remote_ref _remote_sha; do
+      [ -z "$local_ref" ] && continue
+      HAVE_REFSPEC=1
+      case "$local_sha" in
+        '') DELETE_ONLY=0 ;;      # missing sha field — be safe, run the gate
+        *[!0]*) DELETE_ONLY=0 ;;  # any non-zero char — a real update, not a delete
+        *) : ;;                   # all zeros — a delete refspec
+      esac
+    done <<EOF
+$REFSPEC_INPUT
+EOF
+    if [ "$HAVE_REFSPEC" -eq 1 ] && [ "$DELETE_ONLY" -eq 1 ]; then
+      echo "[pre-push] delete-only push — skipping quality gate"
+      exit 0
+    fi
+  fi
+fi
+
 STAGED_REVIEW_STATE=$(git diff --cached --name-only HEAD -- '.review-state/*.json' 2>/dev/null || true)
 if [ -n "$STAGED_REVIEW_STATE" ]; then
   echo ""

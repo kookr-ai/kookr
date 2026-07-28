@@ -18,6 +18,10 @@ else
 fi
 STARTUP_TIMEOUT_SECONDS="${KOOKR_STARTUP_TIMEOUT_SECONDS:-720}"
 CHECK_INTERVAL_SECONDS="${KOOKR_STARTUP_CHECK_INTERVAL_SECONDS:-2}"
+# Per-probe curl bound for the liveness gate (issue #1553). The deadline loop
+# only re-checks BETWEEN curls, so one unbounded curl against a hung
+# /api/health defeats STARTUP_TIMEOUT_SECONDS and wedges the deploy forever.
+HEALTH_CURL_MAX_TIME_SECONDS="${KOOKR_HEALTH_CURL_MAX_TIME_SECONDS:-10}"
 APP_DIR="$(pwd -P)"
 PID_FILE="/tmp/kookr-prod-${PORT}.pid"
 SYSTEMD_ENV_FILE="${HOME}/.config/kookr/kookr.env"
@@ -332,7 +336,7 @@ wait_for_health() {
       tail -n 100 "$LOG_FILE" || true
       exit 1
     fi
-    if curl -sf "$HEALTH_URL"; then
+    if curl -sf --max-time "$HEALTH_CURL_MAX_TIME_SECONDS" "$HEALTH_URL"; then
       rm -f "$PID_FILE"
       echo " Kookr prod restarted successfully"
       return 0
@@ -364,7 +368,7 @@ wait_for_systemd_health() {
       systemctl --user status kookr.service --no-pager || true
       exit 1
     fi
-    if curl -sf "$HEALTH_URL"; then
+    if curl -sf --max-time "$HEALTH_CURL_MAX_TIME_SECONDS" "$HEALTH_URL"; then
       echo " Kookr systemd service restarted successfully"
       return 0
     fi
@@ -499,6 +503,89 @@ NODE
   } >&2
 }
 
+capture_predeploy_log_activity() {
+  # Record when the OUTGOING server last logged, BEFORE we stop/restart it, so
+  # the smoke suite can flag a multi-hour pre-boot silence — a wedged server
+  # stops logging (the 07-25 incident went ~2h50m without output). Must run
+  # before shutdown: a graceful SIGTERM writes "Shutting down…" which would
+  # otherwise refresh the anchor to ~now and mask the silence. Source is
+  # path-aware because the two deploy modes log to different places:
+  #   - systemd: journald (the unit has no server.log redirect)
+  #   - script:  $LOG_FILE (start_server redirects stdout there)
+  # Left empty when the source is unavailable, so the continuity check skips
+  # rather than guessing. node/journald give cross-platform epoch math (the GNU
+  # and BSD coreutils flags for file mtime and date parsing diverge).
+  local mode="${1:-script}"
+  PREDEPLOY_LOG_MTIME_MS=""
+  if [[ "$mode" == "systemd" ]]; then
+    command -v journalctl >/dev/null 2>&1 || return 0
+    local last_line epoch_s
+    last_line="$(journalctl --user -u kookr.service -n 1 -o short-unix --no-pager 2>/dev/null | tail -n 1)" || true
+    [[ -n "$last_line" ]] || return 0
+    epoch_s="${last_line%% *}" # "1690000000.123456 host unit[pid]: msg" → field 1
+    PREDEPLOY_LOG_MTIME_MS="$(
+      node -e 'const s = parseFloat(process.argv[1]); process.stdout.write(Number.isFinite(s) ? String(Math.round(s * 1000)) : "");' "$epoch_s" 2>/dev/null || true
+    )"
+    return 0
+  fi
+  # node reads the mtime portably (the coreutils mtime flags differ across
+  # GNU and BSD).
+  [[ -f "$LOG_FILE" ]] || return 0
+  PREDEPLOY_LOG_MTIME_MS="$(
+    node -e 'try { process.stdout.write(String(require("node:fs").statSync(process.argv[1]).mtimeMs)); } catch { /* absent → empty */ }' "$LOG_FILE" 2>/dev/null || true
+  )"
+}
+
+run_post_deploy_smoke() {
+  # Post-deploy smoke suite (issue #1592) — bounded checks that the startup
+  # liveness gate cannot see (health/ready/tasks latency, adapter version-probe
+  # sanity, log continuity). Non-zero exit here fails the deploy command; the
+  # server is already live, so this is an alarm for an operator, not a rollback.
+  local mode="${1:-script}"
+  if [[ "${KOOKR_POST_DEPLOY_SMOKE:-1}" != "1" ]]; then
+    echo "Skipping post-deploy smoke suite (KOOKR_POST_DEPLOY_SMOKE=${KOOKR_POST_DEPLOY_SMOKE:-1})"
+    return 0
+  fi
+  local script_dir tasks_url smoke_log smoke_log_temp status
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  # Derive the tasks URL from the (already port-correct) HEALTH_URL base rather
+  # than letting the node side re-derive it from KOOKR_PORT: on the systemd path
+  # PORT comes from the env file into a bash var that is NOT exported, so the
+  # node subprocess could otherwise probe the default :4800 while health/ready
+  # correctly target the unit's real port.
+  tasks_url="${HEALTH_URL%/api/health}/api/tasks?limit=1"
+  # Point version-probe at the right log source. Under systemd the server logs
+  # to journald (not $LOG_FILE, which is stale/absent), so materialize the
+  # unit's recent output — `-o cat` prints the raw MESSAGE, i.e. the same
+  # `[startup] adapter=… version=…` lines the script path writes to server.log.
+  smoke_log="$LOG_FILE"
+  smoke_log_temp=""
+  if [[ "$mode" == "systemd" ]]; then
+    if command -v journalctl >/dev/null 2>&1; then
+      smoke_log_temp="$(mktemp "${TMPDIR:-/tmp}/kookr-smoke-journal.XXXXXX")" || smoke_log_temp=""
+      if [[ -n "$smoke_log_temp" ]]; then
+        journalctl --user -u kookr.service -n 5000 -o cat --no-pager > "$smoke_log_temp" 2>/dev/null || true
+        smoke_log="$smoke_log_temp"
+      fi
+    else
+      # journald unreachable → point at a nonexistent file so version-probe
+      # skips safely rather than reading a stale server.log.
+      smoke_log="${KOOKR_DIR}/.prod-smoke-no-journald"
+    fi
+  fi
+  echo "Running post-deploy smoke suite (scripts/prod-smoke.ts)..."
+  status=0
+  KOOKR_SMOKE_HEALTH_URL="$HEALTH_URL" \
+  KOOKR_SMOKE_READY_URL="$READY_URL" \
+  KOOKR_SMOKE_TASKS_URL="$tasks_url" \
+  KOOKR_SMOKE_LOG_FILE="$smoke_log" \
+  KOOKR_SMOKE_KOOKR_DIR="$KOOKR_DIR" \
+  KOOKR_SMOKE_PREDEPLOY_LOG_MTIME_MS="${PREDEPLOY_LOG_MTIME_MS:-}" \
+    node --import tsx "${script_dir}/prod-smoke.ts" || status=$?
+  [[ -n "$smoke_log_temp" ]] && rm -f "$smoke_log_temp"
+  return "$status"
+}
+
 if [[ "${KOOKR_PROD_RESTART_TEST_ONLY:-}" == "1" ]]; then
   return 0 2>/dev/null || exit 0
 fi
@@ -506,13 +593,17 @@ fi
 if systemd_unit_active; then
   load_systemd_env_file
   configure_port_derived_values
+  capture_predeploy_log_activity systemd
   restart_systemd_unit
   wait_for_systemd_health
   run_post_restart_checks
+  run_post_deploy_smoke systemd
   exit 0
 fi
 
+capture_predeploy_log_activity script
 stop_existing_server
 start_server
 wait_for_health
 run_post_restart_checks
+run_post_deploy_smoke script

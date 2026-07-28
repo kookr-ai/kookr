@@ -20,11 +20,60 @@ pnpm test         # must be green
 git diff --stat   # review — no accidental files, no secrets
 ```
 
+### Pre-`gh pr create` duplicate-guard (mandatory)
+
+Run this **immediately before every `gh pr create`** below. It aborts with a
+non-zero exit (no PR is created) if the issue was already auto-closed by an
+earlier merge, or the head branch already has an open PR or one merged in the
+last 24h — the exact 2026-07-26 race that produced duplicate PRs
+(task dd1fbcec, a downstream repo — PRs #1672/#1673/#1674). This gives agents and
+rehearsals a mechanical stop, not just prose.
+
+```bash
+# --- Pre-`gh pr create` duplicate-guard (issue #1569) ----------------------
+# Fails CLOSED: if a gh probe errors (auth / network / rate-limit) the guard
+# aborts rather than green-lighting an unverified PR — a rate-limited parallel
+# batch is exactly when the duplicate race bites.
+pr_create_guard() {
+  local branch abort n state dupes
+  branch="$1"; shift                 # head branch of the PR about to be created
+  abort=0
+  for n in "$@"; do                  # issue number(s) this PR would close
+    if ! state=$(gh issue view "$n" --json state -q .state 2>/dev/null); then
+      echo "PR-CREATE ABORTED: could not verify issue #$n (gh error / auth / rate-limit) — refusing to open a PR unverified." >&2
+      abort=1; continue
+    fi
+    if [ "$state" = "CLOSED" ]; then
+      echo "PR-CREATE ABORTED: issue #$n is CLOSED (likely auto-closed by an earlier merge) — refusing to open a duplicate PR." >&2
+      abort=1
+    fi
+  done
+  if ! dupes=$(gh pr list --head "$branch" --state all --json number,state,mergedAt \
+    -q '.[] | select(.state=="OPEN" or (.mergedAt != null and (now - (.mergedAt|fromdateiso8601) < 86400))) | "#\(.number)/\(.state)"' 2>/dev/null); then
+    echo "PR-CREATE ABORTED: could not verify PRs for '$branch' (gh error / auth / rate-limit) — refusing to open a PR unverified." >&2
+    abort=1
+  elif [ -n "$dupes" ]; then
+    echo "PR-CREATE ABORTED: head branch '$branch' already has PR(s) $dupes (open or merged <24h ago) — refusing to open a duplicate PR." >&2
+    abort=1
+  fi
+  [ "$abort" -eq 0 ] || return 1
+  echo "pr-create guard OK: issue(s) [$*] open, no live/recent PR on '$branch'."
+}
+
+# The guard MUST pass before the PR is created. For cross-fork PRs, edit the two
+# gh calls to add `-R <owner>/<repo>` and use `--head <owner>:<branch>`:
+#   pr_create_guard "$(git rev-parse --abbrev-ref HEAD)" <ISSUE_N> [<ISSUE_N2> ...] || exit 1
+#   gh pr create ...
+```
+
 ## 2. Create the PR
 
 Target `staging` for feature/fix PRs. Target `main` only for hotfixes or docs-only changes.
 
 ```bash
+# Guard first — never open a duplicate PR (see §1):
+pr_create_guard "$(git rev-parse --abbrev-ref HEAD)" "$N" || exit 1
+
 gh pr create --base staging --title "feat: short description" --body "$(cat <<'EOF'
 ## Summary
 - What was done
@@ -123,6 +172,11 @@ After a staging PR is merged and validated, create a merge PR to main:
 
 ```bash
 git checkout staging && git pull
+# A staging→main merge PR is not issue-scoped, so the §1 duplicate-guard does
+# not apply (its merged-<24h rule would false-abort routine merges). Guard only
+# against a second *open* staging→main PR for the same head:
+[ -z "$(gh pr list --head staging --base main --state open --json number -q '.[].number' 2>/dev/null)" ] \
+  || { echo "An open staging→main PR already exists — not creating a duplicate." >&2; exit 1; }
 gh pr create --base main --title "Staging" --body "$(cat <<'EOF'
 ## Summary
 - Merge staging changes into main
@@ -135,12 +189,62 @@ EOF
 )"
 ```
 
+## 8. Merge & Head-Branch Cleanup
+
+**Every merge of an issue/feature head branch must delete that branch.** Squash
+merges leave the branch tip a non-ancestor of `main`; if the branch survives it
+still shows a full stale diff and is PR-able a second time, producing net-no-op
+duplicate PRs — the 2026-07-26 duplicate-PR incident (issue #1572). Branch
+survival, not the merge method, is the root cause, so deletion is part of the
+merge step, never an optional follow-up. (This does **not** apply to the
+long-lived `staging` branch in §7's staging→main merge — never delete `staging`.)
+
+On this repo (private + Free plan, no auto-merge — issue #29) use the wrapper,
+which squash-merges **and deletes the branch** once checks pass:
+
+```bash
+pnpm merge <PR_NUMBER>            # = bash scripts/kookr-merge.sh <PR_NUMBER>
+                                 # squash-merges with --delete-branch
+```
+
+For any other repo, delete the branch as part of the merge:
+
+```bash
+gh pr merge <PR_NUMBER> --squash --delete-branch
+```
+
+### Linked-worktree edge case (deletion must never silently fail)
+
+`--delete-branch` also deletes the **local** branch, which fails if that branch is
+checked out in a linked worktree (e.g. the worktree you merged from). Pick one so
+the deletion never silently no-ops:
+
+- **Merge from the primary checkout**, not the merging worktree, so no linked
+  worktree holds the branch — then `--delete-branch` removes remote and local cleanly.
+- **Or delete explicitly** when `--delete-branch` reports a local-delete failure
+  (the remote may already be gone, so make each step idempotent):
+
+```bash
+gh pr merge <PR_NUMBER> --squash                              # merge; local --delete-branch may fail
+git push origin --delete <head-branch> 2>/dev/null || true    # ensure the REMOTE branch is gone
+git worktree remove <worktree-path> 2>/dev/null || true       # drop the linked worktree holding it
+git branch -D <head-branch> 2>/dev/null || true               # then the local branch
+```
+
+Verify the remote head branch is gone before calling the merge done:
+
+```bash
+gh api "repos/<owner>/<repo>/branches/<head-branch>"   # expect: HTTP 404
+```
+
 ## Common Mistakes to Avoid
 
 - **Never use `gh pr edit --body` or `gh pr edit --title`** — it fails with a GraphQL Projects Classic deprecation error
 - **Never leave checklist items unchecked** after they've been validated
 - **Never skip thread resolution** after pushing a review fix
 - **Never create a PR without running the repo checks first**
+- **Never run `gh pr create` without passing the pre-create duplicate-guard** (§1) — a CLOSED issue or an already-open/recently-merged head branch means the work already shipped
+- **Never leave a merged issue/feature head branch alive** (§8) — a surviving squash-merged branch is re-PR-able and produces net-no-op duplicate PRs (issue #1572); the long-lived `staging` branch is the sole exception
 
 ## See Also
 

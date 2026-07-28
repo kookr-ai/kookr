@@ -1,5 +1,7 @@
 import { stat } from 'node:fs/promises';
 import type { Task, TaskStore } from '../core/tasks.js';
+import { deterministicTaskName } from '../core/task-naming.js';
+import { displayPromptForTask } from '../core/prompt-display.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import { getGitInfo } from '../adapters/git-info.js';
 import type { WorktreeRegistry } from '../adapters/git-worktree-registry.js';
@@ -216,6 +218,85 @@ export async function reconcile(
   }
 
   return result;
+}
+
+/**
+ * BOOT-ONLY sweep for launches that died with the previous process (issue
+ * #1526 Phase C / #1528). A task in `open` status with ZERO sessions exists
+ * only while a launch is in flight (`launchTaskCore` creates it, then awaits
+ * `adapter.launch`, which attaches the first session). A launch cannot
+ * survive a process restart — `beginLaunch` reservations are deliberately
+ * in-memory only — so at boot every open/zero-session task without a fresh
+ * reservation is stale by construction: its launcher is gone, no session will
+ * ever attach, and `reconcile()`'s dead-session logic never touches it
+ * (that path requires `sessions.length > 0`).
+ *
+ * Disposition follows reconcile's existing crash convention: no session ever
+ * attached, so there is no positive completed_turn evidence — the task goes
+ * `open → inProgress → terminated` (user must acknowledge or reopen), the
+ * same terminal status a mid-turn crash gets, and it records a queryable
+ * `stale_open_launch` {@link Task.disposition} (issue #1588). Deleting the
+ * record instead would silently erase the evidence that a scheduled fire died
+ * — the same no-silent-loss rule the in-process launch-failure cleanup now
+ * follows (it disposes rather than deletes).
+ *
+ * What distinguishes a legitimately mid-flight launch: a FRESH
+ * `beginLaunch` reservation (`taskStore.hasFreshLaunchReservation`). At boot
+ * the reservation map is empty, so nothing is protected — correct, because
+ * no launch survives the restart. The guard is what makes this function safe
+ * against misuse from a periodic path, and it is the tested discriminator.
+ *
+ * Returns the terminated task ids; the caller merges them into
+ * `ReconciliationResult.tasksTerminated` so downstream boot handling (issue
+ * claim release, onTaskOutcome, logging) treats them like any other
+ * boot-terminated task.
+ */
+export function reconcileStaleOpenLaunches(
+  taskStore: TaskStore,
+): string[] {
+  const terminated: string[] = [];
+  for (const task of taskStore.listTasks()) {
+    if (task.status !== 'open') continue;
+    if (task.sessions.length > 0) continue;
+    if (taskStore.hasFreshLaunchReservation(task.id)) continue;
+    try {
+      // Belt-and-braces backstop (issue #1554): tasks created after the
+      // creation-time naming change already carry a name, but a legacy task
+      // persisted before it may still be nameless here. Give it the
+      // deterministic fallback before terminating so no task ever reaches a
+      // terminal state with `name=null`.
+      if (!task.name) {
+        taskStore.renameTask(task.id, deterministicTaskName(displayPromptForTask(task), task.cwd));
+      }
+      // Never silently terminate a persisted task (issue #1588): record a
+      // queryable disposition first so the terminal record explains WHY it
+      // died (its launcher process is gone), and so a retried POST with the
+      // same idempotency key can replay it. First-write-wins, so a task that
+      // was already disposed in-process keeps its original reason.
+      taskStore.setDisposition(task.id, {
+        reason: 'stale_open_launch',
+        at: new Date().toISOString(),
+        source: 'startup-reconcile',
+        detail: 'open task with zero sessions at boot — its launcher died with the previous process',
+      });
+      // open → inProgress → terminated: the status machine has no direct
+      // open→terminated edge; reconcile()'s dead-session path uses the same
+      // two-step transition.
+      taskStore.startTask(task.id);
+      taskStore.terminateTask(task.id);
+      terminated.push(task.id);
+      console.warn(
+        `[startup-reconcile] terminated stale launch task ${task.id} ` +
+        '(open with zero sessions — its launcher died with the previous process)',
+      );
+    } catch (err) {
+      console.error(
+        `[startup-reconcile] failed to terminate stale launch task ${task.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  return terminated;
 }
 
 /**

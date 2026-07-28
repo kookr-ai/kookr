@@ -3,20 +3,24 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
 import { loadTasksWithRecovery, saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
-import { reconcile, type ReconciliationResult } from './reconciliation.js';
+import { reconcile, reconcileStaleOpenLaunches, type ReconciliationResult } from './reconciliation.js';
 import { type AgentPreflightSnapshot, type PreflightLogger } from './agent-preflight.js';
 import type { ServerMessage, SnapshotMessage } from '../shared/contracts/messages.js';
 import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
 import type { Scope } from './viewer-data-policy.js';
 import { createTerminalScopeChecker } from './terminal-scope.js';
 import { ContactShareReadModel } from '../core/contact-share.js';
-import { generateTaskName } from '../core/task-naming.js';
+import { deterministicTaskName, generateTaskName } from '../core/task-naming.js';
 import type { BackendError, TerminalBackend } from '../adapters/terminal-backend.js';
 import { wireEventPipeline } from './event-pipeline.js';
 import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
 import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
+import { buildCapacityLedger } from '../core/capacity-ledger.js';
+import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
+import { resolveTaskAttentionSignals } from './task-attention-signals.js';
+import { IdempotencyLedger } from '../core/idempotency-ledger.js';
 import { DrainController } from './drain-state.js';
 import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handler.js';
 import { QuotaAdapter } from '../adapters/quota-adapter.js';
@@ -34,7 +38,14 @@ import type { KookrServerInternal } from './server-test-helpers.js';
 import { createSnapshotMessage, getSnapshotAgentsForClient } from './use-cases/get-snapshot.js';
 import { sweepReflectWorktrees } from './use-cases/request-task-reflect.js';
 import { startBackgroundServices } from './bootstrap/start-background-services.js';
-import { resolveMaintenancePruneIntervalHours } from './lifecycle-timers.js';
+import {
+  formatPayloadDietLogLine,
+  resolveMaintenancePruneIntervalHours,
+  type PayloadDietStats,
+} from './lifecycle-timers.js';
+import { pruneAgedTaskRecords } from './use-cases/prune-aged-task-records.js';
+import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';
+import { isTerminalStatus } from '../core/task-status.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
 import {
@@ -42,6 +53,10 @@ import {
   type ResourceStatusSampler,
 } from './resource-status-service.js';
 import { createOperationalAlertEvaluator } from './operational-alert-rules.js';
+import { LessonSpoolService } from './lesson-spool-service.js';
+import { defaultSpoolDir } from '../core/lesson-write-spool.js';
+import { SignalOutboxService } from './signal-outbox-service.js';
+import { defaultSignalOutboxDir } from '../core/signal-outbox.js';
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
 import { TaskStateSaveScheduler } from './task-state-save-scheduler.js';
 import { createIssueClaimServices, createUpstreamOfResolver, isIssueClaimsEnabled, type IssueClaimServices } from './issue-claim-wiring.js';
@@ -53,6 +68,7 @@ import {
   getOperationalAlertConfig,
   resetOperationalAlertConfig,
 } from './operational-alert-config.js';
+import { readAdmissionControlConfigFromEnv } from './task-admission.js';
 import {
   FindingEvidenceReviewQueueStore,
   FindingEvidenceReviewSampler,
@@ -78,6 +94,10 @@ import { createRealtimeServices, DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS } from './
 import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
+import {
+  TaskTailStore,
+  readTaskTailConfigFromEnv,
+} from '../core/task-tail-store.js';
 import {
   buildCollaborationDiagnostics,
   startConfiguredPrivateNetworkCollaborationListener,
@@ -289,6 +309,32 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // rebuild) touches it — the port bind only enforces exclusivity later.
   const releaseSingleWriterLock = acquireSingleWriterLock(kookrDir);
 
+  // Durable terminal tails for completed tasks (rfc-task-tail-retrieval).
+  const taskTailConfig = readTaskTailConfigFromEnv(process.env, kookrDir);
+  const taskTailStore = new TaskTailStore({
+    dir: taskTailConfig.dir,
+    retentionDays: taskTailConfig.retentionDays,
+    maxBytes: taskTailConfig.maxBytes,
+  });
+  let taskTailPurgeTimer: ReturnType<typeof setInterval> | undefined;
+  if (taskTailConfig.purgeIntervalMs > 0) {
+    // First sweep after one interval (not at boot) so startup stays light.
+    taskTailPurgeTimer = setInterval(() => {
+      void taskTailStore.purgeExpired().then((removed) => {
+        if (removed > 0) {
+          console.log(`[task-tail] purged ${removed} expired terminal tail(s)`);
+        }
+      }).catch((err) => {
+        console.warn(
+          '[task-tail] purge failed:',
+          err instanceof Error ? err.message : err,
+        );
+      });
+    }, taskTailConfig.purgeIntervalMs);
+    // Don't keep the process alive solely for purge ticks.
+    taskTailPurgeTimer.unref?.();
+  }
+
   const coreStores = await createCoreStores({
     kookrDir,
     hooksDir,
@@ -331,6 +377,29 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // `currentSettings` binding (reassigned by the settings PUT path) so an
   // operator's change takes effect on the next liveness tick without a restart.
   const getAutoCloseCompletionReadyDelayMs = () => currentSettings.autoCloseCompletionReadyDelayMin * 60_000;
+  // Live getter for the completion-ready TTL escalation threshold (issue
+  // #1526 Phase A / FM5). Same live-binding pattern as the delay above.
+  const getCompletionReadyTtlMs = () => currentSettings.completionReadyTtlMinutes * 60_000;
+  // Live getters for the hung-task reaper (issue #1526 Phase A / FM6).
+  const getHungTaskReapEnabled = () => currentSettings.hungTaskReapEnabled;
+  const getHungTaskReapMs = () => currentSettings.hungTaskReapMinutes * 60_000;
+  // Live getter for the adapter-launch hard timeout (issue #1526 Phase C /
+  // #1528). Same live-binding pattern — applies to the next launch.
+  const getLaunchTimeoutMs = () => currentSettings.launchTimeoutSeconds * 1000;
+  // Live getter for the scheduled-task starvation dead-man window (issue
+  // #1526 Phase C). Read on every scheduler tick.
+  const getDeadManScheduleMs = () => currentSettings.deadManScheduleMinutes * 60_000;
+  // Honest server-side backpressure (issue #1526 Phase C / C3). All read the
+  // live `currentSettings` binding, so a settings PUT applies to the next
+  // launch / liveness tick without a restart.
+  const getMaxPendingTasks = () => currentSettings.maxPendingTasks;
+  const getPendingTaskTtlMs = () => currentSettings.pendingTaskTtlMinutes * 60_000;
+  // Per-source spawn budget — one limiter instance per server so window state
+  // is shared across REST, WS, and internal launch paths.
+  const spawnRateLimiter = new SpawnRateLimiter({
+    getLimit: () => currentSettings.spawnBurstLimit,
+    getWindowMs: () => currentSettings.spawnBurstWindowMinutes * 60_000,
+  });
   // #681: live getter for the per-agent-type effort defaults. Reads the live
   // `currentSettings` binding so an operator's settings PUT takes effect on the
   // next launch without a restart (the PUT path reassigns `currentSettings`).
@@ -527,6 +596,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     (sessionName) => taskStore.findTaskBySession(sessionName)?.projectId,
   );
 
+  // Payload-diet observability (issue #1526 Phase C / C2): remember the size
+  // of the most recent `all`-scope snapshot broadcast so the boot / maintenance
+  // stats line can report it alongside the tracked-record count.
+  let lastSnapshotPayloadBytes: number | null = null;
+
   const realtime = await createRealtimeServices({
     kookrDir,
     taskStore,
@@ -536,6 +610,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     serverCwd,
     sttUrl,
     buildScopedSnapshot,
+    observeSnapshotPayloadSize: (observation) => {
+      if (observation.payloadType === 'snapshot' && observation.scopeKey === 'all' && observation.action !== 'dropped') {
+        lastSnapshotPayloadBytes = observation.bytes;
+      }
+    },
     ledgerAnalytics,
     projectConfigStore,
     projectSidebarStore,
@@ -658,6 +737,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Reconcile with live backend sessions
   const reconcileResult = await reconcile(taskStore, terminalBackend, worktreeRegistry);
+  // Boot-only sweep (issue #1526 Phase C / #1528): launches that died with
+  // the previous process leave open/zero-session tasks that reconcile()'s
+  // dead-session logic never touches. Terminate them here and merge into
+  // tasksTerminated so claim release / onTaskOutcome below treat them like
+  // any other boot-terminated task. Runs BEFORE createScheduleRuntime so
+  // scheduleService.reconcileOnStartup sees their terminal status.
+  reconcileResult.tasksTerminated.push(...reconcileStaleOpenLaunches(taskStore));
   if (reconcileResult.resumed.length > 0) {
     console.log(`Resumed monitoring: ${reconcileResult.resumed.join(', ')}`);
   }
@@ -802,35 +888,53 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // --- Auto-naming helper ---
 
-  /** Fire-and-forget: generate a short AI name for a task */
+  /**
+   * Fire-and-forget: generate a short AI name for a task. NEVER leaves a task
+   * unnamed (issue #1526 Phase C4): when the LLM is unavailable, returns an
+   * empty name, or fails outright, the deterministic prompt-derived fallback
+   * is applied instead — during the 2026-07-24 grok burst every naming call
+   * logged "LLM returned empty name", leaving whole batches unnamed and
+   * degrading incident triage.
+   */
   function autoNameTask(taskId: string, prompt: string, cwd: string, criteria?: string): void {
-    if (!llmClient) return;
+    const applyName = (name: string): void => {
+      const current = taskStore.getTask(taskId);
+      // Upgrade a still-unnamed task or one carrying the deterministic
+      // creation-time placeholder (issue #1554: `autoNamed`); never overwrite
+      // an authoritative name (explicit playbook/user name, or a prior upgrade).
+      if (!current || (current.name && !current.autoNamed)) return;
+      taskStore.renameTask(taskId, name);
+      console.log(`[task-naming] Named task ${taskId}: "${name}"`);
+      broadcastToAll(createSnapshotMessage({
+        monitor,
+        serverCwd,
+        sttUrl,
+        ttsUrl,
+        activityMetaProvider: hookIngestion,
+        coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
+        getMaxActiveTasks,
+        relationTaskStore: taskStore,
+        terminalInputSnapshots: terminalInputCoordinator,
+        userInputDeliveryProvider: userInputDeliveries,
+      }));
+    };
+
+    if (!llmClient) {
+      applyName(deterministicTaskName(prompt, cwd));
+      return;
+    }
     generateTaskName(llmClient, prompt, cwd, criteria)
       .then((name) => {
         if (!name) {
-          console.warn(`[task-naming] LLM returned empty name for task ${taskId}`);
+          console.warn(`[task-naming] LLM returned empty name for task ${taskId}; using deterministic fallback`);
+          applyName(deterministicTaskName(prompt, cwd));
           return;
         }
-        const current = taskStore.getTask(taskId);
-        if (current && !current.name) {
-          taskStore.renameTask(taskId, name);
-          console.log(`[task-naming] Named task ${taskId}: "${name}"`);
-          broadcastToAll(createSnapshotMessage({
-            monitor,
-            serverCwd,
-            sttUrl,
-            ttsUrl,
-            activityMetaProvider: hookIngestion,
-            coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
-            getMaxActiveTasks,
-            relationTaskStore: taskStore,
-            terminalInputSnapshots: terminalInputCoordinator,
-            userInputDeliveryProvider: userInputDeliveries,
-          }));
-        }
+        applyName(name);
       })
       .catch((err) => {
         console.warn(`[task-naming] Failed to name task ${taskId}:`, err instanceof Error ? err.message : err);
+        applyName(deterministicTaskName(prompt, cwd));
       });
   }
 
@@ -849,6 +953,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ...(issueClaimServices ? { issueClaimRegistry: issueClaimServices.registry } : {}),
   };
 
+  // Durable idempotency ledger (issue #1526 Phase B / FM2, FM3): protects
+  // POST /api/tasks retries (e.g. a client timeout against an overloaded
+  // server that had already created the task) from creating a duplicate.
+  // Loaded before the launch service deps are built so the first launch
+  // served can already see replay state from a prior process.
+  const idempotencyLedger = new IdempotencyLedger(kookrDir);
+  await idempotencyLedger.load();
+
   // Launch service deps — shared by WS handler, REST routes, and the Ralph
   // cycler's fresh-runtime launcher inside wireEventPipeline.
   const launchServiceDeps: LaunchServiceDeps = {
@@ -863,6 +975,22 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     isAccepting: () => drainController.isAccepting(),
     validateLaunchCwd: config.validateLaunchCwd,
     bypassAllPermissions,
+    idempotencyLedger,
+    getLaunchTimeoutMs,
+    // issue #1526 Phase C / C3: pending-queue depth limit + per-source spawn
+    // budget, with the SAME watchdog-aware capacity-ledger builder /api/health
+    // uses so a 429 body and the health endpoint tell one story.
+    getMaxPendingTasks,
+    spawnRateLimiter,
+    getCapacityLedger: () => {
+      const now = Date.now();
+      return buildCapacityLedger(taskStore.listTasks(), {
+        now,
+        maxActiveTasks: getMaxActiveTasks(),
+        isHungSuspect: (task) => resolveTaskAttentionSignals(task, { queue, watchdog }, now).hungSuspect,
+        isLaunching: (task) => taskStore.hasFreshLaunchReservation(task.id),
+      });
+    },
   };
 
   let remoteLaunchBroker: import('../remote/launch-broker.js').RemoteLaunchBroker | undefined;
@@ -986,6 +1114,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getMaxActiveTasks,
     broadcastToAll,
     isAccepting: () => drainController.isAccepting(),
+    getDeadManScheduleMs,
   });
   realtime.setScheduleStore(scheduleStore);
   realtime.setSnapshotAchievementsReady(true);
@@ -1126,9 +1255,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     } : {}),
     taskStore, monitor, queue, adapter, hookWatcher, watchdog,
     interactionLog,
+    taskTailStore,
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
     serverCwd, serverPort: port, pluginUpdateBin: agentBin, kookrDir, frontendDir, broadcastToAll,
     getOperationalAlertHistory: () => resourceStatusService.getOperationalAlertHistory(),
+    // issue #1590: feed the load-based POST /api/tasks admission gate the same
+    // already-sampled event-loop p95 the health snapshot exposes.
+    getLatestResourceStatus: () => resourceStatusService.getLatest(),
     llmClient,
     sessionHealthService,
     ...(findingEvidenceReviewEnabled ? { findingEvidenceReviewHmacKey } : {}),
@@ -1217,6 +1350,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     worktreeRegistry,
     getMaxActiveTasks,
     getAutoCloseCompletionReadyDelayMs,
+    getCompletionReadyTtlMs,
     settings: {
       get: () => currentSettings,
       getLoadedFromDefaults: () => settingsLoadedFromDefaults,
@@ -1304,6 +1438,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }
   };
 
+  // Payload-diet stats line (issue #1526 Phase C / C2): logged once at boot
+  // and after every scheduled maintenance sweep.
+  const getPayloadDietStats = (): PayloadDietStats => {
+    const tasks = taskStore.listTasks();
+    return {
+      trackedTasks: tasks.length,
+      terminalTasks: tasks.filter((task) => isTerminalStatus(task.status)).length,
+      lastSnapshotBytes: lastSnapshotPayloadBytes,
+    };
+  };
+
   const operationalAlertConfig = resetOperationalAlertConfig();
   const operationalAlertEvaluator = createOperationalAlertEvaluator(
     getOperationalAlertConfig,
@@ -1325,6 +1470,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   } else {
     console.log('[ops-alerts] Operational alerts disabled (set KOOKR_ALERT_* thresholds to enable)');
   }
+  // Load-based admission for POST /api/tasks (issue #1590): shed spawn POSTs
+  // with 503 + Retry-After when the sampled event-loop delay p95 is saturated.
+  const admissionControlConfig = readAdmissionControlConfigFromEnv();
+  console.log(
+    admissionControlConfig.eventLoopDelayThresholdMs > 0
+      ? `[admission] POST /api/tasks sheds at event-loop p95 >= ` +
+          `${admissionControlConfig.eventLoopDelayThresholdMs}ms ` +
+          `(503, Retry-After ${admissionControlConfig.retryAfterSeconds}s)`
+      : '[admission] Load-based POST /api/tasks admission disabled (set KOOKR_ADMISSION_EVENT_LOOP_DELAY_MS to enable)',
+  );
   const resourceStatusService = createResourceStatusService({
     sampler: resourceStatusSampler ?? createSystemResourceSampler({ dataDirectoryPath: kookrDir }),
     broadcastToAll,
@@ -1332,6 +1487,65 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getCircuitBreakerSnapshots: () => circuitBreakerRegistry.getAllSnapshots(),
     intervalMs: resourceStatusIntervalMs,
   });
+
+  // Lesson-write spool recovery + prolonged KB degradation alert (issue #1519).
+  // Spool lives under ~/.kookr/playbook-state (user-scoped, not per-port dataDir)
+  // so lessons survive across prod/dev instances on the same host.
+  // Disabled when KOOKR_LESSON_SPOOL=0 (also set in vitest.config.ts so unit
+  // tests do not shell out to `kb doctor` every 5 minutes or on the 15s boot tick).
+  const lessonSpoolDisabled = process.env.KOOKR_LESSON_SPOOL === '0';
+  const lessonSpoolService = new LessonSpoolService({
+    spoolDir: defaultSpoolDir(process.env),
+    emitAlert: (alert) => broadcastToAll(alert),
+  });
+  if (!lessonSpoolDisabled) {
+    lessonSpoolService.start();
+  }
+
+  // Agent signal outbox drain (issue #1541). When agents raised
+  // `kookr signal` while this daemon was down, entries sit under
+  // ~/.kookr/playbook-state/signal-outbox/; this service applies them on boot
+  // and every 30s. Disabled when KOOKR_SIGNAL_OUTBOX=0 (also set in vitest).
+  const signalOutboxDisabled = process.env.KOOKR_SIGNAL_OUTBOX === '0';
+  const signalOutboxService = new SignalOutboxService({
+    taskStore,
+    spoolDir: defaultSignalOutboxDir(process.env),
+    // Same hooksDir root the HTTP signal route uses so outbox drains cannot
+    // bypass the lesson-decision gate (issue #1608).
+    kookrDir,
+    onTaskOutcome: (taskId, outcome) => {
+      try {
+        onTaskOutcomeHolder?.(taskId, outcome);
+      } catch (err) {
+        console.warn('[signal-outbox] onTaskOutcome threw:', err);
+      }
+    },
+    onDelivered: () => {
+      try {
+        broadcastToAll(createSnapshotMessage({
+          monitor,
+          serverCwd,
+          sttUrl,
+          ttsUrl,
+          activityMetaProvider: hookIngestion,
+          coordinator: {
+            taskStore,
+            auditTailProvider: hookIngestion,
+            suppressions: coordinatorSuppressions,
+          },
+          getMaxActiveTasks,
+          relationTaskStore: taskStore,
+          terminalInputSnapshots: terminalInputCoordinator,
+          userInputDeliveryProvider: userInputDeliveries,
+        }));
+      } catch (err) {
+        console.warn('[signal-outbox] broadcast threw:', err);
+      }
+    },
+  });
+  if (!signalOutboxDisabled) {
+    signalOutboxService.start();
+  }
 
   // --- Quota monitoring (polls Anthropic OAuth usage endpoint) ---
   const quotaAdapter = new QuotaAdapter(120_000); // 120s interval
@@ -1342,6 +1556,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     serverCwd, sttUrl, ttsUrl, abortPendingSuggestion,
     lifecycleExtras: {
       hookWatcher, watchdog, shadowRegistry, tokenTracker,
+      taskTailStore,
       onTaskOutcome: (taskId, outcome) => {
         onTaskOutcomeHolder?.(taskId, outcome);
       },
@@ -1349,7 +1564,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
     agentLifecycleDeps: lifecycleDeps, broadcastToAll,
     broadcastProjectSummaries,
-    launchTask: (opts, serverOpts) => launchTask(launchServiceDeps, opts, serverOpts),
+    // issue #1526 Phase C / C3: launches arriving over this wiring come from
+    // the WS transport (dashboard launch/relaunch/playbook messages) — tag
+    // them so the spawn budget buckets them as `websocket`, not anonymous
+    // `api`. An opts-level source (none today on WS paths) would still win.
+    launchTask: (opts, serverOpts) => launchTask(launchServiceDeps, { launchSource: 'websocket', ...opts }, serverOpts),
     githubStateStore, ledgerAnalytics, projectConfigStore, projectSidebarStore,
     skillDiscoveryState, prLessonsState, getRegistryActiveProjects,
     achievementWatcher,
@@ -1404,8 +1623,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       monitor, taskStore, queue, adapter, adapterRegistry, tokenTracker, watchdog,
       hookWatcher, terminalBackend, hooksDir, tasksFile, serverCwd,
       saveIntervalMs, livenessIntervalMs, broadcastToAll,
-      shadowRegistry, agentLifecycleDeps: lifecycleDeps,
+      shadowRegistry, agentLifecycleDeps: lifecycleDeps, taskTailStore,
       quotaAdapter, getMaxActiveTasks, getAutoCloseCompletionReadyDelayMs, suppressionTracker,
+      getCompletionReadyTtlMs,
+      getPendingTaskTtlMs,
+      auditLogPath: join(kookrDir, 'audit.jsonl'),
+      reportsDir: join(kookrDir, 'reports'),
+      getHungTaskReapEnabled, getHungTaskReapMs,
       budgetChecker, projectConfigStore, progressBudgetBurnDiagnostics,
       detectionStatsStore,
       persistenceHealth,
@@ -1420,7 +1644,32 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       maintenancePrune: {
         dataDir: kookrDir,
         intervalHours: resolveMaintenancePruneIntervalHours(process.env),
+        // Aged terminal task-record prune (issue #1526 Phase C / C2): runs on
+        // the same tick; the shrunken store persists on the next periodic save.
+        pruneTaskRecords: () => pruneAgedTaskRecords({
+          taskStore,
+          monitor,
+          takePredeleteSnapshot,
+          auditLogPath: join(kookrDir, 'audit.jsonl'),
+        }),
+        onTaskRecordsPruned: () => {
+          // Push a fresh snapshot so dashboards drop the pruned rows now
+          // rather than on the next tick broadcast.
+          broadcastToAll(createSnapshotMessage({
+            monitor,
+            serverCwd,
+            activityMetaProvider: hookIngestion,
+            coordinator: { taskStore, auditTailProvider: hookIngestion, suppressions: coordinatorSuppressions },
+            relationTaskStore: taskStore,
+          }));
+        },
+        getPayloadDietStats,
       },
+      // Hourly prod smoke tick (issue #1593). Enabled by default only on the
+      // canonical prod port (4800) so a fresh deploy is protected with no
+      // operational change; dev servers and the test suite stay silent unless
+      // KOOKR_PROD_SMOKE_TICK forces it on. Undefined ⇒ no interval started.
+      prodSmokeTick: createProdSmokeTickFromEnv({ env: process.env, port, kookrDir, broadcast: broadcastToAll }),
     },
   });
 
@@ -1488,6 +1737,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Start background services that should wait for the server to be listening.
   backgroundServices.startAfterListen();
 
+  // Payload-diet boot stats (issue #1526 Phase C / C2): one line so operators
+  // see the tracked-record count and (once broadcast) the snapshot size.
+  console.log(formatPayloadDietLogLine(getPayloadDietStats()));
+
   const remoteChatTrigger = await startRemoteChatTrigger({
     host,
     port,
@@ -1509,6 +1762,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     if (isClosed) return;
     isClosed = true;
 
+    if (taskTailPurgeTimer) {
+      clearInterval(taskTailPurgeTimer);
+      taskTailPurgeTimer = undefined;
+    }
+
+    lessonSpoolService.stop();
+    signalOutboxService.stop();
     await backgroundServices.stop();
     try {
       await taskStateSaveScheduler.close();

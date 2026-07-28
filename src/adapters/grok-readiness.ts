@@ -12,6 +12,7 @@
  * captured screen is an auth/update screen rather than the composer.
  */
 import { stripTerminalControls } from './agent-launch-context.js';
+import { analyzePaneSemantics } from '../shared/pane-semantics.js';
 
 /**
  * Substrings that indicate Grok is showing an authentication or update screen
@@ -49,6 +50,31 @@ export function detectGrokBlockingStartupUI(display: string): string | null {
     if (text.includes(marker)) {
       return `Grok showed an unexpected startup screen ("${marker}") instead of the ready composer`;
     }
+  }
+  return null;
+}
+
+/**
+ * Mid-run analog of {@link detectGrokBlockingStartupUI} for Grok's PERMISSION
+ * prompt (issue #1526 Phase C4): returns a human-readable reason when the
+ * captured display shows Grok's cursor-selectable permission row menu, else
+ * `null`.
+ *
+ * The row labels are grounded in verbatim strings extracted from the grok
+ * 0.2.111 binary's permission prompter ("Allow once", "Always allow this
+ * command", "Reject", "No, and tell Grok what to do differently", …) and live
+ * in the shared pane-semantics module, which is ALSO the production mid-run
+ * rescan path: the server's 5s watchdog tick calls `adapter.captureDisplay`
+ * and classifies the pane via `analyzePaneSemantics`, so a Grok session whose
+ * permission hooks never fired (POC-A: `permission_denied` is unreliable in
+ * headless mode) is still reported `permission_blocked` from the pane alone.
+ * This wrapper exposes the same classification to Grok-adapter callers — the
+ * launch path uses it to explain an unacknowledged initial prompt.
+ */
+export function detectGrokPermissionPromptUI(display: string): string | null {
+  const semantics = analyzePaneSemantics(display);
+  if (semantics.state === 'permission_dialog' && semantics.confidence === 'high') {
+    return `Grok is showing a permission prompt ("${semantics.matchedText ?? 'Allow once / Reject'}")`;
   }
   return null;
 }

@@ -108,6 +108,7 @@ function ledgerSummary(entry: ScheduleResponse['executionLedger'][number]): stri
 function outcomeLabel(outcome: ScheduleResponse['executionLedger'][number]['outcome']): string {
   switch (outcome) {
     case 'queued':
+    case 'queued_capacity':
       return 'queued';
     case 'running':
       return 'running';
@@ -123,6 +124,8 @@ function outcomeLabel(outcome: ScheduleResponse['executionLedger'][number]['outc
       return 'skipped: active run';
     case 'skipped_capacity':
       return 'skipped: capacity';
+    case 'skipped_coalesced':
+      return 'skipped: already queued';
     case 'skipped_draining':
       return 'skipped: draining';
     case 'skipped_manual':
@@ -144,6 +147,8 @@ function reasonLabel(reason: NonNullable<ScheduleResponse['executionLedger'][num
       return 'draining';
     case 'previous_run_active':
       return 'previous run active';
+    case 'previous_run_pending':
+      return 'previous run already queued';
     case 'manual_catch_up_required':
       return 'Run Now to recover';
     case 'missing_cwd':

@@ -1,9 +1,17 @@
-import type { LlmClient } from './llm-client.js';
+import { basename } from 'node:path';
+import { completeLlmDetailed } from './llm-client.js';
+import type { LlmClient, LlmCompletionRequest, LlmResponseFormat } from './llm-client.js';
+import { stripWorktreeGuardrailPrefix } from './prompt-display.js';
 import { logTaskNaming } from './training-data-logger.js';
 
-// Budget for a single LLM call. OpenRouter floors this up internally, since
-// DeepSeek V4 Flash is slower than the free-tier providers this is tuned for.
 const TIMEOUT_MS = 10_000;
+// Token budget for a single naming call. Reasoning models (e.g. baseten
+// Nemotron) spend hidden reasoning tokens before any JSON is emitted; with the
+// former budget of 30 the reasoning stream consumed the whole allowance and the
+// completion finished with `length` before a single character of the name was
+// produced — 0% success in prod (issue #1555). 512 leaves ample room for
+// reasoning plus the tiny `{"name": "…"}` payload while staying cheap.
+const MAX_TOKENS = 512;
 const MAX_NAME_LENGTH = 80;
 const MAX_NAME_WORDS = 12;
 
@@ -71,6 +79,96 @@ function parseTaskName(raw: string): string | null {
   return normalizeTaskName(structuredName ?? raw);
 }
 
+// A line that, once leading markers are stripped, is nothing but JSON
+// structural punctuation — `{`, `}`, `[`, `]`, optionally with a trailing
+// comma/colon. These are the opening lines of a spawn payload pasted in as the
+// prompt (issue #1556, task a5a89a9a named `"{"`) and must never become a task
+// name; the namer falls through to the first line with real content.
+const STRUCTURAL_JUNK_LINE_RE = /^[{}[\]()][{}[\]()\s,:]*$/;
+
+function isNameWorthyLine(line: string): boolean {
+  return line.length > 0 && !STRUCTURAL_JUNK_LINE_RE.test(line);
+}
+
+/**
+ * Deterministic, never-empty task name derived from the prompt itself —
+ * the guaranteed fallback when the LLM namer returns nothing (issue #1526
+ * Phase C4: during the 2026-07-24 grok burst every naming call came back
+ * empty, leaving whole batches of unnamed tasks and degrading triage).
+ * Uses the first meaningful prompt line (leading markdown/list markers
+ * stripped, whitespace collapsed), truncated to {@link MAX_NAME_LENGTH};
+ * for a blank prompt, falls back to the cwd basename.
+ *
+ * Junk first lines are skipped rather than taken literally (issue #1556):
+ * the worktree-guardrail preamble is stripped up front, and lone/leading JSON
+ * braces-brackets never become the name — so a JSON spawn payload pasted as the
+ * prompt no longer yields a name of `"{"`, and a guardrail-prefixed prompt no
+ * longer yields the boilerplate first line.
+ */
+export function deterministicTaskName(prompt: string, cwd?: string): string {
+  const firstLine = stripWorktreeGuardrailPrefix(prompt)
+    .split('\n')
+    .map((line) => line.replace(/^[\s#>*-]+/, '').trim())
+    .find(isNameWorthyLine);
+  const collapsed = firstLine?.replace(/\s+/g, ' ') ?? '';
+  if (collapsed.length === 0) {
+    const dir = cwd ? basename(cwd) : '';
+    return dir ? `Task in ${dir}` : 'Unnamed task';
+  }
+  if (collapsed.length <= MAX_NAME_LENGTH) return collapsed;
+  return `${collapsed.slice(0, MAX_NAME_LENGTH - 1).trimEnd()}…`;
+}
+
+/**
+ * When a JSON spawn payload is pasted in as the prompt (a CLI caller sending
+ * the whole `{prompt, cwd, name, …}` body as the prompt string — issue #1556,
+ * task a5a89a9a), lift the embedded `name` field so the task is named with the
+ * caller's intended name instead of the payload's first brace. Returns the
+ * trimmed name when the prompt parses as a JSON object carrying a non-empty
+ * string `name`; otherwise undefined (ordinary prose prompts are untouched).
+ */
+export function extractEmbeddedTaskName(prompt: string): string | undefined {
+  const trimmed = prompt.trim();
+  if (!trimmed.startsWith('{')) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  if (!('name' in parsed)) return undefined;
+  const name = (parsed as { name: unknown }).name;
+  if (typeof name !== 'string') return undefined;
+  const cleaned = name.trim().replace(/\s+/g, ' ');
+  if (cleaned.length === 0) return undefined;
+  return cleaned.length <= MAX_NAME_LENGTH
+    ? cleaned
+    : `${cleaned.slice(0, MAX_NAME_LENGTH - 1).trimEnd()}…`;
+}
+
+/**
+ * Structured-output request shapes tried in order (issue #1555, mirroring the
+ * #1522 criteria-evaluator chain): a provider that rejects `json_schema` (400)
+ * or honors it but returns unparseable text falls through to the looser
+ * `json_object`, then to a plain completion parsed heuristically — instead of a
+ * single-shot `json_schema` call that fails open on the first hiccup.
+ */
+type NamingMode = 'json_schema' | 'json_object' | 'plain';
+
+const NAMING_MODES: readonly NamingMode[] = ['json_schema', 'json_object', 'plain'];
+
+function namingResponseFormat(mode: NamingMode): LlmResponseFormat | undefined {
+  switch (mode) {
+    case 'json_schema':
+      return { type: 'json_schema', jsonSchema: { name: 'task_name', schema: TASK_NAME_SCHEMA } };
+    case 'json_object':
+      return { type: 'json_object' };
+    case 'plain':
+      return undefined;
+  }
+}
+
 /** Generates a short task name via an LLM. Returns null on any failure. */
 export async function generateTaskName(
   client: LlmClient,
@@ -86,29 +184,43 @@ export async function generateTaskName(
     contextParts.push(`Success criteria: ${criteria}`);
   }
 
-  try {
-    const rawName = await client.complete({
-      useCase: 'task_naming',
-      maxTokens: 30,
-      system: SYSTEM_PROMPT,
-      userMessage: `Generate a task name for this coding task.\n\n${contextParts.join('\n')}`,
-      responseFormat: {
-        type: 'json_schema',
-        jsonSchema: {
-          name: 'task_name',
-          schema: TASK_NAME_SCHEMA,
-        },
-      },
-      timeoutMs: TIMEOUT_MS,
-    });
+  const baseRequest: Omit<LlmCompletionRequest, 'responseFormat'> = {
+    useCase: 'task_naming',
+    maxTokens: MAX_TOKENS,
+    system: SYSTEM_PROMPT,
+    userMessage: `Generate a task name for this coding task.\n\n${contextParts.join('\n')}`,
+    timeoutMs: TIMEOUT_MS,
+  };
 
-    const name = rawName ? parseTaskName(rawName) : null;
-    if (name) {
-      logTaskNaming(prompt, cwd, criteria, name);
+  // Reason recorded from the last unusable attempt so the aggregate failure is
+  // diagnosable from logs (finish_reason=length ⇒ truncated budget) instead of
+  // a bare "empty name".
+  let lastFailure = 'no attempt made';
+
+  for (const mode of NAMING_MODES) {
+    const responseFormat = namingResponseFormat(mode);
+    try {
+      const { text, finishReason } = await completeLlmDetailed(client, {
+        ...baseRequest,
+        ...(responseFormat ? { responseFormat } : {}),
+      });
+      const name = text ? parseTaskName(text) : null;
+      if (name) {
+        logTaskNaming(prompt, cwd, criteria, name);
+        return name;
+      }
+      lastFailure = text === null
+        ? `empty completion (mode=${mode}, finish_reason=${finishReason ?? 'unknown'})`
+        : `unparseable completion (mode=${mode}, finish_reason=${finishReason ?? 'unknown'})`;
+      // A client-level condition (breaker open) fails identically for every
+      // mode. Stop rather than re-trip the breaker — and re-log — once per mode.
+      if (finishReason === 'circuit_open') break;
+    } catch (err) {
+      if ((err as { name?: string } | null)?.name === 'AbortError') throw err;
+      lastFailure = `error (mode=${mode}): ${err instanceof Error ? err.message : String(err)}`;
     }
-    return name;
-  } catch (err) {
-    console.warn(`[task-naming] Failed: ${err instanceof Error ? err.message : err}`);
-    return null;
   }
+
+  console.warn(`[task-naming] No usable name after structured-output fallbacks — ${lastFailure}`);
+  return null;
 }

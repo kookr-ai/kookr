@@ -1660,6 +1660,31 @@ describe('WebSocket MessageRouter', () => {
     }
   });
 
+  test('clearCompleted falls back to an unattributed websocket actor without a connectionId (issue #1526 Phase B)', async () => {
+    const auditDir = await mkdtemp(join(tmpdir(), 'kookr-ws-clear-audit-unattributed-'));
+    const auditLogPath = join(auditDir, 'audit.jsonl');
+    try {
+      const done = taskStore.createTask({ prompt: 'Done', cwd: '/cwd/a', projectId: 'github.com/org/a' });
+      taskStore.startTask(done.id);
+      taskStore.completeTask(done.id);
+      const r = new MessageRouter({
+        taskStore, queue, monitor, adapter,
+        send: (msg) => { sentMessages.push(msg); },
+        broadcastToAll: (msg) => { sentMessages.push(msg); },
+        serverCwd: '/test/cwd',
+        auditLogPath,
+        // connectionId intentionally omitted.
+      });
+
+      await r.handleMessage({ type: 'clearCompleted', projectId: 'github.com/org/a' });
+
+      const row = JSON.parse((await readFile(auditLogPath, 'utf-8')).trim()) as { actor: { source: string; actorId?: string } };
+      expect(row.actor).toEqual({ source: 'websocket', actorId: 'unattributed' });
+    } finally {
+      await rm(auditDir, { recursive: true, force: true });
+    }
+  });
+
   test('clearCompleted invokes takePredeleteSnapshot when sweeping any task', async () => {
     const t = taskStore.createTask('Done', '/cwd');
     taskStore.startTask(t.id);

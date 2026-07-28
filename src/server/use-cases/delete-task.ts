@@ -12,7 +12,7 @@ import { cleanupSessionResources } from '../agent-lifecycle.js';
 
 export interface DeleteTaskDeps {
   taskStore: TaskStore;
-  adapter: Pick<AgentAdapter, 'stop'>;
+  adapter: Pick<AgentAdapter, 'stop'> & { captureDisplay?(tmuxName: string): Promise<string> };
   monitor: Pick<Monitor, 'unregisterAgent'>;
   hookWatcher?: Pick<HookFileWatcher, 'stop'>;
   watchdog?: Pick<Watchdog, 'unregisterAgent'>;
@@ -26,6 +26,11 @@ export interface DeleteTaskDeps {
   /** Drop in-memory ingestion counters / dedup cache / sequence counter
    *  for each Kookr session belonging to the deleted task. */
   hookIngestion?: Pick<HookIngestion, 'forgetSession'>;
+  /** Remove durable terminal tail when the operator explicitly deletes the task. */
+  taskTailStore?: Pick<
+    import('../../core/task-tail-store.js').TaskTailStore,
+    'save' | 'removeByTaskId'
+  >;
 }
 
 export async function deleteTask(deps: DeleteTaskDeps, taskId: string): Promise<boolean> {
@@ -64,5 +69,15 @@ export async function deleteTask(deps: DeleteTaskDeps, taskId: string): Promise<
   // record disappears (otherwise the next save logs an orphan-snooze warning).
   deps.queue?.purgeTask(taskId);
   deps.taskStore.deleteTask(taskId);
+
+  // Explicit delete clears retained terminal tails immediately (TTL only
+  // covers completed tasks still present in tasks.json).
+  if (deps.taskTailStore) {
+    try {
+      await deps.taskTailStore.removeByTaskId(taskId);
+    } catch {
+      // Best-effort — never fail a delete on tail filesystem state.
+    }
+  }
   return true;
 }

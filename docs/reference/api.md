@@ -6,7 +6,8 @@ Kookr exposes local HTTP and WebSocket endpoints from the Hono server. In develo
 
 | Endpoint | Description |
 | --- | --- |
-| `GET /api/health` | Server status, agent count, build info, and launch dependency degradation summary |
+| `GET /api/health` | Server status, agent count, build info, launch dependency degradation, capacity ledger, and (when `kookrDir` is set) a stale-while-revalidate 24h `lessonYield` snapshot served from the last background scan — absent until the first scan completes; the request path never scans hook logs (issues #1538, #1553) |
+| `GET /api/diagnostics/lesson-yield` | Per-window lesson yield (`?days=1..30`): decided / completed tasks from hook-log scans; single-flight per window, `503 lesson_yield_scan_timeout` when the 30s scan bound expires (issues #1538, #1553) |
 | `GET /api/health/stt` | Bundled speech-to-text container health |
 | `GET /api/startup-summary` | Crash-recovery startup summary fetched once on UI mount |
 | `GET /metrics` | Prometheus text exposition for request durations, circuit breakers, attention-queue suppressions, audit-sink health, aggregate auth-throttle counters, and outbound finding-webhook delivery outcomes |
@@ -65,13 +66,15 @@ IP addresses.
 
 | Endpoint | Description |
 | --- | --- |
-| `GET /api/tasks` | All tasks with sessions. `?view=compact` returns a lighter list projection (see below) |
+| `GET /api/tasks` | All tasks with sessions. `?view=compact` (alias `?compact=true`) returns a lighter list projection; optional `status`/`since`/`limit`/`offset` filters (see below) |
 | `GET /api/tasks/:id` | A single task by id — always full detail including `prompt` (404 with `{"error": "Task not found"}` for unknown ids) |
+| `GET /api/tasks/:id/tail` | Bounded terminal output tail for a task — live ring while in progress, durable persisted tail after completion (see below) |
 | `GET /api/tasks/completion-ready/stale` | List stale `completion_ready` signals and whether each can be auto-closed |
 | `POST /api/tasks` | Create and launch a new task |
-| `POST /api/tasks/:id/complete` | Mark a finished task `completed` (non-destructive), tear down its idle session, and apply the saved worktree-cleanup policy |
+| `POST /api/tasks/:id/complete` | Mark a finished task `completed` (non-destructive), tear down its idle session, and apply the saved worktree-cleanup policy. Supervisor endpoint — see below |
 | `POST /api/tasks/:id/signal` | Raise an agent → user signal (e.g. `completion_ready`); schedules delayed auto-completion when the task opted into `autoCloseOnSignal` |
-| `POST /api/tasks/abort` | Idempotent batch abort: cancel the given `taskIds` (with an optional operator `reason`), interrupting each live session. Returns a per-task result (`aborted`/`already_terminal`/`not_found`/`failed`) and a summary; retries are safe |
+| `POST /api/tasks/abort` | Idempotent batch abort: cancel the given `taskIds` (with an optional operator `reason`), interrupting each live session. Returns a per-task result (`aborted`/`already_terminal`/`not_found`/`failed`) and a summary; retries are safe. Supervisor endpoint — see below |
+| `POST /api/tasks/completion-ready/ack-all` | Complete every stale `completion_ready` task in one call (`{"force": true}` to ignore auto-close policy). Supervisor endpoint — see below |
 | `POST /api/tasks/:taskId/sessions/:sessionId/reconnect-transport` | Safely rebuild only Kookr's internal dtach attach child for a session — verifies the dtach master pid + socket identity, preserves the agent + master pids and the ring/subscribers, and never writes terminal input or relaunches the agent. `200` on success/inconclusive, `429` on cooldown/retry-cap, `409` on identity/socket/unknown-session, `501` if the backend has no reconnect support, `502` if the fresh attach cannot be opened |
 | `DELETE /api/tasks/:id` | Stop and remove a task |
 | `POST /api/agents/:id/message` | Send a message or hint to a running agent |
@@ -86,6 +89,33 @@ can use one field name across the whole API — `/api/projects`
 `recentTasks[]` and `/api/snapshot` agents key tasks by `taskId`. `id`
 remains for backwards compatibility.
 
+### `GET /api/tasks/:id/tail?lines=N`
+
+Returns a bounded excerpt of the task's terminal/session output. Works for both
+running and completed tasks:
+
+- **In progress** — captures the live dtach ring (`source: "live"`).
+- **Completed / terminated / cancelled** — serves a durable snapshot written
+  just before session teardown (`source: "persisted"`), retained for
+  `KOOKR_TASK_TAIL_RETENTION_DAYS` (default **7**). See
+  [rfc-task-tail-retrieval](../rfc/rfc-task-tail-retrieval.md).
+
+| Query | Default | Clamp |
+| --- | --- | --- |
+| `lines` | `80` | 1–2000 |
+
+`200` body fields: `schemaVersion`, `taskId`, `sessionId`, `taskStatus`,
+`source` (`live` \| `persisted`), `capturedAt`, optional `retentionExpiresAt`
+(persisted only), `linesRequested`, `totalLines`, `shownLines`, `text`,
+`truncated`.
+
+`404` when the task is unknown, or no live session and no non-expired
+persisted tail exist. `400` when `lines` is not a valid integer in range.
+
+Lucy’s `peek_kookr_task_output` tool continues to call
+`GET /api/capture/:sessionId`, which falls back to the same persisted store by
+session id when the live ring is gone.
+
 ### `GET /api/tasks?view=compact`
 
 `GET /api/tasks` defaults to the **full** list — every task carries its complete
@@ -98,9 +128,10 @@ only renders row-level metadata.
 fields a list needs — `id`/`taskId`, `name`, `status`, `cwd`, `agentType`,
 `playbookId`, `projectId`, `priority`, `parentTaskId`/`childTaskIds`,
 `blocks`/`blocked_by`, `deliveryAuthorization`, `autoCloseOnSignal`,
-`tokenUsage` (plus `aggregateTokenUsage` on parents),
+`unattended`, `operatorNeeded`, `tokenUsage` (plus `aggregateTokenUsage` on parents),
 `pendingSignal`, `issueClaim`, `ralphLoop`, the `createdAt`/`updatedAt`/
-`finishedAt`/`terminatedAt` timeline, a `suppressed` flag when applicable, and a
+`finishedAt`/`terminatedAt` timeline, a `disposition` record on a task pruned
+before its first session (issue #1588), a `suppressed` flag when applicable, and a
 trimmed `sessions[]` stub (`tmuxSession`, `agentType`, `lastStatus`,
 `lastTurnState`, `worktreeHealth`, `lastEventAt`, `crashRecovered`,
 `relaunchCount`) — and **omits** the heavy bodies: `prompt`, `userPrompt`,
@@ -112,11 +143,43 @@ existing clients keep receiving the full list. When a client needs the full
 detail for one task — e.g. to relaunch it with its original prompt — fetch
 `GET /api/tasks/:id`, which always returns the complete task.
 
+`?compact=true` is accepted as an alias for `?view=compact`.
+
+### `GET /api/tasks` list filters & pagination
+
+`GET /api/tasks` (both the full and compact views) accepts optional, additive
+query params (issue #1526 Phase C / C2 payload diet):
+
+| Param | Meaning |
+| --- | --- |
+| `status` | Keep only tasks with this exact status (`open`, `pending`, `inProgress`, `completed`, `terminated`, `cancelled`) |
+| `since` | ISO 8601 date/time — keep only tasks with `updatedAt >= since` |
+| `limit` | Positive integer — return at most this many tasks (applied after filtering) |
+| `offset` | Non-negative integer — skip this many tasks before applying `limit` |
+
+Filters preserve the store's listing order; `offset`/`limit` slice the filtered
+list. When `limit` or `offset` is present, the response carries an
+`X-Total-Count` header with the post-filter, pre-slice match count so pagers can
+render page controls without a second request.
+
+**Backward compatibility:** with none of these params the response is
+byte-identical to the historical full (or compact) listing — Lucy and the CLI
+keep consuming it unpaginated. A malformed value (non-integer `limit`/`offset`,
+unknown `status`, unparseable `since`) returns `400 {"error": ...}` rather than
+silently returning the full multi-megabyte list.
+
+Examples:
+
+```
+GET /api/tasks?status=completed&since=2026-07-18T00:00:00Z&view=compact
+GET /api/tasks?limit=50&offset=100
+```
+
 ### `POST /api/tasks` body fields
 
 `prompt` (required) and `cwd` (required) plus optional `criteria`, `parentTaskId`,
-`agentType`, `effort`, `disableDedup`, `metadata`, `dependencies`, and
-`autoCloseOnSignal`.
+`agentType`, `effort`, `model`, `disableDedup`, `metadata`, `dependencies`,
+`autoCloseOnSignal`, `unattended`, and `idempotencyKey`.
 
 `autoCloseOnSignal` (optional, boolean) opts the task into auto-completion after
 its agent's `completion_ready` signal has been pending for the configured
@@ -127,6 +190,14 @@ minutes) (see
 non-boolean value returns `400`. When omitted, the task **inherits the policy of
 its `parentTaskId`**, so the behavior propagates down self-continuation chains;
 set it explicitly to `false` to opt a successor out.
+
+`unattended` (optional, boolean) marks the task as autonomous — launched with
+nobody watching to answer an interactive prompt. When `true`, the spawned Claude
+Code agent's injected `--settings` gain permission `deny` rules for interactive
+tools (`AskUserQuestion` and equivalents), so a blocking call fails fast and the
+task is flagged **operator-needed** (`operatorNeeded` on the task, surfaced in the
+tasks API and dashboard) instead of hanging forever. A non-boolean value returns
+`400`. Omitted/`false` ⇒ attended, unchanged behavior. See issue #1562.
 
 `cwd` must name an existing directory on the server's machine — it is
 validated before any task record or session is created, and a missing or
@@ -148,7 +219,82 @@ default). Codex model selection defaults to `gpt-5.6-sol` and can be overridden
 with `KOOKR_CODEX_MODEL`. The `kookr-spawn --effort <level>` flag maps to this
 field.
 
+`model` (optional, string) pins the model for *this one task* (#1518). Validated
+against the **resolved** agent's known-model allowlist after any `round-robin`
+resolution; an invalid id returns `400 {"error", "code": "invalid_model"}` with
+no silent fallback. Allowed base ids for `claude-code`:
+
+- `claude-fable-5`, `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`,
+  `claude-sonnet-5`, `claude-sonnet-4-6`, `claude-haiku-4-5`
+- dated suffixes of those bases (e.g. `claude-haiku-4-5-20251001`) are also
+  accepted
+
+`codex-cli` and `grok-build` currently reject a per-task `model` pin (they keep
+`KOOKR_CODEX_MODEL` / `KOOKR_GROK_MODEL`). Omitting `model` leaves the agent
+CLI / env default unchanged. The `kookr-spawn --model <id>` flag maps to this
+field. Resolution order for both `effort` and `model`: **per-task override →
+per-schedule value → global agent-type default → unset**.
+
+`idempotencyKey` (optional, string, ≤200 characters — issue #1526 Phase B)
+protects a retried request from creating a duplicate task. It is a *different*
+mechanism from the existing prompt+cwd+agentType dedup (`disableDedup` /
+`metadata.intent`): that dedup is defeated whenever the prompt varies between
+attempts — for example a spawn helper that embeds a fresh random branch
+suffix in the prompt on every call. An idempotency key instead identifies the
+logical *request*, independent of its prompt content.
+
+- The first `POST /api/tasks` carrying a given key creates the task normally
+  (`201`).
+- Any later request with the SAME key — including one racing concurrently
+  with the first — returns `200` with the body flattened like the `201` shape
+  (not wrapped like the prompt-dedup `{"task", "duplicate": true}` response)
+  plus `"idempotentReplay": true`, referencing the SAME task, with `queued`
+  preserved if that task is still `pending`. No new task is created and no
+  duplicate-confirmation UX is triggered.
+- If the task the key resolved to is **terminal** (`completed` / `terminated`
+  / `cancelled`) but has **zero sessions** — it was queued at the concurrency
+  cap and then reaped, cancelled, or TTL-expired before ever launching an
+  agent — it is treated as if the key had never been claimed: the stale entry
+  is dropped and the request launches fresh. **Exception (issue #1588):** if
+  that zero-session terminal task carries a `disposition` (a pre-session
+  prune — launch timeout / launch error / stale-open-launch), it **is**
+  replayed, so the retry returns the disposed task with its reason visible
+  instead of silently creating a sibling. A terminal task that *did* run (at
+  least one session) is still replayed too, since re-launching it would
+  duplicate work that already happened.
+- An empty string or a key over 200 characters returns
+  `400 {"error": "idempotencyKey must be ..."}`.
+- If a launch fails **before a task record is created** (validation error,
+  backpressure rejection), the reservation is released so a retry with the same
+  key is treated as fresh. If it fails **after the task was created** (adapter
+  launch error or hard launch timeout), the task is disposed (issue #1588) and
+  the key is finalized to it, so a same-key retry returns that disposed task as
+  an idempotent replay rather than creating a sibling.
+- **Durability is best-effort, not absolute.** Reservations live in a ledger
+  (`idempotency-ledger.json` under the Kookr data dir, 24h TTL — a key past
+  its TTL is treated as never seen) that is written to disk once a launch has
+  actually produced a task. Three caveats:
+  1. A crash strictly inside the create→persist window (memory-only pending
+     reservation, never yet written) loses that one in-flight reservation —
+     a retry issued after that specific crash can create a duplicate.
+  2. Once a task exists, persisting its ledger entry is best-effort: a disk
+     write failure (full disk, permissions) is logged loudly server-side but
+     never fails the request — the caller still gets its successful task, and
+     same-process replay stays protected via the in-memory entry, but that
+     entry is not guaranteed to survive a subsequent restart until the next
+     successful write.
+  3. A corrupt on-disk ledger file is quarantined and the ledger restarts
+     empty, resetting idempotency protection for every previously-finalized
+     key (server-log warning only, no other alerting).
+- Omitting `idempotencyKey` leaves behavior exactly as before. The
+  `kookr-spawn --idempotency-key <key>` flag maps to this field.
+
 ### `POST /api/tasks/:id/complete`
+
+A [supervisor endpoint](#supervisor-surface): gated by `KOOKR_SUPERVISOR_TOKEN`
+when set, and every outcome is attributed via the optional `X-Kookr-Actor`
+header into `audit.jsonl` (see [Actor attribution and the supervisor
+token](#actor-attribution-and-the-supervisor-token)).
 
 Non-destructive way to mark a finished task terminal, distinct from
 `DELETE` (which removes the task) and from cancel/kill (which carries
@@ -195,17 +341,38 @@ Raise a non-blocking agent → user signal for a task. The motivating case is
 `completion_ready` — the agent declaring it believes the task is done (raised via
 [`kookr signal`](./cli.md)).
 
-Body: `kind` (required; currently `completion_ready`) and optional `note` (string;
-secrets are best-effort redacted and over-limit notes are visibly truncated).
+Body:
 
-- Success returns `200 {"ok": true, "signal": {...}, "truncated": <bool>}`.
+- `kind` (required; currently `completion_ready`)
+- `note` (optional string; secrets are best-effort redacted and over-limit notes
+  are visibly truncated)
+- `signalId` (optional string, ≤200 chars) — client-generated idempotency key
+  for the durable signal outbox (issue #1541). When supplied, a re-POST of the
+  same id returns `200` with `"idempotentReplay": true` without re-firing
+  outcome hooks or churning `raisedAt`.
+
+- Success returns `200 {"ok": true, "signal": {...}, "truncated": <bool>}`
+  (plus `"idempotentReplay": true` on a pure `signalId` replay).
 - The signal is stored on the task (`pendingSignal`) and surfaced in the
   dashboard (banner + emphasized **Complete** button). Dismiss via the
   `dismissAgentSignal` WebSocket message; it is also cleared on terminal
   transitions.
 - Unknown id returns `404`; a terminal task returns `409`
-  (`{"code": "task_terminal"}`); a malformed body or bad `kind`/`note` returns
-  `400`; remote-owned `shared:` ids return `403`.
+  (`{"code": "task_terminal"}`); a malformed body or bad `kind`/`note`/`signalId`
+  returns `400`; remote-owned `shared:` ids return `403`.
+- Offline agents should write-behind via the [signal outbox](./signal-outbox.md)
+  rather than treating a connection failure as a task failure.
+
+**Lesson-decision gate (issue #1538).** For `kind: "completion_ready"`, when the
+task has launched sessions and neither a `kb remember` / `kookr lesson remember`
+write nor an explicit `No generic KB lesson:` skip appears in its PreToolUse
+Bash hook trail, the server returns `409` with
+`{"code": "lesson_decision_required", "decision": "search-only"|"no-kb-activity",
+"hint": "…", "counts": {…}}` and does **not** record the signal. Fail-open when
+the task has 0 sessions, `kookrDir` is unset, or
+`KOOKR_LESSON_DECISION_GATE=0|false|off|no`. See
+[lesson-decision-gate](./lesson-decision-gate.md). Human Complete
+(`POST /api/tasks/:id/complete`) is not gated.
 
 **Auto-close.** When the task opted into the policy (`autoCloseOnSignal` — set at
 launch or inherited from its parent; see
@@ -237,6 +404,58 @@ Success returns `200` with schema
 Each entry includes the task, the stored signal, `ageMs`, `canAutoClose`, and,
 when `canAutoClose` is false, `manualActionRequiredReason`.
 
+### `POST /api/tasks/completion-ready/ack-all`
+
+A [supervisor endpoint](#supervisor-surface) (issue #1526 Phase B): completes
+every task currently listed by
+[`GET /api/tasks/completion-ready/stale`](#get-apitaskscompletion-readystale)
+in one call — the "drain the backlog" verb for an operator or supervising
+agent who needs to unblock several wedged `completion_ready` tasks at once
+instead of calling `POST /api/tasks/:id/complete` one id at a time.
+
+Body (all fields optional):
+
+- `force` (boolean, default `false`): when `false`, only entries the GET
+  endpoint reports as `canAutoClose: true` are completed. When `true`, every
+  stale entry is completed regardless of auto-close policy — an explicit
+  "unlock everything" escape hatch.
+- `thresholdMs`: same meaning as the GET endpoint's query parameter (minimum
+  signal age in milliseconds; defaults to one hour).
+
+An empty or omitted body is valid and defaults to `force: false`.
+
+Success returns `200`:
+
+```json
+{
+  "force": false,
+  "results": [
+    { "taskId": "abc123", "outcome": "completed", "status": "completed" },
+    { "taskId": "def456", "outcome": "already_terminal", "status": "cancelled" }
+  ],
+  "summary": {
+    "matched": 2, "completed": 1, "already_terminal": 1,
+    "partial_ralph_completion": 0, "invalid": 0, "not_found": 0, "failed": 0
+  }
+}
+```
+
+`outcome` per task is one of `completed`, `already_terminal`,
+`partial_ralph_completion` (an active Ralph loop ends its current iteration
+only — see `POST /api/tasks/:id/complete`), `invalid`, `not_found`, or
+`failed` (unexpected error; see `error`). Each completion is audited
+individually (`task.complete` rows via the same path
+`POST /api/tasks/:id/complete` uses) plus one summary
+`task.completionReadyAckAll` audit row for the whole call, all carrying the
+resolved actor.
+
+**Pacing.** Unlike the background TTL-escalation sweep (which spaces
+completions across ticks to avoid a snapshot-broadcast storm — see
+`docs/reports/` issue #1526 Phase A), this endpoint acts immediately on every
+matched task within the request: a supervisor call needs a complete per-task
+result set back in one response. It still broadcasts the dashboard snapshot
+only once for the whole batch, not once per task.
+
 ## Issue Claims
 
 Present only when the server was started with `KOOKR_ISSUE_CLAIMS` enabled; with the flag off all three routes return `404` and clients proceed as pre-lock (RFC `rfc-issue-ownership-lock`).
@@ -249,14 +468,62 @@ Present only when the server was started with `KOOKR_ISSUE_CLAIMS` enabled; with
 
 ## Supervisor Surface
 
+Read-only diagnostics plus the mutating verbs a supervising agent (or an
+operator's emergency "unlock" path) uses to inspect and drain a stuck Kookr
+instance (issue #1526 Phase B / FM12, FM16).
+
 | Endpoint | Description |
 | --- | --- |
 | `GET /api/snapshot` | Current agent states and anomalies |
 | `GET /api/queue` | Attention queue contents |
 | `GET /api/anomaly-stats` | Anomaly counters and detector stats |
-| `GET /api/capture/:sessionId` | Snapshot of the dtach session ring buffer |
+| `GET /api/capture/:sessionId` | Snapshot of the dtach session ring buffer; falls back to a persisted task tail (`source: "persisted"`) when the live ring is gone |
 | `GET /api/diagnostics/session-health` | Versioned cross-signal health snapshot for tracked sessions, including signal timestamps, attach state, browser bridge state, and coordinated-stall diagnostics |
 | `POST /api/hook-event/:sessionId` | HTTP push surface for hook events, used by Codex CLI hooks |
+| `GET /api/tasks/completion-ready/stale` | List stale `completion_ready` signals (see [above](#get-apitaskscompletion-readystale)) |
+| `POST /api/tasks/:id/complete` | Mark one task complete (see [above](#post-apitasksidcomplete)) — **token-gated** |
+| `POST /api/tasks/abort` | Idempotent batch abort (see [above](#tasks-and-agents)) — **token-gated** |
+| `POST /api/tasks/completion-ready/ack-all` | Drain the whole completion-ready backlog in one call (see [above](#post-apitaskscompletion-readyack-all)) — **token-gated** |
+
+### Actor attribution and the supervisor token
+
+Every mutating task-lifecycle route — `DELETE /api/tasks/:id`,
+`POST /api/tasks/:id/complete`, `POST /api/tasks/abort`,
+`POST /api/tasks/completion-ready/ack-all`, and `POST /api/agents/:id/message`
+— accepts an optional `X-Kookr-Actor` request header identifying the caller,
+e.g. `lucy-supervisor`, `dashboard`, `agent:<taskId>`, `cli`. The resolved
+actor is recorded in `audit.jsonl` rows (`task.deleteTask`, `task.batchAbort`,
+`task.complete`, `task.completionReadyAckAll`) and, for the message route, in
+the interaction log's `user_input` event. The WebSocket transport attributes
+the same way using its per-connection id instead of a header.
+
+The header is **optional and never rejects the request** — an absent or blank
+value records the actor as `"unattributed"` and logs one deprecation-style
+warning per source (`api` / `websocket`) per process boot, not per request.
+This is the same forensics gap the 2026-07-24 deadlock postmortem found: four
+`task.batchAbort` audit rows recorded `actor: {"source": "api"}` with no
+caller id, so it was impossible to tell from the durable trail alone who
+issued them.
+
+`KOOKR_SUPERVISOR_TOKEN` (env var, unset by default) additionally gates the
+three **token-gated** endpoints above with a bearer token, independent of the
+actor header:
+
+- Unset (default): those endpoints stay exactly as open as the rest of the
+  local-first API — no behavior change.
+- Set: callers must send `Authorization: Bearer <token>` on those routes, or
+  the server returns `401 {"error": "supervisor-unauthorized"}` with a
+  `WWW-Authenticate: Bearer` header. Comparison is constant-time. There is
+  **no loopback bypass** — unlike `KOOKR_ADMIN_TOKEN` (see [Admin / runtime
+  control](#admin--runtime-control)), a caller must present the token even
+  from localhost, since the point of this gate is to stop a misbehaving local
+  process (e.g. the incident's local-model chat loop) from freely driving
+  supervisor verbs just by running on the same box. `GET` routes are never
+  gated by this token.
+
+This is deliberately not a full auth system — no rotation, no per-caller
+tokens, no expiry. See `KOOKR_SUPERVISOR_TOKEN` in
+[Environment Variables](environment-variables.md).
 
 ### `POST /api/hook-event/:sessionId`
 
@@ -437,9 +704,11 @@ with no effort override (model-native default). Override the model with
 empty, or lacks a `codex-cli` entry, no effort flag is passed. An explicit
 `ultra` request always selects the Sol model because Luna does not advertise
 `ultra`. A per-task `effort` on `POST /api/tasks` (or `kookr-spawn --effort`)
-overrides the settings default for one launch. Resolution order: per-task
-override → per-agent-type setting → unset (CLI/model default). Stock binaries
-skip fork-only model and effort overrides.
+overrides the settings default for one launch. Schedules may also pin
+`effort` / `model` on create/update; those values are forwarded into each
+spawned task. Resolution order: per-task override → per-schedule value →
+per-agent-type setting → unset (CLI/model default). Stock binaries skip
+fork-only model and effort overrides.
 
 ### Admin / runtime control
 

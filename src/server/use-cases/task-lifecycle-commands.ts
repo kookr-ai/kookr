@@ -135,13 +135,42 @@ export interface BatchAbortResult {
 export class TaskLifecycleCommands {
   constructor(private readonly deps: TaskLifecycleCommandDeps) {}
 
+  /**
+   * Mark a task complete (issue #691; actor attribution added issue #1526
+   * Phase B / FM12 — this is the exact call a supervisor needed and lacked
+   * during the 2026-07-24 deadlock). Every outcome — including no-ops like
+   * `already_terminal`/`not_found` — is audited when `auditLogPath` is
+   * configured, mirroring `deleteTask`'s unconditional audit below: knowing
+   * a supervisor *attempted* a no-op call is itself useful forensics.
+   */
   async completeTask(
     taskId: string,
     opts: {
       feedback?: TaskCompletionFeedback;
       requestReflect?: boolean;
       cleanupWorktree?: boolean;
-    } = {},
+      /** Override completionPath (issue #1608). */
+      completionPath?: import('../../core/lesson-decision.js').CompletionPath;
+      lessonGateExempt?: string;
+      decisionSatisfied?: boolean;
+    } & TaskDeletionAuditOpts = {},
+  ): Promise<TaskLifecycleCommandResult> {
+    const result = await this.completeTaskInner(taskId, opts);
+    await this.writeTaskCompletionAudit(taskId, result, opts.actor);
+    return result;
+  }
+
+  private async completeTaskInner(
+    taskId: string,
+    opts: {
+      feedback?: TaskCompletionFeedback;
+      requestReflect?: boolean;
+      cleanupWorktree?: boolean;
+      completionPath?: import('../../core/lesson-decision.js').CompletionPath;
+      lessonGateExempt?: string;
+      decisionSatisfied?: boolean;
+      actor?: TaskDeletionAuditOpts['actor'];
+    },
   ): Promise<TaskLifecycleCommandResult> {
     const task = this.deps.taskStore.getTask(taskId);
     if (!task) return { outcome: 'not_found', error: `Task not found: ${taskId}` };
@@ -171,11 +200,19 @@ export class TaskLifecycleCommands {
 
     const preEvents = this.captureTaskEvents(task);
 
+    // Infer actor source for completionPath. Stamp runs inside completeTaskImpl
+    // before the pending signal is cleared, so signal provenance is still visible.
+    const actorSource = opts.actor?.source;
+
     try {
-      this.deps.taskStore.clearPendingSignal(taskId);
       await completeTaskImpl(taskId, this.deps.getLifecycleDeps(), {
         cleanupWorktree: opts.cleanupWorktree,
+        actorSource,
+        completionPath: opts.completionPath,
+        lessonGateExempt: opts.lessonGateExempt,
+        decisionSatisfied: opts.decisionSatisfied,
       });
+      this.deps.taskStore.clearPendingSignal(taskId);
     } catch (err) {
       if (err instanceof InvalidTransitionError) {
         const current = this.deps.taskStore.getTask(taskId);
@@ -689,6 +726,29 @@ export class TaskLifecycleCommands {
     if (opts.gcFeedbackBundle) {
       this.gcFeedbackBundle(task.id);
       this.gcTaskSnapshotBundle(task.id);
+    }
+  }
+
+  private async writeTaskCompletionAudit(
+    taskId: string,
+    result: TaskLifecycleCommandResult,
+    actor?: TaskDeletionAuditActor,
+  ): Promise<void> {
+    if (!this.deps.auditLogPath) return;
+    const row: Record<string, unknown> = {
+      type: 'task.complete',
+      timestamp: nowISO(),
+      actor: actor ?? { source: 'unknown' },
+      taskId,
+      outcome: result.outcome,
+      ...('task' in result ? { status: result.task.status } : {}),
+      ...('error' in result ? { error: result.error } : {}),
+    };
+    try {
+      await mkdir(dirname(this.deps.auditLogPath), { recursive: true });
+      await appendFile(this.deps.auditLogPath, `${JSON.stringify(row)}\n`, 'utf-8');
+    } catch (err) {
+      console.warn('[task-audit] failed to append completion audit row:', err);
     }
   }
 

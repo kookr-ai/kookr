@@ -301,4 +301,55 @@ describe('ProjectSidebar interactions', () => {
       'github.com/b',
     ]);
   });
+
+  describe('capacity breakdown (issue #1526 Phase B / FM9)', () => {
+    function mkInProgressAgent(agentId: string, stuckReason?: import('../../shared/protocol.js').TaskStuckReason): import('../../shared/protocol.js').AgentState {
+      return {
+        agentId,
+        taskId: `task-${agentId}`,
+        taskName: `Task ${agentId}`,
+        events: [],
+        anomaly: null,
+        taskStatus: 'inProgress',
+        ...(stuckReason ? { stuckReason } : {}),
+      };
+    }
+
+    test('a healthy-only "12 running" figure carries no breakdown segment', async () => {
+      useKookrStore.setState({
+        agents: Array.from({ length: 3 }, (_, i) => mkInProgressAgent(`w${i}`)),
+        maxActiveTasks: 10,
+      });
+
+      await act(async () => {
+        root.render(React.createElement(ProjectSidebar, { onManage: vi.fn() }));
+      });
+      await flush();
+
+      const allIcon = container.querySelector('[data-testid="project-icon-all"]');
+      expect(allIcon?.getAttribute('aria-label')).toBe('All Projects, 3/10 of cap');
+    });
+
+    test('surfaces finished-awaiting-ack and hung-suspect counts instead of a flat running count — the incident case', async () => {
+      useKookrStore.setState({
+        agents: [
+          mkInProgressAgent('working-1'),
+          mkInProgressAgent('ack-1', 'awaiting_completion_ack'),
+          mkInProgressAgent('ack-2', 'awaiting_completion_ack'),
+          mkInProgressAgent('hung-1', 'hung_suspect'),
+        ],
+        maxActiveTasks: 10,
+      });
+
+      await act(async () => {
+        root.render(React.createElement(ProjectSidebar, { onManage: vi.fn() }));
+      });
+      await flush();
+
+      const allIcon = container.querySelector('[data-testid="project-icon-all"]');
+      // cappedCount stays 4/10 (unchanged, matches the server's `active` count)
+      // but the breakdown now says WHY, instead of implying 4 tasks are working.
+      expect(allIcon?.getAttribute('aria-label')).toBe('All Projects, 4/10 of cap, 2 awaiting ack, 1 hung?');
+    });
+  });
 });

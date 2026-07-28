@@ -11,6 +11,7 @@ import {
 } from './schedule-runner.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator } from './schedule-validator.js';
+import { PendingQueueFullError } from './launch-service.js';
 
 const INVALID_PLAYBOOK_PATH_ERROR = 'Playbook path must stay inside the selected playbooks directory';
 
@@ -19,10 +20,20 @@ describe('ScheduleRunner', () => {
   let store: ScheduleStore;
   let service: ScheduleService;
   let validator: ScheduleValidator;
-  let launched: Array<{ prompt: string; cwd: string }>;
+  let launched: Array<{
+    prompt: string;
+    cwd: string;
+    agentType?: string;
+    effort?: string;
+    model?: string;
+    launchSource?: string;
+  }>;
   let taskIdCounter: number;
   let activeTaskIds: Set<string>;
+  /** Task ids the mock launcher pended instead of launching (issue #1526 Phase A: at-capacity fires queue). */
+  let pendingTaskIds: Set<string>;
   let activeCount: number;
+  let maxActive: number;
   let runners: Set<ScheduleRunner>;
 
   beforeEach(async () => {
@@ -33,7 +44,9 @@ describe('ScheduleRunner', () => {
     launched = [];
     taskIdCounter = 0;
     activeTaskIds = new Set();
+    pendingTaskIds = new Set();
     activeCount = 0;
+    maxActive = 10;
     runners = new Set();
 
     await mkdir(join(dir, '.kookr', 'playbooks'), { recursive: true });
@@ -61,16 +74,37 @@ Do the test thing.
       store,
       service,
       validator,
+      // Mirrors real launchTask semantics (src/server/launch-service.ts): at
+      // or over capacity, the task is created and pended rather than
+      // launched (issue #1526 Phase A) — `queued: true`, no active-count
+      // increment. Below capacity, unchanged: launches immediately.
       launcher: async (opts) => {
         const taskId = `task-${++taskIdCounter}`;
-        launched.push({ prompt: opts.prompt, cwd: opts.cwd });
-        activeTaskIds.add(taskId);
-        activeCount += 1;
-        return { task: { id: taskId } as any, queued: false };
+        launched.push({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          agentType: opts.agentType,
+          effort: opts.effort,
+          model: opts.model,
+          launchSource: opts.launchSource,
+        });
+        const queued = activeCount >= maxActive;
+        if (queued) {
+          pendingTaskIds.add(taskId);
+        } else {
+          activeTaskIds.add(taskId);
+          activeCount += 1;
+        }
+        return { task: { id: taskId } as any, queued };
       },
       getActiveCount: () => activeCount,
-      getMaxActiveTasks: () => 10,
-      isTaskBlockingSchedule: (taskId) => activeTaskIds.has(taskId),
+      getMaxActiveTasks: () => maxActive,
+      isTaskBlockingSchedule: (taskId) => activeTaskIds.has(taskId) || pendingTaskIds.has(taskId),
+      getBlockingTaskStatus: (taskId) => {
+        if (activeTaskIds.has(taskId)) return 'inProgress';
+        if (pendingTaskIds.has(taskId)) return 'pending';
+        return undefined;
+      },
       ...overrides,
     });
     runners.add(runner);
@@ -108,6 +142,34 @@ Do the test thing.
         scheduledFor: expect.any(String),
       }),
     ]);
+  });
+
+  it('forwards schedule effort and model pins into the launcher (#1518)', async () => {
+    const schedule = store.create({
+      name: 'Fable max',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+      agentType: 'claude-code',
+      effort: 'max',
+      model: 'claude-fable-5',
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner();
+    await runner.tick();
+
+    expect(launched).toHaveLength(1);
+    expect(launched[0]).toMatchObject({
+      effort: 'max',
+      model: 'claude-fable-5',
+      agentType: 'claude-code',
+      // issue #1526 Phase C / C3: schedule provenance — exempts the fire from
+      // the spawn burst budget and stamps metadata.launchSource.
+      launchSource: 'schedule',
+    });
   });
 
   it('skips disabled schedules', async () => {
@@ -158,6 +220,35 @@ Do the test thing.
       reasonCode: 'previous_run_active',
       blockingTaskId: 'task-1',
     }));
+    // The blocking pointer must survive the skipped_active write, or a
+    // second consecutive skip would lose track of the still-active task.
+    expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
+  });
+
+  it('preserves the blocking pointer across two consecutive skipped_active writes', async () => {
+    const schedule = store.create({
+      name: 'ActiveTwice',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner();
+    await runner.tick();
+    expect(launched).toHaveLength(1);
+
+    // Two consecutive skips while the task is still active — before the fix,
+    // the first skip already wiped latestExecution.taskId.
+    for (let i = 0; i < 2; i++) {
+      replaceSchedule(schedule.id, { lastScheduledFor: new Date(Date.now() - 2 * 60_000).toISOString() });
+      await runner.tick();
+      expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_active');
+      expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
+    }
+    expect(launched).toHaveLength(1);
   });
 
   it('fires when previous run is stale (older than threshold)', async () => {
@@ -194,7 +285,7 @@ Do the test thing.
     expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
   });
 
-  it('skips when at max active tasks', async () => {
+  it('queues instead of skipping when at max active tasks (issue #1526 Phase A)', async () => {
     activeCount = 10;
 
     const schedule = store.create({
@@ -211,15 +302,145 @@ Do the test thing.
     const runner = createRunner();
     await runner.tick();
 
-    expect(launched).toHaveLength(0);
-    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_capacity');
+    // The fire goes through the normal launcher — a task IS created, just
+    // pended instead of launched. Nothing is silently dropped.
+    expect(launched).toHaveLength(1);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('queued_capacity');
     expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('capacity');
+    expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
     expect(store.get(schedule.id)!.executionLedger.at(-1)).toEqual(expect.objectContaining({
-      outcome: 'skipped_capacity',
+      outcome: 'queued_capacity',
       reasonCode: 'capacity',
+      taskId: 'task-1',
     }));
-    expect(store.get(schedule.id)!.remainingTriggers).toBe(2);
+    // A capacity-queued fire still consumes its cron trigger quota — it DID fire.
+    expect(store.get(schedule.id)!.remainingTriggers).toBe(1);
     expect(store.get(schedule.id)!.enabled).toBe(true);
+  });
+
+  it('coalesces a second fire while the previous fire is still pending (issue #1526 Phase A)', async () => {
+    activeCount = 10; // at capacity — every fire queues instead of launching
+
+    const schedule = store.create({
+      name: 'Coalesce',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner();
+    await runner.tick();
+    expect(launched).toHaveLength(1);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('queued_capacity');
+
+    replaceSchedule(schedule.id, {
+      lastScheduledFor: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+    await runner.tick();
+
+    // No second task created — the first fire's task is still pending.
+    expect(launched).toHaveLength(1);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_coalesced');
+    expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('previous_run_pending');
+    expect(store.get(schedule.id)!.executionLedger.at(-1)).toEqual(expect.objectContaining({
+      outcome: 'skipped_coalesced',
+      reasonCode: 'previous_run_pending',
+      blockingTaskId: 'task-1',
+    }));
+  });
+
+  it('preserves the blocking pointer across THREE fires with distinct prompts — no burst-launch (issue #1526 Phase A regression)', async () => {
+    // Regression for the coalesce-pointer-wipe bug: markExecutionOutcome used
+    // to write latestExecution.taskId from receipt.taskId alone, which is
+    // always undefined for a skip — so a second consecutive skip wiped the
+    // pointer fire() relies on, and a third fire would launch a duplicate.
+    // A schedule with a genuinely dynamic/templated prompt (not a static one
+    // launchTask's prompt-hash dedup could incidentally save) is exactly the
+    // case that bites: each fire below resolves a DIFFERENT literal prompt,
+    // so nothing but the blocking-pointer chain itself can prevent a burst.
+    activeCount = 10; // at capacity — every fire queues instead of launching
+
+    const schedule = store.create({
+      name: 'ThreeFireCoalesce',
+      cron: '* * * * *',
+      playbook: { path: 'dynamic.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    async function writeDynamicPlaybook(marker: string): Promise<void> {
+      await writeFile(join(dir, '.kookr', 'playbooks', 'dynamic.md'), `---
+name: Dynamic Playbook
+description: A playbook whose body changes per fire
+parameters: []
+checklist:
+  - Step 1
+---
+
+Do the test thing (${marker}).
+`);
+    }
+
+    const runner = createRunner();
+
+    // Fire 1: queues task-1 with prompt A.
+    await writeDynamicPlaybook('fire-1');
+    await runner.tick();
+    expect(launched).toHaveLength(1);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('queued_capacity');
+    expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
+
+    // Fire 2: prompt B — must coalesce against task-1, not launch.
+    await writeDynamicPlaybook('fire-2');
+    replaceSchedule(schedule.id, { lastScheduledFor: new Date(Date.now() - 2 * 60_000).toISOString() });
+    await runner.tick();
+    expect(launched).toHaveLength(1);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_coalesced');
+    // The pointer must survive this write for fire 3 to see it.
+    expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
+
+    // Fire 3: prompt C — the bug let this one through and launched task-2.
+    await writeDynamicPlaybook('fire-3');
+    replaceSchedule(schedule.id, { lastScheduledFor: new Date(Date.now() - 2 * 60_000).toISOString() });
+    await runner.tick();
+
+    expect(launched).toHaveLength(1); // still exactly one launcher call
+    expect(launched[0].prompt).toContain('fire-1'); // the one call was fire 1's
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_coalesced');
+    expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
+    expect(store.get(schedule.id)!.executionLedger.at(-1)).toEqual(expect.objectContaining({
+      outcome: 'skipped_coalesced',
+      reasonCode: 'previous_run_pending',
+      blockingTaskId: 'task-1',
+    }));
+
+    // recordTaskTerminalOutcome must still be able to find this schedule by
+    // its (preserved) latestExecution.taskId after two consecutive skips.
+    await service.recordTaskTerminalOutcome('task-1', 'completed');
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('completed');
+  });
+
+  it('fires normally below capacity — queued_capacity/coalescing do not activate', async () => {
+    const schedule = store.create({
+      name: 'BelowCapacity',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner();
+    await runner.tick();
+
+    expect(launched).toHaveLength(1);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('running');
   });
 
   it('suppresses firing while the server is draining (issue #659)', async () => {
@@ -895,5 +1116,128 @@ describe('isTaskBlockingSchedule', () => {
       updatedAt: new Date(now.getTime() + 60 * 60_000),
     };
     expect(isTaskBlockingSchedule(task, now)).toBe(true);
+  });
+});
+
+describe('ScheduleRunner launch timeout + dead-man wiring (issue #1526 Phase C)', () => {
+  let dir: string;
+  let store: ScheduleStore;
+  let service: ScheduleService;
+  let validator: ScheduleValidator;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'runner-c1-test-'));
+    store = new ScheduleStore(dir);
+    validator = new ScheduleValidator();
+    service = new ScheduleService({ store, validator });
+    await mkdir(join(dir, '.kookr', 'playbooks'), { recursive: true });
+    await writeFile(join(dir, '.kookr', 'playbooks', 'test.md'), `---
+name: Test Playbook
+parameters: []
+---
+
+Do the thing.
+`);
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('a launcher rejection shaped like LaunchTimeoutError records dispatch_failed / launch_error', async () => {
+    const schedule = store.create({
+      name: 'Times out',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    store.replace({
+      ...store.get(schedule.id)!,
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const timeoutError = Object.assign(
+      new Error('Agent launch timed out after 180s (agent claude-code, task t1) — launch abandoned and task cleaned up'),
+      { name: 'LaunchTimeoutError', code: 'launch_timeout' },
+    );
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => { throw timeoutError; },
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+    });
+    await runner.tick();
+
+    const after = store.get(schedule.id)!;
+    expect(after.latestExecution?.outcome).toBe('dispatch_failed');
+    expect(after.latestExecution?.reasonCode).toBe('launch_error');
+    expect(after.latestExecution?.message).toContain('timed out');
+    // The receipt is terminal — nothing left 'reserved' to wedge the schedule.
+    expect(after.currentExecution?.status).toBe('terminal');
+  });
+
+  it('a fire rejected by the pending-queue depth limit records dispatch_failed / pending_queue_full (issue #1526 C3)', async () => {
+    const schedule = store.create({
+      name: 'Queue full',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    store.replace({
+      ...store.get(schedule.id)!,
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => {
+        throw new PendingQueueFullError({
+          maxActiveTasks: 10,
+          active: 10,
+          free: 0,
+          byClass: { working: 1, finishedAwaitingAck: 8, hungSuspect: 1, launching: 0 },
+          pendingQueueDepth: 24,
+          oldestPendingAgeMs: 60_000,
+          oldestFinishedAwaitingAckAgeMs: null,
+        }, 24);
+      },
+      getActiveCount: () => 10,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+    });
+    await runner.tick();
+
+    const after = store.get(schedule.id)!;
+    // Never silently dropped: the ledger shows the fire AND why it failed,
+    // with a reason distinct from a broken launcher.
+    expect(after.latestExecution?.outcome).toBe('dispatch_failed');
+    expect(after.latestExecution?.reasonCode).toBe('pending_queue_full');
+    expect(after.latestExecution?.message).toContain('Pending queue is full');
+    expect(after.currentExecution?.status).toBe('terminal');
+  });
+
+  it('the dead-man switch is evaluated once per tick with the full schedule list', async () => {
+    const check = vi.fn();
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => ({ task: { id: 'unused' } as any, queued: false }),
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+      deadMan: { check },
+    });
+
+    await runner.tick();
+    await runner.tick();
+
+    expect(check).toHaveBeenCalledTimes(2);
+    expect(check).toHaveBeenCalledWith(store.list());
   });
 });

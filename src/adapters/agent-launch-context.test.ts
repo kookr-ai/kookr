@@ -7,6 +7,7 @@ import { resolveAgentLauncherBinDir } from '../core/hook-writer-paths.js';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
 import {
   buildAgentLaunchContext,
+  resolveGitCommonDirBounded,
   deliverInitialPromptToSession,
   resolveBracketedPasteSubmit,
   isBracketedPasteModeEnabled,
@@ -88,6 +89,32 @@ describe('agent-launch-context', () => {
       `Read(//${join(repoDir, '.git').slice(1)}/**)`,
       `Write(//${join(repoDir, '.git').slice(1)}/**)`,
     ]);
+  });
+
+  // issue #1562: unattended/autonomous tasks hard-deny interactive tools so a
+  // blocking call fails fast instead of hanging on an unanswerable prompt.
+  test('adds interactive-tool deny rules for unattended tasks', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'Autonomous task', cwd: '/repo', unattended: true });
+    const context = await buildAgentLaunchContext({
+      taskStore,
+      taskId: task.id,
+      cwd: makeTempDir(),
+    });
+
+    expect(context.permissionDenylist).toEqual(['AskUserQuestion']);
+  });
+
+  test('does not add deny rules for attended tasks', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'Interactive task', cwd: '/repo' });
+    const context = await buildAgentLaunchContext({
+      taskStore,
+      taskId: task.id,
+      cwd: makeTempDir(),
+    });
+
+    expect(context.permissionDenylist).toEqual([]);
   });
 
   test('maps linked worktrees back to the shared git common dir', async () => {
@@ -667,5 +694,66 @@ describe('deliverInitialPromptToSession waitForReady covers paste-mode-enable to
     expect(writeSeqSpy.mock.invocationCallOrder[0]).toBeGreaterThan(
       sleep.mock.invocationCallOrder[0],
     );
+  });
+});
+
+describe('resolveGitCommonDirBounded (issue #1526 Phase C / #1528)', () => {
+  test('a hung probe times out and degrades to null with a warning', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await resolveGitCommonDirBounded('/some/cwd', {
+        timeoutMs: 20,
+        resolver: () => new Promise<string | null>(() => { /* hung git probe */ }),
+      });
+      expect(result).toBeNull();
+      expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('timed out'))).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test('a rejecting probe degrades to null with a warning (never fails the launch)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await resolveGitCommonDirBounded('/some/cwd', {
+        timeoutMs: 5_000,
+        resolver: () => Promise.reject(new Error('EACCES: probe blew up')),
+      });
+      expect(result).toBeNull();
+      expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('probe failed'))).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test('a fast probe wins the race and returns its value (settle-once)', async () => {
+    const result = await resolveGitCommonDirBounded('/some/cwd', {
+      timeoutMs: 5_000,
+      resolver: () => Promise.resolve('/some/cwd/.git'),
+    });
+    expect(result).toBe('/some/cwd/.git');
+  });
+
+  test('buildAgentLaunchContext proceeds WITHOUT KOOKR_GIT_COMMON_DIR when the probe hangs', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Timeout task', '/repo');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const context = await buildAgentLaunchContext({
+        taskStore,
+        taskId: task.id,
+        cwd: '/repo',
+        agentLauncherBinDir: null,
+        gitCommonDirTimeoutMs: 20,
+        resolveGitCommonDirImpl: () => new Promise<string | null>(() => { /* hung */ }),
+      });
+      // Degraded launch context: task env still present, git env absent.
+      expect(context.env.KOOKR_TASK_ID).toBe(task.id);
+      expect(context.env.KOOKR_GIT_COMMON_DIR).toBeUndefined();
+      expect(context.permissionAllowlist).toEqual(['Bash(git *)']);
+      expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('timed out'))).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

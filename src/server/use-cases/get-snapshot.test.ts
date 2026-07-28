@@ -410,6 +410,34 @@ describe('snapshot use cases', () => {
     expect(clientBytes).toBeLessThan(rawBytes / 10);
   });
 
+  it('projects description and completionDigest so historical task bulk stays under the WS hard cap', () => {
+    // Modeled on 2026-07-22 prod outage: ~465 agents, ~9.2 MB snapshot dominated by
+    // full task prompts + completionDigest.filesChanged (one digest alone was ~425 KB).
+    // The WS hard cap drops frames above 8 MiB, which left the UI empty / "dev mode".
+    const AGENT_COUNT = 400;
+    const agents = Array.from({ length: AGENT_COUNT }, (_, i) => ({
+      agentId: `a-${i}`,
+      events: [],
+      anomaly: null,
+      taskStatus: 'completed',
+      description: `prompt-${i}-` + 'P'.repeat(12_000),
+      completionDigest: {
+        bullets: [`Changed 2000 files: file-0.ts, file-1.ts, …`],
+        filesChanged: Array.from({ length: 2000 }, (_, j) => `path/to/file-${j}.ts`),
+      },
+    })) as any;
+    const monitor = { getSnapshot: () => agents } as any;
+
+    const clientBytes = JSON.stringify(getSnapshotAgentsForClient({ monitor })).length;
+    const rawBytes = JSON.stringify(getSnapshotAgentsRaw({ monitor })).length;
+    const WS_HARD_CAP = 8 * 1024 * 1024;
+
+    expect(rawBytes).toBeGreaterThan(WS_HARD_CAP);
+    expect(clientBytes).toBeLessThan(WS_HARD_CAP / 2);
+    expect(getSnapshotAgentsForClient({ monitor })[0]!.completionDigest!.filesChanged.length)
+      .toBeLessThan(agents[0].completionDigest.filesChanged.length);
+  });
+
   it('includes workspaceEnabled: true in snapshot when set', () => {
     const monitor = {
       getSnapshot: () => [] as any,

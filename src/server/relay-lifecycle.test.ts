@@ -52,7 +52,7 @@ async function freePort(): Promise<number> {
 }
 
 async function waitForRelayAdmin(relayUrl: string, token: string): Promise<void> {
-  const deadline = Date.now() + 4_000;
+  const deadline = Date.now() + 10_000;
   let lastError = '';
   while (Date.now() < deadline) {
     try {

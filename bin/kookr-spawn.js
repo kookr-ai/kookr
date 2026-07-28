@@ -42,6 +42,27 @@ const TERMINAL_TASK_STATUSES = new Set(['completed', 'cancelled', 'terminated'])
 // ALL_EFFORT_LEVELS in
 // src/shared/contracts/agent-types.ts.
 const EFFORT_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+// #1518: known model base ids for CLI fast-fail. Keep in sync with
+// ALL_MODEL_IDS / CLAUDE_CODE_MODEL_IDS in src/shared/contracts/agent-types.ts.
+// Dated suffixes (e.g. claude-haiku-4-5-20251001) are accepted when they start
+// with a known base. Authoritative agent-specific check still runs server-side.
+const MODEL_IDS = [
+  'claude-fable-5',
+  'claude-opus-4-8',
+  'claude-opus-4-7',
+  'claude-opus-4-6',
+  'claude-sonnet-5',
+  'claude-sonnet-4-6',
+  'claude-haiku-4-5',
+];
+function isKnownModelId(model) {
+  if (typeof model !== 'string' || model.length === 0) return false;
+  if (MODEL_IDS.includes(model)) return true;
+  return MODEL_IDS.some((id) => model.startsWith(`${id}-`));
+}
+// #1526 Phase B: keep in sync with MAX_IDEMPOTENCY_KEY_LENGTH in
+// src/shared/contracts/launch.ts.
+const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
 
 // ---------- arg parsing ----------
 
@@ -62,8 +83,23 @@ Options:
                            claude-code: low|medium|high|xhigh|max.
                            codex-cli:   none|minimal|low|medium|high|xhigh|max|ultra.
                            grok-build:  omit --effort (server rejects any value).
+      --model <id>         Pin the model for this task (default: agent CLI /
+                           env default). claude-code accepts known Claude ids
+                           (e.g. claude-fable-5, claude-opus-4-8,
+                           claude-sonnet-5, claude-haiku-4-5 and dated
+                           suffixes). codex-cli / grok-build reject --model
+                           (use KOOKR_CODEX_MODEL / KOOKR_GROK_MODEL instead).
       --criteria <text>    Acceptance criteria. Note: this is argv-exposed.
       --dedupe <mode>      warn, block, or skip (default: warn).
+      --idempotency-key <key>
+                           Opaque retry key (issue #1526). Re-running with the
+                           SAME key returns the task an earlier attempt with
+                           that key already created instead of launching a
+                           second one — protects against retrying after a
+                           client-side timeout against an overloaded server.
+                           Distinct from --dedupe, which compares prompt+cwd;
+                           an idempotency key survives prompt text that varies
+                           between attempts (e.g. an embedded random suffix).
       --wait[=<seconds>]   After creating the task, poll until it raises
                            completion-ready or reaches a terminal state.
       --parent-task-id <uuid>  Override the parent task linkage explicitly.
@@ -73,6 +109,10 @@ Options:
                            "kookr signal completion-ready" (frees a slot).
       --no-auto-close-on-signal
                            Opt this task out, overriding any inherited policy.
+      --unattended         Mark the task autonomous: deny interactive tools
+                           (AskUserQuestion and equivalents) so a blocking call
+                           fails fast and flags the task operator-needed instead
+                           of hanging with nobody to answer.
   -f, --prompt-file <path> Read prompt from a file (hook-safe).
       --json               Print one machine-readable JSON envelope to stdout.
   -h, --help               Show this help.
@@ -124,12 +164,15 @@ function parseArgs(argv) {
     cwd: null,
     agent: null,
     effort: null,
+    model: null,
     criteria: null,
     dedupe: 'warn',
+    idempotencyKey: null,
     promptFile: null,
     parentTaskId: null,
     noParentTask: false,
     autoCloseOnSignal: null,
+    unattended: false,
     json: false,
     wait: false,
     waitTimeoutSeconds: null,
@@ -156,12 +199,20 @@ function parseArgs(argv) {
       out.effort = eat();
     } else if (tok.startsWith('--effort=')) {
       out.effort = tok.slice('--effort='.length);
+    } else if (tok === '--model') {
+      out.model = eat();
+    } else if (tok.startsWith('--model=')) {
+      out.model = tok.slice('--model='.length);
     } else if (tok === '--criteria') {
       out.criteria = eat();
     } else if (tok === '--dedupe') {
       out.dedupe = eat();
     } else if (tok.startsWith('--dedupe=')) {
       out.dedupe = tok.slice('--dedupe='.length);
+    } else if (tok === '--idempotency-key') {
+      out.idempotencyKey = eat();
+    } else if (tok.startsWith('--idempotency-key=')) {
+      out.idempotencyKey = tok.slice('--idempotency-key='.length);
     } else if (tok === '--wait') {
       out.wait = true;
     } else if (tok.startsWith('--wait=')) {
@@ -183,6 +234,8 @@ function parseArgs(argv) {
         throw new UsageError('--auto-close-on-signal and --no-auto-close-on-signal are mutually exclusive');
       }
       out.autoCloseOnSignal = false;
+    } else if (tok === '--unattended') {
+      out.unattended = true;
     } else if (tok === '-f' || tok === '--prompt-file') {
       out.promptFile = eat();
     } else if (tok === '--') {
@@ -208,6 +261,21 @@ function parseArgs(argv) {
     throw new UsageError(
       `--effort must be one of: ${[...EFFORT_LEVELS].join(', ')} (got: ${out.effort})`,
     );
+  }
+  if (out.model !== null && !isKnownModelId(out.model)) {
+    throw new UsageError(
+      `--model must be a known model id (e.g. ${MODEL_IDS.slice(0, 4).join(', ')}; got: ${out.model})`,
+    );
+  }
+  if (out.idempotencyKey !== null) {
+    const trimmed = out.idempotencyKey.trim();
+    if (trimmed === '') {
+      throw new UsageError('--idempotency-key requires a non-empty value');
+    }
+    if (trimmed.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
+      throw new UsageError(`--idempotency-key must be at most ${MAX_IDEMPOTENCY_KEY_LENGTH} characters`);
+    }
+    out.idempotencyKey = trimmed;
   }
   if (out.parentTaskId !== null) {
     const trimmed = out.parentTaskId.trim();
@@ -443,16 +511,19 @@ function apiAuthHeaders(env = process.env) {
 
 // ---------- HTTP POST ----------
 
-async function postTask({ baseUrl, prompt, cwd, agent, effort = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null }) {
+async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, unattended = false, idempotencyKey = null }) {
   const body = { prompt, cwd };
   if (criteria) body.criteria = criteria;
   if (agent) body.agentType = agent;
   if (effort) body.effort = effort;
+  if (model) body.model = model;
   if (disableDedup) body.disableDedup = true;
   if (metadataIntent) body.metadata = { intent: metadataIntent };
   if (parentTaskId) body.parentTaskId = parentTaskId;
   // null = unspecified → let the server inherit the parent's policy.
   if (autoCloseOnSignal !== null) body.autoCloseOnSignal = autoCloseOnSignal;
+  if (unattended) body.unattended = true;
+  if (idempotencyKey) body.idempotencyKey = idempotencyKey;
 
   const res = await fetch(`${baseUrl}/api/tasks`, {
     method: 'POST',
@@ -476,7 +547,10 @@ async function postTask({ baseUrl, prompt, cwd, agent, effort = null, criteria, 
 
   if (!res.ok && res.status !== 200) {
     const msg = json?.error ?? (text || `HTTP ${res.status}`);
-    return { kind: 'server_error', status: res.status, message: msg };
+    // Keep the parsed body: a 429 backpressure rejection (#1526 Phase C)
+    // carries the capacity ledger, which the error renderer turns into a
+    // "why was this refused" breakdown.
+    return { kind: 'server_error', status: res.status, message: msg, body: json };
   }
 
   if (json?.duplicate === true) {
@@ -485,7 +559,11 @@ async function postTask({ baseUrl, prompt, cwd, agent, effort = null, criteria, 
   }
 
   // Success path — server returns the task object at 201, or the wrapped
-  // { task, duplicate: true } at 200 (handled above).
+  // { task, duplicate: true } at 200 (handled above). An idempotency-key
+  // replay (#1526) is also a 200, but flattened like the 201 shape with an
+  // extra `idempotentReplay: true` field mixed in — it falls through to this
+  // same "created" branch by design, so `formatSuccess`/`--json` output can
+  // read `task.idempotentReplay` without a separate result kind.
   return { kind: 'created', task: json, queued: Boolean(json?.queued) };
 }
 
@@ -648,7 +726,12 @@ function formatSuccess({ task, baseUrl, queued }) {
   const parent = typeof task?.parentTaskId === 'string' && task.parentTaskId.length > 0
     ? task.parentTaskId
     : null;
-  const status = queued ? '⌛ Task queued' : '✓ Task created';
+  // #1526 Phase B: an idempotency-key replay returns the SAME task an
+  // earlier attempt already created — say so, instead of claiming a fresh
+  // "Task created".
+  const status = task?.idempotentReplay
+    ? '↺ Task already exists (idempotent replay)'
+    : queued ? '⌛ Task queued' : '✓ Task created';
   const lines = [`task_id=${id}`];
   if (parent) lines.push(`parent_task_id=${parent}`);
   lines.push(
@@ -695,10 +778,52 @@ function formatTaskAge(createdAt) {
 }
 
 /**
+ * Backpressure rejection codes a 429 body may carry (#1526 Phase C / C3).
+ * Keep in sync with PendingQueueFullError / SpawnBurstLimitError in
+ * src/server/launch-service.ts.
+ */
+const BACKPRESSURE_CODES = new Set(['pending_queue_full', 'spawn_burst_limit']);
+
+/**
+ * Render a 429 backpressure body (#1526 Phase C / C3) as a multi-line "why"
+ * breakdown from the capacity ledger the server attached, so the operator
+ * sees WHAT is occupying the slots (working / awaiting-ack / hung-suspect /
+ * launching) and the queue/budget state instead of a bare error string.
+ * Returns null when the body is not a recognizable backpressure shape.
+ */
+function formatBackpressure429(body) {
+  if (!body || !BACKPRESSURE_CODES.has(body.code)) return null;
+  const lines = [`kookr-spawn: launch refused (${body.code}): ${body.error ?? 'server backpressure'}`];
+  const cap = body.capacity;
+  if (cap && typeof cap === 'object') {
+    const byClass = cap.byClass ?? {};
+    lines.push(
+      `   capacity: ${cap.active}/${cap.maxActiveTasks} slots occupied ` +
+      `(working ${byClass.working ?? '?'}, awaiting-ack ${byClass.finishedAwaitingAck ?? '?'}, ` +
+      `hung-suspect ${byClass.hungSuspect ?? '?'}, launching ${byClass.launching ?? '?'})`,
+    );
+    const queueLimit = typeof body.maxPendingTasks === 'number' ? `/${body.maxPendingTasks}` : '';
+    lines.push(`   pending queue: ${cap.pendingQueueDepth}${queueLimit} task(s)`);
+  }
+  if (body.code === 'spawn_burst_limit') {
+    const windowMin = typeof body.windowMs === 'number' ? Math.round(body.windowMs / 60_000) : '?';
+    const retrySec = typeof body.retryAfterMs === 'number' ? Math.max(1, Math.ceil(body.retryAfterMs / 1000)) : '?';
+    lines.push(
+      `   burst budget: ${body.limit} launches per ${windowMin}m for source "${body.source}"; retry in ~${retrySec}s`,
+    );
+  } else {
+    lines.push('   free a slot (complete/abort a task) or raise maxPendingTasks, then retry');
+  }
+  return lines.join('\n');
+}
+
+/**
  * Print the server-error message. If the server returned 404 and we sent a
  * parentTaskId, surface a targeted hint about --no-parent-task / --parent-task-id
  * instead of the generic "server returned 404: ..." form. Shared between the
  * initial-POST and dedupe-retry call sites so the wording stays in sync.
+ * A 429 backpressure body (#1526 Phase C) renders as the full capacity
+ * breakdown; the caller still exits non-zero (EXIT_SERVER_ERROR).
  */
 function reportServerError({ result, baseUrl, parentTaskId, err }) {
   if (result.status === 404 && parentTaskId) {
@@ -707,6 +832,13 @@ function reportServerError({ result, baseUrl, parentTaskId, err }) {
       `Re-run with --no-parent-task to launch detached, or --parent-task-id <uuid> to override.`,
     );
     return;
+  }
+  if (result.status === 429) {
+    const rendered = formatBackpressure429(result.body);
+    if (rendered) {
+      err.error(rendered);
+      return;
+    }
   }
   err.error(`kookr-spawn: server returned ${result.status}: ${result.message}`);
 }
@@ -747,6 +879,9 @@ function taskDetails({ task = {}, baseUrl, queued = false }) {
     taskId,
     parentTaskId,
     queued,
+    // #1526 Phase B: true when this response replayed an earlier attempt's
+    // task (same --idempotency-key) instead of creating a new one.
+    idempotentReplay: Boolean(task?.idempotentReplay),
     task: {
       id: taskId,
       agentType: task?.agentType ?? null,
@@ -966,11 +1101,14 @@ async function main({
       cwd: cwdAbs,
       agent: args.agent,
       effort: args.effort,
+      model: args.model,
       criteria: args.criteria,
       disableDedup: args.dedupe === 'skip',
       metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
       parentTaskId,
       autoCloseOnSignal: args.autoCloseOnSignal,
+      unattended: args.unattended,
+      idempotencyKey: args.idempotencyKey,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -999,7 +1137,16 @@ async function main({
         ok: false,
         code: 'SERVER_ERROR',
         message: result.message,
-        details: { status: result.status, baseUrl, parentTaskId },
+        details: {
+          status: result.status,
+          baseUrl,
+          parentTaskId,
+          // #1526 Phase C: pass the 429 backpressure body (code + capacity
+          // ledger + limits) through so JSON consumers can render "why".
+          ...(result.status === 429 && result.body && BACKPRESSURE_CODES.has(result.body.code)
+            ? { backpressure: result.body }
+            : {}),
+        },
       });
     }
     reportServerError({ result, baseUrl, parentTaskId, err });
@@ -1065,11 +1212,13 @@ async function main({
         cwd: cwdAbs,
         agent: args.agent,
         effort: args.effort,
+        model: args.model,
         criteria: args.criteria,
         disableDedup: true,
         metadataIntent: 'keep_as_duplicate',
         parentTaskId,
         autoCloseOnSignal: args.autoCloseOnSignal,
+        unattended: args.unattended,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -1094,7 +1243,9 @@ async function main({
       exitCode: EXIT_OK,
       ok: true,
       code: 'OK',
-      message: result.queued ? 'Task queued' : 'Task created',
+      message: result.task?.idempotentReplay
+        ? 'Task already exists (idempotent replay)'
+        : result.queued ? 'Task queued' : 'Task created',
       details: taskDetails({ task: result.task, baseUrl, queued: result.queued }),
     });
   }
@@ -1137,6 +1288,7 @@ export {
   HELP_TEXT,
   UsageError,
   classifyWaitState,
+  formatBackpressure429,
   formatDedup,
   formatSuccess,
   formatWaitOutcome,

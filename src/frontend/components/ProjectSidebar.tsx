@@ -312,6 +312,20 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
     () => agents.filter((a) => a.taskStatus === 'inProgress').length,
     [agents],
   );
+  // Capacity breakdown (issue #1526 Phase B / FM9): during the 2026-07-24
+  // deadlock this exact number — cappedCount — read "12 running" while the
+  // truth was 11 finished-awaiting-ack + 1 hung + 0 actually working. Derived
+  // client-side from the same `agents`/`stuckReason` the WS snapshot already
+  // carries (server: core/stuck-reason.ts), mirroring `GET /api/health`'s
+  // `capacity.byClass` aggregate without a separate fetch.
+  const finishedAwaitingAckCount = useMemo(
+    () => agents.filter((a) => a.taskStatus === 'inProgress' && a.stuckReason === 'awaiting_completion_ack').length,
+    [agents],
+  );
+  const hungSuspectCount = useMemo(
+    () => agents.filter((a) => a.taskStatus === 'inProgress' && a.stuckReason === 'hung_suspect').length,
+    [agents],
+  );
 
   const [menuProjectId, setMenuProjectId] = useState<string | null>(null);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
@@ -359,6 +373,12 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
   const queueSegment = hasPending
     ? `${pendingCount} queued${atCap ? ', waiting for a slot' : ''}`
     : (atCap ? 'at capacity, new launches will queue' : null);
+  // Only rendered when at least one task isn't genuinely working — an empty
+  // breakdown (the common case) adds nothing over `capLabel` alone.
+  const capacityBreakdownSegment = [
+    finishedAwaitingAckCount > 0 ? `${finishedAwaitingAckCount} awaiting ack` : null,
+    hungSuspectCount > 0 ? `${hungSuspectCount} hung?` : null,
+  ].filter((s): s is string => Boolean(s)).join(', ') || null;
   const canAdjustCap = Boolean(onAdjustCap) && hasLimit;
   const adjustHint = canAdjustCap ? 'Right-click or Shift+F10 to adjust cap' : null;
   const allTooltipText = [
@@ -366,6 +386,7 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
     `${allTaskLoad.activeAgents} active agent${allTaskLoad.activeAgents !== 1 ? 's' : ''}`,
     `${allTaskLoad.runningAgents} running · ${allTaskLoad.stalledAgents} stalled`,
     capLabel,
+    capacityBreakdownSegment,
     queueSegment,
     adjustHint,
   ].filter((s): s is string => Boolean(s)).join(' · ');
@@ -374,6 +395,7 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
   const allAriaLabel = [
     'All Projects',
     hasLimit ? capLabel : null,
+    capacityBreakdownSegment,
     hasPending ? `${pendingCount} queued` : null,
     atCap ? 'at capacity' : null,
   ].filter((s): s is string => Boolean(s)).join(', ');

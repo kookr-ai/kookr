@@ -36,6 +36,7 @@ import type { CoordinatorSuppressionReader } from './coordinator/suppression-sto
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import type { DashboardSelectionController } from './dashboard-selection-controller.js';
 import type { UserInputDeliveryService } from './user-input-delivery-service.js';
+import { resolveLifecycleActor, type LifecycleAuditActor } from './actor-attribution.js';
 
 export interface MessageRouterDeps {
   taskStore: TaskStore;
@@ -224,12 +225,14 @@ export class MessageRouter {
     });
   }
 
-  /** Actor metadata for destructive task-lifecycle audit rows. */
-  private deletionAuditActor(): { source: 'websocket'; actorId?: string } {
-    return {
-      source: 'websocket',
-      ...(this.deps.connectionId ? { actorId: this.deps.connectionId } : {}),
-    };
+  /**
+   * Actor metadata for task-lifecycle audit rows (issue #1526 Phase B). Falls
+   * back to `'unattributed'` (with a one-time-per-boot warning) when no
+   * connection id is wired, same fallback the HTTP `X-Kookr-Actor` header
+   * gets on the REST surface.
+   */
+  private deletionAuditActor(): LifecycleAuditActor {
+    return resolveLifecycleActor('websocket', this.deps.connectionId);
   }
 
   /** Resolved server cwd with the `process.cwd()` fallback applied. */

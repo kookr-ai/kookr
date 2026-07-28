@@ -1,6 +1,7 @@
-import type { Hono } from 'hono';
+import type { Context, Hono } from 'hono';
 import { join } from 'node:path';
 import { discoverPlaybooks } from '../../core/playbook-discovery.js';
+import { extractEmbeddedTaskName } from '../../core/task-naming.js';
 import { saveTasks, serializeSnoozed } from '../../core/task-persistence.js';
 import { normalizeAgentSelection } from '../../core/agent-types.js';
 import { createSnapshotMessage } from '../use-cases/get-snapshot.js';
@@ -9,14 +10,29 @@ import { redactSecrets } from '../../core/redact-secrets.js';
 import {
   AGENT_SIGNAL_KINDS,
   isAgentSignalKind,
+  MAX_AGENT_SIGNAL_ID_LENGTH,
   MAX_AGENT_SIGNAL_NOTE_LENGTH,
   type PendingAgentSignal,
 } from '../../shared/contracts/agent-signal.js';
 import { TaskLifecycleCommands } from '../use-cases/task-lifecycle-commands.js';
-import { launchTask, DrainModeError, isCwdValidationError, isEffortValidationError } from '../launch-service.js';
+import {
+  launchTask,
+  DrainModeError,
+  isCwdValidationError,
+  isEffortValidationError,
+  isModelValidationError,
+  isPendingQueueFullError,
+  isSpawnBurstLimitError,
+} from '../launch-service.js';
+import { MAX_IDEMPOTENCY_KEY_LENGTH } from '../../shared/contracts/launch.js';
+import {
+  evaluateTaskAdmission,
+  readAdmissionControlConfigFromEnv,
+} from '../task-admission.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import { LAUNCH_DEPENDENCIES, type LaunchDependency } from '../../core/playbook.js';
 import type { SessionInfo, Task, TaskStore, TokenUsage } from '../../core/tasks.js';
+import type { TaskStatus } from '../../core/task-status.js';
 import type { TaskDependencyEdge, TaskMetadataIntent } from '../../shared/contracts/task.js';
 import { normalizeTerminalWorktreeHealth } from '../../core/worktree-health.js';
 import { readEvolutionRunProjection } from '../../core/evolution-summary.js';
@@ -25,18 +41,51 @@ import { MAX_BATCH_ABORT_TASKS } from '../../shared/contracts/messages.js';
 import { CoordinatorSuppressionStore } from '../coordinator/suppression-store.js';
 import { promotePendingTasks } from '../agent-lifecycle.js';
 import type { TaskRouteDeps } from './shared.js';
+import type { AttentionQueue } from '../../core/attention-queue.js';
+import type { Watchdog } from '../../core/watchdog.js';
+import { resolveTaskAttentionSignals } from '../task-attention-signals.js';
+import { deriveStuckReason } from '../../core/stuck-reason.js';
+import type { TaskStuckReason } from '../../shared/contracts/task-stuck-reason.js';
 import {
   DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
   classifyCompletionReadyClosePolicy,
   listStaleCompletionReadyTasks,
 } from '../../core/completion-ready-cleanup.js';
+import {
+  boundTailText,
+  parseTailLinesQuery,
+  TASK_TAIL_SCHEMA_VERSION,
+} from '../../core/task-tail-store.js';
+import { ACTOR_HEADER, resolveLifecycleActor } from '../actor-attribution.js';
+import { isAuthorizedSupervisorRequest } from '../supervisor-auth.js';
+import { ackAllStaleCompletionReadyTasks } from '../use-cases/ack-all-completion-ready.js';
+import { SUPERVISOR_AUTH_HEADER } from '../../shared/contracts/supervisor-actions.js';
+import {
+  evaluateLessonDecisionGate,
+  hooksDirFromKookrDir,
+  isLessonDecisionGateEnabled,
+  resolveTaskLessonDecision,
+} from '../../core/lesson-decision.js';
 
 const MAX_TASK_EDGE_COUNT = 64;
 const MAX_TASK_EDGE_LENGTH = 240;
 
+/** 401 response body for a supervisor-token-gated route with a missing/wrong bearer token. */
+function supervisorUnauthorizedResponse(c: Context) {
+  c.header('WWW-Authenticate', 'Bearer');
+  return c.json({ error: 'supervisor-unauthorized' }, 401);
+}
+
 export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   const { taskStore, monitor, adapter, hookWatcher, watchdog, broadcastToAll, serverCwd, hookIngestion } = deps;
+  // Load-based admission gate for POST /api/tasks (issue #1590). Read env once
+  // at registration (env config, like the operational-alert thresholds), unless
+  // a config was threaded explicitly (tests).
+  const admissionControlConfig = deps.admissionControlConfig ?? readAdmissionControlConfigFromEnv();
   const coordinatorSuppressions = deps.coordinatorSuppressions ?? new CoordinatorSuppressionStore(deps.kookrDir ?? serverCwd);
+  const auditLogPath = deps.kookrDir ? join(deps.kookrDir, 'audit.jsonl') : undefined;
+  /** Resolve the `X-Kookr-Actor` header into an attributed audit-row actor (issue #1526 Phase B). */
+  const actorFromRequest = (c: Context) => resolveLifecycleActor('api', c.req.header(ACTOR_HEADER));
   const lifecycleCommands = new TaskLifecycleCommands({
     taskStore,
     monitor,
@@ -44,7 +93,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     scheduleService: deps.scheduleService,
     broadcastToAll,
     activityMetaProvider: hookIngestion,
-    auditLogPath: deps.kookrDir ? join(deps.kookrDir, 'audit.jsonl') : undefined,
+    auditLogPath,
     getLifecycleDeps: () => ({
       adapter,
       monitor,
@@ -54,6 +103,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       watchdog,
       ...(deps.issueClaimRegistry ? { issueClaimRegistry: deps.issueClaimRegistry } : {}),
       ...(deps.onTaskOutcome ? { onTaskOutcome: deps.onTaskOutcome } : {}),
+      ...(deps.taskTailStore ? { taskTailStore: deps.taskTailStore } : {}),
       shadowRegistry: deps.shadowRegistry,
       suppressionTracker: deps.suppressionTracker,
       tokenTracker: deps.tokenTracker,
@@ -94,16 +144,45 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   // launchHealthSummary) while keeping the id/status/session-health/token/timeline
   // fields a list needs. The full detail — including prompt — stays available via
   // GET /api/tasks/:id. Default remains the full list for backward compatibility.
+  //
+  // Optional list filters + pagination (issue #1526 Phase C / C2 payload diet):
+  // `status=<TaskStatus>`, `since=<ISO date>` (updatedAt >= since), `limit`,
+  // `offset`. All additive: with none of them present the response is
+  // byte-identical to the historical full listing (Lucy and the CLI consume it
+  // unpaginated). When `limit`/`offset` are present, the pre-slice match count
+  // is exposed via the `X-Total-Count` response header so pagers can render
+  // page controls without a second request.
   app.get('/api/tasks', (c) => {
-    if (c.req.query('view') === 'compact') {
-      const compact = taskStore.listTasks().map((t) => toCompactApiTask(t, taskStore));
+    const attentionDeps = { queue: deps.queue, watchdog: deps.watchdog };
+    const listQuery = parseTaskListQuery({
+      limit: c.req.query('limit'),
+      offset: c.req.query('offset'),
+      status: c.req.query('status'),
+      since: c.req.query('since'),
+    });
+    if (listQuery instanceof Error) return c.json({ error: listQuery.message }, 400);
+    const paginated = listQuery.limit !== undefined || listQuery.offset !== undefined;
+
+    const selectTasks = (): Task[] => {
+      const filtered = filterTaskList(taskStore.listTasks(), listQuery);
+      if (paginated) c.header('X-Total-Count', String(filtered.length));
+      return sliceTaskList(filtered, listQuery);
+    };
+
+    if (c.req.query('view') === 'compact' || c.req.query('compact') === 'true') {
+      const now = Date.now();
+      const compact = selectTasks()
+        .map((t) => toCompactApiTask(t, taskStore))
+        .map((t) => attachStuckReason(t, attentionDeps, now));
       if (!deps.suppressionTracker) return c.json(compact);
       const tracker = deps.suppressionTracker;
       return c.json(compact.map((t) => withSuppressionFlag(t, tracker)));
     }
-    const tasks = taskStore.listTasks()
+    const now = Date.now();
+    const tasks = selectTasks()
       .map(normalizeTaskForApi)
-      .map((t) => attachAggregateTokenUsage(t, taskStore));
+      .map((t) => attachAggregateTokenUsage(t, taskStore))
+      .map((t) => attachStuckReason(t, attentionDeps, now));
     if (!deps.suppressionTracker) return c.json(tasks);
     const tracker = deps.suppressionTracker;
     return c.json(tasks.map((t) => withSuppressionFlag(t, tracker)));
@@ -114,13 +193,18 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     if (thresholdMs instanceof Error) return c.json({ error: thresholdMs.message }, 400);
 
     const generatedAt = new Date();
-    const tasks = listStaleCompletionReadyTasks(taskStore.listTasks(), { now: generatedAt, thresholdMs })
+    const ttlMs = deps.getCompletionReadyTtlMs?.();
+    // `closeReason` (issue #1526 Phase A) is additive under the existing
+    // schemaVersion below — only present when canAutoClose is true, so an
+    // older client that doesn't know the field simply ignores it.
+    const tasks = listStaleCompletionReadyTasks(taskStore.listTasks(), { now: generatedAt, thresholdMs, ttlMs })
       .map((entry) => ({
         task: normalizeTaskForApi(entry.task),
         signal: entry.signal,
         ageMs: entry.ageMs,
         canAutoClose: entry.canAutoClose,
         ...(entry.manualActionRequiredReason ? { manualActionRequiredReason: entry.manualActionRequiredReason } : {}),
+        ...(entry.closeReason ? { closeReason: entry.closeReason } : {}),
       }));
     return c.json({
       schemaVersion: 'stale-completion-ready-tasks.v1',
@@ -135,9 +219,83 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     const id = c.req.param('id');
     const task = taskStore.getTask(id);
     if (!task) return c.json({ error: 'Task not found' }, 404);
-    const normalized = attachAggregateTokenUsage(normalizeTaskForApi(task), taskStore);
+    const normalized = attachStuckReason(
+      attachAggregateTokenUsage(normalizeTaskForApi(task), taskStore),
+      { queue: deps.queue, watchdog: deps.watchdog },
+      Date.now(),
+    );
     if (!deps.suppressionTracker) return c.json(normalized);
     return c.json(withSuppressionFlag(normalized, deps.suppressionTracker));
+  });
+
+  /**
+   * Bounded terminal tail for a task — live ring when in progress, durable
+   * persisted tail after completion (rfc-task-tail-retrieval).
+   */
+  app.get('/api/tasks/:id/tail', async (c) => {
+    const id = c.req.param('id');
+    const linesOrErr = parseTailLinesQuery(c.req.query('lines'));
+    if (linesOrErr instanceof Error) return c.json({ error: linesOrErr.message }, 400);
+
+    const task = taskStore.getTask(id);
+    if (!task) return c.json({ error: 'Task not found' }, 404);
+
+    const liveSession = [...task.sessions]
+      .reverse()
+      .find((s) => s.lastStatus !== 'completed' && s.lastStatus !== 'aborted');
+
+    if (liveSession && typeof adapter.captureDisplay === 'function') {
+      try {
+        const raw = await adapter.captureDisplay(liveSession.tmuxSession);
+        const bound = boundTailText(raw, linesOrErr);
+        return c.json({
+          schemaVersion: TASK_TAIL_SCHEMA_VERSION,
+          taskId: task.id,
+          sessionId: liveSession.tmuxSession,
+          taskStatus: task.status,
+          source: 'live' as const,
+          capturedAt: new Date().toISOString(),
+          linesRequested: linesOrErr,
+          totalLines: bound.totalLines,
+          shownLines: bound.shownLines,
+          text: bound.text,
+          truncated: false,
+        });
+      } catch (err) {
+        // Fall through to persisted tail when live capture fails (e.g. race
+        // with session teardown).
+        console.warn(
+          `[task-tail] live capture failed for ${liveSession.tmuxSession}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    const stored = deps.taskTailStore
+      ? await deps.taskTailStore.getByTaskId(task.id)
+      : null;
+    if (!stored) {
+      const reason = isTerminalStatus(task.status)
+        ? 'No persisted terminal tail for this task (never captured, expired, or retention disabled)'
+        : 'No live session output and no persisted terminal tail';
+      return c.json({ error: reason, taskId: task.id }, 404);
+    }
+
+    const bound = boundTailText(stored.text, linesOrErr);
+    return c.json({
+      schemaVersion: TASK_TAIL_SCHEMA_VERSION,
+      taskId: task.id,
+      sessionId: stored.sessionId,
+      taskStatus: task.status,
+      source: 'persisted' as const,
+      capturedAt: stored.capturedAt,
+      retentionExpiresAt: deps.taskTailStore!.retentionExpiresAt(stored.capturedAt),
+      linesRequested: linesOrErr,
+      totalLines: bound.totalLines,
+      shownLines: bound.shownLines,
+      text: bound.text,
+      truncated: stored.truncated,
+    });
   });
 
   app.get('/api/tasks/:id/evolution', async (c) => {
@@ -217,6 +375,19 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   });
 
   app.post('/api/tasks', async (c) => {
+    // Load-based admission (issue #1590): shed the request BEFORE parsing the
+    // body or touching the launch path, so a saturated event loop fast-fails
+    // with 503 + Retry-After in ≤2s instead of hanging into a client timeout.
+    // Reuses the already-sampled health-snapshot p95 (no second monitor); fails
+    // open when the signal is missing or the gate is disabled.
+    const admission = evaluateTaskAdmission({
+      config: admissionControlConfig,
+      eventLoopDelayP95Ms: deps.getLatestResourceStatus?.()?.server.eventLoopDelayP95Ms ?? null,
+    });
+    if (!admission.admit) {
+      c.header('Retry-After', String(admission.rejection.retryAfterSeconds));
+      return c.json(admission.rejection, 503);
+    }
     try {
       const body = await c.req.json() as {
         prompt?: string;
@@ -225,10 +396,13 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         parentTaskId?: string;
         agentType?: string;
         effort?: unknown;
+        model?: unknown;
         disableDedup?: unknown;
         metadata?: unknown;
         dependencies?: unknown;
         autoCloseOnSignal?: unknown;
+        unattended?: unknown;
+        idempotencyKey?: unknown;
       };
 
       if (!body.prompt || typeof body.prompt !== 'string') {
@@ -258,35 +432,75 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       if (metadataIntent === 'keep_as_duplicate' && body.disableDedup !== true) {
         return c.json({ error: 'metadata.intent "keep_as_duplicate" requires disableDedup true' }, 400);
       }
-      // #681: shape check only. The agent-specific allowed-set check runs in
-      // launchTask after round-robin resolution and surfaces as a 400 via
-      // EffortValidationError (mapped below).
+      // #681 / #1518: shape check only. The agent-specific allowed-set check
+      // runs in launchTask after round-robin resolution and surfaces as a 400
+      // via EffortValidationError / ModelValidationError (mapped below).
       if (body.effort !== undefined && typeof body.effort !== 'string') {
         return c.json({ error: 'effort must be a string' }, 400);
       }
+      if (body.model !== undefined && typeof body.model !== 'string') {
+        return c.json({ error: 'model must be a string' }, 400);
+      }
       if (body.autoCloseOnSignal !== undefined && typeof body.autoCloseOnSignal !== 'boolean') {
         return c.json({ error: 'autoCloseOnSignal must be a boolean' }, 400);
+      }
+      if (body.unattended !== undefined && typeof body.unattended !== 'boolean') {
+        return c.json({ error: 'unattended must be a boolean' }, 400);
+      }
+      // issue #1526 Phase B: bounded, opaque idempotency key. Validated here
+      // (shape only); reserve/replay semantics live in launchTask's wrapper.
+      if (body.idempotencyKey !== undefined) {
+        if (typeof body.idempotencyKey !== 'string' || body.idempotencyKey.length === 0) {
+          return c.json({ error: 'idempotencyKey must be a non-empty string' }, 400);
+        }
+        if (body.idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
+          return c.json({ error: `idempotencyKey must be at most ${MAX_IDEMPOTENCY_KEY_LENGTH} characters` }, 400);
+        }
       }
 
       const rawSource = c.req.header('X-Kookr-Launch-Source');
       const launchSource: 'cli' | 'ui' | 'api' =
         rawSource === 'cli' || rawSource === 'ui' ? rawSource : 'api';
-      const { task, queued, duplicate } = await launchTask(deps.launchServiceDeps, {
+      // issue #1526 Phase C / C3: actor-qualified spawn budget. Reuses the
+      // Phase B attribution header so 'lucy' burns her own burst budget
+      // instead of sharing the anonymous `api` bucket.
+      const launchActorId = c.req.header(ACTOR_HEADER)?.trim() || undefined;
+      // #1556: a CLI caller that pastes a whole JSON spawn payload as the
+      // prompt (a5a89a9a) carries its intended name in an embedded `name`
+      // field — lift it so the task is named that instead of the payload's
+      // opening brace. Ordinary prose prompts return undefined and are
+      // unaffected; a set name skips AI naming (see LaunchOpts.name).
+      const embeddedName = extractEmbeddedTaskName(body.prompt);
+      const { task, queued, duplicate, idempotentReplay } = await launchTask(deps.launchServiceDeps, {
         prompt: body.prompt,
         cwd: body.cwd,
+        name: embeddedName,
         criteria: body.criteria,
         parentTaskId: body.parentTaskId,
         agentType: body.agentType ? normalizeAgentSelection(body.agentType) : undefined,
         effort: typeof body.effort === 'string' ? body.effort : undefined,
+        model: typeof body.model === 'string' ? body.model : undefined,
         disableDedup: body.disableDedup === true,
         metadataIntent,
         dependencies: parseLaunchDependencies(body.dependencies),
         launchSource,
+        launchActorId,
         autoCloseOnSignal: typeof body.autoCloseOnSignal === 'boolean' ? body.autoCloseOnSignal : undefined,
+        unattended: typeof body.unattended === 'boolean' ? body.unattended : undefined,
+        idempotencyKey: typeof body.idempotencyKey === 'string' ? body.idempotencyKey : undefined,
       });
 
       if (duplicate) {
         return c.json({ task, duplicate: true }, 200);
+      }
+
+      // Idempotent replay (#1526 Phase B): the SAME task an earlier request
+      // with this idempotencyKey already created — flattened like the 201
+      // shape (not wrapped like prompt-dedup's `{task, duplicate:true}`) so
+      // callers that already parse a plain task object need no extra
+      // branching to notice the replay via `idempotentReplay`.
+      if (idempotentReplay) {
+        return c.json({ ...task, idempotentReplay: true }, 200);
       }
 
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
@@ -296,6 +510,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         return c.json({ error: err.message }, 400);
       }
       if (isEffortValidationError(err)) {
+        return c.json({ error: err.message, code: err.code }, 400);
+      }
+      if (isModelValidationError(err)) {
         return c.json({ error: err.message, code: err.code }, 400);
       }
       // RFC F12: a missing working directory is a client error, surfaced
@@ -309,6 +526,30 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       if (err instanceof DrainModeError) {
         return c.json({ error: err.message, code: err.code }, 503);
       }
+      // Honest server-side backpressure (issue #1526 Phase C / C3): both
+      // rejections return 429 with the capacity-ledger snapshot so the caller
+      // can render WHY (active/max, byClass breakdown, queue depth) instead
+      // of guessing from a bare error string.
+      if (isPendingQueueFullError(err)) {
+        return c.json({
+          error: err.message,
+          code: err.code,
+          capacity: err.capacity,
+          maxPendingTasks: err.maxPendingTasks,
+        }, 429);
+      }
+      if (isSpawnBurstLimitError(err)) {
+        c.header('Retry-After', String(Math.max(1, Math.ceil(err.retryAfterMs / 1000))));
+        return c.json({
+          error: err.message,
+          code: err.code,
+          capacity: err.capacity,
+          source: err.source,
+          limit: err.limit,
+          windowMs: err.windowMs,
+          retryAfterMs: err.retryAfterMs,
+        }, 429);
+      }
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);
     }
@@ -321,7 +562,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     if (!task) return c.json({ error: 'Task not found' }, 404);
 
     try {
-      await lifecycleCommands.deleteTask(id, { actor: { source: 'api' } });
+      await lifecycleCommands.deleteTask(id, { actor: actorFromRequest(c) });
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, relationTaskStore: taskStore }));
       return c.json({ ok: true });
     } catch (err) {
@@ -341,12 +582,19 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   // This route shares the WS completion command. When monitor events are
   // available it may finalize a completion digest; helper tasks with no captured
   // events remain digestless.
+  //
+  // Supervisor endpoint (issue #1526 Phase B / FM12): gated by
+  // `KOOKR_SUPERVISOR_TOKEN` when set (see supervisor-auth.ts), and every
+  // outcome is attributed via `X-Kookr-Actor` into audit.jsonl.
   app.post('/api/tasks/:id/complete', async (c) => {
+    if (!isAuthorizedSupervisorRequest(c.req.header(SUPERVISOR_AUTH_HEADER))) {
+      return supervisorUnauthorizedResponse(c);
+    }
     const id = c.req.param('id');
     if (isSharedTaskId(id)) return c.json({ error: 'SharedTask IDs are remote-owned' }, 403);
 
     try {
-      const result = await lifecycleCommands.completeTask(id);
+      const result = await lifecycleCommands.completeTask(id, { actor: actorFromRequest(c) });
       if (result.outcome === 'not_found') {
         return c.json({ error: 'Task not found' }, 404);
       }
@@ -385,7 +633,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       );
     }
 
-    let body: { kind?: unknown; note?: unknown };
+    let body: { kind?: unknown; note?: unknown; signalId?: unknown };
     try {
       body = await c.req.json();
     } catch {
@@ -394,6 +642,46 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     if (!isAgentSignalKind(body.kind)) {
       return c.json({ error: `kind must be one of: ${AGENT_SIGNAL_KINDS.join(', ')}` }, 400);
     }
+
+    // Client-generated idempotency key for the durable signal outbox (issue #1541).
+    // Optional for backward compatibility with pre-outbox CLIs.
+    let signalId: string | undefined;
+    if (body.signalId !== undefined) {
+      if (typeof body.signalId !== 'string' || body.signalId.trim() === '') {
+        return c.json({ error: 'signalId must be a non-empty string when supplied' }, 400);
+      }
+      if (body.signalId.length > MAX_AGENT_SIGNAL_ID_LENGTH) {
+        return c.json(
+          { error: `signalId must be at most ${MAX_AGENT_SIGNAL_ID_LENGTH} characters` },
+          400,
+        );
+      }
+      signalId = body.signalId.trim();
+    }
+
+    // Pure replay of an already-processed signalId: return the current pending
+    // signal (or a synthetic one) without re-firing outcome hooks.
+    if (signalId) {
+      const prior = taskStore.getProcessedSignal(signalId);
+      if (prior && prior.taskId === id && prior.kind === body.kind) {
+        const current = taskStore.getPendingSignal(id);
+        const replaySignal: PendingAgentSignal = current?.kind === body.kind
+          ? current
+          : {
+              kind: body.kind,
+              raisedAt: current?.raisedAt ?? new Date().toISOString(),
+              signalId,
+            };
+        return c.json({
+          ok: true,
+          signal: replaySignal,
+          truncated: false,
+          autoClosed: false,
+          idempotentReplay: true,
+        });
+      }
+    }
+
     let note: string | undefined;
     let truncated = false;
     if (body.note !== undefined) {
@@ -405,10 +693,45 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       if (normalized.note) note = normalized.note;
     }
 
+    // Issue #1538: completion-ready is a lifecycle step that requires a
+    // post-task lesson decision (kb remember OR explicit skip marker) visible
+    // in the task's Bash hook trail. Without this gate the learning flywheel
+    // goes silent even when the KB spool is healthy. Fail-open when the task
+    // has never launched (0 sessions) so unit fixtures and pre-launch paths
+    // keep working; fail-closed once a session exists.
+    if (body.kind === 'completion_ready' && isLessonDecisionGateEnabled()) {
+      const hooksDir = deps.kookrDir
+        ? hooksDirFromKookrDir(deps.kookrDir)
+        : undefined;
+      if (hooksDir) {
+        const resolved = await resolveTaskLessonDecision(task, hooksDir);
+        const gate = evaluateLessonDecisionGate({
+          sessionsScanned: resolved.sessionsScanned,
+          decision: resolved.decision,
+        });
+        if (!gate.allow) {
+          return c.json(
+            {
+              error: gate.reason,
+              code: gate.code,
+              decision: gate.decision,
+              hint: gate.hint,
+              counts: resolved.counts,
+            },
+            409,
+          );
+        }
+      }
+    }
+
     const signal: PendingAgentSignal = {
       kind: body.kind,
       raisedAt: new Date().toISOString(),
       ...(note ? { note } : {}),
+      ...(signalId ? { signalId } : {}),
+      // HTTP route always tags provenance so yield v2 can distinguish a
+      // normal (gated) signal from an outbox-drained one (issue #1608).
+      source: 'http',
     };
     taskStore.setPendingSignal(id, signal);
     if (signal.kind === 'completion_ready') {
@@ -433,9 +756,11 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       !isActiveRalphLoop(task);
 
     broadcastSnapshotWithCoordinator();
+    // Re-read so same-kind re-raises report the preserved raisedAt.
+    const stored = taskStore.getPendingSignal(id) ?? signal;
     return c.json({
       ok: true,
-      signal,
+      signal: stored,
       truncated,
       autoClosed: false,
       ...(autoCloseScheduled ? {
@@ -453,7 +778,15 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   // sessions, and returns a per-task result so callers can report partial
   // failures. Retrying the same request is safe: already-terminal tasks report
   // `already_terminal` without a second transition or audit row.
+  //
+  // Supervisor endpoint (issue #1526 Phase B / FM12, FM16): gated by
+  // `KOOKR_SUPERVISOR_TOKEN` when set, and attributed via `X-Kookr-Actor` —
+  // the 2026-07-24 incident's four 13:39 aborts landed in audit.jsonl as
+  // unattributable `source: 'api'` rows.
   app.post('/api/tasks/abort', async (c) => {
+    if (!isAuthorizedSupervisorRequest(c.req.header(SUPERVISOR_AUTH_HEADER))) {
+      return supervisorUnauthorizedResponse(c);
+    }
     let body: { taskIds?: unknown; reason?: unknown };
     try {
       body = await c.req.json();
@@ -488,9 +821,63 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     try {
       const result = await lifecycleCommands.batchAbortTasks(taskIds, {
         reason: typeof body.reason === 'string' ? body.reason : undefined,
-        actor: { source: 'api' },
+        actor: actorFromRequest(c),
       });
       broadcastSnapshotWithCoordinator();
+      return c.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+  });
+
+  // Drain the completion-ready backlog in one supervisor call (issue #1526
+  // Phase B / FM12). Completes every task `GET /api/tasks/completion-ready/stale`
+  // currently lists as `canAutoClose: true`; `{ "force": true }` widens that to
+  // every stale entry regardless of policy — the "unlock everything" escape
+  // hatch the 2026-07-24 deadlock had no equivalent of (11 wedged tasks, no
+  // caller with both the wiring and the authority to close them). Gated by
+  // `KOOKR_SUPERVISOR_TOKEN` when set; every result is attributed via
+  // `X-Kookr-Actor` and audited as one `task.completionReadyAckAll` row plus
+  // one `task.complete` row per completed task.
+  app.post('/api/tasks/completion-ready/ack-all', async (c) => {
+    if (!isAuthorizedSupervisorRequest(c.req.header(SUPERVISOR_AUTH_HEADER))) {
+      return supervisorUnauthorizedResponse(c);
+    }
+
+    let body: { force?: unknown; thresholdMs?: unknown } = {};
+    const rawBody = await c.req.text();
+    if (rawBody.trim()) {
+      try {
+        body = JSON.parse(rawBody) as { force?: unknown; thresholdMs?: unknown };
+      } catch {
+        return c.json({ error: 'invalid JSON body' }, 400);
+      }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return c.json({ error: 'body must be a JSON object' }, 400);
+      }
+    }
+    if (body.force !== undefined && typeof body.force !== 'boolean') {
+      return c.json({ error: 'force must be a boolean when supplied' }, 400);
+    }
+    const thresholdMs = body.thresholdMs === undefined
+      ? DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS
+      : parseThresholdMs(String(body.thresholdMs));
+    if (thresholdMs instanceof Error) return c.json({ error: thresholdMs.message }, 400);
+
+    try {
+      const result = await ackAllStaleCompletionReadyTasks(
+        { taskStore, lifecycleCommands, auditLogPath },
+        {
+          force: body.force === true,
+          thresholdMs,
+          ttlMs: deps.getCompletionReadyTtlMs?.(),
+          actor: actorFromRequest(c),
+        },
+      );
+      if (result.summary.completed > 0 || result.summary.partial_ralph_completion > 0) {
+        broadcastSnapshotWithCoordinator();
+      }
       return c.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -552,7 +939,7 @@ function parseThresholdMs(raw: string | undefined): number | Error {
  * `/api/projects` `recentTasks[]`, and `/api/snapshot` agents (which all key
  * by `taskId`). `id` stays for backwards compatibility.
  */
-type ApiTask = Task & { taskId: string; aggregateTokenUsage?: TokenUsage };
+type ApiTask = Task & { taskId: string; aggregateTokenUsage?: TokenUsage; stuckReason?: TaskStuckReason };
 
 /**
  * Attach the descendant-rolled-up token usage to a parent/batch task so a
@@ -564,6 +951,32 @@ function attachAggregateTokenUsage(task: ApiTask, store: TaskStore): ApiTask {
   if (!task.childTaskIds || task.childTaskIds.length === 0) return task;
   const aggregate = store.getAggregateTokenUsage(task.id);
   return aggregate ? { ...task, aggregateTokenUsage: aggregate } : task;
+}
+
+/**
+ * Attach the optional `stuckReason` field (issue #1526 Phase B) to an
+ * `inProgress` task — why it's occupying a capacity slot without doing
+ * visible work (awaiting the user's completion ack, watchdog-suspected hung,
+ * waiting on input, or permission-blocked). Additive-optional: omitted
+ * entirely for anything not `inProgress`, so existing consumers of this
+ * response shape are byte-identical when nothing is stuck.
+ */
+function attachStuckReason<
+  T extends { status: Task['status']; pendingSignal?: Task['pendingSignal']; sessions: Array<{ tmuxSession: string }> },
+>(
+  task: T,
+  deps: { queue?: Pick<AttentionQueue, 'peek'>; watchdog?: Pick<Watchdog, 'getState' | 'getConfig' | 'hasToolInProgress'> },
+  now: number,
+): T & { stuckReason?: TaskStuckReason } {
+  if (task.status !== 'inProgress') return task;
+  const { hungSuspect, queuedAnomalyType } = resolveTaskAttentionSignals(task, deps, now);
+  const stuckReason = deriveStuckReason({
+    status: task.status,
+    pendingSignal: task.pendingSignal,
+    hungSuspect,
+    anomalyType: queuedAnomalyType,
+  });
+  return stuckReason ? { ...task, stuckReason } : task;
 }
 
 /**
@@ -607,6 +1020,8 @@ type CompactApiTask = Pick<
   | 'blocked_by'
   | 'deliveryAuthorization'
   | 'autoCloseOnSignal'
+  | 'unattended'
+  | 'operatorNeeded'
   | 'tokenUsage'
   | 'pendingSignal'
   | 'issueClaim'
@@ -615,12 +1030,15 @@ type CompactApiTask = Pick<
   | 'updatedAt'
   | 'finishedAt'
   | 'terminatedAt'
+  | 'disposition'
 > & {
   /** Alias of `id`, mirroring the full `ApiTask` surface. */
   taskId: string;
   /** Descendant-rolled-up token usage on a parent/batch task (issue #1307). */
   aggregateTokenUsage?: TokenUsage;
   sessions: CompactApiTaskSession[];
+  /** Why an `inProgress` task is occupying a slot without visible work (issue #1526 Phase B). */
+  stuckReason?: TaskStuckReason;
 };
 
 /**
@@ -650,6 +1068,8 @@ function toCompactApiTask(task: Task, store: TaskStore): CompactApiTask {
     blocked_by: task.blocked_by,
     deliveryAuthorization: task.deliveryAuthorization,
     autoCloseOnSignal: task.autoCloseOnSignal,
+    unattended: task.unattended,
+    operatorNeeded: task.operatorNeeded,
     tokenUsage: task.tokenUsage,
     aggregateTokenUsage,
     pendingSignal: task.pendingSignal,
@@ -659,6 +1079,7 @@ function toCompactApiTask(task: Task, store: TaskStore): CompactApiTask {
     updatedAt: task.updatedAt,
     finishedAt: task.finishedAt,
     terminatedAt: task.terminatedAt,
+    disposition: task.disposition,
     sessions: task.sessions.map((session) => ({
       tmuxSession: session.tmuxSession,
       agentType: session.agentType,
@@ -670,6 +1091,80 @@ function toCompactApiTask(task: Task, store: TaskStore): CompactApiTask {
       relaunchCount: session.relaunchCount,
     })),
   };
+}
+
+/** Statuses accepted by the `status` list filter — the full TaskStatus union. */
+const TASK_LIST_STATUSES: ReadonlySet<string> = new Set([
+  'open', 'pending', 'inProgress', 'completed', 'terminated', 'cancelled',
+] satisfies TaskStatus[]);
+
+interface TaskListQuery {
+  limit?: number;
+  offset?: number;
+  status?: TaskStatus;
+  since?: Date;
+}
+
+/**
+ * Parse + validate the optional GET /api/tasks list-filter query params
+ * (issue #1526 Phase C / C2). Returns an Error (mapped to a 400 by the route)
+ * on any malformed value rather than silently ignoring it — a typo'd filter
+ * must not quietly return the full 20+ MB listing.
+ */
+export function parseTaskListQuery(raw: {
+  limit?: string;
+  offset?: string;
+  status?: string;
+  since?: string;
+}): TaskListQuery | Error {
+  const query: TaskListQuery = {};
+  if (raw.limit !== undefined) {
+    if (!/^\d+$/.test(raw.limit) || Number(raw.limit) < 1) {
+      return new Error('limit must be a positive integer');
+    }
+    query.limit = Number(raw.limit);
+  }
+  if (raw.offset !== undefined) {
+    if (!/^\d+$/.test(raw.offset)) {
+      return new Error('offset must be a non-negative integer');
+    }
+    query.offset = Number(raw.offset);
+  }
+  if (raw.status !== undefined) {
+    if (!TASK_LIST_STATUSES.has(raw.status)) {
+      return new Error(`status must be one of: ${[...TASK_LIST_STATUSES].join(', ')}`);
+    }
+    query.status = raw.status as TaskStatus;
+  }
+  if (raw.since !== undefined) {
+    const parsed = Date.parse(raw.since);
+    if (Number.isNaN(parsed)) {
+      return new Error('since must be an ISO 8601 date');
+    }
+    query.since = new Date(parsed);
+  }
+  return query;
+}
+
+/**
+ * Apply the `status` / `since` filters, preserving the store's listing order.
+ * Identity-preserving when no filter is set so the no-params response stays
+ * byte-identical to the historical full listing.
+ */
+export function filterTaskList(tasks: Task[], query: TaskListQuery): Task[] {
+  if (query.status === undefined && query.since === undefined) return tasks;
+  return tasks.filter((task) => {
+    if (query.status !== undefined && task.status !== query.status) return false;
+    if (query.since !== undefined && task.updatedAt.getTime() < query.since.getTime()) return false;
+    return true;
+  });
+}
+
+/** Apply `offset`/`limit` over the (filtered) listing order. */
+export function sliceTaskList(tasks: Task[], query: TaskListQuery): Task[] {
+  if (query.offset === undefined && query.limit === undefined) return tasks;
+  const start = query.offset ?? 0;
+  return tasks.slice(start, query.limit !== undefined ? start + query.limit : undefined);
 }
 
 function normalizeTaskForApi(task: Task): ApiTask {

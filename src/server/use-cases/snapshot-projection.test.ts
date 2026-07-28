@@ -169,6 +169,15 @@ describe('snapshot projection', () => {
       cwd: '/cwd',
       createdAt: new Date(),
     });
+    // This test exercises the projection's `promptTitle` fallback, which now
+    // only applies to legacy tasks with no name — tasks are named from birth
+    // (issue #1554) and named tasks short-circuit the fallback. Clear the
+    // creation-time placeholder to reach the fallback path.
+    for (const id of [long.id, huge.id]) {
+      const stored = taskStore.getTaskForMutation(id)!;
+      delete stored.name;
+      delete stored.autoNamed;
+    }
 
     const snapshot = project(taskStore, [liveAgent('agent-named'), liveAgent('agent-long'), liveAgent('agent-huge')]);
 
@@ -271,6 +280,49 @@ describe('snapshot projection', () => {
       playbookId: 'analyze.md',
       playbookParameterValues: { repo: 'owner/repo', count: '10' },
     });
+  });
+
+  // issue #1562: the unattended + operator-needed flags must cross the
+  // store→AgentState projection so the dashboard/tasks API can render the block.
+  it('projects unattended + operatorNeeded onto live and pending entries', () => {
+    const taskStore = new TaskStore();
+    const live = createTaskForMutation(taskStore, {
+      prompt: 'Autonomous work',
+      cwd: '/workspace/app',
+      unattended: true,
+    });
+    taskStore.addSession(live.id, {
+      tmuxSession: 'agent-unattended',
+      agentType: 'claude-code',
+      cwd: '/workspace/app',
+      createdAt: new Date('2026-07-28T10:00:00Z'),
+    });
+    taskStore.setOperatorNeeded(live.id, {
+      reason: 'interactive_tool_denied',
+      toolName: 'AskUserQuestion',
+      detectedAt: new Date('2026-07-28T10:05:00Z'),
+      message: 'blocked',
+    });
+
+    const pending = createTaskForMutation(taskStore, {
+      prompt: 'Pending autonomous work',
+      cwd: '/workspace/app',
+      unattended: true,
+    });
+    taskStore.pendTask(pending.id);
+
+    const snapshot = project(taskStore, [liveAgent('agent-unattended')]);
+
+    const liveEntry = snapshot.find((s) => s.agentId === 'agent-unattended');
+    expect(liveEntry?.unattended).toBe(true);
+    expect(liveEntry?.operatorNeeded).toMatchObject({
+      reason: 'interactive_tool_denied',
+      toolName: 'AskUserQuestion',
+    });
+
+    const pendingEntry = snapshot.find((s) => s.agentId === `pending-${pending.id}`);
+    expect(pendingEntry?.unattended).toBe(true);
+    expect(pendingEntry?.operatorNeeded).toBeUndefined();
   });
 
   it('replaces terminal live sessions with clean synthetic terminal entries', () => {

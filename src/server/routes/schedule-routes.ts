@@ -73,6 +73,8 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
       if (typeof body.maxTriggers === "number" || body.maxTriggers === null) patch.maxTriggers = body.maxTriggers;
       if (typeof body.cwd === "string") patch.cwd = body.cwd;
       if (typeof body.agentType === "string") patch.agentType = normalizeAgentSelection(body.agentType);
+      if (typeof body.effort === "string") patch.effort = body.effort;
+      if (typeof body.model === "string") patch.model = body.model;
       if (typeof body.playbook === "object" && body.playbook !== null && !Array.isArray(body.playbook)) {
         const playbook = body.playbook as { path?: unknown; parameters?: unknown; scope?: unknown };
         if (typeof playbook.path === "string") {

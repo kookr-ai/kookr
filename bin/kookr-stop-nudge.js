@@ -28,10 +28,14 @@ const DEFAULT_MIN_TASK_AGE_MS = 45_000;
 const KILL_MARKER = '/dev/shm/.kookr-nudge-disabled';
 
 const NUDGE_REASON =
-  'If you consider this Kookr task fully complete and ready to be closed, signal it now '
-  + 'by running `kookr signal completion-ready` (optionally with --note "..."). The user '
-  + 'will then review and complete it. If there is more to do — or this is just a turn '
-  + 'boundary, not the end of the task — simply continue or stop as you judge. '
+  'If you consider this Kookr task fully complete and ready to be closed: first emit a '
+  + 'post-task lesson decision in the Bash hook trail '
+  + '(`kb remember --kb=agent-task-lessons …` OR '
+  + '`printf \'No generic KB lesson: %s\\n\' \'<reason>\'`), then run '
+  + '`kookr signal completion-ready` (optionally with --note "..."). '
+  + 'Completion-ready is rejected without that decision (issue #1538). The user will then '
+  + 'review and complete it. If there is more to do — or this is just a turn boundary, '
+  + 'not the end of the task — simply continue or stop as you judge. '
   + 'This reminder fires at most once per task.';
 
 /** Exit 0 always. Optionally emit a block decision first. */
