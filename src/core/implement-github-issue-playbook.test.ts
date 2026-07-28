@@ -69,7 +69,9 @@ describe('implement-github-issue playbook', () => {
   test('Phase 0 skips non-automatable labels before implementation', () => {
     expect(pb.body).toContain('automation-blocked');
     expect(pb.body).toContain('question');
-    expect(pb.body).toMatch(/skip issues with labels.*automation-blocked.*question/i);
+    // `architecture` marks design-document issues (RFCs, decision docs) that are
+    // not one-PR implementation units — the selector must never auto-pick them (#1565).
+    expect(pb.body).toMatch(/skip issues with labels.*automation-blocked.*architecture.*question/i);
   });
 
   test('uses the deployed issue-claim API contract', () => {
