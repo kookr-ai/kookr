@@ -133,6 +133,28 @@ describe('validateSettings', () => {
     expect(result.completionReadyTtlMinutes).toBe(120);
     expect(result.hungTaskReapEnabled).toBe(true);
     expect(result.hungTaskReapMinutes).toBe(180);
+    expect(result.postMergeCleanupBudgetMinutes).toBe(10);
+  });
+
+  it('defaults postMergeCleanupBudgetMinutes to 10 (issue #1560)', () => {
+    expect(validateSettings({}).postMergeCleanupBudgetMinutes).toBe(10);
+    expect(DEFAULT_SETTINGS.postMergeCleanupBudgetMinutes).toBe(10);
+  });
+
+  it('accepts a valid postMergeCleanupBudgetMinutes', () => {
+    expect(validateSettings({ postMergeCleanupBudgetMinutes: 20 }).postMergeCleanupBudgetMinutes).toBe(20);
+  });
+
+  it('clamps postMergeCleanupBudgetMinutes below minimum to 1', () => {
+    expect(validateSettings({ postMergeCleanupBudgetMinutes: 0 }).postMergeCleanupBudgetMinutes).toBe(1);
+  });
+
+  it('clamps postMergeCleanupBudgetMinutes above maximum to 120', () => {
+    expect(validateSettings({ postMergeCleanupBudgetMinutes: 999 }).postMergeCleanupBudgetMinutes).toBe(120);
+  });
+
+  it('falls back to the default when postMergeCleanupBudgetMinutes is not a number', () => {
+    expect(validateSettings({ postMergeCleanupBudgetMinutes: 'soon' }).postMergeCleanupBudgetMinutes).toBe(10);
   });
 
   it('defaults completionReadyTtlMinutes to 120', () => {
@@ -443,6 +465,7 @@ describe('loadSettings / saveSettings', () => {
       pendingTaskTtlMinutes: 120,
       spawnBurstLimit: 60,
       spawnBurstWindowMinutes: 15,
+      postMergeCleanupBudgetMinutes: 15,
     };
     await saveSettings(filePath, settings);
     const result = await loadSettings(filePath);
