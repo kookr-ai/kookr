@@ -1,4 +1,4 @@
-import { readFile, stat } from 'node:fs/promises';
+import { open, stat } from 'node:fs/promises';
 import { statSync } from 'node:fs';
 import type { TokenUsage } from './types.js';
 import { resolvePricing, estimateCost } from './pricing-tables.js';
@@ -72,16 +72,22 @@ interface TokenTotals {
 interface TranscriptState {
   taskId: string;
   /**
-   * UTF-16 code-unit offset into the in-memory string representation of the
-   * file. Used by `scanOne` to slice off already-parsed content.
+   * Byte offset into the on-disk transcript up to which `scanOne` has parsed
+   * complete records. The incremental reader seeks here and reads only the
+   * newly-appended bytes, so a multi-MB transcript is never re-read in full
+   * on an unchanged tick (issue #1620 / #1371). Advanced only past a trailing
+   * newline so a mid-write partial line is re-read once it finishes rather
+   * than being split across scans.
    */
-  offset: number;
+  parseByteOffset: number;
   /**
-   * Byte offset into the on-disk transcript. Used by `scanGrowth` to detect
-   * file growth via `fs.stat` without re-reading. Tracked separately from
-   * `offset` because `fs.stat` returns bytes while JS string `.length` is
-   * UTF-16 code units — mixing them silently misfires on any non-ASCII byte
-   * (em-dashes, smart quotes, emoji are all common in transcripts).
+   * Last on-disk byte size observed by `scanOne`/`scanGrowth`. Used by
+   * `scanGrowth` to detect file growth via `fs.stat` without re-reading, and
+   * seeded to the file's current size at {@link TokenTracker.register} so
+   * pre-existing bytes are not reported as fresh growth on the first tick.
+   * Tracked in bytes (not JS-string code units) because `fs.stat` returns
+   * bytes and any non-ASCII content (em-dashes, smart quotes, emoji) would
+   * otherwise make the freshness probe misfire.
    */
   byteOffset: number;
   /** Usage is grouped by the model named on each assistant entry. */
@@ -183,6 +189,20 @@ export class TokenTracker {
   /** task id → transcript paths */
   private taskToTranscripts = new Map<string, Set<string>>();
 
+  /**
+   * Number of times {@link scanOne} has actually read bytes off disk. A
+   * stat-first no-op tick does NOT increment this. Exposed so tests can assert
+   * that an unchanged transcript is not re-read every 5s (issue #1620), and to
+   * feed the forthcoming `KOOKR_MEMORY_LEDGER` read-churn signal (#1612/#1621).
+   */
+  readCount = 0;
+  /**
+   * Cumulative count of characters decoded from incremental reads. This is the
+   * ledger's `cumulativeReadChars` signal: before this fix it grew by the whole
+   * file size on every tick; now it grows only by freshly-appended content.
+   */
+  cumulativeReadChars = 0;
+
   /** Register a transcript file for a task. */
   register(transcriptPath: string, taskId: string): void {
     if (this.transcripts.has(transcriptPath)) return;
@@ -194,7 +214,7 @@ export class TokenTracker {
     try { initialByteOffset = statSync(transcriptPath).size; } catch { /* file not created yet */ }
     this.transcripts.set(transcriptPath, {
       taskId,
-      offset: 0,
+      parseByteOffset: 0,
       byteOffset: initialByteOffset,
       tokenBuckets: new Map(),
       explicitCostUsd: 0,
@@ -225,6 +245,22 @@ export class TokenTracker {
     }
   }
 
+  /**
+   * Unregister every transcript belonging to a task. Called when a task reaches
+   * a terminal state so its transcripts — including subagent (sidechain)
+   * transcripts registered under the parent task id, which the per-session
+   * `unregister` path never touched — stop being re-scanned every 5s
+   * (issue #1620, change d). Idempotent: unknown task ids are a no-op.
+   */
+  unregisterTask(taskId: string): void {
+    const paths = this.taskToTranscripts.get(taskId);
+    if (!paths) return;
+    for (const path of paths) {
+      this.transcripts.delete(path);
+    }
+    this.taskToTranscripts.delete(taskId);
+  }
+
   /** Scan all registered transcripts for new cost data. */
   async scanAll(): Promise<void> {
     for (const [path, state] of this.transcripts) {
@@ -240,7 +276,7 @@ export class TokenTracker {
    * at message end, but bytes arrive continuously in the meantime.
    *
    * Call this BEFORE `scanAll` on the same tick so `scanAll` does not advance
-   * `state.offset` past the growth this probe is supposed to observe.
+   * `state.byteOffset` past the growth this probe is supposed to observe.
    */
   async scanGrowth(): Promise<TranscriptGrowth[]> {
     const growths: TranscriptGrowth[] = [];
@@ -347,24 +383,79 @@ export class TokenTracker {
   }
 
   private async scanOne(path: string, state: TranscriptState): Promise<void> {
-    let content: string;
+    let size: number;
     try {
-      content = await readFile(path, 'utf-8');
+      size = (await stat(path)).size;
     } catch {
       return; // File doesn't exist yet or is unreadable
     }
 
-    if (content.length <= state.offset) {
-      // Even when no new code units are present, keep byteOffset in sync with
-      // the file's actual byte size so the freshness probe doesn't double-fire
-      // on pure-ASCII no-op ticks.
-      state.byteOffset = Buffer.byteLength(content, 'utf-8');
+    // Stat-first guard (issue #1620, change b): when the file has not grown
+    // past what we already parsed, skip the read entirely. A full `readFile`
+    // of an unchanged multi-MB transcript on every 5s tick was the dominant
+    // RSS allocation-churn driver. Keep the freshness baseline in lockstep so
+    // scanGrowth doesn't re-fire on the unchanged file.
+    if (size === state.parseByteOffset) {
+      state.byteOffset = size;
       return;
     }
 
-    const newContent = content.slice(state.offset);
-    state.offset = content.length;
-    state.byteOffset = Buffer.byteLength(content, 'utf-8');
+    let start = state.parseByteOffset;
+    if (size < state.parseByteOffset) {
+      // Truncation / rotation: the file shrank below what we'd consumed. Re-read
+      // from the top and reconstruct this transcript's totals from scratch, so a
+      // rotated file (new content at the same path) is accounted cleanly instead
+      // of being *added* on top of the pre-truncation totals. Every parse-derived
+      // accumulator is reset — not just the byte offset and per-message
+      // bookkeeping — otherwise the surviving lines would double-count.
+      start = 0;
+      state.parseByteOffset = 0;
+      state.tokenBuckets.clear();
+      state.explicitCostUsd = 0;
+      state.totalCostUsd = null;
+      state.models.clear();
+      state.perMsgUsage.clear();
+      state.lastLegacySignature = null;
+    }
+
+    // Read only the appended bytes ([start, size)) from the byte offset, never
+    // the whole file (closes #1371's class). fs.read with an explicit position
+    // does not move a shared cursor, so concurrent scans stay correct.
+    let buffer: Buffer;
+    try {
+      const handle = await open(path, 'r');
+      try {
+        const length = size - start;
+        const buf = Buffer.allocUnsafe(length);
+        const { bytesRead } = await handle.read(buf, 0, length, start);
+        buffer = buf.subarray(0, bytesRead);
+      } finally {
+        await handle.close();
+      }
+    } catch {
+      return; // File vanished or became unreadable between stat and read.
+    }
+
+    // Only consume up to the final newline: a trailing partial line is a
+    // mid-write fragment that must not be split across scans. A newline byte
+    // (0x0A) is never a UTF-8 continuation byte, so cutting there is always a
+    // valid char boundary — decoding the consumed slice can't split a
+    // multi-byte character.
+    const lastNewline = buffer.lastIndexOf(0x0a);
+    if (lastNewline === -1) {
+      // No complete line yet — leave parseByteOffset unchanged so these bytes
+      // are re-read once the line finishes. Advance the freshness baseline.
+      state.byteOffset = size;
+      return;
+    }
+
+    const consumable = buffer.subarray(0, lastNewline + 1);
+    const newContent = consumable.toString('utf-8');
+    state.parseByteOffset = start + consumable.length;
+    state.byteOffset = size;
+
+    this.readCount += 1;
+    this.cumulativeReadChars += newContent.length;
 
     const lines = newContent.split('\n');
     for (const line of lines) {

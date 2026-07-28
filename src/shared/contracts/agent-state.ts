@@ -3,6 +3,7 @@ import type { AgentEvent } from './agent-events.js';
 import type { AgentActivityMeta } from './hook-events.js';
 import type { Anomaly, AnomalySeverity, FindingEvidenceAuditRecord } from './anomalies.js';
 import type { PendingAgentSignal } from './agent-signal.js';
+import type { OperatorNeeded } from './operator-needed.js';
 import type { TaskStuckReason } from './task-stuck-reason.js';
 import type { CompletionDigest } from './completion-digest.js';
 import type { LatestCompletionSignal } from './completion-signal.js';
@@ -107,6 +108,19 @@ export interface AgentState {
    * raw Monitor AgentState never carries it. Absent when no signal is raised.
    */
   pendingSignal?: PendingAgentSignal;
+  /**
+   * True when this task was launched unattended/autonomous (issue #1562),
+   * projected from the task record so the dashboard can label the task and
+   * contextualize the operator-needed flag below. Absent ⇒ attended.
+   */
+  unattended?: boolean;
+  /**
+   * Set when an unattended agent's interactive-tool call was denied (issue
+   * #1562), projected from the task record. Drives the dashboard operator-needed
+   * banner so the block is visible instead of an open-ended hang. Absent when
+   * no interactive call has been denied.
+   */
+  operatorNeeded?: OperatorNeeded;
   /**
    * Why an `inProgress` task is occupying a capacity slot without visible work
    * (issue #1526 Phase B / FM9) — awaiting the user's completion ack,

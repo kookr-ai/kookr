@@ -896,6 +896,10 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
   // agent is actually idle (completed_turn) so a signal raised mid-work never
   // invites premature completion.
   const pendingSignal = agent.pendingSignal;
+  // Operator-needed flag (issue #1562): an unattended agent tried a denied
+  // interactive tool. Surfaced as a header badge + banner so the block is
+  // visible instead of the agent hanging on an unanswerable prompt.
+  const operatorNeeded = agent.operatorNeeded;
   const hasDerivedCompletionSignal = !!agent.latestCompletionSignal && isCompletedTurn;
   const showSignalBanner = (!!pendingSignal || hasDerivedCompletionSignal)
     && agent.taskStatus !== 'pending'
@@ -967,6 +971,15 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
             </span>
           )}
           {agent.anomaly && <span className={`detail-badge ${badgeClass}`}>{badgeLabel}</span>}
+          {operatorNeeded && (
+            <span
+              className="detail-badge permission"
+              title={operatorNeeded.message}
+              data-testid="task-operator-needed-badge"
+            >
+              Operator needed
+            </span>
+          )}
         </div>
         <div className="detail-header-right">
           <TaskIdCopyButton taskId={agent.taskId} />
@@ -1064,6 +1077,18 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
               Dismiss
             </button>
           )}
+        </div>
+      )}
+      {operatorNeeded && (
+        <div
+          className="detail-signal-banner detail-signal-banner--attention"
+          role="status"
+          aria-live="polite"
+          data-testid="agent-operator-needed-banner"
+        >
+          <span className="detail-signal-banner__text">
+            <strong>Operator needed:</strong> {operatorNeeded.message}
+          </span>
         </div>
       )}
       {agent.anomaly?.transcriptContext?.lastAssistantMessage && (

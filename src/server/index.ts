@@ -16,6 +16,8 @@ import { wireEventPipeline } from './event-pipeline.js';
 import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
 import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
+import type { Task } from '../core/tasks.js';
+import { selectDeliveredMergedPr, type MergedPrAttribution } from '../core/delivered-task-completion.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
 import { buildCapacityLedger } from '../core/capacity-ledger.js';
 import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
@@ -36,6 +38,7 @@ import {
 } from './startup-recovery.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
 import { createSnapshotMessage, getSnapshotAgentsForClient } from './use-cases/get-snapshot.js';
+import { collectBootTranscriptRegistrations } from './boot-transcript-registration.js';
 import { sweepReflectWorktrees } from './use-cases/request-task-reflect.js';
 import { startBackgroundServices } from './bootstrap/start-background-services.js';
 import {
@@ -48,6 +51,7 @@ import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';
 import { isTerminalStatus } from '../core/task-status.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
+import { createMemoryLedger, readMemoryLedgerConfigFromEnv } from './memory-ledger.js';
 import {
   createResourceStatusService,
   type ResourceStatusSampler,
@@ -383,6 +387,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Live getters for the hung-task reaper (issue #1526 Phase A / FM6).
   const getHungTaskReapEnabled = () => currentSettings.hungTaskReapEnabled;
   const getHungTaskReapMs = () => currentSettings.hungTaskReapMinutes * 60_000;
+  // Live getter for the post-merge cleanup budget (issue #1560). Same
+  // live-binding pattern — applies on the next liveness tick.
+  const getPostMergeCleanupBudgetMs = () => currentSettings.postMergeCleanupBudgetMinutes * 60_000;
   // Live getter for the adapter-launch hard timeout (issue #1526 Phase C /
   // #1528). Same live-binding pattern — applies to the next launch.
   const getLaunchTimeoutMs = () => currentSettings.launchTimeoutSeconds * 1000;
@@ -673,6 +680,23 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getGithubRefOpenState: (ref) => githubStateStore.isRefOpen(ref),
     setTrackedGithubRepos: (repos) => githubScanner.setTrackedGithubRepos(repos),
   });
+
+  // Delivery attribution for the delivered-completion sweep (issue #1560): the
+  // task's own merged PR. `selectDeliveredMergedPr` excludes PRs merely
+  // referenced in the task prompt (`detectedFrom === 'prompt'`) so a live task
+  // that mentions an already-merged PR is never force-completed — only PRs
+  // discovered from the agent's own activity count as delivery.
+  const resolveMergedPr = (task: Task): MergedPrAttribution | null =>
+    selectDeliveredMergedPr(
+      githubStateStore.getTaskState(task.id).prs.map((pr) => ({
+        status: pr.status,
+        number: pr.ref.number,
+        url: pr.ref.url,
+        owner: pr.ref.owner,
+        repo: pr.ref.repo,
+        detectedFrom: pr.ref.detectedFrom,
+      })),
+    );
   broadcastProjectSummariesRef = broadcastProjectSummaries;
 
   // Load persisted tasks
@@ -801,13 +825,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
   realtime.setCoordinatorAuditTailProvider(hookIngestion);
 
-  // Register transcripts for resumed sessions so token tracker picks up existing data
-  for (const task of taskStore.getAllTasks()) {
-    for (const session of task.sessions) {
-      if (session.transcriptPath) {
-        tokenTracker.register(session.transcriptPath, task.id);
-      }
-    }
+  // Register transcripts for resumed sessions so token tracker picks up existing
+  // data. Filtered to non-terminal Claude Code sessions (issue #1620, change a):
+  // terminal tasks never grow again, and non-Claude rollout files are metered
+  // elsewhere — registering them was the dominant RSS allocation-churn driver.
+  for (const { transcriptPath, taskId } of collectBootTranscriptRegistrations(taskStore.getAllTasks())) {
+    tokenTracker.register(transcriptPath, taskId);
   }
 
   // Late-bound R16 block-alert callback. The Telegram integration is started
@@ -1488,6 +1511,23 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     intervalMs: resourceStatusIntervalMs,
   });
 
+  // Periodic memory ledger (issue #1612). Opt-in (KOOKR_MEMORY_LEDGER=1) so it
+  // costs nothing by default; when enabled it logs a structured `[mem-ledger]`
+  // line with process memory plus per-subsystem retention counts, letting a
+  // soak bisect the dominant RSS retainer with evidence rather than a guess.
+  const memoryLedgerConfig = readMemoryLedgerConfigFromEnv();
+  const memoryLedger = createMemoryLedger({
+    intervalMs: memoryLedgerConfig.intervalMs,
+    collectSubsystems: () => ({
+      monitor: monitor.getRetentionMetrics(),
+      hookIngestion: hookIngestion.getRetentionMetrics(),
+      hookWatcher: hookWatcher.getRetentionMetrics(),
+    }),
+  });
+  if (memoryLedgerConfig.enabled) {
+    memoryLedger.start();
+  }
+
   // Lesson-write spool recovery + prolonged KB degradation alert (issue #1519).
   // Spool lives under ~/.kookr/playbook-state (user-scoped, not per-port dataDir)
   // so lessons survive across prod/dev instances on the same host.
@@ -1627,6 +1667,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       quotaAdapter, getMaxActiveTasks, getAutoCloseCompletionReadyDelayMs, suppressionTracker,
       getCompletionReadyTtlMs,
       getPendingTaskTtlMs,
+      getPostMergeCleanupBudgetMs,
+      resolveMergedPr,
+      signalOutboxSpoolDir: defaultSignalOutboxDir(process.env),
       auditLogPath: join(kookrDir, 'audit.jsonl'),
       reportsDir: join(kookrDir, 'reports'),
       getHungTaskReapEnabled, getHungTaskReapMs,
@@ -1769,6 +1812,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
     lessonSpoolService.stop();
     signalOutboxService.stop();
+    memoryLedger.stop();
     await backgroundServices.stop();
     try {
       await taskStateSaveScheduler.close();

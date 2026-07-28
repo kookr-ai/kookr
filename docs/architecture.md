@@ -514,7 +514,11 @@ kookr/
 │   │
 │   ├── adapters/                          # I/O boundaries (ports-and-adapters pattern)
 │   │   ├── terminal-backend.ts            # TerminalBackend interface (dtach-only post-V8)
-│   │   ├── local-dtach-backend.ts         # Real dtach-backed TerminalBackend
+│   │   ├── local-dtach-backend.ts         # TerminalBackend façade (lifecycle + wiring)
+│   │   ├── local-dtach-shared.ts          # Dtach constants, types, buildDtachSpawn
+│   │   ├── local-dtach-process-identity.ts # Master/agent pid + ownership checks
+│   │   ├── local-dtach-stream.ts          # Attach / ring / write path
+│   │   ├── local-dtach-recovery.ts        # Startup recovery + reconnect transport
 │   │   ├── fake-terminal-backend.ts       # In-memory fake for tests
 │   │   ├── keystroke.ts                   # Keystroke encoding helpers for terminal input
 │   │   ├── agent-adapter.ts               # Common AgentAdapter interface
