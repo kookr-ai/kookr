@@ -1765,6 +1765,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         kookrRepoPath: serverCwd,
         getRunningSha: () => (buildInfo.commitHash && buildInfo.commitHash !== 'dev' ? buildInfo.commitHash : null),
         broadcast: broadcastToAll,
+        // On a converged tick, flip the per-schedule ROI rollup's live-verified
+        // counts for every merged unit the deployed SHA contains (issue #1596).
+        // The detector resolves containment via git ancestry; the store owns the
+        // ledgers and records the flip with no manual bookkeeping step.
+        onDeployVerified: (deployedSha, isContained) =>
+          scheduleStore.recordDeployVerification(deployedSha, isContained),
       }),
     },
   });

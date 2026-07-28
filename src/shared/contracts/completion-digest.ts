@@ -5,6 +5,14 @@ export interface CompletionDigest {
   branch?: string;
   commits?: string[];
   prUrls?: string[];
+  /**
+   * Merge commit SHA of the task's delivered PR, when it merged (issue #1596).
+   * Distinct from `commits` (the branch's own commits): this is the commit on
+   * the base branch, the containment key the per-schedule ROI rollup tests
+   * against the last smoke-gate-passed prod SHA to tell `merged` from
+   * `live-verified` delivery.
+   */
+  mergeCommit?: string;
   verificationCommands?: string[];
   tokenUsage?: CompletionTokenUsage;
   /** Advisory LLM-assisted check of user-provided completion criteria. */
