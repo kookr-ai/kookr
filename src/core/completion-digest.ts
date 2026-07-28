@@ -18,6 +18,12 @@ export interface CompletionDigest {
   commits?: string[];
   /** Pull request URL(s) created or updated by the task, when available. */
   prUrls?: string[];
+  /**
+   * Merge commit SHA of the task's delivered PR, when it merged (issue #1596).
+   * The containment key the per-schedule ROI rollup tests against the last
+   * smoke-gate-passed prod SHA to distinguish `merged` from `live-verified`.
+   */
+  mergeCommit?: string;
   /** Verification commands the agent ran, preserved for later review. */
   verificationCommands?: string[];
   /** Token/cost closeout, including explicit unavailable states. */
