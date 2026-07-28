@@ -1,6 +1,13 @@
 import { describe, test, expect, vi, afterEach } from 'vitest';
-import { deterministicTaskName, generateTaskName } from './task-naming.js';
+import { deterministicTaskName, extractEmbeddedTaskName, generateTaskName } from './task-naming.js';
 import type { LlmClient, LlmCompletionDetail, LlmCompletionRequest } from './llm-client.js';
+import {
+  GUARDRAIL_PREFIXED_USER_PROMPT,
+  GUARDRAIL_PREFIXED_USER_PROMPT_BODY,
+  JSON_SPAWN_PAYLOAD_EMBEDDED_NAME,
+  JSON_SPAWN_PAYLOAD_PROMPT,
+  JSON_SPAWN_PAYLOAD_PROMPT_NO_NAME,
+} from './__fixtures__/prompt-intake-fixtures.js';
 
 function mockClient(responseText: string | null): LlmClient {
   return {
@@ -260,5 +267,69 @@ describe('deterministicTaskName (issue #1526 Phase C4 — no task is ever unname
   test('falls back to the cwd basename for a blank prompt, and is never empty', () => {
     expect(deterministicTaskName('   \n\t\n', '/srv/checkouts/kookr')).toBe('Task in kookr');
     expect(deterministicTaskName('')).toBe('Unnamed task');
+  });
+
+  // Issue #1556: junk first lines (JSON payload braces, guardrail preamble)
+  // must never become the name.
+  test('skips a JSON payload opening brace instead of naming the task "{"', () => {
+    const name = deterministicTaskName(JSON_SPAWN_PAYLOAD_PROMPT, '/p');
+    expect(name).not.toBe('{');
+    expect(name.startsWith('{')).toBe(false);
+    // Falls through to the first line with real content (a JSON key line).
+    expect(name).toContain('prompt');
+  });
+
+  test('never produces a brace/bracket-only name for a JSON-shaped prompt without a name', () => {
+    expect(deterministicTaskName(JSON_SPAWN_PAYLOAD_PROMPT_NO_NAME, '/p'))
+      .not.toMatch(/^[{}[\]()\s,:]+$/);
+    // Degenerate empty object/array: no meaningful line at all → cwd fallback.
+    expect(deterministicTaskName('{}', '/srv/checkouts/kookr')).toBe('Task in kookr');
+    expect(deterministicTaskName('[\n]', '/srv/checkouts/kookr')).toBe('Task in kookr');
+  });
+
+  test('names a guardrail-prefixed prompt from its body, not the preamble', () => {
+    const name = deterministicTaskName(GUARDRAIL_PREFIXED_USER_PROMPT, '/p');
+    expect(name).toBe(GUARDRAIL_PREFIXED_USER_PROMPT_BODY);
+    expect(name.startsWith('You are currently in')).toBe(false);
+  });
+});
+
+describe('extractEmbeddedTaskName (issue #1556 — JSON spawn payload pasted as prompt)', () => {
+  test('lifts the embedded name from a real spawn-payload prompt', () => {
+    expect(extractEmbeddedTaskName(JSON_SPAWN_PAYLOAD_PROMPT))
+      .toBe(JSON_SPAWN_PAYLOAD_EMBEDDED_NAME);
+  });
+
+  test('returns undefined for a JSON payload without a name field', () => {
+    expect(extractEmbeddedTaskName(JSON_SPAWN_PAYLOAD_PROMPT_NO_NAME)).toBeUndefined();
+  });
+
+  test('returns undefined for ordinary prose and markdown prompts', () => {
+    expect(extractEmbeddedTaskName('Fix the auth bug')).toBeUndefined();
+    expect(extractEmbeddedTaskName('## Heading\n\nDo the thing')).toBeUndefined();
+  });
+
+  test('returns undefined for a non-string or blank embedded name', () => {
+    expect(extractEmbeddedTaskName('{"name": 42}')).toBeUndefined();
+    expect(extractEmbeddedTaskName('{"name": "   "}')).toBeUndefined();
+    expect(extractEmbeddedTaskName('{"name": null}')).toBeUndefined();
+  });
+
+  test('returns undefined for malformed JSON', () => {
+    expect(extractEmbeddedTaskName('{"name": "unterminated')).toBeUndefined();
+  });
+
+  test('collapses internal whitespace in the embedded name', () => {
+    // The name value carries a JSON-escaped newline (\\n → a real newline once
+    // parsed), which must collapse to a single space.
+    expect(extractEmbeddedTaskName('{"name": "Fix   the\\n  auth bug"}')).toBe('Fix the auth bug');
+  });
+
+  test('truncates an over-long embedded name to the 80-char cap with an ellipsis', () => {
+    const name = extractEmbeddedTaskName(`{"name": "Audit ${'x'.repeat(200)}"}`);
+    expect(name).toBeDefined();
+    expect(name!.length).toBeLessThanOrEqual(80);
+    expect(name!.endsWith('…')).toBe(true);
+    expect(name!.startsWith('Audit')).toBe(true);
   });
 });
