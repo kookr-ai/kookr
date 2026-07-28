@@ -77,6 +77,8 @@ describe('Settings API', () => {
       pendingTaskTtlMinutes: 240,
       spawnBurstLimit: 30,
       spawnBurstWindowMinutes: 10,
+      reservedActiveSlots: 2,
+      reservedSlotSources: ['kookr'],
       postMergeCleanupBudgetMinutes: 10,
       loadedFromDefaults: true,
       warnings: [],

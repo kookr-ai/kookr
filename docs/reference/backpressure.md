@@ -24,6 +24,8 @@ without a restart. The section 5 thresholds are environment variables
 | `pendingTaskTtlMinutes` | 240 | 15–2880 | Max time a task may starve in `pending` |
 | `spawnBurstLimit` | 30 | 5–500 | Per-source creations per window |
 | `spawnBurstWindowMinutes` | 10 | 1–120 | Sliding window for `spawnBurstLimit` |
+| `reservedActiveSlots` | 2 | 0–12 | Active slots reserved for privileged sources |
+| `reservedSlotSources` | `['kookr']` | list | Sources/actors that may consume reserved slots |
 
 ## 1. Pending-queue depth limit (`maxPendingTasks`)
 
@@ -104,6 +106,43 @@ budget (they create nothing).
 
 The limiter is in-memory; a restart resets every window (errs toward
 accepting work, same trade as launch reservations).
+
+## 3a. Reserved self-maintenance slots (`reservedActiveSlots`, issue #1564)
+
+Capacity — not architecture — is the binding constraint on kookr self-drain:
+`maxActiveTasks` was saturated by ~30 ad-hoc parent-spawned lucy tasks on
+2026-07-26, and the last "Lucy parallel issue batch" run ended
+`skipped_capacity`. Sections 1–3 bound how *fast* and how *much* any one source
+can create; they do not guarantee that kookr self-maintenance can ever get a
+slot when another source is at capacity. This reservation does.
+
+`reservedActiveSlots` (default **2**, range 0–12) is the number of
+`maxActiveTasks` slots held back for **privileged** launch sources. A launch is
+privileged when its `launchSource` **or** its attributed `launchActorId`
+(the `X-Kookr-Actor` header) matches an entry in `reservedSlotSources` (default
+`['kookr']`, so kookr self-maintenance batches attribute as actor `kookr`).
+
+- A **privileged** launch (e.g. actor `kookr`) is admitted while
+  `active < maxActiveTasks` — it can consume the reserved slots.
+- A **non-privileged** launch (e.g. a lucy burst) is admitted only while
+  `active < maxActiveTasks - reservedActiveSlots`; at or above that it **pends**
+  through the normal at-capacity path instead of taking a reserved slot.
+
+So even when a lucy burst has saturated its share, `reservedActiveSlots` slots
+remain available and a kookr batch spawn still launches immediately.
+
+The reservation is **observable** in the `GET /api/health` capacity ledger,
+which gains four fields whenever a reservation is configured:
+`reservedActiveSlots`, `reservedSlotSources`, `freeForReservedSources`
+(= `free`, the whole pool), and `freeForGeneralSources`
+(`maxActiveTasks - reservedActiveSlots - active`, floored at 0). When
+`freeForGeneralSources` hits 0 while `freeForReservedSources` is still positive,
+the reservation is actively protecting kookr headroom. The same block rides
+along on the `capacity` snapshot in `pending_queue_full` / `spawn_burst_limit`
+429 bodies. Setting `reservedActiveSlots: 0` disables the reservation (all
+sources share the full pool, prior behavior). The effective reservation is
+additionally clamped to `maxActiveTasks` at read time, so it can never exceed
+the pool.
 
 ## 4. Promotion posture guard (anti-re-wedge, FM11)
 

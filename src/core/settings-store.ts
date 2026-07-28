@@ -181,6 +181,29 @@ export interface KookrSettings {
   /** Sliding-window size (minutes) for {@link spawnBurstLimit}. */
   spawnBurstWindowMinutes: number;
   /**
+   * Reserved self-maintenance capacity (issue #1564). Number of
+   * {@link maxActiveTasks} concurrency slots held back for privileged
+   * launch sources listed in {@link reservedSlotSources}. A launch whose
+   * source/actor is NOT privileged is admitted only while the active count is
+   * below `maxActiveTasks - reservedActiveSlots`; at or above that it pends
+   * instead of consuming a reserved slot. Privileged launches use the full
+   * `maxActiveTasks`, so `reservedActiveSlots` slots are always available for
+   * kookr self-maintenance even when a lucy-style burst has saturated the rest.
+   * Read via a live getter, so a settings change applies to the next launch.
+   * Clamped to 0..12; 0 disables the reservation.
+   */
+  reservedActiveSlots: number;
+  /**
+   * Launch source / actor identifiers privileged to consume the
+   * {@link reservedActiveSlots} reserved slots (issue #1564). A launch is
+   * privileged when its `launchSource` OR its attributed `launchActorId`
+   * (the `X-Kookr-Actor` header) matches an entry here. Default `['kookr']`:
+   * kookr self-maintenance batches attribute themselves as actor `kookr`, so
+   * they keep the reservation while anonymous/lucy bursts do not. Entries are
+   * trimmed; empty/blank entries and non-string values are dropped.
+   */
+  reservedSlotSources: string[];
+  /**
    * Post-merge cleanup budget (minutes), issue #1560. A running task whose PR
    * has merged but whose post-merge cleanup tail (branch-delete push, CI-rerun
    * loops, waiting on input) drags on is auto-completed once this budget —
@@ -218,6 +241,8 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   pendingTaskTtlMinutes: 240,
   spawnBurstLimit: 30,
   spawnBurstWindowMinutes: 10,
+  reservedActiveSlots: 2,
+  reservedSlotSources: ['kookr'],
   postMergeCleanupBudgetMinutes: 10,
 };
 
@@ -274,6 +299,16 @@ const MIN_SPAWN_BURST_LIMIT = 5;
 const MAX_SPAWN_BURST_LIMIT = 500;
 const MIN_SPAWN_BURST_WINDOW_MIN = 1;
 const MAX_SPAWN_BURST_WINDOW_MIN = 120;
+// Reserved self-maintenance slot bounds (issue #1564). Floor of 0 disables the
+// reservation; ceiling of 12 keeps a fat-fingered value from swallowing an
+// entire realistic `maxActiveTasks` (capped at 25) and starving general work.
+// The launch admission path additionally clamps the effective reservation to
+// `maxActiveTasks` at read time, so a reservation can never exceed the pool.
+const MIN_RESERVED_ACTIVE_SLOTS = 0;
+const MAX_RESERVED_ACTIVE_SLOTS = 12;
+// Cap on the number of privileged reserved-slot source identifiers, mirroring
+// the defensive bounds on other operator-supplied lists (e.g. reply snippets).
+const MAX_RESERVED_SLOT_SOURCES = 20;
 // Post-merge cleanup budget bounds (minutes), issue #1560. Floor of 1 keeps a
 // minimum tail window (a merged PR's branch-delete push + snapshot settle);
 // ceiling of 120 (2h) stays comfortably below the hung-task reaper's 180m
@@ -392,6 +427,24 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     );
   }
 
+  let reservedActiveSlots = DEFAULT_SETTINGS.reservedActiveSlots;
+  if (typeof raw.reservedActiveSlots === 'number' && Number.isFinite(raw.reservedActiveSlots)) {
+    reservedActiveSlots = Math.max(
+      MIN_RESERVED_ACTIVE_SLOTS,
+      Math.min(MAX_RESERVED_ACTIVE_SLOTS, Math.round(raw.reservedActiveSlots)),
+    );
+  }
+
+  let reservedSlotSources = DEFAULT_SETTINGS.reservedSlotSources;
+  if (Array.isArray(raw.reservedSlotSources)) {
+    const cleaned = raw.reservedSlotSources
+      .filter((entry): entry is string => typeof entry === 'string')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+    // De-duplicate (order-preserving) and cap the list length.
+    reservedSlotSources = [...new Set(cleaned)].slice(0, MAX_RESERVED_SLOT_SOURCES);
+  }
+
   let postMergeCleanupBudgetMinutes = DEFAULT_SETTINGS.postMergeCleanupBudgetMinutes;
   if (typeof raw.postMergeCleanupBudgetMinutes === 'number' && Number.isFinite(raw.postMergeCleanupBudgetMinutes)) {
     postMergeCleanupBudgetMinutes = Math.max(
@@ -481,6 +534,8 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       pendingTaskTtlMinutes,
       spawnBurstLimit,
       spawnBurstWindowMinutes,
+      reservedActiveSlots,
+      reservedSlotSources,
       postMergeCleanupBudgetMinutes,
     },
   };

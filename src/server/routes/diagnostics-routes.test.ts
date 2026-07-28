@@ -855,6 +855,46 @@ describe('diagnostics routes', () => {
       expect(body.capacity.oldestPendingAgeMs).toBeNull();
       expect(body.capacity.oldestFinishedAwaitingAckAgeMs).toBeNull();
     });
+
+    test('surfaces the reserved self-maintenance reservation when settings are wired (issue #1564)', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getMaxActiveTasks: () => 10,
+        settings: {
+          get: () => ({ reservedActiveSlots: 3, reservedSlotSources: ['kookr'] } as never),
+          getLoadedFromDefaults: () => false,
+          update: async () => [],
+        },
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        capacity: {
+          maxActiveTasks: number;
+          reservedActiveSlots?: number;
+          reservedSlotSources?: string[];
+          freeForReservedSources?: number;
+          freeForGeneralSources?: number;
+        };
+      };
+      expect(body.capacity.reservedActiveSlots).toBe(3);
+      expect(body.capacity.reservedSlotSources).toEqual(['kookr']);
+      // Idle store: reserved sources see the whole pool, general sources see it minus the reservation.
+      expect(body.capacity.freeForReservedSources).toBe(10);
+      expect(body.capacity.freeForGeneralSources).toBe(7);
+    });
+
+    test('omits the reservation block when settings are not wired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      const body = await res.json() as { capacity: { reservedActiveSlots?: number } };
+      expect(body.capacity.reservedActiveSlots).toBeUndefined();
+    });
   });
 
   // ---------------------------------------------------------------------------

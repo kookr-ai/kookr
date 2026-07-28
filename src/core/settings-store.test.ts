@@ -251,6 +251,29 @@ describe('validateSettings', () => {
     expect(validateSettings({ spawnBurstWindowMinutes: false }).spawnBurstWindowMinutes).toBe(10);
   });
 
+  it('defaults reservedActiveSlots to 2 and clamps to the 0–12 range (issue #1564)', () => {
+    expect(validateSettings({}).reservedActiveSlots).toBe(2);
+    expect(DEFAULT_SETTINGS.reservedActiveSlots).toBe(2);
+    expect(validateSettings({ reservedActiveSlots: 3 }).reservedActiveSlots).toBe(3);
+    expect(validateSettings({ reservedActiveSlots: -5 }).reservedActiveSlots).toBe(0);
+    expect(validateSettings({ reservedActiveSlots: 9_999 }).reservedActiveSlots).toBe(12);
+    expect(validateSettings({ reservedActiveSlots: 2.6 }).reservedActiveSlots).toBe(3);
+    expect(validateSettings({ reservedActiveSlots: null }).reservedActiveSlots).toBe(2);
+  });
+
+  it("defaults reservedSlotSources to ['kookr'] and cleans the list (issue #1564)", () => {
+    expect(validateSettings({}).reservedSlotSources).toEqual(['kookr']);
+    expect(DEFAULT_SETTINGS.reservedSlotSources).toEqual(['kookr']);
+    // Trims, drops blanks/non-strings, and de-duplicates order-preserving.
+    expect(
+      validateSettings({ reservedSlotSources: [' kookr ', '', 'ops', 'kookr', 42, null] }).reservedSlotSources,
+    ).toEqual(['kookr', 'ops']);
+    // A non-array falls back to the default.
+    expect(validateSettings({ reservedSlotSources: 'kookr' }).reservedSlotSources).toEqual(['kookr']);
+    // An explicit empty array is honored (reservation held from everyone).
+    expect(validateSettings({ reservedSlotSources: [] }).reservedSlotSources).toEqual([]);
+  });
+
   it('defaults replySnippets to an empty list', () => {
     expect(validateSettings({}).replySnippets).toEqual([]);
     expect(DEFAULT_SETTINGS.replySnippets).toEqual([]);
@@ -465,6 +488,8 @@ describe('loadSettings / saveSettings', () => {
       pendingTaskTtlMinutes: 120,
       spawnBurstLimit: 60,
       spawnBurstWindowMinutes: 15,
+      reservedActiveSlots: 3,
+      reservedSlotSources: ['kookr', 'ops'],
       postMergeCleanupBudgetMinutes: 15,
     };
     await saveSettings(filePath, settings);
