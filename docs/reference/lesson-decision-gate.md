@@ -65,7 +65,7 @@ path for managed agents.
 
 | Surface | Window | Notes |
 |---------|--------|-------|
-| `GET /api/diagnostics/lesson-yield?days=N` | 1–30 days (default 1) | Full snapshot; single-flight per window with a 30s hard scan timeout (503 `lesson_yield_scan_timeout` on expiry); warms the health cache when `days=1` (issue #1553) |
+| `GET /api/diagnostics/lesson-yield?days=N` | 1–30 days (default 1) | Full snapshot, cache-first / stale-while-revalidate per window: a fresh or stale snapshot returns immediately while a single-flight refresh runs; a cold cache waits at most ~8s, then returns `503 lesson_yield_warming` (with `retryAfterMs`) while the bounded scan finishes in the background — the request path never hangs. Every completed scan warms the shared per-window cache. `503 lesson_yield_scan_timeout` only if a scan hits the 30s bound within that wait (issues #1553, #1585) |
 | `GET /api/health` → `lessonYield` | last 24h | Stale-while-revalidate (issue #1553): the request path never scans hook logs — it serves the last background snapshot (60s TTL triggers a bounded background refresh; staleness visible via `generatedAt`). Absent until the first background scan completes. |
 | `kookr lesson yield [--days N] [--json]` | 1–30 days | Offline operator CLI; reads `~/.kookr/tasks.json` + hooks |
 | `pnpm kb:usage --days N` | existing report | Still has the per-task decision breakdown |
