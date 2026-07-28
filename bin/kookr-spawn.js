@@ -22,6 +22,17 @@ const RETRY_DELAY_MS = 3000;
 const DEFAULT_RETRIES = 3;
 const MAX_RETRIES = 10;
 const POST_TIMEOUT_MS = 10_000;
+// #1591: ambiguous-outcome reconciliation. A POST that times out (client abort
+// at POST_TIMEOUT_MS) or returns a 5xx leaves the task's existence unknown — it
+// may or may not have been created. When an idempotency key is in play a re-POST
+// with the SAME key is safe: the server ledger replays the earlier task if it was
+// created, or launches fresh if it was not (see docs/reference/spawn-contract.md).
+// So the client reconciles by re-POSTing with backoff instead of exiting
+// ambiguous. 429 backpressure is a definitive, task-not-created rejection and is
+// surfaced to the operator rather than silently retried.
+const RECONCILE_MAX_RETRIES = 2;
+const RECONCILE_BASE_DELAY_MS = 500;
+const RECONCILE_MAX_DELAY_MS = 8_000;
 const WAIT_READ_TIMEOUT_MS = 2_000;
 const WAIT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_MAX_PROMPT_BYTES = 1024 * 1024;
@@ -572,6 +583,52 @@ function apiAuthHeaders(env = process.env) {
 
 // ---------- HTTP POST ----------
 
+/**
+ * A 5xx leaves the task's existence ambiguous (the server may have created it
+ * before the failure), so it is reconcilable via an idempotent re-POST. 429
+ * (backpressure) and 4xx (client error) are definitive — the task was NOT
+ * created — so they are not reconciled here.
+ */
+function isReconcilableStatus(status) {
+  return typeof status === 'number' && status >= 500 && status <= 599;
+}
+
+/**
+ * Extract a retry hint (ms) from a server response so the reconcile loop can
+ * honor `Retry-After`. Prefers explicit body fields (`retryAfterMs` from the
+ * burst-limit shape, `retryAfterSeconds` from the 503 saturation shape) and
+ * falls back to the numeric `Retry-After` header (seconds). Returns null when
+ * no usable hint is present. See docs/reference/spawn-contract.md.
+ */
+function parseRetryAfterMs(headerValue, body) {
+  const bodyMs = body?.retryAfterMs;
+  if (typeof bodyMs === 'number' && Number.isFinite(bodyMs) && bodyMs > 0) {
+    return Math.ceil(bodyMs);
+  }
+  const bodySec = body?.retryAfterSeconds;
+  if (typeof bodySec === 'number' && Number.isFinite(bodySec) && bodySec > 0) {
+    return Math.ceil(bodySec * 1000);
+  }
+  if (typeof headerValue === 'string' && headerValue.trim() !== '') {
+    const secs = Number(headerValue.trim());
+    if (Number.isFinite(secs) && secs >= 0) return Math.ceil(secs * 1000);
+  }
+  return null;
+}
+
+/**
+ * Delay before the next reconcile re-POST: honor an explicit `Retry-After`
+ * hint when the server gave one, otherwise exponential backoff, both capped at
+ * RECONCILE_MAX_DELAY_MS.
+ */
+function reconcileDelayMs(attempt, retryAfterMs) {
+  if (typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+    return Math.min(RECONCILE_MAX_DELAY_MS, retryAfterMs);
+  }
+  const backoff = RECONCILE_BASE_DELAY_MS * 2 ** attempt;
+  return Math.min(RECONCILE_MAX_DELAY_MS, backoff);
+}
+
 async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, unattended = false, idempotencyKey = null }) {
   const body = { prompt, cwd };
   if (criteria) body.criteria = criteria;
@@ -610,8 +667,15 @@ async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = nu
     const msg = json?.error ?? (text || `HTTP ${res.status}`);
     // Keep the parsed body: a 429 backpressure rejection (#1526 Phase C)
     // carries the capacity ledger, which the error renderer turns into a
-    // "why was this refused" breakdown.
-    return { kind: 'server_error', status: res.status, message: msg, body: json };
+    // "why was this refused" breakdown. `retryAfterMs` (#1591) surfaces the
+    // server's `Retry-After` hint so the reconcile loop can honor it.
+    return {
+      kind: 'server_error',
+      status: res.status,
+      message: msg,
+      body: json,
+      retryAfterMs: parseRetryAfterMs(res.headers.get('retry-after'), json),
+    };
   }
 
   if (json?.duplicate === true) {
@@ -626,6 +690,57 @@ async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = nu
   // same "created" branch by design, so `formatSuccess`/`--json` output can
   // read `task.idempotentReplay` without a separate result kind.
   return { kind: 'created', task: json, queued: Boolean(json?.queued) };
+}
+
+/**
+ * POST a task, reconciling ambiguous outcomes (#1591). A network/timeout error
+ * or a 5xx response leaves the task's existence unknown; when `idempotencyKey`
+ * is set the same-key re-POST is safe (replay-or-create), so we retry with
+ * backoff up to `retries` times, honoring any `Retry-After` hint. Without a key
+ * the outcome stays ambiguous and we surface the failure as before (the caller
+ * must not risk a duplicate launch). 429 backpressure and other 4xx are
+ * definitive and returned unchanged. `onRetry` receives per-attempt telemetry
+ * for operator-facing logging.
+ */
+async function postTaskWithReconcile({
+  postArgs,
+  idempotencyKey = null,
+  sleep = defaultSleep,
+  retries = RECONCILE_MAX_RETRIES,
+  onRetry = () => {},
+}) {
+  const canReconcile = Boolean(idempotencyKey);
+  for (let attempt = 0; ; attempt++) {
+    let result;
+    try {
+      result = await postTask(postArgs);
+    } catch (err) {
+      // Network error or client-side timeout: the task may or may not exist.
+      if (canReconcile && attempt < retries) {
+        const delayMs = reconcileDelayMs(attempt, null);
+        onRetry({
+          attempt: attempt + 1,
+          reason: err instanceof Error ? err.message : String(err),
+          delayMs,
+        });
+        await sleep(delayMs);
+        continue;
+      }
+      throw err;
+    }
+    if (
+      result.kind === 'server_error' &&
+      isReconcilableStatus(result.status) &&
+      canReconcile &&
+      attempt < retries
+    ) {
+      const delayMs = reconcileDelayMs(attempt, result.retryAfterMs);
+      onRetry({ attempt: attempt + 1, reason: `HTTP ${result.status}`, delayMs });
+      await sleep(delayMs);
+      continue;
+    }
+    return result;
+  }
 }
 
 // ---------- wait polling ----------
@@ -1177,20 +1292,37 @@ async function main({
 
   let result;
   try {
-    result = await postTask({
-      baseUrl,
-      prompt,
-      cwd: cwdAbs,
-      agent: args.agent,
-      effort: args.effort,
-      model: args.model,
-      criteria: args.criteria,
-      disableDedup: args.dedupe === 'skip',
-      metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
-      parentTaskId,
-      autoCloseOnSignal: args.autoCloseOnSignal,
-      unattended: args.unattended,
+    result = await postTaskWithReconcile({
+      postArgs: {
+        baseUrl,
+        prompt,
+        cwd: cwdAbs,
+        agent: args.agent,
+        effort: args.effort,
+        model: args.model,
+        criteria: args.criteria,
+        disableDedup: args.dedupe === 'skip',
+        metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
+        parentTaskId,
+        autoCloseOnSignal: args.autoCloseOnSignal,
+        unattended: args.unattended,
+        idempotencyKey: effectiveIdempotencyKey,
+      },
       idempotencyKey: effectiveIdempotencyKey,
+      sleep,
+      // #1591: re-POST is safe under the same key, so reconcile the ambiguous
+      // outcome instead of exiting and telling the operator to check the
+      // dashboard. Announce each retry (skipped in --json mode, which reports a
+      // single terminal envelope).
+      onRetry: args.json
+        ? undefined
+        : ({ attempt, reason, delayMs }) => {
+            err.error(
+              `kookr-spawn: ambiguous launch outcome (${reason}); re-POSTing with ` +
+              `idempotency key to reconcile (attempt ${attempt}/${RECONCILE_MAX_RETRIES}, ` +
+              `retry in ${Math.ceil(delayMs / 1000)}s)…`,
+            );
+          },
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -1383,6 +1515,10 @@ export {
   parseRetries,
   parseWaitTimeoutSeconds,
   postTask,
+  postTaskWithReconcile,
+  parseRetryAfterMs,
+  reconcileDelayMs,
+  isReconcilableStatus,
   probeHealth,
   resolveBaseUrl,
   resolveCwd,

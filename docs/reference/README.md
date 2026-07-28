@@ -15,4 +15,5 @@ Operator and developer references for Kookr:
 - [Playbooks](playbooks.md)
 - [Self-Hosted Relay Runbook](self-hosted-relay-runbook.md)
 - [Session Sharing](session-sharing.md)
+- [Spawn Contract (`POST /api/tasks`)](spawn-contract.md)
 - [Shared View Setup](shared-view-setup.md)

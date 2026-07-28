@@ -291,6 +291,10 @@ logical *request*, independent of its prompt content.
 - Omitting `idempotencyKey` leaves behavior exactly as before. The
   `kookr-spawn --idempotency-key <key>` flag maps to this field.
 
+For the full client contract — how to reconcile an ambiguous outcome (a timeout
+or 5xx where the task may or may not exist), and the recommended 429/503 retry
+policy — see the [Spawn Contract](./spawn-contract.md).
+
 ### `POST /api/tasks/:id/complete`
 
 A [supervisor endpoint](#supervisor-surface): gated by `KOOKR_SUPERVISOR_TOKEN`
