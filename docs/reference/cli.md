@@ -548,6 +548,25 @@ kookr ralph cancel <taskId> [--json]
 
 If a loop appears stopped after a crash, relaunching the same playbook may show a duplicate-loop conflict or a **Replace with new** recovery dialog. See [Ralph Loop Stopped Or Shows "Replace With New"](../troubleshooting.md#ralph-loop-stopped-or-shows-replace-with-new) before editing local state by hand.
 
+## `kookr schedule`
+
+List, trigger, enable, or disable schedules from the shell — the same operations the dashboard's Schedules panel performs, for headless/SSH boxes with no browser. Thin HTTP client over the server's `/api/schedules` routes.
+
+```bash
+kookr schedule list [--json]
+kookr schedule run <id> [--json]
+kookr schedule enable <id> [--json]
+kookr schedule disable <id> [--json]
+```
+
+- `list` renders one line per schedule — `<id>  <enabled|disabled>  <name>  cron="<cron>"  next=<nextRunAt|->` plus `triggers=<remaining>/<max>` when a trigger cap is set. Pass `--json` for the raw `{schedules, status}` payload so scripts don't parse the human format.
+- `run <id>` fires the schedule once now and prints the spawned task id (`(queued)` when the server accepted the fire but is at capacity, so the task waits in the pending queue until a slot frees).
+- `enable <id>` / `disable <id>` toggle the schedule without editing its definition.
+
+The server is discovered the same way as `kookr spawn` (`KOOKR_API_BASE_URL`, then `KOOKR_PORT`, then a probe of `4800`/`4801`); `KOOKR_API_TOKEN` is forwarded to non-loopback servers.
+
+Exit codes (specific to `kookr schedule`): `0` success; `2` user error (bad flags, missing schedule id); `3` no server reachable (fail closed); `4` server rejected the request (unknown id, capacity/drain, validation, or scheduling not configured).
+
 ## `kookr drain` / `kookr resume`
 
 Control operator drain mode on a running local Kookr instance:

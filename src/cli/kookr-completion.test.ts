@@ -127,8 +127,8 @@ describe('renderCompletion', () => {
   it('renders a bash completion with root commands, subcommands, and flags', () => {
     const script = renderCompletion('bash');
     expect(script).toContain('complete -F _kookr kookr');
-    expect(script).toContain('spawn signal issue doctor status logs command ralph drain resume maintenance lesson emission pr-checklist context-pack push completion');
-    expect(script).toContain('compgen -W "spawn signal issue doctor status logs command ralph drain resume maintenance lesson emission pr-checklist context-pack push completion -h --help -v --version"');
+    expect(script).toContain('spawn signal issue doctor status logs command ralph schedule drain resume maintenance lesson emission pr-checklist context-pack push completion');
+    expect(script).toContain('compgen -W "spawn signal issue doctor status logs command ralph schedule drain resume maintenance lesson emission pr-checklist context-pack push completion -h --help -v --version"');
     expect(script).toContain('compgen -W "outcome"');
     expect(script).toContain('status pause resume cancel');
     expect(script).toContain('list claim release owner');
@@ -151,7 +151,7 @@ describe('renderCompletion', () => {
   it('renders a zsh completion with root commands, subcommands, and flags', () => {
     const script = renderCompletion('zsh');
     expect(script).toContain('#compdef kookr');
-    expect(script).toContain('root_commands=(spawn signal issue doctor status logs command ralph drain resume maintenance lesson emission pr-checklist context-pack push completion)');
+    expect(script).toContain('root_commands=(spawn signal issue doctor status logs command ralph schedule drain resume maintenance lesson emission pr-checklist context-pack push completion)');
     expect(script).toContain('compadd -- $root_commands -h --help -v --version');
     expect(script).toContain('compadd outcome');
     expect(script).toContain('compadd -- status pause resume cancel');
@@ -201,6 +201,12 @@ describe('bash completion behavior', () => {
   it('completes Ralph subcommands', async () => {
     await expect(completeBash(['kookr', 'ralph', ''])).resolves.toEqual(
       expect.arrayContaining(['status', 'pause', 'resume', 'cancel']),
+    );
+  });
+
+  it('completes schedule subcommands and flags', async () => {
+    await expect(completeBash(['kookr', 'schedule', ''])).resolves.toEqual(
+      expect.arrayContaining(['list', 'run', 'enable', 'disable', '--json']),
     );
   });
 

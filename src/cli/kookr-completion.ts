@@ -86,6 +86,11 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     flags: ['--json', '-h', '--help'],
   },
   {
+    name: 'schedule',
+    subcommands: ['list', 'run', 'enable', 'disable'],
+    flags: ['--json', '-h', '--help'],
+  },
+  {
     name: 'drain',
     subcommands: ['status'],
   },
@@ -236,6 +241,8 @@ function renderBashCompletion(): string {
   const commandSubcommands = subcommandsFor('command');
   const ralphSubcommands = subcommandsFor('ralph');
   const ralphFlags = flagsFor('ralph');
+  const scheduleSubcommands = subcommandsFor('schedule');
+  const scheduleFlags = flagsFor('schedule');
   const drainSubcommands = subcommandsFor('drain');
   const drainFlags = flagsFor('drain');
   const maintenanceSubcommands = subcommandsFor('maintenance');
@@ -346,6 +353,13 @@ _kookr()
         COMPREPLY=( $(compgen -W "${ralphFlags}" -- "\${cur}") )
       fi
       ;;
+    schedule)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${scheduleSubcommands} ${scheduleFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${scheduleFlags}" -- "\${cur}") )
+      fi
+      ;;
     drain)
       COMPREPLY=( $(compgen -W "${drainSubcommands} ${drainFlags}" -- "\${cur}") )
       ;;
@@ -445,6 +459,8 @@ function renderZshCompletion(): string {
   const commandSubcommands = subcommandsFor('command');
   const ralphSubcommands = subcommandsFor('ralph');
   const ralphFlags = flagsFor('ralph');
+  const scheduleSubcommands = subcommandsFor('schedule');
+  const scheduleFlags = flagsFor('schedule');
   const drainSubcommands = subcommandsFor('drain');
   const drainFlags = flagsFor('drain');
   const maintenanceSubcommands = subcommandsFor('maintenance');
@@ -527,6 +543,13 @@ _kookr()
         compadd -- ${ralphSubcommands} ${ralphFlags}
       else
         compadd -- ${ralphFlags}
+      fi
+      ;;
+    schedule)
+      if (( CURRENT == 3 )); then
+        compadd -- ${scheduleSubcommands} ${scheduleFlags}
+      else
+        compadd -- ${scheduleFlags}
       fi
       ;;
     drain)
