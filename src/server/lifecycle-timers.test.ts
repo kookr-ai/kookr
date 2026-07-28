@@ -2,6 +2,12 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+vi.mock('./dirty-worktree-completion-finding.js', () => ({
+  surfaceDirtyWorktreeOnHeadlessCompletion: vi.fn(async () => false),
+}));
+import { surfaceDirtyWorktreeOnHeadlessCompletion } from './dirty-worktree-completion-finding.js';
+const mockSurfaceDirty = vi.mocked(surfaceDirtyWorktreeOnHeadlessCompletion);
 import {
   AUTO_CLOSE_SWEEP_MIN_INTERVAL_MS,
   autoCloseStaleCompletionReadyTasks,
@@ -356,6 +362,28 @@ describe('autoCloseStaleCompletionReadyTasks', () => {
     expect(result.closedTaskIds).toEqual([task.id]);
     expect(taskStore.getTask(task.id)?.status).toBe('completed');
     expect(safeReleaseAllFor).toHaveBeenCalledWith(task.id, 'released');
+  });
+
+  test('surfaces a dirty-worktree finding before completing on the headless path (issue #1580)', async () => {
+    mockSurfaceDirty.mockClear();
+    mockSurfaceDirty.mockResolvedValue(true);
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'Dirty', cwd: '/tmp', autoCloseOnSignal: true });
+    startTask(taskStore, task.id);
+    taskStore.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt: '2026-06-21T00:00:00.000Z' });
+    const broadcastToAll = vi.fn();
+
+    const result = await autoCloseStaleCompletionReadyTasks(
+      { taskStore, lifecycleDeps: lifecycleDeps(taskStore), broadcastToAll },
+      { now: new Date('2026-06-21T01:00:00.000Z') },
+    );
+
+    // The finding is surfaced for the auto-closed task, and completion still proceeds.
+    expect(mockSurfaceDirty).toHaveBeenCalledTimes(1);
+    expect(mockSurfaceDirty.mock.calls[0]![0].id).toBe(task.id);
+    expect(mockSurfaceDirty.mock.calls[0]![1]).toMatchObject({ taskStore, broadcastToAll });
+    expect(result.closedTaskIds).toEqual([task.id]);
+    expect(taskStore.getTask(task.id)?.status).toBe('completed');
   });
 
   describe('TTL escalation and stagger (issue #1526 Phase A)', () => {
