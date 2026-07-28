@@ -1595,12 +1595,25 @@ function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDeleteTas
   const colorIdx = projectLabelText ? agentProjectColor(agent) : -1;
   const isCancelled = agent.taskStatus === 'cancelled';
   const isTerminated = agent.taskStatus === 'terminated';
+  // A reaped task that had already delivered a merged PR before it hung (issue
+  // #1559) — surfaced distinctly from a plain `terminated` so a successful
+  // delivery isn't read as failure.
+  const isDeliveredThenHung = isTerminated && agent.reapOutcome === 'delivered_then_hung';
   const coordinatorChip = coordinatorChipForTask(useKookrStore((s) => s.coordinator), agent.taskId);
   // The row's style variant: cancelled (user stopped), terminated (session died
   // without ack), or completed (default / user acknowledged). Keep CSS variants
-  // aligned with rfc-task-loss-prevention D1.
+  // aligned with rfc-task-loss-prevention D1. AgentProviderMark only knows the
+  // base variants, so delivered-then-hung reuses the terminated mark and adds a
+  // distinct row class + label of its own.
   const rowVariant = isCancelled ? 'cancelled' : isTerminated ? 'terminated' : 'completed';
-  const terminalLabel = isCancelled ? 'Cancelled' : isTerminated ? 'Terminated' : 'Completed';
+  const deliveredThenHungClass = isDeliveredThenHung ? ' delivered-then-hung' : '';
+  const terminalLabel = isCancelled
+    ? 'Cancelled'
+    : isDeliveredThenHung
+      ? 'Delivered then hung'
+      : isTerminated
+        ? 'Terminated'
+        : 'Completed';
   const finishedAt = formatCompactDateTime(agent.finishedAt);
   const finishedAgo = formatRelativeTimeAgo(agent.finishedAt);
   const finishedTitle = finishedAt
@@ -1616,7 +1629,7 @@ function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDeleteTas
   return (
     <Tooltip text={agent.description}>
       <div
-        className={`completed-row${selected ? ' selected' : ''} ${rowVariant}${pendingDeletion ? ' pending-deletion' : ''}`}
+        className={`completed-row${selected ? ' selected' : ''} ${rowVariant}${deliveredThenHungClass}${pendingDeletion ? ' pending-deletion' : ''}`}
         onClick={selectCompletedAgent}
       >
         <RailRowSelectionTarget

@@ -6285,6 +6285,8 @@ label.task-share-row {
 }
 .completed-row.cancelled { border-left-color: var(--red); }
 .completed-row.terminated { border-left-color: var(--amber); }
+/* Reaped-but-delivered (issue #1559): green edge signals the work landed, distinct from a plain terminated. */
+.completed-row.delivered-then-hung { border-left-color: var(--green); }
 .completed-row:hover { background: var(--bg-card-hover); color: var(--text-secondary); }
 .completed-row.pending-deletion {
   opacity: 0.62;

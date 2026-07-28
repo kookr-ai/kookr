@@ -66,24 +66,61 @@ export type TaskDispositionReason =
   /** Adapter launch threw before any session attached. */
   | 'launch_error'
   /** Boot reconcile terminated an `open` zero-session task whose launcher died with the previous process. */
-  | 'stale_open_launch';
+  | 'stale_open_launch'
+  /**
+   * The hung-task reaper terminated a silent in-session task (issue #1559).
+   * Unlike the pre-session reasons above, this disposition is recorded AFTER a
+   * session ran; its {@link TaskDisposition.outcome} distinguishes a task that
+   * produced nothing from one that had already delivered a merged PR.
+   */
+  | 'hung_reap';
 
 /**
- * Queryable disposition record for a pre-session prune/terminate (issue #1588).
+ * Outcome of a hung-task reap (issue #1559). A reaped task's `status` is always
+ * `terminated`, but `delivered_then_hung` marks the case where the task had
+ * already delivered its work (an attributable merged PR) before it hung — so
+ * surfaces can distinguish a successful-but-abandoned delivery from a task that
+ * accomplished nothing, instead of masking both as a plain `terminated`.
+ */
+export type TaskReapOutcome = 'terminated' | 'delivered_then_hung';
+
+/**
+ * Queryable disposition record for a task prune/terminate.
  *
- * This is the single disposition mechanism for pre-session prunes — the
- * recovery work-conservation ledger (#1540) is expected to build ITS
+ * Two producers write this SAME shape (there is deliberately no second,
+ * parallel disposition mechanism — issue #1559):
+ * - the pre-session prune/terminate paths (issue #1588: `launch_timeout`,
+ *   `launch_error`, `stale_open_launch`), and
+ * - the hung-task reaper (issue #1559: `hung_reap`), which additionally sets
+ *   {@link outcome} and, on delivery, {@link deliveredPr}.
+ *
+ * The recovery work-conservation ledger (#1540) is expected to build ITS
  * disposition records on this same shape rather than a parallel one.
  */
 export interface TaskDisposition {
-  /** Why the task was pruned/terminated before its first session. */
+  /** Why the task was pruned/terminated. */
   reason: TaskDispositionReason;
   /** ISO-8601 timestamp the disposition was recorded. */
   at: string;
-  /** Subsystem that recorded it (e.g. 'launch-service', 'startup-reconcile'). */
+  /** Subsystem that recorded it (e.g. 'launch-service', 'startup-reconcile', 'hung-task-reaper'). */
   source: string;
   /** Optional human-readable detail (e.g. the underlying launch error message). */
   detail?: string;
+  /**
+   * Reap outcome (issue #1559). Present only on `hung_reap` dispositions;
+   * `delivered_then_hung` when the reaped task had an attributable merged PR.
+   */
+  outcome?: TaskReapOutcome;
+  /**
+   * The attributable merged PR that made the outcome `delivered_then_hung`
+   * (issue #1559). Sourced from the same delivery attribution the
+   * delivered-completion sweep uses (#1560). Absent for a plain `terminated`
+   * reap.
+   */
+  deliveredPr?: {
+    number: number;
+    url?: string;
+  };
 }
 
 export interface TaskLaunchHealthSummary {

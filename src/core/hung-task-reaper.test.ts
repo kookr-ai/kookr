@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'vitest';
-import { DEFAULT_HUNG_TASK_REAP_MS, evaluateHungTaskReap, isTaskHungSuspect } from './hung-task-reaper.js';
+import {
+  DEFAULT_HUNG_TASK_REAP_MS,
+  buildReapDisposition,
+  classifyReapOutcome,
+  evaluateHungTaskReap,
+  isTaskHungSuspect,
+} from './hung-task-reaper.js';
+import type { MergedPrAttribution } from './delivered-task-completion.js';
 import { Watchdog } from './watchdog.js';
 
 const THRESHOLD_MS = 3 * 60 * 60 * 1000; // 3h, matches the default
@@ -284,6 +291,49 @@ describe('evaluateHungTaskReap', () => {
         { now: NOW },
       );
       expect(suspect).toBe(false);
+    });
+  });
+});
+
+describe('classifyReapOutcome / buildReapDisposition (issue #1559)', () => {
+  const MERGED: MergedPrAttribution = { prNumber: 1542, prUrl: 'https://github.com/kookr-ai/kookr/pull/1542' };
+  const AT = '2026-07-25T21:13:18.000Z';
+
+  // Invariant: outcome is delivered_then_hung IFF an attributable merged PR is
+  // present — sampled across the presence (with/without url) and absence
+  // (null/undefined) cases.
+  test('outcome is delivered_then_hung exactly when a merged PR is present', () => {
+    for (const merged of [MERGED, { prNumber: 7 }] as (MergedPrAttribution | null | undefined)[]) {
+      expect(classifyReapOutcome(merged)).toBe('delivered_then_hung');
+    }
+    for (const empty of [null, undefined] as (MergedPrAttribution | null | undefined)[]) {
+      expect(classifyReapOutcome(empty)).toBe('terminated');
+    }
+  });
+
+  test('delivered disposition carries the outcome, PR identity, and reaper source', () => {
+    expect(buildReapDisposition(MERGED, AT)).toEqual({
+      reason: 'hung_reap',
+      at: AT,
+      source: 'hung-task-reaper',
+      outcome: 'delivered_then_hung',
+      detail: 'Delivered PR #1542 before hanging; reaped after prolonged silence.',
+      deliveredPr: { number: 1542, url: 'https://github.com/kookr-ai/kookr/pull/1542' },
+    });
+  });
+
+  test('a merged PR without a URL omits the url field', () => {
+    const d = buildReapDisposition({ prNumber: 99 }, AT);
+    expect(d.deliveredPr).toEqual({ number: 99 });
+    expect(d.outcome).toBe('delivered_then_hung');
+  });
+
+  test('no attribution yields a plain terminated disposition with no deliveredPr', () => {
+    expect(buildReapDisposition(null, AT)).toEqual({
+      reason: 'hung_reap',
+      at: AT,
+      source: 'hung-task-reaper',
+      outcome: 'terminated',
     });
   });
 });
