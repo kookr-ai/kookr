@@ -46,6 +46,7 @@ import {
   type DeliveredCompletionTracker,
 } from './delivered-task-completion-sweep.js';
 import type { MergedPrAttribution } from '../core/delivered-task-completion.js';
+import { surfaceDirtyWorktreeOnHeadlessCompletion } from './dirty-worktree-completion-finding.js';
 
 export interface TimerDeps {
   monitor: Monitor;
@@ -485,6 +486,15 @@ export async function autoCloseStaleCompletionReadyTasks(
   for (const entry of entries) {
     const taskId = entry.task.id;
     try {
+      // Headless completion bypasses the interactive dialog's dirty-worktree
+      // verdict, so surface a finding first when the worktree holds
+      // uncommitted work (issue #1580). Inspection runs before the transition,
+      // while the task still owns the worktree, and never throws.
+      await surfaceDirtyWorktreeOnHeadlessCompletion(entry.task, {
+        taskStore: deps.taskStore,
+        auditLogPath: deps.auditLogPath,
+        broadcastToAll: deps.broadcastToAll,
+      });
       await completeTask(taskId, lifecycleDeps);
       deps.taskStore.clearPendingSignal(taskId);
       closedTaskIds.push(taskId);

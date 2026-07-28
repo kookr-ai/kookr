@@ -24,6 +24,7 @@
  */
 
 import { completeTask, type LifecycleDeps } from './agent-lifecycle.js';
+import { surfaceDirtyWorktreeOnHeadlessCompletion } from './dirty-worktree-completion-finding.js';
 import { appendAuditRow } from '../core/audit-log.js';
 import { nowISO } from '../core/interaction-log.js';
 import {
@@ -254,6 +255,14 @@ export async function autoCompleteDeliveredTasks(
         note,
         now,
         onTaskOutcome: deps.onTaskOutcome,
+      });
+      // Same headless-completion visibility guard as the auto-close sweep
+      // (issue #1580): surface a finding if the delivered task still holds
+      // uncommitted work, so a dirty worktree is never discarded/kept silently.
+      await surfaceDirtyWorktreeOnHeadlessCompletion(task, {
+        taskStore: deps.taskStore,
+        auditLogPath: deps.auditLogPath,
+        broadcastToAll: deps.broadcastToAll,
       });
       await completeTask(task.id, deps.lifecycleDeps, {
         actorSource: DELIVERED_AUTO_COMPLETE_ACTOR,

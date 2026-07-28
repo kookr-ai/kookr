@@ -84,6 +84,45 @@ slack) — well before the hung-task reaper's hours-long threshold, which stays
 the backstop. The sweep drains gently (≤2 completions per batch, ≥60 s between
 batches), matching the completion-ready auto-close sweep.
 
+## Dirty-worktree visibility (issue #1580)
+
+Completion runs the worktree-cleanup guard cascade
+(`inspectWorktreeCleanup` → `WorktreeCleanupVerdict`) and **preserves** a
+worktree it finds dirty (blocker `uncommitted-changes`) rather than discarding
+uncommitted work. The two completion modes differ only in **who sees that
+verdict**:
+
+- **Interactive completion.** A human clicking **Complete** sees the dirty
+  summary in the completion dialog before deciding (post-#1436:
+  `CleanupWorktreeOption`, `WorktreeDirtySummary`). The signal is surfaced.
+- **Headless completion.** The auto-close sweep
+  (`autoCloseStaleCompletionReadyTasks`) and the delivery-aware paths above run
+  with **nobody at the dialog**, so the same dirty preservation used to happen
+  silently — a task could reach `completed` with a heavily-dirty worktree and no
+  one would notice (the #1548 retro observed a task completed with 213 dirty
+  files and 0 unpushed commits).
+
+The headless completion paths now **surface, rather than block** — both the
+completion-ready auto-close sweep and the delivery-aware auto-complete. Before
+completing a task, each reuses the exact `inspectTaskWorktrees` verdict the
+dialog reads; if any worktree holds uncommitted changes it emits a finding a
+human sees without opening the dialog:
+
+- an `audit.jsonl` row, `type: task.completedWithDirtyWorktree`, actor
+  `system:dirty-worktree-guard`, carrying the total dirty count and a
+  per-worktree breakdown, and
+- a broadcast `alert` (severity `warning`) on the existing alert channel naming
+  the task and the dirty summary.
+
+**Why surface and not block:** the auto-close sweep exists to free the slot a
+finished task holds, and the operator who enabled `autoCloseOnSignal` asked for
+exactly that teardown. Blocking the close would wedge the slot indefinitely.
+Surfacing keeps the work (the worktree is still preserved, not discarded) *and*
+makes the leftover state visible. Surfacing the finding never fails the
+completion it reports on — an inspection or broadcast error is logged and
+swallowed. There is no second dirty-detection path: the finding reads the same
+verdict machinery the dialog does.
+
 ## Why it exists
 
 Kookr caps the number of concurrently running tasks (`MAX_ACTIVE_TASKS`, default
