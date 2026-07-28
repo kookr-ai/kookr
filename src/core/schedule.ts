@@ -6,6 +6,7 @@ import { DEFAULT_AGENT_TYPE, normalizeAgentSelection } from './agent-types.js';
 import { isValidCron, nextRun, describeCron } from './cron.js';
 import type { PlaybookScope } from './playbook.js';
 import type { TokenUsage } from './usage-types.js';
+import { ScheduleRollupStore, type ScheduleRollup } from './schedule-rollup.js';
 
 export interface SchedulePlaybook {
   path: string;
@@ -287,9 +288,16 @@ export class ScheduleStore {
    * A stale entry (signature mismatch after an edit) reads back as `unknown`.
    */
   private resolutionCache = new Map<string, { signature: string; resolvable: boolean }>();
+  /**
+   * Durable per-schedule ROI rollup (issue #1584). Materialized incrementally
+   * at ledger-write time and reconciled from the ledger on {@link load}, so
+   * schedule ROI is readable in O(1) without any on-request scan.
+   */
+  private rollupStore: ScheduleRollupStore;
 
   constructor(kookrDir: string) {
     this.filePath = join(kookrDir, 'schedules.json');
+    this.rollupStore = new ScheduleRollupStore(kookrDir);
   }
 
   async load(): Promise<void> {
@@ -309,15 +317,28 @@ export class ScheduleStore {
     } catch (err) {
       if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
         this.loadError = undefined;
-        return;
+      } else {
+        this.loadError = err instanceof Error
+          ? `Failed to load schedules: ${err.message}`
+          : `Failed to load schedules: ${String(err)}`;
+        this.schedules.clear();
       }
-      this.loadError = err instanceof Error
-        ? `Failed to load schedules: ${err.message}`
-        : `Failed to load schedules: ${String(err)}`;
-      this.schedules.clear();
     } finally {
       this.bumpRevision();
     }
+    // Reconcile the durable rollup against the freshly-loaded ledger — a
+    // missing/deleted/corrupt/stale rollup store self-heals from the ledger.
+    await this.rollupStore.load(this.list());
+  }
+
+  /** Materialized ROI rollup for one schedule (O(1); no ledger scan). */
+  getRollup(id: string): ScheduleRollup | undefined {
+    return this.rollupStore.get(id);
+  }
+
+  /** Materialized ROI rollups for the whole fleet (O(n); no ledger scan). */
+  listRollups(): ScheduleRollup[] {
+    return this.rollupStore.list();
   }
 
   getLoadError(): string | undefined {
@@ -393,6 +414,7 @@ export class ScheduleStore {
     };
 
     this.schedules.set(schedule.id, schedule);
+    this.rollupStore.updateFromSchedule(schedule);
     this.bumpRevision();
     return schedule;
   }
@@ -429,6 +451,7 @@ export class ScheduleStore {
       updatedAt: new Date().toISOString(),
     };
     this.schedules.set(id, updated);
+    this.rollupStore.updateFromSchedule(updated);
     this.bumpRevision();
     return updated;
   }
@@ -442,6 +465,7 @@ export class ScheduleStore {
       updatedAt: new Date().toISOString(),
     };
     this.schedules.set(id, updated);
+    this.rollupStore.updateFromSchedule(updated);
     this.bumpRevision();
     return updated;
   }
@@ -450,21 +474,32 @@ export class ScheduleStore {
     const deleted = this.schedules.delete(id);
     if (deleted) {
       this.resolutionCache.delete(id);
+      this.rollupStore.remove(id);
       this.bumpRevision();
     }
     return deleted;
   }
 
   replace(schedule: Schedule): void {
-    this.schedules.set(schedule.id, {
+    const stored: Schedule = {
       ...schedule,
       updatedAt: new Date().toISOString(),
-    });
+    };
+    this.schedules.set(schedule.id, stored);
+    // Incremental, bounded write-path update: recompute only THIS schedule's
+    // rollup from its ledger — never a full-fleet rescan (issue #1584).
+    this.rollupStore.updateFromSchedule(stored);
     this.bumpRevision();
   }
 
   async persist(): Promise<void> {
-    const write = this.persistChain.then(() => this.writeSchedules());
+    const write = this.persistChain.then(async () => {
+      await this.writeSchedules();
+      // Persist the derived rollup alongside the ledger so it survives a
+      // restart. It is always reconciled against the ledger on load, so a
+      // failed/partial rollup write self-heals on next boot.
+      await this.rollupStore.persist();
+    });
     // Keep the internal tail usable after a failed write, while callers still observe this write's rejection.
     this.persistChain = write.catch(() => {});
     return write;

@@ -44,6 +44,21 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
     return c.json(deps.scheduleService.listResponse());
   });
 
+  // Fast ROI rollup endpoints (issue #1584). Read ONLY the materialized
+  // per-schedule store — no tasks.json / hook-log scan on the request path, so
+  // they stay O(1)/O(n) and never hang the way an on-request scan can.
+  app.get("/api/schedules/rollups", (c) => {
+    if (!deps.scheduleService) return c.json({ rollups: [] });
+    return c.json({ rollups: deps.scheduleService.listRollups() });
+  });
+
+  app.get("/api/schedules/:id/rollup", (c) => {
+    if (!deps.scheduleService) return c.json({ error: "Scheduling not configured" }, 500);
+    const rollup = deps.scheduleService.getRollup(c.req.param("id"));
+    if (!rollup) return c.json({ error: "Schedule not found" }, 404);
+    return c.json(rollup);
+  });
+
   app.post("/api/schedules", async (c) => {
     if (!deps.scheduleService) return c.json({ error: "Scheduling not configured" }, 500);
     try {

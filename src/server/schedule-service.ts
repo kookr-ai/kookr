@@ -15,6 +15,7 @@ import {
   ScheduleStore,
   ScheduleValidationError,
 } from '../core/schedule.js';
+import type { ScheduleRollup } from '../core/schedule-rollup.js';
 import type { TokenUsage } from '../core/usage-types.js';
 import { ScheduleValidator, validateCron } from './schedule-validator.js';
 
@@ -89,6 +90,20 @@ export class ScheduleService {
       schedules: this.store.listWithComputed(),
       status: this.getStatusSnapshot(),
     };
+  }
+
+  /**
+   * Materialized ROI rollup for one schedule (issue #1584). Reads ONLY the
+   * in-memory materialized store — no tasks.json / hook-log scan on the request
+   * path. `undefined` when the schedule id is unknown.
+   */
+  getRollup(id: string): ScheduleRollup | undefined {
+    return this.store.getRollup(id);
+  }
+
+  /** Fleet-wide materialized ROI rollups (issue #1584). No on-request scan. */
+  listRollups(): ScheduleRollup[] {
+    return this.store.listRollups();
   }
 
   getStatusSnapshot(): ScheduleStatusSnapshot {
