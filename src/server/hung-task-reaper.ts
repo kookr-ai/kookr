@@ -2,7 +2,10 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
+import type { MergedPrAttribution } from '../core/delivered-task-completion.js';
+import type { TaskReapOutcome } from '../shared/contracts/task.js';
 import { appendAuditRow } from '../core/audit-log.js';
+import { buildReapDisposition } from '../core/hung-task-reaper.js';
 import { nowISO } from '../core/interaction-log.js';
 import { terminateTask, type LifecycleDeps } from './agent-lifecycle.js';
 
@@ -28,11 +31,21 @@ export interface HungTaskReaperDeps {
   auditLogPath?: string;
   /** Optional broadcast for the reap alert — reuses the existing 'alert' channel, no new notification surface. */
   broadcastToAll?: (msg: ServerMessage) => void;
+  /**
+   * Delivery attribution (issue #1559): a task's attributable merged PR, or
+   * null. Wired to the same `GitHubStateStore`-backed resolver the
+   * delivered-completion sweep uses (#1560) — no new attribution mechanism, no
+   * pane scraping, no live GitHub call. Absent → the reap records a plain
+   * `terminated` outcome (never a false `delivered_then_hung`).
+   */
+  resolveMergedPr?: (task: Task) => MergedPrAttribution | null;
   now?: () => Date;
 }
 
 export interface HungTaskReapResult {
   reportPath?: string;
+  /** Recorded reap outcome (issue #1559): `terminated` or `delivered_then_hung`. */
+  outcome: TaskReapOutcome;
 }
 
 function formatAgeFromNow(now: Date, at: number): string {
@@ -106,7 +119,20 @@ export async function reapHungTask(
     ? await writeHungTaskReport(task, evidence, deps.reportsDir, now)
     : undefined;
 
+  // Attribute delivery BEFORE terminating, so a task that already merged its PR
+  // is recorded as `delivered_then_hung` instead of masking the delivery as a
+  // plain `terminated` (issue #1559). Reuses the delivered-completion sweep's
+  // attribution (#1560) — cached GitHub state, no pane scrape, no live call.
+  const merged = deps.resolveMergedPr?.(task) ?? null;
+  const disposition = buildReapDisposition(merged, now.toISOString());
+  const outcome = disposition.outcome ?? 'terminated';
+
   await terminateTask(task.id, deps.lifecycleDeps);
+
+  // Record the disposition on the (still-present) terminated task record. The
+  // store keeps reaped tasks, and setDisposition is first-write-wins, so this
+  // is the single durable outcome marker for the reap (issue #1559).
+  deps.taskStore.setDisposition(task.id, disposition);
 
   await appendAuditRow(deps.auditLogPath, {
     type: 'task.hungTaskReap',
@@ -115,6 +141,8 @@ export async function reapHungTask(
     taskId: task.id,
     silentForMs: evidence.silentForMs,
     thresholdMs: evidence.thresholdMs,
+    outcome,
+    ...(disposition.deliveredPr ? { deliveredPr: disposition.deliveredPr } : {}),
     evidence: {
       lastHookEventAt: evidence.lastHookEventAt,
       lastPaneChangeAt: evidence.lastPaneChangeAt,
@@ -123,13 +151,18 @@ export async function reapHungTask(
     ...(reportPath ? { reportPath } : {}),
   });
 
+  const silentMinutes = Math.round(evidence.silentForMs / 60_000);
   deps.broadcastToAll?.({
     type: 'alert',
     agentId: task.sessions[task.sessions.length - 1]?.tmuxSession ?? '',
-    summary: `Reaped hung task: ${task.name ?? task.id}`,
-    details: `No hook events, pane change, or token activity for ${Math.round(evidence.silentForMs / 60_000)}m — session terminated.`,
+    summary: disposition.deliveredPr
+      ? `Reaped delivered-then-hung task (PR #${disposition.deliveredPr.number}): ${task.name ?? task.id}`
+      : `Reaped hung task: ${task.name ?? task.id}`,
+    details: disposition.deliveredPr
+      ? `Delivered PR #${disposition.deliveredPr.number}, then no hook events, pane change, or token activity for ${silentMinutes}m — session terminated.`
+      : `No hook events, pane change, or token activity for ${silentMinutes}m — session terminated.`,
     severity: 'warning',
   });
 
-  return { reportPath };
+  return { reportPath, outcome };
 }

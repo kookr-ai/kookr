@@ -11,7 +11,7 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { TaskStore } from '../../core/tasks.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
-import { registerDiagnosticsRoutes } from './diagnostics-routes.js';
+import { registerDiagnosticsRoutes, LESSON_YIELD_REQUEST_BUDGET_MS } from './diagnostics-routes.js';
 import type { RouteDeps } from './shared.js';
 import {
   computeLessonYield,
@@ -183,5 +183,78 @@ describe('GET /api/diagnostics/lesson-yield scheduling (issue #1553)', () => {
     expect(res.status).toBe(500);
     const body = await res.json() as { error: string };
     expect(body.error).toBe('disk exploded');
+  });
+
+  // Issue #1585: the request path is cache-first and can no longer hang.
+  test('a warm cache is served without launching a second scan', async () => {
+    scanMock.mockResolvedValue(snapshot({ windowDays: 2, decided: 5 }));
+    const app = mkApp(baseDeps());
+
+    const first = await app.request('/api/diagnostics/lesson-yield?days=2');
+    expect(first.status).toBe(200);
+    expect((await first.json() as { decided: number }).decided).toBe(5);
+    expect(scanMock).toHaveBeenCalledTimes(1);
+
+    // Fresh cache: the next request returns immediately without a new scan.
+    const second = await app.request('/api/diagnostics/lesson-yield?days=2');
+    expect(second.status).toBe(200);
+    expect((await second.json() as { decided: number }).decided).toBe(5);
+    expect(scanMock).toHaveBeenCalledTimes(1);
+  });
+
+  test('a cold scan slower than the request budget returns 503 warming, not a hang', async () => {
+    vi.useFakeTimers();
+    try {
+      // Scan never settles: without the budget the request would block up to
+      // the 30s scan bound — the exact hang class from prod on 2026-07-26.
+      scanMock.mockImplementation(() => new Promise<LessonYieldSnapshot>(() => {}));
+      const app = mkApp(baseDeps());
+
+      const pending = app.request('/api/diagnostics/lesson-yield?days=2');
+      // Advance past the request budget; the endpoint must give up waiting.
+      await vi.advanceTimersByTimeAsync(LESSON_YIELD_REQUEST_BUDGET_MS + 10);
+      const res = await pending;
+
+      expect(res.status).toBe(503);
+      const body = await res.json() as { error: string; retryAfterMs: number };
+      expect(body.error).toBe('lesson_yield_warming');
+      expect(body.retryAfterMs).toBe(LESSON_YIELD_REQUEST_BUDGET_MS);
+      // The bounded background scan is still the single in-flight scan.
+      expect(scanMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('an expired per-window cache serves the stale snapshot while one refresh runs', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-07-27T00:00:00.000Z'));
+      // Warm the cache with a first, immediately-resolving scan.
+      scanMock.mockResolvedValueOnce(snapshot({ windowDays: 2, decided: 1 }));
+      const app = mkApp(baseDeps());
+      const warm = await app.request('/api/diagnostics/lesson-yield?days=2');
+      expect((await warm.json() as { decided: number }).decided).toBe(1);
+      expect(scanMock).toHaveBeenCalledTimes(1);
+
+      // Switch to a controllable scan and expire the 60s TTL.
+      const resolvers: Array<(value: LessonYieldSnapshot) => void> = [];
+      scanMock.mockImplementation(() => new Promise((resolve) => { resolvers.push(resolve); }));
+      vi.setSystemTime(new Date('2026-07-27T00:01:01.000Z'));
+
+      // Stale response is immediate (old snapshot) with exactly one new scan.
+      const staleRes = await app.request('/api/diagnostics/lesson-yield?days=2');
+      expect(staleRes.status).toBe(200);
+      expect((await staleRes.json() as { decided: number }).decided).toBe(1);
+      expect(scanMock).toHaveBeenCalledTimes(2);
+
+      // The refresh lands; a later request serves the new snapshot.
+      resolvers[0](snapshot({ windowDays: 2, decided: 2 }));
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      const freshRes = await app.request('/api/diagnostics/lesson-yield?days=2');
+      expect((await freshRes.json() as { decided: number }).decided).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -567,6 +567,8 @@ If `{{mergeAfterImplementation}}` is `true`:
    ```
 
 2. Do not bypass branch protection, required reviews, failing checks, or maintainer policy. Exception: if `{{ignoreBudgetCiFailures}}` is `true`, a check that failed solely because CI budget/quota was unavailable (it never ran) does not count as a failing check — treat it as non-blocking. Genuine test/lint/type/build failures still block regardless of this toggle.
+
+   **CI-rerun bound — max 2 CI rerun attempts, then report and stop.** Never loop re-running CI hoping a flaky check goes green. Re-run a failing check at most twice per PR; after the **second** failed rerun, **report the CI state** (failing check names and their run links from `gh pr checks` / `gh run view`) and stop — **never loop** or sit at "waiting for CI" indefinitely. Before spending a rerun, classify the failure: infra-red CI (budget/quota/runner outage — the run never executed your code) is non-blocking and should be classified non-blocking rather than rerun (see #1198), and does not consume one of the 2 attempts. This bound exists because an unbounded rerun/merge loop once stranded a delivery task for ~3h (PR #1542 / task faf7902b).
 3. If the PR is mergeable now, merge using the repository's expected method. In `kookr-ai/kookr`, prefer the repository merge wrapper:
 
    ```bash

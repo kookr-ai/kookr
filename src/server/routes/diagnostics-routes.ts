@@ -43,8 +43,8 @@ const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const REVIEW_ADMIN_TOKEN_HEADER = 'x-kookr-admin-token';
 const REVIEW_CSRF_HEADER = 'x-kookr-finding-review-token';
 const DEFAULT_HOOK_INGESTION_LAG_WARNING_THRESHOLD_MS = 2_000;
-/** Cache TTL for the /api/health lessonYield block (hook scans can be heavy). */
-const LESSON_YIELD_HEALTH_CACHE_MS = 60_000;
+/** Cache TTL for lessonYield snapshots (per window; hook scans can be heavy). */
+const LESSON_YIELD_CACHE_MS = 60_000;
 const MAX_LESSON_YIELD_DAYS = 30;
 /**
  * Hard ceiling for one lesson-yield hook-log scan (issue #1553). The hooks
@@ -52,6 +52,16 @@ const MAX_LESSON_YIELD_DAYS = 30;
  * saturated the main thread and OOM-crashed prod on 2026-07-26.
  */
 const LESSON_YIELD_SCAN_TIMEOUT_MS = 30_000;
+/**
+ * Request-path budget for GET /api/diagnostics/lesson-yield on a cold cache
+ * (issue #1585). The scan itself is bounded at LESSON_YIELD_SCAN_TIMEOUT_MS,
+ * but 30s far exceeds a diagnostics endpoint's latency budget (prod re-confirmed
+ * the request hangs past a 10s curl cap on 2026-07-26). The request path waits
+ * at most this long for a first scan, then returns a 503 `lesson_yield_warming`
+ * while the bounded scan finishes in the background and warms the cache for the
+ * retry. Kept comfortably under the 10s acceptance ceiling.
+ */
+export const LESSON_YIELD_REQUEST_BUDGET_MS = 8_000;
 /** After a failed/timed-out background refresh, do not retry before this. */
 const LESSON_YIELD_REFRESH_FAILURE_BACKOFF_MS = 5 * 60_000;
 
@@ -60,15 +70,21 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   let findingEvidenceReviewService: FindingEvidenceReviewService | undefined;
   let findingEvidenceReviewConfig: FindingEvidenceReviewServiceConfig | undefined;
   let findingEvidenceReviewLogStore: ReviewLogStore | undefined;
-  // Issue #1538: cache the 24h lesson-yield snapshot for /api/health so a
-  // frequent dashboard poll does not re-scan every hook log every time.
-  // Issue #1553: the request path NEVER awaits a scan — /api/health serves
-  // this cache stale-while-revalidate and a single-flight background scan
+  // Issue #1538: cache lesson-yield snapshots so a frequent dashboard poll does
+  // not re-scan every hook log every time. Keyed by window length in days so
+  // /api/health (1d) and GET /api/diagnostics/lesson-yield?days=N share the
+  // same single-flight + cache machinery.
+  // Issue #1553: the /api/health request path NEVER awaits a scan — it serves
+  // the cache stale-while-revalidate and a single-flight background scan
   // repopulates it. Awaiting the scan inline pinned the event loop against a
   // multi-GB hooks dir and OOM-crashed prod on 2026-07-26.
-  let lessonYieldHealthCache:
-    | { expiresAtMs: number; snapshot: LessonYieldSnapshot }
-    | undefined;
+  // Issue #1585: the diagnostics request path is now cache-first too and waits
+  // at most LESSON_YIELD_REQUEST_BUDGET_MS for a cold scan (never the full 30s
+  // scan bound), so the endpoint can no longer hang.
+  const lessonYieldCache = new Map<
+    number,
+    { expiresAtMs: number; snapshot: LessonYieldSnapshot }
+  >();
   let lessonYieldRefreshNotBeforeMs = 0;
   const lessonYieldScansInFlight = new Map<number, Promise<LessonYieldSnapshot>>();
 
@@ -76,8 +92,8 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
    * Single-flight lesson-yield scan per window length, hard-bounded by
    * LESSON_YIELD_SCAN_TIMEOUT_MS. Shared by the /api/health background
    * refresh and GET /api/diagnostics/lesson-yield so concurrent callers can
-   * never stack duplicate scans. A completed 1-day scan warms the health
-   * cache as a side effect.
+   * never stack duplicate scans. A completed scan warms the per-window cache
+   * as a side effect.
    */
   function runLessonYieldScan(days: number): Promise<LessonYieldSnapshot> {
     const inFlight = lessonYieldScansInFlight.get(days);
@@ -89,12 +105,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       hooksDirFromKookrDir(kookrDir),
       { days, signal: AbortSignal.timeout(LESSON_YIELD_SCAN_TIMEOUT_MS) },
     ).then((snapshot) => {
-      if (days === 1) {
-        lessonYieldHealthCache = {
-          expiresAtMs: Date.now() + LESSON_YIELD_HEALTH_CACHE_MS,
-          snapshot,
-        };
-      }
+      lessonYieldCache.set(days, {
+        expiresAtMs: Date.now() + LESSON_YIELD_CACHE_MS,
+        snapshot,
+      });
       return snapshot;
     }).finally(() => {
       lessonYieldScansInFlight.delete(days);
@@ -156,9 +170,9 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     let lessonYieldBlock: LessonYieldSnapshot | undefined;
     if (deps.kookrDir) {
       const nowMs = Date.now();
-      lessonYieldBlock = lessonYieldHealthCache?.snapshot;
-      const cacheFresh = lessonYieldHealthCache !== undefined
-        && lessonYieldHealthCache.expiresAtMs > nowMs;
+      const cached = lessonYieldCache.get(1);
+      lessonYieldBlock = cached?.snapshot;
+      const cacheFresh = cached !== undefined && cached.expiresAtMs > nowMs;
       if (!cacheFresh && nowMs >= lessonYieldRefreshNotBeforeMs) {
         runLessonYieldScan(1).catch(() => {
           // Soft: health stays 200 even if hook scans fail — but back off so
@@ -332,12 +346,47 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       }
       days = Math.min(parsed, MAX_LESSON_YIELD_DAYS);
     }
+
+    // Cache-first, stale-while-revalidate (issue #1585). A fresh snapshot is
+    // returned immediately; a stale one is served while a single-flight refresh
+    // runs in the background. The request path never blocks on a full hook-log
+    // scan — the prior inline `await runLessonYieldScan(days)` could stall up to
+    // the 30s scan bound and hung past a 10s curl cap in prod on 2026-07-26.
+    const nowMs = Date.now();
+    const cached = lessonYieldCache.get(days);
+    if (cached && cached.expiresAtMs > nowMs) {
+      return c.json(cached.snapshot);
+    }
+
+    const refresh = runLessonYieldScan(days);
+    if (cached) {
+      // Stale cache present: serve it now, let the refresh land in background.
+      refresh.catch(() => { /* soft: staleness is visible via generatedAt */ });
+      return c.json(cached.snapshot);
+    }
+
+    // Cold cache: wait for the first scan, but only up to the request budget.
+    // If the budget elapses first the bounded scan keeps running and warms the
+    // cache for the retry, so the client is never left blocked on the endpoint.
+    let budgetTimer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<'budget'>((resolve) => {
+      budgetTimer = setTimeout(() => resolve('budget'), LESSON_YIELD_REQUEST_BUDGET_MS);
+    });
     try {
-      // Single-flight + hard timeout (issue #1553): concurrent callers share
-      // one scan, and a scan can never outlive LESSON_YIELD_SCAN_TIMEOUT_MS.
-      // A 1-day result warms the /api/health cache inside the helper.
-      const snapshot = await runLessonYieldScan(days);
-      return c.json(snapshot);
+      const outcome = await Promise.race([refresh, budget]);
+      if (outcome === 'budget') {
+        // Do not orphan the still-pending scan's rejection.
+        refresh.catch(() => { /* handled by the /api/health backoff path */ });
+        return c.json(
+          {
+            error: 'lesson_yield_warming',
+            message: `Snapshot for days=${days} is still computing; retry shortly.`,
+            retryAfterMs: LESSON_YIELD_REQUEST_BUDGET_MS,
+          },
+          503,
+        );
+      }
+      return c.json(outcome);
     } catch (err) {
       // `AbortSignal.timeout` rejects with a DOMException — match by name so
       // the verdict does not depend on DOMException's Error inheritance.
@@ -352,6 +401,8 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         { error: err instanceof Error ? err.message : String(err) },
         500,
       );
+    } finally {
+      if (budgetTimer) clearTimeout(budgetTimer);
     }
   });
 

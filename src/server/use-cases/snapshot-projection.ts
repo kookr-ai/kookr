@@ -286,6 +286,7 @@ function buildTerminalTaskEntry(task: Task): AgentState {
     ralphLoop: task.ralphLoop,
     unattended: task.unattended,
     ...(task.operatorNeeded ? { operatorNeeded: task.operatorNeeded } : {}),
+    ...(task.disposition?.outcome ? { reapOutcome: task.disposition.outcome } : {}),
   };
 }
 

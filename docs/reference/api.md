@@ -7,7 +7,7 @@ Kookr exposes local HTTP and WebSocket endpoints from the Hono server. In develo
 | Endpoint | Description |
 | --- | --- |
 | `GET /api/health` | Server status, agent count, build info, launch dependency degradation, capacity ledger, and (when `kookrDir` is set) a stale-while-revalidate 24h `lessonYield` snapshot served from the last background scan — absent until the first scan completes; the request path never scans hook logs (issues #1538, #1553) |
-| `GET /api/diagnostics/lesson-yield` | Per-window lesson yield (`?days=1..30`): decided / completed tasks from hook-log scans; single-flight per window, `503 lesson_yield_scan_timeout` when the 30s scan bound expires (issues #1538, #1553) |
+| `GET /api/diagnostics/lesson-yield` | Per-window lesson yield (`?days=1..30`): decided / completed tasks from hook-log scans. Cache-first / stale-while-revalidate — a fresh or stale snapshot returns immediately; a cold cache waits at most ~8s for a single-flight scan, then returns `503 lesson_yield_warming` (with `retryAfterMs`) while the bounded scan finishes in the background, so the request path never hangs. (`503 lesson_yield_scan_timeout` remains only for the rare case a scan aborts at its 30s bound inside that wait.) (issues #1538, #1553, #1585) |
 | `GET /api/health/stt` | Bundled speech-to-text container health |
 | `GET /api/startup-summary` | Crash-recovery startup summary fetched once on UI mount |
 | `GET /metrics` | Prometheus text exposition for request durations, circuit breakers, attention-queue suppressions, audit-sink health, aggregate auth-throttle counters, and outbound finding-webhook delivery outcomes |
@@ -131,7 +131,9 @@ fields a list needs — `id`/`taskId`, `name`, `status`, `cwd`, `agentType`,
 `unattended`, `operatorNeeded`, `tokenUsage` (plus `aggregateTokenUsage` on parents),
 `pendingSignal`, `issueClaim`, `ralphLoop`, the `createdAt`/`updatedAt`/
 `finishedAt`/`terminatedAt` timeline, a `disposition` record on a task pruned
-before its first session (issue #1588), a `suppressed` flag when applicable, and a
+before its first session (issue #1588) or reaped while hung (issue #1559 — a
+`hung_reap` disposition whose `outcome` is `delivered_then_hung` when the reaped
+task had already merged its PR), a `suppressed` flag when applicable, and a
 trimmed `sessions[]` stub (`tmuxSession`, `agentType`, `lastStatus`,
 `lastTurnState`, `worktreeHealth`, `lastEventAt`, `crashRecovered`,
 `relaunchCount`) — and **omits** the heavy bodies: `prompt`, `userPrompt`,

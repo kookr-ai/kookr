@@ -699,6 +699,7 @@ export async function maybeReapHungTask(
       reportsDir: deps.reportsDir,
       auditLogPath: deps.auditLogPath,
       broadcastToAll: deps.broadcastToAll,
+      resolveMergedPr: deps.resolveMergedPr,
       now,
     },
   );
