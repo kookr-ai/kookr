@@ -548,6 +548,19 @@ fi
 gh api repos/<owner>/<repo>/pulls/<PR_NUMBER> -X PATCH -f "assignees[]=$ASSIGNEE"
 ```
 
+**Propagate Idea Scout provenance labels (conversion tracking).** If the target issue was created by the Repository Idea Scout it carries `idea-scout` and an `idea:<issue-number>` join-key label. Copy both onto this PR so the scouted-idea → merged-PR conversion is computable from labels alone (Idea Scout playbook, Provenance Labels). This is a no-op for issues that were not scouted:
+
+```bash
+IDEA_LABELS=$(gh issue view <TARGET> -R "$REPO" --json labels \
+  --jq '[.labels[].name | select(. == "idea-scout" or startswith("idea:"))] | join(",")')
+if [ -n "$IDEA_LABELS" ]; then
+  # These labels already exist in the repo (the scout created them); a PR is an
+  # issue for the labels API, so add the comma-separated set idempotently to
+  # this PR number. Re-adding an existing label is a no-op.
+  gh issue edit <PR_NUMBER> -R "$REPO" --add-label "$IDEA_LABELS" >/dev/null || true
+fi
+```
+
 After the PR exists, run the repo post-push workflow (`kookr-post-push` when available): verify mergeability, checklist/body freshness, CI, and early feedback. Keep driving those gates until the PR is healthy or a real blocker remains.
 
 ## Phase 8: Merge Policy and Claim Release
