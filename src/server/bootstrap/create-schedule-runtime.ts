@@ -4,7 +4,7 @@ import type { ServerMessage } from '../../shared/contracts/messages.js';
 import { launchTask, type LaunchServiceDeps } from '../launch-service.js';
 import { isTaskBlockingSchedule, ScheduleRunner } from '../schedule-runner.js';
 import { ScheduleDeadManSwitch } from '../schedule-dead-man.js';
-import { ScheduleService } from '../schedule-service.js';
+import { deriveLedgerEnrichment, ScheduleService } from '../schedule-service.js';
 import { ScheduleValidator } from '../schedule-validator.js';
 
 export interface ScheduleRuntimeDeps {
@@ -40,6 +40,9 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     broadcast: (payload) => {
       deps.broadcastToAll({ type: 'schedules', ...payload });
     },
+    // issue #1582: join cost/artifacts onto ledger rows at write time by
+    // reading the completed fire's task from the live store.
+    resolveLedgerEnrichment: (taskId) => deriveLedgerEnrichment(deps.taskStore.getTask(taskId)),
   });
   await scheduleService.reconcileOnStartup(deps.taskStore);
 
