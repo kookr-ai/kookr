@@ -58,7 +58,10 @@ export type AuditEvent =
   | { kind: 'transcription_failed'; err: string }
   | { kind: 'dropped_audio_too_long'; source: 'voice' | 'audio' | 'video_note' | 'document'; durationSec?: number; bytes?: number; estimatedFromBytes?: boolean }
   | { kind: 'dropped_audio_too_large'; source: 'voice' | 'audio' | 'video_note' | 'document'; bytes: number; durationSec?: number }
-  | { kind: 'dropped_audio_disabled'; source: 'voice' | 'audio' | 'video_note' | 'document' };
+  | { kind: 'dropped_audio_disabled'; source: 'voice' | 'audio' | 'video_note' | 'document' }
+  // `/tasks` read-back command — see issue #1394 and integrations/telegram/tasks-command.ts.
+  | { kind: 'tasks_replied'; sender: number; count: number }
+  | { kind: 'tasks_query_failed'; sender: number; err: string };
 
 export interface AuditWriter {
   /** Fire-and-forget append; never throws into the caller. */

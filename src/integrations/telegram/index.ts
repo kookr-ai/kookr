@@ -21,6 +21,7 @@ import {
 import { audioDropDecision, extractAudioAttachment, filenameFromFilePath, MAX_AUDIO_BYTES } from './audio.js';
 import { parseTaskCommand } from './parse-task.js';
 import { redactCredentials } from './redact.js';
+import { fetchTasksSummary, formatTasksReply, isTasksCommand, type TaskSummaryRow } from './tasks-command.js';
 import { rephrase } from './rephrase.js';
 import { classifyVoiceError, transcribeVoice as defaultTranscribeVoice } from './transcribe.js';
 import { TaskSpecBypassSchema, type ProjectInfo, type ValidatedTaskSpec } from './types.js';
@@ -80,6 +81,12 @@ export interface StartTelegramTriggerDeps {
    * uses the default `transcribeVoice` from `./transcribe.ts`.
    */
   transcribeVoice?: typeof defaultTranscribeVoice;
+  /**
+   * Test seam — fetches the active-task summary for the `/tasks` command
+   * (issue #1394). Production leaves it unset and the default fetcher GETs
+   * `${dashboardBaseUrl}/api/tasks?view=compact`.
+   */
+  fetchTasksSummary?: (baseUrl: string) => Promise<TaskSummaryRow[]>;
   /** Server-lifecycle abort signal — see `VoiceWarmupOpts.lifecycleSignal` and issue #188. */
   lifecycleSignal?: AbortSignal;
 }
@@ -142,6 +149,7 @@ function helpText(allowedProjects: ProjectInfo[]): string {
     'Reply ✓ Spawn or ✗ Cancel on the confirmation message.',
     '',
     'Or use /task <project> <prompt> to bypass the LLM.',
+    'Use /tasks to see active tasks and their blockers.',
     '',
     'Available projects:',
     projects,
@@ -433,6 +441,11 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
       return;
     }
 
+    if (isTasksCommand(text)) {
+      await handleTasksCommand(m.chat.id, userId);
+      return;
+    }
+
     const agentCommand = parseAgentCommand(text);
     if (agentCommand) {
       await handleAgentCommand(m.chat.id, userId, agentCommand);
@@ -503,6 +516,26 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
 
   function getDefaultAgentType(userId: number): AgentType {
     return state.get().agentDefaultsByUser[String(userId)] ?? DEFAULT_AGENT_TYPE;
+  }
+
+  /**
+   * `/tasks` read-back (issue #1394): fetch the compact task listing and reply
+   * with a length-bounded, secret-redacted summary of active tasks and each
+   * task's most-relevant blocker. A fetch failure replies with a short error
+   * rather than a misleading "no tasks" message.
+   */
+  async function handleTasksCommand(chatId: number, userId: number): Promise<void> {
+    const fetcher = deps.fetchTasksSummary ?? fetchTasksSummary;
+    let rows: TaskSummaryRow[];
+    try {
+      rows = await fetcher(deps.dashboardBaseUrl);
+    } catch (err) {
+      audit({ kind: 'tasks_query_failed', sender: userId, err: String(err) });
+      await sendMessageSafe(chatId, 'Could not read task state right now — try again shortly.');
+      return;
+    }
+    audit({ kind: 'tasks_replied', sender: userId, count: rows.length });
+    await sendMessageSafe(chatId, formatTasksReply(rows));
   }
 
   async function handleAgentCommand(chatId: number, userId: number, command: 'status' | 'claude' | 'codex' | 'usage'): Promise<void> {
