@@ -406,6 +406,47 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
     expect(fake.outbound.sendMessage[0].text).toMatch(/Default agent: Claude Code/);
   });
 
+  it('/tasks replies with active tasks and their blockers from the fake store', async () => {
+    fake.queueUpdates([makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: '/tasks' })]);
+    handle = await startTelegramTrigger(makeDeps({
+      fetchTasksSummary: async () => [
+        { id: 'aaaaaaaa1111', name: 'Fix login', status: 'inProgress', cwd: PROJECT.cwd, stuckReason: 'permission_blocked' },
+        { id: 'bbbbbbbb2222', name: 'Migrate db', status: 'inProgress', cwd: PROJECT.cwd, pendingSignal: { kind: 'completion-ready' } },
+        { id: 'cccccccc3333', name: 'Done', status: 'completed', cwd: PROJECT.cwd },
+        { id: 'dddddddd4444', name: 'Foreign project', status: 'inProgress', cwd: '/some/other/repo' },
+      ],
+    }));
+    await waitFor(() => expect(fake.outbound.sendMessage.length).toBeGreaterThan(0));
+    const sent = fake.outbound.sendMessage[fake.outbound.sendMessage.length - 1];
+    // Two active tasks in-scope; the completed one and the foreign-project one excluded.
+    expect(sent.text).toContain('Active tasks (2):');
+    expect(sent.text).toContain('aaaaaaaa');
+    expect(sent.text).toContain('Fix login');
+    expect(sent.text).toContain('blocked on permission');
+    expect(sent.text).toContain('signal: completion-ready');
+    expect(sent.text).not.toContain('Done');
+    expect(sent.text).not.toContain('Foreign project');
+    // The audit count reflects the active, in-scope rows shown — not all fetched rows.
+    await waitFor(() =>
+      expect(readAuditEvents(tmp).some((e) => e.kind === 'tasks_replied' && e.count === 2)).toBe(true),
+    );
+  });
+
+  it('/tasks replies with an error message when the task query fails', async () => {
+    fake.queueUpdates([makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: '/tasks' })]);
+    handle = await startTelegramTrigger(makeDeps({
+      fetchTasksSummary: async () => { throw new Error('boom'); },
+    }));
+    await waitFor(() => expect(fake.outbound.sendMessage.length).toBeGreaterThan(0));
+    const sent = fake.outbound.sendMessage[fake.outbound.sendMessage.length - 1];
+    expect(sent.text).toMatch(/Could not read task state/);
+    // The error branch must not fall through to a misleading "No active tasks."
+    expect(sent.text).not.toContain('No active tasks');
+    await waitFor(() =>
+      expect(readAuditEvents(tmp).some((e) => e.kind === 'tasks_query_failed' && e.err === 'Error: boom')).toBe(true),
+    );
+  });
+
   it('/agent codex persists the default and future tasks use Codex when enabled', async () => {
     fake.queueUpdates([
       makeMessage({ update_id: 1, userId: ALLOWED_USER_ID, text: '/agent codex' }),
