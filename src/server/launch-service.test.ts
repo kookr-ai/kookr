@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, type PendingQueueFullError, type SpawnBurstLimitError, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type LaunchServiceDeps } from './launch-service.js';
 import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
 import { buildCapacityLedger } from '../core/capacity-ledger.js';
 import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
@@ -2161,6 +2161,89 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
 
       await expect(launchTask(deps, { prompt: 'rejected', cwd: '/tmp' }))
         .rejects.toMatchObject({ code: 'pending_queue_full', capacity: ledger });
+    });
+  });
+
+  describe('CPU-aware admission (issue #1630)', () => {
+    function hostLoadDeps(
+      store: TaskStore,
+      threshold: number,
+      sample: { load1m: number; cpuCount: number },
+    ): LaunchServiceDeps {
+      return {
+        ...makeDeps(store),
+        getMaxHostLoadPerCpu: () => threshold,
+        getHostLoadSample: () => sample,
+      };
+    }
+
+    it('rejects with HostLoadAdmissionError when load-per-core exceeds the threshold, before any task record', async () => {
+      const store = new TaskStore();
+      // 4 cores, load 8 -> 2.0 per core, threshold 0.9.
+      const deps = hostLoadDeps(store, 0.9, { load1m: 8, cpuCount: 4 });
+      const before = store.listTasks().length;
+      let thrown: unknown;
+      try {
+        await launchTask(deps, { prompt: 'too hot', cwd: '/tmp' });
+      } catch (err) {
+        thrown = err;
+      }
+      expect(isHostLoadAdmissionError(thrown)).toBe(true);
+      const err = thrown as HostLoadAdmissionError;
+      expect(err.code).toBe('host_load_admission');
+      expect(err.loadPerCpu).toBeCloseTo(2, 5);
+      expect(err.maxLoadPerCpu).toBe(0.9);
+      expect(err.capacity).toBeDefined();
+      // A rejected launch must leave no task record behind.
+      expect(store.listTasks().length).toBe(before);
+    });
+
+    it('admits when load-per-core is below the threshold', async () => {
+      const store = new TaskStore();
+      const deps = hostLoadDeps(store, 0.9, { load1m: 2, cpuCount: 24 });
+      const result = await launchTask(deps, { prompt: 'plenty of headroom', cwd: '/tmp' });
+      expect(result.queued).toBe(false);
+      expect(store.getTask(result.task.id)).toBeDefined();
+    });
+
+    it('does not gate when disabled (threshold 0), even under extreme load', async () => {
+      const store = new TaskStore();
+      const deps = hostLoadDeps(store, 0, { load1m: 999, cpuCount: 1 });
+      const result = await launchTask(deps, { prompt: 'gate off', cwd: '/tmp' });
+      expect(result.queued).toBe(false);
+    });
+
+    it('exempts schedule-fired launches from the host-load gate', async () => {
+      const store = new TaskStore();
+      const deps = hostLoadDeps(store, 0.9, { load1m: 999, cpuCount: 1 });
+      const result = await launchTask(deps, {
+        prompt: 'scheduled',
+        cwd: '/tmp',
+        launchSource: 'schedule',
+      });
+      expect(result.queued).toBe(false);
+    });
+
+    it('fires below active capacity — host saturation is task-count-independent', async () => {
+      const store = new TaskStore();
+      const deps: LaunchServiceDeps = {
+        ...hostLoadDeps(store, 0.9, { load1m: 8, cpuCount: 4 }),
+        // Plenty of active headroom, no active tasks — but the host is saturated.
+        getMaxActiveTasks: () => 10,
+      };
+      await expect(launchTask(deps, { prompt: 'saturated but idle queue', cwd: '/tmp' }))
+        .rejects.toMatchObject({ code: 'host_load_admission' });
+    });
+
+    it('is inert when only the threshold is set but no sampler is wired', async () => {
+      const store = new TaskStore();
+      const deps: LaunchServiceDeps = {
+        ...makeDeps(store),
+        getMaxHostLoadPerCpu: () => 0.9,
+        // getHostLoadSample intentionally absent.
+      };
+      const result = await launchTask(deps, { prompt: 'no sampler', cwd: '/tmp' });
+      expect(result.queued).toBe(false);
     });
   });
 

@@ -23,6 +23,7 @@ import {
   isModelValidationError,
   isPendingQueueFullError,
   isSpawnBurstLimitError,
+  isHostLoadAdmissionError,
 } from '../launch-service.js';
 import { MAX_IDEMPOTENCY_KEY_LENGTH } from '../../shared/contracts/launch.js';
 import {
@@ -549,6 +550,18 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
           limit: err.limit,
           windowMs: err.windowMs,
           retryAfterMs: err.retryAfterMs,
+        }, 429);
+      }
+      // CPU-aware admission (issue #1630): host is CPU-saturated. Same 429
+      // shape as the other backpressure rejections, with the load reading so
+      // the caller can render WHY and back off until load drops.
+      if (isHostLoadAdmissionError(err)) {
+        return c.json({
+          error: err.message,
+          code: err.code,
+          capacity: err.capacity,
+          loadPerCpu: err.loadPerCpu,
+          maxLoadPerCpu: err.maxLoadPerCpu,
         }, 429);
       }
       const message = err instanceof Error ? err.message : String(err);

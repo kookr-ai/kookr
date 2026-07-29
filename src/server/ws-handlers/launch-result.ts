@@ -3,9 +3,11 @@ import {
   isCwdValidationError,
   isPendingQueueFullError,
   isSpawnBurstLimitError,
+  isHostLoadAdmissionError,
   type LaunchResult,
   type PendingQueueFullError,
   type SpawnBurstLimitError,
+  type HostLoadAdmissionError,
 } from '../launch-service.js';
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 
@@ -42,19 +44,29 @@ function isGrokAuthPreflightError(err: unknown): boolean {
  * refused — the same breakdown the REST 429 body and `GET /api/health`
  * `capacity` carry, not just a bare error string.
  */
-function describeBackpressure(err: PendingQueueFullError | SpawnBurstLimitError): string {
+function describeBackpressure(
+  err: PendingQueueFullError | SpawnBurstLimitError | HostLoadAdmissionError,
+): string {
   const cap = err.capacity;
+  const headline = isHostLoadAdmissionError(err)
+    ? 'The host is CPU-saturated — nothing was launched.'
+    : err.code === 'pending_queue_full'
+    ? 'The pending queue is full — nothing was launched.'
+    : 'This caller\'s spawn burst budget is exhausted — nothing was launched.';
   const lines = [
-    err.code === 'pending_queue_full'
-      ? 'The pending queue is full — nothing was launched.'
-      : 'This caller\'s spawn burst budget is exhausted — nothing was launched.',
+    headline,
     `- Capacity: ${cap.active}/${cap.maxActiveTasks} slots occupied ` +
       `(working ${cap.byClass.working}, awaiting-ack ${cap.byClass.finishedAwaitingAck}, ` +
       `hung-suspect ${cap.byClass.hungSuspect}, launching ${cap.byClass.launching}).`,
     `- Pending queue: ${cap.pendingQueueDepth} task(s)` +
       (isPendingQueueFullError(err) ? ` (limit ${err.maxPendingTasks}).` : '.'),
   ];
-  if (isSpawnBurstLimitError(err)) {
+  if (isHostLoadAdmissionError(err)) {
+    lines.push(
+      `- Host load: ${err.loadPerCpu.toFixed(2)} per core (threshold ${err.maxLoadPerCpu.toFixed(2)}). ` +
+      'Retry once host load drops, or raise/disable KOOKR_MAX_HOST_LOAD_PER_CPU.',
+    );
+  } else if (isSpawnBurstLimitError(err)) {
     lines.push(
       `- Burst budget: ${err.limit} launches per ${Math.round(err.windowMs / 60_000)}m for source "${err.source}"; ` +
       `retry in ~${Math.max(1, Math.ceil(err.retryAfterMs / 1000))}s.`,
@@ -88,7 +100,7 @@ export function handleLaunchResult(
   if (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[launch] failed prompt="${promptExcerpt}" err=${message}`);
-    const details = isPendingQueueFullError(err) || isSpawnBurstLimitError(err)
+    const details = isPendingQueueFullError(err) || isSpawnBurstLimitError(err) || isHostLoadAdmissionError(err)
       ? describeBackpressure(err)
       : isCwdValidationError(err)
       ? CWD_LAUNCH_RECOVERY_DETAILS
@@ -110,8 +122,10 @@ export function handleLaunchResult(
       summary: `Error starting "${promptExcerpt}": ${message}`,
       details,
       // Backpressure rejections are deliberate policy refusals with a retry
-      // path, not launch failures — warn, don't page (issue #1526 Phase C).
-      severity: isPendingQueueFullError(err) || isSpawnBurstLimitError(err) ? 'warning' : 'critical',
+      // path, not launch failures — warn, don't page (issue #1526 Phase C, #1630).
+      severity: isPendingQueueFullError(err) || isSpawnBurstLimitError(err) || isHostLoadAdmissionError(err)
+        ? 'warning'
+        : 'critical',
     });
     return { duplicate: false };
   }

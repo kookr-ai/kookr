@@ -32,7 +32,7 @@ vi.mock('../use-cases/delete-task.js', async (importActual) => {
   };
 });
 
-import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, PendingQueueFullError, SpawnBurstLimitError } from '../launch-service.js';
+import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, PendingQueueFullError, SpawnBurstLimitError, HostLoadAdmissionError } from '../launch-service.js';
 import { deleteTask } from '../use-cases/delete-task.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
@@ -1196,6 +1196,24 @@ describe('POST /api/tasks error paths', () => {
       retryAfterMs: 42_000,
       capacity: backpressureLedger,
     });
+  });
+
+  test('maps HostLoadAdmissionError to 429 with code, ledger, and load fields (issue #1630)', async () => {
+    vi.mocked(launchTask).mockRejectedValueOnce(new HostLoadAdmissionError(backpressureLedger, 2.0, 0.9));
+    const res = await mkApp(mkLoopDeps(new TaskStore())).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      code: 'host_load_admission',
+      loadPerCpu: 2.0,
+      maxLoadPerCpu: 0.9,
+      capacity: backpressureLedger,
+    });
+    expect(body.error).toMatch(/Host CPU load/);
   });
 
   test('forwards the X-Kookr-Actor header as launchActorId for actor-qualified budgets (issue #1526 C3)', async () => {

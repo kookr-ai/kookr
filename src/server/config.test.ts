@@ -6,8 +6,10 @@ import {
   DEFAULT_OPERATIONAL_ALERT_PROCESS_RSS_BYTES,
   DEFAULT_OPERATIONAL_ALERT_SUSTAIN_SAMPLES,
   DEFAULT_REQUEST_BODY_LIMIT_BYTES,
+  DEFAULT_MAX_HOST_LOAD_PER_CPU,
   readOperationalAlertConfigFromEnv,
   readRequestBodyLimitBytesFromEnv,
+  readMaxHostLoadPerCpuFromEnv,
 } from './config.js';
 
 describe('readOperationalAlertConfigFromEnv', () => {
@@ -120,5 +122,23 @@ describe('readRequestBodyLimitBytesFromEnv', () => {
         DEFAULT_REQUEST_BODY_LIMIT_BYTES,
       );
     }
+  });
+});
+
+describe('readMaxHostLoadPerCpuFromEnv', () => {
+  test('defaults to disabled (0) when env is empty', () => {
+    expect(readMaxHostLoadPerCpuFromEnv({})).toBe(DEFAULT_MAX_HOST_LOAD_PER_CPU);
+    expect(DEFAULT_MAX_HOST_LOAD_PER_CPU).toBe(0);
+  });
+
+  test('accepts a positive fractional load-per-core threshold', () => {
+    expect(readMaxHostLoadPerCpuFromEnv({ KOOKR_MAX_HOST_LOAD_PER_CPU: '0.9' })).toBeCloseTo(0.9, 5);
+    expect(readMaxHostLoadPerCpuFromEnv({ KOOKR_MAX_HOST_LOAD_PER_CPU: '2' })).toBe(2);
+  });
+
+  test('clamps negatives to 0 (disabled) and falls back for blank/non-numeric', () => {
+    expect(readMaxHostLoadPerCpuFromEnv({ KOOKR_MAX_HOST_LOAD_PER_CPU: '-1' })).toBe(0);
+    expect(readMaxHostLoadPerCpuFromEnv({ KOOKR_MAX_HOST_LOAD_PER_CPU: '  ' })).toBe(0);
+    expect(readMaxHostLoadPerCpuFromEnv({ KOOKR_MAX_HOST_LOAD_PER_CPU: 'abc' })).toBe(0);
   });
 });

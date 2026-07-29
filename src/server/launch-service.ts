@@ -35,6 +35,7 @@ import type { IdempotencyLedger } from '../core/idempotency-ledger.js';
 import { isTerminalStatus } from '../core/task-status.js';
 import { buildCapacityLedger, isReservedSlotLaunch, type CapacityLedger } from '../core/capacity-ledger.js';
 import { spawnBudgetKey, type SpawnRateLimiter, type SpawnRateVerdict } from '../core/spawn-rate-limiter.js';
+import { evaluateHostLoadAdmission, type HostLoadSample } from '../core/host-load-admission.js';
 import { LaunchPhaseTracker, type LaunchPhaseTimings } from '../core/launch-phase-timings.js';
 
 export type { LaunchOpts } from '../shared/contracts/launch.js';
@@ -146,6 +147,24 @@ export interface LaunchServiceDeps {
    * the task store alone (hungSuspect always 0).
    */
   getCapacityLedger?: () => CapacityLedger;
+  /**
+   * CPU-aware task admission (issue #1630). Live getter for the load-per-core
+   * threshold (`KOOKR_MAX_HOST_LOAD_PER_CPU`). When it returns a value > 0 AND
+   * {@link getHostLoadSample} is wired, a launch is rejected with
+   * {@link HostLoadAdmissionError} while the sampled 1-minute load average per
+   * logical CPU exceeds this threshold — so a burst of compile/test-heavy tasks
+   * cannot saturate the shared host and starve the supervisor event loop.
+   * `0`/absent disables the gate (behavior unchanged). Unlike the pending-queue
+   * guard this fires regardless of active-task count: host saturation is a
+   * function of aggregate CPU, not task count.
+   */
+  getMaxHostLoadPerCpu?: () => number;
+  /**
+   * Host load sampler for the admission gate above. Production wires this to
+   * `os.loadavg()` / `os.cpus()`; tests inject a fixed sample. Only consulted
+   * when {@link getMaxHostLoadPerCpu} returns a positive threshold.
+   */
+  getHostLoadSample?: () => HostLoadSample;
 }
 
 /**
@@ -329,6 +348,41 @@ export class SpawnBurstLimitError extends Error {
 /** Type guard for {@link SpawnBurstLimitError}, for callers mapping to 429. */
 export function isSpawnBurstLimitError(err: unknown): err is SpawnBurstLimitError {
   return err instanceof SpawnBurstLimitError;
+}
+
+/**
+ * Thrown by {@link launchTask} when CPU-aware admission (issue #1630) rejects a
+ * launch because the host 1-minute load average per core exceeds the
+ * configured `KOOKR_MAX_HOST_LOAD_PER_CPU` threshold. Same 429-with-ledger
+ * shape as the other backpressure rejections, distinct code so a caller can
+ * tell "the host is CPU-saturated" apart from "the queue is full". Thrown
+ * before any task record exists. Unlike the other guards it can fire even
+ * below `maxActiveTasks`: a handful of compile-heavy tasks saturate the host
+ * regardless of task count.
+ */
+export class HostLoadAdmissionError extends Error {
+  readonly code = 'host_load_admission';
+  constructor(
+    /** Capacity-ledger snapshot at rejection time. */
+    readonly capacity: CapacityLedger,
+    /** Sampled 1-minute load average per logical CPU. */
+    readonly loadPerCpu: number,
+    /** The configured load-per-core threshold that was exceeded. */
+    readonly maxLoadPerCpu: number,
+  ) {
+    super(
+      `Host CPU load is ${loadPerCpu.toFixed(2)} per core ` +
+      `(threshold ${maxLoadPerCpu.toFixed(2)}) — launch rejected to protect the ` +
+      'supervisor event loop from CPU starvation. Retry once host load drops, ' +
+      'or raise/disable KOOKR_MAX_HOST_LOAD_PER_CPU.',
+    );
+    this.name = 'HostLoadAdmissionError';
+  }
+}
+
+/** Type guard for {@link HostLoadAdmissionError}, for callers mapping to 429. */
+export function isHostLoadAdmissionError(err: unknown): err is HostLoadAdmissionError {
+  return err instanceof HostLoadAdmissionError;
 }
 
 /**
@@ -870,15 +924,39 @@ async function launchTaskCore(
     }
   }
 
-  // --- Server-side backpressure (issue #1526 Phase C / C3) ---
-  // Both guards run AFTER dedup (an idempotent replay of an existing task
+  // --- Server-side backpressure (issue #1526 Phase C / C3, #1630) ---
+  // These guards run AFTER dedup (an idempotent replay of an existing task
   // must never be rejected — it creates nothing) and BEFORE createTask (a
   // rejected launch must leave no task record). No await sits between these
   // checks and createTask, so the counts they read cannot go stale.
   //
-  // 1) Per-source spawn budget. Checked first: it identifies the misbehaving
-  //    CALLER, which is more actionable than the shared-queue state — a
-  //    runaway burst should see "you are bursting" even once it has also
+  // 0) CPU-aware admission (issue #1630). Checked first so a host-saturation
+  //    rejection never consumes a per-source burst token. Opt-in and
+  //    disabled by default (threshold 0), and — unlike the guards below —
+  //    independent of active-task count: a handful of compile/test-heavy
+  //    tasks saturate the shared host regardless of how many tasks are
+  //    "active". Schedule fires are exempt for the same reason the spawn
+  //    budget exempts them (operator-configured cadence, already bounded).
+  const hostLoadThreshold = deps.getMaxHostLoadPerCpu?.() ?? 0;
+  if (hostLoadThreshold > 0 && deps.getHostLoadSample && (opts.launchSource ?? 'api') !== 'schedule') {
+    const decision = evaluateHostLoadAdmission(deps.getHostLoadSample(), hostLoadThreshold);
+    if (!decision.admit) {
+      console.warn(
+        `[backpressure] host CPU load ${decision.loadPerCpu.toFixed(2)}/core ` +
+        `exceeds threshold ${decision.threshold.toFixed(2)} — rejecting launch`,
+      );
+      throw new HostLoadAdmissionError(
+        snapshotCapacityLedger(deps, maxActive),
+        decision.loadPerCpu,
+        decision.threshold,
+      );
+    }
+  }
+
+  // 1) Per-source spawn budget. Checked before the queue-depth guard: it
+  //    identifies the misbehaving CALLER, which is more actionable than the
+  //    shared-queue state — a runaway burst should see "you are bursting"
+  //    even once it has also
   //    filled the queue. Schedule fires are exempt (see SpawnRateLimiter
   //    module docs): their cadence is operator-configured and already bounded
   //    by per-schedule coalescing + dead-man alerting.

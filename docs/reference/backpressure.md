@@ -8,15 +8,22 @@ cap (FM11). This page documents the mechanisms that make the server say
 "no" honestly instead.
 
 Sections 1–4 are **depth-based**: they measure the pending queue / creation
-rate and reject with **429**. Section 5 is **load-based** (issue #1590): it
-measures the server's event-loop lag and sheds with **503** when the process
-is saturated — an orthogonal axis, because a wedged event loop hangs a spawn
-POST regardless of how empty the queue is.
+rate and reject with **429**. Sections 5–6 are **load-based**: Section 5
+(issue #1590) measures the server's event-loop lag and sheds with **503** when
+the process is *already* saturated; Section 6 (issue #1630) measures the *host*
+CPU load average and rejects with **429** before the host becomes saturated.
+Both are an orthogonal axis to the queue depth — a wedged event loop hangs a
+spawn POST regardless of how empty the queue is, and a CPU-saturated host
+starves the supervisor regardless of task *count* (`maxActiveTasks` bounds
+count, not aggregate CPU). The two load-based gates are complementary signals:
+host load average is a **leading** indicator (the host is hot but the loop may
+not lag yet), event-loop delay is the **lagging** symptom (the loop is already
+starved).
 
 The settings for sections 1–4 live in the normal settings store
 (`GET/PUT /api/settings`) and are read through live getters — a change applies
-without a restart. The section 5 thresholds are environment variables
-(`KOOKR_ADMISSION_*`, read at startup).
+without a restart. The section 5 and 6 thresholds are environment variables
+(`KOOKR_ADMISSION_*` / `KOOKR_MAX_HOST_LOAD_PER_CPU`, read at startup).
 
 | Setting | Default | Range | Purpose |
 | --- | --- | --- | --- |
@@ -214,6 +221,46 @@ and `src/server/routes/task-routes.test.ts` (route):
 - **INV4** — the gate fails open when disabled (`threshold ≤ 0`) or when the
   saturation signal is missing/non-finite.
 
+## 6. Host CPU-load admission (`KOOKR_MAX_HOST_LOAD_PER_CPU`)
+
+Section 5 sheds once the event loop is *already* lagging — a lagging symptom.
+Section 6 (issue #1630) acts on the **leading** signal: the host 1-minute load
+average per logical CPU. The supervisor shares one host with every agent task
+it spawns and has **no CPU isolation** from them; a burst of compile/test-heavy
+tasks (`rustc`, full `pnpm test` suites) pushes load past the core count and
+starves the supervisor event loop, so `GET /api/health` and `POST /api/tasks`
+time out for minutes even though the process is alive. `maxActiveTasks` bounds
+task *count*, not aggregate *CPU*, so a handful of heavy tasks saturate the host
+regardless of how many are "active".
+
+This gate is a launch-service backpressure guard (like sections 1–3), so it
+rejects with **429**, but it is **load-based** and — unlike the depth guards —
+fires **independently of active-task count**. On each launch, when
+`KOOKR_MAX_HOST_LOAD_PER_CPU > 0`, the service samples `os.loadavg()[0] /
+os.cpus().length`; if that exceeds the threshold the launch is rejected **before
+any task record is created**:
+
+- **REST** (`POST /api/tasks`): HTTP **429**, body
+  `{ error, code: "host_load_admission", capacity, loadPerCpu, maxLoadPerCpu }` —
+  the same capacity-ledger shape as the depth 429s, plus the sampled load. The
+  distinct code lets a client tell "the host is CPU-saturated, back off until
+  load drops" apart from `pending_queue_full` / `spawn_burst_limit`.
+- It is checked **before** the per-source spawn budget, so a host-saturation
+  rejection never consumes a burst token.
+- **Schedule-fired launches are exempt** (like the spawn budget): their cadence
+  is operator-configured and already bounded.
+
+| Setting | Default | Range | Purpose |
+| --- | --- | --- | --- |
+| `KOOKR_MAX_HOST_LOAD_PER_CPU` | 0 (disabled) | ≥0 load-per-core, `0` disables | Host 1-min load average per CPU at/above which launches are rejected with 429 |
+
+The gate is **opt-in** and disabled by default (`0`), so behavior is unchanged
+unless an operator sets it; a sensible starting point on a busy shared host is
+~0.9–1.0 (reject once average load reaches the core count). It **fails open** —
+a non-finite load sample or a non-positive CPU count admits the launch — so a
+bad reading never wedges the spawn path shut. The threshold is read once at
+startup (an operational knob, not a live-tunable setting).
+
 ## Error shape summary
 
 ```jsonc
@@ -247,5 +294,14 @@ and `src/server/routes/task-routes.test.ts` (route):
   "observedEventLoopDelayP95Ms": 1450,
   "thresholdMs": 1000,
   "retryAfterSeconds": 2
+}
+
+// 429, code "host_load_admission" — load-based (§6, issue #1630)
+{
+  "error": "Host CPU load is 2.00 per core (threshold 0.90) — launch rejected …",
+  "code": "host_load_admission",
+  "capacity": { /* same ledger shape */ },
+  "loadPerCpu": 2.0,
+  "maxLoadPerCpu": 0.9
 }
 ```
