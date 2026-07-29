@@ -17,11 +17,12 @@ Usage:
   kookr logs <taskId> [OPTIONS]   Tail a task's recent hook-event activity.
   kookr command outcome [commandId] Inspect local/remote command outcomes as JSONL.
   kookr ralph <command> <taskId> [--json] Inspect or control a Ralph loop.
+  kookr schedule <verb> [OPTIONS]  List/run/enable/disable schedules.
   kookr drain|resume [OPTIONS]  Control operator drain mode.
   kookr maintenance prune [OPTIONS]   Prune aged completed-task data-dir artifacts.
   kookr maintenance backup [OPTIONS]  Create a crash-consistent data-dir backup tarball.
   kookr lesson status|drain|remember  Durable lesson-write spool (kb degraded path).
-  kookr emission plan|dedupe|metrics|defer  Drain-coupled issue filing budget + dedupe.
+  kookr emission plan|dedupe|metrics|defer|version  Drain-coupled issue filing budget + dedupe.
   kookr pr-checklist verify|doctor [OPTIONS]  Verify PR checklist or report local gate fail-open rate.
   kookr context-pack --spec <f> --out <f>  Build a spawn-time context pack from a JSON spec.
   kookr push test <deviceId>    Send a relay push test.
@@ -94,6 +95,14 @@ async function main({
   if (command === 'ralph') {
     const { main: runRalphCli } = await import('./kookr-ralph.js');
     return runRalphCli({ argv: rest, env, out, err, exit });
+  }
+
+  // Schedule list/run/enable/disable (issue #1399). Thin HTTP client against
+  // the running server's /api/schedules routes, so it dispatches here rather
+  // than booting a server.
+  if (command === 'schedule') {
+    const { main: runScheduleCli } = await import('./kookr-schedule.js');
+    return runScheduleCli({ argv: rest, env, out, err, exit });
   }
 
   if (command === 'logs') {

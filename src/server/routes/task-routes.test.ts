@@ -8,6 +8,7 @@ import { loadTasks } from '../../core/task-persistence.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { Monitor } from '../../core/monitor.js';
 import { Watchdog } from '../../core/watchdog.js';
+import { getStuckFlagPrecision, resetStuckFlagPrecision } from '../../core/stuck-flag-precision.js';
 import type { TaskRouteDeps } from './shared.js';
 import type { ServerMessage, SystemResourceStatus } from '../../shared/contracts/messages.js';
 import { performance } from 'node:perf_hooks';
@@ -31,7 +32,7 @@ vi.mock('../use-cases/delete-task.js', async (importActual) => {
   };
 });
 
-import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, PendingQueueFullError, SpawnBurstLimitError } from '../launch-service.js';
+import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, PendingQueueFullError, SpawnBurstLimitError, HostLoadAdmissionError } from '../launch-service.js';
 import { deleteTask } from '../use-cases/delete-task.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
@@ -436,6 +437,11 @@ describe('stuckReason projection (issue #1526 Phase B)', () => {
     return rows.find((t) => t.id === id);
   }
 
+  // The precision counter (#1653) is a process-local singleton mutated by the
+  // stuckReason projection on every /api/tasks poll — reset it so the
+  // liveness-cross-check assertions below start from zero.
+  beforeEach(() => resetStuckFlagPrecision());
+
   test('pendingSignal completion_ready → stuckReason awaiting_completion_ack, on both full and compact views', async () => {
     const taskStore = new TaskStore();
     const task = seedInProgressTask(taskStore, 'kookr-ack');
@@ -463,6 +469,51 @@ describe('stuckReason projection (issue #1526 Phase B)', () => {
     const app = mkApp(deps);
     const row = findRow(await (await app.request('/api/tasks')).json(), task.id);
     expect(row.stuckReason).toBe('waiting_on_input');
+    // No watchdog liveness for this agent → nothing to cross-check → real flag.
+    expect(getStuckFlagPrecision()).toMatchObject({ flags: 1, suppressed: 0 });
+  });
+
+  test('#1653: needs_input on an agent with recent watchdog liveness is suppressed (no false alarm) and recorded as a suppression', async () => {
+    const taskStore = new TaskStore();
+    const task = seedInProgressTask(taskStore, 'kookr-live');
+    const queue = new AttentionQueue();
+    queue.enqueue('kookr-live', anomaly({ agentId: 'kookr-live', type: 'needs_input' }));
+
+    const deps = mkLoopDeps(taskStore);
+    deps.queue = queue;
+    // Spinner/token counter animating in the same minute the anomaly queued:
+    // register the agent with a hook event ~now so the liveness cross-check fires.
+    const watchdog = new Watchdog();
+    watchdog.registerAgent('kookr-live', Date.now());
+    deps.watchdog = watchdog;
+
+    const app = mkApp(deps);
+    const row = findRow(await (await app.request('/api/tasks')).json(), task.id);
+    expect(row.stuckReason).toBeUndefined();
+    expect(Object.keys(row)).not.toContain('stuckReason');
+    // The would-be false positive is counted, so the fix is measurable.
+    expect(getStuckFlagPrecision()).toMatchObject({ flags: 0, suppressed: 1 });
+  });
+
+  test('#1653: polling the same suppressed agent repeatedly counts one episode, not one per poll', async () => {
+    const taskStore = new TaskStore();
+    const task = seedInProgressTask(taskStore, 'kookr-poll');
+    const queue = new AttentionQueue();
+    queue.enqueue('kookr-poll', anomaly({ agentId: 'kookr-poll', type: 'needs_input' }));
+
+    const deps = mkLoopDeps(taskStore);
+    deps.queue = queue;
+    const watchdog = new Watchdog();
+    watchdog.registerAgent('kookr-poll', Date.now());
+    deps.watchdog = watchdog;
+
+    const app = mkApp(deps);
+    for (let i = 0; i < 5; i++) {
+      const row = findRow(await (await app.request('/api/tasks')).json(), task.id);
+      expect(row.stuckReason).toBeUndefined();
+    }
+    // 5 polls of one suppressed episode → a single suppressed tick.
+    expect(getStuckFlagPrecision()).toMatchObject({ flags: 0, suppressed: 1 });
   });
 
   test('queued permission_blocked anomaly → stuckReason permission_blocked', async () => {
@@ -1145,6 +1196,24 @@ describe('POST /api/tasks error paths', () => {
       retryAfterMs: 42_000,
       capacity: backpressureLedger,
     });
+  });
+
+  test('maps HostLoadAdmissionError to 429 with code, ledger, and load fields (issue #1630)', async () => {
+    vi.mocked(launchTask).mockRejectedValueOnce(new HostLoadAdmissionError(backpressureLedger, 2.0, 0.9));
+    const res = await mkApp(mkLoopDeps(new TaskStore())).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      code: 'host_load_admission',
+      loadPerCpu: 2.0,
+      maxLoadPerCpu: 0.9,
+      capacity: backpressureLedger,
+    });
+    expect(body.error).toMatch(/Host CPU load/);
   });
 
   test('forwards the X-Kookr-Actor header as launchActorId for actor-qualified budgets (issue #1526 C3)', async () => {

@@ -127,7 +127,10 @@ export async function reapHungTask(
   const disposition = buildReapDisposition(merged, now.toISOString());
   const outcome = disposition.outcome ?? 'terminated';
 
-  await terminateTask(task.id, deps.lifecycleDeps);
+  await terminateTask(task.id, deps.lifecycleDeps, {
+    reason: 'timeout',
+    detail: `hung-task-reaper: silent for ${Math.round(evidence.silentForMs / 1000)}s (threshold ${Math.round(evidence.thresholdMs / 1000)}s)`,
+  });
 
   // Record the disposition on the (still-present) terminated task record. The
   // store keeps reaped tasks, and setDisposition is first-write-wins, so this

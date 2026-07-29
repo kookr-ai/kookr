@@ -73,6 +73,7 @@ describe('Settings API', () => {
       hungTaskReapMinutes: 180,
       launchTimeoutSeconds: 180,
       deadManScheduleMinutes: 120,
+      scheduleFailureAlertThreshold: 3,
       maxPendingTasks: 24,
       pendingTaskTtlMinutes: 240,
       spawnBurstLimit: 30,

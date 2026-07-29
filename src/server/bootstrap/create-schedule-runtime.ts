@@ -4,6 +4,7 @@ import type { ServerMessage } from '../../shared/contracts/messages.js';
 import { launchTask, type LaunchServiceDeps } from '../launch-service.js';
 import { isTaskBlockingSchedule, ScheduleRunner } from '../schedule-runner.js';
 import { ScheduleDeadManSwitch } from '../schedule-dead-man.js';
+import { ScheduleResolutionAlerter } from '../schedule-resolution-alert.js';
 import { deriveLedgerEnrichment, ScheduleService } from '../schedule-service.js';
 import { ScheduleValidator } from '../schedule-validator.js';
 
@@ -21,6 +22,12 @@ export interface ScheduleRuntimeDeps {
    * back to the module default (120m).
    */
   getDeadManScheduleMs?: () => number;
+  /**
+   * Live getter for the per-schedule consecutive-failure alert threshold
+   * (issue #1665, `scheduleFailureAlertThreshold` setting). Absent falls back
+   * to the schedule service default.
+   */
+  getScheduleFailureAlertThreshold?: () => number;
 }
 
 export interface ScheduleRuntime {
@@ -43,6 +50,12 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     // issue #1582: join cost/artifacts onto ledger rows at write time by
     // reading the completed fire's task from the live store.
     resolveLedgerEnrichment: (taskId) => deriveLedgerEnrichment(deps.taskStore.getTask(taskId)),
+    // issue #1665: raise a per-schedule failure alert through the same
+    // dashboard alert channel the dead-man switch uses.
+    emitAlert: (message) => deps.broadcastToAll(message),
+    ...(deps.getScheduleFailureAlertThreshold
+      ? { getFailureAlertThreshold: deps.getScheduleFailureAlertThreshold }
+      : {}),
   });
   await scheduleService.reconcileOnStartup(deps.taskStore);
 
@@ -75,6 +88,13 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     deadMan: new ScheduleDeadManSwitch({
       broadcast: deps.broadcastToAll,
       ...(deps.getDeadManScheduleMs ? { getDeadManMs: deps.getDeadManScheduleMs } : {}),
+    }),
+    // issue #1661: operational alert when a schedule's playbook stops resolving
+    // in its (defaulted) tier — including one silently broken by the scope
+    // migration. Fires within one validation cycle instead of only surfacing
+    // as a ledger `dispatch_failed` on the next fire.
+    resolutionAlerter: new ScheduleResolutionAlerter({
+      broadcast: deps.broadcastToAll,
     }),
   });
 

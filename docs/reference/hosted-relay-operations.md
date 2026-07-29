@@ -101,6 +101,33 @@ accept path does not enumerate valid share IDs.
 Alerts are emitted for maintenance mode, emergency disable, rate-limit hits,
 stale heartbeat age, policy sync failures, and 5xx threshold crossings.
 
+## Health And Readiness Probes
+
+The relay exposes two orthogonal probe endpoints so an orchestrator can tell a
+degraded-but-alive process apart from one that must stop receiving traffic:
+
+- `GET /health` — liveness. Always returns 200 while the process is running, so
+  a load balancer or Kubernetes liveness probe does not restart a relay that is
+  merely degraded. The JSON body reports `status` (`ok` or `degraded`),
+  `dbReachable`, and the hosted-relay mode; it also carries hosted status and
+  TLS expiry for external certificate-expiry alerting.
+- `GET /ready` — readiness. Returns 200 `{ "ready": true }` only when the state
+  DB is reachable and the relay is not emergency-disabled. It returns 503 with
+  `{ "ready": false, "reason": "db-unreachable" }` when the SQLite state probe
+  fails, or `{ "ready": false, "reason": "emergency-disabled" }` when hosted
+  mode is `emergencyDisabled`. Point the load balancer / ingress readiness check
+  at `/ready` so a degraded instance is cordoned (stops receiving traffic)
+  without being restarted.
+
+### Graceful Shutdown
+
+The relay traps `SIGTERM` and `SIGINT` and runs its normal teardown exactly
+once: in-flight WebSockets are closed with code 1001 (going away), the HTTP
+server drains, and the SQLite state store is checkpointed (WAL) and closed. A
+second signal during shutdown is ignored, and if teardown does not finish within
+the grace deadline the process force-exits so a hung close cannot wedge a
+rolling deploy.
+
 ## Terminal Viewing Production Gate
 
 Hosted relay terminal viewing is fail-closed. If `KOOKR_HOSTED_RELAY_ENABLED=1`

@@ -25,7 +25,7 @@ import type {
   Task,
   TaskCompletionFeedback,
 } from './task-read-model.js';
-import { isTerminalStatus, type TaskStatus } from './task-status.js';
+import { isTerminalStatus, type TaskStatus, type TerminationCause } from './task-status.js';
 import {
   DETERMINISTIC_RELATION_CONFIDENCE,
   taskRelationKey,
@@ -57,7 +57,8 @@ export type {
   TaskLaunchHealthSummary,
 } from './task-read-model.js';
 export type { ChildSessionInfo, GitInfo, SessionInfo, WorktreeHealth } from './session-read-model.js';
-export { isActiveStatus, isTerminalStatus } from './task-status.js';
+export { isActiveStatus, isTerminalStatus, isRecoverableTermination } from './task-status.js';
+export type { TerminationReason, TerminationCause } from './task-status.js';
 export type { TaskStatus } from './task-status.js';
 export type { TokenUsage } from './usage-types.js';
 
@@ -525,10 +526,18 @@ export class TaskStore {
   /**
    * Transition a task to 'terminated': all sessions died without explicit user action.
    * The user must acknowledge (→ completed) or reopen (→ open) to progress.
+   *
+   * `cause` records WHY the task died (issue #1664) so a swept cohort is
+   * diagnosable and the recovery path can tell a resumable kill from a
+   * deliberate one. When omitted the reason defaults to `unknown` — a
+   * terminated task always has a non-empty `terminationReason`.
    */
-  terminateTask(id: string): Task {
+  terminateTask(id: string, cause?: TerminationCause): Task {
     const task = this.transition(id, 'terminated');
     task.terminatedAt = new Date();
+    task.terminationReason = cause?.reason ?? 'unknown';
+    if (cause?.signal) task.terminationSignal = cause.signal;
+    if (cause?.detail) task.terminationDetail = cause.detail;
     return cloneTask(task);
   }
 

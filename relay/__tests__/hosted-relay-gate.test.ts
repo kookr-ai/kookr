@@ -414,6 +414,38 @@ describe('hosted relay terminal viewing production gate', () => {
     expect(healthBody.stateWriteFailure).toBeUndefined();
   });
 
+  it('returns 503 on /ready when hosted mode is emergencyDisabled while /health stays 200', async () => {
+    // Issue #1393: emergency-disabled is a readiness failure (cordon), not a
+    // liveness failure (restart). /health body still reports degraded.
+    tmp = await mkdtemp(join(tmpdir(), 'kookr-hosted-relay-gate-'));
+    relay = createRelayServer({
+      adminToken: 'admin-secret',
+      accountToken: 'account-secret',
+      stateDbPath: join(tmp, 'relay.sqlite'),
+      allowInsecureClients: true,
+      hostedRelay: {
+        enabled: true,
+        operationalGatesMet: true,
+        mode: 'emergencyDisabled',
+      },
+    });
+    await listen(relay);
+
+    const health = await fetch(new URL('/health', relay.url()));
+    expect(health.status).toBe(200);
+    await expect(health.json()).resolves.toMatchObject({
+      status: 'degraded',
+      hostedRelay: { mode: 'emergencyDisabled' },
+    });
+
+    const ready = await fetch(new URL('/ready', relay.url()));
+    expect(ready.status).toBe(503);
+    await expect(ready.json()).resolves.toEqual({
+      ready: false,
+      reason: 'emergency-disabled',
+    });
+  });
+
   it.each([
     ['notConfigured', 'hosted-relay-production-gate'],
     ['maintenance', 'hosted-relay-maintenance'],

@@ -1015,6 +1015,34 @@ describe('Monitor', () => {
       expect(monitor.isPermissionBlocked('agent-1')).toBe(true);
     });
 
+    test('returns true when permission_request is followed by trailing idle_prompt', () => {
+      // Claude Code fires Notification(idle_prompt) ~60s after idle; an agent
+      // waiting on a permission prompt is idle. The detector trims the overlay
+      // so the finding stays permission_blocked — the gate must too (#1367).
+      monitor.processEvents('agent-1', [
+        makePermissionRequest('s1', 'Bash'),
+        {
+          type: 'notification',
+          sessionId: 's1',
+          notificationType: 'idle_prompt',
+          message: 'Claude is waiting for your input',
+        },
+      ]);
+      expect(monitor.getCurrentAnomaly('agent-1')?.type).toBe('permission_blocked');
+      expect(monitor.isPermissionBlocked('agent-1')).toBe(true);
+    });
+
+    test('returns false for AskUserQuestion permission_request (needs_input, not blocked)', () => {
+      // Matches detectPermissionBlocked: AskUserQuestion's own approval prompt
+      // is needs_input, not permission_blocked.
+      monitor.processEvents('agent-1', [
+        makeToolUse('s1', 'AskUserQuestion'),
+        makePermissionRequest('s1', 'AskUserQuestion'),
+      ]);
+      expect(monitor.getCurrentAnomaly('agent-1')?.type).toBe('needs_input');
+      expect(monitor.isPermissionBlocked('agent-1')).toBe(false);
+    });
+
     test('returns false when last event is not permission_request', () => {
       monitor.processEvents('agent-1', [makeToolUse('s1', 'Bash')]);
       expect(monitor.isPermissionBlocked('agent-1')).toBe(false);
@@ -1046,6 +1074,29 @@ describe('Monitor', () => {
       expect(blocked).toHaveLength(2);
       expect(blocked).toContain('agent-1');
       expect(blocked).toContain('agent-3');
+    });
+
+    test('still lists agent after trailing idle_prompt on permission_request', () => {
+      monitor.processEvents('agent-1', [
+        makePermissionRequest('s1', 'Bash'),
+        {
+          type: 'notification',
+          sessionId: 's1',
+          notificationType: 'idle_prompt',
+          message: 'Claude is waiting for your input',
+        },
+      ]);
+      monitor.processEvents('agent-2', [makeToolUse('s2', 'Read')]);
+
+      expect(monitor.getPermissionBlockedAgents()).toEqual(['agent-1']);
+    });
+
+    test('excludes AskUserQuestion permission_request', () => {
+      monitor.processEvents('agent-1', [
+        makeToolUse('s1', 'AskUserQuestion'),
+        makePermissionRequest('s1', 'AskUserQuestion'),
+      ]);
+      expect(monitor.getPermissionBlockedAgents()).toEqual([]);
     });
 
     test('excludes stopped agents', () => {

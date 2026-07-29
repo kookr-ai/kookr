@@ -7,6 +7,7 @@ import { readTelemetryLog } from '../../core/telemetry.js';
 import { analyzeSession } from '../../core/friction-analyzer.js';
 import { buildLiveFrictionCalibrationSnapshot } from '../../core/live-friction-calibration.js';
 import { getDetectionStats } from '../../core/detection-stats.js';
+import { getStuckFlagPrecision } from '../../core/stuck-flag-precision.js';
 import { buildLaunchDependencyDiagnostics } from '../../core/launch-dependency-diagnostics.js';
 import { generateReportFromFile, formatReport } from '../../core/shadow-report.js';
 import { getSnapshotAgentsRaw } from '../use-cases/get-snapshot.js';
@@ -281,7 +282,12 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
 
   app.get('/api/queue', (c) => c.json(queue.getAll()));
 
-  app.get('/api/anomaly-stats', (c) => c.json(getDetectionStats()));
+  app.get('/api/anomaly-stats', (c) =>
+    // `stuckFlagPrecision` (issue #1653): waiting_on_input flags vs would-be
+    // false positives suppressed by the liveness cross-check, plus the derived
+    // precision ratio. Additive field — existing consumers ignore it.
+    c.json({ ...getDetectionStats(), stuckFlagPrecision: getStuckFlagPrecision() }),
+  );
 
   app.get(REQUEST_LATENCIES_ROUTE, (c) => {
     if (!deps.requestDurationMetrics) {

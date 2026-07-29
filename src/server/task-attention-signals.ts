@@ -1,7 +1,7 @@
 import type { Task } from '../core/tasks.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { Watchdog } from '../core/watchdog.js';
-import { isTaskHungSuspect } from '../core/hung-task-reaper.js';
+import { isTaskHungSuspect, type HungTaskLivenessEvidence } from '../core/hung-task-reaper.js';
 
 /**
  * Structural task shape this module needs — deliberately narrower than
@@ -27,6 +27,13 @@ export interface TaskAttentionSignals {
   hungSuspect: boolean;
   /** `AttentionQueue.peek(agentId)?.type`, or `null` when nothing is queued or the task has no session yet. */
   queuedAnomalyType: string | null;
+  /**
+   * Raw liveness timestamps for the task's agent (`Watchdog.getState`), or
+   * `undefined` when the task has no session or the watchdog has no state for
+   * it. Fed to `deriveStuckReason`'s `waiting_on_input` liveness cross-check
+   * (issue #1653) so an actively-working agent is never flagged.
+   */
+  liveness?: HungTaskLivenessEvidence;
 }
 
 const NO_SIGNALS: TaskAttentionSignals = { hungSuspect: false, queuedAnomalyType: null };
@@ -48,18 +55,19 @@ export function resolveTaskAttentionSignals(
 
   const queuedAnomalyType = deps.queue?.peek(agentId)?.type ?? null;
   const state = deps.watchdog?.getState(agentId);
+  const liveness: HungTaskLivenessEvidence | undefined = state
+    ? { lastHookEventAt: state.lastEventAt, lastPaneChangeAt: state.lastPaneChangeAt, lastTokenActivityAt: state.lastTokenActivityAt }
+    : undefined;
   const hungSuspect = isTaskHungSuspect(
     task,
     {
       queuedAnomalyType,
-      liveness: state
-        ? { lastHookEventAt: state.lastEventAt, lastPaneChangeAt: state.lastPaneChangeAt, lastTokenActivityAt: state.lastTokenActivityAt }
-        : undefined,
+      liveness,
       toolInProgress: deps.watchdog?.hasToolInProgress(agentId) ?? false,
       unconditionalStaleThresholdMs: deps.watchdog?.getConfig().unconditionalStaleThresholdMs ?? Infinity,
     },
     { now },
   );
 
-  return { hungSuspect, queuedAnomalyType };
+  return { hungSuspect, queuedAnomalyType, liveness };
 }

@@ -1061,10 +1061,20 @@ Create exactly one GitHub issue for every candidate whose `publishDecision` is `
 
 ### Phase 7.0 — Emission budget (mandatory before any `gh issue create`)
 
-Before filing, resolve how many new issues this run may open. When open backlog ≥ 60, the budget collapses to 2 regardless of `PUBLISH_TARGET`. Over-budget candidates are deferred to `~/.kookr/playbook-state/deferred-ideas/<repoSlug>.jsonl` (or appended to an existing umbrella issue) — never filed.
+Before filing, resolve how many new issues this run may open. Two coupled limits apply, and the plan reports the tighter one:
+
+- **Backlog cap.** When the target repo's open backlog ≥ 60, the budget collapses to 2 regardless of `PUBLISH_TARGET`.
+- **Drain cap (issue #1657).** `kookr emission plan` additionally caps the budget by the **target repo's own drain rate** — the count of issues it *closed* in the last 7 days. A repo draining ~1 issue/window admits ~0–1 new issues/window even when its absolute backlog sits under 60. This is keyed on `--repo` (the repository being filed into), never the emitting actor's home repo, so a high-drain actor filing into a low-drain repo is throttled by the low-drain target. Use `--no-drain-coupling` only to reproduce the legacy backlog-only budget.
+
+Over-budget candidates are deferred to `~/.kookr/playbook-state/deferred-ideas/<repoSlug>.jsonl` (or appended to an existing umbrella issue) — never filed.
 
 ```bash
 if [ "$PUBLISH" = "publish-safe" ]; then
+  # Best-effort: warn (do not block) if the running budget logic lags origin/main
+  # so a deploy lag can't silently disable the drain cap (#1657 criterion 3).
+  kookr emission version --json 2>&1 >/dev/null | grep -i 'ANOMALY' \
+    && echo "WARNING: emission budget logic lags origin/main — redeploy." || true
+
   # How many autonomous candidates are actually publishable this run.
   REQUESTED=$(jq '[.[] | select(.authority == "autonomous" and .publishDecision == "publish")] | length' "$IDEAS_LOG")
   EMISSION_PLAN=$(kookr emission plan --repo "$REPO" --requested "$REQUESTED" --json) \
@@ -1072,8 +1082,9 @@ if [ "$PUBLISH" = "publish-safe" ]; then
   ALLOWED=$(printf '%s' "$EMISSION_PLAN" | jq -r '.plan.allowedBudget')
   ACTION=$(printf '%s' "$EMISSION_PLAN" | jq -r '.plan.action')
   OPEN_BACKLOG=$(printf '%s' "$EMISSION_PLAN" | jq -r '.plan.openBacklogCount')
+  DRAIN_CAP=$(printf '%s' "$EMISSION_PLAN" | jq -r '.plan.drainCap // "n/a"')
   printf '%s\n' "$EMISSION_PLAN" > "$STATE_DIR/emission-plan.json"
-  echo "emission-budget: action=$ACTION allowed=$ALLOWED requested=$REQUESTED openBacklog=$OPEN_BACKLOG"
+  echo "emission-budget: action=$ACTION allowed=$ALLOWED requested=$REQUESTED openBacklog=$OPEN_BACKLOG drainCap=$DRAIN_CAP"
 fi
 ```
 

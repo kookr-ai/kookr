@@ -63,6 +63,8 @@ import {
   type ResourceStatusSampler,
 } from './resource-status-service.js';
 import { createOperationalAlertEvaluator } from './operational-alert-rules.js';
+import { loadavg, cpus } from 'node:os';
+import { readMaxHostLoadPerCpuFromEnv } from './config.js';
 import { LessonSpoolService } from './lesson-spool-service.js';
 import { defaultSpoolDir } from '../core/lesson-write-spool.js';
 import { SignalOutboxService } from './signal-outbox-service.js';
@@ -402,6 +404,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Live getter for the scheduled-task starvation dead-man window (issue
   // #1526 Phase C). Read on every scheduler tick.
   const getDeadManScheduleMs = () => currentSettings.deadManScheduleMinutes * 60_000;
+  // Live getter for the per-schedule consecutive-failure alert threshold (issue
+  // #1665). Read on every recorded terminal run so a settings PUT applies next.
+  const getScheduleFailureAlertThreshold = () => currentSettings.scheduleFailureAlertThreshold;
   // Honest server-side backpressure (issue #1526 Phase C / C3). All read the
   // live `currentSettings` binding, so a settings PUT applies to the next
   // launch / liveness tick without a restart.
@@ -994,6 +999,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const idempotencyLedger = new IdempotencyLedger(kookrDir);
   await idempotencyLedger.load();
 
+  // CPU-aware admission threshold (issue #1630). Read once at boot — this is an
+  // operational env knob, not a live-tunable setting; 0 (the default) disables
+  // the gate so behavior is unchanged unless an operator opts in.
+  const hostLoadAdmissionThreshold = readMaxHostLoadPerCpuFromEnv();
+  if (hostLoadAdmissionThreshold > 0) {
+    console.log(
+      `[backpressure] CPU-aware admission enabled: rejecting launches while host load ` +
+      `exceeds ${hostLoadAdmissionThreshold.toFixed(2)}/core (KOOKR_MAX_HOST_LOAD_PER_CPU)`,
+    );
+  }
+
   // Launch service deps — shared by WS handler, REST routes, and the Ralph
   // cycler's fresh-runtime launcher inside wireEventPipeline.
   const launchServiceDeps: LaunchServiceDeps = {
@@ -1028,6 +1044,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         reservedSlotSources: getReservedSlotSources(),
       });
     },
+    // CPU-aware admission (issue #1630): reject new launches while the host is
+    // CPU-saturated so a burst of compile/test-heavy tasks cannot starve the
+    // supervisor event loop. Opt-in via KOOKR_MAX_HOST_LOAD_PER_CPU (0 = off,
+    // the default), read at boot; the sample is read live per launch.
+    getMaxHostLoadPerCpu: () => hostLoadAdmissionThreshold,
+    getHostLoadSample: () => ({ load1m: loadavg()[0], cpuCount: cpus().length }),
   };
 
   let remoteLaunchBroker: import('../remote/launch-broker.js').RemoteLaunchBroker | undefined;
@@ -1152,6 +1174,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     broadcastToAll,
     isAccepting: () => drainController.isAccepting(),
     getDeadManScheduleMs,
+    getScheduleFailureAlertThreshold,
   });
   realtime.setScheduleStore(scheduleStore);
   realtime.setSnapshotAchievementsReady(true);

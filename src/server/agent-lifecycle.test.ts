@@ -836,7 +836,7 @@ describe('terminateTask', () => {
     expect(deps.adapter.stop).toHaveBeenCalledWith('kookr-dead');
     expect(deps.monitor.unregisterAgent).toHaveBeenCalledWith('kookr-dead');
     expect(deps.taskStore.updateSession).toHaveBeenCalledWith('task-99', 'kookr-dead', { lastStatus: 'completed' });
-    expect(deps.taskStore.terminateTask).toHaveBeenCalledWith('task-99');
+    expect(deps.taskStore.terminateTask).toHaveBeenCalledWith('task-99', undefined);
   });
 
   test('logs task_terminated with sessions_died reason', async () => {

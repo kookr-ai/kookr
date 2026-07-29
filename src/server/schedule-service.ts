@@ -18,7 +18,95 @@ import {
 import type { ScheduleRollup } from '../core/schedule-rollup.js';
 import type { TokenUsage } from '../core/usage-types.js';
 import type { LaunchPhaseTimings } from '../core/launch-phase-timings.js';
+import type { ServerMessage } from '../shared/contracts/messages.js';
 import { ScheduleValidator, validateCron } from './schedule-validator.js';
+import { OPERATIONAL_ALERT_AGENT_ID } from './operational-alert-rules.js';
+
+/** Default per-schedule consecutive-failure alert threshold (issue #1665). */
+export const DEFAULT_SCHEDULE_FAILURE_ALERT_THRESHOLD = 3;
+
+/**
+ * Next value of a schedule's `consecutiveFailures` counter (issue #1665) given
+ * the terminal `lastRunStatus` just recorded. A `completed` run resets the
+ * streak to 0; every other terminal status (a `failed` dispatch/skip outcome
+ * or a `cancelled` run) increments it. Pure so the counter transition is unit
+ * testable without a store.
+ */
+export function nextConsecutiveFailures(
+  previous: number | undefined,
+  status: 'completed' | 'cancelled' | 'failed',
+): number {
+  if (status === 'completed') return 0;
+  return (previous ?? 0) + 1;
+}
+
+/**
+ * Edge-triggered per-schedule failure alert (issue #1665): one `warning` alert
+ * the moment the consecutive-failure streak crosses the threshold, one `info`
+ * recovery alert when a later `completed` run clears a firing streak. Keyed per
+ * schedule id so distinct failing schedules don't collide on one alert key.
+ */
+export function buildScheduleFailureAlert(
+  schedule: Pick<Schedule, 'id' | 'name'>,
+  consecutiveFailures: number,
+  threshold: number,
+  lastMessage?: string,
+): Extract<ServerMessage, { type: 'alert' }> {
+  const detail = lastMessage ? ` Last error: ${lastMessage}.` : '';
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `Schedule "${schedule.name}" has failed ${consecutiveFailures} consecutive runs`,
+    details:
+      `Schedule "${schedule.name}" (${schedule.id}) has now failed ${consecutiveFailures} ` +
+      `consecutive runs, crossing the alert threshold of ${threshold} ` +
+      '(scheduleFailureAlertThreshold setting).' +
+      `${detail} Inspect the schedules panel and the schedule's execution ledger; ` +
+      'a run that completes successfully resets the counter and clears this alert. ' +
+      'This alert is raised once per failing episode (alert-only — no automatic remediation).',
+    severity: 'warning',
+    operationalAlert: {
+      key: `schedule:failures:${schedule.id}`,
+      metric: 'schedule_consecutive_failures',
+      state: 'fired',
+    },
+  };
+}
+
+export function buildScheduleFailureRecoveryAlert(
+  schedule: Pick<Schedule, 'id' | 'name'>,
+): Extract<ServerMessage, { type: 'alert' }> {
+  return {
+    type: 'alert',
+    agentId: OPERATIONAL_ALERT_AGENT_ID,
+    summary: `Recovered: schedule "${schedule.name}" completed a run again`,
+    details:
+      `Schedule "${schedule.name}" (${schedule.id}) completed a run, ` +
+      'resetting its consecutive-failure counter to 0 and clearing the failure alert.',
+    severity: 'info',
+    operationalAlert: {
+      key: `schedule:failures:${schedule.id}`,
+      metric: 'schedule_consecutive_failures',
+      state: 'recovered',
+    },
+  };
+}
+
+/**
+ * Outcomes recorded by `markExecutionOutcome` that count as a genuine schedule
+ * run failure and increment the consecutive-failure counter (issue #1665). Only
+ * `dispatch_failed` — the launch pipeline actually failed to start the run —
+ * qualifies. Every other outcome `markExecutionOutcome` handles is a benign
+ * deferral, NOT a failure, and must carry the counter forward unchanged:
+ * `skipped_active`/`skipped_coalesced` mean the previous run is still
+ * running/pending (a healthy schedule whose task simply outlives its cron
+ * interval, or one coalescing under capacity pressure — exactly when an
+ * operator wants LESS noise); `skipped_draining` is an operator drain;
+ * `skipped_manual`/`skipped_stale`/`skipped_capacity`/`deduplicated` are
+ * intentional skips; and `unknown_after_restart` is unresolved rather than
+ * failed. Counting any of those would mislabel healthy schedules as failing.
+ */
+const SCHEDULE_RUN_FAILURE_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = new Set(['dispatch_failed']);
 
 /**
  * Cost/tokens + artifact links joined onto a ledger row from its task at
@@ -69,6 +157,18 @@ export interface ScheduleServiceDeps {
    * stubbed in tests.
    */
   resolveLedgerEnrichment?: (taskId: string) => ScheduleLedgerEnrichment | undefined;
+  /**
+   * Sink for the per-schedule failure alert (issue #1665). Optional: when
+   * absent, the `consecutiveFailures` counter is still maintained and surfaced,
+   * but no alert is emitted. Wired to `broadcastToAll` in production.
+   */
+  emitAlert?: (message: Extract<ServerMessage, { type: 'alert' }>) => void;
+  /**
+   * Live getter for the consecutive-failure alert threshold (issue #1665).
+   * Read per recorded run so a settings change applies immediately. Falls back
+   * to {@link DEFAULT_SCHEDULE_FAILURE_ALERT_THRESHOLD} when absent.
+   */
+  getFailureAlertThreshold?: () => number;
 }
 
 export class ScheduleService {
@@ -76,6 +176,8 @@ export class ScheduleService {
   private readonly validator: ScheduleValidator;
   private readonly broadcast?: (payload: ScheduleListResponse) => void;
   private readonly resolveLedgerEnrichment?: (taskId: string) => ScheduleLedgerEnrichment | undefined;
+  private readonly emitAlert?: (message: Extract<ServerMessage, { type: 'alert' }>) => void;
+  private readonly getFailureAlertThreshold?: () => number;
   private runnerStartedAt?: string;
   private lastTickCompletedAt?: string;
   private lastError?: string;
@@ -87,6 +189,37 @@ export class ScheduleService {
     this.validator = deps.validator;
     this.broadcast = deps.broadcast;
     this.resolveLedgerEnrichment = deps.resolveLedgerEnrichment;
+    this.emitAlert = deps.emitAlert;
+    this.getFailureAlertThreshold = deps.getFailureAlertThreshold;
+  }
+
+  /**
+   * Emit the edge-triggered per-schedule failure alert (issue #1665) after a
+   * terminal run has been persisted. `previous` is the schedule as it was
+   * BEFORE this run (so `priorCount` is the real prior streak) and `nextCount`
+   * is the freshly-persisted counter (from {@link nextConsecutiveFailures}).
+   * Fires once on the healthy→failing edge (streak crosses the threshold) and
+   * once on the failing→healthy edge (a `completed` run resets a firing streak).
+   */
+  private emitFailureAlertOnEdge(previous: Schedule, nextCount: number, lastMessage?: string): void {
+    if (!this.emitAlert) return;
+    const priorCount = previous.consecutiveFailures ?? 0;
+    const threshold = this.resolveFailureAlertThreshold();
+    if (threshold <= 0) return;
+
+    if (priorCount < threshold && nextCount >= threshold) {
+      this.emitAlert(buildScheduleFailureAlert(previous, nextCount, threshold, lastMessage));
+    } else if (priorCount >= threshold && nextCount === 0) {
+      this.emitAlert(buildScheduleFailureRecoveryAlert(previous));
+    }
+  }
+
+  private resolveFailureAlertThreshold(): number {
+    const value = this.getFailureAlertThreshold?.();
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      return Math.floor(value);
+    }
+    return DEFAULT_SCHEDULE_FAILURE_ALERT_THRESHOLD;
   }
 
   listResponse(): ScheduleListResponse {
@@ -382,11 +515,21 @@ export class ScheduleService {
     // to `details.blockingTaskId` (the task this skip was actually blocked
     // by) preserves the pointer across any number of consecutive skips.
     const preservedTaskId = receipt.taskId ?? details.blockingTaskId;
+    // Failure-counter tracking (issue #1665). Only a genuine launch failure
+    // (`dispatch_failed`) increments; the benign deferrals/skips this method
+    // also records (previous run still active/pending, operator drain, manual/
+    // stale/dedup skips, unresolved-after-restart) carry the counter forward
+    // unchanged, so a healthy-but-slow or capacity-pressured schedule never
+    // trips the failure alert. See SCHEDULE_RUN_FAILURE_OUTCOMES.
+    const consecutiveFailures = SCHEDULE_RUN_FAILURE_OUTCOMES.has(outcome)
+      ? nextConsecutiveFailures(schedule.consecutiveFailures, 'failed')
+      : schedule.consecutiveFailures ?? 0;
     this.store.replace({
       ...schedule,
       lastRunAt: receipt.evaluatedAt,
       lastRunTaskId: receipt.taskId,
       lastRunStatus: 'failed',
+      consecutiveFailures,
       ...consumeCronTrigger(schedule, receipt.trigger, outcome === 'dispatch_failed', evaluatedAt),
       latestExecution: {
         receiptId,
@@ -419,6 +562,7 @@ export class ScheduleService {
     });
     await this.store.persist();
     this.broadcastSchedules();
+    this.emitFailureAlertOnEdge(schedule, consecutiveFailures, message);
   }
 
   async recordTaskTerminalOutcome(taskId: string, status: 'completed' | 'cancelled'): Promise<void> {
@@ -431,12 +575,14 @@ export class ScheduleService {
     // Join cost/artifacts onto the row at write time (issue #1582). A null
     // resolver or a task with no measured usage leaves the fields absent.
     const enrichment = this.resolveLedgerEnrichment?.(taskId) ?? {};
+    const consecutiveFailures = nextConsecutiveFailures(schedule.consecutiveFailures, status);
 
     this.store.replace({
       ...schedule,
       lastRunAt: new Date().toISOString(),
       lastRunTaskId: taskId,
       lastRunStatus: status,
+      consecutiveFailures,
       latestExecution: {
         ...schedule.latestExecution,
         outcome: status,
@@ -459,6 +605,7 @@ export class ScheduleService {
     });
     await this.store.persist();
     this.broadcastSchedules();
+    this.emitFailureAlertOnEdge(schedule, consecutiveFailures);
   }
 
   async reconcileOnStartup(taskStore: TaskStore): Promise<void> {
@@ -563,11 +710,21 @@ export class ScheduleService {
         // Enrich the reconciled-completion row too (issue #1582) — the task is
         // already in hand here, so join its cost/artifacts directly.
         const enrichment = deriveLedgerEnrichment(task);
+        // Keep the failure counter accurate across a restart-reconciled run and
+        // evaluate the alert edge on it (issue #1665). Emitting here rather than
+        // suppressing it closes a gap: a reconciled `cancelled` run that lands
+        // exactly on the threshold would otherwise consume the crossing edge
+        // silently, so a later live failure (already at/over threshold) could
+        // never fire. The edge trigger caps this at one alert per crossing
+        // schedule — bounded to schedules that had a mid-flight run at crash,
+        // not a boot-wide storm. `completed`/`terminated` reset and clear.
+        const reconciledFailures = nextConsecutiveFailures(schedule.consecutiveFailures, scheduleOutcome);
         this.store.replace({
           ...schedule,
           lastRunAt: task.updatedAt.toISOString(),
           lastRunTaskId: task.id,
           lastRunStatus: scheduleOutcome,
+          consecutiveFailures: reconciledFailures,
           latestExecution: {
             ...latest,
             outcome: scheduleOutcome,
@@ -589,6 +746,9 @@ export class ScheduleService {
           } : {}),
         });
         changed = true;
+        // Evaluate the alert edge against the pre-reconcile snapshot (issue
+        // #1665). `schedule` here is still the pre-`replace` value.
+        this.emitFailureAlertOnEdge(schedule, reconciledFailures);
       }
     }
 

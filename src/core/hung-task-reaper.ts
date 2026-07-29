@@ -55,6 +55,29 @@ export interface HungTaskLivenessEvidence {
   lastTokenActivityAt: number;
 }
 
+/**
+ * True when ANY liveness channel (hook event, pane-content change, token
+ * movement) advanced within `withinMs` of `now` — i.e. the agent is
+ * demonstrably working right now (issue #1653). This is the inverse of the
+ * reaper's all-channels-silent rule: the reaper needs the MOST RECENT of the
+ * three to be silent for the full threshold, so here we compare that same
+ * most-recent timestamp against a short grace window. Callers use it to
+ * suppress a `waiting_on_input` stuck-flag that would otherwise fire against a
+ * task whose pane/spinner/token counter was live within the same minute.
+ */
+export function hasRecentLiveness(
+  liveness: HungTaskLivenessEvidence,
+  now: number,
+  withinMs: number,
+): boolean {
+  const lastActivityAt = Math.max(
+    liveness.lastHookEventAt,
+    liveness.lastPaneChangeAt,
+    liveness.lastTokenActivityAt,
+  );
+  return now - lastActivityAt < withinMs;
+}
+
 export type HungTaskReapIneligibleReason =
   /** A2 hard exclusion: the task's population overlaps A1's — it already has a pending signal. */
   | 'has_pending_signal'

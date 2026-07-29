@@ -130,6 +130,28 @@ describe('Crash Recovery', () => {
     expect(taskStore.getTask(child.id)!.sessions).toHaveLength(1);
   });
 
+  test('does NOT relaunch a task terminated for a non-recoverable reason (#1664)', async () => {
+    // A deliberate kill (operator / supervisor sweep) must not auto-resume.
+    const cwd = join(tempDir, 'manual-kill');
+    const task = await setupCrashedTask('Long-running work', cwd);
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    expect(taskStore.getTask(task.id)!.status).toBe('terminated');
+
+    // Simulate the termination having been classified as a deliberate kill.
+    const mutable = taskStore.getTaskForMutation(task.id)!;
+    mutable.terminationReason = 'manual';
+
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+
+    expect(result.relaunched).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0].taskId).toBe(task.id);
+    expect(result.skipped[0].reason).toContain('non-recoverable termination');
+    // Stays terminal — not reopened.
+    expect(taskStore.getTask(task.id)!.status).toBe('terminated');
+  });
+
   test('still relaunches a spawned task that crashed mid-turn (#693 guard is clean-finish-only)', async () => {
     // The clean-finish skip must not suppress genuine crash recovery: a spawned
     // task whose newest session died while still `running` is a crash and is

@@ -554,11 +554,14 @@ export class Monitor {
 
   /**
    * Check if an agent is currently blocked on a permission request.
+   *
+   * Uses the derived anomaly (same trim + AskUserQuestion exclusion as
+   * `detectPermissionBlocked`) rather than the raw last event, so a trailing
+   * `notification(idle_prompt)` after a permission_request does not make
+   * remote approval throw "session is not permission-blocked" (#1367).
    */
   isPermissionBlocked(agentId: string): boolean {
-    const events = this.agentEvents.get(agentId);
-    if (!events || events.length === 0) return false;
-    return events[events.length - 1].type === 'permission_request';
+    return this.getCurrentAnomaly(agentId)?.type === 'permission_blocked';
   }
 
   /**
@@ -566,9 +569,9 @@ export class Monitor {
    */
   getPermissionBlockedAgents(): string[] {
     const blocked: string[] = [];
-    for (const [agentId, events] of this.agentEvents) {
+    for (const agentId of this.agentEvents.keys()) {
       if (this.stoppedAgents.has(agentId)) continue;
-      if (events.length > 0 && events[events.length - 1].type === 'permission_request') {
+      if (this.isPermissionBlocked(agentId)) {
         blocked.push(agentId);
       }
     }

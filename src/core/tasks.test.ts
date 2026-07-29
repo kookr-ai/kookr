@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest';
-import { TaskStore, InvalidTransitionError, isTerminalStatus, isActiveStatus, type Task, type TokenUsage } from './tasks.js';
+import { TaskStore, InvalidTransitionError, isTerminalStatus, isActiveStatus, isRecoverableTermination, type Task, type TokenUsage, type TerminationReason } from './tasks.js';
 import type { AgentEvent, TaskStatus } from './types.js';
 
 describe('TaskStore', () => {
@@ -567,6 +567,30 @@ describe('TaskStore', () => {
 
       expect(terminated.status).toBe('terminated');
       expect(terminated.terminatedAt).toBeInstanceOf(Date);
+    });
+
+    test('terminateTask defaults the reason to unknown (issue #1664)', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.startTask(task.id);
+      const terminated = store.terminateTask(task.id);
+
+      expect(terminated.terminationReason).toBe('unknown');
+      expect(terminated.terminationSignal).toBeUndefined();
+      expect(terminated.terminationDetail).toBeUndefined();
+    });
+
+    test('terminateTask records the supplied cause (issue #1664)', () => {
+      const task = store.createTask('Task', '/cwd');
+      store.startTask(task.id);
+      const terminated = store.terminateTask(task.id, {
+        reason: 'timeout',
+        signal: 'SIGKILL',
+        detail: 'silent for 900s',
+      });
+
+      expect(terminated.terminationReason).toBe('timeout');
+      expect(terminated.terminationSignal).toBe('SIGKILL');
+      expect(terminated.terminationDetail).toBe('silent for 900s');
     });
 
     test('terminated -> completed via completeTask (user acknowledges finish)', () => {
@@ -1735,6 +1759,22 @@ describe('status classification helpers', () => {
   test.each(active)('isActiveStatus(%s) is true', (s) => {
     expect(isActiveStatus(s)).toBe(true);
     expect(isTerminalStatus(s)).toBe(false);
+  });
+
+  // issue #1664 — recoverable-vs-terminal termination classification.
+  const recoverable: TerminationReason[] = ['server-restart', 'oom', 'timeout', 'unknown'];
+  const nonRecoverable: TerminationReason[] = ['manual', 'supervisor'];
+
+  test.each(recoverable)('isRecoverableTermination(%s) is true', (r) => {
+    expect(isRecoverableTermination(r)).toBe(true);
+  });
+
+  test.each(nonRecoverable)('isRecoverableTermination(%s) is false', (r) => {
+    expect(isRecoverableTermination(r)).toBe(false);
+  });
+
+  test('isRecoverableTermination(undefined) is true (legacy pre-#1664 terminations)', () => {
+    expect(isRecoverableTermination(undefined)).toBe(true);
   });
 });
 

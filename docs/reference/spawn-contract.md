@@ -85,10 +85,30 @@ server returned a `5xx` after it might already have persisted the task record.
 3. On exhausting the budget, stop and surface the ambiguity to the operator
    (the task's existence is still unknown; do **not** blind-retry without a key).
 
-**Without an idempotency key** there is no safe reconciliation: a re-POST could
-create a sibling task. The client must **not** silently retry — it surfaces the
-ambiguity and points the operator at the dashboard to check whether the task
-exists before re-running. Always send a key when you intend to retry.
+**Without an idempotency key** a re-POST is unsafe — it could create a sibling
+task — so the client must **not** blind-retry the create. It can still reconcile
+*read-only*: a bounded `GET /api/tasks` probe (issue #1573) creates nothing, so
+it can never duplicate. The probe resolves the ambiguity to one of three
+outcomes:
+
+- **matched** — an active task matches this spawn's prompt + cwd (+ agent, when
+  pinned). The prompt is compared after applying the server's file-reference
+  normalization (existing relative paths → absolute), so a prompt naming a real
+  file still matches the task the server stored. This is reported as an
+  already-existing task recovered via the probe,
+  **not** a fresh "created": a prompt+cwd match is *not* proof this spawn created
+  it — a concurrent spawn with the same prompt+cwd matches identically. Honor
+  `--dedupe=block` here; otherwise exit success with the recovered id.
+- **absent** — the probe succeeded and found no match: the task was **not**
+  created. Exit non-zero with an unambiguous "no task was created" message.
+- **unknown** — every probe attempt errored (server unreachable): existence is
+  still unverifiable. Only here does the client fall back to advising a dashboard
+  check.
+
+`--dedupe=skip` is the exception: it intends a *new* task, so a prompt+cwd match
+is almost certainly a pre-existing sibling. Under skip the probe is not run and
+the client reports that it could not confirm a create, pointing at
+`--idempotency-key`. Always send a key when you intend to retry.
 
 ## Recommended retry policy
 
@@ -126,8 +146,11 @@ Guidance:
 - **Ambiguous-outcome reconciliation.** On a client timeout, a network error, or
   a `5xx` response, when a key is available the CLI re-POSTs with the **same
   key** (`postTaskWithReconcile`), honoring any `Retry-After` hint, up to 2
-  extra attempts, instead of exiting ambiguous. Without a key it prints the
-  ambiguity and advises checking the dashboard before re-running — unchanged.
+  extra attempts, instead of exiting ambiguous. Without a key it runs the
+  bounded read-only `GET /api/tasks` probe (`reconcileViaTaskProbe`, issue
+  #1573) and renders `matched` / `absent` / `unknown` per the keyless section
+  above — the "check the dashboard" bail is now only the last-resort `unknown`
+  branch, not the default ambiguous outcome.
 - **Backpressure.** A `429` is surfaced to the operator with the full capacity
   breakdown (working / awaiting-ack / hung-suspect / launching, queue depth,
   burst budget) rather than silently retried, because burst/queue limits are an

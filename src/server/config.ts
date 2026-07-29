@@ -99,3 +99,22 @@ export function readRequestBodyLimitBytesFromEnv(
 ): number {
   return readPositiveInt(env.KOOKR_REQUEST_BODY_LIMIT_BYTES, DEFAULT_REQUEST_BODY_LIMIT_BYTES);
 }
+
+/**
+ * CPU-aware task admission threshold (issue #1630), expressed as 1-minute load
+ * average per logical CPU. `0` (the default) disables the gate — mirroring the
+ * `0`-disables convention used by the operational-alert thresholds — so
+ * behavior is unchanged unless an operator opts in. When set > 0, a new task
+ * launch is rejected while `os.loadavg()[0] / os.cpus().length` exceeds this
+ * value, so a burst of compile/test-heavy tasks cannot saturate the host and
+ * starve the supervisor's event loop. A sensible starting point on a busy
+ * shared host is ~0.9–1.0 (reject once average load reaches the core count).
+ */
+export const DEFAULT_MAX_HOST_LOAD_PER_CPU = 0;
+
+/** Read the CPU-aware task-admission threshold (load-per-core) from the environment. */
+export function readMaxHostLoadPerCpuFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  return readNonNegativeNumber(env.KOOKR_MAX_HOST_LOAD_PER_CPU, DEFAULT_MAX_HOST_LOAD_PER_CPU);
+}

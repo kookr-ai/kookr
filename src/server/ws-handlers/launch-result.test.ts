@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
 import { GrokAuthPreflightError } from '../../adapters/grok-build-adapter.js';
-import { CwdValidationError, PendingQueueFullError, SpawnBurstLimitError } from '../launch-service.js';
+import { CwdValidationError, PendingQueueFullError, SpawnBurstLimitError, HostLoadAdmissionError } from '../launch-service.js';
 import { handleLaunchResult } from './launch-result.js';
 
 function collect(): { send: (msg: ServerMessage) => void; sent: ServerMessage[] } {
@@ -100,6 +100,22 @@ describe('handleLaunchResult', () => {
     expect(alert.summary).toContain('Spawn burst limit reached');
     expect(alert.details).toContain('30 launches per 10m for source "websocket"');
     expect(alert.details).toContain('retry in ~42s');
+    expect(alert.details).toContain('10/10 slots occupied');
+  });
+
+  it('renders the host-load line as a warning alert for a CPU-saturation rejection (issue #1630)', () => {
+    const { send, sent } = collect();
+    const err = new HostLoadAdmissionError(ledger, 2.0, 0.9);
+
+    handleLaunchResult(send, 'hot launch', undefined, err);
+
+    const alert = sent[0] as Extract<ServerMessage, { type: 'alert' }>;
+    // A deliberate policy refusal with a retry path — warn, don't page.
+    expect(alert.severity).toBe('warning');
+    expect(alert.summary).toContain('Host CPU load');
+    expect(alert.details).toContain('The host is CPU-saturated');
+    expect(alert.details).toContain('2.00 per core (threshold 0.90)');
+    expect(alert.details).toContain('KOOKR_MAX_HOST_LOAD_PER_CPU');
     expect(alert.details).toContain('10/10 slots occupied');
   });
 });
