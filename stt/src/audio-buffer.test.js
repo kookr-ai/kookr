@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect } from 'vitest';
-import { AudioBuffer } from './audio-buffer.js';
+import { AudioBuffer, DEFAULT_MAX_BUFFER_SECONDS } from './audio-buffer.js';
 
 // -- Helpers ------------------------------------------------------------------
 
@@ -113,6 +113,95 @@ describe('AudioBuffer', () => {
 
       // All 3000 samples preserved — zero audio loss
       expect(ab.getAudio().length).toBe(3000);
+    });
+  });
+
+  describe('rolling-window bound', () => {
+    test('trims oldest samples once the window is exceeded', () => {
+      // Window of 100 samples; feed 250 in chunks of 50.
+      const ab = new AudioBuffer(16000, 100);
+      for (let i = 0; i < 5; i++) ab.addChunk(createPCMBuffer(50));
+
+      expect(ab._totalSamples).toBe(100);
+      expect(ab.getAudio().length).toBe(100);
+    });
+
+    test('keeps the most recent samples (front is dropped, tail preserved)', () => {
+      const ab = new AudioBuffer(16000, 3);
+
+      // Distinct single-sample chunks so we can identify which survive.
+      const mk = (v) => {
+        const b = Buffer.alloc(2);
+        b.writeInt16LE(v, 0);
+        return b;
+      };
+      ab.addChunk(mk(1000));
+      ab.addChunk(mk(2000));
+      ab.addChunk(mk(3000));
+      ab.addChunk(mk(4000));
+      ab.addChunk(mk(5000));
+
+      const audio = ab.getAudio();
+      expect(audio.length).toBe(3);
+      // Oldest (1000, 2000) trimmed; newest three retained in order.
+      expect(audio[0]).toBeCloseTo(3000 / 32768, 4);
+      expect(audio[1]).toBeCloseTo(4000 / 32768, 4);
+      expect(audio[2]).toBeCloseTo(5000 / 32768, 4);
+    });
+
+    test('slices a straddling chunk at the window boundary', () => {
+      // Window 75; a single 100-sample chunk must be trimmed to its last 75.
+      const ab = new AudioBuffer(16000, 75);
+      ab.addChunk(createPCMBuffer(100));
+
+      const audio = ab.getAudio();
+      expect(audio.length).toBe(75);
+      // Sample at original index 25 becomes index 0 after front trim.
+      expect(audio[0]).toBeCloseTo(((25 * 100) % 32000) / 32768, 4);
+    });
+
+    test('does not trim when total is exactly at the cap (boundary)', () => {
+      const ab = new AudioBuffer(16000, 100);
+      ab.addChunk(createPCMBuffer(100));
+      expect(ab._totalSamples).toBe(100);
+      expect(ab.getAudio().length).toBe(100);
+      expect(ab.trimmedSamples).toBe(0);
+    });
+
+    test('maxSamples <= 0 disables trimming (unbounded)', () => {
+      const ab = new AudioBuffer(16000, 0);
+      for (let i = 0; i < 10; i++) ab.addChunk(createPCMBuffer(1000));
+      expect(ab.getAudio().length).toBe(10000);
+      expect(ab.trimmedSamples).toBe(0);
+    });
+
+    test('negative maxSamples also disables trimming', () => {
+      const ab = new AudioBuffer(16000, -1);
+      for (let i = 0; i < 10; i++) ab.addChunk(createPCMBuffer(1000));
+      expect(ab.getAudio().length).toBe(10000);
+      expect(ab.trimmedSamples).toBe(0);
+    });
+
+    test('trimmedSamples reports how many front samples were dropped', () => {
+      const ab = new AudioBuffer(16000, 100);
+      for (let i = 0; i < 5; i++) ab.addChunk(createPCMBuffer(50)); // 250 total
+      // Window keeps the last 100; 150 trimmed off the front.
+      expect(ab.trimmedSamples).toBe(150);
+      expect(ab.trimmedSamples + ab._totalSamples).toBe(250);
+    });
+
+    test('default cap derives from DEFAULT_MAX_BUFFER_SECONDS', () => {
+      const ab = new AudioBuffer();
+      expect(ab.maxSamples).toBe(DEFAULT_MAX_BUFFER_SECONDS * 16000);
+    });
+
+    test('clear() resets a trimmed buffer', () => {
+      const ab = new AudioBuffer(16000, 100);
+      for (let i = 0; i < 5; i++) ab.addChunk(createPCMBuffer(50));
+      ab.clear();
+      expect(ab.getAudio().length).toBe(0);
+      expect(ab.duration()).toBe(0);
+      expect(ab.trimmedSamples).toBe(0);
     });
   });
 });
