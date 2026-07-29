@@ -331,6 +331,15 @@ Before scoring, order the filtered candidate pool with the committed drain order
 
 Ordering rule (matches `orderCandidatesByDrainTier` in `src/core/backlog-drain-order.ts`, which the selection-simulation test in `src/core/backlog-drain-order.test.ts` verifies): propose no-gate-tier issues first (in `noGateTier` order), then unclassified issues in their existing order, then gated issues last. Do not select a gated issue while any no-gate-tier or unclassified issue remains eligible. A number must never appear in both tiers; add future issues per the file's `howToJoinATier`.
 
+### 3.0.5 Apply the severity tier order (issue #1658)
+
+After the drain-tier deferral above, rank the remaining eligible pool by severity so real production bugs are not peers of cosmetic idea issues. The canonical source is `severity-tier-order.json` alongside these playbooks (`plugin/playbooks/severity-tier-order.json` in the repo):
+
+- **Fast lane** (`fastLaneLabels`, `outage`, `prod-bug`, `auto-triage`, most-severe first): any candidate carrying one of these labels is proposed first, ordered by its earliest-matching label (so an `outage` outranks a plain `prod-bug`).
+- **Defer** (`deferLabels`, `idea-scout`): a candidate carrying only a defer label sinks to the end. A fast-lane label always wins over a defer label, so a prod bug that is also tagged an idea is still worked first.
+
+Ordering rule (matches `orderCandidatesBySeverityTier` in `src/core/severity-tier-order.ts`, which the selection-simulation test in `src/core/severity-tier-order.test.ts` verifies): propose fast-lane issues first (most-severe label first), then unclassified issues in their existing order, then deferred issues last. Pick a prod-bug/outage issue before any idea issue when slots are contended. This is ranking only — never auto-close a deferred idea (that stays human-gated). This ordering is orthogonal to the drain order (#1568): compose them safety-first — apply the gated deferral of 3.0 first, then this severity ranking among the safe set. The labels are the source of truth; add a new severity label to the vocabulary per the file's `howToJoinATier`, no code change.
+
 ### 3.1 Score each candidate issue
 
 For each filtered issue:
