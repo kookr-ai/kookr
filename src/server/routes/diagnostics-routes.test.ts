@@ -9,6 +9,7 @@ import { CircuitBreaker, CircuitBreakerRegistry } from '../../core/circuit-break
 import { ShadowDetectorRegistry } from '../../core/shadow-detector.js';
 import { GitHubStateStore } from '../../core/github-state-store.js';
 import { recordSuppression, resetDetectionStats } from '../../core/detection-stats.js';
+import { recordWaitingOnInputOutcome, resetStuckFlagPrecision } from '../../core/stuck-flag-precision.js';
 import { extractRawHookHeader, HookParseError, parseHookEvent } from '../../core/hook-parser.js';
 import { Monitor } from '../../core/monitor.js';
 import { Watchdog } from '../../core/watchdog.js';
@@ -1184,6 +1185,16 @@ describe('diagnostics routes', () => {
         subagentTtlEvictions: expect.any(Number),
       }));
       expect(body.suppressionReasons.hook_disconnected.systemic_hook_stall).toBe(1);
+    });
+
+    test('#1653: includes the stuckFlagPrecision counters and derived ratio', async () => {
+      resetStuckFlagPrecision();
+      recordWaitingOnInputOutcome('agent-a', 'flag');
+      recordWaitingOnInputOutcome('agent-b', 'suppressed');
+
+      const res = await mkApp({}).request('/api/anomaly-stats');
+      const body = await res.json();
+      expect(body.stuckFlagPrecision).toEqual({ flags: 1, suppressed: 1, precision: 0.5 });
     });
   });
 

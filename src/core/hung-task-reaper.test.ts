@@ -4,6 +4,7 @@ import {
   buildReapDisposition,
   classifyReapOutcome,
   evaluateHungTaskReap,
+  hasRecentLiveness,
   isTaskHungSuspect,
 } from './hung-task-reaper.js';
 import type { MergedPrAttribution } from './delivered-task-completion.js';
@@ -15,6 +16,23 @@ const NOW = Date.parse('2026-06-21T00:00:00.000Z');
 function silentSince(ms: number) {
   return { lastHookEventAt: ms, lastPaneChangeAt: ms, lastTokenActivityAt: ms };
 }
+
+describe('hasRecentLiveness (#1653)', () => {
+  test('true when any single channel moved within the window', () => {
+    expect(hasRecentLiveness({ lastHookEventAt: NOW - 1_000, lastPaneChangeAt: 0, lastTokenActivityAt: 0 }, NOW, 60_000)).toBe(true);
+    expect(hasRecentLiveness({ lastHookEventAt: 0, lastPaneChangeAt: NOW - 1_000, lastTokenActivityAt: 0 }, NOW, 60_000)).toBe(true);
+    expect(hasRecentLiveness({ lastHookEventAt: 0, lastPaneChangeAt: 0, lastTokenActivityAt: NOW - 1_000 }, NOW, 60_000)).toBe(true);
+  });
+
+  test('false when the most-recent channel is at or past the window edge', () => {
+    expect(hasRecentLiveness(silentSince(NOW - 60_000), NOW, 60_000)).toBe(false);
+    expect(hasRecentLiveness(silentSince(NOW - 120_000), NOW, 60_000)).toBe(false);
+  });
+
+  test('never-recorded channels (0) do not count as activity', () => {
+    expect(hasRecentLiveness({ lastHookEventAt: 0, lastPaneChangeAt: 0, lastTokenActivityAt: 0 }, NOW, 60_000)).toBe(false);
+  });
+});
 
 describe('evaluateHungTaskReap', () => {
   test('all channels silent past the threshold is eligible', () => {
