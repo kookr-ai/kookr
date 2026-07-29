@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, mkdir, writeFile, rm, utimes } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { discoverPlaybooks, userPlaybooksDir, pluginPlaybooksDir } from './playbook-discovery.js';
 
@@ -402,6 +402,19 @@ describe('userPlaybooksDir', () => {
     try {
       process.env.KOOKR_USER_PLAYBOOKS_DIR = '/tmp/custom-user-playbooks';
       expect(userPlaybooksDir()).toBe('/tmp/custom-user-playbooks');
+    } finally {
+      if (original === undefined) delete process.env.KOOKR_USER_PLAYBOOKS_DIR;
+      else process.env.KOOKR_USER_PLAYBOOKS_DIR = original;
+    }
+  });
+
+  test('resolves a relative KOOKR_USER_PLAYBOOKS_DIR override to an absolute path (#1431)', () => {
+    const original = process.env.KOOKR_USER_PLAYBOOKS_DIR;
+    try {
+      process.env.KOOKR_USER_PLAYBOOKS_DIR = 'relative/user-playbooks';
+      const resolved = userPlaybooksDir();
+      expect(isAbsolute(resolved)).toBe(true);
+      expect(resolved).toBe(resolve('relative/user-playbooks'));
     } finally {
       if (original === undefined) delete process.env.KOOKR_USER_PLAYBOOKS_DIR;
       else process.env.KOOKR_USER_PLAYBOOKS_DIR = original;

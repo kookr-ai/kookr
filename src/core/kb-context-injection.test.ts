@@ -10,6 +10,7 @@ import {
   nextTurnId,
   parseKbSearchResponse,
   runKbContextInjection,
+  stripPlaybookContextHeader,
   type KbSearchExec,
   type TurnIdFsDeps,
 } from './kb-context-injection.js';
@@ -63,6 +64,29 @@ describe('assembleTaskContext', () => {
 });
 
 // --- nextTurnId -------------------------------------------------------------
+
+describe('stripPlaybookContextHeader', () => {
+  const HEADER =
+    '> _Kookr playbook context — you are executing the **Deploy** playbook '
+    + '(scope: project). Its definition file is at `/path/to/.kookr/playbooks/deploy.md`. '
+    + 'If asked to modify this playbook, edit that file._';
+
+  it('drops a leading playbook context header so the body remains', () => {
+    expect(stripPlaybookContextHeader(`${HEADER}\n\nShip the release now.`)).toBe(
+      'Ship the release now.',
+    );
+  });
+
+  it('leaves a prompt without a header untouched', () => {
+    const plain = 'how does atomic save work';
+    expect(stripPlaybookContextHeader(plain)).toBe(plain);
+  });
+
+  it('falls back to the original prompt when only the header is present', () => {
+    const headerOnly = `${HEADER}\n\n`;
+    expect(stripPlaybookContextHeader(headerOnly)).toBe(headerOnly);
+  });
+});
 
 describe('nextTurnId', () => {
   it('increments monotonically per session', async () => {
@@ -306,6 +330,27 @@ describe('runKbContextInjection', () => {
     );
     expect(result.stdout).toBe('');
     expect(result.stderr).toContain('skipped');
+  });
+
+  it('queries KB on the task body, not the playbook context header (#1431)', async () => {
+    const header =
+      '> _Kookr playbook context — you are executing the **Deploy** playbook '
+      + '(scope: project). Its definition file is at `/path/to/.kookr/playbooks/deploy.md`. '
+      + 'If asked to modify this playbook, edit that file._';
+    let capturedQuery = '';
+    await runKbContextInjection(
+      { prompt: `${header}\n\nhow does atomic save work`, sessionId: 's-hdr' },
+      {
+        env: {},
+        stateDir: await tmpStateDir(),
+        execKbSearch: async (args) => {
+          capturedQuery = args[1] ?? '';
+          return { stdout: searchPayload({ state: 'no-relevant-context' }, []), stderr: '', exitCode: 0 };
+        },
+      },
+    );
+    expect(capturedQuery).toBe('how does atomic save work');
+    expect(capturedQuery).not.toContain('Kookr playbook context');
   });
 
   it('does nothing for an empty prompt', async () => {

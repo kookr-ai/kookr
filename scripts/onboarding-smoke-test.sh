@@ -53,7 +53,9 @@ run_claude_preflight() {
   fi
 
   local output_file
-  output_file="$(mktemp -t kookr-claude-preflight-XXXXXX)"
+  # Positional template (not `-t`): BSD/macOS `mktemp -t` treats the argument
+  # as a literal prefix and leaves the `XXXXXX` in the path (issue #1431).
+  output_file="$(mktemp "${TMPDIR:-/tmp}/kookr-claude-preflight-XXXXXX")"
   local preflight_status=0
   if command -v timeout >/dev/null 2>&1; then
     timeout "$CLAUDE_PREFLIGHT_TIMEOUT_S" \

@@ -234,7 +234,11 @@ else
   if [ -n "${SKIP_PORTABILITY_CHECK:-}" ]; then
     echo "[pre-push] shell-portability: skipped via SKIP_PORTABILITY_CHECK."
   elif [ -n "$CHANGED_FILES" ]; then
-    PORTABILITY_PATHS=$(mktemp -t kookr-shell-portability.XXXXXX)
+    # Positional template (not `-t`): GNU and BSD/macOS `mktemp` handle it
+    # identically. BSD `mktemp -t` treats its argument as a literal prefix and
+    # appends its own randomness, so the trailing `XXXXXX` can survive in the
+    # path — a divergence only positional templates avoid (issue #1431).
+    PORTABILITY_PATHS=$(mktemp "${TMPDIR:-/tmp}/kookr-shell-portability.XXXXXX")
     trap 'rm -f "$PORTABILITY_PATHS"' EXIT
 
     printf '%s\n' "$CHANGED_FILES" | while IFS= read -r path; do
