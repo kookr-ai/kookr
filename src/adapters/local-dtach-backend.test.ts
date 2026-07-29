@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { LocalDtachBackend, buildDtachSpawn } from './local-dtach-backend.js';
+import { findDtachMasterPidSync, verifyMasterIdentity } from './local-dtach-process-identity.js';
 import { killProcessTree } from './process-tree.js';
 import { SessionGoneError } from './terminal-backend.js';
 
@@ -117,6 +118,52 @@ async function waitForPidFile(pidFile: string, timeoutMs = 3_000): Promise<numbe
     await new Promise((r) => setTimeout(r, 25));
   }
   return -1;
+}
+
+/**
+ * Poll until a freshly created dtach master is identity-verifiable.
+ *
+ * `createSession` resolves the master pid by scanning `/proc` for the process
+ * that references the socket; under load the `setsid -f` fork can leave that
+ * scan momentarily empty, so the manifest entry is written with `pid: -1` and
+ * the master only becomes `/proc`-verifiable a few milliseconds later. A
+ * reconnect/recovery call issued inside that window re-scans and can transiently
+ * miss the master, yielding `identity-unverified` instead of the outcome the
+ * test is actually exercising. That timing race is the root cause of the
+ * ~1/run flake in the concurrent reconnect/recovery cases (kookr-ai/kookr#1627);
+ * waiting on the real identity gate makes those assertions deterministic
+ * without mocking the behaviour under test. Throws on timeout so a genuinely
+ * unverifiable master fails loudly rather than masking a regression.
+ *
+ * This mirrors the exact gate the production reconnect/recovery paths apply
+ * (`LocalDtachRecovery`: `pid <= 0 → findDtachMasterPidSync`, then
+ * `verifyMasterIdentity`), so polling it converges precisely when — and only
+ * when — those paths would stop returning `identity-unverified`.
+ */
+async function waitForMasterIdentity(
+  socketDir: string,
+  id: string,
+  timeoutMs = 3_000,
+): Promise<void> {
+  const manifestPath = join(socketDir, 'test', 'manifest.json');
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (existsSync(manifestPath)) {
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as {
+        entries: Array<{ sessionId: string; pid: number; sock: string }>;
+      };
+      const entry = manifest.entries.find((e) => e.sessionId === id);
+      if (entry) {
+        let pid = entry.pid;
+        if (pid <= 0) pid = findDtachMasterPidSync(entry.sock, DTACH!);
+        if (verifyMasterIdentity(pid, entry.sock, DTACH!)) return;
+      }
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`master identity for session ${id} not verifiable within ${timeoutMs}ms`);
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
 }
 
 /** All processes whose cmdline references `sock`, with their argv tokens. */
@@ -1084,6 +1131,9 @@ describe('LocalDtachBackend reconnectTransport', () => {
 
     const id = 'reconnect-spawnfail';
     await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+    // Settle the identity gate before the reconnect so the assertion exercises
+    // the attach-spawn path, not a racing `identity-unverified` (#1627).
+    await waitForMasterIdentity(tmpDir, id);
 
     // Make the fresh attach spawn throw AFTER identity + disposal.
     const anyBackend = backend as unknown as { attachPtyInto: (...a: unknown[]) => void };
@@ -1701,6 +1751,12 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
       });
     }
     await backend.createSession({ id: broken, command: '/bin/sh', args: ['-c', 'exec cat'] });
+    // Settle each healthy master's identity gate before the concurrent verify so
+    // `recovered-live` is not lost to a racing `identity-unverified` under load
+    // (#1627). The broken session goes through the socket-missing path below, so
+    // its identity is never consulted.
+    await waitForMasterIdentity(tmpDir, liveA);
+    await waitForMasterIdentity(tmpDir, liveB);
     // Break the third session's transport: remove its socket → socket-missing.
     unlinkSync(join(tmpDir, 'test', `${broken}.sock`));
 
