@@ -11,6 +11,9 @@ export default defineConfig({
     // Fails the run if a test poisons the shared git config (test identity,
     // core.bare flip, or bare-repo debris) and heals it. See test/git-repo-guard.ts.
     globalSetup: ['./test/git-repo-guard.global.ts'],
+    // TEMPORARY (issue #1437): names the test that poisons the shared git
+    // config in CI. Removed in the same PR once CI has identified it.
+    setupFiles: ['./test/_poisoner-probe.setup.ts'],
     // Scrub ambient KOOKR_*/CLAUDE_*/ANTHROPIC_* so local (live daemon) == CI.
     // Allowlist lives in test/setup-env.ts and mirrors `env` below. See #1372.
     setupFiles: ['./test/setup-env.ts'],
