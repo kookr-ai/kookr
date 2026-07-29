@@ -1240,4 +1240,54 @@ Do the thing.
     expect(check).toHaveBeenCalledTimes(2);
     expect(check).toHaveBeenCalledWith(store.list());
   });
+
+  it('feeds the resolution alerter the unresolvable schedules (issue #1661)', async () => {
+    // A legacy (no-scope) schedule whose playbook does NOT exist in the project
+    // tier — cwd exists, but `.kookr/playbooks/missing.md` does not. This is the
+    // shape of the 68e9cb52 incident.
+    const broken = store.create({
+      name: 'Lucy parallel issue batch',
+      cron: '* * * * *',
+      playbook: { path: 'missing.md', parameters: {} },
+      cwd: dir,
+    });
+    // A resolvable schedule (test.md exists in the project tier) — must NOT be
+    // reported as unresolvable, but SHOULD appear in the resolved-ids set.
+    const healthy = store.create({
+      name: 'Healthy',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+
+    const check = vi.fn();
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => ({ task: { id: 'unused' } as any, queued: false }),
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+      resolutionAlerter: { check },
+    });
+
+    runner.refreshPlaybookResolution();
+
+    expect(check).toHaveBeenCalledTimes(1);
+    const [reported, resolvedIds] = check.mock.calls[0];
+    expect(reported).toEqual([
+      expect.objectContaining({
+        id: broken.id,
+        name: 'Lucy parallel issue batch',
+        playbookPath: 'missing.md',
+        scope: 'project',
+        legacy: true,
+      }),
+    ]);
+    // The healthy schedule is not in the unresolvable report...
+    expect(reported).toHaveLength(1);
+    // ...but IS in the genuinely-resolved set that gates recovery alerts.
+    expect(resolvedIds).toEqual([healthy.id]);
+  });
 });
