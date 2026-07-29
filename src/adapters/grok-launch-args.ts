@@ -92,6 +92,15 @@ export interface BuildGrokEnvOptions {
    * and take precedence over the passthrough base.
    */
   launchContextEnv: Record<string, string>;
+  /**
+   * Caller-supplied env extension (AdapterLaunchOptions.extraEnv). Layered above
+   * the allowlist base and task context but BELOW the GROK_* control vars and the
+   * XAI_API_KEY scrub, so it can inject Kookr-internal vars (RALPH_VERDICT_FILE,
+   * RALPH_ITERATION) without overriding the security-critical redirects or
+   * re-introducing a pay-per-token key. Matches the Claude/Codex extraEnv
+   * precedence (after launch-context env). See issue #1366.
+   */
+  extraEnv?: Record<string, string>;
   /** The composed per-session GROK_HOME to redirect Grok's config root to. */
   grokHome: string;
   /**
@@ -121,6 +130,13 @@ export function buildAllowlistedGrokEnv(opts: BuildGrokEnvOptions): Record<strin
 
   // 2. Kookr task context (wins over passthrough — its PATH prepends the launcher).
   Object.assign(env, opts.launchContextEnv);
+
+  // 2b. Caller-supplied extraEnv (AdapterLaunchOptions). Applied after the
+  //     allowlist base and task context to match Claude/Codex precedence, but
+  //     BEFORE the GROK_* control vars and the XAI_API_KEY scrub below so it can
+  //     never override the security-critical redirects or reintroduce the
+  //     pay-per-token key (issue #1366).
+  if (opts.extraEnv) Object.assign(env, opts.extraEnv);
 
   // 3. Grok control vars (POC-A run-poc.sh:122-124). Redirect config to the
   //    session home; share the real auth.json for multi-agent OIDC refresh;

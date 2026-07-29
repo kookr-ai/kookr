@@ -286,8 +286,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // hit ARG_MAX or leak into parent-session hook command scanners.
     // --dangerously-skip-permissions is conditional on opt-in via
     // KOOKR_BYPASS_ALL_PERMISSIONS=true.
+    // A per-call `bypassPermissions` override (AdapterLaunchOptions) wins over
+    // the constructor-time default for THIS launch only; when unset the instance
+    // default applies (issue #1366).
+    const bypassPermissions = opts?.bypassPermissions ?? this.bypassAllPermissions;
     const args: string[] = [];
-    if (this.bypassAllPermissions) {
+    if (bypassPermissions) {
       // --dangerously-skip-permissions + --setting-sources '' are both required:
       // ask-rules in user settings would otherwise match before bypass mode is
       // consulted. See docs/poc/006-bypass-permissions-ask-rule-override.md.

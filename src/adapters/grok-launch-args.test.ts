@@ -112,6 +112,42 @@ describe('buildAllowlistedGrokEnv', () => {
     });
     expect(e.XAI_API_KEY).toBeUndefined();
   });
+
+  it('merges caller-supplied extraEnv keys that do not collide with controls (issue #1366)', () => {
+    const e = buildAllowlistedGrokEnv({
+      processEnv,
+      launchContextEnv: { KOOKR_TASK_ID: 't1' },
+      extraEnv: { RALPH_VERDICT_FILE: '/tmp/verdict.json', RALPH_ITERATION: '3' },
+      grokHome: '/tmp/session/.grok',
+      authPath: '/tmp/fake-home/.grok/auth.json',
+    });
+    expect(e.RALPH_VERDICT_FILE).toBe('/tmp/verdict.json');
+    expect(e.RALPH_ITERATION).toBe('3');
+    // Task context still present alongside the caller vars.
+    expect(e.KOOKR_TASK_ID).toBe('t1');
+  });
+
+  it('never lets extraEnv override the GROK_* control vars or reintroduce XAI_API_KEY (issue #1366)', () => {
+    // The security claim: extraEnv layers ABOVE the allowlist base + task
+    // context but BELOW the control-var block and the XAI_API_KEY scrub, so a
+    // caller cannot break session isolation or reintroduce a pay-per-token key.
+    const e = buildAllowlistedGrokEnv({
+      processEnv,
+      launchContextEnv: { KOOKR_TASK_ID: 't1' },
+      extraEnv: {
+        GROK_HOME: '/evil/home',
+        GROK_AUTH_PATH: '/evil/auth.json',
+        GROK_CLAUDE_HOOKS_ENABLED: '1',
+        XAI_API_KEY: 'xai-must-not-reach-agent',
+      },
+      grokHome: '/tmp/session/.grok',
+      authPath: '/tmp/fake-home/.grok/auth.json',
+    });
+    expect(e.GROK_HOME).toBe('/tmp/session/.grok');
+    expect(e.GROK_AUTH_PATH).toBe('/tmp/fake-home/.grok/auth.json');
+    expect(e.GROK_CLAUDE_HOOKS_ENABLED).toBe('0');
+    expect(e.XAI_API_KEY).toBeUndefined();
+  });
 });
 
 describe('resolveGrokLaunchGate', () => {

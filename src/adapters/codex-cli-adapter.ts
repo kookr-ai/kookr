@@ -292,7 +292,11 @@ export class CodexCliAdapter implements AgentAdapter {
         `(see docs/rfc/rfc-crash-recovery-resume.md). Launching fresh.`,
       );
     }
-    const tmuxName = `kookr-${randomUUID().slice(0, 8)}`;
+    // Honor a caller-preallocated session id (AdapterLaunchOptions.tmuxName).
+    // Ralph loops publish `loop.ownerSessionId` from this value BEFORE launching
+    // and gate their own Stop-event ownership on it; minting a fresh UUID here
+    // would point ownership at a session that is never created (issue #1366).
+    const tmuxName = opts?.tmuxName ?? `kookr-${randomUUID().slice(0, 8)}`;
     this.tmuxToTaskId.set(tmuxName, taskId);
 
     // Phase instrumentation (issue #1589): session-create covers launch-context
@@ -319,8 +323,11 @@ export class CodexCliAdapter implements AgentAdapter {
       });
     }
 
-    // Build the Codex CLI command.
-    const permissionFlagStr = this.bypassAllPermissions
+    // Build the Codex CLI command. A per-call `bypassPermissions` override
+    // (AdapterLaunchOptions) wins over the constructor-time default for THIS
+    // launch only; when unset the instance default applies (issue #1366).
+    const bypassPermissions = opts?.bypassPermissions ?? this.bypassAllPermissions;
+    const permissionFlagStr = bypassPermissions
       ? '--dangerously-bypass-approvals-and-sandbox'
       : '--full-auto';
 
