@@ -17,3 +17,4 @@ run_lane "Validating skill frontmatter" pnpm validate:skills
 run_lane "Validating documented commands" pnpm validate:docs-commands
 run_lane "Validating requirements status matrix" pnpm validate:requirements
 run_lane "Running tests" pnpm test
+run_lane "Running stt sidecar tests" pnpm test:stt
