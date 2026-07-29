@@ -13,6 +13,7 @@ import { registerSettingsRoutes } from './routes/settings-routes.js';
 import { registerTaskRoutes } from './routes/task-routes.js';
 import { registerSessionTransportRoutes } from './routes/session-transport-routes.js';
 import { registerIssueClaimRoutes } from './routes/issue-claim-routes.js';
+import { registerEnvironmentBlockerRoutes } from './routes/environment-blocker-routes.js';
 import { registerCoordinatorRoutes } from './routes/coordinator-routes.js';
 import { registerAgentRoutes } from './routes/agent-routes.js';
 import { registerFileRoutes } from './routes/file-routes.js';
@@ -120,6 +121,9 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerFileRoutes(app, sharedDeps);
   registerTaskRelationsRoutes(app, sharedDeps);
   if (sharedDeps.issueClaims) registerIssueClaimRoutes(app, sharedDeps.issueClaims);
+  if (sharedDeps.environmentBlockerRegistry) {
+    registerEnvironmentBlockerRoutes(app, { registry: sharedDeps.environmentBlockerRegistry });
+  }
   registerCostComparisonRoutes(app, sharedDeps);
   registerOutcomeLedgerRoutes(app, sharedDeps);
   registerProjectRoutes(app, sharedDeps);
