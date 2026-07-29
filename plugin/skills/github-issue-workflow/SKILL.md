@@ -18,6 +18,9 @@ End-to-end workflow for creating a GitHub issue and immediately setting up for i
 ```bash
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 # 1) Budget: when open backlog ≥ 60, new filings per run collapse to 2.
+#    Plus a drain-rate cap (#1657): a low-drain target repo can refuse or
+#    tighten the budget even under 60, so read allowedBudget — never assume
+#    "under 60 ⇒ file freely."
 #    Fail closed — do not file if plan fails or allowedBudget is 0.
 PLAN=$(kookr emission plan --repo "$REPO" --requested 1 --json) || {
   echo "emission plan failed; do not file"; exit 1; }

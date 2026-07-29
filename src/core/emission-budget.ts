@@ -20,7 +20,25 @@ export const DEFAULT_CONSTRAINED_BUDGET = 2;
 /** Token-Jaccard similarity above which a candidate is treated as a duplicate. */
 export const DEFAULT_DEDUPE_SIMILARITY_THRESHOLD = 0.72;
 
-export const EMISSION_BUDGET_SCHEMA_VERSION = 'emission-budget.v1' as const;
+/**
+ * How many new issues one drained issue "earns" the emitter (issue #1657).
+ * A ratio of 1 means a repo draining N issues/window admits at most ~N new
+ * issues/window, so a repo draining ~1/window admits ~0–1.
+ */
+export const DEFAULT_DRAIN_COUPLING_RATIO = 1;
+
+/**
+ * Minimum new-issue budget granted regardless of drain (issue #1657). Default
+ * 0: a repo that drained nothing in the window earns no new-issue budget. Raise
+ * via `--drain-floor` when a genuinely fresh repo should still admit a few.
+ */
+export const DEFAULT_DRAIN_FLOOR_BUDGET = 0;
+
+// v2 (issue #1657): allowedBudget is additionally capped by the target repo's
+// drain rate (closed-in-window), fixing low-backlog / low-drain repos (e.g.
+// lucy at backlog 52 < threshold 60 but draining ~1/window) that previously
+// received the full requested budget.
+export const EMISSION_BUDGET_SCHEMA_VERSION = 'emission-budget.v2' as const;
 export const NET_BACKLOG_DELTA_WINDOW_DAYS = 7;
 
 export interface EmissionBudgetInput {
@@ -40,6 +58,19 @@ export interface EmissionBudgetInput {
    * When omitted, under-threshold runs keep the full requested budget.
    */
   normalBudgetCap?: number;
+  /**
+   * Drain-coupling (issue #1657): issues drained (closed) in the *target
+   * repo's* recent window. When provided, the allowed budget is additionally
+   * capped by the drain rate so a low-drain repo cannot admit a full batch of
+   * new issues merely because its absolute backlog sits under the threshold.
+   * This cap is keyed on the repo being filed into, never the emitting actor's
+   * home repo. Omit to disable drain coupling (legacy backlog-only behavior).
+   */
+  drainCount?: number;
+  /** New issues earned per drained issue. Default {@link DEFAULT_DRAIN_COUPLING_RATIO}. */
+  drainCouplingRatio?: number;
+  /** Minimum budget regardless of drain. Default {@link DEFAULT_DRAIN_FLOOR_BUDGET}. */
+  drainFloorBudget?: number;
 }
 
 export type EmissionBudgetAction = 'allow' | 'constrain' | 'refuse';
@@ -55,6 +86,12 @@ export interface EmissionBudgetPlan {
   /** How many requested filings must be deferred/redirected. */
   deferredCount: number;
   constrainedBudget: number;
+  /** True when a drain-rate cap was applied (issue #1657). */
+  drainCoupled: boolean;
+  /** Drained (closed-in-window) count used for coupling, when provided. */
+  drainCount?: number;
+  /** The drain-derived cap on allowedBudget, when drain coupling is active. */
+  drainCap?: number;
   action: EmissionBudgetAction;
   reason: string;
 }
@@ -165,6 +202,36 @@ export function resolveEmissionBudget(input: EmissionBudgetInput): EmissionBudge
     }
   }
 
+  // Drain-coupling (issue #1657): additionally cap the allowed budget by the
+  // *target* repo's drain rate, so a low-drain repo cannot admit a full batch
+  // of new issues merely because its absolute backlog sits under the
+  // threshold. This is a strict tightening layered on the backlog logic above.
+  let drainCoupled = false;
+  let drainCount: number | undefined;
+  let drainCap: number | undefined;
+  if (input.drainCount !== undefined && Number.isFinite(input.drainCount)) {
+    drainCoupled = true;
+    drainCount = clampNonNegInt(input.drainCount);
+    const ratio =
+      input.drainCouplingRatio !== undefined && Number.isFinite(input.drainCouplingRatio)
+        ? Math.max(0, input.drainCouplingRatio)
+        : DEFAULT_DRAIN_COUPLING_RATIO;
+    const floor = clampNonNegInt(input.drainFloorBudget ?? DEFAULT_DRAIN_FLOOR_BUDGET);
+    drainCap = floor + Math.ceil(drainCount * ratio);
+    if (drainCap < allowedBudget) {
+      const priorAllowed = allowedBudget;
+      allowedBudget = drainCap;
+      action = allowedBudget === 0 ? 'refuse' : 'constrain';
+      reason =
+        `Drain-coupled: target repo drained ${drainCount} issue(s) in window → ` +
+        `drain cap ${drainCap} (ratio ${ratio}, floor ${floor}); ` +
+        `tightened allowedBudget from ${priorAllowed} to ${allowedBudget}. ` +
+        (allowedBudget === 0
+          ? 'Emission refused — the repo is not draining; defer all candidates.'
+          : `Defer or umbrella-append the remaining ${requestedBudget - allowedBudget} candidate(s).`);
+    }
+  }
+
   return {
     schemaVersion: EMISSION_BUDGET_SCHEMA_VERSION,
     openBacklogCount,
@@ -174,6 +241,9 @@ export function resolveEmissionBudget(input: EmissionBudgetInput): EmissionBudge
     allowedBudget,
     deferredCount: Math.max(0, requestedBudget - allowedBudget),
     constrainedBudget,
+    drainCoupled,
+    ...(drainCount !== undefined ? { drainCount } : {}),
+    ...(drainCap !== undefined ? { drainCap } : {}),
     action,
     reason,
   };
@@ -369,4 +439,53 @@ export function buildDeferredIdeaRecord(input: {
 export function deferredIdeasPath(repo: string, kookrDir: string): string {
   const slug = repo.replace(/[/.]/g, '-');
   return `${kookrDir.replace(/\/$/, '')}/playbook-state/deferred-ideas/${slug}.jsonl`;
+}
+
+/**
+ * Deploy-freshness check for the emission-budget logic (issue #1657, acceptance
+ * criterion 3). The 07-27 budget (#1611) "worked for kookr but not lucy" partly
+ * because the running daemon's playbook/CLI version could silently lag
+ * origin/main. These helpers let a preflight compare the *running* schema
+ * version against the version compiled into origin/main's source and surface an
+ * anomaly line when they diverge, rather than failing silently.
+ */
+
+/** Extract `EMISSION_BUDGET_SCHEMA_VERSION`'s literal from TypeScript source. */
+export function extractSchemaVersion(source: string): string | null {
+  const m = source.match(
+    /EMISSION_BUDGET_SCHEMA_VERSION\s*=\s*['"]([^'"]+)['"]/,
+  );
+  return m ? m[1]! : null;
+}
+
+export interface BudgetLogicVersionStatus {
+  /** Schema version of the running (compiled-in) budget logic. */
+  running: string;
+  /** Schema version parsed from the reference source (origin/main), or null. */
+  reference: string | null;
+  /** True when a reference was resolved and differs from the running version. */
+  lagging: boolean;
+  /** Always present — the audit/anomaly line callers must log. */
+  logLine: string;
+}
+
+/**
+ * Compare the running budget-logic version against a reference (origin/main).
+ * A null reference means "could not verify" (git unavailable) — not lagging,
+ * but the log line says so, so the absence of a check is never silent.
+ */
+export function budgetLogicVersionStatus(
+  running: string,
+  reference: string | null,
+): BudgetLogicVersionStatus {
+  const lagging = reference !== null && reference !== running;
+  const logLine =
+    reference === null
+      ? `emission-version: running=${running} reference=unknown ` +
+        `(could not read origin/main); cannot verify deploy freshness.`
+      : lagging
+        ? `emission-version: ANOMALY running=${running} reference=${reference} — ` +
+          `running budget logic lags origin/main; redeploy before trusting the budget.`
+        : `emission-version: OK running=${running} reference=${reference}.`;
+  return { running, reference, lagging, logLine };
 }

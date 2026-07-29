@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { EMISSION_BUDGET_SCHEMA_VERSION } from '../core/emission-budget.js';
 import {
   parseEmissionArgs,
   runEmissionCli,
@@ -195,5 +196,140 @@ describe('runEmissionCli', () => {
     const code = await runEmissionCli(['plan', '--repo', 'o/r'], io);
     expect(code).toBe(2);
     expect(io.errs.join('\n')).toMatch(/--requested/);
+  });
+});
+
+describe('runEmissionCli drain coupling (issue #1657)', () => {
+  // The drain query MUST be keyed on the target repo (`repo:<targetRepo>`), never
+  // the emitting actor's home repo — that is the whole point of #1657. `expectRepo`
+  // asserts the keying at the query level so a regression to the wrong repo fails.
+  function planGh(
+    openCount: number,
+    closedCount: number,
+    open: unknown[] = [],
+    expectRepo?: string,
+  ) {
+    return (args: string[]): string => {
+      if (args[0] === 'api') {
+        // The query is passed as an `-f q=<query>` token.
+        const q = args.find((a) => a.startsWith('q=')) ?? '';
+        if (q.includes('is:closed')) {
+          if (expectRepo) expect(q).toContain(`repo:${expectRepo}`);
+          return `${closedCount}\n`;
+        }
+        if (q.includes('is:open')) return `${openCount}\n`;
+        return '0\n';
+      }
+      if (args[0] === 'issue') return JSON.stringify(open);
+      throw new Error(`unexpected gh args: ${args.join(' ')}`);
+    };
+  }
+
+  it('caps allowedBudget by the target repo drain rate (low-drain repo)', async () => {
+    const io = mkIo();
+    // backlog 52 (< 60 threshold) but only 1 issue drained this window. The drain
+    // query is asserted (via expectRepo) to target lucy, not the emitting actor.
+    const code = await runEmissionCli(
+      ['plan', '--repo', 'jeanibarz/lucy', '--requested', '10', '--json'],
+      { ...io, runGh: planGh(52, 1, [], 'jeanibarz/lucy') },
+    );
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.plan.openBacklogCount).toBe(52);
+    expect(payload.plan.overThreshold).toBe(false);
+    expect(payload.plan.drainCoupled).toBe(true);
+    expect(payload.plan.drainCount).toBe(1);
+    expect(payload.plan.drainCap).toBe(1);
+    expect(payload.plan.allowedBudget).toBe(1);
+    expect(payload.plan.deferredCount).toBe(9);
+    expect(payload.plan.action).toBe('constrain');
+  });
+
+  it('skips drain coupling (keeps full budget) when the drain search throws', async () => {
+    const io = mkIo();
+    // The open-backlog query succeeds but the is:closed drain query throws; the
+    // plan must degrade gracefully to backlog-only budget, not fail the run.
+    const runGh = (args: string[]): string => {
+      if (args[0] === 'api') {
+        const q = args.find((a) => a.startsWith('q=')) ?? '';
+        if (q.includes('is:closed')) throw new Error('search API 503');
+        if (q.includes('is:open')) return '40\n';
+        return '0\n';
+      }
+      if (args[0] === 'issue') return '[]';
+      throw new Error(`unexpected gh args: ${args.join(' ')}`);
+    };
+    const code = await runEmissionCli(
+      ['plan', '--repo', 'jeanibarz/lucy', '--requested', '10', '--json'],
+      { ...io, runGh },
+    );
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.plan.drainCoupled).toBe(false);
+    expect(payload.plan.drainCount).toBeUndefined();
+    expect(payload.plan.allowedBudget).toBe(10); // backlog under threshold → full budget
+  });
+
+  it('disables drain coupling with --no-drain-coupling', async () => {
+    const io = mkIo();
+    const code = await runEmissionCli(
+      ['plan', '--repo', 'jeanibarz/lucy', '--requested', '10', '--no-drain-coupling', '--json'],
+      { ...io, runGh: planGh(52, 1) },
+    );
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.plan.drainCoupled).toBe(false);
+    expect(payload.plan.allowedBudget).toBe(10); // full budget restored
+  });
+});
+
+describe('runEmissionCli version (issue #1657)', () => {
+  it('reports OK when the running version matches origin/main', async () => {
+    const io = mkIo();
+    const gitArgs: string[][] = [];
+    const code = await runEmissionCli(['version', '--json'], {
+      ...io,
+      // Echo the *live* running version back as the reference so this OK case
+      // keeps tracking the constant across future schema bumps (not a pinned
+      // literal that flips to lagging on the next bump).
+      runGit: (args: string[]) => {
+        gitArgs.push(args);
+        return `export const EMISSION_BUDGET_SCHEMA_VERSION = '${EMISSION_BUDGET_SCHEMA_VERSION}' as const;`;
+      },
+    });
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.ok).toBe(true);
+    expect(payload.lagging).toBe(false);
+    expect(io.errs.join('\n')).toMatch(/emission-version: OK/);
+    // The verb must read the schema source from origin/main, not a stale ref.
+    expect(gitArgs[0]).toContain('show');
+    expect(gitArgs[0]).toContain('origin/main:src/core/emission-budget.ts');
+  });
+
+  it('flags an anomaly when origin/main is ahead of the running version', async () => {
+    const io = mkIo();
+    const code = await runEmissionCli(['version', '--json'], {
+      ...io,
+      runGit: () =>
+        `export const EMISSION_BUDGET_SCHEMA_VERSION = 'emission-budget.v999' as const;`,
+    });
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.lagging).toBe(true);
+    expect(payload.reference).toBe('emission-budget.v999');
+    expect(io.errs.join('\n')).toMatch(/ANOMALY/);
+  });
+
+  it('cannot verify when git fails', async () => {
+    const io = mkIo();
+    const code = await runEmissionCli(['version'], {
+      ...io,
+      runGit: () => {
+        throw new Error('no origin');
+      },
+    });
+    expect(code).toBe(0);
+    expect(io.logs.join('\n')).toMatch(/cannot verify/i);
   });
 });

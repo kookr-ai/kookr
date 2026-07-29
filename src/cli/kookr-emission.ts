@@ -20,12 +20,17 @@ import { homedir } from 'node:os';
 import {
   DEFAULT_CONSTRAINED_BUDGET,
   DEFAULT_DEDUPE_SIMILARITY_THRESHOLD,
+  DEFAULT_DRAIN_COUPLING_RATIO,
+  DEFAULT_DRAIN_FLOOR_BUDGET,
   DEFAULT_OPEN_BACKLOG_THRESHOLD,
+  EMISSION_BUDGET_SCHEMA_VERSION,
   NET_BACKLOG_DELTA_WINDOW_DAYS,
+  budgetLogicVersionStatus,
   buildDeferredIdeaRecord,
   checkDedupe,
   computeNetBacklogDelta7d,
   deferredIdeasPath,
+  extractSchemaVersion,
   resolveEmissionBudget,
   utcDayKeyDaysAgo,
   type EmissionBudgetPlan,
@@ -33,18 +38,21 @@ import {
   type NetBacklogDelta7d,
 } from '../core/emission-budget.js';
 
-export const USAGE = `kookr emission — drain-coupled issue filing budget + dedupe (#1607).
+export const USAGE = `kookr emission — drain-coupled issue filing budget + dedupe (#1607, #1657).
 
 Usage:
   kookr emission plan    --repo <owner/repo> --requested <N> [OPTIONS]
   kookr emission dedupe  --repo <owner/repo> --title <text> [OPTIONS]
   kookr emission metrics --repo <owner/repo> [OPTIONS]
   kookr emission defer   --repo <owner/repo> --title <text> --source <name> [OPTIONS]
+  kookr emission version [--repo-dir <path>] [OPTIONS]
 
-plan     Resolve how many new issues this run may file given live open backlog.
+plan     Resolve how many new issues this run may file given live open backlog
+         AND the target repo's drain rate (closed issues in the window, #1657).
 dedupe   Mandatory pre-filing duplicate check; always prints a log line.
 metrics  Open backlog + 7-day netBacklogDelta7d + current constrained budget.
 defer    Append a candidate to the deferred-ideas JSONL instead of filing.
+version  Report the running budget-logic version and warn if it lags origin/main.
 
 Options:
   --repo <owner/repo>     Target GitHub repository (required).
@@ -54,8 +62,13 @@ Options:
   --reason <text>         Defer reason (default: over emission budget).
   --threshold <N>         Open-backlog threshold (default: ${DEFAULT_OPEN_BACKLOG_THRESHOLD}).
   --constrained <N>       Budget when over threshold (default: ${DEFAULT_CONSTRAINED_BUDGET}).
+  --drain-window <N>      Drain-rate window in days (plan; default: ${NET_BACKLOG_DELTA_WINDOW_DAYS}).
+  --drain-ratio <N>       New issues earned per drained issue (default: ${DEFAULT_DRAIN_COUPLING_RATIO}).
+  --drain-floor <N>       Minimum budget regardless of drain (default: ${DEFAULT_DRAIN_FLOOR_BUDGET}).
+  --no-drain-coupling     Disable drain coupling (legacy backlog-only budget).
   --body-preview <text>   Optional body snippet stored on defer.
   --kookr-dir <PATH>      State root for deferred-ideas (default: ~/.kookr).
+  --repo-dir <PATH>       Local checkout to compare against origin/main (version).
   --json                  Machine-readable envelope on stdout.
   -h, --help              Show this help.
 
@@ -75,6 +88,8 @@ export interface EmissionCliIo {
   now?: () => Date;
   /** Injectable gh runner for tests. Returns stdout text; throws on failure. */
   runGh?: (args: string[]) => string;
+  /** Injectable git runner for tests (version verb). Returns stdout; throws on failure. */
+  runGit?: (args: string[]) => string;
   /** Injectable append for defer (tests). */
   appendLine?: (path: string, line: string) => void;
 }
@@ -89,6 +104,11 @@ interface ParsedArgs {
   bodyPreview: string | null;
   threshold: number;
   constrained: number;
+  drainWindow: number;
+  drainRatio: number;
+  drainFloor: number;
+  drainCoupling: boolean;
+  repoDir: string | null;
   kookrDir: string;
   json: boolean;
   help: boolean;
@@ -107,6 +127,11 @@ export function parseEmissionArgs(argv: string[]): ParsedArgs {
     bodyPreview: null,
     threshold: DEFAULT_OPEN_BACKLOG_THRESHOLD,
     constrained: DEFAULT_CONSTRAINED_BUDGET,
+    drainWindow: NET_BACKLOG_DELTA_WINDOW_DAYS,
+    drainRatio: DEFAULT_DRAIN_COUPLING_RATIO,
+    drainFloor: DEFAULT_DRAIN_FLOOR_BUDGET,
+    drainCoupling: true,
+    repoDir: null,
     kookrDir: `${homedir()}/.kookr`,
     json: false,
     help: false,
@@ -157,6 +182,31 @@ export function parseEmissionArgs(argv: string[]): ParsedArgs {
       if (!Number.isFinite(out.constrained)) {
         throw new EmissionUsageError('--constrained must be a number');
       }
+    } else if (tok === '--drain-window' || tok.startsWith('--drain-window=')) {
+      out.drainWindow = tok.includes('=')
+        ? Number(tok.slice('--drain-window='.length))
+        : eatNum('--drain-window');
+      if (!Number.isFinite(out.drainWindow)) {
+        throw new EmissionUsageError('--drain-window must be a number');
+      }
+    } else if (tok === '--drain-ratio' || tok.startsWith('--drain-ratio=')) {
+      out.drainRatio = tok.includes('=')
+        ? Number(tok.slice('--drain-ratio='.length))
+        : eatNum('--drain-ratio');
+      if (!Number.isFinite(out.drainRatio)) {
+        throw new EmissionUsageError('--drain-ratio must be a number');
+      }
+    } else if (tok === '--drain-floor' || tok.startsWith('--drain-floor=')) {
+      out.drainFloor = tok.includes('=')
+        ? Number(tok.slice('--drain-floor='.length))
+        : eatNum('--drain-floor');
+      if (!Number.isFinite(out.drainFloor)) {
+        throw new EmissionUsageError('--drain-floor must be a number');
+      }
+    } else if (tok === '--no-drain-coupling') {
+      out.drainCoupling = false;
+    } else if (tok === '--repo-dir' || tok.startsWith('--repo-dir=')) {
+      out.repoDir = tok.includes('=') ? tok.slice('--repo-dir='.length) : eat();
     } else if (tok === '--kookr-dir' || tok.startsWith('--kookr-dir=')) {
       out.kookrDir = tok.includes('=') ? tok.slice('--kookr-dir='.length) : eat();
     } else if (tok.startsWith('-')) {
@@ -180,6 +230,19 @@ function defaultRunGh(args: string[], env: NodeJS.ProcessEnv): string {
   if (result.error) throw new Error(`gh failed to start: ${result.error.message}`);
   if (result.status !== 0) {
     const msg = (result.stderr || result.stdout || `gh exit ${result.status}`).trim();
+    throw new Error(msg);
+  }
+  return result.stdout ?? '';
+}
+
+function defaultRunGit(args: string[], repoDir: string): string {
+  const result = spawnSync('git', ['-C', repoDir, ...args], {
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  if (result.error) throw new Error(`git failed to start: ${result.error.message}`);
+  if (result.status !== 0) {
+    const msg = (result.stderr || result.stdout || `git exit ${result.status}`).trim();
     throw new Error(msg);
   }
   return result.stdout ?? '';
@@ -236,6 +299,9 @@ function printPlanHuman(out: { log: (...a: unknown[]) => void }, plan: EmissionB
   out.log(`requestedBudget=${plan.requestedBudget}`);
   out.log(`allowedBudget=${plan.allowedBudget}`);
   out.log(`deferredCount=${plan.deferredCount}`);
+  out.log(`drainCoupled=${plan.drainCoupled}`);
+  if (plan.drainCount !== undefined) out.log(`drainCount=${plan.drainCount}`);
+  if (plan.drainCap !== undefined) out.log(`drainCap=${plan.drainCap}`);
   out.log(`action=${plan.action}`);
   out.log(`reason=${plan.reason}`);
 }
@@ -249,6 +315,7 @@ export async function runEmissionCli(
   const err = io.err ?? console;
   const now = io.now ?? (() => new Date());
   const runGh = io.runGh ?? ((args: string[]) => defaultRunGh(args, env));
+  const runGit = io.runGit;
   const appendLine =
     io.appendLine ??
     ((path: string, line: string) => {
@@ -282,11 +349,35 @@ export async function runEmissionCli(
         openBacklogCount = listOpenIssues(runGh, repo).length;
       }
       const openIssues = listOpenIssues(runGh, repo);
+      // Drain-coupling (#1657): the drain denominator is *this* repo's recent
+      // closed-issue count, so a high-drain actor filing into a low-drain repo
+      // is budgeted by the low-drain target, never the actor's home repo.
+      let drainCount: number | undefined;
+      if (args.drainCoupling) {
+        const since = utcDayKeyDaysAgo(args.drainWindow, now());
+        try {
+          drainCount = searchTotalCount(
+            runGh,
+            `repo:${repo} is:issue is:closed closed:>=${since}`,
+          );
+        } catch {
+          // Leave drainCount undefined → drain coupling is skipped this run
+          // rather than failing the whole plan on a flaky search query.
+          drainCount = undefined;
+        }
+      }
       const plan = resolveEmissionBudget({
         openBacklogCount,
         requestedBudget: args.requested,
         openBacklogThreshold: args.threshold,
         constrainedBudget: args.constrained,
+        ...(drainCount !== undefined
+          ? {
+              drainCount,
+              drainCouplingRatio: args.drainRatio,
+              drainFloorBudget: args.drainFloor,
+            }
+          : {}),
       });
       const payload = {
         ok: true,
@@ -399,6 +490,31 @@ export async function runEmissionCli(
       } else {
         out.log(`deferred → ${path}`);
         out.log(JSON.stringify(record));
+      }
+      return 0;
+    }
+
+    if (args.verb === 'version') {
+      // Deploy-freshness check (#1657 acceptance criterion 3): compare the
+      // running budget-logic version against origin/main's source so a
+      // silently-lagging daemon is surfaced, not assumed fresh. Best-effort:
+      // a missing git / no origin ref yields reference=null ("cannot verify").
+      const running = EMISSION_BUDGET_SCHEMA_VERSION;
+      const repoDir = args.repoDir ?? process.cwd();
+      const gitRun = runGit ?? ((a: string[]) => defaultRunGit(a, repoDir));
+      let reference: string | null = null;
+      try {
+        const source = gitRun(['show', 'origin/main:src/core/emission-budget.ts']);
+        reference = extractSchemaVersion(source);
+      } catch {
+        reference = null;
+      }
+      const status = budgetLogicVersionStatus(running, reference);
+      if (args.json) {
+        err.error(status.logLine);
+        out.log(JSON.stringify({ ok: true, repoDir, ...status }));
+      } else {
+        out.log(status.logLine);
       }
       return 0;
     }

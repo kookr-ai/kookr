@@ -113,7 +113,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
   },
   {
     name: 'emission',
-    subcommands: ['plan', 'dedupe', 'metrics', 'defer'],
+    subcommands: ['plan', 'dedupe', 'metrics', 'defer', 'version'],
     flags: [
       '--repo',
       '--requested',
@@ -122,8 +122,13 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
       '--reason',
       '--threshold',
       '--constrained',
+      '--drain-window',
+      '--drain-ratio',
+      '--drain-floor',
+      '--no-drain-coupling',
       '--body-preview',
       '--kookr-dir',
+      '--repo-dir',
       '--json',
       '-h',
       '--help',
