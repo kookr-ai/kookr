@@ -45,6 +45,7 @@ import type { AttentionQueue } from '../../core/attention-queue.js';
 import type { Watchdog } from '../../core/watchdog.js';
 import { resolveTaskAttentionSignals } from '../task-attention-signals.js';
 import { deriveStuckReason } from '../../core/stuck-reason.js';
+import { recordWaitingOnInputOutcome, clearWaitingOnInputTracking } from '../../core/stuck-flag-precision.js';
 import type { TaskStuckReason } from '../../shared/contracts/task-stuck-reason.js';
 import {
   DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
@@ -969,13 +970,35 @@ function attachStuckReason<
   now: number,
 ): T & { stuckReason?: TaskStuckReason } {
   if (task.status !== 'inProgress') return task;
-  const { hungSuspect, queuedAnomalyType } = resolveTaskAttentionSignals(task, deps, now);
+  const { hungSuspect, queuedAnomalyType, liveness } = resolveTaskAttentionSignals(task, deps, now);
   const stuckReason = deriveStuckReason({
     status: task.status,
     pendingSignal: task.pendingSignal,
     hungSuspect,
     anomalyType: queuedAnomalyType,
+    liveness,
+    now,
   });
+  // #1653 precision telemetry: a `needs_input` anomaly reaches the
+  // `waiting_on_input` branch only when it isn't outranked by a
+  // completion-ready signal or a hung-suspect verdict. In that branch the flag
+  // is either emitted or suppressed by the liveness cross-check — record which
+  // (edge-triggered per agent, so a polled projection isn't counted repeatedly)
+  // so the fix's effect on precision is observable in diagnostics. Otherwise
+  // the agent is not in a needs_input episode, so forget it — a later re-entry
+  // is a fresh episode.
+  const agentId = task.sessions[task.sessions.length - 1]?.tmuxSession;
+  if (agentId) {
+    if (
+      queuedAnomalyType === 'needs_input' &&
+      !hungSuspect &&
+      task.pendingSignal?.kind !== 'completion_ready'
+    ) {
+      recordWaitingOnInputOutcome(agentId, stuckReason === 'waiting_on_input' ? 'flag' : 'suppressed');
+    } else {
+      clearWaitingOnInputTracking(agentId);
+    }
+  }
   return stuckReason ? { ...task, stuckReason } : task;
 }
 
