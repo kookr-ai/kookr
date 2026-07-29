@@ -25,6 +25,7 @@
     "test:e2e:relay": "vitest run relay/__tests__/two-nodes.test.ts",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
+    "test:stt": "cd stt && npm ci --no-audit --no-fund && npm test",
     "build": "pnpm generate-build-info && pnpm build:dtach && pnpm build:server && pnpm build:relay && pnpm build:frontend",
     "build:dtach": "bash scripts/build-dtach.sh",
     "fix:native-perms": "bash scripts/fix-native-perms.sh",

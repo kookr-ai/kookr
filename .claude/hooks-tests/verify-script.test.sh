@@ -35,6 +35,7 @@ validate:skills
 validate:docs-commands
 validate:requirements
 test
+test:stt
 EOF
 
 if ! cmp -s "$TMPDIR/expected.log" "$TMPDIR/pnpm.log"; then

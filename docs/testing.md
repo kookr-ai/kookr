@@ -15,6 +15,7 @@ For the design history, see [RFC: Testing Surfacing and Coverage Visibility](rfc
 | `pnpm validate:docs-commands` | Verifies documented package scripts, local CLI binaries, and repo-local command entrypoints exist. | Local + CI (`test` job). |
 | `pnpm exec playwright test` | Browser E2E. | Local + CI (`build` job, Playwright container). |
 | `pnpm test:hooks` | Shell regression tests for project hooks. | Local + CI (`test` job). |
+| `pnpm test:stt` | Installs and runs the `stt/` speech-to-text sidecar's own vitest unit suite (`stt/src/**/*.test.js`, minus the `*.integration.test.js` files, which need `STT_INTEGRATION=1` and the separate integration config). `stt/` is a standalone npm package outside the root vitest include globs. | Local + CI (`stt-tests` job). |
 | `CANARY=1 pnpm exec playwright test e2e/canary.spec.ts` | Real-agent canary, validates mock event fixtures against real Claude Code (Haiku). Local/manual due to API cost. | Local only. |
 
 `e2e/accessibility-smoke.spec.ts` adds axe-backed structural scans for the dashboard shell and core dialogs. It disables axe's `color-contrast` rule because the existing dark theme has broad contrast debt that would make the smoke layer noisy; do not add broader suppressions without documenting the reason here.
@@ -30,7 +31,7 @@ Some UI regressions are covered below the Playwright layer because they are data
 
 | Workflow | Triggers | Jobs |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | Push to `main`, PRs targeting `main`. | `test` (typecheck, skill validation, playbook validation, Vitest + coverage, smoke gates, hook tests), `build` (Playwright). On PRs, both jobs path-filter: code-heavy steps are skipped when the PR touches no code paths (docs/skills-only PRs run just the validators). Push to `main` always runs everything. |
+| `.github/workflows/ci.yml` | Push to `main`, PRs targeting `main`. | `test` (typecheck, skill validation, playbook validation, Vitest + coverage, smoke gates, hook tests), `stt-tests` (the `stt/` sidecar's own npm vitest suite; path-filtered on `stt/**`), `build` (Playwright). On PRs, all jobs path-filter: code-heavy steps are skipped when the PR touches no matching paths (docs/skills-only PRs run just the validators; `stt-tests` steps skip when no `stt/**` file changed). Push to `main` always runs everything. |
 | `.github/workflows/e2e.yml` | Manual `/run-e2e` PR comment. | Full Playwright run, uploads HTML report on every run, comments result on the PR. |
 | `.github/workflows/staging.yml` | Staging-branch flow. | Plain `pnpm test` (no coverage). The testing-surfacing RFC defers staging coverage to a later phase. |
 

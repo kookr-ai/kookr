@@ -130,6 +130,43 @@ jobs:
         if: steps.filter.outputs.code != 'false' || steps.filter.outputs.hooks == 'true'
         run: pnpm test:hooks
 
+  # Dedicated lane for the speech-to-text sidecar. `stt/` is a standalone npm
+  # package (its own package-lock.json + vitest config) outside the root
+  # vitest include globs, so its unit suite never ran in the main `test` job.
+  # This keeps it fast and isolated: npm-cached install of stt's own dep tree,
+  # then its vitest run. tts/ is Python and stays out of this JS lane.
+  stt-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            stt:
+              - 'stt/**'
+              - '.github/workflows/ci.yml'
+
+      - uses: actions/setup-node@v7
+        if: steps.filter.outputs.stt != 'false'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: stt/package-lock.json
+
+      - name: Install stt dependencies
+        if: steps.filter.outputs.stt != 'false'
+        run: npm ci --no-audit --no-fund
+        working-directory: stt
+
+      - name: Run stt unit tests
+        if: steps.filter.outputs.stt != 'false'
+        run: npm test
+        working-directory: stt
+
   build:
     runs-on: ubuntu-latest
     # A red E2E suite with retries + trace capture has run 27+ minutes;
