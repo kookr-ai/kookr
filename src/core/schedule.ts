@@ -192,6 +192,15 @@ export interface Schedule {
   lastRunAt?: string;
   lastRunTaskId?: string;
   lastRunStatus?: 'completed' | 'cancelled' | 'failed';
+  /**
+   * Count of consecutive non-`completed` terminal runs (issue #1665). Bumped
+   * whenever `lastRunStatus` is written to anything other than `completed` (a
+   * `failed` dispatch/skip outcome or a `cancelled` run) and reset to 0 on a
+   * `completed` run. Drives the per-schedule failure alert (see
+   * `ScheduleService`) and surfaces schedule health without hand-reading the
+   * store. Absent until the schedule has recorded its first terminal run.
+   */
+  consecutiveFailures?: number;
   /** Cron watermark — used for cadence computation, not UI status. */
   lastScheduledFor?: string;
   lastCronEvaluatedAt?: string;
@@ -603,6 +612,11 @@ function normalizeSchedule(raw: unknown): Schedule | null {
     ...(typeof candidate.lastRunAt === 'string' ? { lastRunAt: candidate.lastRunAt } : {}),
     ...(typeof candidate.lastRunTaskId === 'string' ? { lastRunTaskId: candidate.lastRunTaskId } : {}),
     ...(candidate.lastRunStatus ? { lastRunStatus: candidate.lastRunStatus } : {}),
+    ...(typeof candidate.consecutiveFailures === 'number'
+      && Number.isFinite(candidate.consecutiveFailures)
+      && candidate.consecutiveFailures > 0
+      ? { consecutiveFailures: Math.floor(candidate.consecutiveFailures) }
+      : {}),
     ...(typeof candidate.lastScheduledFor === 'string' ? { lastScheduledFor: candidate.lastScheduledFor } : {}),
     ...(typeof candidate.lastCronEvaluatedAt === 'string' ? { lastCronEvaluatedAt: candidate.lastCronEvaluatedAt } : {}),
     ...(candidate.latestExecution ? { latestExecution: normalizeLatestExecution(candidate.latestExecution) } : {}),

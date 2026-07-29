@@ -144,6 +144,13 @@ export interface Schedule {
   lastRunAt?: string;
   lastRunTaskId?: string;
   lastRunStatus?: 'completed' | 'cancelled' | 'failed';
+  /**
+   * Count of consecutive non-`completed` terminal runs (issue #1665). Mirrors
+   * the `core/schedule` definition — reset to 0 on a `completed` run,
+   * incremented otherwise. Drives the per-schedule failure alert and surfaces
+   * schedule health at a glance.
+   */
+  consecutiveFailures?: number;
   lastScheduledFor?: string;
   lastCronEvaluatedAt?: string;
   latestExecution?: ScheduleLatestExecutionStatus;
