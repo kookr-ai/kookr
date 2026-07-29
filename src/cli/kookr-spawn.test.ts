@@ -29,6 +29,10 @@ import {
   postTaskWithReconcile,
   parseRetryAfterMs,
   reconcileDelayMs,
+  reconcileViaTaskProbe,
+  taskMatchesSpawn,
+  cwdEquivalent,
+  formatReconcileRecovered,
   isReconcilableStatus,
   probeHealth,
   resolveBaseUrl,
@@ -1328,6 +1332,111 @@ describe('waitForTaskReady', () => {
   });
 });
 
+// ---------- no-key reconcile probe (#1573) ----------
+
+describe('cwdEquivalent (#1573)', () => {
+  it('treats trailing-slash-only differences as equal', () => {
+    expect(cwdEquivalent('/repo/x', '/repo/x/')).toBe(true);
+    expect(cwdEquivalent('/repo/x///', '/repo/x')).toBe(true);
+  });
+  it('treats genuinely different paths as unequal', () => {
+    expect(cwdEquivalent('/repo/x', '/repo/y')).toBe(false);
+    expect(cwdEquivalent('/repo/x', '/repo/xy')).toBe(false);
+  });
+  it('is false for non-string inputs', () => {
+    expect(cwdEquivalent(undefined as unknown as string, '/x')).toBe(false);
+  });
+});
+
+describe('formatReconcileRecovered (#1573)', () => {
+  it('renders the id and a "recovered via reconcile probe" note, not "created"', () => {
+    const rendered = formatReconcileRecovered({ task: { id: 'r1' }, baseUrl: 'http://x' });
+    expect(rendered).toContain('task_id=r1');
+    expect(rendered).toContain('recovered via reconcile probe');
+    expect(rendered).not.toContain('Task created'); // never claims a fresh creation
+    expect(rendered).toContain('http://x/#/tasks/r1');
+  });
+});
+
+describe('taskMatchesSpawn (#1573)', () => {
+  const spawn = { prompt: 'do the thing', cwd: '/repo/x', agentType: 'claude-code' };
+
+  it('matches an active task by userPrompt + cwd', () => {
+    const task = { id: 't1', status: 'inProgress', cwd: '/repo/x', userPrompt: 'do the thing', prompt: 'INJECTED\ndo the thing' };
+    expect(taskMatchesSpawn(task, spawn)).toBe(true);
+  });
+
+  it('matches via prompt-prefix when userPrompt is absent (launch-context injection)', () => {
+    const task = { id: 't1', status: 'launching', cwd: '/repo/x/', prompt: 'do the thing\n\n[launch context]' };
+    expect(taskMatchesSpawn(task, spawn)).toBe(true);
+  });
+
+  it('does NOT match a terminal task (already finished — not this spawn)', () => {
+    const task = { id: 't1', status: 'completed', cwd: '/repo/x', userPrompt: 'do the thing' };
+    expect(taskMatchesSpawn(task, spawn)).toBe(false);
+  });
+
+  it('does NOT match a different cwd', () => {
+    const task = { id: 't1', status: 'inProgress', cwd: '/repo/other', userPrompt: 'do the thing' };
+    expect(taskMatchesSpawn(task, spawn)).toBe(false);
+  });
+
+  it('does NOT match a different prompt', () => {
+    const task = { id: 't1', status: 'inProgress', cwd: '/repo/x', userPrompt: 'something else' };
+    expect(taskMatchesSpawn(task, spawn)).toBe(false);
+  });
+
+  it('filters on agentType only when the spawn pinned one', () => {
+    const task = { id: 't1', status: 'inProgress', cwd: '/repo/x', userPrompt: 'do the thing', agentType: 'codex-cli' };
+    expect(taskMatchesSpawn(task, spawn)).toBe(false); // pinned claude-code, task is codex-cli
+    expect(taskMatchesSpawn(task, { ...spawn, agentType: null })).toBe(true); // no pin → agentType ignored
+  });
+});
+
+describe('reconcileViaTaskProbe (#1573)', () => {
+  const spawn = { baseUrl: 'http://x', prompt: 'p', cwd: '/repo/x', agentType: null as string | null };
+
+  it('returns matched when an active task matches (and never re-POSTs)', async () => {
+    const fetchTasksImpl = vi.fn(async () => ({
+      kind: 'ok' as const,
+      tasks: [{ id: 'landed', status: 'inProgress', cwd: '/repo/x', userPrompt: 'p' }],
+    }));
+    const result = await reconcileViaTaskProbe({ ...spawn, fetchTasksImpl, sleep: async () => {} });
+    expect(result.kind).toBe('matched');
+    if (result.kind === 'matched') expect(result.task.id).toBe('landed');
+    expect(fetchTasksImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns absent when the probe succeeds but nothing matches', async () => {
+    const fetchTasksImpl = vi.fn(async () => ({ kind: 'ok' as const, tasks: [] }));
+    const result = await reconcileViaTaskProbe({ ...spawn, fetchTasksImpl, sleep: async () => {} });
+    expect(result.kind).toBe('absent');
+  });
+
+  it('retries read failures with backoff, then returns unknown after the budget', async () => {
+    const fetchTasksImpl = vi.fn(async () => ({ kind: 'error' as const, message: 'boom' }));
+    const onRetry = vi.fn();
+    const result = await reconcileViaTaskProbe({ ...spawn, fetchTasksImpl, sleep: async () => {}, onRetry });
+    expect(result.kind).toBe('unknown');
+    if (result.kind === 'unknown') expect(result.message).toBe('boom');
+    // first attempt + RECONCILE_MAX_RETRIES(2) retries = 3 reads
+    expect(fetchTasksImpl).toHaveBeenCalledTimes(3);
+    expect(onRetry).toHaveBeenCalledTimes(2);
+  });
+
+  it('recovers on a later probe attempt after a transient read failure', async () => {
+    let n = 0;
+    const fetchTasksImpl = vi.fn(async () => {
+      n += 1;
+      if (n === 1) return { kind: 'error' as const, message: 'transient' };
+      return { kind: 'ok' as const, tasks: [{ id: 'late', status: 'inProgress', cwd: '/repo/x', userPrompt: 'p' }] };
+    });
+    const result = await reconcileViaTaskProbe({ ...spawn, fetchTasksImpl, sleep: async () => {} });
+    expect(result.kind).toBe('matched');
+    if (result.kind === 'matched') expect(result.task.id).toBe('late');
+  });
+});
+
 // ---------- main (end-to-end against a fake API server) ----------
 
 describe('main', () => {
@@ -1492,10 +1601,13 @@ describe('main', () => {
     }
   });
 
-  it('does not reconcile an ambiguous 5xx without a key — surfaces the failure (#1591)', async () => {
-    let calls = 0;
+  it('does not re-POST an ambiguous 5xx without a key — reconciles via read-only probe (#1591/#1573)', async () => {
+    let posts = 0;
+    // No tasksHandler → GET /api/tasks 404s, so the probe cannot confirm and
+    // exhausts to "unknown". The point of this test is that the client never
+    // re-POSTs (no duplicate risk) — the probe is read-only.
     const { server, baseUrl } = await startFakeApi(() => {
-      calls += 1;
+      posts += 1;
       return { status: 500, body: JSON.stringify({ error: 'transient' }) };
     });
     try {
@@ -1513,7 +1625,349 @@ describe('main', () => {
         sleep: async () => {},
       });
       expect(codes).toEqual([EXIT_SERVER_ERROR]);
-      expect(calls).toBe(1);
+      expect(posts).toBe(1); // exactly one POST — the read-only probe never creates
+      const rendered = errBucket.errors.join('\n');
+      expect(rendered).toContain('could not verify whether a task was created');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  // ---- #1573 acceptance criteria: keyless ambiguous-outcome reconcile ----
+
+  it('AC1/AC3: 5xx-after-create reconciles via probe, exits 0 with the id, and never re-POSTs (#1573)', async () => {
+    let posts = 0;
+    let gets = 0;
+    const { server, baseUrl } = await startFakeApi(
+      () => {
+        // The create "fails" from the client's view (5xx) even though the task
+        // landed server-side — the incident shape.
+        posts += 1;
+        return { status: 500, body: JSON.stringify({ error: 'timeout after create' }) };
+      },
+      undefined,
+      () => {
+        gets += 1;
+        return {
+          status: 200,
+          body: JSON.stringify([
+            { id: 'landed-1', status: 'inProgress', cwd: tmpCwd, userPrompt: 'hello', agentType: 'claude-code' },
+          ]),
+        };
+      },
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(posts).toBe(1); // AC3: exactly one POST — no duplicate ever created
+      expect(gets).toBeGreaterThanOrEqual(1);
+      const rendered = logs.join('\n');
+      expect(rendered).toContain('task_id=landed-1'); // AC1: reports the id
+      expect(rendered).toContain('recovered via reconcile probe');
+      // AC4: no "Check the dashboard … before re-running" bail
+      expect((logs.join('\n') + errBucket.errors.join('\n'))).not.toContain('Check the dashboard');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('AC2/AC4: true failure (no task landed) exits non-zero saying no task was created, not "check the dashboard" (#1573)', async () => {
+    const { server, baseUrl } = await startFakeApi(
+      () => ({ status: 500, body: JSON.stringify({ error: 'down' }) }),
+      undefined,
+      () => ({ status: 200, body: JSON.stringify([]) }), // probe: nothing landed
+    );
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_SERVER_ERROR]);
+      const rendered = errBucket.errors.join('\n');
+      expect(rendered).toContain('no task was created');
+      expect(rendered).not.toContain('Check the dashboard'); // AC4
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('honors --dedupe=block when the probe recovers an ambiguous match (#1573)', async () => {
+    const { server, baseUrl } = await startFakeApi(
+      () => ({ status: 500, body: JSON.stringify({ error: 'timeout' }) }),
+      undefined,
+      () => ({
+        status: 200,
+        body: JSON.stringify([
+          { id: 'maybe-mine', status: 'inProgress', cwd: tmpCwd, userPrompt: 'hello', agentType: 'claude-code' },
+        ]),
+      }),
+    );
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello', '--dedupe=block'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_DUPLICATE_BLOCKED]);
+      expect(errBucket.errors.join('\n')).toContain('blocked by --dedupe=block');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('emits a reconciled --json success envelope when the probe recovers a match (#1573)', async () => {
+    const { server, baseUrl } = await startFakeApi(
+      () => ({ status: 503, body: JSON.stringify({ error: 'shedding' }) }),
+      undefined,
+      () => ({
+        status: 200,
+        body: JSON.stringify([
+          { id: 'json-landed', status: 'inProgress', cwd: tmpCwd, userPrompt: 'hello', agentType: 'claude-code' },
+        ]),
+      }),
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello', '--json'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      const envelope = parseSingleJsonLog(logs);
+      expect(envelope).toMatchObject({ ok: true, code: 'OK', details: { taskId: 'json-landed', reconciled: true } });
+      expect(errBucket.errors).toEqual([]); // --json stays quiet on stderr
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('emits a reconciled --json failure envelope when the probe confirms nothing landed (#1573)', async () => {
+    const { server, baseUrl } = await startFakeApi(
+      () => ({ status: 500, body: JSON.stringify({ error: 'down' }) }),
+      undefined,
+      () => ({ status: 200, body: JSON.stringify([]) }),
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello', '--json'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_SERVER_ERROR]);
+      const envelope = parseSingleJsonLog(logs);
+      expect(envelope).toMatchObject({ ok: false, code: 'SERVER_ERROR', details: { reconciled: true } });
+      expect(envelope.message).toContain('no task was created');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('AC1: matches this spawn even when the prompt names a real file the server rewrote to an absolute path (#1573)', async () => {
+    // The server rewrites existing relative file tokens to absolute paths via
+    // normalizePromptFileReferences before storing userPrompt. The probe must
+    // apply the same transform or it would never match its own task.
+    await writeFile(join(tmpCwd, 'app.ts'), 'export {}\n');
+    const absPath = join(tmpCwd, 'app.ts');
+    const { server, baseUrl } = await startFakeApi(
+      () => ({ status: 500, body: JSON.stringify({ error: 'timeout after create' }) }),
+      undefined,
+      () => ({
+        status: 200,
+        body: JSON.stringify([
+          {
+            id: 'file-landed',
+            status: 'inProgress',
+            cwd: tmpCwd,
+            // server-normalized: relative "app.ts" → absolute path
+            userPrompt: `fix ${absPath}`,
+            prompt: `[launch context]\nfix ${absPath}`,
+            agentType: 'claude-code',
+          },
+        ]),
+      }),
+    );
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['fix app.ts'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(logs.join('\n')).toContain('task_id=file-landed');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('AC1: reconciles the throw path (dropped connection / timeout) keylessly via the probe (#1573)', async () => {
+    // The catch-block wiring is independent of the 5xx path; exercise it with a
+    // POST that drops the socket mid-request while GET /api/tasks shows the task
+    // landed.
+    let posts = 0;
+    const server = createServer((req, res) => {
+      if (req.method === 'GET' && req.url === '/api/tasks') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify([
+          { id: 'throw-landed', status: 'inProgress', cwd: tmpCwd, userPrompt: 'hello', agentType: 'claude-code' },
+        ]));
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/api/tasks') {
+        posts += 1;
+        req.socket.destroy(); // ambiguous: connection dropped mid-request
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    if (!addr || typeof addr !== 'object') throw new Error('no address');
+    const baseUrl = `http://127.0.0.1:${addr.port}`;
+    try {
+      const { io, logs } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_OK]);
+      expect(posts).toBe(1); // no re-POST on the throw path — probe is read-only
+      expect(logs.join('\n')).toContain('task_id=throw-landed');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('does NOT claim success from a probe under --dedupe=skip (a match is likely a sibling) (#1573)', async () => {
+    let gets = 0;
+    const { server, baseUrl } = await startFakeApi(
+      () => ({ status: 500, body: JSON.stringify({ error: 'timeout' }) }),
+      undefined,
+      () => {
+        gets += 1;
+        return {
+          status: 200,
+          body: JSON.stringify([
+            { id: 'sibling', status: 'inProgress', cwd: tmpCwd, userPrompt: 'hello', agentType: 'claude-code' },
+          ]),
+        };
+      },
+    );
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello', '--dedupe=skip'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_SERVER_ERROR]); // never a false success
+      expect(gets).toBe(0); // skip mode does not probe (a match would be a sibling)
+      const rendered = errBucket.errors.join('\n');
+      expect(rendered).toContain('--idempotency-key');
+      expect(rendered).not.toContain('Check the dashboard');
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('still surfaces a 429 backpressure rejection without probing (definitive, task not created) (#1573)', async () => {
+    let gets = 0;
+    const { server, baseUrl } = await startFakeApi(
+      () => ({
+        status: 429,
+        body: JSON.stringify({ error: 'burst', code: 'spawn_burst_limit', source: 'cli', limit: 30, windowMs: 600000, retryAfterMs: 1000 }),
+      }),
+      undefined,
+      () => {
+        gets += 1;
+        return { status: 200, body: JSON.stringify([{ id: 'x', status: 'inProgress', cwd: tmpCwd, userPrompt: 'hello' }]) };
+      },
+    );
+    try {
+      const { io } = makeConsoleCapture();
+      const errBucket = makeConsoleCapture();
+      const { codes, exit } = makeExitCapture();
+      await main({
+        argv: ['hello'],
+        env: { KOOKR_API_BASE_URL: baseUrl },
+        stdin: ttyStdin(),
+        cwd: tmpCwd,
+        out: io,
+        err: errBucket.io,
+        exit,
+        sleep: async () => {},
+      });
+      expect(codes).toEqual([EXIT_SERVER_ERROR]);
+      expect(gets).toBe(0); // 429 is definitive → no probe
+      expect(errBucket.errors.join('\n')).toContain('spawn_burst_limit');
     } finally {
       await closeServer(server);
     }
@@ -1992,9 +2446,11 @@ describe('main', () => {
     }
   });
 
-  it('exits 4 when server returns an error', async () => {
+  it('exits 4 when server returns a definitive error (4xx surfaces the message)', async () => {
+    // Use a definitive 4xx: a 5xx is now reconcilable via the keyless probe
+    // (#1573), so it would no longer surface the raw server message directly.
     const { server, baseUrl } = await startFakeApi(() => ({
-      status: 500,
+      status: 400,
       body: JSON.stringify({ error: 'kaboom' }),
     }));
     try {

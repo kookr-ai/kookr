@@ -12,7 +12,7 @@
 // that distinguishes a Kookr instance from an unrelated service.
 
 import { pathToFileURL } from 'node:url';
-import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { resolve as pathResolve } from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -797,6 +797,116 @@ async function fetchTasks(baseUrl) {
   return { kind: 'ok', tasks: json };
 }
 
+// ---------- #1573: no-key reconcile probe ----------
+
+/** Two cwds are equivalent if they differ only by trailing slashes. */
+function cwdEquivalent(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const strip = (s) => s.replace(/\/+$/, '');
+  return strip(a) === strip(b);
+}
+
+// Mirror of the server's src/server/prompt-file-paths.ts: existing relative
+// file tokens under cwd are rewritten to their absolute resolved path before a
+// task's `userPrompt` is stored. The probe must apply the SAME transform to the
+// prompt it sent before comparing, or a prompt naming a real file (very common
+// in agent prompts) would never match this spawn's own task — a false "no task
+// created" that could then invite the duplicate this feature exists to prevent.
+// Keep in sync with normalizePromptFileReferences server-side.
+const FILE_REFERENCE_PATTERN =
+  /(^|[\s([{'"`])((?:\.\.?\/)?(?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]+|(?:\.\.?\/)?[A-Za-z0-9._-]+\.[A-Za-z0-9._-]+)(?=$|[\s)\]}'"`:;,.!?])/g;
+
+function normalizePromptFileReferences(prompt, cwd) {
+  if (typeof prompt !== 'string' || typeof cwd !== 'string') return prompt;
+  return prompt.replace(FILE_REFERENCE_PATTERN, (match, prefix, candidate) => {
+    let resolved;
+    try {
+      resolved = pathResolve(cwd, candidate);
+    } catch {
+      return match;
+    }
+    return existsSync(resolved) ? `${prefix}${resolved}` : match;
+  });
+}
+
+/**
+ * Does an existing `/api/tasks` record look like the task this spawn tried to
+ * create? Matches on the ACTIVE (non-terminal) state, the working directory,
+ * the agent type (only when the caller pinned one), and the prompt.
+ *
+ * The server stores the caller's text as `userPrompt` — which is exactly
+ * `normalizePromptFileReferences(sentPrompt, cwd)` (no launch-context
+ * injection) — and the injected/guarded launch text as `prompt`. So the
+ * reliable comparison is the caller's *normalized* prompt against `userPrompt`;
+ * `normalizedPrompt` must be precomputed by the caller. We keep raw-prompt
+ * fallbacks for a server that did not populate `userPrompt`.
+ *
+ * IMPORTANT (#1573): a prompt+cwd match is NOT proof this spawn created the
+ * task — a concurrent spawn with the same prompt+cwd matches identically. The
+ * caller must therefore treat a match as an ambiguous "already exists", never
+ * as a fresh "created".
+ */
+function taskMatchesSpawn(task, { prompt, normalizedPrompt = prompt, cwd, agentType = null }) {
+  if (!task || typeof task !== 'object') return false;
+  const status = typeof task.status === 'string' ? task.status : null;
+  if (status && TERMINAL_TASK_STATUSES.has(status)) return false;
+  if (!cwdEquivalent(task.cwd, cwd)) return false;
+  if (agentType && typeof task.agentType === 'string' && task.agentType !== agentType) return false;
+  const authored = typeof task.userPrompt === 'string' ? task.userPrompt : null;
+  if (authored !== null && (authored === normalizedPrompt || authored === prompt)) return true;
+  // Fallback for servers that don't populate `userPrompt`: `task.prompt` may
+  // carry prepended launch-context/guardrail text, so allow a suffix match on
+  // the normalized (or raw) prompt in addition to equality.
+  const raw = typeof task.prompt === 'string' ? task.prompt : null;
+  if (raw !== null) {
+    if (raw === normalizedPrompt || raw === prompt) return true;
+    if (raw.startsWith(normalizedPrompt) || raw.endsWith(normalizedPrompt)) return true;
+    if (raw.startsWith(prompt) || raw.endsWith(prompt)) return true;
+  }
+  return false;
+}
+
+/**
+ * #1573: after an ambiguous create failure (a client timeout or a 5xx) with NO
+ * idempotency key to make a re-POST safe, learn whether the task actually
+ * landed by doing a bounded, READ-ONLY `GET /api/tasks` probe. The probe
+ * creates nothing, so it can never introduce a duplicate — the one guarantee a
+ * keyless re-POST cannot give. Read failures retry with the same backoff the
+ * re-POST path uses.
+ *
+ * Returns exactly one of:
+ *  - `{ kind: 'matched', task }`   — an active task matches this spawn (ambiguous: may be a concurrent spawn's)
+ *  - `{ kind: 'absent' }`          — a probe succeeded and found no match (the task was NOT created)
+ *  - `{ kind: 'unknown', message }`— every probe attempt errored (existence still unknown)
+ */
+async function reconcileViaTaskProbe({
+  baseUrl,
+  prompt,
+  cwd,
+  agentType = null,
+  fetchTasksImpl = fetchTasks,
+  sleep = defaultSleep,
+  retries = RECONCILE_MAX_RETRIES,
+  onRetry = () => {},
+}) {
+  // Normalize once (existsSync/resolve is filesystem work) — matches what the
+  // server stored as `userPrompt`.
+  const normalizedPrompt = normalizePromptFileReferences(prompt, cwd);
+  let lastError = 'unknown error';
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetchTasksImpl(baseUrl);
+    if (res.kind === 'ok') {
+      const match = res.tasks.find((task) => taskMatchesSpawn(task, { prompt, normalizedPrompt, cwd, agentType }));
+      return match ? { kind: 'matched', task: match } : { kind: 'absent' };
+    }
+    lastError = res.message;
+    if (attempt >= retries) return { kind: 'unknown', message: lastError };
+    const delayMs = reconcileDelayMs(attempt, null);
+    onRetry({ attempt: attempt + 1, reason: res.message, delayMs });
+    await sleep(delayMs);
+  }
+}
+
 function classifyWaitState(agent) {
   const taskStatus = typeof agent?.taskStatus === 'string'
     ? agent.taskStatus
@@ -932,6 +1042,21 @@ function formatDedup({ task, baseUrl }) {
   ].join('\n');
 }
 
+/**
+ * #1573: render an ambiguous create outcome that a read-only reconcile probe
+ * resolved to an existing active task. Deliberately says "recovered", not
+ * "created": the match may be a concurrent spawn's task with the same
+ * prompt+cwd, so we never claim this spawn authored it.
+ */
+function formatReconcileRecovered({ task, baseUrl }) {
+  const id = task?.id ?? '';
+  return [
+    `task_id=${id}`,
+    'ℹ active task already exists for this prompt + cwd (recovered via reconcile probe after an ambiguous create)',
+    `   open: ${baseUrl}/#/tasks/${id}`,
+  ].join('\n');
+}
+
 function formatDuplicateWarning({ task }) {
   const id = task?.id ?? 'unknown';
   const status = task?.status ?? 'active';
@@ -1017,6 +1142,139 @@ function reportServerError({ result, baseUrl, parentTaskId, err }) {
     }
   }
   err.error(`kookr-spawn: server returned ${result.status}: ${result.message}`);
+}
+
+/**
+ * #1573: terminal handler for an ambiguous KEYLESS create failure (client
+ * timeout or 5xx, no idempotency key). Runs the read-only reconcile probe and
+ * renders a definitive outcome instead of the old "Check the dashboard" bail:
+ *
+ *  - probe matched  → the task exists. Ambiguous (may be a concurrent spawn's),
+ *                     so honor --dedupe=block; otherwise report it as recovered
+ *                     (exit 0), never as a fresh "created".
+ *  - probe absent   → no task was created (exit non-zero, unambiguous message).
+ *  - probe unknown  → existence still unverifiable (exit non-zero); only here do
+ *                     we fall back to advising a dashboard check.
+ */
+async function renderNoKeyReconcile({
+  args,
+  baseUrl,
+  prompt,
+  cwd,
+  agentType,
+  ambiguityReason,
+  out,
+  err,
+  exit,
+  sleep,
+}) {
+  // #1573: --dedupe=skip intends a NEW task even when a sibling exists, so a
+  // prompt+cwd probe match is almost certainly that pre-existing sibling — not
+  // this spawn's task. The probe therefore cannot confirm success here; report
+  // it honestly and point at --idempotency-key (the only key-safe reconcile).
+  if (args.dedupe === 'skip') {
+    const message =
+      'could not confirm a task was created — under --dedupe=skip a prompt+cwd match cannot ' +
+      'be distinguished from a pre-existing sibling. Pass --idempotency-key so a retry can reconcile safely.';
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_SERVER_ERROR,
+        ok: false,
+        code: 'SERVER_ERROR',
+        message,
+        details: { baseUrl, reconciled: false },
+      });
+    }
+    err.error(`kookr-spawn: ambiguous launch outcome (${ambiguityReason}).`);
+    err.error(`kookr-spawn: ${message}`);
+    return exit(EXIT_SERVER_ERROR);
+  }
+
+  const probe = await reconcileViaTaskProbe({
+    baseUrl,
+    prompt,
+    cwd,
+    agentType,
+    sleep,
+    onRetry: args.json
+      ? undefined
+      : ({ attempt, reason, delayMs }) => {
+          err.error(
+            `kookr-spawn: ambiguous launch outcome (${ambiguityReason}); probing ` +
+            `GET /api/tasks to reconcile (attempt ${attempt}/${RECONCILE_MAX_RETRIES}, ` +
+            `retry in ${Math.ceil(delayMs / 1000)}s)…`,
+          );
+        },
+  });
+
+  if (probe.kind === 'matched') {
+    if (args.dedupe === 'block') {
+      if (args.json) {
+        return exitJson({
+          out,
+          exit,
+          exitCode: EXIT_DUPLICATE_BLOCKED,
+          ok: false,
+          code: 'DUPLICATE_BLOCKED',
+          message: 'Matching active task recovered via reconcile probe; blocked by --dedupe=block',
+          details: taskDetails({ task: probe.task, baseUrl }),
+        });
+      }
+      err.error(formatDuplicateWarning({ task: probe.task }));
+      err.error('kookr-spawn: matching active task recovered via reconcile probe; blocked by --dedupe=block.');
+      return exit(EXIT_DUPLICATE_BLOCKED);
+    }
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_OK,
+        ok: true,
+        code: 'OK',
+        message: 'Active task recovered via reconcile probe (ambiguous create outcome)',
+        details: { ...taskDetails({ task: probe.task, baseUrl }), reconciled: true },
+      });
+    }
+    out.log(formatReconcileRecovered({ task: probe.task, baseUrl }));
+    return exit(EXIT_OK);
+  }
+
+  if (probe.kind === 'absent') {
+    const message =
+      'no task was created — the create request failed and a reconcile probe found no matching active task.';
+    if (args.json) {
+      return exitJson({
+        out,
+        exit,
+        exitCode: EXIT_SERVER_ERROR,
+        ok: false,
+        code: 'SERVER_ERROR',
+        message,
+        details: { baseUrl, reconciled: true },
+      });
+    }
+    err.error(`kookr-spawn: ${message}`);
+    return exit(EXIT_SERVER_ERROR);
+  }
+
+  // probe.kind === 'unknown' — genuinely unverifiable.
+  const message = `could not verify whether a task was created — reconcile probe failed (${probe.message}).`;
+  if (args.json) {
+    return exitJson({
+      out,
+      exit,
+      exitCode: EXIT_SERVER_ERROR,
+      ok: false,
+      code: 'SERVER_ERROR',
+      message,
+      details: { baseUrl, reconciled: false },
+    });
+  }
+  err.error(`kookr-spawn: ${message}`);
+  err.error(`Inspect the dashboard at ${baseUrl} to confirm before re-running.`);
+  return exit(EXIT_SERVER_ERROR);
 }
 
 function formatPromptDiff(existingPrompt, newPrompt) {
@@ -1326,6 +1584,25 @@ async function main({
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    // #1573: a keyless client timeout / network error leaves the task's
+    // existence ambiguous. A re-POST could duplicate, but a read-only probe
+    // cannot — so reconcile from GET /api/tasks instead of bailing to the
+    // dashboard. With a key in play, postTaskWithReconcile already retried the
+    // safe re-POST, so a throw here is a genuine exhaustion — keep the bail.
+    if (effectiveIdempotencyKey === null) {
+      return renderNoKeyReconcile({
+        args,
+        baseUrl,
+        prompt,
+        cwd: cwdAbs,
+        agentType: args.agent,
+        ambiguityReason: msg,
+        out,
+        err,
+        exit,
+        sleep,
+      });
+    }
     if (args.json) {
       return exitJson({
         out,
@@ -1343,6 +1620,24 @@ async function main({
   }
 
   if (result.kind === 'server_error') {
+    // #1573: a keyless 5xx is the other ambiguous shape — the task may have
+    // been created before the failure. Reconcile via the read-only probe.
+    // 429 backpressure and other 4xx are definitive (task NOT created), so they
+    // skip the probe and surface as before.
+    if (effectiveIdempotencyKey === null && isReconcilableStatus(result.status)) {
+      return renderNoKeyReconcile({
+        args,
+        baseUrl,
+        prompt,
+        cwd: cwdAbs,
+        agentType: args.agent,
+        ambiguityReason: `HTTP ${result.status}`,
+        out,
+        err,
+        exit,
+        sleep,
+      });
+    }
     if (args.json) {
       return exitJson({
         out,
@@ -1518,6 +1813,10 @@ export {
   postTaskWithReconcile,
   parseRetryAfterMs,
   reconcileDelayMs,
+  reconcileViaTaskProbe,
+  taskMatchesSpawn,
+  cwdEquivalent,
+  formatReconcileRecovered,
   isReconcilableStatus,
   probeHealth,
   resolveBaseUrl,
