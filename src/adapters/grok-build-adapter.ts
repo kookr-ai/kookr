@@ -389,13 +389,22 @@ export class GrokBuildAdapter implements AgentAdapter {
 
     // Allowlisted child env (server secrets excluded) + interactive argv. We exec
     // the EXACT resolved canonical path, not the launcher symlink.
+    // Honor the caller-supplied env extension (AdapterLaunchOptions.extraEnv) so
+    // Ralph loops can inject RALPH_VERDICT_FILE / RALPH_ITERATION, matching the
+    // Claude/Codex adapters. It layers above the allowlist base and task context
+    // but below the security-critical GROK_* control vars and the XAI_API_KEY
+    // scrub, so honoring it cannot widen the secret surface (issue #1366).
     const env = buildAllowlistedGrokEnv({
       processEnv: this.env,
       launchContextEnv: launchContext.env,
+      extraEnv: opts?.extraEnv,
       grokHome,
       authPath,
     });
-    const args = buildGrokLaunchArgs({ model: this.model, bypassAllPermissions: this.bypassAllPermissions });
+    // A per-call `bypassPermissions` override wins over the constructor-time
+    // default for THIS launch only; when unset the instance default applies.
+    const bypassPermissions = opts?.bypassPermissions ?? this.bypassAllPermissions;
+    const args = buildGrokLaunchArgs({ model: this.model, bypassAllPermissions: bypassPermissions });
 
     await this.backend.createSession({
       id: tmuxName,
