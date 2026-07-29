@@ -1,4 +1,5 @@
 import type { Task, TaskStore } from '../core/tasks.js';
+import type { TerminationCause } from '../core/task-status.js';
 import type { Monitor } from '../core/monitor.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { Watchdog } from '../core/watchdog.js';
@@ -526,17 +527,21 @@ export async function completeTask(
  *
  * Invoked from reconciliation when all sessions are dead on an in-progress
  * task. See rfc-task-loss-prevention.md D1.
+ *
+ * `cause` records why the task died (issue #1664); it defaults to `unknown`
+ * (a likely crash) when the caller has no better classification.
  */
 export async function terminateTask(
   taskId: string,
   deps: LifecycleDeps,
+  cause?: TerminationCause,
 ): Promise<void> {
   const task = deps.taskStore.getTask(taskId);
   if (!task) throw new Error(`Task not found: ${taskId}`);
 
   await stopAllLiveSessions(task, deps, 'completed');
   deps.queue?.purgeTask(taskId);
-  deps.taskStore.terminateTask(taskId);
+  deps.taskStore.terminateTask(taskId, cause);
 
   await deps.interactionLog?.append({
     type: 'task_terminated',

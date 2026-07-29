@@ -205,7 +205,13 @@ export async function reconcile(
         taskStore.completeTask(latestTask.id);
         result.tasksCompleted.push(latestTask.id);
       } else {
-        taskStore.terminateTask(latestTask.id);
+        // No clean-finish evidence: a likely crash whose precise cause (OOM,
+        // restart, killed) reconcile cannot distinguish per-task. Record
+        // `unknown` — recoverable, so crash-recovery may relaunch it (#1664).
+        taskStore.terminateTask(latestTask.id, {
+          reason: 'unknown',
+          detail: 'all sessions died without a clean turn',
+        });
         result.tasksTerminated.push(latestTask.id);
       }
     }
@@ -283,7 +289,11 @@ export function reconcileStaleOpenLaunches(
       // open→terminated edge; reconcile()'s dead-session path uses the same
       // two-step transition.
       taskStore.startTask(task.id);
-      taskStore.terminateTask(task.id);
+      // Its launcher died with the previous process — a restart cohort (#1664).
+      taskStore.terminateTask(task.id, {
+        reason: 'server-restart',
+        detail: 'launcher died with the previous process (boot sweep)',
+      });
       terminated.push(task.id);
       console.warn(
         `[startup-reconcile] terminated stale launch task ${task.id} ` +

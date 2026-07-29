@@ -1,6 +1,7 @@
 import { access, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { TaskStore, SessionInfo, Task } from '../core/tasks.js';
+import { isRecoverableTermination } from '../core/task-status.js';
 import { AdapterRegistry, type ResumeContext } from '../adapters/agent-adapter.js';
 import type { ReconciliationResult } from './reconciliation.js';
 import { hashPrompt } from './hash-prompt.js';
@@ -102,6 +103,20 @@ export async function recoverCrashedSessions(
         taskId: task.id,
         sessionId: tmuxName,
         reason: 'task already has a running session',
+      });
+      continue;
+    }
+
+    // Guard: the task was terminated for a deliberate, non-recoverable reason
+    // (an operator kill or a supervisor sweep). Auto-resuming those would undo
+    // an intentional stop; only restart/oom/timeout/unknown terminations are
+    // resumable. Terminations recorded before #1664 have no reason and are
+    // treated as `unknown` (recoverable), preserving prior behavior.
+    if (task.status === 'terminated' && !isRecoverableTermination(task.terminationReason)) {
+      result.skipped.push({
+        taskId: task.id,
+        sessionId: tmuxName,
+        reason: `non-recoverable termination (${task.terminationReason})`,
       });
       continue;
     }

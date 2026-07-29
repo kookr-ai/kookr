@@ -4,7 +4,7 @@ import type { PendingAgentSignal } from '../shared/contracts/agent-signal.js';
 import type { OperatorNeeded } from '../shared/contracts/operator-needed.js';
 import type { AgentType } from './agent-types.js';
 import type { SessionInfo } from './session-read-model.js';
-import type { TaskStatus } from './task-status.js';
+import type { TaskStatus, TerminationReason } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
 import type { RalphLoopState } from '../shared/contracts/ralph.js';
 import type { LaunchPhaseTimings } from './launch-phase-timings.js';
@@ -243,6 +243,17 @@ export interface Task {
   finishedAt?: Date;
   /** Set when the task transitions to 'terminated' via reconciliation. */
   terminatedAt?: Date;
+  /**
+   * Why the task was terminated (issue #1664). Recorded alongside `terminatedAt`
+   * so a swept cohort is diagnosable and the recovery path can tell a resumable
+   * kill (restart/oom/timeout/unknown) from a deliberate one (manual/supervisor).
+   * Absent on tasks terminated before this field existed (treated as `unknown`).
+   */
+  terminationReason?: TerminationReason;
+  /** Killing OS signal when known (e.g. `SIGKILL`). See issue #1664. */
+  terminationSignal?: string;
+  /** Short free-text detail about the termination. See issue #1664. */
+  terminationDetail?: string;
   /**
    * Queryable evidence that a pre-session prune/terminate path disposed of this
    * task before its first agent session ever attached (issue #1588). Its

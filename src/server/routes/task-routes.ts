@@ -1031,6 +1031,9 @@ type CompactApiTask = Pick<
   | 'updatedAt'
   | 'finishedAt'
   | 'terminatedAt'
+  | 'terminationReason'
+  | 'terminationSignal'
+  | 'terminationDetail'
   | 'disposition'
 > & {
   /** Alias of `id`, mirroring the full `ApiTask` surface. */
@@ -1081,6 +1084,9 @@ function toCompactApiTask(task: Task, store: TaskStore): CompactApiTask {
     updatedAt: task.updatedAt,
     finishedAt: task.finishedAt,
     terminatedAt: task.terminatedAt,
+    terminationReason: task.terminationReason,
+    terminationSignal: task.terminationSignal,
+    terminationDetail: task.terminationDetail,
     disposition: task.disposition,
     sessions: task.sessions.map((session) => ({
       tmuxSession: session.tmuxSession,
