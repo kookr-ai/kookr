@@ -31,6 +31,28 @@ import {
 const TASK_CONTEXT_MAX_CHARS = 2000;
 /** `kb search` is given the prompt as the query; keep it bounded. */
 const QUERY_MAX_CHARS = 400;
+
+/**
+ * Playbook prompts (since #1420) begin with a fixed ~215-char context-header
+ * blockquote naming the playbook and its definition path. That boilerplate is
+ * identical across every playbook launch, so leaving it in the query source
+ * would spend more than half of `QUERY_MAX_CHARS` on non-discriminating text
+ * and degrade KB relevance. Strip a leading header line so the query keys off
+ * the actual task body (#1431). Matched on the stable prefix, not the full
+ * wording, so header copy-edits don't silently defeat the strip.
+ */
+const PLAYBOOK_CONTEXT_HEADER_RE = /^> _Kookr playbook context\b[^\n]*\n+/;
+
+/**
+ * Drop a leading playbook context header from a prompt so the KB query keys off
+ * the task body. Returns the prompt unchanged when no header is present, and
+ * falls back to the original prompt when stripping would leave nothing to query
+ * (a header-only prompt).
+ */
+export function stripPlaybookContextHeader(prompt: string): string {
+  const stripped = prompt.replace(PLAYBOOK_CONTEXT_HEADER_RE, '');
+  return stripped.trim() === '' ? prompt : stripped;
+}
 /** Per-snippet cap on injected content so a turn is not flooded. */
 const SNIPPET_MAX_CHARS = 800;
 /** `kb search --gate` runs the Stage B LLM judge — bound the per-turn wait. */
@@ -309,7 +331,7 @@ export async function runKbContextInjection(
     // misbinding (kb-search throws on unknown `--flags`).
     const exec = await deps.execKbSearch([
       'search',
-      prompt.slice(0, QUERY_MAX_CHARS),
+      stripPlaybookContextHeader(prompt).slice(0, QUERY_MAX_CHARS),
       '--gate',
       `--task-context-file=${tcFile}`,
       '--format=json',

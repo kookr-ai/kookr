@@ -1,6 +1,6 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { Playbook, PlaybookScope } from './playbook.js';
 import { parsePlaybook, PlaybookParseError } from './playbook-parser.js';
 import { resolvePluginDir } from './plugin-paths.js';
@@ -33,7 +33,11 @@ const playbookDirCache = new Map<string, PlaybookDirCacheEntry>();
  */
 export function userPlaybooksDir(): string {
   const override = process.env.KOOKR_USER_PLAYBOOKS_DIR;
-  if (override && override.trim().length > 0) return override;
+  // Resolve the override to an absolute path: a relative value would flow into
+  // each playbook's `filePath`, and the launch context header advertises that
+  // path for the agent to edit — a relative one resolves against the agent's
+  // own cwd, i.e. the wrong directory (issue #1431).
+  if (override && override.trim().length > 0) return resolve(override);
   return join(homedir(), '.kookr', 'playbooks');
 }
 
