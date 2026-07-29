@@ -1,4 +1,4 @@
-import type { AgentState } from '../../core/monitor.js';
+import type { AgentState } from '../../shared/contracts/agent-state.js';
 import type { Task } from '../../core/tasks.js';
 import {
   buildTaskSpeechActivityLines,

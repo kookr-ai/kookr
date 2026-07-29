@@ -1,4 +1,5 @@
-import type { AgentState, Monitor } from '../core/monitor.js';
+import type { Monitor } from '../core/monitor.js';
+import type { AgentState } from '../shared/contracts/agent-state.js';
 import { type HookIngestion, mintEventId } from './hook-ingestion.js';
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { TokenTracker } from '../core/token-tracker.js';
