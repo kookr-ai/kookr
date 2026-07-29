@@ -175,9 +175,18 @@ if [ -n "$NONTRIVIAL" ]; then
     echo "  Non-trivial change e.g.: $(echo "$NONTRIVIAL" | head -1)"
     echo "  Marker:     $MARKER_FILE"
     echo ""
-    echo "Run the \`pre-push\` skill in Claude Code (it runs reviewer specialists"
-    echo "and writes the marker). See .claude/skills/pre-push/SKILL.md for the"
-    echo "marker schema and the bypass form."
+    echo "Run the \`kookr-pre-push\` skill in Claude Code (it runs reviewer"
+    echo "specialists and writes the marker). See"
+    echo ".claude/skills/kookr-pre-push/SKILL.md for the marker schema."
+    echo ""
+    echo "Not using Claude Code? After self-reviewing your diff, write the marker"
+    echo "yourself. A bypass marker is SHA-bound (dies on your next commit) and"
+    echo "logged on every use. Copy-paste these two lines, editing the reason:"
+    echo ""
+    echo "  mkdir -p \"$MARKER_DIR\""
+    echo "  printf '{\"sha\":\"$HEAD_SHA\",\"status\":\"bypass\",\"reason\":\"REPLACE: why you are bypassing\"}\n' > \"$MARKER_FILE\""
+    echo ""
+    echo "  (use \"status\":\"approved\" instead once a real review has passed.)"
     exit 1
   fi
 
