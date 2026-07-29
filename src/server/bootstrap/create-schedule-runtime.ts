@@ -4,6 +4,7 @@ import type { ServerMessage } from '../../shared/contracts/messages.js';
 import { launchTask, type LaunchServiceDeps } from '../launch-service.js';
 import { isTaskBlockingSchedule, ScheduleRunner } from '../schedule-runner.js';
 import { ScheduleDeadManSwitch } from '../schedule-dead-man.js';
+import { ScheduleResolutionAlerter } from '../schedule-resolution-alert.js';
 import { deriveLedgerEnrichment, ScheduleService } from '../schedule-service.js';
 import { ScheduleValidator } from '../schedule-validator.js';
 
@@ -87,6 +88,13 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     deadMan: new ScheduleDeadManSwitch({
       broadcast: deps.broadcastToAll,
       ...(deps.getDeadManScheduleMs ? { getDeadManMs: deps.getDeadManScheduleMs } : {}),
+    }),
+    // issue #1661: operational alert when a schedule's playbook stops resolving
+    // in its (defaulted) tier — including one silently broken by the scope
+    // migration. Fires within one validation cycle instead of only surfacing
+    // as a ledger `dispatch_failed` on the next fire.
+    resolutionAlerter: new ScheduleResolutionAlerter({
+      broadcast: deps.broadcastToAll,
     }),
   });
 

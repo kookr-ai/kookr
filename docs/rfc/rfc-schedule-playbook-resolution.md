@@ -103,7 +103,7 @@ export function resolvePlaybookInScope(
 
 `isPathInside` moves here from `playbook-launch.ts` so there is one copy. `userPlaybooksDir`/`pluginPlaybooksDir` are imported from `playbook-discovery.ts` (server modules already import them from there — no layer inversion). The `playbook-launch.ts` import-swap (replace its private `resolvePlaybooksDir`/`isPathInside` with these) is an **optional follow-up cleanup**, not part of the regression fix, to keep blast radius off the all-UI-launches path.
 
-> Note: no `probePlaybookScope`. There is deliberately no fallback chain anywhere in the runtime. The only thing that ever chose a scope by searching is the one-time migration script (R4), where a human reviews the result.
+> Note: no `probePlaybookScope`. There is deliberately no fallback chain anywhere in the runtime *resolution/launch* path. The only thing that ever *chooses* a scope by searching is the one-time migration script (R4), where a human reviews the result. (A read-only cross-tier probe also exists in `schedule-resolution-alert.ts` to compute the operator hint in the unresolvable-playbook alert — issue #1661 — but it never resolves or launches from the probed tier, so the no-fallback resolution invariant is unaffected.)
 
 ### Why single-scope + migration, not runtime backfill
 

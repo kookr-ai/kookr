@@ -5,7 +5,25 @@ import { ScheduleValidationError, isTriggerLimitExhausted, scheduleResolutionSig
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator, resolveSchedulePlaybookSync } from './schedule-validator.js';
 import { isPendingQueueFullError, launchPhaseTimingsOf, type LaunchOpts, type LaunchResult } from './launch-service.js';
+import {
+  crossTierResolutionHint,
+  type ScheduleResolutionProbe,
+  type UnresolvableScheduleInfo,
+} from './schedule-resolution-alert.js';
 import type { TaskStatus } from '../core/types.js';
+
+/**
+ * Cross-tier resolution probe for {@link crossTierResolutionHint} (#1661).
+ * Wraps the hardened sync resolver into a never-null boolean; the caller wraps
+ * throws, but keep this total for defence in depth.
+ */
+const scheduleResolutionProbe: ScheduleResolutionProbe = (playbookPath, scope, cwd) => {
+  try {
+    return resolveSchedulePlaybookSync(playbookPath, scope, cwd) !== undefined;
+  } catch {
+    return false;
+  }
+};
 
 const TICK_INTERVAL_MS = 60_000;
 const CATCHUP_MAX_STALENESS_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -76,6 +94,16 @@ export interface ScheduleRunnerDeps {
    * older wiring/tests).
    */
   deadMan?: { check(schedules: Schedule[]): void };
+  /**
+   * Unresolvable-playbook operational alerter (issue #1661). When provided,
+   * fed the current set of unresolvable schedules on every validation cycle
+   * (the runner's existing tick + the pre-broadcast seed) so an already-broken
+   * schedule — including one silently broken by the scope migration — raises
+   * an operational alert within one cycle, not only when an operator re-enables
+   * it and reads the ledger. `check` must never throw. Absent means no
+   * unresolvable-playbook alerting (back-compat for older wiring/tests).
+   */
+  resolutionAlerter?: { check(unresolvable: UnresolvableScheduleInfo[], resolvedIds: string[]): void };
 }
 
 export class ScheduleRunner {
@@ -187,10 +215,13 @@ export class ScheduleRunner {
    * `lastResolution`).
    */
   refreshPlaybookResolution(): void {
+    const unresolvable: UnresolvableScheduleInfo[] = [];
+    const resolvedIds: string[] = [];
     for (const schedule of this.deps.store.list()) {
       const scope = schedule.playbook.scope ?? 'project';
+      const cwdExists = existsSync(schedule.cwd);
       let resolvable = false;
-      if (existsSync(schedule.cwd)) {
+      if (cwdExists) {
         try {
           resolvable = resolveSchedulePlaybookSync(schedule.playbook.path, scope, schedule.cwd) !== undefined;
         } catch {
@@ -207,6 +238,38 @@ export class ScheduleRunner {
         );
       }
       this.lastResolution.set(schedule.id, { signature, resolvable });
+
+      // Collect unresolvable schedules for the operational alerter (#1661).
+      // Scoped to `cwd exists but playbook does not resolve` — a missing cwd is
+      // a distinct config error handled elsewhere, and folding it in here would
+      // mislabel it as an unresolvable *playbook*. The cross-tier hint probes
+      // the other tiers so the alert can say "pin scope: plugin" (the exact fix
+      // for the 68e9cb52 legacy-schedule incident).
+      if (cwdExists && !resolvable) {
+        const resolvableInTier = crossTierResolutionHint(schedule, scheduleResolutionProbe);
+        unresolvable.push({
+          id: schedule.id,
+          name: schedule.name,
+          playbookPath: schedule.playbook.path,
+          scope,
+          legacy: schedule.playbook.scope === undefined,
+          ...(resolvableInTier ? { resolvableInTier } : {}),
+        });
+      } else if (resolvable) {
+        // `resolvable` is only ever true when cwd exists (guarded above), so
+        // this is the "genuinely resolves now" set the alerter uses to gate
+        // recovery alerts — see ScheduleResolutionAlerter.check.
+        resolvedIds.push(schedule.id);
+      }
+    }
+    // Wrap the alerter call: unlike the dead-man (only invoked from the
+    // tracked-work-wrapped tick), refreshPlaybookResolution also runs on the
+    // unwrapped startup seed, so a throwing broadcast here must not abort
+    // runner startup.
+    try {
+      this.deps.resolutionAlerter?.check(unresolvable, resolvedIds);
+    } catch (err) {
+      console.error('[schedule] resolution alerter check failed:', err);
     }
   }
 
