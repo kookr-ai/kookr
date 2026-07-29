@@ -101,6 +101,12 @@ accept path does not enumerate valid share IDs.
 Alerts are emitted for maintenance mode, emergency disable, rate-limit hits,
 stale heartbeat age, policy sync failures, and 5xx threshold crossings.
 
+The same endpoint also serves a Prometheus text exposition when called with
+`?format=prometheus` (same admin-token/loopback gate), so an operator already
+scraping the Kookr server can graph relay time-series and alert on
+`kookr_relay_alert_active`. See the self-hosted relay runbook for a scrape-config
+example.
+
 ## Health And Readiness Probes
 
 The relay exposes two orthogonal probe endpoints so an orchestrator can tell a

@@ -23,6 +23,7 @@ import {
   type GuestLinkPosture,
   type HostedRelayStatus,
 } from '../src/shared/contracts/hosted-relay.js';
+import { PROMETHEUS_CONTENT_TYPE, renderRelayPrometheusExposition } from './prometheus-exposition.js';
 import { isNodeHello, makeRelayHello, REMOTE_PROTOCOL_VERSION, type NodeHello } from '../src/remote/handshake.js';
 import type { CommandOutcome, CommandResult, RemoteCommandAction } from '../src/remote/command-journal.js';
 import { isRemoteControlEvent, type RemoteControlEvent } from '../src/remote/control-events.js';
@@ -1854,7 +1855,15 @@ export function createRelayServer(opts: RelayServerOptions = {}): RelayServerHan
           return;
         }
         const metrics = metricsSnapshot();
-        const response: HostedRelayMetricsResponse = { metrics, alerts: relayAlerts(metrics) };
+        const alerts = relayAlerts(metrics);
+        // Prometheus scrape surface behind the same admin-token/loopback gate as the
+        // JSON view, so an operator already scraping the Kookr server can graph relay
+        // time-series and let alerts fire (#1383). Default stays JSON for existing callers.
+        if (url.searchParams.get('format') === 'prometheus') {
+          sendText(res, 200, PROMETHEUS_CONTENT_TYPE, renderRelayPrometheusExposition(metrics, alerts));
+          return;
+        }
+        const response: HostedRelayMetricsResponse = { metrics, alerts };
         sendJson(res, 200, response);
         return;
       }

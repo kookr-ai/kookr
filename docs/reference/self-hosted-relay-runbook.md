@@ -156,6 +156,38 @@ fi
 
 Wire these checks to email, ntfy, PagerDuty, or another channel the operator actually sees.
 
+## Metrics (Prometheus)
+
+The relay exposes its metric snapshot as a Prometheus text exposition, so an operator
+already scraping the Kookr server can graph relay time-series (connected nodes, ticket
+outcomes, rate-limit hits, 5xx counts) and alert on `kookr_relay_alert_active`. It sits
+behind the same admin-token / loopback gate as the JSON view — add `?format=prometheus`
+to the existing `/relay/admin/metrics` endpoint:
+
+```bash
+curl --fail -sS \
+  -H "Authorization: Bearer $KOOKR_RELAY_ADMIN_TOKEN" \
+  'http://127.0.0.1:8080/relay/admin/metrics?format=prometheus'
+```
+
+Because the endpoint is loopback-only, scrape it through an SSH tunnel or a Prometheus
+agent co-located on the relay host that forwards to your central Prometheus. Example
+scrape config (agent running on the relay box, tunnelling the admin token):
+
+```yaml
+scrape_configs:
+  - job_name: kookr-relay
+    metrics_path: /relay/admin/metrics
+    params:
+      format: [prometheus]
+    authorization:
+      credentials_file: /etc/kookr-relay/admin-token
+    static_configs:
+      - targets: ['127.0.0.1:8080']
+```
+
+Omitting `format=prometheus` returns the existing `{ metrics, alerts }` JSON, unchanged.
+
 ## Verify
 
 Run the read-only posture check from the server:
