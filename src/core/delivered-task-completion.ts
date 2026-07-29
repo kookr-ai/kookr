@@ -94,6 +94,8 @@ export function selectDeliveredMergedPr(prs: readonly TrackedPrRef[]): MergedPrA
  * - `ralph_active` — an active Ralph loop owns the lifecycle.
  * - `already_signaled` — a `completion_ready` signal is already pending; the
  *   normal auto-close / TTL path owns it.
+ * - `provider_paused` — agent is stalled on billing/quota (issue #1667); a
+ *   pause is neither delivery nor a hang, so auto-complete must not fire.
  */
 export type DeliveredCompletionReason =
   | 'post_merge_budget_exceeded'
@@ -102,7 +104,8 @@ export type DeliveredCompletionReason =
   | 'not_in_progress'
   | 'not_opted_in'
   | 'ralph_active'
-  | 'already_signaled';
+  | 'already_signaled'
+  | 'provider_paused';
 
 export interface DeliveredCompletionDecision {
   autoComplete: boolean;
@@ -128,13 +131,24 @@ function isActiveRalphLoop(task: Pick<Task, 'ralphLoop'>): boolean {
  *   3. no active Ralph loop (that lifecycle owns completion),
  *   4. no pending `completion_ready` signal (the normal auto-close/TTL path
  *      already owns a task that signaled),
- *   5. an attributable merged PR must exist (never auto-complete otherwise),
- *   6. `now - firstObservedMergedAt >= budget`.
+ *   5. agent must not be provider-paused on billing/quota (issue #1667),
+ *   6. an attributable merged PR must exist (never auto-complete otherwise),
+ *   7. `now - firstObservedMergedAt >= budget`.
  */
 export function classifyDeliveredCompletion(
   task: Pick<Task, 'status' | 'ralphLoop' | 'pendingSignal' | 'autoCloseOnSignal'>,
   merged: MergedPrAttribution | null,
-  opts: { now: Date; firstObservedMergedAtMs?: number; budgetMs?: number },
+  opts: {
+    now: Date;
+    firstObservedMergedAtMs?: number;
+    budgetMs?: number;
+    /**
+     * Precomputed via `classifyProviderPause` / `isProviderPaused` (issue
+     * #1667). When true, refuse auto-complete even if the merge budget has
+     * elapsed — a billing/quota stall is not post-merge cleanup hang.
+     */
+    providerPaused?: boolean;
+  },
 ): DeliveredCompletionDecision {
   if (task.status !== 'inProgress') {
     return { autoComplete: false, reason: 'not_in_progress' };
@@ -147,6 +161,9 @@ export function classifyDeliveredCompletion(
   }
   if (task.pendingSignal?.kind === 'completion_ready') {
     return { autoComplete: false, reason: 'already_signaled' };
+  }
+  if (opts.providerPaused === true) {
+    return { autoComplete: false, reason: 'provider_paused' };
   }
   if (!merged) {
     return { autoComplete: false, reason: 'not_merged' };

@@ -19,13 +19,15 @@ export const DEFAULT_WAITING_ON_INPUT_LIVENESS_GRACE_MS = 60_000;
  *
  * 1. `pendingSignal` (`completion_ready`) — the agent itself declared it's
  *    done; this always wins over any liveness/attention state.
- * 2. `hungSuspect` — see `core/hung-task-reaper.ts#isTaskHungSuspect`, which
+ * 2. `providerPaused` — billing/quota stall (issue #1667). Wins over hung so a
+ *    provider pause is never mislabeled as a silent hang and reaped.
+ * 3. `hungSuspect` — see `core/hung-task-reaper.ts#isTaskHungSuspect`, which
  *    is the ONLY place that combines the watchdog's queued `stale_agent`
  *    verdict with its all-channels-silent fallback. Callers compute this
  *    once and pass the boolean in rather than this function re-deriving it,
  *    so the capacity ledger's `hungSuspect` byClass and a task's
  *    `stuckReason: 'hung_suspect'` can never disagree for the same task.
- * 3. `anomalyType` — the task's currently active/queued finding type
+ * 4. `anomalyType` — the task's currently active/queued finding type
  *    (`AttentionQueue.peek(agentId)?.type` or the client-facing
  *    `AgentState.anomaly?.type`, depending on caller). Only `needs_input` and
  *    `permission_blocked` map to a stuck reason; anything else (or none) means
@@ -34,6 +36,11 @@ export const DEFAULT_WAITING_ON_INPUT_LIVENESS_GRACE_MS = 60_000;
 export interface StuckReasonInput {
   status: TaskStatus;
   pendingSignal?: Pick<PendingAgentSignal, 'kind'>;
+  /**
+   * Precomputed via `core/provider-pause.ts#isProviderPaused` (issue #1667).
+   * When true, the task surfaces as `provider_paused` rather than hung.
+   */
+  providerPaused?: boolean;
   /** Precomputed via `isTaskHungSuspect` — see class doc above. */
   hungSuspect?: boolean;
   anomalyType?: string | null;
@@ -79,6 +86,10 @@ export function isWaitingOnInputSuppressedByLiveness(
 export function deriveStuckReason(input: StuckReasonInput): TaskStuckReason | null {
   if (input.status !== 'inProgress') return null;
   if (input.pendingSignal?.kind === 'completion_ready') return 'awaiting_completion_ack';
+  // Issue #1667: a billing/quota pause is an explicit external stall — surface
+  // it ahead of hung_suspect so auto-complete / reaper paths that consult
+  // stuckReason never treat a provider pause as silent death.
+  if (input.providerPaused === true) return 'provider_paused';
   if (input.hungSuspect || input.anomalyType === 'stale_agent') return 'hung_suspect';
   if (input.anomalyType === 'needs_input') {
     // #1653: don't flag a demonstrably-working agent. A live spinner / running

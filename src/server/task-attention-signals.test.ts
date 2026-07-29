@@ -15,7 +15,7 @@ function subject(overrides: Partial<Parameters<typeof resolveTaskAttentionSignal
 describe('resolveTaskAttentionSignals', () => {
   it('returns the all-false default for a task with no sessions', () => {
     const signals = resolveTaskAttentionSignals(subject({ sessions: [] }), {}, Date.now());
-    expect(signals).toEqual({ hungSuspect: false, queuedAnomalyType: null });
+    expect(signals).toEqual({ hungSuspect: false, queuedAnomalyType: null, providerPaused: false });
   });
 
   it('trusts a queued stale_agent verdict directly', () => {
@@ -26,6 +26,25 @@ describe('resolveTaskAttentionSignals', () => {
     );
     expect(signals.hungSuspect).toBe(true);
     expect(signals.queuedAnomalyType).toBe('stale_agent');
+    expect(signals.providerPaused).toBe(false);
+  });
+
+  it('issue #1667: flags providerPaused from a billing-shaped api_error anomaly', () => {
+    const signals = resolveTaskAttentionSignals(
+      subject(),
+      {
+        queue: {
+          peek: () =>
+            ({
+              type: 'api_error',
+              explanation: 'API error: billing_error. Last message: "Credit balance is too low"',
+            }) as never,
+        },
+      },
+      Date.now(),
+    );
+    expect(signals.providerPaused).toBe(true);
+    expect(signals.queuedAnomalyType).toBe('api_error');
   });
 
   it('flags all-channels-silent liveness past the watchdog threshold, but never a live tool call', () => {

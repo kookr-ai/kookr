@@ -46,6 +46,7 @@ import {
   type DeliveredCompletionTracker,
 } from './delivered-task-completion-sweep.js';
 import type { MergedPrAttribution } from '../core/delivered-task-completion.js';
+import { classifyProviderPause, isProviderPaused } from '../core/provider-pause.js';
 import { surfaceDirtyWorktreeOnHeadlessCompletion } from './dirty-worktree-completion-finding.js';
 
 export interface TimerDeps {
@@ -411,6 +412,11 @@ export interface AutoCloseStaleCompletionReadyDeps {
   auditLogPath?: string;
   /** Optional broadcast for the TTL-escalation alert (issue #1526 Phase A) — reuses the existing 'alert' channel, no new notification surface. */
   broadcastToAll?: (msg: ServerMessage) => void;
+  /**
+   * Issue #1667: skip auto-closing tasks whose agent is provider-paused
+   * (billing/quota). Optional — omit → no pause filtering (legacy tests).
+   */
+  isProviderPaused?: (task: Task) => boolean;
 }
 
 export interface AutoCloseStaleCompletionReadyResult {
@@ -478,6 +484,7 @@ export async function autoCloseStaleCompletionReadyTasks(
   const entries = listStaleCompletionReadyTasks(deps.taskStore.listTasks(), {
     now: opts.now,
     thresholdMs: opts.thresholdMs ?? DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
+    ...(deps.isProviderPaused ? { isProviderPaused: deps.isProviderPaused } : {}),
     ttlMs: opts.ttlMs,
   })
     .filter((entry) => entry.canAutoClose && !isActiveRalphLoop(entry.task))
@@ -687,6 +694,25 @@ export async function maybeReapHungTask(
   };
   const verdict = evaluateHungTaskReap(task, liveness, { now: nowDate.getTime(), thresholdMs });
   if (!verdict.eligible) return false;
+
+  // Issue #1667: a billing/quota stall is not a hang — refuse to reap so the
+  // delivery-owning child keeps its slot/identity until the pause clears or a
+  // human acts. Pane text is load-bearing for the 74d1d038 shape (GH Actions
+  // spending-limit annotations visible in the terminal without a stop_failure).
+  // Tests often stub Monitor with a partial surface; treat missing
+  // getAgentEvents as "no event evidence" and still scan pane text.
+  const events =
+    typeof deps.monitor.getAgentEvents === 'function'
+      ? deps.monitor.getAgentEvents(agentId)
+      : [];
+  const pause = classifyProviderPause({ events, texts: [paneContent] });
+  if (pause.paused) {
+    console.warn(
+      `[hung-task-reaper] skipping reap for task ${task.id} — provider_paused `
+      + `(${pause.detail ?? 'billing/quota'}); holding slot for resume`,
+    );
+    return false;
+  }
 
   console.warn(
     `[hung-task-reaper] reaping task ${task.id} — silent ${Math.round(verdict.silentForMs / 60_000)}m `
@@ -1039,12 +1065,27 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         await deps.worktreeRegistry.refresh(deps.worktreeRegistryRepoPath);
       }
       const result = await reconcile(taskStore, terminalBackend, deps.worktreeRegistry);
+      // Issue #1667: shared provider-pause check for auto-close + delivered
+      // sweeps. Reads recent agent events for the task's live session.
+      const isTaskProviderPaused = (task: Task): boolean => {
+        const agentId = task.sessions[task.sessions.length - 1]?.tmuxSession;
+        if (!agentId) return false;
+        const events = monitor.getAgentEvents(agentId);
+        const anomaly = queue.peek(agentId);
+        return isProviderPaused({
+          events,
+          anomalyType: anomaly?.type ?? null,
+          anomalyExplanation: anomaly?.explanation ?? null,
+        });
+      };
+
       const autoCloseResult = await autoCloseStaleCompletionReadyTasks(
         {
           taskStore,
           lifecycleDeps,
           auditLogPath: deps.auditLogPath,
           broadcastToAll: deps.broadcastToAll,
+          isProviderPaused: isTaskProviderPaused,
         },
         {
           thresholdMs: deps.getAutoCloseCompletionReadyDelayMs?.(),
@@ -1058,12 +1099,14 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       // its post-merge cleanup budget is exceeded. Raises through the #1541
       // outbox / autoCloseOnSignal path; the hung-task reaper stays the
       // backstop. Skipped when no merge-attribution resolver is wired.
+      // Issue #1667: never auto-complete while provider-paused.
       const deliveredResult = deps.resolveMergedPr
         ? await autoCompleteDeliveredTasks(
           {
             taskStore,
             lifecycleDeps,
             resolveMergedPr: deps.resolveMergedPr,
+            isProviderPaused: isTaskProviderPaused,
             tracker: deliveredCompletionTracker,
             ...(deps.signalOutboxSpoolDir ? { signalOutboxSpoolDir: deps.signalOutboxSpoolDir } : {}),
             ...(deps.agentLifecycleDeps?.onTaskOutcome
