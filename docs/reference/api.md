@@ -472,6 +472,18 @@ Present only when the server was started with `KOOKR_ISSUE_CLAIMS` enabled; with
 | `GET /api/issue-claims?repo=&number=` | List claims (one when `number` given) with `doing`/`lastActivityAt`/`ageMs` |
 | `DELETE /api/issue-claims` | Holder-checked release (`{repo, number, taskId}` in the JSON body); `403` if not owner |
 
+### Environment blockers (issue #1690)
+
+A durable registry of active external blockers (e.g. a GitHub Actions billing limit) so the first detector registers a blocker once, other agents consult it instead of re-diagnosing, and the operator is notified exactly once. The registry is durable across daemon restart and auto-clears on a successful probe.
+
+| Endpoint | Description |
+| --- | --- |
+| `POST /api/environment-blockers` | Register-once (`{type, scope, detectedBy?, probe?, reason?}`); returns `{blocker, newlyRegistered}`. Subsequent calls for the same `${type}:${scope}` are idempotent and fire no second notification |
+| `GET /api/environment-blockers` | List active blockers |
+| `GET /api/environment-blockers?type=&scope=` | Consult one — returns a `{blocked, state:'blocked_external', blocker}` disposition, or `{blocked:false}` |
+| `POST /api/environment-blockers/probe` | Record a probe outcome (`{type, scope, success}`); a `success` auto-clears the blocker and releases parked agents |
+| `DELETE /api/environment-blockers` | Manual operator clear (`{type, scope}`) |
+
 ## Supervisor Surface
 
 Read-only diagnostics plus the mutating verbs a supervising agent (or an

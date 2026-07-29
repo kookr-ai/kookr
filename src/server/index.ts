@@ -72,6 +72,7 @@ import { defaultSignalOutboxDir } from '../core/signal-outbox.js';
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
 import { TaskStateSaveScheduler } from './task-state-save-scheduler.js';
 import { createIssueClaimServices, createUpstreamOfResolver, isIssueClaimsEnabled, type IssueClaimServices } from './issue-claim-wiring.js';
+import { EnvironmentBlockerRegistry } from '../core/environment-blocker-registry.js';
 import { decorateClaim } from './issue-claim-decorator.js';
 import { resolveClaimRepo } from './use-cases/resolve-claim-repo.js';
 import { getProjectId } from '../core/project-identity.js';
@@ -774,6 +775,34 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     );
   }
 
+  // Environment-blocker registry (issue #1690). A durable, shared record of
+  // active external blockers (e.g. a GitHub Actions billing limit) so the first
+  // detector registers a blocker once, other agents consult it instead of
+  // re-diagnosing, and the operator is notified exactly once. Constructed and
+  // loaded from disk BEFORE the HTTP listener so the `/api/environment-blockers`
+  // routes never serve an unpopulated registry after a restart. The single-shot
+  // notifier is a clearly-marked operator log line; richer escalation (WS
+  // broadcast / Telegram) is a deliberate follow-up — the exactly-once + durable
+  // dedupe semantics live in the registry regardless of the sink.
+  const environmentBlockerRegistry = new EnvironmentBlockerRegistry(kookrDir, {
+    notify: (blocker) => {
+      console.warn(
+        `[environment-blocker] operator notification: external blocker active — `
+        + `type=${blocker.type} scope=${blocker.scope}`
+        + (blocker.reason ? ` reason=${JSON.stringify(blocker.reason)}` : '')
+        + (blocker.probe ? ` probe=${JSON.stringify(blocker.probe)}` : '')
+        + `. Agents hitting this park in blocked_external instead of retry-spinning; `
+        + `it auto-clears on the next successful probe.`,
+      );
+    },
+  });
+  await environmentBlockerRegistry.load();
+  if (environmentBlockerRegistry.size() > 0) {
+    console.log(
+      `[environment-blocker] ${environmentBlockerRegistry.size()} active blocker(s) restored from disk`,
+    );
+  }
+
   // Reconcile with live backend sessions
   const reconcileResult = await reconcile(taskStore, terminalBackend, worktreeRegistry);
   // Boot-only sweep (issue #1526 Phase C / #1528): launches that died with
@@ -1287,6 +1316,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   const upstreamOf = createUpstreamOfResolver();
   const app = createRoutes({
+    environmentBlockerRegistry,
     ...(issueClaimServices ? {
       issueClaims: {
         enabled: true,

@@ -58,6 +58,7 @@ import type { UserInputDeliveryService } from '../user-input-delivery-service.js
 import type { SessionHealthService } from '../session-health-service.js';
 import type { DeliveryTraceReader } from '../../core/delivery-trace.js';
 import type { TelegramTaskOutcome } from '../../shared/contracts/telegram.js';
+import type { EnvironmentBlockerRegistry } from '../../core/environment-blocker-registry.js';
 export type { RemoteShareDeps } from '../remote-share-deps.js';
 
 /**
@@ -406,6 +407,14 @@ export interface RouteDeps {
   findingEvidenceReviewSampler?: Pick<FindingEvidenceReviewSampler, 'getStatus'>;
   /** Shared coordinator recommendation suppressions; routes may write it and snapshots read it. */
   coordinatorSuppressions?: CoordinatorSuppressionRegistry;
+  /**
+   * Durable environment-blocker registry (issue #1690). Backs the
+   * `/api/environment-blockers` routes so a detected external blocker (e.g. a CI
+   * billing limit) is registered once, consulted by other agents instead of
+   * re-diagnosed, and escalated with exactly one human notification. Absent in
+   * tests that build a partial RouteDeps ⇒ the routes are not registered.
+   */
+  environmentBlockerRegistry?: EnvironmentBlockerRegistry;
   /** Operator drain / resume state (issue #659). Absent disables the admin drain routes. */
   drainController?: DrainController;
   /** Recent operational-alert fire/recovery history for admin introspection. */
