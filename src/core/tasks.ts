@@ -157,7 +157,8 @@ export class TaskStore {
   /**
    * Creates and returns a snapshot of the newly stored task record. Code that
    * intentionally owns a multi-field state transition must opt in through
-   * getTaskForMutation or a narrower TaskStore mutation API.
+   * a narrower TaskStore mutation API (Ralph: {@link runRalphMutation};
+   * other multi-field paths: {@link getTaskForMutation} until migrated).
    */
   createTask(opts: CreateTaskOptions): Task;
   createTask(prompt: string, cwd: string, criteria?: string, parentTaskId?: string): Task;
@@ -299,9 +300,31 @@ export class TaskStore {
    * Return the stored mutable task for code paths that intentionally own a
    * multi-field state transition. Prefer narrower TaskStore methods for simple
    * updates; this exists so mutable access is explicit rather than accidental.
+   *
+   * Ralph loop control paths must use {@link runRalphMutation} instead (issue
+   * #1461). Remaining production callers outside Ralph should migrate to
+   * narrower methods; tests may continue using this helper for fixtures.
    */
   getTaskForMutation(id: string): Task | undefined {
     return this.tasks.get(id);
+  }
+
+  /**
+   * Ralph-owned multi-field state transition port (issue #1461).
+   *
+   * Replaces {@link getTaskForMutation} for `ralph-loop-service` and
+   * `ralph-cycler` so Ralph mutation sites are greppable and the general
+   * escape hatch can be closed without Ralph churn. The mutator receives the
+   * live stored Task; confine mutations to `ralphLoop` (and `updatedAt`).
+   * Returning the task itself is allowed for multi-step async flows that must
+   * hold a live reference across awaits.
+   *
+   * @returns The mutator's return value, or `undefined` if the task id is unknown.
+   */
+  runRalphMutation<T>(taskId: string, mutator: (task: Task) => T): T | undefined {
+    const task = this.tasks.get(taskId);
+    if (!task) return undefined;
+    return mutator(task);
   }
 
   /**

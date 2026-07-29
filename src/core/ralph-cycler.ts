@@ -135,7 +135,7 @@ export class RalphCycler {
     opts: RalphCyclerHandleStopOptions,
   ): Promise<RalphCyclerAction> {
     const events: RalphCyclerEvent[] = [];
-    const task = taskStore.getTaskForMutation(opts.taskId);
+    const task = taskStore.runRalphMutation(opts.taskId, (t) => t);
     if (!task) return { kind: 'noop', events };
     const loop = task.ralphLoop;
     if (!loop) return { kind: 'noop', events };
