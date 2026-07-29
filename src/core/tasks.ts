@@ -314,10 +314,13 @@ export class TaskStore {
    *
    * Replaces {@link getTaskForMutation} for `ralph-loop-service` and
    * `ralph-cycler` so Ralph mutation sites are greppable and the general
-   * escape hatch can be closed without Ralph churn. The mutator receives the
-   * live stored Task; confine mutations to `ralphLoop` (and `updatedAt`).
-   * Returning the task itself is allowed for multi-step async flows that must
-   * hold a live reference across awaits.
+   * escape hatch can be closed without Ralph churn.
+   *
+   * Prefer performing mutations *inside* the mutator callback (sync Ralph
+   * transitions). Returning the live task is reserved for multi-step async
+   * flows that must hold a reference across awaits — call sites should
+   * document that with a short comment. Confine mutations to `ralphLoop`
+   * fields and `updatedAt`.
    *
    * @returns The mutator's return value, or `undefined` if the task id is unknown.
    */

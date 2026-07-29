@@ -135,6 +135,8 @@ export class RalphCycler {
     opts: RalphCyclerHandleStopOptions,
   ): Promise<RalphCyclerAction> {
     const events: RalphCyclerEvent[] = [];
+    // Live ref across predicate/diff IO awaits for this stop transition.
+    // All loop field writes below mutate the store-backed RalphLoopState.
     const task = taskStore.runRalphMutation(opts.taskId, (t) => t);
     if (!task) return { kind: 'noop', events };
     const loop = task.ralphLoop;
