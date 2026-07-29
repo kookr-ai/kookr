@@ -215,6 +215,15 @@ describe('validateSettings', () => {
     expect(validateSettings({ deadManScheduleMinutes: 'never' }).deadManScheduleMinutes).toBe(120);
   });
 
+  it('defaults scheduleFailureAlertThreshold to 3 and clamps to the 1–100 range (issue #1665)', () => {
+    expect(validateSettings({}).scheduleFailureAlertThreshold).toBe(3);
+    expect(DEFAULT_SETTINGS.scheduleFailureAlertThreshold).toBe(3);
+    expect(validateSettings({ scheduleFailureAlertThreshold: 10 }).scheduleFailureAlertThreshold).toBe(10);
+    expect(validateSettings({ scheduleFailureAlertThreshold: 0 }).scheduleFailureAlertThreshold).toBe(1);
+    expect(validateSettings({ scheduleFailureAlertThreshold: 9_999 }).scheduleFailureAlertThreshold).toBe(100);
+    expect(validateSettings({ scheduleFailureAlertThreshold: 'off' }).scheduleFailureAlertThreshold).toBe(3);
+  });
+
   it('defaults maxPendingTasks to 24 and clamps to the 4–200 range (issue #1526 Phase C / C3)', () => {
     expect(validateSettings({}).maxPendingTasks).toBe(24);
     expect(DEFAULT_SETTINGS.maxPendingTasks).toBe(24);
@@ -484,6 +493,7 @@ describe('loadSettings / saveSettings', () => {
       hungTaskReapMinutes: 240,
       launchTimeoutSeconds: 300,
       deadManScheduleMinutes: 240,
+      scheduleFailureAlertThreshold: 5,
       maxPendingTasks: 48,
       pendingTaskTtlMinutes: 120,
       spawnBurstLimit: 60,

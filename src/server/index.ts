@@ -402,6 +402,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Live getter for the scheduled-task starvation dead-man window (issue
   // #1526 Phase C). Read on every scheduler tick.
   const getDeadManScheduleMs = () => currentSettings.deadManScheduleMinutes * 60_000;
+  // Live getter for the per-schedule consecutive-failure alert threshold (issue
+  // #1665). Read on every recorded terminal run so a settings PUT applies next.
+  const getScheduleFailureAlertThreshold = () => currentSettings.scheduleFailureAlertThreshold;
   // Honest server-side backpressure (issue #1526 Phase C / C3). All read the
   // live `currentSettings` binding, so a settings PUT applies to the next
   // launch / liveness tick without a restart.
@@ -1152,6 +1155,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     broadcastToAll,
     isAccepting: () => drainController.isAccepting(),
     getDeadManScheduleMs,
+    getScheduleFailureAlertThreshold,
   });
   realtime.setScheduleStore(scheduleStore);
   realtime.setSnapshotAchievementsReady(true);

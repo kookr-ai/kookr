@@ -145,6 +145,16 @@ export interface KookrSettings {
    */
   deadManScheduleMinutes: number;
   /**
+   * Per-schedule consecutive-failure alert threshold (issue #1665). When a
+   * schedule's `consecutiveFailures` counter crosses this value (each terminal
+   * run whose `lastRunStatus` is not `completed` increments it; a `completed`
+   * run resets it), the schedule service emits one operational `alert`
+   * (severity warning) through the dashboard alert channel, and a matching
+   * `info` recovery alert when the schedule next completes. Read via a live
+   * getter so a settings change applies to the next recorded run.
+   */
+  scheduleFailureAlertThreshold: number;
+  /**
    * Pending-queue depth limit (issue #1526 Phase C / C3, FM3). During the
    * 2026-07-24 deadlock POST /api/tasks accepted unbounded creation: every
    * over-cap launch silently pended, so a runaway burst looked successful to
@@ -237,6 +247,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   hungTaskReapMinutes: 180,
   launchTimeoutSeconds: 180,
   deadManScheduleMinutes: 120,
+  scheduleFailureAlertThreshold: 3,
   maxPendingTasks: 24,
   pendingTaskTtlMinutes: 240,
   spawnBurstLimit: 30,
@@ -280,6 +291,11 @@ const MAX_LAUNCH_TIMEOUT_SEC = 900;
 // can't trip it; ceiling of 1440 (24h) keeps the switch meaningful.
 const MIN_DEAD_MAN_SCHEDULE_MIN = 30;
 const MAX_DEAD_MAN_SCHEDULE_MIN = 1440;
+// Per-schedule consecutive-failure alert threshold (issue #1665). Floor of 1
+// lets an operator alert on the very first failure; ceiling of 100 stops a
+// fat-fingered value from silencing the alert entirely.
+const MIN_SCHEDULE_FAILURE_ALERT_THRESHOLD = 1;
+const MAX_SCHEDULE_FAILURE_ALERT_THRESHOLD = 100;
 // Pending-queue depth bounds (issue #1526 Phase C / C3). Floor of 4 keeps the
 // queue useful (a depth-0/1 queue would reject legitimate short bursts the cap
 // absorbs within minutes); ceiling of 200 stops a fat-fingered value from
@@ -392,6 +408,14 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     deadManScheduleMinutes = Math.max(
       MIN_DEAD_MAN_SCHEDULE_MIN,
       Math.min(MAX_DEAD_MAN_SCHEDULE_MIN, Math.round(raw.deadManScheduleMinutes)),
+    );
+  }
+
+  let scheduleFailureAlertThreshold = DEFAULT_SETTINGS.scheduleFailureAlertThreshold;
+  if (typeof raw.scheduleFailureAlertThreshold === 'number' && Number.isFinite(raw.scheduleFailureAlertThreshold)) {
+    scheduleFailureAlertThreshold = Math.max(
+      MIN_SCHEDULE_FAILURE_ALERT_THRESHOLD,
+      Math.min(MAX_SCHEDULE_FAILURE_ALERT_THRESHOLD, Math.round(raw.scheduleFailureAlertThreshold)),
     );
   }
 
@@ -530,6 +554,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       hungTaskReapMinutes,
       launchTimeoutSeconds,
       deadManScheduleMinutes,
+      scheduleFailureAlertThreshold,
       maxPendingTasks,
       pendingTaskTtlMinutes,
       spawnBurstLimit,

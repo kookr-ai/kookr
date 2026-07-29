@@ -4,8 +4,14 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ScheduleStore } from '../core/schedule.js';
 import { TaskStore } from '../core/tasks.js';
-import { deriveLedgerEnrichment, ScheduleService, type ScheduleLedgerEnrichment } from './schedule-service.js';
+import {
+  deriveLedgerEnrichment,
+  nextConsecutiveFailures,
+  ScheduleService,
+  type ScheduleLedgerEnrichment,
+} from './schedule-service.js';
 import { ScheduleValidator } from './schedule-validator.js';
+import type { ServerMessage } from '../shared/contracts/messages.js';
 
 function withService(testFn: (service: ScheduleService, store: ScheduleStore, dir: string) => void | Promise<void>): Promise<void> | void {
   const dir = mkdtempSync(join(tmpdir(), 'schedule-service-test-'));
@@ -560,5 +566,242 @@ describe('ScheduleService status', () => {
         reasonCode: 'reconciled_after_restart',
       }));
     });
+  });
+});
+
+describe('nextConsecutiveFailures', () => {
+  it('resets to 0 on a completed run', () => {
+    expect(nextConsecutiveFailures(4, 'completed')).toBe(0);
+    expect(nextConsecutiveFailures(undefined, 'completed')).toBe(0);
+  });
+
+  it('increments on a failed or cancelled run', () => {
+    expect(nextConsecutiveFailures(undefined, 'failed')).toBe(1);
+    expect(nextConsecutiveFailures(2, 'failed')).toBe(3);
+    expect(nextConsecutiveFailures(0, 'cancelled')).toBe(1);
+    expect(nextConsecutiveFailures(1, 'cancelled')).toBe(2);
+  });
+});
+
+describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
+  function alertServiceHarness(threshold: number): {
+    service: ScheduleService;
+    store: ScheduleStore;
+    dir: string;
+    alerts: Array<Extract<ServerMessage, { type: 'alert' }>>;
+    cleanup: () => void;
+  } {
+    const dir = mkdtempSync(join(tmpdir(), 'schedule-service-alert-test-'));
+    const store = new ScheduleStore(dir);
+    const alerts: Array<Extract<ServerMessage, { type: 'alert' }>> = [];
+    const service = new ScheduleService({
+      store,
+      validator: new ScheduleValidator(),
+      emitAlert: (message) => alerts.push(message),
+      getFailureAlertThreshold: () => threshold,
+    });
+    return { service, store, dir, alerts, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  async function failOnce(service: ScheduleService, store: ScheduleStore, scheduleId: string, scheduledFor: string): Promise<void> {
+    const receipt = await service.reserveExecution(store.get(scheduleId)!, 'cron', scheduledFor);
+    await service.markExecutionOutcome(scheduleId, receipt.id, 'dispatch_failed', 'launch_error', 'boom');
+  }
+
+  it('increments consecutiveFailures on failures and resets it on a completed run', async () => {
+    const { service, store, cleanup } = alertServiceHarness(3);
+    try {
+      const schedule = store.create({
+        name: 'FailingSchedule',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+      await failOnce(service, store, schedule.id, '2026-01-01T09:05:00.000Z');
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(2);
+
+      // A completed run resets the streak. Drive it through the terminal path.
+      const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', '2026-01-01T09:10:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, 'task-ok', false);
+      await service.recordTaskTerminalOutcome('task-ok', 'completed');
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(0);
+
+      // The counter is surfaced on the API projection without hand-reading the store.
+      expect(service.listResponse().schedules[0].consecutiveFailures).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('emits exactly one warning alert when the streak crosses the threshold', async () => {
+    const { service, store, alerts, cleanup } = alertServiceHarness(2);
+    try {
+      const schedule = store.create({
+        name: 'CrossingSchedule',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
+      expect(alerts).toHaveLength(0); // below threshold
+
+      await failOnce(service, store, schedule.id, '2026-01-01T09:05:00.000Z');
+      expect(alerts).toHaveLength(1); // crossed 2
+      expect(alerts[0].severity).toBe('warning');
+      expect(alerts[0].operationalAlert?.key).toBe(`schedule:failures:${schedule.id}`);
+      expect(alerts[0].summary).toContain('CrossingSchedule');
+      // The last error message is folded into the operator-facing details.
+      expect(alerts[0].details).toContain('boom');
+
+      // A third failure does NOT re-alert (edge-triggered, still firing).
+      await failOnce(service, store, schedule.id, '2026-01-01T09:10:00.000Z');
+      expect(alerts).toHaveLength(1);
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(3);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('emits an info recovery alert when a completed run clears a firing streak', async () => {
+    const { service, store, alerts, cleanup } = alertServiceHarness(2);
+    try {
+      const schedule = store.create({
+        name: 'RecoverySchedule',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
+      await failOnce(service, store, schedule.id, '2026-01-01T09:05:00.000Z');
+      expect(alerts.filter((a) => a.operationalAlert?.state === 'fired')).toHaveLength(1);
+
+      const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', '2026-01-01T09:10:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, 'task-ok', false);
+      await service.recordTaskTerminalOutcome('task-ok', 'completed');
+
+      const recovery = alerts.filter((a) => a.operationalAlert?.state === 'recovered');
+      expect(recovery).toHaveLength(1);
+      expect(recovery[0].severity).toBe('info');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('treats benign skips as neutral — deferrals never trip the counter or alert', async () => {
+    // Regression for the false-positive the correctness review caught: a healthy
+    // schedule whose task outlives its cron interval records skipped_active /
+    // skipped_coalesced every tick; those, an operator drain, and other benign
+    // skips must NOT be counted as failures.
+    for (const benign of ['skipped_active', 'skipped_coalesced', 'skipped_draining', 'skipped_manual', 'deduplicated'] as const) {
+      const { service, store, alerts, cleanup } = alertServiceHarness(2);
+      try {
+        const schedule = store.create({
+          name: `Benign-${benign}`,
+          cron: '* * * * *',
+          playbook: { path: 'daily.md', parameters: {} },
+          cwd: '/tmp',
+        });
+
+        // Seed one real failure so we can prove the skip carries it forward, not resets it.
+        await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
+        expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+
+        // Two benign skips in a row must not climb past 1 nor cross the threshold.
+        for (const at of ['2026-01-01T09:05:00.000Z', '2026-01-01T09:10:00.000Z']) {
+          const r = await service.reserveExecution(store.get(schedule.id)!, 'cron', at);
+          await service.markExecutionOutcome(schedule.id, r.id, benign, 'none');
+        }
+        expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+        expect(alerts).toHaveLength(0);
+      } finally {
+        cleanup();
+      }
+    }
+  });
+
+  it('counts a cancelled terminal run through recordTaskTerminalOutcome and can fire on it', async () => {
+    const { service, store, alerts, cleanup } = alertServiceHarness(2);
+    try {
+      const schedule = store.create({
+        name: 'CancelledSchedule',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      // A dispatch failure then a cancelled terminal run crosses the threshold of 2.
+      await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+
+      const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', '2026-01-01T09:05:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, 'task-cancel', false);
+      await service.recordTaskTerminalOutcome('task-cancel', 'cancelled');
+
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(2);
+      expect(alerts.filter((a) => a.operationalAlert?.state === 'fired')).toHaveLength(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('reconcileOnStartup evaluates the alert edge on a reconciled crossing (no silent edge loss)', async () => {
+    const { service, store, alerts, cleanup } = alertServiceHarness(2);
+    try {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Run scheduled work', '/tmp');
+      taskStore.startTask(task.id);
+      taskStore.cancelTask(task.id);
+
+      const schedule = store.create({
+        name: 'ReconcileCrossing',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      // Seed: one prior failure (counter = 1, threshold - 1) plus a mid-flight
+      // run pointing at the cancelled task.
+      await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
+      const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', '2026-01-01T09:05:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, task.id, false);
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+      const before = alerts.length;
+
+      await service.reconcileOnStartup(taskStore);
+
+      // The reconciled cancellation crosses the threshold and fires exactly once.
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(2);
+      expect(alerts.length - before).toBe(1);
+      expect(alerts[alerts.length - 1].operationalAlert?.state).toBe('fired');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('does not emit when no threshold getter/alert sink is wired', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'schedule-service-noalert-test-'));
+    try {
+      const store = new ScheduleStore(dir);
+      // No emitAlert, default threshold (3).
+      const service = new ScheduleService({ store, validator: new ScheduleValidator() });
+      const schedule = store.create({
+        name: 'NoSink',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      for (let i = 0; i < 5; i++) {
+        const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', `2026-01-01T0${i}:00:00.000Z`);
+        await service.markExecutionOutcome(schedule.id, receipt.id, 'dispatch_failed', 'launch_error', 'boom');
+      }
+      // Counter still maintained even without an alert sink.
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(5);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

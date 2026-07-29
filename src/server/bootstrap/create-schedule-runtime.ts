@@ -21,6 +21,12 @@ export interface ScheduleRuntimeDeps {
    * back to the module default (120m).
    */
   getDeadManScheduleMs?: () => number;
+  /**
+   * Live getter for the per-schedule consecutive-failure alert threshold
+   * (issue #1665, `scheduleFailureAlertThreshold` setting). Absent falls back
+   * to the schedule service default.
+   */
+  getScheduleFailureAlertThreshold?: () => number;
 }
 
 export interface ScheduleRuntime {
@@ -43,6 +49,12 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     // issue #1582: join cost/artifacts onto ledger rows at write time by
     // reading the completed fire's task from the live store.
     resolveLedgerEnrichment: (taskId) => deriveLedgerEnrichment(deps.taskStore.getTask(taskId)),
+    // issue #1665: raise a per-schedule failure alert through the same
+    // dashboard alert channel the dead-man switch uses.
+    emitAlert: (message) => deps.broadcastToAll(message),
+    ...(deps.getScheduleFailureAlertThreshold
+      ? { getFailureAlertThreshold: deps.getScheduleFailureAlertThreshold }
+      : {}),
   });
   await scheduleService.reconcileOnStartup(deps.taskStore);
 
