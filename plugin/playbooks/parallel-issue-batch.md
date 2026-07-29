@@ -586,12 +586,32 @@ If you are blocked by conflicts, unclear requirements, missing credentials, or a
    AGENT_FLAG=""
    if [ "$CHILD_AGENT" != "default" ]; then AGENT_FLAG="--agent $CHILD_AGENT"; fi
    # ISSUES_LABEL e.g. "#123" or "#200+#201"
-   node "$KOOKR_REPO/bin/kookr-spawn.js" \
+   # PRIMARY_N = lowest issue number in the unit (CAS key for the batch claim).
+   # --claim-issue interleaves an atomic ownership claim with createTask (RFC
+   # rfc-issue-ownership-lock PR 1b). Exit 6 → re-select another unit (R16);
+   # flag-off / old server → no-op (R7/R26). Always pass --claim-repo from the
+   # playbook's repo parameter so forks key on the upstream home.
+   CLAIM_FLAGS="--claim-issue $PRIMARY_N --claim-repo $REPO"
+   if ! node "$KOOKR_REPO/bin/kookr-spawn.js" \
      --cwd "$LOCAL" \
      --prompt-file "$PROMPTS_DIR/<unit-slug>.md" \
      --criteria "Issues $ISSUES_LABEL have a single PR matching the requested merge policy" \
      --auto-close-on-signal \
-     $AGENT_FLAG
+     $CLAIM_FLAGS \
+     $AGENT_FLAG; then
+     spawn_rc=$?
+     if [ "$spawn_rc" -eq 6 ]; then
+       echo "claim held for primary #$PRIMARY_N — skip unit and re-select (R16)"
+       # After one full pass + one retry post-reconcile tick with no free unit,
+       # emit the exhausted audit event so give-up is observable:
+       # curl -fsS -X POST "$KOOKR_API_BASE_URL/api/issue-claims/exhausted" \
+       #   -H 'Content-Type: application/json' \
+       #   -d "{\"repo\":\"$REPO\",\"number\":$PRIMARY_N,\"taskId\":\"$KOOKR_TASK_ID\",\"reason\":\"reselection_exhausted\"}" || true
+       continue
+     fi
+     echo "spawn failed rc=$spawn_rc for unit primary #$PRIMARY_N"
+     continue
+   fi
    ```
 
    `--auto-close-on-signal` opts each child into delayed auto-completion: once the

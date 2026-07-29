@@ -121,6 +121,18 @@ export interface LaunchOpts {
    * mechanics.
    */
   idempotencyKey?: string;
+  /**
+   * Hot-path issue claim (RFC rfc-issue-ownership-lock PR 1b). When set and
+   * `KOOKR_ISSUE_CLAIMS` is on, `launchTask` resolves the claim key (async)
+   * then interleaves a synchronous CAS with `createTask` so a held issue
+   * never produces a task record. When the flag is off the field is a
+   * strict no-op (R7). `repo` is optional — omitted keys resolve from cwd
+   * (playbooks typically pass the playbook's repo parameter).
+   */
+  claimIssue?: {
+    number: number;
+    repo?: string;
+  };
 }
 
 export interface LaunchResult<TaskShape extends { id: string } = { id: string }> {

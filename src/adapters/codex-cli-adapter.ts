@@ -307,6 +307,7 @@ export class CodexCliAdapter implements AgentAdapter {
       taskId,
       cwd,
       serverPort: this.serverPort,
+      sessionName: tmuxName,
     });
 
     // Generate hook settings (same format as Claude Code --settings)

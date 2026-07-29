@@ -40,6 +40,27 @@ For each open issue:
    - **Still valid**: The issue still describes a real problem or unimplemented feature
    - **Stale**: No activity for {{staleThresholdDays}}+ days and the issue is vague or unclear
 
+## Phase 2.5: Kookr issue claim before mutating an issue (RFC PR 1b)
+
+When you will close, label, or otherwise mutate a specific issue, claim it first so two triage agents cannot act on the same issue concurrently:
+
+```bash
+REPO="{{repoFullName}}"
+TARGET=<issue_number>
+kookr issue claim "$TARGET" --repo "$REPO" || {
+  rc=$?
+  if [ "$rc" -eq 6 ]; then echo "skip #$TARGET (held)"; continue; fi
+  if [ "$rc" -eq 3 ]; then echo "park — server unreachable"; exit 1; fi
+  # 0 or other: proceed (incl. pre-lock on 404)
+}
+```
+
+Release when done with that issue (or leave to terminal-task auto-release):
+
+```bash
+kookr issue release "$TARGET" --repo "$REPO" || true
+```
+
 ## Phase 3: Act on each issue
 
 ### For resolved issues

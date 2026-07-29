@@ -135,6 +135,13 @@ interface BuildAgentLaunchContextOptions {
   cwd: string;
   serverPort?: number;
   /**
+   * Terminal session name for this launch (dtach/tmux id, e.g. `kookr-a1b2c3d4`).
+   * When provided, injected as `KOOKR_AGENT_ID` so `kookr issue claim` can send
+   * it as `sessionId` and the refusal block's `doing` follows the live session
+   * (RFC PR 1b / issue #1230 dogfood).
+   */
+  sessionName?: string;
+  /**
    * Directory to prepend to the agent `PATH` so a bare `kookr` resolves to the
    * bundled launcher shim (issue #786). Defaults to {@link resolveAgentLauncherBinDir};
    * pass `null` to skip PATH injection (used by tests that assert the rest of the
@@ -227,6 +234,11 @@ export async function buildAgentLaunchContext(
   // event pipeline) rather than hanging on an unanswerable prompt. Attended
   // tasks get an empty denylist, leaving their generated settings unchanged.
   const permissionDenylist = task?.unattended ? [...INTERACTIVE_TOOL_DENY_RULES] : [];
+
+  // Session id for claim ownership / refusal-block `doing` (RFC PR 1b).
+  if (opts.sessionName) {
+    env.KOOKR_AGENT_ID = opts.sessionName;
+  }
 
   if (task?.parentTaskId) {
     env.KOOKR_PARENT_TASK_ID = task.parentTaskId;
