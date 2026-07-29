@@ -21,7 +21,7 @@ import {
 import { audioDropDecision, extractAudioAttachment, filenameFromFilePath, MAX_AUDIO_BYTES } from './audio.js';
 import { parseTaskCommand } from './parse-task.js';
 import { redactCredentials } from './redact.js';
-import { fetchTasksSummary, formatTasksReply, isTasksCommand, type TaskSummaryRow } from './tasks-command.js';
+import { fetchTasksSummary, formatTasksReply, isTasksCommand, selectActiveTasks, type TaskSummaryRow } from './tasks-command.js';
 import { rephrase } from './rephrase.js';
 import { classifyVoiceError, transcribeVoice as defaultTranscribeVoice } from './transcribe.js';
 import { TaskSpecBypassSchema, type ProjectInfo, type ValidatedTaskSpec } from './types.js';
@@ -534,8 +534,11 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
       await sendMessageSafe(chatId, 'Could not read task state right now — try again shortly.');
       return;
     }
-    audit({ kind: 'tasks_replied', sender: userId, count: rows.length });
-    await sendMessageSafe(chatId, formatTasksReply(rows));
+    // Scope the read-back to the projects this user may spawn against so the
+    // reply cannot leak out-of-scope task names/blockers (issue #1394 Risks).
+    const opts = { allowedCwds: deps.allowedProjects.map((p) => p.cwd) };
+    audit({ kind: 'tasks_replied', sender: userId, count: selectActiveTasks(rows, opts).length });
+    await sendMessageSafe(chatId, formatTasksReply(rows, opts));
   }
 
   async function handleAgentCommand(chatId: number, userId: number, command: 'status' | 'claude' | 'codex' | 'usage'): Promise<void> {

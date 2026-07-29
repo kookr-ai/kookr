@@ -591,6 +591,21 @@ The system SHOULD allow the user to set a dashboard-wide default coding agent fo
 
 **Evidence:** `src/core/settings-store.ts`, `src/shared/contracts/agent-types.ts`, `src/server/launch-service.ts`, `src/server/index.ts`, `src/frontend/components/SettingsDialog.tsx`, tests in `src/core/settings-store.test.ts`, `src/core/agent-types.test.ts`, `src/server/settings-api.test.ts`, `src/server/launch-service.test.ts`, and `src/frontend/components/SettingsDialog.test.ts`.
 
+### R4b.5b: Telegram Task Read-Back — SHOULD — `done`
+
+The system SHOULD let authorized Telegram users read the state of active tasks without opening the web dashboard.
+
+**Acceptance criteria:**
+- `/tasks` replies with the active (non-terminal) tasks and each task's most-relevant blocker (an explicit stuck reason, else the agent's pending signal, else a declared dependency edge).
+- Terminal tasks (completed, terminated, cancelled) are excluded; a no-active-tasks state returns a clear message.
+- The read-back is scoped to the projects the user may spawn against, so it does not leak out-of-scope task names or blockers.
+- The reply is length-bounded and each row passes through the existing secret redactor.
+- A failure to read task state returns an explicit error rather than a misleading empty result.
+
+**Rationale:** After spawning work from a phone, the remote surface was spawn-only; an operator had to open the dashboard to learn whether an agent was blocked. `/tasks` closes that read-back gap while keeping the same allowlist/rate-limit/redaction guards as the rest of the integration.
+
+**Evidence:** `src/integrations/telegram/tasks-command.ts` (parse/select/format/fetch), `src/integrations/telegram/index.ts` (`/tasks` dispatch + project scoping + help text), `src/integrations/telegram/audit.ts` (`tasks_replied`/`tasks_query_failed` events), tests in `src/integrations/telegram/tasks-command.test.ts` and `src/integrations/telegram/index.test.ts`.
+
 ### R4b.6: Looped Playbook Conflict Guidance [F6.7] — SHOULD — `done`
 
 The system SHOULD surface actionable inline guidance when a looped playbook launch cannot start because an existing Kookr loop or standalone Ralph plugin conflicts with it.
