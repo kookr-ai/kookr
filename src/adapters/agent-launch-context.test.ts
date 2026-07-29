@@ -756,4 +756,18 @@ describe('resolveGitCommonDirBounded (issue #1526 Phase C / #1528)', () => {
       warnSpy.mockRestore();
     }
   });
+
+  test('injects KOOKR_AGENT_ID from sessionName (RFC PR 1b)', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'p', cwd: '/repo' });
+    const context = await buildAgentLaunchContext({
+      taskStore,
+      taskId: task.id,
+      cwd: '/repo',
+      agentLauncherBinDir: null,
+      sessionName: 'kookr-deadbeef',
+    });
+    expect(context.env.KOOKR_AGENT_ID).toBe('kookr-deadbeef');
+    expect(context.env.KOOKR_TASK_ID).toBe(task.id);
+  });
 });

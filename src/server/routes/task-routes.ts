@@ -24,6 +24,8 @@ import {
   isPendingQueueFullError,
   isSpawnBurstLimitError,
   isHostLoadAdmissionError,
+  isIssueClaimHeldError,
+  isIssueClaimRepoError,
 } from '../launch-service.js';
 import { MAX_IDEMPOTENCY_KEY_LENGTH } from '../../shared/contracts/launch.js';
 import {
@@ -405,6 +407,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         autoCloseOnSignal?: unknown;
         unattended?: unknown;
         idempotencyKey?: unknown;
+        claimIssue?: unknown;
       };
 
       if (!body.prompt || typeof body.prompt !== 'string') {
@@ -459,6 +462,25 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
           return c.json({ error: `idempotencyKey must be at most ${MAX_IDEMPOTENCY_KEY_LENGTH} characters` }, 400);
         }
       }
+      // RFC PR 1b: optional hot-path claim. Shape only here; CAS lives in
+      // launchTask. Flag-off is a no-op server-side (R7).
+      let claimIssue: { number: number; repo?: string } | undefined;
+      if (body.claimIssue !== undefined) {
+        if (typeof body.claimIssue !== 'object' || body.claimIssue === null || Array.isArray(body.claimIssue)) {
+          return c.json({ error: 'claimIssue must be an object with number' }, 400);
+        }
+        const rawClaim = body.claimIssue as { number?: unknown; repo?: unknown };
+        if (typeof rawClaim.number !== 'number' || !Number.isInteger(rawClaim.number) || rawClaim.number <= 0) {
+          return c.json({ error: 'claimIssue.number must be a positive integer' }, 400);
+        }
+        if (rawClaim.repo !== undefined && typeof rawClaim.repo !== 'string') {
+          return c.json({ error: 'claimIssue.repo must be a string when provided' }, 400);
+        }
+        claimIssue = {
+          number: rawClaim.number,
+          ...(typeof rawClaim.repo === 'string' ? { repo: rawClaim.repo } : {}),
+        };
+      }
 
       const rawSource = c.req.header('X-Kookr-Launch-Source');
       const launchSource: 'cli' | 'ui' | 'api' =
@@ -490,6 +512,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         autoCloseOnSignal: typeof body.autoCloseOnSignal === 'boolean' ? body.autoCloseOnSignal : undefined,
         unattended: typeof body.unattended === 'boolean' ? body.unattended : undefined,
         idempotencyKey: typeof body.idempotencyKey === 'string' ? body.idempotencyKey : undefined,
+        ...(claimIssue ? { claimIssue } : {}),
       });
 
       if (duplicate) {
@@ -516,6 +539,17 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       }
       if (isModelValidationError(err)) {
         return c.json({ error: err.message, code: err.code }, 400);
+      }
+      if (isIssueClaimRepoError(err)) {
+        return c.json({ error: err.message, code: err.code, resolveCode: err.resolveCode }, 400);
+      }
+      if (isIssueClaimHeldError(err)) {
+        return c.json({
+          error: err.message,
+          code: err.code,
+          owned: false,
+          owner: err.owner,
+        }, 409);
       }
       // RFC F12: a missing working directory is a client error, surfaced
       // before any session spawn with the actual cause leading the message.

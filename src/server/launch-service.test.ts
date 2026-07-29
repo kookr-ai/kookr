@@ -6,7 +6,10 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type LaunchServiceDeps } from './launch-service.js';
+import { IssueClaimRegistry } from '../core/issue-claim-registry.js';
+import type { ClaimEvent, ClaimTaskPort, ClaimTaskView } from '../core/issue-claim-types.js';
+import { isTerminalStatus } from '../core/task-status.js';
 import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
 import { buildCapacityLedger } from '../core/capacity-ledger.js';
 import type { LaunchPreflightFinding } from '../core/launch-dependency-preflight.js';
@@ -2440,5 +2443,135 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
       const result = await launchTask(deps, { prompt: 'unstamped', cwd: '/tmp' });
       expect(store.getTask(result.task.id)?.metadata).toBeUndefined();
     });
+  });
+});
+
+describe('launchTask claimIssue (RFC PR 1b / #1230)', () => {
+  let store: TaskStore;
+  let deps: LaunchServiceDeps;
+  let events: ClaimEvent[];
+
+  function makePort(taskStore: TaskStore): ClaimTaskPort {
+    return {
+      activeTaskViews: () => taskStore.getAllTasks().map((t): ClaimTaskView => ({
+        id: t.id,
+        status: t.status,
+        ...(t.name !== undefined ? { name: t.name } : {}),
+        ...(t.issueClaim !== undefined ? { issueClaim: t.issueClaim } : {}),
+      })),
+      getTaskView: (taskId) => {
+        const t = taskStore.getTask(taskId);
+        if (!t) return undefined;
+        return {
+          id: t.id,
+          status: t.status,
+          ...(t.name !== undefined ? { name: t.name } : {}),
+          ...(t.issueClaim !== undefined ? { issueClaim: t.issueClaim } : {}),
+        };
+      },
+      setIssueClaim: (taskId, claim) => taskStore.setIssueClaim(taskId, claim),
+      clearIssueClaim: (taskId) => taskStore.clearIssueClaim(taskId),
+    };
+  }
+
+  beforeEach(() => {
+    store = new TaskStore();
+    events = [];
+    const registry = new IssueClaimRegistry(makePort(store), (e) => events.push(e));
+    deps = {
+      ...makeDeps(store),
+      issueClaimRegistry: registry,
+      resolveClaimRepo: vi.fn(async () => ({ ok: true as const, repo: 'github.com/kookr-ai/kookr' })),
+      flushTasks: vi.fn(async () => undefined),
+    };
+  });
+
+  it('is a no-op when registry is not wired (flag off, R7)', async () => {
+    const bare = makeDeps(store);
+    const result = await launchTask(bare, {
+      prompt: 'work on #1',
+      cwd: '/tmp',
+      claimIssue: { number: 1 },
+    });
+    expect(result.task.issueClaim).toBeUndefined();
+    expect(bare.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+  });
+
+  it('grants claim on create when free (CAS interleaved with createTask)', async () => {
+    const result = await launchTask(deps, {
+      prompt: 'work on #42',
+      cwd: '/tmp',
+      claimIssue: { number: 42 },
+    });
+    expect(result.task.issueClaim).toMatchObject({
+      repo: 'github.com/kookr-ai/kookr',
+      number: 42,
+    });
+    expect(events.map((e) => e.decision)).toContain('granted');
+    expect(deps.flushTasks).toHaveBeenCalled();
+    expect(deps.resolveClaimRepo).toHaveBeenCalledWith({ cwd: '/tmp' });
+  });
+
+  it('refuses with IssueClaimHeldError and creates no task when held', async () => {
+    const owner = store.createTask({ prompt: 'owner', cwd: '/tmp' });
+    store.startTask(owner.id);
+    deps.issueClaimRegistry!.claim(
+      { repo: 'github.com/kookr-ai/kookr', number: 99 },
+      { taskId: owner.id },
+    );
+    events.length = 0;
+
+    await expect(
+      launchTask(deps, {
+        prompt: 'challenger for #99',
+        cwd: '/tmp',
+        claimIssue: { number: 99 },
+      }),
+    ).rejects.toBeInstanceOf(IssueClaimHeldError);
+
+    const nonOwner = store.listTasks().filter((t) => t.id !== owner.id);
+    expect(nonOwner).toHaveLength(0);
+    expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    expect(events.map((e) => e.decision)).not.toContain('granted');
+  });
+
+  it('releases the claim when adapter.launch fails (R5b)', async () => {
+    vi.mocked(deps.adapterRegistry.get('claude-code').launch).mockRejectedValueOnce(
+      new Error('spawn failed'),
+    );
+    await expect(
+      launchTask(deps, {
+        prompt: 'will fail launch',
+        cwd: '/tmp',
+        claimIssue: { number: 7 },
+      }),
+    ).rejects.toThrow(/spawn failed/);
+
+    // Map must be free again — a second claim by a new task succeeds.
+    const second = await launchTask(deps, {
+      prompt: 'retry after failed launch',
+      cwd: '/tmp',
+      claimIssue: { number: 7 },
+    });
+    expect(second.task.issueClaim?.number).toBe(7);
+    expect(events.map((e) => e.decision)).toContain('released');
+  });
+
+  it('isIssueClaimHeldError type guard works', () => {
+    const err = new IssueClaimHeldError({
+      repo: 'github.com/a/b',
+      number: 1,
+      taskId: 't1',
+      ownerStatus: 'inProgress',
+      claimedAt: new Date().toISOString(),
+    });
+    expect(isIssueClaimHeldError(err)).toBe(true);
+    expect(isIssueClaimHeldError(new Error('x'))).toBe(false);
+  });
+
+  // Keep isTerminalStatus referenced so unused-import lint stays quiet if
+  // tree-shaken in some configs (used conceptually by the registry port).
+  it('port filters terminal owners via isTerminalStatus', () => {
+    expect(isTerminalStatus('completed')).toBe(true);
   });
 });

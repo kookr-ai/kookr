@@ -255,6 +255,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       taskId,
       cwd,
       serverPort: this.serverPort,
+      sessionName: tmuxName,
     });
 
     // Generate hook settings. Unattended spawns also carry interactive-tool

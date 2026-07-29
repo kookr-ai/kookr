@@ -1,6 +1,6 @@
 # RFC: Issue-Ownership Lock — an Atomic Claim Registry for GitHub Issues
 
-**Status:** Accepted (v4; PR 1a — mechanism + manual CLI + audit — implemented; PR 1c — launch reservation — implemented (Implementation note item 7); 1b pending 1a soak.)
+**Status:** Accepted (v4; PR 1a — mechanism + manual CLI + audit — implemented; PR 1c — launch reservation — implemented (Implementation note item 7); PR 1b — hot-path auto-claim + playbook instrumentation — implemented (#1230).)
 **Date:** 2026-07-02
 **Author:** Jean Ibarz (with Claude Opus 4.8)
 **Implementation branch:** `rfc/issue-ownership-lock`

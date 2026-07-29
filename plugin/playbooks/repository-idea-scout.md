@@ -589,6 +589,19 @@ When `{{extraInstruction}}` is non-empty, persist the validated scope text to `<
 
 Create or update `<stateFile>` with a phase checklist. Use `pending`, `in_progress`, `done`, or `error` for each phase, and only mark a phase `done` after its artifact is written and validated.
 
+## Phase 1.5: Kookr claim policy (RFC PR 1b)
+
+This playbook primarily **creates** new idea issues — creation does not claim. When you act on an *existing* open issue (comment, close as duplicate, re-label), claim it first:
+
+```bash
+REPO="{{repoFullName}}"
+TARGET=<existing_issue_number>
+kookr issue claim "$TARGET" --repo "$REPO"
+# exit 6 → skip; exit 3 → park; 0/404 → proceed (R26 pre-lock)
+```
+
+New `gh issue create` results do not require a claim.
+
 ## Phase 2: Issue Inventory
 
 Fetch open issues first using temp files and JSON validation:

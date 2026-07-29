@@ -221,6 +221,17 @@ The subagent (`Agent(subagent_type: "oss-issue-scout", ...)`) is the preferred p
 
 **After the scout returns, post the claim comment** using the `gh api` command from the return value. This is mandatory for all repos, not just those requiring pre-assignment. The `claim-gate` PreToolUse hook re-runs the competition queries on the POST as a final guard — if it blocks, re-scout instead of forcing through. If the issue is assigned to someone else, skip it — do not work on it, not even partially.
 
+**Kookr ownership claim** (RFC issue-ownership-lock PR 1b) — machine lock complementary to the GitHub claim comment:
+
+```bash
+REPO="{{repoFullName}}"
+TARGET=<scouted_issue_number>
+kookr issue claim "$TARGET" --repo "$REPO"
+# exit 0 → proceed (404 / flag-off → pre-lock, R26)
+# exit 6 → re-scout a different candidate (R16); after pass+retry POST /api/issue-claims/exhausted
+# exit 3 → bounded park (R25)
+```
+
 ## Phase 4: Fix
 
 1. Sync fork with upstream:

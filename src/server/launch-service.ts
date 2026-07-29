@@ -165,6 +165,33 @@ export interface LaunchServiceDeps {
    * when {@link getMaxHostLoadPerCpu} returns a positive threshold.
    */
   getHostLoadSample?: () => HostLoadSample;
+  /**
+   * Hot-path issue claim (RFC PR 1b). When provided AND the launch opts carry
+   * `claimIssue`, {@link launchTask} interleaves a synchronous CAS with
+   * `createTask`. Absent (flag off / older wiring) ⇒ claimIssue is a no-op.
+   */
+  issueClaimRegistry?: {
+    ownerRecord(key: { repo: string; number: number }): { taskId: string; ownerName?: string; ownerStatus: string; worktreePath?: string; claimedAt: string; sessionId?: string } | null;
+    claim(
+      key: { repo: string; number: number },
+      claimant: { taskId: string; sessionId?: string },
+      opts?: { force?: boolean },
+    ): { ok: true; reentrant: boolean } | { ok: false; owner: { taskId: string; ownerName?: string; ownerStatus: string; worktreePath?: string; claimedAt: string; sessionId?: string; repo: string; number: number } };
+    safeReleaseAllFor(taskId: string, reason?: 'released' | 'dead_reclaim' | 'orphan_reclaim'): unknown[];
+  };
+  /**
+   * Async claim-key repo resolution (phase a of R4). Only called when both
+   * the registry is wired and `opts.claimIssue` is set. Must complete before
+   * the synchronous critical section.
+   */
+  resolveClaimRepo?: (input: {
+    cwd: string;
+    repoFlag?: string;
+  }) => Promise<{ ok: true; repo: string } | { ok: false; code: string; message: string }>;
+  /**
+   * Force-flush task state after a successful grant (R5). Optional for tests.
+   */
+  flushTasks?: () => Promise<void>;
 }
 
 /**
@@ -190,6 +217,55 @@ export class DrainModeError extends Error {
     super('Server is draining; not accepting new task launches');
     this.name = 'DrainModeError';
   }
+}
+
+/**
+ * Thrown by {@link launchTask} when `--claim-issue` / `claimIssue` targets an
+ * issue already owned by another live task (RFC R4/R15). No task record is
+ * created. The API maps this to HTTP 409 with `code: 'issue_claim_held'`.
+ */
+export class IssueClaimHeldError extends Error {
+  readonly code = 'issue_claim_held';
+  readonly owner: {
+    taskId: string;
+    ownerName?: string;
+    ownerStatus: string;
+    worktreePath?: string;
+    claimedAt: string;
+    sessionId?: string;
+    repo: string;
+    number: number;
+  };
+  constructor(owner: IssueClaimHeldError['owner']) {
+    const name = owner.ownerName ? ` (${owner.ownerName})` : '';
+    super(
+      `Issue ${owner.repo}#${owner.number} is already claimed by task ${owner.taskId}${name}`,
+    );
+    this.name = 'IssueClaimHeldError';
+    this.owner = owner;
+  }
+}
+
+export function isIssueClaimHeldError(err: unknown): err is IssueClaimHeldError {
+  return err instanceof IssueClaimHeldError;
+}
+
+/**
+ * Thrown when claim-key repo resolution fails for a `--claim-issue` launch
+ * (ambiguous bare name, mismatch, unresolvable). API → 400.
+ */
+export class IssueClaimRepoError extends Error {
+  readonly code = 'issue_claim_repo';
+  readonly resolveCode: string;
+  constructor(message: string, resolveCode: string) {
+    super(message);
+    this.name = 'IssueClaimRepoError';
+    this.resolveCode = resolveCode;
+  }
+}
+
+export function isIssueClaimRepoError(err: unknown): err is IssueClaimRepoError {
+  return err instanceof IssueClaimRepoError;
 }
 
 /**
@@ -924,6 +1000,28 @@ async function launchTaskCore(
     }
   }
 
+  // --- Issue-claim key resolution (RFC PR 1b, R4 phase a) ---
+  // Async, so it runs BEFORE the no-await critical section below. Flag-off or
+  // missing claimIssue → strict early no-op (R7): no resolve, no throw.
+  let resolvedClaimKey: { repo: string; number: number } | undefined;
+  if (opts.claimIssue && deps.issueClaimRegistry && deps.resolveClaimRepo) {
+    const number = opts.claimIssue.number;
+    if (!Number.isInteger(number) || number <= 0) {
+      throw new IssueClaimRepoError(
+        `claimIssue.number must be a positive integer (got: ${String(number)})`,
+        'invalid_number',
+      );
+    }
+    const resolution = await deps.resolveClaimRepo({
+      cwd: opts.cwd,
+      ...(opts.claimIssue.repo !== undefined ? { repoFlag: opts.claimIssue.repo } : {}),
+    });
+    if (!resolution.ok) {
+      throw new IssueClaimRepoError(resolution.message, resolution.code);
+    }
+    resolvedClaimKey = { repo: resolution.repo, number };
+  }
+
   // --- Server-side backpressure (issue #1526 Phase C / C3, #1630) ---
   // These guards run AFTER dedup (an idempotent replay of an existing task
   // must never be rejected — it creates nothing) and BEFORE createTask (a
@@ -998,6 +1096,24 @@ async function launchTaskCore(
     }
   }
 
+  // --- Issue-claim CAS (RFC PR 1b, R4 phase b) ---
+  // Fully synchronous: check map → createTask → claim. No await between
+  // check and set. Held by another live task → throw with NO task created.
+  if (resolvedClaimKey && deps.issueClaimRegistry) {
+    const holder = deps.issueClaimRegistry.ownerRecord(resolvedClaimKey);
+    if (holder) {
+      throw new IssueClaimHeldError({
+        ...resolvedClaimKey,
+        taskId: holder.taskId,
+        ownerStatus: holder.ownerStatus,
+        claimedAt: holder.claimedAt,
+        ...(holder.ownerName !== undefined ? { ownerName: holder.ownerName } : {}),
+        ...(holder.worktreePath !== undefined ? { worktreePath: holder.worktreePath } : {}),
+        ...(holder.sessionId !== undefined ? { sessionId: holder.sessionId } : {}),
+      });
+    }
+  }
+
   const task = taskStore.createTask({
     prompt: effectivePrompt,
     userPrompt,
@@ -1030,11 +1146,31 @@ async function launchTaskCore(
     unattended: opts.unattended,
   });
 
+  if (resolvedClaimKey && deps.issueClaimRegistry) {
+    const claimResult = deps.issueClaimRegistry.claim(resolvedClaimKey, { taskId: task.id });
+    if (!claimResult.ok) {
+      // Single-threaded so this should be unreachable after the pre-check;
+      // keep it as a self-healing backstop: no orphaned task without a claim.
+      taskStore.deleteTask(task.id);
+      throw new IssueClaimHeldError(claimResult.owner);
+    }
+  }
+
   if (taskStore.getActiveCount() >= effectiveMaxActive) {
     const queuedTask = taskStore.pendTask(task.id);
     // The task record is committed (queued for promotion), so the round-robin
     // launch consumed its slot — advance the rotation.
     if (isRoundRobin) deps.roundRobinCursor?.advance();
+    if (resolvedClaimKey && deps.flushTasks) {
+      try {
+        await deps.flushTasks();
+      } catch (err) {
+        console.error(
+          `[issue-claims] flush after grant failed for task ${task.id}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
     return { task: queuedTask, queued: true };
   }
 
@@ -1101,6 +1237,11 @@ async function launchTaskCore(
     // A late-settling abandoned launch cannot corrupt this terminal record:
     // TaskStore.addSession refuses to attach a session to a terminal task.
     taskStore.endLaunch(task.id);
+    // R5b: release any issue claim granted above so a failed launch cannot
+    // leave an orphaned map entry / phantom granted audit row. safeRelease
+    // never throws; lifecycle wrappers would also release on terminate, but
+    // terminateTask below bypasses those wrappers.
+    deps.issueClaimRegistry?.safeReleaseAllFor(task.id, 'released');
     // Instrumentation (issue #1589): the launch was abandoned mid-phase. abort()
     // flags the in-flight phase as `incompletePhase` — the phase that consumed
     // the time. Persist it on the disposed task (so `GET /api/tasks/:id` shows
@@ -1161,6 +1302,18 @@ async function launchTaskCore(
   }
   // The launch succeeded — advance the rotation now that the task is live.
   if (isRoundRobin) deps.roundRobinCursor?.advance();
+  // R5: force-flush after grant so the claim survives a crash before the
+  // next coalesced save.
+  if (resolvedClaimKey && deps.flushTasks) {
+    try {
+      await deps.flushTasks();
+    } catch (err) {
+      console.error(
+        `[issue-claims] flush after grant failed for task ${task.id}: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
   const source = opts.launchSource ?? 'api';
   console.log(`[launch] source=${source} agent=${agentType} taskId=${task.id} cwd=${opts.cwd}`);
   const launchedTask = taskStore.getTask(task.id) ?? task;

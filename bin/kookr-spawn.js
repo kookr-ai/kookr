@@ -181,6 +181,14 @@ Options:
                            fails fast and flags the task operator-needed instead
                            of hanging with nobody to answer.
   -f, --prompt-file <path> Read prompt from a file (hook-safe).
+      --claim-issue <n>    Atomically claim GitHub issue <n> as part of task
+                           creation (RFC issue-ownership-lock PR 1b). When the
+                           issue is already owned by another live task the
+                           spawn fails with exit 6 and no task is created.
+                           No-op when the server has KOOKR_ISSUE_CLAIMS off.
+      --claim-repo <r>     Home repo for --claim-issue (owner/repo). Optional;
+                           the server resolves from cwd when omitted. Pass
+                           explicitly from forks / playbooks.
       --json               Print one machine-readable JSON envelope to stdout.
   -h, --help               Show this help.
 
@@ -222,7 +230,7 @@ Exit codes:
   3  No Kookr server reachable.
   4  Server returned an error.
   5  Duplicate active prompt blocked.
-  6  --wait timed out before the task was ready or terminal.`;
+  6  --claim-issue held by another live task, OR --wait timed out.`;
 
 function parseArgs(argv) {
   const out = {
@@ -241,6 +249,8 @@ function parseArgs(argv) {
     noParentTask: false,
     autoCloseOnSignal: null,
     unattended: false,
+    claimIssue: null,
+    claimRepo: null,
     json: false,
     wait: false,
     waitTimeoutSeconds: null,
@@ -310,6 +320,14 @@ function parseArgs(argv) {
       out.unattended = true;
     } else if (tok === '-f' || tok === '--prompt-file') {
       out.promptFile = eat();
+    } else if (tok === '--claim-issue') {
+      out.claimIssue = eat();
+    } else if (tok.startsWith('--claim-issue=')) {
+      out.claimIssue = tok.slice('--claim-issue='.length);
+    } else if (tok === '--claim-repo') {
+      out.claimRepo = eat();
+    } else if (tok.startsWith('--claim-repo=')) {
+      out.claimRepo = tok.slice('--claim-repo='.length);
     } else if (tok === '--') {
       // Everything after -- is positional
       for (let j = i + 1; j < argv.length; j++) out.positional.push(argv[j]);
@@ -355,6 +373,23 @@ function parseArgs(argv) {
       throw new UsageError('--parent-task-id requires a non-empty value');
     }
     out.parentTaskId = trimmed;
+  }
+  if (out.claimIssue !== null) {
+    const n = Number(out.claimIssue);
+    if (!Number.isInteger(n) || n <= 0) {
+      throw new UsageError(`--claim-issue must be a positive integer (got: ${out.claimIssue})`);
+    }
+    out.claimIssue = n;
+  }
+  if (out.claimRepo !== null) {
+    const trimmed = String(out.claimRepo).trim();
+    if (trimmed === '') {
+      throw new UsageError('--claim-repo requires a non-empty value');
+    }
+    if (out.claimIssue === null) {
+      throw new UsageError('--claim-repo requires --claim-issue');
+    }
+    out.claimRepo = trimmed;
   }
   if (out.parentTaskId !== null && out.noParentTask) {
     throw new UsageError('--parent-task-id and --no-parent-task are mutually exclusive');
@@ -629,7 +664,7 @@ function reconcileDelayMs(attempt, retryAfterMs) {
   return Math.min(RECONCILE_MAX_DELAY_MS, backoff);
 }
 
-async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, unattended = false, idempotencyKey = null }) {
+async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, unattended = false, idempotencyKey = null, claimIssue = null, claimRepo = null }) {
   const body = { prompt, cwd };
   if (criteria) body.criteria = criteria;
   if (agent) body.agentType = agent;
@@ -642,6 +677,12 @@ async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = nu
   if (autoCloseOnSignal !== null) body.autoCloseOnSignal = autoCloseOnSignal;
   if (unattended) body.unattended = true;
   if (idempotencyKey) body.idempotencyKey = idempotencyKey;
+  if (claimIssue !== null) {
+    body.claimIssue = {
+      number: claimIssue,
+      ...(claimRepo ? { repo: claimRepo } : {}),
+    };
+  }
 
   const res = await fetch(`${baseUrl}/api/tasks`, {
     method: 'POST',
@@ -1562,6 +1603,8 @@ async function main({
         disableDedup: args.dedupe === 'skip',
         metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
         parentTaskId,
+        claimIssue: args.claimIssue,
+        claimRepo: args.claimRepo,
         autoCloseOnSignal: args.autoCloseOnSignal,
         unattended: args.unattended,
         idempotencyKey: effectiveIdempotencyKey,
@@ -1620,6 +1663,30 @@ async function main({
   }
 
   if (result.kind === 'server_error') {
+    // RFC PR 1b: claim held at launch — no task created. Exit 6 matches
+    // `kookr issue claim` so batch re-selection loops can branch on one code.
+    if (result.status === 409 && result.body?.code === 'issue_claim_held') {
+      const owner = result.body.owner;
+      const ownerLabel = owner?.taskId
+        ? `task ${owner.taskId}${owner.ownerName ? ` (${owner.ownerName})` : ''}`
+        : 'another live task';
+      const msg = result.body.error
+        ?? `Issue claim held by ${ownerLabel}`;
+      if (args.json) {
+        return exitJson({
+          out,
+          exit,
+          exitCode: EXIT_WAIT_TIMEOUT,
+          ok: false,
+          code: 'ISSUE_CLAIM_HELD',
+          message: msg,
+          details: { status: 409, owner, baseUrl },
+        });
+      }
+      err.error(`kookr-spawn: ${msg}`);
+      err.error('Action: pick a different issue (or wait for the owner to finish).');
+      return exit(EXIT_WAIT_TIMEOUT);
+    }
     // #1573: a keyless 5xx is the other ambiguous shape — the task may have
     // been created before the failure. Reconcile via the read-only probe.
     // 429 backpressure and other 4xx are definitive (task NOT created), so they
@@ -1726,6 +1793,8 @@ async function main({
         disableDedup: true,
         metadataIntent: 'keep_as_duplicate',
         parentTaskId,
+        claimIssue: args.claimIssue,
+        claimRepo: args.claimRepo,
         autoCloseOnSignal: args.autoCloseOnSignal,
         unattended: args.unattended,
       });

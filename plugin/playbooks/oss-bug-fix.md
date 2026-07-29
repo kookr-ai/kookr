@@ -51,7 +51,22 @@ gh issue list -R <forkName> --label "bug-triage" --state open --json number,titl
 
 ## Phase 1.5: Claim the Issue
 
-**Before any implementation work**, comment on the upstream issue to announce intent:
+**Kookr ownership claim first** (RFC issue-ownership-lock PR 1b). Auto-populate `--repo` from the playbook parameter so forks key on the upstream home:
+
+```bash
+REPO="{{repoFullName}}"
+TARGET=<selected_issue_number>
+kookr issue claim "$TARGET" --repo "$REPO"
+# exit 0 → you own it (or claims API off / 404 → proceed as pre-lock, R26)
+# exit 6 → held by another live task → pick a different candidate, then one
+#          retry after ≥1 reconcile tick; if still stuck emit exhausted:
+#   curl -fsS -X POST "${KOOKR_API_BASE_URL:-http://127.0.0.1:4800}/api/issue-claims/exhausted" \
+#     -H 'Content-Type: application/json' \
+#     -d "{\"repo\":\"$REPO\",\"number\":$TARGET,\"taskId\":\"$KOOKR_TASK_ID\",\"reason\":\"reselection_exhausted\"}" || true
+# exit 3 → server unreachable → bounded park (R25); do not start work
+```
+
+**Before any implementation work**, also comment on the upstream issue to announce intent:
 ```bash
 gh api repos/{{repoFullName}}/issues/{upstream_number}/comments -f body="I'd like to work on this."
 ```
