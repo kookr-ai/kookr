@@ -1201,6 +1201,7 @@ The TTS sidecar SHALL reject synthesis requests whose text is blank or exceeds t
 | R4b.4 | — | SHOULD | done | QuickLaunch, App |
 | R4b.5 | — | SHOULD | done | telegram/index, telegram/rephrase, launch-service |
 | R4b.5a | — | SHOULD | done | settings-store, launch-service, SettingsDialog |
+| R4b.5b | — | SHOULD | done | telegram/tasks-command, telegram/index |
 | R4b.6 | F6.7 | SHOULD | done | looped-playbook-launch, PlaybookBrowser |
 | R4b.7 | — | SHALL | done | launch-service, ralph-loop-service, implement-github-issue playbook |
 | R4b.8 | F6.2, F6.6 | SHALL | done | LaunchTaskDialog, PlaybookBrowser, playbook-launch, task-routes |
