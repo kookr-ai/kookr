@@ -28,7 +28,8 @@ import { createServer } from 'node:http';
 
 import { WebSocketServer } from 'ws';
 
-import { AudioBuffer } from './audio-buffer.js';
+import { AudioBuffer, DEFAULT_MAX_BUFFER_SECONDS } from './audio-buffer.js';
+import { normalizeConfigMessage } from './config-validation.js';
 import { loadVAD } from './vad.js';
 import {
   loadModel,
@@ -49,6 +50,39 @@ const MAX_WINDOW_SIZE = parseFloat(process.env.MAX_WINDOW_SIZE || '15.0');
 const SENTENCE_BUFFER = parseFloat(process.env.SENTENCE_BUFFER || '2.0');
 const MIN_AUDIO_SECONDS = parseFloat(process.env.MIN_AUDIO_SECONDS || '0.5');
 const SAMPLE_RATE = 16000;
+
+/**
+ * Parse a positive-number env var, falling back to `fallback` when unset or
+ * not a finite value > 0. Without this a typo like `STT_MAX_BUFFER_SECONDS=abc`
+ * yields NaN, and `NaN` comparisons silently disable the very bound this hardens.
+ *
+ * @param {string|undefined} raw
+ * @param {number} fallback
+ * @returns {number}
+ */
+function parsePositiveNumber(raw, fallback) {
+  if (raw == null || raw === '') return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+// Largest inbound WebSocket frame the sidecar will accept before closing the
+// connection. 16-bit PCM audio frames are small; 1 MB is generous. Mirrors the
+// main-server frame caps added in #1322.
+const WS_MAX_PAYLOAD_BYTES = parsePositiveNumber(process.env.STT_WS_MAX_PAYLOAD_BYTES, 1_000_000);
+// Rolling-window cap for the per-connection audio buffer, in samples.
+const MAX_BUFFER_SECONDS = parsePositiveNumber(
+  process.env.STT_MAX_BUFFER_SECONDS,
+  DEFAULT_MAX_BUFFER_SECONDS,
+);
+const MAX_BUFFER_SAMPLES = Math.round(MAX_BUFFER_SECONDS * SAMPLE_RATE);
+// Languages the sidecar will accept in a `config` message; anything else clamps
+// back to DEFAULT_LANGUAGE.
+const SUPPORTED_LANGUAGES = (process.env.STT_SUPPORTED_LANGUAGES || DEFAULT_LANGUAGE)
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+const DEFAULT_PROGRESSIVE = true;
 const runtimeInfo = getRuntimeInfo();
 const transcriptionBackend = createTranscriptionBackend();
 
@@ -62,7 +96,7 @@ function handleConnection(ws, req) {
   const clientAddr = req.socket.remoteAddress;
   console.log(`Client connected: ${clientAddr}`);
 
-  const audioBuffer = new AudioBuffer(SAMPLE_RATE);
+  const audioBuffer = new AudioBuffer(SAMPLE_RATE, MAX_BUFFER_SAMPLES);
   const streamingHandler = new SmartProgressiveStreamingHandler(transcriptionBackend, {
     maxWindowSize: MAX_WINDOW_SIZE,
     sentenceBuffer: SENTENCE_BUFFER,
@@ -70,7 +104,7 @@ function handleConnection(ws, req) {
     minAudioSeconds: MIN_AUDIO_SECONDS,
   });
 
-  let progressiveEnabled = true;
+  let progressiveEnabled = DEFAULT_PROGRESSIVE;
   let language = DEFAULT_LANGUAGE;
   let lastProgressiveTime = 0;
   let processing = false;
@@ -113,7 +147,10 @@ function handleConnection(ws, req) {
 
       try {
         const audio = audioBuffer.getAudio();
-        const result = await streamingHandler.transcribeIncremental(audio);
+        const result = await streamingHandler.transcribeIncremental(
+          audio,
+          audioBuffer.trimmedSamples,
+        );
         lastProcessedAudioSeconds = audio.length / SAMPLE_RATE;
 
         // Send progressive update
@@ -167,8 +204,15 @@ function handleConnection(ws, req) {
     const msgType = data.type;
 
     if (msgType === 'config') {
-      if ('language' in data) language = data.language;
-      if ('progressive' in data) progressiveEnabled = data.progressive;
+      const normalized = normalizeConfigMessage(data, {
+        currentLanguage: language,
+        currentProgressive: progressiveEnabled,
+        defaultLanguage: DEFAULT_LANGUAGE,
+        defaultProgressive: DEFAULT_PROGRESSIVE,
+        supportedLanguages: SUPPORTED_LANGUAGES,
+      });
+      language = normalized.language;
+      progressiveEnabled = normalized.progressive;
 
       console.log(`Client config: language=${language}, progressive=${progressiveEnabled}`);
 
@@ -215,7 +259,10 @@ function handleConnection(ws, req) {
           }
 
           const audio = audioBuffer.getAudio();
-          const result = await streamingHandler.transcribeIncremental(audio);
+          const result = await streamingHandler.transcribeIncremental(
+            audio,
+            audioBuffer.trimmedSamples,
+          );
           lastProcessedAudioSeconds = audio.length / SAMPLE_RATE;
 
           const fullText = [result.fixedText, result.activeText]
@@ -314,7 +361,7 @@ const httpServer = createServer((req, res) => {
   res.end('Not Found');
 });
 
-const wss = new WebSocketServer({ server: httpServer });
+const wss = new WebSocketServer({ server: httpServer, maxPayload: WS_MAX_PAYLOAD_BYTES });
 wss.on('connection', handleConnection);
 
 // --- Graceful Shutdown ---

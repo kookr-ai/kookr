@@ -191,6 +191,86 @@ describe('SmartProgressiveStreamingHandler', () => {
     });
   });
 
+  describe('trimmed-buffer rebasing (rolling window)', () => {
+    test('growing absolute length is not treated as cached — no freeze', async () => {
+      vi.mocked(detectSpeech).mockResolvedValue({
+        maxProb: 0.9, speechRatio: 0.8, hasSpeech: true,
+      });
+
+      let callCount = 0;
+      const mockBackend = {
+        name: 'mock',
+        async transcribe() {
+          callCount++;
+          return { text: 'text', sentences: [] };
+        },
+      };
+
+      const handler = new SmartProgressiveStreamingHandler(mockBackend);
+      const audio = createTone(2); // 32000 samples
+
+      await handler.transcribeIncremental(audio, 0);
+      expect(callCount).toBe(1);
+
+      // Same physical length AND same absolute start → cached.
+      await handler.transcribeIncremental(audio, 0);
+      expect(callCount).toBe(1);
+
+      // Physical length identical but 16000 samples trimmed off the front, so
+      // absolute length grew (48000 > 32000) → must transcribe, not freeze.
+      await handler.transcribeIncremental(audio, 16000);
+      expect(callCount).toBe(2);
+    });
+
+    test('window start rebases into the trimmed buffer coordinates', async () => {
+      vi.mocked(detectSpeech).mockResolvedValue({
+        maxProb: 0.9, speechRatio: 0.8, hasSpeech: true,
+      });
+
+      let received = null;
+      const mockBackend = {
+        name: 'mock',
+        async transcribe(audio) {
+          received = audio;
+          return { text: 'text', sentences: [] };
+        },
+      };
+
+      const handler = new SmartProgressiveStreamingHandler(mockBackend);
+      handler.fixedEndTime = 1.0; // absolute 16000 samples fixed
+
+      const audio = createTone(2); // 32000 physical samples
+
+      // 8000 samples trimmed → windowStart = 16000 - 8000 = 8000
+      await handler.transcribeIncremental(audio, 8000);
+      expect(received.length).toBe(32000 - 8000);
+    });
+
+    test('window start clamps to 0 when the trim passes the fixed point', async () => {
+      vi.mocked(detectSpeech).mockResolvedValue({
+        maxProb: 0.9, speechRatio: 0.8, hasSpeech: true,
+      });
+
+      let received = null;
+      const mockBackend = {
+        name: 'mock',
+        async transcribe(audio) {
+          received = audio;
+          return { text: 'text', sentences: [] };
+        },
+      };
+
+      const handler = new SmartProgressiveStreamingHandler(mockBackend);
+      handler.fixedEndTime = 0.5; // absolute 8000 samples fixed
+
+      const audio = createTone(2); // 32000 physical samples
+
+      // 16000 trimmed > 8000 fixed → clamp to 0, whole buffer transcribed.
+      await handler.transcribeIncremental(audio, 16000);
+      expect(received.length).toBe(32000);
+    });
+  });
+
   describe('window sliding', () => {
     test('fixes sentences when window exceeds maxWindowSize', async () => {
       vi.mocked(detectSpeech).mockResolvedValue({

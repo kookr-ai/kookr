@@ -4,19 +4,56 @@
  * Receives 16-bit Int16 PCM from the client, normalizes to Float32 [-1, 1],
  * and maintains a growing buffer for incremental transcription.
  *
+ * The buffer is bounded by a rolling window (default {@link DEFAULT_MAX_BUFFER_SECONDS})
+ * so a client that streams audio without ever sending `stop`/`clear` cannot grow
+ * memory without limit. When the window is exceeded the oldest samples are trimmed
+ * off the front rather than rejecting new audio.
+ *
  * FR-STT-010: Parakeet STT Backend
  */
 
 const SAMPLE_RATE = 16000;
 
+/**
+ * Default rolling-window length for the accumulating buffer, in seconds.
+ * Generous enough for legitimate long dictations while still bounding
+ * per-connection memory (300s @ 16kHz Float32 ≈ 19 MB).
+ */
+export const DEFAULT_MAX_BUFFER_SECONDS = 300;
+
 export class AudioBuffer {
-  constructor(sampleRate = SAMPLE_RATE) {
+  /**
+   * @param {number} [sampleRate]
+   * @param {number} [maxSamples] Rolling-window cap in samples. Values <= 0
+   *   disable trimming (unbounded). Defaults to
+   *   `DEFAULT_MAX_BUFFER_SECONDS * sampleRate`.
+   */
+  constructor(sampleRate = SAMPLE_RATE, maxSamples = null) {
     this.sampleRate = sampleRate;
+    this.maxSamples =
+      maxSamples == null ? Math.round(DEFAULT_MAX_BUFFER_SECONDS * sampleRate) : maxSamples;
     /** @type {Float32Array[]} */
     this._chunks = [];
     this._totalSamples = 0;
+    /**
+     * Absolute index of the first sample currently held, i.e. how many
+     * samples the rolling window has dropped off the front since the last
+     * `clear()`. Consumers that track absolute (session-relative) offsets
+     * use this to rebase into the trimmed buffer's coordinates.
+     * @type {number}
+     */
+    this._trimmedSamples = 0;
     /** @type {Float32Array|null} */
     this._cachedBuffer = null;
+  }
+
+  /**
+   * Absolute index of `getAudio()[0]` within the full session — the count of
+   * samples trimmed off the front so far. `0` until the rolling window engages.
+   * @returns {number}
+   */
+  get trimmedSamples() {
+    return this._trimmedSamples;
   }
 
   /**
@@ -51,7 +88,33 @@ export class AudioBuffer {
     this._totalSamples += sampleCount;
     this._cachedBuffer = null;
 
+    this._trimToWindow();
+
     return this.duration();
+  }
+
+  /**
+   * Drop the oldest samples until the buffer fits within `maxSamples`.
+   * Whole leading chunks are shifted off; the chunk that straddles the
+   * window boundary is sliced (copied) so its old backing memory is freed.
+   */
+  _trimToWindow() {
+    if (this.maxSamples <= 0) return;
+
+    while (this._totalSamples > this.maxSamples && this._chunks.length > 0) {
+      const overflow = this._totalSamples - this.maxSamples;
+      const head = this._chunks[0];
+      if (head.length <= overflow) {
+        this._chunks.shift();
+        this._totalSamples -= head.length;
+        this._trimmedSamples += head.length;
+      } else {
+        this._chunks[0] = head.slice(overflow);
+        this._totalSamples -= overflow;
+        this._trimmedSamples += overflow;
+      }
+      this._cachedBuffer = null;
+    }
   }
 
   /**
@@ -88,6 +151,7 @@ export class AudioBuffer {
   clear() {
     this._chunks = [];
     this._totalSamples = 0;
+    this._trimmedSamples = 0;
     this._cachedBuffer = null;
   }
 }

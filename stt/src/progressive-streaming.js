@@ -88,32 +88,47 @@ export class SmartProgressiveStreamingHandler {
    * Call repeatedly with a growing audio buffer (Float32Array).
    * Returns the current transcription state with fixed + active text.
    *
+   * `fixedEndTime` and `lastTranscribedLength` are tracked in absolute
+   * (session-relative) coordinates. When the source buffer applies a rolling
+   * window it drops samples off the front, so `audio[0]` is no longer session
+   * time 0. Pass `audioStartSample` (the absolute index of `audio[0]`, e.g.
+   * `AudioBuffer.trimmedSamples`) so the window offsets rebase into the trimmed
+   * buffer's coordinates. It defaults to 0 (no trimming), preserving the
+   * previous behavior exactly.
+   *
    * @param {Float32Array} audio - Growing audio buffer at sampleRate
+   * @param {number} [audioStartSample=0] - Absolute index of audio[0]
    * @returns {Promise<PartialTranscription>}
    */
-  async transcribeIncremental(audio) {
+  async transcribeIncremental(audio, audioStartSample = 0) {
     const currentLength = audio.length;
+    // Absolute length of audio seen this session, including trimmed-off front.
+    const absoluteLength = audioStartSample + currentLength;
     const minSamples = this.sampleRate * this.minAudioSeconds;
 
     // Need minimum audio before transcribing
-    if (currentLength < minSamples) {
+    if (absoluteLength < minSamples) {
       return new PartialTranscription(
         this.fixedSentences.join(' '),
         '',
-        currentLength / this.sampleRate,
+        absoluteLength / this.sampleRate,
         false,
       );
     }
 
     // Return cached result if no new audio since last transcription
-    if (currentLength === this.lastTranscribedLength && this.lastResult) {
+    if (absoluteLength === this.lastTranscribedLength && this.lastResult) {
       return this.lastResult;
     }
 
-    this.lastTranscribedLength = currentLength;
+    this.lastTranscribedLength = absoluteLength;
 
-    // Extract window from last fixed sentence endpoint to end of audio
-    const windowStartSamples = Math.floor(this.fixedEndTime * this.sampleRate);
+    // Extract window from last fixed sentence endpoint to end of audio.
+    // fixedEndTime is absolute; rebase it into the (possibly trimmed) buffer.
+    const windowStartSamples = Math.max(
+      0,
+      Math.floor(this.fixedEndTime * this.sampleRate) - audioStartSample,
+    );
     const audioWindow = audio.slice(windowStartSamples);
     const windowDuration = audioWindow.length / this.sampleRate;
 
@@ -124,7 +139,7 @@ export class SmartProgressiveStreamingHandler {
       this.lastResult = new PartialTranscription(
         this.fixedSentences.join(' '),
         '',
-        currentLength / this.sampleRate,
+        absoluteLength / this.sampleRate,
         false,
       );
       return this.lastResult;
@@ -158,8 +173,9 @@ export class SmartProgressiveStreamingHandler {
         this.fixedEndTime = newFixedEndTime;
 
         // Re-transcribe from new fixed point for fresh active text
-        const newWindowStartSamples = Math.floor(
-          this.fixedEndTime * this.sampleRate,
+        const newWindowStartSamples = Math.max(
+          0,
+          Math.floor(this.fixedEndTime * this.sampleRate) - audioStartSample,
         );
         const newAudioWindow = audio.slice(newWindowStartSamples);
         result = await this.model.transcribe(newAudioWindow);
@@ -168,7 +184,7 @@ export class SmartProgressiveStreamingHandler {
 
     const fixedText = this.fixedSentences.join(' ');
     const activeText = result.text ? result.text.trim() : '';
-    const timestamp = audio.length / this.sampleRate;
+    const timestamp = absoluteLength / this.sampleRate;
 
     this.lastResult = new PartialTranscription(fixedText, activeText, timestamp, false);
     return this.lastResult;
@@ -178,10 +194,11 @@ export class SmartProgressiveStreamingHandler {
    * Get final transcription by combining fixed + active.
    *
    * @param {Float32Array} audio - Complete audio buffer
+   * @param {number} [audioStartSample=0] - Absolute index of audio[0]
    * @returns {Promise<string>} Final complete transcription text
    */
-  async finalize(audio) {
-    const result = await this.transcribeIncremental(audio);
+  async finalize(audio, audioStartSample = 0) {
+    const result = await this.transcribeIncremental(audio, audioStartSample);
 
     const parts = [];
     if (result.fixedText) parts.push(result.fixedText);

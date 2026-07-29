@@ -50,6 +50,11 @@ services:
       MAX_WINDOW_SIZE: "15.0"
       SENTENCE_BUFFER: "2.0"
       MIN_AUDIO_SECONDS: "0.5"
+      # Inbound-hardening knobs (#1413): max WebSocket frame bytes, rolling
+      # audio-buffer window (seconds), and accepted config languages.
+      STT_WS_MAX_PAYLOAD_BYTES: "1000000"
+      STT_MAX_BUFFER_SECONDS: "300"
+      STT_SUPPORTED_LANGUAGES: ${STT_LANGUAGE:-en}
     depends_on:
       kookr-stt-whisper:
         condition: service_started
