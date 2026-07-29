@@ -197,3 +197,93 @@ describe('runEmissionCli', () => {
     expect(io.errs.join('\n')).toMatch(/--requested/);
   });
 });
+
+describe('runEmissionCli drain coupling (issue #1657)', () => {
+  function planGh(openCount: number, closedCount: number, open: unknown[] = []) {
+    return (args: string[]): string => {
+      if (args[0] === 'api') {
+        // The query is passed as an `-f q=<query>` token.
+        const q = args.find((a) => a.startsWith('q=')) ?? '';
+        if (q.includes('is:closed')) return `${closedCount}\n`;
+        if (q.includes('is:open')) return `${openCount}\n`;
+        return '0\n';
+      }
+      if (args[0] === 'issue') return JSON.stringify(open);
+      throw new Error(`unexpected gh args: ${args.join(' ')}`);
+    };
+  }
+
+  it('caps allowedBudget by the target repo drain rate (low-drain repo)', async () => {
+    const io = mkIo();
+    // backlog 52 (< 60 threshold) but only 1 issue drained this window.
+    const code = await runEmissionCli(
+      ['plan', '--repo', 'jeanibarz/lucy', '--requested', '10', '--json'],
+      { ...io, runGh: planGh(52, 1) },
+    );
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.plan.openBacklogCount).toBe(52);
+    expect(payload.plan.overThreshold).toBe(false);
+    expect(payload.plan.drainCoupled).toBe(true);
+    expect(payload.plan.drainCount).toBe(1);
+    expect(payload.plan.drainCap).toBe(1);
+    expect(payload.plan.allowedBudget).toBe(1);
+    expect(payload.plan.deferredCount).toBe(9);
+    expect(payload.plan.action).toBe('constrain');
+  });
+
+  it('disables drain coupling with --no-drain-coupling', async () => {
+    const io = mkIo();
+    const code = await runEmissionCli(
+      ['plan', '--repo', 'jeanibarz/lucy', '--requested', '10', '--no-drain-coupling', '--json'],
+      { ...io, runGh: planGh(52, 1) },
+    );
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.plan.drainCoupled).toBe(false);
+    expect(payload.plan.allowedBudget).toBe(10); // full budget restored
+  });
+});
+
+describe('runEmissionCli version (issue #1657)', () => {
+  it('reports OK when the running version matches origin/main', async () => {
+    const io = mkIo();
+    const code = await runEmissionCli(['version', '--json'], {
+      ...io,
+      // Whatever the running version is, echo it back as the reference.
+      runGit: () =>
+        `export const EMISSION_BUDGET_SCHEMA_VERSION = 'emission-budget.v2' as const;`,
+    });
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.ok).toBe(true);
+    expect(payload.lagging).toBe(false);
+    expect(io.errs.join('\n')).toMatch(/emission-version: OK/);
+  });
+
+  it('flags an anomaly when origin/main is ahead of the running version', async () => {
+    const io = mkIo();
+    const code = await runEmissionCli(['version', '--json'], {
+      ...io,
+      runGit: () =>
+        `export const EMISSION_BUDGET_SCHEMA_VERSION = 'emission-budget.v999' as const;`,
+    });
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.lagging).toBe(true);
+    expect(payload.reference).toBe('emission-budget.v999');
+    expect(io.errs.join('\n')).toMatch(/ANOMALY/);
+  });
+
+  it('cannot verify when git fails', async () => {
+    const io = mkIo();
+    const code = await runEmissionCli(['version'], {
+      ...io,
+      runGit: () => {
+        throw new Error('no origin');
+      },
+    });
+    expect(code).toBe(0);
+    expect(io.logs.join('\n')).toMatch(/cannot verify/i);
+  });
+});

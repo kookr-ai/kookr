@@ -4,11 +4,13 @@ import {
   DEFAULT_DEDUPE_SIMILARITY_THRESHOLD,
   DEFAULT_OPEN_BACKLOG_THRESHOLD,
   EMISSION_BUDGET_SCHEMA_VERSION,
+  budgetLogicVersionStatus,
   buildDeferredIdeaRecord,
   checkDedupe,
   computeNetBacklogDelta,
   computeNetBacklogDelta7d,
   deferredIdeasPath,
+  extractSchemaVersion,
   normalizeIssueTitle,
   partitionByBudget,
   resolveEmissionBudget,
@@ -241,5 +243,112 @@ describe('deferred idea helpers', () => {
     });
     expect(plan.action).toBe('refuse');
     expect(plan.reason).toMatch(/Requested budget is 0/i);
+  });
+});
+
+describe('resolveEmissionBudget drain coupling (issue #1657)', () => {
+  it('leaves the plan unchanged and drainCoupled=false when drainCount is omitted', () => {
+    const plan = resolveEmissionBudget({ openBacklogCount: 40, requestedBudget: 10 });
+    expect(plan.drainCoupled).toBe(false);
+    expect(plan.drainCount).toBeUndefined();
+    expect(plan.drainCap).toBeUndefined();
+    expect(plan.allowedBudget).toBe(10);
+  });
+
+  it('budgets a low-drain target by ITS drain, not the requesting actor’s home-repo drain', () => {
+    // Regression for #1657: a high-drain actor (e.g. filing 56/window in kookr)
+    // files into a low-drain repo (lucy, backlog 52 < threshold 60, draining 1).
+    // The plan must be keyed on the *target* repo's drain (1), not the actor's.
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 52, // under the 60 threshold → backlog logic alone would allow full
+      requestedBudget: 10,
+      drainCount: 1, // target repo drained only 1 issue this window
+    });
+    expect(plan.overThreshold).toBe(false);
+    expect(plan.drainCoupled).toBe(true);
+    expect(plan.drainCount).toBe(1);
+    expect(plan.drainCap).toBe(1); // floor 0 + ceil(1 * 1)
+    expect(plan.allowedBudget).toBe(1);
+    expect(plan.deferredCount).toBe(9);
+    expect(plan.action).toBe('constrain');
+    expect(plan.reason).toMatch(/drain cap 1/i);
+  });
+
+  it('refuses emission into a repo draining nothing (drainCount 0, floor 0)', () => {
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 10,
+      requestedBudget: 5,
+      drainCount: 0,
+    });
+    expect(plan.drainCap).toBe(0);
+    expect(plan.allowedBudget).toBe(0);
+    expect(plan.action).toBe('refuse');
+    expect(plan.deferredCount).toBe(5);
+  });
+
+  it('honors a drain floor so a fresh repo can still admit a few', () => {
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 10,
+      requestedBudget: 5,
+      drainCount: 0,
+      drainFloorBudget: 2,
+    });
+    expect(plan.drainCap).toBe(2);
+    expect(plan.allowedBudget).toBe(2);
+    expect(plan.action).toBe('constrain');
+  });
+
+  it('scales the cap with the coupling ratio', () => {
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 10,
+      requestedBudget: 10,
+      drainCount: 4,
+      drainCouplingRatio: 0.5, // 4 drained * 0.5 = 2
+    });
+    expect(plan.drainCap).toBe(2);
+    expect(plan.allowedBudget).toBe(2);
+  });
+
+  it('only tightens — a generous drain cap never loosens the backlog budget', () => {
+    // Over threshold → backlog logic constrains to 2; a large drain must not lift it.
+    const plan = resolveEmissionBudget({
+      openBacklogCount: DEFAULT_OPEN_BACKLOG_THRESHOLD + 5,
+      requestedBudget: 10,
+      drainCount: 100,
+    });
+    expect(plan.overThreshold).toBe(true);
+    expect(plan.drainCoupled).toBe(true);
+    expect(plan.drainCap).toBe(100);
+    expect(plan.allowedBudget).toBe(DEFAULT_CONSTRAINED_BUDGET); // stays 2, not 100
+  });
+});
+
+describe('budget-logic deploy-freshness (issue #1657)', () => {
+  it('extracts the schema version literal from source', () => {
+    const src = `export const EMISSION_BUDGET_SCHEMA_VERSION = 'emission-budget.v2' as const;`;
+    expect(extractSchemaVersion(src)).toBe('emission-budget.v2');
+    expect(extractSchemaVersion('no version here')).toBeNull();
+  });
+
+  it('flags a lagging running version against the origin reference', () => {
+    const status = budgetLogicVersionStatus('emission-budget.v1', 'emission-budget.v2');
+    expect(status.lagging).toBe(true);
+    expect(status.logLine).toMatch(/ANOMALY/);
+    expect(status.logLine).toMatch(/lags origin\/main/);
+  });
+
+  it('reports OK when running matches the reference', () => {
+    const status = budgetLogicVersionStatus(
+      EMISSION_BUDGET_SCHEMA_VERSION,
+      EMISSION_BUDGET_SCHEMA_VERSION,
+    );
+    expect(status.lagging).toBe(false);
+    expect(status.logLine).toMatch(/OK/);
+  });
+
+  it('says it cannot verify when the reference is unavailable', () => {
+    const status = budgetLogicVersionStatus(EMISSION_BUDGET_SCHEMA_VERSION, null);
+    expect(status.lagging).toBe(false);
+    expect(status.logLine).toMatch(/cannot verify/i);
   });
 });

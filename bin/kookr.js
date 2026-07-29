@@ -22,7 +22,7 @@ Usage:
   kookr maintenance prune [OPTIONS]   Prune aged completed-task data-dir artifacts.
   kookr maintenance backup [OPTIONS]  Create a crash-consistent data-dir backup tarball.
   kookr lesson status|drain|remember  Durable lesson-write spool (kb degraded path).
-  kookr emission plan|dedupe|metrics|defer  Drain-coupled issue filing budget + dedupe.
+  kookr emission plan|dedupe|metrics|defer|version  Drain-coupled issue filing budget + dedupe.
   kookr pr-checklist verify|doctor [OPTIONS]  Verify PR checklist or report local gate fail-open rate.
   kookr context-pack --spec <f> --out <f>  Build a spawn-time context pack from a JSON spec.
   kookr push test <deviceId>    Send a relay push test.
