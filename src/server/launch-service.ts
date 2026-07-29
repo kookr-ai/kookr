@@ -545,7 +545,10 @@ function reconcileStaleDuplicate(taskStore: TaskStore, task: Task): void {
     updated?.status === 'inProgress'
     && (updated.sessions.length === 0 || updated.sessions.every(isSessionTerminal))
   ) {
-    taskStore.terminateTask(updated.id);
+    taskStore.terminateTask(updated.id, {
+      reason: 'unknown',
+      detail: 'stale duplicate reconciled at launch (dead sessions)',
+    });
   }
 }
 
