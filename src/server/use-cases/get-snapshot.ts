@@ -1,4 +1,5 @@
-import type { Monitor, AgentState } from '../../core/monitor.js';
+import type { Monitor } from '../../core/monitor.js';
+import type { AgentState } from '../../shared/contracts/agent-state.js';
 import type { BuildInfo } from '../../core/build-info.js';
 import { computeProjectSummaries } from '../../core/project-summary.js';
 import type { LedgerAnalytics } from '../../core/ledger-analytics.js';
