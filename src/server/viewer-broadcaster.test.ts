@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { WebSocket } from 'ws';
 
 import type { Actor } from './auth.js';
+import type { AgentState } from '../core/monitor.js';
 import type { Scope } from './viewer-data-policy.js';
 import type { ServerMessage, SnapshotMessage } from '../shared/contracts/messages.js';
 import { ViewerAwareBroadcaster, type BroadcasterRegistry } from './viewer-broadcaster.js';
@@ -137,6 +138,77 @@ describe('ViewerAwareBroadcaster', () => {
     expect(buildScopedSnapshot).toHaveBeenCalledWith({ kind: 'projects', projectIds: ['a', 'b'] });
     expect((JSON.parse(v1[0]) as SnapshotMessage).serverCwd).toBe('/scoped');
     expect((JSON.parse(v2[0]) as SnapshotMessage).serverCwd).toBe('/scoped');
+  });
+
+  test('the shared fleet base is computed once per flush and threaded into every distinct scope build (#1398)', () => {
+    // Three viewers holding three DISTINCT scopes. Pre-#1398 each scope re-ran
+    // the fleet projection; now the base is computed once and reused.
+    const registry = stubRegistry([
+      { ws: fakeSocket(() => undefined), actor: projectsViewer('g1', ['a']) },
+      { ws: fakeSocket(() => undefined), actor: projectsViewer('g2', ['b']) },
+      { ws: fakeSocket(() => undefined), actor: projectsViewer('g3', ['c']) },
+    ]);
+    const base = [{ id: 'fleet-base' }] as unknown as AgentState[];
+    const computeSnapshotBaseAgents = vi.fn<() => AgentState[]>(() => base);
+    const seenBases: (AgentState[] | undefined)[] = [];
+    const buildScopedSnapshot = vi.fn<(scope: Scope, baseClientAgents?: AgentState[]) => SnapshotMessage>(
+      (_scope, baseClientAgents) => {
+        seenBases.push(baseClientAgents);
+        return snapshot({ serverCwd: '/scoped' });
+      },
+    );
+    const broadcaster = new ViewerAwareBroadcaster({ registry, buildScopedSnapshot, computeSnapshotBaseAgents });
+
+    broadcaster.broadcast(snapshot());
+
+    // Fleet projection paid once regardless of the three distinct scopes.
+    expect(computeSnapshotBaseAgents).toHaveBeenCalledTimes(1);
+    expect(buildScopedSnapshot).toHaveBeenCalledTimes(3);
+    // Every scope build received the very same base instance.
+    expect(seenBases).toHaveLength(3);
+    for (const seen of seenBases) expect(seen).toBe(base);
+  });
+
+  test('mixed owner + scoped fan-out computes the base once and leaves the owner all-snapshot untouched (#1398)', () => {
+    const ownerSent: string[] = [];
+    const scopedSent: string[] = [];
+    // Owner iterated BEFORE the first scoped viewer: the base must still be
+    // computed exactly once, only when the scoped connection is reached.
+    const registry = stubRegistry([
+      { ws: fakeSocket((d) => ownerSent.push(d)), actor: OWNER },
+      { ws: fakeSocket((d) => scopedSent.push(d)), actor: projectsViewer('g1', ['a']) },
+    ]);
+    const base = [{ id: 'fleet-base' }] as unknown as AgentState[];
+    const computeSnapshotBaseAgents = vi.fn<() => AgentState[]>(() => base);
+    const buildScopedSnapshot = vi.fn<(scope: Scope, baseClientAgents?: AgentState[]) => SnapshotMessage>(
+      () => snapshot({ serverCwd: '/scoped' }),
+    );
+    const broadcaster = new ViewerAwareBroadcaster({ registry, buildScopedSnapshot, computeSnapshotBaseAgents });
+
+    broadcaster.broadcast(snapshot({ serverCwd: '/owner-all' }));
+
+    expect(computeSnapshotBaseAgents).toHaveBeenCalledTimes(1);
+    expect(buildScopedSnapshot).toHaveBeenCalledWith({ kind: 'projects', projectIds: ['a'] }, base);
+    // The owner keeps the caller-provided `all` snapshot; the scoped viewer gets the factory's.
+    expect((JSON.parse(ownerSent[0]) as SnapshotMessage).serverCwd).toBe('/owner-all');
+    expect((JSON.parse(scopedSent[0]) as SnapshotMessage).serverCwd).toBe('/scoped');
+  });
+
+  test('the shared fleet base is not computed for an all-only fan-out (#1398)', () => {
+    const registry = stubRegistry([
+      { ws: fakeSocket(() => undefined), actor: OWNER },
+      { ws: fakeSocket(() => undefined), actor: allViewer('gAll') },
+    ]);
+    const computeSnapshotBaseAgents = vi.fn<() => AgentState[]>(() => [] as unknown as AgentState[]);
+    const broadcaster = new ViewerAwareBroadcaster({
+      registry,
+      buildScopedSnapshot: () => snapshot(),
+      computeSnapshotBaseAgents,
+    });
+
+    broadcaster.broadcast(snapshot());
+
+    expect(computeSnapshotBaseAgents).not.toHaveBeenCalled();
   });
 
   test('scoped viewer snapshots are observed and dropped above the payload cap without affecting owners', () => {

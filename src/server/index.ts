@@ -37,7 +37,13 @@ import {
   runStartupRecoveryPhase,
 } from './startup-recovery.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
-import { createSnapshotMessage, getSnapshotAgentsForClient } from './use-cases/get-snapshot.js';
+import {
+  computeSnapshotBaseAgents as computeSnapshotBaseAgentsFn,
+  createSnapshotMessage,
+  getSnapshotAgentsForClient,
+  type SnapshotMessageDeps,
+} from './use-cases/get-snapshot.js';
+import type { AgentState } from '../core/monitor.js';
 import { collectBootTranscriptRegistrations } from './boot-transcript-registration.js';
 import { sweepReflectWorktrees } from './use-cases/request-task-reflect.js';
 import { startBackgroundServices } from './bootstrap/start-background-services.js';
@@ -587,23 +593,37 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   // Single owner of WS scope filtering (#809, RFC §"Outbound scope filtering").
   // The broadcaster (#805) and the viewer initial-connection burst both call
-  // this to build the snapshot a `projects` viewer receives; for an `all` scope
-  // the broadcaster reuses the already-enriched owner snapshot, so this factory
-  // is only ever invoked for a `projects` scope. Only scope-relevant deps are
-  // threaded in — whole-world aggregates, speech endpoints, and owner-config
-  // capabilities are neither passed here NOR (independently) emitted by
-  // `createSnapshotMessage` for a `projects` scope, which is the real authority.
-  const buildScopedSnapshot = (scope: Scope): SnapshotMessage =>
-    createSnapshotMessage({
-      monitor,
-      serverCwd,
-      scope,
-      bypassAllPermissions,
-      relationTaskStore: taskStore,
-      drainStatus: drainController.status(),
-      terminalInputSnapshots: terminalInputCoordinator,
-      userInputDeliveryProvider: userInputDeliveries,
-    });
+  // `buildScopedSnapshot` to build the snapshot a `projects` viewer receives;
+  // for an `all` scope the broadcaster reuses the already-enriched owner
+  // snapshot, so that factory is only ever invoked for a `projects` scope. Only
+  // scope-relevant deps are threaded in — whole-world aggregates, speech
+  // endpoints, and owner-config capabilities are neither passed here NOR
+  // (independently) emitted by `createSnapshotMessage` for a `projects` scope,
+  // which is the real authority.
+  //
+  // Shared deps for every per-scope snapshot build in a flush. `scope` and the
+  // optional reusable `precomputedClientAgents` (#1398) are the only per-call
+  // differences; keeping one factory guarantees the base computed by
+  // `computeSnapshotBaseAgents` uses byte-identical agent-affecting deps.
+  const scopedSnapshotDeps = (scope: Scope, precomputedClientAgents?: AgentState[]): SnapshotMessageDeps => ({
+    monitor,
+    serverCwd,
+    scope,
+    bypassAllPermissions,
+    relationTaskStore: taskStore,
+    drainStatus: drainController.status(),
+    terminalInputSnapshots: terminalInputCoordinator,
+    userInputDeliveryProvider: userInputDeliveries,
+    ...(precomputedClientAgents ? { precomputedClientAgents } : {}),
+  });
+  const buildScopedSnapshot = (scope: Scope, precomputedClientAgents?: AgentState[]): SnapshotMessage =>
+    createSnapshotMessage(scopedSnapshotDeps(scope, precomputedClientAgents));
+  // Full-fleet projection base, computed once per broadcast flush and reused
+  // across every distinct viewer scope so the fleet projection
+  // (`Monitor.getSnapshot()` + `buildSnapshotProjection()`) runs once regardless
+  // of scope count (#1398).
+  const computeSnapshotBaseAgents = (): AgentState[] =>
+    computeSnapshotBaseAgentsFn(scopedSnapshotDeps({ kind: 'all' }));
 
   // Single owner of the terminal-stream scope decision (#810, RFC §"Terminal
   // stream fan-out"). Owns the session→task→projectId lookup AND the scope
@@ -633,6 +653,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     serverCwd,
     sttUrl,
     buildScopedSnapshot,
+    computeSnapshotBaseAgents,
     observeSnapshotPayloadSize: (observation) => {
       if (observation.payloadType === 'snapshot' && observation.scopeKey === 'all' && observation.action !== 'dropped') {
         lastSnapshotPayloadBytes = observation.bytes;

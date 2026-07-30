@@ -75,6 +75,17 @@ export interface SnapshotQueryDeps {
   scope?: Scope;
   /** Injectable clock (tests). Drives the aged-terminal-task snapshot cutoff. */
   now?: () => Date;
+  /**
+   * Precomputed full-fleet (scope-`all`) client-projected agents, reused across
+   * every per-scope snapshot build in one broadcast flush (#1398). When set,
+   * {@link getSnapshotAgentsForClient} skips the expensive
+   * `monitor.getSnapshot()` + `buildSnapshotProjection()` + per-agent client
+   * projection and only runs {@link filterAgentsToScope} on this base — so the
+   * fleet projection cost is paid once per flush, not once per distinct scope.
+   * Build it with {@link computeSnapshotBaseAgents} using the same deps as the
+   * per-scope path so the reused base is byte-identical to a recompute.
+   */
+  precomputedClientAgents?: AgentState[];
 }
 
 export interface SnapshotMessageDeps extends SnapshotQueryDeps {
@@ -218,8 +229,28 @@ export interface ProjectSummaryQueryDeps extends SnapshotQueryDeps {
  * See docs/rfc/rfc-snapshot-payload-slimming.md.
  */
 export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[] {
+  // Reuse a precomputed full-fleet base across per-scope builds in one broadcast
+  // flush (#1398): the fleet projection is byte-identical for every scope, so
+  // only the cheap per-scope `filterAgentsToScope` need differ. Falls back to a
+  // fresh full-fleet computation when no base was threaded in.
+  const base = deps.precomputedClientAgents ?? computeFullClientSnapshotAgents(deps);
+  return filterAgentsToScope(base, deps.scope);
+}
+
+/**
+ * Build the full-fleet (scope-`all`, unfiltered) client-projected snapshot
+ * agents once so a broadcast flush can reuse them across every per-scope build
+ * (#1398). This is the expensive half of the snapshot path — `monitor.getSnapshot()`
+ * re-derives turn-state/anomaly per agent and `buildSnapshotProjection()` walks
+ * the fleet — and it is independent of viewer scope: scope only ever *removes*
+ * whole agents (via {@link filterAgentsToScope}), and the per-agent client
+ * projection depends on nothing outside that one agent, so the base is identical
+ * for every scope and safe to share. Callers apply scope afterwards.
+ */
+function computeFullClientSnapshotAgents(deps: SnapshotQueryDeps): AgentState[] {
   const nowMs = (deps.now?.() ?? new Date()).getTime();
-  return getProjectedSnapshotAgents(deps, {
+  // scope: undefined → full unfiltered fleet; the caller filters per scope.
+  return getProjectedSnapshotAgents({ ...deps, scope: undefined }, {
     excludeTerminalBeforeMs: nowMs - SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS,
   }).map((agent) => {
     const activityMeta = deps.activityMetaProvider?.getActivityMeta(agent.agentId);
@@ -360,6 +391,29 @@ function scopedRelationStore(
   };
 }
 
+/**
+ * Apply {@link createSnapshotMessage}'s implicit pending-signal default (bind the
+ * provider from `relationTaskStore` when the caller passed none) so a base
+ * computed outside the message builder — the shared per-flush base (#1398) —
+ * carries agent signals identically to the inline per-scope path.
+ */
+function defaultPendingSignalProvider(deps: SnapshotMessageDeps): SnapshotMessageDeps {
+  if (deps.pendingSignalProvider) return deps;
+  if (typeof deps.relationTaskStore?.getPendingSignal !== 'function') return deps;
+  return { ...deps, pendingSignalProvider: deps.relationTaskStore };
+}
+
+/**
+ * Compute the full-fleet client-projected base once for a broadcast flush so
+ * {@link createSnapshotMessage} can reuse it across every per-scope build via
+ * `precomputedClientAgents` (#1398). Applies the same pending-signal defaulting
+ * as {@link createSnapshotMessage}, so the reused base is byte-identical to the
+ * base each per-scope call would otherwise recompute for itself.
+ */
+export function computeSnapshotBaseAgents(deps: SnapshotMessageDeps): AgentState[] {
+  return computeFullClientSnapshotAgents(defaultPendingSignalProvider(deps));
+}
+
 export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessage {
   const speechCapabilities = deps.speechCapabilities ?? buildLocalSpeechCapabilities({
     sttUrl: deps.sttUrl,
@@ -370,11 +424,7 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
   // snapshot path (every caller that already passes relationTaskStore: taskStore)
   // carries agent signals without per-call-site wiring. Explicit
   // pendingSignalProvider still wins for callers that set it.
-  const baseAgents = getSnapshotAgentsForClient({
-    ...deps,
-    pendingSignalProvider: deps.pendingSignalProvider
-      ?? (typeof deps.relationTaskStore?.getPendingSignal === 'function' ? deps.relationTaskStore : undefined),
-  });
+  const baseAgents = getSnapshotAgentsForClient(defaultPendingSignalProvider(deps));
 
   // For a `projects` viewer, every whole-world sub-projection is omitted by the
   // default-deny scrub-list (RFC §"Outbound scope filtering"). This is enforced

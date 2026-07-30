@@ -6,7 +6,7 @@ import { ACHIEVEMENT_BY_ID } from '../../core/achievement-catalog.js';
 import type { AttentionQueue } from '../../core/attention-queue.js';
 import type { GitHubReference } from '../../core/github-types.js';
 import type { LedgerAnalytics } from '../../core/ledger-analytics.js';
-import type { Monitor } from '../../core/monitor.js';
+import type { AgentState, Monitor } from '../../core/monitor.js';
 import type { PrLessonsStateHolder } from '../../core/pr-lessons-discovery.js';
 import type { ProjectConfigStore } from '../../core/project-config-store.js';
 import type { ProjectSidebarStore } from '../../core/project-sidebar-store.js';
@@ -81,7 +81,14 @@ export interface RealtimeServicesDeps {
    * caller that has no viewers) the default stub fails closed if ever invoked
    * rather than leaking the unfiltered `all` snapshot.
    */
-  buildScopedSnapshot?: (scope: Scope) => SnapshotMessage;
+  buildScopedSnapshot?: (scope: Scope, baseClientAgents?: AgentState[]) => SnapshotMessage;
+  /**
+   * Compute the full-fleet client-projected base once per broadcast flush so
+   * every distinct viewer scope reuses it instead of re-running the fleet
+   * projection (#1398). Threaded straight into the broadcaster; optional so
+   * lightweight/test wirings without it keep the pre-#1398 per-scope recompute.
+   */
+  computeSnapshotBaseAgents?: () => AgentState[];
   /**
    * Outbound snapshot payload guard (#832). Production uses conservative MiB
    * defaults; tests can lower the thresholds to exercise warn/drop behavior.
@@ -133,6 +140,7 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
           `[viewer-broadcaster] scoped snapshot for ${scope.kind} scope requested but no buildScopedSnapshot was wired`,
         );
       }),
+    ...(deps.computeSnapshotBaseAgents ? { computeSnapshotBaseAgents: deps.computeSnapshotBaseAgents } : {}),
     snapshotPayloadSizePolicy: {
       warnBytes: deps.snapshotPayloadWarnBytes ?? DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS.warnBytes,
       maxBytes: deps.snapshotPayloadMaxBytes ?? DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS.maxBytes,
