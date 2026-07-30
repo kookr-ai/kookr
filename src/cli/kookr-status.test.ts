@@ -388,6 +388,24 @@ describe('kookr-status renderReport', () => {
     expect(lines).toHaveLength(7);
   });
 
+  it('surfaces ci_blind_debt from /api/health (issue #1703)', () => {
+    const health = {
+      ...baseHealth,
+      ci_blind_debt: {
+        blindMergeCount: 3,
+        queueDepth: 3,
+        verifyFailedCount: 1,
+        oldestAgeMs: 90_000,
+      },
+    };
+    const out = renderReport({
+      port: 4800,
+      health,
+      agents: [],
+    });
+    expect(out).toContain('CI-blind debt: blind=3  queue=3  verifyFailed=1  oldest=1m 30s');
+  });
+
   it('lists critical findings with padded severity label', () => {
     const agents = [
       {

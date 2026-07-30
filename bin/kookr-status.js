@@ -164,6 +164,23 @@ function renderReport({ port, health, agents }) {
 
   lines.push(`Cost:    ${formatCost(totalCost)}`);
 
+  // CI-blind-merge debt (issue #1703) — surfaced on /api/health as
+  // ciBlindDebt / ci_blind_debt so daily reports and operators see unverified
+  // merge inventory instead of treating "PRs merged" as fully verified.
+  const debt = health.ciBlindDebt ?? health.ci_blind_debt;
+  if (debt && typeof debt.queueDepth === 'number') {
+    const oldest =
+      typeof debt.oldestAgeMs === 'number'
+        ? `  oldest=${formatUptime(debt.oldestAgeMs)}`
+        : '';
+    lines.push(
+      `CI-blind debt: blind=${debt.blindMergeCount ?? debt.queueDepth}` +
+        `  queue=${debt.queueDepth}` +
+        `  verifyFailed=${debt.verifyFailedCount ?? 0}` +
+        oldest,
+    );
+  }
+
   if (findings.length > 0) {
     const sevLine = SEVERITIES
       .filter((s) => severityCounts[s] > 0)

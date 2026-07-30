@@ -3,6 +3,7 @@ import {
   DEFAULT_CONSTRAINED_BUDGET,
   DEFAULT_DEDUPE_SIMILARITY_THRESHOLD,
   DEFAULT_OPEN_BACKLOG_THRESHOLD,
+  DEFAULT_RETRO_VERIFY_DEPTH_THRESHOLD,
   EMISSION_BUDGET_SCHEMA_VERSION,
   budgetLogicVersionStatus,
   buildDeferredIdeaRecord,
@@ -14,6 +15,7 @@ import {
   normalizeIssueTitle,
   partitionByBudget,
   resolveEmissionBudget,
+  shouldBurstDrainBeforeEmission,
   titleSimilarity,
   utcDayKeyDaysAgo,
 } from './emission-budget.js';
@@ -323,10 +325,126 @@ describe('resolveEmissionBudget drain coupling (issue #1657)', () => {
   });
 });
 
+describe('resolveEmissionBudget retro-verify / ci_blind_debt (issue #1703)', () => {
+  it('leaves the plan unchanged and retroVerifyCoupled=false when depth is omitted', () => {
+    const plan = resolveEmissionBudget({ openBacklogCount: 40, requestedBudget: 10 });
+    expect(plan.retroVerifyCoupled).toBe(false);
+    expect(plan.retroVerifyWithheld).toBe(false);
+    expect(plan.retroVerifyDepth).toBeUndefined();
+    expect(plan.allowedBudget).toBe(10);
+    expect(plan.action).toBe('allow');
+  });
+
+  it('withholds the emission budget when retro-verify depth exceeds the threshold', () => {
+    // Acceptance criterion: budget is withheld while retro-verify depth exceeds
+    // a threshold. Default threshold 0 ⇒ any debt refuses new feature emissions.
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 10,
+      requestedBudget: 8,
+      retroVerifyDepth: 3,
+    });
+    expect(plan.schemaVersion).toBe(EMISSION_BUDGET_SCHEMA_VERSION);
+    expect(plan.retroVerifyCoupled).toBe(true);
+    expect(plan.retroVerifyDepth).toBe(3);
+    expect(plan.retroVerifyDepthThreshold).toBe(DEFAULT_RETRO_VERIFY_DEPTH_THRESHOLD);
+    expect(plan.retroVerifyWithheld).toBe(true);
+    expect(plan.allowedBudget).toBe(0);
+    expect(plan.deferredCount).toBe(8);
+    expect(plan.action).toBe('refuse');
+    expect(plan.reason).toMatch(/ci_blind_debt/i);
+    expect(plan.reason).toMatch(/Burst-drain/i);
+  });
+
+  it('allows emission when depth is at/under the threshold', () => {
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 10,
+      requestedBudget: 5,
+      retroVerifyDepth: 2,
+      retroVerifyDepthThreshold: 5,
+    });
+    expect(plan.retroVerifyCoupled).toBe(true);
+    expect(plan.retroVerifyWithheld).toBe(false);
+    expect(plan.allowedBudget).toBe(5);
+    expect(plan.action).toBe('allow');
+  });
+
+  it('allows emission when depth is 0 (empty retro-verify queue)', () => {
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 10,
+      requestedBudget: 5,
+      retroVerifyDepth: 0,
+    });
+    expect(plan.retroVerifyCoupled).toBe(true);
+    expect(plan.retroVerifyWithheld).toBe(false);
+    expect(plan.allowedBudget).toBe(5);
+  });
+
+  it('still withholds when depth exceeds threshold even if backlog already refused', () => {
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 100,
+      requestedBudget: 5,
+      constrainedBudget: 0,
+      retroVerifyDepth: 12,
+    });
+    expect(plan.allowedBudget).toBe(0);
+    expect(plan.retroVerifyWithheld).toBe(true);
+    expect(plan.reason).toMatch(/ci_blind_debt/i);
+  });
+
+  it('applies after drain coupling (debt gate is the final tightener)', () => {
+    // Drain would allow 2; debt gate must still refuse.
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 10,
+      requestedBudget: 10,
+      drainCount: 2,
+      retroVerifyDepth: 1,
+    });
+    expect(plan.drainCap).toBe(2);
+    expect(plan.retroVerifyWithheld).toBe(true);
+    expect(plan.allowedBudget).toBe(0);
+    expect(plan.action).toBe('refuse');
+  });
+});
+
+describe('shouldBurstDrainBeforeEmission (issue #1703)', () => {
+  it('recommends burst-drain when depth exceeds threshold and CI recovered', () => {
+    expect(
+      shouldBurstDrainBeforeEmission({
+        retroVerifyDepth: 4,
+        ciRecovered: true,
+      }),
+    ).toBe(true);
+  });
+
+  it('does not recommend a full-CI burst-drain while CI is still absent', () => {
+    expect(
+      shouldBurstDrainBeforeEmission({
+        retroVerifyDepth: 4,
+        ciRecovered: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('recommends a drain attempt when CI recovery is unknown and depth is over threshold', () => {
+    expect(shouldBurstDrainBeforeEmission({ retroVerifyDepth: 1 })).toBe(true);
+  });
+
+  it('does not recommend drain when the queue is empty / under threshold', () => {
+    expect(shouldBurstDrainBeforeEmission({ retroVerifyDepth: 0 })).toBe(false);
+    expect(
+      shouldBurstDrainBeforeEmission({
+        retroVerifyDepth: 2,
+        retroVerifyDepthThreshold: 5,
+        ciRecovered: true,
+      }),
+    ).toBe(false);
+  });
+});
+
 describe('budget-logic deploy-freshness (issue #1657)', () => {
   it('extracts the schema version literal from source', () => {
-    const src = `export const EMISSION_BUDGET_SCHEMA_VERSION = 'emission-budget.v2' as const;`;
-    expect(extractSchemaVersion(src)).toBe('emission-budget.v2');
+    const src = `export const EMISSION_BUDGET_SCHEMA_VERSION = 'emission-budget.v3' as const;`;
+    expect(extractSchemaVersion(src)).toBe('emission-budget.v3');
     expect(extractSchemaVersion('no version here')).toBeNull();
   });
 

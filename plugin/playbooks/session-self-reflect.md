@@ -64,8 +64,15 @@ if [ -s "$METRICS_FILE" ]; then
 else
   kookr emission metrics --repo "$REPO" --json 2>/dev/null || true
 fi
-# Include netBacklogDelta7d, openBacklogCount, and the current emission budget
-# action in the reflection report's signal summary (Signal: backlog).
+# Include netBacklogDelta7d, openBacklogCount, the current emission budget
+# action, AND ci_blind_debt (issue #1703) in the reflection report's signal
+# summary (Signal: backlog / Signal: ci_blind_debt). Prefer the metrics file's
+# `ci_blind_debt` block; fall back to a live status read:
+kookr retro-verify status --json 2>/dev/null || true
+# Field of record for unverified-merge debt: ci_blind_debt.queueDepth /
+# blindMergeCount. A non-zero depth means merges landed without CI signal and
+# have not yet been retro-verified — count it next to "PRs merged" so daily
+# reports do not treat blind merges as fully verified success.
 ```
 
 The script outputs:

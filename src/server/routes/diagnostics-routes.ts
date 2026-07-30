@@ -39,6 +39,11 @@ import {
   hooksDirFromKookrDir,
   type LessonYieldSnapshot,
 } from '../../core/lesson-decision.js';
+import { computeCiBlindDebt, type CiBlindDebt } from '../../core/ci-blind-debt.js';
+import {
+  defaultRetroVerifyQueueDir,
+  readPendingRetroVerify,
+} from '../../core/retro-verify-queue.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const REVIEW_ADMIN_TOKEN_HEADER = 'x-kookr-admin-token';
@@ -193,6 +198,20 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       }
     }
 
+    // CI-blind-merge debt (issue #1703) — retro-verify queue depth + blind-merge
+    // count. The spool is a small JSONL under ~/.kookr (or
+    // KOOKR_RETRO_VERIFY_QUEUE_DIR); a single read is cheap enough for the
+    // health hot path (unlike lesson-yield's hook-log scan). Failures are
+    // soft: health stays 200 and omits the block rather than 500.
+    let ciBlindDebtBlock: CiBlindDebt | undefined;
+    try {
+      const spoolDir = defaultRetroVerifyQueueDir(process.env);
+      const pending = await readPendingRetroVerify(spoolDir);
+      ciBlindDebtBlock = computeCiBlindDebt(pending);
+    } catch {
+      ciBlindDebtBlock = undefined;
+    }
+
     return c.json({
       status: 'ok',
       agents: tasks.length,
@@ -205,6 +224,12 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       },
       capacity,
       ...(lessonYieldBlock ? { lessonYield: lessonYieldBlock } : {}),
+      // camelCase + snake_case: dashboard/status CLI use camelCase; daily
+      // reports and the issue acceptance criterion name the metric
+      // `ci_blind_debt`.
+      ...(ciBlindDebtBlock
+        ? { ciBlindDebt: ciBlindDebtBlock, ci_blind_debt: ciBlindDebtBlock }
+        : {}),
       ...(terminalBackendBlock ? { terminalBackend: terminalBackendBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),

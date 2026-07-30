@@ -126,9 +126,30 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
       '--drain-ratio',
       '--drain-floor',
       '--no-drain-coupling',
+      '--retro-verify-threshold',
+      '--no-retro-verify-coupling',
+      '--retro-verify-dir',
       '--body-preview',
       '--kookr-dir',
       '--repo-dir',
+      '--json',
+      '-h',
+      '--help',
+    ],
+  },
+  {
+    name: 'retro-verify',
+    subcommands: ['status', 'drain', 'enqueue'],
+    flags: [
+      '--dir',
+      '--sha',
+      '--repo',
+      '--pr',
+      '--reason',
+      '--limit',
+      '--dry-run',
+      '--repo-dir',
+      '--verify-cmd',
       '--json',
       '-h',
       '--help',
@@ -259,6 +280,8 @@ function renderBashCompletion(): string {
   const lessonRememberFlags = shellWords(LESSON_REMEMBER_FLAGS);
   const emissionSubcommands = subcommandsFor('emission');
   const emissionFlags = flagsFor('emission');
+  const retroVerifySubcommands = subcommandsFor('retro-verify');
+  const retroVerifyFlags = flagsFor('retro-verify');
   const prChecklistSubcommands = subcommandsFor('pr-checklist');
   const prChecklistFlags = flagsFor('pr-checklist');
   const contextPackFlags = flagsFor('context-pack');
@@ -415,6 +438,13 @@ _kookr()
         COMPREPLY=( $(compgen -W "${emissionFlags}" -- "\${cur}") )
       fi
       ;;
+    retro-verify)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${retroVerifySubcommands} ${retroVerifyFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${retroVerifyFlags}" -- "\${cur}") )
+      fi
+      ;;
     pr-checklist)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
         COMPREPLY=( $(compgen -W "${prChecklistSubcommands} ${prChecklistFlags}" -- "\${cur}") )
@@ -477,6 +507,8 @@ function renderZshCompletion(): string {
   const lessonRememberFlags = shellWords(LESSON_REMEMBER_FLAGS);
   const emissionSubcommands = subcommandsFor('emission');
   const emissionFlags = flagsFor('emission');
+  const retroVerifySubcommands = subcommandsFor('retro-verify');
+  const retroVerifyFlags = flagsFor('retro-verify');
   const prChecklistSubcommands = subcommandsFor('pr-checklist');
   const prChecklistFlags = flagsFor('pr-checklist');
   const contextPackFlags = flagsFor('context-pack');
@@ -588,6 +620,13 @@ _kookr()
         compadd -- ${emissionSubcommands} ${emissionFlags}
       else
         compadd -- ${emissionFlags}
+      fi
+      ;;
+    retro-verify)
+      if (( CURRENT == 3 )); then
+        compadd -- ${retroVerifySubcommands} ${retroVerifyFlags}
+      else
+        compadd -- ${retroVerifyFlags}
       fi
       ;;
     pr-checklist)
