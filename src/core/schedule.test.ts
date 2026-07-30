@@ -2,7 +2,15 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ScheduleStore, ScheduleValidationError, scheduleResolutionSignature } from './schedule.js';
+import {
+  ScheduleStore,
+  ScheduleValidationError,
+  scheduleResolutionSignature,
+  pruneExecutionLedger,
+  isPendingLedgerEntry,
+  MAX_LEDGER_ENTRIES,
+  type ScheduleExecutionLedgerEntry,
+} from './schedule.js';
 
 describe('ScheduleStore', () => {
   let dir: string;
@@ -838,6 +846,107 @@ describe('ScheduleStore', () => {
     it('drops a non-array artifacts field', async () => {
       const ledger = await loadWithLedger([baseLedgerEntry({ taskId: 't', artifacts: 'not-an-array' })]);
       expect(ledger[0]).not.toHaveProperty('artifacts');
+    });
+  });
+
+  // issue #1392: the per-schedule execution ledger is bounded so a
+  // once-per-minute schedule cannot accrue ~1,440 rows/day of unbounded memory
+  // and O(ledger) write amplification.
+  describe('executionLedger cap (#1392)', () => {
+    function ledgerEntry(
+      seq: number,
+      outcome: ScheduleExecutionLedgerEntry['outcome'] = 'completed',
+    ): ScheduleExecutionLedgerEntry {
+      const stamp = `2026-01-01T00:${String(seq % 60).padStart(2, '0')}:00.000Z`;
+      return {
+        id: `s1:cron:${seq}`,
+        scheduleId: 's1',
+        trigger: 'cron',
+        decision: 'cron_due',
+        evaluatedAt: stamp,
+        outcome,
+        taskId: `task-${seq}`,
+      };
+    }
+
+    it('classifies mid-flight outcomes as pending and terminal ones as not', () => {
+      expect(isPendingLedgerEntry(ledgerEntry(1, 'running'))).toBe(true);
+      expect(isPendingLedgerEntry(ledgerEntry(1, 'queued'))).toBe(true);
+      expect(isPendingLedgerEntry(ledgerEntry(1, 'queued_capacity'))).toBe(true);
+      expect(isPendingLedgerEntry(ledgerEntry(1, 'completed'))).toBe(false);
+      expect(isPendingLedgerEntry(ledgerEntry(1, 'skipped_coalesced'))).toBe(false);
+      expect(isPendingLedgerEntry(ledgerEntry(1, 'dispatch_failed'))).toBe(false);
+    });
+
+    it('is a no-op when the ledger is within the cap', () => {
+      const ledger = Array.from({ length: 3 }, (_, i) => ledgerEntry(i));
+      expect(pruneExecutionLedger(ledger, 5)).toBe(ledger);
+    });
+
+    it('bounds to the cap and retains the most-recent entries', () => {
+      const ledger = Array.from({ length: 25 }, (_, i) => ledgerEntry(i));
+      const pruned = pruneExecutionLedger(ledger, 10);
+      expect(pruned).toHaveLength(10);
+      // Newest-N retained (ids 15..24, chronological order preserved).
+      expect(pruned.map((e) => e.id)).toEqual(
+        Array.from({ length: 10 }, (_, i) => `s1:cron:${15 + i}`),
+      );
+    });
+
+    it('keeps a pending row that falls outside the newest-N window', () => {
+      // Oldest row is pending; the rest are terminal. Pruning to 3 would drop it
+      // by pure recency, but a later reconcile keys off it — it must survive.
+      const ledger = [
+        ledgerEntry(0, 'running'),
+        ...Array.from({ length: 9 }, (_, i) => ledgerEntry(i + 1)),
+      ];
+      const pruned = pruneExecutionLedger(ledger, 3);
+      // 3 newest terminal + the retained pending row, pending first (chrono order).
+      expect(pruned).toHaveLength(4);
+      expect(pruned[0]).toMatchObject({ id: 's1:cron:0', outcome: 'running' });
+      expect(pruned.slice(1).map((e) => e.id)).toEqual(['s1:cron:7', 's1:cron:8', 's1:cron:9']);
+    });
+
+    it('defaults the cap to MAX_LEDGER_ENTRIES', () => {
+      const ledger = Array.from({ length: MAX_LEDGER_ENTRIES + 5 }, (_, i) => ledgerEntry(i));
+      const pruned = pruneExecutionLedger(ledger);
+      expect(pruned).toHaveLength(MAX_LEDGER_ENTRIES);
+      expect(pruned[pruned.length - 1].id).toBe(`s1:cron:${MAX_LEDGER_ENTRIES + 4}`);
+    });
+
+    it('bounds an oversized legacy ledger on load', async () => {
+      const over = MAX_LEDGER_ENTRIES + 50;
+      const entries = Array.from({ length: over }, (_, i) => ({
+        id: `s1:cron:${i}`,
+        scheduleId: 's1',
+        trigger: 'cron',
+        decision: 'cron_due',
+        evaluatedAt: '2026-01-01T00:00:00.000Z',
+        outcome: 'completed',
+        taskId: `task-${i}`,
+      }));
+      const raw = [{
+        id: 's1',
+        name: 'Legacy bloat',
+        enabled: true,
+        cron: '* * * * *',
+        playbook: { path: 'a.md', parameters: {} },
+        cwd: '/tmp',
+        agentType: 'claude',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        executionLedger: entries,
+      }];
+      await writeFile(join(dir, 'schedules.json'), JSON.stringify(raw), 'utf-8');
+      const reloaded = new ScheduleStore(dir);
+      await reloaded.load();
+      const ledger = reloaded.list()[0].executionLedger;
+      expect(ledger).toHaveLength(MAX_LEDGER_ENTRIES);
+      // Trimmed from the OLD end: the retained window is the newest MAX rows,
+      // so both boundaries pin the recency direction (an off-by-one trimming the
+      // wrong end would keep the last id but shift the first).
+      expect(ledger[0].id).toBe(`s1:cron:${over - MAX_LEDGER_ENTRIES}`);
+      expect(ledger[ledger.length - 1].id).toBe(`s1:cron:${over - 1}`);
     });
   });
 });

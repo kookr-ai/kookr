@@ -138,6 +138,66 @@ export interface ScheduleExecutionLedgerEntry {
   mergeCommit?: string;
 }
 
+/**
+ * Per-schedule cap on persisted {@link ScheduleExecutionLedgerEntry} rows
+ * (issue #1392). A once-per-minute schedule accrues ~1,440 entries/day, held in
+ * memory and re-serialized in full on every reservation — unbounded memory and
+ * O(ledger) fsync cost on a long-running node. Bounding the ledger to the
+ * newest N rows makes both flat.
+ *
+ * Consequence for the ROI rollup (issue #1584): `computeScheduleRollup` derives
+ * from this ledger and is already a WINDOWED view (it carries `windowStart` /
+ * `windowEnd`), so the cap simply narrows that window to the retained rows — it
+ * does not break a lifetime contract the rollup never made. At 500 the window
+ * spans ~8h for a per-minute schedule and is effectively unbounded for the
+ * hourly/daily cadences that dominate, while keeping the per-tick serialization
+ * cost a constant rather than O(age).
+ */
+export const MAX_LEDGER_ENTRIES = 500;
+
+/**
+ * Outcomes a ledger row can carry while its run is still mid-flight — the
+ * server has recorded a reservation/launch but no terminal result yet. A later
+ * completion (`recordTaskTerminalOutcome`) or post-restart reconcile
+ * (`reconcileOnStartup`) resolves the row in place by `taskId`, so these rows
+ * MUST survive pruning even when they fall outside the newest-N window; dropping
+ * one would silently lose the receipt the reconcile depends on. Mirrors the
+ * mid-flight set `reconcileOnStartup` keys off (issue #1392 / #1526 Phase A).
+ */
+const PENDING_LEDGER_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = new Set([
+  'running',
+  'queued',
+  'queued_capacity',
+]);
+
+/**
+ * True when a ledger row is still awaiting a terminal outcome — see
+ * {@link PENDING_LEDGER_OUTCOMES}.
+ */
+export function isPendingLedgerEntry(entry: ScheduleExecutionLedgerEntry): boolean {
+  return PENDING_LEDGER_OUTCOMES.has(entry.outcome);
+}
+
+/**
+ * Bound a schedule's execution ledger to {@link MAX_LEDGER_ENTRIES} (issue
+ * #1392). Keeps the newest `cap` rows (ledger order is chronological — appends
+ * push to the tail, in-place updates preserve position) PLUS any pending/
+ * unresolved row that would otherwise be pruned, so a live receipt a later
+ * reconcile keys off is never dropped. Chronological order is preserved:
+ * surviving pending rows from the pruned prefix stay ahead of the retained
+ * tail. A no-op when the ledger is already within the cap.
+ */
+export function pruneExecutionLedger(
+  ledger: ScheduleExecutionLedgerEntry[],
+  cap: number = MAX_LEDGER_ENTRIES,
+): ScheduleExecutionLedgerEntry[] {
+  if (cap < 0 || ledger.length <= cap) return ledger;
+  const cutoff = ledger.length - cap;
+  const tail = ledger.slice(cutoff);
+  const survivingPending = ledger.slice(0, cutoff).filter(isPendingLedgerEntry);
+  return survivingPending.length === 0 ? tail : [...survivingPending, ...tail];
+}
+
 export interface ScheduleExecutionReceipt {
   id: string;
   scheduleId: string;
@@ -629,10 +689,14 @@ function normalizeSchedule(raw: unknown): Schedule | null {
 
 function normalizeExecutionLedger(raw: unknown): ScheduleExecutionLedgerEntry[] {
   if (!Array.isArray(raw)) return [];
-  return raw.flatMap((item) => {
+  const entries = raw.flatMap((item) => {
     const entry = normalizeExecutionLedgerEntry(item);
     return entry ? [entry] : [];
   });
+  // Bound a legacy ledger that grew unbounded before the cap existed (issue
+  // #1392) — a node loading an oversized schedules.json converges to the cap on
+  // first read rather than carrying the bloat forward.
+  return pruneExecutionLedger(entries);
 }
 
 function normalizeExecutionLedgerEntry(raw: unknown): ScheduleExecutionLedgerEntry | undefined {
