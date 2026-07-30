@@ -388,6 +388,10 @@ function PriorityBadge({ agent }: { agent: AgentState }): React.ReactElement | n
  */
 const STUCK_REASON_LABEL: Record<NonNullable<AgentState['stuckReason']>, { label: string; title: string }> = {
   awaiting_completion_ack: { label: 'Awaiting ack', title: 'Agent signaled completion — awaiting your review' },
+  provider_paused: {
+    label: 'Billing pause',
+    title: 'Agent is stalled on a provider/CI billing or quota limit — not delivered, not hung (issue #1667)',
+  },
   hung_suspect: { label: 'Hung?', title: 'Watchdog suspects this agent has gone silent — may be stuck' },
   waiting_on_input: { label: 'Needs input', title: 'Agent is waiting on a response' },
   permission_blocked: { label: 'Permission', title: 'Agent is blocked on a permission prompt' },

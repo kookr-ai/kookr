@@ -8,12 +8,14 @@
  */
 export type TaskStuckReason =
   | 'awaiting_completion_ack'
+  | 'provider_paused'
   | 'hung_suspect'
   | 'waiting_on_input'
   | 'permission_blocked';
 
 export const TASK_STUCK_REASONS: readonly TaskStuckReason[] = [
   'awaiting_completion_ack',
+  'provider_paused',
   'hung_suspect',
   'waiting_on_input',
   'permission_blocked',

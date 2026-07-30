@@ -19,6 +19,7 @@ import { buildGithubTaskOverlay } from './github-task-overlay.js';
 import type { FindingEvidenceAuditRecord } from '../../shared/contracts/anomalies.js';
 import type { PendingAgentSignal } from '../../shared/contracts/agent-signal.js';
 import { deriveStuckReason } from '../../core/stuck-reason.js';
+import { isProviderPaused } from '../../core/provider-pause.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
 import { buildCoordinatorSnapshotState, type CoordinatorAuditTailProvider, type CoordinatorTask } from '../coordinator/detectors.js';
 import type { CoordinatorSuppressionReader } from '../coordinator/suppression-store.js';
@@ -235,7 +236,17 @@ export function getSnapshotAgentsForClient(deps: SnapshotQueryDeps): AgentState[
     // falls back to AttentionQueue.peek), so this stays free — the cost was
     // already paid building the snapshot regardless of this field.
     const stuckReason = agent.taskStatus
-      ? deriveStuckReason({ status: agent.taskStatus, pendingSignal, anomalyType: agent.anomaly?.type ?? null })
+      ? deriveStuckReason({
+        status: agent.taskStatus,
+        pendingSignal,
+        // Issue #1667: surface provider_paused from the already-projected
+        // anomaly rather than a second event scan on the snapshot hot path.
+        providerPaused: isProviderPaused({
+          anomalyType: agent.anomaly?.type ?? null,
+          anomalyExplanation: agent.anomaly?.explanation ?? null,
+        }),
+        anomalyType: agent.anomaly?.type ?? null,
+      })
       : null;
     const userInputDeliveries = deps.userInputDeliveryProvider
       ?.getSnapshot(agent.agentId)

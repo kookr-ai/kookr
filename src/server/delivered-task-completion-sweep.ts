@@ -93,6 +93,13 @@ export interface AutoCompleteDeliveredDeps {
    * `merged`); tests inject a fake.
    */
   resolveMergedPr: (task: Task) => MergedPrAttribution | null;
+  /**
+   * Issue #1667: true when the agent is provider-paused (billing/quota). The
+   * pure classifier refuses auto-complete in that case so a pause is never
+   * treated as post-merge cleanup hang. Production reads recent agent events
+   * (+ pane text); tests inject a fake. Optional — omit → never paused.
+   */
+  isProviderPaused?: (task: Task) => boolean;
   /** Cross-tick budget-clock + throttle state (created once per server). */
   tracker: DeliveredCompletionTracker;
   /**
@@ -235,10 +242,12 @@ export async function autoCompleteDeliveredTasks(
     }
 
     const firstObservedMergedAtMs = tracker.observe(task.id, nowMs);
+    const providerPaused = deps.isProviderPaused?.(task) === true;
     const decision = classifyDeliveredCompletion(task, merged, {
       now,
       firstObservedMergedAtMs,
       budgetMs,
+      providerPaused,
     });
     if (!decision.autoComplete) continue;
 
