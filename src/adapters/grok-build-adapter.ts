@@ -77,6 +77,97 @@ const DEFAULT_GROK_PROMPT_SUBMIT_RETRIES = 0;
 export const DEFAULT_GROK_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS = 10_000;
 
 /**
+ * Fixed cushion (ms) added on top of the nominal wait budget when computing
+ * the default `agentBootTimeoutMs` below (issue #1642). Covers the
+ * un-timed `backend.captureBytes` calls and cleanup work that run around the
+ * timed waits themselves (blocking-startup-UI detection after the ready
+ * wait, permission-prompt detection on an unconfirmed delivery,
+ * `cleanupFailedLaunch`).
+ */
+export const AGENT_BOOT_TIMEOUT_MARGIN_MS = 10_000;
+
+/**
+ * Compute the default wall-clock bound for the grok-build `agent-boot`
+ * phase (issue #1642: grok-build `POST /api/tasks` >90s launch hang).
+ *
+ * `agent-boot` runs {@link GrokBuildAdapter.waitForReadyOrAbort} (its own
+ * `promptReadyTimeoutMs` poll for the bracketed-paste ready signal) followed
+ * by `deliverInitialPromptToSession`, which — because `waitForReady` is
+ * threaded through — polls for the SAME ready signal a second time
+ * (`promptReadyTimeoutMs` again) before the submit-confirmation retries
+ * (`promptSubmitConfirmTimeoutMs` per attempt, `promptSubmitRetries + 1`
+ * attempts). Nominal budget: `promptReadyTimeoutMs * 2 +
+ * promptSubmitConfirmTimeoutMs * (promptSubmitRetries + 1)`.
+ *
+ * That nominal sum is NOT a hard bound on its own: every wait in the chain
+ * polls via `backend.captureBytes()`, and each individual `await` on that
+ * call is not itself time-boxed — the `Date.now() <= deadline` check that
+ * enforces each loop's timeout only runs BETWEEN awaits, so one hung/slow
+ * capture (host contention, a wedged pty) can carry a "bounded" wait well
+ * past its nominal deadline. When Grok is also showing a blocking startup
+ * screen (auth/update/permission-row) instead of the ready composer, the
+ * ready signal never arrives at all, so every wait in the chain runs to its
+ * full nominal length AND is exposed to that per-await slippage — this is
+ * the mechanism behind the reported `POST /api/tasks` holding >90s, up to
+ * the 180s top-level `launchTimeoutSeconds` ceiling (#1528).
+ *
+ * {@link AGENT_BOOT_TIMEOUT_MARGIN_MS} is added as a cushion for the
+ * un-timed work around those waits, and the whole `agent-boot` phase is then
+ * raced against this deadline (see `launch()`) as a backstop that fires
+ * regardless of what any individual internal await does — capping the phase
+ * well below the 180s ceiling so a hung/blocked launch fails fast instead of
+ * holding the request open.
+ */
+export function computeDefaultAgentBootTimeoutMs(
+  promptReadyTimeoutMs: number,
+  promptSubmitConfirmTimeoutMs: number,
+  promptSubmitRetries: number,
+): number {
+  return (
+    promptReadyTimeoutMs * 2 +
+    promptSubmitConfirmTimeoutMs * (promptSubmitRetries + 1) +
+    AGENT_BOOT_TIMEOUT_MARGIN_MS
+  );
+}
+
+/**
+ * Race a promise against a wall-clock deadline (issue #1642), mirroring
+ * `launch-service.ts`'s `raceLaunchAgainstTimeout` settle-once pattern at
+ * adapter scale. On timeout the abandoned promise is NOT cancelled (this
+ * layer exposes no abort hook either); its eventual settlement is observed
+ * and swallowed — harmless because the caller's timeout catch always runs
+ * `cleanupFailedLaunch` right after this rejects, so a late resolution has
+ * nothing live left to attach to.
+ */
+async function raceWithDeadline<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  onTimeout: () => Error,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(onTimeout());
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (timedOut) {
+      promise.then(
+        () => { /* late success after abandonment — cleanupFailedLaunch already ran */ },
+        () => { /* late rejection after abandonment — already surfaced via the timeout error */ },
+      );
+    }
+  }
+}
+
+/**
  * Upper bound on the pane-tail substituted into a Grok stop/stop_failure
  * event's `lastMessage` (issue #1526 Phase C4). Grok's stop hook payload has
  * no final-assistant-message field, so the adapter falls back to a bounded
@@ -121,6 +212,14 @@ export interface GrokBuildAdapterOptions {
   promptReadyTimeoutMs?: number;
   promptSubmitConfirmTimeoutMs?: number;
   promptSubmitRetries?: number;
+  /**
+   * Wall-clock ceiling on the whole `agent-boot` phase — readiness wait +
+   * initial-prompt delivery + submit-confirmation retries (issue #1642).
+   * Defaults to {@link computeDefaultAgentBootTimeoutMs} of the configured
+   * ready/confirm/retry knobs above, so overriding any of those also moves
+   * the default deadline; set this explicitly to pin an independent bound.
+   */
+  agentBootTimeoutMs?: number;
 }
 
 /** Thrown when a Grok launch is refused before spawning (gate / qualification / auth-UI). */
@@ -139,6 +238,32 @@ export class GrokAuthPreflightError extends GrokLaunchRefusedError {
     super(message);
     this.name = 'GrokAuthPreflightError';
   }
+}
+
+/**
+ * Thrown when the grok-build `agent-boot` phase (readiness wait + initial
+ * prompt delivery + submit-confirmation) exceeds its wall-clock bound
+ * (issue #1642). Unlike {@link GrokLaunchRefusedError}, this fires AFTER the
+ * terminal session was already created — it is the backstop against a
+ * hung/blocked launch (Grok showing a blocking startup screen, or a wedged
+ * terminal capture) holding `POST /api/tasks` open indefinitely.
+ */
+export class GrokAgentBootTimeoutError extends Error {
+  readonly code = 'grok_agent_boot_timeout';
+  constructor(taskId: string, tmuxName: string, timeoutMs: number) {
+    super(
+      `[grok-build-adapter] agent-boot did not complete within ${Math.round(timeoutMs / 1000)}s ` +
+      `(task ${taskId}, session ${tmuxName}) — Grok may be showing a blocking startup screen ` +
+      `(auth/update/permission-row) or the terminal capture is wedged. Aborting the launch ` +
+      `rather than holding POST /api/tasks open.`,
+    );
+    this.name = 'GrokAgentBootTimeoutError';
+  }
+}
+
+/** Type guard for {@link GrokAgentBootTimeoutError}. */
+export function isGrokAgentBootTimeoutError(err: unknown): err is GrokAgentBootTimeoutError {
+  return err instanceof GrokAgentBootTimeoutError;
 }
 
 /**
@@ -201,6 +326,7 @@ export class GrokBuildAdapter implements AgentAdapter {
   private promptReadyTimeoutMs: number;
   private promptSubmitConfirmTimeoutMs: number;
   private promptSubmitRetries: number;
+  private agentBootTimeoutMs: number;
   /** Memoized installed-state resolution (identity + qualification). */
   private installedStateProbe?: Promise<GrokInstalledState>;
 
@@ -230,6 +356,13 @@ export class GrokBuildAdapter implements AgentAdapter {
     // to decide whether a retry Enter is safe. A missing acknowledgement must
     // therefore fail closed rather than risk submitting the same prompt again.
     this.promptSubmitRetries = options?.promptSubmitRetries ?? DEFAULT_GROK_PROMPT_SUBMIT_RETRIES;
+    this.agentBootTimeoutMs =
+      options?.agentBootTimeoutMs ??
+      computeDefaultAgentBootTimeoutMs(
+        this.promptReadyTimeoutMs,
+        this.promptSubmitConfirmTimeoutMs,
+        this.promptSubmitRetries,
+      );
   }
 
   /** Resolve installed identity/qualification (memoized). */
@@ -421,41 +554,18 @@ export class GrokBuildAdapter implements AgentAdapter {
     // readiness wait (waitForReadyOrAbort polls up to promptReadyTimeoutMs) and
     // the byte-level prompt delivery below.
     opts?.onPhase?.('agent-boot');
-    // Ready-state probe + abort-on-unexpected-UI, THEN byte-level prompt delivery.
+    // Ready-state probe + abort-on-unexpected-UI, THEN byte-level prompt
+    // delivery — raced against agentBootTimeoutMs (issue #1642) so a
+    // hung/blocked launch (blocking startup UI, or a wedged terminal
+    // capture) fails fast instead of holding POST /api/tasks open for up to
+    // the 180s top-level launch timeout.
     const submitConfirmed = this.armInitialPromptSubmitSignal(tmuxName);
     try {
-      await this.waitForReadyOrAbort(tmuxName);
-      const awaitSubmit = (timeoutMs: number) => withTimeout(submitConfirmed.then(() => true), timeoutMs, false);
-      const delivery = await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
-        inputWriter: this.inputWriter,
-        bracketedPaste: this.promptBracketedPaste,
-        waitForReady: this.promptBracketedPaste,
-        awaitSubmit: this.promptBracketedPaste ? awaitSubmit : undefined,
-        submitConfirmTimeoutMs: this.promptSubmitConfirmTimeoutMs,
-        submitRetries: this.promptSubmitRetries,
-        readyTimeoutMs: this.promptReadyTimeoutMs,
-      });
-      if (delivery.status === 'unconfirmed') {
-        // Explain a known cause before the generic diagnosis: a permission
-        // row menu (e.g. a startup approval) swallows the composer, so the
-        // prompt can never be acknowledged (issue #1526 Phase C4).
-        let permissionPrompt: string | null = null;
-        try {
-          const display = textDecoder.decode(await this.backend.captureBytes(tmuxName));
-          permissionPrompt = detectGrokPermissionPromptUI(display);
-        } catch {
-          /* diagnosis is best-effort — never mask the delivery failure */
-        }
-        throw new Error(
-          `[grok-build-adapter] Grok did not acknowledge the initial prompt within ` +
-            `${this.promptSubmitConfirmTimeoutMs}ms; refusing to resend it. ` +
-            (permissionPrompt
-              ? `${permissionPrompt} — resolve it in the terminal before relaunching. `
-              : '') +
-            `Auth preflight passed; inspect Grok terminal/PTY readiness and hook dispatch ` +
-            `(including terminal query handling).`,
-        );
-      }
+      await raceWithDeadline(
+        this.runAgentBootSequence(tmuxName, prompt, submitConfirmed),
+        this.agentBootTimeoutMs,
+        () => new GrokAgentBootTimeoutError(taskId, tmuxName, this.agentBootTimeoutMs),
+      );
     } catch (err) {
       await this.cleanupFailedLaunch(tmuxName);
       throw err;
@@ -512,6 +622,52 @@ export class GrokBuildAdapter implements AgentAdapter {
     // delivery still proceeds fail-open, while the hook-backed confirmation
     // guard refuses to resend an unacknowledged prompt.
     void ready;
+  }
+
+  /**
+   * The `agent-boot` sequence: ready-state probe + abort-on-unexpected-UI,
+   * then byte-level prompt delivery. Extracted from `launch()` so it can be
+   * raced against `agentBootTimeoutMs` (issue #1642) — the caller wraps this
+   * in {@link raceWithDeadline} and runs `cleanupFailedLaunch` on either a
+   * thrown error from here or a timeout from the race.
+   */
+  private async runAgentBootSequence(
+    tmuxName: string,
+    prompt: string,
+    submitConfirmed: Promise<void>,
+  ): Promise<void> {
+    await this.waitForReadyOrAbort(tmuxName);
+    const awaitSubmit = (timeoutMs: number) => withTimeout(submitConfirmed.then(() => true), timeoutMs, false);
+    const delivery = await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
+      inputWriter: this.inputWriter,
+      bracketedPaste: this.promptBracketedPaste,
+      waitForReady: this.promptBracketedPaste,
+      awaitSubmit: this.promptBracketedPaste ? awaitSubmit : undefined,
+      submitConfirmTimeoutMs: this.promptSubmitConfirmTimeoutMs,
+      submitRetries: this.promptSubmitRetries,
+      readyTimeoutMs: this.promptReadyTimeoutMs,
+    });
+    if (delivery.status === 'unconfirmed') {
+      // Explain a known cause before the generic diagnosis: a permission
+      // row menu (e.g. a startup approval) swallows the composer, so the
+      // prompt can never be acknowledged (issue #1526 Phase C4).
+      let permissionPrompt: string | null = null;
+      try {
+        const display = textDecoder.decode(await this.backend.captureBytes(tmuxName));
+        permissionPrompt = detectGrokPermissionPromptUI(display);
+      } catch {
+        /* diagnosis is best-effort — never mask the delivery failure */
+      }
+      throw new Error(
+        `[grok-build-adapter] Grok did not acknowledge the initial prompt within ` +
+          `${this.promptSubmitConfirmTimeoutMs}ms; refusing to resend it. ` +
+          (permissionPrompt
+            ? `${permissionPrompt} — resolve it in the terminal before relaunching. `
+            : '') +
+          `Auth preflight passed; inspect Grok terminal/PTY readiness and hook dispatch ` +
+          `(including terminal query handling).`,
+      );
+    }
   }
 
   private armInitialPromptSubmitSignal(tmuxName: string): Promise<void> {

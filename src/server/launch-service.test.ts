@@ -1005,6 +1005,112 @@ describe('launchTask', () => {
     });
   });
 
+  describe('grok-build agent-boot wall-clock bound (issue #1642)', () => {
+    /**
+     * End-to-end reproduction of the reported grok-build `POST /api/tasks`
+     * >90s launch hang: a REAL `GrokBuildAdapter` (not a fake `.launch`
+     * mock) wired against a terminal backend whose `captureBytes` never
+     * resolves — the same failure mode as a wedged pty under host
+     * contention, or Grok showing a blocking startup screen that never
+     * emits the ready DECSET. Before the #1642 fix, `waitForReadyOrAbort`'s
+     * "bounded" ready-wait loop can never check its own deadline because the
+     * awaited capture itself hangs, and the launch is only ever bounded by
+     * the coarse 180s top-level `launchTimeoutSeconds` (#1528) — holding
+     * `POST /api/tasks` open for the whole ceiling. This proves the
+     * grok-build-specific `agentBootTimeoutMs` bound (default ~50s, pinned
+     * to 50ms here) fires FIRST and aborts the launch fast, with
+     * `dispatch_failed`/`launch_error` naming `agent-boot` as the
+     * `incompletePhase` — not an unbounded hang up to the 180s ceiling.
+     */
+    it('aborts a launch hung in agent-boot well under the top-level launch timeout, naming agent-boot as incompletePhase', async () => {
+      const { GrokBuildAdapter } = await import('../adapters/grok-build-adapter.js');
+      const { FakeTerminalBackend } = await import('../adapters/fake-terminal-backend.js');
+
+      const sessionHomeRoot = await mkdtemp(join(tmpdir(), 'launch-svc-grok-home-'));
+      const sourceGrokHome = await mkdtemp(join(tmpdir(), 'launch-svc-grok-source-'));
+      try {
+        await writeFile(
+          join(sourceGrokHome, 'auth.json'),
+          JSON.stringify({
+            // Key under the configured default scope the preflight looks up;
+            // an arbitrary scope reads as "no usable credential" and the
+            // launch would fail at auth-preflight before reaching agent-boot.
+            'https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828': {
+              key: 'test-access-token',
+              auth_mode: 'oidc',
+              create_time: '2026-07-01T00:00:00Z',
+              user_id: 'test-user',
+              expires_at: '2030-01-01T00:00:00Z',
+              refresh_token: 'test-refresh-token',
+            },
+          }),
+        );
+
+        const backend = new FakeTerminalBackend();
+        // Wedged terminal capture — never resolves, so every internal
+        // ready-wait loop's `Date.now() <= deadline` check never runs.
+        vi.spyOn(backend, 'captureBytes').mockImplementation(() => new Promise(() => { /* never settles */ }));
+
+        const grokAdapter = new GrokBuildAdapter(backend as any, store, {
+          // Literal PATH — the launch aborts in agent-boot before anything is
+          // exec'd, so a fixed value is fine; reading the ambient PATH from the
+          // environment here would trip the PR-checklist env rule.
+          env: { PATH: '/usr/bin:/bin' } as NodeJS.ProcessEnv,
+          installedStateOverride: {
+            kind: 'ok',
+            version: '0.2.93',
+            buildId: 'test-build',
+            identity: {
+              configured: 'grok',
+              launcherPath: '/fake/.grok/bin/grok',
+              canonicalPath: '/fake/.grok/bin/grok-0.2.93',
+              sha256: 'a'.repeat(64),
+              sizeBytes: 1,
+              mode: 0o755,
+              uid: 0,
+              gid: 0,
+            },
+            qualification: { status: 'tested', reason: 'matches tested build', evidenceBuildId: '0.2.93' },
+          } as any,
+          sourceGrokHome,
+          sessionHomeRoot,
+          promptReadyTimeoutMs: 30,
+          agentBootTimeoutMs: 50,
+        });
+
+        const registry = new AdapterRegistry();
+        registry.register(grokAdapter as any);
+        const grokDeps: LaunchServiceDeps = {
+          ...makeDeps(store),
+          adapterRegistry: registry,
+          // The outer backstop is left at a production-like 180s: the whole
+          // point of the fix is that agent-boot's own, much tighter bound
+          // fires first, so this test would time out (way past the vitest
+          // test timeout) if the fix regressed to relying on this alone.
+          getLaunchTimeoutMs: () => 180_000,
+        };
+
+        const start = Date.now();
+        await expect(
+          launchTask(grokDeps, { prompt: 'grok hang', cwd: '/tmp', agentType: 'grok-build' }),
+        ).rejects.toThrow(/agent-boot did not complete within/);
+        const elapsed = Date.now() - start;
+
+        // Bounded to roughly agentBootTimeoutMs (50ms) — nowhere near the
+        // 180s outer ceiling — proving the launch was aborted, not hung.
+        expect(elapsed).toBeLessThan(5_000);
+
+        const [disposed] = store.listTasks();
+        expect(disposed.disposition?.reason).toBe('launch_error');
+        expect(disposed.launchPhaseTimings?.incompletePhase).toBe('agent-boot');
+        expect(disposed.launchPhaseTimings?.phases.find((p) => p.phase === 'session-create')?.completed).toBe(true);
+      } finally {
+        await rm(sessionHomeRoot, { recursive: true, force: true });
+        await rm(sourceGrokHome, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('does not deduplicate across agent types', async () => {
     const first = await launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'claude-code' });
     const second = await launchTask(deps, { prompt: 'hello', cwd: '/tmp', agentType: 'codex-cli' });
