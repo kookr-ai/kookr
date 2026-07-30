@@ -107,6 +107,7 @@ describe('FindingsPanel stuckReason badge (issue #1526 Phase B / FM9)', () => {
     root = renderPanel(container, {
       healthy: [
         makeAgent({ agentId: 'h-ack', stuckReason: 'awaiting_completion_ack' }),
+        makeAgent({ agentId: 'h-pause', stuckReason: 'provider_paused' }),
         makeAgent({ agentId: 'h-hung', stuckReason: 'hung_suspect' }),
         makeAgent({ agentId: 'h-input', stuckReason: 'waiting_on_input' }),
         makeAgent({ agentId: 'h-perm', stuckReason: 'permission_blocked' }),
@@ -114,9 +115,16 @@ describe('FindingsPanel stuckReason badge (issue #1526 Phase B / FM9)', () => {
     });
 
     const badges = Array.from(container.querySelectorAll('.healthy-row .stuck-reason-badge'));
-    expect(badges.map((b) => b.textContent)).toEqual(['Awaiting ack', 'Hung?', 'Needs input', 'Permission']);
+    expect(badges.map((b) => b.textContent)).toEqual([
+      'Awaiting ack',
+      'Billing pause',
+      'Hung?',
+      'Needs input',
+      'Permission',
+    ]);
     expect(badges.map((b) => b.className)).toEqual([
       'stuck-reason-badge stuck-reason-badge--awaiting_completion_ack',
+      'stuck-reason-badge stuck-reason-badge--provider_paused',
       'stuck-reason-badge stuck-reason-badge--hung_suspect',
       'stuck-reason-badge stuck-reason-badge--waiting_on_input',
       'stuck-reason-badge stuck-reason-badge--permission_blocked',
