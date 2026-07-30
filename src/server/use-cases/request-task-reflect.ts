@@ -41,7 +41,10 @@ export interface RequestTaskReflectDeps {
    * Launches a task via the standard launch flow. Injected so the use-case
    * stays free of the full LaunchServiceDeps surface.
    */
-  launchTask: (opts: LaunchOpts) => Promise<{ task: Task; queued: boolean }>;
+  launchTask: (
+    opts: LaunchOpts,
+    serverOpts?: { deliveryPolicy?: 'pre-authorized' | 'ask-first' },
+  ) => Promise<{ task: Task; queued: boolean }>;
   /** Override resolved plugin dir (for tests). Defaults to resolvePluginDir(undefined). */
   pluginDirOverride?: string;
 }
@@ -170,7 +173,9 @@ export async function requestTaskReflect(
       disableDedup: true,
       launchSource: 'api',
       sandboxProfile: 'reflect',
-    });
+      // Reflect skills carry their own human confirmation gates; ask-first
+      // keeps the server gate consistent with the skill's designed flow.
+    }, { deliveryPolicy: 'ask-first' });
   } catch (err) {
     // Clean up worktree on launch failure
     await removeReflectWorktree(worktreePath, deps.reflectWorktreesDir).catch(() => {});

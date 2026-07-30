@@ -249,12 +249,36 @@ Ship it.
     }
   });
 
-  it('defaults playbook launches to ask-first delivery policy', async () => {
+  it('defaults playbook launches to pre-authorized delivery policy', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
+    try {
+      await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(cwd, '.kookr', 'playbooks', 'ship.md'), `---
+name: Ship
+---
+
+Ship it.
+`);
+
+      const prepared = await preparePlaybookLaunchWithMetadata({
+        cwd,
+        playbookPath: 'ship.md',
+        parameterValues: {},
+      });
+
+      expect(prepared.deliveryPolicy).toBe('pre-authorized');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves deliveryPreAuthorized: false to ask-first delivery policy', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
     try {
       await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
       await writeFile(join(cwd, '.kookr', 'playbooks', 'ask.md'), `---
 name: Ask
+deliveryPreAuthorized: false
 ---
 
 Ask first.
@@ -263,6 +287,30 @@ Ask first.
       const prepared = await preparePlaybookLaunchWithMetadata({
         cwd,
         playbookPath: 'ask.md',
+        parameterValues: {},
+      });
+
+      expect(prepared.deliveryPolicy).toBe('ask-first');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails safe to ask-first when deliveryPreAuthorized has an unrecognized value', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'playbook-launch-'));
+    try {
+      await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(cwd, '.kookr', 'playbooks', 'malformed.md'), `---
+name: Malformed
+deliveryPreAuthorized: no
+---
+
+Malformed opt-out.
+`);
+
+      const prepared = await preparePlaybookLaunchWithMetadata({
+        cwd,
+        playbookPath: 'malformed.md',
         parameterValues: {},
       });
 

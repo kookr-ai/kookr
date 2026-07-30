@@ -76,7 +76,12 @@ export function parsePlaybook(
     : undefined;
   const repoTags = parseStringArray(meta['repo-tags']);
   const dependencies = parseLaunchDependencies(meta.dependencies);
-  const deliveryPreAuthorized = parseOptionalBoolean(meta.deliveryPreAuthorized);
+  // Fail safe: a present-but-unrecognized value (e.g. `no`, `off`, `0`) must
+  // not fall through to the pre-authorized default — treat it as an explicit
+  // opt-out so malformed frontmatter never grants autonomous delivery.
+  const deliveryPreAuthorized = meta.deliveryPreAuthorized === undefined
+    ? undefined
+    : parseOptionalBoolean(meta.deliveryPreAuthorized) ?? false;
   const autoCloseOnSignal = parseOptionalBoolean(meta.autoCloseOnSignal);
 
   return {

@@ -75,7 +75,7 @@ Loop {{target}}.
           disableDedup: true,
           prompt: expect.stringContaining('This runtime is one loop iteration, not the whole loop.'),
         }),
-        { deliveryPolicy: 'ask-first' },
+        { deliveryPolicy: 'pre-authorized' },
       );
       const launchPrompt = launchTask.mock.calls[0][0].prompt;
       expect(launchPrompt).toContain('iteration cap of 7');
@@ -167,6 +167,44 @@ Loop.
       expect(launchTask).toHaveBeenCalledWith(
         expect.objectContaining({ disableDedup: true }),
         { deliveryPolicy: 'pre-authorized' },
+      );
+    });
+  });
+
+  it('propagates the deliveryPreAuthorized:false opt-out as ask-first delivery policy', async () => {
+    await withPlaybook(`---
+name: Loopable
+tags: [workflow, loopable]
+deliveryPreAuthorized: false
+---
+
+Loop.
+`, async (cwd) => {
+      const taskStore = new TaskStore();
+      const startLoop = vi.fn(async () => ({ ok: true, changed: true, value: undefined }));
+      const launchTask = vi.fn(async (opts) => {
+        const task = taskStore.createTask({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          playbookId: opts.playbookId,
+          playbookParameterValues: opts.playbookParameterValues,
+        });
+        return { task, queued: false };
+      });
+
+      await launchLoopedPlaybook({
+        taskStore,
+        launchTask,
+        ralphLoopService: { startLoop } as unknown as RalphLoopService,
+      }, {
+        cwd,
+        playbookPath: 'workflow.md',
+        parameterValues: {},
+      });
+
+      expect(launchTask).toHaveBeenCalledWith(
+        expect.objectContaining({ disableDedup: true }),
+        { deliveryPolicy: 'ask-first' },
       );
     });
   });
@@ -495,7 +533,7 @@ Loop in docs/target-note.md.
           cwd: targetCwd,
           projectId: `local/${basename(targetCwd)}`,
         }),
-        { deliveryPolicy: 'ask-first' },
+        { deliveryPolicy: 'pre-authorized' },
       );
     } finally {
       await rm(sourceCwd, { recursive: true, force: true });

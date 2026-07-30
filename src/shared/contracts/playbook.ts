@@ -80,7 +80,12 @@ export interface Playbook {
   tags: string[];
   /** Raw loop defaults declared in frontmatter. */
   loop?: PlaybookLoopConfig;
-  /** Server-consumed policy flag: when true, playbook launches may deliver without asking first. */
+  /**
+   * Server-consumed policy flag. Delivery is pre-authorized by default: playbook
+   * launches complete the full delivery cycle (commit, push, open/update PR)
+   * without asking first. Set to `false` to require the agent to ask before
+   * pushing and opening a PR (`ask-first` delivery).
+   */
   deliveryPreAuthorized?: boolean;
   /**
    * Server-consumed policy flag: when true, tasks launched from this playbook

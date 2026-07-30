@@ -77,7 +77,7 @@ discovery, precedence, and plugin portability rules.
 | `checklist` | list of strings | no | `[]` | Task completion criteria. These become the launched task's criteria. |
 | `tags` | list of strings | no | `[]` | Display and behavior tags. `loopable` enables bounded loop metadata and defaults. |
 | `loop` | mapping | no | absent | Optional loop settings for playbooks tagged `loopable`. Invalid loop metadata is recorded as `loopValidationError`; standard launch metadata still parses. |
-| `deliveryPreAuthorized` | boolean | no | absent | Server policy flag used by delivery playbooks. Only `true` and `false` are recognized. |
+| `deliveryPreAuthorized` | boolean | no | absent | Server delivery-policy flag. Absent (or `true`) launches tasks with pre-authorized delivery — the full commit/push/PR cycle without asking. Set `false` to require the agent to ask before pushing and opening a PR. Unrecognized values (e.g. `no`, `0`) fail safe to ask-first. |
 | `autoCloseOnSignal` | boolean | no | absent | When `true`, tasks launched from this playbook auto-complete after their agent's `completion_ready` signal has been pending for the configured Auto-close delay (the `autoCloseCompletionReadyDelayMin` setting, default 30 minutes), instead of waiting indefinitely for manual review. Successors spawned via `parentTaskId` inherit it automatically. Only `true` and `false` are recognized. See [auto-close-on-signal](./auto-close-on-signal.md). |
 | `cwd` | string | no | launch dialog cwd | Target working directory override for launched tasks. |
 | `dependencies` | list of launch dependency strings | no | `[]` | External capabilities the playbook requires before launch. Unsupported values are parse errors. Currently supported: `kb`. |
