@@ -744,8 +744,19 @@ describe('launchTask', () => {
     expect(result.task.playbookParameterValues).toEqual({ repo: 'owner/repo', count: '10' });
   });
 
-  it('stamps ask-first delivery authorization by default', async () => {
+  it('stamps pre-authorized delivery authorization by default', async () => {
     const result = await launchTask(deps, { prompt: 'hello', cwd: '/tmp' });
+
+    expect(result.task.deliveryAuthorization).toBe('pre-authorized');
+    expect(store.getTask(result.task.id)?.deliveryAuthorization).toBe('pre-authorized');
+  });
+
+  it('stamps ask-first delivery authorization from server-only launch options', async () => {
+    const result = await launchTask(
+      deps,
+      { prompt: 'hello ask-first', cwd: '/tmp' },
+      { deliveryPolicy: 'ask-first' },
+    );
 
     expect(result.task.deliveryAuthorization).toBe('ask-first');
     expect(store.getTask(result.task.id)?.deliveryAuthorization).toBe('ask-first');
@@ -1133,8 +1144,25 @@ describe('launchTask', () => {
     expect(result.task.prompt).toContain('Do NOT commit to main or in this checkout');
     expect(result.task.prompt).toContain('every Kookr task must make tracked-file changes in a fresh git worktree of its own');
     expect(result.task.prompt).toContain(`git worktree add ../${repoDir.split('/').pop()}-<short-name> -b <feature-branch> 'HEAD'`);
-    expect(result.task.prompt).toContain('ask the user whether to push the branch and open a PR');
+    expect(result.task.prompt).toContain('Delivery is pre-authorized for this task');
     expect(result.task.prompt).toContain('Implement the bug fix and update tests.');
+  });
+
+  it('prefixes ask-first delivery guidance when requested by server launch context', async () => {
+    await initGitRepo(repoDir);
+
+    const result = await launchTask(
+      deps,
+      {
+        prompt: 'Implement the bug fix and update tests.',
+        cwd: repoDir,
+      },
+      { deliveryPolicy: 'ask-first' },
+    );
+
+    expect(result.task.prompt).toContain('ask the user whether to push the branch and open a PR');
+    expect(result.task.prompt).not.toContain('Delivery is pre-authorized for this task');
+    expect(result.task.deliveryAuthorization).toBe('ask-first');
   });
 
   it('prefixes pre-authorized delivery guidance when requested by server launch context', async () => {
@@ -1195,7 +1223,7 @@ describe('launchTask', () => {
     expect(result.task.prompt).toContain('Do NOT commit to main, in this worktree, or in the main checkout');
     expect(result.task.prompt).toContain('every Kookr task must make tracked-file changes in a fresh git worktree of its own');
     expect(result.task.prompt).toContain(`git worktree add ../${repoDir.split('/').pop()}-<short-name> -b <feature-branch> 'HEAD'`);
-    expect(result.task.prompt).toContain('ask the user whether to push the branch and open a PR');
+    expect(result.task.prompt).toContain('Delivery is pre-authorized for this task');
     expect(result.task.prompt).toContain('Implement the bug fix and update tests.');
   });
 
