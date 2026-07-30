@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { AgentState } from '../../core/monitor.js';
+import type { AgentState } from '../../shared/contracts/agent-state.js';
 import type { Anomaly } from '../../core/types.js';
 import type { TaskRelation } from '../../shared/contracts/task-relations.js';
 import {

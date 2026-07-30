@@ -12,6 +12,7 @@ import {
   type ScheduleStatusSnapshot,
   type UpdateScheduleDefinitionInput,
   isTriggerLimitExhausted,
+  pruneExecutionLedger,
   ScheduleStore,
   ScheduleValidationError,
 } from '../core/schedule.js';
@@ -880,7 +881,11 @@ function upsertLedgerEntry(
   entry: ScheduleExecutionLedgerEntry,
 ): ScheduleExecutionLedgerEntry[] {
   const index = ledger.findIndex((candidate) => candidate.id === entry.id);
-  if (index === -1) return [...ledger, entry];
+  // Only an append grows the ledger, so it is the sole path that can breach the
+  // cap (issue #1392) — prune the newest entry in, keeping pending rows a later
+  // reconcile depends on. An in-place update never changes length, so it stays
+  // untouched.
+  if (index === -1) return pruneExecutionLedger([...ledger, entry]);
   return [
     ...ledger.slice(0, index),
     { ...ledger[index], ...entry },

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ScheduleStore } from '../core/schedule.js';
+import { ScheduleStore, MAX_LEDGER_ENTRIES } from '../core/schedule.js';
 import { TaskStore } from '../core/tasks.js';
 import {
   deriveLedgerEnrichment,
@@ -565,6 +565,186 @@ describe('ScheduleService status', () => {
         outcome: 'completed',
         reasonCode: 'reconciled_after_restart',
       }));
+    });
+  });
+});
+
+describe('ScheduleService execution-ledger cap (issue #1392)', () => {
+  const EPOCH = Date.UTC(2026, 0, 1, 0, 0, 0);
+  const stampFor = (seq: number) => new Date(EPOCH + seq * 60_000).toISOString();
+
+  it('bounds the persisted ledger to the cap while retaining the most-recent fires', async () => {
+    await withService(async (service, store) => {
+      const created = store.create({
+        name: 'Per-minute',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      // Seed a ledger already AT the cap directly (fast — no per-row persist),
+      // then drive K real fires. Each fire's ledger append (and the prune it
+      // triggers) happens in markExecutionOutcome → upsertLedgerEntry;
+      // reserveExecution only sets currentExecution. The effect is identical to
+      // recording cap+K outcomes, but without hundreds of file writes.
+      const seeded = Array.from({ length: MAX_LEDGER_ENTRIES }, (_, i) => ({
+        id: `${created.id}:cron:${stampFor(i)}`,
+        scheduleId: created.id,
+        trigger: 'cron' as const,
+        decision: 'cron_due' as const,
+        scheduledFor: stampFor(i),
+        evaluatedAt: stampFor(i),
+        completedAt: stampFor(i),
+        outcome: 'skipped_stale' as const,
+        reasonCode: 'stale' as const,
+      }));
+      store.replace({ ...store.get(created.id)!, executionLedger: seeded });
+
+      const K = 5;
+      for (let k = 0; k < K; k += 1) {
+        const scheduledFor = stampFor(MAX_LEDGER_ENTRIES + k);
+        const receipt = await service.reserveExecution(store.get(created.id)!, 'cron', scheduledFor);
+        await service.markExecutionOutcome(created.id, receipt.id, 'skipped_stale', 'stale');
+      }
+
+      const ledger = store.get(created.id)!.executionLedger;
+      // Bound holds after cap+K appends.
+      expect(ledger).toHaveLength(MAX_LEDGER_ENTRIES);
+      // Most-recent K fires all retained, newest last (chronological order).
+      const kept = new Set(ledger.map((e) => e.scheduledFor));
+      for (let k = 0; k < K; k += 1) {
+        expect(kept.has(stampFor(MAX_LEDGER_ENTRIES + k))).toBe(true);
+      }
+      expect(ledger[ledger.length - 1].scheduledFor).toBe(stampFor(MAX_LEDGER_ENTRIES + K - 1));
+      // The oldest K seeded fires were pruned to make room.
+      for (let i = 0; i < K; i += 1) {
+        expect(kept.has(stampFor(i))).toBe(false);
+      }
+      expect(ledger[0].scheduledFor).toBe(stampFor(K));
+    });
+  });
+
+  it('never prunes a still-pending fire even when it falls outside the newest-N window', async () => {
+    await withService(async (service, store) => {
+      const created = store.create({
+        name: 'Pending survives',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      // Oldest row is a live `running` fire a later reconcile keys off; the rest
+      // fill the ledger to the cap. It sits outside the newest-N window, so pure
+      // recency would drop it — it must survive.
+      const pending = {
+        id: `${created.id}:cron:${stampFor(0)}`,
+        scheduleId: created.id,
+        trigger: 'cron' as const,
+        decision: 'cron_due' as const,
+        scheduledFor: stampFor(0),
+        evaluatedAt: stampFor(0),
+        outcome: 'running' as const,
+        taskId: 'task-live',
+      };
+      const seeded = [
+        pending,
+        ...Array.from({ length: MAX_LEDGER_ENTRIES - 1 }, (_, i) => ({
+          id: `${created.id}:cron:${stampFor(i + 1)}`,
+          scheduleId: created.id,
+          trigger: 'cron' as const,
+          decision: 'cron_due' as const,
+          scheduledFor: stampFor(i + 1),
+          evaluatedAt: stampFor(i + 1),
+          completedAt: stampFor(i + 1),
+          outcome: 'skipped_stale' as const,
+          reasonCode: 'stale' as const,
+        })),
+      ];
+      store.replace({ ...store.get(created.id)!, executionLedger: seeded });
+
+      // One more fire pushes the ledger over the cap.
+      const receipt = await service.reserveExecution(store.get(created.id)!, 'cron', stampFor(MAX_LEDGER_ENTRIES));
+      await service.markExecutionOutcome(created.id, receipt.id, 'skipped_stale', 'stale');
+
+      const ledger = store.get(created.id)!.executionLedger;
+      // The retained pending row is kept ON TOP of the newest-N terminal window,
+      // so a live receipt a reconcile depends on is never dropped — total is
+      // cap + (pending retained) rather than a hard cap. Pending counts are
+      // bounded in practice (at most one outstanding fire per schedule).
+      expect(ledger).toHaveLength(MAX_LEDGER_ENTRIES + 1);
+      const pendingRow = ledger.find((e) => e.taskId === 'task-live');
+      expect(pendingRow).toMatchObject({ outcome: 'running', scheduledFor: stampFor(0) });
+      // It leads the ledger (chronological order preserved).
+      expect(ledger[0].taskId).toBe('task-live');
+      // Exactly one row breached the newest-N window — the pending one.
+      expect(ledger.filter((e) => e.outcome !== 'skipped_stale')).toHaveLength(1);
+    });
+  });
+
+  it('re-prunes a formerly-pending row once it resolves to terminal, converging back to the cap', async () => {
+    await withService(async (service, store) => {
+      const created = store.create({
+        name: 'Pending resolves',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      // Seed one over the cap: the oldest row is a live `running` fire (retained
+      // beyond the cap because a reconcile keys off it), the rest terminal.
+      const seeded = [
+        {
+          id: `${created.id}:cron:${stampFor(0)}`,
+          scheduleId: created.id,
+          trigger: 'cron' as const,
+          decision: 'cron_due' as const,
+          scheduledFor: stampFor(0),
+          evaluatedAt: stampFor(0),
+          outcome: 'running' as const,
+          taskId: 'task-live',
+        },
+        ...Array.from({ length: MAX_LEDGER_ENTRIES }, (_, i) => ({
+          id: `${created.id}:cron:${stampFor(i + 1)}`,
+          scheduleId: created.id,
+          trigger: 'cron' as const,
+          decision: 'cron_due' as const,
+          scheduledFor: stampFor(i + 1),
+          evaluatedAt: stampFor(i + 1),
+          completedAt: stampFor(i + 1),
+          outcome: 'skipped_stale' as const,
+          reasonCode: 'stale' as const,
+        })),
+      ];
+      store.replace({
+        ...store.get(created.id)!,
+        latestExecution: {
+          executionToken: 'tok-live',
+          evaluatedAt: stampFor(0),
+          trigger: 'cron',
+          taskId: 'task-live',
+          outcome: 'running',
+        },
+        executionLedger: seeded,
+      });
+      expect(store.get(created.id)!.executionLedger).toHaveLength(MAX_LEDGER_ENTRIES + 1);
+
+      // The live task finishes: its ledger row resolves in place (no prune —
+      // updateLedgerEntryForTask is length-invariant), so the ledger is briefly
+      // still one over the cap, now with zero pending rows.
+      await service.recordTaskTerminalOutcome('task-live', 'completed');
+      const afterResolve = store.get(created.id)!.executionLedger;
+      expect(afterResolve).toHaveLength(MAX_LEDGER_ENTRIES + 1);
+      expect(afterResolve.find((e) => e.taskId === 'task-live')).toMatchObject({ outcome: 'completed' });
+
+      // The next append prunes with no pending row to protect, so the ledger
+      // converges back to exactly the cap and the formerly-pending row (oldest)
+      // is dropped.
+      const receipt = await service.reserveExecution(store.get(created.id)!, 'cron', stampFor(MAX_LEDGER_ENTRIES + 1));
+      await service.markExecutionOutcome(created.id, receipt.id, 'skipped_stale', 'stale');
+
+      const converged = store.get(created.id)!.executionLedger;
+      expect(converged).toHaveLength(MAX_LEDGER_ENTRIES);
+      expect(converged.some((e) => e.taskId === 'task-live')).toBe(false);
     });
   });
 });

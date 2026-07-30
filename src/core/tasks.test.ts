@@ -9,6 +9,48 @@ describe('TaskStore', () => {
     store = new TaskStore();
   });
 
+  describe('runRalphMutation (issue #1461)', () => {
+    test('runs mutator against the live stored task and returns its result', () => {
+      const created = store.createTask('ralph owner', '/cwd');
+      const result = store.runRalphMutation(created.id, (task) => {
+        task.ralphLoop = {
+          prompt: 'iterate',
+          iterationCap: 3,
+          currentIteration: 0,
+          status: 'running',
+          lastIterationStartedAt: 0,
+          cumulativeIterations: 0,
+        };
+        task.updatedAt = new Date('2026-01-01T00:00:00.000Z');
+        return task.ralphLoop.status;
+      });
+      expect(result).toBe('running');
+      expect(store.getTask(created.id)!.ralphLoop?.status).toBe('running');
+      expect(store.getTask(created.id)!.updatedAt.toISOString()).toBe('2026-01-01T00:00:00.000Z');
+    });
+
+    test('returns undefined for unknown task ids without invoking the mutator', () => {
+      const mutator = vi.fn((task: Task) => task.id);
+      expect(store.runRalphMutation('missing-id', mutator)).toBeUndefined();
+      expect(mutator).not.toHaveBeenCalled();
+    });
+
+    test('returning the live task supports multi-step async flows', () => {
+      const created = store.createTask('live ref', '/cwd');
+      const live = store.runRalphMutation(created.id, (t) => t);
+      expect(live).toBeDefined();
+      live!.ralphLoop = {
+        prompt: 'p',
+        iterationCap: 1,
+        currentIteration: 0,
+        status: 'paused',
+        lastIterationStartedAt: 0,
+        cumulativeIterations: 0,
+      };
+      expect(store.getTask(created.id)!.ralphLoop?.status).toBe('paused');
+    });
+  });
+
   describe('Task CRUD', () => {
     test('createTask returns task with id and status open', () => {
       const task = store.createTask('Fix auth bug', '/workspace/project');

@@ -35,6 +35,16 @@ describe('deriveStuckReason', () => {
     expect(reason).toBe('hung_suspect');
   });
 
+  test('providerPaused true → provider_paused, ahead of hung_suspect (issue #1667)', () => {
+    const reason = deriveStuckReason({
+      status: 'inProgress',
+      providerPaused: true,
+      hungSuspect: true,
+      anomalyType: 'stale_agent',
+    });
+    expect(reason).toBe('provider_paused');
+  });
+
   test('anomalyType stale_agent alone (hungSuspect omitted) also maps to hung_suspect', () => {
     const reason = deriveStuckReason({ status: 'inProgress', anomalyType: 'stale_agent' });
     expect(reason).toBe('hung_suspect');
