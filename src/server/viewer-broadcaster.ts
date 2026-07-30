@@ -18,6 +18,7 @@ import { WebSocket } from 'ws';
 
 import type { Actor } from './auth.js';
 import { canonicalizeScope, type Scope } from './viewer-data-policy.js';
+import type { AgentState } from '../core/monitor.js';
 import type { ServerMessage, SnapshotMessage } from '../shared/contracts/messages.js';
 import {
   normalizeSnapshotPayloadSizePolicy,
@@ -56,7 +57,16 @@ export interface ViewerAwareBroadcasterDeps {
    * of `projects`-scope filtering. An unwired stub fails closed (a viewer gets an
    * error, never the unfiltered `all` snapshot).
    */
-  buildScopedSnapshot: (scope: Scope) => SnapshotMessage;
+  buildScopedSnapshot: (scope: Scope, baseClientAgents?: AgentState[]) => SnapshotMessage;
+  /**
+   * Compute the full-fleet client-projected snapshot agents once per flush so
+   * every distinct viewer scope reuses them instead of each re-running the fleet
+   * projection (`Monitor.getSnapshot()` + `buildSnapshotProjection()`) (#1398). When wired,
+   * `broadcast` computes this at most once per snapshot flush (only if a scoped
+   * viewer is connected) and threads the result into `buildScopedSnapshot`. When
+   * omitted, each scope rebuilds its own base — the pre-#1398 behavior.
+   */
+  computeSnapshotBaseAgents?: () => AgentState[];
   snapshotPayloadSizePolicy?: SnapshotPayloadSizePolicy;
   /**
    * Soft `ws.bufferedAmount` threshold (#1424). Frames are skipped (not
@@ -109,7 +119,8 @@ function serializeSnapshot(
 
 export class ViewerAwareBroadcaster {
   private readonly registry: BroadcasterRegistry;
-  private readonly buildScopedSnapshot: (scope: Scope) => SnapshotMessage;
+  private readonly buildScopedSnapshot: (scope: Scope, baseClientAgents?: AgentState[]) => SnapshotMessage;
+  private readonly computeSnapshotBaseAgents: (() => AgentState[]) | undefined;
   private readonly snapshotPayloadSizePolicy: SnapshotPayloadSizePolicy | undefined;
   private readonly backpressureSoftBytes: number;
   private readonly backpressureHardBytes: number;
@@ -117,6 +128,7 @@ export class ViewerAwareBroadcaster {
   constructor(deps: ViewerAwareBroadcasterDeps) {
     this.registry = deps.registry;
     this.buildScopedSnapshot = deps.buildScopedSnapshot;
+    this.computeSnapshotBaseAgents = deps.computeSnapshotBaseAgents;
     this.snapshotPayloadSizePolicy = normalizeSnapshotPayloadSizePolicy(deps.snapshotPayloadSizePolicy);
     const soft = Math.max(1, Math.floor(deps.backpressureSoftBytes ?? DEFAULT_BACKPRESSURE_SOFT_BYTES));
     const hard = Math.max(soft, Math.floor(deps.backpressureHardBytes ?? DEFAULT_BACKPRESSURE_HARD_BYTES));
@@ -158,6 +170,12 @@ export class ViewerAwareBroadcaster {
 
     const allSnapshot = serializeSnapshot(msg, 'all', this.snapshotPayloadSizePolicy);
     const scopedCache = new Map<string, SerializedSnapshot>();
+    // Full-fleet projection base, computed at most once per flush and only when a
+    // scoped viewer is actually present, then reused across every distinct scope
+    // (#1398). Lazy so an all-only fan-out never pays for it; memoized across the
+    // (possibly throwing) per-connection builds below.
+    let baseClientAgents: AgentState[] | undefined;
+    let baseComputed = false;
 
     for (const { ws, actor } of connections) {
       // Each connection is isolated: a throwing `buildScopedSnapshot` (the
@@ -174,7 +192,17 @@ export class ViewerAwareBroadcaster {
           scopeKey = snapshotScopeKey(scope);
           let cached = scopedCache.get(scopeKey);
           if (!cached) {
-            cached = serializeSnapshot(this.buildScopedSnapshot(scope), scopeKey, this.snapshotPayloadSizePolicy);
+            if (!baseComputed) {
+              // Compute the shared fleet base once, on first scoped viewer only.
+              baseClientAgents = this.computeSnapshotBaseAgents?.();
+              baseComputed = true;
+            }
+            // Omit the base arg entirely when none was computed so the factory's
+            // call signature is unchanged for the pre-#1398 (unwired) path.
+            const scopedMsg = baseClientAgents !== undefined
+              ? this.buildScopedSnapshot(scope, baseClientAgents)
+              : this.buildScopedSnapshot(scope);
+            cached = serializeSnapshot(scopedMsg, scopeKey, this.snapshotPayloadSizePolicy);
             scopedCache.set(scopeKey, cached);
           }
           serialized = cached;

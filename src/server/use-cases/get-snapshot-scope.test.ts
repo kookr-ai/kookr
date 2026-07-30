@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  computeSnapshotBaseAgents,
   createSnapshotMessage,
   getProjectSummaries,
   getSnapshotAgentsForClient,
 } from './get-snapshot.js';
 import type { Scope } from '../viewer-data-policy.js';
 import type { TaskRelation } from '../../shared/contracts/task-relations.js';
+import { TaskStore } from '../../core/tasks.js';
 
 // --- #809: buildScopedSnapshot project-scope filtering + scrub-list ---
 //
@@ -252,6 +254,158 @@ describe('getProjectSummaries — scope filtering', () => {
       scope: { kind: 'all' },
     });
     expect(summaries.map((s) => s.project).sort()).toEqual([P1, P2].sort());
+  });
+});
+
+// --- #1398: reuse the base fleet projection across per-scope snapshot builds ---
+//
+// A single broadcast flush builds one snapshot per distinct viewer scope. Before
+// #1398 each scope re-ran monitor.getSnapshot() + buildSnapshotProjection() + the
+// per-agent client projection; now the full-fleet base is computed once and each
+// scope only re-runs filterAgentsToScope. These lock in the two acceptance
+// criteria: getSnapshot runs once per flush regardless of scope count, and the
+// scoped outputs are byte-identical to the per-scope recompute.
+describe('createSnapshotMessage — shared fleet base reuse (#1398)', () => {
+  /** A monitor whose getSnapshot returns fixed agents and counts its invocations. */
+  function countingMonitor(agents: any[]): { getSnapshot: () => any[]; calls: () => number } {
+    let calls = 0;
+    return {
+      getSnapshot: () => {
+        calls += 1;
+        return agents;
+      },
+      calls: () => calls,
+    };
+  }
+
+  const SCOPES: (Scope | undefined)[] = [
+    { kind: 'projects', projectIds: [P1] },
+    { kind: 'projects', projectIds: [P2] },
+    { kind: 'all' },
+    undefined,
+  ];
+
+  it('computes the fleet projection once per flush regardless of distinct scope count', () => {
+    // Per-scope recompute path (no shared base): one getSnapshot per build.
+    const direct = countingMonitor(AGENTS);
+    const directMsgs = SCOPES.map((scope) =>
+      createSnapshotMessage({ monitor: direct as any, serverCwd: '/repo', ...(scope ? { scope } : {}) }),
+    );
+    expect(direct.calls()).toBe(SCOPES.length);
+
+    // Shared-base path: compute the base once, thread it into every scope build.
+    const shared = countingMonitor(AGENTS);
+    const base = computeSnapshotBaseAgents({ monitor: shared as any, serverCwd: '/repo' });
+    expect(shared.calls()).toBe(1);
+    const sharedMsgs = SCOPES.map((scope) =>
+      createSnapshotMessage({
+        monitor: shared as any,
+        serverCwd: '/repo',
+        precomputedClientAgents: base,
+        ...(scope ? { scope } : {}),
+      }),
+    );
+    // Building N scoped messages from the base adds zero further getSnapshot calls.
+    expect(shared.calls()).toBe(1);
+
+    // Byte-identical scoped outputs, before (per-scope recompute) vs after (base reuse).
+    for (let i = 0; i < SCOPES.length; i += 1) {
+      expect(JSON.stringify(sharedMsgs[i])).toBe(JSON.stringify(directMsgs[i]));
+    }
+  });
+
+  it('runs buildSnapshotProjection once per flush and stays byte-identical (getTaskSnapshot-bearing monitor)', () => {
+    // A monitor that also implements getTaskSnapshot forces
+    // getProjectedSnapshotAgents down the buildSnapshotProjection branch (the
+    // other #1398 tests only exercise the raw-monitor path). Here a live session
+    // is enriched with its task's projectId by the projection, and a second
+    // task-less agent carries its own projectId — so scope filtering over the
+    // projected fleet is non-trivial and the projection walk itself must be
+    // scope-independent and reusable across scopes.
+    // Build the fixture ONCE and share it — the direct and shared paths must see
+    // byte-identical data (a fresh TaskStore would mint different task UUIDs).
+    const taskStore = new TaskStore();
+    const t1 = taskStore.createTask('Enriched task', '/ws/one');
+    taskStore.setProjectId(t1.id, P1);
+    taskStore.addSession(t1.id, {
+      tmuxSession: 'sess-1',
+      agentType: 'claude-code',
+      cwd: '/ws/one',
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    // 'sess-1' has NO projectId of its own — the projection must enrich it from t1.
+    const liveStates = [
+      agent({ agentId: 'sess-1', taskId: t1.id }),
+      agent({ agentId: 'lone', taskId: 't-lone', projectId: P2 }),
+    ];
+    function projectingMonitor(): { getSnapshot: () => any[]; getTaskSnapshot: () => any[]; calls: () => number } {
+      let calls = 0;
+      return {
+        getSnapshot: () => {
+          calls += 1;
+          return liveStates;
+        },
+        getTaskSnapshot: () => taskStore.getAllTasks(),
+        calls: () => calls,
+      };
+    }
+
+    const direct = projectingMonitor();
+    const directMsgs = SCOPES.map((scope) =>
+      createSnapshotMessage({ monitor: direct as any, serverCwd: '/repo', ...(scope ? { scope } : {}) }),
+    );
+    expect(direct.calls()).toBe(SCOPES.length);
+    // Projection actually enriched the live session with its task's projectId.
+    expect(directMsgs[0].agents.find((a) => a.agentId === 'sess-1')?.projectId).toBe(P1);
+
+    const shared = projectingMonitor();
+    const base = computeSnapshotBaseAgents({ monitor: shared as any, serverCwd: '/repo' });
+    const sharedMsgs = SCOPES.map((scope) =>
+      createSnapshotMessage({
+        monitor: shared as any,
+        serverCwd: '/repo',
+        precomputedClientAgents: base,
+        ...(scope ? { scope } : {}),
+      }),
+    );
+    expect(shared.calls()).toBe(1);
+    for (let i = 0; i < SCOPES.length; i += 1) {
+      expect(JSON.stringify(sharedMsgs[i])).toBe(JSON.stringify(directMsgs[i]));
+    }
+  });
+
+  it('stays byte-identical with a relation store (scoped childRollup + taskRelations)', () => {
+    const agents = [
+      agent({ agentId: 'a-parent', taskId: 'parent', projectId: P1 }),
+      agent({ agentId: 'a-cin', taskId: 'child-in', projectId: P1 }),
+      agent({ agentId: 'a-cout', taskId: 'child-out', projectId: P2 }),
+    ];
+    const relations: TaskRelation[] = [
+      { ...rel('r-cin', 'child-in', 'parent'), type: 'spawned_by' },
+      { ...rel('r-cout', 'child-out', 'parent'), type: 'spawned_by' },
+    ];
+    const store = { listRelations: () => relations, getPendingSignal: () => undefined } as any;
+
+    const direct = countingMonitor(agents);
+    const directMsgs = SCOPES.map((scope) =>
+      createSnapshotMessage({ monitor: direct as any, serverCwd: '/repo', relationTaskStore: store, ...(scope ? { scope } : {}) }),
+    );
+
+    const shared = countingMonitor(agents);
+    const base = computeSnapshotBaseAgents({ monitor: shared as any, serverCwd: '/repo', relationTaskStore: store });
+    const sharedMsgs = SCOPES.map((scope) =>
+      createSnapshotMessage({
+        monitor: shared as any,
+        serverCwd: '/repo',
+        relationTaskStore: store,
+        precomputedClientAgents: base,
+        ...(scope ? { scope } : {}),
+      }),
+    );
+    expect(shared.calls()).toBe(1);
+    for (let i = 0; i < SCOPES.length; i += 1) {
+      expect(JSON.stringify(sharedMsgs[i])).toBe(JSON.stringify(directMsgs[i]));
+    }
   });
 });
 
