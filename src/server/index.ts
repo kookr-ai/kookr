@@ -79,6 +79,14 @@ import { PersistenceHealthTracker } from '../core/persistence-health.js';
 import { TaskStateSaveScheduler } from './task-state-save-scheduler.js';
 import { createIssueClaimServices, createUpstreamOfResolver, isIssueClaimsEnabled, type IssueClaimServices } from './issue-claim-wiring.js';
 import { EnvironmentBlockerRegistry } from '../core/environment-blocker-registry.js';
+import {
+  createOwnerEscalationNotifier,
+  controlRoomLogChannel,
+} from '../core/escalation-owner-channel.js';
+import {
+  defaultRetroVerifyQueueDir,
+  readPendingRetroVerify,
+} from '../core/retro-verify-queue.js';
 import { decorateClaim } from './issue-claim-decorator.js';
 import { resolveClaimRepo } from './use-cases/resolve-claim-repo.js';
 import { getProjectId } from '../core/project-identity.js';
@@ -799,22 +807,27 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Environment-blocker registry (issue #1690). A durable, shared record of
   // active external blockers (e.g. a GitHub Actions billing limit) so the first
   // detector registers a blocker once, other agents consult it instead of
-  // re-diagnosing, and the operator is notified exactly once. Constructed and
-  // loaded from disk BEFORE the HTTP listener so the `/api/environment-blockers`
-  // routes never serve an unpopulated registry after a restart. The single-shot
-  // notifier is a clearly-marked operator log line; richer escalation (WS
-  // broadcast / Telegram) is a deliberate follow-up — the exactly-once + durable
-  // dedupe semantics live in the registry regardless of the sink.
+  // re-diagnosing, and the owner is escalated. Constructed and loaded from disk
+  // BEFORE the HTTP listener so the `/api/environment-blockers` routes never
+  // serve an unpopulated registry after a restart.
+  //
+  // Escalation (issue #1702): escalations route to an owner-read control-room
+  // feed carrying the *quantified running cost* of the blocker (CI-blind merge
+  // count + retro-verify queue depth from the durable spool, plus the
+  // blocked-capability list the registry computes itself). Blockers tagged
+  // `requiresHuman` re-escalate on the staleness TTL via the heartbeat sweep
+  // below, instead of firing a single buried notification.
   const environmentBlockerRegistry = new EnvironmentBlockerRegistry(kookrDir, {
-    notify: (blocker) => {
-      console.warn(
-        `[environment-blocker] operator notification: external blocker active — `
-        + `type=${blocker.type} scope=${blocker.scope}`
-        + (blocker.reason ? ` reason=${JSON.stringify(blocker.reason)}` : '')
-        + (blocker.probe ? ` probe=${JSON.stringify(blocker.probe)}` : '')
-        + `. Agents hitting this park in blocked_external instead of retry-spinning; `
-        + `it auto-clears on the next successful probe.`,
-      );
+    notify: createOwnerEscalationNotifier([controlRoomLogChannel()]),
+    costProvider: async () => {
+      try {
+        const pending = await readPendingRetroVerify(defaultRetroVerifyQueueDir(process.env));
+        return { ciBlindMergeCount: pending.length, retroVerifyQueueDepth: pending.length };
+      } catch {
+        // Fail-open: a missing/unreadable spool is zero debt, never a blocked
+        // escalation (same posture as the emission CLI's cost read).
+        return { ciBlindMergeCount: 0, retroVerifyQueueDepth: 0 };
+      }
     },
   });
   await environmentBlockerRegistry.load();
@@ -822,6 +835,35 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     console.log(
       `[environment-blocker] ${environmentBlockerRegistry.size()} active blocker(s) restored from disk`,
     );
+  }
+  // Re-escalation heartbeat (issue #1702): periodically sweep active blockers so
+  // a `requiresHuman` blocker that stays open re-escalates once its staleness
+  // TTL elapses. Runs on an interval (default hourly; the TTL, not the tick,
+  // controls re-escalation cadence) and never keeps the process alive on its
+  // own. Disabled by setting KOOKR_ENV_BLOCKER_HEARTBEAT_MS=0.
+  const envBlockerHeartbeatMs = (() => {
+    const raw = process.env.KOOKR_ENV_BLOCKER_HEARTBEAT_MS;
+    if (raw === undefined) return 60 * 60 * 1000;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : 60 * 60 * 1000;
+  })();
+  let envBlockerHeartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  if (envBlockerHeartbeatMs > 0) {
+    envBlockerHeartbeatTimer = setInterval(() => {
+      void environmentBlockerRegistry.heartbeat().then((fired) => {
+        if (fired.length > 0) {
+          console.log(
+            `[environment-blocker] heartbeat re-escalated ${fired.length} stale blocker(s)`,
+          );
+        }
+      }).catch((err) => {
+        console.warn(
+          '[environment-blocker] heartbeat sweep failed:',
+          err instanceof Error ? err.message : err,
+        );
+      });
+    }, envBlockerHeartbeatMs);
+    envBlockerHeartbeatTimer.unref?.();
   }
 
   // Reconcile with live backend sessions
@@ -2021,6 +2063,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     if (taskTailPurgeTimer) {
       clearInterval(taskTailPurgeTimer);
       taskTailPurgeTimer = undefined;
+    }
+
+    if (envBlockerHeartbeatTimer) {
+      clearInterval(envBlockerHeartbeatTimer);
+      envBlockerHeartbeatTimer = undefined;
     }
 
     lessonSpoolService.stop();

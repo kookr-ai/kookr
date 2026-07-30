@@ -34,9 +34,15 @@ function validateTypeScope(body: Record<string, unknown>): string | null {
  * - `GET  /api/environment-blockers` — list active blockers, or
  *   consult one via `?type=&scope=` (returns a `blocked_external` disposition).
  * - `POST /api/environment-blockers` — register-once. Body:
- *   `{ type, scope, detectedBy?, probe?, reason? }`. Returns `{ blocker, newlyRegistered }`.
+ *   `{ type, scope, detectedBy?, probe?, reason?, requiresHuman?, blockedCapability? }`.
+ *   Returns `{ blocker, newlyRegistered }`. `requiresHuman` blockers re-escalate
+ *   on the staleness TTL (issue #1702).
  * - `POST /api/environment-blockers/probe` — record a probe outcome. Body:
  *   `{ type, scope, success }`. A success auto-clears the blocker.
+ * - `POST /api/environment-blockers/regime` — record a tolerance-machinery ref
+ *   (issue #1702). Body: `{ type, scope, ref }`. Marks the blocker as having a
+ *   tolerance regime so the emission budget refuses new tolerance machinery for
+ *   it. Returns `{ recorded, regime }`.
  * - `DELETE /api/environment-blockers` — manual clear. Body: `{ type, scope }`.
  */
 export function registerEnvironmentBlockerRoutes(app: Hono, deps: EnvironmentBlockerRouteDeps): void {
@@ -71,7 +77,30 @@ export function registerEnvironmentBlockerRoutes(app: Hono, deps: EnvironmentBlo
       ...(typeof body.detectedBy === 'string' ? { detectedBy: body.detectedBy } : {}),
       ...(typeof body.probe === 'string' ? { probe: body.probe } : {}),
       ...(typeof body.reason === 'string' ? { reason: body.reason } : {}),
+      ...(typeof body.requiresHuman === 'boolean' ? { requiresHuman: body.requiresHuman } : {}),
+      ...(typeof body.blockedCapability === 'string'
+        ? { blockedCapability: body.blockedCapability }
+        : {}),
     });
+    return c.json(result);
+  });
+
+  app.post(`${ENVIRONMENT_BLOCKERS_PATH}/regime`, async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = (await c.req.json()) as Record<string, unknown>;
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+    const validationError = validateTypeScope(body);
+    if (validationError) {
+      return c.json({ error: validationError }, 400);
+    }
+    const ref = body.ref;
+    if (typeof ref !== 'string' || ref.length === 0) {
+      return c.json({ error: 'ref is required and must be a non-empty string' }, 400);
+    }
+    const result = await deps.registry.recordRegimeEntry(body.type as string, body.scope as string, ref);
     return c.json(result);
   });
 
