@@ -356,4 +356,33 @@ describe('autoCompleteDeliveredTasks (issue #1560)', () => {
     expect(second.completedTaskIds).toHaveLength(1);
     expect(taskStore.listTasks().every((t) => t.status === 'completed')).toBe(true);
   });
+
+  test('issue #1667: provider-paused child is never auto-completed as delivered; resumes after pause clears', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    const tracker = createDeliveredCompletionTracker();
+    const past = plus(T0, DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS + 5_000);
+    let paused = true;
+    const isProviderPaused = () => paused;
+
+    // Prime the budget clock.
+    await autoCompleteDeliveredTasks(
+      baseDeps(taskStore, () => MERGED, { tracker, now: () => T0, isProviderPaused }),
+    );
+
+    // Stall: past budget but provider-paused → must stay inProgress.
+    const stalled = await autoCompleteDeliveredTasks(
+      baseDeps(taskStore, () => MERGED, { tracker, now: () => past, isProviderPaused }),
+    );
+    expect(stalled.completedTaskIds).toEqual([]);
+    expect(taskStore.getTask(id)?.status).toBe('inProgress');
+
+    // Resume: pause clears → delivered auto-complete may fire.
+    paused = false;
+    const resumed = await autoCompleteDeliveredTasks(
+      baseDeps(taskStore, () => MERGED, { tracker, now: () => plus(past, 1_000), isProviderPaused }),
+    );
+    expect(resumed.completedTaskIds).toEqual([id]);
+    expect(taskStore.getTask(id)?.status).toBe('completed');
+  });
 });

@@ -1,4 +1,5 @@
-import type { AgentState } from '../../core/monitor.js';
+import type { MonitorAgentState } from '../../core/monitor.js';
+import { toClientAgentState } from '../../core/monitor-agent-state.js';
 import type { AgentType } from '../../core/agent-types.js';
 import { deriveLatestCompletionSignal } from '../../core/completion-signal.js';
 import { displayPromptForTask } from '../../core/prompt-display.js';
@@ -6,6 +7,7 @@ import { projectDisplayLabel } from '../../core/project-identity.js';
 import { isTerminalStatus, type Task, type TaskLaunchHealthSummary } from '../../core/tasks.js';
 import type { AgentStatus, Anomaly, TaskStatus, WorktreeHealth } from '../../core/types.js';
 import { normalizeTerminalWorktreeHealth } from '../../core/worktree-health.js';
+import type { AgentState } from '../../shared/contracts/agent-state.js';
 import type { TaskPriority } from '../../shared/contracts/task.js';
 
 interface SessionSnapshotMeta {
@@ -82,12 +84,13 @@ type SnapshotFindingState = AgentState & { anomaly: Anomaly; taskId: string };
 
 /**
  * Build the dashboard-facing agent snapshot from raw monitor state plus task
- * snapshots. The projection creates fresh AgentState objects, preserves the
- * source monitor states, and keeps synthetic pending/terminal entries out of
- * Monitor so core monitoring stays focused on live event/anomaly state.
+ * snapshots. Maps live {@link MonitorAgentState} into wire {@link AgentState}
+ * (shared SSOT), then enriches with task metadata and projection-only fields.
+ * Synthetic pending/terminal entries stay out of Monitor so core monitoring
+ * remains focused on live event/anomaly state (issue #1460).
  */
 export function buildSnapshotProjection(deps: {
-  monitorStates: readonly AgentState[];
+  monitorStates: readonly MonitorAgentState[];
   tasks: readonly Task[];
   /**
    * When set, synthetic terminal entries are skipped for tasks whose last
@@ -140,7 +143,7 @@ export function buildSnapshotProjection(deps: {
       continue;
     }
 
-    const state: AgentState = { ...rawState };
+    const state = toClientAgentState(rawState);
     if (meta) {
       enrichLiveState(state, meta);
     }

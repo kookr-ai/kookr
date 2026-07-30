@@ -1,4 +1,4 @@
-import type { AgentState } from '../../core/monitor.js';
+import type { AgentState } from '../../shared/contracts/agent-state.js';
 import type { GitHubReference } from '../../core/github-types.js';
 import type { GithubTaskOverlayEntry } from '../../core/project-summary.js';
 import { projectIdToOwnerRepo } from '../../core/project-identity.js';

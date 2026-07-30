@@ -998,6 +998,12 @@ kbd {
   background: rgba(52,211,153,0.12);
   color: var(--green);
 }
+/* Issue #1667: billing/quota pause — amber so it reads as "hold, not dead". */
+.stuck-reason-badge--provider_paused {
+  border: 1px solid rgba(251,191,36,0.4);
+  background: rgba(251,191,36,0.12);
+  color: var(--amber);
+}
 .stuck-reason-badge--hung_suspect {
   border: 1px solid rgba(248,113,113,0.35);
   background: rgba(248,113,113,0.12);

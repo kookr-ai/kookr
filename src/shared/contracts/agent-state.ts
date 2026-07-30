@@ -24,6 +24,17 @@ import type { TerminalInputSnapshot } from './terminal-input.js';
 import type { UserInputDeliverySnapshot } from './user-input-delivery.js';
 import type { SessionHealthSnapshot } from './session-health.js';
 
+/**
+ * Client/wire agent state — the dashboard and protocol SSOT (issue #1460).
+ *
+ * Live monitor state is the narrower `MonitorAgentState` in `src/core/monitor.ts`
+ * (no projection-only fields). Snapshot builders map live → this DTO and attach
+ * fields such as `childRollup`, `pendingSignal`, `stuckReason`,
+ * `terminalInputSnapshot`, `effectiveAttentionSeverity`, and `reapOutcome`.
+ *
+ * Do not `@link` core modules from this file — the protocol-boundary test
+ * treats path-like references as dependency edges (shared must not depend on core).
+ */
 export interface AgentState {
   agentId: string;
   events: AgentEvent[];
@@ -106,7 +117,7 @@ export interface AgentState {
    * Pending agent → user signal (RFC: rfc-agent-signal-surface), joined from
    * the task record onto the client-facing state at projection time. Like
    * {@link childRollup}, this is populated only by the snapshot builder — the
-   * raw Monitor AgentState never carries it. Absent when no signal is raised.
+   * raw live `MonitorAgentState` never carries it. Absent when no signal is raised.
    */
   pendingSignal?: PendingAgentSignal;
   /**

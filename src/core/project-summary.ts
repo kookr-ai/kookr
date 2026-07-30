@@ -1,4 +1,4 @@
-import type { AgentState } from './monitor.js';
+import type { AgentState } from '../shared/contracts/agent-state.js';
 import type { LedgerAnalytics } from './ledger-analytics.js';
 import type { ProjectConfig, ProjectConfigStore } from './project-config-store.js';
 import type { PrLessonsStateHolder } from './pr-lessons-discovery.js';

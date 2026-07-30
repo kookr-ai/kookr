@@ -1,4 +1,4 @@
-import type { AgentState } from '../../core/monitor.js';
+import type { AgentState } from '../../shared/contracts/agent-state.js';
 import type { AnomalySeverity } from '../../shared/contracts/anomalies.js';
 import type { TaskRelation, TaskRelationRollup } from '../../shared/contracts/task-relations.js';
 import { isTerminalStatus, type TaskStatus } from '../../shared/contracts/task-status.js';

@@ -69,7 +69,18 @@ export function classifyCompletionReadyClosePolicy(
 
 export function listStaleCompletionReadyTasks(
   tasks: Task[],
-  opts: { now?: Date; thresholdMs?: number; ttlMs?: number } = {},
+  opts: {
+    now?: Date;
+    thresholdMs?: number;
+    ttlMs?: number;
+    /**
+     * Issue #1667: when true for a task, hold the completion-ready signal
+     * without auto-closing — a billing/quota pause is not delivery. The signal
+     * stays visible so the operator can ack or the agent can resume after the
+     * pause clears.
+     */
+    isProviderPaused?: (task: Task) => boolean;
+  } = {},
 ): StaleCompletionReadyTask[] {
   const nowMs = (opts.now ?? new Date()).getTime();
   const thresholdMs = opts.thresholdMs ?? DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS;
@@ -78,6 +89,7 @@ export function listStaleCompletionReadyTasks(
   for (const task of tasks) {
     const signal = task.pendingSignal;
     if (task.status !== 'inProgress' || signal?.kind !== 'completion_ready') continue;
+    if (opts.isProviderPaused?.(task) === true) continue;
 
     const raisedAtMs = Date.parse(signal.raisedAt);
     // Persisted task stores can outlive older/invalid signal payloads; skip
