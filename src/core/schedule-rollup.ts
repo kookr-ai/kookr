@@ -19,10 +19,19 @@ import type { Schedule, ScheduleExecutionOutcome } from './schedule.js';
  * without a `tokenUsage` measurement contributes nothing to the sums and is not
  * counted in {@link measuredFires} — so `costUsd` is a sum over MEASURED fires,
  * never a fabricated $0 for an unmeasured one.
+ *
+ * WINDOWED, not lifetime (issue #1392): every count/sum below is recomputed from
+ * the schedule's CURRENT execution ledger, which is bounded to the newest
+ * {@link MAX_LEDGER_ENTRIES} rows (plus any live pending row). A fire that ages
+ * out of that retention window stops contributing — so on a high-cadence
+ * schedule these are totals over the retained window (`windowStart`..`windowEnd`),
+ * not since-creation lifetime figures. The window spans the ledger cap: effectively
+ * unbounded for the hourly/daily cadences that produce delivery units, narrowing
+ * only for sub-hourly schedules.
  */
 export interface ScheduleRollup {
   scheduleId: string;
-  /** Total ledger fires counted for this schedule. */
+  /** Ledger fires counted over the retained window (see the windowing note above). */
   fires: number;
   /** Fires grouped by outcome. Only non-zero outcomes appear as keys. */
   outcomes: Partial<Record<ScheduleExecutionOutcome, number>>;
@@ -31,7 +40,11 @@ export interface ScheduleRollup {
   /**
    * Merged delivery units: ledger fires that carried a joined `mergeCommit`
    * (issue #1596). A merged PR counts here the moment its merge commit is joined
-   * onto the fire — regardless of whether that commit has reached prod.
+   * onto the fire — regardless of whether that commit has reached prod. Counted
+   * over the retained window (see the windowing note above): a merge fire that
+   * ages past the ledger cap drops out of this count. In practice delivery-unit
+   * schedules run at cadences whose {@link MAX_LEDGER_ENTRIES} window spans
+   * weeks-plus, so merged units remain counted well beyond deploy-verification.
    */
   merged: number;
   /**
