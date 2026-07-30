@@ -24,6 +24,7 @@ import {
   FindingEvidenceAuditor,
   type FindingEvidenceAuditRecord,
 } from './finding-evidence-audit.js';
+import { OutstandingSubagentTracker } from './outstanding-subagents.js';
 import { lastAssistantMessage } from './transcript-parser.js';
 
 /**
@@ -114,14 +115,6 @@ export interface MonitorAgentState {
 export type AgentState = MonitorAgentState;
 
 const DEFAULT_WINDOW_SIZE = 50;
-
-/**
- * Time after which an outstanding subagent entry is considered stale and dropped.
- * Caps the duration of needs_input suppression when a SubagentStop event is lost
- * (process SIGKILL, watcher drop, etc). 30 minutes is ~3× the longest legitimate
- * background subagent observed in production hook logs at design time.
- */
-const SUBAGENT_TTL_MS = 30 * 60 * 1000;
 
 /**
  * Cap on the per-agent set of suppressed completion-signal ids (issue #1612).
@@ -221,12 +214,11 @@ export class Monitor {
   private findingEvidenceAuditor = new FindingEvidenceAuditor();
   private agentTranscriptPaths = new Map<string, string>();
   /**
-   * Outstanding background subagents per parent agent. Each subagent tracked with
-   * its Date.now() at SubagentStart so a lazy TTL eviction caps suppression
-   * duration when the matching SubagentStop is lost.
-   * Outer key: parent agentId (tmux session name). Inner key: subagentId from the hook.
+   * Outstanding-subagent policy (TTL + suppression). Extracted from Monitor so
+   * the pure tracking/suppression policy is independently unit-testable
+   * (issue #1464 first slice).
    */
-  private outstandingSubagents = new Map<string, Map<string, number>>();
+  private outstandingSubagents = new OutstandingSubagentTracker();
   /** Completion signal ids suppressed because the parent Stop was stale behind TTL-evicted subagents. */
   private suppressedCompletionSignalIds = new Map<string, Set<string>>();
   private sessionHealthProvider?: (agentId: string, turnState: TurnState) => SessionHealthSnapshot | undefined;
@@ -619,8 +611,6 @@ export class Monitor {
     for (const events of this.agentEvents.values()) retainedEvents += events.length;
     let suppressedCompletionSignalIds = 0;
     for (const ids of this.suppressedCompletionSignalIds.values()) suppressedCompletionSignalIds += ids.size;
-    let outstandingSubagents = 0;
-    for (const map of this.outstandingSubagents.values()) outstandingSubagents += map.size;
     return {
       agents: this.agentEvents.size,
       retainedEvents,
@@ -628,8 +618,8 @@ export class Monitor {
       transcriptPaths: this.agentTranscriptPaths.size,
       suppressedCompletionSignalAgents: this.suppressedCompletionSignalIds.size,
       suppressedCompletionSignalIds,
-      outstandingSubagentParents: this.outstandingSubagents.size,
-      outstandingSubagents,
+      outstandingSubagentParents: this.outstandingSubagents.parentCount(),
+      outstandingSubagents: this.outstandingSubagents.totalOutstanding(),
       ttlEvictedSubagentCounts: this.ttlEvictedSubagentEventCounts.size,
     };
   }
@@ -766,32 +756,16 @@ export class Monitor {
   }
 
   /**
-   * Update outstanding-subagent tracking for one event. SubagentStart adds the
-   * subagentId with a Date.now() timestamp; SubagentStop removes it; session_end
-   * flushes the map for the agent and emits the orphan metric if non-empty. A
-   * Stop hook with explicit zero active background tasks/crons is authoritative
-   * provider evidence that no subordinate work remains, so it clears stale
-   * entries without counting them as orphans.
+   * Forward one event into the outstanding-subagent tracker. session_end flushes
+   * via {@link flushAndDeleteSubagents} so orphan telemetry stays on the Monitor
+   * write path; start/stop/zero-background Stop live in the tracker.
    */
   private updateSubagentTracking(agentId: string, event: AgentEvent): void {
-    if (event.type === 'subagent_start' && event.agentId) {
-      let map = this.outstandingSubagents.get(agentId);
-      if (!map) {
-        map = new Map();
-        this.outstandingSubagents.set(agentId, map);
-      }
-      map.set(event.agentId, Date.now());
-    } else if (event.type === 'subagent_stop' && event.agentId) {
-      this.outstandingSubagents.get(agentId)?.delete(event.agentId);
-    } else if (
-      event.type === 'stop'
-      && event.activeBackgroundTaskCount === 0
-      && event.activeSessionCronCount === 0
-    ) {
-      this.outstandingSubagents.delete(agentId);
-    } else if (event.type === 'session_end') {
+    if (event.type === 'session_end') {
       this.flushAndDeleteSubagents(agentId);
+      return;
     }
+    this.outstandingSubagents.updateFromEvent(agentId, event);
   }
 
   /**
@@ -801,80 +775,55 @@ export class Monitor {
    * cannot double-count.
    */
   private flushAndDeleteSubagents(agentId: string): void {
-    const map = this.outstandingSubagents.get(agentId);
-    if (map && map.size > 0) {
-      recordSubagentOrphans(map.size, 1);
+    const orphanCount = this.outstandingSubagents.flush(agentId);
+    if (orphanCount > 0) {
+      recordSubagentOrphans(orphanCount, 1);
     }
-    this.outstandingSubagents.delete(agentId);
   }
 
   /**
-   * Drop subagent entries older than SUBAGENT_TTL_MS. Caps suppression duration
+   * Drop subagent entries older than the tracker TTL. Caps suppression duration
    * when SubagentStop is lost (SIGKILL, watcher drop). Returns surviving size.
    *
    * Eviction is lazy: it only runs when suppressIfSubagentsRunning is called.
-   * If the parent agent emits no further events that trigger anomaly detection,
-   * stale entries persist until session_end or unregisterAgent. Acceptable —
-   * memory is bounded by SubagentStart count, and session teardown always clears.
+   * Telemetry and snapshot TTL-eviction markers stay on Monitor; the tracker is
+   * pure map mutation.
    */
   private evictStaleSubagents(
     agentId: string,
     now: number,
     options: { markSnapshotTtlEviction?: boolean } = {},
   ): number {
-    const map = this.outstandingSubagents.get(agentId);
-    if (!map) return 0;
-    let evicted = 0;
-    for (const [subagentId, startedAt] of map) {
-      if (now - startedAt > SUBAGENT_TTL_MS) {
-        map.delete(subagentId);
-        evicted++;
-      }
-    }
+    const { remaining, evicted } = this.outstandingSubagents.evictStale(agentId, now);
     if (evicted > 0) {
       recordSubagentTtlEviction(evicted);
       if (options.markSnapshotTtlEviction ?? true) {
         this.ttlEvictedSubagentEventCounts.set(agentId, this._eventCounts.get(agentId) ?? 0);
       }
     }
-    return map.size;
+    return remaining;
   }
 
   /**
    * Suppress watchdog-routed anomaly types when one or more background subagents
-   * are still running for the agent. Other anomaly types pass through unchanged.
-   *
-   * Three types are eligible: `needs_input`, `stale_agent`, `hook_disconnected`.
-   *
-   * - `needs_input`: the parent's Stop hook fires whenever its turn ends, including
-   *   while waiting on a `run_in_background` subagent. See rfc-subagent-aware-needs-input.md.
-   * - `stale_agent` / `hook_disconnected`: while a background subagent is doing the
-   *   work, the parent emits no hook events for minutes and its pane may not change
-   *   meaningfully — the watchdog tick would otherwise mint a false-positive finding.
-   *   See rfc-supervisor-stale-agent-false-positives.md.
-   *
-   * `permission_blocked` is deliberately excluded — a parent blocked on permission
-   * is genuinely blocked regardless of subagent state.
-   *
-   * This helper is side-effect free w.r.t. recordSuppression so it can be safely
-   * called from both write (processEvents, applyWatchdogVerdict) and read
-   * (getEventAnomaly) paths. The write paths increment the counter.
+   * are still running for the agent. Policy lives in
+   * {@link OutstandingSubagentTracker.suppressIfRunning}; this wrapper records
+   * TTL telemetry / snapshot markers and remains free of recordSuppression so
+   * it can be called from both write and read paths.
    */
   private suppressIfSubagentsRunning(
     anomaly: Anomaly | null,
     agentId: string,
     options: { markSnapshotTtlEviction?: boolean } = {},
   ): Anomaly | null {
-    if (!anomaly) return anomaly;
-    if (
-      anomaly.type !== 'needs_input'
-      && anomaly.type !== 'stale_agent'
-      && anomaly.type !== 'hook_disconnected'
-    ) {
-      return anomaly;
+    const result = this.outstandingSubagents.suppressIfRunning(anomaly, agentId, Date.now());
+    if (result.evicted > 0) {
+      recordSubagentTtlEviction(result.evicted);
+      if (options.markSnapshotTtlEviction ?? true) {
+        this.ttlEvictedSubagentEventCounts.set(agentId, this._eventCounts.get(agentId) ?? 0);
+      }
     }
-    const remaining = this.evictStaleSubagents(agentId, Date.now(), options);
-    return remaining > 0 ? null : anomaly;
+    return result.anomaly;
   }
 
   /**
@@ -938,7 +887,7 @@ export class Monitor {
    */
   private deriveTurnStateForSnapshot(agentId: string, events: AgentEvent[]): TurnState {
     const turnState = deriveTurnState(events);
-    const outstandingBeforeEviction = this.outstandingSubagents.get(agentId)?.size ?? 0;
+    const outstandingBeforeEviction = this.outstandingSubagents.size(agentId);
     const remainingAfterEviction = this.evictStaleSubagents(agentId, Date.now());
     if (turnState === 'completed_turn' && remainingAfterEviction > 0) {
       return 'running';
