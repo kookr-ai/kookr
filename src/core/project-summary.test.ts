@@ -6,7 +6,7 @@ import { computeProjectSummaries, checkContributionLimit, configSeedsMembership 
 import { OssAttemptStore } from './oss-attempt-store.js';
 import { LedgerAnalytics } from './ledger-analytics.js';
 import { ProjectConfigStore } from './project-config-store.js';
-import type { AgentState } from './monitor.js';
+import type { AgentState } from '../shared/contracts/agent-state.js';
 
 function makeAgent(overrides: Partial<AgentState> & { agentId: string }): AgentState {
   return {

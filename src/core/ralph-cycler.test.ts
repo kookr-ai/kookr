@@ -1000,3 +1000,13 @@ describe('RalphCycler — stall handling (PR2)', () => {
     expect(task.ralphLoop?.burnedOutTargets?.[0].target).toBe('__stall_predicate__');
   });
 });
+
+
+describe('Ralph escape hatch closure (issue #1461)', () => {
+  it('ralph-cycler production source does not call getTaskForMutation', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL('./ralph-cycler.ts', import.meta.url), 'utf8');
+    expect(src).not.toMatch(/getTaskForMutation/);
+    expect(src).toMatch(/runRalphMutation/);
+  });
+});

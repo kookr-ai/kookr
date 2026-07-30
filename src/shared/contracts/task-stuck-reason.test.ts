@@ -9,6 +9,7 @@ describe('task-stuck-reason contract', () => {
   it('pins the documented reason literals', () => {
     expect([...TASK_STUCK_REASONS]).toEqual([
       'awaiting_completion_ack',
+      'provider_paused',
       'hung_suspect',
       'waiting_on_input',
       'permission_blocked',

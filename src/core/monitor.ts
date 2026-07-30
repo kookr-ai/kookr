@@ -27,7 +27,17 @@ import {
 import { OutstandingSubagentTracker } from './outstanding-subagents.js';
 import { lastAssistantMessage } from './transcript-parser.js';
 
-export interface AgentState {
+/**
+ * Live agent state produced by {@link Monitor}.
+ *
+ * Wire/client SSOT is {@link import('../shared/contracts/agent-state.js').AgentState}
+ * (`shared/contracts/agent-state.ts`). This type is the narrow live/internal
+ * shape: it intentionally omits projection-only dashboard fields
+ * (`childRollup`, `effectiveAttentionSeverity`, `pendingSignal`, `reapOutcome`,
+ * `stuckReason`, `terminalInputSnapshot`) which snapshot builders attach via
+ * {@link import('./monitor-agent-state.js').toClientAgentState}. See issue #1460.
+ */
+export interface MonitorAgentState {
   agentId: string;
   events: AgentEvent[];
   anomaly: Anomaly | null;
@@ -95,6 +105,14 @@ export interface AgentState {
   /** Cross-signal terminal/session health supplied by the server read model. */
   sessionHealth?: SessionHealthSnapshot;
 }
+
+/**
+ * @deprecated Prefer {@link MonitorAgentState} for live monitor state, or
+ * `AgentState` from `shared/contracts/agent-state` for the wire/client DTO.
+ * Kept as an alias so existing `import { AgentState } from './monitor'` sites
+ * keep compiling during the #1460 transition.
+ */
+export type AgentState = MonitorAgentState;
 
 const DEFAULT_WINDOW_SIZE = 50;
 
@@ -934,13 +952,13 @@ export class Monitor {
     return this.suppressedCompletionSignalIds.get(agentId)?.has(signalId) ?? false;
   }
 
-  private buildAgentState(agentId: string, events: AgentEvent[]): AgentState {
+  private buildAgentState(agentId: string, events: AgentEvent[]): MonitorAgentState {
     const turnState = this.deriveTurnStateForSnapshot(agentId, events);
     const currentAnomaly = this.getCurrentAnomaly(agentId);
     const anomaly = this.shouldSuppressSnapshotNeedsInput(agentId, events, currentAnomaly)
       ? null
       : currentAnomaly;
-    const state: AgentState = {
+    const state: MonitorAgentState = {
       agentId,
       events,
       anomaly,
@@ -977,14 +995,14 @@ export class Monitor {
    * Preserves `getSnapshot().find(...)` semantics for missing agents by
    * returning undefined when the agent has no live event window.
    */
-  getAgentState(agentId: string): AgentState | undefined {
+  getAgentState(agentId: string): MonitorAgentState | undefined {
     const events = this.agentEvents.get(agentId);
     if (events === undefined) return undefined;
     return this.buildAgentState(agentId, events);
   }
 
   /**
-   * Return the live turn state without building an AgentState. Server-side
+   * Return the live turn state without building a MonitorAgentState. Server-side
    * diagnostics use this to keep REST projections aligned with WebSocket
    * snapshots without recursively asking the health provider for a snapshot.
    */
@@ -1001,8 +1019,8 @@ export class Monitor {
    * server snapshot use case owns task metadata enrichment and synthetic
    * pending/terminal entries.
    */
-  getSnapshot(): AgentState[] {
-    const states: AgentState[] = [];
+  getSnapshot(): MonitorAgentState[] {
+    const states: MonitorAgentState[] = [];
     for (const [agentId, events] of this.agentEvents) {
       states.push(this.buildAgentState(agentId, events));
     }

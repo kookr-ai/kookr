@@ -295,7 +295,9 @@ export class RalphLoopService {
   }
 
   async startLoop(task: Task, input: RalphLoopRequest): Promise<RalphLoopServiceResult<RalphLoopState>> {
-    const currentTask = this.deps.taskStore.getTaskForMutation(task.id);
+    // Live ref across awaits (claim owner, stop catch-up). Prefer in-callback
+    // mutation for sync Ralph transitions; multi-step async keeps a held ref.
+    const currentTask = this.deps.taskStore.runRalphMutation(task.id, (t) => t);
     if (!currentTask) return missingTask();
     assignRalphLoop(currentTask, input);
     await this.claimLatestLiveOwner(currentTask);
@@ -306,92 +308,113 @@ export class RalphLoopService {
   }
 
   async attachLoop(task: Task, input: RalphLoopRequest): Promise<RalphLoopServiceResult<RalphLoopState>> {
-    const currentTask = this.deps.taskStore.getTaskForMutation(task.id);
-    if (!currentTask) return missingTask();
-    if (currentTask.ralphLoop && (currentTask.ralphLoop.status === 'running' || currentTask.ralphLoop.status === 'paused')) {
-      return {
-        ok: false,
-        status: 409,
-        body: {
-          error: 'task already has an active Ralph loop',
-          status: currentTask.ralphLoop.status,
-          currentIteration: currentTask.ralphLoop.currentIteration,
-        },
-      };
-    }
+    const conflict = this.deps.taskStore.runRalphMutation(task.id, (currentTask) => {
+      if (currentTask.ralphLoop && (currentTask.ralphLoop.status === 'running' || currentTask.ralphLoop.status === 'paused')) {
+        return {
+          ok: false as const,
+          status: 409 as const,
+          body: {
+            error: 'task already has an active Ralph loop',
+            status: currentTask.ralphLoop.status,
+            currentIteration: currentTask.ralphLoop.currentIteration,
+          },
+        };
+      }
+      return null;
+    });
+    if (conflict === undefined) return missingTask();
+    if (conflict) return conflict;
 
-    return this.startLoop(currentTask, input);
+    return this.startLoop(task, input);
   }
 
   cancelLoop(task: Task): RalphLoopServiceResult<RalphLoopStatus> {
-    const currentTask = this.deps.taskStore.getTaskForMutation(task.id);
-    if (!currentTask) return missingTask();
-    const loop = currentTask.ralphLoop;
-    if (!loop) return missingLoop();
+    return this.deps.taskStore.runRalphMutation(task.id, (currentTask) => {
+      const loop = currentTask.ralphLoop;
+      if (!loop) return missingLoop();
 
-    if (loop.status === 'running' || loop.status === 'paused') {
-      loop.status = 'cancelled';
-      currentTask.updatedAt = new Date();
-      return { ok: true, value: loop.status, changed: true };
-    }
+      if (loop.status === 'running' || loop.status === 'paused') {
+        loop.status = 'cancelled';
+        currentTask.updatedAt = new Date();
+        return { ok: true as const, value: loop.status, changed: true };
+      }
 
-    return { ok: true, value: loop.status, changed: false };
+      return { ok: true as const, value: loop.status, changed: false };
+    }) ?? missingTask();
   }
 
   completeLoop(task: Task): RalphLoopServiceResult<RalphLoopStatus> {
-    const currentTask = this.deps.taskStore.getTaskForMutation(task.id);
-    if (!currentTask) return missingTask();
-    const loop = currentTask.ralphLoop;
-    if (!loop) return missingLoop();
+    return this.deps.taskStore.runRalphMutation(task.id, (currentTask) => {
+      const loop = currentTask.ralphLoop;
+      if (!loop) return missingLoop();
 
-    if (loop.status === 'running' || loop.status === 'paused') {
-      loop.status = 'completed';
-      currentTask.updatedAt = new Date();
-      return { ok: true, value: loop.status, changed: true };
-    }
+      if (loop.status === 'running' || loop.status === 'paused') {
+        loop.status = 'completed';
+        currentTask.updatedAt = new Date();
+        return { ok: true as const, value: loop.status, changed: true };
+      }
 
-    if (loop.status === 'completed') {
-      return { ok: true, value: loop.status, changed: false };
-    }
+      if (loop.status === 'completed') {
+        return { ok: true as const, value: loop.status, changed: false };
+      }
 
-    return {
-      ok: false,
-      status: 409,
-      body: {
-        error: `cannot complete Ralph loop with status ${loop.status}`,
-        status: loop.status,
-      },
-    };
+      return {
+        ok: false as const,
+        status: 409 as const,
+        body: {
+          error: `cannot complete Ralph loop with status ${loop.status}`,
+          status: loop.status,
+        },
+      };
+    }) ?? missingTask();
   }
 
   async modifyBurnedTargets(
     taskId: string,
     input: { remove: string[]; clear: boolean },
   ): Promise<RalphLoopServiceResult<NonNullable<RalphLoopState['burnedOutTargets']>>> {
-    const currentTask = this.deps.taskStore.getTaskForMutation(taskId);
-    if (!currentTask) return missingTask();
-    const loop = currentTask.ralphLoop;
-    if (!loop) return missingLoop();
+    type BurnedResult = RalphLoopServiceResult<NonNullable<RalphLoopState['burnedOutTargets']>> & {
+      audit?: {
+        previous: NonNullable<RalphLoopState['burnedOutTargets']>;
+        actuallyRemoved: NonNullable<RalphLoopState['burnedOutTargets']>;
+        iteration: number;
+      };
+    };
 
-    if (input.remove.length === 0 && !input.clear) {
+    const result = this.deps.taskStore.runRalphMutation(taskId, (currentTask): BurnedResult => {
+      const loop = currentTask.ralphLoop;
+      if (!loop) return missingLoop();
+
+      if (input.remove.length === 0 && !input.clear) {
+        return {
+          ok: true,
+          value: structuredClone(loop.burnedOutTargets ?? []),
+          changed: false,
+        };
+      }
+
+      const previous = (loop.burnedOutTargets ?? []).map((target) => ({ ...target }));
+      if (input.clear) {
+        loop.burnedOutTargets = [];
+      } else {
+        const removeSet = new Set(input.remove.map((target) => canonicalizeTarget(target)));
+        loop.burnedOutTargets = (loop.burnedOutTargets ?? []).filter((target) => !removeSet.has(target.target));
+      }
+
+      const remaining = new Set((loop.burnedOutTargets ?? []).map((target) => target.target));
+      const actuallyRemoved = previous.filter((target) => !remaining.has(target.target));
+      currentTask.updatedAt = new Date();
       return {
         ok: true,
         value: structuredClone(loop.burnedOutTargets ?? []),
-        changed: false,
+        changed: true,
+        audit: { previous, actuallyRemoved, iteration: loop.currentIteration },
       };
-    }
+    });
+    if (result === undefined) return missingTask();
+    if (!result.ok || !result.audit) return result;
 
-    const previous = (loop.burnedOutTargets ?? []).map((target) => ({ ...target }));
-    if (input.clear) {
-      loop.burnedOutTargets = [];
-    } else {
-      const removeSet = new Set(input.remove.map((target) => canonicalizeTarget(target)));
-      loop.burnedOutTargets = (loop.burnedOutTargets ?? []).filter((target) => !removeSet.has(target.target));
-    }
-
-    const remaining = new Set((loop.burnedOutTargets ?? []).map((target) => target.target));
-    const actuallyRemoved = previous.filter((target) => !remaining.has(target.target));
-
+    const { previous, actuallyRemoved, iteration } = result.audit;
     if (this.deps.interactionLog) {
       const ts = nowISO();
       try {
@@ -407,34 +430,33 @@ export class RalphLoopService {
         console.warn(`[ralph-loop-service] ralph_burned_targets_modified audit append failed for task ${taskId}:`, err);
       }
 
-      const iter = loop.currentIteration;
       for (const target of actuallyRemoved) {
         if (!target.burned) continue;
         void this.deps.interactionLog.append({
           type: 'ralph_target_unburned',
           taskId,
           target: target.target,
-          iteration: iter,
+          iteration,
           via: 'patch_burned_targets',
           timestamp: ts,
         }).catch(() => undefined);
       }
     }
 
-    currentTask.updatedAt = new Date();
     return {
       ok: true,
-      value: structuredClone(loop.burnedOutTargets ?? []),
+      value: result.value,
       changed: true,
     };
   }
 
   markLoopFailed(taskId: string): boolean {
-    const currentTask = this.deps.taskStore.getTaskForMutation(taskId);
-    if (!currentTask?.ralphLoop) return false;
-    currentTask.ralphLoop.status = 'failed';
-    currentTask.updatedAt = new Date();
-    return true;
+    return this.deps.taskStore.runRalphMutation(taskId, (currentTask) => {
+      if (!currentTask.ralphLoop) return false;
+      currentTask.ralphLoop.status = 'failed';
+      currentTask.updatedAt = new Date();
+      return true;
+    }) ?? false;
   }
 
   async finalizeCompletedLoopStop(task: Task, sessionId: string, event: AgentEvent): Promise<boolean> {
@@ -442,7 +464,8 @@ export class RalphLoopService {
     if (event.type !== 'stop') return false;
     if (!isStopFromMainTaskSession(task, sessionId, event)) return false;
 
-    const currentTask = this.deps.taskStore.getTaskForMutation(task.id);
+    // Live ref: may await completion metadata + finalize across steps.
+    const currentTask = this.deps.taskStore.runRalphMutation(task.id, (t) => t);
     if (!currentTask) return false;
     const completeTask = this.deps.completeTask;
     let finalizeTask: ((taskId: string) => Promise<void>) | undefined;
@@ -466,64 +489,89 @@ export class RalphLoopService {
   }
 
   async updatePrompt(task: Task, prompt: unknown): Promise<RalphLoopServiceResult<RalphLoopState>> {
-    const currentTask = this.deps.taskStore.getTaskForMutation(task.id);
-    if (!currentTask) return missingTask();
-    const loop = currentTask.ralphLoop;
-    if (!loop) return missingLoop();
     if (typeof prompt !== 'string' || prompt.trim().length === 0) {
       return { ok: false, status: 400, body: { error: 'prompt is required and must be a non-empty string' } };
     }
-    if (loop.status !== 'running' && loop.status !== 'paused') {
-      return {
-        ok: false,
-        status: 409,
-        body: {
-          error: `cannot update Ralph prompt in terminal status: ${loop.status}`,
-          status: loop.status,
-        },
-      };
-    }
 
-    const previousPrompt = loop.prompt;
-    loop.prompt = prompt;
-    currentTask.updatedAt = new Date();
+    type UpdatePromptMutation =
+      | RalphLoopServiceResult<RalphLoopState>
+      | {
+          ok: true;
+          value: RalphLoopState;
+          changed: true;
+          previousPrompt: string;
+          taskId: string;
+          status: 'running' | 'paused';
+        };
+
+    const result = this.deps.taskStore.runRalphMutation(task.id, (currentTask): UpdatePromptMutation => {
+      const loop = currentTask.ralphLoop;
+      if (!loop) return missingLoop();
+      if (loop.status !== 'running' && loop.status !== 'paused') {
+        return {
+          ok: false,
+          status: 409,
+          body: {
+            error: `cannot update Ralph prompt in terminal status: ${loop.status}`,
+            status: loop.status,
+          },
+        };
+      }
+
+      const previousPrompt = loop.prompt;
+      loop.prompt = prompt;
+      currentTask.updatedAt = new Date();
+      const status: 'running' | 'paused' = loop.status;
+      return {
+        ok: true,
+        value: structuredClone(loop),
+        changed: true,
+        previousPrompt,
+        taskId: currentTask.id,
+        status,
+      };
+    });
+    if (result === undefined) return missingTask();
+    if (!result.ok) return result;
+    if (!('previousPrompt' in result)) return result;
 
     await this.deps.interactionLog?.append({
       type: 'ralph_prompt_updated',
-      taskId: currentTask.id,
-      status: loop.status,
-      previousPrompt,
-      prompt: loop.prompt,
+      taskId: result.taskId,
+      status: result.status,
+      previousPrompt: result.previousPrompt,
+      prompt,
       timestamp: nowISO(),
     });
 
-    return { ok: true, value: structuredClone(loop), changed: true };
+    return { ok: true, value: result.value, changed: true };
   }
 
   pauseLoop(task: Task): RalphLoopServiceResult<RalphLoopState> {
-    const currentTask = this.deps.taskStore.getTaskForMutation(task.id);
-    if (!currentTask) return missingTask();
-    const loop = currentTask.ralphLoop;
-    if (!loop) return missingLoop();
-    if (isTerminalRalphStatus(loop.status)) {
-      return {
-        ok: false,
-        status: 409,
-        body: { error: `cannot pause Ralph loop in terminal status: ${loop.status}`, status: loop.status },
-      };
-    }
+    return this.deps.taskStore.runRalphMutation(task.id, (currentTask) => {
+      const loop = currentTask.ralphLoop;
+      if (!loop) return missingLoop();
+      if (isTerminalRalphStatus(loop.status)) {
+        return {
+          ok: false as const,
+          status: 409 as const,
+          body: { error: `cannot pause Ralph loop in terminal status: ${loop.status}`, status: loop.status },
+        };
+      }
 
-    if (loop.status === 'running') {
-      loop.status = 'paused';
-      currentTask.updatedAt = new Date();
-      return { ok: true, value: structuredClone(loop), changed: true };
-    }
+      if (loop.status === 'running') {
+        loop.status = 'paused';
+        currentTask.updatedAt = new Date();
+        return { ok: true as const, value: structuredClone(loop), changed: true };
+      }
 
-    return { ok: true, value: structuredClone(loop), changed: false };
+      return { ok: true as const, value: structuredClone(loop), changed: false };
+    }) ?? missingTask();
   }
 
   async resumeLoop(task: Task): Promise<RalphLoopServiceResult<RalphLoopState>> {
-    const currentTask = this.deps.taskStore.getTaskForMutation(task.id);
+    // Live ref across findLiveSession + catchUpFromLatestStop awaits.
+    const currentTask = this.deps.taskStore.runRalphMutation(task.id, (t) => t);
     if (!currentTask) return missingTask();
     const loop = currentTask.ralphLoop;
     if (!loop) return missingLoop();
@@ -565,7 +613,8 @@ export class RalphLoopService {
     event: AgentEvent,
     options: RalphStopHandlingOptions = {},
   ): Promise<void> {
-    const currentTask = this.deps.taskStore.getTaskForMutation(task.id);
+    // Live ref across stop fingerprint handling (cycler + launch awaits).
+    const currentTask = this.deps.taskStore.runRalphMutation(task.id, (t) => t);
     if (!currentTask) return;
     if (!currentTask.ralphLoop || currentTask.ralphLoop.status !== 'running') return;
     if (!this.deps.ralphCycler) return;
@@ -590,7 +639,8 @@ export class RalphLoopService {
     };
 
     for (const taskSnapshot of this.deps.taskStore.getAllTasks()) {
-      const task = this.deps.taskStore.getTaskForMutation(taskSnapshot.id);
+      // Live ref: probe + audit write + status mutation span awaits.
+      const task = this.deps.taskStore.runRalphMutation(taskSnapshot.id, (t) => t);
       if (!task) continue;
       const loop = task.ralphLoop;
       if (!loop || loop.status !== 'running') continue;
@@ -689,7 +739,9 @@ export class RalphLoopService {
     stopFingerprint: string,
     options: RalphStopHandlingOptions = {},
   ): Promise<void> {
-    const currentTask = this.deps.taskStore.getTaskForMutation(task.id);
+    // Live ref across cost scan / verdict read / cycler / launch awaits.
+    // Re-fetch loop after each await so concurrent status changes are visible.
+    const currentTask = this.deps.taskStore.runRalphMutation(task.id, (t) => t);
     if (!currentTask?.ralphLoop || currentTask.ralphLoop.status !== 'running') return;
     const ralphCycler = this.deps.ralphCycler;
     if (!ralphCycler) return;
@@ -717,7 +769,7 @@ export class RalphLoopService {
       });
       // Fire any interaction-log events the cycler decided should fire.
       this.fireCyclerEvents(action.events);
-      const currentLoop = this.deps.taskStore.getTaskForMutation(currentTask.id)?.ralphLoop;
+      const currentLoop = this.deps.taskStore.runRalphMutation(currentTask.id, (t) => t.ralphLoop);
       if (
         !currentLoop
         || currentLoop.status !== 'running'
@@ -725,29 +777,33 @@ export class RalphLoopService {
       ) return;
 
       if (action.kind === 'launch_fresh') {
-        const actionTask = this.deps.taskStore.getTaskForMutation(action.taskId);
+        const actionTask = this.deps.taskStore.runRalphMutation(action.taskId, (t) => t);
         if (!actionTask) return;
         if (this.deps.monitor.refreshRalphZeroDiffStreak(sessionId)) {
           this.broadcastSnapshot();
         }
         try {
           const newSessionId = await this.launchFreshRuntime(actionTask, action.text);
-          const loopAfterLaunch = this.deps.taskStore.getTaskForMutation(currentTask.id)?.ralphLoop;
-          if (loopAfterLaunch?.handlingStopFingerprint === stopFingerprint) {
-            delete loopAfterLaunch.handlingStopFingerprint;
-            loopAfterLaunch.lastHandledStopFingerprint = stopFingerprint;
-          }
+          this.deps.taskStore.runRalphMutation(currentTask.id, (t) => {
+            const loopAfterLaunch = t.ralphLoop;
+            if (loopAfterLaunch?.handlingStopFingerprint === stopFingerprint) {
+              delete loopAfterLaunch.handlingStopFingerprint;
+              loopAfterLaunch.lastHandledStopFingerprint = stopFingerprint;
+            }
+          });
           this.deps.monitor.refreshRalphZeroDiffStreak(newSessionId);
           this.broadcastSnapshot();
         } catch (err) {
-          const loopAfterLaunch = this.deps.taskStore.getTaskForMutation(currentTask.id)?.ralphLoop;
-          if (loopAfterLaunch?.handlingStopFingerprint === stopFingerprint) {
-            delete loopAfterLaunch.handlingStopFingerprint;
-            loopAfterLaunch.lastHandledStopFingerprint = stopFingerprint;
-            if (!(err instanceof RalphLaunchInterruptedError)) {
-              loopAfterLaunch.status = 'failed';
+          this.deps.taskStore.runRalphMutation(currentTask.id, (t) => {
+            const loopAfterLaunch = t.ralphLoop;
+            if (loopAfterLaunch?.handlingStopFingerprint === stopFingerprint) {
+              delete loopAfterLaunch.handlingStopFingerprint;
+              loopAfterLaunch.lastHandledStopFingerprint = stopFingerprint;
+              if (!(err instanceof RalphLaunchInterruptedError)) {
+                loopAfterLaunch.status = 'failed';
+              }
             }
-          }
+          });
           if (err instanceof RalphLaunchInterruptedError) return;
           throw err;
         }
@@ -761,10 +817,11 @@ export class RalphLoopService {
         this.broadcastSnapshot();
       }
     } catch (err) {
-      const currentLoop = this.deps.taskStore.getTaskForMutation(currentTask.id)?.ralphLoop;
-      if (currentLoop?.handlingStopFingerprint === stopFingerprint) {
-        delete currentLoop.handlingStopFingerprint;
-      }
+      this.deps.taskStore.runRalphMutation(currentTask.id, (t) => {
+        if (t.ralphLoop?.handlingStopFingerprint === stopFingerprint) {
+          delete t.ralphLoop.handlingStopFingerprint;
+        }
+      });
       throw err;
     }
   }
@@ -786,7 +843,8 @@ export class RalphLoopService {
   }
 
   private async launchFreshRuntime(task: Task, prompt: string): Promise<string> {
-    const currentTask = this.deps.taskStore.getTaskForMutation(task.id);
+    // Live ref across verdict unlink / template render / session launch awaits.
+    const currentTask = this.deps.taskStore.runRalphMutation(task.id, (t) => t);
     if (!currentTask) throw new Error(`Task not found: ${task.id}`);
     const loop = currentTask.ralphLoop;
     if (!loop) throw new Error(`Task ${task.id} has no Ralph loop`);
@@ -823,21 +881,29 @@ export class RalphLoopService {
         },
       });
     } catch (err) {
-      if (currentTask.ralphLoop?.ownerSessionId === newTmuxName) {
-        delete currentTask.ralphLoop.ownerSessionId;
-      }
+      this.deps.taskStore.runRalphMutation(task.id, (t) => {
+        if (t.ralphLoop?.ownerSessionId === newTmuxName) {
+          delete t.ralphLoop.ownerSessionId;
+        }
+      });
       throw err;
     }
 
-    const liveTask = this.deps.taskStore.getTaskForMutation(task.id) ?? currentTask;
-    const liveLoop = liveTask.ralphLoop;
-    if (!liveLoop || liveLoop.status !== 'running') {
-      await this.deps.terminalBackend.killSession(newTmuxName).catch(() => undefined);
-      if (liveTask.ralphLoop?.ownerSessionId === newTmuxName) {
-        delete liveTask.ralphLoop.ownerSessionId;
+    const postLaunch = this.deps.taskStore.runRalphMutation(task.id, (liveTask) => {
+      const liveLoop = liveTask.ralphLoop;
+      if (!liveLoop || liveLoop.status !== 'running') {
+        if (liveTask.ralphLoop?.ownerSessionId === newTmuxName) {
+          delete liveTask.ralphLoop.ownerSessionId;
+        }
+        return { ok: false as const, status: liveLoop?.status };
       }
+      return { ok: true as const };
+    }) ?? { ok: false as const, status: undefined as RalphLoopStatus | undefined };
+
+    if (!postLaunch.ok) {
+      await this.deps.terminalBackend.killSession(newTmuxName).catch(() => undefined);
       throw new RalphLaunchInterruptedError(
-        `loop status changed during launch (now ${liveLoop?.status ?? 'gone'})`,
+        `loop status changed during launch (now ${postLaunch.status ?? 'gone'})`,
       );
     }
 
