@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import type { AgentState } from '../../core/monitor.js';
+import type { AgentState } from '../../shared/contracts/agent-state.js';
 import type { GitHubReference } from '../../core/github-types.js';
 import { buildGithubTaskOverlay } from './github-task-overlay.js';
 

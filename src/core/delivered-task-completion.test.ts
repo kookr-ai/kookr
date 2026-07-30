@@ -96,9 +96,9 @@ describe('classifyDeliveredCompletion', () => {
     }
   });
 
-  // INVARIANT 3 — state guards: a non-running task, an active Ralph loop, or an
-  // already-pending completion_ready signal are never auto-completed here, no
-  // matter how far past the budget.
+  // INVARIANT 3 — state guards: a non-running task, an active Ralph loop, an
+  // already-pending completion_ready signal, or a provider pause are never
+  // auto-completed here, no matter how far past the budget.
   it('INV3: state guards are never overridden by an exceeded budget', () => {
     const wayPast = { now: new Date(T0 + 10 * 60 * 60_000), firstObservedMergedAtMs: T0, budgetMs: 60_000 };
 
@@ -136,6 +136,14 @@ describe('classifyDeliveredCompletion', () => {
       expect(notOptedIn.autoComplete).toBe(false);
       expect(notOptedIn.reason).toBe('not_opted_in');
     }
+
+    // Issue #1667: provider pause blocks delivered auto-complete.
+    const paused = classifyDeliveredCompletion(runningTask(), MERGED, {
+      ...wayPast,
+      providerPaused: true,
+    });
+    expect(paused.autoComplete).toBe(false);
+    expect(paused.reason).toBe('provider_paused');
   });
 
   // INVARIANT 4 — exact boundary under a controlled clock.

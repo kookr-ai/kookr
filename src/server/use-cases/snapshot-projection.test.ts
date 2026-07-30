@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AgentState } from '../../core/monitor.js';
+import type { MonitorAgentState } from '../../core/monitor.js';
+import type { AgentState } from '../../shared/contracts/agent-state.js';
 import { TaskStore } from '../../core/tasks.js';
 import { buildSnapshotProjection } from './snapshot-projection.js';
 
@@ -25,14 +26,14 @@ function guardedWorktreePrompt(userPrompt: string, delivery: 'ask-first' | 'pre-
   ].join('\n');
 }
 
-function project(taskStore: TaskStore, monitorStates: AgentState[] = []): AgentState[] {
+function project(taskStore: TaskStore, monitorStates: MonitorAgentState[] = []): AgentState[] {
   return buildSnapshotProjection({
     monitorStates,
     tasks: taskStore.getAllTasks(),
   });
 }
 
-function liveAgent(agentId: string, overrides: Partial<AgentState> = {}): AgentState {
+function liveAgent(agentId: string, overrides: Partial<MonitorAgentState> = {}): MonitorAgentState {
   return {
     agentId,
     events: [],
