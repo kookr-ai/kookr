@@ -127,6 +127,10 @@ export function registerIssueClaimRoutes(app: Hono, deps: IssueClaimRouteDeps): 
     return c.json({
       owned: true,
       reentrant: result.reentrant,
+      // Include resolved repo so CLI success lines never print "(unknown repo)"
+      // when --repo was omitted (issue #1230 dogfood).
+      repo,
+      number,
       ...(result.tookOver ? { tookOver: deps.decorate(result.tookOver) } : {}),
     });
   });
@@ -212,6 +216,44 @@ export function registerIssueClaimRoutes(app: Hono, deps: IssueClaimRouteDeps): 
 
     const records = deps.registry.listRecords({ repo, number }).map((record) => deps.decorate(record));
     return c.json(records);
+  });
+
+  // R16: automatic caller exhausted re-selection after exit-6 denials.
+  // Emits an `exhausted` audit event so give-up is observable (not silent).
+  app.post(`${ISSUE_CLAIMS_PATH}/exhausted`, async (c) => {
+    if (!deps.enabled) return disabledResponse(c);
+
+    let body: Record<string, unknown>;
+    try {
+      body = (await c.req.json()) as Record<string, unknown>;
+    } catch {
+      return c.json({ error: 'invalid JSON body' }, 400);
+    }
+
+    const number = body.number;
+    if (typeof number !== 'number' || !Number.isInteger(number) || number <= 0) {
+      return c.json({ error: 'number must be a positive integer' }, 400);
+    }
+    if (typeof body.repo !== 'string' || body.repo.trim() === '') {
+      return c.json({ error: 'repo is required for exhausted events' }, 400);
+    }
+    const repo =
+      projectIdFromRepoSpecifier(body.repo)
+      ?? (isSafeGithubProjectId(body.repo) ? body.repo : null);
+    if (!repo) {
+      return c.json({ error: `invalid repo: ${body.repo}` }, 400);
+    }
+    const requestingTaskId = typeof body.taskId === 'string' ? body.taskId : undefined;
+    const reason = typeof body.reason === 'string' ? body.reason : undefined;
+
+    deps.registry.recordExhausted(
+      { repo, number },
+      {
+        ...(requestingTaskId !== undefined ? { requestingTaskId } : {}),
+        ...(reason !== undefined ? { reason } : {}),
+      },
+    );
+    return c.json({ ok: true, decision: 'exhausted', repo, number });
   });
 }
 

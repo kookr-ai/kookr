@@ -54,6 +54,17 @@ gh issue list -R {{repoFullName}} --label "bug" --state open --limit 50 --json n
 gh issue list -R {{repoFullName}} --label "bug" --state closed --limit 100 --json number,title,closedAt
 ```
 
+## Phase 1.5: Kookr claim when creating/updating a triage issue (RFC PR 1b)
+
+Before opening or editing a fork triage issue that maps to a specific upstream bug, claim the upstream issue number so parallel triage runs do not double-file:
+
+```bash
+REPO="{{repoFullName}}"
+TARGET=<upstream_bug_number>
+kookr issue claim "$TARGET" --repo "$REPO"
+# exit 6 → skip this upstream bug; exit 3 → park; 0/404 → proceed
+```
+
 ## Phase 2: Score and act
 
 ### Confidence Score (1-5): Is this a real bug?

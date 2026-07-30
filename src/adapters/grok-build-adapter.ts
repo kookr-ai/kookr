@@ -349,6 +349,7 @@ export class GrokBuildAdapter implements AgentAdapter {
       taskId,
       cwd,
       serverPort: this.serverPort,
+      sessionName: tmuxName,
     });
 
     // Compose an isolated per-session GROK_HOME: monitoring hooks + linked

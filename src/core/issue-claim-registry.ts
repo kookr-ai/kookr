@@ -210,6 +210,24 @@ export class IssueClaimRegistry {
     return records;
   }
 
+  /**
+   * Record that an automatic caller exhausted re-selection after exit-6
+   * denials (RFC R16). Emits a single `exhausted` ClaimEvent so give-up is
+   * observable in the audit log — callers also surface a coordinator finding.
+   * Does not mutate ownership state.
+   */
+  recordExhausted(
+    key: ClaimKey,
+    opts: { requestingTaskId?: string; reason?: string } = {},
+  ): void {
+    this.emit({
+      decision: 'exhausted',
+      ...key,
+      ...(opts.requestingTaskId !== undefined ? { requestingTaskId: opts.requestingTaskId } : {}),
+      ...(opts.reason !== undefined ? { reason: opts.reason } : {}),
+    });
+  }
+
   private grant(key: ClaimKey, claimant: { taskId: string; sessionId?: string }, takeoverOf?: string): void {
     // One claim per task (PR 1): a task claiming a new key releases its old one.
     this.releaseAllFor(claimant.taskId);

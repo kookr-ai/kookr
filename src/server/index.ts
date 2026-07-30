@@ -835,6 +835,59 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     if (bootClaimsReleased > 0) {
       console.log(`[issue-claims] boot reconcile released ${bootClaimsReleased} claim(s)`);
     }
+
+    // Boot backfill (RFC PR 1b / R23): for in-flight tasks that have no
+    // issueClaim projection yet, attempt a high-confidence grant through the
+    // CAS when GitHubStateStore has exactly one live issue reference for the
+    // task. Never invent from playbookParameterValues (stale/re-targeted).
+    // Underivable tasks stay a bounded fail-open window and are logged with
+    // their ids so operators can see who is unprotected.
+    let backfilled = 0;
+    const unprotected: string[] = [];
+    for (const task of taskStore.getAllTasks()) {
+      if (isTerminalStatus(task.status)) continue;
+      if (task.issueClaim) continue;
+      const issueRefs = githubStateStore
+        .getReferences(task.id)
+        .filter((r) => r.type === 'issue');
+      if (issueRefs.length === 0) {
+        unprotected.push(task.id);
+        continue;
+      }
+      // Collapse to unique (owner/repo, number). Multiple distinct issues →
+      // underivable (do not guess which one the task "owns").
+      const unique = new Map<string, { repo: string; number: number }>();
+      for (const ref of issueRefs) {
+        const repo = `github.com/${ref.owner}/${ref.repo}`;
+        unique.set(`${repo}\t${ref.number}`, { repo, number: ref.number });
+      }
+      if (unique.size !== 1) {
+        unprotected.push(task.id);
+        continue;
+      }
+      const key = [...unique.values()][0]!;
+      const sessionId = task.sessions.find(
+        (s) => s.lastStatus !== 'completed' && s.lastStatus !== 'aborted',
+      )?.tmuxSession;
+      const result = issueClaimServices.registry.claim(
+        key,
+        { taskId: task.id, ...(sessionId ? { sessionId } : {}) },
+      );
+      if (result.ok) {
+        backfilled++;
+      } else {
+        // Another live owner already holds it — this task stays unprotected.
+        unprotected.push(task.id);
+      }
+    }
+    if (backfilled > 0) {
+      console.log(`[issue-claims] boot backfill granted ${backfilled} claim(s)`);
+    }
+    if (unprotected.length > 0) {
+      console.log(
+        `[issue-claims] ${unprotected.length} unprotected: ${unprotected.join(', ')}`,
+      );
+    }
   }
   for (const task of taskStore.getAllTasks()) {
     for (const session of task.sessions) {
@@ -1039,6 +1092,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     );
   }
 
+  // Holder filled after TaskStateSaveScheduler is constructed below — R5
+  // force-flush on claim grant must go through the same scheduler the routes
+  // use. Until then flush is a no-op (no launch can complete before serve).
+  let flushTasksForClaims: (() => Promise<void>) | undefined;
+
+  // Claim-repo resolver for the launch-path CAS (RFC PR 1b). Built once so
+  // fork/upstream lookups share the process-lifetime cache with the HTTP
+  // claim routes (createUpstreamOfResolver is invoked again later for routes;
+  // each instance has its own cache, which is fine — lookups are rare).
+  const launchPathUpstreamOf = createUpstreamOfResolver();
+
   // Launch service deps — shared by WS handler, REST routes, and the Ralph
   // cycler's fresh-runtime launcher inside wireEventPipeline.
   const launchServiceDeps: LaunchServiceDeps = {
@@ -1079,6 +1143,20 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // the default), read at boot; the sample is read live per launch.
     getMaxHostLoadPerCpu: () => hostLoadAdmissionThreshold,
     getHostLoadSample: () => ({ load1m: loadavg()[0], cpuCount: cpus().length }),
+    // RFC PR 1b: hot-path claim CAS. Flag-off leaves these undefined →
+    // claimIssue on LaunchOpts is a strict no-op (R7).
+    ...(issueClaimServices ? {
+      issueClaimRegistry: issueClaimServices.registry,
+      resolveClaimRepo: (input: { cwd: string; repoFlag?: string }) => resolveClaimRepo(
+        input,
+        {
+          getProjectId,
+          activeProjectIds: () => taskStore.getProjectIds(),
+          upstreamOf: launchPathUpstreamOf,
+        },
+      ),
+      flushTasks: () => flushTasksForClaims?.() ?? Promise.resolve(),
+    } : {}),
   };
 
   let remoteLaunchBroker: import('../remote/launch-broker.js').RemoteLaunchBroker | undefined;
@@ -1215,6 +1293,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     suppressionTracker,
     persistenceHealth,
   });
+  // Wire R5 force-flush for the launch-path claim CAS (holder filled above).
+  flushTasksForClaims = () => taskStateSaveScheduler.flush('flush', { force: true });
 
   // --- Self-diagnostic runner ---
   const serverStartMs = Date.now();

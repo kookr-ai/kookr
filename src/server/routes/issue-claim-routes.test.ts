@@ -119,7 +119,12 @@ describe('issue-claim routes', () => {
         jsonRequest('POST', { repo: KEY.repo, number: KEY.number, taskId: 'a', sessionId: 'kookr-aaa' }),
       );
       expect(res.status).toBe(200);
-      expect(await res.json()).toMatchObject({ owned: true, reentrant: false });
+      expect(await res.json()).toMatchObject({
+        owned: true,
+        reentrant: false,
+        repo: KEY.repo,
+        number: KEY.number,
+      });
       expect(flushTasks).toHaveBeenCalledTimes(1);
       expect(port.tasks.get('a')?.issueClaim).toMatchObject({ repo: KEY.repo, number: KEY.number });
     });

@@ -54,6 +54,19 @@ Check no PR already exists:
 gh pr list -R {{repoFullName}} --author "@me" --state open --json number,title,headRefName
 ```
 
+## Phase 1.5: Kookr issue claim (RFC PR 1b)
+
+For each eligible fix issue, claim ownership before opening a PR:
+
+```bash
+REPO="{{repoFullName}}"
+TARGET=<upstream_number>
+kookr issue claim "$TARGET" --repo "$REPO"
+# exit 0 → proceed (or claims off/404 → pre-lock, R26)
+# exit 6 → skip this issue; after full pass + one reconcile retry, POST /api/issue-claims/exhausted
+# exit 3 → park (R25); do not open a PR while ownership is unverifiable
+```
+
 ## Phase 2: Prepare each fix
 
 ```bash
