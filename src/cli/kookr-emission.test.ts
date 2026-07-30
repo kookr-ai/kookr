@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { EMISSION_BUDGET_SCHEMA_VERSION } from '../core/emission-budget.js';
 import { computeCiBlindDebt } from '../core/ci-blind-debt.js';
 import { buildRetroVerifyEntry } from '../core/retro-verify-queue.js';
+import { EnvironmentBlockerRegistry } from '../core/environment-blocker-registry.js';
 import {
+  parseBlockerKey,
   parseEmissionArgs,
   runEmissionCli,
   USAGE,
@@ -447,5 +452,165 @@ describe('runEmissionCli version (issue #1657)', () => {
     });
     expect(code).toBe(0);
     expect(io.logs.join('\n')).toMatch(/cannot verify/i);
+  });
+});
+
+describe('parseBlockerKey', () => {
+  it('splits type:scope on the first colon', () => {
+    expect(parseBlockerKey('ci-billing:github-actions')).toEqual({
+      type: 'ci-billing',
+      scope: 'github-actions',
+    });
+  });
+
+  it('returns null for a malformed key', () => {
+    expect(parseBlockerKey('no-colon')).toBeNull();
+    expect(parseBlockerKey(':scope')).toBeNull();
+    expect(parseBlockerKey('type:')).toBeNull();
+  });
+});
+
+describe('runEmissionCli tolerance-machinery cap (issue #1702)', () => {
+  const planGh =
+    (open: number, closed: number) =>
+    (args: string[]): string => {
+      if (args[0] === 'api') {
+        const q = args.find((a) => a.startsWith('q=')) ?? '';
+        if (q.includes('is:closed')) return `${closed}\n`;
+        if (q.includes('is:open')) return `${open}\n`;
+        return '0\n';
+      }
+      if (args[0] === 'issue') return '[]';
+      throw new Error(`unexpected gh args: ${args.join(' ')}`);
+    };
+
+  it('refuses new tolerance machinery when the blocker already has a regime', async () => {
+    const io = mkIo();
+    const code = await runEmissionCli(
+      [
+        'plan',
+        '--repo',
+        'jeanibarz/lucy',
+        '--requested',
+        '3',
+        '--tolerance-blocker',
+        'ci-billing:github-actions',
+        '--json',
+      ],
+      {
+        ...io,
+        runGh: planGh(10, 5),
+        readToleranceRegime: async (key) => key === 'ci-billing:github-actions',
+      },
+    );
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.plan.toleranceRegimeCoupled).toBe(true);
+    expect(payload.plan.toleranceRegimeBlocked).toBe(true);
+    expect(payload.plan.toleranceRegimeBlockerKey).toBe('ci-billing:github-actions');
+    expect(payload.plan.allowedBudget).toBe(0);
+    expect(payload.plan.action).toBe('refuse');
+    expect(payload.note).toMatch(/tolerance regime/i);
+  });
+
+  it('allows the run when the blocker has no regime yet', async () => {
+    const io = mkIo();
+    const code = await runEmissionCli(
+      [
+        'plan',
+        '--repo',
+        'jeanibarz/lucy',
+        '--requested',
+        '3',
+        '--tolerance-blocker',
+        'ci-billing:github-actions',
+        '--json',
+      ],
+      {
+        ...io,
+        runGh: planGh(10, 5),
+        readToleranceRegime: async () => false,
+      },
+    );
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.plan.toleranceRegimeCoupled).toBe(true);
+    expect(payload.plan.toleranceRegimeBlocked).toBe(false);
+    expect(payload.plan.allowedBudget).toBeGreaterThan(0);
+  });
+
+  it('does not consult the gate when --tolerance-blocker is omitted', async () => {
+    const io = mkIo();
+    let consulted = false;
+    const code = await runEmissionCli(
+      ['plan', '--repo', 'jeanibarz/lucy', '--requested', '3', '--json'],
+      {
+        ...io,
+        runGh: planGh(10, 5),
+        readToleranceRegime: async () => {
+          consulted = true;
+          return true;
+        },
+      },
+    );
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(consulted).toBe(false);
+    expect(payload.plan.toleranceRegimeCoupled).toBe(false);
+  });
+
+  it('reads the real env-blocker registry from --kookr-dir (no injection)', async () => {
+    // Exercises the non-injected loadToleranceRegimeActive glue end-to-end:
+    // parse key → construct registry → load() → hasRegime.
+    const dir = mkdtempSync(join(tmpdir(), 'emission-tolerance-e2e-'));
+    try {
+      const registry = new EnvironmentBlockerRegistry(dir);
+      await registry.register({ type: 'ci-billing', scope: 'github-actions', requiresHuman: true });
+      await registry.recordRegimeEntry('ci-billing', 'github-actions', '#1688');
+
+      const io = mkIo();
+      const code = await runEmissionCli(
+        [
+          'plan',
+          '--repo',
+          'jeanibarz/lucy',
+          '--requested',
+          '3',
+          '--tolerance-blocker',
+          'ci-billing:github-actions',
+          '--kookr-dir',
+          dir,
+          '--json',
+        ],
+        { ...io, runGh: planGh(10, 5) }, // no readToleranceRegime → real disk read
+      );
+      expect(code).toBe(0);
+      const payload = JSON.parse(io.logs[0]!);
+      expect(payload.plan.toleranceRegimeBlocked).toBe(true);
+      expect(payload.plan.allowedBudget).toBe(0);
+
+      // A blocker without a recorded regime is not blocked (real read, fail-open).
+      const io2 = mkIo();
+      await runEmissionCli(
+        [
+          'plan',
+          '--repo',
+          'jeanibarz/lucy',
+          '--requested',
+          '3',
+          '--tolerance-blocker',
+          'search-quota:brave',
+          '--kookr-dir',
+          dir,
+          '--json',
+        ],
+        { ...io2, runGh: planGh(10, 5) },
+      );
+      const payload2 = JSON.parse(io2.logs[0]!);
+      expect(payload2.plan.toleranceRegimeCoupled).toBe(true);
+      expect(payload2.plan.toleranceRegimeBlocked).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

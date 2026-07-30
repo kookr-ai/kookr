@@ -5,8 +5,10 @@ import { join } from 'node:path';
 import {
   EnvironmentBlockerRegistry,
   ENVIRONMENT_BLOCKER_REGISTRY_FILE,
+  DEFAULT_STALE_ESCALATION_TTL_MS,
   environmentBlockerKey,
   type EnvironmentBlocker,
+  type EnvironmentBlockerEscalation,
 } from './environment-blocker-registry.js';
 
 describe('EnvironmentBlockerRegistry', () => {
@@ -84,7 +86,9 @@ describe('EnvironmentBlockerRegistry', () => {
     await registry.register({ type: 'ci-billing', scope: 'github-actions', detectedBy: 'task-3' });
 
     expect(notify).toHaveBeenCalledTimes(1);
-    expect(notify.mock.calls[0][0].key).toBe('ci-billing:github-actions');
+    expect(notify.mock.calls[0][0].blocker.key).toBe('ci-billing:github-actions');
+    expect(notify.mock.calls[0][0].kind).toBe('initial');
+    expect(notify.mock.calls[0][0].escalationCount).toBe(1);
     // notifiedAt recorded and persisted.
     expect(registry.get('ci-billing', 'github-actions')?.notifiedAt).toBeDefined();
     expect(readFile().blockers['ci-billing:github-actions'].notifiedAt).toBeDefined();
@@ -273,5 +277,221 @@ describe('EnvironmentBlockerRegistry', () => {
     expect(registry.consult('ci-billing', 'github-actions').blocked).toBe(true);
     expect(errorSpy).toHaveBeenCalled();
     errorSpy.mockRestore();
+  });
+
+  describe('re-escalation heartbeat for requires_human blockers (issue #1702)', () => {
+    test('an ordinary blocker is single-shot — heartbeat never re-escalates it', async () => {
+      let now = Date.parse('2026-07-30T00:00:00.000Z');
+      const notify = vi.fn();
+      const registry = new EnvironmentBlockerRegistry(tempDir, { notify, now: () => now });
+      await registry.register({ type: 'ci-billing', scope: 'github-actions' });
+      expect(notify).toHaveBeenCalledTimes(1);
+
+      // Advance well past the TTL — an ordinary (non-human) blocker stays quiet.
+      now += DEFAULT_STALE_ESCALATION_TTL_MS * 3;
+      const fired = await registry.heartbeat();
+      expect(fired).toHaveLength(0);
+      expect(notify).toHaveBeenCalledTimes(1);
+    });
+
+    test('a requires_human blocker re-escalates once the staleness TTL elapses', async () => {
+      let now = Date.parse('2026-07-30T00:00:00.000Z');
+      const notify = vi.fn();
+      const registry = new EnvironmentBlockerRegistry(tempDir, {
+        notify,
+        now: () => now,
+        staleTtlMs: 24 * 60 * 60 * 1000,
+      });
+      await registry.register({ type: 'ci-billing', scope: 'github-actions', requiresHuman: true });
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(notify.mock.calls[0][0].kind).toBe('initial');
+
+      // Not yet stale: 12h in, heartbeat is a no-op.
+      now += 12 * 60 * 60 * 1000;
+      expect(await registry.heartbeat()).toHaveLength(0);
+      expect(notify).toHaveBeenCalledTimes(1);
+
+      // Past the TTL: re-escalate exactly once with an incremented count.
+      now += 13 * 60 * 60 * 1000;
+      const fired = await registry.heartbeat();
+      expect(fired).toHaveLength(1);
+      expect(notify).toHaveBeenCalledTimes(2);
+      const second = notify.mock.calls[1][0] as EnvironmentBlockerEscalation;
+      expect(second.kind).toBe('re-escalation');
+      expect(second.escalationCount).toBe(2);
+
+      // Immediately after, not stale again — no double-fire.
+      expect(await registry.heartbeat()).toHaveLength(0);
+      expect(notify).toHaveBeenCalledTimes(2);
+    });
+
+    test('re-escalation state survives a restart (lastEscalatedAt persisted)', async () => {
+      let now = Date.parse('2026-07-30T00:00:00.000Z');
+      const notify = vi.fn();
+      const registry = new EnvironmentBlockerRegistry(tempDir, {
+        notify,
+        now: () => now,
+      });
+      await registry.register({ type: 'ci-billing', scope: 'github-actions', requiresHuman: true });
+      expect(notify).toHaveBeenCalledTimes(1);
+
+      // Reload; the reloaded registry sees a recent lastEscalatedAt and stays quiet.
+      const reloaded = new EnvironmentBlockerRegistry(tempDir, { notify, now: () => now });
+      await reloaded.load();
+      now += 1 * 60 * 60 * 1000;
+      expect(await reloaded.heartbeat()).toHaveLength(0);
+      expect(notify).toHaveBeenCalledTimes(1);
+
+      // Once the TTL elapses across the restart boundary, it re-escalates.
+      now += DEFAULT_STALE_ESCALATION_TTL_MS;
+      expect(await reloaded.heartbeat()).toHaveLength(1);
+      expect(notify).toHaveBeenCalledTimes(2);
+    });
+
+    test('the staleness boundary is inclusive: fires at exactly the TTL, not one ms before', async () => {
+      let now = Date.parse('2026-07-30T00:00:00.000Z');
+      const ttl = 24 * 60 * 60 * 1000;
+      const notify = vi.fn();
+      const registry = new EnvironmentBlockerRegistry(tempDir, {
+        notify,
+        now: () => now,
+        staleTtlMs: ttl,
+      });
+      await registry.register({ type: 'ci-billing', scope: 'github-actions', requiresHuman: true });
+      expect(notify).toHaveBeenCalledTimes(1);
+
+      // One ms short of the TTL: not due.
+      now += ttl - 1;
+      expect(await registry.heartbeat()).toHaveLength(0);
+      expect(notify).toHaveBeenCalledTimes(1);
+
+      // Exactly the TTL (now - lastEscalatedAt === ttl): due (>= is inclusive).
+      now += 1;
+      expect(await registry.heartbeat()).toHaveLength(1);
+      expect(notify).toHaveBeenCalledTimes(2);
+    });
+
+    test('a blocker cleared mid-sweep is not escalated (snapshot vs live map)', async () => {
+      let now = Date.parse('2026-07-30T00:00:00.000Z');
+      const notify = vi.fn();
+      // Once armed, escalating the FIRST blocker clears the SECOND mid-sweep.
+      // The heartbeat iterates a snapshot taken before the clear, so without the
+      // live has() re-check it would deliver a spurious escalation for the
+      // just-cleared blocker.
+      let armed = false;
+      const registry: EnvironmentBlockerRegistry = new EnvironmentBlockerRegistry(tempDir, {
+        notify,
+        now: () => now,
+        costProvider: async () => {
+          if (armed) {
+            armed = false; // only clear once, during the first escalation of the sweep
+            await registry.clear('search-quota', 'brave');
+          }
+          return { ciBlindMergeCount: 0, retroVerifyQueueDepth: 0 };
+        },
+      });
+      await registry.register({ type: 'ci-billing', scope: 'github-actions', requiresHuman: true });
+      await registry.register({ type: 'search-quota', scope: 'brave', requiresHuman: true });
+      notify.mockClear();
+
+      now += 2 * 24 * 60 * 60 * 1000;
+      armed = true;
+      const fired = await registry.heartbeat();
+
+      // Only the first (still-active) blocker re-escalated.
+      expect(fired).toHaveLength(1);
+      expect(fired[0]!.blocker.key).toBe('ci-billing:github-actions');
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(registry.get('search-quota', 'brave')).toBeUndefined();
+    });
+  });
+
+  describe('escalation cost payload (issue #1702)', () => {
+    test('escalation carries CI-blind merge count, retro-verify depth, and blocked capabilities', async () => {
+      const notify = vi.fn();
+      // Distinct values so a field swap/conflation in buildCost cannot pass.
+      const costProvider = vi
+        .fn()
+        .mockResolvedValue({ ciBlindMergeCount: 7, retroVerifyQueueDepth: 3 });
+      const registry = new EnvironmentBlockerRegistry(tempDir, { notify, costProvider });
+
+      await registry.register({
+        type: 'ci-billing',
+        scope: 'github-actions',
+        requiresHuman: true,
+        blockedCapability: 'ci',
+      });
+      await registry.register({
+        type: 'search-quota',
+        scope: 'brave',
+        blockedCapability: 'web-search',
+      });
+
+      const escalation = notify.mock.calls[0][0] as EnvironmentBlockerEscalation;
+      expect(escalation.cost.ciBlindMergeCount).toBe(7);
+      expect(escalation.cost.retroVerifyQueueDepth).toBe(3);
+      // Blocked-capability list spans every active blocker, sorted + deduped.
+      const latest = notify.mock.calls.at(-1)![0] as EnvironmentBlockerEscalation;
+      expect(latest.cost.blockedCapabilities).toEqual(['ci', 'web-search']);
+    });
+
+    test('a cost-provider failure does not block escalation — cost falls back to zero', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const notify = vi.fn();
+      const costProvider = vi.fn().mockRejectedValue(new Error('spool unreadable'));
+      const registry = new EnvironmentBlockerRegistry(tempDir, { notify, costProvider });
+
+      await registry.register({ type: 'ci-billing', scope: 'github-actions', blockedCapability: 'ci' });
+      expect(notify).toHaveBeenCalledTimes(1);
+      const escalation = notify.mock.calls[0][0] as EnvironmentBlockerEscalation;
+      expect(escalation.cost.ciBlindMergeCount).toBe(0);
+      expect(escalation.cost.retroVerifyQueueDepth).toBe(0);
+      expect(escalation.cost.blockedCapabilities).toEqual(['ci']);
+      errorSpy.mockRestore();
+    });
+
+    test('a NaN/undefined cost figure is coerced to 0, not leaked into the payload', async () => {
+      const notify = vi.fn();
+      const costProvider = vi
+        .fn()
+        .mockResolvedValue({ ciBlindMergeCount: Number.NaN, retroVerifyQueueDepth: undefined });
+      const registry = new EnvironmentBlockerRegistry(tempDir, { notify, costProvider });
+
+      await registry.register({ type: 'ci-billing', scope: 'github-actions' });
+      const escalation = notify.mock.calls[0][0] as EnvironmentBlockerEscalation;
+      expect(escalation.cost.ciBlindMergeCount).toBe(0);
+      expect(escalation.cost.retroVerifyQueueDepth).toBe(0);
+    });
+  });
+
+  describe('tolerance-regime tracking (issue #1702)', () => {
+    test('recordRegimeEntry appends deduped refs; hasRegime flips once one exists', async () => {
+      const registry = new EnvironmentBlockerRegistry(tempDir);
+      await registry.register({ type: 'ci-billing', scope: 'github-actions', requiresHuman: true });
+
+      expect(registry.hasRegime('ci-billing', 'github-actions')).toBe(false);
+
+      const first = await registry.recordRegimeEntry('ci-billing', 'github-actions', '#1688');
+      expect(first.recorded).toBe(true);
+      expect(registry.hasRegime('ci-billing', 'github-actions')).toBe(true);
+
+      // Idempotent: the same ref is not appended twice.
+      const dup = await registry.recordRegimeEntry('ci-billing', 'github-actions', '#1688');
+      expect(dup.recorded).toBe(false);
+      await registry.recordRegimeEntry('ci-billing', 'github-actions', '#1691');
+      expect(registry.getRegime('ci-billing', 'github-actions')).toEqual(['#1688', '#1691']);
+
+      // Persisted across a restart.
+      const reloaded = new EnvironmentBlockerRegistry(tempDir);
+      await reloaded.load();
+      expect(reloaded.getRegime('ci-billing', 'github-actions')).toEqual(['#1688', '#1691']);
+    });
+
+    test('recordRegimeEntry on an unknown blocker is a no-op', async () => {
+      const registry = new EnvironmentBlockerRegistry(tempDir);
+      const result = await registry.recordRegimeEntry('ci-billing', 'github-actions', '#1');
+      expect(result).toEqual({ recorded: false, regime: [] });
+      expect(registry.hasRegime('ci-billing', 'github-actions')).toBe(false);
+    });
   });
 });
