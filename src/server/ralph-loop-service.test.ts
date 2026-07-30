@@ -726,3 +726,12 @@ describe('RalphLoopService', () => {
     expect(updated.updatedAt.getTime()).toBeGreaterThanOrEqual(before);
   });
 });
+
+
+describe('Ralph escape hatch closure (issue #1461)', () => {
+  test('ralph-loop-service production source does not call getTaskForMutation', () => {
+    const src = readFileSync(new URL('./ralph-loop-service.ts', import.meta.url), 'utf8');
+    expect(src).not.toMatch(/getTaskForMutation/);
+    expect(src).toMatch(/runRalphMutation/);
+  });
+});
