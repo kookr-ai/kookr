@@ -70,7 +70,9 @@ export class ReflectionHandler {
       }),
       cwd: this.deps.serverCwd,
       name: 'Reflect on session friction',
-    });
+      // Reflect skills carry their own human confirmation gates; ask-first
+      // keeps the server gate consistent with the skill's designed flow.
+    }, { deliveryPolicy: 'ask-first' });
 
     await this.deps.interactionLog?.append({
       type: 'reflect_triggered',

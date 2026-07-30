@@ -969,7 +969,7 @@ async function launchTaskCore(
   const launchNote = formatLaunchNote(dependencyFindings);
 
   const userPrompt = normalizePromptFileReferences(opts.prompt, opts.cwd);
-  const deliveryAuthorization: DeliveryAuthorization = serverOpts.deliveryPolicy ?? 'ask-first';
+  const deliveryAuthorization: DeliveryAuthorization = serverOpts.deliveryPolicy ?? 'pre-authorized';
   const guardedPrompt = await applyWorktreeGuardrails(opts.prompt, opts.cwd, deliveryAuthorization);
   const effectivePrompt = normalizePromptFileReferences(guardedPrompt, opts.cwd);
   const bypassAllPermissions = deps.bypassAllPermissions === true;

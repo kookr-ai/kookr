@@ -81,6 +81,32 @@ Ship it.
     expect(pb.deliveryPreAuthorized).toBeUndefined();
   });
 
+  test('parses deliveryPreAuthorized:false frontmatter', () => {
+    const content = `---
+name: Explicit opt-out
+deliveryPreAuthorized: false
+---
+Ask first.
+`;
+
+    const pb = parsePlaybook(content, 'ask.md', '/project');
+
+    expect(pb.deliveryPreAuthorized).toBe(false);
+  });
+
+  test('fails safe to false when deliveryPreAuthorized has an unrecognized value', () => {
+    const content = `---
+name: Malformed opt-out
+deliveryPreAuthorized: no
+---
+Ask first.
+`;
+
+    const pb = parsePlaybook(content, 'malformed.md', '/project');
+
+    expect(pb.deliveryPreAuthorized).toBe(false);
+  });
+
   test('parses autoCloseOnSignal frontmatter', () => {
     const content = `---
 name: Auto-close chain

@@ -373,7 +373,7 @@ Loop route.
         projectId: `local/${basename(targetCwd)}`,
         playbookId: 'workflow.md',
       }),
-      { deliveryPolicy: 'ask-first' },
+      { deliveryPolicy: 'pre-authorized' },
     );
   });
 
