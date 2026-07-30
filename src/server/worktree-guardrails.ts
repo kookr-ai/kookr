@@ -117,7 +117,7 @@ function buildGuidance(
 export async function applyWorktreeGuardrails(
   prompt: string,
   cwd: string,
-  deliveryPolicy: DeliveryPolicy = 'ask-first',
+  deliveryPolicy: DeliveryPolicy = 'pre-authorized',
 ): Promise<string> {
   if (!prompt.trim() || hasWorktreeGuardrails(prompt)) return prompt;
 

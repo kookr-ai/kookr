@@ -121,6 +121,10 @@ playbook-internal policy. The guardrail builder **swaps the gate sentence**:
 
 - default (absent/false) — current text: "…ask the user whether to push the
   branch and open a PR."
+  > **Amended 2026-07-30 (#1706):** the default flipped. Absent now resolves
+  > to **pre-authorized**; only an explicit `deliveryPreAuthorized: false`
+  > (or serverOpts `deliveryPolicy: 'ask-first'`) produces the ask-first
+  > gate. Unrecognized frontmatter values fail safe to ask-first.
 - pre-authorized — replacement: "Delivery is pre-authorized for this task:
   when your work is committed and verified, finish the full delivery cycle
   without asking again — commit, push the branch, open or update the PR, and

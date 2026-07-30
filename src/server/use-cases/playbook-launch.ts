@@ -134,7 +134,7 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
 
   return {
     playbook,
-    deliveryPolicy: playbook.deliveryPreAuthorized ? 'pre-authorized' : 'ask-first',
+    deliveryPolicy: playbook.deliveryPreAuthorized === false ? 'ask-first' : 'pre-authorized',
     launchOpts: {
       prompt,
       cwd: effectiveCwd,

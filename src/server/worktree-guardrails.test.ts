@@ -24,12 +24,26 @@ async function initGitRepo(dir: string) {
 }
 
 describe('applyWorktreeGuardrails', () => {
-  it('uses ask-first delivery guidance by default', async () => {
+  it('uses pre-authorized delivery guidance by default', async () => {
     const repoDir = await mkdtemp(join(tmpdir(), 'guardrails-'));
     try {
       await initGitRepo(repoDir);
 
       const prompt = await applyWorktreeGuardrails('Implement it.', repoDir);
+
+      expect(prompt).toContain('Delivery is pre-authorized for this task');
+      expect(prompt).not.toContain('ask the user whether to push the branch and open a PR');
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses ask-first delivery guidance when explicitly requested', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'guardrails-'));
+    try {
+      await initGitRepo(repoDir);
+
+      const prompt = await applyWorktreeGuardrails('Implement it.', repoDir, 'ask-first');
 
       expect(prompt).toContain('ask the user whether to push the branch and open a PR');
       expect(prompt).not.toContain('Delivery is pre-authorized for this task');

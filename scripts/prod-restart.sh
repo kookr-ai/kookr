@@ -16,7 +16,12 @@ else
   READY_URL=""
   READY_URL_EXPLICIT=0
 fi
-STARTUP_TIMEOUT_SECONDS="${KOOKR_STARTUP_TIMEOUT_SECONDS:-720}"
+# Startup gate deadline (issue #1721). The server binds its listener only after
+# full recovery (task load, session reattach, event replay) — measured at ~10.5
+# minutes on a 727-task instance, which raced the old 720s default. Keep the
+# default comfortably above observed startup so a loaded box doesn't fail the
+# deploy and tempt a retry that kills the almost-ready server.
+STARTUP_TIMEOUT_SECONDS="${KOOKR_STARTUP_TIMEOUT_SECONDS:-1800}"
 CHECK_INTERVAL_SECONDS="${KOOKR_STARTUP_CHECK_INTERVAL_SECONDS:-2}"
 # Per-probe curl bound for the liveness gate (issue #1553). The deadline loop
 # only re-checks BETWEEN curls, so one unbounded curl against a hung
@@ -328,6 +333,7 @@ wait_for_health() {
     exit 1
   fi
 
+  local last_heartbeat=$SECONDS
   while (( SECONDS < deadline )); do
     sleep "$CHECK_INTERVAL_SECONDS"
     if ! kill -0 "$start_pid" 2>/dev/null; then
@@ -340,6 +346,10 @@ wait_for_health() {
       rm -f "$PID_FILE"
       echo " Kookr prod restarted successfully"
       return 0
+    fi
+    if (( SECONDS - last_heartbeat >= 30 )); then
+      echo "Still waiting for ${HEALTH_URL} (${SECONDS}s elapsed of ${STARTUP_TIMEOUT_SECONDS}s; server pid ${start_pid} alive — startup normally takes ~10min at scale)"
+      last_heartbeat=$SECONDS
     fi
   done
 
@@ -361,6 +371,7 @@ restart_systemd_unit() {
 wait_for_systemd_health() {
   local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
 
+  local last_heartbeat=$SECONDS
   while (( SECONDS < deadline )); do
     sleep "$CHECK_INTERVAL_SECONDS"
     if ! systemctl --user is-active --quiet kookr.service >/dev/null 2>&1; then
@@ -371,6 +382,10 @@ wait_for_systemd_health() {
     if curl -sf --max-time "$HEALTH_CURL_MAX_TIME_SECONDS" "$HEALTH_URL"; then
       echo " Kookr systemd service restarted successfully"
       return 0
+    fi
+    if (( SECONDS - last_heartbeat >= 30 )); then
+      echo "Still waiting for ${HEALTH_URL} (${SECONDS}s elapsed of ${STARTUP_TIMEOUT_SECONDS}s; kookr.service active — startup normally takes ~10min at scale)"
+      last_heartbeat=$SECONDS
     fi
   done
 
