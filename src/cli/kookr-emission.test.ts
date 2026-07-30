@@ -1,19 +1,37 @@
 import { describe, expect, it } from 'vitest';
 import { EMISSION_BUDGET_SCHEMA_VERSION } from '../core/emission-budget.js';
+import { computeCiBlindDebt } from '../core/ci-blind-debt.js';
+import { buildRetroVerifyEntry } from '../core/retro-verify-queue.js';
 import {
   parseEmissionArgs,
   runEmissionCli,
   USAGE,
 } from './kookr-emission.js';
 
-function mkIo() {
+function mkIo(opts: { retroVerifyDepth?: number } = {}) {
   const logs: string[] = [];
   const errs: string[] = [];
+  const depth = opts.retroVerifyDepth ?? 0;
+  const entries =
+    depth > 0
+      ? Array.from({ length: depth }, (_, i) =>
+          buildRetroVerifyEntry({
+            sha: `${'a'.repeat(39)}${i.toString(16)}`.slice(0, 40).padEnd(40, '0'),
+            prNumber: i + 1,
+            repo: 'jeanibarz/lucy',
+            reason: 'verified-locally',
+            createdAt: '2026-07-28T00:00:00.000Z',
+          }),
+        )
+      : [];
+  const debt = computeCiBlindDebt(entries, { now: new Date('2026-07-30T12:00:00.000Z') });
   return {
     out: { log: (...a: unknown[]) => logs.push(a.map(String).join(' ')) },
     err: { error: (...a: unknown[]) => errs.push(a.map(String).join(' ')) },
     logs,
     errs,
+    // Isolate from the real ~/.kookr retro-verify spool so unit tests are hermetic.
+    readRetroVerifyDepth: async () => ({ depth: debt.queueDepth, debt }),
   };
 }
 
@@ -280,6 +298,104 @@ describe('runEmissionCli drain coupling (issue #1657)', () => {
     const payload = JSON.parse(io.logs[0]!);
     expect(payload.plan.drainCoupled).toBe(false);
     expect(payload.plan.allowedBudget).toBe(10); // full budget restored
+  });
+});
+
+describe('runEmissionCli retro-verify / ci_blind_debt (issue #1703)', () => {
+  function planGh(openCount: number, closedCount: number) {
+    return (args: string[]) => {
+      if (args[0] === 'api') {
+        const q = args.find((a) => a.startsWith('q=')) ?? '';
+        if (q.includes('is:closed')) return `${closedCount}\n`;
+        if (q.includes('is:open')) return `${openCount}\n`;
+        return '0\n';
+      }
+      if (args[0] === 'issue') return '[]';
+      throw new Error(`unexpected gh args: ${args.join(' ')}`);
+    };
+  }
+
+  it('withholds the emission budget when retro-verify depth exceeds the threshold', async () => {
+    // Acceptance criterion: emission budget is withheld while retro-verify
+    // depth exceeds a threshold (default 0 ⇒ any debt refuses).
+    const io = mkIo({ retroVerifyDepth: 4 });
+    const code = await runEmissionCli(
+      ['plan', '--repo', 'jeanibarz/lucy', '--requested', '10', '--json'],
+      { ...io, runGh: planGh(10, 5) },
+    );
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.plan.schemaVersion).toBe(EMISSION_BUDGET_SCHEMA_VERSION);
+    expect(payload.plan.retroVerifyCoupled).toBe(true);
+    expect(payload.plan.retroVerifyDepth).toBe(4);
+    expect(payload.plan.retroVerifyWithheld).toBe(true);
+    expect(payload.plan.allowedBudget).toBe(0);
+    expect(payload.plan.action).toBe('refuse');
+    expect(payload.ci_blind_debt.queueDepth).toBe(4);
+    expect(payload.ciBlindDebt.blindMergeCount).toBe(4);
+    expect(payload.burstDrainFirst).toBe(true);
+    expect(payload.note).toMatch(/kookr retro-verify drain/);
+  });
+
+  it('allows emission when the retro-verify queue is empty', async () => {
+    const io = mkIo({ retroVerifyDepth: 0 });
+    const code = await runEmissionCli(
+      ['plan', '--repo', 'jeanibarz/lucy', '--requested', '10', '--json'],
+      { ...io, runGh: planGh(10, 5) },
+    );
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.plan.retroVerifyWithheld).toBe(false);
+    expect(payload.plan.allowedBudget).toBe(5); // drain-coupled: closed=5
+    expect(payload.ci_blind_debt.queueDepth).toBe(0);
+    expect(payload.burstDrainFirst).toBe(false);
+  });
+
+  it('includes ci_blind_debt on metrics for the daily report', async () => {
+    const io = mkIo({ retroVerifyDepth: 2 });
+    const code = await runEmissionCli(
+      ['metrics', '--repo', 'jeanibarz/lucy', '--json'],
+      {
+        ...io,
+        runGh: (args) => {
+          if (args[0] === 'api') {
+            const q = args.find((a) => a.startsWith('q=')) ?? '';
+            if (q.includes('is:open')) return '20\n';
+            if (q.includes('created:')) return '5\n';
+            if (q.includes('closed:')) return '3\n';
+            return '0\n';
+          }
+          throw new Error(`unexpected gh args: ${args.join(' ')}`);
+        },
+      },
+    );
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.ci_blind_debt.queueDepth).toBe(2);
+    expect(payload.ciBlindDebt.blindMergeCount).toBe(2);
+    expect(payload.emissionBudgetIfRequested10.retroVerifyWithheld).toBe(true);
+    expect(payload.emissionBudgetIfRequested10.allowedBudget).toBe(0);
+  });
+
+  it('disables the ci_blind_debt gate with --no-retro-verify-coupling', async () => {
+    const io = mkIo({ retroVerifyDepth: 99 });
+    const code = await runEmissionCli(
+      [
+        'plan',
+        '--repo',
+        'jeanibarz/lucy',
+        '--requested',
+        '10',
+        '--no-retro-verify-coupling',
+        '--json',
+      ],
+      { ...io, runGh: planGh(10, 5) },
+    );
+    expect(code).toBe(0);
+    const payload = JSON.parse(io.logs[0]!);
+    expect(payload.plan.retroVerifyCoupled).toBe(false);
+    expect(payload.ci_blind_debt).toBeUndefined();
+    expect(payload.plan.allowedBudget).toBe(5);
   });
 });
 

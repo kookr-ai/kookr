@@ -1074,10 +1074,20 @@ Create exactly one GitHub issue for every candidate whose `publishDecision` is `
 
 ### Phase 7.0 — Emission budget (mandatory before any `gh issue create`)
 
-Before filing, resolve how many new issues this run may open. Two coupled limits apply, and the plan reports the tighter one:
+Before filing, resolve how many new issues this run may open. Three coupled limits apply, and the plan reports the tightest one:
 
 - **Backlog cap.** When the target repo's open backlog ≥ 60, the budget collapses to 2 regardless of `PUBLISH_TARGET`.
 - **Drain cap (issue #1657).** `kookr emission plan` additionally caps the budget by the **target repo's own drain rate** — the count of issues it *closed* in the last 7 days. A repo draining ~1 issue/window admits ~0–1 new issues/window even when its absolute backlog sits under 60. This is keyed on `--repo` (the repository being filed into), never the emitting actor's home repo, so a high-drain actor filing into a low-drain repo is throttled by the low-drain target. Use `--no-drain-coupling` only to reproduce the legacy backlog-only budget.
+- **ci_blind_debt / retro-verify gate (issue #1703).** When the durable retro-verify queue depth exceeds the threshold (default 0 = any pending blind-merge debt), the plan refuses new feature-issue emissions (`allowedBudget=0`, `retroVerifyWithheld=true`) so verification drains before more inventory is filed. On CI recovery, **burst-drain first**:
+
+```bash
+# Burst-drain SLO (#1703): re-verify merges made while CI was signal-absent
+# before opening new feature issues. Failures auto-file a tracked P1.
+if [ "$(kookr retro-verify status --json 2>/dev/null | jq -r '.ci_blind_debt.queueDepth // 0')" -gt 0 ]; then
+  echo "ci_blind_debt: non-empty retro-verify queue — burst-draining before emission"
+  kookr retro-verify drain --json || true
+fi
+```
 
 Over-budget candidates are deferred to `~/.kookr/playbook-state/deferred-ideas/<repoSlug>.jsonl` (or appended to an existing umbrella issue) — never filed.
 
@@ -1096,12 +1106,17 @@ if [ "$PUBLISH" = "publish-safe" ]; then
   ACTION=$(printf '%s' "$EMISSION_PLAN" | jq -r '.plan.action')
   OPEN_BACKLOG=$(printf '%s' "$EMISSION_PLAN" | jq -r '.plan.openBacklogCount')
   DRAIN_CAP=$(printf '%s' "$EMISSION_PLAN" | jq -r '.plan.drainCap // "n/a"')
+  CI_BLIND_DEPTH=$(printf '%s' "$EMISSION_PLAN" | jq -r '.ci_blind_debt.queueDepth // 0')
+  RETRO_WITHHELD=$(printf '%s' "$EMISSION_PLAN" | jq -r '.plan.retroVerifyWithheld // false')
   printf '%s\n' "$EMISSION_PLAN" > "$STATE_DIR/emission-plan.json"
-  echo "emission-budget: action=$ACTION allowed=$ALLOWED requested=$REQUESTED openBacklog=$OPEN_BACKLOG drainCap=$DRAIN_CAP"
+  echo "emission-budget: action=$ACTION allowed=$ALLOWED requested=$REQUESTED openBacklog=$OPEN_BACKLOG drainCap=$DRAIN_CAP ci_blind_debt=$CI_BLIND_DEPTH retroVerifyWithheld=$RETRO_WITHHELD"
+  if [ "$RETRO_WITHHELD" = "true" ]; then
+    echo "ci_blind_debt gate: emission withheld — drain retro-verify queue before re-running publish"
+  fi
 fi
 ```
 
-Also capture the 7-day net backlog delta for this run **and** the stable daily-reflection signal path (opened7d − closed7d):
+Also capture the 7-day net backlog delta for this run **and** the stable daily-reflection signal path (opened7d − closed7d + ci_blind_debt):
 
 ```bash
 mkdir -p "$HOME/.kookr/playbook-state/emission-metrics"
@@ -1110,7 +1125,8 @@ kookr emission metrics --repo "$REPO" --json \
         "$HOME/.kookr/playbook-state/emission-metrics/${REPO_SLUG}.json" \
   || true
 # Daily reflection (session-self-reflect / Lucy workflow-reflection) reads
-# ~/.kookr/playbook-state/emission-metrics/<repoSlug>.json → netBacklogDelta7d.
+# ~/.kookr/playbook-state/emission-metrics/<repoSlug>.json →
+#   netBacklogDelta7d + ci_blind_debt (blindMergeCount, queueDepth).
 ```
 
 Use the reader-first `issue-body.md` as the body — never the local `report.md`, and never a state path. If `issue-created.json` already exists with a valid `url`, do not create another issue.

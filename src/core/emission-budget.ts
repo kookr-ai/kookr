@@ -38,8 +38,19 @@ export const DEFAULT_DRAIN_FLOOR_BUDGET = 0;
 // drain rate (closed-in-window), fixing low-backlog / low-drain repos (e.g.
 // lucy at backlog 52 < threshold 60 but draining ~1/window) that previously
 // received the full requested budget.
-export const EMISSION_BUDGET_SCHEMA_VERSION = 'emission-budget.v2' as const;
+// v3 (issue #1703): allowedBudget is additionally withheld when the
+// retro-verify (ci_blind_debt) queue depth exceeds a threshold, so new feature
+// emissions cannot outrun re-verification of merges made while CI was
+// signal-absent.
+export const EMISSION_BUDGET_SCHEMA_VERSION = 'emission-budget.v3' as const;
 export const NET_BACKLOG_DELTA_WINDOW_DAYS = 7;
+
+/**
+ * Default retro-verify depth at/above which new-issue emission is refused
+ * (issue #1703). 0 means any pending blind-merge debt withholds feature
+ * emissions until the queue is burst-drained (or sample-drained).
+ */
+export const DEFAULT_RETRO_VERIFY_DEPTH_THRESHOLD = 0;
 
 export interface EmissionBudgetInput {
   /** Current open issue count for the target repo. */
@@ -71,6 +82,19 @@ export interface EmissionBudgetInput {
   drainCouplingRatio?: number;
   /** Minimum budget regardless of drain. Default {@link DEFAULT_DRAIN_FLOOR_BUDGET}. */
   drainFloorBudget?: number;
+  /**
+   * Retro-verify / ci_blind_debt coupling (issue #1703): current depth of the
+   * durable retro-verify queue (merged-while-unverified commits). When provided
+   * and greater than {@link retroVerifyDepthThreshold}, the allowed budget is
+   * forced to 0 so feature-issue emissions wait for the queue to drain. Omit to
+   * disable this gate (legacy backlog + drain-only budget).
+   */
+  retroVerifyDepth?: number;
+  /**
+   * Depth at/above which emission is withheld. Default
+   * {@link DEFAULT_RETRO_VERIFY_DEPTH_THRESHOLD} (0 ⇒ any debt withholds).
+   */
+  retroVerifyDepthThreshold?: number;
 }
 
 export type EmissionBudgetAction = 'allow' | 'constrain' | 'refuse';
@@ -92,6 +116,17 @@ export interface EmissionBudgetPlan {
   drainCount?: number;
   /** The drain-derived cap on allowedBudget, when drain coupling is active. */
   drainCap?: number;
+  /**
+   * True when the retro-verify / ci_blind_debt gate was consulted (issue #1703).
+   * Distinct from "withheld": depth can be 0 and the gate still reports.
+   */
+  retroVerifyCoupled: boolean;
+  /** Retro-verify queue depth used for the gate, when provided. */
+  retroVerifyDepth?: number;
+  /** Threshold at/above which emission is withheld, when the gate is active. */
+  retroVerifyDepthThreshold?: number;
+  /** True when depth exceeded the threshold and allowedBudget was forced to 0. */
+  retroVerifyWithheld: boolean;
   action: EmissionBudgetAction;
   reason: string;
 }
@@ -232,6 +267,41 @@ export function resolveEmissionBudget(input: EmissionBudgetInput): EmissionBudge
     }
   }
 
+  // Retro-verify / ci_blind_debt coupling (issue #1703): when the durable
+  // retro-verify queue is deeper than the threshold, force allowedBudget to 0
+  // so new feature-issue emissions wait for a burst (or sample) drain. This is
+  // a strict tightening layered on the backlog + drain logic above.
+  let retroVerifyCoupled = false;
+  let retroVerifyDepth: number | undefined;
+  let retroVerifyDepthThreshold: number | undefined;
+  let retroVerifyWithheld = false;
+  if (input.retroVerifyDepth !== undefined && Number.isFinite(input.retroVerifyDepth)) {
+    retroVerifyCoupled = true;
+    retroVerifyDepth = clampNonNegInt(input.retroVerifyDepth);
+    retroVerifyDepthThreshold = clampNonNegInt(
+      input.retroVerifyDepthThreshold ?? DEFAULT_RETRO_VERIFY_DEPTH_THRESHOLD,
+    );
+    if (retroVerifyDepth > retroVerifyDepthThreshold && allowedBudget > 0) {
+      const priorAllowed = allowedBudget;
+      allowedBudget = 0;
+      retroVerifyWithheld = true;
+      action = 'refuse';
+      reason =
+        `ci_blind_debt: retro-verify queue depth ${retroVerifyDepth} exceeds ` +
+        `threshold ${retroVerifyDepthThreshold}; emission withheld ` +
+        `(tightened allowedBudget from ${priorAllowed} to 0). ` +
+        `Burst-drain the retro-verify queue before new feature-issue emissions.`;
+    } else if (retroVerifyDepth > retroVerifyDepthThreshold && allowedBudget === 0) {
+      // Already refused by an earlier gate; still mark the debt as observed so
+      // callers see that the queue needs draining even when budget was 0 for
+      // another reason.
+      retroVerifyWithheld = true;
+      reason =
+        `${reason} Also: ci_blind_debt retro-verify depth ${retroVerifyDepth} ` +
+        `> threshold ${retroVerifyDepthThreshold} — drain before re-emitting.`;
+    }
+  }
+
   return {
     schemaVersion: EMISSION_BUDGET_SCHEMA_VERSION,
     openBacklogCount,
@@ -244,9 +314,40 @@ export function resolveEmissionBudget(input: EmissionBudgetInput): EmissionBudge
     drainCoupled,
     ...(drainCount !== undefined ? { drainCount } : {}),
     ...(drainCap !== undefined ? { drainCap } : {}),
+    retroVerifyCoupled,
+    ...(retroVerifyDepth !== undefined ? { retroVerifyDepth } : {}),
+    ...(retroVerifyDepthThreshold !== undefined ? { retroVerifyDepthThreshold } : {}),
+    retroVerifyWithheld,
     action,
     reason,
   };
+}
+
+/**
+ * Whether the retro-verify queue must be burst-drained before a feature
+ * emission run (issue #1703). Pure decision over already-known facts:
+ * depth above threshold, and (when known) whether CI capacity has recovered.
+ *
+ * - When `ciRecovered` is true and depth exceeds the threshold → drain first.
+ * - When `ciRecovered` is false, sample-drain is still useful but the emission
+ *   budget gate (above) is what withholds new inventory; this helper returns
+ *   false so playbooks do not block on an unavailable full-CI drain.
+ * - When `ciRecovered` is unknown (`undefined`), any depth over threshold
+ *   still recommends a drain attempt (local-verification sample drain).
+ */
+export function shouldBurstDrainBeforeEmission(input: {
+  retroVerifyDepth: number;
+  retroVerifyDepthThreshold?: number;
+  /** True when CI/capacity probe reports recovery; false when still absent. */
+  ciRecovered?: boolean;
+}): boolean {
+  const depth = clampNonNegInt(input.retroVerifyDepth);
+  const threshold = clampNonNegInt(
+    input.retroVerifyDepthThreshold ?? DEFAULT_RETRO_VERIFY_DEPTH_THRESHOLD,
+  );
+  if (depth <= threshold) return false;
+  if (input.ciRecovered === false) return false;
+  return true;
 }
 
 /**

@@ -23,6 +23,7 @@ Usage:
   kookr maintenance backup [OPTIONS]  Create a crash-consistent data-dir backup tarball.
   kookr lesson status|drain|remember  Durable lesson-write spool (kb degraded path).
   kookr emission plan|dedupe|metrics|defer|version  Drain-coupled issue filing budget + dedupe.
+  kookr retro-verify status|drain|enqueue  CI-blind-merge debt + retro-verify drain.
   kookr pr-checklist verify|doctor [OPTIONS]  Verify PR checklist or report local gate fail-open rate.
   kookr context-pack --spec <f> --out <f>  Build a spawn-time context pack from a JSON spec.
   kookr push test <deviceId>    Send a relay push test.
@@ -151,6 +152,12 @@ async function main({
     return exit(process.exitCode ?? 0);
   }
 
+  // CI-blind-merge debt + retro-verify queue drain (issues #1689 / #1703).
+  if (command === 'retro-verify') {
+    await runRetroVerifyCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
+  }
+
   if (command === 'pr-checklist') {
     await runPrChecklistCommand(rest, { env, out, err });
     return exit(process.exitCode ?? 0);
@@ -232,6 +239,19 @@ async function runEmissionCommand(argv, { env = process.env, out = console, err 
   }
   const mod = await import(pathToFileURL(entry).href);
   process.exitCode = await mod.runEmissionCli(argv, { env, out, err });
+}
+
+async function runRetroVerifyCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const entry = join(here, '..', 'dist', 'cli', 'kookr-retro-verify.js');
+  if (!existsSync(entry)) {
+    err.error('[kookr] Build output not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build`) first.');
+    process.exitCode = 1;
+    return;
+  }
+  const mod = await import(pathToFileURL(entry).href);
+  process.exitCode = await mod.runRetroVerifyCli(argv, { env, out, err });
 }
 
 async function runCommandOutcomeCommand(argv) {

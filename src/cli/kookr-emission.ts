@@ -23,6 +23,7 @@ import {
   DEFAULT_DRAIN_COUPLING_RATIO,
   DEFAULT_DRAIN_FLOOR_BUDGET,
   DEFAULT_OPEN_BACKLOG_THRESHOLD,
+  DEFAULT_RETRO_VERIFY_DEPTH_THRESHOLD,
   EMISSION_BUDGET_SCHEMA_VERSION,
   NET_BACKLOG_DELTA_WINDOW_DAYS,
   budgetLogicVersionStatus,
@@ -32,13 +33,23 @@ import {
   deferredIdeasPath,
   extractSchemaVersion,
   resolveEmissionBudget,
+  shouldBurstDrainBeforeEmission,
   utcDayKeyDaysAgo,
   type EmissionBudgetPlan,
   type IssueRef,
   type NetBacklogDelta7d,
 } from '../core/emission-budget.js';
+import {
+  computeCiBlindDebt,
+  formatCiBlindDebtLogLine,
+  type CiBlindDebt,
+} from '../core/ci-blind-debt.js';
+import {
+  defaultRetroVerifyQueueDir,
+  readPendingRetroVerify,
+} from '../core/retro-verify-queue.js';
 
-export const USAGE = `kookr emission — drain-coupled issue filing budget + dedupe (#1607, #1657).
+export const USAGE = `kookr emission — drain-coupled issue filing budget + dedupe (#1607, #1657, #1703).
 
 Usage:
   kookr emission plan    --repo <owner/repo> --requested <N> [OPTIONS]
@@ -47,10 +58,11 @@ Usage:
   kookr emission defer   --repo <owner/repo> --title <text> --source <name> [OPTIONS]
   kookr emission version [--repo-dir <path>] [OPTIONS]
 
-plan     Resolve how many new issues this run may file given live open backlog
-         AND the target repo's drain rate (closed issues in the window, #1657).
+plan     Resolve how many new issues this run may file given live open backlog,
+         the target repo's drain rate (closed issues in the window, #1657), and
+         the retro-verify / ci_blind_debt queue depth (#1703).
 dedupe   Mandatory pre-filing duplicate check; always prints a log line.
-metrics  Open backlog + 7-day netBacklogDelta7d + current constrained budget.
+metrics  Open backlog + 7-day netBacklogDelta7d + ci_blind_debt + budget.
 defer    Append a candidate to the deferred-ideas JSONL instead of filing.
 version  Report the running budget-logic version and warn if it lags origin/main.
 
@@ -66,14 +78,23 @@ Options:
   --drain-ratio <N>       New issues earned per drained issue (default: ${DEFAULT_DRAIN_COUPLING_RATIO}).
   --drain-floor <N>       Minimum budget regardless of drain (default: ${DEFAULT_DRAIN_FLOOR_BUDGET}).
   --no-drain-coupling     Disable drain coupling (legacy backlog-only budget).
+  --retro-verify-threshold <N>
+                          Depth at/above which emission is withheld
+                          (default: ${DEFAULT_RETRO_VERIFY_DEPTH_THRESHOLD}).
+  --no-retro-verify-coupling
+                          Disable ci_blind_debt gate (do not read the queue).
   --body-preview <text>   Optional body snippet stored on defer.
   --kookr-dir <PATH>      State root for deferred-ideas (default: ~/.kookr).
+  --retro-verify-dir <PATH>
+                          Retro-verify queue dir (default: ~/.kookr/playbook-state/retro-verify-queue
+                          or KOOKR_RETRO_VERIFY_QUEUE_DIR).
   --repo-dir <PATH>       Local checkout to compare against origin/main (version).
   --json                  Machine-readable envelope on stdout.
   -h, --help              Show this help.
 
 Environment:
   GH_TOKEN / gh auth      Required for live GitHub counts (plan/dedupe/metrics).
+  KOOKR_RETRO_VERIFY_QUEUE_DIR  Override retro-verify queue path.
 
 Exit codes:
   0  Success.
@@ -92,6 +113,11 @@ export interface EmissionCliIo {
   runGit?: (args: string[]) => string;
   /** Injectable append for defer (tests). */
   appendLine?: (path: string, line: string) => void;
+  /**
+   * Injectable retro-verify depth reader (tests). When omitted, the CLI reads
+   * the durable queue from disk (or returns 0 / empty debt on ENOENT).
+   */
+  readRetroVerifyDepth?: () => Promise<{ depth: number; debt: CiBlindDebt }>;
 }
 
 interface ParsedArgs {
@@ -108,6 +134,9 @@ interface ParsedArgs {
   drainRatio: number;
   drainFloor: number;
   drainCoupling: boolean;
+  retroVerifyCoupling: boolean;
+  retroVerifyDepthThreshold: number;
+  retroVerifyDir: string | null;
   repoDir: string | null;
   kookrDir: string;
   json: boolean;
@@ -131,6 +160,9 @@ export function parseEmissionArgs(argv: string[]): ParsedArgs {
     drainRatio: DEFAULT_DRAIN_COUPLING_RATIO,
     drainFloor: DEFAULT_DRAIN_FLOOR_BUDGET,
     drainCoupling: true,
+    retroVerifyCoupling: true,
+    retroVerifyDepthThreshold: DEFAULT_RETRO_VERIFY_DEPTH_THRESHOLD,
+    retroVerifyDir: null,
     repoDir: null,
     kookrDir: `${homedir()}/.kookr`,
     json: false,
@@ -205,6 +237,19 @@ export function parseEmissionArgs(argv: string[]): ParsedArgs {
       }
     } else if (tok === '--no-drain-coupling') {
       out.drainCoupling = false;
+    } else if (tok === '--no-retro-verify-coupling') {
+      out.retroVerifyCoupling = false;
+    } else if (tok === '--retro-verify-threshold' || tok.startsWith('--retro-verify-threshold=')) {
+      out.retroVerifyDepthThreshold = tok.includes('=')
+        ? Number(tok.slice('--retro-verify-threshold='.length))
+        : eatNum('--retro-verify-threshold');
+      if (!Number.isFinite(out.retroVerifyDepthThreshold)) {
+        throw new EmissionUsageError('--retro-verify-threshold must be a number');
+      }
+    } else if (tok === '--retro-verify-dir' || tok.startsWith('--retro-verify-dir=')) {
+      out.retroVerifyDir = tok.includes('=')
+        ? tok.slice('--retro-verify-dir='.length)
+        : eat();
     } else if (tok === '--repo-dir' || tok.startsWith('--repo-dir=')) {
       out.repoDir = tok.includes('=') ? tok.slice('--repo-dir='.length) : eat();
     } else if (tok === '--kookr-dir' || tok.startsWith('--kookr-dir=')) {
@@ -302,8 +347,35 @@ function printPlanHuman(out: { log: (...a: unknown[]) => void }, plan: EmissionB
   out.log(`drainCoupled=${plan.drainCoupled}`);
   if (plan.drainCount !== undefined) out.log(`drainCount=${plan.drainCount}`);
   if (plan.drainCap !== undefined) out.log(`drainCap=${plan.drainCap}`);
+  out.log(`retroVerifyCoupled=${plan.retroVerifyCoupled}`);
+  if (plan.retroVerifyDepth !== undefined) out.log(`retroVerifyDepth=${plan.retroVerifyDepth}`);
+  if (plan.retroVerifyDepthThreshold !== undefined) {
+    out.log(`retroVerifyDepthThreshold=${plan.retroVerifyDepthThreshold}`);
+  }
+  out.log(`retroVerifyWithheld=${plan.retroVerifyWithheld}`);
   out.log(`action=${plan.action}`);
   out.log(`reason=${plan.reason}`);
+}
+
+async function loadCiBlindDebt(
+  args: ParsedArgs,
+  env: NodeJS.ProcessEnv,
+  now: () => Date,
+  inject?: EmissionCliIo['readRetroVerifyDepth'],
+): Promise<{ depth: number; debt: CiBlindDebt }> {
+  if (inject) return inject();
+  const spoolDir = args.retroVerifyDir ?? defaultRetroVerifyQueueDir(env);
+  try {
+    const pending = await readPendingRetroVerify(spoolDir);
+    const debt = computeCiBlindDebt(pending, { now: now() });
+    return { depth: debt.queueDepth, debt };
+  } catch {
+    // Fail-open for the metric path: a missing/unreadable spool is treated as
+    // zero debt rather than failing the whole plan (same posture as a failed
+    // drain-search). Operators can still inspect via `kookr retro-verify status`.
+    const debt = computeCiBlindDebt([], { now: now() });
+    return { depth: 0, debt };
+  }
 }
 
 export async function runEmissionCli(
@@ -366,6 +438,21 @@ export async function runEmissionCli(
           drainCount = undefined;
         }
       }
+      // ci_blind_debt / retro-verify coupling (#1703): read the durable queue
+      // and withhold feature emissions while depth exceeds the threshold so
+      // verification drains before new inventory.
+      let retroVerifyDepth: number | undefined;
+      let ciBlindDebt: CiBlindDebt | undefined;
+      let burstDrainFirst = false;
+      if (args.retroVerifyCoupling) {
+        const loaded = await loadCiBlindDebt(args, env, now, io.readRetroVerifyDepth);
+        retroVerifyDepth = loaded.depth;
+        ciBlindDebt = loaded.debt;
+        burstDrainFirst = shouldBurstDrainBeforeEmission({
+          retroVerifyDepth: loaded.depth,
+          retroVerifyDepthThreshold: args.retroVerifyDepthThreshold,
+        });
+      }
       const plan = resolveEmissionBudget({
         openBacklogCount,
         requestedBudget: args.requested,
@@ -378,21 +465,37 @@ export async function runEmissionCli(
               drainFloorBudget: args.drainFloor,
             }
           : {}),
+        ...(retroVerifyDepth !== undefined
+          ? {
+              retroVerifyDepth,
+              retroVerifyDepthThreshold: args.retroVerifyDepthThreshold,
+            }
+          : {}),
       });
       const payload = {
         ok: true,
         repo,
         plan,
+        ...(ciBlindDebt
+          ? {
+              ciBlindDebt,
+              ci_blind_debt: ciBlindDebt,
+              burstDrainFirst,
+            }
+          : {}),
         openIssueSample: openIssues.slice(0, 5).map((i) => ({ number: i.number, title: i.title })),
         note:
-          plan.deferredCount > 0
-            ? `With allowedBudget=${plan.allowedBudget}, ${plan.deferredCount} of the requested filings must be deferred/redirected.`
-            : undefined,
+          plan.retroVerifyWithheld
+            ? `ci_blind_debt gate: retro-verify depth ${plan.retroVerifyDepth} > threshold ${plan.retroVerifyDepthThreshold}; run \`kookr retro-verify drain\` before new feature emissions.`
+            : plan.deferredCount > 0
+              ? `With allowedBudget=${plan.allowedBudget}, ${plan.deferredCount} of the requested filings must be deferred/redirected.`
+              : undefined,
       };
       if (args.json) {
         out.log(JSON.stringify(payload));
       } else {
         printPlanHuman(out, plan);
+        if (ciBlindDebt) out.log(formatCiBlindDebtLogLine(ciBlindDebt));
         if (payload.note) out.log(payload.note);
       }
       return 0;
@@ -434,17 +537,33 @@ export async function runEmissionCli(
       const opened7d = searchTotalCount(runGh, `repo:${repo} is:issue created:>=${since}`);
       const closed7d = searchTotalCount(runGh, `repo:${repo} is:issue is:closed closed:>=${since}`);
       const delta = computeNetBacklogDelta7d(opened7d, closed7d);
+      let retroVerifyDepth: number | undefined;
+      let ciBlindDebt: CiBlindDebt | undefined;
+      if (args.retroVerifyCoupling) {
+        const loaded = await loadCiBlindDebt(args, env, now, io.readRetroVerifyDepth);
+        retroVerifyDepth = loaded.depth;
+        ciBlindDebt = loaded.debt;
+      }
       const plan = resolveEmissionBudget({
         openBacklogCount,
         requestedBudget: 10,
         openBacklogThreshold: args.threshold,
         constrainedBudget: args.constrained,
+        ...(retroVerifyDepth !== undefined
+          ? {
+              retroVerifyDepth,
+              retroVerifyDepthThreshold: args.retroVerifyDepthThreshold,
+            }
+          : {}),
       });
       const payload: {
         ok: true;
         repo: string;
         openBacklogCount: number;
         since: string;
+        ciBlindDebt?: CiBlindDebt;
+        /** snake_case alias for daily-report consumers (issue #1703). */
+        ci_blind_debt?: CiBlindDebt;
       } & NetBacklogDelta7d & {
           emissionBudgetIfRequested10: EmissionBudgetPlan;
         } = {
@@ -454,6 +573,7 @@ export async function runEmissionCli(
         since,
         ...delta,
         emissionBudgetIfRequested10: plan,
+        ...(ciBlindDebt ? { ciBlindDebt, ci_blind_debt: ciBlindDebt } : {}),
       };
       if (args.json) {
         out.log(JSON.stringify(payload));
@@ -464,8 +584,10 @@ export async function runEmissionCli(
         out.log(`closed7d=${delta.closed7d}`);
         out.log(`netBacklogDelta7d=${delta.netBacklogDelta7d}`);
         out.log(`since=${since}`);
+        if (ciBlindDebt) out.log(formatCiBlindDebtLogLine(ciBlindDebt));
         out.log(
-          `emissionBudget(if requested=10): allowed=${plan.allowedBudget} action=${plan.action}`,
+          `emissionBudget(if requested=10): allowed=${plan.allowedBudget} action=${plan.action}` +
+            (plan.retroVerifyWithheld ? ' retroVerifyWithheld=true' : ''),
         );
       }
       return 0;
