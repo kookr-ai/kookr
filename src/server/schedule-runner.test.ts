@@ -8,6 +8,7 @@ import {
   type ScheduleRunnerDeps,
   isTaskBlockingSchedule,
   SCHEDULE_GATE_MAX_TASK_AGE_MS,
+  FIRE_WALL_CLOCK_CAP_MS,
 } from './schedule-runner.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator } from './schedule-validator.js';
@@ -1239,6 +1240,170 @@ Do the thing.
 
     expect(check).toHaveBeenCalledTimes(2);
     expect(check).toHaveBeenCalledWith(store.list());
+  });
+
+  it('keeps the wall-clock cap below the tick interval (issue #1708 invariant)', () => {
+    // The whole decoupling relies on a stalled fire settling within one tick so
+    // it can never bleed into the next; the source comment claims "kept below
+    // TICK_INTERVAL_MS" (60_000). Lock that relationship in.
+    expect(FIRE_WALL_CLOCK_CAP_MS).toBeLessThan(60_000);
+  });
+
+  it('wall-clock-bounds a hung fire() so other fires and the dead-man still run (issue #1708)', async () => {
+    // Two due schedules. The FIRST schedule's launcher hangs forever; the
+    // second launches normally. A single hung fire() must not block the other
+    // fire OR the dead-man self-check — the whole point of #1708.
+    await writeFile(join(dir, '.kookr', 'playbooks', 'hang.md'), `---
+name: Hang Playbook
+parameters: []
+---
+
+HANG forever.
+`);
+    await writeFile(join(dir, '.kookr', 'playbooks', 'ok.md'), `---
+name: OK Playbook
+parameters: []
+---
+
+Launch fine.
+`);
+
+    // `hung` is created first so it is first in store.list() insertion order —
+    // under a (rejected) sequential-but-bounded implementation the ok fire
+    // would not even start until hung's cap elapsed. The concurrency assertion
+    // below relies on this ordering.
+    const hung = store.create({
+      name: 'Hangs',
+      cron: '* * * * *',
+      playbook: { path: 'hang.md', parameters: {} },
+      cwd: dir,
+    });
+    store.replace({ ...store.get(hung.id)!, createdAt: new Date(Date.now() - 2 * 60_000).toISOString() });
+    const ok = store.create({
+      name: 'Fires fine',
+      cron: '* * * * *',
+      playbook: { path: 'ok.md', parameters: {} },
+      cwd: dir,
+    });
+    store.replace({ ...store.get(ok.id)!, createdAt: new Date(Date.now() - 2 * 60_000).toISOString() });
+
+    const CAP = 1_000;
+    const start = Date.now();
+    let hungLauncherEntered = false;
+    let okLaunchedAtMs: number | undefined;
+    // Capture the hung schedule's receipt status AT dead-man-check time to prove
+    // the check runs BEFORE the fires reserve (decoupled), not merely once.
+    let hungStatusAtCheck: string | undefined = 'sentinel';
+    const deadManCheck = vi.fn((schedules: Array<ReturnType<ScheduleStore['get']>>) => {
+      const h = schedules.find((s) => s?.id === hung.id);
+      hungStatusAtCheck = h?.currentExecution?.status;
+    });
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      // Short cap so the hung launcher is bounded in real time without slowing
+      // the suite; production default is FIRE_WALL_CLOCK_CAP_MS. Comfortably
+      // above the healthy fire's real fs-persist cost so only the stuck fire
+      // trips it.
+      fireTimeoutMs: CAP,
+      launcher: async (opts) => {
+        if (opts.prompt.includes('HANG')) {
+          hungLauncherEntered = true;
+          return new Promise<never>(() => {}); // never settles — models a stuck launcher
+        }
+        okLaunchedAtMs = Date.now() - start;
+        return { task: { id: 'task-ok' } as any, queued: false };
+      },
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+      deadMan: { check: deadManCheck },
+    });
+
+    await runner.tick();
+    const elapsed = Date.now() - start;
+
+    // The tick was bounded — it did NOT wait on the never-settling launcher
+    // (which would hang the tick forever without the cap).
+    expect(elapsed).toBeLessThan(CAP * 3);
+    // The stuck launcher WAS entered — the cap is what let the tick move on.
+    expect(hungLauncherEntered).toBe(true);
+    // Concurrency: the ok fire launched WELL BEFORE hung's cap elapsed. Under a
+    // sequential-but-bounded loop (hung first) ok would not launch until ~CAP;
+    // proving it launched early is what proves a hung fire does not *block* the
+    // others, not merely that they eventually run.
+    expect(okLaunchedAtMs).toBeDefined();
+    expect(okLaunchedAtMs!).toBeLessThan(CAP / 2);
+    // The dead-man self-check ran, and ran BEFORE the fires reserved (its
+    // captured view of the hung schedule had no receipt yet) — i.e. decoupled
+    // from, not gated behind, the fire loop.
+    expect(deadManCheck).toHaveBeenCalledTimes(1);
+    expect(hungStatusAtCheck).toBeUndefined();
+    // The healthy schedule's fire completed and recorded an accepted execution.
+    const okAfter = store.get(ok.id)!;
+    expect(okAfter.currentExecution?.status).toBe('accepted');
+    expect(okAfter.latestExecution?.taskId).toBe('task-ok');
+    // The hung schedule is bounded: its reservation exists but never advanced
+    // past 'reserved' within the tick (its fire is still hanging in the
+    // background, where its own error path will eventually record the outcome).
+    const hungAfter = store.get(hung.id)!;
+    expect(hungAfter.currentExecution?.status).toBe('reserved');
+  });
+
+  it('does not re-fire (duplicate) a schedule whose previous fire is still in flight past the cap (issue #1708)', async () => {
+    // Regression guard: bounding a fire releases the tick's `firing` gate while
+    // the launcher is still stuck. Without an in-flight guard, the NEXT tick
+    // would see the same occurrence as due (reserveExecution already advanced
+    // lastScheduledFor) and, with disableDedup set, launch a SECOND task.
+    await writeFile(join(dir, '.kookr', 'playbooks', 'stuck.md'), `---
+name: Stuck Playbook
+parameters: []
+---
+
+Launch and stall.
+`);
+    const schedule = store.create({
+      name: 'Stuck',
+      cron: '* * * * *',
+      playbook: { path: 'stuck.md', parameters: {} },
+      cwd: dir,
+    });
+    store.replace({ ...store.get(schedule.id)!, createdAt: new Date(Date.now() - 2 * 60_000).toISOString() });
+
+    let launchCount = 0;
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      fireTimeoutMs: 200,
+      launcher: async () => {
+        launchCount += 1;
+        return new Promise<never>(() => {}); // never settles — the fire stays in flight
+      },
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+    });
+
+    // Force the schedule due again for the given tick. reserveExecution advances
+    // lastScheduledFor, so without this reset a later tick might not be due and
+    // the test would pass vacuously — we want due-ness so the in-flight guard is
+    // provably the ONLY thing preventing a second launch.
+    const forceDue = () =>
+      store.replace({ ...store.get(schedule.id)!, lastScheduledFor: new Date(Date.now() - 2 * 60_000).toISOString() });
+
+    // First tick launches once and is bounded by the cap.
+    await runner.tick();
+    expect(launchCount).toBe(1);
+
+    // Subsequent ticks — schedule due each time, fire still in flight — must
+    // NOT launch again.
+    forceDue();
+    await runner.tick();
+    forceDue();
+    await runner.tick();
+    expect(launchCount).toBe(1);
   });
 
   it('feeds the resolution alerter the unresolvable schedules (issue #1661)', async () => {

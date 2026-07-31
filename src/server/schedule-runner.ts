@@ -5,6 +5,7 @@ import { ScheduleValidationError, isTriggerLimitExhausted, scheduleResolutionSig
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator, resolveSchedulePlaybookSync } from './schedule-validator.js';
 import { isPendingQueueFullError, launchPhaseTimingsOf, type LaunchOpts, type LaunchResult } from './launch-service.js';
+import { withTimeout } from '../core/with-timeout.js';
 import {
   crossTierResolutionHint,
   type ScheduleResolutionProbe,
@@ -27,6 +28,18 @@ const scheduleResolutionProbe: ScheduleResolutionProbe = (playbookPath, scope, c
 
 const TICK_INTERVAL_MS = 60_000;
 const CATCHUP_MAX_STALENESS_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+/**
+ * Wall-clock cap for a single `fire()` (issue #1708). One hung launcher (the
+ * motivating case: grok-build stalling 90s+) must not be able to freeze the
+ * tick. Past this cap the fire is left to settle in the background — its own
+ * try/catch still records the ledger outcome if/when it finally settles — and
+ * the tick moves on. Kept below `TICK_INTERVAL_MS` so a stalled fire can never
+ * bleed one tick into the next, and well below the launcher's own
+ * `launchTimeoutSeconds` (default 180s) so the scheduler is not held hostage to
+ * the launch pipeline's slower internal deadline.
+ */
+export const FIRE_WALL_CLOCK_CAP_MS = 45_000;
 
 // A task is treated as still blocking its schedule only if its `updatedAt` is
 // within this window. Beyond it, the prior run is presumed abandoned and the
@@ -104,6 +117,12 @@ export interface ScheduleRunnerDeps {
    * unresolvable-playbook alerting (back-compat for older wiring/tests).
    */
   resolutionAlerter?: { check(unresolvable: UnresolvableScheduleInfo[], resolvedIds: string[]): void };
+  /**
+   * Per-fire wall-clock cap in ms (issue #1708). Parameterized for tests;
+   * defaults to {@link FIRE_WALL_CLOCK_CAP_MS}. A launcher that hangs past this
+   * cap is left to settle in the background so the tick is never frozen.
+   */
+  fireTimeoutMs?: number;
 }
 
 export class ScheduleRunner {
@@ -119,6 +138,16 @@ export class ScheduleRunner {
    * schedule does not emit a spurious `warn` on every process restart.
    */
   private lastResolution = new Map<string, { signature: string; resolvable: boolean }>();
+  /**
+   * Schedule ids whose `fire()` is still in flight (issue #1708). A fire that
+   * exceeds {@link FIRE_WALL_CLOCK_CAP_MS} releases the tick but keeps its id
+   * here until it TRULY settles, so the next tick does not re-fire — and
+   * duplicate-launch — a schedule whose launcher is still stuck. Bounded in
+   * practice by the launcher's own launch timeout; if a launcher never
+   * settles, one stuck fire is held per schedule (no duplicate zombies) and
+   * the dead-man switch flags the resulting starvation.
+   */
+  private inFlightFires = new Set<string>();
 
   constructor(deps: ScheduleRunnerDeps) {
     this.deps = deps;
@@ -181,7 +210,26 @@ export class ScheduleRunner {
     if (this.firing) return;
     this.firing = true;
     try {
+      // Dead-man starvation self-check (issue #1526 Phase C) runs FIRST, fully
+      // decoupled from the fires below (issue #1708). Previously it ran AFTER
+      // the `for…await fire()` loop so it could see this tick's outcomes — but
+      // that also meant a single hung `fire()` (grok-build stalling 90s+)
+      // froze the dead-man along with every other fire, defeating the very
+      // watchdog meant to notice the freeze. It reads accumulated ledger state
+      // (prior ticks' reservations and outcomes), so at worst it now lags one
+      // 60s tick — negligible against the multi-minute starvation window — and
+      // in exchange it is guaranteed to run every tick regardless of a stalled
+      // launcher. Wrapped defensively (like refreshPlaybookResolution's alerter
+      // call): the contract says `check` never throws, but a throw here must
+      // not abort the fire loop it exists to protect.
+      try {
+        this.deps.deadMan?.check(this.deps.store.list());
+      } catch (err) {
+        console.error('[schedule] dead-man check failed:', err);
+      }
+
       const now = new Date();
+      const fires: Array<Promise<void>> = [];
       for (const schedule of this.deps.store.list()) {
         if (!schedule.enabled) continue;
         if (isTriggerLimitExhausted(schedule)) {
@@ -190,14 +238,74 @@ export class ScheduleRunner {
         }
         const scheduledNextRun = computeNextRunFor(schedule);
         if (!scheduledNextRun || scheduledNextRun > now) continue;
-        await this.fire(schedule, 'cron', scheduledNextRun);
+        if (this.inFlightFires.has(schedule.id)) {
+          // A previous fire for this schedule is still in flight past its
+          // wall-clock cap (issue #1708). Skip rather than launch a duplicate:
+          // reserveExecution already advanced `lastScheduledFor`, so without
+          // this guard the now-released `firing` gate would let the next tick
+          // re-fire the same occurrence (disableDedup is set) and spawn a
+          // second task. It clears when the stuck fire finally settles.
+          console.warn(`[schedule] Skipping "${schedule.name}" — previous fire still in flight past its wall-clock cap (issue #1708)`);
+          continue;
+        }
+        // Fire concurrently and wall-clock-bound each (issue #1708): a single
+        // hung fire() no longer blocks the other due schedules, and each fire
+        // is capped so the tick as a whole settles within the cap. Fires touch
+        // only their own schedule's ledger, so concurrency is safe; the
+        // launcher still serializes capacity decisions (queues at capacity).
+        fires.push(this.fireBounded(schedule, 'cron', scheduledNextRun));
       }
-      // Dead-man starvation self-check (issue #1526 Phase C): runs AFTER the
-      // fires above so this tick's outcomes are already in the ledger.
-      this.deps.deadMan?.check(this.deps.store.list());
+      await Promise.allSettled(fires);
       this.deps.service.recordTickCompleted();
     } finally {
       this.firing = false;
+    }
+  }
+
+  /**
+   * Run one cron `fire()` under a wall-clock cap (issue #1708). If the fire
+   * settles within the cap, its result flows through as normal. If it hangs
+   * past the cap, this resolves anyway and leaves the underlying `fire()` to
+   * settle in the background — while its schedule id stays in
+   * {@link inFlightFires} so the next tick will not re-fire (and duplicate) it.
+   *
+   * The in-flight marker is cleared, and any error surfaced, only when the
+   * underlying `fire()` TRULY settles. `fire()` handles its own launcher
+   * errors internally (recording the ledger outcome), so the reject branch
+   * here catches only the pre-launcher failures ahead of that try/catch (e.g.
+   * reserveExecution throwing). Because the settlement promise is consumed by
+   * `withTimeout`'s race, a late settlement after the cap cannot surface as an
+   * unhandled rejection. Never rejects, so `Promise.allSettled` in the tick
+   * always resolves promptly.
+   */
+  private async fireBounded(
+    schedule: Schedule,
+    trigger: 'cron',
+    scheduledNextRun: Date,
+  ): Promise<void> {
+    const cap = this.deps.fireTimeoutMs ?? FIRE_WALL_CLOCK_CAP_MS;
+    this.inFlightFires.add(schedule.id);
+    const settled = this.fire(schedule, trigger, scheduledNextRun).then(
+      () => {
+        this.inFlightFires.delete(schedule.id);
+      },
+      (err) => {
+        this.inFlightFires.delete(schedule.id);
+        // A fire that rejects BEFORE its own launcher try/catch (e.g.
+        // reserveExecution throwing). Surface it so a broken fire is never
+        // silent; isolate it so it cannot abort the other fires.
+        const message = err instanceof Error ? err.message : String(err);
+        this.deps.service.recordRunnerError(`[schedule] Fire error for "${schedule.name}": ${message}`);
+        console.error(`[schedule] Fire error for "${schedule.name}":`, err);
+      },
+    );
+    const timedOut = await withTimeout(settled.then(() => false), cap, true);
+    if (timedOut) {
+      console.warn(
+        `[schedule] fire() for "${schedule.name}" exceeded the ${Math.round(cap / 1000)}s `
+        + 'wall-clock cap — leaving it to settle in the background so the tick is not frozen; '
+        + 'the schedule will not re-fire until it settles (issue #1708)',
+      );
     }
   }
 
