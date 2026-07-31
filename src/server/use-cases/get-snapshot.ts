@@ -354,7 +354,19 @@ function getProjectedSnapshotAgents(
   opts: { excludeTerminalBeforeMs?: number } = {},
 ): AgentState[] {
   const rawMonitorStates = deps.monitor.getSnapshot();
-  const taskSnapshot = deps.monitor.getTaskSnapshot?.();
+  // Thread the age cutoff into the fetch so aged terminal tasks are skipped
+  // BEFORE the per-task clone (issue #1749 follow-up) — cloning ~800 terminal
+  // tasks per snapshot build was a heap-limit OOM driver. The fetch keeps any
+  // aged task owning a LIVE monitor session (ghost-agent guard), so
+  // buildSnapshotProjection's re-application of the same cutoff below is
+  // REQUIRED, not redundant: it is what keeps those protected tasks out of the
+  // client payload as synthetic terminal entries (#1526 payload diet). It also
+  // keeps mocks that ignore the argument filtered.
+  const taskSnapshot = deps.monitor.getTaskSnapshot?.(
+    opts.excludeTerminalBeforeMs !== undefined
+      ? { excludeTerminalBeforeMs: opts.excludeTerminalBeforeMs }
+      : undefined,
+  );
   // Lightweight tests and legacy mocks may provide only raw monitor state.
   // The real server Monitor implements getTaskSnapshot, so production
   // dashboard paths receive task/session projection from this use-case.

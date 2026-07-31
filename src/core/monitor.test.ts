@@ -1819,4 +1819,42 @@ describe('Monitor', () => {
       expect(getDetectionStats().suppressionReasons.needs_input.snooze_false_positive).toBe(1);
     });
   });
+
+  describe('getTaskSnapshot pre-clone age filter (issue #1749 follow-up)', () => {
+    const AGED_MS = 30 * 24 * 60 * 60 * 1000;
+
+    function makeAgedTerminalTask(sessionId: string): string {
+      const task = taskStore.createTask(`Task for ${sessionId}`, '/cwd');
+      taskStore.addSession(task.id, {
+        tmuxSession: sessionId,
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(Date.now() - AGED_MS),
+      });
+      taskStore.completeTask(task.id);
+      const live = taskStore.getTaskForMutation(task.id)!;
+      const old = new Date(Date.now() - AGED_MS);
+      live.updatedAt = old;
+      if (live.finishedAt) live.finishedAt = old;
+      return task.id;
+    }
+
+    test('drops aged terminal tasks when a cutoff is passed, keeps them without one', () => {
+      const agedId = makeAgedTerminalTask('kookr-cold');
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      expect(monitor.getTaskSnapshot({ excludeTerminalBeforeMs: cutoff }).map((t) => t.id)).not.toContain(agedId);
+      expect(monitor.getTaskSnapshot().map((t) => t.id)).toContain(agedId);
+    });
+
+    test('ALWAYS keeps a task whose session is live in the monitor, however aged (ghost-agent guard)', () => {
+      // A live monitor state whose owning task is missing from the projection's
+      // session index leaks as an unattributed ghost agent — the age cutoff
+      // must never remove the owner of a live session.
+      const agedId = makeAgedTerminalTask('kookr-ghost');
+      monitor.processEvents('kookr-ghost', [makeToolUse('kookr-ghost', 'Read', { file_path: '/tmp/x' })]);
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const ids = monitor.getTaskSnapshot({ excludeTerminalBeforeMs: cutoff }).map((t) => t.id);
+      expect(ids).toContain(agedId);
+    });
+  });
 });

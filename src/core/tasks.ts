@@ -107,6 +107,32 @@ function cloneTask(task: Task): Task {
 }
 
 /**
+ * Latest activity timestamp (ms) attributable to a task for snapshot-age
+ * purposes. `updatedAt` normally dominates (every transition bumps it), but
+ * `finishedAt`/`terminatedAt` are included defensively for legacy records.
+ * Using `updatedAt` means any fresh mutation (rename, feedback, reopen) makes
+ * an aged terminal task reappear in the snapshot — the operator-friendly
+ * behavior. (Moved here from the server snapshot projection so
+ * {@link TaskStore.listTasksForSnapshot} can filter pre-clone without a
+ * core→server import; the projection re-exports it.)
+ */
+export function taskSnapshotRecencyMs(task: Pick<Task, 'updatedAt' | 'finishedAt' | 'terminatedAt'>): number {
+  return Math.max(
+    task.updatedAt.getTime(),
+    task.finishedAt?.getTime() ?? 0,
+    task.terminatedAt?.getTime() ?? 0,
+  );
+}
+
+/** True when the task is terminal AND its last activity predates `cutoffMs`. */
+export function isAgedTerminalTask(
+  task: Pick<Task, 'status' | 'updatedAt' | 'finishedAt' | 'terminatedAt'>,
+  cutoffMs: number,
+): boolean {
+  return isTerminalStatus(task.status) && taskSnapshotRecencyMs(task) < cutoffMs;
+}
+
+/**
  * How long an in-flight launch reservation stays authoritative. A launch that
  * hangs past this without attaching a session or failing loses its
  * reservation, so a wedged adapter cannot strand a pending task forever
@@ -533,6 +559,46 @@ export class TaskStore {
    */
   viewTasks(): readonly Task[] {
     return Array.from(this.tasks.values());
+  }
+
+  /**
+   * Cloning accessor for snapshot builds that filters BEFORE cloning
+   * (issue #1749 follow-up). The client snapshot path discards terminal tasks
+   * older than its age cutoff anyway, but the old flow cloned all of them
+   * first — ~78 MB of garbage per snapshot build at 814 tasks, 98% of it
+   * terminal — and that transient churn is what ratcheted V8's retained arena
+   * toward the heap limit. Skipping aged terminal tasks pre-clone keeps the
+   * safe detached-copy semantics for what remains (the projection embeds task
+   * sub-objects like `tokenUsage`/`ralphLoop` by reference, so the clone is
+   * load-bearing here — do NOT swap in {@link viewTasks}).
+   * Without a cutoff this is exactly {@link getAllTasks}.
+   *
+   * INVARIANT (`protectSessionIds`): the snapshot projection builds its
+   * session-suppression index from the tasks it receives — a live monitor
+   * state whose owning task is absent leaks into the client snapshot as an
+   * unattributed "ghost" agent instead of being suppressed. Callers MUST
+   * protect every task owning a session that can appear in the monitor
+   * snapshot; the age cutoff governs synthetic terminal entries only, never
+   * the suppression index. `Monitor.getTaskSnapshot` wires this from its live
+   * agent map.
+   */
+  listTasksForSnapshot(opts?: {
+    excludeTerminalBeforeMs?: number;
+    /** Session ids (`tmuxSession`) whose owning tasks are kept regardless of age. */
+    protectSessionIds?: ReadonlySet<string>;
+  }): Task[] {
+    const cutoff = opts?.excludeTerminalBeforeMs;
+    const protect = opts?.protectSessionIds;
+    const out: Task[] = [];
+    for (const task of this.tasks.values()) {
+      if (
+        cutoff !== undefined
+        && isAgedTerminalTask(task, cutoff)
+        && !(protect && task.sessions.some((s) => protect.has(s.tmuxSession)))
+      ) continue;
+      out.push(cloneTask(task));
+    }
+    return out;
   }
 
   private transition(id: string, to: TaskStatus): Task {
