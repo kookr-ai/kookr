@@ -15,7 +15,7 @@ function subject(overrides: Partial<Parameters<typeof resolveTaskAttentionSignal
 describe('resolveTaskAttentionSignals', () => {
   it('returns the all-false default for a task with no sessions', () => {
     const signals = resolveTaskAttentionSignals(subject({ sessions: [] }), {}, Date.now());
-    expect(signals).toEqual({ hungSuspect: false, queuedAnomalyType: null, providerPaused: false });
+    expect(signals).toEqual({ hungSuspect: false, queuedAnomalyType: null, providerPaused: false, mergeReady: false });
   });
 
   it('trusts a queued stale_agent verdict directly', () => {
@@ -94,5 +94,66 @@ describe('resolveTaskAttentionSignals', () => {
       now,
     );
     expect(signals.liveness).toBeUndefined();
+  });
+
+  describe('#1148: publish/merge reconciliation', () => {
+    it('flags mergeReady and surfaces the reconciliation verdict from a pr-green-mergeable queued anomaly', () => {
+      const signals = resolveTaskAttentionSignals(
+        subject(),
+        {
+          queue: {
+            peek: () =>
+              ({
+                type: 'needs_input',
+                explanation: 'PR is green and mergeable...',
+                reconciliation: {
+                  classification: 'pr-green-mergeable',
+                  reasonCode: 'pr_green_mergeable_auto_merge_authorized',
+                  evidence: {} as never,
+                },
+              }) as never,
+          },
+        },
+        Date.now(),
+      );
+      expect(signals.mergeReady).toBe(true);
+      expect(signals.reconciliation).toEqual({
+        classification: 'pr-green-mergeable',
+        reasonCode: 'pr_green_mergeable_auto_merge_authorized',
+      });
+    });
+
+    it('does not flag mergeReady for a real-blocker reconciliation verdict', () => {
+      const signals = resolveTaskAttentionSignals(
+        subject(),
+        {
+          queue: {
+            peek: () =>
+              ({
+                type: 'needs_input',
+                explanation: 'Agent is waiting for input.',
+                reconciliation: {
+                  classification: 'real-blocker',
+                  reasonCode: 'no_reconciling_evidence',
+                  evidence: {} as never,
+                },
+              }) as never,
+          },
+        },
+        Date.now(),
+      );
+      expect(signals.mergeReady).toBe(false);
+      expect(signals.reconciliation).toEqual({ classification: 'real-blocker', reasonCode: 'no_reconciling_evidence' });
+    });
+
+    it('omits reconciliation when the queued anomaly has none', () => {
+      const signals = resolveTaskAttentionSignals(
+        subject(),
+        { queue: { peek: () => ({ type: 'needs_input', explanation: 'Agent is waiting for input.' }) as never } },
+        Date.now(),
+      );
+      expect(signals.mergeReady).toBe(false);
+      expect(signals.reconciliation).toBeUndefined();
+    });
   });
 });

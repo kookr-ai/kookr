@@ -539,6 +539,44 @@ function mapMergeable(value: unknown): GitHubPRState['mergeable'] {
   return value === 'MERGEABLE' || value === 'CONFLICTING' ? value : 'UNKNOWN';
 }
 
+// --- PR merge readiness (#1148 publish/merge reconciliation) ---------------
+
+/** Merge-readiness evidence derived from an already-fetched {@link GitHubPRState}. */
+export interface PRMergeReadiness {
+  /** The PR is open and GitHub reports `mergeable: MERGEABLE`. */
+  mergeable: boolean;
+  /** No check is failing or still pending — `checks` may also be empty. */
+  checksGreen: boolean;
+  /** Check names still queued/in-progress. */
+  pendingChecks: string[];
+  /** Check names that failed or timed out. */
+  failingChecks: string[];
+}
+
+/**
+ * Evaluate whether a fetched PR is "green" (no failing/pending checks) and
+ * mergeable, for the publish/merge state reconciler (#1148 AC3): when a PR is
+ * already green and mergeable, the reconciler should surface a structured
+ * merge-ready signal instead of asking the operator.
+ */
+export function evaluatePRMergeReadiness(pr: GitHubPRState): PRMergeReadiness {
+  const mergeable = pr.status === 'open' && pr.mergeable === 'MERGEABLE';
+  const pendingChecks = pr.checks
+    .filter((check) => check.status !== 'completed')
+    .map((check) => check.name);
+  const failingChecks = pr.checks
+    .filter((check) => check.conclusion === 'failure' || check.conclusion === 'timed_out')
+    .map((check) => check.name);
+  const checksGreen = pendingChecks.length === 0 && failingChecks.length === 0;
+  return { mergeable, checksGreen, pendingChecks, failingChecks };
+}
+
+/** True when {@link evaluatePRMergeReadiness} reports both a mergeable PR and green checks. */
+export function isPRGreenAndMergeable(pr: GitHubPRState): boolean {
+  const readiness = evaluatePRMergeReadiness(pr);
+  return readiness.mergeable && readiness.checksGreen;
+}
+
 /** Fetch PR review threads and reviewers via GraphQL. */
 async function fetchPRReviewThreads(ref: GitHubReference): Promise<{
   threads: GitHubReviewThread[];

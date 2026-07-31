@@ -13,6 +13,41 @@ import type { CleanupClassification } from './workspace-types.js';
 import { gitExecEnv, gitIn, runGitIn } from './git-helpers.js';
 import { resolveDefaultBranch } from './repo-policy-resolver.js';
 
+/**
+ * Evidence for whether normal local git credentials can publish a branch,
+ * independent of any connector/integration tool's own auth (#1148 publish/
+ * merge reconciliation). A connector (e.g. an MCP GitHub tool) can fail to
+ * create a remote branch for reasons that have nothing to do with the
+ * repository being blocked — an expired connector token, a connector-side
+ * rate limit, etc. `git push --dry-run` exercises the operator's own local
+ * credentials so a caller can tell a connector outage apart from a real
+ * repository blocker.
+ */
+export interface LocalGitPublishProbe {
+  canPublish: boolean;
+  reasonCode: 'dry_run_push_ok' | 'dry_run_push_failed' | 'dry_run_push_timed_out';
+}
+
+/**
+ * Probe whether `git push --dry-run` would succeed for `branch` against
+ * `remote`. Read-only: `--dry-run` performs every check up to (but not
+ * including) the actual push, so nothing is published.
+ */
+export async function probeLocalGitPublishability(
+  repoPath: string,
+  branch: string,
+  remote = 'origin',
+): Promise<LocalGitPublishProbe> {
+  const result = await runGitIn(
+    repoPath,
+    ['push', '--dry-run', remote, `HEAD:refs/heads/${branch}`],
+    { maxAttempts: 1 },
+  );
+  if (result.kind === 'ok') return { canPublish: true, reasonCode: 'dry_run_push_ok' };
+  if (result.kind === 'timed_out') return { canPublish: false, reasonCode: 'dry_run_push_timed_out' };
+  return { canPublish: false, reasonCode: 'dry_run_push_failed' };
+}
+
 export type WorktreeMergeClassification = Extract<
   CleanupClassification,
   'merged' | 'patch_equivalent' | 'unique_commits'
