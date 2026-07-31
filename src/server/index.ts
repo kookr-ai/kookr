@@ -96,6 +96,8 @@ import {
   resetOperationalAlertConfig,
 } from './operational-alert-config.js';
 import { readAdmissionControlConfigFromEnv } from './task-admission.js';
+import { readLoadShedConfigFromEnv } from './websocket-load-shed.js';
+import { readDashboardFanoutConfigFromEnv } from './websocket-backpressure-config.js';
 import {
   FindingEvidenceReviewQueueStore,
   FindingEvidenceReviewSampler,
@@ -652,6 +654,25 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // stats line can report it alongside the tracked-record count.
   let lastSnapshotPayloadBytes: number | null = null;
 
+  // Dashboard WS fan-out death-spiral guards (issue #1725). Read here (before
+  // `createRealtimeServices`) so both the load-shed gate and the per-client
+  // backpressure/liveness knobs are wired into the same broadcaster/registry
+  // instances the rest of the server uses.
+  const wsLoadShedConfig = readLoadShedConfigFromEnv();
+  console.log(
+    wsLoadShedConfig.eventLoopDelayThresholdMs > 0
+      ? `[ws-load-shed] dashboard snapshot fan-out sheds to degraded frames at event-loop p95 >= ` +
+          `${wsLoadShedConfig.eventLoopDelayThresholdMs}ms for ${wsLoadShedConfig.sustainTicks} consecutive ticks ` +
+          `(recovers after ${wsLoadShedConfig.recoverTicks} consecutive ticks back under threshold)`
+      : '[ws-load-shed] Event-loop-delay load-shed disabled (set KOOKR_WS_LOAD_SHED_EVENT_LOOP_DELAY_MS to enable)',
+  );
+  const dashboardFanoutConfig = readDashboardFanoutConfigFromEnv();
+  console.log(
+    `[ws-fanout] dashboard client sustained soft-backpressure disconnect after ` +
+      `${dashboardFanoutConfig.backpressureDisconnectAfterSkips} consecutive skips; ` +
+      `dead-socket liveness sweep ${dashboardFanoutConfig.livenessSweepEnabled ? 'enabled' : 'disabled'}`,
+  );
+
   const realtime = await createRealtimeServices({
     kookrDir,
     taskStore,
@@ -681,6 +702,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     coordinatorSuppressions,
     resolveGrantLiveness: (grantId) => viewerGrantStore.liveness(grantId),
     isActorAllowedTerminalSession,
+    loadShedConfig: wsLoadShedConfig,
+    backpressureDisconnectAfterSkips: dashboardFanoutConfig.backpressureDisconnectAfterSkips,
+    livenessSweepEnabled: dashboardFanoutConfig.livenessSweepEnabled,
     // #808 / R10: a sweep evicting a live viewer socket is an audit event
     // (fire-and-forget so a slow audit write never stalls the sweep tick).
     onViewerEvicted: (eviction) => {
@@ -1719,6 +1743,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     alertEvaluator: operationalAlertEvaluator,
     getCircuitBreakerSnapshots: () => circuitBreakerRegistry.getAllSnapshots(),
     intervalMs: resourceStatusIntervalMs,
+    // #1725: feed the same sampled event-loop delay p95 into the dashboard WS
+    // load-shed gate — reuses this measurement instead of a second monitor.
+    onEventLoopDelaySample: realtime.noteEventLoopDelaySample,
   });
 
   // Periodic memory ledger (issue #1612). Opt-in (KOOKR_MEMORY_LEDGER=1) so it

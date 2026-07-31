@@ -16,6 +16,50 @@ function fakeSocket(readyState: number = WebSocket.OPEN): WebSocket & { close: R
   } as unknown as WebSocket & { close: ReturnType<typeof vi.fn> };
 }
 
+/**
+ * A fake socket that additionally implements the ping/pong surface
+ * (`on`/`ping`/`terminate`) the #1725 liveness sweep depends on. `pong()`
+ * simulates the peer answering a ping. `bufferedAmount` is a plain mutable
+ * field so a test can simulate a draining send backlog between sweeps.
+ * `capabilities` lets a test omit `on` or `ping` individually (R12 coverage).
+ */
+function livenessSocket(
+  readyState: number = WebSocket.OPEN,
+  opts: { bufferedAmount?: number; capabilities?: { on?: boolean; ping?: boolean } } = {},
+): WebSocket & {
+  close: ReturnType<typeof vi.fn>;
+  ping: ReturnType<typeof vi.fn>;
+  terminate: ReturnType<typeof vi.fn>;
+  pong: () => void;
+  bufferedAmount: number;
+} {
+  let pongHandler: (() => void) | undefined;
+  const hasOn = opts.capabilities?.on ?? true;
+  const hasPing = opts.capabilities?.ping ?? true;
+  return {
+    readyState,
+    bufferedAmount: opts.bufferedAmount ?? 0,
+    close: vi.fn(),
+    send: vi.fn(),
+    ...(hasPing ? { ping: vi.fn() } : {}),
+    terminate: vi.fn(),
+    ...(hasOn
+      ? {
+          on: (event: string, handler: () => void) => {
+            if (event === 'pong') pongHandler = handler;
+          },
+        }
+      : {}),
+    pong: () => pongHandler?.(),
+  } as unknown as WebSocket & {
+    close: ReturnType<typeof vi.fn>;
+    ping: ReturnType<typeof vi.fn>;
+    terminate: ReturnType<typeof vi.fn>;
+    pong: () => void;
+    bufferedAmount: number;
+  };
+}
+
 const OWNER: Actor = { kind: 'owner' };
 function viewer(grantId: string): Actor {
   return { kind: 'viewer', grantId, scope: { kind: 'all' } };
@@ -380,5 +424,230 @@ describe('ViewerConnectionRegistry', () => {
     expect(health.sweepTickCount).toBe(1);
     expect(health.lastSweepAt).toBe('2023-11-14T22:13:25.000Z');
     expect(health.connectedViewerCount).toBe(1);
+  });
+
+  describe('dead-socket liveness reaping (#1725)', () => {
+    test('an OPEN socket that answers pong survives repeated sweeps and owners are covered too', () => {
+      const registry = new ViewerConnectionRegistry({ autoStartSweep: false });
+      const ws = livenessSocket();
+      registry.register(ws, OWNER, 'dashboard');
+
+      registry.sweep();
+      expect(ws.ping).toHaveBeenCalledTimes(1);
+      ws.pong();
+      registry.sweep();
+      expect(ws.ping).toHaveBeenCalledTimes(2);
+      ws.pong();
+      registry.sweep();
+
+      expect(ws.terminate).not.toHaveBeenCalled();
+      expect(registry.size()).toBe(1);
+    });
+
+    test('a socket that never answers pong is terminated on the sweep after the missed round', () => {
+      const registry = new ViewerConnectionRegistry({ autoStartSweep: false });
+      const ws = livenessSocket();
+      registry.register(ws, OWNER, 'dashboard');
+
+      registry.sweep(); // sends the first ping, no pong yet expected
+      expect(registry.size()).toBe(1);
+      expect(ws.terminate).not.toHaveBeenCalled();
+
+      registry.sweep(); // ping unanswered for a full tick → reaped
+      expect(ws.terminate).toHaveBeenCalledTimes(1);
+      expect(registry.size()).toBe(0);
+    });
+
+    test('a socket already non-OPEN (CLOSE-WAIT/CLOSING) is terminated and dropped immediately, without waiting on its close handler', () => {
+      const registry = new ViewerConnectionRegistry({ autoStartSweep: false });
+      const ws = livenessSocket(WebSocket.CLOSING);
+      registry.register(ws, OWNER, 'dashboard');
+
+      registry.sweep();
+
+      expect(ws.terminate).toHaveBeenCalledTimes(1);
+      expect(registry.size()).toBe(0);
+    });
+
+    test('liveness reaping covers viewer AND terminal sockets, not just dashboard owners', () => {
+      const registry = new ViewerConnectionRegistry({ autoStartSweep: false });
+      const dead = livenessSocket();
+      registry.register(dead, viewer('g1'), 'terminal', { sessionName: 'kookr-1' });
+
+      registry.sweep();
+      registry.sweep(); // unanswered ping → reaped
+
+      expect(dead.terminate).toHaveBeenCalledTimes(1);
+      expect(registry.size()).toBe(0);
+    });
+
+    test('a socket that answers pong is never reaped even under many sweeps', () => {
+      const registry = new ViewerConnectionRegistry({ autoStartSweep: false });
+      const ws = livenessSocket();
+      registry.register(ws, OWNER, 'dashboard');
+      for (let i = 0; i < 5; i++) {
+        registry.sweep();
+        ws.pong();
+      }
+      expect(ws.terminate).not.toHaveBeenCalled();
+    });
+
+    test('livenessSweepEnabled: false opts out entirely — a dead socket is left for the revocation path only', () => {
+      const registry = new ViewerConnectionRegistry({ autoStartSweep: false, livenessSweepEnabled: false });
+      const ws = livenessSocket();
+      registry.register(ws, OWNER, 'dashboard');
+
+      registry.sweep();
+      registry.sweep();
+      registry.sweep();
+
+      expect(ws.ping).not.toHaveBeenCalled();
+      expect(ws.terminate).not.toHaveBeenCalled();
+      expect(registry.size()).toBe(1);
+    });
+
+    test('a socket lacking ping/on (lightweight test double) only gets the readyState check, never throws', () => {
+      const registry = new ViewerConnectionRegistry({ autoStartSweep: false });
+      const openPlain = fakeSocket(WebSocket.OPEN);
+      const closingPlain = fakeSocket(WebSocket.CLOSING);
+      registry.register(openPlain, OWNER, 'dashboard');
+      registry.register(closingPlain, OWNER, 'dashboard');
+
+      expect(() => registry.sweep()).not.toThrow();
+      expect(registry.size()).toBe(1); // only the CLOSING one was reaped
+    });
+
+    test('a throwing ping reaps the socket immediately instead of waiting a tick', () => {
+      const registry = new ViewerConnectionRegistry({ autoStartSweep: false });
+      const ws = livenessSocket();
+      (ws.ping as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        throw new Error('socket already destroyed');
+      });
+      registry.register(ws, OWNER, 'dashboard');
+
+      expect(() => registry.sweep()).not.toThrow();
+      expect(ws.terminate).toHaveBeenCalledTimes(1);
+      expect(registry.size()).toBe(0);
+    });
+
+    test('livenessHealth reports enabled state, reap count and last-reap timestamp', () => {
+      let clock = 1_700_000_000_000;
+      const registry = new ViewerConnectionRegistry({ autoStartSweep: false, now: () => clock });
+      expect(registry.livenessHealth()).toEqual({ enabled: true, reapCount: 0, lastReapAt: null });
+
+      const dead = livenessSocket();
+      registry.register(dead, OWNER, 'dashboard');
+      registry.sweep();
+      registry.sweep(); // reaps
+      clock = 1_700_000_010_000;
+
+      const health = registry.livenessHealth();
+      expect(health.enabled).toBe(true);
+      expect(health.reapCount).toBe(1);
+      expect(health.lastReapAt).toBe('2023-11-14T22:13:20.000Z');
+    });
+
+    test('a throwing liveness check for one socket does not block reaping/revocation of the rest of the tick', () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const registry = new ViewerConnectionRegistry({
+        autoStartSweep: false,
+        resolveGrantLiveness: () => 'revoked',
+      });
+      const poison = livenessSocket();
+      (poison.ping as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        throw new Error('boom');
+      });
+      const revokedViewer = fakeSocket();
+      registry.register(poison, OWNER, 'dashboard');
+      registry.register(revokedViewer, viewer('g1'), 'dashboard');
+
+      expect(() => registry.sweep()).not.toThrow();
+      expect(revokedViewer.close).toHaveBeenCalledWith(1008, 'Access revoked');
+      expect(registry.size()).toBe(0);
+    });
+
+    test('a socket with a nonzero send backlog is NOT reaped for missing a pong — ping physically queues behind the backlog (R1)', () => {
+      const registry = new ViewerConnectionRegistry({ autoStartSweep: false });
+      const ws = livenessSocket(WebSocket.OPEN, { bufferedAmount: 2_000_000 }); // mid-drain on a large snapshot
+      registry.register(ws, OWNER, 'dashboard');
+
+      // Many sweeps while backlogged — never pinged, never reaped, because a
+      // ping would just queue behind the backlog and can never return in time.
+      for (let i = 0; i < 5; i++) registry.sweep();
+
+      expect(ws.ping).not.toHaveBeenCalled();
+      expect(ws.terminate).not.toHaveBeenCalled();
+      expect(registry.size()).toBe(1);
+    });
+
+    test('a socket drains mid-liveness-check and resumes normal ping/pong reaping once backlog clears', () => {
+      const registry = new ViewerConnectionRegistry({ autoStartSweep: false });
+      const ws = livenessSocket(WebSocket.OPEN, { bufferedAmount: 2_000_000 });
+      registry.register(ws, OWNER, 'dashboard');
+
+      registry.sweep(); // backlogged: exempt, not pinged
+      expect(ws.ping).not.toHaveBeenCalled();
+
+      ws.bufferedAmount = 0; // drains
+      registry.sweep(); // first ping now that it's clear
+      expect(ws.ping).toHaveBeenCalledTimes(1);
+      expect(registry.size()).toBe(1);
+
+      registry.sweep(); // unanswered ping on a now-healthy socket → reaped
+      expect(ws.terminate).toHaveBeenCalledTimes(1);
+    });
+
+    test('reaping a viewer socket fires the onEvict audit hook with reason liveness-timeout (R11)', () => {
+      const evictions: SweepEviction[] = [];
+      const registry = new ViewerConnectionRegistry({
+        autoStartSweep: false,
+        onEvict: (e) => evictions.push(e),
+      });
+      const ws = livenessSocket();
+      registry.register(ws, viewer('g9'), 'dashboard');
+
+      registry.sweep();
+      registry.sweep(); // unanswered ping → reaped
+
+      expect(evictions).toEqual([{ grantId: 'g9', kind: 'dashboard', sessionName: undefined, reason: 'liveness-timeout' }]);
+    });
+
+    test('reaping an OWNER socket does not call onEvict (audit hook is viewer-only, matching evict())', () => {
+      const evictions: SweepEviction[] = [];
+      const registry = new ViewerConnectionRegistry({
+        autoStartSweep: false,
+        onEvict: (e) => evictions.push(e),
+      });
+      const ws = livenessSocket();
+      registry.register(ws, OWNER, 'dashboard');
+
+      registry.sweep();
+      registry.sweep();
+
+      expect(evictions).toEqual([]);
+    });
+
+    test('a socket with ping but no on() is treated as unsupported — never reaped via liveness (R12)', () => {
+      const registry = new ViewerConnectionRegistry({ autoStartSweep: false });
+      const ws = livenessSocket(WebSocket.OPEN, { capabilities: { on: false, ping: true } });
+      registry.register(ws, OWNER, 'dashboard');
+
+      for (let i = 0; i < 5; i++) registry.sweep();
+
+      expect(ws.ping).not.toHaveBeenCalled();
+      expect(ws.terminate).not.toHaveBeenCalled();
+      expect(registry.size()).toBe(1);
+    });
+
+    test('a socket with on() but no ping is treated as unsupported — never reaped via liveness (R12)', () => {
+      const registry = new ViewerConnectionRegistry({ autoStartSweep: false });
+      const ws = livenessSocket(WebSocket.OPEN, { capabilities: { on: true, ping: false } });
+      registry.register(ws, OWNER, 'dashboard');
+
+      for (let i = 0; i < 5; i++) registry.sweep();
+
+      expect(ws.terminate).not.toHaveBeenCalled();
+      expect(registry.size()).toBe(1);
+    });
   });
 });

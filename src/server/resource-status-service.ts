@@ -28,6 +28,15 @@ export interface ResourceStatusServiceDeps {
   alertEvaluator?: ResourceAlertEvaluator;
   /** Optional provider for dependency breaker snapshots sampled with each resource tick. */
   getCircuitBreakerSnapshots?: () => CircuitBreakerSnapshot[];
+  /**
+   * Fed the freshly sampled `server.eventLoopDelayP95Ms` on every tick (#1725).
+   * This is the SAME sampler that already powers the #1590 admission guard —
+   * wiring it here lets the dashboard WS load-shed gate reuse the measurement
+   * rather than standing up a second `monitorEventLoopDelay`. Called even when
+   * the sample is `null` (sampler unavailable) so a consumer's own streak
+   * logic sees every tick.
+   */
+  onEventLoopDelaySample?: (delayMs: number | null) => void;
   intervalMs?: number;
   operationalAlertHistoryLimit?: number;
   nowMs?: () => number;
@@ -61,6 +70,7 @@ export class ResourceStatusService {
   private readonly broadcastToAll: (msg: ServerMessage) => void;
   private readonly alertEvaluator: ResourceAlertEvaluator | null;
   private readonly getCircuitBreakerSnapshots: (() => CircuitBreakerSnapshot[]) | null;
+  private readonly onEventLoopDelaySample: ((delayMs: number | null) => void) | null;
   private readonly intervalMs: number;
   private readonly operationalAlertHistoryLimit: number;
   private readonly nowMs: () => number;
@@ -82,6 +92,7 @@ export class ResourceStatusService {
     this.broadcastToAll = deps.broadcastToAll;
     this.alertEvaluator = deps.alertEvaluator ?? null;
     this.getCircuitBreakerSnapshots = deps.getCircuitBreakerSnapshots ?? null;
+    this.onEventLoopDelaySample = deps.onEventLoopDelaySample ?? null;
     this.intervalMs = deps.intervalMs ?? RESOURCE_STATUS_INTERVAL_MS;
     this.operationalAlertHistoryLimit = normalizeHistoryLimit(deps.operationalAlertHistoryLimit);
     this.nowMs = deps.nowMs ?? (() => Date.now());
@@ -123,23 +134,50 @@ export class ResourceStatusService {
   private tick(expectedAtMs: number | null): void {
     if (!this.running) return;
 
-    const status = this.attachCircuitBreakerSnapshots(this.takeSample(expectedAtMs));
-    this.latest = status;
-    this.broadcastToAll({ type: 'resourceStatus', status });
+    // #1725 review finding: the reschedule at the bottom of this method must
+    // run EVEN IF something in the body throws. Before #1725 a dead tick loop
+    // only meant stale `resourceStatus`/ops-alerts; #1725 makes this loop the
+    // sole feed for the dashboard WS load-shed gate (`onEventLoopDelaySample`
+    // below), so a silently-dead loop can now leave that gate stuck wherever
+    // it last was — permanently shed-active in the worst case. `broadcastToAll`
+    // and `evaluateAlerts` are caller-supplied and can throw for reasons this
+    // service doesn't control (a consumer's enrichment step, a custom alert
+    // evaluator); this `finally` guarantees the next tick is scheduled
+    // regardless, matching `takeSample`'s existing fail-open discipline.
+    try {
+      const status = this.attachCircuitBreakerSnapshots(this.takeSample(expectedAtMs));
+      this.latest = status;
+      this.broadcastToAll({ type: 'resourceStatus', status });
 
-    for (const alert of this.evaluateAlerts(status)) {
-      // Log every fire/recovery server-side so an operator can confirm from
-      // logs alone that the alert path executed during an incident. The
-      // summary text is self-describing (it says "Recovered" on clear).
-      if (alert.type === 'alert') {
-        this.logger.warn('[ops-alerts]', alert.summary);
-        this.recordOperationalAlert(alert);
+      // #1725: feed the SAME sampled event-loop delay p95 that just went out on
+      // `status` to the dashboard WS load-shed gate. Isolated so a throwing
+      // consumer can never take down the resource-status tick loop.
+      if (this.onEventLoopDelaySample) {
+        try {
+          this.onEventLoopDelaySample(status.server.eventLoopDelayP95Ms);
+        } catch (err) {
+          this.logger.warn('[resource-status] onEventLoopDelaySample threw; continuing', err);
+        }
       }
-      this.broadcastToAll(alert);
-    }
 
-    const nextExpectedAtMs = this.nowMs() + this.intervalMs;
-    this.timeout = this.setTimeoutFn(() => this.tick(nextExpectedAtMs), this.intervalMs);
+      for (const alert of this.evaluateAlerts(status)) {
+        // Log every fire/recovery server-side so an operator can confirm from
+        // logs alone that the alert path executed during an incident. The
+        // summary text is self-describing (it says "Recovered" on clear).
+        if (alert.type === 'alert') {
+          this.logger.warn('[ops-alerts]', alert.summary);
+          this.recordOperationalAlert(alert);
+        }
+        this.broadcastToAll(alert);
+      }
+    } catch (err) {
+      this.logger.warn('[resource-status] tick body threw; rescheduling next tick anyway', err);
+    } finally {
+      if (this.running) {
+        const nextExpectedAtMs = this.nowMs() + this.intervalMs;
+        this.timeout = this.setTimeoutFn(() => this.tick(nextExpectedAtMs), this.intervalMs);
+      }
+    }
   }
 
   private recordOperationalAlert(alert: AlertMessage): void {

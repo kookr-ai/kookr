@@ -945,6 +945,7 @@ delta sequence number.
 | `workspaceSweepReport` | Reconstructed Removed/removal-failed sweep manifest from the durable ledger (reconnect-after-completion). | `runId`, optional `report` |
 | `diagnosticReport` | Push the latest self-diagnostic report when findings exist. | `report` |
 | `ossAttempts` | Push OSS contribution-attempt store state and refresh status. | `store`, optional `refreshStatus` |
+| `wsBackpressureNotice` | Compact dashboard fan-out notice (issue #1725): `resyncNeeded` after one socket drains from bufferedAmount backpressure (it may have missed frames while skipped); `loadShedActive`/`loadShedRecovered` when the event-loop-delay load-shed gate engages/disengages (full snapshots are suspended while active). Older clients ignore unknown `type`s, so this is forward-compatible with no required frontend change. | `kind`, optional `scopeKey`, optional `eventLoopDelayP95Ms` |
 
 ### Client-to-server messages
 
