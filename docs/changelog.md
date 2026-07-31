@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `kookr effort-split`: measure lucy vs kookr output share (non-merge commits,
+  merged PRs, lines changed) against the 80/20 target for the daily report.
+  Sourced from `gh` only; persists one JSONL row/day to
+  `~/.kookr/effort-split.jsonl` and flags deviations when kookr share falls
+  outside 5%–35% on any metric (issue #1718).
 - Hardened task and workspace worktree cleanup so the primary checkout and
   arbitrary non-linked paths are never removed.
 - Automatic cleanup now refuses protected branches (`main`, `master`,

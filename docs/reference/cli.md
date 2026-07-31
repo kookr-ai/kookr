@@ -255,6 +255,32 @@ kookr lesson yield    [--json] [--days N] [--kookr-dir PATH]
   `GET /api/diagnostics/lesson-yield?days=N` and the `lessonYield` block on
   `GET /api/health`. See [lesson-decision-gate](./lesson-decision-gate.md).
 
+## `kookr effort-split`
+
+Daily-report helper for the operator's 80/20 output split (issue #1718): measure
+share of non-merge commits, merged PRs, and lines changed between a primary repo
+(default `jeanibarz/lucy`) and a secondary repo (default `kookr-ai/kookr`).
+
+```bash
+kookr effort-split [--json] [--window-hours N] [--repo owner/name]...
+                   [--primary owner/name] [--secondary owner/name]
+                   [--min-share N] [--max-share N]
+                   [--kookr-dir PATH] [--path PATH] [--no-persist] [--date YYYY-MM-DD]
+```
+
+- Data source is `gh` only (merged PRs via `gh pr list`, commits via
+  `gh api repos/.../commits`). The contribution ledger is never read.
+- Prints an "Effort split vs 80/20" section for the Discord daily report, with a
+  prominent `DEVIATION` warning when the secondary share on any metric falls
+  outside the band (default 5%–35%, i.e. 20% ± 15pt). Configurable via
+  `--min-share` / `--max-share` or `KOOKR_EFFORT_SPLIT_MIN` /
+  `KOOKR_EFFORT_SPLIT_MAX`.
+- Persists one JSONL row per UTC day to `~/.kookr/effort-split.jsonl`; same-day
+  re-run overwrites rather than appending a duplicate.
+
+The Lucy daily-progress-report playbook should run this command in its gather
+phase and paste the printed section into the digest.
+
 ## `kookr issue`
 
 Claim, release, or inspect GitHub-issue ownership (RFC `rfc-issue-ownership-lock`; the server side is flag-gated behind `KOOKR_ISSUE_CLAIMS`).
