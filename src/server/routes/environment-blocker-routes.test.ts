@@ -147,6 +147,50 @@ describe('environment-blocker routes', () => {
     expect(res.status).toBe(400);
   });
 
+  test('POST persists requiresHuman and blockedCapability (issue #1702)', async () => {
+    const res = await app.request('/api/environment-blockers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'ci-billing',
+        scope: 'github-actions',
+        requiresHuman: true,
+        blockedCapability: 'ci',
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.blocker.requiresHuman).toBe(true);
+    expect(body.blocker.blockedCapability).toBe('ci');
+  });
+
+  test('POST /regime records a tolerance-machinery ref and flips hasRegime (issue #1702)', async () => {
+    await registry.register({ type: 'ci-billing', scope: 'github-actions', requiresHuman: true });
+    expect(registry.hasRegime('ci-billing', 'github-actions')).toBe(false);
+
+    const res = await app.request('/api/environment-blockers/regime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'ci-billing', scope: 'github-actions', ref: '#1688' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.recorded).toBe(true);
+    expect(body.regime).toEqual(['#1688']);
+    expect(registry.hasRegime('ci-billing', 'github-actions')).toBe(true);
+  });
+
+  test('POST /regime requires a non-empty ref', async () => {
+    await registry.register({ type: 'ci-billing', scope: 'github-actions' });
+    const res = await app.request('/api/environment-blockers/regime', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'ci-billing', scope: 'github-actions' }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/ref is required/);
+  });
+
   test('DELETE clears a blocker', async () => {
     await registry.register({ type: 'ci-billing', scope: 'github-actions' });
     const res = await app.request('/api/environment-blockers', {

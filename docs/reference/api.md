@@ -472,17 +472,22 @@ Present only when the server was started with `KOOKR_ISSUE_CLAIMS` enabled; with
 | `GET /api/issue-claims?repo=&number=` | List claims (one when `number` given) with `doing`/`lastActivityAt`/`ageMs` |
 | `DELETE /api/issue-claims` | Holder-checked release (`{repo, number, taskId}` in the JSON body); `403` if not owner |
 
-### Environment blockers (issue #1690)
+### Environment blockers (issue #1690, escalation heartbeat #1702)
 
-A durable registry of active external blockers (e.g. a GitHub Actions billing limit) so the first detector registers a blocker once, other agents consult it instead of re-diagnosing, and the operator is notified exactly once. The registry is durable across daemon restart and auto-clears on a successful probe.
+A durable registry of active external blockers (e.g. a GitHub Actions billing limit) so the first detector registers a blocker once, other agents consult it instead of re-diagnosing, and the owner is escalated. The registry is durable across daemon restart and auto-clears on a successful probe.
+
+Escalation (issue #1702): escalations route to an owner-read control-room feed and carry the **quantified running cost** of the blocker — CI-blind merge count, retro-verify queue depth, and the blocked-capability list. Blockers tagged `requiresHuman` (only a human can clear them) **re-escalate on a staleness TTL** (default 24h) via a periodic heartbeat sweep, instead of firing once. Once a blocker has a **tolerance regime** (machinery built to live with it, recorded via `/regime`), the emission budget refuses new tolerance machinery for that blocker (`kookr emission plan --tolerance-blocker <type:scope>`), so the harness escalates rather than over-tolerates.
 
 | Endpoint | Description |
 | --- | --- |
-| `POST /api/environment-blockers` | Register-once (`{type, scope, detectedBy?, probe?, reason?}`); returns `{blocker, newlyRegistered}`. Subsequent calls for the same `${type}:${scope}` are idempotent and fire no second notification |
+| `POST /api/environment-blockers` | Register-once (`{type, scope, detectedBy?, probe?, reason?, requiresHuman?, blockedCapability?}`); returns `{blocker, newlyRegistered}`. Subsequent calls for the same `${type}:${scope}` are idempotent |
 | `GET /api/environment-blockers` | List active blockers |
 | `GET /api/environment-blockers?type=&scope=` | Consult one — returns a `{blocked, state:'blocked_external', blocker}` disposition, or `{blocked:false}` |
 | `POST /api/environment-blockers/probe` | Record a probe outcome (`{type, scope, success}`); a `success` auto-clears the blocker and releases parked agents |
+| `POST /api/environment-blockers/regime` | Record a tolerance-machinery ref (`{type, scope, ref}`) so the emission budget refuses new tolerance machinery for the blocker; returns `{recorded, regime}` |
 | `DELETE /api/environment-blockers` | Manual operator clear (`{type, scope}`) |
+
+The re-escalation heartbeat interval is configurable via `KOOKR_ENV_BLOCKER_HEARTBEAT_MS` (default 3600000; `0` disables the sweep — the TTL, not the tick, governs re-escalation cadence).
 
 ## Supervisor Surface
 

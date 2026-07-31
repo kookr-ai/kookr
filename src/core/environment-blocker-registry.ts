@@ -20,10 +20,24 @@ import { atomicWriteFile, readJsonFile } from './persistence-utils.js';
  *     so, receives a {@link BlockedExternalDisposition} telling it to park in the
  *     `blocked_external` state rather than re-diagnose, retry-spin, or falsely
  *     complete. This is the correct target state issue #1667's fix lands on.
- *   - **single-shot escalation**: the injected {@link EnvironmentBlockerNotifier}
- *     fires *exactly once* per active blocker (deduped via the persisted
- *     `notifiedAt` field, so a daemon restart never re-notifies). Delivery is
- *     retried on subsequent register calls until it succeeds.
+ *   - **escalation**: the injected {@link EnvironmentBlockerNotifier} fires with
+ *     an {@link EnvironmentBlockerEscalation} carrying the blocker plus the
+ *     *quantified running cost* of the blocker (CI-blind merge count,
+ *     retro-verify queue depth, blocked-capability list). Ordinary blockers
+ *     escalate *once* (deduped via the persisted `lastEscalatedAt`, so a daemon
+ *     restart never re-notifies); delivery is retried on subsequent register
+ *     calls until it succeeds.
+ *   - **re-escalation heartbeat** (issue #1702): blockers tagged
+ *     `requiresHuman` — those only a human can clear (e.g. a GitHub Actions
+ *     billing limit) — re-escalate on a staleness TTL ({@link staleTtlMs},
+ *     default 24h) instead of firing once, so a human-authority blocker that
+ *     sits open keeps surfacing (with its compounding cost) rather than being
+ *     escalated once and forgotten. {@link heartbeat} sweeps due blockers.
+ *   - **tolerance-regime tracking** (issue #1702): each blocker records the
+ *     tolerance-machinery already built for it ({@link recordRegimeEntry}); once
+ *     a regime exists ({@link hasRegime}) the emission budget refuses *new*
+ *     tolerance machinery for the same blocker (see `emission-budget.ts`), so
+ *     the harness stops paying to tolerate what it should escalate.
  *   - **probe auto-clear**: {@link recordProbeResult} with `success: true` clears
  *     the blocker, after which {@link consult} no longer reports it — parked
  *     agents are released to resume.
@@ -35,6 +49,16 @@ import { atomicWriteFile, readJsonFile } from './persistence-utils.js';
 
 export const ENVIRONMENT_BLOCKER_REGISTRY_FILE = 'environment-blockers.json';
 const SCHEMA_VERSION = 'environment-blocker-registry.v1';
+
+/**
+ * Default staleness TTL for `requiresHuman` re-escalation (issue #1702). A
+ * human-authority blocker re-escalates once this long has elapsed since its
+ * previous escalation, so a blocker only a human can clear keeps surfacing
+ * instead of firing a single buried notification. 24h by design: long enough
+ * not to nag within a working session, short enough that a multi-day stall
+ * (the motivating lucy #1748 case sat 2+ days) re-fires daily.
+ */
+export const DEFAULT_STALE_ESCALATION_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * A registered external blocker. `key` is the stable identity `${type}:${scope}`.
@@ -54,10 +78,40 @@ export interface EnvironmentBlocker {
   /** Optional free-text reason / signal that triggered registration. */
   reason?: string;
   /**
-   * ISO timestamp the single human notification fired. Unset until the notifier
-   * has delivered successfully; persisted so a restart never re-notifies.
+   * True when only a human can clear this blocker (issue #1702) — e.g. a
+   * GitHub Actions account-level billing limit. `requiresHuman` blockers
+   * re-escalate on the staleness TTL rather than firing a single notification.
+   */
+  requiresHuman?: boolean;
+  /**
+   * The capability this blocker takes offline (issue #1702), e.g. `ci` or
+   * `web-search`. Surfaced in the escalation's blocked-capability list so the
+   * human sees *what* is unavailable, not just that something is blocked.
+   * Defaults to `scope` when unset.
+   */
+  blockedCapability?: string;
+  /**
+   * ISO timestamp the *first* escalation fired. Unset until the notifier has
+   * delivered successfully; persisted so a restart never re-fires the initial
+   * escalation. Kept distinct from {@link lastEscalatedAt} for audit.
    */
   notifiedAt?: string;
+  /**
+   * ISO timestamp of the *most recent* escalation (issue #1702). Drives the
+   * `requiresHuman` staleness TTL: a re-escalation fires when
+   * `now - lastEscalatedAt ≥ staleTtlMs`. Persisted so the heartbeat survives
+   * a restart.
+   */
+  lastEscalatedAt?: string;
+  /** How many escalations have fired for this blocker (issue #1702). */
+  escalationCount?: number;
+  /**
+   * Refs (PR/issue numbers or slugs) of the tolerance machinery already built
+   * for this blocker (issue #1702). A non-empty regime marks the blocker as
+   * "already tolerated"; the emission budget then refuses new tolerance
+   * machinery for it. Append-only via {@link recordRegimeEntry}.
+   */
+  regime?: string[];
 }
 
 /** Input to {@link EnvironmentBlockerRegistry.register}. */
@@ -67,6 +121,10 @@ export interface RegisterBlockerInput {
   detectedBy?: string;
   probe?: string;
   reason?: string;
+  /** Tag this blocker as human-authority (re-escalates on the TTL). */
+  requiresHuman?: boolean;
+  /** Capability taken offline; defaults to `scope`. */
+  blockedCapability?: string;
 }
 
 /** Result of {@link EnvironmentBlockerRegistry.register}. */
@@ -94,11 +152,59 @@ export interface ProbeResult {
 }
 
 /**
- * Single-shot escalation sink. Invoked *exactly once* per active blocker (the
- * registry dedupes via `notifiedAt`). May be async; if it throws, `notifiedAt`
- * is left unset so the next register attempt retries delivery.
+ * Quantified running cost of an active blocker (issue #1702). Carried on every
+ * escalation so the human sees the *compounding price* of the stall — not just
+ * "still blocked". The three fields are the acceptance-criterion metrics:
+ * CI-blind merge count, retro-verify queue depth, and the blocked-capability
+ * list.
  */
-export type EnvironmentBlockerNotifier = (blocker: EnvironmentBlocker) => void | Promise<void>;
+export interface EscalationCost {
+  /** Merges landed without CI verification while blockers are active. */
+  ciBlindMergeCount: number;
+  /** Depth of the durable retro-verify queue (same population as the count). */
+  retroVerifyQueueDepth: number;
+  /** Capabilities currently offline across all active blockers (sorted, deduped). */
+  blockedCapabilities: string[];
+}
+
+/**
+ * Supplies the dynamic half of {@link EscalationCost} — the CI-blind merge
+ * count and retro-verify queue depth — from wherever the daemon reads them
+ * (the retro-verify spool / ci_blind_debt metric). Injected so the pure
+ * registry never reaches into the queue directly. The registry fills in
+ * `blockedCapabilities` from its own active-blocker list. May be async; a throw
+ * is treated as zero cost (logged) so escalation delivery is never blocked on a
+ * cost read.
+ */
+export type RunningCostProvider = () =>
+  | { ciBlindMergeCount: number; retroVerifyQueueDepth: number }
+  | Promise<{ ciBlindMergeCount: number; retroVerifyQueueDepth: number }>;
+
+/**
+ * A single (re-)escalation event delivered to the {@link EnvironmentBlockerNotifier}.
+ */
+export interface EnvironmentBlockerEscalation {
+  blocker: EnvironmentBlocker;
+  /** `initial` on the first escalation; `re-escalation` on a staleness re-fire. */
+  kind: 'initial' | 're-escalation';
+  /** 1-based count of escalations fired for this blocker (this one included). */
+  escalationCount: number;
+  /** Quantified running cost at the moment of escalation. */
+  cost: EscalationCost;
+  /** ISO timestamp this escalation fired. */
+  at: string;
+}
+
+/**
+ * Escalation sink. For ordinary blockers it is invoked *once* per active
+ * blocker (deduped via the persisted `lastEscalatedAt`); for `requiresHuman`
+ * blockers it is invoked again each time the staleness TTL elapses. May be
+ * async; if it throws, escalation state is left unstamped so the next register
+ * or heartbeat retries delivery.
+ */
+export type EnvironmentBlockerNotifier = (
+  escalation: EnvironmentBlockerEscalation,
+) => void | Promise<void>;
 
 interface EnvironmentBlockerFile {
   schemaVersion: string;
@@ -107,8 +213,19 @@ interface EnvironmentBlockerFile {
 
 export interface EnvironmentBlockerRegistryOptions {
   now?: () => number;
-  /** Single human-notification sink; fired once per active blocker. */
+  /** Escalation sink; see {@link EnvironmentBlockerNotifier}. */
   notify?: EnvironmentBlockerNotifier;
+  /**
+   * Staleness TTL (ms) after which a `requiresHuman` blocker re-escalates.
+   * Default {@link DEFAULT_STALE_ESCALATION_TTL_MS} (24h).
+   */
+  staleTtlMs?: number;
+  /**
+   * Supplies the dynamic running-cost fields carried on each escalation. When
+   * omitted, escalations carry zero for the CI-blind / retro-verify metrics
+   * (the blocked-capability list is always computed from the registry itself).
+   */
+  costProvider?: RunningCostProvider;
 }
 
 /** Build the stable `${type}:${scope}` identity for a blocker. */
@@ -133,6 +250,8 @@ export class EnvironmentBlockerRegistry {
   private readonly filePath: string;
   private readonly now: () => number;
   private readonly notify?: EnvironmentBlockerNotifier;
+  private readonly staleTtlMs: number;
+  private readonly costProvider?: RunningCostProvider;
   private blockers = new Map<string, EnvironmentBlocker>();
   /** Async write mutex — serializes persist() across concurrent callers. */
   private writeLock: Promise<void> = Promise.resolve();
@@ -150,6 +269,11 @@ export class EnvironmentBlockerRegistry {
     this.filePath = join(kookrDir, ENVIRONMENT_BLOCKER_REGISTRY_FILE);
     this.now = options.now ?? Date.now;
     this.notify = options.notify;
+    this.staleTtlMs =
+      options.staleTtlMs !== undefined && Number.isFinite(options.staleTtlMs) && options.staleTtlMs >= 0
+        ? options.staleTtlMs
+        : DEFAULT_STALE_ESCALATION_TTL_MS;
+    this.costProvider = options.costProvider;
   }
 
   /**
@@ -194,9 +318,10 @@ export class EnvironmentBlockerRegistry {
     const key = environmentBlockerKey(input.type, input.scope);
     const existing = this.blockers.get(key);
     if (existing) {
-      // Register-once: do not overwrite detectedAt/detectedBy. Retry the single
-      // notification only if a prior attempt has not yet delivered.
-      if (!existing.notifiedAt) await this.tryNotify(existing);
+      // Register-once: do not overwrite detectedAt/detectedBy. maybeEscalate
+      // both retries a not-yet-delivered initial escalation and re-fires a stale
+      // `requiresHuman` blocker (its own guards decide which, if either).
+      await this.maybeEscalate(existing);
       return { blocker: existing, newlyRegistered: false };
     }
 
@@ -208,10 +333,12 @@ export class EnvironmentBlockerRegistry {
       ...(input.detectedBy !== undefined ? { detectedBy: input.detectedBy } : {}),
       ...(input.probe !== undefined ? { probe: input.probe } : {}),
       ...(input.reason !== undefined ? { reason: input.reason } : {}),
+      ...(input.requiresHuman !== undefined ? { requiresHuman: input.requiresHuman } : {}),
+      ...(input.blockedCapability !== undefined ? { blockedCapability: input.blockedCapability } : {}),
     };
     this.blockers.set(key, blocker);
     await this.persistBestEffort('register', key);
-    await this.tryNotify(blocker);
+    await this.maybeEscalate(blocker);
     return { blocker, newlyRegistered: true };
   }
 
@@ -266,32 +393,159 @@ export class EnvironmentBlockerRegistry {
   }
 
   /**
-   * Deliver the single human notification for `blocker`, then record and persist
-   * `notifiedAt` so it never fires again. A no-op when no notifier is configured
-   * or the blocker was already notified. On notifier failure, `notifiedAt` is
-   * left unset (logged loudly) so a later register attempt retries delivery.
+   * Sweep all active blockers and (re-)escalate any that are due (issue #1702):
+   * a never-escalated blocker fires its initial escalation; a `requiresHuman`
+   * blocker whose last escalation is older than {@link staleTtlMs} re-escalates.
+   * Intended to be called on a timer by the daemon. Returns the escalations
+   * fired this sweep (empty when nothing is due), so callers can log/observe.
    */
-  private async tryNotify(blocker: EnvironmentBlocker): Promise<void> {
-    if (blocker.notifiedAt || !this.notify) return;
-    // Synchronous in-flight guard (added/removed with no await between the
-    // check and the add) so at most one delivery is ever in flight per key,
-    // even when N detectors register the same blocker concurrently.
-    if (this.notifyInFlight.has(blocker.key)) return;
+  async heartbeat(): Promise<EnvironmentBlockerEscalation[]> {
+    const fired: EnvironmentBlockerEscalation[] = [];
+    for (const blocker of this.list()) {
+      const escalation = await this.maybeEscalate(blocker);
+      if (escalation) fired.push(escalation);
+    }
+    return fired;
+  }
+
+  /**
+   * Record a piece of tolerance machinery built for this blocker (issue #1702)
+   * — e.g. the PR number of a merge-gate or retro-verify feature. Append-only
+   * and deduped; a non-empty regime is what the emission budget consults to
+   * refuse *new* tolerance machinery for the same blocker. Returns
+   * `{ recorded:false }` when no matching blocker is active or the ref is
+   * already present.
+   */
+  async recordRegimeEntry(
+    type: string,
+    scope: string,
+    ref: string,
+  ): Promise<{ recorded: boolean; regime: string[] }> {
+    const blocker = this.blockers.get(environmentBlockerKey(type, scope));
+    if (!blocker) return { recorded: false, regime: [] };
+    const regime = blocker.regime ?? [];
+    if (regime.includes(ref)) {
+      blocker.regime = regime;
+      return { recorded: false, regime: [...regime] };
+    }
+    regime.push(ref);
+    blocker.regime = regime;
+    await this.persistBestEffort('regime', blocker.key);
+    return { recorded: true, regime: [...regime] };
+  }
+
+  /** The tolerance-machinery refs recorded for a blocker (empty when none / unknown). */
+  getRegime(type: string, scope: string): string[] {
+    return [...(this.blockers.get(environmentBlockerKey(type, scope))?.regime ?? [])];
+  }
+
+  /** True when a tolerance regime already exists for this blocker (issue #1702). */
+  hasRegime(type: string, scope: string): boolean {
+    return (this.blockers.get(environmentBlockerKey(type, scope))?.regime?.length ?? 0) > 0;
+  }
+
+  /**
+   * Decide whether `blocker` is due for escalation right now, and what kind:
+   *   - `initial` when it has never been escalated (covers a fresh blocker and a
+   *     retry of a previously-failed initial delivery, since a failed delivery
+   *     leaves `lastEscalatedAt` unset);
+   *   - `re-escalation` when it is `requiresHuman` and the staleness TTL has
+   *     elapsed since the last escalation;
+   *   - `null` (no-op) otherwise — ordinary blockers are single-shot, and a
+   *     `requiresHuman` blocker escalated within the TTL is not yet due.
+   */
+  private escalationDue(
+    blocker: EnvironmentBlocker,
+    nowMs: number,
+  ): 'initial' | 're-escalation' | null {
+    if (!blocker.lastEscalatedAt) return 'initial';
+    if (!blocker.requiresHuman) return null;
+    const lastMs = Date.parse(blocker.lastEscalatedAt);
+    if (!Number.isFinite(lastMs)) return 're-escalation';
+    return nowMs - lastMs >= this.staleTtlMs ? 're-escalation' : null;
+  }
+
+  /**
+   * Build the {@link EscalationCost} for an escalation: the dynamic CI-blind /
+   * retro-verify figures from the injected cost provider (zero when absent or
+   * on error), plus the blocked-capability list computed from every active
+   * blocker's capability label.
+   */
+  private async buildCost(): Promise<EscalationCost> {
+    const toCount = (v: unknown): number =>
+      typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.floor(v)) : 0;
+    let ciBlindMergeCount = 0;
+    let retroVerifyQueueDepth = 0;
+    if (this.costProvider) {
+      try {
+        const dynamic = await this.costProvider();
+        // Coerce defensively: a provider returning NaN/undefined must not leak
+        // a NaN into the escalation payload/message (Math.floor(NaN) is NaN).
+        ciBlindMergeCount = toCount(dynamic.ciBlindMergeCount);
+        retroVerifyQueueDepth = toCount(dynamic.retroVerifyQueueDepth);
+      } catch (err) {
+        console.error(
+          '[environment-blocker-registry] cost provider failed; escalating with zero ' +
+            'CI-blind / retro-verify cost:',
+          err,
+        );
+      }
+    }
+    const blockedCapabilities = [
+      ...new Set(this.list().map((b) => b.blockedCapability ?? b.scope)),
+    ].sort();
+    return { ciBlindMergeCount, retroVerifyQueueDepth, blockedCapabilities };
+  }
+
+  /**
+   * Escalate `blocker` if it is due, delivering the cost-bearing payload to the
+   * notifier and stamping `lastEscalatedAt` / `notifiedAt` / `escalationCount`
+   * on success. A no-op (returns null) when no notifier is configured, the
+   * blocker is not due, or a delivery for this key is already in flight. On
+   * notifier failure the stamps are left as-is (logged loudly) so a later
+   * register or heartbeat retries delivery. The in-flight guard is synchronous
+   * (added/removed with no await between the check and the add) so at most one
+   * delivery is ever in flight per key, even when N detectors register the same
+   * blocker concurrently.
+   */
+  private async maybeEscalate(
+    blocker: EnvironmentBlocker,
+  ): Promise<EnvironmentBlockerEscalation | null> {
+    if (!this.notify) return null;
+    const nowMs = this.now();
+    const kind = this.escalationDue(blocker, nowMs);
+    if (!kind) return null;
+    if (this.notifyInFlight.has(blocker.key)) return null;
     this.notifyInFlight.add(blocker.key);
+    // A heartbeat sweep iterates a snapshot; the blocker may have been cleared
+    // (probe success / operator clear) between snapshot and here. Don't deliver
+    // a "still blocked" escalation for a blocker that is no longer active.
+    if (!this.blockers.has(blocker.key)) {
+      this.notifyInFlight.delete(blocker.key);
+      return null;
+    }
+    const at = new Date(nowMs).toISOString();
+    const escalationCount = (blocker.escalationCount ?? 0) + 1;
+    let escalation: EnvironmentBlockerEscalation;
     try {
-      await this.notify(blocker);
+      const cost = await this.buildCost();
+      escalation = { blocker, kind, escalationCount, cost, at };
+      await this.notify(escalation);
     } catch (err) {
       console.error(
         `[environment-blocker-registry] notify(${JSON.stringify(blocker.key)}) failed; ` +
-          'will retry on the next register attempt:',
+          'will retry on the next register attempt or heartbeat:',
         err,
       );
-      return;
+      return null;
     } finally {
       this.notifyInFlight.delete(blocker.key);
     }
-    blocker.notifiedAt = new Date(this.now()).toISOString();
-    await this.persistBestEffort('notify', blocker.key);
+    blocker.escalationCount = escalationCount;
+    blocker.lastEscalatedAt = at;
+    if (!blocker.notifiedAt) blocker.notifiedAt = at;
+    await this.persistBestEffort('escalate', blocker.key);
+    return escalation;
   }
 
   /**

@@ -406,6 +406,72 @@ describe('resolveEmissionBudget retro-verify / ci_blind_debt (issue #1703)', () 
   });
 });
 
+describe('resolveEmissionBudget tolerance-machinery cap (issue #1702)', () => {
+  it('leaves the plan unchanged and toleranceRegimeCoupled=false when the field is omitted', () => {
+    const plan = resolveEmissionBudget({ openBacklogCount: 10, requestedBudget: 5 });
+    expect(plan.toleranceRegimeCoupled).toBe(false);
+    expect(plan.toleranceRegimeBlocked).toBe(false);
+    expect(plan.allowedBudget).toBe(5);
+    expect(plan.action).toBe('allow');
+  });
+
+  it('refuses tolerance machinery when a regime already exists for the blocker', () => {
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 10,
+      requestedBudget: 5,
+      toleranceRegimeActive: true,
+      toleranceRegimeBlockerKey: 'ci-billing:github-actions',
+    });
+    expect(plan.toleranceRegimeCoupled).toBe(true);
+    expect(plan.toleranceRegimeBlocked).toBe(true);
+    expect(plan.toleranceRegimeBlockerKey).toBe('ci-billing:github-actions');
+    expect(plan.allowedBudget).toBe(0);
+    expect(plan.action).toBe('refuse');
+    expect(plan.reason).toMatch(/tolerance regime already exists/i);
+    expect(plan.reason).toMatch(/escalate the blocker/i);
+  });
+
+  it('reports the gate but does not block when no regime is active yet', () => {
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 10,
+      requestedBudget: 5,
+      toleranceRegimeActive: false,
+      toleranceRegimeBlockerKey: 'ci-billing:github-actions',
+    });
+    expect(plan.toleranceRegimeCoupled).toBe(true);
+    expect(plan.toleranceRegimeBlocked).toBe(false);
+    expect(plan.allowedBudget).toBe(5);
+    expect(plan.action).toBe('allow');
+  });
+
+  it('is the final tightener — applies even when other gates already allowed a budget', () => {
+    // Backlog + drain would allow 2; the tolerance-regime gate must still refuse.
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 80,
+      requestedBudget: 10,
+      drainCount: 5,
+      toleranceRegimeActive: true,
+      toleranceRegimeBlockerKey: 'ci-billing:github-actions',
+    });
+    expect(plan.allowedBudget).toBe(0);
+    expect(plan.action).toBe('refuse');
+    expect(plan.toleranceRegimeBlocked).toBe(true);
+  });
+
+  it('marks the regime as an also-binding constraint when an earlier gate already refused', () => {
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 100,
+      requestedBudget: 5,
+      constrainedBudget: 0,
+      toleranceRegimeActive: true,
+      toleranceRegimeBlockerKey: 'ci-billing:github-actions',
+    });
+    expect(plan.allowedBudget).toBe(0);
+    expect(plan.toleranceRegimeBlocked).toBe(true);
+    expect(plan.reason).toMatch(/tolerance regime already exists/i);
+  });
+});
+
 describe('shouldBurstDrainBeforeEmission (issue #1703)', () => {
   it('recommends burst-drain when depth exceeds threshold and CI recovered', () => {
     expect(

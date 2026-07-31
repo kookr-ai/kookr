@@ -48,6 +48,7 @@ import {
   defaultRetroVerifyQueueDir,
   readPendingRetroVerify,
 } from '../core/retro-verify-queue.js';
+import { EnvironmentBlockerRegistry } from '../core/environment-blocker-registry.js';
 
 export const USAGE = `kookr emission — drain-coupled issue filing budget + dedupe (#1607, #1657, #1703).
 
@@ -83,6 +84,11 @@ Options:
                           (default: ${DEFAULT_RETRO_VERIFY_DEPTH_THRESHOLD}).
   --no-retro-verify-coupling
                           Disable ci_blind_debt gate (do not read the queue).
+  --tolerance-blocker <type:scope>
+                          Mark this run's candidates as tolerance machinery for
+                          the given external blocker (plan). If that blocker
+                          already has a tolerance regime in the env-blocker
+                          registry, emission is refused (#1702).
   --body-preview <text>   Optional body snippet stored on defer.
   --kookr-dir <PATH>      State root for deferred-ideas (default: ~/.kookr).
   --retro-verify-dir <PATH>
@@ -118,6 +124,13 @@ export interface EmissionCliIo {
    * the durable queue from disk (or returns 0 / empty debt on ENOENT).
    */
   readRetroVerifyDepth?: () => Promise<{ depth: number; debt: CiBlindDebt }>;
+  /**
+   * Injectable tolerance-regime reader (tests). Given a blocker key
+   * `type:scope`, returns whether that blocker already has a tolerance regime.
+   * When omitted, the CLI loads the env-blocker registry from `--kookr-dir` and
+   * calls `hasRegime` (a missing/unreadable registry ⇒ false / no regime).
+   */
+  readToleranceRegime?: (blockerKey: string) => Promise<boolean>;
 }
 
 interface ParsedArgs {
@@ -137,6 +150,7 @@ interface ParsedArgs {
   retroVerifyCoupling: boolean;
   retroVerifyDepthThreshold: number;
   retroVerifyDir: string | null;
+  toleranceBlocker: string | null;
   repoDir: string | null;
   kookrDir: string;
   json: boolean;
@@ -163,6 +177,7 @@ export function parseEmissionArgs(argv: string[]): ParsedArgs {
     retroVerifyCoupling: true,
     retroVerifyDepthThreshold: DEFAULT_RETRO_VERIFY_DEPTH_THRESHOLD,
     retroVerifyDir: null,
+    toleranceBlocker: null,
     repoDir: null,
     kookrDir: `${homedir()}/.kookr`,
     json: false,
@@ -249,6 +264,10 @@ export function parseEmissionArgs(argv: string[]): ParsedArgs {
     } else if (tok === '--retro-verify-dir' || tok.startsWith('--retro-verify-dir=')) {
       out.retroVerifyDir = tok.includes('=')
         ? tok.slice('--retro-verify-dir='.length)
+        : eat();
+    } else if (tok === '--tolerance-blocker' || tok.startsWith('--tolerance-blocker=')) {
+      out.toleranceBlocker = tok.includes('=')
+        ? tok.slice('--tolerance-blocker='.length)
         : eat();
     } else if (tok === '--repo-dir' || tok.startsWith('--repo-dir=')) {
       out.repoDir = tok.includes('=') ? tok.slice('--repo-dir='.length) : eat();
@@ -353,6 +372,11 @@ function printPlanHuman(out: { log: (...a: unknown[]) => void }, plan: EmissionB
     out.log(`retroVerifyDepthThreshold=${plan.retroVerifyDepthThreshold}`);
   }
   out.log(`retroVerifyWithheld=${plan.retroVerifyWithheld}`);
+  out.log(`toleranceRegimeCoupled=${plan.toleranceRegimeCoupled}`);
+  if (plan.toleranceRegimeBlockerKey !== undefined) {
+    out.log(`toleranceRegimeBlockerKey=${plan.toleranceRegimeBlockerKey}`);
+  }
+  out.log(`toleranceRegimeBlocked=${plan.toleranceRegimeBlocked}`);
   out.log(`action=${plan.action}`);
   out.log(`reason=${plan.reason}`);
 }
@@ -375,6 +399,40 @@ async function loadCiBlindDebt(
     // drain-search). Operators can still inspect via `kookr retro-verify status`.
     const debt = computeCiBlindDebt([], { now: now() });
     return { depth: 0, debt };
+  }
+}
+
+/**
+ * Split a `type:scope` blocker key on its first `:`. The env-blocker registry
+ * forbids `:` in either field, so the first colon is the unambiguous delimiter.
+ * Returns null when the key is malformed (no colon / empty half).
+ */
+export function parseBlockerKey(key: string): { type: string; scope: string } | null {
+  const idx = key.indexOf(':');
+  if (idx <= 0 || idx >= key.length - 1) return null;
+  return { type: key.slice(0, idx), scope: key.slice(idx + 1) };
+}
+
+/**
+ * Resolve whether the given blocker already has a tolerance regime (#1702).
+ * Reads the env-blocker registry from `kookrDir`; a missing/unreadable registry
+ * or an unknown blocker means "no regime" (fail-open, same posture as the other
+ * live-signal reads in this CLI).
+ */
+async function loadToleranceRegimeActive(
+  blockerKey: string,
+  kookrDir: string,
+  inject?: EmissionCliIo['readToleranceRegime'],
+): Promise<boolean> {
+  if (inject) return inject(blockerKey);
+  const parsed = parseBlockerKey(blockerKey);
+  if (!parsed) return false;
+  try {
+    const registry = new EnvironmentBlockerRegistry(kookrDir);
+    await registry.load();
+    return registry.hasRegime(parsed.type, parsed.scope);
+  } catch {
+    return false;
   }
 }
 
@@ -453,6 +511,16 @@ export async function runEmissionCli(
           retroVerifyDepthThreshold: args.retroVerifyDepthThreshold,
         });
       }
+      // Tolerance-machinery cap (#1702): when this run's candidates tolerate a
+      // blocker that already has a regime, the budget is forced to 0.
+      let toleranceRegimeActive: boolean | undefined;
+      if (args.toleranceBlocker) {
+        toleranceRegimeActive = await loadToleranceRegimeActive(
+          args.toleranceBlocker,
+          args.kookrDir,
+          io.readToleranceRegime,
+        );
+      }
       const plan = resolveEmissionBudget({
         openBacklogCount,
         requestedBudget: args.requested,
@@ -471,6 +539,12 @@ export async function runEmissionCli(
               retroVerifyDepthThreshold: args.retroVerifyDepthThreshold,
             }
           : {}),
+        ...(toleranceRegimeActive !== undefined
+          ? {
+              toleranceRegimeActive,
+              toleranceRegimeBlockerKey: args.toleranceBlocker!,
+            }
+          : {}),
       });
       const payload = {
         ok: true,
@@ -485,7 +559,9 @@ export async function runEmissionCli(
           : {}),
         openIssueSample: openIssues.slice(0, 5).map((i) => ({ number: i.number, title: i.title })),
         note:
-          plan.retroVerifyWithheld
+          plan.toleranceRegimeBlocked
+            ? `tolerance-regime gate: ${plan.toleranceRegimeBlockerKey ?? 'blocker'} already has a tolerance regime; refusing new tolerance machinery. Escalate the blocker to a human instead (#1702).`
+            : plan.retroVerifyWithheld
             ? `ci_blind_debt gate: retro-verify depth ${plan.retroVerifyDepth} > threshold ${plan.retroVerifyDepthThreshold}; run \`kookr retro-verify drain\` before new feature emissions.`
             : plan.deferredCount > 0
               ? `With allowedBudget=${plan.allowedBudget}, ${plan.deferredCount} of the requested filings must be deferred/redirected.`

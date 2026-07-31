@@ -42,7 +42,14 @@ export const DEFAULT_DRAIN_FLOOR_BUDGET = 0;
 // retro-verify (ci_blind_debt) queue depth exceeds a threshold, so new feature
 // emissions cannot outrun re-verification of merges made while CI was
 // signal-absent.
-export const EMISSION_BUDGET_SCHEMA_VERSION = 'emission-budget.v3' as const;
+// v4 (issue #1702): allowedBudget is forced to 0 for *tolerance machinery* — a
+// new PR/issue that tolerates an external blocker which already has a tolerance
+// regime. Once the harness has built machinery to live with a blocker, further
+// machinery for the *same* blocker is negative-ROI: the blocker should be
+// escalated to a human, not tolerated harder. Reuses the drain-couple layering
+// (#1657/#1674): a strict tightening stacked on the backlog/drain/retro-verify
+// gates.
+export const EMISSION_BUDGET_SCHEMA_VERSION = 'emission-budget.v4' as const;
 export const NET_BACKLOG_DELTA_WINDOW_DAYS = 7;
 
 /**
@@ -95,6 +102,20 @@ export interface EmissionBudgetInput {
    * {@link DEFAULT_RETRO_VERIFY_DEPTH_THRESHOLD} (0 ⇒ any debt withholds).
    */
   retroVerifyDepthThreshold?: number;
+  /**
+   * Tolerance-machinery cap (issue #1702): set true when the candidate(s) this
+   * run wants to file are *tolerance machinery* (a merge-gate, a
+   * tolerate-the-blocker workaround, …) for an external blocker that already
+   * has a tolerance regime (the env-blocker registry reports `hasRegime`). When
+   * true, the allowed budget is forced to 0 so the harness stops paying to
+   * tolerate a blocker it should escalate. Omit/false to disable this gate.
+   */
+  toleranceRegimeActive?: boolean;
+  /**
+   * The blocker key (`type:scope`) the existing regime belongs to, for the
+   * refusal reason string. Optional; purely informational.
+   */
+  toleranceRegimeBlockerKey?: string;
 }
 
 export type EmissionBudgetAction = 'allow' | 'constrain' | 'refuse';
@@ -127,6 +148,16 @@ export interface EmissionBudgetPlan {
   retroVerifyDepthThreshold?: number;
   /** True when depth exceeded the threshold and allowedBudget was forced to 0. */
   retroVerifyWithheld: boolean;
+  /**
+   * True when the tolerance-machinery gate was consulted (issue #1702), i.e.
+   * `toleranceRegimeActive` was provided. Distinct from "blocked": the gate can
+   * report without forcing budget to 0 (it only does so when active).
+   */
+  toleranceRegimeCoupled: boolean;
+  /** The blocker key whose existing regime triggered the gate, when provided. */
+  toleranceRegimeBlockerKey?: string;
+  /** True when tolerance machinery was refused because a regime already exists. */
+  toleranceRegimeBlocked: boolean;
   action: EmissionBudgetAction;
   reason: string;
 }
@@ -302,6 +333,37 @@ export function resolveEmissionBudget(input: EmissionBudgetInput): EmissionBudge
     }
   }
 
+  // Tolerance-machinery cap (issue #1702): when this run's candidates tolerate a
+  // blocker that ALREADY has a tolerance regime, force allowedBudget to 0. Once
+  // machinery exists to live with a blocker, the next dollar is better spent
+  // escalating it to a human than tolerating it harder. Strict tightening
+  // layered on all gates above (same shape as the retro-verify gate).
+  let toleranceRegimeCoupled = false;
+  let toleranceRegimeBlocked = false;
+  if (input.toleranceRegimeActive !== undefined) {
+    toleranceRegimeCoupled = true;
+    const blockerRef = input.toleranceRegimeBlockerKey
+      ? ` for blocker ${input.toleranceRegimeBlockerKey}`
+      : '';
+    if (input.toleranceRegimeActive && allowedBudget > 0) {
+      const priorAllowed = allowedBudget;
+      allowedBudget = 0;
+      toleranceRegimeBlocked = true;
+      action = 'refuse';
+      reason =
+        `Tolerance regime already exists${blockerRef}; refusing new tolerance ` +
+        `machinery (tightened allowedBudget from ${priorAllowed} to 0). ` +
+        `Escalate the blocker to a human instead of building more machinery to tolerate it.`;
+    } else if (input.toleranceRegimeActive && allowedBudget === 0) {
+      // Already refused by an earlier gate; still mark it so callers see the
+      // regime is the (also-)binding constraint.
+      toleranceRegimeBlocked = true;
+      reason =
+        `${reason} Also: a tolerance regime already exists${blockerRef} — ` +
+        `escalate the blocker, do not build more tolerance machinery.`;
+    }
+  }
+
   return {
     schemaVersion: EMISSION_BUDGET_SCHEMA_VERSION,
     openBacklogCount,
@@ -318,6 +380,11 @@ export function resolveEmissionBudget(input: EmissionBudgetInput): EmissionBudge
     ...(retroVerifyDepth !== undefined ? { retroVerifyDepth } : {}),
     ...(retroVerifyDepthThreshold !== undefined ? { retroVerifyDepthThreshold } : {}),
     retroVerifyWithheld,
+    toleranceRegimeCoupled,
+    ...(input.toleranceRegimeBlockerKey !== undefined
+      ? { toleranceRegimeBlockerKey: input.toleranceRegimeBlockerKey }
+      : {}),
+    toleranceRegimeBlocked,
     action,
     reason,
   };
