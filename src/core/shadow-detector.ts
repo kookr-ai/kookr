@@ -77,7 +77,13 @@ export interface ShadowHeartbeat {
 
 export type ShadowLogEntry = ShadowTransition | ShadowHeartbeat;
 
-const DEFAULT_MAX_LOG_BYTES = 256 * 1024 * 1024;
+/**
+ * Rotate before the live file exceeds this size (issue #1764).
+ * Was 256 MiB — far too large for any per-request full or even partial
+ * parse; 16 MiB keeps a useful heartbeat window while bounding disk +
+ * report cost. Override via ShadowDetectorRegistryOptions.maxLogBytes.
+ */
+const DEFAULT_MAX_LOG_BYTES = 16 * 1024 * 1024;
 const DEFAULT_ROTATED_GENERATIONS = 2;
 
 export interface ShadowDetectorRegistryOptions {

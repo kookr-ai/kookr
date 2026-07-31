@@ -709,7 +709,7 @@ Success `200` returns `{ ok, applicable, spawnScout, spawnSkipReason, emitStarva
 | `GET /api/reflect` | Analyze session friction patterns |
 | `GET /api/reflect/recommendation` | Top-priority reflection recommendation for the UI banner |
 | `GET /api/telemetry/report` | Aggregated telemetry over the session log |
-| `GET /api/shadow-report` | Shadow-detection comparison report, with `?format=text` for plain text |
+| `GET /api/shadow-report` | Shadow-detection comparison report (`?format=text` for plain text). Cache-first / stale-while-revalidate: fresh or stale report returns immediately; cold cache waits at most ~8s for a single-flight bounded parse, then returns `503 shadow_report_warming` (with `retryAfterMs`) while the scan finishes in the background. Parse is tail-bounded (default 4 MiB / 50k entries / 7d). (issue #1764) |
 
 ## GitHub
 
