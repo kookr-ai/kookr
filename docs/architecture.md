@@ -221,6 +221,7 @@ stateDiagram-v2
 > - GitHub PR/issue awareness: `githubUpdate`
 > - Workspace / contribution workspace: `workspaceView`, `workspaceCleanupDetail`, `workspaceSweepProgress`, `workspaceSweepComplete`, `workspaceSweepBusy`, `workspaceSweepReport`
 > - OSS attempts: `ossAttempts`
+> - Dashboard fan-out health (issue #1725): `wsBackpressureNotice`
 >
 > **ClientMessage families:**
 >
