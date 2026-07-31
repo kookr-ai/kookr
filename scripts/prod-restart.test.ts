@@ -1,8 +1,9 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { createServer, type AddressInfo, type Socket } from 'node:net';
+import { spawn, spawnSync } from 'node:child_process';
+import { createServer as createNetServer, type AddressInfo, type Socket } from 'node:net';
+import { createServer } from 'node:http';
 import { describe, expect, it } from 'vitest';
 
 describe('production server systemd unit', () => {
@@ -36,6 +37,23 @@ exit 1
     writeFileSync(
       join(binDir, 'curl'),
       `#!/usr/bin/env bash
+# Minimal curl stub: succeed for -sf nags and for the readiness-gate probe
+# shape curl -o BODY -w '%{http_code}' (issue #1721).
+out=""
+fmt=""
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    -o) out="\$2"; shift 2 ;;
+    -w) fmt="\$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [[ -n "\$out" ]]; then
+  printf '%s\\n' '{"ready":true,"checks":{}}' > "\$out"
+fi
+if [[ "\$fmt" == '%{http_code}' ]]; then
+  printf '200'
+fi
 exit 0
 `,
     );
@@ -278,14 +296,14 @@ exit 1
   });
 });
 
-describe('prod-restart wait_for_health bounded liveness gate (issue #1553)', () => {
-  it('fails at the deadline instead of wedging when /api/health hangs', async () => {
+describe('prod-restart wait_for_health bounded readiness gate (issue #1553 / #1721)', () => {
+  it('fails at the deadline instead of wedging when /api/ready hangs', async () => {
     // A TCP server that accepts connections and never responds — the exact
-    // shape of the hung /api/health that wedged deploys on 2026-07-26. The
+    // shape of the hung probe that wedged deploys on 2026-07-26. The
     // deadline check only runs between curls, so without --max-time one
     // hanging curl defeats STARTUP_TIMEOUT_SECONDS entirely.
     const sockets: Socket[] = [];
-    const server = createServer((socket) => { sockets.push(socket); });
+    const server = createNetServer((socket) => { sockets.push(socket); });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const port = (server.address() as AddressInfo).port;
     const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-restart-'));
@@ -304,7 +322,7 @@ describe('prod-restart wait_for_health bounded liveness gate (issue #1553)', () 
         {
           env: {
             ...process.env,
-            KOOKR_HEALTH_URL: `http://127.0.0.1:${port}/api/health`,
+            KOOKR_READY_URL: `http://127.0.0.1:${port}/api/ready`,
             KOOKR_STARTUP_TIMEOUT_SECONDS: '3',
             KOOKR_STARTUP_CHECK_INTERVAL_SECONDS: '0',
             KOOKR_HEALTH_CURL_MAX_TIME_SECONDS: '1',
@@ -324,6 +342,94 @@ describe('prod-restart wait_for_health bounded liveness gate (issue #1553)', () 
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   }, 30_000);
+
+  it('waits through startup-in-progress 503 then succeeds on ready 200 (issue #1721)', async () => {
+    // Simulates listen-early boot: first probes return 503 with
+    // startup-in-progress, then 200 once deferred recovery finishes.
+    // Must use async spawn (not spawnSync): a sync child blocks the Node
+    // event loop, so this HTTP stub cannot answer curl and the probe times out.
+    let hits = 0;
+    const server = createServer((_req, res) => {
+      hits += 1;
+      if (hits < 3) {
+        res.writeHead(503, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          ready: false,
+          checks: {
+            startup: {
+              critical: true,
+              ready: false,
+              status: 'recovering',
+              reason: 'startup-in-progress',
+              detail: 'session reattach',
+            },
+          },
+        }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ready: true, checks: { startup: { critical: true, ready: true, status: 'ready' } } }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as AddressInfo).port;
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-restart-'));
+    try {
+      const pidFile = join(dir, 'server.pid');
+      const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+        const child = spawn(
+          'bash',
+          ['-c', [
+            `KOOKR_PROD_RESTART_TEST_ONLY=1 source ${JSON.stringify(join(process.cwd(), 'scripts/prod-restart.sh'))}`,
+            `PID_FILE=${JSON.stringify(pidFile)}`,
+            'LOG_FILE=/dev/null',
+            'echo $$ > "$PID_FILE"',
+            'wait_for_health',
+          ].join('; ')],
+          {
+            env: {
+              ...process.env,
+              KOOKR_READY_URL: `http://127.0.0.1:${port}/api/ready`,
+              KOOKR_STARTUP_TIMEOUT_SECONDS: '10',
+              KOOKR_STARTUP_CHECK_INTERVAL_SECONDS: '0',
+              KOOKR_HEALTH_CURL_MAX_TIME_SECONDS: '2',
+            },
+          },
+        );
+        let stdout = '';
+        let stderr = '';
+        child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+        child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL');
+          reject(new Error('wait_for_health test timed out'));
+        }, 15_000);
+        child.on('close', (status) => {
+          clearTimeout(timer);
+          resolve({ status, stdout, stderr });
+        });
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('Kookr prod restarted successfully');
+      expect(hits).toBeGreaterThanOrEqual(3);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 20_000);
+
+  it('defaults KOOKR_STARTUP_TIMEOUT_SECONDS to 1800 (issue #1721)', () => {
+    const result = spawnSync(
+      'bash',
+      ['-c', [
+        'unset KOOKR_STARTUP_TIMEOUT_SECONDS',
+        `KOOKR_PROD_RESTART_TEST_ONLY=1 source ${JSON.stringify(join(process.cwd(), 'scripts/prod-restart.sh'))}`,
+        'printf "%s\\n" "$STARTUP_TIMEOUT_SECONDS"',
+      ].join('; ')],
+      { encoding: 'utf8' },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('1800');
+  });
 });
 
 describe('prod-restart systemd delegation', () => {
@@ -355,6 +461,22 @@ exit 1
         join(binDir, 'curl'),
         `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "${curlLog}"
+# Support the readiness-gate probe shape (issue #1721): curl -o BODY -w '%{http_code}'.
+out=""
+fmt=""
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    -o) out="\$2"; shift 2 ;;
+    -w) fmt="\$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [[ -n "\$out" ]]; then
+  printf '%s\\n' '{"ready":true,"checks":{}}' > "\$out"
+fi
+if [[ "\$fmt" == '%{http_code}' ]]; then
+  printf '200'
+fi
 exit 0
 `,
       );
@@ -383,8 +505,8 @@ exit 0
       expect(result.stdout).toContain('Kookr systemd service restarted successfully');
       expect(readFileSync(systemctlLog, 'utf8')).toContain('--user is-active --quiet kookr.service');
       expect(readFileSync(systemctlLog, 'utf8')).toContain('--user restart kookr.service');
-      expect(readFileSync(curlLog, 'utf8')).toContain('-sf --max-time 10 http://127.0.0.1:4999/api/health');
-      expect(readFileSync(curlLog, 'utf8')).toContain('-sf --max-time 5 http://127.0.0.1:4999/api/ready');
+      // Deploy gate probes /api/ready (issue #1721); post-restart nag also hits ready.
+      expect(readFileSync(curlLog, 'utf8')).toContain('http://127.0.0.1:4999/api/ready');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
