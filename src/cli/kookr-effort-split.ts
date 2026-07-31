@@ -55,7 +55,7 @@ Options:
   --min-share <N>         Secondary-share floor (0–1 or 0–100; default 5%)
   --max-share <N>         Secondary-share ceiling (0–1 or 0–100; default 35%)
   --date <YYYY-MM-DD>     Force the calendar-day key used for JSONL upsert
-  --json                  Machine-readable report on stdout (section on stderr)
+  --json                  Machine-readable report on stdout (includes section text)
   -h, --help              Show this help
 
 Environment:

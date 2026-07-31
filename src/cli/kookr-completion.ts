@@ -112,6 +112,24 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     ],
   },
   {
+    name: 'effort-split',
+    flags: [
+      '--repo',
+      '--window-hours',
+      '--primary',
+      '--secondary',
+      '--kookr-dir',
+      '--path',
+      '--no-persist',
+      '--min-share',
+      '--max-share',
+      '--date',
+      '--json',
+      '-h',
+      '--help',
+    ],
+  },
+  {
     name: 'emission',
     subcommands: ['plan', 'dedupe', 'metrics', 'defer', 'version'],
     flags: [
@@ -278,6 +296,7 @@ function renderBashCompletion(): string {
   const lessonStatusFlags = shellWords(LESSON_STATUS_FLAGS);
   const lessonDrainFlags = shellWords(LESSON_DRAIN_FLAGS);
   const lessonRememberFlags = shellWords(LESSON_REMEMBER_FLAGS);
+  const effortSplitFlags = flagsFor('effort-split');
   const emissionSubcommands = subcommandsFor('emission');
   const emissionFlags = flagsFor('emission');
   const retroVerifySubcommands = subcommandsFor('retro-verify');
@@ -431,6 +450,9 @@ _kookr()
         esac
       fi
       ;;
+    effort-split)
+      COMPREPLY=( $(compgen -W "${effortSplitFlags}" -- "\${cur}") )
+      ;;
     emission)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
         COMPREPLY=( $(compgen -W "${emissionSubcommands} ${emissionFlags}" -- "\${cur}") )
@@ -505,6 +527,7 @@ function renderZshCompletion(): string {
   const lessonStatusFlags = shellWords(LESSON_STATUS_FLAGS);
   const lessonDrainFlags = shellWords(LESSON_DRAIN_FLAGS);
   const lessonRememberFlags = shellWords(LESSON_REMEMBER_FLAGS);
+  const effortSplitFlags = flagsFor('effort-split');
   const emissionSubcommands = subcommandsFor('emission');
   const emissionFlags = flagsFor('emission');
   const retroVerifySubcommands = subcommandsFor('retro-verify');
@@ -614,6 +637,9 @@ _kookr()
           remember) compadd -- ${lessonRememberFlags} ;;
         esac
       fi
+      ;;
+    effort-split)
+      compadd -- ${effortSplitFlags}
       ;;
     emission)
       if (( CURRENT == 3 )); then
