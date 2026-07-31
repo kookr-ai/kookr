@@ -15,10 +15,104 @@ describe('production server systemd unit', () => {
     expect(unit).toContain('WorkingDirectory=%h/git/kookr-prod');
     expect(unit).toContain('EnvironmentFile=-%h/.config/kookr/kookr.env');
     expect(unit).toContain('ExecStart=/usr/bin/env node dist/server/start.js');
+    // glibc allocator tuning for the RSS sawtooth / arena fragmentation (#1753).
+    expect(unit).toContain('Environment=MALLOC_ARENA_MAX=2');
+    expect(unit).toContain('Environment=MALLOC_TRIM_THRESHOLD_=131072');
+    // Env knobs must precede EnvironmentFile so ~/.config/kookr/kookr.env can
+    // still override them per-host.
+    expect(unit.indexOf('Environment=MALLOC_ARENA_MAX=2')).toBeLessThan(
+      unit.indexOf('EnvironmentFile=-%h/.config/kookr/kookr.env'),
+    );
     expect(unit).toContain('Restart=on-failure');
     expect(unit).toContain('WantedBy=default.target');
     expect(unit).not.toMatch(/^User=/m);
     expect(unit).not.toMatch(/^Group=/m);
+  });
+});
+
+describe('prod-restart script-managed fallback launch (issue #1753)', () => {
+  // The pid-file fallback path exports the glibc allocator knobs before
+  // `exec node`, mirroring the systemd unit's Environment= lines. The unit-file
+  // assertions above cannot cover this second delivery mechanism, and the launch
+  // string has fragile nested quoting (`export VAR="${VAR:-default}"` embedded in
+  // a double-quoted `local launch=...` handed to `sh -c "$launch"`). These tests
+  // execute `start_server` for real with stubbed `setsid`/`node` and assert the
+  // node process actually observes the intended MALLOC_* values.
+  function runStartServer(overrideEnv: Record<string, string>): {
+    arena: string;
+    trim: string;
+  } {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-fallback-'));
+    try {
+      const binDir = join(dir, 'bin');
+      const kookrDir = join(dir, '.kookr');
+      mkdirSync(binDir);
+      mkdirSync(kookrDir, { recursive: true });
+      const recordFile = join(dir, 'malloc-env.txt');
+      const pidFile = join(dir, 'server.pid');
+      const logFile = join(kookrDir, 'server.log');
+
+      // setsid stub: run the launch synchronously (drop the `-f` detach flag)
+      // so the record file is written before start_server returns.
+      writeFileSync(
+        join(binDir, 'setsid'),
+        `#!/usr/bin/env bash
+[[ "$1" == "-f" ]] && shift
+exec "$@"
+`,
+      );
+      // node stub: record the allocator env the launch exported, then exit.
+      // Writes to a fixed record file (not stdout, which the launch redirects
+      // to the log file) so the values survive.
+      writeFileSync(
+        join(binDir, 'node'),
+        `#!/usr/bin/env bash
+printf 'ARENA=%s\\nTRIM=%s\\n' "\${MALLOC_ARENA_MAX-}" "\${MALLOC_TRIM_THRESHOLD_-}" > ${JSON.stringify(recordFile)}
+exit 0
+`,
+      );
+      chmodSync(join(binDir, 'setsid'), 0o755);
+      chmodSync(join(binDir, 'node'), 0o755);
+
+      const result = spawnSync(
+        'bash',
+        ['-c', [
+          `KOOKR_PROD_RESTART_TEST_ONLY=1 source ${JSON.stringify(join(process.cwd(), 'scripts/prod-restart.sh'))}`,
+          `PID_FILE=${JSON.stringify(pidFile)}`,
+          `LOG_FILE=${JSON.stringify(logFile)}`,
+          `KOOKR_DIR=${JSON.stringify(kookrDir)}`,
+          'start_server',
+        ].join('; ')],
+        {
+          env: {
+            ...process.env,
+            PATH: `${binDir}:${process.env.PATH ?? ''}`,
+            ...overrideEnv,
+          },
+          encoding: 'utf8',
+        },
+      );
+      expect(result.status).toBe(0);
+      const recorded = readFileSync(recordFile, 'utf8');
+      const arena = /ARENA=(.*)/.exec(recorded)?.[1] ?? '';
+      const trim = /TRIM=(.*)/.exec(recorded)?.[1] ?? '';
+      return { arena, trim };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('exports the default MALLOC_ARENA_MAX/TRIM_THRESHOLD to the server', () => {
+    const { arena, trim } = runStartServer({});
+    expect(arena).toBe('2');
+    expect(trim).toBe('131072');
+  });
+
+  it('honors a pre-set MALLOC_ARENA_MAX from the launching shell', () => {
+    const { arena, trim } = runStartServer({ MALLOC_ARENA_MAX: '8' });
+    expect(arena).toBe('8');
+    // The unset knob still falls back to its default.
+    expect(trim).toBe('131072');
   });
 });
 
