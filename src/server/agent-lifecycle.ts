@@ -27,6 +27,13 @@ import {
   stampTaskCompletionProvenance,
   type CompletionPath,
 } from '../core/lesson-decision.js';
+import { appendAuditRow } from '../core/audit-log.js';
+import {
+  planTerminalClassification,
+  type TerminalClassificationPlan,
+  type ProviderTransientRetryRequest,
+  type ProviderTransientAlertRequest,
+} from '../core/silent-failure-classifier.js';
 
 // ---------------------------------------------------------------------------
 // Post-launch registration (used by WS handler and REST routes)
@@ -258,6 +265,26 @@ export interface LifecycleDeps {
    * peekable for the configured retention window.
    */
   taskTailStore?: Pick<TaskTailStore, 'save' | 'removeByTaskId'>;
+  /**
+   * Shared `audit.jsonl` path (issue #1712). When set, the silent-failure guard
+   * writes `task.reclassifiedFailed` / `task.retrySpawned` rows so a
+   * reclassified provider-transient failure and any auto-retry are queryable.
+   * Best-effort — a missing path simply skips the audit rows.
+   */
+  auditLogPath?: string;
+  /**
+   * Bounded auto-retry hook for a schedule-provenance `provider_transient`
+   * failure (issue #1712). Absent → no auto-retry (reclassification + alert
+   * still fire); the schedule's own next cron remains the backstop.
+   */
+  providerTransientRetry?: (req: ProviderTransientRetryRequest) => void | Promise<void>;
+  /**
+   * Operator-alert hook fired when a `provider_transient` failure exhausts its
+   * retry budget (issue #1712). Absent → no alert. The real implementation
+   * raises a critical operator alert — the 2026-07-30 incident starved silently
+   * because an exhausted retryable failure produced no operator signal at all.
+   */
+  providerTransientAlert?: (req: ProviderTransientAlertRequest) => void | Promise<void>;
 }
 
 /** Resolve the owning task for a session without requiring a full TaskStore mock. */
@@ -467,6 +494,25 @@ export async function completeTask(
   if (!task) throw new Error(`Task not found: ${taskId}`);
   const completionEvents = captureCompletionEvents(task, deps);
 
+  // Silent-failure integrity guard (issue #1712). A terminal turn that made
+  // ZERO tool calls and whose final message is a provider/transport error
+  // (`529 Overloaded`, `API Error`, 429/5xx, rate limit) is never a real
+  // completion — it is a `provider_transient` failure. Recording it `completed`
+  // is exactly what starved the pipeline on 2026-07-30 (task dae17e59). Only an
+  // in-progress task can be reclassified: acking an already-terminated task to
+  // `completed` is a deliberate operator action, not a silent failure.
+  if (task.status === 'inProgress') {
+    const plan = planTerminalClassification({
+      events: completionEvents,
+      provenanceKind: task.provenance?.kind,
+      priorRetryAttempts: task.retryAttempt ?? 0,
+    });
+    if (plan.reclassifyToFailed) {
+      await reclassifyProviderTransientFailure(task, plan, deps);
+      return;
+    }
+  }
+
   // Stamp completion provenance on the live record before the status
   // transition so yield v2 can join decision buckets onto the path
   // (issue #1608). Uses getTaskForMutation so the stamp survives.
@@ -518,6 +564,106 @@ export async function completeTask(
     cleanupTaskWorktrees(deps.taskStore, taskId, deps.interactionLog).catch(() => {});
   }
   cleanupReflectWorktree(task, deps);
+}
+
+/** Cap the audited provider-error detail so a huge final message can't bloat audit.jsonl. */
+const MAX_PROVIDER_ERROR_DETAIL = 500;
+
+function truncateProviderErrorDetail(message: string | undefined): string | undefined {
+  if (!message) return undefined;
+  const trimmed = message.trim();
+  return trimmed.length > MAX_PROVIDER_ERROR_DETAIL
+    ? `${trimmed.slice(0, MAX_PROVIDER_ERROR_DETAIL)}…`
+    : trimmed;
+}
+
+/**
+ * Reclassify a would-be completion as a `provider_transient` failure (issue
+ * #1712): terminate instead of complete, write the audit trail, and either
+ * schedule a bounded auto-retry (schedule provenance, budget remaining) or emit
+ * one operator alert (budget spent). Retry/alert are optional injected hooks —
+ * when unwired, the reclassification + audit still fire, and the schedule's next
+ * cron stays the backstop.
+ */
+async function reclassifyProviderTransientFailure(
+  task: Task,
+  plan: TerminalClassificationPlan,
+  deps: LifecycleDeps,
+): Promise<void> {
+  const detail = truncateProviderErrorDetail(plan.matchedMessage);
+  // Reuse the terminate path so session teardown, lease/claim release, outcome
+  // notification, and worktree cleanup all match a normal failed termination.
+  await terminateTask(task.id, deps, { reason: 'provider_transient', detail });
+
+  const originalTaskId = task.retryOf ?? task.id;
+  const priorRetryAttempts = task.retryAttempt ?? 0;
+
+  await appendAuditRow(deps.auditLogPath, {
+    type: 'task.reclassifiedFailed',
+    timestamp: nowISO(),
+    actor: 'system:silent-failure-classifier',
+    taskId: task.id,
+    reason: 'provider_transient',
+    failureClass: 'provider_transient',
+    toolCallCount: plan.toolCallCount,
+    provenanceKind: task.provenance?.kind ?? 'unknown',
+    priorRetryAttempts,
+    originalTaskId,
+    ...(detail ? { matchedMessage: detail } : {}),
+  });
+
+  if (plan.retry.schedule) {
+    await appendAuditRow(deps.auditLogPath, {
+      type: 'task.retrySpawned',
+      timestamp: nowISO(),
+      actor: 'system:silent-failure-classifier',
+      taskId: task.id,
+      originalTaskId,
+      attempt: plan.retry.attempt,
+      delayMs: plan.retry.delayMs,
+      reason: 'provider_transient',
+    });
+    try {
+      await deps.providerTransientRetry?.({
+        originalTaskId,
+        failedTaskId: task.id,
+        attempt: plan.retry.attempt,
+        delayMs: plan.retry.delayMs,
+        ...(detail ? { reason: detail } : {}),
+      });
+    } catch (err) {
+      console.warn(
+        `[silent-failure] provider-transient retry hook threw for ${task.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  } else if (plan.exhausted) {
+    // Durable exhaustion record (issue #1712). The operator alert below is an
+    // ephemeral broadcast — lost if no dashboard is connected — so also write a
+    // queryable audit row: an exhausted retryable failure must never be silent.
+    await appendAuditRow(deps.auditLogPath, {
+      type: 'task.retryExhausted',
+      timestamp: nowISO(),
+      actor: 'system:silent-failure-classifier',
+      taskId: task.id,
+      originalTaskId,
+      attempts: priorRetryAttempts,
+      reason: 'provider_transient',
+    });
+    try {
+      await deps.providerTransientAlert?.({
+        failedTaskId: task.id,
+        originalTaskId,
+        attempts: priorRetryAttempts,
+        ...(detail ? { reason: detail } : {}),
+      });
+    } catch (err) {
+      console.warn(
+        `[silent-failure] provider-transient alert hook threw for ${task.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
 }
 
 /**

@@ -99,6 +99,8 @@ export interface WsConnectionDeps {
     onTaskOutcome?: import('./agent-lifecycle.js').LifecycleDeps['onTaskOutcome'];
     /** Durable terminal-tail store (rfc-task-tail-retrieval). */
     taskTailStore?: import('./agent-lifecycle.js').LifecycleDeps['taskTailStore'];
+    /** Shared audit.jsonl path for silent-failure reclassification audit (issue #1712). */
+    auditLogPath?: import('./agent-lifecycle.js').LifecycleDeps['auditLogPath'];
   };
   agentLifecycleDeps: AgentLifecycleDeps;
   broadcastToAll: (msg: ServerMessage) => void;

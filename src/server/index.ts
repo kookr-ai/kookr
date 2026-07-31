@@ -78,6 +78,10 @@ import { readMaxHostLoadPerCpuFromEnv } from './config.js';
 import { LessonSpoolService } from './lesson-spool-service.js';
 import { defaultSpoolDir } from '../core/lesson-write-spool.js';
 import { SignalOutboxService } from './signal-outbox-service.js';
+import {
+  createProviderTransientRetryHandler,
+  createProviderTransientAlertHandler,
+} from './provider-transient-retry.js';
 import { defaultSignalOutboxDir } from '../core/signal-outbox.js';
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
 import { TaskStateSaveScheduler } from './task-state-save-scheduler.js';
@@ -1875,6 +1879,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       onTaskOutcome: (taskId, outcome) => {
         onTaskOutcomeHolder?.(taskId, outcome);
       },
+      // Silent-failure integrity (issue #1712): audit a WS-driven complete that
+      // reclassifies to provider_transient.
+      auditLogPath: join(kookrDir, 'audit.jsonl'),
       ...(issueClaimServices ? { issueClaimRegistry: issueClaimServices.registry } : {}),
     },
     agentLifecycleDeps: lifecycleDeps, broadcastToAll,
@@ -1970,6 +1977,24 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       resolveMergedPr,
       signalOutboxSpoolDir: defaultSignalOutboxDir(process.env),
       auditLogPath: join(kookrDir, 'audit.jsonl'),
+      // Silent-failure integrity (issue #1712): bounded auto-retry + operator
+      // alert for schedule-provenance provider_transient failures the auto-close
+      // sweep would otherwise mask as `completed`.
+      providerTransientRetry: createProviderTransientRetryHandler({
+        taskStore,
+        launchTask: (opts) => launchTask(launchServiceDeps, opts),
+      }),
+      providerTransientAlert: createProviderTransientAlertHandler({
+        enqueueAlert: ({ note }) => {
+          broadcastToAll({
+            type: 'alert',
+            agentId: '',
+            summary: 'Scheduled task failed (provider-transient) — auto-retries exhausted',
+            details: note,
+            severity: 'critical',
+          });
+        },
+      }),
       dispositionLedgerPath: join(kookrDir, 'disposition.jsonl'),
       reportsDir: join(kookrDir, 'reports'),
       getHungTaskReapEnabled, getHungTaskReapMs,

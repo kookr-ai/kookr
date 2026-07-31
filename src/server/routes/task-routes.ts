@@ -105,6 +105,11 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       getCleanupWorktreeOnComplete: deps.getCleanupWorktreeOnComplete,
       hookWatcher,
       watchdog,
+      // Silent-failure integrity (issue #1712): audit a would-be completion
+      // that reclassifies to `provider_transient`. A manual/UI complete keeps
+      // the reclassification (never `completed`) but no auto-retry — an operator
+      // is present, so retry/alert hooks are deliberately left unwired here.
+      ...(auditLogPath ? { auditLogPath } : {}),
       ...(deps.issueClaimRegistry ? { issueClaimRegistry: deps.issueClaimRegistry } : {}),
       ...(deps.onTaskOutcome ? { onTaskOutcome: deps.onTaskOutcome } : {}),
       ...(deps.taskTailStore ? { taskTailStore: deps.taskTailStore } : {}),

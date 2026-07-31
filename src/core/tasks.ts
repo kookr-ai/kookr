@@ -903,6 +903,20 @@ export class TaskStore {
   }
 
   /**
+   * Stamp provider-transient retry lineage on a freshly-spawned retry task
+   * (issue #1712). `retryOf` is the ORIGINAL failing task (the lineage root) and
+   * `retryAttempt` is the 1-based attempt number, which the completion path
+   * reads to enforce the bounded-retry cap. No-op for an unknown task.
+   */
+  setRetryLineage(taskId: string, lineage: { retryOf: string; retryAttempt: number }): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    task.retryOf = lineage.retryOf;
+    task.retryAttempt = lineage.retryAttempt;
+    task.updatedAt = new Date();
+  }
+
+  /**
    * Upsert user feedback on a completed task. Returns true if the value changed,
    * false if it was a no-op (existing feedback deep-equal to the input). Callers
    * use the boolean to suppress redundant interaction-log emissions.
