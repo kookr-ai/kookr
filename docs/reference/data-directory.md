@@ -48,6 +48,7 @@ as internal unless this table says they are safe to remove.
 | `project-sidebar.json` | project sidebar | Local sidebar preferences and project ordering. | Keep if UI state matters. |
 | `oss-attempts.json` | OSS contribution gate | Contribution attempt counters. | Keep for rate-limit continuity. |
 | `contribution-ledger.jsonl` | OSS contribution gate | Append-only contribution history. | Keep for deduplication and audit history. |
+| `effort-split.jsonl` | `kookr effort-split` / daily report | One row per UTC day of lucy vs kookr output share (non-merge commits, PRs merged, lines changed) vs the 80/20 target. Sourced from `gh`, not the contribution ledger. Same-day re-run overwrites. | Keep for week-over-week trends. |
 | `detection-stats.json` | detector telemetry | Aggregate anomaly detector counters. | Keep for detector quality telemetry. |
 | `audit.jsonl` | server routes | Operator and task lifecycle audit events. | Keep for diagnostics. |
 | `feedback/` | feedback bundle writer | Feedback artifacts generated from task feedback flows. | Keep unless intentionally discarding feedback history. |

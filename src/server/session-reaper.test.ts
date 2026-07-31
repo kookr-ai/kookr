@@ -65,9 +65,11 @@ describe('SessionReaperService.runSweep', () => {
         sessionId: 'kookr-orphan',
         kind: 'unowned',
         taskId: null,
-        ageMs: 25 * HOUR_MS,
         signal: 'SIGTERM_then_SIGKILL',
       });
+      // ageMs is measured at reap time; allow a few ms of clock drift under load.
+      expect(rows[0]!.ageMs).toBeGreaterThanOrEqual(25 * HOUR_MS);
+      expect(rows[0]!.ageMs).toBeLessThan(25 * HOUR_MS + 5_000);
       expect(typeof rows[0].timestamp).toBe('string');
       expect(typeof rows[0].reason).toBe('string');
       expect('processCount' in rows[0]).toBe(true);

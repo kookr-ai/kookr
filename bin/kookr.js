@@ -22,6 +22,7 @@ Usage:
   kookr maintenance prune [OPTIONS]   Prune aged completed-task data-dir artifacts.
   kookr maintenance backup [OPTIONS]  Create a crash-consistent data-dir backup tarball.
   kookr lesson status|drain|remember  Durable lesson-write spool (kb degraded path).
+  kookr effort-split [OPTIONS]  Lucy vs kookr output share vs the 80/20 target (daily report).
   kookr emission plan|dedupe|metrics|defer|version  Drain-coupled issue filing budget + dedupe.
   kookr retro-verify status|drain|enqueue  CI-blind-merge debt + retro-verify drain.
   kookr pr-checklist verify|doctor [OPTIONS]  Verify PR checklist or report local gate fail-open rate.
@@ -146,6 +147,12 @@ async function main({
     return exit(process.exitCode ?? 0);
   }
 
+  // Effort split vs 80/20 for the daily report (issue #1718). gh-only; no ledger.
+  if (command === 'effort-split') {
+    await runEffortSplitCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
+  }
+
   // Drain-coupled issue emission budget + mandatory dedupe (issue #1607).
   if (command === 'emission') {
     await runEmissionCommand(rest, { env, out, err });
@@ -226,6 +233,21 @@ async function runLessonCommand(argv, { env = process.env, out = console, err = 
   }
   const mod = await import(pathToFileURL(entry).href);
   process.exitCode = await mod.runLessonCli(argv, { env, out, err });
+}
+
+async function runEffortSplitCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-effort-split.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-effort-split.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] effort-split module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exitCode = 1;
+    return;
+  }
+  const mod = await import(pathToFileURL(entry).href);
+  process.exitCode = await mod.runEffortSplitCli(argv, { env, out, err });
 }
 
 async function runEmissionCommand(argv, { env = process.env, out = console, err = console } = {}) {
