@@ -4,6 +4,8 @@ import { randomBytes } from 'node:crypto';
 
 import { loadTasksWithRecovery, saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
 import { reconcile, reconcileStaleOpenLaunches, type ReconciliationResult } from './reconciliation.js';
+import { SessionReaperService } from './session-reaper.js';
+import { readSessionReapConfigFromEnv } from './config.js';
 import { type AgentPreflightSnapshot, type PreflightLogger } from './agent-preflight.js';
 import type { ServerMessage, SnapshotMessage } from '../shared/contracts/messages.js';
 import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
@@ -176,6 +178,14 @@ export interface KookrConfig {
    * See docs/rfc/rfc-v8-tmux-removal.md and docs/adr/014-local-dtach-backend.md.
    */
   terminalBackend: TerminalBackend;
+  /**
+   * Absolute path to `terminalBackend`'s dtach socket/manifest directory
+   * (`LocalDtachBackend.getInstanceDir()`), when the backend is dtach-backed.
+   * Used by the boot-only stale-attach-client sweep (issue #1720) to scope its
+   * process-table scan to sessions this instance owns. Absent (e.g. in tests
+   * using a non-dtach fake backend) simply skips that sweep.
+   */
+  terminalInstanceDir?: string;
   /** Optional STT service WebSocket URL (e.g. ws://localhost:8003). Enables speech-to-text when set. */
   sttUrl?: string;
   /** Optional TTS service HTTP URL (e.g. http://localhost:8004). Advertised as a Phase 6 speech capability when set. */
@@ -322,7 +332,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const {
     port, host, kookrDir, tasksFile, hooksDir, settingsDir,
     serverCwd, frontendDir, saveIntervalMs, livenessIntervalMs,
-    terminalBackend, sttUrl, ttsUrl, useFakeTerminalBridge, agentBin, codexBin, grokBin, bypassAllPermissions,
+    terminalBackend, terminalInstanceDir, sttUrl, ttsUrl, useFakeTerminalBridge, agentBin, codexBin, grokBin, bypassAllPermissions,
     claudeDir, preflightOnFatal, preflightLogger,
     ossSourceWatcherFs, ossSourceWatcherDebounceMs,
     resourceStatusSampler,
@@ -866,6 +876,19 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     envBlockerHeartbeatTimer.unref?.();
   }
 
+  // Orphan / terminal-task session reaper (issue #1720). Config is a live
+  // getter (re-read on every sweep) so KOOKR_REAP_ORPHAN_SESSIONS can be
+  // toggled without a restart, matching the `getCleanupWorktreeOnComplete`
+  // convention. Wired here (rather than constructed inline at each call site)
+  // so start.ts, the boot sweep below, and the periodic liveness tick in
+  // lifecycle-timers.ts all share one instance's audit trail + health counters.
+  const sessionReaper = new SessionReaperService({
+    taskStore,
+    backend: terminalBackend,
+    auditLogPath: join(kookrDir, 'audit.jsonl'),
+    getConfig: () => readSessionReapConfigFromEnv(process.env),
+  });
+
   // Reconcile with live backend sessions
   const reconcileResult = await reconcile(taskStore, terminalBackend, worktreeRegistry);
   // Boot-only sweep (issue #1526 Phase C / #1528): launches that died with
@@ -884,6 +907,29 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   if (reconcileResult.orphans.length > 0) {
     console.warn(`Orphan sessions (not in tasks): ${reconcileResult.orphans.join(', ')}`);
   }
+
+  // Boot-only: stale `dtach -a` attach clients from dead server generations
+  // (issue #1720 leak class 3) — run BEFORE the orphan/terminal-task sweep so
+  // a leftover attach process never confuses process-table bookkeeping for
+  // the sweep below (the two act on disjoint process kinds, but ordering
+  // keeps the boot log easy to read top-to-bottom by leak class).
+  if (terminalInstanceDir) {
+    try {
+      await sessionReaper.runStaleAttacherSweep(terminalInstanceDir);
+    } catch (err) {
+      console.warn('[session-reaper] stale-attacher boot sweep failed:', err instanceof Error ? err.message : err);
+    }
+  }
+  // Boot: reap true orphans (leak class 1) and terminal-task session leaks
+  // (leak class 2) already computed above by `reconcile()`'s orphan detection
+  // plus this service's own ownership cross-reference. Also runs periodically
+  // from the liveness tick in lifecycle-timers.ts.
+  try {
+    await sessionReaper.runSweep();
+  } catch (err) {
+    console.warn('[session-reaper] boot sweep failed:', err instanceof Error ? err.message : err);
+  }
+
   if (issueClaimServices) {
     // Additive reconcile release (R9): reconcile() calls the raw TaskStore
     // terminal methods, bypassing the agent-lifecycle wrappers, so claims for
@@ -1556,6 +1602,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
     diagnosticRunner,
     terminalBackend,
+    sessionReaper,
     deliveryTrace,
     coordinatorSuppressions,
     drainController,
@@ -1907,6 +1954,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       auditLogPath: join(kookrDir, 'audit.jsonl'),
       reportsDir: join(kookrDir, 'reports'),
       getHungTaskReapEnabled, getHungTaskReapMs,
+      sessionReaper,
       budgetChecker, projectConfigStore, progressBudgetBurnDiagnostics,
       detectionStatsStore,
       persistenceHealth,

@@ -118,3 +118,46 @@ export function readMaxHostLoadPerCpuFromEnv(
 ): number {
   return readNonNegativeNumber(env.KOOKR_MAX_HOST_LOAD_PER_CPU, DEFAULT_MAX_HOST_LOAD_PER_CPU);
 }
+
+/**
+ * Default minimum age (ms) an UNOWNED dtach session must reach before the
+ * orphan/terminal-task session reaper (issue #1720) terminates it — 24h, so
+ * the sweep never races a mid-launch session (#1537 item 2).
+ */
+export const DEFAULT_REAP_ORPHAN_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Default grace period (ms) a session whose OWNING TASK has already reached a
+ * terminal status must sit before the reaper terminates it (issue #1720 leak
+ * class 2 — a `completed`/`terminated` task whose session process tree is
+ * still resident). Much shorter than the orphan threshold: the owning task is
+ * already known to be done, so this only guards against double-signalling a
+ * session `completeTask`'s own fire-and-forget `adapter.stop()` is still in
+ * the middle of stopping.
+ */
+export const DEFAULT_REAP_TERMINAL_TASK_GRACE_MS = 60 * 1000;
+
+export interface SessionReapEnvConfig {
+  enabled: boolean;
+  orphanAgeThresholdMs: number;
+  terminalTaskGraceMs: number;
+}
+
+/**
+ * Read the orphan/terminal-task session reaper configuration (issue #1720)
+ * from the environment. `KOOKR_REAP_ORPHAN_SESSIONS` defaults ON — set to
+ * `'false'` to disable the whole sweep (both leak classes it acts on; the
+ * boot-only stale-attach-client sweep shares this same flag).
+ */
+export function readSessionReapConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): SessionReapEnvConfig {
+  return {
+    enabled: env.KOOKR_REAP_ORPHAN_SESSIONS !== 'false',
+    orphanAgeThresholdMs: readNonNegativeNumber(env.KOOKR_REAP_ORPHAN_AGE_MS, DEFAULT_REAP_ORPHAN_AGE_MS),
+    terminalTaskGraceMs: readNonNegativeNumber(
+      env.KOOKR_REAP_TERMINAL_TASK_GRACE_MS,
+      DEFAULT_REAP_TERMINAL_TASK_GRACE_MS,
+    ),
+  };
+}

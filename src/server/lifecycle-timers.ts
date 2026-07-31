@@ -116,6 +116,13 @@ export interface TimerDeps {
   getHungTaskReapEnabled?: () => boolean;
   /** Live getter — hung-task reap silence threshold, in milliseconds. */
   getHungTaskReapMs?: () => number;
+  /**
+   * Orphan/terminal-task session reaper (issue #1720). Run on every liveness
+   * tick, after `reconcile()` — reaps true orphan sessions and sessions whose
+   * owning task already reached a terminal status but whose process tree is
+   * still resident. Absent only in tests that don't care about this sweep.
+   */
+  sessionReaper?: Pick<import('./session-reaper.js').SessionReaperService, 'runSweep'>;
   /** Optional suppression tracker for snooze storm auto-suppress. */
   suppressionTracker?: SnoozeSuppressionTracker;
   /** Optional durable store for cumulative detector telemetry (persisted on the save tick). */
@@ -1065,6 +1072,16 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         await deps.worktreeRegistry.refresh(deps.worktreeRegistryRepoPath);
       }
       const result = await reconcile(taskStore, terminalBackend, deps.worktreeRegistry);
+      // Orphan/terminal-task session reaper (issue #1720) — runs after every
+      // reconcile so a session whose owning task JUST reached a terminal
+      // status (or that reconcile just re-confirmed is unowned) is swept
+      // promptly rather than waiting for the next boot. Never blocks the
+      // liveness tick on failure.
+      try {
+        await deps.sessionReaper?.runSweep();
+      } catch (err) {
+        console.warn('[session-reaper] periodic sweep failed:', err instanceof Error ? err.message : err);
+      }
       // Issue #1667: shared provider-pause check for auto-close + delivered
       // sweeps. Reads recent agent events for the task's live session.
       const isTaskProviderPaused = (task: Task): boolean => {

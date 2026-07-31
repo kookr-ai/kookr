@@ -208,6 +208,7 @@ async function main(): Promise<void> {
     saveIntervalMs: 5000,
     livenessIntervalMs: 5000,
     terminalBackend,
+    terminalInstanceDir: terminalBackend.getInstanceDir(),
     sttUrl,
     ttsUrl,
     ttsVoice: TTS_VOICE,

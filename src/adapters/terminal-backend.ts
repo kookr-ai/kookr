@@ -385,6 +385,16 @@ export interface TerminalBackend extends TerminalSessionStreamPort {
   getSessionDiagnostics?(id: SessionId): TerminalSessionDiagnostics | null;
 
   /**
+   * Optional. Wall-clock ms since epoch when this session was created (dtach
+   * manifest `startedAt` for `LocalDtachBackend`), or `null` when unknown —
+   * either the session is not known to this backend, or the backend does not
+   * track session age. Used by the orphan/terminal-task session reaper
+   * (issue #1720) to age-gate reaping; an absent implementation or a `null`
+   * result is treated conservatively as "too young to reap" by that caller.
+   */
+  getSessionStartedAt?(id: SessionId): Promise<number | null>;
+
+  /**
    * Optional. Tear down any backend-owned background work (timers, final
    * persistence flushes) before the process exits. Implementations that
    * persist state to disk should perform a final flush here so SIGTERM does

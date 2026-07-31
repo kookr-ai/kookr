@@ -109,6 +109,15 @@ Sessions with `kind=terminal` bridge opens in the log are the tell-tale sign of 
 - **Problem for dtach:** tmux's list returns `[]` when there's no tmux server running; this silently makes ALL task sessions look dead to reconcile.
 - Fixed partially in PR #346 (commit `a42ccfd` — "reconcile queries dtach backend") but reconcile still calls `TerminalManager`.
 - V8 changes the signature to `reconcile(taskStore, backend: TerminalBackend)`.
+- `reconcile()` only COMPUTES the orphan set (sessions the backend reports live that no task accounts for — including a session whose OWN record already carries `lastStatus: 'completed'`/`'aborted'`, since the loop `continue`s past those without marking them accounted-for). It never acts on it.
+
+## Session reaping (issue #1720)
+
+`src/server/session-reaper.ts` (`SessionReaperService`) is the separate "act on it" step run after every `reconcile()` call (boot + periodic liveness tick, wired from `index.ts` / `lifecycle-timers.ts`):
+- Cross-references every backend-reported live session against the TaskStore itself (not reconcile's output) and classifies each with the pure `src/core/session-reap-policy.ts` logic into `unowned` (leak class 1 — the original orphan report) or `terminal-task-leak` (leak class 2 — task already `completed`/`terminated`/`cancelled`, or its session record already terminal, but the process tree is still resident; e.g. `completeTask`'s fire-and-forget `adapter.stop()` silently failed).
+- Reaps via the backend's existing `killSession` (TERM → grace → KILL + socket removal) once past an age/grace threshold (`KOOKR_REAP_ORPHAN_AGE_MS` default 24h for unowned sessions — never race a mid-launch session per #1537 item 2 — `KOOKR_REAP_TERMINAL_TASK_GRACE_MS` default 60s for owned leaks, since the owning task is already known to be done). Master flag `KOOKR_REAP_ORPHAN_SESSIONS` (default on).
+- Boot-only `runStaleAttacherSweep` (backed by `src/adapters/dtach-attach-reaper.ts`) kills leaked `dtach -a` attach-client processes from dead server generations (leak class 3), scoped to `LocalDtachBackend.getInstanceDir()` so it never touches another port's sessions or a user's own terminal.
+- Every reap is logged to `audit.jsonl` and surfaced cheaply (cached counters, no re-scan) on `GET /api/health`'s `sessionReaper` block.
 
 ## Gotchas
 
