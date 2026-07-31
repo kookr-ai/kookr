@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { gitExecEnv } from '../core/git-helpers.js';
-import { cleanupTaskWorktrees, inspectTaskWorktrees } from './git-worktree.js';
+import { cleanupReconciledTaskWorktrees, cleanupTaskWorktrees, inspectTaskWorktrees } from './git-worktree.js';
 import { TaskStore } from '../core/tasks.js';
 
 function cleanGitEnv(): NodeJS.ProcessEnv {
@@ -167,6 +167,29 @@ describe('inspectWorktreeCleanup real git integration', () => {
     const { taskStore, taskId } = taskFixture(fixture);
     await cleanupTaskWorktrees(taskStore, taskId);
 
+    expect(existsSync(fixture.worktree)).toBe(false);
+    expect(refExists(fixture.repo, 'refs/heads/feature')).toBe(false);
+    expect(taskStore.getTask(taskId)?.sessions[0]?.worktreeHealth).toBe('cleaned_up');
+  }, 10_000);
+
+  it('reaps a reconcile-completed task worktree end-to-end (#1727)', async () => {
+    const fixture = createFixture();
+    roots.push(fixture.root);
+    fixture.branchHead = commitFile(fixture.worktree, 'second-feature.txt', 'second feature\n', 'second feature change');
+
+    git(fixture.repo, 'switch', '-c', 'squash-result', 'main');
+    git(fixture.repo, 'merge', '--squash', 'feature');
+    git(fixture.repo, 'commit', '-m', 'squash feature for reconcile cleanup');
+    const squashHead = git(fixture.repo, 'rev-parse', 'HEAD');
+    git(fixture.repo, 'update-ref', 'refs/remotes/origin/main', squashHead);
+
+    const { taskStore, taskId } = taskFixture(fixture);
+    const cleaned = await cleanupReconciledTaskWorktrees(
+      taskStore,
+      { tasksCompleted: [taskId], tasksTerminated: [] },
+    );
+
+    expect(cleaned).toEqual([taskId]);
     expect(existsSync(fixture.worktree)).toBe(false);
     expect(refExists(fixture.repo, 'refs/heads/feature')).toBe(false);
     expect(taskStore.getTask(taskId)?.sessions[0]?.worktreeHealth).toBe('cleaned_up');

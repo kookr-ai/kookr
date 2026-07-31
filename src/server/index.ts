@@ -128,6 +128,7 @@ import { SupervisorFeedbackCaseStore } from './supervisor-feedback-case-store.js
 import { UserInputDeliveryService } from './user-input-delivery-service.js';
 import { type OssSourceWatcherFs } from './oss-source-watcher.js';
 import { migrateLegacyProtectedWorktree } from '../adapters/worktree-marker.js';
+import { cleanupReconciledTaskWorktrees } from '../adapters/git-worktree.js';
 import { createContributionWorkspaceServices } from './bootstrap/create-contribution-workspace-services.js';
 import { createAgentRuntime } from './bootstrap/create-agent-runtime.js';
 import { createCoreStores } from './bootstrap/create-core-stores.js';
@@ -1394,6 +1395,35 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // and flips to ready only after post-listen recovery completes.
   const startupReadiness = new StartupReadiness(serverStartedAt);
   let startupRecoverySummary: CrashRecoveryResult | null = null;
+
+  // Reap worktrees for tasks reconcile drove to a terminal state at boot
+  // (#1727). Prior-process crashes leave dead-session tasks whose worktrees
+  // were never reaped — the dominant disk leak in the incident. Mirrors the
+  // boot claim-release additive call and honors cleanupWorktreeOnComplete for
+  // the completed subset.
+  //
+  // Ordering is load-bearing: this runs AFTER runStartupRecoveryPhase, which
+  // relaunches recoverable dead-session tasks back into their worktree. By
+  // now those tasks have been reopened (open/inProgress), so the helper's
+  // terminal-status re-check skips them — cleanup only touches tasks that are
+  // still terminal, never a worktree recovery just re-adopted.
+  //
+  // Awaited (not fire-and-forget) so a slow reap cannot outlive boot and race
+  // later startup phases; inspectWorktreeCleanup preserves dirty/unmerged/
+  // shared worktrees, and per-task errors are swallowed inside the helper.
+  try {
+    const reaped = await cleanupReconciledTaskWorktrees(
+      taskStore,
+      reconcileResult,
+      interactionLog,
+      { cleanupCompleted: getCleanupWorktreeOnComplete() },
+    );
+    if (reaped.length > 0) {
+      console.log(`[worktree-cleanup] boot reconcile reaped worktrees for ${reaped.length} task(s)`);
+    }
+  } catch (err) {
+    console.warn('[worktree-cleanup] boot reap failed:', err instanceof Error ? err.message : err);
+  }
 
   // Reclaim reflect worktrees orphaned by a crash between `git worktree add`
   // and reflect-task completion (plus a 7-day TTL backstop). Best-effort —

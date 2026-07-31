@@ -23,6 +23,7 @@ vi.mock('./worktree-safety.js', () => ({
 }));
 
 import {
+  cleanupReconciledTaskWorktrees,
   cleanupTaskWorktrees,
   inspectTaskWorktrees,
   inspectWorktreeCleanup,
@@ -1068,6 +1069,183 @@ describe('cleanupTaskWorktrees', () => {
       branch: 'feature',
     });
     expect(mockRemoveRegisteredWorktree).toHaveBeenCalledWith('/wt/fallback', expect.objectContaining({ force: true }));
+  });
+});
+
+describe('cleanupReconciledTaskWorktrees', () => {
+  function setupCleanWorktree() {
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({
+      'status --porcelain': '',
+      'log': '',
+      'symbolic-ref': 'refs/remotes/origin/main\n',
+      'worktree prune': '',
+      'branch -d': 'Deleted branch feature (was abc1234).\n',
+    });
+  }
+
+  /** Create a terminal task owning one clean worktree at `cwd`. */
+  function makeWorktreeTask(taskStore: TaskStore, cwd: string, terminal: 'completed' | 'terminated'): string {
+    const task = taskStore.createTask('Fix bug', '/project');
+    taskStore.addSession(task.id, {
+      tmuxSession: `s-${cwd}`,
+      agentType: 'claude-code',
+      cwd,
+      createdAt: new Date(),
+      gitIsWorktree: true,
+      gitBranch: 'feature',
+      gitCommit: 'abc123',
+    });
+    if (terminal === 'completed') taskStore.completeTask(task.id);
+    else taskStore.terminateTask(task.id);
+    return task.id;
+  }
+
+  test('reaps both completed and terminated task worktrees by default', async () => {
+    const taskStore = new TaskStore();
+    const completedId = makeWorktreeTask(taskStore, '/wt/completed', 'completed');
+    const terminatedId = makeWorktreeTask(taskStore, '/wt/terminated', 'terminated');
+    const { log } = makeFakeLog();
+    setupCleanWorktree();
+
+    const cleaned = await cleanupReconciledTaskWorktrees(
+      taskStore,
+      { tasksCompleted: [completedId], tasksTerminated: [terminatedId] },
+      log,
+    );
+
+    expect(new Set(cleaned)).toEqual(new Set([completedId, terminatedId]));
+    expect(mockRemoveRegisteredWorktree).toHaveBeenCalledWith('/wt/completed', expect.objectContaining({ force: true }));
+    expect(mockRemoveRegisteredWorktree).toHaveBeenCalledWith('/wt/terminated', expect.objectContaining({ force: true }));
+  });
+
+  test('cleanupCompleted=false preserves completed worktrees but still reaps terminated', async () => {
+    const taskStore = new TaskStore();
+    const completedId = makeWorktreeTask(taskStore, '/wt/completed', 'completed');
+    const terminatedId = makeWorktreeTask(taskStore, '/wt/terminated', 'terminated');
+    const { log } = makeFakeLog();
+    setupCleanWorktree();
+
+    const cleaned = await cleanupReconciledTaskWorktrees(
+      taskStore,
+      { tasksCompleted: [completedId], tasksTerminated: [terminatedId] },
+      log,
+      { cleanupCompleted: false },
+    );
+
+    expect(cleaned).toEqual([terminatedId]);
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalledWith('/wt/completed', expect.anything());
+    expect(mockRemoveRegisteredWorktree).toHaveBeenCalledWith('/wt/terminated', expect.objectContaining({ force: true }));
+  });
+
+  test('skips terminal tasks that own no worktree', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('No worktree', '/project');
+    taskStore.addSession(task.id, {
+      tmuxSession: 's1',
+      agentType: 'claude-code',
+      cwd: '/project',
+      createdAt: new Date(),
+      // gitIsWorktree not set → not a worktree
+    });
+    taskStore.completeTask(task.id);
+    const { log } = makeFakeLog();
+
+    const cleaned = await cleanupReconciledTaskWorktrees(
+      taskStore,
+      { tasksCompleted: [task.id], tasksTerminated: [] },
+      log,
+    );
+
+    expect(cleaned).toEqual([]);
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
+  });
+
+  test('deduplicates a task id present in both lists', async () => {
+    const taskStore = new TaskStore();
+    const id = makeWorktreeTask(taskStore, '/wt/dup', 'terminated');
+    const { log } = makeFakeLog();
+    setupCleanWorktree();
+
+    const cleaned = await cleanupReconciledTaskWorktrees(
+      taskStore,
+      { tasksCompleted: [id], tasksTerminated: [id] },
+      log,
+    );
+
+    expect(cleaned).toEqual([id]);
+    expect(mockRemoveRegisteredWorktree).toHaveBeenCalledTimes(1);
+  });
+
+  test('empty reconcile result is a no-op', async () => {
+    const taskStore = new TaskStore();
+    const { log } = makeFakeLog();
+
+    const cleaned = await cleanupReconciledTaskWorktrees(
+      taskStore,
+      { tasksCompleted: [], tasksTerminated: [] },
+      log,
+    );
+
+    expect(cleaned).toEqual([]);
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
+  });
+
+  test('a preserved (dirty) worktree is not counted as reaped', async () => {
+    const taskStore = new TaskStore();
+    const id = makeWorktreeTask(taskStore, '/wt/dirty', 'terminated');
+    const { log } = makeFakeLog();
+    // Dirty tree → inspectWorktreeCleanup blocks removal; the directory stays.
+    mockExistsSync.mockImplementation((p: string) => !p.toString().endsWith('.kookr-protected'));
+    mockGitResponses({
+      'status --porcelain': ' M file.ts\n',
+      'symbolic-ref': 'refs/remotes/origin/main\n',
+    });
+
+    const reaped = await cleanupReconciledTaskWorktrees(
+      taskStore,
+      { tasksCompleted: [], tasksTerminated: [id] },
+      log,
+    );
+
+    // Owned a worktree, but nothing was removed → not reported as reaped.
+    expect(reaped).toEqual([]);
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
+  });
+
+  test('skips a task that is no longer terminal (recovery/reopen race)', async () => {
+    const taskStore = new TaskStore();
+    const id = makeWorktreeTask(taskStore, '/wt/recovered', 'terminated');
+    // Simulate boot crash-recovery / user reopen flipping the task back to a
+    // live state after reconcile captured it as terminated.
+    taskStore.reopenTask(id);
+    taskStore.startTask(id);
+    expect(taskStore.getTask(id)!.status).toBe('inProgress');
+    const { log } = makeFakeLog();
+    setupCleanWorktree();
+
+    const reaped = await cleanupReconciledTaskWorktrees(
+      taskStore,
+      { tasksCompleted: [], tasksTerminated: [id] },
+      log,
+    );
+
+    expect(reaped).toEqual([]);
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
+  });
+
+  test('ignores ids with no matching task in the store', async () => {
+    const taskStore = new TaskStore();
+    const { log } = makeFakeLog();
+
+    const reaped = await cleanupReconciledTaskWorktrees(
+      taskStore,
+      { tasksCompleted: ['does-not-exist'], tasksTerminated: [] },
+      log,
+    );
+
+    expect(reaped).toEqual([]);
+    expect(mockRemoveRegisteredWorktree).not.toHaveBeenCalled();
   });
 });
 
