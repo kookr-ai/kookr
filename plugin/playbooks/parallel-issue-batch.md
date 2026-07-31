@@ -102,6 +102,7 @@ checklist:
   - Child tasks monitored for idle prompts, pasted-but-unsubmitted messages, permission dialogs, PR creation, CI, and mergeability
   - Interactivity policy honored: autonomous onAmbiguity modes never paused for user input
   - Headless runs (schedule/parent provenance or unattended) never called AskUserQuestion; an empty backlog reported-and-exited to `completed` with a machine-readable `blocked-empty` outcome record, never `needs_input`
+  - blocked-empty outcomes invoked the pipeline-starvation refill (`POST /api/pipeline-starvation/handle`); any on-demand idea-scout taskId was recorded in state.md with provenance starvation-trigger
   - All selected issues reached the configured policy: merged PRs when mergeAfterImplementation=true, otherwise open green PRs
   - Redundant or superseded cleanup PRs closed when a broader cleanup already landed
   - DONE or BLOCKED marker written to the durable batch state
@@ -919,11 +920,57 @@ Reach this when there is nothing eligible to do: the `issueSelector` matched not
 
 2. **Write the structured empty-backlog report** to `$STATE_FILE` — a `## Empty Backlog` section that itemizes every open issue (`#N — <title> — <disqualifier>`) and the open-issue count. This mirrors the correct prior behavior (batch `74022030` itemized all 24 open issues, then exited) instead of the stranding behavior (`305a603d`/`5c6ddf5c`).
 
-3. **Emit the machine-readable outcome record** to `$OUTCOME_FILE` with `outcome: "blocked-empty"` per **Durable State → Machine-readable outcome record**. Build it from `$CANDIDATES_FILE` and write it atomically (temp file, then `mv`). Stamp `generatedAt` at runtime. This is the record the starvation-refill trigger (companion issue) consumes.
+3. **Emit the machine-readable outcome record** to `$OUTCOME_FILE` with `outcome: "blocked-empty"` per **Durable State → Machine-readable outcome record**. Build it from `$CANDIDATES_FILE` and write it atomically (temp file, then `mv`). Stamp `generatedAt` at runtime. This is the record the starvation-refill trigger (issue #1715) consumes.
 
-4. **Post a summary as task output** — a short human-facing line naming the repo, the open-issue count, and that no eligible work remains (e.g. `No safe, unblocked, single-PR issue remains in owner/repo (24 open, all disqualified) — report-and-exit, no work spawned.`).
+4. **Invoke the pipeline-starvation refill** (issue #1715). After `$OUTCOME_FILE` exists, hand it to the engine so it can spawn an on-demand `repository-idea-scout` (when dedup allows) and/or raise a pipeline-starvation alert on the second consecutive empty within 12h. Do this for **every** blocked-empty terminal path (headless and interactive) — the engine owns the dedup; the playbook must not skip the call:
 
-5. **Terminate.** Write the terminal marker and stop:
+   ```bash
+   # Build a small request body next to the outcome file (not in the git worktree).
+   HANDLE_BODY="$STATE_DIR/starvation-handle-request.json"
+   node -e '
+     const fs = require("fs");
+     const outcome = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+     const body = {
+       outcome,
+       localPath: process.argv[2] || "",
+       parentTaskId: process.env.KOOKR_TASK_ID || undefined,
+     };
+     fs.writeFileSync(process.argv[3], JSON.stringify(body));
+   ' "$OUTCOME_FILE" "${LOCAL:-}" "$HANDLE_BODY"
+
+   HANDLE_RESP="$STATE_DIR/starvation-handle-response.json"
+   curl -sS -X POST \
+     "${KOOKR_API_BASE_URL:-http://127.0.0.1:4800}/api/pipeline-starvation/handle" \
+     -H 'Content-Type: application/json' \
+     --data-binary @"$HANDLE_BODY" \
+     -o "$HANDLE_RESP" || true
+
+   # Auditability: record the engine decision + any spawned scout taskId in state.md.
+   if [ -f "$HANDLE_RESP" ]; then
+     SCOUT_TASK_ID=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(r.spawnedScoutTaskId||"")' "$HANDLE_RESP" 2>/dev/null || true)
+     SUMMARY=$(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(r.summary||"")' "$HANDLE_RESP" 2>/dev/null || true)
+     {
+       printf '## Pipeline starvation refill (issue #1715)\n'
+       printf 'provenance: starvation-trigger\n'
+       printf 'handledAt: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+       if [ -n "$SUMMARY" ]; then printf 'summary: %s\n' "$SUMMARY"; fi
+       if [ -n "$SCOUT_TASK_ID" ]; then
+         printf 'starvationScoutTaskId: %s\n' "$SCOUT_TASK_ID"
+       else
+         printf 'starvationScoutTaskId: (none — see summary / spawnSkipReason)\n'
+       fi
+       printf '\n'
+     } >> "$STATE_FILE"
+   else
+     printf '## Pipeline starvation refill (issue #1715)\nprovenance: starvation-trigger\nerror: handle endpoint unreachable — engine did not run\n\n' >> "$STATE_FILE"
+   fi
+   ```
+
+   The engine (not this playbook) enforces: max 1 starvation-triggered scout per repo per 4h; skip when a scout is already running/queued or a successful ideation finished in the last 4h; second consecutive `blocked-empty` within 12h emits one pipeline-starvation operational alert (first does not). Scout spawns are stamped in `audit.jsonl` with `provenance: "starvation-trigger"`.
+
+5. **Post a summary as task output** — a short human-facing line naming the repo, the open-issue count, and that no eligible work remains (e.g. `No safe, unblocked, single-PR issue remains in owner/repo (24 open, all disqualified) — report-and-exit, no work spawned.`). If a scout was spawned, mention its task id.
+
+6. **Terminate.** Write the terminal marker and stop:
 
    ```bash
    printf 'NO-ELIGIBLE-WORK: %s — %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '<reason>' >> "$STATE_FILE"
