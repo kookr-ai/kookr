@@ -56,6 +56,21 @@ export interface SessionReaperDeps {
   /** Live config getter — same "live getter" convention as `getCleanupWorktreeOnComplete`. */
   getConfig: () => SessionReapConfig;
   now?: () => number;
+  /**
+   * Optional thunk sweeping Monitor state for aged terminal tasks (issue
+   * #1761), bound by the server to `monitor.sweepAgedTerminalAgents(now -
+   * SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS, { skipSessionIds })`. Runs on every
+   * periodic reaper tick; the boot-time sweep is inert by ordering (hook
+   * replay populates the monitor AFTER the boot sweep — the ~5s liveness tick
+   * does the real first sweep). Receives this sweep's live session ids so an
+   * agent whose session is still alive is NEVER swept (sweeping is terminal:
+   * a stopped agent's late hook events are dropped, not re-created — see
+   * Monitor.sweepAgedTerminalAgents). Deliberately NOT gated on the reaper
+   * kill switch (`KOOKR_REAP_ORPHAN_SESSIONS=false`): with live sessions
+   * excluded, the sweep only clears monitor memory of already-dead sessions,
+   * which is memory hygiene, not session reaping. Returns the number swept.
+   */
+  sweepMonitorAgedAgents?: (liveSessionIds: ReadonlySet<string>) => number;
 }
 
 export interface SessionReapSweepResult {
@@ -175,6 +190,21 @@ export class SessionReaperService {
     this.lastSweepAt = nowISO();
     this.lastOrphanCount = orphanCount;
     this.lastTerminalLeakCount = terminalLeakCount;
+
+    // Monitor-state sweep for aged terminal tasks (issue #1761): piggybacks on
+    // this safety-net tick because the paths that create the leak (startup
+    // hook replay, reconciliation terminal transitions) have no teardown of
+    // their own. Best-effort — a throw here must not break session reaping.
+    if (this.deps.sweepMonitorAgedAgents) {
+      try {
+        const sweptAgents = this.deps.sweepMonitorAgedAgents(new Set(liveSessions));
+        if (sweptAgents > 0) {
+          console.log(`[session-reaper] swept ${sweptAgents} aged-terminal monitor agent(s) (issue #1761)`);
+        }
+      } catch (err) {
+        console.warn('[session-reaper] monitor aged-agent sweep failed:', err instanceof Error ? err.message : err);
+      }
+    }
 
     return { scanned: liveSessions.length, reaped, orphanCount, terminalLeakCount };
   }

@@ -1820,6 +1820,77 @@ describe('Monitor', () => {
     });
   });
 
+  describe('sweepAgedTerminalAgents (issue #1761)', () => {
+    const AGED_MS = 30 * 24 * 60 * 60 * 1000;
+    const cutoff = () => Date.now() - 7 * 24 * 60 * 60 * 1000;
+
+    function makeTaskWithSession(sessionId: string): string {
+      const task = taskStore.createTask(`Task for ${sessionId}`, '/cwd');
+      taskStore.addSession(task.id, {
+        tmuxSession: sessionId,
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+      });
+      return task.id;
+    }
+
+    function ageTerminal(taskId: string): void {
+      taskStore.completeTask(taskId);
+      const live = taskStore.getTaskForMutation(taskId)!;
+      const old = new Date(Date.now() - AGED_MS);
+      live.updatedAt = old;
+      if (live.finishedAt) live.finishedAt = old;
+    }
+
+    test('unregisters agents of aged terminal tasks; keeps live, recent-terminal, and unowned agents', () => {
+      const agedId = makeTaskWithSession('kookr-aged');
+      ageTerminal(agedId);
+      const recentId = makeTaskWithSession('kookr-recent');
+      taskStore.completeTask(recentId); // terminal but fresh — inside the cutoff
+      makeTaskWithSession('kookr-live'); // stays inProgress
+
+      for (const id of ['kookr-aged', 'kookr-recent', 'kookr-live', 'kookr-unowned']) {
+        monitor.processEvents(id, [makeToolUse(id, 'Read', { file_path: '/tmp/x' })]);
+      }
+
+      const swept = monitor.sweepAgedTerminalAgents(cutoff());
+      expect(swept).toBe(1);
+      const ids = monitor.getSnapshot().map((s) => s.agentId).sort();
+      expect(ids).toEqual(['kookr-live', 'kookr-recent', 'kookr-unowned']);
+      // Idempotent: nothing left to sweep.
+      expect(monitor.sweepAgedTerminalAgents(cutoff())).toBe(0);
+    });
+
+    test('never sweeps an agent whose session is still alive (skipSessionIds)', () => {
+      // Task terminal in store but session alive (reaper leak class 2, or a
+      // session spared by KOOKR_REAP_ORPHAN_SESSIONS=false): sweeping would
+      // permanently darken its monitoring, since stopped agents are never
+      // lazily re-created.
+      const agedId = makeTaskWithSession('kookr-alive-leak');
+      ageTerminal(agedId);
+      monitor.processEvents('kookr-alive-leak', [makeToolUse('kookr-alive-leak', 'Read', { file_path: '/tmp/x' })]);
+
+      expect(monitor.sweepAgedTerminalAgents(cutoff(), { skipSessionIds: new Set(['kookr-alive-leak']) })).toBe(0);
+      expect(monitor.getSnapshot().map((s) => s.agentId)).toContain('kookr-alive-leak');
+      // Once the session dies (no longer in the live set), it sweeps normally.
+      expect(monitor.sweepAgedTerminalAgents(cutoff(), { skipSessionIds: new Set() })).toBe(1);
+    });
+
+    test('a swept agent no longer inflates the getTaskSnapshot protect set', () => {
+      // The #1760 ghost-agent guard keeps any task owning a live agentEvents
+      // key — after the sweep, the aged task must actually leave the filtered
+      // task snapshot instead of being protected forever.
+      const agedId = makeTaskWithSession('kookr-stale');
+      ageTerminal(agedId);
+      monitor.processEvents('kookr-stale', [makeToolUse('kookr-stale', 'Read', { file_path: '/tmp/x' })]);
+
+      expect(monitor.getTaskSnapshot({ excludeTerminalBeforeMs: cutoff() }).map((t) => t.id)).toContain(agedId);
+      monitor.sweepAgedTerminalAgents(cutoff());
+      expect(monitor.getTaskSnapshot({ excludeTerminalBeforeMs: cutoff() }).map((t) => t.id)).not.toContain(agedId);
+    });
+  });
+
   describe('getTaskSnapshot pre-clone age filter (issue #1749 follow-up)', () => {
     const AGED_MS = 30 * 24 * 60 * 60 * 1000;
 

@@ -56,6 +56,7 @@ import {
   getSnapshotAgentsForClient,
   type SnapshotMessageDeps,
 } from './use-cases/get-snapshot.js';
+import { SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS } from './use-cases/snapshot-projection.js';
 import type { AgentState } from '../core/monitor.js';
 import { collectBootTranscriptRegistrations } from './boot-transcript-registration.js';
 import { sweepReflectWorktrees } from './use-cases/request-task-reflect.js';
@@ -936,6 +937,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     backend: terminalBackend,
     auditLogPath: join(kookrDir, 'audit.jsonl'),
     getConfig: () => readSessionReapConfigFromEnv(process.env),
+    // Issue #1761: clear Monitor state for aged terminal tasks on every sweep
+    // (boot + periodic). Same age cutoff as the snapshot payload diet — recent
+    // terminal tasks keep their monitor state and attention findings.
+    sweepMonitorAgedAgents: (liveSessionIds) => monitor.sweepAgedTerminalAgents(
+      Date.now() - SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS,
+      { skipSessionIds: liveSessionIds },
+    ),
   });
 
   // Reconcile with live backend sessions

@@ -39,6 +39,31 @@ async function readAuditRows(auditLogPath: string): Promise<Record<string, unkno
 }
 
 describe('SessionReaperService.runSweep', () => {
+  it('runs the monitor aged-agent sweep on every sweep and survives its failure (issue #1761)', async () => {
+    const taskStore = new TaskStore();
+    const backend = new FakeTerminalBackend();
+    let calls = 0;
+    const reaper = new SessionReaperService({
+      taskStore,
+      backend,
+      getConfig: () => ENABLED_CONFIG,
+      sweepMonitorAgedAgents: () => { calls += 1; return calls === 1 ? 3 : 0; },
+    });
+    await reaper.runSweep();
+    await reaper.runSweep();
+    expect(calls).toBe(2);
+
+    // A throwing sweep must not break session reaping.
+    const throwing = new SessionReaperService({
+      taskStore,
+      backend,
+      getConfig: () => ENABLED_CONFIG,
+      sweepMonitorAgedAgents: () => { throw new Error('boom'); },
+    });
+    const result = await throwing.runSweep();
+    expect(result.scanned).toBe(0);
+  });
+
   it('reaps a true orphan session past the age threshold (issue #1720 leak class 1)', async () => {
     await withTempAuditLog(async (auditLogPath) => {
       const taskStore = new TaskStore();
