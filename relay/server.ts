@@ -55,6 +55,7 @@ import { createVapidKeyStore, type VapidKeyStore } from './src/push/vapid.js';
 import { RelaySqliteStateStore, type PersistedNodeRegistration } from './src/state/sqlite.js';
 import { InMemoryContactShareEnvelopeStore } from './src/contact-share/envelopes.js';
 import { createRelayShutdownHandler, installRelayProcessSignalHandlers } from './shutdown.js';
+import { installDieWithParentWatchdog, readDieWithParentConfig } from './die-with-parent.js';
 
 interface NodeRegistration extends PersistedNodeRegistration {}
 
@@ -5342,6 +5343,27 @@ if (process.argv[1]?.endsWith('/relay/server.ts') || process.argv[1]?.endsWith('
     // close/WAL checkpoint) to SIGTERM/SIGINT so deploys drain cleanly.
     const shutdown = createRelayShutdownHandler({ close: () => relay.close() });
     installRelayProcessSignalHandlers(shutdown);
+    // Issue #1723: die-with-parent watchdog. Opt-in (test suite only — see
+    // vitest.config.ts). When the launching process exits, reap this relay so
+    // a crashed/SIGKILL-ed test runner cannot strand it as a memory-leaking
+    // orphan. Never enabled in production (the detached prod relay must outlive
+    // its launcher).
+    const dieWithParent = readDieWithParentConfig(process.env);
+    if (dieWithParent.enabled) {
+      installDieWithParentWatchdog({
+        intervalMs: dieWithParent.intervalMs,
+        ...(dieWithParent.expectedPpid !== undefined
+          ? { expectedPpid: dieWithParent.expectedPpid }
+          : {}),
+        onParentExit: ({ initialPpid, currentPpid }) => {
+          console.warn(
+            `[relay] parent process ${initialPpid} exited (reparented to ${currentPpid}); ` +
+              'shutting down to avoid an orphaned relay server (#1723).',
+          );
+          void shutdown('parent-exit');
+        },
+      });
+    }
     relay.httpServer.listen(port, bindHost, () => {
       console.log(`[relay] listening on http://${bindHost}:${port}`);
     });

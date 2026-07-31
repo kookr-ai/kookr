@@ -41,6 +41,7 @@ import { DEFAULT_HUNG_TASK_REAP_MS, evaluateHungTaskReap } from '../core/hung-ta
 import { reapHungTask } from './hung-task-reaper.js';
 import type { ProdSmokeTick } from './prod-smoke-tick.js';
 import type { DeployLagDetector } from './deploy-lag-detector.js';
+import { runRelayOrphanSweep } from './relay-orphan-sweep.js';
 import {
   autoCompleteDeliveredTasks,
   createDeliveredCompletionTracker,
@@ -206,6 +207,23 @@ export interface TimerDeps {
    * guards against pile-up itself.
    */
   deployLagDetector?: DeployLagDetector;
+  /**
+   * Optional relay-orphan sweep (issue #1723). When `intervalHours > 0`
+   * (resolved from `KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS`, default off), a
+   * dedicated interval reaps leaked `relay/server.ts` processes whose task
+   * worktree no longer exists — the backstop for the die-with-parent watchdog.
+   * Production-safe: a live relay's cwd always exists, so it is never selected.
+   * Every sweep is wrapped so an error is logged and never crashes the server.
+   */
+  relayOrphanSweep?: RelayOrphanSweepScheduleConfig;
+}
+
+/** Config for the scheduled relay-orphan sweep (issue #1723). */
+export interface RelayOrphanSweepScheduleConfig {
+  /** Interval between sweeps, in hours. `<= 0` disables the timer entirely. */
+  intervalHours: number;
+  /** Test seam for the sweep core. */
+  run?: typeof runRelayOrphanSweep;
 }
 
 export interface MaintenancePruneScheduleConfig {
@@ -312,6 +330,23 @@ export async function runScheduledMaintenancePrune(
 }
 
 /**
+ * Run one scheduled relay-orphan sweep (issue #1723). Errors are caught and
+ * logged so a failed sweep can never bubble into the interval callback and
+ * crash the process.
+ */
+export async function runScheduledRelayOrphanSweep(
+  config: RelayOrphanSweepScheduleConfig,
+): Promise<void> {
+  try {
+    const run = config.run ?? runRelayOrphanSweep;
+    await run({ excludePids: new Set([process.pid]) });
+  } catch (err) {
+    // Non-fatal: log and keep the server running.
+    console.error('[relay-orphan-sweep] scheduled sweep failed:', err);
+  }
+}
+
+/**
  * Aged terminal task-record prune leg of the scheduled maintenance sweep
  * (issue #1526 Phase C / C2). Isolated from the disk sweep so either leg
  * failing never suppresses the other; always finishes with the payload-diet
@@ -368,6 +403,8 @@ export interface TimerHandles {
   prodSmokeTickInterval: ReturnType<typeof setInterval> | null;
   /** Null unless the deploy-lag detector (issue #1594) was configured. */
   deployLagDetectorInterval: ReturnType<typeof setInterval> | null;
+  /** Null unless the relay-orphan sweep (issue #1723) was configured. */
+  relayOrphanSweepInterval: ReturnType<typeof setInterval> | null;
 }
 
 /**
@@ -1346,6 +1383,22 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     }, intervalMs);
   }
 
+  // --- Relay-orphan sweep (issue #1723), optional ---
+  // Reaps leaked `relay/server.ts` processes whose task worktree no longer
+  // exists — the backstop for the die-with-parent watchdog. Off unless
+  // KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS is a positive number.
+  let relayOrphanSweepInterval: ReturnType<typeof setInterval> | null = null;
+  const relayOrphanSweep = deps.relayOrphanSweep;
+  if (relayOrphanSweep && relayOrphanSweep.intervalHours > 0) {
+    const intervalMs = relayOrphanSweep.intervalHours * 60 * 60 * 1000;
+    console.log(
+      `[relay-orphan-sweep] scheduled sweep enabled every ${relayOrphanSweep.intervalHours}h`,
+    );
+    relayOrphanSweepInterval = setInterval(() => {
+      void runScheduledRelayOrphanSweep(relayOrphanSweep);
+    }, intervalMs);
+  }
+
   // --- Hourly prod smoke tick (issue #1593), optional ---
   // A cheap in-process liveness check: runs the same bounded smoke suite the
   // deploy gate uses against the live instance, on the tick's own cadence, and
@@ -1394,6 +1447,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     maintenancePruneInterval,
     prodSmokeTickInterval,
     deployLagDetectorInterval,
+    relayOrphanSweepInterval,
   };
 }
 
@@ -1443,4 +1497,5 @@ export function clearAllTimers(handles: TimerHandles): void {
   if (handles.maintenancePruneInterval) clearInterval(handles.maintenancePruneInterval);
   if (handles.prodSmokeTickInterval) clearInterval(handles.prodSmokeTickInterval);
   if (handles.deployLagDetectorInterval) clearInterval(handles.deployLagDetectorInterval);
+  if (handles.relayOrphanSweepInterval) clearInterval(handles.relayOrphanSweepInterval);
 }

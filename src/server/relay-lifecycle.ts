@@ -338,6 +338,11 @@ export async function startRelay(opts: RelayLifecycleOptions = {}): Promise<stri
       PORT: String(config.port),
       KOOKR_RELAY_BIND_HOST: config.bindHost,
       KOOKR_RELAY_STATE_DB_PATH: config.stateDbPath,
+      // Issue #1723: declare our pid so a die-with-parent watchdog (enabled only
+      // in the test suite) watches THIS launcher and reaps the relay if we die.
+      // Inert in production, where the watchdog is disabled and the relay is
+      // meant to outlive the CLI.
+      KOOKR_RELAY_PARENT_PID: String(process.pid),
     },
   });
   child.unref();

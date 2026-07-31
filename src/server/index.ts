@@ -70,6 +70,7 @@ import {
   resolveMaintenancePruneIntervalHours,
   type PayloadDietStats,
 } from './lifecycle-timers.js';
+import { resolveRelayOrphanSweepIntervalHours } from './relay-orphan-sweep.js';
 import { pruneAgedTaskRecords } from './use-cases/prune-aged-task-records.js';
 import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';
 import { createDeployLagDetectorFromEnv } from './deploy-lag-detector.js';
@@ -2140,6 +2141,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           }));
         },
         getPayloadDietStats,
+      },
+      // Relay-orphan sweep (issue #1723). Off unless
+      // KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS is set to a positive number.
+      // Reaps leaked relay/server.ts processes whose task worktree is gone —
+      // production-safe (a live relay's cwd always exists).
+      relayOrphanSweep: {
+        intervalHours: resolveRelayOrphanSweepIntervalHours(process.env),
       },
       // Hourly prod smoke tick (issue #1593). Enabled by default only on the
       // canonical prod port (4800) so a fresh deploy is protected with no
