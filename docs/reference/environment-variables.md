@@ -153,7 +153,7 @@ only when diagnosing slow viewers or unusually high terminal-output volume.
 
 ## Hook Event Log
 
-Read by `bin/kookr-hook-writer.js` at hook time to bound per-session hook JSONL growth (issue #1433). The live `HookFileWatcher` re-reads the whole active file on every append, so an unbounded file makes each hook event cost O(file size) and starves ingestion under load. Rotation caps the active file while preserving append-only JSONL semantics; rotated segments are named `<session>.jsonl.N` and cleaned up by `kookr maintenance` once the owning task is terminal and aged.
+Read by `bin/kookr-hook-writer.js` at hook time to bound per-session hook JSONL growth (issue #1433). Historically the live `HookFileWatcher` re-read the whole active file on every append (O(file size) per event), which starved ingestion under load; as of the #1612 incremental-read fix it stat-first skips and range-reads only appended bytes. Rotation still caps active-file size and bounds startup/replay cost while preserving append-only JSONL semantics; rotated segments are named `<session>.jsonl.N` and cleaned up by `kookr maintenance` once the owning task is terminal and aged.
 
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
