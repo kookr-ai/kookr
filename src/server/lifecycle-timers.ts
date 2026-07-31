@@ -18,6 +18,7 @@ import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
 import type { SessionInfo } from '../core/session-read-model.js';
 import { reconcile } from './reconciliation.js';
 import type { WorktreeRegistry } from '../adapters/git-worktree-registry.js';
+import { cleanupReconciledTaskWorktrees } from '../adapters/git-worktree.js';
 import { saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
 import { cleanupSessionResources, completeTask, promotePendingTasks, type LifecycleDeps, type AgentLifecycleDeps } from './agent-lifecycle.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
@@ -1184,6 +1185,29 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       for (const tmuxName of result.markedCompleted) {
         await cleanupSessionResources(tmuxName, lifecycleDeps);
       }
+
+      // Reap worktrees for reconcile-driven terminal transitions (#1727).
+      // reconcile() bypasses the agent-lifecycle wrappers that normally fire
+      // cleanup, so a task whose sessions all died leaves its worktree on
+      // disk forever without this — the disk-level twin of the claim-release
+      // call above. Fire-and-forget: cleanup runs git/du and must not block
+      // the tick; inspectWorktreeCleanup preserves dirty/unmerged/shared
+      // worktrees. The completed subset honors cleanupWorktreeOnComplete just
+      // like the manual completeTask path; the terminated subset always reaps.
+      void cleanupReconciledTaskWorktrees(
+        taskStore,
+        result,
+        deps.agentLifecycleDeps?.interactionLog,
+        { cleanupCompleted: deps.agentLifecycleDeps?.getCleanupWorktreeOnComplete?.() ?? true },
+      )
+        .then((cleaned) => {
+          if (cleaned.length > 0) {
+            console.log(
+              `[worktree-cleanup] reconcile reaped worktrees for ${cleaned.length} task(s)`,
+            );
+          }
+        })
+        .catch(() => {});
 
       if (
         result.markedCompleted.length > 0

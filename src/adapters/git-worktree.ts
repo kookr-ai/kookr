@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { existsSync } from 'node:fs';
 import { basename } from 'node:path';
 import type { TaskStore, Task } from '../core/tasks.js';
+import { isTerminalStatus } from '../core/task-status.js';
 import type { DeferredInteractionLogWriter, InteractionEvent } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
 import { classifyGitError, DEFAULT_GIT_MAX_BUFFER, DEFAULT_GIT_TIMEOUT_MS, gitExecEnv } from '../core/git-helpers.js';
@@ -445,21 +446,28 @@ export async function inspectTaskWorktrees(
  * Clean up worktrees for a completed/cancelled task.
  * Fires asynchronously — does NOT block the caller.
  * Checks task.status before each destructive step to abort if reopened.
+ *
+ * Returns the number of worktree directories actually removed from disk
+ * (preserved / already-gone / failed worktrees are not counted), so callers
+ * can report honest reap counts instead of "worktrees this task owned".
  */
 export async function cleanupTaskWorktrees(
   taskStore: TaskStore,
   taskId: string,
   interactionLog?: DeferredInteractionLogWriter,
-): Promise<void> {
+): Promise<number> {
   const task = taskStore.getTask(taskId);
-  if (!task) return;
+  if (!task) return 0;
 
   const paths = getWorktreePaths(task);
-  if (paths.length === 0) return;
+  if (paths.length === 0) return 0;
 
+  let removed = 0;
   for (const worktreePath of paths) {
     try {
-      await cleanupSingleWorktree(taskStore, taskId, task, worktreePath, interactionLog);
+      if (await cleanupSingleWorktree(taskStore, taskId, task, worktreePath, interactionLog)) {
+        removed += 1;
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await interactionLog?.append({
@@ -471,15 +479,83 @@ export async function cleanupTaskWorktrees(
       });
     }
   }
+  return removed;
 }
 
+/**
+ * Clean up worktrees for tasks driven to a terminal state by `reconcile()`.
+ *
+ * `reconcile()` calls the RAW `TaskStore` terminal methods (completeTask /
+ * terminateTask), bypassing the agent-lifecycle wrappers that normally fire
+ * worktree cleanup. Without this, a task whose sessions all die — the common
+ * case for abandoned or crashed agents — leaves its worktree on disk forever
+ * (issue #1727: 949 stale checkouts, ~200 GB, filled the prod disk). This is
+ * the disk-level twin of the reconcile claim-release call for issue-ownership
+ * locks: an additive step on the reconcile path, alongside claim release and
+ * onTaskOutcome.
+ *
+ * Behavior mirrors the manual wrappers exactly:
+ * - `tasksTerminated` (dead-session crash path, like `terminateTask`) is
+ *   always cleaned.
+ * - `tasksCompleted` (clean-turn finish, like `completeTask`) is cleaned only
+ *   when `cleanupCompleted` is true (default), so a user who set
+ *   `cleanupWorktreeOnComplete=false` keeps their completed-task worktrees.
+ *
+ * Every safety gate is inherited wholesale from `cleanupTaskWorktrees` →
+ * `inspectWorktreeCleanup`: dirty trees, unmerged commits, and worktrees still
+ * shared by a live open/inProgress task are preserved, never removed. A task
+ * that is no longer terminal by the time cleanup runs — reopened by a user, or
+ * relaunched by boot crash recovery — is skipped up front, so a worktree that
+ * a live session just re-adopted is never reaped out from under it.
+ *
+ * Awaits all cleanups sequentially so callers can await for deterministic
+ * tests and resource use stays bounded even with hundreds of stale checkouts;
+ * each per-task cleanup already swallows its own errors, so this never rejects.
+ * Returns the task ids that had at least one worktree actually removed (for an
+ * honest reap-count summary log).
+ */
+export async function cleanupReconciledTaskWorktrees(
+  taskStore: TaskStore,
+  reconcileResult: {
+    readonly tasksCompleted: readonly string[];
+    readonly tasksTerminated: readonly string[];
+  },
+  interactionLog?: DeferredInteractionLogWriter,
+  opts: { cleanupCompleted?: boolean } = {},
+): Promise<string[]> {
+  const cleanupCompleted = opts.cleanupCompleted ?? true;
+  const taskIds = new Set<string>(reconcileResult.tasksTerminated);
+  if (cleanupCompleted) {
+    for (const id of reconcileResult.tasksCompleted) taskIds.add(id);
+  }
+
+  const reaped: string[] = [];
+  for (const taskId of taskIds) {
+    const task = taskStore.getTask(taskId);
+    // Skip tasks a live session may have re-adopted since reconcile ran
+    // (user reopen, or boot crash-recovery relaunch). cleanupSingleWorktree
+    // also guards the 'open' status per-step, but re-checking terminal status
+    // here additionally covers a recovery relaunch that advanced the task to
+    // 'inProgress' before this reap started.
+    if (!task || !isTerminalStatus(task.status)) continue;
+    if (getWorktreePaths(task).length === 0) continue;
+    if (await cleanupTaskWorktrees(taskStore, taskId, interactionLog) > 0) {
+      reaped.push(taskId);
+    }
+  }
+  return reaped;
+}
+
+// Returns true only when the worktree directory was actually removed from
+// disk (so callers can report an honest reap count); false when it was
+// preserved, skipped, already gone, or removal failed.
 async function cleanupSingleWorktree(
   taskStore: TaskStore,
   taskId: string,
   task: Task,
   worktreePath: string,
   interactionLog?: DeferredInteractionLogWriter,
-): Promise<void> {
+): Promise<boolean> {
   // The same inspection the completion dialog displays. Running the guard
   // cascade here — rather than re-implementing it — is what keeps the dialog's
   // claim and this outcome from drifting apart.
@@ -496,14 +572,14 @@ async function cleanupSingleWorktree(
       reason: 'not found',
       timestamp: nowISO(),
     });
-    return;
+    return false;
   }
 
   if (verdict.blocker !== undefined) {
     await interactionLog?.append(
       blockedCleanupEvent(verdict.blocker, taskId, worktreePath, verdict.branch),
     );
-    return;
+    return false;
   }
 
   const session = getSessionForWorktree(task, worktreePath);
@@ -521,7 +597,7 @@ async function cleanupSingleWorktree(
       reason: 'task reopened',
       timestamp: nowISO(),
     });
-    return;
+    return false;
   }
 
   // Step 1: Remove the registered worktree through Git. `force` preserves the
@@ -544,9 +620,12 @@ async function cleanupSingleWorktree(
       error: removal.stderr ?? removal.reason ?? 'worktree removal failed',
       timestamp: nowISO(),
     });
-    return;
+    return false;
   }
 
+  // The directory is gone from disk now — the reap succeeded. Any failure in
+  // the follow-up prune / branch-delete steps below does not un-remove it, so
+  // every path from here returns true.
   const repoPath = removal.target.commonDir;
   const cleanedBranch = removal.target.branch;
   markWorktreeCleanedUp(taskStore, taskId, task, worktreePath);
@@ -560,7 +639,7 @@ async function cleanupSingleWorktree(
       reason: 'task reopened',
       timestamp: nowISO(),
     });
-    return;
+    return true;
   }
 
   // Step 2: Prune git worktree registry
@@ -585,7 +664,7 @@ async function cleanupSingleWorktree(
         error: 'branch deletion failed after worktree removal',
         timestamp: nowISO(),
       });
-      return;
+      return true;
     }
   }
 
@@ -596,4 +675,5 @@ async function cleanupSingleWorktree(
     branch: cleanedBranch,
     timestamp: nowISO(),
   });
+  return true;
 }

@@ -72,8 +72,9 @@ The system SHOULD reconcile Kookr-managed task sessions against the live `git wo
 - A prunable worktree or failed registry refresh is surfaced as stale metadata in the agent snapshot.
 - Agent snapshots carry worktree health so the frontend can render a compact warning near project/branch metadata.
 - Agent snapshots carry a server-computed project display label so per-agent badges do not re-derive project identity from `cwd` basenames.
+- Worktrees owned by tasks that reconcile drove to a terminal state (completed/terminated) are reaped through the same safety-gated cleanup as manual completion — on both the boot reconcile and the liveness-tick reconcile. The completed subset honors the `cleanupWorktreeOnComplete` setting; the terminated subset is always reaped; dirty, unmerged, and worktrees still shared by a live task are preserved; and a task a live session has re-adopted (user reopen or boot crash-recovery relaunch) is skipped.
 
-**Evidence:** `src/adapters/git-worktree-registry.ts`, `src/server/reconciliation.ts`, `src/server/lifecycle-timers.ts`, `src/core/monitor.ts`, `src/frontend/components/DetailPanel.tsx`, `src/frontend/components/FindingsPanel.tsx`.
+**Evidence:** `src/adapters/git-worktree-registry.ts`, `src/adapters/git-worktree.ts` (`cleanupReconciledTaskWorktrees`), `src/server/reconciliation.ts`, `src/server/lifecycle-timers.ts`, `src/server/index.ts`, `src/core/monitor.ts`, `src/frontend/components/DetailPanel.tsx`, `src/frontend/components/FindingsPanel.tsx`.
 
 ### R1.7: Preserve Completed Task Implementation Metadata [F1.4] — SHOULD — `done`
 
