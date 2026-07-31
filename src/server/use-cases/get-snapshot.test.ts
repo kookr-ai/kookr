@@ -148,7 +148,7 @@ describe('snapshot use cases', () => {
       serverCwd: '/repo',
       coordinator: {
         taskStore: {
-          listTasks: () => [{
+          viewTasks: () => [{
             id: 'task-1',
             prompt: 'Ship it',
             cwd: '/repo',
@@ -211,7 +211,7 @@ describe('snapshot use cases', () => {
       monitor,
       serverCwd: '/repo',
       coordinator: {
-        taskStore: { listTasks: () => taskStore.listTasks() },
+        taskStore: { viewTasks: () => taskStore.viewTasks() },
       },
       now: () => new Date('2026-05-21T12:00:00.000Z'),
     });
@@ -222,6 +222,36 @@ describe('snapshot use cases', () => {
         taskId: task.id,
       }),
     ]);
+  });
+
+  it('snapshot payload is immune to task mutations after the build (issue #1749 non-cloning view)', () => {
+    // The coordinator build reads the store through the non-cloning viewTasks,
+    // so this pins the safety precondition: no live Task reference may reach
+    // the message — a store mutation after createSnapshotMessage returns must
+    // not alter what would be serialized to clients.
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Ship it', '/repo');
+    taskStore.addSession(task.id, {
+      tmuxSession: 'agent-1',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date('2026-05-21T11:00:00.000Z'),
+    });
+
+    const msg = createSnapshotMessage({
+      monitor: { getSnapshot: () => [], getTaskSnapshot: () => taskStore.getAllTasks() } as any,
+      serverCwd: '/repo',
+      coordinator: {
+        taskStore: { viewTasks: () => taskStore.viewTasks() },
+      },
+      now: () => new Date('2026-05-21T12:00:00.000Z'),
+    });
+    const serializedBefore = JSON.stringify(msg);
+
+    taskStore.getTaskForMutation(task.id)!.prompt = 'mutated after snapshot build';
+    taskStore.getTaskForMutation(task.id)!.name = 'mutated-name';
+
+    expect(JSON.stringify(msg)).toBe(serializedBefore);
   });
 
   it('preserves raw monitor identity for legacy mocks without task snapshots', () => {

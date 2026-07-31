@@ -165,6 +165,21 @@ describe('TaskStore', () => {
       expect(store.listTasks()).toHaveLength(3);
     });
 
+    test('viewTasks returns every task without cloning (issue #1749 hot-path contract)', () => {
+      expect(store.viewTasks()).toHaveLength(0);
+
+      const created = store.createTask('Task 1', '/cwd');
+      store.createTask('Task 2', '/cwd');
+
+      const view = store.viewTasks();
+      expect(view).toHaveLength(2);
+      // The whole point of viewTasks is skipping the per-task structuredClone:
+      // it must hand back the live records, identity-equal across calls.
+      expect(view.find((t) => t.id === created.id)).toBe(store.viewTasks().find((t) => t.id === created.id));
+      // While the cloning accessors keep returning detached snapshots.
+      expect(store.listTasks().find((t) => t.id === created.id)).not.toBe(view.find((t) => t.id === created.id));
+    });
+
     test('listTasks returns snapshots instead of stored mutable records', () => {
       const created = store.createTask('Task 1', '/cwd');
       store.addSession(created.id, {
