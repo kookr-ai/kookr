@@ -5,8 +5,19 @@
 # repos where GitHub auto-merge is unavailable (private repos on the Free plan
 # without branch protection — see issue #29).
 #
+# Before merging, an independent-review gate (issue #1717) refuses to merge
+# unless the PR carries a fresh-context reviewer verdict of `pass` for the
+# current head, or the sanctioned `review-skipped-timeout` label. This makes
+# zero-review autonomous merges unreachable. The gate literals below are kept in
+# sync with src/core/independent-review.ts by a contract test. Set
+# KOOKR_MERGE_REQUIRE_REVIEW=0 to disable the gate (manual merges, OSS repos).
+#
 # Usage: kookr-merge <pr-number> [--repo OWNER/NAME]
 set -euo pipefail
+
+# --- independent-review gate literals (keep in sync with src/core/independent-review.ts) ---
+KOOKR_REVIEW_MARKER='<!-- kookr-independent-review -->'
+KOOKR_REVIEW_TIMEOUT_LABEL='review-skipped-timeout'
 
 PR=""
 REPO_ARG=()
@@ -31,7 +42,74 @@ Exit codes:
   1  pre-flight failed (state/draft/review) or merge command failed
   2  bad usage
   3  one or more checks failed (gh pr checks --watch returned non-zero)
+  4  blocked by the independent-review gate (no pass verdict / confirmed finding)
 EOF
+}
+
+# require_review_verdict — enforce the independent merge-review gate (#1717).
+# Allows the merge only when the latest reviewer verdict comment is `pass` for
+# the current head SHA, or the PR carries the timeout label. Returns 0 to allow,
+# 4 to block. Set KOOKR_MERGE_REQUIRE_REVIEW=0 to skip entirely.
+require_review_verdict() {
+  local require="${KOOKR_MERGE_REQUIRE_REVIEW:-1}"
+  if [[ "$require" == "0" || "$require" == "false" ]]; then
+    echo "kookr-merge: independent-review gate disabled (KOOKR_MERGE_REQUIRE_REVIEW=$require)"
+    return 0
+  fi
+
+  local view head_sha decision
+  if ! view="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json comments,labels,headRefOid)"; then
+    echo "kookr-merge: could not read PR comments/labels for the review gate" >&2
+    return 4
+  fi
+  head_sha="$(printf '%s' "$view" | jq -r '.headRefOid // "" | ascii_downcase')"
+  # Export the reviewed head so the final merge can pin to it (--match-head-commit),
+  # closing the TOCTOU window where the head advances during the check-watch wait
+  # and an unreviewed commit would otherwise merge.
+  REVIEW_HEAD_SHA="$head_sha"
+
+  decision="$(printf '%s' "$view" | jq -r \
+    --arg marker "$KOOKR_REVIEW_MARKER" \
+    --arg tlabel "$KOOKR_REVIEW_TIMEOUT_LABEL" \
+    --arg head "$head_sha" '
+    def strip: gsub("^\\s+|\\s+$"; "");
+    def verdicts:
+      [ .comments[]
+        | select(.body | contains($marker))
+        | .createdAt as $ts
+        | (.body | split("\n") | map(strip)) as $lines
+        | ( [ $lines[] | select(ascii_downcase | startswith("kookr-review-verdict:")) ] | last // "" ) as $vline
+        | ( $vline | ascii_downcase | ltrimstr("kookr-review-verdict:") | strip ) as $verdict
+        | select($verdict == "pass" or $verdict == "block")
+        | ( [ $lines[] | select(ascii_downcase | startswith("review-head-sha:")) ] | last // "" ) as $sline
+        | ( $sline | ascii_downcase | ltrimstr("review-head-sha:") | strip ) as $sha
+        | { ts: ($ts // ""), verdict: $verdict, sha: $sha } ];
+    ([ .labels[]?.name | ascii_downcase ] | index($tlabel)) as $hasLabel
+    | ( verdicts | sort_by(.ts) | last ) as $v
+    | if $v == null then
+        (if $hasLabel then "allow:timeout-label" else "block:no-verdict" end)
+      elif $v.verdict == "block" then
+        "block:blocked-finding"
+      elif ($v.sha != "" and $head != "" and $v.sha != $head) then
+        (if $hasLabel then "allow:timeout-label-stale" else "block:stale-verdict" end)
+      else
+        "allow:pass"
+      end
+  ')"
+
+  case "$decision" in
+    allow:*)
+      echo "kookr-merge: independent-review gate: ${decision#allow:}"
+      return 0
+      ;;
+    *)
+      echo "kookr-merge: BLOCKED by the independent-review gate: ${decision#block:}" >&2
+      echo "kookr-merge: the latest reviewer verdict must be 'pass' for the current head ($head_sha)," >&2
+      echo "kookr-merge: or the PR must carry the '$KOOKR_REVIEW_TIMEOUT_LABEL' label." >&2
+      echo "kookr-merge: run the independent-merge-review skill, or set KOOKR_MERGE_REQUIRE_REVIEW=0 for a manual merge." >&2
+      return 4
+      ;;
+  esac
 }
 
 while [[ $# -gt 0 ]]; do
@@ -146,6 +224,10 @@ if [[ "$review_decision" == "CHANGES_REQUESTED" ]]; then
   exit 1
 fi
 
+if ! require_review_verdict; then
+  exit 4
+fi
+
 echo "kookr-merge: watching checks for PR #$PR"
 if ! watch_checks; then
   echo "kookr-merge: checks did not pass for PR #$PR" >&2
@@ -153,4 +235,11 @@ if ! watch_checks; then
 fi
 
 echo "kookr-merge: checks passed, squash-merging PR #$PR"
-gh pr merge "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --squash --delete-branch
+# Pin the merge to the reviewed head when the review gate ran (REVIEW_HEAD_SHA is
+# set inside require_review_verdict). If the head advanced during the wait, gh
+# refuses the merge rather than merging an unreviewed commit.
+HEAD_PIN=()
+if [[ -n "${REVIEW_HEAD_SHA:-}" ]]; then
+  HEAD_PIN=(--match-head-commit "$REVIEW_HEAD_SHA")
+fi
+gh pr merge "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --squash --delete-branch ${HEAD_PIN[@]+"${HEAD_PIN[@]}"}

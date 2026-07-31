@@ -57,6 +57,7 @@
     "kb:usage": "node --import tsx scripts/kb-usage-report.ts",
     "coverage:summary": "node --import tsx scripts/coverage-summary.ts coverage/coverage-summary.json",
     "shadow:report": "node --import tsx scripts/shadow-report.ts",
+    "review:coverage": "node --import tsx scripts/review-coverage-report.ts",
     "test:onboarding": "bash scripts/onboarding-smoke-test.sh",
     "validate:skills": "node --import tsx scripts/validate-skills.ts",
     "validate:playbooks": "node --import tsx scripts/validate-playbooks.ts",

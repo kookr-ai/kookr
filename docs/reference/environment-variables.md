@@ -127,6 +127,7 @@ not user configuration knobs.
 | `KOOKR_SPAWN_MAX_PROMPT_BYTES` | `1048576` | Positive integer bytes | Maximum prompt size accepted from `kookr spawn` stdin or `--prompt-file`. |
 | `KOOKR_SPAWN_CONNECT_RETRIES` | `3` | Integer `1` through `10` | Number of `kookr spawn` connectivity sweeps before reporting no server. |
 | `KOOKR_SPAWN_AUTO_IDEMPOTENCY` | unset (off) | `1`/`true`/`yes`/`on` to enable | Default for `kookr spawn --auto-idempotency`: when no `--idempotency-key` is given, derive a key (`auto-<hash>`) from prompt+cwd+criteria+agent so a client-timeout retry of the identical spawn replays instead of stranding a duplicate (bounded by the server's rolling 24h idempotency TTL). Only helps stable-prompt retries; regenerated-prompt retries need an explicit `--idempotency-key`. `--no-auto-idempotency` overrides it per-invocation; no effect under `--dedupe=skip`. |
+| `KOOKR_MERGE_REQUIRE_REVIEW` | `1` (on) | `0`/`false` to disable | Independent merge-review gate for `pnpm merge` (`scripts/kookr-merge.sh`, issue #1717). When on (default), the wrapper refuses to merge (exit 4) unless the PR carries a fresh-context reviewer verdict of `pass` for the current head — see the `independent-merge-review` skill — or the `review-skipped-timeout` label (applied when the reviewer exceeds the 10-minute latency budget). Set to `0` only for a human-driven manual merge, never for an autonomous self-merge. |
 
 ## Terminal Backend
 

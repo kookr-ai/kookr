@@ -129,6 +129,21 @@ describe('implement-github-issue playbook', () => {
     expect(pb.body).toContain('"targetTitle":${TARGET_TITLE_JSON}');
   });
 
+  test('Phase 8 requires the independent merge-review gate before pnpm merge (issue #1717)', () => {
+    const phase8Start = pb.body.indexOf('Phase 8: Merge Policy and Claim Release');
+    const gateIdx = pb.body.indexOf('Independent merge-review gate', phase8Start);
+    const mergeIdx = pb.body.indexOf('pnpm merge <PR_NUMBER>', phase8Start);
+    expect(gateIdx).toBeGreaterThan(phase8Start);
+    // The gate instruction must precede the merge command.
+    expect(mergeIdx).toBeGreaterThan(gateIdx);
+    // Fresh-context reviewer + Codex→Claude fallback + timeout label are the load-bearing pieces.
+    const gateText = pb.body.slice(gateIdx, mergeIdx);
+    expect(gateText).toMatch(/fresh-context/i);
+    expect(gateText).toContain('independent-merge-review');
+    expect(gateText).toMatch(/rate-limited/i);
+    expect(gateText).toContain('review-skipped-timeout');
+  });
+
   test('Phase 8.5 surfaces the post-task KB lesson decision before Phase 9', () => {
     // Issue #227 / #1538: agents must emit either a `kb remember` write or the
     // skip marker before the verdict is written (and before completion-ready),
