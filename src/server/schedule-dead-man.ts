@@ -55,6 +55,13 @@ const HEALTHY_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = new Set([
 
 export interface ScheduleDeadManDeps {
   broadcast: (msg: ServerMessage) => void;
+  /**
+   * Optional durable sink for fire/clear transitions (issue #1709). Called with
+   * the same alert that is broadcast, so a transition that happens while no
+   * client is listening still leaves an on-disk trace. Fire-and-forget: it must
+   * not throw, and never gates the WS broadcast.
+   */
+  recordTransition?: (alert: Extract<ServerMessage, { type: 'alert' }>) => void;
   /** Live getter for the dead-man window (ms). Falls back to {@link DEFAULT_DEAD_MAN_SCHEDULE_MS}. */
   getDeadManMs?: () => number;
   /** Injectable clock (tests). */
@@ -85,13 +92,32 @@ export class ScheduleDeadManSwitch {
 
     if (verdict.starving && !this.firing) {
       this.firing = true;
-      this.deps.broadcast(buildScheduleStarvationAlert(verdict.reason ?? 'scheduled executions are starving', windowMs));
+      this.emit(buildScheduleStarvationAlert(verdict.reason ?? 'scheduled executions are starving', windowMs));
       return;
     }
     if (!verdict.starving && this.firing) {
       this.firing = false;
-      this.deps.broadcast(buildScheduleStarvationRecoveryAlert());
+      this.emit(buildScheduleStarvationRecoveryAlert());
     }
+  }
+
+  /**
+   * Record the transition to the durable sink (if configured) BEFORE
+   * broadcasting, so the on-disk trace is written even if the broadcast path is
+   * somehow lossy. The recorder is fire-and-forget; a throw from it (a future
+   * alternate emitter, a bug) must never suppress the WS broadcast, so it is
+   * guarded here rather than trusting caller discipline.
+   */
+  private emit(alert: Extract<ServerMessage, { type: 'alert' }>): void {
+    try {
+      this.deps.recordTransition?.(alert);
+    } catch (err) {
+      console.warn(
+        '[schedule-dead-man] recordTransition threw (ignored):',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    this.deps.broadcast(alert);
   }
 
   private resolveWindowMs(): number {

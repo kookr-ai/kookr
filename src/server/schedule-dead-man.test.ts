@@ -231,4 +231,38 @@ describe('ScheduleDeadManSwitch (issue #1526 Phase C)', () => {
     deadMan.check([healthy]);
     expect(broadcast).not.toHaveBeenCalled();
   });
+
+  it('records each fire/clear transition to the durable sink with the same alert it broadcasts (issue #1709)', () => {
+    const broadcast = vi.fn();
+    const recordTransition = vi.fn();
+    const deadMan = new ScheduleDeadManSwitch({
+      broadcast,
+      recordTransition,
+      getDeadManMs: () => DEFAULT_DEAD_MAN_SCHEDULE_MS,
+      now: () => new Date(NOW),
+    });
+    const failures = [
+      entry('dispatch_failed', NOW - 3 * 3_600_000),
+      entry('dispatch_failed', NOW - 2 * 3_600_000),
+      entry('dispatch_failed', NOW - 1 * 3_600_000),
+    ];
+
+    // Fire edge.
+    deadMan.check([schedule({ executionLedger: failures })]);
+    // Clear edge.
+    deadMan.check([schedule({ executionLedger: [...failures, entry('completed', NOW - 10 * 60_000)] })]);
+
+    expect(recordTransition).toHaveBeenCalledTimes(2);
+    // The sink receives exactly the broadcast alert objects.
+    expect(recordTransition.mock.calls[0]![0]).toBe(broadcast.mock.calls[0]![0]);
+    expect(recordTransition.mock.calls[1]![0]).toBe(broadcast.mock.calls[1]![0]);
+    expect(recordTransition.mock.calls[0]![0].operationalAlert).toMatchObject({
+      key: 'schedule:dead_man',
+      state: 'fired',
+    });
+    expect(recordTransition.mock.calls[1]![0].operationalAlert).toMatchObject({
+      key: 'schedule:dead_man',
+      state: 'recovered',
+    });
+  });
 });
