@@ -29,6 +29,9 @@ import { registerSessionSharingRecoveryRoutes } from './routes/session-sharing-r
 import { registerCollaborationPairingRoutes } from './routes/collaboration-pairing-routes.js';
 import { registerViewerShareRoutes, isViewerShareRoute } from './routes/viewer-share-routes.js';
 import { registerSpeechRoutes } from './routes/speech-routes.js';
+import { registerPipelineStarvationRoutes } from './routes/pipeline-starvation-routes.js';
+import { PipelineStarvationService } from './pipeline-starvation-service.js';
+import { launchTask } from './launch-service.js';
 import { AgentSpeakCache } from './agent-speak-cache.js';
 import { DEFAULT_TTS_VOICE } from './tts-manager.js';
 import { TaskSpeechSummaryCache } from './task-speech-summary-cache.js';
@@ -126,6 +129,18 @@ export function createRoutes(deps: RouteDeps): Hono {
   }
   registerCostComparisonRoutes(app, sharedDeps);
   registerOutcomeLedgerRoutes(app, sharedDeps);
+  // Issue #1715: batch blocked-empty → on-demand idea-scout + starvation alert.
+  // Built from the same launchServiceDeps the task/schedule paths use so spawn
+  // goes through capacity admission, idempotency, and audit provenance.
+  registerPipelineStarvationRoutes(app, {
+    pipelineStarvation: new PipelineStarvationService({
+      taskStore: sharedDeps.taskStore,
+      launcher: (opts) => launchTask(sharedDeps.launchServiceDeps, opts),
+      broadcast: sharedDeps.broadcastToAll,
+      kookrDir: sharedDeps.kookrDir,
+      log: (line) => console.log(line),
+    }),
+  });
   registerProjectRoutes(app, sharedDeps);
   registerOssAttemptRoutes(app, sharedDeps);
   registerScheduleRoutes(app, sharedDeps);

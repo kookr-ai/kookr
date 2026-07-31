@@ -85,3 +85,47 @@ describe('parallel-issue-batch playbook: headless report-and-exit (#1714)', () =
     expect(values).toEqual(['ask', 'auto-safe-subset', 'auto-stop']);
   });
 });
+
+/**
+ * Contract tests for the pipeline-starvation refill trigger (issue #1715).
+ * After a blocked-empty outcome the batch MUST hand the record to the engine
+ * so an on-demand idea-scout can refill the queue and a second consecutive
+ * empty can raise a pipeline-starvation alert. These assertions pin the
+ * call site so the playbook cannot silently drop the composition with the
+ * engine endpoint.
+ */
+describe('parallel-issue-batch playbook: pipeline-starvation refill (#1715)', () => {
+  const playbookPath = join(
+    import.meta.dirname,
+    '..',
+    '..',
+    'plugin',
+    'playbooks',
+    'parallel-issue-batch.md',
+  );
+  const content = readFileSync(playbookPath, 'utf-8');
+  const pb = parsePlaybook(content, 'parallel-issue-batch.md', '/');
+
+  test('invokes POST /api/pipeline-starvation/handle after blocked-empty', () => {
+    expect(pb.body).toContain('/api/pipeline-starvation/handle');
+    expect(pb.body).toContain('pipeline-starvation refill');
+    expect(pb.body).toMatch(/starvation-trigger/);
+  });
+
+  test('records any spawned scout taskId in state.md for auditability', () => {
+    expect(pb.body).toContain('starvationScoutTaskId');
+    expect(pb.body).toMatch(/\$STATE_FILE/);
+  });
+
+  test('documents engine-side dedup and second-consecutive alert contract', () => {
+    expect(pb.body).toMatch(/max 1 starvation-triggered scout per repo per 4h/i);
+    expect(pb.body).toMatch(/second consecutive.*12h/i);
+    expect(pb.body).toMatch(/first does not/i);
+  });
+
+  test('lists the starvation-refill contract in the checklist', () => {
+    const checklistText = pb.checklist.join('\n');
+    expect(checklistText).toMatch(/pipeline-starvation refill/i);
+    expect(checklistText).toContain('starvation-trigger');
+  });
+});

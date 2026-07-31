@@ -664,6 +664,40 @@ Returns the full sanitized config object for that project.
 | `PATCH /api/schedules/:id` | Update a schedule |
 | `DELETE /api/schedules/:id` | Delete a schedule |
 | `POST /api/schedules/:id/run` | Trigger a scheduled task immediately |
+| `POST /api/pipeline-starvation/handle` | Consume a batch `blocked-empty` outcome: on-demand idea-scout + starvation alert (issue #1715) |
+
+### `POST /api/pipeline-starvation/handle`
+
+Called by `parallel-issue-batch` after it writes a machine-readable
+`blocked-empty` outcome (issue #1714). The engine:
+
+1. Records the empty event in the durable per-repo ledger
+   (`~/.kookr/playbook-state/pipeline-starvation/<repo-slug>.json`).
+2. Spawns at most one on-demand `repository-idea-scout` for the repo when no
+   successful ideation ran in the last 4h, no scout is already in flight, and
+   no starvation-triggered scout was spawned in the last 4h. Spawns are
+   stamped in `audit.jsonl` with `provenance: "starvation-trigger"`.
+3. On the **second** consecutive `blocked-empty` for the same repo within 12h,
+   emits one pipeline-starvation operational alert (the first empty does not
+   alert).
+
+Body:
+
+```json
+{
+  "outcome": {
+    "schemaVersion": 1,
+    "outcome": "blocked-empty",
+    "repo": "owner/repo",
+    "runKey": "<run-key>",
+    "openIssueCount": 24,
+    "disqualified": [{ "issue": 1, "reason": "…" }],
+    "generatedAt": "<ISO-8601>"
+  },
+  "localPath": "/optional/checkout",
+  "parentTaskId": "<optional batch task id>"
+}
+```
 
 ## Reflection And Telemetry
 
