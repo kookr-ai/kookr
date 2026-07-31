@@ -25,7 +25,15 @@ if (fileIdx >= 0 && args[fileIdx + 1]) {
 }
 
 async function main(): Promise<void> {
-  const report = await generateReportFromFile(filePath);
+  // Offline CLI intentionally opts out of the HTTP route's tight defaults
+  // (issue #1764): promotion metrics in ADR-013 need a wider corpus than a
+  // dashboard poll. Unbounded maxBytes/maxEntries stream the full file(s);
+  // maxAgeMs: 0 disables the relative age filter.
+  const report = await generateReportFromFile(filePath, {
+    maxBytes: Number.POSITIVE_INFINITY,
+    maxEntries: Number.POSITIVE_INFINITY,
+    maxAgeMs: 0,
+  });
 
   if (jsonOutput) {
     process.stdout.write(JSON.stringify(report, null, 2) + '\n');

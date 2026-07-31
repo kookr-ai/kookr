@@ -5,9 +5,10 @@
  * transitions + heartbeats, and computes per-strategy coverage metrics.
  */
 
-import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
+import { closeSync, createReadStream, fstatSync, openSync, readSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import type { ShadowLogEntry, ShadowTransition, ShadowHeartbeat, ShadowSource } from './shadow-detector.js';
 import type { AnomalyType } from './types.js';
 
@@ -328,8 +329,13 @@ export async function parseShadowLogFromFile(
   filePath: string,
   options: ParseShadowLogFromFileOptions = {},
 ): Promise<{ entries: ShadowLogEntry[]; errors: number; truncated: boolean }> {
-  const maxBytes = Math.max(1, Math.floor(options.maxBytes ?? DEFAULT_SHADOW_REPORT_MAX_BYTES));
-  const maxEntries = Math.max(1, Math.floor(options.maxEntries ?? DEFAULT_SHADOW_REPORT_MAX_ENTRIES));
+  const maxBytesOpt = options.maxBytes ?? DEFAULT_SHADOW_REPORT_MAX_BYTES;
+  const maxEntriesOpt = options.maxEntries ?? DEFAULT_SHADOW_REPORT_MAX_ENTRIES;
+  // POSITIVE_INFINITY / non-finite → unbounded (offline CLI / promotion analysis).
+  const unboundedBytes = !Number.isFinite(maxBytesOpt);
+  const unboundedEntries = !Number.isFinite(maxEntriesOpt);
+  const maxBytes = unboundedBytes ? Number.POSITIVE_INFINITY : Math.max(1, Math.floor(maxBytesOpt));
+  const maxEntries = unboundedEntries ? Number.POSITIVE_INFINITY : Math.max(1, Math.floor(maxEntriesOpt));
   const maxAgeMs = Math.max(0, Math.floor(options.maxAgeMs ?? DEFAULT_SHADOW_REPORT_MAX_AGE_MS));
 
   // Newest-first so the byte/row budget retains the recent window.
@@ -340,19 +346,23 @@ export async function parseShadowLogFromFile(
   let truncated = false;
 
   for (const path of paths) {
-    if (bytesRemaining <= 0 || newestFirst.length >= maxEntries) {
+    if ((!unboundedBytes && bytesRemaining <= 0) || (!unboundedEntries && newestFirst.length >= maxEntries)) {
       truncated = true;
       break;
     }
-    const entryBudget = maxEntries - newestFirst.length;
-    const parsed = parseShadowLogFileTail(path, bytesRemaining, entryBudget);
+    const entryBudget = unboundedEntries
+      ? Number.POSITIVE_INFINITY
+      : maxEntries - newestFirst.length;
+    const parsed = unboundedBytes
+      ? await parseShadowLogFileStream(path, entryBudget)
+      : parseShadowLogFileTail(path, bytesRemaining, entryBudget);
     // parsed.entries are chronological within the file; reverse so we keep
     // prepending older generations behind the already-collected newer ones.
     for (let i = parsed.entries.length - 1; i >= 0; i--) {
       newestFirst.push(parsed.entries[i]!);
     }
     errors += parsed.errors;
-    bytesRemaining -= parsed.bytesRead;
+    if (!unboundedBytes) bytesRemaining -= parsed.bytesRead;
     if (parsed.truncatedByBytes || parsed.truncatedByEntries) truncated = true;
   }
 
@@ -407,22 +417,74 @@ async function listShadowLogPaths(filePath: string): Promise<string[]> {
   return [...generations, filePath];
 }
 
-/**
- * Read at most `maxBytes` from the end of `filePath` and parse JSONL lines.
- * Drops a leading partial line when the tail starts mid-line.
- * Returns chronological entries within the read window.
- */
-function parseShadowLogFileTail(
-  filePath: string,
-  maxBytes: number,
-  maxEntries: number,
-): {
+type FileParseResult = {
   entries: ShadowLogEntry[];
   errors: number;
   bytesRead: number;
   truncatedByBytes: boolean;
   truncatedByEntries: boolean;
-} {
+};
+
+/**
+ * Stream-parse an entire shadow log file (offline / unbounded path).
+ * Used when maxBytes is POSITIVE_INFINITY so the CLI can still analyze
+ * full promotion corpora without the HTTP route's tight defaults.
+ */
+async function parseShadowLogFileStream(
+  filePath: string,
+  maxEntries: number,
+): Promise<FileParseResult> {
+  const entries: ShadowLogEntry[] = [];
+  let errors = 0;
+  let truncatedByEntries = false;
+  const entryCap = Number.isFinite(maxEntries) ? maxEntries : Number.POSITIVE_INFINITY;
+  const rl = createInterface({
+    input: createReadStream(filePath, { encoding: 'utf-8' }),
+    crlfDelay: Infinity,
+  });
+  try {
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line) as ShadowLogEntry;
+        if (entry.kind === 'transition' || entry.kind === 'heartbeat') {
+          entries.push(entry);
+          // Sliding window: file is chronological, so drop the oldest when capped.
+          if (entries.length > entryCap) {
+            entries.shift();
+            truncatedByEntries = true;
+          }
+        } else {
+          errors++;
+        }
+      } catch {
+        errors++;
+      }
+    }
+  } catch {
+    // ENOENT or mid-stream I/O failure: return whatever was parsed.
+  } finally {
+    rl.close();
+  }
+  return {
+    entries,
+    errors,
+    bytesRead: 0,
+    truncatedByBytes: false,
+    truncatedByEntries,
+  };
+}
+
+/**
+ * Read at most `maxBytes` from the end of `filePath` and parse JSONL lines.
+ * Drops a leading partial line only when the tail starts mid-line
+ * (byte before `start` is not `\n`). Returns chronological entries.
+ */
+function parseShadowLogFileTail(
+  filePath: string,
+  maxBytes: number,
+  maxEntries: number,
+): FileParseResult {
   const entries: ShadowLogEntry[] = [];
   let errors = 0;
   let bytesRead = 0;
@@ -444,15 +506,24 @@ function parseShadowLogFileTail(
     const buf = Buffer.allocUnsafe(length);
     bytesRead = readSync(fd, buf, 0, length, start);
     let text = buf.subarray(0, bytesRead).toString('utf-8');
+    // Only drop a leading partial line when the cut is mid-line. If the
+    // byte immediately before `start` is `\n` (or start===0), the first
+    // character of `text` is already a complete line start.
     if (start > 0) {
-      const nl = text.indexOf('\n');
-      if (nl >= 0 && nl + 1 < text.length) {
-        text = text.slice(nl + 1);
-      } else if (nl < 0) {
-        // Entire tail is one partial line — nothing parseable.
-        return { entries, errors, bytesRead, truncatedByBytes: true, truncatedByEntries: false };
-      } else {
-        text = '';
+      const prev = Buffer.allocUnsafe(1);
+      const prevRead = readSync(fd, prev, 0, 1, start - 1);
+      const startsOnLineBoundary = prevRead === 1 && prev[0] === 0x0a;
+      if (!startsOnLineBoundary) {
+        const nl = text.indexOf('\n');
+        if (nl >= 0 && nl + 1 < text.length) {
+          text = text.slice(nl + 1);
+        } else if (nl < 0) {
+          // Entire tail is one partial line — nothing parseable.
+          return { entries, errors, bytesRead, truncatedByBytes: true, truncatedByEntries: false };
+        } else {
+          // Tail ends at the first newline only (no complete subsequent line).
+          text = '';
+        }
       }
     }
 
@@ -462,7 +533,7 @@ function parseShadowLogFileTail(
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i]!;
       if (!line.trim()) continue;
-      if (newestFirst.length >= maxEntries) {
+      if (Number.isFinite(maxEntries) && newestFirst.length >= maxEntries) {
         truncatedByEntries = true;
         break;
       }

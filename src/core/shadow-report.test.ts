@@ -421,8 +421,7 @@ describe('parseShadowLogFromFile / generateReportFromFile', () => {
       });
       expect(truncated).toBe(true);
       const agentIds = entries.map((e) => e.agentId);
-      expect(agentIds).toContain('new');
-      expect(agentIds).not.toContain('old');
+      expect(agentIds).toEqual(['mid', 'new']);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
