@@ -806,6 +806,41 @@ hints and packed facts can be stale, so a child must verify and explore beyond
 it. Exit `0` on success; `2` on any failure — a usage error (missing
 `--spec`/`--out`), a malformed spec, or a failed write of the output pack.
 
+## `kookr signal-emit`
+
+Spool an **operator signal** into the delivery outbox (issue #1716). Scheduled
+monitors call this to turn a status reading or a liveness check into a signal
+file that the in-server delivery bridge then pushes to Discord / Telegram. See
+[Operator Signal Delivery](./environment-variables.md#operator-signal-delivery)
+for the channel configuration.
+
+```bash
+# deploy-lag / prod-smoke transitions (fire on ok→alert, clear on alert→ok):
+kookr signal-emit transition --source deploy-lag --status alert --detail "7 commits / 9.5h behind"
+# liveness registry (stale/missing artifact → one signal, re-emit ≤ once per 6h):
+kookr signal-emit liveness --registry liveness.json
+```
+
+The compiled CLI is loaded with a `dist`→`src` fallback, so the verb works from
+an `npm`/`npx` install and a source checkout alike; the by-path form
+(`node "$KOOKR_REPO/bin/kookr-signal-emit.js" …`) keeps working unchanged.
+
+Options:
+
+| Option | Argument | Default | Description |
+| --- | --- | --- | --- |
+| `transition --source` | `<name>` | — | Monitor name (e.g. `deploy-lag`, `prod-smoke`). Required for `transition`. |
+| `transition --status` | `ok`\|`alert`\|`unknown` | — | Current status; a transition vs the persisted last-known status emits a fire/clear signal. Required for `transition`. |
+| `transition --detail` | `<text>` | none | Human summary included in the notification. |
+| `liveness --registry` | `<path.json>` | — | JSON array of `{name,maxAgeMs,path?,enabled?}` entries checked against artifact mtimes. Required for `liveness`. |
+| `liveness --now` | `<iso>` | now | Override the current time (testing / replay). |
+| `--dir` | `<path>` | `$KOOKR_OPERATOR_SIGNAL_DIR` or `~/.kookr/playbook-state/operator-signals` | Override the operator-signal outbox directory. |
+| `-h`, `--help` | none | false | Print command help and exit. |
+
+Exit `0` whether or not a signal was emitted; `2` on a usage error (missing
+`--source`/`--status`/`--registry`, invalid `--status`, or an unreadable
+registry).
+
 ## `kookr push test`
 
 Send a synthetic relay push notification to a registered device:

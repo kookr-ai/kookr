@@ -204,6 +204,14 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     ],
   },
   {
+    name: 'signal-emit',
+    subcommands: ['transition', 'liveness'],
+    flags: ['--source', '--status', '--detail', '--registry', '--now', '--dir', '-h', '--help'],
+    flagValues: {
+      '--status': ['ok', 'alert', 'unknown'],
+    },
+  },
+  {
     name: 'push',
     subcommands: ['test'],
   },
@@ -304,6 +312,8 @@ function renderBashCompletion(): string {
   const prChecklistSubcommands = subcommandsFor('pr-checklist');
   const prChecklistFlags = flagsFor('pr-checklist');
   const contextPackFlags = flagsFor('context-pack');
+  const signalEmitSubcommands = subcommandsFor('signal-emit');
+  const signalEmitFlags = flagsFor('signal-emit');
   const pushSubcommands = subcommandsFor('push');
   const completionFlags = flagsFor('completion');
 
@@ -477,6 +487,13 @@ _kookr()
     context-pack)
       COMPREPLY=( $(compgen -W "${contextPackFlags}" -- "\${cur}") )
       ;;
+    signal-emit)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${signalEmitSubcommands} ${signalEmitFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${signalEmitFlags}" -- "\${cur}") )
+      fi
+      ;;
     push)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
         COMPREPLY=( $(compgen -W "${pushSubcommands}" -- "\${cur}") )
@@ -535,6 +552,8 @@ function renderZshCompletion(): string {
   const prChecklistSubcommands = subcommandsFor('pr-checklist');
   const prChecklistFlags = flagsFor('pr-checklist');
   const contextPackFlags = flagsFor('context-pack');
+  const signalEmitSubcommands = subcommandsFor('signal-emit');
+  const signalEmitFlags = flagsFor('signal-emit');
   const pushSubcommands = subcommandsFor('push');
   const completionFlags = flagsFor('completion');
 
@@ -664,6 +683,13 @@ _kookr()
       ;;
     context-pack)
       compadd -- ${contextPackFlags}
+      ;;
+    signal-emit)
+      if (( CURRENT == 3 )); then
+        compadd -- ${signalEmitSubcommands} ${signalEmitFlags}
+      else
+        compadd -- ${signalEmitFlags}
+      fi
       ;;
     push)
       if (( CURRENT == 3 )); then

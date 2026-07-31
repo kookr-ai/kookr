@@ -27,6 +27,7 @@ Usage:
   kookr retro-verify status|drain|enqueue  CI-blind-merge debt + retro-verify drain.
   kookr pr-checklist verify|doctor [OPTIONS]  Verify PR checklist or report local gate fail-open rate.
   kookr context-pack --spec <f> --out <f>  Build a spawn-time context pack from a JSON spec.
+  kookr signal-emit transition|liveness [OPTIONS]  Spool an operator signal for delivery.
   kookr push test <deviceId>    Send a relay push test.
   kookr completion bash|zsh     Print a shell completion script.
 
@@ -178,6 +179,15 @@ async function main({
     return exit(process.exitCode ?? 0);
   }
 
+  // Operator-signal emitter (issue #1716). Spools transition / liveness signals
+  // into the delivery outbox for the in-server bridge to push outbound. Loads
+  // the compiled CLI with a dist→src fallback; the by-path
+  // bin/kookr-signal-emit.js form keeps working too.
+  if (command === 'signal-emit') {
+    await runSignalEmitCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
+  }
+
   if (command !== undefined) {
     err.error(`[kookr] Unknown command: ${command}`);
     err.error('Run `kookr --help` for usage.');
@@ -314,6 +324,20 @@ async function runContextPackCommand(argv, { env = process.env, out = console, e
   }
   const mod = await import(pathToFileURL(entry).href);
   process.exitCode = await mod.runContextPackCli(argv, { env, out });
+}
+
+async function runSignalEmitCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-signal-emit.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-signal-emit.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] signal-emit module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exit(1);
+  }
+  const mod = await import(pathToFileURL(entry).href);
+  process.exitCode = await mod.runSignalEmitCli(argv);
 }
 
 async function runDoctorCommand(argv, { env = process.env, out = console, err = console } = {}) {
