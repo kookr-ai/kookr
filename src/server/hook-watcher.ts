@@ -1,20 +1,24 @@
 import {
+  closeSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   renameSync,
   statSync,
   watch,
   writeFileSync,
   type FSWatcher,
 } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
+import { open, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { HookEventInjector } from './hook-ingestion.js';
 import { splitHookRecords } from './hook-record-framing.js';
 
 /** Default poll interval for the backup polling mechanism (ms). */
 const DEFAULT_POLL_INTERVAL_MS = 3_000;
-const REPLAY_CHECKPOINT_TAIL_CHARS = 4_096;
+/** Byte length of the tail stored in a replay checkpoint for integrity checks. */
+const REPLAY_CHECKPOINT_TAIL_BYTES = 4_096;
 
 interface WatchOptions {
   replayExisting?: boolean;
@@ -32,7 +36,15 @@ interface HookReplayCheckpoint {
   dev: number;
   ino: number;
   sizeBytes: number;
+  /**
+   * Resume offset. Historically named `offsetChars` (JS string index) when
+   * `readNewLines` decoded the whole file; since the #1612 incremental-read
+   * fix it stores a **byte** offset into the on-disk JSONL. Field name kept
+   * for on-disk schema compatibility; older char-based checkpoints fail the
+   * tail check and safely fall back to offset 0.
+   */
   offsetChars: number;
+  /** Exact trailing bytes at `offsetChars`, encoded as latin1 for 1:1 byte fidelity. */
   offsetTail: string;
 }
 
@@ -116,6 +128,11 @@ const HEALTH_SAMPLE_LIMIT = 128;
 export class HookFileWatcher {
   private watchers = new Map<string, FSWatcher>();
   private pollIntervals = new Map<string, ReturnType<typeof setInterval>>();
+  /**
+   * Byte offset into each session's active hook JSONL. Advanced only after
+   * complete records are framed — partial trailing records stay unconsumed so
+   * a mid-write append is re-read once the record finishes (issue #1612).
+   */
   private offsets = new Map<string, number>();
   /**
    * Last-observed inode of each session's ACTIVE hook file (issue #1566). The
@@ -129,18 +146,19 @@ export class HookFileWatcher {
   private reading = new Set<string>(); // Mutex: prevent concurrent reads for same agent
   private healthBySession = new Map<string, MutableHookWatcherSessionHealth>();
   /**
-   * Cumulative characters pulled off disk by readNewLines (issue #1612).
-   * readNewLines re-reads the entire (unboundedly growing) hook file on every
-   * fs.watch fire and every backup poll, so this counter divided by the read
-   * count is the average whole-file size re-read — the smoking-gun metric for
-   * the whole-file-re-read allocation-churn hypothesis under a memory soak.
+   * Cumulative bytes pulled off disk by readNewLines (issue #1612).
+   * Before the incremental-read fix this counted whole-file re-reads (file_size
+   * × event_count allocation churn). After the fix it counts only appended
+   * ranges — `cumulativeReadChars / readCount` is the average bytes actually
+   * read per event, so a soak can confirm the bound landed.
    */
   private cumulativeReadChars = 0;
   /**
-   * Monotonic count of readNewLines whole-file reads across the process
-   * lifetime (issue #1612). Global, unlike per-session `health.readCount` which
-   * is dropped on unwatch — so `cumulativeReadChars / cumulativeReadCount` stays
-   * a meaningful "average file size re-read" even as sessions come and go.
+   * Monotonic count of readNewLines disk reads across the process lifetime
+   * (issue #1612). Stat-first no-growth skips do **not** increment this.
+   * Global, unlike per-session `health.readCount` which is dropped on unwatch —
+   * so `cumulativeReadChars / cumulativeReadCount` stays meaningful as sessions
+   * come and go.
    */
   private cumulativeReadCount = 0;
   private pollIntervalMs: number;
@@ -299,9 +317,10 @@ export class HookFileWatcher {
 
   /**
    * Read-only retention/throughput counts for the memory ledger (issue #1612).
-   * `cumulativeReadChars / readCount` is the average whole-file size re-read per
-   * event. Both counters are process-lifetime monotonic (not per-session, which
-   * is dropped on unwatch) so the ratio stays meaningful across session churn.
+   * `cumulativeReadChars / readCount` is the average bytes actually read per
+   * disk read (appended ranges only after the incremental-read fix). Both
+   * counters are process-lifetime monotonic (not per-session, which is dropped
+   * on unwatch) so the ratio stays meaningful across session churn.
    */
   getRetentionMetrics(): Record<string, number> {
     return {
@@ -326,14 +345,20 @@ export class HookFileWatcher {
   }
 
   /**
-   * Read new lines since last offset. Serialized per agent to prevent duplicates.
+   * Read new lines since last **byte** offset. Serialized per agent to prevent
+   * duplicates.
    *
    * Mutex is intentionally **skip-if-busy**, not queue-and-wait. If a caller
    * (drainNow, poll, or fs.watch) arrives while another read is in flight,
    * that caller no-ops and the in-flight read delivers the same data. This
-   * keeps the watchdog tick from serializing behind a long readFile — a
+   * keeps the watchdog tick from serializing behind a long disk read — a
    * future refactorer should not "fix" it to queue-and-wait without
    * re-evaluating watchdog-tick latency.
+   *
+   * Hot path (issue #1612 / #1620 hypothesis A): **stat-first** skip when the
+   * file has not grown past the offset, otherwise read only the appended byte
+   * range. Pre-fix this re-decoded the whole unboundedly-growing JSONL on
+   * every fs.watch fire and every backup poll (multi-MB × event rate).
    */
   private async readNewLines(
     tmuxName: string,
@@ -346,9 +371,8 @@ export class HookFileWatcher {
     try {
       const prevInode = this.inodes.get(tmuxName);
       const fileStat = await stat(filePath).catch(() => undefined);
-      const content = await readFile(filePath, 'utf-8');
-      this.cumulativeReadChars += content.length;
-      this.cumulativeReadCount += 1;
+      if (fileStat === undefined) return;
+
       let offset = this.offsets.get(tmuxName) ?? 0;
 
       // Truncation / rotation recovery.
@@ -358,38 +382,59 @@ export class HookFileWatcher {
       // active inode, so an inode change is the definitive rotation signal —
       // more robust than a size compare, which misses the case where the fresh
       // generation already regrew past our old offset before this read (then
-      // `slice(offset)` would cut into the middle of unrelated new bytes).
-      // Records in [offset..oldEnd] left with the rotated generation unread, so
-      // recover that tail from <file>.1 before dropping to the fresh file — a
-      // reader lagging more than a cap behind would otherwise silently skip them
-      // (issue #1566, the residual of #1433).
+      // a byte-range read from the old offset would cut into the middle of
+      // unrelated new bytes). Records in [offset..oldEnd] left with the
+      // rotated generation unread, so recover that tail from <file>.1 before
+      // dropping to the fresh file — a reader lagging more than a cap behind
+      // would otherwise silently skip them (issue #1566, residual of #1433).
       //
       // A same-inode shrink is an in-place TRUNCATION/replace: the offset now
-      // sits past end-of-file and `slice(offset)` would return '' forever,
+      // sits past end-of-file and a ranged read would return empty forever,
       // silently dropping every later record until restart (issue #703). Reset
       // to 0 and re-read the new file — no stale generation is re-read, so no
       // phantom re-injection. HookIngestion content-hash dedup absorbs any
       // boundary overlap; the common truncate-to-0 case has none at all.
-      if (prevInode !== undefined && fileStat !== undefined && fileStat.ino !== prevInode) {
+      if (prevInode !== undefined && fileStat.ino !== prevInode) {
         await this.recoverRotatedTail(tmuxName, filePath, offset, prevInode, options);
         offset = 0;
-      } else if (offset > content.length) {
+        this.offsets.set(tmuxName, 0);
+      } else if (offset > fileStat.size) {
         offset = 0;
+        this.offsets.set(tmuxName, 0);
       }
 
       // Record the active inode so the next read can classify a shrink as a
       // rotation (inode changed) vs an in-place truncation (inode unchanged).
-      if (fileStat !== undefined) this.inodes.set(tmuxName, fileStat.ino);
+      this.inodes.set(tmuxName, fileStat.ino);
 
-      const newContent = content.slice(offset);
+      // Stat-first guard: no growth → no disk read, no allocation.
+      if (fileStat.size === offset) {
+        return;
+      }
+
+      const start = offset;
+      const length = fileStat.size - start;
+      const buffer = await readFileRange(filePath, start, length);
+      // Meter actual bytes pulled off disk (the ledger's churn signal).
+      this.cumulativeReadChars += buffer.length;
+      this.cumulativeReadCount += 1;
+
+      const newContent = buffer.toString('utf-8');
       const { records, consumedChars } = splitHookRecords(newContent);
-      this.offsets.set(tmuxName, offset + consumedChars);
+      // Map framed char consumption back to byte consumption. A trailing
+      // partial record is left unconsumed so the next append re-reads it once
+      // complete. Buffer.byteLength of the consumed prefix is correct for any
+      // valid UTF-8 JSONL (hook writers emit complete UTF-8 records).
+      const consumedBytes = Buffer.byteLength(newContent.slice(0, consumedChars), 'utf-8');
+      this.offsets.set(tmuxName, start + consumedBytes);
+
       const health = this.getOrCreateHealth(tmuxName);
       health.readCount += 1;
       health.lastReadAtMs = Date.now();
-      health.recordCount += records.filter((line) => line.trim()).length;
+      const nonEmpty = records.filter((line) => line.trim()).length;
+      health.recordCount += nonEmpty;
       if (options?.replay === true) {
-        health.replayRecordCount += records.filter((line) => line.trim()).length;
+        health.replayRecordCount += nonEmpty;
       }
 
       for (const line of records) {
@@ -397,7 +442,7 @@ export class HookFileWatcher {
         try {
           this.adapter.injectHookEvent(tmuxName, line, undefined, {
             startupReplay: options?.startupReplay === true,
-            fileMtimeMs: fileStat?.mtimeMs,
+            fileMtimeMs: fileStat.mtimeMs,
           });
         } catch (err) {
           this.recordHealthError(tmuxName, err);
@@ -406,7 +451,7 @@ export class HookFileWatcher {
       }
 
       if (options?.replay === true) {
-        await this.writeReplayCheckpoint(tmuxName, filePath, content);
+        await this.writeReplayCheckpoint(tmuxName, filePath);
       }
     } catch (err) {
       this.recordHealthError(tmuxName, err);
@@ -420,12 +465,12 @@ export class HookFileWatcher {
    * Recover the unread tail a writer rotation moved out of the active file
    * (issue #1566). When the writer rotates, it renames the active `<file>` to
    * `<file>.1` and starts a fresh `<file>` (bin/kookr-hook-writer.js
-   * rotateHookFile). A reader that had consumed only `offset` chars of the old
+   * rotateHookFile). A reader that had consumed only `offset` bytes of the old
    * file would otherwise never observe records in `[offset..end]` — they left
    * with the rotated generation, which the live tail never reads. Read
-   * `<file>.1`, confirm it carries the pre-rotation inode (so an older,
-   * already-drained generation is never re-read), and inject the `[offset..end]`
-   * tail. HookIngestion content-hash dedup absorbs any boundary overlap.
+   * `<file>.1` from the byte offset, confirm it carries the pre-rotation inode
+   * (so an older, already-drained generation is never re-read), and inject the
+   * unread tail. HookIngestion content-hash dedup absorbs any boundary overlap.
    *
    * Bounded to the single most-recent generation (`<file>.1`). If more than one
    * cap of data was written between reads (multiple rotations), older
@@ -449,12 +494,13 @@ export class HookFileWatcher {
       // shrink or several rotations elapsed (the wanted generation aged past
       // `.1`); either way, re-reading would risk replaying stale history.
       if (rotatedStat === undefined || rotatedStat.ino !== prevInode) return;
-      const rotatedContent = await readFile(rotatedPath, 'utf-8');
-      this.cumulativeReadChars += rotatedContent.length;
-      this.cumulativeReadCount += 1;
-      if (rotatedContent.length <= offset) return; // caught up at rotation time — nothing unread
+      if (rotatedStat.size <= offset) return; // caught up at rotation time — nothing unread
 
-      const { records } = splitHookRecords(rotatedContent.slice(offset));
+      const buffer = await readFileRange(rotatedPath, offset, rotatedStat.size - offset);
+      this.cumulativeReadChars += buffer.length;
+      this.cumulativeReadCount += 1;
+
+      const { records } = splitHookRecords(buffer.toString('utf-8'));
       let recovered = 0;
       for (const line of records) {
         if (!line.trim()) continue;
@@ -496,15 +542,12 @@ export class HookFileWatcher {
         const fileStat = await stat(filePath);
         const knownOffset = this.offsets.get(tmuxName) ?? 0;
         if (fileStat.size !== knownOffset) {
-          // The file size diverged from our offset. Growth means fs.watch
+          // Both sides are byte offsets (issue #1612). Growth means fs.watch
           // missed an append; shrink means the file was truncated, rotated, or
           // replaced (issue #703), and fs.watch may not fire for an in-place
           // truncate. Either way, defer to readNewLines — the single authority
-          // on framing: it re-reads from the offset and, when the offset now
-          // sits past EOF, resets to 0 first. Routing both directions through
-          // one read keeps this size-vs-offset check a coarse change trigger,
-          // not a correctness gate, so the byte/char unit mismatch here can
-          // never drop a record on its own.
+          // on framing: it range-reads from the offset and, when the offset now
+          // sits past EOF, resets to 0 first.
           this.getOrCreateHealth(tmuxName).pollChangeDetectedCount += 1;
           await this.readNewLines(tmuxName, filePath);
         }
@@ -641,14 +684,21 @@ export class HookFileWatcher {
       const stats = statSync(filePath);
       if (stats.dev !== checkpoint.dev || stats.ino !== checkpoint.ino) return 0;
       if (stats.size < checkpoint.sizeBytes) return 0;
-      const content = readFileSync(filePath, 'utf-8');
-      if (checkpoint.offsetChars > content.length) return 0;
-      const actualTail = content.slice(
-        Math.max(0, checkpoint.offsetChars - checkpoint.offsetTail.length),
-        checkpoint.offsetChars,
-      );
+      // `offsetChars` is a byte offset (see HookReplayCheckpoint). Tail is the
+      // exact preceding bytes encoded as latin1 — compare raw bytes, not a
+      // UTF-8 re-decode that could diverge at multi-byte boundaries.
+      const offsetBytes = checkpoint.offsetChars;
+      if (offsetBytes > stats.size) return 0;
+      // latin1: one code unit per byte, so string length === byte length.
+      const tailByteLen = checkpoint.offsetTail.length;
+      if (tailByteLen > offsetBytes) return 0;
+      const actualTail = readFileRangeSync(
+        filePath,
+        offsetBytes - tailByteLen,
+        tailByteLen,
+      ).toString('latin1');
       if (actualTail !== checkpoint.offsetTail) return 0;
-      return checkpoint.offsetChars;
+      return offsetBytes;
     } catch {
       return 0;
     }
@@ -657,21 +707,23 @@ export class HookFileWatcher {
   private async writeReplayCheckpoint(
     tmuxName: string,
     filePath: string,
-    content: string,
   ): Promise<void> {
     if (!this.replayCheckpointPath) return;
 
     try {
       const stats = await stat(filePath);
       const offset = this.offsets.get(tmuxName) ?? 0;
-      const offsetTailStart = Math.max(0, offset - REPLAY_CHECKPOINT_TAIL_CHARS);
+      const tailByteLen = Math.min(REPLAY_CHECKPOINT_TAIL_BYTES, offset);
+      const offsetTail = tailByteLen === 0
+        ? ''
+        : (await readFileRange(filePath, offset - tailByteLen, tailByteLen)).toString('latin1');
       this.replayCheckpoints.sessions[tmuxName] = {
         filePath,
         dev: stats.dev,
         ino: stats.ino,
         sizeBytes: stats.size,
         offsetChars: offset,
-        offsetTail: content.slice(offsetTailStart, offset),
+        offsetTail,
       };
       mkdirSync(dirname(this.replayCheckpointPath), { recursive: true });
       const tmpPath = `${this.replayCheckpointPath}.tmp`;
@@ -681,6 +733,32 @@ export class HookFileWatcher {
       this.recordHealthError(tmuxName, err);
       console.warn(`[hook-watcher] failed to write replay checkpoint for ${tmuxName}:`, err);
     }
+  }
+}
+
+/** Positioned byte-range read (async). Used by the incremental hot path. */
+async function readFileRange(filePath: string, start: number, length: number): Promise<Buffer> {
+  if (length <= 0) return Buffer.alloc(0);
+  const handle = await open(filePath, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(length);
+    const { bytesRead } = await handle.read(buf, 0, length, start);
+    return bytesRead === length ? buf : buf.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Positioned byte-range read (sync). Startup checkpoint verification only. */
+function readFileRangeSync(filePath: string, start: number, length: number): Buffer {
+  if (length <= 0) return Buffer.alloc(0);
+  const fd = openSync(filePath, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(length);
+    const bytesRead = readSync(fd, buf, 0, length, start);
+    return bytesRead === length ? buf : buf.subarray(0, bytesRead);
+  } finally {
+    closeSync(fd);
   }
 }
 

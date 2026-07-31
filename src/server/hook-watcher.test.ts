@@ -1173,4 +1173,101 @@ describe('HookFileWatcher', () => {
     await new Promise((r) => setTimeout(r, 200));
     expect(events.length).toBe(0);
   });
+
+  describe('incremental byte-range reads (issue #1612)', () => {
+    function sessionStartPayload(note: string): string {
+      return `${JSON.stringify({
+        session_id: 'sess-1',
+        transcript_path: '/path/to/transcript.jsonl',
+        cwd: '/cwd',
+        hook_event_name: 'SessionStart',
+        note,
+      })}\n`;
+    }
+
+    test('stat-first: no-growth drainNow does not re-read the file', async () => {
+      const hookFile = join(tempDir, 'kookr-stat-first.jsonl');
+      writeFileSync(hookFile, '');
+      registerSession('kookr-stat-first');
+      watcher.watch('kookr-stat-first');
+
+      const line = sessionStartPayload('baseline');
+      appendFileSync(hookFile, line);
+      await watcher.drainNow('kookr-stat-first');
+
+      const afterFirst = watcher.getRetentionMetrics();
+      expect(afterFirst.readCount).toBe(1);
+      expect(afterFirst.cumulativeReadChars).toBe(Buffer.byteLength(line, 'utf-8'));
+      expect(events).toHaveLength(1);
+
+      // Unchanged file: repeated drains must be free (the pre-fix whole-file
+      // re-read would have counted file_size × N here).
+      await watcher.drainNow('kookr-stat-first');
+      await watcher.drainNow('kookr-stat-first');
+      await watcher.drainNow('kookr-stat-first');
+
+      const afterIdle = watcher.getRetentionMetrics();
+      expect(afterIdle.readCount).toBe(afterFirst.readCount);
+      expect(afterIdle.cumulativeReadChars).toBe(afterFirst.cumulativeReadChars);
+      expect(events).toHaveLength(1);
+    });
+
+    test('growth reads only the appended byte range, not the prior corpus', async () => {
+      const hookFile = join(tempDir, 'kookr-incr.jsonl');
+      writeFileSync(hookFile, '');
+      registerSession('kookr-incr');
+      watcher.watch('kookr-incr');
+
+      // Build a multi-MB prefix so a whole-file re-read would dominate the meter.
+      const prefix = sessionStartPayload('x'.repeat(256 * 1024));
+      appendFileSync(hookFile, prefix);
+      await watcher.drainNow('kookr-incr');
+      const afterPrefix = watcher.getRetentionMetrics();
+      expect(afterPrefix.cumulativeReadChars).toBe(Buffer.byteLength(prefix, 'utf-8'));
+      expect(events).toHaveLength(1);
+
+      const suffix = `${JSON.stringify({
+        session_id: 'sess-1',
+        transcript_path: '/path/to/transcript.jsonl',
+        cwd: '/cwd',
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        permission_mode: 'acceptEdits',
+      })}\n`;
+      appendFileSync(hookFile, suffix);
+      await watcher.drainNow('kookr-incr');
+
+      const afterSuffix = watcher.getRetentionMetrics();
+      // Exactly one additional read of only the appended bytes.
+      expect(afterSuffix.readCount).toBe(afterPrefix.readCount + 1);
+      expect(afterSuffix.cumulativeReadChars - afterPrefix.cumulativeReadChars).toBe(
+        Buffer.byteLength(suffix, 'utf-8'),
+      );
+      expect(events.map((e) => e.type)).toEqual(['session_start', 'tool_use']);
+    });
+
+    test('multibyte append advances the byte offset (not the char count)', async () => {
+      const hookFile = join(tempDir, 'kookr-utf8-incr.jsonl');
+      writeFileSync(hookFile, '');
+      registerSession('kookr-utf8-incr');
+      watcher.watch('kookr-utf8-incr');
+
+      const line = `${JSON.stringify({
+        session_id: 'sess-1',
+        transcript_path: '/path/to/transcript.jsonl',
+        cwd: '/项目/🚀/ワークスペース',
+        hook_event_name: 'SessionStart',
+        note: '日本語'.repeat(50),
+      })}\n`;
+      const byteLen = Buffer.byteLength(line, 'utf-8');
+      expect(byteLen).toBeGreaterThan(line.length); // prove char/byte skew
+
+      appendFileSync(hookFile, line);
+      await watcher.drainNow('kookr-utf8-incr');
+
+      expect(watcher.getOffset('kookr-utf8-incr')).toBe(byteLen);
+      expect(watcher.getRetentionMetrics().cumulativeReadChars).toBe(byteLen);
+      expect(events).toHaveLength(1);
+    });
+  });
 });
