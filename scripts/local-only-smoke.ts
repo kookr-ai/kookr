@@ -76,6 +76,7 @@ function assertKookrDiff(before: FileSnapshot, after: FileSnapshot): void {
   const isAllowedLocalOnlyChange = (entry: string): boolean => {
     return entry === 'tasks.json'
       || /^tasks\.json\.daily\.\d{8}$/.test(entry)
+      || entry === 'disposition.jsonl'
       || entry === 'oss-attempts.json'
       || entry === 'project-configs.json'
       || entry === 'detection-stats.json'
