@@ -7,7 +7,10 @@ import { FakeTerminalBackend } from './fake-terminal-backend.js';
 import {
   GrokBuildAdapter,
   GrokLaunchRefusedError,
+  GrokAgentBootTimeoutError,
   GROK_STOP_LAST_MESSAGE_MAX_CHARS,
+  AGENT_BOOT_TIMEOUT_MARGIN_MS,
+  computeDefaultAgentBootTimeoutMs,
 } from './grok-build-adapter.js';
 import type { AgentEvent } from '../core/agent-events.js';
 import type { GrokInstalledState } from './grok-build-preflight.js';
@@ -242,6 +245,77 @@ describe('GrokBuildAdapter', () => {
     await expect(adapter.launch(task.id, 'x', '/workspace')).rejects.toThrow(/console\.x\.ai|startup screen/);
     // The composed GROK_HOME is removed on abort (no orphaned session dirs).
     expect(readdirSync(sessionHomeRoot)).toHaveLength(0);
+  });
+
+  describe('agent-boot wall-clock bound (issue #1642)', () => {
+    test('computeDefaultAgentBootTimeoutMs sums the nominal wait chain plus a fixed margin', () => {
+      // waitForReadyOrAbort's ready wait + deliverInitialPromptToSession's OWN
+      // internal ready wait (readyTimeoutMs threaded through twice) + the
+      // submit-confirmation retries, plus the fixed cushion for the un-timed
+      // captureBytes calls/cleanup around them.
+      expect(computeDefaultAgentBootTimeoutMs(15_000, 10_000, 0)).toBe(
+        15_000 * 2 + 10_000 * 1 + AGENT_BOOT_TIMEOUT_MARGIN_MS,
+      );
+      expect(computeDefaultAgentBootTimeoutMs(15_000, 10_000, 2)).toBe(
+        15_000 * 2 + 10_000 * 3 + AGENT_BOOT_TIMEOUT_MARGIN_MS,
+      );
+    });
+
+    test('defaults agentBootTimeoutMs from the configured ready/confirm/retry knobs', () => {
+      const adapter = new GrokBuildAdapter(backend, taskStore, {
+        env: { ...baseEnv },
+        installedStateOverride: testedState(),
+        sourceGrokHome,
+        sessionHomeRoot,
+        promptReadyTimeoutMs: 1000,
+        promptSubmitConfirmTimeoutMs: 500,
+        promptSubmitRetries: 1,
+      });
+      expect((adapter as unknown as { agentBootTimeoutMs: number }).agentBootTimeoutMs).toBe(
+        computeDefaultAgentBootTimeoutMs(1000, 500, 1),
+      );
+    });
+
+    test('a hung readiness probe (wedged terminal capture) is ABORTED within agentBootTimeoutMs, not held open indefinitely', async () => {
+      const adapter = new GrokBuildAdapter(backend, taskStore, {
+        env: { ...baseEnv },
+        installedStateOverride: testedState(),
+        sourceGrokHome,
+        sessionHomeRoot,
+        promptBracketedPaste: false,
+        promptReadyTimeoutMs: 30,
+        agentBootTimeoutMs: 50,
+      });
+      // Simulate a wedged terminal capture — e.g. a blocked pty under host
+      // contention (the mechanism behind issue #1642's grok-build POST
+      // /api/tasks >90s hang): captureBytes never resolves, so
+      // waitForReadyOrAbort's internal `Date.now() <= deadline` loop check
+      // never gets a chance to fire because the awaited call itself hangs.
+      vi.spyOn(backend, 'captureBytes').mockImplementation(() => new Promise(() => { /* never settles */ }));
+
+      const task = taskStore.createTask('x', '/workspace');
+      const phases: string[] = [];
+      const start = Date.now();
+      let caught: unknown;
+      try {
+        await adapter.launch(task.id, 'x', '/workspace', undefined, { onPhase: (p) => phases.push(p) });
+      } catch (err) {
+        caught = err;
+      }
+      const elapsed = Date.now() - start;
+
+      expect(caught).toBeInstanceOf(GrokAgentBootTimeoutError);
+      expect(caught).toMatchObject({ message: expect.stringContaining('agent-boot did not complete within') });
+      // Bounded to roughly agentBootTimeoutMs (50ms), nowhere near an
+      // unbounded hang or the 180s top-level launch-service ceiling.
+      expect(elapsed).toBeLessThan(5_000);
+      // The adapter reported entering agent-boot (so launch-service's phase
+      // tracker would mark it as the incompletePhase) but never reached ack.
+      expect(phases).toEqual(['session-create', 'agent-boot']);
+      // cleanupFailedLaunch ran: no orphaned session or session home dir.
+      expect([...backend.sessions.values()].every((session) => !session.alive)).toBe(true);
+      expect(readdirSync(sessionHomeRoot)).toHaveLength(0);
+    });
   });
 
   test('re-resolves installed identity on launch (TOCTOU), not a memoized preflight result', async () => {
