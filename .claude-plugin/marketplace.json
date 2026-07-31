@@ -11,7 +11,7 @@
     {
       "name": "kookr-toolkit",
       "source": "./plugin",
-      "description": "Curated skills + review subagents shipped with Kookr. 60 skills (TypeScript patterns, async flow control, error handling, DDD, OSS PR workflow, reviewer distillation) + 18 review subagents (boundary-critic, design-minimalist, failure-mode-analyst, ambition-amplifier, assumption-archaeologist, and more).",
+      "description": "Curated skills + review subagents shipped with Kookr. 61 skills (TypeScript patterns, async flow control, error handling, DDD, OSS PR workflow, reviewer distillation, independent merge review) + 18 review subagents (boundary-critic, design-minimalist, failure-mode-analyst, ambition-amplifier, assumption-archaeologist, and more).",
       "category": "development"
     }
   ]
