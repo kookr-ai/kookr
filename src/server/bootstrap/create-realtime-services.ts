@@ -193,16 +193,19 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
     // #1725 review finding (R6): the load-shed gate in `broadcaster.broadcast`
     // only skips the serialize-and-fan-out half of a shed snapshot — but this
     // enrichment block (coordinator-state build, achievement checks, spend
-    // lookup, 2x `taskStore.listTasks()`) runs unconditionally BEFORE that
-    // gate is ever consulted. Skipping it here too means shed mode actually
-    // sheds the snapshot's construction cost, not just its transport cost —
-    // the broadcaster discards `msg`'s content entirely while shedding, so
-    // none of this enrichment is wasted work avoided, it's wasted work
-    // avoided for real.
+    // lookup) runs unconditionally BEFORE that gate is ever consulted.
+    // Skipping it here too means shed mode actually sheds the snapshot's
+    // construction cost, not just its transport cost — the broadcaster
+    // discards `msg`'s content entirely while shedding, so none of this
+    // enrichment is wasted work avoided, it's wasted work avoided for real.
     if (msg.type === 'snapshot' && !loadShedGate?.isActive) {
+      // Non-cloning view, shared by the achievement check and the coordinator
+      // build below (issue #1749): both only read-and-derive synchronously, and
+      // two full-store `listTasks()` deep clones per snapshot flush was the
+      // allocation amplifier behind the 4 GB heap-limit OOMs.
+      const tasks = deps.taskStore.viewTasks();
       if (snapshotAchievementsReady && achievementWatcher && scheduleStore) {
         try {
-          const tasks = deps.taskStore.listTasks();
           const distinctProjectIds = new Set(
             tasks.map((t) => t.projectId).filter((p): p is string => !!p),
           );
@@ -227,7 +230,7 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
       msg = {
         ...msg,
         coordinator: msg.coordinator ?? buildCoordinatorSnapshotState(
-            { tasks: buildCoordinatorDetectorTasks(deps.taskStore.listTasks(), snapshotAgentsForCoordinator(msg)) },
+            { tasks: buildCoordinatorDetectorTasks(tasks, snapshotAgentsForCoordinator(msg)) },
             coordinatorAuditTailProvider?.getCoordinatorAuditTail() ?? [],
             deps.coordinatorSuppressions ? { suppressions: deps.coordinatorSuppressions } : {},
         ),

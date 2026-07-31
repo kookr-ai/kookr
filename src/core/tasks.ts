@@ -522,6 +522,19 @@ export class TaskStore {
     return all.map(cloneTask);
   }
 
+  /**
+   * Non-cloning read view of every task. Returns the LIVE task objects:
+   * callers MUST NOT mutate them and MUST NOT retain them across store
+   * mutations — read synchronously, derive, and drop. Exists for hot read
+   * paths (snapshot-broadcast enrichment, issue #1749) where the per-task
+   * `structuredClone` in {@link listTasks} costs ~58 MB of heap churn and
+   * ~110 ms of blocked event loop per call at 800 tasks, which turned
+   * hook-event bursts into heap-limit OOMs.
+   */
+  viewTasks(): readonly Task[] {
+    return Array.from(this.tasks.values());
+  }
+
   private transition(id: string, to: TaskStatus): Task {
     const task = this.tasks.get(id);
     if (!task) {

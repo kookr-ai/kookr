@@ -1005,7 +1005,7 @@ describe('event-pipeline: snapshot broadcast coalescing (#704)', () => {
       // LATEST state, not the state at the first event.
       let current: any[] = [{ agentId: 'agent-1', anomaly: null, events: [] }];
       (deps.monitor.getSnapshot as any).mockImplementation(() => current);
-      wireEventPipeline(deps); // default 16ms window
+      wireEventPipeline(deps); // default 250ms window
 
       for (let i = 0; i < 5; i++) {
         current = [{ agentId: 'agent-1', anomaly: null, events: [], seq: i } as any];
@@ -1015,7 +1015,7 @@ describe('event-pipeline: snapshot broadcast coalescing (#704)', () => {
       // Trailing-edge: nothing has fanned out yet during the burst.
       expect(snapshotBroadcasts(broadcasts)).toHaveLength(0);
 
-      vi.advanceTimersByTime(16);
+      vi.advanceTimersByTime(250);
 
       // Exactly one snapshot rebuild + fan-out for the whole burst …
       const snaps = snapshotBroadcasts(broadcasts);
@@ -1038,7 +1038,7 @@ describe('event-pipeline: snapshot broadcast coalescing (#704)', () => {
     for (let i = 0; i < 3; i++) fireEvent('agent-1', toolUse(`tu-${i}`));
 
     // Coalescing off: each event fans out synchronously. This is the N-rebuild
-    // baseline the default 16ms window collapses to 1.
+    // baseline the default 250ms window collapses to 1.
     expect(snapshotBroadcasts(broadcasts)).toHaveLength(3);
   });
 
@@ -1055,7 +1055,7 @@ describe('event-pipeline: snapshot broadcast coalescing (#704)', () => {
           : [{ agentId: 'agent-1', anomaly: { type: 'needs_input', severity: 'warning' }, events: [] }],
       );
       (deps.monitor.processEvents as any).mockImplementation(() => { phase = 'post'; });
-      wireEventPipeline(deps); // default 16ms window
+      wireEventPipeline(deps); // default 250ms window
 
       fireEvent('agent-1', { type: 'stop', sessionId: 's1', lastMessage: 'need input' } as AgentEvent);
 
@@ -1065,7 +1065,7 @@ describe('event-pipeline: snapshot broadcast coalescing (#704)', () => {
       expect(blocked.anomaly?.type).toBe('needs_input');
 
       // And the immediate flush consumed the pending window — no duplicate later.
-      vi.advanceTimersByTime(16);
+      vi.advanceTimersByTime(250);
       expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
     } finally {
       vi.useRealTimers();
@@ -1089,7 +1089,7 @@ describe('event-pipeline: snapshot broadcast coalescing (#704)', () => {
 
       // info severity is not attention-worthy → no immediate flush yet.
       expect(snapshotBroadcasts(broadcasts)).toHaveLength(0);
-      vi.advanceTimersByTime(16);
+      vi.advanceTimersByTime(250);
       expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
     } finally {
       vi.useRealTimers();
@@ -1106,13 +1106,13 @@ describe('event-pipeline: snapshot broadcast coalescing (#704)', () => {
       wireEventPipeline(deps);
 
       for (let i = 0; i < 3; i++) fireEvent('agent-1', toolUse(`a-${i}`));
-      vi.advanceTimersByTime(16);
+      vi.advanceTimersByTime(250);
       expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
 
       // A regression that left snapshotDirty=true or failed to re-arm the timer
       // would either double-fire here or never fire the second burst.
       for (let i = 0; i < 3; i++) fireEvent('agent-1', toolUse(`b-${i}`));
-      vi.advanceTimersByTime(16);
+      vi.advanceTimersByTime(250);
       expect(snapshotBroadcasts(broadcasts)).toHaveLength(2);
     } finally {
       vi.useRealTimers();
@@ -1143,7 +1143,7 @@ describe('event-pipeline: snapshot broadcast coalescing (#704)', () => {
       (deps.monitor.getSnapshot as any).mockReturnValue(routine);
       fireEvent('agent-1', toolUse('routine-1'));
       expect(snapshotBroadcasts(broadcasts)).toHaveLength(1); // still coalesced
-      vi.advanceTimersByTime(16);
+      vi.advanceTimersByTime(250);
       expect(snapshotBroadcasts(broadcasts)).toHaveLength(2);
     } finally {
       vi.useRealTimers();

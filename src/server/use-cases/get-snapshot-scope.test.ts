@@ -73,7 +73,7 @@ describe('createSnapshotMessage — scope filtering', () => {
         session_start_total: 1,
       },
       achievementStreak: { lastActiveDate: null, currentStreak: 0 },
-      coordinator: { taskStore: { listTasks: () => [] } },
+      coordinator: { taskStore: { viewTasks: () => [] } },
     });
     expect(msg).not.toHaveProperty('totalSpendUsd');
     expect(msg).not.toHaveProperty('achievements');

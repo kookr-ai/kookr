@@ -1506,7 +1506,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const serverStartMs = Date.now();
   const diagnosticRunner = new DiagnosticRunner({
     getDetectionStats,
-    getAgentCount: () => taskStore.listTasks().length,
+    // Non-cloning view: a count must not pay for a full-store deep clone
+    // (issue #1749; same incident class as the #1553 /api/health OOM hotfix).
+    getAgentCount: () => taskStore.viewTasks().length,
     getUptimeMs: () => Date.now() - serverStartMs,
     getWsBroadcastCount: () => realtime.getWsBroadcastCount(),
     getEventCounts: () => monitor.getEventCounts(),

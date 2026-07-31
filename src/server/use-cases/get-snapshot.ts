@@ -122,7 +122,10 @@ export interface SnapshotMessageDeps extends SnapshotQueryDeps {
   /** Live getter for the configured concurrency cap (settings.maxActiveTasks). */
   getMaxActiveTasks?: () => number;
   coordinator?: {
-    taskStore: Pick<TaskStore, 'listTasks'>;
+    /** Read-only view source; the coordinator build only reads-and-derives, so
+     *  the non-cloning `viewTasks` avoids a full-store deep clone per snapshot
+     *  (issue #1749). */
+    taskStore: Pick<TaskStore, 'viewTasks'>;
     auditTailProvider?: CoordinatorAuditTailProvider;
     suppressions?: CoordinatorSuppressionReader;
   };
@@ -512,7 +515,7 @@ export function createSnapshotMessage(deps: SnapshotMessageDeps): SnapshotMessag
     // Coordinator is whole-world detector state — omitted for a `projects` viewer.
     ...(deps.coordinator && !projectsScope ? {
       coordinator: buildCoordinatorSnapshotState(
-        { tasks: buildCoordinatorDetectorTasks(deps.coordinator.taskStore.listTasks(), agents) },
+        { tasks: buildCoordinatorDetectorTasks(deps.coordinator.taskStore.viewTasks(), agents) },
         deps.coordinator.auditTailProvider?.getCoordinatorAuditTail() ?? [],
         {
           ...(deps.now ? { now: deps.now() } : {}),

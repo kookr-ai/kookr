@@ -379,7 +379,8 @@ describe('createRealtimeServices', () => {
     test('R6: while shed is active, the expensive snapshot enrichment (coordinator build, taskStore reads) is skipped entirely, not just the transport', async () => {
       tempDir = mkdtempSync(join(tmpdir(), 'kookr-realtime-'));
       const taskStore = new TaskStore();
-      const listTasksSpy = vi.spyOn(taskStore, 'listTasks');
+      // Enrichment reads the store via the non-cloning viewTasks (issue #1749).
+      const viewTasksSpy = vi.spyOn(taskStore, 'viewTasks');
       const realtime = await createTestRealtimeServices(tempDir, {
         taskStore,
         loadShedConfig: { eventLoopDelayThresholdMs: 100, sustainTicks: 1, recoverTicks: 1 },
@@ -388,15 +389,17 @@ describe('createRealtimeServices', () => {
       addDashboardSocket(realtime, openSocket(send));
       vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-      // Baseline: not shed — enrichment runs, taskStore is read (coordinator build).
+      // Baseline: not shed — enrichment runs, taskStore is read (coordinator
+      // build + achievement check share exactly ONE non-cloning read; a second
+      // call would mean the #1749 full-store-read amplifier is creeping back).
       realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
-      expect(listTasksSpy).toHaveBeenCalled();
-      listTasksSpy.mockClear();
+      expect(viewTasksSpy).toHaveBeenCalledTimes(1);
+      viewTasksSpy.mockClear();
 
       // Engage shed, then broadcast again — enrichment must be skipped this time.
       realtime.noteEventLoopDelaySample(500);
       realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
-      expect(listTasksSpy).not.toHaveBeenCalled();
+      expect(viewTasksSpy).not.toHaveBeenCalled();
     });
   });
 });

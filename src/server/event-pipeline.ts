@@ -72,14 +72,21 @@ export interface EventPipelineDeps {
    * transitions (a newly-entered warning/critical anomaly) bypass coalescing
    * and flush immediately so "an agent needs you" is never delayed.
    *
-   * Defaults to 16ms (one display frame — imperceptible for single interactive
-   * updates). Set to `0` to disable coalescing and flush synchronously.
+   * Defaults to 250ms. A full snapshot rebuild + fan-out stays heavyweight at
+   * fleet scale even after the issue #1749 clone removal (projection over
+   * every agent/task/relation plus a multi-MB JSON.stringify per scope), so
+   * the window amortizes hook-event bursts rather than chasing display
+   * frames — the old 16ms window let sustained bursts flush back-to-back,
+   * which compounded the #1749 heap-limit OOMs. Attention transitions still
+   * bypass the window entirely via the immediate-flush path, so urgency is
+   * never delayed by coalescing. Set to `0` to disable coalescing and flush
+   * synchronously.
    */
   snapshotCoalesceWindowMs?: number;
   userInputDeliveries?: UserInputDeliveryService;
 }
 
-const DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS = 16;
+const DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS = 250;
 
 /**
  * Anomalies that warrant interrupting the operator — these bypass broadcast
@@ -115,13 +122,16 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
 
   // --- Snapshot broadcast coalescing (#704) ----------------------------------
   // Every processed hook event asks for a full-snapshot rebuild + fan-out. On a
-  // busy fleet, bursts within a few ms produce N redundant rebuilds and N
-  // fan-outs. We collapse a burst to a single trailing rebuild + fan-out: each
-  // request marks the snapshot dirty and (re)arms a short timer; the timer's
-  // flush rebuilds from the live monitor snapshot, so the broadcast always
-  // reflects final state. `flushSnapshotNow` is the immediate-flush escape used
-  // internally for attention transitions and exposed on the wire result for
-  // callers that need a synchronous flush (e.g. a future shutdown drain).
+  // busy fleet, a burst produces N redundant rebuilds and N fan-outs. We
+  // collapse each window's worth of requests to a single trailing rebuild +
+  // fan-out: a request marks the snapshot dirty and arms the timer ONLY if none
+  // is pending — a fixed-window throttle, deliberately NOT a debounce (a
+  // re-arming debounce would starve the flush indefinitely under sustained
+  // hook traffic, issue #1749). The timer's flush rebuilds from the live
+  // monitor snapshot, so the broadcast always reflects final state.
+  // `flushSnapshotNow` is the immediate-flush escape used internally for
+  // attention transitions and exposed on the wire result for callers that need
+  // a synchronous flush (e.g. a future shutdown drain).
   const coalesceWindowMs = deps.snapshotCoalesceWindowMs ?? DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS;
   let snapshotDirty = false;
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
