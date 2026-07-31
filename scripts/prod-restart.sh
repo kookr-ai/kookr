@@ -316,9 +316,73 @@ start_server() {
   fi
 }
 
+# Deploy gate (issue #1721): prefer /api/ready so listen-early boots stay
+# "not ready" until deferred recovery finishes. Success is:
+#   - HTTP 200 (fully ready), OR
+#   - HTTP 503 whose body does NOT contain startup-in-progress (startup done;
+#     other critical degradation is handled as a non-fatal post-restart WARN).
+# Connection refused / curl failure keeps waiting (listener not bound yet).
+# Writes the response body to $1 when a probe reaches the server.
+probe_ready_for_deploy() {
+  local body_file="$1"
+  local http_code=""
+  local curl_status=0
+
+  # Do not append a fallback via `|| echo` after curl -w: on connection failure
+  # curl already writes "000" and a non-zero exit, which would concatenate to
+  # "000000" and never match a real status code.
+  set +e
+  http_code="$(
+    curl -sS --max-time "$HEALTH_CURL_MAX_TIME_SECONDS" \
+      -o "$body_file" -w '%{http_code}' \
+      "$READY_URL" 2>/dev/null
+  )"
+  curl_status=$?
+  set -e
+  if (( curl_status != 0 )) || [[ -z "$http_code" ]]; then
+    http_code="000"
+  fi
+
+  if [[ "$http_code" == "200" ]]; then
+    return 0
+  fi
+  if [[ "$http_code" == "503" ]] && [[ -s "$body_file" ]] \
+    && ! grep -q 'startup-in-progress' "$body_file" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+# Operator-facing phase snippet for heartbeats (best-effort; empty on parse miss).
+ready_probe_phase_hint() {
+  local body_file="$1"
+  if [[ ! -s "$body_file" ]]; then
+    echo "waiting for listener"
+    return 0
+  fi
+  if grep -q 'startup-in-progress' "$body_file" 2>/dev/null; then
+    # Prefer the startup.status field when present.
+    local status
+    status="$(
+      sed -n 's/.*"startup"[[:space:]]*:[[:space:]]*{[^}]*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$body_file" 2>/dev/null | head -n 1
+    )"
+    if [[ -n "$status" ]]; then
+      echo "startup phase=${status}"
+      return 0
+    fi
+    echo "startup in progress"
+    return 0
+  fi
+  echo "probe pending"
+}
+
 wait_for_health() {
   local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
   local start_pid=""
+  local body_file=""
+  local last_heartbeat=$SECONDS
+  local phase_hint=""
 
   while (( SECONDS < deadline )); do
     if [[ -s "$PID_FILE" ]]; then
@@ -333,28 +397,34 @@ wait_for_health() {
     exit 1
   fi
 
-  local last_heartbeat=$SECONDS
+  body_file="$(mktemp "${TMPDIR:-/tmp}/kookr-ready-probe.XXXXXX")"
+
+  last_heartbeat=$SECONDS
   while (( SECONDS < deadline )); do
     sleep "$CHECK_INTERVAL_SECONDS"
     if ! kill -0 "$start_pid" 2>/dev/null; then
+      rm -f -- "$body_file"
       echo "Kookr prod server exited before becoming healthy"
       echo "--- last 100 lines of ${LOG_FILE} ---"
       tail -n 100 "$LOG_FILE" || true
       exit 1
     fi
-    if curl -sf --max-time "$HEALTH_CURL_MAX_TIME_SECONDS" "$HEALTH_URL"; then
-      rm -f "$PID_FILE"
+    if probe_ready_for_deploy "$body_file"; then
+      rm -f -- "$body_file" "$PID_FILE"
       echo " Kookr prod restarted successfully"
       return 0
     fi
     if (( SECONDS - last_heartbeat >= 30 )); then
-      echo "Still waiting for ${HEALTH_URL} (${SECONDS}s elapsed of ${STARTUP_TIMEOUT_SECONDS}s; server pid ${start_pid} alive — startup normally takes ~10min at scale)"
+      phase_hint="$(ready_probe_phase_hint "$body_file")"
+      echo "Still waiting for ${READY_URL} (${SECONDS}s elapsed of ${STARTUP_TIMEOUT_SECONDS}s; server pid ${start_pid} alive; ${phase_hint})"
       last_heartbeat=$SECONDS
     fi
   done
 
-  rm -f "$PID_FILE"
+  rm -f -- "$body_file" "$PID_FILE"
   echo "Health check failed after ${STARTUP_TIMEOUT_SECONDS}s"
+  echo "--- last 100 lines of ${LOG_FILE} ---"
+  tail -n 100 "$LOG_FILE" || true
   exit 1
 }
 
@@ -370,25 +440,34 @@ restart_systemd_unit() {
 
 wait_for_systemd_health() {
   local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
-
+  local body_file=""
   local last_heartbeat=$SECONDS
+  local phase_hint=""
+
+  body_file="$(mktemp "${TMPDIR:-/tmp}/kookr-ready-probe.XXXXXX")"
+
+  last_heartbeat=$SECONDS
   while (( SECONDS < deadline )); do
     sleep "$CHECK_INTERVAL_SECONDS"
     if ! systemctl --user is-active --quiet kookr.service >/dev/null 2>&1; then
+      rm -f -- "$body_file"
       echo "Kookr systemd service kookr.service is not active after restart"
       systemctl --user status kookr.service --no-pager || true
       exit 1
     fi
-    if curl -sf --max-time "$HEALTH_CURL_MAX_TIME_SECONDS" "$HEALTH_URL"; then
+    if probe_ready_for_deploy "$body_file"; then
+      rm -f -- "$body_file"
       echo " Kookr systemd service restarted successfully"
       return 0
     fi
     if (( SECONDS - last_heartbeat >= 30 )); then
-      echo "Still waiting for ${HEALTH_URL} (${SECONDS}s elapsed of ${STARTUP_TIMEOUT_SECONDS}s; kookr.service active — startup normally takes ~10min at scale)"
+      phase_hint="$(ready_probe_phase_hint "$body_file")"
+      echo "Still waiting for ${READY_URL} (${SECONDS}s elapsed of ${STARTUP_TIMEOUT_SECONDS}s; kookr.service active; ${phase_hint})"
       last_heartbeat=$SECONDS
     fi
   done
 
+  rm -f -- "$body_file"
   echo "Health check failed after ${STARTUP_TIMEOUT_SECONDS}s for systemd unit kookr.service"
   systemctl --user status kookr.service --no-pager || true
   exit 1

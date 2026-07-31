@@ -38,6 +38,8 @@ import {
   promotePendingStartupTasks,
   runStartupRecoveryPhase,
 } from './startup-recovery.js';
+import { StartupReadiness } from './startup-readiness.js';
+import type { CrashRecoveryResult } from './crash-recovery.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
 import {
   computeSnapshotBaseAgents as computeSnapshotBaseAgentsFn,
@@ -1374,39 +1376,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     monitor, watchdog, abortPendingSuggestion, broadcastToAll, serverCwd, taskStore,
   };
 
-  const startupRecoverySummary = await runStartupRecoveryPhase({
-    taskStore,
-    queue,
-    monitor,
-    watchdog,
-    terminalBackend,
-    hookWatcher,
-    suppressionTracker,
-    interactionLog,
-    adapterRegistry,
-    reconcileResult,
-    persisted,
-    lifecycleDeps,
-    serverCwd,
-    broadcastToAll,
-    ralphLoopService,
-    hookIngestion,
-    activityLedger,
-    restartEpoch,
-    dispositionLedgerPath: join(kookrDir, 'disposition.jsonl'),
-    staleOpenLaunchTaskIds,
-  });
-  await promotePendingStartupTasks({
-    taskStore,
-    adapterRegistry,
-    lifecycleDeps,
-    broadcastToAll,
-    serverCwd,
-  });
+  // Issue #1721: defer heavy recovery (session reattach + hook replay) until
+  // AFTER the HTTP listener binds so /api/health and /api/ready are reachable
+  // during the multi-minute recovery window. The gate starts `initializing`
+  // and flips to ready only after post-listen recovery completes.
+  const startupReadiness = new StartupReadiness(serverStartedAt);
+  let startupRecoverySummary: CrashRecoveryResult | null = null;
 
   // Reclaim reflect worktrees orphaned by a crash between `git worktree add`
   // and reflect-task completion (plus a 7-day TTL backstop). Best-effort —
-  // a sweep failure must never block startup.
+  // a sweep failure must never block startup. Independent of session recovery.
   try {
     const { removed, kept } = await sweepReflectWorktrees({ reflectWorktreesDir, taskStore });
     if (removed > 0) {
@@ -1656,7 +1635,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           },
         }
       : {}),
-    startupRecoverySummary,
+    startupRecoverySummary: null,
+    getStartupRecoverySummary: () => startupRecoverySummary,
+    startupReadiness,
     ralphCycler,
     tokenTracker,
     tasksFile,
@@ -2082,6 +2063,65 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // always pass); enforced the moment viewer terminal resolution is wired.
     isActorAllowedTerminalSession,
   });
+
+  // Issue #1721: listener is up — surface liveness immediately, then run the
+  // heavy recovery that used to block bind (session reattach, hook replay,
+  // crash relaunch). /api/ready stays 503 until markReady().
+  startupReadiness.markListening();
+  startupReadiness.markRecovering('session reattach + hook replay + crash recovery');
+  console.log('[startup] HTTP listener bound; starting deferred recovery phase');
+  let deferredRecoveryFailed = false;
+  try {
+    startupRecoverySummary = await runStartupRecoveryPhase({
+      taskStore,
+      queue,
+      monitor,
+      watchdog,
+      terminalBackend,
+      hookWatcher,
+      suppressionTracker,
+      interactionLog,
+      adapterRegistry,
+      reconcileResult,
+      persisted,
+      lifecycleDeps,
+      serverCwd,
+      broadcastToAll,
+      ralphLoopService,
+      hookIngestion,
+      activityLedger,
+      restartEpoch,
+      dispositionLedgerPath: join(kookrDir, 'disposition.jsonl'),
+      staleOpenLaunchTaskIds,
+    });
+    await promotePendingStartupTasks({
+      taskStore,
+      adapterRegistry,
+      lifecycleDeps,
+      broadcastToAll,
+      serverCwd,
+    });
+  } catch (err) {
+    // Recovery failure must not leave the process forever-unready (deploy gate
+    // would wait the full timeout). Still flip ready so /api/ready opens and
+    // operators can inspect logs / startup-summary; detail records the miss.
+    deferredRecoveryFailed = true;
+    console.error(
+      '[startup] Deferred recovery phase failed:',
+      err instanceof Error ? err.message : err,
+    );
+  }
+  startupReadiness.markReady(
+    deferredRecoveryFailed
+      ? 'startup complete with recovery errors — inspect server log'
+      : 'startup complete',
+  );
+  console.log(
+    deferredRecoveryFailed
+      ? '[startup] Deferred recovery phase finished with errors; ready for work (degraded)'
+      : '[startup] Deferred recovery phase complete; ready for work',
+  );
+
   const collaborationListener = await startConfiguredPrivateNetworkCollaborationListener({
     env: process.env,
     dashboardHost: host,

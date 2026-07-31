@@ -358,7 +358,24 @@ if [[ "$1" == "--user" && "$2" == "restart" ]]; then exit 0; fi
 exit 1
 `,
       );
-      writeFileSync(join(binDir, 'curl'), "#!/usr/bin/env bash\nexit 0\n");
+      // Readiness gate (issue #1721) uses curl -o BODY -w '%{http_code}'.
+      // Post-restart nags and the smoke suite use real URLs where configured.
+      writeFileSync(
+        join(binDir, 'curl'),
+        `#!/usr/bin/env bash
+out=""; fmt=""
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    -o) out="\$2"; shift 2 ;;
+    -w) fmt="\$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [[ -n "\$out" ]]; then printf '%s\\n' '{"ready":true,"checks":{}}' > "\$out"; fi
+if [[ "\$fmt" == '%{http_code}' ]]; then printf '200'; fi
+exit 0
+`,
+      );
       chmodSync(join(binDir, 'systemctl'), 0o755);
       chmodSync(join(binDir, 'curl'), 0o755);
 
@@ -415,7 +432,22 @@ if [[ "$1" == "--user" && "$2" == "restart" ]]; then exit 0; fi
 exit 1
 `,
       );
-      writeFileSync(join(binDir, 'curl'), "#!/usr/bin/env bash\nexit 0\n");
+      writeFileSync(
+        join(binDir, 'curl'),
+        `#!/usr/bin/env bash
+out=""; fmt=""
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    -o) out="\$2"; shift 2 ;;
+    -w) fmt="\$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [[ -n "\$out" ]]; then printf '%s\\n' '{"ready":true,"checks":{}}' > "\$out"; fi
+if [[ "\$fmt" == '%{http_code}' ]]; then printf '200'; fi
+exit 0
+`,
+      );
       // journald stub: -o cat prints raw MESSAGE lines (what version-probe
       // parses); -o short-unix (used by the continuity anchor) prints an epoch.
       writeFileSync(

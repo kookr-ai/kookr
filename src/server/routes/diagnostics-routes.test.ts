@@ -1162,6 +1162,43 @@ describe('diagnostics routes', () => {
         },
       });
     });
+
+    test('startup readiness gate 503 while recovering, 200 once ready (issue #1721)', async () => {
+      const { StartupReadiness } = await import('../startup-readiness.js');
+      const gate = new StartupReadiness('2026-07-30T21:27:39.918Z');
+      gate.markRecovering('session reattach');
+
+      const recovering = await mkApp({
+        terminalBackend: backend({}) as never,
+        kookrDir: tempDir,
+        startupReadiness: gate,
+      }).request('/api/ready');
+      expect(recovering.status).toBe(503);
+      const recoveringBody = await recovering.json();
+      expect(recoveringBody.ready).toBe(false);
+      expect(recoveringBody.checks.startup).toEqual({
+        critical: true,
+        ready: false,
+        status: 'recovering',
+        reason: 'startup-in-progress',
+        detail: 'session reattach',
+      });
+
+      gate.markReady();
+      const ready = await mkApp({
+        terminalBackend: backend({}) as never,
+        kookrDir: tempDir,
+        startupReadiness: gate,
+      }).request('/api/ready');
+      expect(ready.status).toBe(200);
+      const readyBody = await ready.json();
+      expect(readyBody.ready).toBe(true);
+      expect(readyBody.checks.startup).toEqual({
+        critical: true,
+        ready: true,
+        status: 'ready',
+      });
+    });
   });
 
   // ---------------------------------------------------------------------------

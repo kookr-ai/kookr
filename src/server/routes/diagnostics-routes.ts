@@ -223,6 +223,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       agents: tasks.length,
       build: buildInfo,
       serverStartedAt,
+      // Issue #1721: expose startup phase so operators/deploy can see
+      // "listening, still recovering" vs "fully ready" without treating
+      // liveness as readiness.
+      ...(deps.startupReadiness ? { startup: deps.startupReadiness.getProgress() } : {}),
       launchDependencies,
       attentionQueue: {
         activeFindingDepth: queue.getDepth(attentionQueueSampledAtMs),
@@ -244,17 +248,30 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   });
 
   // Machine-readable readiness verdict for orchestrators / load balancers
-  // (issue #660). Unlike /api/health — which always returns 200 so the
-  // dashboard never sees a hard error — /api/ready turns 503 when a *critical*
-  // subsystem is down or unavailable for new work: operator drain mode,
-  // the terminal/dtach backend in `error` (manifest-corrupt /
-  // dtach-unavailable), or the persistence directory unwritable.
+  // (issue #660, extended by #1721). Unlike /api/health — which always returns
+  // 200 so the dashboard never sees a hard error — /api/ready turns 503 when a
+  // *critical* subsystem is down or unavailable for new work: startup recovery
+  // still in progress, operator drain mode, the terminal/dtach backend in
+  // `error` (manifest-corrupt / dtach-unavailable), or the persistence
+  // directory unwritable.
   // Non-critical degradation (terminal `degraded`) stays 200/ready so
   // transient blips do not cordon a node out of rotation.
   // Read-only and unauthenticated by design: probes must reach it without an
   // admin token.
   app.get('/api/ready', (c) => {
     const checks: Record<string, ReadinessCheck> = {};
+
+    // Issue #1721: listen-early boot keeps this critical until recovery finishes.
+    if (deps.startupReadiness) {
+      const startup = deps.startupReadiness.toReadinessCheck();
+      checks.startup = {
+        critical: startup.critical,
+        ready: startup.ready,
+        status: startup.status,
+        ...(startup.reason ? { reason: startup.reason } : {}),
+        ...(startup.detail ? { detail: startup.detail } : {}),
+      };
+    }
 
     const terminalBackend = deps.terminalBackend;
     if (terminalBackend) {
@@ -786,8 +803,12 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     return c.json({ report });
   });
 
-  // Crash recovery startup summary endpoint (fetched once by frontend on mount)
-  app.get('/api/startup-summary', (c) => c.json(deps.startupRecoverySummary ?? null));
+  // Crash recovery startup summary endpoint (fetched once by frontend on mount).
+  // Prefer the live getter (issue #1721 listen-early) so a post-listen recovery
+  // result is visible once it lands; fall back to the static field for tests.
+  app.get('/api/startup-summary', (c) =>
+    c.json(deps.getStartupRecoverySummary?.() ?? deps.startupRecoverySummary ?? null),
+  );
 
   app.get('/api/capture/:sessionId', async (c) => {
     const sessionId = c.req.param('sessionId');
@@ -847,6 +868,8 @@ interface ReadinessCheck {
   status: string;
   /** Machine-readable cause when not ready (e.g. errno code, error kind). */
   reason?: string;
+  /** Optional operator-facing detail (e.g. startup phase description, #1721). */
+  detail?: string;
 }
 
 /**

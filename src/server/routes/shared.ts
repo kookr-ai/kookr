@@ -367,6 +367,32 @@ export interface RouteDeps {
   sessionHealthService?: Pick<SessionHealthService, 'getDiagnostics'>;
   /** Result of the crash-recovery startup phase; fetched once by the frontend on mount. */
   startupRecoverySummary?: CrashRecoveryResult | null;
+  /**
+   * Live getter for the crash-recovery summary (issue #1721). Preferred over the
+   * static `startupRecoverySummary` field when recovery runs *after* the HTTP
+   * listener binds — the summary is null until recovery finishes, then fills in.
+   */
+  getStartupRecoverySummary?: () => CrashRecoveryResult | null | undefined;
+  /**
+   * Startup-phase readiness gate (issue #1721). Critical on `/api/ready` until
+   * post-listen recovery completes; also projected on `/api/health.startup`.
+   */
+  startupReadiness?: {
+    toReadinessCheck(): {
+      critical: true;
+      ready: boolean;
+      status: string;
+      reason?: string;
+      detail?: string;
+    };
+    getProgress(): {
+      phase: string;
+      detail: string;
+      startedAt: string;
+      listeningAt?: string;
+      readyAt?: string;
+    };
+  };
   /** Ralph iteration cycler — drives the loop state machine on Stop events. */
   ralphCycler?: RalphCycler;
   /** Token tracker — used by ralph routes to read cumulative cost. */

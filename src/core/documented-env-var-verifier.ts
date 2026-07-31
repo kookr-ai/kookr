@@ -133,7 +133,8 @@ export const INTERNAL_ENV_VARS: ReadonlySet<string> = new Set([
   // The hourly-tick's operator-facing knobs (KOOKR_PROD_SMOKE_TICK[_INTERVAL_
   // MINUTES]) ARE in the main reference. These surfaced here when the suite core
   // moved from scripts/ (unscanned) into src/ for reuse by the hourly tick.
-  'KOOKR_READY_URL',
+  // KOOKR_READY_URL is documented in docs/reference/environment-variables.md
+  // (issue #1721 deploy gate) — do not re-list it here.
   'KOOKR_SMOKE_ALERT_PATH',
   'KOOKR_SMOKE_HEALTH_MAX_TIME_SECONDS',
   'KOOKR_SMOKE_HEALTH_URL',
