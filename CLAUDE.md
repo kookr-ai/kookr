@@ -47,6 +47,30 @@ plugin/agents/         — General-purpose review subagents
 - Agent monitoring: Claude Code hooks (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`) injected via `--settings` flag. Hooks are additive to user settings. See docs/poc/001-hook-mechanism-validation.md
 - Skill/agent distribution: Kookr Toolkit ships as a Claude Code plugin at `plugin/` with `.claude-plugin/marketplace.json` listing it. `ClaudeCodeAdapter` injects `--plugin-dir <kookr>/plugin` into every spawned `claude` so Kookr-spawned agents see the toolkit regardless of cwd. Other developers install via `/plugin marketplace add kookr-ai/kookr` + `/plugin install kookr-toolkit@kookr`.
 
+## CI policy: local verification is the merge gate (operator decision, standing)
+
+The operator will NOT pay for GitHub Actions — on this or any of their repos
+(jeanibarz/lucy, jeanibarz/local-research-agent, …). This repo is public, so its
+free CI may happen to run; treat it as **advisory**, never as the verification
+authority, and never wait on it:
+
+- **Verify locally, fully, before opening the PR.** Typecheck, the full test
+  suite, and touched-surface gates run on this machine and are the ONLY
+  authoritative green. Record the evidence (commands + summary counts) in the
+  PR body.
+- **Then create the PR and merge it yourself** once local gates are green. Do
+  not stall on pending checks, bot reviewers, or a human unless the task
+  explicitly says otherwise. A required check that never executed
+  (billing/quota/spending-limit, "failed" in seconds without running) is
+  non-blocking BY DEFAULT — merge with the repo's allowed method, or
+  `gh pr merge --admin` if branch protection insists, noting the local-gate
+  evidence.
+- **Never** alert about CI billing, file issues to "fix CI billing", propose
+  paying for CI, or add workflows that consume paid minutes on the operator's
+  private repos.
+- A check that genuinely RAN and failed on the code still blocks — fix it.
+- Playbook parameter `ignoreBudgetCiFailures` defaults to `true` accordingly.
+
 ## Where to put a new skill or agent
 
 Two homes only (RFC: `docs/rfc/rfc-skill-agent-distribution.md`):
