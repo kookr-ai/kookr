@@ -255,6 +255,16 @@ export interface Task {
   /** Short free-text detail about the termination. See issue #1664. */
   terminationDetail?: string;
   /**
+   * Retry lineage for a `provider_transient` silent-failure auto-retry (issue
+   * #1712). `retryOf` points back to the ORIGINAL failing task in the lineage
+   * (never to an intermediate retry), so every retry is attributable to the one
+   * fire that first hit the provider error. `retryAttempt` is 1-based (1 for the
+   * first retry, 2 for the second); the original fire leaves both absent. The
+   * completion path reads `retryAttempt` to enforce the bounded-retry cap.
+   */
+  retryOf?: string;
+  retryAttempt?: number;
+  /**
    * Queryable evidence that a pre-session prune/terminate path disposed of this
    * task before its first agent session ever attached (issue #1588). Its
    * presence proves the task was terminated on purpose rather than silently

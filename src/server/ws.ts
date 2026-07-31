@@ -60,6 +60,11 @@ export interface MessageRouterDeps {
     issueClaimRegistry?: import('./agent-lifecycle.js').LifecycleDeps['issueClaimRegistry'];
     /** Optional remote-chat back-channel for terminal task outcomes. */
     onTaskOutcome?: import('./agent-lifecycle.js').LifecycleDeps['onTaskOutcome'];
+    /**
+     * Shared audit.jsonl path (issue #1712) so a would-be completion that
+     * reclassifies to `provider_transient` on a WS-driven complete is audited.
+     */
+    auditLogPath?: import('./agent-lifecycle.js').LifecycleDeps['auditLogPath'];
   };
   sttUrl?: string;
   ttsUrl?: string;

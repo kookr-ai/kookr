@@ -41,6 +41,13 @@ export function isActiveStatus(s: TaskStatus): boolean {
  * - `timeout`        — reaped for exceeding a silence/hang threshold.
  * - `manual`         — an operator terminated it deliberately.
  * - `supervisor`     — a supervisor/batch controller swept it.
+ * - `provider_transient` — the terminal turn made zero tool calls and its final
+ *                      message was a provider/transport error (`529 Overloaded`,
+ *                      `API Error`, 429/5xx, rate limit). Reclassified from a
+ *                      would-be `completed` so a silent no-op never masks a
+ *                      failure (issue #1712). Schedule-provenance failures of
+ *                      this reason are auto-retried by the completion path, so
+ *                      the crash-recovery relaunch must NOT also resume them.
  * - `unknown`        — all sessions died without positive clean-finish evidence
  *                      (a likely crash whose precise cause could not be classified).
  */
@@ -50,6 +57,7 @@ export type TerminationReason =
   | 'timeout'
   | 'manual'
   | 'supervisor'
+  | 'provider_transient'
   | 'unknown';
 
 /**
@@ -67,7 +75,10 @@ export interface TerminationCause {
  * Restart / OOM / timeout are transient global events that should re-spawn the
  * dropped work; `unknown` is a likely crash and is also resumable (the existing
  * crash-recovery relaunch guard bounds retries). `manual` and `supervisor` are
- * deliberate kills and must NOT auto-resume. See issue #1664.
+ * deliberate kills and must NOT auto-resume. `provider_transient` owns its own
+ * bounded schedule retry in the completion path (issue #1712), so the
+ * crash-recovery relaunch must leave it alone to avoid double-recovery. See
+ * issue #1664.
  */
 export function isRecoverableTermination(reason: TerminationReason | undefined): boolean {
   switch (reason) {
@@ -79,6 +90,7 @@ export function isRecoverableTermination(reason: TerminationReason | undefined):
       return true;
     case 'manual':
     case 'supervisor':
+    case 'provider_transient':
       return false;
   }
 }

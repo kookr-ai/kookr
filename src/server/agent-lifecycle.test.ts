@@ -1706,3 +1706,205 @@ describe('promotePendingTasks launch reservation (#700)', () => {
     expect(taskStore.getActiveCount()).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Silent-failure integrity guard (issue #1712)
+// ---------------------------------------------------------------------------
+
+describe('completeTask — provider-transient reclassification (issue #1712)', () => {
+  const SID = 'kookr-s1';
+
+  function providerFailureTask(overrides: Partial<Task> = {}): Task {
+    return lifecycleTask({
+      id: 'task-1712',
+      status: 'inProgress',
+      provenance: { kind: 'schedule', sourceId: 'sched-lucy' },
+      sessions: [{ tmuxSession: SID, lastStatus: 'inProgress' }] as any,
+      ...overrides,
+    });
+  }
+
+  function eventsWithProviderError(): any[] {
+    return [
+      { type: 'session_start', sessionId: SID },
+      { type: 'stop', sessionId: SID, lastMessage: 'API Error: 529 Overloaded' },
+    ];
+  }
+
+  async function readAuditRows(auditLogPath: string): Promise<Array<Record<string, unknown>>> {
+    const { readFile } = await import('node:fs/promises');
+    const raw = await readFile(auditLogPath, 'utf-8');
+    return raw.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  }
+
+  let tmpDir: string;
+  let auditLogPath: string;
+
+  beforeEach(async () => {
+    mockCleanupTaskWorktrees.mockReset().mockResolvedValue(undefined);
+    const { mkdtemp } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    tmpDir = await mkdtemp(join(tmpdir(), 'silent-failure-'));
+    auditLogPath = join(tmpDir, 'audit.jsonl');
+  });
+
+  test('AC1: 0 tool calls + 529 digest on a schedule task → terminated/provider_transient + retry scheduled', async () => {
+    const task = providerFailureTask();
+    const providerTransientRetry = vi.fn().mockResolvedValue(undefined);
+    const deps = makeLifecycleDeps({
+      monitor: { unregisterAgent: vi.fn(), getAgentEvents: vi.fn().mockReturnValue(eventsWithProviderError()) },
+      auditLogPath,
+      providerTransientRetry,
+    });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await completeTask('task-1712', deps);
+
+    // Never completed — terminated as a provider-transient failure instead.
+    expect(deps.taskStore.completeTask).not.toHaveBeenCalled();
+    expect(deps.taskStore.terminateTask).toHaveBeenCalledWith('task-1712', {
+      reason: 'provider_transient',
+      detail: 'API Error: 529 Overloaded',
+    });
+
+    // Retry scheduled with lineage + attempt.
+    expect(providerTransientRetry).toHaveBeenCalledWith(expect.objectContaining({
+      originalTaskId: 'task-1712',
+      failedTaskId: 'task-1712',
+      attempt: 1,
+    }));
+
+    const rows = await readAuditRows(auditLogPath);
+    const reclassified = rows.find((r) => r.type === 'task.reclassifiedFailed');
+    expect(reclassified).toMatchObject({
+      taskId: 'task-1712',
+      failureClass: 'provider_transient',
+      toolCallCount: 0,
+      provenanceKind: 'schedule',
+    });
+    expect(rows.find((r) => r.type === 'task.retrySpawned')).toMatchObject({
+      taskId: 'task-1712',
+      originalTaskId: 'task-1712',
+      attempt: 1,
+    });
+  });
+
+  test('AC2: after the retry budget is spent, no further retry — one operator alert instead', async () => {
+    const task = providerFailureTask({ retryOf: 'task-1712', retryAttempt: 2 });
+    const providerTransientRetry = vi.fn().mockResolvedValue(undefined);
+    const providerTransientAlert = vi.fn().mockResolvedValue(undefined);
+    const deps = makeLifecycleDeps({
+      monitor: { unregisterAgent: vi.fn(), getAgentEvents: vi.fn().mockReturnValue(eventsWithProviderError()) },
+      auditLogPath,
+      providerTransientRetry,
+      providerTransientAlert,
+    });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await completeTask('task-1712', deps);
+
+    expect(deps.taskStore.terminateTask).toHaveBeenCalledWith('task-1712', expect.objectContaining({ reason: 'provider_transient' }));
+    expect(providerTransientRetry).not.toHaveBeenCalled();
+    expect(providerTransientAlert).toHaveBeenCalledWith(expect.objectContaining({
+      failedTaskId: 'task-1712',
+      originalTaskId: 'task-1712',
+      attempts: 2,
+    }));
+
+    const rows = await readAuditRows(auditLogPath);
+    expect(rows.some((r) => r.type === 'task.reclassifiedFailed')).toBe(true);
+    expect(rows.some((r) => r.type === 'task.retrySpawned')).toBe(false);
+    // Durable exhaustion record survives even when no dashboard sees the broadcast.
+    expect(rows.find((r) => r.type === 'task.retryExhausted')).toMatchObject({
+      taskId: 'task-1712',
+      originalTaskId: 'task-1712',
+      attempts: 2,
+    });
+  });
+
+  test('AC2: a retry that does real work takes the normal completed path — no reclassify/retry/alert', async () => {
+    // A retry-lineage task (retryAttempt set) that makes ≥1 tool call must
+    // complete normally: the guard short-circuits on tool activity before it
+    // ever consults the retry budget.
+    const task = providerFailureTask({ retryOf: 'task-1712', retryAttempt: 1 });
+    const providerTransientRetry = vi.fn();
+    const providerTransientAlert = vi.fn();
+    const deps = makeLifecycleDeps({
+      monitor: {
+        unregisterAgent: vi.fn(),
+        getAgentEvents: vi.fn().mockReturnValue([
+          { type: 'tool_use', sessionId: SID, toolName: 'Bash' },
+          { type: 'stop', sessionId: SID, lastMessage: 'Filed 2 issues, all green' },
+        ]),
+      },
+      auditLogPath,
+      providerTransientRetry,
+      providerTransientAlert,
+    });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await completeTask('task-1712', deps);
+
+    expect(deps.taskStore.completeTask).toHaveBeenCalledWith('task-1712');
+    expect(deps.taskStore.terminateTask).not.toHaveBeenCalled();
+    expect(providerTransientRetry).not.toHaveBeenCalled();
+    expect(providerTransientAlert).not.toHaveBeenCalled();
+  });
+
+  test('AC3: a run with ≥1 tool call but an error-mentioning final message is NOT reclassified', async () => {
+    const task = providerFailureTask();
+    const providerTransientRetry = vi.fn();
+    const deps = makeLifecycleDeps({
+      monitor: {
+        unregisterAgent: vi.fn(),
+        getAgentEvents: vi.fn().mockReturnValue([
+          { type: 'tool_use', sessionId: SID, toolName: 'Bash' },
+          { type: 'stop', sessionId: SID, lastMessage: 'Hit a 500 mid-run but recovered and filed 3 issues' },
+        ]),
+      },
+      auditLogPath,
+      providerTransientRetry,
+    });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await completeTask('task-1712', deps);
+
+    expect(deps.taskStore.completeTask).toHaveBeenCalledWith('task-1712');
+    expect(deps.taskStore.terminateTask).not.toHaveBeenCalled();
+    expect(providerTransientRetry).not.toHaveBeenCalled();
+  });
+
+  test('a non-schedule provider failure is reclassified but never auto-retried or alerted', async () => {
+    const task = providerFailureTask({ provenance: { kind: 'manual', sourceId: 'api' } });
+    const providerTransientRetry = vi.fn();
+    const providerTransientAlert = vi.fn();
+    const deps = makeLifecycleDeps({
+      monitor: { unregisterAgent: vi.fn(), getAgentEvents: vi.fn().mockReturnValue(eventsWithProviderError()) },
+      auditLogPath,
+      providerTransientRetry,
+      providerTransientAlert,
+    });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await completeTask('task-1712', deps);
+
+    expect(deps.taskStore.terminateTask).toHaveBeenCalledWith('task-1712', expect.objectContaining({ reason: 'provider_transient' }));
+    expect(providerTransientRetry).not.toHaveBeenCalled();
+    expect(providerTransientAlert).not.toHaveBeenCalled();
+  });
+
+  test('an already-terminated task acked to completed is not reclassified', async () => {
+    const task = providerFailureTask({ status: 'terminated' });
+    const deps = makeLifecycleDeps({
+      monitor: { unregisterAgent: vi.fn(), getAgentEvents: vi.fn().mockReturnValue(eventsWithProviderError()) },
+      auditLogPath,
+    });
+    (deps.taskStore.getTask as ReturnType<typeof vi.fn>).mockReturnValue(task);
+
+    await completeTask('task-1712', deps);
+
+    expect(deps.taskStore.completeTask).toHaveBeenCalledWith('task-1712');
+    expect(deps.taskStore.terminateTask).not.toHaveBeenCalled();
+  });
+});

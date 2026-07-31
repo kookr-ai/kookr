@@ -104,6 +104,15 @@ export interface TimerDeps {
   signalOutboxSpoolDir?: string;
   /** Path to the shared audit.jsonl log — threaded to the completion-ready sweep and hung-task reaper for system-actor audit rows. */
   auditLogPath?: string;
+  /**
+   * Bounded auto-retry hook for schedule-provenance `provider_transient` silent
+   * failures (issue #1712). Threaded onto the auto-close path's LifecycleDeps so
+   * a scheduled task the sweep would complete — that is actually a zero-tool-call
+   * 529 — reclassifies and retries instead of masking the failure as `completed`.
+   */
+  providerTransientRetry?: LifecycleDeps['providerTransientRetry'];
+  /** Operator-alert hook fired when a `provider_transient` failure exhausts its retry budget (issue #1712). */
+  providerTransientAlert?: LifecycleDeps['providerTransientAlert'];
   /** Path to the disposition-ledger JSONL (issue #1540) — threaded to the hung-task reaper so every reap-driven cancel records a work-conservation disposition. Absent → reaper disposition writes are skipped. */
   dispositionLedgerPath?: string;
   /**
@@ -1050,6 +1059,12 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       ? { getCleanupWorktreeOnComplete: deps.agentLifecycleDeps.getCleanupWorktreeOnComplete }
       : {}),
     ...(deps.taskTailStore ? { taskTailStore: deps.taskTailStore } : {}),
+    // Silent-failure integrity guard wiring (issue #1712): the auto-close sweep
+    // completes via agent-lifecycle.completeTask, so it must carry the audit
+    // path + retry/alert hooks for the reclassification guard to fire.
+    ...(deps.auditLogPath ? { auditLogPath: deps.auditLogPath } : {}),
+    ...(deps.providerTransientRetry ? { providerTransientRetry: deps.providerTransientRetry } : {}),
+    ...(deps.providerTransientAlert ? { providerTransientAlert: deps.providerTransientAlert } : {}),
   };
 
   // Re-entrancy guard (issue #1526 Phase A review fix) — same rationale as

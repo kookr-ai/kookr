@@ -102,6 +102,16 @@ verdict**:
   one would notice (the #1548 retro observed a task completed with 213 dirty
   files and 0 unpushed commits).
 
+> **Silent-failure guard (issue #1712).** Before completing, `completeTask`
+> inspects the terminal turn: a run that made **zero tool calls** and whose final
+> message is a provider/transport error (`529` / `API Error` / 429 / 5xx / rate
+> limit) is reclassified to `terminated` / `provider_transient` rather than
+> `completed`, so a headless auto-close can no longer stamp a silent provider
+> failure as success. Schedule-provenance failures are auto-retried up to twice
+> (bounded backoff, `retryOf`/`retryAttempt` lineage) and, once the budget is
+> spent, raise a critical operator alert plus a durable `task.retryExhausted`
+> audit row.
+
 The headless completion paths now **surface, rather than block** — both the
 completion-ready auto-close sweep and the delivery-aware auto-complete. Before
 completing a task, each reuses the exact `inspectTaskWorktrees` verdict the
