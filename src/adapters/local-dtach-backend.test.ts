@@ -22,8 +22,8 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { LocalDtachBackend, buildDtachSpawn } from './local-dtach-backend.js';
 import { findDtachMasterPidSync, verifyMasterIdentity } from './local-dtach-process-identity.js';
-import { killProcessTree } from './process-tree.js';
 import { SessionGoneError } from './terminal-backend.js';
+import { reapDtachReferencing } from '../test-utils/reap-dtach.js';
 
 describe('buildDtachSpawn', () => {
   const dtach = '/vendor/dtach/dtach';
@@ -56,35 +56,6 @@ describe('buildDtachSpawn', () => {
     expect(command).toBe('setsid');
   });
 });
-
-/**
- * Reap any dtach masters (and the agent/shell children they host) whose
- * command line references `dir`. dtach masters are spawned via `setsid` and
- * survive the test process, so without this the suite leaks one resident
- * dtach holder per created session (kookr-ai/kookr#784). Linux-only; degrades
- * to a no-op where `/proc` is unavailable.
- */
-async function reapDtachReferencing(dir: string): Promise<void> {
-  let names: string[];
-  try {
-    names = readdirSync('/proc');
-  } catch {
-    return;
-  }
-  const targets: number[] = [];
-  for (const name of names) {
-    if (!/^\d+$/.test(name)) continue;
-    try {
-      const cmdline = readFileSync(`/proc/${name}/cmdline`, 'utf-8').replace(/\0/g, ' ');
-      if (cmdline.includes('dtach') && cmdline.includes(dir)) targets.push(Number(name));
-    } catch {
-      // process exited between readdir and read — skip
-    }
-  }
-  for (const pid of targets) {
-    await killProcessTree(pid, { graceMs: 2_000 });
-  }
-}
 
 function resolveDtachBinary(): string | null {
   // Prefer the vendored copy if present, otherwise fall back to PATH.
