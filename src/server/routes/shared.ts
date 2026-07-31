@@ -356,6 +356,13 @@ export interface RouteDeps {
    * stats (attached sessions, pending writers, last error, etc.).
    */
   terminalBackend?: TerminalBackend;
+  /**
+   * Orphan/terminal-task session reaper (issue #1720). `/api/health` reads
+   * only `getHealthSnapshot()` — a cheap in-memory read of counters the
+   * reaper's own sweeps already computed, never a fresh scan on the request
+   * path (issue #1553 lesson).
+   */
+  sessionReaper?: Pick<import('../session-reaper.js').SessionReaperService, 'getHealthSnapshot'>;
   /** Cross-signal terminal/session diagnostics for the dashboard and support capture. */
   sessionHealthService?: Pick<SessionHealthService, 'getDiagnostics'>;
   /** Result of the crash-recovery startup phase; fetched once by the frontend on mount. */

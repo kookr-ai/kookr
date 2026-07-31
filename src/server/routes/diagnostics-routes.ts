@@ -137,6 +137,12 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         errorCount: stats.errorCount,
       };
     }
+    // Session reaper (issue #1720): cheap in-memory counters from the last
+    // boot/periodic sweep — never a fresh disk/process scan on this request
+    // path (issue #1553 lesson: an unbounded scan here previously OOM-crashed
+    // prod).
+    const sessionReaperBlock = deps.sessionReaper?.getHealthSnapshot();
+
     // #808 / R10: surface the revocation sweep liveness + viewer count + grant
     // store writability so a dead sweep or a read-only store is visible to the
     // operator. Owner-only: viewers are denied every `/api/*` route but the
@@ -231,6 +237,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         ? { ciBlindDebt: ciBlindDebtBlock, ci_blind_debt: ciBlindDebtBlock }
         : {}),
       ...(terminalBackendBlock ? { terminalBackend: terminalBackendBlock } : {}),
+      ...(sessionReaperBlock ? { sessionReaper: sessionReaperBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),
     });

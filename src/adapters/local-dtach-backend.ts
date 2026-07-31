@@ -450,6 +450,28 @@ export class LocalDtachBackend implements TerminalBackend {
     };
   }
 
+  /**
+   * Wall-clock ms since epoch this session's manifest entry was created, or
+   * `null` when there is no entry or `startedAt` fails to parse. Used by the
+   * orphan/terminal-task session reaper (issue #1720) to age-gate reaping.
+   */
+  async getSessionStartedAt(id: SessionId): Promise<number | null> {
+    const entry = await this.readEntry(id);
+    if (!entry) return null;
+    const parsed = Date.parse(entry.startedAt);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+
+  /**
+   * Absolute path to this backend's dtach socket/manifest directory
+   * (`/tmp/kookr-dtach/<uid>/<instanceId>`). Used by the stale-attach-client
+   * reaper (issue #1720) to scope its process-table scan to sessions THIS
+   * instance owns — never another port's sessions or a user's own terminal.
+   */
+  getInstanceDir(): string {
+    return this.instanceDir;
+  }
+
   getSessionDiagnostics(id: SessionId): TerminalSessionDiagnostics | null {
     const entry = this.manifestStore.read().entries.find((candidate) => candidate.sessionId === id);
     const sess = this.attached.get(id);

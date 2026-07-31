@@ -95,6 +95,8 @@ export interface FakeSession {
    * working session ends `recovered-unverified`.
    */
   recoveryRepairsUntilLive: number;
+  /** Session-reaper age-gating (issue #1720): ms since epoch this session was "created". */
+  startedAtMs: number;
 }
 
 /** Synthetic redraw a successful fake reconnect emits (models the dtach redraw). */
@@ -167,7 +169,19 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
       reconnectWedged: false,
       recoveryWedged: false,
       recoveryRepairsUntilLive: Number.POSITIVE_INFINITY,
+      startedAtMs: Date.now(),
     });
+  }
+
+  /** Test helper (issue #1720): override the synthetic session start time used by `getSessionStartedAt`. */
+  setSessionStartedAt(id: SessionId, startedAtMs: number): void {
+    const s = this.sessions.get(id);
+    if (!s) throw new SessionGoneError(id);
+    s.startedAtMs = startedAtMs;
+  }
+
+  async getSessionStartedAt(id: SessionId): Promise<number | null> {
+    return this.sessions.get(id)?.startedAtMs ?? null;
   }
 
   async listSessions(): Promise<SessionId[]> {

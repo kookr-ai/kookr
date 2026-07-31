@@ -45,6 +45,9 @@ uncomment only the values you need.
 | `KOOKR_TASK_TAIL_DIR` | `{dataDir}/task-tails` | Absolute or relative path | Override the on-disk directory for durable terminal tails. |
 | `KOOKR_TASK_TAIL_MAX_BYTES` | `262144` (256 KiB) | Positive integer bytes | Maximum UTF-8 bytes retained per task tail (suffix-truncated from the live ring capture). |
 | `KOOKR_TASK_TAIL_PURGE_INTERVAL_MS` | `3600000` (1 hour) | Non-negative integer ms | Background purge tick for expired tails. `0` disables the timer (lazy expiry on read still applies). |
+| `KOOKR_REAP_ORPHAN_SESSIONS` | on | `false` to disable | Controls the orphan/terminal-task session reaper (issue #1720): at boot and on every periodic liveness tick, terminates (TERM → grace → KILL) dtach sessions that either have no owning task at all, or whose owning task already reached a terminal status while the session's process tree stayed resident — the exact leak that accumulated 41 orphan sessions (~5.5 GB RSS+swap) and OOM-killed prod on 2026-07-30. Also gates the boot-only stale-`dtach -a`-attach-client sweep. Every reap is logged to `audit.jsonl` (`session.reap` / `session.reapStaleAttacher`) and surfaced (cheaply, from cached counters) on `GET /api/health`'s `sessionReaper` block. |
+| `KOOKR_REAP_ORPHAN_AGE_MS` | `86400000` (24h) | Non-negative integer ms | Minimum age an UNOWNED session must reach before the reaper above terminates it — avoids racing a mid-launch session (#1537 item 2). |
+| `KOOKR_REAP_TERMINAL_TASK_GRACE_MS` | `60000` (60s) | Non-negative integer ms | Minimum time a session whose OWNING TASK already reached a terminal status must sit before the reaper terminates it. Deliberately much shorter than the orphan threshold — the owning task is already known to be done; the grace only avoids double-signalling a session `completeTask`'s own fire-and-forget cleanup is still stopping. |
 
 ### Read-Only Shared View
 
