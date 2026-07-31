@@ -7,6 +7,7 @@ import { ScheduleDeadManSwitch } from '../schedule-dead-man.js';
 import { ScheduleResolutionAlerter } from '../schedule-resolution-alert.js';
 import { deriveLedgerEnrichment, ScheduleService } from '../schedule-service.js';
 import { ScheduleValidator } from '../schedule-validator.js';
+import { bindOperationalAlertSink, OperationalAlertSink } from '../operational-alert-sink.js';
 
 export interface ScheduleRuntimeDeps {
   kookrDir: string;
@@ -28,6 +29,13 @@ export interface ScheduleRuntimeDeps {
    * to the schedule service default.
    */
   getScheduleFailureAlertThreshold?: () => number;
+  /**
+   * Optional durable sink for operational-alert fire/clear transitions (issue
+   * #1709, WS0.3). When omitted, one is created under `kookrDir`. Provided
+   * (shared) so future emitters — e.g. WS1 provider-health — record through the
+   * same sink.
+   */
+  operationalAlertSink?: OperationalAlertSink;
 }
 
 export interface ScheduleRuntime {
@@ -35,11 +43,16 @@ export interface ScheduleRuntime {
   scheduleValidator: ScheduleValidator;
   scheduleService: ScheduleService;
   scheduleRunner: ScheduleRunner;
+  /** Durable JSONL sink recording dead-man (and future provider-health) transitions. */
+  operationalAlertSink: OperationalAlertSink;
 }
 
 export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<ScheduleRuntime> {
   const scheduleStore = new ScheduleStore(deps.kookrDir);
   await scheduleStore.load();
+  const operationalAlertSink =
+    deps.operationalAlertSink ?? new OperationalAlertSink({ kookrDir: deps.kookrDir });
+  const recordOperationalAlert = bindOperationalAlertSink(operationalAlertSink);
   const scheduleValidator = new ScheduleValidator();
   const scheduleService = new ScheduleService({
     store: scheduleStore,
@@ -87,6 +100,9 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     // evaluated on the runner's existing tick. Alert-only.
     deadMan: new ScheduleDeadManSwitch({
       broadcast: deps.broadcastToAll,
+      // issue #1709 (WS0.3): durable sink so a starvation fire→clear that
+      // happens while no dashboard client is connected still leaves a trace.
+      recordTransition: recordOperationalAlert,
       ...(deps.getDeadManScheduleMs ? { getDeadManMs: deps.getDeadManScheduleMs } : {}),
     }),
     // issue #1661: operational alert when a schedule's playbook stops resolving
@@ -98,5 +114,5 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     }),
   });
 
-  return { scheduleStore, scheduleValidator, scheduleService, scheduleRunner };
+  return { scheduleStore, scheduleValidator, scheduleService, scheduleRunner, operationalAlertSink };
 }

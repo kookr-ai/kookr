@@ -50,6 +50,7 @@ as internal unless this table says they are safe to remove.
 | `contribution-ledger.jsonl` | OSS contribution gate | Append-only contribution history. | Keep for deduplication and audit history. |
 | `detection-stats.json` | detector telemetry | Aggregate anomaly detector counters. | Keep for detector quality telemetry. |
 | `audit.jsonl` | server routes | Operator and task lifecycle audit events. | Keep for diagnostics. |
+| `operational-alerts.jsonl` | schedule runtime / operational-alert sink | Append-only durable trace of operational-alert fire/recovery transitions (schedule dead-man; future provider-health), so a fire→clear that occurs while no dashboard client is connected still leaves an on-disk record (issue #1709). | Keep for incident reconstruction. |
 | `feedback/` | feedback bundle writer | Feedback artifacts generated from task feedback flows. | Keep unless intentionally discarding feedback history. |
 | `task-snapshots/` | task snapshot bundles | Snapshot artifacts captured for diagnostics and feedback. | Keep unless intentionally discarding diagnostics. |
 | `finding-evidence-reviews.jsonl` | finding review diagnostics | Manual/background finding-evidence review outcomes. | Keep if using finding review diagnostics. |
