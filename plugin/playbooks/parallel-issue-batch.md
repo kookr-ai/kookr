@@ -101,6 +101,7 @@ checklist:
   - Child prompts require fresh git worktrees and no edits in the main checkout
   - Child tasks monitored for idle prompts, pasted-but-unsubmitted messages, permission dialogs, PR creation, CI, and mergeability
   - Interactivity policy honored: autonomous onAmbiguity modes never paused for user input
+  - Headless runs (schedule/parent provenance or unattended) never called AskUserQuestion; an empty backlog reported-and-exited to `completed` with a machine-readable `blocked-empty` outcome record, never `needs_input`
   - All selected issues reached the configured policy: merged PRs when mergeAfterImplementation=true, otherwise open green PRs
   - Redundant or superseded cleanup PRs closed when a broader cleanup already landed
   - DONE or BLOCKED marker written to the durable batch state
@@ -171,11 +172,38 @@ Rules:
 
 This policy applies only to *pool/selection ambiguity*. Per-issue design choices are not covered by it: those always follow "pick the smallest implementation that satisfies the issue and continue" in every mode.
 
-- `ask` (interactive, default): when genuinely ambiguous or blocked on selection, pause with a single `AskUserQuestion` that states the situation, lists concrete options, and marks a recommended default. This is the right mode for supervised runs.
-- `auto-safe-subset` (autonomous): never call `AskUserQuestion`. Resolve ambiguity by applying the safe default automatically — select the largest concurrently-safe, non-overlapping subset of the discovered pool under the Phase 3 rules and proceed. If no safe candidate exists, write `BLOCKED` with the reason instead of asking.
-- `auto-stop` (autonomous): never call `AskUserQuestion`. If the pool is ambiguous or the selector matches nothing, write `BLOCKED` with the exact reason and stop.
+### Headless gate (issue #1714) — evaluate FIRST, before `onAmbiguity`
 
-In both autonomous modes, record the decision and the policy that produced it in `$STATE_FILE` so a human can audit why the parent proceeded or stopped without input.
+A **headless** run has no human watching to answer a prompt. `AskUserQuestion` in a headless run does not pause for a human — it strands the task in `needs_input` for its whole lifetime, holding a `maxActiveTasks` slot until it is reaped (2026-07-30 incident: scheduled batches `305a603d` and `5c6ddf5c` each stranded ~8h on "No safe, unblocked, single-PR issue remains"). So in a headless run `AskUserQuestion` is **forbidden regardless of `{{onAmbiguity}}`**, including the `ask` default.
+
+Detect headless mode from the launch signals injected into the environment. Compute this once, early, and record it in `$STATE_FILE`:
+
+```bash
+# HEADLESS=1 when this run was launched by a schedule or a parent task, or was
+# explicitly marked unattended — i.e. nobody is watching to answer a prompt.
+# KOOKR_LAUNCH_PROVENANCE ∈ {schedule, parent, manual, unknown} (issue #1583);
+# KOOKR_PARENT_TASK_ID and KOOKR_UNATTENDED are the corroborating signals.
+HEADLESS=0
+case "${KOOKR_LAUNCH_PROVENANCE:-}" in
+  schedule|parent) HEADLESS=1 ;;
+esac
+[ -n "${KOOKR_PARENT_TASK_ID:-}" ] && HEADLESS=1
+[ "${KOOKR_UNATTENDED:-}" = "1" ] && HEADLESS=1
+: "$HEADLESS"  # ensure the block exits 0 even when every guard above is false
+```
+
+- **Headless** (`HEADLESS=1`): never call `AskUserQuestion`. Wherever the `ask` policy below would pause, run the **Report-and-exit protocol** (Phase 7) instead: write the structured empty-backlog report, emit the machine-readable outcome record, post a summary as task output, and COMPLETE within this run's own lifetime. The run terminates `completed`, never `needs_input`.
+- **Interactive** (`HEADLESS=0`, a supervised manual launch): `{{onAmbiguity}}` applies unchanged, including the `ask` default's `AskUserQuestion`.
+
+The headless gate only removes the *prompt*; it never relaxes a safety gate and never changes per-issue design behavior.
+
+### `onAmbiguity` modes (interactive runs; autonomous modes apply everywhere)
+
+- `ask` (interactive, default): when genuinely ambiguous or blocked on selection, pause with a single `AskUserQuestion` that states the situation, lists concrete options, and marks a recommended default. This is the right mode for supervised runs. **In a headless run this mode is overridden by the headless gate above** — report-and-exit instead of asking.
+- `auto-safe-subset` (autonomous): never call `AskUserQuestion`. Resolve ambiguity by applying the safe default automatically — select the largest concurrently-safe, non-overlapping subset of the discovered pool under the Phase 3 rules and proceed. If no safe candidate exists, run the Report-and-exit protocol (Phase 7).
+- `auto-stop` (autonomous): never call `AskUserQuestion`. If the pool is ambiguous or the selector matches nothing, run the Report-and-exit protocol (Phase 7).
+
+In both autonomous modes, and in any headless run, record the decision and the policy that produced it in `$STATE_FILE` so a human can audit why the parent proceeded or stopped without input.
 
 ## Durable State
 
@@ -192,6 +220,7 @@ CANDIDATES_FILE="$STATE_DIR/candidates.json"
 SELECTION_FILE="$STATE_DIR/selection.json"
 CHILDREN_FILE="$STATE_DIR/children.json"
 MONITOR_FILE="$STATE_DIR/monitor.md"
+OUTCOME_FILE="$STATE_DIR/outcome.json"
 PROMPTS_DIR="$STATE_DIR/prompts"
 mkdir -p "$PROMPTS_DIR"
 ```
@@ -203,9 +232,41 @@ Prior-run state is part of the selection input, not a reason to stop early. A co
 Terminal markers:
 
 - `DONE`: all selected issues reached the configured PR policy.
-- `BLOCKED`: the parent cannot safely select, spawn, or supervise without user intervention.
+- `BLOCKED`: the parent cannot safely select, spawn, or supervise without user intervention (a real blocker a human must clear).
+- `NO-ELIGIBLE-WORK`: the backlog is drained — no safe, unblocked, single-PR issue remains. This is a **legitimate no-op completion**, not a blocker: nothing is wrong and no human action is required. A headless run reaches this via the **Report-and-exit protocol** (Phase 7) and terminates `completed`, never `needs_input`.
 
-When terminal, write the marker to `$STATE_FILE`, write `STOP: COMPLETE` or `STOP: BLOCKED - <reason>` to `.batch-stop` in the parent task cwd, and stop.
+When terminal, write the marker to `$STATE_FILE`, write `STOP: COMPLETE`, `STOP: BLOCKED - <reason>`, or `STOP: NO-ELIGIBLE-WORK - <reason>` to `.batch-stop` in the parent task cwd, and stop.
+
+### Machine-readable outcome record (`$OUTCOME_FILE`, issue #1714)
+
+Every terminal run writes a single machine-readable outcome record to `$OUTCOME_FILE` so downstream automation — notably the starvation-refill trigger (companion issue) — can act without parsing prose. It is JSON with a stable schema:
+
+```json
+{
+  "schemaVersion": 1,
+  "outcome": "blocked-empty",
+  "repo": "owner/repo",
+  "runKey": "<RUN_KEY>",
+  "headless": true,
+  "provenance": "schedule",
+  "onAmbiguity": "ask",
+  "reason": "No safe, unblocked, single-PR issue remains in owner/repo",
+  "openIssueCount": 24,
+  "disqualified": [
+    { "issue": 123, "title": "…", "reason": "already has open PR #456" },
+    { "issue": 124, "title": "…", "reason": "label:blocked" }
+  ],
+  "generatedAt": "<ISO-8601, stamped at runtime>"
+}
+```
+
+`outcome` is the machine key:
+
+- `done`: batch completed with delivered/open PRs (Phase 7 DONE).
+- `blocked-empty`: no eligible work remained — the drained-backlog no-op the starvation-refill trigger consumes. `disqualified` itemizes **every** open issue with its disqualifier so a human (or the refill trigger) sees exactly why the pool was empty.
+- `blocked`: a real blocker stopped the run (Phase 7 BLOCKED); `reason` explains what a human must clear.
+
+Write `$OUTCOME_FILE` atomically (write a temp file, then `mv`) so a reader never sees a half-written record.
 
 ## Phase 0: Reconstruct Prior Batch State
 
@@ -269,7 +330,7 @@ Resolve the local checkout:
 
 If validation fails, write `BLOCKED` with the exact reason.
 
-After `REPO_SLUG` is known, finish Phase 0's prior-run scan if it could not be completed earlier. If Phase 0 found an active prior run, set `STATE_DIR`, `STATE_FILE`, `SELECTION_FILE`, `CHILDREN_FILE`, `MONITOR_FILE`, and `PROMPTS_DIR` to that run's files and jump to Phase 5. Only create a fresh run directory when there is no active run to resume.
+After `REPO_SLUG` is known, finish Phase 0's prior-run scan if it could not be completed earlier. If Phase 0 found an active prior run, set `STATE_DIR`, `STATE_FILE`, `CANDIDATES_FILE`, `SELECTION_FILE`, `CHILDREN_FILE`, `MONITOR_FILE`, `OUTCOME_FILE`, and `PROMPTS_DIR` to that run's files and jump to Phase 5. Only create a fresh run directory when there is no active run to resume.
 
 ## Phase 2: Gather Candidate Issues
 
@@ -422,7 +483,7 @@ Hard concurrency rules (apply **between work units**, not inside a bundle):
 - Prefer small, testable issues with clear acceptance criteria over large ambiguous issues.
 - The sum of issue counts across work units must be ≤ `targetIssueCount`.
 
-Write the final matrix to `$SELECTION_FILE`. If fewer than one work unit is safe, write `BLOCKED`.
+Write the final matrix to `$SELECTION_FILE`. If fewer than one work unit is safe — the backlog is drained or every remaining candidate is unsafe/blocked/duplicate — do **not** call `AskUserQuestion` and do **not** strand. Run the **Report-and-exit protocol** (Phase 7): it writes the structured empty-backlog report and the `blocked-empty` outcome record, then terminates the run (headless: `completed`; interactive `ask`: it may still surface the situation via a single `AskUserQuestion`, but only when `HEADLESS=0`).
 
 ## Phase 4: Spawn Child Tasks
 
@@ -845,9 +906,30 @@ printf 'BLOCKED: <reason>\n' >> "$STATE_FILE"
 echo "STOP: BLOCKED - <reason>" > .batch-stop
 ```
 
+### Report-and-exit protocol (empty backlog, issue #1714)
+
+Reach this when there is nothing eligible to do: the `issueSelector` matched nothing, the backlog is drained, or every remaining candidate is unsafe/blocked/duplicate. This is the drained-backlog no-op, **not** a real blocker. A headless run (`HEADLESS=1` from the Interactivity Policy) MUST take this path instead of `AskUserQuestion`; the autonomous `onAmbiguity` modes route here too. It terminates the run within its own lifetime — `completed`, never `needs_input`.
+
+1. **Enumerate every open issue and its disqualifier.** For each open issue in the target repo, record why it is ineligible (already-open/merged PR, blocked/duplicate/wontfix label, another author when `allowOtherAuthors=false`, active claim, unsafe write scope, completed/blocked in prior batch state, etc.). Reuse `$CANDIDATES_FILE`, which already carries `excluded_reason` per issue.
+
+2. **Write the structured empty-backlog report** to `$STATE_FILE` — a `## Empty Backlog` section that itemizes every open issue (`#N — <title> — <disqualifier>`) and the open-issue count. This mirrors the correct prior behavior (batch `74022030` itemized all 24 open issues, then exited) instead of the stranding behavior (`305a603d`/`5c6ddf5c`).
+
+3. **Emit the machine-readable outcome record** to `$OUTCOME_FILE` with `outcome: "blocked-empty"` per **Durable State → Machine-readable outcome record**. Build it from `$CANDIDATES_FILE` and write it atomically (temp file, then `mv`). Stamp `generatedAt` at runtime. This is the record the starvation-refill trigger (companion issue) consumes.
+
+4. **Post a summary as task output** — a short human-facing line naming the repo, the open-issue count, and that no eligible work remains (e.g. `No safe, unblocked, single-PR issue remains in owner/repo (24 open, all disqualified) — report-and-exit, no work spawned.`).
+
+5. **Terminate.** Write the terminal marker and stop:
+
+   ```bash
+   printf 'NO-ELIGIBLE-WORK: %s — %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '<reason>' >> "$STATE_FILE"
+   echo "STOP: NO-ELIGIBLE-WORK - <reason>" > .batch-stop
+   ```
+
+   In a headless run this is a clean **completed** no-op: emit the post-task lesson decision and `kookr signal completion-ready` exactly as the DONE path below (the run auto-closes after the grace period). Never enter `needs_input`. In an interactive (`HEADLESS=0`) `ask` run, you may instead surface the empty pool to the operator with a single `AskUserQuestion` after writing the report and outcome record — the report is written either way so nothing is lost if the operator is absent.
+
 **Release the supervisor's own slot (single launch only).** This playbook sets
-`autoCloseOnSignal: true`, so once the batch is terminal (`DONE` or `BLOCKED`
-written above and every child accounted for), free this supervisor task's slot
+`autoCloseOnSignal: true`, so once the batch is terminal (`DONE`, `BLOCKED`, or
+`NO-ELIGIBLE-WORK` written above and every child accounted for), free this supervisor task's slot
 after the grace period instead of leaving the finished batch open and filling
 the active-task cap.
 
@@ -883,6 +965,8 @@ Ralph loop mode, ignore this — the loop owns the task lifecycle and the
 
 ## Anti-Patterns
 
+- Calling `AskUserQuestion` in a headless run (schedule/parent provenance or unattended) — it strands the task in `needs_input` for hours holding an active slot (2026-07-30: `305a603d`, `5c6ddf5c`). Report-and-exit to `completed` instead.
+- Treating a drained backlog as a `BLOCKED` needing human intervention. An empty eligible pool is a legitimate no-op (`NO-ELIGIBLE-WORK` / `blocked-empty`); write the report and outcome record and complete.
 - Stopping at a completed prior run when the launch request asks for another batch and open eligible issues remain.
 - Asking the user to find new issues after a terminal prior run instead of carrying completed issues forward as exclusions.
 - Spawning work units first and checking file overlap later.
