@@ -8,6 +8,8 @@ import {
   generateReport,
   generateReportFromFile,
   formatReport,
+  DEFAULT_SHADOW_REPORT_MAX_BYTES,
+  DEFAULT_SHADOW_REPORT_MAX_ENTRIES,
   type ShadowReport,
 } from './shadow-report.js';
 import type { ShadowLogEntry, ShadowHeartbeat, ShadowTransition } from './shadow-detector.js';
@@ -388,6 +390,100 @@ describe('parseShadowLogFromFile / generateReportFromFile', () => {
       const report = await generateReportFromFile(path);
       expect(report.totalEntries).toBe(1);
       expect(report.parseErrors).toBe(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('byte-tail keeps only the newest window of a large file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'shadow-report-tail-'));
+    try {
+      const path = join(dir, 'log.jsonl');
+      // Pad so the early rows fall outside a small maxBytes budget.
+      const pad = 'x'.repeat(200);
+      const oldLine = JSON.stringify({
+        ...hb('2026-03-28T11:00:00Z', 'old', null, null),
+        _pad: pad,
+      });
+      const midLine = JSON.stringify({
+        ...hb('2026-03-28T12:00:00Z', 'mid', null, null),
+        _pad: pad,
+      });
+      const newLine = JSON.stringify(hb('2026-03-28T12:00:10Z', 'new', null, null));
+      await writeFile(path, [oldLine, midLine, newLine].join('\n') + '\n', 'utf-8');
+
+      // Budget that covers newLine + maybe mid, but not old when reading from the end.
+      const maxBytes = Buffer.byteLength(newLine, 'utf-8') + Buffer.byteLength(midLine, 'utf-8') + 2;
+      const { entries, truncated } = await parseShadowLogFromFile(path, {
+        maxBytes,
+        maxEntries: 100,
+        maxAgeMs: 0,
+      });
+      expect(truncated).toBe(true);
+      const agentIds = entries.map((e) => e.agentId);
+      expect(agentIds).toContain('new');
+      expect(agentIds).not.toContain('old');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('maxEntries keeps the newest rows across rotated generations', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'shadow-report-max-entries-'));
+    try {
+      const path = join(dir, 'shadow-detection.jsonl');
+      await writeFile(
+        `${path}.1`,
+        [
+          JSON.stringify(hb('2026-03-28T11:00:00Z', 'gen1-a', null, null)),
+          JSON.stringify(hb('2026-03-28T11:00:05Z', 'gen1-b', null, null)),
+        ].join('\n') + '\n',
+        'utf-8',
+      );
+      await writeFile(
+        path,
+        [
+          JSON.stringify(hb('2026-03-28T12:00:00Z', 'live-a', null, null)),
+          JSON.stringify(hb('2026-03-28T12:00:05Z', 'live-b', null, null)),
+        ].join('\n') + '\n',
+        'utf-8',
+      );
+
+      const { entries, truncated } = await parseShadowLogFromFile(path, {
+        maxBytes: DEFAULT_SHADOW_REPORT_MAX_BYTES,
+        maxEntries: 2,
+        maxAgeMs: 0,
+      });
+      expect(truncated).toBe(true);
+      expect(entries).toHaveLength(2);
+      expect(entries.map((e) => e.agentId)).toEqual(['live-a', 'live-b']);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('maxAgeMs drops entries older than the window relative to newest', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'shadow-report-max-age-'));
+    try {
+      const path = join(dir, 'log.jsonl');
+      await writeFile(
+        path,
+        [
+          JSON.stringify(hb('2026-03-20T12:00:00Z', 'ancient', null, null)),
+          JSON.stringify(hb('2026-03-28T12:00:00Z', 'recent', null, null)),
+        ].join('\n') + '\n',
+        'utf-8',
+      );
+
+      // 1 day window: ancient (8 days before recent) is dropped.
+      const { entries, truncated } = await parseShadowLogFromFile(path, {
+        maxBytes: DEFAULT_SHADOW_REPORT_MAX_BYTES,
+        maxEntries: DEFAULT_SHADOW_REPORT_MAX_ENTRIES,
+        maxAgeMs: 24 * 60 * 60 * 1000,
+      });
+      expect(truncated).toBe(true);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.agentId).toBe('recent');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

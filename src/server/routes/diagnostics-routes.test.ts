@@ -2207,6 +2207,68 @@ describe('diagnostics routes', () => {
       const text = await res.text();
       expect(text).toContain('Shadow Detection Report');
     });
+
+    test('serves a cached report on the second request within the TTL (issue #1764)', async () => {
+      const logPath = join(tempDir, 'shadow-cache.jsonl');
+      writeFileSync(
+        logPath,
+        JSON.stringify({
+          kind: 'heartbeat',
+          timestamp: '2026-03-28T12:00:00.000Z',
+          agentId: 'a1',
+          source: 'pane_semantics',
+          shadowState: null,
+          realState: null,
+        }) + '\n',
+      );
+      const registry = new ShadowDetectorRegistry(logPath);
+      // Cache is per registerDiagnosticsRoutes invocation (per app instance).
+      const app = mkApp({ shadowRegistry: registry });
+
+      const first = await app.request('/api/shadow-report');
+      expect(first.status).toBe(200);
+      const body1 = await first.json() as { generatedAt: string; totalEntries: number };
+
+      // Mutate the log — a cache hit must still return the first snapshot.
+      writeFileSync(logPath, '');
+
+      const second = await app.request('/api/shadow-report');
+      expect(second.status).toBe(200);
+      const body2 = await second.json() as { generatedAt: string; totalEntries: number };
+      expect(body2.generatedAt).toBe(body1.generatedAt);
+      expect(body2.totalEntries).toBe(body1.totalEntries);
+      expect(body2.totalEntries).toBe(1);
+    });
+
+    test('concurrent cold requests share a single in-flight parse (issue #1764)', async () => {
+      const logPath = join(tempDir, 'shadow-concurrent.jsonl');
+      writeFileSync(
+        logPath,
+        JSON.stringify({
+          kind: 'heartbeat',
+          timestamp: '2026-03-28T12:00:00.000Z',
+          agentId: 'a1',
+          source: 'pane_semantics',
+          shadowState: null,
+          realState: null,
+        }) + '\n',
+      );
+      const registry = new ShadowDetectorRegistry(logPath);
+      const app = mkApp({ shadowRegistry: registry });
+
+      const [a, b, c] = await Promise.all([
+        app.request('/api/shadow-report'),
+        app.request('/api/shadow-report'),
+        app.request('/api/shadow-report'),
+      ]);
+      expect(a.status).toBe(200);
+      expect(b.status).toBe(200);
+      expect(c.status).toBe(200);
+      const bodies = await Promise.all([a.json(), b.json(), c.json()]) as Array<{ generatedAt: string }>;
+      // Same generatedAt means one scan served all concurrent waiters.
+      expect(bodies[0]!.generatedAt).toBe(bodies[1]!.generatedAt);
+      expect(bodies[1]!.generatedAt).toBe(bodies[2]!.generatedAt);
+    });
   });
 
   // ---------------------------------------------------------------------------

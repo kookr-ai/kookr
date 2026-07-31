@@ -5,12 +5,33 @@
  * transitions + heartbeats, and computes per-strategy coverage metrics.
  */
 
-import { createReadStream } from 'node:fs';
+import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
-import { createInterface } from 'node:readline/promises';
 import type { ShadowLogEntry, ShadowTransition, ShadowHeartbeat, ShadowSource } from './shadow-detector.js';
 import type { AnomalyType } from './types.js';
+
+/**
+ * Bounds for per-request shadow-log reads (issue #1764).
+ * Unbounded full-file parse of multi-hundred-MB shadow-detection.jsonl
+ * OOM-wedged prod: one request inflates GBs of parsed rows, dashboard
+ * retries stack concurrent parses, and the heap climbs to the limit.
+ */
+/** Default tail-window across all generations (most recent bytes first). */
+export const DEFAULT_SHADOW_REPORT_MAX_BYTES = 4 * 1024 * 1024;
+/** Hard cap on parsed JSONL rows retained for a report. */
+export const DEFAULT_SHADOW_REPORT_MAX_ENTRIES = 50_000;
+/** Drop entries older than this relative to the newest retained entry. */
+export const DEFAULT_SHADOW_REPORT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface ParseShadowLogFromFileOptions {
+  /** Max raw bytes to read across generations, newest-first. */
+  maxBytes?: number;
+  /** Max parsed entries to keep (newest retained). */
+  maxEntries?: number;
+  /** Drop entries older than this many ms vs newest entry (0 = no age filter). */
+  maxAgeMs?: number;
+}
 
 // --- Interval types ---
 
@@ -295,26 +316,73 @@ export function generateReport(entries: ShadowLogEntry[]): ShadowReport {
 // --- File-based report ---
 
 /**
- * Read the shadow log line-by-line. readFile(path, 'utf-8') exceeds V8's
- * ~512MB string-length limit on multi-day logs, so the previous
- * implementation silently returned an empty report. Streaming sidesteps
- * the string-length cap; in-memory entry size is still bounded by JS heap.
+ * Read a bounded tail of the shadow log (+ rotated generations).
+ *
+ * History: full-file `readFile` hit V8's ~512MB string cap; line streaming
+ * sidestepped that but still loaded every row into the heap. Issue #1764:
+ * prod had 172 MB live + 536 MB rotations — one report request inflated GBs
+ * of parsed objects. This path only reads the newest `maxBytes`, keeps at
+ * most `maxEntries` rows, and drops entries older than `maxAgeMs`.
  */
 export async function parseShadowLogFromFile(
   filePath: string,
-): Promise<{ entries: ShadowLogEntry[]; errors: number }> {
-  const entries: ShadowLogEntry[] = [];
-  let errors = 0;
+  options: ParseShadowLogFromFileOptions = {},
+): Promise<{ entries: ShadowLogEntry[]; errors: number; truncated: boolean }> {
+  const maxBytes = Math.max(1, Math.floor(options.maxBytes ?? DEFAULT_SHADOW_REPORT_MAX_BYTES));
+  const maxEntries = Math.max(1, Math.floor(options.maxEntries ?? DEFAULT_SHADOW_REPORT_MAX_ENTRIES));
+  const maxAgeMs = Math.max(0, Math.floor(options.maxAgeMs ?? DEFAULT_SHADOW_REPORT_MAX_AGE_MS));
 
-  for (const path of await listShadowLogPaths(filePath)) {
-    const parsed = await parseShadowLogFileOnly(path);
-    entries.push(...parsed.entries);
+  // Newest-first so the byte/row budget retains the recent window.
+  const paths = (await listShadowLogPaths(filePath)).reverse();
+  const newestFirst: ShadowLogEntry[] = [];
+  let errors = 0;
+  let bytesRemaining = maxBytes;
+  let truncated = false;
+
+  for (const path of paths) {
+    if (bytesRemaining <= 0 || newestFirst.length >= maxEntries) {
+      truncated = true;
+      break;
+    }
+    const entryBudget = maxEntries - newestFirst.length;
+    const parsed = parseShadowLogFileTail(path, bytesRemaining, entryBudget);
+    // parsed.entries are chronological within the file; reverse so we keep
+    // prepending older generations behind the already-collected newer ones.
+    for (let i = parsed.entries.length - 1; i >= 0; i--) {
+      newestFirst.push(parsed.entries[i]!);
+    }
     errors += parsed.errors;
+    bytesRemaining -= parsed.bytesRead;
+    if (parsed.truncatedByBytes || parsed.truncatedByEntries) truncated = true;
   }
 
-  return { entries, errors };
+  // newestFirst is newest→oldest; restore chronological order for intervals.
+  const chronological = newestFirst.reverse();
+
+  if (maxAgeMs > 0 && chronological.length > 0) {
+    let newestTs = Number.NEGATIVE_INFINITY;
+    for (const e of chronological) {
+      const ts = Date.parse(e.timestamp);
+      if (Number.isFinite(ts) && ts > newestTs) newestTs = ts;
+    }
+    if (Number.isFinite(newestTs) && newestTs > Number.NEGATIVE_INFINITY) {
+      const cutoff = newestTs - maxAgeMs;
+      const filtered = chronological.filter((e) => {
+        const ts = Date.parse(e.timestamp);
+        return !Number.isFinite(ts) || ts >= cutoff;
+      });
+      if (filtered.length < chronological.length) truncated = true;
+      return { entries: filtered, errors, truncated };
+    }
+  }
+
+  return { entries: chronological, errors, truncated };
 }
 
+/**
+ * List rotated generations + live file, oldest-first (`.N` high → `.1` → live).
+ * Callers that want a tail window reverse this list.
+ */
 async function listShadowLogPaths(filePath: string): Promise<string[]> {
   let names: string[];
   try {
@@ -339,23 +407,69 @@ async function listShadowLogPaths(filePath: string): Promise<string[]> {
   return [...generations, filePath];
 }
 
-async function parseShadowLogFileOnly(
+/**
+ * Read at most `maxBytes` from the end of `filePath` and parse JSONL lines.
+ * Drops a leading partial line when the tail starts mid-line.
+ * Returns chronological entries within the read window.
+ */
+function parseShadowLogFileTail(
   filePath: string,
-): Promise<{ entries: ShadowLogEntry[]; errors: number }> {
+  maxBytes: number,
+  maxEntries: number,
+): {
+  entries: ShadowLogEntry[];
+  errors: number;
+  bytesRead: number;
+  truncatedByBytes: boolean;
+  truncatedByEntries: boolean;
+} {
   const entries: ShadowLogEntry[] = [];
   let errors = 0;
+  let bytesRead = 0;
+  let truncatedByBytes = false;
+  let truncatedByEntries = false;
+  let fd: number | undefined;
 
-  const rl = createInterface({
-    input: createReadStream(filePath, { encoding: 'utf-8' }),
-    crlfDelay: Infinity,
-  });
   try {
-    for await (const line of rl) {
+    fd = openSync(filePath, 'r');
+    const size = fstatSync(fd).size;
+    if (size <= 0) {
+      return { entries, errors, bytesRead: 0, truncatedByBytes: false, truncatedByEntries: false };
+    }
+
+    const budget = Math.max(1, Math.floor(maxBytes));
+    const start = size > budget ? size - budget : 0;
+    truncatedByBytes = start > 0;
+    const length = size - start;
+    const buf = Buffer.allocUnsafe(length);
+    bytesRead = readSync(fd, buf, 0, length, start);
+    let text = buf.subarray(0, bytesRead).toString('utf-8');
+    if (start > 0) {
+      const nl = text.indexOf('\n');
+      if (nl >= 0 && nl + 1 < text.length) {
+        text = text.slice(nl + 1);
+      } else if (nl < 0) {
+        // Entire tail is one partial line — nothing parseable.
+        return { entries, errors, bytesRead, truncatedByBytes: true, truncatedByEntries: false };
+      } else {
+        text = '';
+      }
+    }
+
+    const lines = text.split('\n');
+    // Walk newest→oldest so maxEntries keeps the recent end of this file.
+    const newestFirst: ShadowLogEntry[] = [];
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i]!;
       if (!line.trim()) continue;
+      if (newestFirst.length >= maxEntries) {
+        truncatedByEntries = true;
+        break;
+      }
       try {
         const entry = JSON.parse(line) as ShadowLogEntry;
         if (entry.kind === 'transition' || entry.kind === 'heartbeat') {
-          entries.push(entry);
+          newestFirst.push(entry);
         } else {
           errors++;
         }
@@ -363,15 +477,26 @@ async function parseShadowLogFileOnly(
         errors++;
       }
     }
+    // Restore chronological order within the file window.
+    for (let i = newestFirst.length - 1; i >= 0; i--) {
+      entries.push(newestFirst[i]!);
+    }
   } catch {
-    // ENOENT or mid-stream I/O failure: return whatever was parsed.
+    // ENOENT or I/O failure: return whatever was parsed.
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* already closed */ }
+    }
   }
 
-  return { entries, errors };
+  return { entries, errors, bytesRead, truncatedByBytes, truncatedByEntries };
 }
 
-export async function generateReportFromFile(filePath: string): Promise<ShadowReport> {
-  const { entries, errors } = await parseShadowLogFromFile(filePath);
+export async function generateReportFromFile(
+  filePath: string,
+  options: ParseShadowLogFromFileOptions = {},
+): Promise<ShadowReport> {
+  const { entries, errors } = await parseShadowLogFromFile(filePath, options);
   const report = generateReport(entries);
   report.parseErrors = errors;
   return report;

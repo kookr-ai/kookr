@@ -9,7 +9,14 @@ import { buildLiveFrictionCalibrationSnapshot } from '../../core/live-friction-c
 import { getDetectionStats } from '../../core/detection-stats.js';
 import { getStuckFlagPrecision } from '../../core/stuck-flag-precision.js';
 import { buildLaunchDependencyDiagnostics } from '../../core/launch-dependency-diagnostics.js';
-import { generateReportFromFile, formatReport } from '../../core/shadow-report.js';
+import {
+  generateReportFromFile,
+  formatReport,
+  DEFAULT_SHADOW_REPORT_MAX_BYTES,
+  DEFAULT_SHADOW_REPORT_MAX_ENTRIES,
+  DEFAULT_SHADOW_REPORT_MAX_AGE_MS,
+  type ShadowReport,
+} from '../../core/shadow-report.js';
 import { getSnapshotAgentsRaw } from '../use-cases/get-snapshot.js';
 import { buildReflectionRecommendationResponse } from '../reflection-task.js';
 import {
@@ -82,6 +89,18 @@ const LESSON_YIELD_REFRESH_FAILURE_BACKOFF_MS = 5 * 60_000;
  * the block is served stale-while-revalidate off a short-lived cache.
  */
 const STALE_PROCESS_CACHE_MS = 15_000;
+/**
+ * Cache TTL for GET /api/shadow-report (issue #1764). Report generation reads
+ * a bounded tail of shadow-detection.jsonl; re-parsing on every dashboard
+ * poll is pure waste and concurrent full parses were the OOM driver.
+ */
+const SHADOW_REPORT_CACHE_MS = 60_000;
+/**
+ * Cold-cache request budget for /api/shadow-report. The parse itself is
+ * byte-bounded, but a first request must not pin the event loop past a
+ * diagnostics latency budget while retries stack (the #1764 crash pattern).
+ */
+export const SHADOW_REPORT_REQUEST_BUDGET_MS = 8_000;
 
 /**
  * Scan `/proc` for stale relay-server + dtach processes and summarize per class.
@@ -156,6 +175,35 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     const cached = staleProcessCache;
     if (!cached || cached.expiresAtMs <= Date.now()) refreshStaleProcessSummary();
     return cached?.summary ?? null; // undefined until the first background scan warms the cache
+  }
+
+  // Shadow report (issue #1764): bound parse + stale-while-revalidate +
+  // single-flight. Concurrent full-file parses of a 172 MB+ log were the
+  // 2026-08-01 OOM driver — one wedged request made the dashboard retry and
+  // stack more parses until the heap limit.
+  let shadowReportCache:
+    | { expiresAtMs: number; logPath: string; report: ShadowReport }
+    | undefined;
+  let shadowReportInFlight: Promise<ShadowReport> | null = null;
+
+  function runShadowReportScan(logPath: string): Promise<ShadowReport> {
+    if (shadowReportInFlight) return shadowReportInFlight;
+    const scan = generateReportFromFile(logPath, {
+      maxBytes: DEFAULT_SHADOW_REPORT_MAX_BYTES,
+      maxEntries: DEFAULT_SHADOW_REPORT_MAX_ENTRIES,
+      maxAgeMs: DEFAULT_SHADOW_REPORT_MAX_AGE_MS,
+    }).then((report) => {
+      shadowReportCache = {
+        expiresAtMs: Date.now() + SHADOW_REPORT_CACHE_MS,
+        logPath,
+        report,
+      };
+      return report;
+    }).finally(() => {
+      shadowReportInFlight = null;
+    });
+    shadowReportInFlight = scan;
+    return scan;
   }
 
   /**
@@ -797,11 +845,54 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     const shadowLogPath = deps.shadowRegistry?.getLogFilePath();
     if (!shadowLogPath) return c.json({ error: 'Shadow detection not configured' }, 404);
     const format = c.req.query('format');
-    const report = await generateReportFromFile(shadowLogPath);
-    if (format === 'text') {
-      return c.text(formatReport(report));
+
+    // Stale-while-revalidate + concurrency 1 (issue #1764). Fresh cache →
+    // immediate response. Stale cache → serve stale while single-flight
+    // refresh runs. Cold + in-flight overlap → await the same promise (never
+    // stack a second full parse). Cold + empty → wait up to the request budget.
+    const nowMs = Date.now();
+    const cached = shadowReportCache?.logPath === shadowLogPath
+      ? shadowReportCache
+      : undefined;
+    if (cached && cached.expiresAtMs > nowMs) {
+      if (format === 'text') return c.text(formatReport(cached.report));
+      return c.json(cached.report);
     }
-    return c.json(report);
+
+    const refresh = runShadowReportScan(shadowLogPath);
+    if (cached) {
+      refresh.catch(() => { /* soft: staleness is visible via generatedAt */ });
+      if (format === 'text') return c.text(formatReport(cached.report));
+      return c.json(cached.report);
+    }
+
+    let budgetTimer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<'budget'>((resolve) => {
+      budgetTimer = setTimeout(() => resolve('budget'), SHADOW_REPORT_REQUEST_BUDGET_MS);
+    });
+    try {
+      const outcome = await Promise.race([refresh, budget]);
+      if (outcome === 'budget') {
+        refresh.catch(() => { /* still warming for the next caller */ });
+        return c.json(
+          {
+            error: 'shadow_report_warming',
+            message: 'Shadow report is still computing; retry shortly.',
+            retryAfterMs: SHADOW_REPORT_REQUEST_BUDGET_MS,
+          },
+          503,
+        );
+      }
+      if (format === 'text') return c.text(formatReport(outcome));
+      return c.json(outcome);
+    } catch (err) {
+      return c.json(
+        { error: err instanceof Error ? err.message : String(err) },
+        500,
+      );
+    } finally {
+      if (budgetTimer) clearTimeout(budgetTimer);
+    }
   });
 
   app.get('/api/reflect', async (c) => {
