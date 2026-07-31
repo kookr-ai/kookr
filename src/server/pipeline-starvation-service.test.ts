@@ -189,4 +189,52 @@ describe('PipelineStarvationService (#1715)', () => {
     expect(launches).toHaveLength(0);
     expect(alerts).toHaveLength(0);
   });
+
+  test('replaying the same runKey does not re-spawn or false-alert', async () => {
+    const first = await service.handleBatchOutcome({
+      outcome: outcome({ runKey: 'same-run' }),
+      localPath: checkout,
+    });
+    expect(first.spawnedScoutTaskId).toBeTruthy();
+    expect(first.alertEmitted).toBe(false);
+
+    clock = NOW + 60_000;
+    const replay = await service.handleBatchOutcome({
+      outcome: outcome({ runKey: 'same-run', generatedAt: new Date(clock).toISOString() }),
+      localPath: checkout,
+    });
+    expect(replay.decision.alreadyHandled).toBe(true);
+    expect(replay.alertEmitted).toBe(false);
+    expect(launches).toHaveLength(1);
+    expect(alerts).toHaveLength(0);
+  });
+
+  test('spawn failure is visible in summary and does not stamp lastStarvationScoutAt', async () => {
+    service = new PipelineStarvationService({
+      taskStore: store,
+      launcher: async () => {
+        throw new Error('cwd does not exist');
+      },
+      broadcast: (msg) => { alerts.push(msg); },
+      kookrDir,
+      stateDir,
+      ideaScoutStateDirForRepo: () => ideaScoutBase,
+      now: () => clock,
+    });
+
+    const result = await service.handleBatchOutcome({
+      outcome: outcome({ runKey: 'fail-run' }),
+      localPath: checkout,
+    });
+    expect(result.spawnedScoutTaskId).toBeUndefined();
+    expect(result.summary).toMatch(/scout spawn failed/);
+    expect(result.state.lastStarvationScoutAt).toBeUndefined();
+    // Ledger still recorded so a later distinct run can alert on consecutive.
+    expect(result.state.blockedEmptyAt).toHaveLength(1);
+    expect(result.state.handledRunKeys).toContain('fail-run');
+
+    const audit = await readFile(join(kookrDir, 'audit.jsonl'), 'utf-8');
+    expect(audit).toContain('pipeline_starvation_scout_spawn_failed');
+    expect(audit).toContain(STARVATION_TRIGGER_PROVENANCE);
+  });
 });

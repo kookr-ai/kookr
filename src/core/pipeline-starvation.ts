@@ -66,6 +66,12 @@ export interface PipelineStarvationRepoState {
   repo: string;
   /** ISO timestamps of recent blocked-empty outcomes (newest last), pruned to alert window. */
   blockedEmptyAt: string[];
+  /**
+   * Batch runKeys already counted toward `blockedEmptyAt` (newest last).
+   * Retries of the same outcome must not inflate consecutive count / false-alert.
+   * Bounded to the same window as `blockedEmptyAt`.
+   */
+  handledRunKeys: string[];
   /** When we last spawned a starvation-triggered scout for this repo. */
   lastStarvationScoutAt?: string;
   /** Task id of the last starvation-triggered scout (audit / state.md). */
@@ -94,6 +100,12 @@ export interface PipelineStarvationContext {
 export interface PipelineStarvationDecision {
   /** Only true for outcome === 'blocked-empty'. */
   applicable: boolean;
+  /**
+   * True when this exact outcome.runKey was already applied to the ledger.
+   * Callers must skip side effects (no re-spawn attempt beyond normal dedup,
+   * no re-alert, no ledger append) and return the prior state unchanged.
+   */
+  alreadyHandled: boolean;
   spawnScout: boolean;
   spawnSkipReason?: string;
   emitStarvationAlert: boolean;
@@ -102,6 +114,8 @@ export interface PipelineStarvationDecision {
   consecutiveBlockedEmpty: number;
   /** ISO timestamps in the alert window after including current (newest last). */
   blockedEmptyAtAfter: string[];
+  /** runKeys in the alert window after including current (newest last). */
+  handledRunKeysAfter: string[];
 }
 
 const REPO_FULL_NAME_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -158,12 +172,14 @@ export function evaluatePipelineStarvationRefill(
   if (outcome.outcome !== 'blocked-empty') {
     return {
       applicable: false,
+      alreadyHandled: false,
       spawnScout: false,
       spawnSkipReason: `outcome is ${outcome.outcome}, not blocked-empty`,
       emitStarvationAlert: false,
       alertSkipReason: 'not applicable',
       consecutiveBlockedEmpty: 0,
       blockedEmptyAtAfter: ctx.prior?.blockedEmptyAt ?? [],
+      handledRunKeysAfter: ctx.prior?.handledRunKeys ?? [],
     };
   }
 
@@ -176,7 +192,29 @@ export function evaluatePipelineStarvationRefill(
     .filter((row) => Number.isFinite(row.ms) && row.ms >= alertWindowStart)
     .map((row) => row.iso);
 
+  // Keep runKeys aligned with the pruned timestamp window. Older keys outside
+  // the window are dropped so the list cannot grow unbounded.
+  const priorKeys = (ctx.prior?.handledRunKeys ?? []).filter((key) => typeof key === 'string' && key.length > 0);
+  // When counts diverge (legacy state without handledRunKeys), prefer the
+  // longer of the two after window pruning — timestamps still drive consecutive.
+  const alignedKeys = priorKeys.slice(-priorTimes.length);
+
+  if (alignedKeys.includes(outcome.runKey) || priorKeys.includes(outcome.runKey)) {
+    return {
+      applicable: true,
+      alreadyHandled: true,
+      spawnScout: false,
+      spawnSkipReason: `runKey ${outcome.runKey} already handled (idempotent replay)`,
+      emitStarvationAlert: false,
+      alertSkipReason: 'runKey already handled — no re-alert on replay',
+      consecutiveBlockedEmpty: priorTimes.length,
+      blockedEmptyAtAfter: priorTimes,
+      handledRunKeysAfter: priorKeys,
+    };
+  }
+
   const blockedEmptyAtAfter = [...priorTimes, currentIso];
+  const handledRunKeysAfter = [...priorKeys, outcome.runKey].slice(-blockedEmptyAtAfter.length);
   const consecutiveBlockedEmpty = blockedEmptyAtAfter.length;
 
   // --- spawn decision ---
@@ -222,12 +260,14 @@ export function evaluatePipelineStarvationRefill(
 
   return {
     applicable: true,
+    alreadyHandled: false,
     spawnScout,
     spawnSkipReason,
     emitStarvationAlert,
     alertSkipReason,
     consecutiveBlockedEmpty,
     blockedEmptyAtAfter,
+    handledRunKeysAfter,
   };
 }
 
@@ -251,6 +291,7 @@ export function nextPipelineStarvationState(
     schemaVersion: PIPELINE_STARVATION_STATE_SCHEMA,
     repo,
     blockedEmptyAt: decision.blockedEmptyAtAfter,
+    handledRunKeys: decision.handledRunKeysAfter,
     lastStarvationScoutAt: prior?.lastStarvationScoutAt,
     lastStarvationScoutTaskId: prior?.lastStarvationScoutTaskId,
     lastStarvationAlertAt: prior?.lastStarvationAlertAt,
@@ -325,8 +366,17 @@ export function emptyPipelineStarvationState(repo: string, nowMs: number): Pipel
     schemaVersion: PIPELINE_STARVATION_STATE_SCHEMA,
     repo,
     blockedEmptyAt: [],
+    handledRunKeys: [],
     updatedAt: new Date(nowMs).toISOString(),
   };
+}
+
+/**
+ * Guess a local checkout path for owner/repo. Matches the idea-scout playbook's
+ * default of `~/git/<owner-repo>` (slash → hyphen), not bare `~/git/<repo>`.
+ */
+export function defaultCheckoutGuess(repo: string, home = homedir()): string {
+  return join(home, 'git', repoToPlaybookSlug(repo));
 }
 
 /**

@@ -695,9 +695,12 @@ Body:
     "generatedAt": "<ISO-8601>"
   },
   "localPath": "/optional/checkout",
-  "parentTaskId": "<optional batch task id>"
+  "parentTaskId": "<optional batch task id>",
+  "agentType": "<optional agent selection>"
 }
 ```
+
+Success `200` returns `{ ok, applicable, spawnScout, spawnSkipReason, emitStarvationAlert, alertSkipReason, consecutiveBlockedEmpty, spawnedScoutTaskId, scoutQueued, alertEmitted, summary, state }`. Replaying the same `runKey` is a no-op (`spawnScout`/`alert` stay false). `400` on invalid JSON/outcome/`agentType`; `500` on handler failure.
 
 ## Reflection And Telemetry
 

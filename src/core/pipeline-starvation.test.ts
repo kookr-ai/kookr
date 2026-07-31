@@ -38,6 +38,7 @@ function prior(partial: Partial<PipelineStarvationRepoState> = {}): PipelineStar
     schemaVersion: 1,
     repo: 'jeanibarz/lucy',
     blockedEmptyAt: [],
+    handledRunKeys: [],
     updatedAt: new Date(NOW - 60_000).toISOString(),
     ...partial,
   };
@@ -196,10 +197,11 @@ describe('pipeline-starvation pure decision (#1715)', () => {
     expect(decision.emitStarvationAlert).toBe(false);
   });
 
-  test('replay of 2026-07-30 timeline: 08:07 empty would spawn scout (refill by ~08:45)', () => {
+  test('08:07 empty spawns on-demand scout (2026-07-30 timeline replay trigger)', () => {
     // The 08:00 cron scout died silently (#1712). The 08:07 batch emptied.
     // With this trigger, the 08:07 blocked-empty would spawn an on-demand scout
-    // instead of waiting for the 16:00 cron.
+    // instead of waiting for the 16:00 cron (~08:45 refill is operational,
+    // outside unit scope once the scout is launched).
     const t0807 = Date.parse('2026-07-30T06:07:00.000Z'); // 08:07 CEST
     const decision = evaluatePipelineStarvationRefill(
       blockedEmpty({ generatedAt: new Date(t0807).toISOString(), runKey: '8dc20d0c' }),
@@ -212,6 +214,34 @@ describe('pipeline-starvation pure decision (#1715)', () => {
     );
     expect(decision.spawnScout).toBe(true);
     expect(decision.emitStarvationAlert).toBe(false);
+    expect(decision.alreadyHandled).toBe(false);
+  });
+
+  test('replaying the same runKey is a no-op (no false second-empty alert)', () => {
+    const first = evaluatePipelineStarvationRefill(blockedEmpty({ runKey: 'same-run' }), {
+      nowMs: NOW,
+      recentSuccessfulIdeationAtMs: null,
+      scoutInFlight: false,
+      prior: null,
+    });
+    expect(first.spawnScout).toBe(true);
+    expect(first.consecutiveBlockedEmpty).toBe(1);
+    const after = nextPipelineStarvationState('jeanibarz/lucy', null, first, {
+      nowMs: NOW,
+      spawnedTaskId: 't1',
+    });
+    expect(after.handledRunKeys).toEqual(['same-run']);
+
+    const replay = evaluatePipelineStarvationRefill(blockedEmpty({ runKey: 'same-run' }), {
+      nowMs: NOW + 60_000,
+      recentSuccessfulIdeationAtMs: null,
+      scoutInFlight: false,
+      prior: after,
+    });
+    expect(replay.alreadyHandled).toBe(true);
+    expect(replay.spawnScout).toBe(false);
+    expect(replay.emitStarvationAlert).toBe(false);
+    expect(replay.consecutiveBlockedEmpty).toBe(1);
   });
 
   test('idempotency key is stable inside a 4h bucket', () => {

@@ -34,6 +34,9 @@ export async function loadPipelineStarvationState(
       blockedEmptyAt: Array.isArray(parsed.blockedEmptyAt)
         ? parsed.blockedEmptyAt.filter((x): x is string => typeof x === 'string')
         : [],
+      handledRunKeys: Array.isArray(parsed.handledRunKeys)
+        ? parsed.handledRunKeys.filter((x): x is string => typeof x === 'string' && x.length > 0)
+        : [],
       lastStarvationScoutAt: typeof parsed.lastStarvationScoutAt === 'string'
         ? parsed.lastStarvationScoutAt
         : undefined,

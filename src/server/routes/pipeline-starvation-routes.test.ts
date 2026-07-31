@@ -29,16 +29,19 @@ describe('POST /api/pipeline-starvation/handle', () => {
     const fake: HandleBatchOutcomeResult = {
       decision: {
         applicable: true,
+        alreadyHandled: false,
         spawnScout: true,
         emitStarvationAlert: false,
         alertSkipReason: 'first blocked-empty in window — alert deferred until second consecutive',
         consecutiveBlockedEmpty: 1,
         blockedEmptyAtAfter: ['2026-07-30T08:15:00.000Z'],
+        handledRunKeysAfter: ['run-1'],
       },
       state: {
         schemaVersion: 1,
         repo: 'jeanibarz/lucy',
         blockedEmptyAt: ['2026-07-30T08:15:00.000Z'],
+        handledRunKeys: ['run-1'],
         lastStarvationScoutTaskId: 'task-scout-1',
         lastStarvationScoutAt: '2026-07-30T08:15:00.000Z',
         updatedAt: '2026-07-30T08:15:00.000Z',

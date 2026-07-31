@@ -13,6 +13,7 @@
 import { join } from 'node:path';
 import { appendAuditRow } from '../core/audit-log.js';
 import {
+  defaultCheckoutGuess,
   evaluatePipelineStarvationRefill,
   nextPipelineStarvationState,
   starvationScoutIdempotencyKey,
@@ -111,8 +112,24 @@ export class PipelineStarvationService {
       };
     }
 
+    // Idempotent replay of the same runKey: no side effects, no ledger rewrite.
+    if (decision.alreadyHandled) {
+      return {
+        decision,
+        state: prior,
+        spawnedScoutTaskId: prior.lastStarvationScoutTaskId,
+        alertEmitted: false,
+        summary:
+          `pipeline-starvation: already handled runKey=${outcome.runKey}`
+          + (prior.lastStarvationScoutTaskId
+            ? `; prior scout taskId=${prior.lastStarvationScoutTaskId}`
+            : ''),
+      };
+    }
+
     let spawnedScoutTaskId: string | undefined;
     let scoutQueued: boolean | undefined;
+    let spawnError: string | undefined;
     let alertEmitted = false;
 
     if (decision.spawnScout) {
@@ -137,6 +154,7 @@ export class PipelineStarvationService {
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        spawnError = message;
         this.deps.log?.(`[pipeline-starvation] scout spawn failed for ${outcome.repo}: ${message}`);
         await appendAuditRow(this.auditPath(), {
           action: 'pipeline_starvation_scout_spawn_failed',
@@ -177,6 +195,7 @@ export class PipelineStarvationService {
       spawnedScoutTaskId,
       scoutQueued,
       alertEmitted,
+      spawnError,
     });
     return {
       decision,
@@ -203,8 +222,8 @@ export class PipelineStarvationService {
     // checkout's git remote to match (breaks temp/cloned paths).
     const projectId = projectIdFromRepoSpecifier(outcome.repo) ?? undefined;
 
-    // Prefer an existing checkout path; fall back to ~/git/<repo-name> which
-    // the idea-scout playbook itself accepts as a clone/reuse target.
+    // Prefer an existing checkout path; fall back to ~/git/<owner-repo> which
+    // matches the idea-scout playbook's default REPO_SLUG layout.
     const taskTargetCwd = localPath || defaultCheckoutGuess(outcome.repo);
 
     const prepared = await preparePlaybookLaunchWithMetadata({
@@ -251,11 +270,6 @@ export class PipelineStarvationService {
   }
 }
 
-function defaultCheckoutGuess(repo: string): string {
-  const name = repo.includes('/') ? repo.split('/')[1]! : repo;
-  return `${process.env.HOME ?? ''}/git/${name}`;
-}
-
 function buildPipelineStarvationAlert(
   outcome: BatchOutcomeRecord,
   decision: PipelineStarvationDecision,
@@ -287,7 +301,12 @@ function buildPipelineStarvationAlert(
 
 function formatHandleSummary(
   decision: PipelineStarvationDecision,
-  bits: { spawnedScoutTaskId?: string; scoutQueued?: boolean; alertEmitted: boolean },
+  bits: {
+    spawnedScoutTaskId?: string;
+    scoutQueued?: boolean;
+    alertEmitted: boolean;
+    spawnError?: string;
+  },
 ): string {
   const parts: string[] = [
     `pipeline-starvation: consecutive=${decision.consecutiveBlockedEmpty}`,
@@ -297,6 +316,8 @@ function formatHandleSummary(
       `spawned scout taskId=${bits.spawnedScoutTaskId}`
       + `${bits.scoutQueued ? ' (queued)' : ''}`,
     );
+  } else if (bits.spawnError) {
+    parts.push(`scout spawn failed (${bits.spawnError})`);
   } else if (decision.spawnSkipReason) {
     parts.push(`scout skipped (${decision.spawnSkipReason})`);
   }
