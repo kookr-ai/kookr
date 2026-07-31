@@ -257,6 +257,27 @@ The JSON body a receiver must parse — the `kookr.finding.webhook.v1` field
 contract with an example — is documented in
 [Payload body schema](../configuration.md#payload-body-schema).
 
+## Operator Signal Delivery
+
+Operator-signal delivery is off by default (issue #1716). kookr has plenty of
+*detection* — the deploy-lag detector, prod-smoke tick, and liveness checks all
+compute alert conditions — but before this bridge those conditions produced no
+operator-visible notification. When a channel is configured, emitters spool
+signals into `~/.kookr/playbook-state/operator-signals/` and a background service
+pushes new alert/clear signals to Discord and/or Telegram (dedup by signal file
+name, batched to ≤1 message/min, restart-safe). Deploy-lag and prod-smoke
+fire/recover transitions are bridged automatically; the `kookr signal-emit` CLI
+lets scheduled monitors spool transition and liveness signals too.
+
+| Variable | Default | Accepted values | Effect |
+| --- | --- | --- | --- |
+| `KOOKR_DISCORD_WEBHOOK_URL` | unset | Discord incoming-webhook URL | Enables Discord delivery of operator signals. Operator-supplied local config; do not commit shared secrets. |
+| `KOOKR_SIGNAL_TELEGRAM_CHAT_ID` | unset | Numeric Telegram chat ID | Enables Telegram delivery of operator signals to this chat (reuses `KOOKR_TELEGRAM_BOT_TOKEN`). Independent of the inbound remote-chat allowlist. |
+| `KOOKR_SIGNAL_DELIVERY_DRY_RUN` | unset | `1` to enable | Formats and logs each batch but never POSTs. Entries are still marked delivered so the log does not loop. |
+| `KOOKR_SIGNAL_DELIVERY_POLL_MS` | `15000` | Positive integer (ms) | Poll cadence for tailing the operator-signal outbox. |
+| `KOOKR_SIGNAL_DELIVERY_MIN_SEND_MS` | `60000` | Positive integer (ms) | Minimum spacing between outbound messages; each eligible tick drains all pending signals into one batched message. |
+| `KOOKR_OPERATOR_SIGNAL_DIR` | `~/.kookr/playbook-state/operator-signals` | Absolute or relative path | Override the operator-signal outbox directory. |
+
 ## Relay
 
 Hosted relay is inert until the operational gate is explicitly enabled; see

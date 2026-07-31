@@ -83,6 +83,14 @@ import {
   createProviderTransientAlertHandler,
 } from './provider-transient-retry.js';
 import { defaultSignalOutboxDir } from '../core/signal-outbox.js';
+import {
+  SignalDeliveryService,
+  readSignalDeliveryConfigFromEnv,
+  defaultOperatorSignalDir,
+  operationalAlertToSignal,
+  writeOperatorSignal,
+  type OperationalAlertLike,
+} from '../observability/signal-delivery/index.js';
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
 import { TaskStateSaveScheduler } from './task-state-save-scheduler.js';
 import { createIssueClaimServices, createUpstreamOfResolver, isIssueClaimsEnabled, type IssueClaimServices } from './issue-claim-wiring.js';
@@ -1866,6 +1874,32 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     signalOutboxService.start();
   }
 
+  // Operator-signal delivery bridge (issue #1716). Tails the operator-signal
+  // outbox and pushes new alert/clear signals to Discord / Telegram. Off unless
+  // a channel is configured (KOOKR_DISCORD_WEBHOOK_URL and/or
+  // KOOKR_SIGNAL_TELEGRAM_CHAT_ID + KOOKR_TELEGRAM_BOT_TOKEN).
+  const operatorSignalDir = defaultOperatorSignalDir(process.env);
+  const signalDeliveryConfig = readSignalDeliveryConfigFromEnv(process.env);
+  const signalDeliveryService = signalDeliveryConfig
+    ? new SignalDeliveryService({ dir: operatorSignalDir, config: signalDeliveryConfig })
+    : null;
+  signalDeliveryService?.start();
+
+  // Fire-and-forget: spool an operator signal for any operational-alert
+  // fire/recover broadcast (deploy-lag, prod-smoke) so the delivery bridge can
+  // push it outbound. Only active when a delivery channel is configured, so we
+  // never grow a spool nothing drains. Wrap broadcastToAll for the detectors.
+  const emitOperationalSignal = (msg: ServerMessage): void => {
+    const input = operationalAlertToSignal(msg as OperationalAlertLike);
+    if (!input) return;
+    void writeOperatorSignal(operatorSignalDir, input).catch((err) => {
+      console.warn('[signal-delivery] failed to spool operational signal:', err);
+    });
+  };
+  const detectorBroadcast: (msg: ServerMessage) => void = signalDeliveryConfig
+    ? (msg) => { broadcastToAll(msg); emitOperationalSignal(msg); }
+    : broadcastToAll;
+
   // --- Quota monitoring (polls Anthropic OAuth usage endpoint) ---
   const quotaAdapter = new QuotaAdapter(120_000); // 120s interval
 
@@ -2038,7 +2072,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       // canonical prod port (4800) so a fresh deploy is protected with no
       // operational change; dev servers and the test suite stay silent unless
       // KOOKR_PROD_SMOKE_TICK forces it on. Undefined ⇒ no interval started.
-      prodSmokeTick: createProdSmokeTickFromEnv({ env: process.env, port, kookrDir, broadcast: broadcastToAll }),
+      prodSmokeTick: createProdSmokeTickFromEnv({ env: process.env, port, kookrDir, broadcast: detectorBroadcast }),
       // Deploy-lag detector (issue #1594). Compares each monitored prod's
       // running SHA against origin/main and alerts when merged commits sit
       // undeployed past the threshold (default 6h); it never triggers a deploy.
@@ -2052,7 +2086,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         kookrDir,
         kookrRepoPath: serverCwd,
         getRunningSha: () => (buildInfo.commitHash && buildInfo.commitHash !== 'dev' ? buildInfo.commitHash : null),
-        broadcast: broadcastToAll,
+        broadcast: detectorBroadcast,
         // On a converged tick, flip the per-schedule ROI rollup's live-verified
         // counts for every merged unit the deployed SHA contains (issue #1596).
         // The detector resolves containment via git ancestry; the store owns the
@@ -2223,6 +2257,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
     lessonSpoolService.stop();
     signalOutboxService.stop();
+    signalDeliveryService?.stop();
     memoryLedger.stop();
     await backgroundServices.stop();
     try {
