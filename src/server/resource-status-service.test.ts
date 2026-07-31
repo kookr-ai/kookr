@@ -335,4 +335,126 @@ describe('ResourceStatusService', () => {
       vi.useRealTimers();
     }
   });
+
+  describe('onEventLoopDelaySample (#1725)', () => {
+    function statusWithDelay(delayMs: number | null): SystemResourceStatus {
+      const s = status();
+      return { ...s, server: { ...s.server, eventLoopDelayP95Ms: delayMs } };
+    }
+
+    test('is called every tick with the sampled eventLoopDelayP95Ms — the SAME value that goes out on `status`', () => {
+      vi.useFakeTimers();
+      try {
+        const samples: (number | null)[] = [];
+        let delay: number | null = 42;
+        const service = new ResourceStatusService({
+          sampler: { start: vi.fn(), stop: vi.fn(), sample: vi.fn(() => statusWithDelay(delay)) },
+          broadcastToAll: () => {},
+          onEventLoopDelaySample: (d) => samples.push(d),
+          nowMs: () => 1_000,
+          intervalMs: 2_000,
+        });
+
+        service.start();
+        expect(samples).toEqual([42]);
+
+        delay = null; // sampler unavailable this tick
+        vi.advanceTimersByTime(2_000);
+        expect(samples).toEqual([42, null]);
+
+        service.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test('a throwing consumer is isolated — the tick loop keeps running and resourceStatus still broadcasts', () => {
+      vi.useFakeTimers();
+      try {
+        const broadcasts: ServerMessage[] = [];
+        const logger = { warn: vi.fn() };
+        const service = new ResourceStatusService({
+          sampler: { start: vi.fn(), stop: vi.fn(), sample: vi.fn(() => statusWithDelay(10)) },
+          broadcastToAll: (msg) => broadcasts.push(msg),
+          onEventLoopDelaySample: () => {
+            throw new Error('gate boom');
+          },
+          nowMs: () => 1_000,
+          intervalMs: 2_000,
+          logger,
+        });
+
+        service.start();
+        expect(broadcasts).toEqual([{ type: 'resourceStatus', status: statusWithDelay(10) }]);
+        expect(logger.warn).toHaveBeenCalledTimes(1);
+
+        vi.advanceTimersByTime(2_000);
+        expect(broadcasts).toHaveLength(2);
+
+        service.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test('omitted entirely — no behavior change from pre-#1725', () => {
+      vi.useFakeTimers();
+      try {
+        const broadcasts: ServerMessage[] = [];
+        const service = new ResourceStatusService({
+          sampler: { start: vi.fn(), stop: vi.fn(), sample: vi.fn(() => statusWithDelay(10)) },
+          broadcastToAll: (msg) => broadcasts.push(msg),
+          nowMs: () => 1_000,
+          intervalMs: 2_000,
+        });
+
+        expect(() => service.start()).not.toThrow();
+        expect(broadcasts).toHaveLength(1);
+        service.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe('tick reschedules even when the body throws (#1725, R4)', () => {
+    test('a throwing broadcastToAll on the resourceStatus send does not kill the tick loop — the next tick still fires and still samples onEventLoopDelaySample', () => {
+      vi.useFakeTimers();
+      try {
+        const logger = { warn: vi.fn() };
+        const samples: (number | null)[] = [];
+        let shouldThrow = true;
+        const service = new ResourceStatusService({
+          sampler: { start: vi.fn(), stop: vi.fn(), sample: vi.fn(() => statusWithDelay(500)) },
+          broadcastToAll: () => {
+            if (shouldThrow) throw new Error('enrichment boom');
+          },
+          onEventLoopDelaySample: (d) => samples.push(d),
+          nowMs: () => 1_000,
+          intervalMs: 2_000,
+          logger,
+        });
+
+        service.start(); // tick 1: broadcastToAll throws before onEventLoopDelaySample runs
+        expect(samples).toEqual([]); // never reached this tick — broadcastToAll threw first
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.stringContaining('tick body threw'),
+          expect.any(Error),
+        );
+
+        shouldThrow = false;
+        vi.advanceTimersByTime(2_000); // tick 2 must still have been scheduled despite tick 1's throw
+        expect(samples).toEqual([500]);
+
+        service.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    function statusWithDelay(delayMs: number | null): SystemResourceStatus {
+      const s = status();
+      return { ...s, server: { ...s.server, eventLoopDelayP95Ms: delayMs } };
+    }
+  });
 });
