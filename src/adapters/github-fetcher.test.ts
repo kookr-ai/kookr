@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildRepoStateBatchQuery, classifyGitHubRateLimit, parseRepoStateBatchResponse } from './github-fetcher.js';
-import type { GitHubReference } from '../core/github-types.js';
+import {
+  buildRepoStateBatchQuery,
+  classifyGitHubRateLimit,
+  evaluatePRMergeReadiness,
+  isPRGreenAndMergeable,
+  parseRepoStateBatchResponse,
+} from './github-fetcher.js';
+import type { GitHubCheck, GitHubPRState, GitHubReference } from '../core/github-types.js';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -211,5 +217,72 @@ describe('github-fetcher batching helpers', () => {
       retryAfterMs: 120_000,
       message: 'x-ratelimit-remaining: 0',
     });
+  });
+});
+
+describe('evaluatePRMergeReadiness / isPRGreenAndMergeable (#1148)', () => {
+  function check(overrides: Partial<GitHubCheck> = {}): GitHubCheck {
+    return { name: 'ci', status: 'completed', conclusion: 'success', ...overrides };
+  }
+
+  function pr(overrides: Partial<GitHubPRState> = {}): GitHubPRState {
+    return {
+      ref: ref('pr', 42),
+      title: 'Some PR',
+      status: 'open',
+      mergeable: 'MERGEABLE',
+      author: 'alice',
+      branch: 'feature-x',
+      baseBranch: 'main',
+      reviewDecision: 'approved',
+      reviewers: [],
+      unresolvedThreads: [],
+      totalComments: 0,
+      checks: [check()],
+      lastFetchedAt: new Date('2026-07-01T00:00:00.000Z'),
+      ...overrides,
+    };
+  }
+
+  it('is green and mergeable when open, MERGEABLE, and all checks completed successfully', () => {
+    const readiness = evaluatePRMergeReadiness(pr());
+    expect(readiness).toEqual({ mergeable: true, checksGreen: true, pendingChecks: [], failingChecks: [] });
+    expect(isPRGreenAndMergeable(pr())).toBe(true);
+  });
+
+  it('is green and mergeable with no checks at all', () => {
+    expect(isPRGreenAndMergeable(pr({ checks: [] }))).toBe(true);
+  });
+
+  it('is not mergeable when GitHub reports CONFLICTING', () => {
+    const readiness = evaluatePRMergeReadiness(pr({ mergeable: 'CONFLICTING' }));
+    expect(readiness.mergeable).toBe(false);
+    expect(isPRGreenAndMergeable(pr({ mergeable: 'CONFLICTING' }))).toBe(false);
+  });
+
+  it('is not mergeable when the PR is not open (e.g. draft)', () => {
+    expect(isPRGreenAndMergeable(pr({ status: 'draft' }))).toBe(false);
+  });
+
+  it('is not checksGreen while a check is still pending', () => {
+    const readiness = evaluatePRMergeReadiness(pr({ checks: [check({ name: 'build', status: 'in_progress', conclusion: null })] }));
+    expect(readiness.checksGreen).toBe(false);
+    expect(readiness.pendingChecks).toEqual(['build']);
+    expect(isPRGreenAndMergeable(pr({ checks: [check({ name: 'build', status: 'in_progress', conclusion: null })] }))).toBe(false);
+  });
+
+  it('is not checksGreen when a check failed or timed out', () => {
+    const readiness = evaluatePRMergeReadiness(pr({
+      checks: [check({ name: 'lint', conclusion: 'failure' }), check({ name: 'e2e', conclusion: 'timed_out' })],
+    }));
+    expect(readiness.checksGreen).toBe(false);
+    expect(readiness.failingChecks).toEqual(['lint', 'e2e']);
+  });
+
+  it('is checksGreen when checks are neutral/skipped/cancelled but completed', () => {
+    const readiness = evaluatePRMergeReadiness(pr({
+      checks: [check({ conclusion: 'neutral' }), check({ conclusion: 'skipped' }), check({ conclusion: 'cancelled' })],
+    }));
+    expect(readiness.checksGreen).toBe(true);
   });
 });

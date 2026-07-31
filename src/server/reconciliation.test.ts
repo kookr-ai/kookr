@@ -1,7 +1,11 @@
 import { describe, test, expect, beforeEach } from 'vitest';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { TaskStore } from '../core/tasks.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import type { SessionSpec } from '../adapters/terminal-backend.js';
+import { readDispositionEntries } from '../core/disposition-ledger.js';
 import { reconcile, reconcileStaleOpenLaunches } from './reconciliation.js';
 
 function spec(id: string): SessionSpec {
@@ -914,5 +918,56 @@ describe('reconcileStaleOpenLaunches (issue #1526 Phase C / #1528, boot-only)', 
     // No code path reaches a terminal state with name=null.
     expect(after.name).toBe('Legacy launch persisted before #1554');
     expect(after.name).toBeTruthy();
+  });
+});
+
+/**
+ * The ledger write in `reconcileStaleOpenLaunches` is fire-and-forget (the
+ * function itself is synchronous, so it cannot await the write) — poll
+ * instead of asserting immediately after the call returns.
+ */
+async function waitForDispositionEntries(ledgerPath: string, expectedCount: number, timeoutMs = 2000) {
+  const start = Date.now();
+  let entries = await readDispositionEntries(ledgerPath);
+  while (entries.length < expectedCount && Date.now() - start < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    entries = await readDispositionEntries(ledgerPath);
+  }
+  return entries;
+}
+
+// Integration coverage for issue #1540's write site at this call site: this
+// is the only test in the file that wires `dispositionLedgerPath` and reads
+// the ledger back off real disk. Every test above passes even if the
+// `appendDispositionEntry` call inside `reconcileStaleOpenLaunches` (or the
+// `index.ts` call site that used to omit the path entirely — the blocking
+// review defect this closes) is deleted; this one does not.
+describe('reconcileStaleOpenLaunches — disposition ledger (issue #1540 review fix)', () => {
+  test('records an obsolete disposition-ledger entry for a stale-open termination', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Wedged scheduled fire', '/cwd');
+    const ledgerPath = join(await mkdtemp(join(tmpdir(), 'kookr-disposition-')), 'disposition.jsonl');
+
+    const terminated = reconcileStaleOpenLaunches(taskStore, ledgerPath);
+    expect(terminated).toEqual([task.id]);
+
+    const entries = await waitForDispositionEntries(ledgerPath, 1);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      schemaVersion: 'disposition-ledger.v1',
+      taskId: task.id,
+      disposition: 'obsolete',
+      source: 'startup-reconcile',
+    });
+    expect(entries[0].detail).toContain('obsolete-because');
+    expect(entries[0].incidentId).toContain('stale-open-launch-');
+  });
+
+  test('no dispositionLedgerPath → no ledger write attempted (no-op convention)', async () => {
+    const taskStore = new TaskStore();
+    taskStore.createTask('Wedged scheduled fire', '/cwd');
+
+    // Must not throw even though no path was supplied.
+    expect(() => reconcileStaleOpenLaunches(taskStore)).not.toThrow();
   });
 });

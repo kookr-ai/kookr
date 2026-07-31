@@ -8,6 +8,12 @@ import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
 import type { Watchdog } from '../core/watchdog.js';
 import type { ServerMessage } from '../shared/protocol.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
+import {
+  appendDispositionEntry,
+  auditRecoveryDispositions,
+  type DispositionEntry,
+  type DispositionKind,
+} from '../core/disposition-ledger.js';
 import { promotePendingTasks, registerNewAgent, type AgentLifecycleDeps } from './agent-lifecycle.js';
 import { recoverCrashedSessions, type CrashRecoveryResult } from './crash-recovery.js';
 import { runPostRestartRecovery } from './post-restart-recovery.js';
@@ -39,6 +45,21 @@ interface StartupRecoveryDeps {
   activityLedger?: ActivityLedger;
   /** Shared boot epoch used by both recovery audit and session-health diagnostics. */
   restartEpoch: number;
+  /**
+   * Path to the recovery work-conservation ledger (issue #1540). When
+   * absent, no disposition entries are written and the post-recovery audit
+   * is skipped — matches the `auditLogPath` "no-op when unconfigured"
+   * convention used elsewhere in this file's deps.
+   */
+  dispositionLedgerPath?: string;
+  /**
+   * Task ids `reconcileStaleOpenLaunches` terminated this boot (issue #1540
+   * review fix). Together with the crash-recovery relaunched/skipped/failed
+   * ids computed below, this defines the set the post-recovery audit checks
+   * — see the audit block for why the raw `tasksTerminated` list is wrong to
+   * audit directly.
+   */
+  staleOpenLaunchTaskIds?: string[];
 }
 
 interface PromotePendingStartupTasksDeps {
@@ -68,13 +89,21 @@ export async function runStartupRecoveryPhase({
   hookIngestion,
   activityLedger,
   restartEpoch,
+  dispositionLedgerPath,
+  staleOpenLaunchTaskIds = [],
 }: StartupRecoveryDeps): Promise<CrashRecoveryResult | null> {
   let startupRecoverySummary: CrashRecoveryResult | null = null;
+  // Tracks crash-recovery's own outcome (distinct from `startupRecoverySummary`,
+  // which is only set when there's something worth surfacing to the caller) so
+  // the post-recovery audit below can see it even on a boot with nothing to
+  // report. Populated only when the block below actually runs.
+  let crashRecoveryResult: CrashRecoveryResult | null = null;
 
   if (process.env.KOOKR_AUTO_RELAUNCH === 'false') {
     console.log('[crash-recovery] Disabled (KOOKR_AUTO_RELAUNCH=false), skipping');
   } else if (reconcileResult.markedCompleted.length > 0) {
     const recoveryResult = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+    crashRecoveryResult = recoveryResult;
 
     for (const entry of recoveryResult.relaunched) {
       const task = taskStore.getTask(entry.taskId);
@@ -98,6 +127,8 @@ export async function runStartupRecoveryPhase({
     for (const { sessionId, error } of recoveryResult.failed) {
       console.error(`[crash-recovery] Failed ${sessionId}: ${error}`);
     }
+
+    await writeCrashRecoveryDispositions(recoveryResult, restartEpoch, dispositionLedgerPath);
 
     if (recoveryResult.relaunched.length > 0 || recoveryResult.failed.length > 0) {
       startupRecoverySummary = recoveryResult;
@@ -190,7 +221,146 @@ export async function runStartupRecoveryPhase({
     );
   }
 
+  // Post-recovery audit (issue #1540 AC2, review fix for a blocking false-
+  // positive bug): audit ONLY the task ids a write path actually attempted a
+  // disposition for, not the raw `reconcileResult.tasksTerminated` list.
+  //
+  // Auditing the raw list is wrong because not every terminated task has a
+  // code path that writes a disposition:
+  //   - When KOOKR_AUTO_RELAUNCH=false, the whole crash-recovery block above
+  //     (including `writeCrashRecoveryDispositions`) is skipped, so ZERO
+  //     dispositions are written this boot — yet every terminated task would
+  //     still get flagged as an offender.
+  //   - A task whose sessions were ALL already dead before this boot (so none
+  //     of them appear in this boot's `reconcileResult.markedCompleted`) is
+  //     terminated by `reconcile()`'s auto-transition, but crash-recovery
+  //     never sees it either, since it only iterates `markedCompleted`.
+  //
+  // The smallest correct fix: build the audited set from the union of ids
+  // that DID get a disposition-write attempt this boot —
+  // `staleOpenLaunchTaskIds` (written by `reconcileStaleOpenLaunches` itself,
+  // now that the caller passes it a ledger path) plus every relaunched/
+  // skipped/failed task id `writeCrashRecoveryDispositions` covers (mirroring
+  // its own skip-classification so "already relaunched in this pass" siblings
+  // aren't double-counted). Tasks outside that union have no contractual
+  // writer and are intentionally excluded — flagging them would just be a
+  // different false positive. Loud on failure (see `auditRecoveryDispositions`);
+  // never throws, so an audit hiccup never blocks startup.
+  const crashRecoveryAuditedTaskIds = new Set<string>();
+  if (crashRecoveryResult) {
+    for (const relaunch of crashRecoveryResult.relaunched) crashRecoveryAuditedTaskIds.add(relaunch.taskId);
+    for (const skip of crashRecoveryResult.skipped) {
+      if (classifyCrashRecoverySkip(skip.reason)) crashRecoveryAuditedTaskIds.add(skip.taskId);
+    }
+    for (const failure of crashRecoveryResult.failed) crashRecoveryAuditedTaskIds.add(failure.taskId);
+  }
+  const auditedTaskIds = new Set<string>([...staleOpenLaunchTaskIds, ...crashRecoveryAuditedTaskIds]);
+  const disposedTasks = reconcileResult.tasksTerminated
+    .filter((taskId) => auditedTaskIds.has(taskId))
+    .map((taskId) => ({ taskId, status: 'terminated' }));
+
+  if (dispositionLedgerPath && disposedTasks.length > 0) {
+    await auditRecoveryDispositions(
+      dispositionLedgerPath,
+      disposedTasks,
+      { startMs: restartEpoch, endMs: Date.now() },
+    ).catch((err) => {
+      console.error('[disposition-ledger] post-recovery audit failed:', err);
+    });
+  }
+
   return startupRecoverySummary;
+}
+
+/**
+ * Record a work-conservation disposition entry for every task
+ * `recoverCrashedSessions` touched (issue #1540 AC1). No-op when
+ * `dispositionLedgerPath` isn't configured. Best-effort per entry — a ledger-
+ * write failure is logged loudly but must not abort startup.
+ */
+async function writeCrashRecoveryDispositions(
+  recoveryResult: CrashRecoveryResult,
+  restartEpoch: number,
+  dispositionLedgerPath: string | undefined,
+): Promise<void> {
+  if (!dispositionLedgerPath) return;
+  const ledgerPath = dispositionLedgerPath;
+  const incidentId = String(restartEpoch);
+  const source = 'crash-recovery';
+
+  const write = async (entry: DispositionEntry): Promise<void> => {
+    try {
+      await appendDispositionEntry(ledgerPath, entry);
+    } catch (err) {
+      console.error(`[disposition-ledger] failed to record entry for task ${entry.taskId}:`, err);
+    }
+  };
+
+  for (const relaunch of recoveryResult.relaunched) {
+    await write({
+      schemaVersion: 'disposition-ledger.v1',
+      taskId: relaunch.taskId,
+      disposition: 'respawned',
+      detail: `respawned-as: session ${relaunch.newSessionId} (${relaunch.mode === 'resumed' ? 'resumed conversation' : 'fresh launch'})`,
+      incidentId,
+      source,
+      at: new Date().toISOString(),
+    });
+  }
+
+  for (const skip of recoveryResult.skipped) {
+    const classification = classifyCrashRecoverySkip(skip.reason);
+    if (!classification) continue; // already covered by a sibling session's 'respawned' entry above
+    await write({
+      schemaVersion: 'disposition-ledger.v1',
+      taskId: skip.taskId,
+      disposition: classification.kind,
+      detail: classification.detail,
+      incidentId,
+      source,
+      at: new Date().toISOString(),
+    });
+  }
+
+  for (const failure of recoveryResult.failed) {
+    await write({
+      schemaVersion: 'disposition-ledger.v1',
+      taskId: failure.taskId,
+      disposition: 'needs-human',
+      detail: `needs-human: crash-recovery relaunch failed: ${failure.error}`,
+      incidentId,
+      source,
+      at: new Date().toISOString(),
+    });
+  }
+}
+
+/**
+ * Classify a `CrashRecoverySkip.reason` into a work-conservation disposition.
+ * Reason strings are crash-recovery.ts's own guard messages (see
+ * `recoverCrashedSessions`) — matched by prefix since they carry variable
+ * detail (elapsed time, cwd path). Returns `null` when the task's disposition
+ * is already recorded elsewhere in this same pass (a sibling session's
+ * relaunch). Falls back to `obsolete` for the remaining known reasons (the
+ * work is demonstrably covered — a live/duplicate/already-clean session) and
+ * escalates the two genuinely ambiguous guards (crash-loop, missing cwd) to
+ * `needs-human` rather than guessing.
+ */
+function classifyCrashRecoverySkip(reason: string): { kind: DispositionKind; detail: string } | null {
+  if (reason === 'task already relaunched in this recovery pass') return null;
+  if (reason.startsWith('rapid crash-loop')) {
+    return {
+      kind: 'needs-human',
+      detail: `needs-human: skipped by crash-loop protection (${reason}); repeated crashes need investigation before auto-resuming`,
+    };
+  }
+  if (reason.startsWith('CWD does not exist')) {
+    return {
+      kind: 'needs-human',
+      detail: `needs-human: crash-recovery could not resume — ${reason}`,
+    };
+  }
+  return { kind: 'obsolete', detail: `obsolete-because: ${reason}` };
 }
 
 export async function promotePendingStartupTasks({

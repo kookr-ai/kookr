@@ -898,7 +898,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // tasksTerminated so claim release / onTaskOutcome below treat them like
   // any other boot-terminated task. Runs BEFORE createScheduleRuntime so
   // scheduleService.reconcileOnStartup sees their terminal status.
-  reconcileResult.tasksTerminated.push(...reconcileStaleOpenLaunches(taskStore));
+  //
+  // Pass the disposition ledger path (issue #1540 review fix — this was
+  // previously omitted, so no stale-open termination ever recorded a
+  // disposition; see reconciliation.ts's `obsolete` entry for the rationale).
+  // The returned id list is also threaded into `runStartupRecoveryPhase` so
+  // its post-recovery audit knows exactly which terminations this sweep is
+  // contractually covering.
+  const staleOpenLaunchTaskIds = reconcileStaleOpenLaunches(taskStore, join(kookrDir, 'disposition.jsonl'));
+  reconcileResult.tasksTerminated.push(...staleOpenLaunchTaskIds);
   if (reconcileResult.resumed.length > 0) {
     console.log(`Resumed monitoring: ${reconcileResult.resumed.join(', ')}`);
   }
@@ -1339,6 +1347,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     hookIngestion,
     activityLedger,
     restartEpoch,
+    dispositionLedgerPath: join(kookrDir, 'disposition.jsonl'),
+    staleOpenLaunchTaskIds,
   });
   await promotePendingStartupTasks({
     taskStore,
@@ -1932,6 +1942,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       resolveMergedPr,
       signalOutboxSpoolDir: defaultSignalOutboxDir(process.env),
       auditLogPath: join(kookrDir, 'audit.jsonl'),
+      dispositionLedgerPath: join(kookrDir, 'disposition.jsonl'),
       reportsDir: join(kookrDir, 'reports'),
       getHungTaskReapEnabled, getHungTaskReapMs,
       budgetChecker, projectConfigStore, progressBudgetBurnDiagnostics,

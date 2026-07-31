@@ -1,5 +1,11 @@
 import type { AgentEvent, Anomaly, AnomalySeverity, AnomalyType } from './types.js';
 import type { AnomalyDetectorConfig } from './detection-stats.js';
+import type {
+  AnomalyReconciliation,
+  PublishMergeReconciliationEvidence,
+  PublishMergeReconciliationReasonCode,
+  ReconciliationClassification,
+} from './anomaly-types.js';
 
 // Re-export the stats/config surface from its new home so existing import paths
 // keep working while call-sites migrate. The detection module no longer owns
@@ -45,8 +51,9 @@ export function detectAnomalies(
   events: AgentEvent[],
   agentId: string,
   config?: Partial<AnomalyDetectorConfig>,
+  reconciliation?: PublishMergeReconciliationEvidence,
 ): Anomaly | null {
-  return evaluateAnomalies(events, agentId, config).anomaly;
+  return evaluateAnomalies(events, agentId, config, reconciliation).anomaly;
 }
 
 /**
@@ -54,11 +61,20 @@ export function detectAnomalies(
  *
  * Counter mutation belongs at the write boundary (`Monitor.processEvents`), not
  * here, because snapshots and diagnostics also evaluate current state.
+ *
+ * `reconciliation` (#1148) is optional publish/merge evidence — local
+ * git/gh credential reach, tracked PR mergeability/checks, and task merge
+ * authorization — gathered by a caller with live git/gh/GitHub I/O access
+ * (this detector stays pure and I/O-free). When supplied, a would-be
+ * publish/merge `needs_input` blocker is reconciled via
+ * `classifyPublishMergeReconciliation` before it is returned. Omitting it
+ * keeps today's behavior unchanged.
  */
 export function evaluateAnomalies(
   events: AgentEvent[],
   agentId: string,
   config?: Partial<AnomalyDetectorConfig>,
+  reconciliation?: PublishMergeReconciliationEvidence,
 ): AnomalyDetectionEvaluation {
   const cfg = { ...DEFAULT_CONFIG, ...config };
   const window = events.slice(-cfg.windowSize);
@@ -98,7 +114,15 @@ export function evaluateAnomalies(
   // A stop event means the agent completed work and is waiting.
   if (last.type === 'stop') {
     checkedTypes.push('needs_input');
-    return { anomaly: detectNeedsInput(effectiveWindow, agentId), checkedTypes };
+    const candidate = detectNeedsInput(effectiveWindow, agentId);
+    const reconciled = reconcilePublishMergeBlocker(
+      effectiveWindow,
+      agentId,
+      last.lastMessage,
+      candidate,
+      reconciliation,
+    );
+    return { anomaly: reconciled, checkedTypes };
   }
 
   // Check in order of severity
@@ -116,7 +140,17 @@ export function evaluateAnomalies(
 
   checkedTypes.push('needs_input');
   const askUser = detectAskUserQuestion(effectiveWindow, agentId);
-  if (askUser) return { anomaly: askUser, checkedTypes };
+  if (askUser) {
+    const questionText = extractAskUserQuestionText(effectiveWindow);
+    const reconciled = reconcilePublishMergeBlocker(
+      effectiveWindow,
+      agentId,
+      questionText,
+      askUser,
+      reconciliation,
+    );
+    return { anomaly: reconciled, checkedTypes };
+  }
 
   return { anomaly: null, checkedTypes };
 }
@@ -158,6 +192,176 @@ function detectAskUserQuestion(events: AgentEvent[], agentId: string): Anomaly |
   }
 
   return null;
+}
+
+/** Extract free-text from the most recent unresolved AskUserQuestion tool_use, for reconciliation pattern matching. */
+function extractAskUserQuestionText(events: AgentEvent[]): string {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.type === 'tool_result' || e.type === 'input_received') break;
+    if (e.type === 'tool_use' && e.toolName === 'AskUserQuestion') {
+      return extractToolResponseText(e.toolInput);
+    }
+  }
+  return '';
+}
+
+// --- Publish/merge state reconciliation (#1148) -----------------------------
+//
+// A connector/integration failure (e.g. a GitHub MCP `create_branch` call, or
+// a Git Data API error) is not the same thing as a real repository blocker —
+// normal local `git`/`gh` credentials can often still publish. Likewise, once
+// GitHub reports a PR green and mergeable, an agent asking the operator "should
+// I merge?" is redundant lifecycle state, not a real question. Reconcile both
+// before a publish/merge `needs_input` blocker reaches the operator.
+
+/** Text that indicates a preceding tool_result was a connector/integration failure trying to publish, not a real repo blocker. */
+const CONNECTOR_PUBLISH_FAILURE_PATTERNS = [
+  /create[_ -]?branch/i,
+  /git data api/i,
+  /reference already exists/i,
+  /\b(?:github )?connector (?:error|failure|failed|unavailable)\b/i,
+  /mcp__github/i,
+  /502 bad gateway/i,
+];
+
+/**
+ * Text that indicates the agent's own stop/ask is about merging or
+ * publishing — either asking the operator to merge, or reporting that a
+ * publish attempt failed — rather than an unrelated question or defect.
+ * This is the gate for reconciliation (see `reconcilePublishMergeBlocker`):
+ * ambient evidence (a connector failure seen elsewhere in the window, or the
+ * tracked PR being green) is never enough on its own to reclassify a
+ * candidate whose own text doesn't match one of these.
+ */
+const OPERATOR_MERGE_ASK_PATTERNS = [
+  /\bis mergeable\b/i,
+  /all required (?:status )?checks? (?:are|is) green/i,
+  /\bready to merge\b/i,
+  /should i merge/i,
+  /(?:please )?merge (?:this |the )?(?:pr|pull request)\b/i,
+  /\bpublish (?:the |this )?(?:branch|pr|pull request|changes?)\b/i,
+  /\bcould not publish\b/i,
+];
+
+/**
+ * Scan tool_result events for a connector/integration publish failure,
+ * stopping at the nearest tool_result/input_received boundary — mirroring
+ * `extractAskUserQuestionText`'s recency scoping. Only the tool_result
+ * immediately preceding the current point (if any) is inspected; an older
+ * connector failure separated from the current candidate by a later,
+ * unrelated tool_result or a new user turn (`input_received`) is out of
+ * scope and must not be found. Returns the matching evidence text, or null.
+ */
+function findRecentConnectorFailure(events: AgentEvent[]): string | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event.type === 'input_received') return null;
+    if (event.type !== 'tool_result') continue;
+    const text = extractToolResponseText(event.toolResponse);
+    if (text && CONNECTOR_PUBLISH_FAILURE_PATTERNS.some((pattern) => pattern.test(text))) return text;
+    return null; // nearest tool_result didn't match — an earlier one is out of scope
+  }
+  return null;
+}
+
+function isPublishMergeAskText(text: string): boolean {
+  return OPERATOR_MERGE_ASK_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/**
+ * Classify reconciliation evidence into the publish/merge verdict.
+ *
+ * Table (see `anomaly-detector.test.ts` for the full matrix):
+ * - PR green/mergeable + merge-after-implementation authorized → `pr-green-mergeable`.
+ * - Connector failure observed + local git/gh credentials can publish → `connector-failure-but-publishable`.
+ * - Anything else → `real-blocker` (connector failure alone, with no working
+ *   local fallback, is still a real blocker — just one the message should not
+ *   blame on the repository).
+ */
+export function classifyPublishMergeReconciliation(
+  evidence: PublishMergeReconciliationEvidence,
+): { classification: ReconciliationClassification; reasonCode: PublishMergeReconciliationReasonCode } {
+  if (evidence.prGreenAndMergeable && evidence.mergeAfterImplementation) {
+    return { classification: 'pr-green-mergeable', reasonCode: 'pr_green_mergeable_auto_merge_authorized' };
+  }
+  if (evidence.connectorFailureDetected && evidence.localCredentialsCanPublish) {
+    return { classification: 'connector-failure-but-publishable', reasonCode: 'connector_failed_local_credentials_ok' };
+  }
+  if (evidence.connectorFailureDetected) {
+    return { classification: 'real-blocker', reasonCode: 'connector_failed_local_credentials_unavailable' };
+  }
+  return { classification: 'real-blocker', reasonCode: 'no_reconciling_evidence' };
+}
+
+/**
+ * Reconcile a would-be publish/merge `needs_input` blocker before it is
+ * returned to the caller. `candidate` is the anomaly the ordinary detector
+ * (`detectNeedsInput` / `detectAskUserQuestion`) already computed; this
+ * function only overrides it when both (a) evidence was supplied by the
+ * caller and (b) the candidate's OWN text looks publish/merge shaped
+ * (`isPublishMergeAskText`). Ambient evidence — a connector failure seen
+ * elsewhere in the window, or the tracked PR being green — describes state
+ * unrelated to why the agent stopped *now* and must never by itself
+ * reclassify a candidate whose own text is about something else (e.g. an
+ * unrelated design question on an otherwise green, auto-mergeable task).
+ * Otherwise `candidate` passes through unchanged — existing callers that
+ * never pass `evidence` see no behavior change (#1148 AC1-AC4).
+ */
+function reconcilePublishMergeBlocker(
+  events: AgentEvent[],
+  agentId: string,
+  candidateText: string,
+  candidate: Anomaly | null,
+  evidence: PublishMergeReconciliationEvidence | undefined,
+): Anomaly | null {
+  if (!evidence || !candidate) return candidate;
+  if (!isPublishMergeAskText(candidateText)) return candidate;
+
+  const connectorFailureText = findRecentConnectorFailure(events);
+  const mergedEvidence: PublishMergeReconciliationEvidence = {
+    ...evidence,
+    connectorFailureDetected: evidence.connectorFailureDetected || connectorFailureText !== null,
+    connectorFailureText: evidence.connectorFailureText ?? connectorFailureText ?? undefined,
+  };
+  const { classification, reasonCode } = classifyPublishMergeReconciliation(mergedEvidence);
+  const reconciliationContext: AnomalyReconciliation = { classification, reasonCode, evidence: mergedEvidence };
+
+  if (classification === 'connector-failure-but-publishable') {
+    // AC2: don't emit operator text for a mere connector/integration failure
+    // when normal git/gh credentials can still publish. Logged (not counted
+    // in detection-stats, which is outside this layer's scope) so the
+    // dashboard/log surfaces can still explain the suppression (AC4).
+    console.info('[anomaly-detector] reconciled publish/merge blocker: suppressed (connector failure, local credentials can publish)', {
+      agentId,
+      reasonCode,
+      evidence: mergedEvidence,
+    });
+    return null;
+  }
+
+  if (classification === 'pr-green-mergeable') {
+    // AC3: surface a structured merge-ready signal instead of an operator question.
+    return {
+      agentId,
+      type: 'needs_input',
+      severity: 'info',
+      explanation: 'PR is green and mergeable, and merge-after-implementation is authorized. '
+        + 'Merge-ready signal — no operator input needed.',
+      detectedAt: new Date(),
+      reconciliation: reconciliationContext,
+    };
+  }
+
+  // real-blocker: keep the candidate, but attach reconciliation evidence and
+  // (when a connector failure was involved) clarify the message so operators
+  // don't mistake a real repo blocker for a transient connector outage (AC2).
+  const explanation = mergedEvidence.connectorFailureDetected
+    ? `${candidate.explanation} (Reconciled: a GitHub connector/integration failure was observed, but local `
+      + 'git/gh credentials could not publish either — this is a real repository blocker, not a connector outage.)'
+    : candidate.explanation;
+
+  return { ...candidate, explanation, reconciliation: reconciliationContext };
 }
 
 function detectNeedsInput(events: AgentEvent[], agentId: string): Anomaly | null {

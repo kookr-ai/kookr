@@ -1,5 +1,6 @@
 import { stat } from 'node:fs/promises';
 import type { Task, TaskStore } from '../core/tasks.js';
+import { appendDispositionEntry } from '../core/disposition-ledger.js';
 import { deterministicTaskName } from '../core/task-naming.js';
 import { displayPromptForTask } from '../core/prompt-display.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
@@ -259,6 +260,7 @@ export async function reconcile(
  */
 export function reconcileStaleOpenLaunches(
   taskStore: TaskStore,
+  dispositionLedgerPath?: string,
 ): string[] {
   const terminated: string[] = [];
   for (const task of taskStore.listTasks()) {
@@ -299,6 +301,26 @@ export function reconcileStaleOpenLaunches(
         `[startup-reconcile] terminated stale launch task ${task.id} ` +
         '(open with zero sessions — its launcher died with the previous process)',
       );
+      // Work-conservation ledger entry (issue #1540): zero sessions ever
+      // attached, so no work was produced to lose — 'obsolete' is accurate,
+      // not a euphemism. Fire-and-forget (mirrors the worktree-cleanup
+      // pattern in agent-lifecycle.ts): this sweep's own `try` already
+      // guards `terminated.push`, and a ledger-write hiccup must not stop
+      // the loop from disposing the next stale task. Logged loudly on
+      // failure so it's never silent.
+      if (dispositionLedgerPath) {
+        appendDispositionEntry(dispositionLedgerPath, {
+          schemaVersion: 'disposition-ledger.v1',
+          taskId: task.id,
+          disposition: 'obsolete',
+          detail: 'obsolete-because: launcher died before any session attached — no work was ever produced',
+          incidentId: `stale-open-launch-${new Date().toISOString().slice(0, 10)}`,
+          source: 'startup-reconcile',
+          at: new Date().toISOString(),
+        }).catch((err) => {
+          console.error(`[disposition-ledger] failed to record entry for task ${task.id}:`, err);
+        });
+      }
     } catch (err) {
       console.error(
         `[startup-reconcile] failed to terminate stale launch task ${task.id}:`,

@@ -6,6 +6,7 @@ import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { GitHubStateStore } from '../core/github-state-store.js';
 import { selectDeliveredMergedPr } from '../core/delivered-task-completion.js';
+import { readDispositionEntries } from '../core/disposition-ledger.js';
 import type { Task } from '../core/tasks.js';
 import type { GitHubPRState, GitHubReference } from '../core/github-types.js';
 import type { MergedPrAttribution } from '../core/delivered-task-completion.js';
@@ -225,6 +226,36 @@ describe('reapHungTask', () => {
     expect(result.reportPath).toBeUndefined();
     expect(taskStore.getTask(task.id)?.status).toBe('terminated');
   });
+
+  // Integration coverage for issue #1540's write site: this is the ONLY test
+  // in this suite that wires `dispositionLedgerPath` and reads the ledger
+  // back off real disk. Every other test above passes even if the ledger
+  // write call in `writeReapDispositionEntry` is deleted — this one does not.
+  test('issue #1540: records a needs-human disposition-ledger entry for a plain terminated reap', async () => {
+    const taskStore = new TaskStore();
+    const task = makeTask(taskStore);
+    const ledgerPath = join(await mkdtemp(join(tmpdir(), 'kookr-disposition-')), 'disposition.jsonl');
+
+    await reapHungTask(task, evidence(), {
+      taskStore,
+      lifecycleDeps: lifecycleDeps(taskStore),
+      dispositionLedgerPath: ledgerPath,
+      now: () => new Date('2026-06-21T00:00:00.000Z'),
+    });
+
+    const entries = await readDispositionEntries(ledgerPath);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      schemaVersion: 'disposition-ledger.v1',
+      taskId: task.id,
+      disposition: 'needs-human',
+      source: 'hung-task-reaper',
+      incidentId: 'hung-task-reap-2026-06-21',
+      at: '2026-06-21T00:00:00.000Z',
+    });
+    expect(entries[0].detail).toContain('needs-human');
+    expect(entries[0].detail).toContain('no confirmed delivery');
+  });
 });
 
 describe('reapHungTask — delivered_then_hung outcome (issue #1559)', () => {
@@ -282,6 +313,36 @@ describe('reapHungTask — delivered_then_hung outcome (issue #1559)', () => {
       detail: 'Delivered PR #1542 before hanging; reaped after prolonged silence.',
       deliveredPr: { number: 1542, url: 'https://github.com/kookr-ai/kookr/pull/1542' },
     });
+  });
+
+  // Integration coverage for issue #1540's write site (delivered_then_hung
+  // branch). Reads the real ledger off disk — fails if the append call in
+  // `writeReapDispositionEntry`'s `delivered_then_hung` arm is deleted.
+  test('issue #1540: records an obsolete disposition-ledger entry when the reap is delivered_then_hung', async () => {
+    const taskStore = new TaskStore();
+    const task = makeTask(taskStore);
+    const ledgerPath = join(await mkdtemp(join(tmpdir(), 'kookr-disposition-')), 'disposition.jsonl');
+
+    await reapHungTask(task, incidentEvidence(), {
+      taskStore,
+      lifecycleDeps: lifecycleDeps(taskStore),
+      dispositionLedgerPath: ledgerPath,
+      resolveMergedPr: mergedPrResolver(task.id, 1542, 'https://github.com/kookr-ai/kookr/pull/1542'),
+      now: () => REAP_NOW,
+    });
+
+    const entries = await readDispositionEntries(ledgerPath);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      schemaVersion: 'disposition-ledger.v1',
+      taskId: task.id,
+      disposition: 'obsolete',
+      source: 'hung-task-reaper',
+      incidentId: 'hung-task-reap-2026-07-25',
+      at: REAP_NOW.toISOString(),
+    });
+    expect(entries[0].detail).toContain('obsolete-because');
+    expect(entries[0].detail).toContain('PR #1542');
   });
 
   test('audit row and alert carry the delivered_then_hung outcome', async () => {
