@@ -256,7 +256,7 @@ describe('repository-idea-scout playbook', () => {
 
   describe('reader-first issue bodies omit local state and boilerplate', () => {
     test('issue-body.md is the only artifact published and excludes state paths', () => {
-      const sec = pb.body.slice(pb.body.indexOf('### 5.6 Write the reader-first issue bodies'));
+      const sec = pb.body.slice(pb.body.indexOf('### 5.7 Write the reader-first issue bodies'));
       expect(sec).toMatch(/ONLY artifact ever sent to GitHub/i);
       expect(sec).toMatch(/MUST NOT contain local state paths/i);
       // Reader-first template headings.
@@ -309,6 +309,34 @@ describe('repository-idea-scout playbook', () => {
       expect(pb.body).toMatch(/mix of sizes/i);
       expect(pb.body).toMatch(/guidance, not a rigid quota/i);
       expect(pb.body).toMatch(/Never fill an unsafe category merely for balance/i);
+    });
+  });
+
+  describe('coverage-ordered dimension rotation (issue #1749 follow-up)', () => {
+    test('the ORDERED_DIMS shell list matches the Diversity Dimensions table exactly', () => {
+      // The rotation snippet duplicates the table as a shell list; drift between
+      // them silently excludes a dimension from rotation — the exact starvation
+      // the mechanism exists to prevent. This test is the enforced drift guard.
+      const tableSec = pb.body.slice(pb.body.indexOf('## Diversity Dimensions'), pb.body.indexOf('### Coverage-ordered rotation'));
+      const tableDims = [...tableSec.matchAll(/^\| ([a-z][a-z-]*) \|/gm)].map((m) => m[1]).filter((d) => d !== undefined);
+      const snippet = pb.body.match(/ORDERED_DIMS=\$\(printf '%s\\n' ([^|]+)\|/);
+      expect(snippet).not.toBeNull();
+      const shellDims = snippet![1]!.replace(/\\\s*/g, ' ').trim().split(/\s+/);
+      expect(tableDims.length).toBeGreaterThanOrEqual(10);
+      expect(shellDims).toEqual(tableDims);
+    });
+
+    test('coverage update is guarded by appliedRuns and heals schema-invalid files', () => {
+      const sec = pb.body.slice(pb.body.indexOf('### 5.6 Update dimension coverage'));
+      expect(sec).toMatch(/appliedRuns \| index\(\$rk\)/);
+      expect(sec).toMatch(/\[ -s "\$COVERAGE_FILE" \]/);
+      expect(sec).toMatch(/\.dimensions\|type=="object"/);
+      expect(sec).toMatch(/tmp\.\$\$/);
+    });
+
+    test('no hard Phase 8 gate tests coverage content beyond existence and validity', () => {
+      expect(pb.body).toMatch(/no hard gate may test it beyond existence \+ validity/i);
+      expect(pb.body).toMatch(/Dimensions skipped this run:/);
     });
   });
 

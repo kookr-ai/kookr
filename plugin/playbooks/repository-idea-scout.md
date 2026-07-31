@@ -96,6 +96,8 @@ checklist:
   - When publishBehavior is publish-safe, only autonomous candidates become GitHub issues
   - Per-run spend recorded against the spend cap; run stopped or flagged when the cap is reached
   - Provenance labels (idea-scout, idea:<issue-number>) applied to every published idea issue
+  - Dimension coverage file updated once for this run and the skipped-dimensions line reported by name
+  - Focused-profile runs carry at most one wildcard excursion, gated like any other candidate
   - Consolidated portfolio document and proposals document written to local state
 ---
 
@@ -151,14 +153,14 @@ Rules for handling the quoted block:
 
 | Profile | Intent | Dimensions it favors |
 | --- | --- | --- |
-| `balanced` | A useful mix across the whole project | rotate across all diversity dimensions |
-| `reliability-hardening` | Fewer failures, safer recovery | reliability, testing, observability, operability |
+| `balanced` | A useful mix across the whole project | rotate across all diversity dimensions, least-historically-covered first (see Diversity Dimensions) |
+| `reliability-hardening` | Fewer failures, safer recovery | reliability, testing, observability, operability, data-lifecycle |
 | `product-ux` | New or better user-facing capabilities | product, ux, documentation |
 | `architecture-preserving` | Cleaner structure with identical behavior | developer-experience, reliability, testing (structural, behavior-preserving) |
 | `simplification-preserving` | Less code, same capabilities | see Preservation-First Simplification below |
 | `exploratory-proposals` | Bigger product bets to consider | product, ux (mostly review-required proposals) |
 
-When the work profile is `balanced`, rotate categories across the diversity dimensions. For any focused profile, concentrate on that profile's favored dimensions and make each accepted idea a meaningfully different angle. The profile decides which dimensions are in play; the authority policy still decides whether an idea can ever be published autonomously.
+When the work profile is `balanced`, rotate categories across the diversity dimensions, least-historically-covered first. For any focused profile, concentrate on that profile's favored dimensions and make each accepted idea a meaningfully different angle — except the single guaranteed wildcard excursion outside the favored set (see Coverage-ordered rotation for the rules and the profiles it never applies to). The profile decides which dimensions are in play; the authority policy still decides whether an idea can ever be published autonomously.
 
 ## Workload Presets
 
@@ -202,20 +204,34 @@ Grounding rules:
 
 Use this fixed list to drive category rotation. The active work profile selects which dimensions are in play (see Work Profiles).
 
+<!-- DRIFT GUARD: this table is duplicated as a shell list in the Phase 4.1
+     ORDERED_DIMS snippet. Adding/renaming a dimension here without updating that
+     list silently excludes it from rotation. Keep both in sync. -->
+
 | Dimension | What it covers | Examples of distinct angles |
 | --- | --- | --- |
 | product | New user-facing capabilities, workflows, automations | a new command, a new trigger, a new integration target |
 | developer-experience | Build, contributing, dev tools, debugging affordances for contributors | faster local dev loop, richer error output, debugger surfaces |
 | documentation | Concrete gaps in docs, examples, tutorials, runbooks | missing tutorial, undocumented flag, stale example |
-| reliability | Correctness, error handling, recovery, retry, idempotency | new retry policy, recovery for X, missing idempotency on Y |
+| reliability | Correctness, error handling, recovery, retry, idempotency, resilience under induced failure | new retry policy, recovery for X, missing idempotency on Y, fault-injection test, degraded-mode behavior, backpressure on Z, crash-recovery drill |
 | performance | Latency, throughput, resource use under realistic load | caching, batching, hot-path optimization, memory bound |
 | observability | Logging, metrics, tracing, debug surfaces, post-hoc diagnosis | new structured field, new metric, missing trace span |
 | operability | Deployment, config, ops surface, alerting, runtime introspection | new config option, runtime status endpoint, alert routing |
 | ux | Frontend, UI interaction polish, keyboard, accessibility | keyboard nav, focus management, color-contrast fix |
 | security | Authentication, authorization, input validation, supply chain | new validation, new permission boundary, dependency hygiene |
-| testing | Coverage gaps, test infrastructure, fixtures, harness ergonomics | new integration test, fixture builder, flaky-test triage |
+| testing | Coverage gaps, test infrastructure, fixtures, harness ergonomics, test-technique depth | new integration test, fixture builder, flaky-test triage, mutation-testing pass on a critical module, property-based test for a store or state machine, golden/snapshot test for a wire payload, soak/load harness scenario |
+| data-lifecycle | Retention, archival, rotation, and growth bounds for stored and in-memory data | retention policy for X, archive tier for aged records, unbounded-growth audit of a store or directory, log/artifact rotation, resident-set budget for a long-lived process |
 
-For a `balanced` profile, assign categories in the canonical order above until either the publish target is reached or all in-play dimensions have one idea; if the target is larger than the dimension count, continue with the least-covered dimension and a fresh angle. For a focused profile, every idea stays within that profile's dimensions and each accepted angle must differ meaningfully from the prior accepted angles in the run.
+### Coverage-ordered rotation (anti-starvation)
+
+The canonical table order is an identity order, not a visit order. Walking it top-to-bottom on every run means a publish target smaller than the dimension count permanently starves the tail dimensions — that failure mode is why rotation is coverage-ordered:
+
+- **In-play dimensions** has exactly one meaning: for `balanced`, all dimensions in the table; for a focused profile, the profile's favored set plus the wildcard's chosen dimension (when a wildcard applies — see below). Exception: `simplification-preserving` has no favored set and does not do dimension rotation at all — its skip line is the literal `not applicable (profile has no dimension rotation)` and the rules in this section do not apply to it. Every other rule in this section, the report's skip line, and the Phase 8 checks use this definition.
+- **Rotation order.** For a `balanced` profile, order the in-play dimensions by ascending `coveredCount` in `<dimensionCoverageFile>` (ties broken by canonical table order; a dimension absent from the file counts as zero and therefore sorts first). Assign one idea per dimension in that order until the publish target is reached or every in-play dimension has one idea; if the target is larger than the dimension count, continue with the least-covered dimension and a fresh angle. When `<dimensionCoverageFile>` is missing **or is not valid JSON**, treat every count as zero — the ordering degrades to canonical order, identical to the old behavior. Coverage counts **selected** portfolio candidates (Phase 5.6), not published issues: a dimension whose ideas are consistently review-required or budget-deferred still accrues coverage, so authority gating cannot pin it to the head of the rotation forever.
+- **Wildcard (a Phase 5.3 selection guarantee, not a generation slot).** For a focused profile, one exploratory excursion outside the favored set is guaranteed at portfolio selection: Phase 4 seeds at least one eligible out-of-profile candidate into the pool, and Phase 5.3 ensures the selected portfolio contains one (swapping it for the lowest-ranked in-profile candidate if ranking pushed it out). It consumes one of the publish-target slots — on a `quick-shortlist` (3) run that is a third of the run's output, which is the deliberate price of exploration. The wildcard candidate passes **every** gate that applies to any other candidate — `extraInstruction` scope, duplicate check, classification, authority policy, and the Phase 7 emission budget (it can be deferred like anything else). The wildcard is skipped in two cases: the `simplification-preserving` profile (no favored set; its preservation contract excludes exploratory additions), and any scope-filtered run (`extraInstruction` non-empty) where the outside dimension cannot honestly satisfy the scope — the scope filter always wins over the categorical slot. `balanced` needs no wildcard; its coverage ordering already reaches every dimension. Mark the candidate `"wildcard": true` in `<ideasLogFile>`; all others carry `"wildcard": false`.
+- **Skip visibility.** Starvation must be visible, not just mitigated: the run report (Phase 6) lists, by name, every in-play dimension with zero candidates in the final `<ideasLogFile>`, as `Dimensions skipped this run: <comma-separated names>` (or exactly `none`). The line must enumerate actual dimension names — reproducing the heading without the list does not satisfy Phase 8.
+
+For a focused profile, every non-wildcard idea stays within that profile's dimensions and each accepted angle must differ meaningfully from the prior accepted angles in the run.
 
 When `{{extraInstruction}}` is non-empty, every candidate must demonstrably stay within that scope. The scope cannot be ignored to fill a categorical slot.
 
@@ -338,6 +354,7 @@ Compute these from the resolved **repoFullName**:
 - **recommendationsDir**: `<stateDir>/recommendations` — one subdirectory per accepted idea: `<NN>-<slug>/{report.md, duplicate-evidence.md, kb-evidence.md, critic-feedback.md, classification.json, issue-body.md, issue-created.json}`.
 - **capabilityInventoryFile**: `<stateDir>/capability-inventory.md` — required when `workProfile` is `simplification-preserving`; a `status: skipped` marker otherwise.
 - **kbSeedsFile**: `<stateDir>/kb-seeds.json` — the Phase 3.5 knowledge-base survey, bucketed by diversity dimension; written with `status: skipped` when KB grounding is off or unavailable.
+- **dimensionCoverageFile**: `~/.kookr/playbook-state/repository-idea-scout/<repoSlug>/dimension-coverage.json` — **repo-level, deliberately OUTSIDE `<stateDir>`'s `<runKey>`** so it persists across runs (the one exception to run-scoped state; see Idempotency Rules). Shape: `{ "dimensions": { "<dimension>": { "coveredCount": <int>, "lastCoveredAt": <iso8601> } }, "appliedRuns": ["<runKey>", ...] }`. `coveredCount` counts **selected portfolio candidates** (every `<ideasLogFile>` entry, all publish modes), not published issues. Read in Phase 4.1 to order the rotation; updated exactly once per run in Phase 5.6, guarded by `appliedRuns` so resumed/retried runs never double-count (`appliedRuns` keeps the last 50 run keys — resuming a run older than that could re-count, accepted as implausible). Missing, empty, or schema-invalid file = all-zero counts (first run / self-heal). Counts grow monotonically and are ordering heuristics only — deleting the file is always safe and merely resets rotation to canonical order.
 - **issuesFile**: `<stateDir>/issues.json`.
 - **closedIssuesFile**: `<stateDir>/closed-issues.json`.
 - **featuresFile**: `<stateDir>/features.md`.
@@ -772,8 +789,24 @@ Read the candidates currently in memory and `<ideasLogFile>` if it already exist
 
 For each new candidate:
 
-- For a `balanced` profile, walk the canonical dimension list top to bottom and choose the first dimension that is not yet used. If all dimensions are used, choose the least-covered dimension with a fresh angle.
-- For a focused profile, use only that profile's favored dimensions and choose a fresh angle.
+Resolve the coverage ordering once, before assigning categories (missing, empty, or invalid file ⇒ empty counts ⇒ canonical order):
+
+```bash
+COVERAGE_FILE="$BASE_STATE_DIR/$REPO_SLUG/dimension-coverage.json"
+COV=$({ [ -s "$COVERAGE_FILE" ] && jq -e '.dimensions | select(type=="object")' "$COVERAGE_FILE" 2>/dev/null; } || echo '{}')
+# Ascending coveredCount; jq sort_by is stable, so ties keep the canonical input order.
+# DRIFT GUARD: this list MUST match the Diversity Dimensions table exactly (same
+# names, same canonical order). Adding a dimension to the table without adding it
+# here silently excludes it from rotation — the exact starvation this mechanism
+# exists to prevent. Cross-check when editing either.
+ORDERED_DIMS=$(printf '%s\n' product developer-experience documentation reliability performance \
+    observability operability ux security testing data-lifecycle | \
+  jq -nR --argjson cov "$COV" \
+    '[inputs] | map({dim: ., n: ($cov[.].coveredCount // 0)}) | sort_by(.n) | map(.dim) | .[]' -r)
+```
+
+- For a `balanced` profile, walk the **coverage-ordered** dimension list (ascending `coveredCount`, ties in canonical order — see Coverage-ordered rotation) and choose the first dimension that is not yet used this run. If all dimensions are used, choose the least-covered dimension with a fresh angle.
+- For a focused profile, use only that profile's favored dimensions and choose a fresh angle. When the wildcard applies (see Coverage-ordered rotation for the exclusions), additionally seed the pool with **exactly one** candidate in the least-covered dimension outside the favored set, marked `"wildcard": true` — this is the raw material for the Phase 5.3 wildcard guarantee, generated here so selection has something eligible to keep.
 
 Discard any candidate whose category and angle substantially overlap a candidate already in the pool. (Overlaps that are worth consolidating rather than discarding are handled in Phase 5.)
 
@@ -950,6 +983,8 @@ A reasonable full-day (10) target mix — **guidance, not a rigid quota**:
 
 Scale the mix proportionally for other workload sizes. Never fill an unsafe category merely for balance: if there are not enough safe high-confidence fixes, publish fewer of them rather than promoting a shaky candidate. Never promote a `reductive` candidate to fill a slot.
 
+**Wildcard guarantee (focused profiles only — see Coverage-ordered rotation for the exclusions):** after ranking, if no `"wildcard": true` candidate survived the cut and the pool contains one that passes every gate (scope, duplicate, classification, authority), swap it in for the lowest-ranked non-wildcard candidate. If more than one wildcard-marked candidate survived the cut (over-seeding is an error but must not fail the run), keep the best-ranked one and set `"wildcard": false` on the rest — the portfolio must end with **at most one**. The swap guarantees the *dimension excursion*, never a quality exemption: a wildcard candidate that fails a gate, or a pool with no eligible wildcard (recorded as a one-line note in `<recommendationsDoc>`), means this run simply has none — do not fabricate one, and never displace a candidate to force it. "Never fill an unsafe category merely for balance" applies to the wildcard exactly as to any mix slot.
+
 If the ranked, in-scope, non-duplicate portfolio is smaller than `PUBLISH_TARGET`, that is an honest shortfall. Record the shortfall and its reason in `<recommendationsDoc>`; do not invent marginal ideas.
 
 ### 5.4 Assign publish decisions
@@ -983,6 +1018,7 @@ Atomically write `<ideasLogFile>` as a JSON array (temp file then `mv`). Each en
   "parallelConflictRisk": "low",
   "conflictsWith": [],
   "filesTouched": ["src/foo/bar.ts"],
+  "wildcard": false,
   "publishDecision": "publish",
   "reportPath": "recommendations/<NN>-<slug>/report.md",
   "groundedIn": ["<kb>/<path>"],
@@ -992,9 +1028,44 @@ Atomically write `<ideasLogFile>` as a JSON array (temp file then `mv`). Each en
 }
 ```
 
-`conflictsWith` lists the `idx` values of portfolio items with predicted file/module overlap. `groundedIn` lists the `<kb>/<path>` passages that seeded or refined the idea; it is `[]` when the idea has no KB grounding. `kbStale` is `true` when any cited KB passage carried a stale-index warning. Never paste idea text directly into shell source; store generated entries in files and merge with `jq` or a structured JSON writer.
+`conflictsWith` lists the `idx` values of portfolio items with predicted file/module overlap. `groundedIn` lists the `<kb>/<path>` passages that seeded or refined the idea; it is `[]` when the idea has no KB grounding. `kbStale` is `true` when any cited KB passage carried a stale-index warning. `wildcard` is `true` only on the single out-of-profile excursion candidate of a focused-profile run (see Coverage-ordered rotation); `false` everywhere else. Never paste idea text directly into shell source; store generated entries in files and merge with `jq` or a structured JSON writer.
 
-### 5.6 Write the reader-first issue bodies
+### 5.6 Update dimension coverage
+
+Runs in **every** publish mode (`report-only` included — coverage tracks explored dimensions, and `report-only` runs explore). Exactly once per run: the `appliedRuns` guard makes resumed or retried runs no-ops, so re-executing this step never double-counts.
+
+```bash
+COVERAGE_FILE="$BASE_STATE_DIR/$REPO_SLUG/dimension-coverage.json"
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# Self-heal: reset to empty rather than wedging every future run. The guard must
+# test the property the code needs — SCHEMA SHAPE, not mere JSON validity — and
+# `[ -s ]` is load-bearing: on jq 1.6 `jq -e` exits 0 on a ZERO-BYTE file, which
+# would otherwise defeat both this heal and the appliedRuns guard below.
+if ! { [ -s "$COVERAGE_FILE" ] && jq -e \
+    '(type=="object") and (.dimensions|type=="object") and (.appliedRuns|type=="array")
+     and (.dimensions | to_entries | all(.value | type=="object"))' \
+    "$COVERAGE_FILE" >/dev/null 2>&1; }; then
+  printf '{"dimensions":{},"appliedRuns":[]}\n' > "$COVERAGE_FILE.tmp.$$" \
+    && mv "$COVERAGE_FILE.tmp.$$" "$COVERAGE_FILE"
+fi
+if jq -e --arg rk "$RUN_KEY" '.appliedRuns | index($rk)' "$COVERAGE_FILE" >/dev/null; then
+  echo "coverage: run $RUN_KEY already applied; skipping"
+else
+  # One jq invocation for the whole update; $$-unique temp so a concurrent run
+  # on the same repo can lose an increment (last-writer-wins) but can never
+  # corrupt the file. Counts are ordering heuristics; a lost increment is fine.
+  jq --arg rk "$RUN_KEY" --arg now "$NOW" \
+    --argjson counts "$(jq '[.[] | select(.category != null) | .category] | group_by(.) | map({key: .[0], value: length}) | from_entries' "$IDEAS_LOG")" \
+    '.dimensions as $d
+     | .dimensions = ($d + ($counts | with_entries({key: .key, value: {coveredCount: ((($d[.key].coveredCount) // 0) + .value), lastCoveredAt: $now}})))
+     | .appliedRuns = ((.appliedRuns + [$rk]) | .[-50:])' \
+    "$COVERAGE_FILE" > "$COVERAGE_FILE.tmp.$$" \
+    && mv "$COVERAGE_FILE.tmp.$$" "$COVERAGE_FILE" \
+    || { rm -f "$COVERAGE_FILE.tmp.$$"; echo "coverage: update failed (non-fatal — rotation degrades to canonical order)"; }
+fi
+```
+
+### 5.7 Write the reader-first issue bodies
 
 For every candidate whose `publishDecision` is `publish`, write the reader-first `<recommendationsDir>/<NN>-<slug>/issue-body.md`. This is the ONLY artifact ever sent to GitHub. It is concise and reader-first. It MUST NOT contain local state paths, `<stateDir>` references, `kb` shelf internals, portfolio scoring, or playbook-process boilerplate.
 
@@ -1036,7 +1107,7 @@ Write `<recommendationsDoc>` (the portfolio) and `<proposalsDoc>` (gated candida
 ```markdown
 # Repository Idea Scout Portfolio: <repo>
 
-## Summary (publish target, pool size, how many selected, any shortfall, and the `Run spend: $X / cap $Y` line with any cap breach)
+## Summary (publish target, pool size, how many selected, any shortfall, the `Run spend: $X / cap $Y` line with any cap breach, and the `Dimensions skipped this run: <names|none>` line — every in-play dimension absent from the final ideas log, named explicitly)
 ## Scope filter (only when extraInstruction is non-empty)
 ## Issue inventory summary
 ## Codebase and capability inventory summary
@@ -1265,7 +1336,7 @@ The deterministic `Repository idea: <title>` prefix combined with the `--author 
 Before finishing, validate:
 
 - `<ideasLogFile>` exists, contains valid JSON, and has at most `PUBLISH_TARGET` entries. If it has fewer, `<recommendationsDoc>` explains the shortfall.
-- Every entry has a unique `idx`, `slug`, `rank`, `category`, `angle`, `title`, and a full classification block (`authority`, `changeShape`, `size`, `confidence`, `expectedValue`, `evidenceStrength`, `duplicateRisk`, `implementationReadiness`, `parallelConflictRisk`).
+- Every entry has a unique `idx`, `slug`, `rank`, `category`, `angle`, `title`, a boolean `wildcard`, and a full classification block (`authority`, `changeShape`, `size`, `confidence`, `expectedValue`, `evidenceStrength`, `duplicateRisk`, `implementationReadiness`, `parallelConflictRisk`).
 - Every entry's `authority` is consistent with its `changeShape` per the Authority Policy — in particular, no entry with `changeShape: reductive` has `authority` other than `protected`.
 - Every entry has `<recommendationsDir>/<idx>-<slug>/report.md`, `duplicate-evidence.md`, and `classification.json`.
 - Every report contains `## Classification (authority, changeShape, size, confidence, risks)`, `## Duplicate evidence table`, and `## Knowledge base grounding`.
@@ -1278,6 +1349,9 @@ Before finishing, validate:
 - `<kbSeedsFile>` exists and is valid JSON with a `status` of `ok` or `skipped`; every entry has a `groundedIn` array and a boolean `kbStale`.
 - When `workProfile = simplification-preserving`, `<capabilityInventoryFile>` enumerates in-scope capabilities and no accepted candidate removes a documented/user-visible capability as an autonomous issue.
 - `<spendLedgerFile>` exists and is valid JSON with numeric `spendCapUsd`, boolean `capEnforced`, and boolean `capBreached`; when `PUBLISH = publish-safe`, every published entry in `<ideasLogFile>` has a `provenanceLabels` array containing `idea-scout` and `idea:<issue-number>`.
+- `<recommendationsDoc>`'s Summary contains the `Dimensions skipped this run:` line and its content is the literal `none`, the comma-separated names of exactly the in-play dimensions (per the single definition in Coverage-ordered rotation) absent from `<ideasLogFile>`, or — for `simplification-preserving` only — the literal `not applicable (profile has no dimension rotation)`. A missing line, an empty list, or a list that omits a skipped in-play dimension is a validation failure (silent starvation is the failure mode the coverage rotation exists to prevent).
+- When `<ideasLogFile>` has at least one entry: `<dimensionCoverageFile>` exists and is valid JSON. Everything further about its *content* — `appliedRuns` containing this `<runKey>`, `dimensions.<d>.coveredCount` ≥ 1 for categories present in `<ideasLogFile>` — is a **warning recorded in `<recommendationsDoc>`, never a `BLOCKED`**: the file is last-writer-wins under concurrent runs (a sibling can erase this run's entry or increment), a resumed run's portfolio can grow after the guard fired, and an update failure is logged non-fatally. Coverage is ordering heuristics, not correctness state; no hard gate may test it beyond existence + validity.
+- At most one entry in `<ideasLogFile>` has `"wildcard": true`, and only on a focused-profile run.
 - The target checkout's `git status --short` still matches the initial status captured in `<runManifest>`.
 
 Record the final spend and surface it, then mark the run. The completion output must carry per-run spend and any cap breach so the schedule ledger/rollup can pick them up:
@@ -1302,7 +1376,7 @@ If validation passes, write `<promise>DONE</promise>` to `<stateFile>`. If valid
 
 ## Idempotency Rules
 
-1. State is scoped to `<repoSlug>/<runKey>`, not just the repository.
+1. State is scoped to `<repoSlug>/<runKey>`, not just the repository — with exactly one deliberate exception: `<dimensionCoverageFile>` is repo-level so rotation coverage survives across runs. Its writes are guarded by `appliedRuns` (per-`<runKey>` idempotence) and it is safe to delete at any time. A scoped run (`extraInstruction` non-empty) still updates it; that bias is accepted because counts are ordering heuristics, not correctness state.
 2. Reuse `<stateDir>` only when its `<runManifest>` matches the current repo, work profile, workload size, publish behavior, scan limit, knowledge-base mode, task id or run key, and local path.
 3. Do not post comments, create branches, PRs, or edit tracked files in the target repository. The only allowed mutation beyond issue creation is the two provenance labels (`idea-scout`, `idea:<issue-number>`) applied to the idea issues this run creates in `publish-safe` mode; label creation and application are idempotent (`gh label create --force`, `gh issue edit --add-label`).
 4. Create GitHub issues only when `publishBehavior` is `publish-safe`, exactly one issue per **autonomous** candidate, never more, never for a review-required or protected candidate, and never above the drain-coupled emission budget (`kookr emission plan`).
