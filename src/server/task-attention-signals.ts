@@ -3,6 +3,7 @@ import type { AttentionQueue } from '../core/attention-queue.js';
 import type { Watchdog } from '../core/watchdog.js';
 import { isTaskHungSuspect, type HungTaskLivenessEvidence } from '../core/hung-task-reaper.js';
 import { isProviderPaused as classifyIsProviderPaused } from '../core/provider-pause.js';
+import type { AnomalyReconciliation } from '../core/anomaly-types.js';
 
 /**
  * Structural task shape this module needs — deliberately narrower than
@@ -41,12 +42,27 @@ export interface TaskAttentionSignals {
    * (issue #1653) so an actively-working agent is never flagged.
    */
   liveness?: HungTaskLivenessEvidence;
+  /**
+   * Issue #1148: true when the queued anomaly's publish/merge reconciliation
+   * classified the state as `pr-green-mergeable` — a structured merge-ready
+   * signal, not an operator-facing blocker. Dashboard/status surfaces should
+   * treat this task as ready to merge rather than waiting on the operator.
+   */
+  mergeReady: boolean;
+  /**
+   * Issue #1148: the queued anomaly's publish/merge reconciliation verdict
+   * (classification + reason code), when present, so the dashboard/logs can
+   * explain why a publish/merge blocker was suppressed, replaced with a
+   * merge-ready signal, or left in place as a real blocker.
+   */
+  reconciliation?: Pick<AnomalyReconciliation, 'classification' | 'reasonCode'>;
 }
 
 const NO_SIGNALS: TaskAttentionSignals = {
   hungSuspect: false,
   queuedAnomalyType: null,
   providerPaused: false,
+  mergeReady: false,
 };
 
 /**
@@ -84,6 +100,10 @@ export function resolveTaskAttentionSignals(
     anomalyType: queuedAnomalyType,
     anomalyExplanation: queued?.explanation ?? null,
   });
+  const reconciliation = queued?.reconciliation
+    ? { classification: queued.reconciliation.classification, reasonCode: queued.reconciliation.reasonCode }
+    : undefined;
+  const mergeReady = reconciliation?.classification === 'pr-green-mergeable';
 
-  return { hungSuspect, queuedAnomalyType, providerPaused, liveness };
+  return { hungSuspect, queuedAnomalyType, providerPaused, liveness, mergeReady, ...(reconciliation ? { reconciliation } : {}) };
 }
