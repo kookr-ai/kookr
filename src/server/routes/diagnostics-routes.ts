@@ -143,6 +143,11 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // prod).
     const sessionReaperBlock = deps.sessionReaper?.getHealthSnapshot();
 
+    // Resource watchdog (issue #1724): last sample / trigger / throttle /
+    // spawns-in-24h from the service's in-memory snapshot only — never a
+    // fresh `/proc` or process-table scan on this request path (#1553).
+    const resourceWatchdogBlock = deps.resourceWatchdog?.getHealthSnapshot();
+
     // #808 / R10: surface the revocation sweep liveness + viewer count + grant
     // store writability so a dead sweep or a read-only store is visible to the
     // operator. Owner-only: viewers are denied every `/api/*` route but the
@@ -242,6 +247,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         : {}),
       ...(terminalBackendBlock ? { terminalBackend: terminalBackendBlock } : {}),
       ...(sessionReaperBlock ? { sessionReaper: sessionReaperBlock } : {}),
+      ...(resourceWatchdogBlock ? { resourceWatchdog: resourceWatchdogBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),
     });

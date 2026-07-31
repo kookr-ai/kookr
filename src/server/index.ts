@@ -5,7 +5,16 @@ import { randomBytes } from 'node:crypto';
 import { loadTasksWithRecovery, saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
 import { reconcile, reconcileStaleOpenLaunches, type ReconciliationResult } from './reconciliation.js';
 import { SessionReaperService } from './session-reaper.js';
-import { readSessionReapConfigFromEnv } from './config.js';
+import { readSessionReapConfigFromEnv, readResourceWatchdogConfigFromEnv } from './config.js';
+import { createResourceWatchdogService } from './resource-watchdog-service.js';
+import { createResourceWatchdogHostSampler } from './resource-watchdog-sampler.js';
+import { readTrailingFileBytes } from './resource-watchdog-log-tail.js';
+import { FileResourceWatchdogStateStore } from '../core/resource-watchdog-state.js';
+import {
+  JsonlResourceWatchdogAuditSink,
+  defaultResourceWatchdogAuditPath,
+} from '../core/resource-watchdog-audit.js';
+import type { ResourceWatchdogConfig } from '../core/resource-watchdog-types.js';
 import { type AgentPreflightSnapshot, type PreflightLogger } from './agent-preflight.js';
 import type { ServerMessage, SnapshotMessage } from '../shared/contracts/messages.js';
 import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
@@ -1315,6 +1324,38 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     } : {}),
   };
 
+  // Resource watchdog (issue #1724): host-pressure actuator that spawns a
+  // briefed, throttled investigation task. OFF by default
+  // (`KOOKR_RESOURCE_WATCHDOG=1` to enable). Spawns go through launchTask so
+  // capacity/backpressure and reserved-slot posture apply unchanged.
+  const resourceWatchdogEnv = readResourceWatchdogConfigFromEnv(process.env);
+  const resourceWatchdogStatePath = join(kookrDir, 'resource-watchdog.state.json');
+  const resourceWatchdogAuditPath = defaultResourceWatchdogAuditPath(kookrDir);
+  const buildResourceWatchdogConfig = (): ResourceWatchdogConfig => ({
+    ...readResourceWatchdogConfigFromEnv(process.env),
+    taskCwd: process.env.KOOKR_RESOURCE_WATCHDOG_CWD?.trim() || serverCwd,
+    stateFilePath: resourceWatchdogStatePath,
+    auditLogPath: resourceWatchdogAuditPath,
+  });
+  const resourceWatchdogService = createResourceWatchdogService({
+    getConfig: buildResourceWatchdogConfig,
+    sampler: createResourceWatchdogHostSampler({
+      getSessionPressure: () => {
+        const snap = sessionReaper.getHealthSnapshot();
+        return {
+          orphanSessionCount: snap.lastOrphanCount,
+          terminalLeakCount: snap.lastTerminalLeakCount,
+        };
+      },
+    }),
+    stateStore: new FileResourceWatchdogStateStore(resourceWatchdogStatePath),
+    auditSink: new JsonlResourceWatchdogAuditSink(resourceWatchdogAuditPath),
+    launchTask: (opts) => launchTask(launchServiceDeps, opts),
+    // Byte-capped tail only — never readFileSync the whole server.log under
+    // pressure (issue #1553 lesson; prod logs can be multi-GB).
+    readServerLogTail: () => readTrailingFileBytes(join(kookrDir, 'server.log'), 32 * 1024),
+  });
+
   let remoteLaunchBroker: import('../remote/launch-broker.js').RemoteLaunchBroker | undefined;
   if (process.env.KOOKR_RELAY_URL?.trim()) {
     const { createRemoteLaunchBrokerFromEnv, remoteLaunchFeatureEnabled } = await import('../remote/launch-broker.js');
@@ -1658,6 +1699,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     diagnosticRunner,
     terminalBackend,
     sessionReaper,
+    resourceWatchdog: resourceWatchdogService,
     deliveryTrace,
     coordinatorSuppressions,
     drainController,
@@ -2027,6 +2069,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     githubPollingEnabled: currentSettings.githubPollingEnabled,
     scheduleRunner,
     resourceStatusService,
+    resourceWatchdogService,
     findingEvidenceReviewSampler,
     scheduledWorktreeReclaimRunner,
     timerDeps: {

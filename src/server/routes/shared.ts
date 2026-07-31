@@ -363,6 +363,16 @@ export interface RouteDeps {
    * path (issue #1553 lesson).
    */
   sessionReaper?: Pick<import('../session-reaper.js').SessionReaperService, 'getHealthSnapshot'>;
+  /**
+   * Resource watchdog (issue #1724). `/api/health` reads only
+   * `getHealthSnapshot()` — last sample, last trigger, throttle state,
+   * spawns-in-24h — never a fresh `/proc` scan on the request path
+   * (issue #1553 lesson).
+   */
+  resourceWatchdog?: Pick<
+    import('../resource-watchdog-service.js').ResourceWatchdogService,
+    'getHealthSnapshot'
+  >;
   /** Cross-signal terminal/session diagnostics for the dashboard and support capture. */
   sessionHealthService?: Pick<SessionHealthService, 'getDiagnostics'>;
   /** Result of the crash-recovery startup phase; fetched once by the frontend on mount. */

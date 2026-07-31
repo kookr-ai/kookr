@@ -70,6 +70,8 @@ A separate 5-second liveness interval reconciles session state against the dtach
 
 **Stop event suppression:** When an agent's last event is `stop` (indicating the agent finished its turn and is waiting for input), the detector skips `permission_blocked` and `repeated_error` checks. Only `needs_input` detection proceeds after a stop event. This prevents false positives from errors encountered during prior work phases that completed successfully.
 
+**Resource watchdog (host-pressure actuator):** The supervisor watches agent *behavior*; the resource watchdog watches the *machine* they run on. When enabled (`KOOKR_RESOURCE_WATCHDOG=1`, off by default), a periodic sampler reads swap %, MemAvailable, `/proc/vmstat` `oom_kill` deltas, per-agent-family process counts, and the session reaper's orphan counts. On pressure it spawns one unattended investigation task briefed with the snapshot (hard-rules block: no interactive prompts, reversible kookr-owned remediation only), throttled to at most one spawn per 30 minutes (persisted in `{dataDir}/resource-watchdog.state.json`). After a rolling 24h spawn budget is exhausted, the next trigger spawns a *meta-reflection* task instead of another investigation. Spawns use the normal launch path so capacity/backpressure and reserved-slot posture apply; every trigger/suppression/spawn is appended to `resource-watchdog-audit.jsonl` and the last sample/throttle state is surfaced on `GET /api/health.resourceWatchdog` from cached memory only (no `/proc` scan on the health hot path — issue #1553). This is the safety net for the *next* unknown leak class; the deterministic orphan reaper (issue #1720) remains the fix for the known one.
+
 **Stopped-agent guard:** When an agent is explicitly stopped (via the UI stop button), the monitor marks it in a `stoppedAgents` set and the hook file watcher is stopped. `processEvents()` silently drops events for stopped agents, preventing a race condition where buffered hook events arriving after `unregisterAgent()` could resurrect the agent in the snapshot. The stopped flag is cleared by `registerAgent()` so that relaunched agents work correctly.
 
 Agents flagged as needing attention are surfaced to the developer in priority order (see F2.8 in [features.md](features.md)).
@@ -399,6 +401,8 @@ kookr/
 │   │   ├── ledger-watcher.ts              # Watch OSS contribution ledger
 │   │   ├── resource-status-service.ts     # System resource sampling surface
 │   │   ├── system-resource-sampler.ts     # CPU/memory/disk sampling
+│   │   ├── resource-watchdog-service.ts   # Host-pressure actuator (issue #1724; opt-in)
+│   │   ├── resource-watchdog-sampler.ts   # Swap/oom_kill/process-count sampler
 │   │   ├── task-share-service.ts          # Task sharing service boundary
 │   │   ├── relay-*.ts                     # Hosted relay lifecycle/client/connection stores
 │   │   ├── remote-*.ts                    # Remote command/input adapters
