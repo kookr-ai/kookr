@@ -54,15 +54,15 @@ parameters:
       - label: "Chain another batch after each merge"
         value: "true"
   - name: ignoreBudgetCiFailures
-    description: "Treat CI checks that fail only because CI budget/quota is unavailable as non-blocking. Genuine test/lint/type/build failures still block."
+    description: "Treat CI checks that fail only because CI budget/quota is unavailable as non-blocking (default — the operator does not pay for CI; local verification is the merge gate, see CLAUDE.md CI policy). Genuine test/lint/type/build failures still block."
     required: true
-    default: "false"
+    default: "true"
     type: select
     options:
-      - label: "CI failures block (default)"
-        value: "false"
-      - label: "Ignore budget-caused CI failures"
+      - label: "Ignore budget-caused CI failures (default)"
         value: "true"
+      - label: "CI failures block"
+        value: "false"
   - name: closeUnworthyIssues
     description: "Allow closing an issue (with a short explanation) when it isn't worth implementing, instead of opening a PR."
     required: true
@@ -108,7 +108,7 @@ This playbook is delivery-pre-authorized. Once the issue is trusted and implemen
 Three independent toggles, all default off, add extra autonomy. The launch form remembers your last choice per playbook+project, so set them once and they persist across runs.
 
 - **Self-continuation** — `{{selfContinuation}}`. When `true` and you are NOT in Ralph loop mode, once this target reaches *any* durable terminal outcome in Phase 8 (merged, auto-merge enabled, low-value closed, automation-quarantined, or a blocker recorded) — not merge only — use the `self-continuation-task` skill to spawn a fresh Kookr task that re-runs this playbook for the next eligible target, forwarding the same parameters (including these toggles), and only stop the chain when no eligible candidate remains (see the Phase 8 "Self-continuation handoff" and the mandatory completion gate). This produces a Ralph-like chain without the built-in loop. When `false`, finish the single target and stop. In Ralph loop mode this toggle is a no-op — the loop already chains.
-- **Ignore budget CI failures** — `{{ignoreBudgetCiFailures}}`. When `true`, treat CI checks that fail solely because CI budget/quota is unavailable (the run never executed — not a real test result) as non-blocking: do not stall the iteration or hold the PR on them, and in merge mode proceed as if those specific checks were not required. Genuine test, lint, type, or build failures still block — never merge over a real red check. When `false`, any failing required check blocks as usual.
+- **Ignore budget CI failures** — `{{ignoreBudgetCiFailures}}` (defaults to `true`: the operator does not pay for CI; local verification is the merge gate — see the repo CLAUDE.md CI policy). When `true`, treat CI checks that fail solely because CI budget/quota is unavailable (the run never executed — not a real test result) as non-blocking: do not stall the iteration or hold the PR on them, and in merge mode proceed as if those specific checks were not required. Genuine test, lint, type, or build failures still block — never merge over a real red check. When `false`, any failing required check blocks as usual.
 - **Close low-value issues** — `{{closeUnworthyIssues}}`. When `true`, if after reading the issue (Phase 1) you judge it not worth implementing — obsolete, out of scope, duplicate, or net-negative — you may `gh issue close <N>` with a one-line comment explaining why, then move to the next target instead of opening a PR. When `false`, never close issues; skip and report instead.
 
 ## Ralph loop contract
