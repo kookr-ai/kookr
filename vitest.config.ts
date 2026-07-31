@@ -10,7 +10,10 @@ export default defineConfig({
     testTimeout: 15_000,
     // Fails the run if a test poisons the shared git config (test identity,
     // core.bare flip, or bare-repo debris) and heals it. See test/git-repo-guard.ts.
-    globalSetup: ['./test/git-repo-guard.global.ts'],
+    // git-repo-guard: heals a poisoned shared git config. relay-orphan-reaper
+    // (#1723): SIGKILLs any test-suite relay server still lingering after the
+    // run so `pnpm test` leaves zero orphaned relay processes.
+    globalSetup: ['./test/git-repo-guard.global.ts', './test/relay-orphan-reaper.global.ts'],
     // TEMPORARY (issue #1437): names the test that poisons the shared git
     // config in CI. Removed in the same PR once CI has identified it.
     setupFiles: ['./test/_poisoner-probe.setup.ts'],
@@ -43,6 +46,14 @@ export default defineConfig({
       // port 4800 never starts the interval, shells out to git, or fetches a
       // status surface (#1594).
       KOOKR_DEPLOY_LAG_DETECTOR: '0',
+      // Issue #1723: arm the relay die-with-parent watchdog for every relay
+      // server spawned during the suite (relay-lifecycle startRelay spawns real
+      // `relay/server.ts` processes, detached). If a test crashes, times out, or
+      // the runner is SIGKILL-ed, the watchdog reaps the relay instead of
+      // leaking it — the leak that stranded 533 orphans / ~7.5 GB RSS on
+      // 2026-07-30. A short poll keeps the reap prompt in CI/post-test checks.
+      KOOKR_RELAY_DIE_WITH_PARENT: '1',
+      KOOKR_RELAY_DIE_WITH_PARENT_INTERVAL_MS: '250',
     },
     coverage: {
       provider: 'v8',

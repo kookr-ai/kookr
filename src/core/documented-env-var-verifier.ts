@@ -119,6 +119,14 @@ export const INTERNAL_ENV_VARS: ReadonlySet<string> = new Set([
   'KOOKR_RELAY_NODE_ID',
   'KOOKR_RELAY_PORT',
   'KOOKR_RELAY_TOKEN',
+  // Die-with-parent watchdog for test-spawned relay servers (issue #1723).
+  // Set only by vitest.config.ts / the relay lifecycle spawn; not day-to-day
+  // operator config (production relays are meant to outlive their launcher).
+  'KOOKR_RELAY_DIE_WITH_PARENT',
+  'KOOKR_RELAY_DIE_WITH_PARENT_INTERVAL_MS',
+  // Internal launcher→child handshake: the relay lifecycle stamps its own pid
+  // so the die-with-parent watchdog knows whose exit to watch for (issue #1723).
+  'KOOKR_RELAY_PARENT_PID',
   // Written split so the contiguous relay-trusted env name does not appear in
   // this file: src/remote/__tests__/trusted-env-boundary.test.ts forbids that
   // literal outside src/remote/. This is allowlist data, not an env read; same

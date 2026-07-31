@@ -1,0 +1,134 @@
+/**
+ * Issue #1723 item 3: janitor sweep for leaked relay-server orphans.
+ *
+ * The die-with-parent watchdog (relay/die-with-parent.ts) stops NEW leaks, but a
+ * sweep is the backstop for anything already stranded — e.g. a relay whose task
+ * worktree was deleted after `pnpm test`, leaving a `relay/server.ts` process
+ * with a now-nonexistent cwd. Each sweep scans the process table, selects
+ * relay orphans that are safe to reap (worktree gone AND aged past a small
+ * floor), kills the whole process tree, and logs pid/age/RSS per reap.
+ *
+ * Deliberately conservative: a live PRODUCTION relay always has an existing cwd
+ * and is therefore never selected (see selectRelayOrphansToReap). dtach orphans
+ * are surfaced for visibility but reaped by #1720's session reconciler, which
+ * owns the task/session map.
+ */
+import { existsSync } from 'node:fs';
+
+import { killProcessTree } from '../adapters/process-tree.js';
+import { listProcessSnapshots } from '../adapters/proc-process-lister.js';
+import {
+  scanStaleProcesses,
+  selectRelayOrphansToReap,
+  type RelayReapPolicy,
+  type StaleProcess,
+} from '../core/orphan-process-scanner.js';
+
+export interface RelayOrphanSweepDeps {
+  /** Returns the current classified stale-process scan. Injectable for tests. */
+  scan?: () => StaleProcess[];
+  /** Kills a process tree (TERM → grace → KILL). Injectable for tests. */
+  reap?: (pid: number) => Promise<void>;
+  /** Current time in ms. */
+  now?: () => number;
+  /** Reap policy (min/max age). Defaults to worktree-gone-only. */
+  policy?: RelayReapPolicy;
+  logger?: Pick<Console, 'log' | 'warn' | 'error'>;
+  /** Pids to never reap (e.g. this server's own tree). */
+  excludePids?: ReadonlySet<number>;
+}
+
+export interface ReapedRelayOrphan {
+  pid: number;
+  ageMs: number | null;
+  rssBytes: number;
+  cwd: string | null;
+}
+
+export interface RelayOrphanSweepResult {
+  scanned: number;
+  candidates: number;
+  reaped: ReapedRelayOrphan[];
+  reapedRssBytes: number;
+}
+
+function defaultScan(now: number, excludePids?: ReadonlySet<number>): StaleProcess[] {
+  return scanStaleProcesses({
+    listProcesses: listProcessSnapshots,
+    now,
+    cwdExists: (dir) => existsSync(dir),
+    ...(excludePids ? { excludePids } : {}),
+  });
+}
+
+function formatAge(ageMs: number | null): string {
+  if (ageMs === null) return 'unknown';
+  const seconds = Math.round(ageMs / 1000);
+  if (seconds < 120) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 120) return `${minutes}m`;
+  return `${Math.round(minutes / 60)}h`;
+}
+
+function formatRss(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+/**
+ * Run one relay-orphan sweep. Never throws: a failure to kill a single pid is
+ * logged and the sweep continues. Returns what was scanned/selected/reaped.
+ */
+export async function runRelayOrphanSweep(
+  deps: RelayOrphanSweepDeps = {},
+): Promise<RelayOrphanSweepResult> {
+  const now = deps.now ? deps.now() : Date.now();
+  const logger = deps.logger ?? console;
+  const reap = deps.reap ?? ((pid: number) => killProcessTree(pid));
+  const scan = deps.scan ?? (() => defaultScan(now, deps.excludePids));
+
+  const all = scan();
+  const candidates = selectRelayOrphansToReap(all, deps.policy ?? {});
+  const reaped: ReapedRelayOrphan[] = [];
+  let reapedRssBytes = 0;
+
+  for (const proc of candidates) {
+    try {
+      await reap(proc.pid);
+      reaped.push({ pid: proc.pid, ageMs: proc.ageMs, rssBytes: proc.rssBytes, cwd: proc.cwd });
+      reapedRssBytes += proc.rssBytes;
+      logger.warn(
+        `[relay-orphan-sweep] reaped relay pid=${proc.pid} age=${formatAge(proc.ageMs)} ` +
+          `rss=${formatRss(proc.rssBytes)} cwd=${proc.cwd ?? 'unknown'} (worktree gone, #1723)`,
+      );
+    } catch (err) {
+      logger.error(
+        `[relay-orphan-sweep] failed to reap relay pid=${proc.pid}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+
+  if (reaped.length > 0) {
+    logger.log(
+      `[relay-orphan-sweep] swept ${reaped.length} relay orphan(s), ` +
+        `freed ~${formatRss(reapedRssBytes)} RSS (scanned ${all.length} stale process(es))`,
+    );
+  }
+
+  return { scanned: all.length, candidates: candidates.length, reaped, reapedRssBytes };
+}
+
+/**
+ * Resolve the relay-orphan sweep interval (hours) from the environment. Returns
+ * 0 (off) when unset, non-numeric, or non-positive — scheduling is strictly
+ * opt-in, mirroring the maintenance-prune sweep.
+ */
+export function resolveRelayOrphanSweepIntervalHours(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env.KOOKR_RELAY_ORPHAN_SWEEP_INTERVAL_HOURS?.trim();
+  if (!raw) return 0;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return value;
+}

@@ -1,7 +1,7 @@
 import type { Context, Hono } from 'hono';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { accessSync, constants as fsConstants } from 'node:fs';
+import { accessSync, constants as fsConstants, existsSync } from 'node:fs';
 import { readInteractionLog } from '../../core/interaction-log.js';
 import { readTelemetryLog } from '../../core/telemetry.js';
 import { analyzeSession } from '../../core/friction-analyzer.js';
@@ -44,6 +44,12 @@ import {
   defaultRetroVerifyQueueDir,
   readPendingRetroVerify,
 } from '../../core/retro-verify-queue.js';
+import {
+  scanStaleProcesses,
+  summarizeStaleProcesses,
+  type StaleProcessSummary,
+} from '../../core/orphan-process-scanner.js';
+import { listProcessSnapshots } from '../../adapters/proc-process-lister.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const REVIEW_ADMIN_TOKEN_HEADER = 'x-kookr-admin-token';
@@ -70,6 +76,33 @@ const LESSON_YIELD_SCAN_TIMEOUT_MS = 30_000;
 export const LESSON_YIELD_REQUEST_BUDGET_MS = 8_000;
 /** After a failed/timed-out background refresh, do not retry before this. */
 const LESSON_YIELD_REFRESH_FAILURE_BACKOFF_MS = 5 * 60_000;
+/**
+ * Cache TTL for the stale-process scan (issue #1723). A `/proc` walk is cheap
+ * (a few ms) but a frequent health poll should not repeat it every request, so
+ * the block is served stale-while-revalidate off a short-lived cache.
+ */
+const STALE_PROCESS_CACHE_MS = 15_000;
+
+/**
+ * Scan `/proc` for stale relay-server + dtach processes and summarize per class.
+ * Returns null on any platform without `/proc` (empty summary would be
+ * indistinguishable from "clean"; null lets the block be omitted). Never throws.
+ */
+function scanStaleProcessSummary(): StaleProcessSummary | null {
+  try {
+    const snapshots = listProcessSnapshots();
+    if (snapshots.length === 0) return null; // no /proc (non-Linux/sandbox)
+    return summarizeStaleProcesses(
+      scanStaleProcesses({
+        listProcesses: () => snapshots,
+        now: Date.now(),
+        cwdExists: (dir) => existsSync(dir),
+      }),
+    );
+  } catch {
+    return null;
+  }
+}
 
 export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   const { taskStore, queue, adapter, interactionLog, githubScanner, githubStateStore, buildInfo, serverStartedAt } = deps;
@@ -93,6 +126,37 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   >();
   let lessonYieldRefreshNotBeforeMs = 0;
   const lessonYieldScansInFlight = new Map<number, Promise<LessonYieldSnapshot>>();
+
+  // Stale-process gauge (issue #1723 item 4): relay-server + dtach class counts
+  // and RSS, so orphan accumulation is visible before it OOMs anything. Served
+  // stale-while-revalidate (like lessonYield): the request path NEVER awaits a
+  // /proc walk — it returns the last cached summary and, when that is stale,
+  // triggers a single-flight background refresh. A full-host /proc walk on the
+  // health hot path is exactly what the 2026-07-26 OOM hotfix (c9792048)
+  // removed for lessonYield; this block must not reintroduce it.
+  let staleProcessCache: { expiresAtMs: number; summary: StaleProcessSummary | null } | null = null;
+  let staleProcessScanInFlight = false;
+  function refreshStaleProcessSummary(): void {
+    if (staleProcessScanInFlight) return;
+    staleProcessScanInFlight = true;
+    // Defer off the request tick; the scan is sync but must not block the
+    // response. setImmediate keeps it a fire-and-forget background refresh.
+    setImmediate(() => {
+      try {
+        const summary = scanStaleProcessSummary();
+        staleProcessCache = { expiresAtMs: Date.now() + STALE_PROCESS_CACHE_MS, summary };
+      } catch {
+        staleProcessCache = { expiresAtMs: Date.now() + STALE_PROCESS_CACHE_MS, summary: null };
+      } finally {
+        staleProcessScanInFlight = false;
+      }
+    });
+  }
+  function getStaleProcessSummary(): StaleProcessSummary | null {
+    const cached = staleProcessCache;
+    if (!cached || cached.expiresAtMs <= Date.now()) refreshStaleProcessSummary();
+    return cached?.summary ?? null; // undefined until the first background scan warms the cache
+  }
 
   /**
    * Single-flight lesson-yield scan per window length, hard-bounded by
@@ -223,6 +287,8 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ciBlindDebtBlock = undefined;
     }
 
+    const staleProcesses = getStaleProcessSummary();
+
     return c.json({
       status: 'ok',
       agents: tasks.length,
@@ -250,6 +316,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(resourceWatchdogBlock ? { resourceWatchdog: resourceWatchdogBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),
+      ...(staleProcesses ? { staleProcesses } : {}),
     });
   });
 
