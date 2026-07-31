@@ -396,6 +396,23 @@ export type ServerMessage =
         partial?: boolean;
         truncated?: string[];
       };
+    }
+  | {
+      /**
+       * Compact dashboard fan-out notice (issue #1725). Older clients ignore
+       * unknown `type`s in their WS switch (no `default` case), so this is
+       * forward-compatible with zero frontend changes required:
+       * - `resyncNeeded`: sent to one socket that was skipped (bufferedAmount
+       *   backpressure) at least once and has now drained below the soft
+       *   threshold — a nudge that it may have missed coalesced snapshots.
+       * - `loadShedActive` / `loadShedRecovered`: broadcast to every socket
+       *   when the event-loop-delay load-shed gate engages/disengages — full
+       *   snapshot broadcasts are suspended while active.
+       */
+      type: 'wsBackpressureNotice';
+      kind: 'resyncNeeded' | 'loadShedActive' | 'loadShedRecovered';
+      scopeKey?: string;
+      eventLoopDelayP95Ms?: number | null;
     };
 
 export type ClientMessage =
@@ -522,6 +539,7 @@ export const SERVER_MESSAGE_TYPES = [
   'workspaceSweepReport',
   'diagnosticReport',
   'ossAttempts',
+  'wsBackpressureNotice',
 ] as const satisfies readonly ServerMessage['type'][];
 
 /** Upper bound on task IDs accepted by one batch-abort request (issue #1325). */

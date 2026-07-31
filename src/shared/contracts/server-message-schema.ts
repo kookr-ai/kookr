@@ -417,6 +417,13 @@ const ossAttemptsMessage = z.object({
   }).optional(),
 });
 
+const wsBackpressureNoticeMessage = z.object({
+  type: z.literal('wsBackpressureNotice'),
+  kind: z.enum(['resyncNeeded', 'loadShedActive', 'loadShedRecovered']),
+  scopeKey: z.string().optional(),
+  eventLoopDelayP95Ms: z.number().nullable().optional(),
+});
+
 const ServerMessageSchemaImpl = z.union([
   snapshotMessage,
   updateMessage,
@@ -446,6 +453,7 @@ const ServerMessageSchemaImpl = z.union([
   workspaceSweepReportMessage,
   diagnosticReportMessage,
   ossAttemptsMessage,
+  wsBackpressureNoticeMessage,
 ]);
 
 export const ServerMessageSchema = ServerMessageSchemaImpl;

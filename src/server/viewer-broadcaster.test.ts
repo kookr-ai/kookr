@@ -417,4 +417,265 @@ describe('ViewerAwareBroadcaster', () => {
     expect(registry.unregistered).toEqual([]);
     expect(ws.close).not.toHaveBeenCalled();
   });
+
+  describe('serialize-once (#1725 proof)', () => {
+    test('a snapshot flush serializes the `all` payload exactly once regardless of connection count', () => {
+      const stringifySpy = vi.spyOn(JSON, 'stringify');
+      const sent: string[][] = [[], [], []];
+      const registry = stubRegistry([
+        { ws: fakeSocket((d) => sent[0].push(d)), actor: OWNER },
+        { ws: fakeSocket((d) => sent[1].push(d)), actor: OWNER },
+        { ws: fakeSocket((d) => sent[2].push(d)), actor: allViewer('gAll') },
+      ]);
+      const broadcaster = new ViewerAwareBroadcaster({ registry, buildScopedSnapshot: () => snapshot() });
+
+      const before = stringifySpy.mock.calls.length;
+      broadcaster.broadcast(snapshot({ serverCwd: '/repo-once' }));
+      const callsForThisBroadcast = stringifySpy.mock.calls.length - before;
+
+      // Exactly one JSON.stringify call for the snapshot payload itself,
+      // reused verbatim for every connection in the `all` group — proof that
+      // the fan-out is serialize-once, not serialize-per-client (viewer-
+      // broadcaster.ts: `serializeSnapshot` called once in `broadcast`, its
+      // `data` string handed to `send` for every connection, viewer-
+      // broadcaster.ts ~line 171/224).
+      expect(callsForThisBroadcast).toBe(1);
+      for (const bucket of sent) {
+        expect(bucket).toHaveLength(1);
+        expect((JSON.parse(bucket[0]) as SnapshotMessage).serverCwd).toBe('/repo-once');
+      }
+      // All three sockets literally received the same string instance.
+      expect(sent[0][0]).toBe(sent[1][0]);
+      expect(sent[0][0]).toBe(sent[2][0]);
+    });
+  });
+
+  describe('sustained soft-backpressure disconnect + resync notice (#1725)', () => {
+    test('a socket held above soft threshold for N consecutive broadcasts is disconnected', () => {
+      const ws = fakeSocket(() => undefined, 11);
+      const registry = stubRegistry([{ ws, actor: OWNER }]);
+      const broadcaster = new ViewerAwareBroadcaster({
+        registry,
+        buildScopedSnapshot: () => snapshot(),
+        backpressureSoftBytes: 10,
+        backpressureHardBytes: 1000,
+        backpressureDisconnectAfterSkips: 3,
+      });
+
+      broadcaster.broadcast(snapshot());
+      expect(registry.unregistered).toEqual([]);
+      broadcaster.broadcast(snapshot());
+      expect(registry.unregistered).toEqual([]);
+      broadcaster.broadcast(snapshot()); // 3rd consecutive skip -> disconnect
+
+      expect(registry.unregistered).toEqual([ws]);
+      expect(ws.close).toHaveBeenCalledWith(1013, 'sustained dashboard snapshot backpressure');
+    });
+
+    test('a socket that heals before reaching N skips is not disconnected, and gets a resync notice on drain', () => {
+      const sent: string[] = [];
+      const ws = fakeSocket((d) => sent.push(d), 11);
+      const registry = stubRegistry([{ ws, actor: OWNER }]);
+      const broadcaster = new ViewerAwareBroadcaster({
+        registry,
+        buildScopedSnapshot: () => snapshot(),
+        backpressureSoftBytes: 10,
+        backpressureHardBytes: 1000,
+        backpressureDisconnectAfterSkips: 3,
+      });
+
+      broadcaster.broadcast(snapshot()); // skip 1
+      broadcaster.broadcast(snapshot()); // skip 2 (below the N=3 threshold)
+      ws.bufferedAmount = 0; // drains
+      broadcaster.broadcast(snapshot());
+
+      expect(registry.unregistered).toEqual([]);
+      expect(ws.close).not.toHaveBeenCalled();
+      // The drain tick sends the compact resync notice FIRST, immediately
+      // followed by that same tick's real snapshot — the client is warned it
+      // may have missed frames, then resumes normal cadence in the same beat.
+      expect(sent).toHaveLength(2);
+      expect(JSON.parse(sent[0])).toEqual({ type: 'wsBackpressureNotice', kind: 'resyncNeeded', scopeKey: 'all' });
+      expect((JSON.parse(sent[1]) as ServerMessage).type).toBe('snapshot');
+
+      sent.length = 0;
+      broadcaster.broadcast(snapshot());
+      expect(sent.map((d) => (JSON.parse(d) as ServerMessage).type)).toEqual(['snapshot']);
+    });
+
+    test('the consecutive-skip counter resets on drain — a later saturation streak starts fresh', () => {
+      const ws = fakeSocket(() => undefined, 11);
+      const registry = stubRegistry([{ ws, actor: OWNER }]);
+      const broadcaster = new ViewerAwareBroadcaster({
+        registry,
+        buildScopedSnapshot: () => snapshot(),
+        backpressureSoftBytes: 10,
+        backpressureHardBytes: 1000,
+        backpressureDisconnectAfterSkips: 2,
+      });
+
+      broadcaster.broadcast(snapshot()); // skip 1
+      ws.bufferedAmount = 0;
+      broadcaster.broadcast(snapshot()); // heals, resets counter
+      ws.bufferedAmount = 11;
+      broadcaster.broadcast(snapshot()); // skip 1 (fresh streak)
+      expect(registry.unregistered).toEqual([]);
+      broadcaster.broadcast(snapshot()); // skip 2 -> disconnect
+      expect(registry.unregistered).toEqual([ws]);
+    });
+
+    test('R3: the counter is scoped to snapshot frames only — non-snapshot deltas over soft never count toward disconnect', () => {
+      const ws = fakeSocket(() => undefined, 11);
+      const registry = stubRegistry([{ ws, actor: OWNER }]);
+      const broadcaster = new ViewerAwareBroadcaster({
+        registry,
+        buildScopedSnapshot: () => snapshot(),
+        backpressureSoftBytes: 10,
+        backpressureHardBytes: 1000,
+        backpressureDisconnectAfterSkips: 2,
+      });
+
+      // A burst of ordinary (non-snapshot) delta traffic over soft threshold —
+      // must never accumulate toward the snapshot-scoped disconnect counter,
+      // however many times it happens.
+      for (let i = 0; i < 10; i++) {
+        broadcaster.broadcast({ type: 'projectSummaries', projects: [] });
+      }
+      expect(registry.unregistered).toEqual([]);
+
+      // Now two consecutive SNAPSHOT skips reach the N=2 threshold and disconnect.
+      broadcaster.broadcast(snapshot());
+      expect(registry.unregistered).toEqual([]);
+      broadcaster.broadcast(snapshot());
+      expect(registry.unregistered).toEqual([ws]);
+    });
+
+    test('R3: a coordinator.snapshot frame does not double-count against the same broadcast\'s snapshot skip', () => {
+      const ws = fakeSocket(() => undefined, 11);
+      const registry = stubRegistry([{ ws, actor: OWNER }]);
+      const broadcaster = new ViewerAwareBroadcaster({
+        registry,
+        buildScopedSnapshot: () => snapshot(),
+        backpressureSoftBytes: 10,
+        backpressureHardBytes: 1000,
+        backpressureDisconnectAfterSkips: 2,
+      });
+
+      // Each broadcast sends BOTH a primary snapshot frame and a coordinator
+      // frame (since coordinator is set) — if coordinator counted too, one
+      // broadcast would already reach N=2 and disconnect. It must take two
+      // full broadcasts (two snapshot-scoped skips), not one.
+      broadcaster.broadcast(snapshot({ coordinator: { outputs: [] } as never }));
+      expect(registry.unregistered).toEqual([]);
+      broadcaster.broadcast(snapshot({ coordinator: { outputs: [] } as never }));
+      expect(registry.unregistered).toEqual([ws]);
+    });
+
+    test('R9: backpressureDisconnectAfterSkips: 0 disables the sustained-skip disconnect entirely — soft-skip persists forever without disconnecting', () => {
+      const ws = fakeSocket(() => undefined, 11);
+      const registry = stubRegistry([{ ws, actor: OWNER }]);
+      const broadcaster = new ViewerAwareBroadcaster({
+        registry,
+        buildScopedSnapshot: () => snapshot(),
+        backpressureSoftBytes: 10,
+        backpressureHardBytes: 1000,
+        backpressureDisconnectAfterSkips: 0,
+      });
+
+      for (let i = 0; i < 20; i++) broadcaster.broadcast(snapshot());
+
+      expect(registry.unregistered).toEqual([]);
+      expect(ws.close).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('load-shed mode (#1725)', () => {
+    function fakeLoadShedGate(initialActive: boolean): {
+      isActive: boolean;
+      lastEventLoopDelayP95Ms: number | null;
+      recordSkippedSnapshot: ReturnType<typeof vi.fn>;
+    } {
+      return {
+        isActive: initialActive,
+        lastEventLoopDelayP95Ms: 1800,
+        recordSkippedSnapshot: vi.fn(),
+      };
+    }
+
+    test('while active, full snapshot fan-out is replaced by one tiny notice per connection and the gate is told', () => {
+      const sentA: string[] = [];
+      const sentB: string[] = [];
+      const registry = stubRegistry([
+        { ws: fakeSocket((d) => sentA.push(d)), actor: OWNER },
+        { ws: fakeSocket((d) => sentB.push(d)), actor: allViewer('gAll') },
+      ]);
+      const loadShedGate = fakeLoadShedGate(true);
+      const broadcaster = new ViewerAwareBroadcaster({ registry, buildScopedSnapshot: () => snapshot(), loadShedGate });
+
+      broadcaster.broadcast(snapshot({ serverCwd: '/should-not-be-sent' }));
+
+      expect(loadShedGate.recordSkippedSnapshot).toHaveBeenCalledTimes(1);
+      for (const bucket of [sentA, sentB]) {
+        expect(bucket).toHaveLength(1);
+        expect(JSON.parse(bucket[0])).toEqual({
+          type: 'wsBackpressureNotice',
+          kind: 'loadShedActive',
+          eventLoopDelayP95Ms: 1800,
+        });
+      }
+    });
+
+    test('non-snapshot messages still flow normally while shed mode is active', () => {
+      const sent: string[] = [];
+      const registry = stubRegistry([{ ws: fakeSocket((d) => sent.push(d)), actor: OWNER }]);
+      const loadShedGate = fakeLoadShedGate(true);
+      const broadcaster = new ViewerAwareBroadcaster({ registry, buildScopedSnapshot: () => snapshot(), loadShedGate });
+
+      broadcaster.broadcast({ type: 'projectSummaries', projects: [] });
+
+      expect(sent.map((d) => (JSON.parse(d) as ServerMessage).type)).toEqual(['projectSummaries']);
+      expect(loadShedGate.recordSkippedSnapshot).not.toHaveBeenCalled();
+    });
+
+    test('when the gate is inactive, snapshots flow exactly as before shed mode was ever engaged', () => {
+      const sent: string[] = [];
+      const registry = stubRegistry([{ ws: fakeSocket((d) => sent.push(d)), actor: OWNER }]);
+      const loadShedGate = fakeLoadShedGate(false);
+      const broadcaster = new ViewerAwareBroadcaster({ registry, buildScopedSnapshot: () => snapshot(), loadShedGate });
+
+      broadcaster.broadcast(snapshot());
+
+      expect(sent.map((d) => (JSON.parse(d) as ServerMessage).type)).toEqual(['snapshot']);
+    });
+
+    test('on recovery, a loadShedRecovered notice is sent and the SAME broadcast resumes the full snapshot', () => {
+      const sent: string[] = [];
+      const registry = stubRegistry([{ ws: fakeSocket((d) => sent.push(d)), actor: OWNER }]);
+      const loadShedGate = fakeLoadShedGate(true);
+      const broadcaster = new ViewerAwareBroadcaster({ registry, buildScopedSnapshot: () => snapshot(), loadShedGate });
+
+      broadcaster.broadcast(snapshot()); // shed: notice only
+      expect(sent).toHaveLength(1);
+      expect((JSON.parse(sent[0]) as { kind: string }).kind).toBe('loadShedActive');
+
+      loadShedGate.isActive = false; // gate recovers between ticks
+      sent.length = 0;
+      broadcaster.broadcast(snapshot());
+
+      expect(sent.map((d) => (JSON.parse(d) as { type: string; kind?: string }))).toEqual([
+        { type: 'wsBackpressureNotice', kind: 'loadShedRecovered', scopeKey: undefined, eventLoopDelayP95Ms: 1800 },
+        { type: 'snapshot', agents: [], serverCwd: '/repo' },
+      ]);
+    });
+
+    test('without a loadShedGate wired, behavior is unchanged from pre-#1725 (opt-in, no regression)', () => {
+      const sent: string[] = [];
+      const registry = stubRegistry([{ ws: fakeSocket((d) => sent.push(d)), actor: OWNER }]);
+      const broadcaster = new ViewerAwareBroadcaster({ registry, buildScopedSnapshot: () => snapshot() });
+
+      broadcaster.broadcast(snapshot());
+
+      expect(sent.map((d) => (JSON.parse(d) as ServerMessage).type)).toEqual(['snapshot']);
+    });
+  });
 });

@@ -30,6 +30,7 @@ import { ViewerAwareBroadcaster } from '../viewer-broadcaster.js';
 import type { SnapshotPayloadSizeObservation } from '../snapshot-payload-size-policy.js';
 import type { Scope } from '../viewer-data-policy.js';
 import type { IsActorAllowedTerminalSession } from '../terminal-scope.js';
+import { WebSocketLoadShedGate, type WebSocketLoadShedConfig } from '../websocket-load-shed.js';
 
 const SNAPSHOT_PAYLOAD_WARN_BYTES = 2 * 1024 * 1024;
 const SNAPSHOT_PAYLOAD_MAX_BYTES = 8 * 1024 * 1024;
@@ -96,6 +97,23 @@ export interface RealtimeServicesDeps {
   snapshotPayloadWarnBytes?: number;
   snapshotPayloadMaxBytes?: number;
   observeSnapshotPayloadSize?: (observation: SnapshotPayloadSizeObservation) => void;
+  /**
+   * Consecutive broadcasts a socket may sit above the soft bufferedAmount
+   * threshold before it is disconnected outright (#1725). Omitted keeps the
+   * `ViewerAwareBroadcaster` default.
+   */
+  backpressureDisconnectAfterSkips?: number;
+  /**
+   * Dead-socket ping/pong liveness reaping on the registry's existing
+   * revocation-sweep tick (#1725). Omitted keeps the registry default (on).
+   */
+  livenessSweepEnabled?: boolean;
+  /**
+   * Event-loop-delay load-shed gate config (#1725). Only constructed (and
+   * wired into the broadcaster) when provided — lightweight/test wirings that
+   * omit it get the pre-#1725 behavior (snapshots always fully fan out).
+   */
+  loadShedConfig?: WebSocketLoadShedConfig;
 }
 
 export interface RealtimeServices {
@@ -110,6 +128,13 @@ export interface RealtimeServices {
   setSnapshotAchievementsReady: (ready: boolean) => void;
   setProjectSummaryGitHubDeps: (deps: ProjectSummaryGitHubDeps) => void;
   setCoordinatorAuditTailProvider: (provider: CoordinatorAuditTailProvider) => void;
+  /**
+   * Feed one sampled event-loop delay p95 (ms) into the load-shed gate
+   * (#1725). Wired to `ResourceStatusService`'s `onEventLoopDelaySample` at
+   * bootstrap so the gate reuses the SAME measurement as the #1590 admission
+   * guard. A no-op when `loadShedConfig` was not provided.
+   */
+  noteEventLoopDelaySample: (delayMs: number | null) => void;
 }
 
 export interface ProjectSummaryGitHubDeps {
@@ -127,7 +152,12 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
     resolveGrantLiveness: deps.resolveGrantLiveness,
     isActorAllowedTerminalSession: deps.isActorAllowedTerminalSession,
     onEvict: deps.onViewerEvicted,
+    ...(deps.livenessSweepEnabled !== undefined ? { livenessSweepEnabled: deps.livenessSweepEnabled } : {}),
   });
+  // #1725: only constructed when a config was provided, so lightweight/test
+  // wirings that omit `loadShedConfig` keep pre-#1725 behavior (snapshots
+  // always fully fan out; `noteEventLoopDelaySample` below is then a no-op).
+  const loadShedGate = deps.loadShedConfig ? new WebSocketLoadShedGate(deps.loadShedConfig) : undefined;
   const broadcaster = new ViewerAwareBroadcaster({
     registry,
     buildScopedSnapshot:
@@ -146,6 +176,10 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
       maxBytes: deps.snapshotPayloadMaxBytes ?? DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS.maxBytes,
       ...(deps.observeSnapshotPayloadSize ? { observe: deps.observeSnapshotPayloadSize } : {}),
     },
+    ...(deps.backpressureDisconnectAfterSkips !== undefined
+      ? { backpressureDisconnectAfterSkips: deps.backpressureDisconnectAfterSkips }
+      : {}),
+    ...(loadShedGate ? { loadShedGate } : {}),
   });
   let achievementWatcher: AchievementWatcher;
   let wsBroadcastCount = 0;
@@ -156,7 +190,16 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
 
   function broadcastToAll(msg: ServerMessage): void {
     wsBroadcastCount++;
-    if (msg.type === 'snapshot') {
+    // #1725 review finding (R6): the load-shed gate in `broadcaster.broadcast`
+    // only skips the serialize-and-fan-out half of a shed snapshot — but this
+    // enrichment block (coordinator-state build, achievement checks, spend
+    // lookup, 2x `taskStore.listTasks()`) runs unconditionally BEFORE that
+    // gate is ever consulted. Skipping it here too means shed mode actually
+    // sheds the snapshot's construction cost, not just its transport cost —
+    // the broadcaster discards `msg`'s content entirely while shedding, so
+    // none of this enrichment is wasted work avoided, it's wasted work
+    // avoided for real.
+    if (msg.type === 'snapshot' && !loadShedGate?.isActive) {
       if (snapshotAchievementsReady && achievementWatcher && scheduleStore) {
         try {
           const tasks = deps.taskStore.listTasks();
@@ -279,6 +322,9 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
     },
     setCoordinatorAuditTailProvider: (provider) => {
       coordinatorAuditTailProvider = provider;
+    },
+    noteEventLoopDelaySample: (delayMs) => {
+      loadShedGate?.noteSample(delayMs);
     },
   };
 }

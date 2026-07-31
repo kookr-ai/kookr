@@ -42,10 +42,34 @@ const DEFAULT_BACKPRESSURE_SOFT_BYTES = 1 * 1024 * 1024;
  */
 const DEFAULT_BACKPRESSURE_HARD_BYTES = 16 * 1024 * 1024;
 
+/**
+ * Default consecutive broadcasts a socket may sit above the soft threshold
+ * before it is disconnected outright (#1725). A socket that is merely slow
+ * drains and resumes within a broadcast or two — one that stays over soft on
+ * every single tick is not draining at all, and would otherwise sit forever
+ * silently missing every snapshot without ever tripping the hard cap.
+ * Exported so `websocket-backpressure-config.ts`'s env reader shares this
+ * exact default rather than redeclaring it.
+ */
+export const DEFAULT_BACKPRESSURE_DISCONNECT_AFTER_SKIPS = 5;
+
 /** The slice of the registry the broadcaster depends on. */
 export interface BroadcasterRegistry {
   snapshotDashboardConnections(): { ws: WebSocket; actor: Actor }[];
   unregister(ws: WebSocket): void;
+}
+
+/**
+ * The narrow slice of {@link ../websocket-load-shed.WebSocketLoadShedGate} the
+ * broadcaster depends on (#1725) — decoupled to an interface so this module
+ * never imports the gate's env-parsing concerns, matching the
+ * {@link BroadcasterRegistry} seam above.
+ */
+export interface LoadShedSignal {
+  readonly isActive: boolean;
+  /** Last sampled event-loop delay p95 (ms), surfaced on the degraded frame for observability. */
+  readonly lastEventLoopDelayP95Ms: number | null;
+  recordSkippedSnapshot(): void;
 }
 
 export interface ViewerAwareBroadcasterDeps {
@@ -78,6 +102,24 @@ export interface ViewerAwareBroadcasterDeps {
    * closed with 1013. Defaults to 16 MiB; override in tests.
    */
   backpressureHardBytes?: number;
+  /**
+   * Consecutive SNAPSHOT broadcasts a socket may sit above the soft
+   * backpressure threshold before it is disconnected outright (#1725).
+   * Defaults to 5. `0` disables this specific mechanism (soft-skip-only,
+   * pre-#1725 semantics) — an operator's mid-incident kill switch, distinct
+   * from the (unaffected) hard-cap disconnect above.
+   */
+  backpressureDisconnectAfterSkips?: number;
+  /**
+   * Event-loop-delay load-shed gate (#1725). When {@link LoadShedSignal.isActive}
+   * is true, `broadcast` skips the expensive per-scope snapshot
+   * serialize-and-fan-out entirely and sends a tiny `wsBackpressureNotice`
+   * frame instead — the server's own saturation must degrade its most
+   * expensive output rather than keep making itself worse. Omitted entirely
+   * (the default) means load-shedding never engages, matching the pre-#1725
+   * behavior.
+   */
+  loadShedGate?: LoadShedSignal;
 }
 
 /** The scope a connection's actor sees: owners see `all`; viewers see their grant scope. */
@@ -124,6 +166,16 @@ export class ViewerAwareBroadcaster {
   private readonly snapshotPayloadSizePolicy: SnapshotPayloadSizePolicy | undefined;
   private readonly backpressureSoftBytes: number;
   private readonly backpressureHardBytes: number;
+  private readonly backpressureDisconnectAfterSkips: number;
+  private readonly loadShedGate: LoadShedSignal | undefined;
+  /**
+   * Per-socket consecutive-soft-skip counter (#1725), keyed by the live
+   * WebSocket instance. A WeakMap — never needs explicit pruning as sockets
+   * churn, so this cannot itself become a retained-object leak.
+   */
+  private readonly staleClients = new WeakMap<WebSocket, { consecutiveSkips: number }>();
+  /** Tracks whether the PREVIOUS broadcast was shed, so recovery can be announced exactly once. */
+  private wasLoadShedActive = false;
 
   constructor(deps: ViewerAwareBroadcasterDeps) {
     this.registry = deps.registry;
@@ -134,6 +186,15 @@ export class ViewerAwareBroadcaster {
     const hard = Math.max(soft, Math.floor(deps.backpressureHardBytes ?? DEFAULT_BACKPRESSURE_HARD_BYTES));
     this.backpressureSoftBytes = soft;
     this.backpressureHardBytes = hard;
+    // `0` disables the sustained-skip disconnect entirely (soft-skip-only,
+    // pre-#1725 semantics) — an operator's mid-incident kill switch for this
+    // specific mechanism, distinct from the hard-cap disconnect above, which
+    // is unaffected. Any other non-negative value floors to at least 1.
+    const rawDisconnectAfterSkips = Math.floor(
+      deps.backpressureDisconnectAfterSkips ?? DEFAULT_BACKPRESSURE_DISCONNECT_AFTER_SKIPS,
+    );
+    this.backpressureDisconnectAfterSkips = rawDisconnectAfterSkips <= 0 ? 0 : Math.max(1, rawDisconnectAfterSkips);
+    this.loadShedGate = deps.loadShedGate;
   }
 
   /**
@@ -166,6 +227,24 @@ export class ViewerAwareBroadcaster {
         this.send(ws, data, msg.type, 'all');
       }
       return;
+    }
+
+    // Load-shed (#1725): when the event-loop-delay gate has been engaged for
+    // `sustainTicks` consecutive resource-status samples, the snapshot
+    // serialize-and-fan-out below — the actual saturating work in the
+    // 2026-07-31 incident (2.2 MB × 300+ sockets) — is skipped entirely in
+    // favor of one tiny frame per connection. The server degrades its most
+    // expensive output instead of compounding its own overload.
+    if (this.loadShedGate?.isActive) {
+      this.loadShedGate.recordSkippedSnapshot();
+      this.broadcastBackpressureNotice(connections, 'loadShedActive');
+      this.wasLoadShedActive = true;
+      return;
+    }
+    if (this.wasLoadShedActive) {
+      this.wasLoadShedActive = false;
+      this.broadcastBackpressureNotice(connections, 'loadShedRecovered');
+      // Fall through: this tick's full snapshot resumes normally below.
     }
 
     const allSnapshot = serializeSnapshot(msg, 'all', this.snapshotPayloadSizePolicy);
@@ -219,13 +298,47 @@ export class ViewerAwareBroadcaster {
   }
 
   /**
+   * Send a tiny `wsBackpressureNotice` frame to every open connection in place
+   * of a full snapshot (#1725, load-shed mode). Serialized once — same
+   * discipline as the real snapshot fan-out — and routed through {@link send}
+   * so readyState/backpressure handling stays uniform, even though a frame
+   * this small is very unlikely to itself trip backpressure.
+   */
+  private broadcastBackpressureNotice(
+    connections: { ws: WebSocket; actor: Actor }[],
+    kind: 'loadShedActive' | 'loadShedRecovered',
+  ): void {
+    const data = JSON.stringify({
+      type: 'wsBackpressureNotice',
+      kind,
+      eventLoopDelayP95Ms: this.loadShedGate?.lastEventLoopDelayP95Ms ?? null,
+    } satisfies ServerMessage);
+    for (const { ws } of connections) {
+      this.send(ws, data, 'wsBackpressureNotice', 'all');
+    }
+  }
+
+  /**
    * Send one serialized frame to one socket. On failure the socket is dropped
    * from the registry and closed — matching the legacy `sendToClient` semantics
    * the broadcaster replaces. Returns whether the primary send succeeded.
    *
-   * Backpressure (#1424): `bufferedAmount` above the soft threshold skips this
-   * frame for that socket only (drop, never requeue — snapshots are full-state).
-   * Above the hard threshold the socket is unregistered and closed with 1013.
+   * Backpressure (#1424, extended #1725): `bufferedAmount` above the soft
+   * threshold skips this frame for that socket only (drop, never requeue —
+   * snapshots are full-state). For `snapshot` frames specifically, a socket
+   * that stays above soft for {@link backpressureDisconnectAfterSkips}
+   * CONSECUTIVE snapshot broadcasts is disconnected outright — sustained
+   * saturation, not a momentary stall, so waiting for the (much higher) hard
+   * cap would let it silently miss every snapshot indefinitely. Scoped to
+   * `snapshot` only (not the sibling `coordinator.snapshot` frame nor
+   * ordinary deltas that also funnel through this method) so the counter
+   * measures actual snapshot-flush cadence rather than double-counting a
+   * primary+coordinator pair or tripping on unrelated delta traffic. Above
+   * the hard threshold the socket is unregistered and closed with 1013
+   * immediately, same as before. A stale socket that drains back under soft
+   * gets a compact `wsBackpressureNotice(resyncNeeded)` frame instead of
+   * silently resuming — it may have missed several coalesced snapshots while
+   * skipped.
    */
   private send(
     ws: WebSocket,
@@ -238,6 +351,7 @@ export class ViewerAwareBroadcaster {
     const bufferedAmount = getBufferedAmount(ws);
     if (bufferedAmount > this.backpressureHardBytes) {
       this.observeBackpressureDrop(payloadType, scopeKey, bufferedAmount);
+      this.staleClients.delete(ws);
       this.registry.unregister(ws);
       console.warn(
         `[websocket] dashboard client bufferedAmount exceeded hard backpressure; closing`,
@@ -258,13 +372,56 @@ export class ViewerAwareBroadcaster {
     if (bufferedAmount > this.backpressureSoftBytes) {
       // Soft: skip this frame only. Do not requeue — next coalesced snapshot heals.
       this.observeBackpressureDrop(payloadType, scopeKey, bufferedAmount);
+      // The consecutive-skip counter is deliberately scoped to `snapshot`
+      // frames ONLY (#1725 review finding: counting every frame type — the
+      // sibling `coordinator.snapshot` frame, plus ordinary `update`/`alert`/
+      // `projectSummaries` deltas that also funnel through this same `send` —
+      // meant a client could hit `backpressureDisconnectAfterSkips` within
+      // milliseconds of unrelated delta traffic, or be double-counted once
+      // per broadcast via the primary+coordinator pair. "N CONSECUTIVE
+      // broadcasts" (the documented contract) means N snapshot flushes, the
+      // actual periodic/coalesced cadence disconnect-after-N is meant to
+      // measure — not N arbitrary sends.
+      if (payloadType === 'snapshot' && this.backpressureDisconnectAfterSkips > 0) {
+        const state = this.staleClients.get(ws) ?? { consecutiveSkips: 0 };
+        state.consecutiveSkips += 1;
+        this.staleClients.set(ws, state);
+        if (state.consecutiveSkips >= this.backpressureDisconnectAfterSkips) {
+          console.warn(
+            '[websocket] dashboard client sustained soft backpressure across consecutive snapshot broadcasts; disconnecting',
+            {
+              payloadType,
+              bufferedAmount,
+              consecutiveSkips: state.consecutiveSkips,
+              disconnectAfterSkips: this.backpressureDisconnectAfterSkips,
+              softBytes: this.backpressureSoftBytes,
+            },
+          );
+          this.staleClients.delete(ws);
+          this.registry.unregister(ws);
+          try {
+            ws.close(1013, 'sustained dashboard snapshot backpressure');
+          } catch (closeErr) {
+            console.warn('[websocket] Failed to close client after sustained backpressure', closeErr);
+          }
+        }
+      }
       return false;
+    }
+
+    // Healthy (at or below soft). A socket that had skipped at least once
+    // gets a resync nudge before resuming normal cadence — it may have missed
+    // coalesced snapshots while it was stale.
+    if (this.staleClients.get(ws)) {
+      this.staleClients.delete(ws);
+      this.sendResyncNotice(ws, scopeKey);
     }
 
     try {
       ws.send(data);
       return true;
     } catch (err) {
+      this.staleClients.delete(ws);
       this.registry.unregister(ws);
       console.warn(`[websocket] Failed to broadcast ${payloadType}; dropping client`, err);
       try {
@@ -273,6 +430,19 @@ export class ViewerAwareBroadcaster {
         console.warn('[websocket] Failed to close client after broadcast failure', closeErr);
       }
       return false;
+    }
+  }
+
+  /** Best-effort compact notice that a just-drained socket may have missed frames while stale (#1725). */
+  private sendResyncNotice(ws: WebSocket, scopeKey: string): void {
+    try {
+      ws.send(JSON.stringify({
+        type: 'wsBackpressureNotice',
+        kind: 'resyncNeeded',
+        scopeKey,
+      } satisfies ServerMessage));
+    } catch (err) {
+      console.warn('[websocket] failed to send resync-needed notice after backpressure drain', err);
     }
   }
 

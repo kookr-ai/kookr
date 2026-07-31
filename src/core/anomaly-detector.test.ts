@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach } from 'vitest';
 import type { AgentEvent, Anomaly } from './types.js';
-import { detectAnomalies, prioritizeAnomalies } from './anomaly-detector.js';
+import type { PublishMergeReconciliationEvidence } from './anomaly-types.js';
+import { detectAnomalies, prioritizeAnomalies, classifyPublishMergeReconciliation } from './anomaly-detector.js';
 import {
   getDetectionStats,
   resetDetectionStats,
@@ -257,6 +258,165 @@ describe('Anomaly Detector', () => {
 
       const anomaly = detectAnomalies(events, agentId);
       expect(anomaly).toBeNull();
+    });
+  });
+
+  describe('publish/merge state reconciliation (#1148)', () => {
+    function evidence(overrides: Partial<PublishMergeReconciliationEvidence> = {}): PublishMergeReconciliationEvidence {
+      return {
+        connectorFailureDetected: false,
+        localCredentialsCanPublish: false,
+        prGreenAndMergeable: false,
+        mergeAfterImplementation: false,
+        ...overrides,
+      };
+    }
+
+    describe('classifyPublishMergeReconciliation — table', () => {
+      test.each([
+        [
+          'PR green + merge-after-implementation authorized -> pr-green-mergeable',
+          evidence({ prGreenAndMergeable: true, mergeAfterImplementation: true }),
+          'pr-green-mergeable',
+        ],
+        [
+          'PR green but merge-after-implementation not authorized -> real-blocker',
+          evidence({ prGreenAndMergeable: true, mergeAfterImplementation: false }),
+          'real-blocker',
+        ],
+        [
+          'connector failure + local credentials can publish -> connector-failure-but-publishable',
+          evidence({ connectorFailureDetected: true, localCredentialsCanPublish: true }),
+          'connector-failure-but-publishable',
+        ],
+        [
+          'connector failure but local credentials cannot publish -> real-blocker',
+          evidence({ connectorFailureDetected: true, localCredentialsCanPublish: false }),
+          'real-blocker',
+        ],
+        [
+          'no reconciling evidence at all -> real-blocker',
+          evidence(),
+          'real-blocker',
+        ],
+      ])('%s', (_label, ev, expected) => {
+        expect(classifyPublishMergeReconciliation(ev).classification).toBe(expected);
+      });
+    });
+
+    test('connector create-branch failure is reconciled away (suppressed) when local git/gh credentials can publish (AC1/AC2)', () => {
+      const events = eventSequence()
+        .toolUse('mcp__github__create_branch', { branch: 'feature-x' }, 'toolu_1')
+        .toolResult('mcp__github__create_branch', { error: 'Git Data API error: Reference already exists' }, 'toolu_1')
+        .stop('I could not publish the branch via the connector. Please advise.')
+        .build();
+
+      const anomaly = detectAnomalies(events, agentId, undefined, evidence({ localCredentialsCanPublish: true }));
+      expect(anomaly).toBeNull();
+    });
+
+    test('connector failure with no working local fallback still surfaces a real blocker, and the message distinguishes it from a repo defect (AC2)', () => {
+      const events = eventSequence()
+        .toolUse('mcp__github__create_branch', { branch: 'feature-x' }, 'toolu_1')
+        .toolResult('mcp__github__create_branch', { error: 'connector failure: create_branch unavailable' }, 'toolu_1')
+        .stop('Could not publish the branch.')
+        .build();
+
+      const anomaly = detectAnomalies(events, agentId, undefined, evidence({ localCredentialsCanPublish: false }));
+      expect(anomaly).not.toBeNull();
+      expect(anomaly!.type).toBe('needs_input');
+      expect(anomaly!.reconciliation?.classification).toBe('real-blocker');
+      expect(anomaly!.explanation).toContain('real repository blocker');
+    });
+
+    test('a green, mergeable PR with merge-after-implementation authorized surfaces a structured merge-ready signal instead of asking the operator (AC3)', () => {
+      const events = eventSequence()
+        .stop('PR #1140 is mergeable and all required checks are green. Should I merge?')
+        .build();
+
+      const anomaly = detectAnomalies(
+        events,
+        agentId,
+        undefined,
+        evidence({ prGreenAndMergeable: true, mergeAfterImplementation: true }),
+      );
+      expect(anomaly).not.toBeNull();
+      expect(anomaly!.reconciliation?.classification).toBe('pr-green-mergeable');
+      expect(anomaly!.severity).toBe('info');
+      expect(anomaly!.explanation).toContain('Merge-ready');
+    });
+
+    test('an AskUserQuestion asking to merge a green PR is reconciled into a merge-ready signal', () => {
+      const events = eventSequence()
+        .toolUse('AskUserQuestion', { question: 'PR #1140 is mergeable and all checks are green — should I merge?' })
+        .build();
+
+      const anomaly = detectAnomalies(
+        events,
+        agentId,
+        undefined,
+        evidence({ prGreenAndMergeable: true, mergeAfterImplementation: true }),
+      );
+      expect(anomaly!.reconciliation?.classification).toBe('pr-green-mergeable');
+    });
+
+    test('an unrelated question on an otherwise green, auto-mergeable task is NOT discarded for a synthetic merge-ready signal (over-broad context gate regression)', () => {
+      // Ambient evidence (prGreenAndMergeable + mergeAfterImplementation) describes
+      // task state unrelated to why the agent stopped *now*. The candidate's own
+      // text is a genuine unrelated question, so it must survive reconciliation
+      // untouched — not be replaced with a synthetic 'merge-ready' info anomaly.
+      const events = eventSequence()
+        .toolUse('Bash', undefined, 'toolu_1')
+        .toolResult('Bash', undefined, 'toolu_1')
+        .stop('Should I take approach A (repository pattern) or approach B (service layer)?')
+        .build();
+
+      const anomaly = detectAnomalies(
+        events,
+        agentId,
+        undefined,
+        evidence({ prGreenAndMergeable: true, mergeAfterImplementation: true }),
+      );
+      expect(anomaly).not.toBeNull();
+      expect(anomaly!.type).toBe('needs_input');
+      expect(anomaly!.reconciliation).toBeUndefined();
+      expect(anomaly!.explanation).toContain('approach A');
+      expect(anomaly!.explanation).not.toContain('Merge-ready');
+    });
+
+    test('an unrelated needs_input is NOT suppressed by a stale connector tool_result from an earlier turn, even with localCredentialsCanPublish:true (over-broad context gate regression)', () => {
+      // The connector failure is real but stale: a new user turn (input_received)
+      // separates it from the later, unrelated AskUserQuestion. It must not be
+      // picked up as "recent" evidence for a candidate that isn't itself
+      // publish/merge-shaped, or a genuine blocker gets silently suppressed.
+      const events: AgentEvent[] = [
+        { type: 'tool_use', sessionId: 's1', toolName: 'mcp__github__create_branch', toolInput: { branch: 'feature-x' }, toolUseId: 'toolu_1' },
+        { type: 'tool_result', sessionId: 's1', toolName: 'mcp__github__create_branch', toolResponse: { error: 'Git Data API error: Reference already exists' }, toolUseId: 'toolu_1' },
+        { type: 'input_received', sessionId: 's1' },
+        { type: 'tool_use', sessionId: 's1', toolName: 'AskUserQuestion', toolInput: { question: 'Should I use approach A or approach B for the retry logic?' }, toolUseId: 'toolu_2' },
+      ];
+
+      const anomaly = detectAnomalies(events, agentId, undefined, evidence({ localCredentialsCanPublish: true }));
+      expect(anomaly).not.toBeNull();
+      expect(anomaly!.type).toBe('needs_input');
+      expect(anomaly!.subType).toBe('ask_user_question');
+      expect(anomaly!.reconciliation).toBeUndefined();
+    });
+
+    test('reconciliation is a no-op for a stop unrelated to publish/merge, even when evidence is supplied', () => {
+      const events = eventSequence().stop('Investigating a failing unit test.').build();
+
+      const anomaly = detectAnomalies(events, agentId, undefined, evidence());
+      expect(anomaly).not.toBeNull();
+      expect(anomaly!.reconciliation).toBeUndefined();
+    });
+
+    test('omitting reconciliation evidence leaves existing needs_input behavior unchanged (backward compatibility)', () => {
+      const events = eventSequence().stop('I need your help to decide.').build();
+
+      const anomaly = detectAnomalies(events, agentId);
+      expect(anomaly).not.toBeNull();
+      expect(anomaly!.reconciliation).toBeUndefined();
     });
   });
 

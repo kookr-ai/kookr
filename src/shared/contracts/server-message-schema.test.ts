@@ -211,6 +211,11 @@ const serverMessageCases = [
     },
     refreshStatus: { inProgress: false, lastError: null },
   }),
+  serverMessageCase({
+    type: 'wsBackpressureNotice',
+    kind: 'loadShedActive',
+    eventLoopDelayP95Ms: 1800,
+  }),
 ] as const;
 
 const coveredServerMessageTypes = serverMessageCases.map((message) => message.type);

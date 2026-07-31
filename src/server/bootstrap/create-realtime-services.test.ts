@@ -19,7 +19,12 @@ import { createRealtimeServices, type RealtimeServicesDeps } from './create-real
 
 type SnapshotPayloadTestOverrides = Pick<
   RealtimeServicesDeps,
-  'snapshotPayloadWarnBytes' | 'snapshotPayloadMaxBytes' | 'observeSnapshotPayloadSize'
+  | 'snapshotPayloadWarnBytes'
+  | 'snapshotPayloadMaxBytes'
+  | 'observeSnapshotPayloadSize'
+  | 'loadShedConfig'
+  | 'backpressureDisconnectAfterSkips'
+  | 'livenessSweepEnabled'
 >;
 
 function fakeAdapter(agentType: AgentAdapter['agentType']): AgentAdapter {
@@ -78,6 +83,13 @@ async function createTestRealtimeServices(
       : {}),
     ...(overrides.observeSnapshotPayloadSize
       ? { observeSnapshotPayloadSize: overrides.observeSnapshotPayloadSize }
+      : {}),
+    ...(overrides.loadShedConfig ? { loadShedConfig: overrides.loadShedConfig } : {}),
+    ...(overrides.backpressureDisconnectAfterSkips !== undefined
+      ? { backpressureDisconnectAfterSkips: overrides.backpressureDisconnectAfterSkips }
+      : {}),
+    ...(overrides.livenessSweepEnabled !== undefined
+      ? { livenessSweepEnabled: overrides.livenessSweepEnabled }
       : {}),
   });
 }
@@ -306,5 +318,85 @@ describe('createRealtimeServices', () => {
         maxBytes: 1,
       }),
     );
+  });
+
+  describe('load-shed wiring (#1725)', () => {
+    test('without loadShedConfig, noteEventLoopDelaySample is a no-op and snapshots always fan out fully', async () => {
+      tempDir = mkdtempSync(join(tmpdir(), 'kookr-realtime-'));
+      const realtime = await createTestRealtimeServices(tempDir);
+      const send = vi.fn();
+      addDashboardSocket(realtime, openSocket(send));
+
+      expect(() => realtime.noteEventLoopDelaySample(999_999)).not.toThrow();
+      realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
+
+      // broadcastToAll always attaches a coordinator frame (pre-existing
+      // behavior, unrelated to #1725) — both still reach the client normally.
+      expect(parseSent(send.mock.calls.map((c) => c[0] as string)).map((m) => m.type))
+        .toEqual(['snapshot', 'coordinator.snapshot']);
+    });
+
+    test('with loadShedConfig, sustained high delay engages the gate and snapshots are replaced by a degraded notice', async () => {
+      tempDir = mkdtempSync(join(tmpdir(), 'kookr-realtime-'));
+      const realtime = await createTestRealtimeServices(tempDir, {
+        loadShedConfig: { eventLoopDelayThresholdMs: 100, sustainTicks: 2, recoverTicks: 2 },
+      });
+      const send = vi.fn();
+      addDashboardSocket(realtime, openSocket(send));
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      realtime.noteEventLoopDelaySample(500);
+      realtime.noteEventLoopDelaySample(500); // 2nd consecutive tick over threshold -> engaged
+
+      realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
+
+      const messages = parseSent(send.mock.calls.map((c) => c[0] as string));
+      expect(messages).toEqual([
+        { type: 'wsBackpressureNotice', kind: 'loadShedActive', eventLoopDelayP95Ms: 500 },
+      ]);
+    });
+
+    test('recovery resumes full snapshot fan-out on the SAME broadcast as the recovered notice', async () => {
+      tempDir = mkdtempSync(join(tmpdir(), 'kookr-realtime-'));
+      const realtime = await createTestRealtimeServices(tempDir, {
+        loadShedConfig: { eventLoopDelayThresholdMs: 100, sustainTicks: 1, recoverTicks: 1 },
+      });
+      const send = vi.fn();
+      addDashboardSocket(realtime, openSocket(send));
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      realtime.noteEventLoopDelaySample(500); // engages
+      realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
+      send.mockClear();
+
+      realtime.noteEventLoopDelaySample(10); // recovers
+      realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
+
+      const messages = parseSent(send.mock.calls.map((c) => c[0] as string));
+      expect(messages.map((m) => m.type)).toEqual(['wsBackpressureNotice', 'snapshot', 'coordinator.snapshot']);
+    });
+
+    test('R6: while shed is active, the expensive snapshot enrichment (coordinator build, taskStore reads) is skipped entirely, not just the transport', async () => {
+      tempDir = mkdtempSync(join(tmpdir(), 'kookr-realtime-'));
+      const taskStore = new TaskStore();
+      const listTasksSpy = vi.spyOn(taskStore, 'listTasks');
+      const realtime = await createTestRealtimeServices(tempDir, {
+        taskStore,
+        loadShedConfig: { eventLoopDelayThresholdMs: 100, sustainTicks: 1, recoverTicks: 1 },
+      });
+      const send = vi.fn();
+      addDashboardSocket(realtime, openSocket(send));
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      // Baseline: not shed — enrichment runs, taskStore is read (coordinator build).
+      realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
+      expect(listTasksSpy).toHaveBeenCalled();
+      listTasksSpy.mockClear();
+
+      // Engage shed, then broadcast again — enrichment must be skipped this time.
+      realtime.noteEventLoopDelaySample(500);
+      realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
+      expect(listTasksSpy).not.toHaveBeenCalled();
+    });
   });
 });

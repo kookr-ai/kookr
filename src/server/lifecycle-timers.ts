@@ -104,6 +104,8 @@ export interface TimerDeps {
   signalOutboxSpoolDir?: string;
   /** Path to the shared audit.jsonl log — threaded to the completion-ready sweep and hung-task reaper for system-actor audit rows. */
   auditLogPath?: string;
+  /** Path to the disposition-ledger JSONL (issue #1540) — threaded to the hung-task reaper so every reap-driven cancel records a work-conservation disposition. Absent → reaper disposition writes are skipped. */
+  dispositionLedgerPath?: string;
   /**
    * Live getter for the pending-task TTL, in milliseconds (issue #1526
    * Phase C / C3, `pendingTaskTtlMinutes` setting). Read on every liveness
@@ -741,6 +743,7 @@ export async function maybeReapHungTask(
       lifecycleDeps,
       reportsDir: deps.reportsDir,
       auditLogPath: deps.auditLogPath,
+      dispositionLedgerPath: deps.dispositionLedgerPath,
       broadcastToAll: deps.broadcastToAll,
       resolveMergedPr: deps.resolveMergedPr,
       now,

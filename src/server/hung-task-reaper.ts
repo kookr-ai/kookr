@@ -3,8 +3,9 @@ import { join } from 'node:path';
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import type { MergedPrAttribution } from '../core/delivered-task-completion.js';
-import type { TaskReapOutcome } from '../shared/contracts/task.js';
+import type { TaskDisposition, TaskReapOutcome } from '../shared/contracts/task.js';
 import { appendAuditRow } from '../core/audit-log.js';
+import { appendDispositionEntry, type DispositionEntry } from '../core/disposition-ledger.js';
 import { buildReapDisposition } from '../core/hung-task-reaper.js';
 import { nowISO } from '../core/interaction-log.js';
 import { terminateTask, type LifecycleDeps } from './agent-lifecycle.js';
@@ -29,6 +30,12 @@ export interface HungTaskReaperDeps {
   reportsDir?: string;
   /** Path to the shared audit.jsonl log. */
   auditLogPath?: string;
+  /**
+   * Path to the recovery work-conservation ledger (issue #1540). When
+   * absent, no disposition entry is written for the reap — matches the
+   * `auditLogPath`/`reportsDir` "no-op when unconfigured" convention above.
+   */
+  dispositionLedgerPath?: string;
   /** Optional broadcast for the reap alert — reuses the existing 'alert' channel, no new notification surface. */
   broadcastToAll?: (msg: ServerMessage) => void;
   /**
@@ -137,6 +144,20 @@ export async function reapHungTask(
   // is the single durable outcome marker for the reap (issue #1559).
   deps.taskStore.setDisposition(task.id, disposition);
 
+  // Work-conservation ledger entry (issue #1540): a reap always cancels a
+  // task, but that alone doesn't prove the work was conserved. `outcome`
+  // already tells us which: a `delivered_then_hung` task shipped its work
+  // before hanging (nothing to respawn — obsolete), while a plain
+  // `terminated` reap has no confirmed delivery and the reaper never
+  // auto-respawns, so it needs a human to decide retry vs abandon. Best-
+  // effort: a ledger-write failure must not block the reap it is describing,
+  // but it IS loud (console.error), unlike the swallowed audit-row append
+  // above, because a lost disposition entry is exactly the silent-loss
+  // failure mode this issue closes.
+  await writeReapDispositionEntry(task.id, disposition, outcome, evidence, deps, now).catch((err) => {
+    console.error(`[hung-task-reaper] failed to record disposition-ledger entry for task ${task.id}:`, err);
+  });
+
   await appendAuditRow(deps.auditLogPath, {
     type: 'task.hungTaskReap',
     timestamp: nowISO(),
@@ -168,4 +189,51 @@ export async function reapHungTask(
   });
 
   return { reportPath, outcome };
+}
+
+/**
+ * Record the reap's work-conservation entry (issue #1540). No-op when
+ * `dispositionLedgerPath` isn't configured. Bucketed daily rather than per-
+ * reap: the reaper has no shared "recovery run" id the way a boot has
+ * `restartEpoch`, and a daily incident bucket is still precise enough for
+ * `auditRecoveryDispositions`'s window-based query (AC3) to find it.
+ */
+async function writeReapDispositionEntry(
+  taskId: string,
+  taskDisposition: TaskDisposition,
+  outcome: TaskReapOutcome,
+  evidence: HungTaskReapEvidence,
+  deps: HungTaskReaperDeps,
+  now: Date,
+): Promise<void> {
+  if (!deps.dispositionLedgerPath) return;
+  const ledgerPath = deps.dispositionLedgerPath;
+  const silentMinutes = Math.round(evidence.silentForMs / 60_000);
+  const entry: DispositionEntry =
+    outcome === 'delivered_then_hung'
+      ? {
+        schemaVersion: 'disposition-ledger.v1',
+        taskId,
+        disposition: 'obsolete',
+        detail: taskDisposition.deliveredPr
+          ? `obsolete-because: delivered PR #${taskDisposition.deliveredPr.number} before hanging; no respawn needed`
+          : 'obsolete-because: delivered its work before hanging; no respawn needed',
+        incidentId: reapIncidentId(now),
+        source: 'hung-task-reaper',
+        at: now.toISOString(),
+      }
+      : {
+        schemaVersion: 'disposition-ledger.v1',
+        taskId,
+        disposition: 'needs-human',
+        detail: `needs-human: reaped after ${silentMinutes}m of silence with no confirmed delivery — the reaper does not auto-respawn, a human must decide retry vs abandon`,
+        incidentId: reapIncidentId(now),
+        source: 'hung-task-reaper',
+        at: now.toISOString(),
+      };
+  await appendDispositionEntry(ledgerPath, entry);
+}
+
+function reapIncidentId(now: Date): string {
+  return `hung-task-reap-${now.toISOString().slice(0, 10)}`;
 }

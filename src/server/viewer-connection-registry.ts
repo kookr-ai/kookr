@@ -104,8 +104,10 @@ export type GrantLiveness = 'active' | 'revoked' | 'expired' | 'not-found';
  * Why the sweep evicted a socket. Surfaced to the audit hook (#808 / R10).
  * `out-of-scope` (#810) is terminal-only: a still-live grant whose attached task
  * was reassigned out of the grant's project scope (reassignment TOCTOU, RFC F8).
+ * `liveness-timeout` (#1725) is the dead-socket ping/pong reap: the socket was
+ * already non-OPEN or failed to answer a ping within one sweep tick.
  */
-export type EvictionReason = Exclude<GrantLiveness, 'active'> | 'out-of-scope';
+export type EvictionReason = Exclude<GrantLiveness, 'active'> | 'out-of-scope' | 'liveness-timeout';
 
 /** Payload handed to {@link ViewerConnectionRegistryOptions.onEvict}. */
 export interface SweepEviction {
@@ -140,6 +142,18 @@ export interface ViewerConnectionRegistryOptions {
   now?: () => number;
   /** Start the sweep timer on construction. Default true; tests pass false and call {@link sweep} directly. */
   autoStartSweep?: boolean;
+  /**
+   * Dead-socket ping/pong liveness reaping (#1725). The 2026-07-31 incident
+   * left 227+ sockets in CLOSE-WAIT because the saturated event loop never
+   * got around to processing the FIN the OS already delivered — `ws.close()`
+   * relies on that same queued processing, so a socket stuck mid-close stays
+   * registered (and keeps being handed to the broadcaster) indefinitely.
+   * `ws.terminate()` destroys the underlying TCP socket synchronously, so
+   * running this check on the existing sweep tick (already independent of
+   * broadcast cadence) reaps it regardless of event-loop backlog. Default
+   * true; set false to opt out (rollback knob).
+   */
+  livenessSweepEnabled?: boolean;
 }
 
 const DEFAULT_SWEEP_INTERVAL_MS = 10_000;
@@ -152,6 +166,15 @@ const OUT_OF_SCOPE_CLOSE_REASON = 'Out of scope';
 const SHUTDOWN_CLOSE_CODE = 1001;
 const SHUTDOWN_CLOSE_REASON = 'Server shutting down';
 
+/** Observability snapshot for the dead-socket liveness sweep (#1725). */
+export interface LivenessSweepHealth {
+  enabled: boolean;
+  /** Total sockets terminated for failing a ping/pong round or sitting non-OPEN. */
+  reapCount: number;
+  /** ISO-8601 of the last liveness reap, or null if none happened yet. */
+  lastReapAt: string | null;
+}
+
 export class ViewerConnectionRegistry implements SocketRegistrar {
   private readonly sockets = new Map<WebSocket, RegisteredSocket>();
   private readonly resolveGrantLiveness: (grantId: string) => GrantLiveness;
@@ -159,9 +182,14 @@ export class ViewerConnectionRegistry implements SocketRegistrar {
   private readonly onEvict?: (eviction: SweepEviction) => void;
   private readonly now: () => number;
   private readonly sweepIntervalMs: number;
+  private readonly livenessSweepEnabled: boolean;
+  /** Per-socket ping-round-trip flag: true unless a ping went unanswered for one whole sweep tick. */
+  private readonly livenessAlive = new WeakMap<WebSocket, boolean>();
   private sweepTimer: ReturnType<typeof setInterval> | undefined;
   private tickCount = 0;
   private lastSweepAtMs: number | null = null;
+  private livenessReapCount = 0;
+  private lastLivenessReapAtMs: number | null = null;
 
   constructor(options: ViewerConnectionRegistryOptions = {}) {
     this.resolveGrantLiveness = options.resolveGrantLiveness ?? (() => 'active');
@@ -169,6 +197,7 @@ export class ViewerConnectionRegistry implements SocketRegistrar {
     this.onEvict = options.onEvict;
     this.now = options.now ?? (() => Date.now());
     this.sweepIntervalMs = options.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
+    this.livenessSweepEnabled = options.livenessSweepEnabled ?? true;
     if (options.autoStartSweep !== false) this.startSweep();
   }
 
@@ -181,6 +210,20 @@ export class ViewerConnectionRegistry implements SocketRegistrar {
       remoteAddr: meta?.remoteAddr,
       connectedAtMs: this.now(),
     });
+    // Duck-typed: real `ws.WebSocket` instances always implement `on`; a
+    // lightweight test double that only stubs `send`/`close`/`readyState`
+    // simply opts out of ping/pong liveness (readyState-based reaping below
+    // still applies to it).
+    if (this.livenessSweepEnabled && typeof ws.on === 'function') {
+      this.livenessAlive.set(ws, true);
+      // Attached once at registration (mirrors the standard `ws` heartbeat
+      // recipe). Left attached for the socket's lifetime — a no-op closure
+      // over an unregistered `ws` costs nothing and self-cleans via the
+      // WeakMap once the socket is garbage collected.
+      ws.on('pong', () => {
+        this.livenessAlive.set(ws, true);
+      });
+    }
   }
 
   unregister(ws: WebSocket): void {
@@ -321,6 +364,7 @@ export class ViewerConnectionRegistry implements SocketRegistrar {
     this.lastSweepAtMs = this.now();
     for (const entry of [...this.sockets.values()]) {
       try {
+        if (this.livenessSweepEnabled && this.checkLivenessAndMaybeReap(entry)) continue;
         if (entry.actor.kind !== 'viewer') continue;
         const liveness = this.resolveGrantLiveness(entry.actor.grantId);
         if (liveness !== 'active') {
@@ -350,6 +394,107 @@ export class ViewerConnectionRegistry implements SocketRegistrar {
         console.warn('[viewer-registry] sweep failed for one socket; continuing', err);
       }
     }
+  }
+
+  /**
+   * Liveness half of the sweep tick (#1725), run for EVERY registered socket
+   * (owner and viewer, dashboard and terminal) — unlike the revocation checks
+   * below, which apply to viewers only. Two independent failure modes are
+   * reaped:
+   *
+   * 1. Already non-OPEN (CLOSING/CLOSED) but still registered — the socket's
+   *    own `close` handler (which would normally call `unregister`) is queued
+   *    behind whatever is saturating the loop. Reaped immediately rather than
+   *    waiting for that handler to eventually run.
+   * 2. OPEN, has NO pending send backlog, but failed to `pong` a previous
+   *    `ping` within one whole sweep tick — the standard `ws` "detect and
+   *    close broken connections" idiom. `ws.terminate()` destroys the TCP
+   *    socket synchronously (unlike `close()`, which negotiates a close
+   *    handshake the peer may never complete), which is what actually clears
+   *    a CLOSE-WAIT socket when the remote end already went away.
+   *
+   * A socket with a nonzero `bufferedAmount` is deliberately exempted from
+   * (2): `ws.ping()` is just another write, so it queues BEHIND whatever
+   * backlog the socket already has and cannot possibly return before that
+   * backlog drains. A slow-but-alive client under exactly the load this fix
+   * targets (e.g. mid-drain on a large snapshot) would otherwise be reaped
+   * for being slow, not for being dead — the opposite of the intent. A
+   * backlogged-and-actually-stuck socket is still bounded by the broadcaster's
+   * own `bufferedAmount` hard cap (`viewer-broadcaster.ts`), so this reap does
+   * not need to duplicate that path.
+   *
+   * Returns true if the socket was reaped (caller should `continue`, skipping
+   * the now-stale revocation checks for the same entry).
+   */
+  private checkLivenessAndMaybeReap(entry: RegisteredSocket): boolean {
+    const ws = entry.ws;
+    if (ws.readyState !== WebSocket.OPEN) {
+      this.reapDeadSocket(entry);
+      return true;
+    }
+    // Sockets that don't implement BOTH ping and the pong listener (lightweight
+    // test doubles, or a hypothetical future adapter) only get the readyState
+    // check above — gating on both together (rather than each independently)
+    // avoids a socket that has one but not the other being pinged toward a
+    // `livenessAlive === false` state that nothing can ever clear back to true.
+    if (typeof ws.ping !== 'function' || typeof ws.on !== 'function') return false;
+    if (getBufferedAmount(ws) > 0) {
+      // Backlogged: reset rather than penalize — see the bufferedAmount note
+      // above. Skips this tick's ping too (no point pinging behind a backlog).
+      this.livenessAlive.set(ws, true);
+      return false;
+    }
+    if (this.livenessAlive.get(ws) === false) {
+      this.reapDeadSocket(entry);
+      return true;
+    }
+    this.livenessAlive.set(ws, false);
+    try {
+      ws.ping();
+    } catch (err) {
+      // A throwing ping means the socket is already unusable — reap now
+      // rather than waiting for next tick's readyState/pong check to notice.
+      console.warn('[viewer-registry] ping failed; reaping socket', err);
+      this.reapDeadSocket(entry);
+      return true;
+    }
+    return false;
+  }
+
+  private reapDeadSocket(entry: RegisteredSocket): void {
+    this.sockets.delete(entry.ws);
+    this.livenessReapCount++;
+    this.lastLivenessReapAtMs = this.now();
+    // Mirror `evict`'s audit hook (#1725 review finding): a viewer socket
+    // silently disappearing from the registry with no trace made a mass reap
+    // operationally invisible. `onEvict`'s contract has no `liveness-timeout`
+    // grantId-vs-ownership assumption issue here — same call shape as `evict`.
+    if (entry.actor.kind === 'viewer' && this.onEvict) {
+      try {
+        this.onEvict({
+          grantId: entry.actor.grantId,
+          kind: entry.kind,
+          sessionName: entry.sessionName,
+          reason: 'liveness-timeout',
+        });
+      } catch (err) {
+        console.warn('[viewer-registry] eviction audit hook threw; continuing', err);
+      }
+    }
+    try {
+      entry.ws.terminate();
+    } catch (err) {
+      console.warn('[viewer-registry] failed to terminate dead socket', err);
+    }
+  }
+
+  /** Observability snapshot for the dead-socket liveness sweep (#1725). */
+  livenessHealth(): LivenessSweepHealth {
+    return {
+      enabled: this.livenessSweepEnabled,
+      reapCount: this.livenessReapCount,
+      lastReapAt: this.lastLivenessReapAtMs === null ? null : new Date(this.lastLivenessReapAtMs).toISOString(),
+    };
   }
 
   private evict(entry: RegisteredSocket, reason: EvictionReason): void {
@@ -389,4 +534,17 @@ export class ViewerConnectionRegistry implements SocketRegistrar {
     }
     this.sockets.clear();
   }
+}
+
+/**
+ * Read `bufferedAmount` defensively (same pattern as `viewer-broadcaster.ts`,
+ * intentionally duplicated rather than imported — this registry module has no
+ * other dependency on the broadcaster's backpressure concern, and the two
+ * belong to different layers).
+ */
+function getBufferedAmount(ws: WebSocket): number {
+  const bufferedAmount = (ws as WebSocket & { bufferedAmount?: number }).bufferedAmount;
+  return typeof bufferedAmount === 'number' && Number.isFinite(bufferedAmount)
+    ? Math.max(0, bufferedAmount)
+    : 0;
 }
