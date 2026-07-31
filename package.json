@@ -72,6 +72,7 @@
     "codex:rebuild": "bash scripts/rebuild-codex.sh",
     "grok:rebuild": "bash scripts/rebuild-grok.sh",
     "merge": "bash scripts/kookr-merge.sh",
+    "check-verification": "node scripts/check-verification.mjs",
     "prepare": "git config core.hooksPath .hooks && pnpm build:dtach && pnpm fix:native-perms"
   },
   "keywords": [],

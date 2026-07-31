@@ -108,7 +108,7 @@ This playbook is delivery-pre-authorized. Once the issue is trusted and implemen
 Three independent toggles, all default off, add extra autonomy. The launch form remembers your last choice per playbook+project, so set them once and they persist across runs.
 
 - **Self-continuation** — `{{selfContinuation}}`. When `true` and you are NOT in Ralph loop mode, once this target reaches *any* durable terminal outcome in Phase 8 (merged, auto-merge enabled, low-value closed, automation-quarantined, or a blocker recorded) — not merge only — use the `self-continuation-task` skill to spawn a fresh Kookr task that re-runs this playbook for the next eligible target, forwarding the same parameters (including these toggles), and only stop the chain when no eligible candidate remains (see the Phase 8 "Self-continuation handoff" and the mandatory completion gate). This produces a Ralph-like chain without the built-in loop. When `false`, finish the single target and stop. In Ralph loop mode this toggle is a no-op — the loop already chains.
-- **Ignore budget CI failures** — `{{ignoreBudgetCiFailures}}` (defaults to `true`: the operator does not pay for CI; local verification is the merge gate — see the repo CLAUDE.md CI policy). When `true`, treat CI checks that fail solely because CI budget/quota is unavailable (the run never executed — not a real test result) as non-blocking: do not stall the iteration or hold the PR on them, and in merge mode proceed as if those specific checks were not required. Genuine test, lint, type, or build failures still block — never merge over a real red check. When `false`, any failing required check blocks as usual.
+- **Ignore budget CI failures** — `{{ignoreBudgetCiFailures}}` (defaults to `true`: the operator does not pay for CI; local verification is the merge gate — see the repo CLAUDE.md CI policy). When `true`, treat CI checks that fail solely because CI budget/quota is unavailable (the run never executed — not a real test result) as non-blocking: do not stall the iteration or hold the PR on them, and in merge mode proceed as if those specific checks were not required. Genuine test, lint, type, or build failures still block — never merge over a real red check. When `false`, any failing required check blocks as usual. Phase 8 uses the `check-verification` classifier to draw this line precisely: a check with verdict `executed-red` (it ran and failed on the code) always blocks; a `never-executed` check is the only kind this toggle waives, and only after the local gate is run and recorded on the PR (`local-verified` label).
 - **Close low-value issues** — `{{closeUnworthyIssues}}`. When `true`, if after reading the issue (Phase 1) you judge it not worth implementing — obsolete, out of scope, duplicate, or net-negative — you may `gh issue close <N>` with a one-line comment explaining why, then move to the next target instead of opening a PR. When `false`, never close issues; skip and report instead.
 
 ## Ralph loop contract
@@ -581,9 +581,30 @@ If `{{mergeAfterImplementation}}` is `true`:
    gh pr checks <PR_NUMBER> --repo "$REPO"
    ```
 
-2. Do not bypass branch protection, required reviews, failing checks, or maintainer policy. Exception: if `{{ignoreBudgetCiFailures}}` is `true`, a check that failed solely because CI budget/quota was unavailable (it never ran) does not count as a failing check — treat it as non-blocking. Genuine test/lint/type/build failures still block regardless of this toggle.
+2. **Classify the head-SHA check runs before merging** so a check that *ran and failed on the code* is never confused with one that *never executed* (a GitHub Actions budget/quota/billing block that "completes" as failure in seconds without running). In `kookr-ai/kookr`, run the reusable classifier; in other repos run `node scripts/check-verification.mjs` if the plugin is available there, otherwise apply the same rules by inspecting `gh pr checks` / `gh run view` output manually:
 
-   **CI-rerun bound — max 2 CI rerun attempts, then report and stop.** Never loop re-running CI hoping a flaky check goes green. Re-run a failing check at most twice per PR; after the **second** failed rerun, **report the CI state** (failing check names and their run links from `gh pr checks` / `gh run view`) and stop — **never loop** or sit at "waiting for CI" indefinitely. Before spending a rerun, classify the failure: infra-red CI (budget/quota/runner outage — the run never executed your code) is non-blocking and should be classified non-blocking rather than rerun (see #1198), and does not consume one of the 2 attempts. This bound exists because an unbounded rerun/merge loop once stranded a delivery task for ~3h (PR #1542 / task faf7902b).
+   ```bash
+   pnpm check-verification <PR_NUMBER> --repo "$REPO"   # exit 0 green/none, 10 never-executed, 20 executed-red, 30 pending
+   ```
+
+   Act on the classification:
+   - **`executed-red`** — a required check ran and failed on the code. **Never merge.** Post the failing findings on the PR (`gh pr comment <PR_NUMBER> --repo "$REPO" --body "…"` with the failing check names + `gh run view` links) and treat it as a real blocker regardless of `{{ignoreBudgetCiFailures}}`. Fix the code, or record the blocker.
+   - **`never-executed`** — the checks never ran (billing/quota). This is non-blocking only when `{{ignoreBudgetCiFailures}}` is `true` (the default — see the CLAUDE.md CI policy). Before merging you MUST run the repo's local gate and record the evidence on the PR as the audit trail that replaces CI:
+
+     ```bash
+     pnpm verify   # or the repo's documented local gate; capture the pass/fail + test counts
+     gh pr comment <PR_NUMBER> --repo "$REPO" --body "Local gate (CI never executed — billing/quota): \`pnpm verify\` passed — <N> tests. Recorded per CLAUDE.md CI policy (closes-context #1713)."
+     gh label create local-verified --repo "$REPO" --color 0e8a16 --description "Merged on local-gate evidence because CI never executed" 2>/dev/null || true
+     gh pr edit <PR_NUMBER> --repo "$REPO" --add-label local-verified
+     ```
+
+     Only merge after that comment and the `local-verified` label are posted. If `{{ignoreBudgetCiFailures}}` is `false`, `never-executed` blocks like any failing check.
+   - **`executed-green` / `none-required`** — no check-run objection; proceed to merge.
+   - **`pending`** — checks are still running; wait (subject to the CI-rerun bound below) rather than merging.
+
+   Do not otherwise bypass branch protection, required reviews, or maintainer policy.
+
+   **CI-rerun bound — max 2 CI rerun attempts, then report and stop.** Never loop re-running CI hoping a flaky check goes green. Re-run a failing check at most twice per PR; after the **second** failed rerun, **report the CI state** (failing check names and their run links from `gh pr checks` / `gh run view`) and stop — **never loop** or sit at "waiting for CI" indefinitely. A `never-executed` classification (budget/quota/runner outage — the run never executed your code) is non-blocking (see #1198) and does not consume one of the 2 attempts. This bound exists because an unbounded rerun/merge loop once stranded a delivery task for ~3h (PR #1542 / task faf7902b).
 3. If the PR is mergeable now, merge using the repository's expected method. In `kookr-ai/kookr`, prefer the repository merge wrapper:
 
    ```bash

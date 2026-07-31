@@ -69,6 +69,11 @@ authority, and never wait on it:
   paying for CI, or add workflows that consume paid minutes on the operator's
   private repos.
 - A check that genuinely RAN and failed on the code still blocks — fix it.
+  Classify the two apart with `pnpm check-verification <PR> --repo <owner/name>`
+  (`scripts/check-verification.mjs`): `executed-red` always blocks;
+  `never-executed` merges only after the local gate runs and is recorded on the
+  PR as a comment plus the `local-verified` label (the audit trail that replaces
+  CI). See the delivery playbooks' merge phase.
 - Playbook parameter `ignoreBudgetCiFailures` defaults to `true` accordingly.
 
 ## Where to put a new skill or agent

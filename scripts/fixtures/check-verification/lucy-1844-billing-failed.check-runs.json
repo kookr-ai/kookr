@@ -1,0 +1,446 @@
+{
+  "total_count": 3,
+  "check_runs": [
+    {
+      "app": {
+        "client_id": "Iv1.05c79e9ad1f6bdfa",
+        "created_at": "2018-07-30T09:30:17Z",
+        "description": "Automate your workflow from idea to production",
+        "events": [
+          "branch_protection_rule",
+          "check_run",
+          "check_suite",
+          "create",
+          "delete",
+          "deployment",
+          "deployment_status",
+          "discussion",
+          "discussion_comment",
+          "fork",
+          "gollum",
+          "issues",
+          "issue_comment",
+          "label",
+          "merge_group",
+          "milestone",
+          "page_build",
+          "public",
+          "pull_request",
+          "pull_request_review",
+          "pull_request_review_comment",
+          "push",
+          "registry_package",
+          "release",
+          "repository",
+          "repository_dispatch",
+          "status",
+          "watch",
+          "workflow_dispatch",
+          "workflow_run"
+        ],
+        "external_url": "https://help.github.com/en/actions",
+        "html_url": "https://github.com/apps/github-actions",
+        "id": 15368,
+        "name": "GitHub Actions",
+        "node_id": "MDM6QXBwMTUzNjg=",
+        "owner": {
+          "avatar_url": "https://avatars.githubusercontent.com/u/9919?v=4",
+          "events_url": "https://api.github.com/users/github/events{/privacy}",
+          "followers_url": "https://api.github.com/users/github/followers",
+          "following_url": "https://api.github.com/users/github/following{/other_user}",
+          "gists_url": "https://api.github.com/users/github/gists{/gist_id}",
+          "gravatar_id": "",
+          "html_url": "https://github.com/github",
+          "id": 9919,
+          "login": "github",
+          "node_id": "MDEyOk9yZ2FuaXphdGlvbjk5MTk=",
+          "organizations_url": "https://api.github.com/users/github/orgs",
+          "received_events_url": "https://api.github.com/users/github/received_events",
+          "repos_url": "https://api.github.com/users/github/repos",
+          "site_admin": false,
+          "starred_url": "https://api.github.com/users/github/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/github/subscriptions",
+          "type": "Organization",
+          "url": "https://api.github.com/users/github",
+          "user_view_type": "public"
+        },
+        "permissions": {
+          "actions": "write",
+          "administration": "read",
+          "artifact_metadata": "write",
+          "attestations": "write",
+          "checks": "write",
+          "code_quality": "write",
+          "contents": "write",
+          "copilot_requests": "write",
+          "deployments": "write",
+          "discussions": "write",
+          "drives": "write",
+          "issues": "write",
+          "merge_queues": "write",
+          "metadata": "read",
+          "models": "read",
+          "packages": "write",
+          "pages": "write",
+          "pull_requests": "write",
+          "repository_hooks": "write",
+          "repository_projects": "write",
+          "security_events": "write",
+          "statuses": "write",
+          "vulnerability_alerts": "read"
+        },
+        "slug": "github-actions",
+        "updated_at": "2026-06-18T16:17:48Z"
+      },
+      "check_suite": {
+        "id": 82894861669
+      },
+      "completed_at": "2026-07-30T18:39:48Z",
+      "conclusion": "failure",
+      "details_url": "https://github.com/jeanibarz/lucy/actions/runs/30571392183/job/90968738111",
+      "external_id": "a8095be1-42a4-5bea-ae53-7d9f8ecab7f8",
+      "head_sha": "b0b8e68971ca8709cae1f3753dfcee060c7cb211",
+      "html_url": "https://github.com/jeanibarz/lucy/actions/runs/30571392183/job/90968738111",
+      "id": 90968738111,
+      "name": "Anti-drift checklist",
+      "node_id": "CR_kwDOTEX-Ec8AAAAVLijJPw",
+      "output": {
+        "annotations_count": 1,
+        "annotations_url": "https://api.github.com/repos/jeanibarz/lucy/check-runs/90968738111/annotations",
+        "summary": null,
+        "text": null,
+        "title": null
+      },
+      "pull_requests": [
+        {
+          "base": {
+            "ref": "main",
+            "repo": {
+              "id": 1279655441,
+              "name": "lucy",
+              "url": "https://api.github.com/repos/jeanibarz/lucy"
+            },
+            "sha": "98434e1234b34d256f995c7e46d8f528168d7510"
+          },
+          "head": {
+            "ref": "feat/1829-analysis-retries-readiness",
+            "repo": {
+              "id": 1279655441,
+              "name": "lucy",
+              "url": "https://api.github.com/repos/jeanibarz/lucy"
+            },
+            "sha": "b0b8e68971ca8709cae1f3753dfcee060c7cb211"
+          },
+          "id": 4172069669,
+          "number": 1844,
+          "url": "https://api.github.com/repos/jeanibarz/lucy/pulls/1844"
+        }
+      ],
+      "started_at": "2026-07-30T18:39:45Z",
+      "status": "completed",
+      "url": "https://api.github.com/repos/jeanibarz/lucy/check-runs/90968738111",
+      "annotations": [
+        {
+          "annotation_level": "failure",
+          "message": "The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings",
+          "path": ".github",
+          "title": ""
+        }
+      ]
+    },
+    {
+      "app": {
+        "client_id": "Iv1.05c79e9ad1f6bdfa",
+        "created_at": "2018-07-30T09:30:17Z",
+        "description": "Automate your workflow from idea to production",
+        "events": [
+          "branch_protection_rule",
+          "check_run",
+          "check_suite",
+          "create",
+          "delete",
+          "deployment",
+          "deployment_status",
+          "discussion",
+          "discussion_comment",
+          "fork",
+          "gollum",
+          "issues",
+          "issue_comment",
+          "label",
+          "merge_group",
+          "milestone",
+          "page_build",
+          "public",
+          "pull_request",
+          "pull_request_review",
+          "pull_request_review_comment",
+          "push",
+          "registry_package",
+          "release",
+          "repository",
+          "repository_dispatch",
+          "status",
+          "watch",
+          "workflow_dispatch",
+          "workflow_run"
+        ],
+        "external_url": "https://help.github.com/en/actions",
+        "html_url": "https://github.com/apps/github-actions",
+        "id": 15368,
+        "name": "GitHub Actions",
+        "node_id": "MDM6QXBwMTUzNjg=",
+        "owner": {
+          "avatar_url": "https://avatars.githubusercontent.com/u/9919?v=4",
+          "events_url": "https://api.github.com/users/github/events{/privacy}",
+          "followers_url": "https://api.github.com/users/github/followers",
+          "following_url": "https://api.github.com/users/github/following{/other_user}",
+          "gists_url": "https://api.github.com/users/github/gists{/gist_id}",
+          "gravatar_id": "",
+          "html_url": "https://github.com/github",
+          "id": 9919,
+          "login": "github",
+          "node_id": "MDEyOk9yZ2FuaXphdGlvbjk5MTk=",
+          "organizations_url": "https://api.github.com/users/github/orgs",
+          "received_events_url": "https://api.github.com/users/github/received_events",
+          "repos_url": "https://api.github.com/users/github/repos",
+          "site_admin": false,
+          "starred_url": "https://api.github.com/users/github/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/github/subscriptions",
+          "type": "Organization",
+          "url": "https://api.github.com/users/github",
+          "user_view_type": "public"
+        },
+        "permissions": {
+          "actions": "write",
+          "administration": "read",
+          "artifact_metadata": "write",
+          "attestations": "write",
+          "checks": "write",
+          "code_quality": "write",
+          "contents": "write",
+          "copilot_requests": "write",
+          "deployments": "write",
+          "discussions": "write",
+          "drives": "write",
+          "issues": "write",
+          "merge_queues": "write",
+          "metadata": "read",
+          "models": "read",
+          "packages": "write",
+          "pages": "write",
+          "pull_requests": "write",
+          "repository_hooks": "write",
+          "repository_projects": "write",
+          "security_events": "write",
+          "statuses": "write",
+          "vulnerability_alerts": "read"
+        },
+        "slug": "github-actions",
+        "updated_at": "2026-06-18T16:17:48Z"
+      },
+      "check_suite": {
+        "id": 82894861534
+      },
+      "completed_at": "2026-07-30T18:39:48Z",
+      "conclusion": "failure",
+      "details_url": "https://github.com/jeanibarz/lucy/actions/runs/30571392138/job/90968738066",
+      "external_id": "d8309094-5473-50c1-927e-2c17488e9cef",
+      "head_sha": "b0b8e68971ca8709cae1f3753dfcee060c7cb211",
+      "html_url": "https://github.com/jeanibarz/lucy/actions/runs/30571392138/job/90968738066",
+      "id": 90968738066,
+      "name": "Test & syntax check (Node 22)",
+      "node_id": "CR_kwDOTEX-Ec8AAAAVLijJEg",
+      "output": {
+        "annotations_count": 1,
+        "annotations_url": "https://api.github.com/repos/jeanibarz/lucy/check-runs/90968738066/annotations",
+        "summary": null,
+        "text": null,
+        "title": null
+      },
+      "pull_requests": [
+        {
+          "base": {
+            "ref": "main",
+            "repo": {
+              "id": 1279655441,
+              "name": "lucy",
+              "url": "https://api.github.com/repos/jeanibarz/lucy"
+            },
+            "sha": "98434e1234b34d256f995c7e46d8f528168d7510"
+          },
+          "head": {
+            "ref": "feat/1829-analysis-retries-readiness",
+            "repo": {
+              "id": 1279655441,
+              "name": "lucy",
+              "url": "https://api.github.com/repos/jeanibarz/lucy"
+            },
+            "sha": "b0b8e68971ca8709cae1f3753dfcee060c7cb211"
+          },
+          "id": 4172069669,
+          "number": 1844,
+          "url": "https://api.github.com/repos/jeanibarz/lucy/pulls/1844"
+        }
+      ],
+      "started_at": "2026-07-30T18:39:45Z",
+      "status": "completed",
+      "url": "https://api.github.com/repos/jeanibarz/lucy/check-runs/90968738066",
+      "annotations": [
+        {
+          "annotation_level": "failure",
+          "message": "The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings",
+          "path": ".github",
+          "title": ""
+        }
+      ]
+    },
+    {
+      "app": {
+        "client_id": "Iv1.05c79e9ad1f6bdfa",
+        "created_at": "2018-07-30T09:30:17Z",
+        "description": "Automate your workflow from idea to production",
+        "events": [
+          "branch_protection_rule",
+          "check_run",
+          "check_suite",
+          "create",
+          "delete",
+          "deployment",
+          "deployment_status",
+          "discussion",
+          "discussion_comment",
+          "fork",
+          "gollum",
+          "issues",
+          "issue_comment",
+          "label",
+          "merge_group",
+          "milestone",
+          "page_build",
+          "public",
+          "pull_request",
+          "pull_request_review",
+          "pull_request_review_comment",
+          "push",
+          "registry_package",
+          "release",
+          "repository",
+          "repository_dispatch",
+          "status",
+          "watch",
+          "workflow_dispatch",
+          "workflow_run"
+        ],
+        "external_url": "https://help.github.com/en/actions",
+        "html_url": "https://github.com/apps/github-actions",
+        "id": 15368,
+        "name": "GitHub Actions",
+        "node_id": "MDM6QXBwMTUzNjg=",
+        "owner": {
+          "avatar_url": "https://avatars.githubusercontent.com/u/9919?v=4",
+          "events_url": "https://api.github.com/users/github/events{/privacy}",
+          "followers_url": "https://api.github.com/users/github/followers",
+          "following_url": "https://api.github.com/users/github/following{/other_user}",
+          "gists_url": "https://api.github.com/users/github/gists{/gist_id}",
+          "gravatar_id": "",
+          "html_url": "https://github.com/github",
+          "id": 9919,
+          "login": "github",
+          "node_id": "MDEyOk9yZ2FuaXphdGlvbjk5MTk=",
+          "organizations_url": "https://api.github.com/users/github/orgs",
+          "received_events_url": "https://api.github.com/users/github/received_events",
+          "repos_url": "https://api.github.com/users/github/repos",
+          "site_admin": false,
+          "starred_url": "https://api.github.com/users/github/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/github/subscriptions",
+          "type": "Organization",
+          "url": "https://api.github.com/users/github",
+          "user_view_type": "public"
+        },
+        "permissions": {
+          "actions": "write",
+          "administration": "read",
+          "artifact_metadata": "write",
+          "attestations": "write",
+          "checks": "write",
+          "code_quality": "write",
+          "contents": "write",
+          "copilot_requests": "write",
+          "deployments": "write",
+          "discussions": "write",
+          "drives": "write",
+          "issues": "write",
+          "merge_queues": "write",
+          "metadata": "read",
+          "models": "read",
+          "packages": "write",
+          "pages": "write",
+          "pull_requests": "write",
+          "repository_hooks": "write",
+          "repository_projects": "write",
+          "security_events": "write",
+          "statuses": "write",
+          "vulnerability_alerts": "read"
+        },
+        "slug": "github-actions",
+        "updated_at": "2026-06-18T16:17:48Z"
+      },
+      "check_suite": {
+        "id": 82894861534
+      },
+      "completed_at": "2026-07-30T18:39:50Z",
+      "conclusion": "failure",
+      "details_url": "https://github.com/jeanibarz/lucy/actions/runs/30571392138/job/90968737946",
+      "external_id": "1b824071-6011-57b5-9f76-8c3bbb6cba2a",
+      "head_sha": "b0b8e68971ca8709cae1f3753dfcee060c7cb211",
+      "html_url": "https://github.com/jeanibarz/lucy/actions/runs/30571392138/job/90968737946",
+      "id": 90968737946,
+      "name": "Test & syntax check (Node 24)",
+      "node_id": "CR_kwDOTEX-Ec8AAAAVLijImg",
+      "output": {
+        "annotations_count": 1,
+        "annotations_url": "https://api.github.com/repos/jeanibarz/lucy/check-runs/90968737946/annotations",
+        "summary": null,
+        "text": null,
+        "title": null
+      },
+      "pull_requests": [
+        {
+          "base": {
+            "ref": "main",
+            "repo": {
+              "id": 1279655441,
+              "name": "lucy",
+              "url": "https://api.github.com/repos/jeanibarz/lucy"
+            },
+            "sha": "98434e1234b34d256f995c7e46d8f528168d7510"
+          },
+          "head": {
+            "ref": "feat/1829-analysis-retries-readiness",
+            "repo": {
+              "id": 1279655441,
+              "name": "lucy",
+              "url": "https://api.github.com/repos/jeanibarz/lucy"
+            },
+            "sha": "b0b8e68971ca8709cae1f3753dfcee060c7cb211"
+          },
+          "id": 4172069669,
+          "number": 1844,
+          "url": "https://api.github.com/repos/jeanibarz/lucy/pulls/1844"
+        }
+      ],
+      "started_at": "2026-07-30T18:39:45Z",
+      "status": "completed",
+      "url": "https://api.github.com/repos/jeanibarz/lucy/check-runs/90968737946",
+      "annotations": [
+        {
+          "annotation_level": "failure",
+          "message": "The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings",
+          "path": ".github",
+          "title": ""
+        }
+      ]
+    }
+  ]
+}
