@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from './types.js';
-import { Monitor } from './monitor.js';
+import { Monitor, UNOWNED_MONITOR_AGENT_SWEEP_GRACE_MS } from './monitor.js';
 import { TaskStore } from './tasks.js';
 import { AttentionQueue } from './attention-queue.js';
 import { getDetectionStats, resetDetectionStats } from './detection-stats.js';
@@ -1888,6 +1888,221 @@ describe('Monitor', () => {
       expect(monitor.getTaskSnapshot({ excludeTerminalBeforeMs: cutoff() }).map((t) => t.id)).toContain(agedId);
       monitor.sweepAgedTerminalAgents(cutoff());
       expect(monitor.getTaskSnapshot({ excludeTerminalBeforeMs: cutoff() }).map((t) => t.id)).not.toContain(agedId);
+    });
+  });
+
+  describe('sweepUnownedDeadAgents (issue #1763)', () => {
+    // Bind the test grace window to the exported production constant so a change
+    // to the shipped value can't silently diverge from what these tests assert.
+    const GRACE_MS = UNOWNED_MONITOR_AGENT_SWEEP_GRACE_MS;
+
+    function makeTaskWithSession(sessionId: string): string {
+      const task = taskStore.createTask(`Task for ${sessionId}`, '/cwd');
+      taskStore.addSession(task.id, {
+        tmuxSession: sessionId,
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+      });
+      return task.id;
+    }
+
+    test('sweeps every unowned dead agent past the grace period; keeps live and owned', () => {
+      // Unowned = no task references the session (e.g. the task was deleted but
+      // hook replay re-registered the session). Only dead + grace-elapsed
+      // unowned agents are swept. Two dead agents cross the boundary together
+      // to prove the sweep returns a true count, not a boolean.
+      makeTaskWithSession('kookr-owned'); // owned by a live in-progress task
+      const t0 = 1_000_000;
+      for (const id of ['kookr-owned', 'kookr-unowned-dead-a', 'kookr-unowned-dead-b', 'kookr-unowned-live']) {
+        monitor.processEvents(id, [makeToolUse(id, 'Read', { file_path: '/tmp/x' })]);
+      }
+
+      // First observation starts the grace clock; nothing sweeps yet.
+      expect(monitor.sweepUnownedDeadAgents({
+        liveSessionIds: new Set(['kookr-unowned-live']),
+        graceMs: GRACE_MS,
+        now: t0,
+      })).toBe(0);
+
+      // After the grace period, both dead unowned agents sweep; live + owned stay.
+      const swept = monitor.sweepUnownedDeadAgents({
+        liveSessionIds: new Set(['kookr-unowned-live']),
+        graceMs: GRACE_MS,
+        now: t0 + GRACE_MS,
+      });
+      expect(swept).toBe(2);
+      const ids = monitor.getSnapshot().map((s) => s.agentId).sort();
+      expect(ids).toEqual(['kookr-owned', 'kookr-unowned-live']);
+      // Idempotent — nothing left to sweep.
+      expect(monitor.sweepUnownedDeadAgents({
+        liveSessionIds: new Set(['kookr-unowned-live']),
+        graceMs: GRACE_MS,
+        now: t0 + 2 * GRACE_MS,
+      })).toBe(0);
+    });
+
+    test('never sweeps a live unowned session, even long after first observation', () => {
+      // A live orphan (e.g. spared by KOOKR_REAP_ORPHAN_SESSIONS=false) must
+      // never be darkened while its session lives.
+      monitor.processEvents('kookr-live-orphan', [makeToolUse('kookr-live-orphan', 'Read', { file_path: '/tmp/x' })]);
+      const t0 = 2_000_000;
+      expect(monitor.sweepUnownedDeadAgents({
+        liveSessionIds: new Set(['kookr-live-orphan']),
+        graceMs: GRACE_MS,
+        now: t0,
+      })).toBe(0);
+      expect(monitor.sweepUnownedDeadAgents({
+        liveSessionIds: new Set(['kookr-live-orphan']),
+        graceMs: GRACE_MS,
+        now: t0 + 100 * GRACE_MS,
+      })).toBe(0);
+      expect(monitor.getSnapshot().map((s) => s.agentId)).toContain('kookr-live-orphan');
+    });
+
+    test('a single transient listSessions() omission of a still-live orphan does not sweep it', () => {
+      // Robustness: the grace clock measures *continuous* unowned-AND-dead time.
+      // A long-lived unowned live orphan that flickers out of the backend
+      // enumeration for one tick must not be darkened — resetting the clock on
+      // liveness means one absent snapshot can't bank grace toward the sweep.
+      monitor.processEvents('kookr-flaky-orphan', [makeToolUse('kookr-flaky-orphan', 'Read', { file_path: '/tmp/x' })]);
+      const t0 = 5_000_000;
+      // Live for a long time (well past the grace window).
+      for (let i = 0; i <= 5; i++) {
+        expect(monitor.sweepUnownedDeadAgents({
+          liveSessionIds: new Set(['kookr-flaky-orphan']),
+          graceMs: GRACE_MS,
+          now: t0 + i * GRACE_MS,
+        })).toBe(0);
+      }
+      // One tick where the backend transiently omits it — clock only just starts.
+      expect(monitor.sweepUnownedDeadAgents({
+        liveSessionIds: new Set(),
+        graceMs: GRACE_MS,
+        now: t0 + 6 * GRACE_MS,
+      })).toBe(0);
+      // Back in the live set on the very next tick — clock resets, still alive.
+      expect(monitor.sweepUnownedDeadAgents({
+        liveSessionIds: new Set(['kookr-flaky-orphan']),
+        graceMs: GRACE_MS,
+        now: t0 + 7 * GRACE_MS,
+      })).toBe(0);
+      expect(monitor.getSnapshot().map((s) => s.agentId)).toContain('kookr-flaky-orphan');
+      // Only sustained absence across the full grace window sweeps it.
+      expect(monitor.sweepUnownedDeadAgents({ liveSessionIds: new Set(), graceMs: GRACE_MS, now: t0 + 8 * GRACE_MS })).toBe(0);
+      expect(monitor.sweepUnownedDeadAgents({ liveSessionIds: new Set(), graceMs: GRACE_MS, now: t0 + 9 * GRACE_MS })).toBe(1);
+    });
+
+    test('a brand-new session registered before its task lands is not swept (grace clock resets on ownership or liveness)', () => {
+      // Race: registerAgent creates an empty-window entry before the task's
+      // session is added to the store. It must survive until ownership catches up.
+      monitor.registerAgent('kookr-racing');
+      const t0 = 3_000_000;
+      // Observed unowned but still live in the backend — skipped.
+      expect(monitor.sweepUnownedDeadAgents({
+        liveSessionIds: new Set(['kookr-racing']),
+        graceMs: GRACE_MS,
+        now: t0,
+      })).toBe(0);
+      // Task registration lands: ownership resets the grace clock.
+      makeTaskWithSession('kookr-racing');
+      expect(monitor.sweepUnownedDeadAgents({
+        liveSessionIds: new Set(),
+        graceMs: GRACE_MS,
+        now: t0 + 10 * GRACE_MS,
+      })).toBe(0);
+      expect(monitor.getSnapshot().map((s) => s.agentId)).toContain('kookr-racing');
+      // If it later becomes unowned again, the clock starts fresh from that point.
+      taskStore.deleteTask(taskStore.findTaskBySession('kookr-racing')!.id);
+      expect(monitor.sweepUnownedDeadAgents({ liveSessionIds: new Set(), graceMs: GRACE_MS, now: t0 + 11 * GRACE_MS })).toBe(0);
+      expect(monitor.sweepUnownedDeadAgents({ liveSessionIds: new Set(), graceMs: GRACE_MS, now: t0 + 12 * GRACE_MS })).toBe(1);
+    });
+
+    test('a swept unowned agent is marked stopped and does not resurrect via late events', () => {
+      monitor.processEvents('kookr-ghost', [makeToolUse('kookr-ghost', 'Read', { file_path: '/tmp/x' })]);
+      const t0 = 4_000_000;
+      monitor.sweepUnownedDeadAgents({ liveSessionIds: new Set(), graceMs: GRACE_MS, now: t0 }); // start clock
+      expect(monitor.sweepUnownedDeadAgents({ liveSessionIds: new Set(), graceMs: GRACE_MS, now: t0 + GRACE_MS })).toBe(1);
+      expect(monitor.getRetentionMetrics().stoppedAgents).toBe(1);
+      // A late hook replay after the sweep is dropped, not re-created.
+      monitor.processEvents('kookr-ghost', [makeToolUse('kookr-ghost', 'Read', { file_path: '/tmp/y' })]);
+      expect(monitor.getSnapshot().map((s) => s.agentId)).not.toContain('kookr-ghost');
+    });
+  });
+
+  describe('sweepStaleAgents (combined reaper sweep, issues #1761 + #1763)', () => {
+    const AGED_MS = 30 * 24 * 60 * 60 * 1000;
+    const GRACE_MS = UNOWNED_MONITOR_AGENT_SWEEP_GRACE_MS;
+    // The aged-terminal cutoff is on the real wall-clock axis (ageTerminal
+    // stamps real Date.now() timestamps); it is independent of the synthetic
+    // `now` used only to drive the unowned grace clock.
+    const agedCutoff = () => Date.now() - 7 * 24 * 60 * 60 * 1000;
+
+    function makeTaskWithSession(sessionId: string): string {
+      const task = taskStore.createTask(`Task for ${sessionId}`, '/cwd');
+      taskStore.addSession(task.id, {
+        tmuxSession: sessionId,
+        agentType: 'claude-code',
+        cwd: '/cwd',
+        createdAt: new Date(),
+      });
+      return task.id;
+    }
+
+    function ageTerminal(taskId: string): void {
+      taskStore.completeTask(taskId);
+      const live = taskStore.getTaskForMutation(taskId)!;
+      const old = new Date(Date.now() - AGED_MS);
+      live.updatedAt = old;
+      if (live.finishedAt) live.finishedAt = old;
+    }
+
+    test('sums both sweeps, forwarding live sessions to each, and each class handles only its own', () => {
+      // One aged-terminal agent (#1761 class) and one unowned dead agent
+      // (#1763 class) — the combined sweep must clear both and return 2.
+      const agedId = makeTaskWithSession('kookr-aged');
+      ageTerminal(agedId);
+      const t0 = 6_000_000;
+      for (const id of ['kookr-aged', 'kookr-unowned', 'kookr-live']) {
+        monitor.processEvents(id, [makeToolUse(id, 'Read', { file_path: '/tmp/x' })]);
+      }
+
+      // First tick: the unowned agent's grace clock only starts here, so just
+      // the aged-terminal agent (no grace) sweeps.
+      expect(monitor.sweepStaleAgents({
+        liveSessionIds: new Set(['kookr-live']),
+        agedTerminalCutoffMs: agedCutoff(),
+        unownedGraceMs: GRACE_MS,
+        now: t0,
+      })).toBe(1);
+
+      // Re-register the aged agent to prove the second tick's count comes from
+      // the unowned sweep, then let its grace elapse.
+      monitor.registerAgent('kookr-aged');
+      monitor.processEvents('kookr-aged', [makeToolUse('kookr-aged', 'Read', { file_path: '/tmp/x' })]);
+      const swept = monitor.sweepStaleAgents({
+        liveSessionIds: new Set(['kookr-live']),
+        agedTerminalCutoffMs: agedCutoff(),
+        unownedGraceMs: GRACE_MS,
+        now: t0 + GRACE_MS,
+      });
+      expect(swept).toBe(2); // aged-terminal again + the now-grace-elapsed unowned
+      expect(monitor.getSnapshot().map((s) => s.agentId)).toEqual(['kookr-live']);
+    });
+
+    test('never sweeps a live session in either class', () => {
+      // A live session that is BOTH an aged terminal task's session AND (in a
+      // separate agent) an unowned orphan must survive both sweeps.
+      const agedId = makeTaskWithSession('kookr-aged-live');
+      ageTerminal(agedId);
+      const t0 = 7_000_000;
+      for (const id of ['kookr-aged-live', 'kookr-unowned-live']) {
+        monitor.processEvents(id, [makeToolUse(id, 'Read', { file_path: '/tmp/x' })]);
+      }
+      const live = new Set(['kookr-aged-live', 'kookr-unowned-live']);
+      expect(monitor.sweepStaleAgents({ liveSessionIds: live, agedTerminalCutoffMs: agedCutoff(), unownedGraceMs: GRACE_MS, now: t0 })).toBe(0);
+      expect(monitor.sweepStaleAgents({ liveSessionIds: live, agedTerminalCutoffMs: agedCutoff(), unownedGraceMs: GRACE_MS, now: t0 + 100 * GRACE_MS })).toBe(0);
+      expect(monitor.getSnapshot().map((s) => s.agentId).sort()).toEqual(['kookr-aged-live', 'kookr-unowned-live']);
     });
   });
 

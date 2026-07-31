@@ -118,6 +118,16 @@ export type AgentState = MonitorAgentState;
 const DEFAULT_WINDOW_SIZE = 50;
 
 /**
+ * Grace period before an unowned, dead-session monitor agent is swept
+ * (issue #1763). An agent must be observed with no owning task for at least
+ * this long before {@link Monitor.sweepUnownedDeadAgents} unregisters it, so a
+ * brand-new session whose task record has not landed yet is never darkened.
+ * Comfortably longer than the ~5s reaper tick and the task/session
+ * registration window, short enough to reclaim residual leaks promptly.
+ */
+export const UNOWNED_MONITOR_AGENT_SWEEP_GRACE_MS = 60_000;
+
+/**
  * Cap on the per-agent set of suppressed completion-signal ids (issue #1612).
  * A long-lived agent that repeatedly ends a turn behind a background subagent
  * adds one id per completion signal with no natural eviction, so the set grew
@@ -195,6 +205,15 @@ const WATCHDOG_DEBOUNCE_MIN_STREAK = 2;
 export class Monitor {
   private agentEvents = new Map<string, AgentEvent[]>();
   private stoppedAgents = new Set<string>();
+  /**
+   * First time (epoch ms) each agent was observed *continuously* unowned AND
+   * dead (session not live) by {@link sweepUnownedDeadAgents} (issue #1763).
+   * Drives the grace period that avoids racing task creation / session
+   * registration. Reset the moment the agent regains an owner OR its session
+   * is seen live again, so a single transient `listSessions()` omission of a
+   * still-live orphan cannot accumulate grace and darken it. Cleared on sweep.
+   */
+  private agentFirstUnownedDeadAt = new Map<string, number>();
   private windowSize: number;
   /** Monotonic per-agent event counts for self-diagnostic rate checks. */
   private _eventCounts = new Map<string, number>();
@@ -622,6 +641,7 @@ export class Monitor {
       outstandingSubagentParents: this.outstandingSubagents.parentCount(),
       outstandingSubagents: this.outstandingSubagents.totalOutstanding(),
       ttlEvictedSubagentCounts: this.ttlEvictedSubagentEventCounts.size,
+      unownedDeadGraceTracked: this.agentFirstUnownedDeadAt.size,
     };
   }
 
@@ -716,8 +736,107 @@ export class Monitor {
     return swept;
   }
 
+  /**
+   * Unregister every agent whose session is owned by NO task in the store AND
+   * is not currently live, once it has been unowned longer than `graceMs`
+   * (issue #1763). This is the residual leak that {@link sweepAgedTerminalAgents}
+   * cannot reach: that sweep only touches agents whose owning task is terminal
+   * and aged, but startup hook replay re-registers an entry for every historical
+   * session — including sessions whose task was already deleted
+   * ({@link TaskStore.deleteTask}/`pruneAgedTaskRecords` unregister only a
+   * deleted task's OWN sessions from the monitor, not these orphans). Left
+   * unswept, each unowned entry (a) leaks per-agent retention for the life of
+   * the process, and (b) is pushed un-enriched by `buildSnapshotProjection`
+   * (no `sessionIndex` meta ⇒ a `taskId`-less "ghost" agent card, the exact
+   * shape #1760 eliminated for the aged-terminal cause).
+   *
+   * Two guards keep this from racing a session's own creation:
+   *  - `liveSessionIds`: a session still live in the backend is NEVER swept.
+   *    A brand-new session is registered in the monitor before its task record
+   *    lands but is live in tmux, so it is skipped until ownership catches up.
+   *    A live orphan deliberately spared by `KOOKR_REAP_ORPHAN_SESSIONS=false`
+   *    is likewise never darkened.
+   *  - `graceMs`: an agent must have been *continuously* unowned AND dead for
+   *    at least this long before it is swept. {@link registerAgent} creates an
+   *    empty-window entry, so "no events yet" is not a reliable staleness
+   *    signal — the grace clock ({@link agentFirstUnownedDeadAt}) is tracked
+   *    explicitly and reset the moment the agent regains an owner OR its
+   *    session is seen live again. Resetting on liveness (not just ownership)
+   *    is what makes the sweep robust to a transient `listSessions()` omission:
+   *    a single tick where a still-live orphan drops out of the backend
+   *    enumeration cannot elapse the grace period, so it takes `graceMs` of
+   *    sustained absence — not one flake — to sweep.
+   *
+   * Sweeping is TERMINAL (via {@link unregisterAgent} → `stoppedAgents`), which
+   * is safe here precisely because the session is both unowned and dead: no
+   * legitimate future events exist, and a reused session id is resurrected by
+   * {@link registerAgent}. Returns the number of agents unregistered.
+   */
+  sweepUnownedDeadAgents(opts: {
+    liveSessionIds: ReadonlySet<string>;
+    graceMs: number;
+    now?: number;
+  }): number {
+    const now = opts.now ?? Date.now();
+    // Every session id referenced by ANY task, regardless of task status — an
+    // agent id absent from this set has no owning task. Non-cloning read view.
+    const ownedSessionIds = new Set<string>();
+    for (const task of this.taskStore.viewTasks()) {
+      for (const session of task.sessions) ownedSessionIds.add(session.tmuxSession);
+    }
+    let swept = 0;
+    for (const agentId of [...this.agentEvents.keys()]) {
+      // Only accumulate grace while the agent is BOTH unowned AND dead. Any
+      // tick where it is owned or its session is live resets the clock, so the
+      // grace period measures *continuous* sweepable time — a brand-new
+      // session still registering, or a live orphan that flickers out of one
+      // `listSessions()` snapshot, never banks toward the sweep.
+      const sweepable = !ownedSessionIds.has(agentId) && !opts.liveSessionIds.has(agentId);
+      if (!sweepable) {
+        this.agentFirstUnownedDeadAt.delete(agentId);
+        continue;
+      }
+      const firstUnownedDeadAt = this.agentFirstUnownedDeadAt.get(agentId) ?? now;
+      if (!this.agentFirstUnownedDeadAt.has(agentId)) {
+        this.agentFirstUnownedDeadAt.set(agentId, now);
+      }
+      if (now - firstUnownedDeadAt >= opts.graceMs) {
+        this.unregisterAgent(agentId);
+        swept++;
+      }
+    }
+    return swept;
+  }
+
+  /**
+   * Combined stale-Monitor-state sweep for the session reaper (issues #1761 +
+   * #1763): unregisters agents of aged terminal tasks AND agents whose session
+   * is owned by no task and not live, returning the summed count. The two
+   * populations are disjoint (an owned agent is never touched by the unowned
+   * sweep), so the sum is an exact unregister count. `agedTerminalCutoffMs` is
+   * precomputed by the caller (`now - SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS`) so
+   * core stays free of the server-layer snapshot constant. Live sessions are
+   * excluded from both classes.
+   */
+  sweepStaleAgents(opts: {
+    liveSessionIds: ReadonlySet<string>;
+    agedTerminalCutoffMs: number;
+    unownedGraceMs: number;
+    now?: number;
+  }): number {
+    return (
+      this.sweepAgedTerminalAgents(opts.agedTerminalCutoffMs, { skipSessionIds: opts.liveSessionIds })
+      + this.sweepUnownedDeadAgents({
+        liveSessionIds: opts.liveSessionIds,
+        graceMs: opts.unownedGraceMs,
+        now: opts.now,
+      })
+    );
+  }
+
   unregisterAgent(agentId: string): void {
     this.agentEvents.delete(agentId);
+    this.agentFirstUnownedDeadAt.delete(agentId);
     this._eventCounts.delete(agentId);
     this.lastRecordedAnomalyFingerprint.delete(agentId);
     this.lastEventAnomaly.delete(agentId);

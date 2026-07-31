@@ -57,12 +57,15 @@ export interface SessionReaperDeps {
   getConfig: () => SessionReapConfig;
   now?: () => number;
   /**
-   * Optional thunk sweeping Monitor state for aged terminal tasks (issue
-   * #1761), bound by the server to `monitor.sweepAgedTerminalAgents(now -
-   * SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS, { skipSessionIds })`. Runs on every
-   * periodic reaper tick; the boot-time sweep is inert by ordering (hook
-   * replay populates the monitor AFTER the boot sweep — the ~5s liveness tick
-   * does the real first sweep). Receives this sweep's live session ids so an
+   * Optional thunk sweeping stale Monitor state, bound by the server to both
+   * `monitor.sweepAgedTerminalAgents(now - SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS,
+   * { skipSessionIds })` (aged terminal tasks, issue #1761) AND
+   * `monitor.sweepUnownedDeadAgents({ liveSessionIds, graceMs })` (sessions
+   * owned by no task and not live, issue #1763), returning the combined count.
+   * Runs on every periodic reaper tick; the boot-time sweep is inert by
+   * ordering (hook replay populates the monitor AFTER the boot sweep — the ~5s
+   * liveness tick does the real first sweep). Receives this sweep's live
+   * session ids so an
    * agent whose session is still alive is NEVER swept (sweeping is terminal:
    * a stopped agent's late hook events are dropped, not re-created — see
    * Monitor.sweepAgedTerminalAgents). Deliberately NOT gated on the reaper
@@ -191,15 +194,16 @@ export class SessionReaperService {
     this.lastOrphanCount = orphanCount;
     this.lastTerminalLeakCount = terminalLeakCount;
 
-    // Monitor-state sweep for aged terminal tasks (issue #1761): piggybacks on
-    // this safety-net tick because the paths that create the leak (startup
-    // hook replay, reconciliation terminal transitions) have no teardown of
-    // their own. Best-effort — a throw here must not break session reaping.
+    // Stale Monitor-state sweep (issues #1761 aged-terminal + #1763 unowned):
+    // piggybacks on this safety-net tick because the paths that create the leak
+    // (startup hook replay, reconciliation terminal transitions, deleted-task
+    // orphans) have no teardown of their own. Best-effort — a throw here must
+    // not break session reaping.
     if (this.deps.sweepMonitorAgedAgents) {
       try {
         const sweptAgents = this.deps.sweepMonitorAgedAgents(new Set(liveSessions));
         if (sweptAgents > 0) {
-          console.log(`[session-reaper] swept ${sweptAgents} aged-terminal monitor agent(s) (issue #1761)`);
+          console.log(`[session-reaper] swept ${sweptAgents} stale monitor agent(s) (issues #1761/#1763)`);
         }
       } catch (err) {
         console.warn('[session-reaper] monitor aged-agent sweep failed:', err instanceof Error ? err.message : err);

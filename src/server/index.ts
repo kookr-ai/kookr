@@ -57,7 +57,7 @@ import {
   type SnapshotMessageDeps,
 } from './use-cases/get-snapshot.js';
 import { SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS } from './use-cases/snapshot-projection.js';
-import type { AgentState } from '../core/monitor.js';
+import { type AgentState, UNOWNED_MONITOR_AGENT_SWEEP_GRACE_MS } from '../core/monitor.js';
 import { collectBootTranscriptRegistrations } from './boot-transcript-registration.js';
 import { sweepReflectWorktrees } from './use-cases/request-task-reflect.js';
 import { startBackgroundServices } from './bootstrap/start-background-services.js';
@@ -937,13 +937,20 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     backend: terminalBackend,
     auditLogPath: join(kookrDir, 'audit.jsonl'),
     getConfig: () => readSessionReapConfigFromEnv(process.env),
-    // Issue #1761: clear Monitor state for aged terminal tasks on every sweep
-    // (boot + periodic). Same age cutoff as the snapshot payload diet — recent
-    // terminal tasks keep their monitor state and attention findings.
-    sweepMonitorAgedAgents: (liveSessionIds) => monitor.sweepAgedTerminalAgents(
-      Date.now() - SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS,
-      { skipSessionIds: liveSessionIds },
-    ),
+    // Clear stale Monitor state on every sweep (boot + periodic). Two classes:
+    //  - #1761: agents of aged terminal tasks. Same age cutoff as the snapshot
+    //    payload diet — recent terminal tasks keep their monitor state and
+    //    attention findings.
+    //  - #1763: agents whose session is owned by NO task and is not live —
+    //    the residual leak the aged-terminal sweep cannot reach (startup hook
+    //    replay re-registers entries for sessions whose task was deleted).
+    // Live sessions are excluded from both so an in-flight session is never
+    // darkened. Returns the combined count for the reaper's log line.
+    sweepMonitorAgedAgents: (liveSessionIds) => monitor.sweepStaleAgents({
+      liveSessionIds,
+      agedTerminalCutoffMs: Date.now() - SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS,
+      unownedGraceMs: UNOWNED_MONITOR_AGENT_SWEEP_GRACE_MS,
+    }),
   });
 
   // Reconcile with live backend sessions
