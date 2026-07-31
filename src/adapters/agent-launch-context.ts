@@ -244,6 +244,26 @@ export async function buildAgentLaunchContext(
     env.KOOKR_PARENT_TASK_ID = task.parentTaskId;
   }
 
+  // Surface the immutable launch provenance (issue #1583) to the running agent
+  // so headless playbooks can branch on how they were launched (issue #1714).
+  // A scheduled or parent-spawned run has nobody to answer an interactive
+  // prompt, so the parallel-issue-batch playbook uses this to report-and-exit on
+  // an empty backlog instead of stranding on `AskUserQuestion`. `parentTaskId`
+  // is already exposed above; `schedule` provenance had no runtime signal until
+  // now. Manual/unknown provenance is passed through too so the playbook's
+  // interactive branch stays exact.
+  if (task?.provenance) {
+    env.KOOKR_LAUNCH_PROVENANCE = task.provenance.kind;
+  }
+
+  // Unattended/autonomous marker (issue #1562) as a runtime signal too: an
+  // operator can mark a manually-launched run unattended, which also means
+  // "nobody is watching to answer a prompt". Headless playbooks treat this as
+  // report-and-exit as well, not just schedule/parent provenance (issue #1714).
+  if (task?.unattended) {
+    env.KOOKR_UNATTENDED = '1';
+  }
+
   // Propagate the Stop-hook nudge kill switch (RFC: rfc-agent-signal-surface §7)
   // so the baked Stop hook can read it. (In-flight tasks are disabled via the
   // /dev/shm runtime marker the nudge script also stats.)

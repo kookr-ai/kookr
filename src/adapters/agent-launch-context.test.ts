@@ -75,6 +75,9 @@ describe('agent-launch-context', () => {
     expect(context.env).toEqual({
       KOOKR_TASK_ID: child.id,
       KOOKR_PARENT_TASK_ID: parent.id,
+      // A child spawn is `parent` provenance (issue #1583); surfaced to the
+      // agent so headless playbooks can report-and-exit (issue #1714).
+      KOOKR_LAUNCH_PROVENANCE: 'parent',
       KOOKR_PORT: '4801',
       KOOKR_API_BASE_URL: 'http://127.0.0.1:4801',
       KOOKR_GIT_COMMON_DIR: join(repoDir, '.git'),
@@ -115,6 +118,67 @@ describe('agent-launch-context', () => {
     });
 
     expect(context.permissionDenylist).toEqual([]);
+  });
+
+  // issue #1714: surface launch provenance so headless playbooks can branch on
+  // it (report-and-exit on empty backlog instead of stranding on a prompt).
+  test('exposes schedule provenance as KOOKR_LAUNCH_PROVENANCE for scheduled runs', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({
+      prompt: 'Scheduled batch',
+      cwd: '/repo',
+      launchSource: 'schedule',
+      scheduleId: 'sched-1',
+    });
+    const context = await buildAgentLaunchContext({
+      taskStore,
+      taskId: task.id,
+      cwd: makeTempDir(),
+    });
+
+    expect(context.env.KOOKR_LAUNCH_PROVENANCE).toBe('schedule');
+    expect(context.env.KOOKR_UNATTENDED).toBeUndefined();
+  });
+
+  test('exposes manual provenance for a plain API/UI/CLI launch', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'Manual run', cwd: '/repo', launchSource: 'ui' });
+    const context = await buildAgentLaunchContext({
+      taskStore,
+      taskId: task.id,
+      cwd: makeTempDir(),
+    });
+
+    expect(context.env.KOOKR_LAUNCH_PROVENANCE).toBe('manual');
+    // A plain manual launch is attended: no unattended marker (symmetry with the
+    // schedule case above — HEADLESS must not trip on a supervised manual run).
+    expect(context.env.KOOKR_UNATTENDED).toBeUndefined();
+  });
+
+  test('exposes unknown provenance for a bare launch with no signals', async () => {
+    const taskStore = new TaskStore();
+    // No parent, no launchSource ⇒ deriveTaskProvenance defaults to unknown; the
+    // adapter still surfaces it explicitly rather than omitting the var.
+    const task = taskStore.createTask({ prompt: 'Bare task', cwd: '/repo' });
+    const context = await buildAgentLaunchContext({
+      taskStore,
+      taskId: task.id,
+      cwd: makeTempDir(),
+    });
+
+    expect(context.env.KOOKR_LAUNCH_PROVENANCE).toBe('unknown');
+  });
+
+  test('marks KOOKR_UNATTENDED for unattended runs so headless playbooks report-and-exit', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'Autonomous task', cwd: '/repo', unattended: true });
+    const context = await buildAgentLaunchContext({
+      taskStore,
+      taskId: task.id,
+      cwd: makeTempDir(),
+    });
+
+    expect(context.env.KOOKR_UNATTENDED).toBe('1');
   });
 
   test('maps linked worktrees back to the shared git common dir', async () => {

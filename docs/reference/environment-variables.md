@@ -92,6 +92,8 @@ not user configuration knobs.
 | --- | --- | --- | --- |
 | `KOOKR_TASK_ID` | Injected per task | Task id string | Identifies the current Kookr task. Hooks and child-task workflows use it for correlation. |
 | `KOOKR_PARENT_TASK_ID` | Injected only for child tasks | Task id string | Identifies the parent task for nested agent work. |
+| `KOOKR_LAUNCH_PROVENANCE` | Injected per task | `schedule` \| `parent` \| `manual` \| `unknown` | The task's immutable launch provenance (issue #1583). Lets headless playbooks branch on how they were launched — e.g. the parallel-issue-batch playbook treats `schedule`/`parent` as headless and reports-and-exits on an empty backlog instead of stranding on `AskUserQuestion` (issue #1714). |
+| `KOOKR_UNATTENDED` | Injected only for unattended tasks | `1` when set | Marks an unattended/autonomous run (issue #1562) where nobody is watching to answer a prompt. Headless playbooks treat it the same as `schedule`/`parent` provenance (issue #1714). |
 | `KOOKR_API_BASE_URL` | `http://127.0.0.1:<server port>` when known | HTTP URL | Lets agents and CLIs call back to the active Kookr instance. |
 | `KOOKR_GIT_COMMON_DIR` | Injected when cwd is a Git worktree | Absolute path | Points at the shared Git common directory for worktree-aware workflows. |
 | `KOOKR_AGENT_ID` | Not injected yet (reserved) | Session id string | Optional session-id hint read by `kookr issue claim` to stamp the claiming session (RFC rfc-issue-ownership-lock). Harmless when unset; adapters may inject it in a later phase. |
