@@ -180,6 +180,33 @@ describe('TaskStore', () => {
       expect(store.listTasks().find((t) => t.id === created.id)).not.toBe(view.find((t) => t.id === created.id));
     });
 
+    test('listTasksForSnapshot filters aged terminal tasks BEFORE cloning (issue #1749 follow-up)', () => {
+      const fresh = store.createTask('Fresh active', '/cwd');
+      const agedDone = store.createTask('Aged done', '/cwd');
+      store.startTask(agedDone.id);
+      store.completeTask(agedDone.id);
+      // Age the terminal task past the cutoff by back-dating its live record.
+      const aged = store.getTaskForMutation(agedDone.id)!;
+      const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      aged.updatedAt = old;
+      if (aged.finishedAt) aged.finishedAt = old;
+      const recentDone = store.createTask('Recent done', '/cwd');
+      store.startTask(recentDone.id);
+      store.completeTask(recentDone.id);
+
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const filtered = store.listTasksForSnapshot({ excludeTerminalBeforeMs: cutoff });
+      expect(filtered.map((t) => t.id).sort()).toEqual([fresh.id, recentDone.id].sort());
+      // Survivors are detached clones, not live records.
+      const clone = filtered.find((t) => t.id === fresh.id)!;
+      expect(clone).not.toBe(store.viewTasks().find((t) => t.id === fresh.id));
+      clone.prompt = 'mutated';
+      expect(store.getTask(fresh.id)!.prompt).toBe('Fresh active');
+      // No cutoff behaves exactly like getAllTasks.
+      expect(store.listTasksForSnapshot().map((t) => t.id).sort())
+        .toEqual(store.getAllTasks().map((t) => t.id).sort());
+    });
+
     test('listTasks returns snapshots instead of stored mutable records', () => {
       const created = store.createTask('Task 1', '/cwd');
       store.addSession(created.id, {

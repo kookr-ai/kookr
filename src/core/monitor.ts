@@ -627,9 +627,26 @@ export class Monitor {
   /**
    * Expose raw task records for server-side snapshot projection.
    * Monitor deliberately does not turn these into dashboard AgentState entries.
+   * Pass `excludeTerminalBeforeMs` to skip aged terminal tasks BEFORE the
+   * per-task clone (issue #1749 follow-up): the client snapshot path discards
+   * them anyway, and cloning 800 terminal tasks per snapshot build (~78 MB of
+   * transient garbage) was a heap-limit OOM driver. Raw/debug callers omit it
+   * and keep full-fidelity history.
+   *
+   * Tasks owning a session that is live in this monitor's agent map are ALWAYS
+   * kept regardless of age: the projection suppresses a live monitor state via
+   * the session index built from these tasks, and dropping the owner would
+   * leak the state as an unattributed "ghost" agent in client snapshots
+   * (agentId === session.tmuxSession === this map's key).
    */
-  getTaskSnapshot(): Task[] {
-    return this.taskStore.getAllTasks();
+  getTaskSnapshot(opts?: { excludeTerminalBeforeMs?: number }): Task[] {
+    if (opts?.excludeTerminalBeforeMs === undefined) {
+      return this.taskStore.listTasksForSnapshot(opts);
+    }
+    return this.taskStore.listTasksForSnapshot({
+      ...opts,
+      protectSessionIds: new Set(this.agentEvents.keys()),
+    });
   }
 
   /**

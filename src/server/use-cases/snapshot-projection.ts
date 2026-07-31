@@ -4,7 +4,7 @@ import type { AgentType } from '../../core/agent-types.js';
 import { deriveLatestCompletionSignal } from '../../core/completion-signal.js';
 import { displayPromptForTask } from '../../core/prompt-display.js';
 import { projectDisplayLabel } from '../../core/project-identity.js';
-import { isTerminalStatus, type Task, type TaskLaunchHealthSummary } from '../../core/tasks.js';
+import { isAgedTerminalTask, isTerminalStatus, taskSnapshotRecencyMs, type Task, type TaskLaunchHealthSummary } from '../../core/tasks.js';
 import type { AgentStatus, Anomaly, TaskStatus, WorktreeHealth } from '../../core/types.js';
 import { normalizeTerminalWorktreeHealth } from '../../core/worktree-health.js';
 import type { AgentState } from '../../shared/contracts/agent-state.js';
@@ -57,28 +57,11 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 export const SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS = SNAPSHOT_TERMINAL_TASK_MAX_AGE_DAYS * MS_PER_DAY;
 
 /**
- * Latest activity timestamp (ms) attributable to a task for snapshot-age
- * purposes. `updatedAt` normally dominates (every transition bumps it), but
- * `finishedAt`/`terminatedAt` are included defensively for legacy records.
- * Using `updatedAt` means any fresh mutation (rename, feedback, reopen) makes
- * an aged terminal task reappear in the snapshot — the operator-friendly
- * behavior.
+ * Task snapshot-age helpers now live in `core/tasks.ts` so
+ * `TaskStore.listTasksForSnapshot` can filter aged terminal tasks BEFORE
+ * cloning (issue #1749 follow-up). Re-exported here for existing importers.
  */
-export function taskSnapshotRecencyMs(task: Pick<Task, 'updatedAt' | 'finishedAt' | 'terminatedAt'>): number {
-  return Math.max(
-    task.updatedAt.getTime(),
-    task.finishedAt?.getTime() ?? 0,
-    task.terminatedAt?.getTime() ?? 0,
-  );
-}
-
-/** True when the task is terminal AND its last activity predates `cutoffMs`. */
-export function isAgedTerminalTask(
-  task: Pick<Task, 'status' | 'updatedAt' | 'finishedAt' | 'terminatedAt'>,
-  cutoffMs: number,
-): boolean {
-  return isTerminalStatus(task.status) && taskSnapshotRecencyMs(task) < cutoffMs;
-}
+export { taskSnapshotRecencyMs, isAgedTerminalTask };
 
 type SnapshotFindingState = AgentState & { anomaly: Anomaly; taskId: string };
 
