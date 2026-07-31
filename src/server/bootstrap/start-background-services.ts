@@ -7,6 +7,7 @@ import { startLedgerWatcher } from '../ledger-watcher.js';
 import type { ScheduleRunner } from '../schedule-runner.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
 import type { ResourceStatusService } from '../resource-status-service.js';
+import type { ResourceWatchdogService } from '../resource-watchdog-service.js';
 import type { FindingEvidenceReviewSampler } from '../finding-evidence-review-sampler.js';
 import type { ScheduledWorktreeReclaimRunner } from '../scheduled-worktree-reclaim-runner.js';
 
@@ -23,6 +24,8 @@ export interface BackgroundServicesDeps {
   scheduleRunner: ScheduleRunner;
   timerDeps: TimerDeps;
   resourceStatusService?: ResourceStatusService;
+  /** Host-pressure actuator (issue #1724). No-op when disabled via env. */
+  resourceWatchdogService?: Pick<ResourceWatchdogService, 'start' | 'stop'>;
   findingEvidenceReviewSampler?: Pick<FindingEvidenceReviewSampler, 'start' | 'stop'>;
   /** Unattended worktree-reclaim scheduler (issue #1578). No-op unless configured. */
   scheduledWorktreeReclaimRunner?: Pick<ScheduledWorktreeReclaimRunner, 'start' | 'stop'>;
@@ -53,6 +56,7 @@ export function startBackgroundServices(deps: BackgroundServicesDeps): Backgroun
   }
 
   deps.resourceStatusService?.start();
+  deps.resourceWatchdogService?.start();
 
   return {
     timerHandles,
@@ -66,6 +70,7 @@ export function startBackgroundServices(deps: BackgroundServicesDeps): Backgroun
       await deps.scheduleRunner.stop();
       deps.githubScanner.stop();
       deps.resourceStatusService?.stop();
+      deps.resourceWatchdogService?.stop();
       deps.findingEvidenceReviewSampler?.stop();
       await deps.scheduledWorktreeReclaimRunner?.stop();
       ledgerWatcher.close();

@@ -161,3 +161,93 @@ export function readSessionReapConfigFromEnv(
     ),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Resource watchdog (issue #1724) — OFF by default; operator opt-in actuator.
+// ---------------------------------------------------------------------------
+
+/** Default sample cadence (60s). */
+export const DEFAULT_RESOURCE_WATCHDOG_INTERVAL_MS = 60_000;
+/** Default swap-used % threshold. */
+export const DEFAULT_RESOURCE_WATCHDOG_SWAP_PERCENT = 50;
+/** Default MemAvailable floor (MiB). */
+export const DEFAULT_RESOURCE_WATCHDOG_MEM_AVAILABLE_MB = 512;
+/** Default per-agent-family process ceiling. */
+export const DEFAULT_RESOURCE_WATCHDOG_PROCESS_CEILING = 40;
+/** Default orphan-session count ceiling. */
+export const DEFAULT_RESOURCE_WATCHDOG_ORPHAN_CEILING = 5;
+/** Default minimum gap between spawns (30 min). */
+export const DEFAULT_RESOURCE_WATCHDOG_THROTTLE_MS = 30 * 60 * 1000;
+/** Default rolling-24h spawn budget before meta-reflection. */
+export const DEFAULT_RESOURCE_WATCHDOG_SPAWN_BUDGET_24H = 4;
+/** Rolling budget window (24h). */
+export const DEFAULT_RESOURCE_WATCHDOG_SPAWN_BUDGET_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+export interface ResourceWatchdogEnvConfig {
+  enabled: boolean;
+  intervalMs: number;
+  swapUsedPercentThreshold: number;
+  memAvailableMbFloor: number;
+  processCeiling: number;
+  orphanCeiling: number;
+  throttleMs: number;
+  spawnBudget24h: number;
+  spawnBudgetWindowMs: number;
+}
+
+function readTruthyEnvFlag(raw: string | undefined): boolean {
+  if (raw == null) return false;
+  const v = raw.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/**
+ * Read the resource-watchdog configuration (issue #1724) from the environment.
+ *
+ * **Disabled by default.** Set `KOOKR_RESOURCE_WATCHDOG=1` (or true/yes/on) to
+ * enable the actuator after review. Thresholds of `0` disable the individual
+ * rule (same convention as operational alerts).
+ */
+export function readResourceWatchdogConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): ResourceWatchdogEnvConfig {
+  return {
+    enabled: readTruthyEnvFlag(env.KOOKR_RESOURCE_WATCHDOG),
+    intervalMs: Math.max(
+      1_000,
+      readNonNegativeNumber(env.KOOKR_RESOURCE_WATCHDOG_INTERVAL_MS, DEFAULT_RESOURCE_WATCHDOG_INTERVAL_MS)
+        || DEFAULT_RESOURCE_WATCHDOG_INTERVAL_MS,
+    ),
+    swapUsedPercentThreshold: readNonNegativeNumber(
+      env.KOOKR_RESOURCE_WATCHDOG_SWAP_PERCENT,
+      DEFAULT_RESOURCE_WATCHDOG_SWAP_PERCENT,
+    ),
+    memAvailableMbFloor: readNonNegativeNumber(
+      env.KOOKR_RESOURCE_WATCHDOG_MEM_AVAILABLE_MB,
+      DEFAULT_RESOURCE_WATCHDOG_MEM_AVAILABLE_MB,
+    ),
+    processCeiling: readNonNegativeNumber(
+      env.KOOKR_RESOURCE_WATCHDOG_PROCESS_CEILING,
+      DEFAULT_RESOURCE_WATCHDOG_PROCESS_CEILING,
+    ),
+    orphanCeiling: readNonNegativeNumber(
+      env.KOOKR_RESOURCE_WATCHDOG_ORPHAN_CEILING,
+      DEFAULT_RESOURCE_WATCHDOG_ORPHAN_CEILING,
+    ),
+    throttleMs: Math.max(
+      0,
+      readNonNegativeNumber(env.KOOKR_RESOURCE_WATCHDOG_THROTTLE_MS, DEFAULT_RESOURCE_WATCHDOG_THROTTLE_MS),
+    ),
+    spawnBudget24h: Math.max(
+      1,
+      readPositiveInt(env.KOOKR_RESOURCE_WATCHDOG_SPAWN_BUDGET_24H, DEFAULT_RESOURCE_WATCHDOG_SPAWN_BUDGET_24H),
+    ),
+    spawnBudgetWindowMs: Math.max(
+      60_000,
+      readNonNegativeNumber(
+        env.KOOKR_RESOURCE_WATCHDOG_SPAWN_BUDGET_WINDOW_MS,
+        DEFAULT_RESOURCE_WATCHDOG_SPAWN_BUDGET_WINDOW_MS,
+      ) || DEFAULT_RESOURCE_WATCHDOG_SPAWN_BUDGET_WINDOW_MS,
+    ),
+  };
+}

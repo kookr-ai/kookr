@@ -7,9 +7,13 @@ import {
   DEFAULT_OPERATIONAL_ALERT_SUSTAIN_SAMPLES,
   DEFAULT_REQUEST_BODY_LIMIT_BYTES,
   DEFAULT_MAX_HOST_LOAD_PER_CPU,
+  DEFAULT_RESOURCE_WATCHDOG_INTERVAL_MS,
+  DEFAULT_RESOURCE_WATCHDOG_SWAP_PERCENT,
+  DEFAULT_RESOURCE_WATCHDOG_SPAWN_BUDGET_24H,
   readOperationalAlertConfigFromEnv,
   readRequestBodyLimitBytesFromEnv,
   readMaxHostLoadPerCpuFromEnv,
+  readResourceWatchdogConfigFromEnv,
 } from './config.js';
 
 describe('readOperationalAlertConfigFromEnv', () => {
@@ -140,5 +144,43 @@ describe('readMaxHostLoadPerCpuFromEnv', () => {
     expect(readMaxHostLoadPerCpuFromEnv({ KOOKR_MAX_HOST_LOAD_PER_CPU: '-1' })).toBe(0);
     expect(readMaxHostLoadPerCpuFromEnv({ KOOKR_MAX_HOST_LOAD_PER_CPU: '  ' })).toBe(0);
     expect(readMaxHostLoadPerCpuFromEnv({ KOOKR_MAX_HOST_LOAD_PER_CPU: 'abc' })).toBe(0);
+  });
+});
+
+describe('readResourceWatchdogConfigFromEnv (issue #1724)', () => {
+  test('defaults OFF with documented thresholds', () => {
+    const cfg = readResourceWatchdogConfigFromEnv({});
+    expect(cfg.enabled).toBe(false);
+    expect(cfg.intervalMs).toBe(DEFAULT_RESOURCE_WATCHDOG_INTERVAL_MS);
+    expect(cfg.swapUsedPercentThreshold).toBe(DEFAULT_RESOURCE_WATCHDOG_SWAP_PERCENT);
+    expect(cfg.spawnBudget24h).toBe(DEFAULT_RESOURCE_WATCHDOG_SPAWN_BUDGET_24H);
+  });
+
+  test('enables on 1/true/yes/on', () => {
+    for (const raw of ['1', 'true', 'yes', 'on', 'TRUE', ' Yes ']) {
+      expect(readResourceWatchdogConfigFromEnv({ KOOKR_RESOURCE_WATCHDOG: raw }).enabled).toBe(true);
+    }
+    for (const raw of ['0', 'false', 'no', 'off', '', '  ']) {
+      expect(readResourceWatchdogConfigFromEnv({ KOOKR_RESOURCE_WATCHDOG: raw }).enabled).toBe(false);
+    }
+  });
+
+  test('threshold 0 disables individual rules; interval floors at 1000; budget floors at 1', () => {
+    const cfg = readResourceWatchdogConfigFromEnv({
+      KOOKR_RESOURCE_WATCHDOG: '1',
+      KOOKR_RESOURCE_WATCHDOG_SWAP_PERCENT: '0',
+      KOOKR_RESOURCE_WATCHDOG_MEM_AVAILABLE_MB: '0',
+      KOOKR_RESOURCE_WATCHDOG_PROCESS_CEILING: '0',
+      KOOKR_RESOURCE_WATCHDOG_ORPHAN_CEILING: '0',
+      KOOKR_RESOURCE_WATCHDOG_INTERVAL_MS: '100',
+      KOOKR_RESOURCE_WATCHDOG_SPAWN_BUDGET_24H: '0',
+    });
+    expect(cfg.swapUsedPercentThreshold).toBe(0);
+    expect(cfg.memAvailableMbFloor).toBe(0);
+    expect(cfg.processCeiling).toBe(0);
+    expect(cfg.orphanCeiling).toBe(0);
+    expect(cfg.intervalMs).toBe(1_000);
+    // Non-positive budget falls back to the documented default (then floored ≥1).
+    expect(cfg.spawnBudget24h).toBe(DEFAULT_RESOURCE_WATCHDOG_SPAWN_BUDGET_24H);
   });
 });
