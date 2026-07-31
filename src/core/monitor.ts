@@ -2,6 +2,7 @@ import type { AgentActivityMeta, AgentEvent, Anomaly, AnomalyType, TokenUsage, T
 import type { CompletionDigest } from './completion-digest.js';
 import type { TaskDependencyEdge, TaskLaunchPermissionPosture } from '../shared/contracts/task.js';
 import type { Task, TaskLaunchHealthSummary, TaskStore } from './tasks.js';
+import { isAgedTerminalTask } from './tasks.js';
 import type { UserInputDeliverySnapshot } from '../shared/contracts/user-input-delivery.js';
 import type { SessionHealthSnapshot } from '../shared/contracts/session-health.js';
 import type { AttentionQueue } from './attention-queue.js';
@@ -665,6 +666,56 @@ export class Monitor {
    * Remove an agent from monitoring (e.g. session completed or explicitly stopped).
    * Marks the agent as stopped so late-arriving events are silently dropped.
    */
+  /**
+   * Unregister every agent whose owning task is terminal AND aged past
+   * `cutoffMs` (issue #1761). `agentEvents` has no other sweep: startup hook
+   * replay re-populates an entry for every historical session (measured 819 on
+   * a 814-task store), and reconciliation terminal paths never call
+   * {@link unregisterAgent}. Left unswept, those entries (a) leak per-agent
+   * retention for the life of the process, (b) make every snapshot build walk
+   * hundreds of dead states, and (c) neutralize the #1760 pre-clone filter —
+   * its ghost-agent guard must keep any task owning a live agentEvents key, so
+   * a fully-populated map protects (and re-clones) nearly the whole store.
+   *
+   * Uses the same age cutoff as the snapshot payload diet: recent terminal
+   * tasks keep their monitor state (and any attention findings —
+   * {@link unregisterAgent} purges the attention queue, which is only safe
+   * once a finding is stale). Callers pass
+   * `now - SNAPSHOT_TERMINAL_TASK_MAX_AGE_MS`.
+   *
+   * Sweeping is TERMINAL for the entry: {@link unregisterAgent} adds the id to
+   * `stoppedAgents`, and {@link processEvents} refuses to resurrect stopped
+   * agents — a late hook replay after the sweep is dropped, not re-created.
+   * That is deliberate (no re-sweep churn), and it is also why
+   * `skipSessionIds` exists: an agent whose session is STILL ALIVE (task
+   * terminal in store but the session lives on — the reaper's "leak class 2",
+   * or a session deliberately spared by `KOOKR_REAP_ORPHAN_SESSIONS=false`)
+   * must never be swept, or its monitoring goes permanently dark until the
+   * next {@link registerAgent}. The session reaper passes its live-session
+   * list here.
+   *
+   * Returns the number of agents unregistered.
+   */
+  sweepAgedTerminalAgents(cutoffMs: number, opts?: { skipSessionIds?: ReadonlySet<string> }): number {
+    // Invert ownership once (O(tasks + agents)) instead of a per-agent
+    // findTaskBySession scan. viewTasks is the non-cloning read view — this
+    // method reads-and-drops synchronously.
+    const ownerBySession = new Map<string, Task>();
+    for (const task of this.taskStore.viewTasks()) {
+      for (const session of task.sessions) ownerBySession.set(session.tmuxSession, task);
+    }
+    let swept = 0;
+    for (const agentId of [...this.agentEvents.keys()]) {
+      if (opts?.skipSessionIds?.has(agentId)) continue;
+      const owner = ownerBySession.get(agentId);
+      if (owner && isAgedTerminalTask(owner, cutoffMs)) {
+        this.unregisterAgent(agentId);
+        swept++;
+      }
+    }
+    return swept;
+  }
+
   unregisterAgent(agentId: string): void {
     this.agentEvents.delete(agentId);
     this._eventCounts.delete(agentId);
