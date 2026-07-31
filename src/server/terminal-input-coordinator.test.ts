@@ -8,6 +8,7 @@ import { CodexCliAdapter } from '../adapters/codex-cli-adapter.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { LocalDtachBackend } from '../adapters/local-dtach-backend.js';
 import { TaskStore } from '../core/tasks.js';
+import { reapDtachReferencing } from '../test-utils/reap-dtach.js';
 import { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 
 const encoder = new TextEncoder();
@@ -233,8 +234,20 @@ describe('TerminalInputCoordinator with real dtach-backed terminal', () => {
       backend.close();
       backend = null;
     }
+    // dtach masters spawned via setsid can survive killSession failures /
+    // mid-test crashes; reap anything still referencing this /tmp/tsc-* dir
+    // before removing it (#1738 / #784).
     if (tmpDir) {
-      rmSync(tmpDir, { recursive: true, force: true });
+      try {
+        await reapDtachReferencing(tmpDir);
+      } catch {
+        // best-effort
+      }
+      try {
+        rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
       tmpDir = '';
     }
   }

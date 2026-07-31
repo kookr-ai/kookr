@@ -9,13 +9,13 @@
  */
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LocalDtachBackend } from '../adapters/local-dtach-backend.js';
-import { killProcessTree } from '../adapters/process-tree.js';
 import { TaskStore } from '../core/tasks.js';
 import type { SessionReapConfig } from '../core/session-reap-policy.js';
+import { reapDtachReferencing } from '../test-utils/reap-dtach.js';
 import { SessionReaperService } from './session-reaper.js';
 
 function resolveDtachBinary(): string | null {
@@ -26,29 +26,6 @@ function resolveDtachBinary(): string | null {
     return 'dtach';
   } catch {
     return null;
-  }
-}
-
-/** Reap any dtach masters (and their children) still referencing `dir` — same convention as local-dtach-backend.test.ts. */
-async function reapDtachReferencing(dir: string): Promise<void> {
-  let names: string[];
-  try {
-    names = readdirSync('/proc');
-  } catch {
-    return;
-  }
-  const targets: number[] = [];
-  for (const name of names) {
-    if (!/^\d+$/.test(name)) continue;
-    try {
-      const cmdline = readFileSync(`/proc/${name}/cmdline`, 'utf-8').replace(/\0/g, ' ');
-      if (cmdline.includes('dtach') && cmdline.includes(dir)) targets.push(Number(name));
-    } catch {
-      // process exited between readdir and read — skip
-    }
-  }
-  for (const pid of targets) {
-    await killProcessTree(pid, { graceMs: 2_000 });
   }
 }
 

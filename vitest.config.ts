@@ -13,7 +13,14 @@ export default defineConfig({
     // git-repo-guard: heals a poisoned shared git config. relay-orphan-reaper
     // (#1723): SIGKILLs any test-suite relay server still lingering after the
     // run so `pnpm test` leaves zero orphaned relay processes.
-    globalSetup: ['./test/git-repo-guard.global.ts', './test/relay-orphan-reaper.global.ts'],
+    // dtach-master-reaper (#1738): reaps leftover test-suite dtach masters under
+    // /tmp/tsc-* (and other known test prefixes) so the suite cannot leak
+    // resident masters the way an un-reaped createSession would.
+    globalSetup: [
+      './test/git-repo-guard.global.ts',
+      './test/relay-orphan-reaper.global.ts',
+      './test/dtach-master-reaper.global.ts',
+    ],
     // TEMPORARY (issue #1437): names the test that poisons the shared git
     // config in CI. Removed in the same PR once CI has identified it.
     setupFiles: ['./test/_poisoner-probe.setup.ts'],
