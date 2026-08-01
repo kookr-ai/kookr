@@ -5,6 +5,7 @@ import type { Anomaly } from '../core/types.js';
 import type { RequestDurationMetricsSnapshot } from './request-duration-metrics.js';
 import { renderPrometheusExposition } from './prometheus-exposition.js';
 import type { WebhookDeliveryCounts } from '../integrations/webhook/index.js';
+import type { ToolLatencyMetricsSnapshot } from '../core/tool-latency-metrics.js';
 
 const EMPTY_REQUEST_DURATIONS: RequestDurationMetricsSnapshot = {
   schemaVersion: 'request-duration-metrics.v1',
@@ -55,7 +56,23 @@ describe('renderPrometheusExposition', () => {
       resetTimeoutMs: 30_000,
     }];
 
-    const output = renderPrometheusExposition({ requestDurations, circuitBreakers });
+    const toolLatencies: ToolLatencyMetricsSnapshot = {
+      schemaVersion: 'tool-latency-metrics.v1',
+      maxTools: 64,
+      maxSamplesPerTool: 256,
+      toolCount: 1,
+      droppedToolCount: 1,
+      tools: [{
+        toolName: 'Bash/"nested"\\path',
+        count: 5,
+        sampleCount: 3,
+        p50Ms: 100,
+        p95Ms: 250,
+        p99Ms: 300,
+      }],
+    };
+
+    const output = renderPrometheusExposition({ requestDurations, circuitBreakers, toolLatencies });
 
     expect(output).toContain('# HELP kookr_http_request_duration_observations_total Total recorded HTTP request-duration observations by route template.');
     expect(output).toContain('# TYPE kookr_http_request_duration_observations_total counter');
@@ -67,6 +84,16 @@ describe('renderPrometheusExposition', () => {
     expect(output).toContain('kookr_http_request_duration_seconds{method="GET",route="/api/tasks/:taskId/\\"events\\"\\\\tail",quantile="0.95"} 0.025');
     expect(output).toContain('kookr_http_request_duration_seconds{method="GET",route="/api/tasks/:taskId/\\"events\\"\\\\tail",quantile="0.99"} 0.03');
     expect(output).toContain('kookr_http_request_duration_dropped_routes_total 2');
+    expect(output).toContain('# HELP kookr_tool_duration_observations_total Total recorded PreToolUse→PostToolUse observations by tool name.');
+    expect(output).toContain('# TYPE kookr_tool_duration_observations_total counter');
+    expect(output).toContain('kookr_tool_duration_observations_total{tool="Bash/\\"nested\\"\\\\path"} 5');
+    expect(output).toContain('# TYPE kookr_tool_duration_sample_count gauge');
+    expect(output).toContain('kookr_tool_duration_sample_count{tool="Bash/\\"nested\\"\\\\path"} 3');
+    expect(output).toContain('# TYPE kookr_tool_duration_seconds gauge');
+    expect(output).toContain('kookr_tool_duration_seconds{tool="Bash/\\"nested\\"\\\\path",quantile="0.5"} 0.1');
+    expect(output).toContain('kookr_tool_duration_seconds{tool="Bash/\\"nested\\"\\\\path",quantile="0.95"} 0.25');
+    expect(output).toContain('kookr_tool_duration_seconds{tool="Bash/\\"nested\\"\\\\path",quantile="0.99"} 0.3');
+    expect(output).toContain('kookr_tool_duration_dropped_tools_total 1');
     expect(output).toContain('# HELP kookr_circuit_breaker_state Current circuit-breaker state. The active state is 1 and inactive states are 0.');
     expect(output).toContain('# TYPE kookr_circuit_breaker_state gauge');
     expect(output).toContain('kookr_circuit_breaker_state{name="llm",state="closed"} 0');

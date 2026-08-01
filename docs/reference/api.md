@@ -11,13 +11,29 @@ Kookr exposes local HTTP and WebSocket endpoints from the Hono server. In develo
 | `GET /api/diagnostics/lesson-yield` | Per-window lesson yield (`?days=1..30`): decided / completed tasks from hook-log scans. Cache-first / stale-while-revalidate — a fresh or stale snapshot returns immediately; a cold cache waits at most ~8s for a single-flight scan, then returns `503 lesson_yield_warming` (with `retryAfterMs`) while the bounded scan finishes in the background, so the request path never hangs. (`503 lesson_yield_scan_timeout` remains only for the rare case a scan aborts at its 30s bound inside that wait.) (issues #1538, #1553, #1585) |
 | `GET /api/health/stt` | Bundled speech-to-text container health |
 | `GET /api/startup-summary` | Crash-recovery startup summary fetched once on UI mount |
-| `GET /metrics` | Prometheus text exposition for request durations, circuit breakers, attention-queue suppressions, audit-sink health, aggregate auth-throttle counters, and outbound finding-webhook delivery outcomes |
+| `GET /metrics` | Prometheus text exposition for request durations, per-tool PreToolUse→PostToolUse latencies, circuit breakers, attention-queue suppressions, audit-sink health, aggregate auth-throttle counters, and outbound finding-webhook delivery outcomes |
 
 ### `GET /metrics`
 
 Returns Prometheus text format (`text/plain; version=0.0.4`). On loopback
 servers it is unauthenticated; when non-loopback API auth is required it accepts
 owner credentials only and rejects viewer credentials.
+
+Per-tool (PreToolUse→PostToolUse) latency is exported from the watchdog's
+bounded ring-buffer histogram (issue #1770):
+
+- `kookr_tool_duration_observations_total{tool}`: counter of completed tool
+  observations by tool name.
+- `kookr_tool_duration_sample_count{tool}`: gauge of retained samples used for
+  quantiles (capped per tool).
+- `kookr_tool_duration_seconds{tool,quantile}`: gauge of p50 / p95 / p99 tool
+  durations in seconds (`quantile="0.5"|"0.95"|"0.99"`).
+- `kookr_tool_duration_dropped_tools_total`: counter of samples discarded after
+  the tool-name cardinality cap was reached.
+
+Tool-name cardinality and per-tool sample retention are bounded so the structure
+cannot grow with every event. Orphaned PostToolUse events (no matching
+PreToolUse) are not recorded.
 
 Circuit breakers are exported as:
 
