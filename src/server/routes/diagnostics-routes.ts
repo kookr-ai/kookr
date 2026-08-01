@@ -250,18 +250,32 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
 
   app.get('/api/health', async (c) => {
     const terminalBackend = deps.terminalBackend;
+    const backendWriteStats = terminalBackend?.getStats();
     let terminalBackendBlock: object | undefined;
-    if (terminalBackend) {
-      const stats = terminalBackend.getStats();
+    if (backendWriteStats) {
       terminalBackendBlock = {
-        status: deriveTerminalBackendStatus(stats),
-        attachedSessions: stats.attachedSessions,
-        reattachCounts: stats.reattachCounts,
-        pendingWriters: stats.pendingWriters,
-        lastError: stats.lastError,
-        errorCount: stats.errorCount,
+        status: deriveTerminalBackendStatus(backendWriteStats),
+        attachedSessions: backendWriteStats.attachedSessions,
+        reattachCounts: backendWriteStats.reattachCounts,
+        pendingWriters: backendWriteStats.pendingWriters,
+        maxPendingWriters: backendWriteStats.maxPendingWriters,
+        writeTimeoutCount: backendWriteStats.writeTimeoutCount,
+        lastError: backendWriteStats.lastError,
+        errorCount: backendWriteStats.errorCount,
       };
     }
+    // Write-path saturation (issue #1776): mutex queue depth + coordinator
+    // pendingWrites + WriteTimeoutError counts. Always present so operators
+    // can chart zeros without a secret env flag; values stay 0 when deps are
+    // not wired (tests / non-server hosts).
+    const coordinatorWriteMetrics = deps.terminalInputCoordinator?.getWriteMetrics();
+    const terminalWriteBlock = {
+      pendingWriters: backendWriteStats?.pendingWriters ?? 0,
+      maxPendingWriters: backendWriteStats?.maxPendingWriters ?? 0,
+      writeTimeoutCount: backendWriteStats?.writeTimeoutCount ?? 0,
+      pendingWrites: coordinatorWriteMetrics?.pendingWrites ?? 0,
+      maxPendingWrites: coordinatorWriteMetrics?.maxPendingWrites ?? 0,
+    };
     // Session reaper (issue #1720): cheap in-memory counters from the last
     // boot/periodic sweep — never a fresh disk/process scan on this request
     // path (issue #1553 lesson: an unbounded scan here previously OOM-crashed
@@ -373,6 +387,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         ? { ciBlindDebt: ciBlindDebtBlock, ci_blind_debt: ciBlindDebtBlock }
         : {}),
       ...(terminalBackendBlock ? { terminalBackend: terminalBackendBlock } : {}),
+      terminalWrite: terminalWriteBlock,
       ...(sessionReaperBlock ? { sessionReaper: sessionReaperBlock } : {}),
       ...(resourceWatchdogBlock ? { resourceWatchdog: resourceWatchdogBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),

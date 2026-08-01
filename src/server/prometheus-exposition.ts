@@ -14,6 +14,15 @@ import { emptyToolLatencyMetricsSnapshot } from '../core/tool-latency-metrics.js
 
 export const PROMETHEUS_CONTENT_TYPE = 'text/plain; version=0.0.4';
 
+/** Terminal write-path saturation gauges (issue #1776). */
+export interface TerminalWriteMetricsSnapshot {
+  pendingWriters: number;
+  maxPendingWriters: number;
+  writeTimeoutCount: number;
+  pendingWrites: number;
+  maxPendingWrites: number;
+}
+
 export interface PrometheusExpositionSnapshot {
   requestDurations: RequestDurationMetricsSnapshot;
   circuitBreakers: CircuitBreakerSnapshot[];
@@ -22,6 +31,7 @@ export interface PrometheusExpositionSnapshot {
   auditSinks?: AuditSinkMetricsSnapshot[];
   authThrottle?: AuthThrottleSnapshot;
   webhookDeliveries?: WebhookDeliveryCounts;
+  terminalWrite?: TerminalWriteMetricsSnapshot;
 }
 
 export interface AuditSinkMetricsSnapshot {
@@ -40,6 +50,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendAuditSinkMetrics(lines, snapshot.auditSinks ?? []);
   appendAuthThrottleMetrics(lines, snapshot.authThrottle);
   appendWebhookDeliveryMetrics(lines, snapshot.webhookDeliveries);
+  appendTerminalWriteMetrics(lines, snapshot.terminalWrite);
 
   return `${lines.join('\n')}\n`;
 }
@@ -229,6 +240,37 @@ function appendWebhookDeliveryMetrics(
   for (const outcome of WEBHOOK_DELIVERY_OUTCOMES) {
     lines.push(metricLine('kookr_webhook_deliveries_total', { outcome }, counts[outcome]));
   }
+}
+
+const EMPTY_TERMINAL_WRITE: TerminalWriteMetricsSnapshot = {
+  pendingWriters: 0,
+  maxPendingWriters: 0,
+  writeTimeoutCount: 0,
+  pendingWrites: 0,
+  maxPendingWrites: 0,
+};
+
+function appendTerminalWriteMetrics(
+  lines: string[],
+  snapshot: TerminalWriteMetricsSnapshot = EMPTY_TERMINAL_WRITE,
+): void {
+  lines.push(
+    '# HELP kookr_terminal_write_pending_writers Current callers queued or executing under a session writeMutex.',
+    '# TYPE kookr_terminal_write_pending_writers gauge',
+    metricLine('kookr_terminal_write_pending_writers', {}, snapshot.pendingWriters),
+    '# HELP kookr_terminal_write_max_pending_writers High-water mark of writeMutex queue depth since process start.',
+    '# TYPE kookr_terminal_write_max_pending_writers gauge',
+    metricLine('kookr_terminal_write_max_pending_writers', {}, snapshot.maxPendingWriters),
+    '# HELP kookr_terminal_write_timeouts_total Total WriteTimeoutError events from the terminal write path.',
+    '# TYPE kookr_terminal_write_timeouts_total counter',
+    metricLine('kookr_terminal_write_timeouts_total', {}, snapshot.writeTimeoutCount),
+    '# HELP kookr_terminal_write_pending_writes Current in-flight TerminalInputCoordinator writes across sessions.',
+    '# TYPE kookr_terminal_write_pending_writes gauge',
+    metricLine('kookr_terminal_write_pending_writes', {}, snapshot.pendingWrites),
+    '# HELP kookr_terminal_write_max_pending_writes High-water mark of coordinator pendingWrites since process start.',
+    '# TYPE kookr_terminal_write_max_pending_writes gauge',
+    metricLine('kookr_terminal_write_max_pending_writes', {}, snapshot.maxPendingWrites),
+  );
 }
 
 const CIRCUIT_BREAKER_STATES: CircuitBreakerState[] = ['closed', 'open', 'half-open'];

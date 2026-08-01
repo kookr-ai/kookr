@@ -196,6 +196,28 @@ describe('renderPrometheusExposition', () => {
     expect(output).not.toContain('lastFailure');
   });
 
+  test('renders terminalWrite saturation gauges (issue #1776)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      terminalWrite: {
+        pendingWriters: 2,
+        maxPendingWriters: 5,
+        writeTimeoutCount: 3,
+        pendingWrites: 1,
+        maxPendingWrites: 4,
+      },
+    });
+
+    expect(output).toContain('# TYPE kookr_terminal_write_pending_writers gauge');
+    expect(output).toContain('kookr_terminal_write_pending_writers 2');
+    expect(output).toContain('kookr_terminal_write_max_pending_writers 5');
+    expect(output).toContain('# TYPE kookr_terminal_write_timeouts_total counter');
+    expect(output).toContain('kookr_terminal_write_timeouts_total 3');
+    expect(output).toContain('kookr_terminal_write_pending_writes 1');
+    expect(output).toContain('kookr_terminal_write_max_pending_writes 4');
+  });
+
   test('renders aggregate auth throttle counters without source labels', () => {
     const output = renderPrometheusExposition({
       requestDurations: EMPTY_REQUEST_DURATIONS,

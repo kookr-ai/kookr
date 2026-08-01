@@ -112,6 +112,33 @@ describe('metrics routes', () => {
     expect(body).toContain('kookr_webhook_deliveries_total{outcome="dropped"} 2');
   });
 
+  test('serves terminalWrite saturation gauges from backend + coordinator (issue #1776)', async () => {
+    const res = await mkApp({
+      terminalBackend: {
+        getStats: () => ({
+          attachedSessions: 1,
+          reattachCounts: {},
+          pendingWriters: 2,
+          maxPendingWriters: 7,
+          writeTimeoutCount: 4,
+          lastError: null,
+          errorCount: 4,
+        }),
+      } as never,
+      terminalInputCoordinator: {
+        getWriteMetrics: () => ({ pendingWrites: 1, maxPendingWrites: 3 }),
+      } as never,
+    }).request('/metrics');
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('kookr_terminal_write_pending_writers 2');
+    expect(body).toContain('kookr_terminal_write_max_pending_writers 7');
+    expect(body).toContain('kookr_terminal_write_timeouts_total 4');
+    expect(body).toContain('kookr_terminal_write_pending_writes 1');
+    expect(body).toContain('kookr_terminal_write_max_pending_writes 3');
+  });
+
   test('serves live aggregate auth throttle metrics', async () => {
     const authThrottle = new AuthThrottle({ freeFailures: 0, audit: () => {} });
     authThrottle.recordFailure('10.0.0.12', 'bad_token');

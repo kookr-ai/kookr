@@ -109,6 +109,8 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
   private readonly errorSubscribers = new Set<(err: BackendError) => void>();
   private lastError: BackendError | null = null;
   private errorCount = 0;
+  private maxPendingWriters = 0;
+  private writeTimeoutCount = 0;
 
   /** Per-session write queue — preserves submission order across writes. */
   private writeQueues = new Map<SessionId, Promise<void>>();
@@ -496,6 +498,8 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
       attachedSessions: attached,
       reattachCounts: {},
       pendingWriters: 0,
+      maxPendingWriters: this.maxPendingWriters,
+      writeTimeoutCount: this.writeTimeoutCount,
       lastError: this.lastError,
       errorCount: this.errorCount,
     };
@@ -587,6 +591,7 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
   fireError(err: BackendError): void {
     this.lastError = err;
     this.errorCount += 1;
+    if (err.kind === 'write-timed-out') this.writeTimeoutCount += 1;
     for (const cb of this.errorSubscribers) {
       try {
         cb(err);

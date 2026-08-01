@@ -42,6 +42,8 @@ class FailingTerminalBackend implements TerminalBackend {
       attachedSessions: 0,
       reattachCounts: {},
       pendingWriters: 0,
+      maxPendingWriters: 0,
+      writeTimeoutCount: 0,
       lastError: null,
       errorCount: 0,
     };

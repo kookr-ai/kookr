@@ -898,6 +898,8 @@ describe('SessionBridge', () => {
             attachedSessions: 0,
             reattachCounts: {},
             pendingWriters: 0,
+            maxPendingWriters: 0,
+            writeTimeoutCount: 0,
             lastError: null,
             errorCount: 0,
           };
@@ -1250,6 +1252,8 @@ describe('SessionBridge', () => {
             attachedSessions: 0,
             reattachCounts: {},
             pendingWriters: 0,
+            maxPendingWriters: 0,
+            writeTimeoutCount: 0,
             lastError: null,
             errorCount: 0,
           };

@@ -42,6 +42,11 @@ export interface LocalDtachStreamHost {
   readonly reattachCounts: Record<SessionId, number>;
   isClosed(): boolean;
   emitError(err: BackendError): void;
+  /**
+   * Observe aggregate write-mutex queue depth after a session's
+   * `pendingWriters` changes (issue #1776 high-water tracking).
+   */
+  observeWriteQueueDepth(): void;
 }
 
 export class LocalDtachStream {
@@ -440,10 +445,11 @@ export class LocalDtachStream {
   /**
    * Acquire the per-session write mutex, run `fn`, release. Chains on a
    * Promise tail so concurrent callers queue. Counts pending writers for
-   * `/api/health`.
+   * `/api/health` and `/metrics` terminalWrite gauges.
    */
   async runUnderMutex<T>(sess: AttachedSession, fn: () => Promise<T>): Promise<T> {
     sess.pendingWriters += 1;
+    this.host.observeWriteQueueDepth();
     const prev = sess.writeMutex;
     let release!: () => void;
     sess.writeMutex = new Promise<void>((res) => {
