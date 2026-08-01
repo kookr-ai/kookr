@@ -28,7 +28,10 @@ import { createTerminalScopeChecker } from './terminal-scope.js';
 import { ContactShareReadModel } from '../core/contact-share.js';
 import { deterministicTaskName, generateTaskName } from '../core/task-naming.js';
 import type { BackendError, TerminalBackend } from '../adapters/terminal-backend.js';
-import { wireEventPipeline } from './event-pipeline.js';
+import {
+  readSnapshotShedConfigFromEnv,
+  wireEventPipeline,
+} from './event-pipeline.js';
 import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
 import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
@@ -1495,7 +1498,19 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
   let remoteRelayRuntime: RemoteRelayRuntime | null = null;
 
-  const { abortPendingSuggestion } = wireEventPipeline({
+  // #1775: shed non-critical full-snapshot rebuilds when event-loop p95 is
+  // already saturated. The resource-status service is constructed later, so
+  // this holder is filled in once sampling starts (fail-open until then).
+  const snapshotShedConfig = readSnapshotShedConfigFromEnv();
+  console.log(
+    snapshotShedConfig.eventLoopDelayThresholdMs > 0
+      ? `[snapshot-shed] non-critical full-snapshot rebuilds skip when event-loop p95 > ` +
+          `${snapshotShedConfig.eventLoopDelayThresholdMs}ms`
+      : '[snapshot-shed] Snapshot rebuild shed disabled (set KOOKR_SNAPSHOT_SHED_EVENT_LOOP_DELAY_MS to enable)',
+  );
+  let getEventLoopDelayP95MsForSnapshotShed: () => number | null | undefined = () => null;
+
+  const { abortPendingSuggestion, getSnapshotShedMetrics } = wireEventPipeline({
     adapter, monitor, taskStore, tokenTracker, watchdog,
     githubScanner, llmClient, serverCwd, broadcastToAll,
     telemetryLog,
@@ -1512,6 +1527,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       remoteRelayRuntime?.publishPermissionBlocked(taskId);
     },
     permissionAlertBreaker,
+    getEventLoopDelayP95Ms: () => getEventLoopDelayP95MsForSnapshotShed(),
+    snapshotShedEventLoopDelayThresholdMs: snapshotShedConfig.eventLoopDelayThresholdMs,
   });
 
   // Terminal input deps — used by terminal bridge handlers
@@ -1800,6 +1817,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalInputRttMetrics,
     sessionReaper,
     nonCriticalTimerPause: nonCriticalTimerPauseGate,
+    snapshotShed: { getSnapshotShedMetrics },
     resourceWatchdog: resourceWatchdogService,
     deliveryTrace,
     coordinatorSuppressions,
@@ -1977,14 +1995,16 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     alertEvaluator: operationalAlertEvaluator,
     getCircuitBreakerSnapshots: () => circuitBreakerRegistry.getAllSnapshots(),
     intervalMs: resourceStatusIntervalMs,
-    // #1725 / #1785: feed the same sampled event-loop delay p95 into the
-    // dashboard WS load-shed gate AND the non-critical timer pause gate —
-    // reuses this measurement instead of a second monitor.
+    // #1725 / #1785 / #1775: feed the same sampled event-loop delay p95 into
+    // the dashboard WS load-shed gate, non-critical timer pause gate, and
+    // snapshot rebuild shed — reuses this measurement instead of a second monitor.
     onEventLoopDelaySample: (delayMs) => {
       realtime.noteEventLoopDelaySample(delayMs);
       nonCriticalTimerPauseGate.noteSample(delayMs);
     },
   });
+  getEventLoopDelayP95MsForSnapshotShed = () =>
+    resourceStatusService.getLatest()?.server.eventLoopDelayP95Ms ?? null;
 
   // Periodic memory ledger (issue #1612). Opt-in (KOOKR_MEMORY_LEDGER=1) so it
   // costs nothing by default; when enabled it logs a structured `[mem-ledger]`

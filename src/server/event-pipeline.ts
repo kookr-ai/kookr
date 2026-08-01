@@ -28,6 +28,70 @@ import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from './user-input-delivery-service.js';
 import { buildSnapshotProjection } from './use-cases/snapshot-projection.js';
 
+/**
+ * Default event-loop delay p95 threshold (ms) above which non-critical full
+ * snapshot rebuilds are shed (#1775). Aligned with WS load-shed / non-critical
+ * timer pause so the same saturation signal trips multiple guards. `0` disables.
+ */
+export const DEFAULT_SNAPSHOT_SHED_EVENT_LOOP_DELAY_MS = 1_500;
+
+export interface SnapshotShedConfig {
+  /**
+   * Event-loop delay p95 threshold in milliseconds. Non-critical snapshot
+   * rebuilds skip when the latest sample is strictly greater than this value.
+   * `0` disables shedding.
+   */
+  eventLoopDelayThresholdMs: number;
+}
+
+function readNonNegativeNumber(raw: string | undefined, fallback: number): number {
+  if (raw == null || raw.trim() === '') return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return parsed < 0 ? 0 : parsed;
+}
+
+/**
+ * Read snapshot-shed threshold from the environment. Invalid/blank → default;
+ * `KOOKR_SNAPSHOT_SHED_EVENT_LOOP_DELAY_MS=0` disables shedding.
+ */
+export function readSnapshotShedConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): SnapshotShedConfig {
+  return {
+    eventLoopDelayThresholdMs: readNonNegativeNumber(
+      env.KOOKR_SNAPSHOT_SHED_EVENT_LOOP_DELAY_MS,
+      DEFAULT_SNAPSHOT_SHED_EVENT_LOOP_DELAY_MS,
+    ),
+  };
+}
+
+/**
+ * Pure decision: should a non-critical full-snapshot rebuild be skipped?
+ * Fail-open on disabled threshold or missing/non-finite sample (#1775).
+ * "Above threshold" is strict greater-than (matches timer-pause wording).
+ */
+export function shouldShedSnapshotRebuild(input: {
+  eventLoopDelayP95Ms: number | null | undefined;
+  thresholdMs: number;
+}): boolean {
+  const { eventLoopDelayP95Ms, thresholdMs } = input;
+  if (!(thresholdMs > 0)) return false;
+  if (eventLoopDelayP95Ms == null || !Number.isFinite(eventLoopDelayP95Ms)) return false;
+  return eventLoopDelayP95Ms > thresholdMs;
+}
+
+/** Process-lifetime shed counter + config for `/metrics` / health (#1775). */
+export interface SnapshotShedMetricsSnapshot {
+  schemaVersion: 'snapshot-shed.v1';
+  /** Configured threshold (ms); 0 means the gate is disabled. */
+  thresholdMs: number;
+  /** Last finite p95 sample consulted at a shed decision, or null. */
+  lastEventLoopDelayP95Ms: number | null;
+  /** Total non-critical full-snapshot rebuilds skipped since process start. */
+  shedTotal: number;
+}
+
 export interface EventPipelineDeps {
   adapter: AgentAdapter;
   monitor: Monitor;
@@ -84,6 +148,17 @@ export interface EventPipelineDeps {
    */
   snapshotCoalesceWindowMs?: number;
   userInputDeliveries?: UserInputDeliveryService;
+  /**
+   * Latest sampled event-loop delay p95 (ms) for snapshot-shed (#1775).
+   * Reuses the resource-sampler value already powering admission / WS load-shed.
+   * Fail-open: missing getter or null/non-finite samples never shed.
+   */
+  getEventLoopDelayP95Ms?: () => number | null | undefined;
+  /**
+   * Threshold (ms) for shedding non-critical full-snapshot rebuilds. Defaults
+   * to {@link DEFAULT_SNAPSHOT_SHED_EVENT_LOOP_DELAY_MS}; `0` disables.
+   */
+  snapshotShedEventLoopDelayThresholdMs?: number;
 }
 
 const DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS = 250;
@@ -111,8 +186,13 @@ function getProjectedAgentState(monitor: Monitor, taskStore: TaskStore, agentId:
  */
 export function wireEventPipeline(deps: EventPipelineDeps): {
   abortPendingSuggestion: (agentId: string, outcome?: 'used' | 'cleared') => void;
-  /** Force any pending coalesced snapshot broadcast to fan out now (#704). */
+  /**
+   * Force any pending coalesced snapshot broadcast to fan out now (#704).
+   * Critical path: bypasses snapshot-shed under event-loop saturation (#1775).
+   */
   flushSnapshotNow: () => void;
+  /** In-memory shed counter + threshold for `/metrics` / health (#1775). */
+  getSnapshotShedMetrics: () => SnapshotShedMetricsSnapshot;
 } {
   const {
     adapter, monitor, taskStore, tokenTracker, watchdog,
@@ -132,16 +212,49 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
   // `flushSnapshotNow` is the immediate-flush escape used internally for
   // attention transitions and exposed on the wire result for callers that need
   // a synchronous flush (e.g. a future shutdown drain).
+  //
+  // #1775: when event-loop delay p95 is already saturated, non-critical
+  // flushes skip the multi-MB rebuild+fan-out (leave dirty + re-arm) so the
+  // loop can serve terminal I/O. Attention / force flushes fail open.
   const coalesceWindowMs = deps.snapshotCoalesceWindowMs ?? DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS;
+  const snapshotShedThresholdMs =
+    deps.snapshotShedEventLoopDelayThresholdMs ?? DEFAULT_SNAPSHOT_SHED_EVENT_LOOP_DELAY_MS;
   let snapshotDirty = false;
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  let snapshotShedTotal = 0;
+  let lastSnapshotShedSampleMs: number | null = null;
 
-  const flushSnapshotNow = () => {
+  const armCoalesceTimer = (flush: () => void) => {
+    if (flushTimer !== null || coalesceWindowMs <= 0) return;
+    flushTimer = setTimeout(flush, coalesceWindowMs);
+    // Don't let a pending coalesce window keep the process (or a test runner)
+    // alive; the flush is best-effort UI state, not a durability guarantee.
+    flushTimer.unref?.();
+  };
+
+  const flushSnapshotInternal = (opts?: { force?: boolean }) => {
     if (flushTimer !== null) {
       clearTimeout(flushTimer);
       flushTimer = null;
     }
     if (!snapshotDirty) return;
+
+    if (!opts?.force) {
+      const p95 = deps.getEventLoopDelayP95Ms?.();
+      if (p95 != null && Number.isFinite(p95)) {
+        lastSnapshotShedSampleMs = p95;
+      }
+      if (shouldShedSnapshotRebuild({
+        eventLoopDelayP95Ms: p95,
+        thresholdMs: snapshotShedThresholdMs,
+      })) {
+        snapshotShedTotal += 1;
+        // Keep dirty and re-arm so a later quiet window converges once load drops.
+        armCoalesceTimer(() => flushSnapshotInternal());
+        return;
+      }
+    }
+
     snapshotDirty = false;
     broadcastToAll(createSnapshotMessage({
       monitor,
@@ -153,18 +266,16 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
     }));
   };
 
+  /** Critical-path force flush (attention + external escape hatch). */
+  const flushSnapshotNow = () => flushSnapshotInternal({ force: true });
+
   const broadcastSnapshot = () => {
     snapshotDirty = true;
     if (coalesceWindowMs <= 0) {
-      flushSnapshotNow();
+      flushSnapshotInternal();
       return;
     }
-    if (flushTimer === null) {
-      flushTimer = setTimeout(flushSnapshotNow, coalesceWindowMs);
-      // Don't let a pending coalesce window keep the process (or a test runner)
-      // alive; the flush is best-effort UI state, not a durability guarantee.
-      flushTimer.unref?.();
-    }
+    armCoalesceTimer(() => flushSnapshotInternal());
   };
   const publishTaskProjection = (taskId: string) => {
     deps.taskShareService?.publishTaskProjectionForTask(taskId);
@@ -376,5 +487,11 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
   return {
     abortPendingSuggestion: responseAssistProcessor.abortPendingSuggestion,
     flushSnapshotNow,
+    getSnapshotShedMetrics: () => ({
+      schemaVersion: 'snapshot-shed.v1',
+      thresholdMs: snapshotShedThresholdMs,
+      lastEventLoopDelayP95Ms: lastSnapshotShedSampleMs,
+      shedTotal: snapshotShedTotal,
+    }),
   };
 }

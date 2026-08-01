@@ -31,6 +31,7 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
     };
 
     const nonCriticalTimerPause = deps.nonCriticalTimerPause?.getSnapshot();
+    const snapshotShed = deps.snapshotShed?.getSnapshotShedMetrics();
     return c.body(renderPrometheusExposition({
       requestDurations,
       toolLatencies: deps.watchdog?.getToolLatencyMetrics().snapshot(),
@@ -51,6 +52,15 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
               thresholdMs: nonCriticalTimerPause.thresholdMs,
               lastEventLoopDelayP95Ms: nonCriticalTimerPause.lastEventLoopDelayP95Ms,
               pausedTicksTotal: nonCriticalTimerPause.pausedTicksTotal,
+            },
+          }
+        : {}),
+      ...(snapshotShed
+        ? {
+            snapshotShed: {
+              thresholdMs: snapshotShed.thresholdMs,
+              lastEventLoopDelayP95Ms: snapshotShed.lastEventLoopDelayP95Ms,
+              shedTotal: snapshotShed.shedTotal,
             },
           }
         : {}),
