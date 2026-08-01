@@ -10,7 +10,7 @@ const SUSPECTED_TYPE_OPTIONS: ReadonlyArray<{ value: AnomalyType; label: string 
   { value: 'stale_agent', label: 'Stale / stuck' },
   { value: 'hook_disconnected', label: 'Hook pipeline broken' },
   { value: 'hook_missing', label: 'Hook missing' },
-  { value: 'tmux_unresponsive', label: 'Tmux unresponsive' },
+  { value: 'backend_unreachable', label: 'Backend unreachable' },
   { value: 'api_error', label: 'API error' },
   { value: 'budget_exceeded', label: 'Budget exceeded' },
 ];

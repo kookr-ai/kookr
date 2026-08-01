@@ -1,5 +1,11 @@
 import type { AgentEvent } from './agent-events.js';
 
+/**
+ * Canonical anomaly type identifiers. Wire/persistence may still carry the
+ * deprecated alias {@link DEPRECATED_ANOMALY_TYPE_ALIASES}; call
+ * {@link canonicalizeAnomalyTypeKey} at contract edges before treating a value
+ * as {@link AnomalyType}.
+ */
 export type AnomalyType =
   | 'needs_input'
   | 'permission_blocked'
@@ -9,9 +15,35 @@ export type AnomalyType =
   | 'hook_disconnected'
   | 'hook_missing'
   | 'hook_parse_degraded'
-  | 'tmux_unresponsive'
+  | 'backend_unreachable'
   | 'api_error'
   | 'budget_exceeded';
+
+/**
+ * Deprecated wire/persistence aliases for {@link AnomalyType}.
+ *
+ * Kept so consumers and on-disk records that still emit the pre-rename symbol
+ * (tmux → dtach migration leftover; see ADR-014) remain valid. Map at the
+ * contract edge via {@link canonicalizeAnomalyTypeKey}; do not emit these from
+ * new code. Retiring an alias is a separate PROTECTED decision.
+ */
+export const DEPRECATED_ANOMALY_TYPE_ALIASES = {
+  tmux_unresponsive: 'backend_unreachable',
+} as const satisfies Readonly<Record<string, AnomalyType>>;
+
+export type DeprecatedAnomalyTypeAlias = keyof typeof DEPRECATED_ANOMALY_TYPE_ALIASES;
+
+/**
+ * Rewrite a deprecated anomaly-type alias to its canonical {@link AnomalyType}.
+ * Unknown strings are returned unchanged (callers still validate against the
+ * canonical union / schema).
+ */
+export function canonicalizeAnomalyTypeKey(raw: string): string {
+  if (Object.prototype.hasOwnProperty.call(DEPRECATED_ANOMALY_TYPE_ALIASES, raw)) {
+    return DEPRECATED_ANOMALY_TYPE_ALIASES[raw as DeprecatedAnomalyTypeAlias];
+  }
+  return raw;
+}
 
 export type AnomalySeverity = 'info' | 'warning' | 'critical';
 

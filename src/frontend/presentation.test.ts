@@ -433,6 +433,7 @@ describe('findingTypeLabel', () => {
     expect(findingTypeLabel(agent('api_error'))).toBe('API Error');
     expect(findingTypeLabel(agent('merge_conflict'))).toBe('Merge Conflict');
     expect(findingTypeLabel(agent('permission_blocked'))).toBe('Permission');
+    expect(findingTypeLabel(agent('backend_unreachable'))).toBe('Backend Unreachable');
   });
 
   test('distinguishes completed-turn signals from explicit input requests', () => {

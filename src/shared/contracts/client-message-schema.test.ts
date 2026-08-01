@@ -556,6 +556,31 @@ describe('ClientMessageSchema — JSON round trips', () => {
     const atCap = Array.from({ length: MAX_BATCH_ABORT_TASKS }, (_, i) => `task-${i}`);
     expect(ClientMessageSchema.safeParse({ type: 'batchAbortTasks', taskIds: atCap }).success).toBe(true);
   });
+
+  test('rewrites deprecated tmux_unresponsive anomaly type to backend_unreachable', () => {
+    const feedback = ClientMessageSchema.safeParse({
+      type: 'findingFeedback',
+      agentId: 'a1',
+      anomalyType: 'tmux_unresponsive',
+      explanation: 'backend down',
+      verdict: 'false_positive',
+    });
+    expect(feedback.success).toBe(true);
+    if (feedback.success && feedback.data.type === 'findingFeedback') {
+      expect(feedback.data.anomalyType).toBe('backend_unreachable');
+    }
+
+    const missed = ClientMessageSchema.safeParse({
+      type: 'missedFinding',
+      agentId: 'a1',
+      userReason: 'terminal was dead',
+      suspectedType: 'tmux_unresponsive',
+    });
+    expect(missed.success).toBe(true);
+    if (missed.success && missed.data.type === 'missedFinding') {
+      expect(missed.data.suspectedType).toBe('backend_unreachable');
+    }
+  });
 });
 
 describe('API reference WebSocket protocol docs', () => {

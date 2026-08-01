@@ -19,7 +19,7 @@ const LABEL: Record<string, string> = {
   stale_agent: 'Stale Agent',
   hook_disconnected: 'Hook Disconnected',
   hook_missing: 'Hook Missing',
-  tmux_unresponsive: 'Tmux Unresponsive',
+  backend_unreachable: 'Backend Unreachable',
   api_error: 'API Error',
 };
 

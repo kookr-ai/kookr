@@ -1,3 +1,4 @@
+import { canonicalizeAnomalyTypeKey } from '../shared/contracts/anomalies.js';
 import type { AnomalyType } from './types.js';
 
 export const SUPPRESSION_REASONS = [
@@ -52,7 +53,7 @@ const ZERO_COUNTS: Record<AnomalyType, number> = {
   hook_disconnected: 0,
   hook_missing: 0,
   hook_parse_degraded: 0,
-  tmux_unresponsive: 0,
+  backend_unreachable: 0,
   api_error: 0,
   budget_exceeded: 0,
 };
@@ -67,6 +68,36 @@ function createZeroSuppressionReasons(): Record<AnomalyType, Record<SuppressionR
   return Object.fromEntries(
     Object.keys(ZERO_COUNTS).map((type) => [type, { ...ZERO_SUPPRESSION_REASON_COUNTS }]),
   ) as Record<AnomalyType, Record<SuppressionReason, number>>;
+}
+
+/**
+ * Map deprecated anomaly-type keys onto the canonical key and sum counts when
+ * both the alias and the canonical form appear in a persisted snapshot.
+ */
+function foldAnomalyTypeCounts(incoming: Record<string, unknown>): Record<string, number> {
+  const folded: Record<string, number> = {};
+  for (const [rawKey, value] of Object.entries(incoming)) {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) continue;
+    const key = canonicalizeAnomalyTypeKey(rawKey);
+    folded[key] = (folded[key] ?? 0) + value;
+  }
+  return folded;
+}
+
+function foldSuppressionReasons(
+  incoming: Record<string, unknown>,
+): Record<string, Record<string, number>> {
+  const folded: Record<string, Record<string, number>> = {};
+  for (const [rawKey, byReason] of Object.entries(incoming)) {
+    if (!byReason || typeof byReason !== 'object') continue;
+    const key = canonicalizeAnomalyTypeKey(rawKey);
+    const target = folded[key] ?? (folded[key] = {});
+    for (const [reason, value] of Object.entries(byReason as Record<string, unknown>)) {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) continue;
+      target[reason] = (target[reason] ?? 0) + value;
+    }
+  }
+  return folded;
 }
 
 const stats: DetectionStats = {
@@ -162,8 +193,10 @@ export function hydrateDetectionStats(snapshot: Partial<DetectionStats>): void {
   for (const bucket of perType) {
     const incoming = snapshot[bucket];
     if (!incoming || typeof incoming !== 'object') continue;
+    // Fold deprecated aliases into the canonical key and sum when both appear.
+    const folded = foldAnomalyTypeCounts(incoming as Record<string, unknown>);
     for (const key of Object.keys(stats[bucket]) as AnomalyType[]) {
-      const value = (incoming as Record<string, unknown>)[key];
+      const value = folded[key];
       if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
         stats[bucket][key] = value;
       }
@@ -171,11 +204,14 @@ export function hydrateDetectionStats(snapshot: Partial<DetectionStats>): void {
   }
   const suppressionReasons = snapshot.suppressionReasons;
   if (suppressionReasons && typeof suppressionReasons === 'object') {
+    const foldedReasons = foldSuppressionReasons(
+      suppressionReasons as Record<string, unknown>,
+    );
     for (const type of Object.keys(stats.suppressionReasons) as AnomalyType[]) {
-      const incomingByReason = (suppressionReasons as Record<string, unknown>)[type];
+      const incomingByReason = foldedReasons[type];
       if (!incomingByReason || typeof incomingByReason !== 'object') continue;
       for (const reason of SUPPRESSION_REASONS) {
-        const value = (incomingByReason as Record<string, unknown>)[reason];
+        const value = incomingByReason[reason];
         if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
           stats.suppressionReasons[type][reason] = value;
         }

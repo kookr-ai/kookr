@@ -241,7 +241,7 @@ export function findingTypeLabel(agent: AgentState): string {
     case 'hook_disconnected': return 'Hook Disconnected';
     case 'hook_missing': return 'Hook Missing';
     case 'hook_parse_degraded': return 'Hook Parse Degraded';
-    case 'tmux_unresponsive': return 'Terminal Unresponsive';
+    case 'backend_unreachable': return 'Backend Unreachable';
     case 'api_error': return 'API Error';
     case 'budget_exceeded': return 'Budget Exceeded';
     // `completed_turn` => the agent signaled it is ready for review; `Needs Input`
