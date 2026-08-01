@@ -1,5 +1,22 @@
+/**
+ * Lifecycle timer scheduler (issue #1822).
+ *
+ * This module's job is to *register and clear* the server's periodic timers and
+ * to drive the inline token-scan / watchdog / liveness ticks. The body of each
+ * domain job it schedules lives next to that domain's owner and is imported here
+ * as a single callback:
+ *
+ * - completion-ready auto-close → {@link ./completion-ready-sweep.js}
+ * - pending-task TTL expiry     → {@link ./pending-ttl-sweep.js}
+ * - snooze-expiry restore       → {@link ./snooze-restore.js}
+ * - periodic persistence save   → {@link ./persistence-save-tick.js}
+ * - maintenance / relay-orphan  → {@link ./maintenance-prune-schedule.js}
+ *
+ * New periodic behaviour belongs in the relevant domain module, wired in here
+ * as one more scheduled callback — not implemented inline.
+ */
 import type { Monitor } from '../core/monitor.js';
-import { isActiveStatus, type Task, type TaskStore } from '../core/tasks.js';
+import type { Task, TaskStore } from '../core/tasks.js';
 import type { AgentActivityMeta, AgentEvent, Anomaly, TokenUsage } from '../core/types.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
@@ -19,30 +36,18 @@ import type { SessionInfo } from '../core/session-read-model.js';
 import { reconcile } from './reconciliation.js';
 import type { WorktreeRegistry } from '../adapters/git-worktree-registry.js';
 import { cleanupReconciledTaskWorktrees } from '../adapters/git-worktree.js';
-import { saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
-import { cleanupSessionResources, completeTask, promotePendingTasks, type LifecycleDeps, type AgentLifecycleDeps } from './agent-lifecycle.js';
+import type { saveTasksWithSnapshotPolicy } from '../core/task-persistence.js';
+import { cleanupSessionResources, promotePendingTasks, type LifecycleDeps, type AgentLifecycleDeps } from './agent-lifecycle.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
-import { getDetectionStats, type DetectionStats } from '../core/detection-stats.js';
+import type { DetectionStats } from '../core/detection-stats.js';
 import type { UserInputDeliverySnapshot } from '../shared/contracts/user-input-delivery.js';
 import type { PersistenceHealthRecorder } from '../core/persistence-health.js';
 import type { TimerHealthRecorder } from '../core/timer-health.js';
 import type { TaskStateSaveSchedulerLike } from './task-state-save-scheduler.js';
-import {
-  DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
-  listStaleCompletionReadyTasks,
-} from '../core/completion-ready-cleanup.js';
-import {
-  planAndPruneMaintenance,
-  type MaintenancePruneResult,
-} from '../core/maintenance-prune.js';
-import { listExpiredPendingTasks } from '../core/pending-task-ttl.js';
-import { appendAuditRow } from '../core/audit-log.js';
-import { nowISO } from '../core/interaction-log.js';
 import { DEFAULT_HUNG_TASK_REAP_MS, evaluateHungTaskReap } from '../core/hung-task-reaper.js';
 import { reapHungTask } from './hung-task-reaper.js';
 import type { ProdSmokeTick } from './prod-smoke-tick.js';
 import type { DeployLagDetector } from './deploy-lag-detector.js';
-import { runRelayOrphanSweep } from './relay-orphan-sweep.js';
 import {
   autoCompleteDeliveredTasks,
   createDeliveredCompletionTracker,
@@ -50,7 +55,22 @@ import {
 } from './delivered-task-completion-sweep.js';
 import type { MergedPrAttribution } from '../core/delivered-task-completion.js';
 import { classifyProviderPause, isProviderPaused } from '../core/provider-pause.js';
-import { surfaceDirtyWorktreeOnHeadlessCompletion } from './dirty-worktree-completion-finding.js';
+// Domain job bodies extracted from this scheduler (issue #1822). Each lives
+// next to its domain owner; this module only registers/clears the timers that
+// drive them.
+import {
+  autoCloseStaleCompletionReadyTasks,
+  createAutoCloseSweepThrottle,
+} from './completion-ready-sweep.js';
+import { expirePendingTasks } from './pending-ttl-sweep.js';
+import { restoreExpiredSnoozes } from './snooze-restore.js';
+import { runPersistenceSaveTick } from './persistence-save-tick.js';
+import {
+  runScheduledMaintenancePrune,
+  runScheduledRelayOrphanSweep,
+  type MaintenancePruneScheduleConfig,
+  type RelayOrphanSweepScheduleConfig,
+} from './maintenance-prune-schedule.js';
 
 export interface TimerDeps {
   monitor: Monitor;
@@ -234,177 +254,6 @@ export interface TimerDeps {
   };
 }
 
-/** Config for the scheduled relay-orphan sweep (issue #1723). */
-export interface RelayOrphanSweepScheduleConfig {
-  /** Interval between sweeps, in hours. `<= 0` disables the timer entirely. */
-  intervalHours: number;
-  /** Test seam for the sweep core. */
-  run?: typeof runRelayOrphanSweep;
-}
-
-export interface MaintenancePruneScheduleConfig {
-  /** Absolute path to the Kookr data directory to sweep. */
-  dataDir: string;
-  /** Interval between sweeps, in hours. `<= 0` disables the timer entirely. */
-  intervalHours: number;
-  /** Age threshold forwarded to the prune core. Defaults to the core's default. */
-  maxAgeDays?: number;
-  /** Keep-last-K protection for playbook-state runs, forwarded to the core. */
-  playbookStateKeepLast?: number;
-  /** Test seam for the prune core. */
-  run?: typeof planAndPruneMaintenance;
-  /** Injectable clock forwarded to the prune core (tests). */
-  now?: () => number;
-  /**
-   * Aged terminal task-record pruning (issue #1526 Phase C / C2). Wired at
-   * bootstrap to `pruneAgedTaskRecords` over the live TaskStore/Monitor so
-   * the in-memory record map — and, via the next periodic save, `tasks.json`
-   * — sheds terminal tasks older than the retention window on the same
-   * maintenance tick as the disk sweep. Optional so existing wirings and
-   * tests are unchanged.
-   */
-  pruneTaskRecords?: () => Promise<{
-    outcome: 'pruned' | 'snapshot_failed';
-    prunedTaskIds: string[];
-    remainingTasks: number;
-    maxAgeDays: number;
-  }>;
-  /** Fired after ≥1 record was pruned — bootstrap broadcasts a fresh snapshot. */
-  onTaskRecordsPruned?: (result: { prunedTaskIds: string[]; remainingTasks: number }) => void;
-  /**
-   * Payload-diet observability (issue #1526 Phase C / C2): when wired, one
-   * stats line is logged after every sweep so operators can watch the diet
-   * working. Bootstrap also logs the same line once at boot.
-   */
-  getPayloadDietStats?: () => PayloadDietStats;
-}
-
-/** Snapshot of the payload-diet health counters (issue #1526 Phase C / C2). */
-export interface PayloadDietStats {
-  /** Task records currently tracked in the store (the `/api/health` `agents` count). */
-  trackedTasks: number;
-  /** Of which in terminal status. */
-  terminalTasks: number;
-  /** Serialized bytes of the most recent `all`-scope snapshot broadcast, or null before the first. */
-  lastSnapshotBytes: number | null;
-}
-
-/** One-line operator-facing payload-diet stats record. */
-export function formatPayloadDietLogLine(stats: PayloadDietStats): string {
-  const snapshot = stats.lastSnapshotBytes === null
-    ? 'none yet'
-    : `${stats.lastSnapshotBytes} bytes`;
-  return (
-    `[payload-diet] tracked task records=${stats.trackedTasks} `
-    + `(terminal=${stats.terminalTasks}); last snapshot broadcast=${snapshot}`
-  );
-}
-
-/** Resolve the scheduled-prune interval (hours) from the environment.
- *  Returns 0 (off) when unset, non-numeric, or non-positive — the safe default:
- *  scheduling is strictly opt-in. */
-export function resolveMaintenancePruneIntervalHours(
-  env: NodeJS.ProcessEnv = process.env,
-): number {
-  const raw = env.KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS?.trim();
-  if (!raw) return 0;
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0) return 0;
-  return value;
-}
-
-/**
- * Run one scheduled maintenance prune. Errors are caught and logged — a failed
- * sweep must never bubble into the interval callback and crash the process.
- * Returns the result, or `null` when the sweep threw.
- */
-export async function runScheduledMaintenancePrune(
-  config: MaintenancePruneScheduleConfig,
-): Promise<MaintenancePruneResult | null> {
-  try {
-    const run = config.run ?? planAndPruneMaintenance;
-    const result = await run({
-      dataDir: config.dataDir,
-      maxAgeDays: config.maxAgeDays,
-      playbookStateKeepLast: config.playbookStateKeepLast,
-      dryRun: false,
-      ...(config.now ? { now: config.now } : {}),
-    });
-    const warn = result.warnings.length > 0 ? `; ${result.warnings.length} warning(s)` : '';
-    console.log(
-      `[maintenance-prune] scheduled sweep reclaimed ${result.reclaimedBytes} byte(s) ` +
-        `across ${result.removed.length} artifact(s)${warn}`,
-    );
-    await runScheduledTaskRecordPrune(config);
-    return result;
-  } catch (err) {
-    // Non-fatal: log and keep the server running.
-    console.error('[maintenance-prune] scheduled sweep failed:', err);
-    await runScheduledTaskRecordPrune(config);
-    return null;
-  }
-}
-
-/**
- * Run one scheduled relay-orphan sweep (issue #1723). Errors are caught and
- * logged so a failed sweep can never bubble into the interval callback and
- * crash the process.
- */
-export async function runScheduledRelayOrphanSweep(
-  config: RelayOrphanSweepScheduleConfig,
-): Promise<void> {
-  try {
-    const run = config.run ?? runRelayOrphanSweep;
-    await run({ excludePids: new Set([process.pid]) });
-  } catch (err) {
-    // Non-fatal: log and keep the server running.
-    console.error('[relay-orphan-sweep] scheduled sweep failed:', err);
-  }
-}
-
-/**
- * Aged terminal task-record prune leg of the scheduled maintenance sweep
- * (issue #1526 Phase C / C2). Isolated from the disk sweep so either leg
- * failing never suppresses the other; always finishes with the payload-diet
- * stats line when the stats provider is wired.
- */
-async function runScheduledTaskRecordPrune(config: MaintenancePruneScheduleConfig): Promise<void> {
-  if (config.pruneTaskRecords) {
-    try {
-      const result = await config.pruneTaskRecords();
-      if (result.outcome === 'snapshot_failed') {
-        console.error('[maintenance-prune] task-record prune skipped: predelete snapshot failed');
-      } else {
-        console.log(
-          `[maintenance-prune] task-record prune removed ${result.prunedTaskIds.length} aged ` +
-            `terminal task record(s) (> ${result.maxAgeDays}d); ${result.remainingTasks} remain`,
-        );
-        if (result.prunedTaskIds.length > 0) config.onTaskRecordsPruned?.(result);
-      }
-    } catch (err) {
-      console.error('[maintenance-prune] task-record prune failed:', err);
-    }
-  }
-  if (config.getPayloadDietStats) {
-    try {
-      console.log(formatPayloadDietLogLine(config.getPayloadDietStats()));
-    } catch (err) {
-      console.warn('[payload-diet] failed to compute stats line:', err);
-    }
-  }
-}
-
-export interface PersistenceSaveTickDeps {
-  taskStore: TaskStore;
-  queue: AttentionQueue;
-  tasksFile: string;
-  suppressionTracker?: SnoozeSuppressionTracker;
-  detectionStatsStore?: { save(stats: DetectionStats): Promise<void> };
-  persistenceHealth?: PersistenceHealthRecorder;
-  taskStateSaveScheduler?: TaskStateSaveSchedulerLike;
-  taskStateSaver?: typeof saveTasksWithSnapshotPolicy;
-  getDetectionStatsSnapshot?: () => DetectionStats;
-}
 
 export interface TimerHandles {
   tokenScanInterval: ReturnType<typeof setInterval>;
@@ -477,259 +326,6 @@ export function runProgressBudgetBurnDiagnosticSample(
   }) !== null;
 }
 
-export interface AutoCloseStaleCompletionReadyDeps {
-  taskStore: TaskStore;
-  lifecycleDeps?: LifecycleDeps;
-  /** Path to the shared audit.jsonl log. TTL escalations write a row here; immediate (opted-in) closes do not. */
-  auditLogPath?: string;
-  /** Optional broadcast for the TTL-escalation alert (issue #1526 Phase A) — reuses the existing 'alert' channel, no new notification surface. */
-  broadcastToAll?: (msg: ServerMessage) => void;
-  /**
-   * Issue #1667: skip auto-closing tasks whose agent is provider-paused
-   * (billing/quota). Optional — omit → no pause filtering (legacy tests).
-   */
-  isProviderPaused?: (task: Task) => boolean;
-}
-
-export interface AutoCloseStaleCompletionReadyResult {
-  closedTaskIds: string[];
-}
-
-/**
- * Cap on how many completion-ready tasks this function will auto-close per
- * BATCH (issue #1526 Phase A). The incident this guards against: 11
- * simultaneous session teardowns each broadcast a multi-MB websocket
- * snapshot on an already-loaded server, which re-triggers the overload that
- * caused the original wedge. Draining oldest-first (entries are sorted by
- * signal age) across successive batches keeps teardown load flat.
- */
-export const DEFAULT_MAX_AUTO_CLOSE_PER_TICK = 2;
-
-/**
- * Minimum spacing between auto-close BATCHES (issue #1526 Phase A). This
- * function is invoked from the liveness tick, which runs every 5s in
- * production (`livenessIntervalMs`) — without this throttle, "max 2 per
- * tick" would still drain 11 tasks in ~30s (~22 multi-MB teardown broadcasts
- * in half a minute), on the exact server whose overload caused the incident.
- * With this throttle, 11 tasks drain over ~6 minutes (2 every 60s) instead —
- * comfortably inside the ≤2h drain bound while actually spreading the load.
- */
-export const AUTO_CLOSE_SWEEP_MIN_INTERVAL_MS = 60_000;
-
-/**
- * Mutable cross-tick state for the sweep throttle above. Callers that want
- * throttling create ONE of these per server instance (e.g. once in
- * `startLifecycleTimers`) and pass the SAME object on every tick; omitting it
- * disables throttling (only the per-batch cap applies) — used by tests that
- * don't care about batch spacing.
- */
-export interface AutoCloseSweepThrottle {
-  lastSweepAt: number;
-}
-
-export function createAutoCloseSweepThrottle(): AutoCloseSweepThrottle {
-  return { lastSweepAt: 0 };
-}
-
-export async function autoCloseStaleCompletionReadyTasks(
-  deps: AutoCloseStaleCompletionReadyDeps,
-  opts: {
-    now?: Date;
-    thresholdMs?: number;
-    ttlMs?: number;
-    maxPerTick?: number;
-    throttle?: AutoCloseSweepThrottle;
-    minIntervalMs?: number;
-  } = {},
-): Promise<AutoCloseStaleCompletionReadyResult> {
-  const closedTaskIds: string[] = [];
-  const lifecycleDeps = deps.lifecycleDeps;
-  if (!lifecycleDeps) return { closedTaskIds };
-
-  const nowMs = (opts.now ?? new Date()).getTime();
-  if (opts.throttle) {
-    const minIntervalMs = opts.minIntervalMs ?? AUTO_CLOSE_SWEEP_MIN_INTERVAL_MS;
-    if (nowMs - opts.throttle.lastSweepAt < minIntervalMs) return { closedTaskIds };
-    opts.throttle.lastSweepAt = nowMs;
-  }
-
-  const entries = listStaleCompletionReadyTasks(deps.taskStore.listTasks(), {
-    now: opts.now,
-    thresholdMs: opts.thresholdMs ?? DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
-    ...(deps.isProviderPaused ? { isProviderPaused: deps.isProviderPaused } : {}),
-    ttlMs: opts.ttlMs,
-  })
-    .filter((entry) => entry.canAutoClose && !isActiveRalphLoop(entry.task))
-    .slice(0, opts.maxPerTick ?? DEFAULT_MAX_AUTO_CLOSE_PER_TICK);
-
-  for (const entry of entries) {
-    const taskId = entry.task.id;
-    try {
-      // Headless completion bypasses the interactive dialog's dirty-worktree
-      // verdict, so surface a finding first when the worktree holds
-      // uncommitted work (issue #1580). Inspection runs before the transition,
-      // while the task still owns the worktree, and never throws.
-      await surfaceDirtyWorktreeOnHeadlessCompletion(entry.task, {
-        taskStore: deps.taskStore,
-        auditLogPath: deps.auditLogPath,
-        broadcastToAll: deps.broadcastToAll,
-      });
-      await completeTask(taskId, lifecycleDeps);
-      deps.taskStore.clearPendingSignal(taskId);
-      closedTaskIds.push(taskId);
-      if (entry.closeReason === 'ttl_escalation') {
-        await recordTtlEscalation(entry, deps);
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[completion-ready] auto-close failed for task ${taskId}: ${message}`);
-      if (deps.taskStore.getTask(taskId)?.status === 'completed') {
-        deps.taskStore.clearPendingSignal(taskId);
-      }
-    }
-  }
-
-  return { closedTaskIds };
-}
-
-/**
- * Audit + notify a TTL-escalated close (issue #1526 Phase A / FM5). This is
- * the ONLY branch that writes an audit row and broadcasts an alert — an
- * opted-in (`autoCloseOnSignal: true`) close keeps its prior silent behavior,
- * since the operator already asked for exactly that.
- */
-async function recordTtlEscalation(
-  entry: { task: Task; signal: NonNullable<Task['pendingSignal']>; ageMs: number },
-  deps: AutoCloseStaleCompletionReadyDeps,
-): Promise<void> {
-  const { task, signal, ageMs } = entry;
-  await appendAuditRow(deps.auditLogPath, {
-    type: 'task.completionReadyTtlEscalation',
-    timestamp: nowISO(),
-    actor: 'system:completion-ready-ttl',
-    taskId: task.id,
-    signalRaisedAt: signal.raisedAt,
-    ageMs,
-  });
-  deps.broadcastToAll?.({
-    type: 'alert',
-    agentId: task.sessions[task.sessions.length - 1]?.tmuxSession ?? '',
-    summary: `Auto-closed after TTL: ${task.name ?? 'Task'}`,
-    details: `completion_ready pending ${Math.round(ageMs / 60_000)}m with no manual review — closed automatically to free the slot.`,
-    severity: 'info',
-  });
-}
-
-function isActiveRalphLoop(task: Task): boolean {
-  return task.ralphLoop?.status === 'running' || task.ralphLoop?.status === 'paused';
-}
-
-export interface ExpirePendingTasksDeps {
-  taskStore: TaskStore;
-  /** Optional lifecycle context — supplies queue purge, claim release, interaction log, and onTaskOutcome. */
-  lifecycleDeps?: LifecycleDeps;
-  /** Path to the shared audit.jsonl log — every expiry writes a `system:pending-ttl` row. */
-  auditLogPath?: string;
-  /** Optional broadcast for the sweep-summary alert — reuses the existing 'alert' channel. */
-  broadcastToAll?: (msg: ServerMessage) => void;
-}
-
-export interface ExpirePendingTasksResult {
-  expiredTaskIds: string[];
-}
-
-/**
- * Expire pending tasks past the TTL (issue #1526 Phase C / C3). Runs on the
- * liveness tick. Each expired task is cancelled through the existing
- * `pending → cancelled` transition — the same terminal status the promotion
- * loop's failure path uses — with:
- *
- * - an interaction-log `task_cancelled` row, reason `pending_ttl_expired`
- *   (structured reason; NOT `user_cancelled` — nobody clicked anything);
- * - an `audit.jsonl` row, actor `system:pending-ttl` (the convention Phase A's
- *   `system:completion-ready-ttl` / `system:hung-task-reaper` established);
- * - issue-claim release + attention-queue purge (a pending task holds no
- *   sessions, leases, or worktrees, so the full lifecycle cancel is not
- *   needed);
- * - `onTaskOutcome(id, { kind: 'cancelled' })` so chain supervisors observe
- *   the drop.
- *
- * One summary alert per sweep (not per task) keeps a full-queue expiry from
- * flooding the alert channel. No per-tick cap: expiring a pending task tears
- * down no session and broadcasts nothing per-task, so even a maximal sweep
- * (200 tasks) is cheap — unlike the completion-ready drain this deliberately
- * does not throttle.
- */
-export async function expirePendingTasks(
-  deps: ExpirePendingTasksDeps,
-  opts: { now?: Date; ttlMs?: number } = {},
-): Promise<ExpirePendingTasksResult> {
-  const now = opts.now ?? new Date();
-  const entries = listExpiredPendingTasks(deps.taskStore.listTasks(), {
-    now,
-    ttlMs: opts.ttlMs,
-    hasFreshLaunchReservation: (id) => deps.taskStore.hasFreshLaunchReservation(id),
-  });
-
-  const expiredTaskIds: string[] = [];
-  for (const { task, pendingForMs } of entries) {
-    try {
-      deps.taskStore.cancelTask(task.id);
-    } catch (err) {
-      // Raced a promoter or a user cancel — skip; the task is no longer
-      // (only) pending, so it is somebody else's to finish.
-      console.warn(
-        `[pending-ttl] could not expire task ${task.id}:`,
-        err instanceof Error ? err.message : err,
-      );
-      continue;
-    }
-    expiredTaskIds.push(task.id);
-    console.warn(
-      `[pending-ttl] expired pending task ${task.id} — queued ${Math.round(pendingForMs / 60_000)}m without launching`,
-    );
-
-    deps.lifecycleDeps?.queue?.purgeTask(task.id);
-    deps.lifecycleDeps?.issueClaimRegistry?.safeReleaseAllFor(task.id, 'released');
-    try {
-      deps.lifecycleDeps?.onTaskOutcome?.(task.id, { kind: 'cancelled' });
-    } catch (err) {
-      console.warn('[pending-ttl] onTaskOutcome threw:', err);
-    }
-
-    await deps.lifecycleDeps?.interactionLog?.append({
-      type: 'task_cancelled',
-      taskId: task.id,
-      agentId: '',
-      reason: 'pending_ttl_expired',
-      durationMs: pendingForMs,
-      timestamp: nowISO(),
-    });
-    await appendAuditRow(deps.auditLogPath, {
-      type: 'task.pendingTtlExpired',
-      timestamp: nowISO(),
-      actor: 'system:pending-ttl',
-      taskId: task.id,
-      pendingForMs,
-      ...(opts.ttlMs !== undefined ? { ttlMs: opts.ttlMs } : {}),
-      ...(task.parentTaskId ? { parentTaskId: task.parentTaskId } : {}),
-    });
-  }
-
-  if (expiredTaskIds.length > 0) {
-    deps.broadcastToAll?.({
-      type: 'alert',
-      agentId: '',
-      summary: `Expired ${expiredTaskIds.length} pending task(s) (TTL)`,
-      details:
-        'These tasks waited in the pending queue past pendingTaskTtlMinutes without ever launching ' +
-        'and were cancelled to free queue depth. Relaunch any that are still wanted.',
-      severity: 'warning',
-    });
-  }
-
-  return { expiredTaskIds };
-}
 
 /**
  * Check one agent for hung-task reap eligibility and act if so (issue #1526
@@ -828,44 +424,6 @@ export async function maybeReapHungTask(
   return true;
 }
 
-export function restoreExpiredSnoozes(queue: AttentionQueue, taskStore: TaskStore): boolean {
-  const expired = queue.expireDue();
-  if (expired.length === 0) return false;
-  let changed = false;
-
-  for (const entry of expired) {
-    if (!entry.anomaly) {
-      changed = true;
-      continue;
-    }
-
-    if (entry.key === entry.agentId) {
-      queue.enqueue(entry.agentId, entry.anomaly);
-      changed = true;
-      continue;
-    }
-
-    const task = taskStore.getTask(entry.key);
-    if (!task || !isActiveStatus(task.status)) {
-      changed = true;
-      continue;
-    }
-
-    const liveSession = [...task.sessions].reverse().find(
-      (session) => session.lastStatus !== 'completed'
-        && session.lastStatus !== 'aborted'
-        && !session.crashRecovered,
-    );
-    if (liveSession) {
-      queue.enqueue(liveSession.tmuxSession, { ...entry.anomaly, agentId: liveSession.tmuxSession });
-      changed = true;
-    } else {
-      queue.importSnoozed([{ ...entry, expiredPendingRestore: true }]);
-    }
-  }
-
-  return changed;
-}
 
 /** Fixed cadence for the token-usage scan tick (issue #1771 timer-health). */
 export const TOKEN_SCAN_INTERVAL_MS = 5_000;
@@ -1518,41 +1076,6 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   };
 }
 
-export async function runPersistenceSaveTick(deps: PersistenceSaveTickDeps): Promise<void> {
-  try {
-    if (deps.taskStateSaveScheduler) {
-      await deps.taskStateSaveScheduler.flush('periodic', { force: true, policy: 'daily' });
-    } else {
-      const snoozes = serializeSnoozed(deps.queue, deps.taskStore);
-      const suppressionState = deps.suppressionTracker?.export();
-      const taskStateSaver = deps.taskStateSaver ?? saveTasksWithSnapshotPolicy;
-      await taskStateSaver(
-        deps.taskStore.getAllTasks(),
-        deps.tasksFile,
-        'daily',
-        deps.taskStore.getLifetimeSpendUsd(),
-        snoozes,
-        suppressionState,
-        deps.taskStore.listRelations(),
-      );
-      deps.persistenceHealth?.recordSuccess('task_state');
-    }
-  } catch (err) {
-    if (!deps.taskStateSaveScheduler) deps.persistenceHealth?.recordFailure('task_state', err);
-    console.error('Error saving tasks:', err);
-  }
-  // Persist cumulative detector telemetry on the same cadence so FP/FN/
-  // suppression rates survive restarts. Isolated from the task save so a
-  // stats-write failure neither blocks nor is mislabelled as a task error.
-  if (!deps.detectionStatsStore) return;
-  try {
-    await deps.detectionStatsStore.save((deps.getDetectionStatsSnapshot ?? getDetectionStats)());
-    deps.persistenceHealth?.recordSuccess('detection_stats');
-  } catch (err) {
-    deps.persistenceHealth?.recordFailure('detection_stats', err);
-    console.error('Error saving detection stats:', err);
-  }
-}
 
 export function clearAllTimers(handles: TimerHandles): void {
   clearInterval(handles.watchdogInterval);

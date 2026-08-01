@@ -80,7 +80,7 @@ import {
   formatPayloadDietLogLine,
   resolveMaintenancePruneIntervalHours,
   type PayloadDietStats,
-} from './lifecycle-timers.js';
+} from './maintenance-prune-schedule.js';
 import { resolveRelayOrphanSweepIntervalHours } from './relay-orphan-sweep.js';
 import { pruneAgedTaskRecords } from './use-cases/prune-aged-task-records.js';
 import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';

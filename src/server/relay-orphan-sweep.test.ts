@@ -4,7 +4,7 @@ import {
   resolveRelayOrphanSweepIntervalHours,
   runRelayOrphanSweep,
 } from './relay-orphan-sweep.js';
-import { runScheduledRelayOrphanSweep } from './lifecycle-timers.js';
+import { runScheduledRelayOrphanSweep } from './maintenance-prune-schedule.js';
 import type { StaleProcess } from '../core/orphan-process-scanner.js';
 
 function relay(overrides: Partial<StaleProcess> & { pid: number }): StaleProcess {

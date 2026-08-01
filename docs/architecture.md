@@ -384,7 +384,12 @@ kookr/
 │   │   ├── agent-preflight.ts             # Agent binary availability/version preflight
 │   │   ├── launch-service.ts              # High-level launch orchestration
 │   │   ├── event-pipeline.ts              # Wires adapter events into monitor/tracker/watchdog
-│   │   ├── lifecycle-timers.ts            # Periodic timers: liveness, reconciliation, task save
+│   │   ├── lifecycle-timers.ts            # Thin scheduler: registers/clears periodic timers (token-scan, watchdog, liveness, save, snooze, maintenance)
+│   │   ├── completion-ready-sweep.ts      # Job body: auto-close stale completion-ready tasks
+│   │   ├── pending-ttl-sweep.ts           # Job body: expire pending tasks past the TTL
+│   │   ├── snooze-restore.ts              # Job body: restore attention-queue entries whose snooze elapsed
+│   │   ├── persistence-save-tick.ts       # Job body: periodic task-state + detection-stats save
+│   │   ├── maintenance-prune-schedule.ts  # Job bodies: scheduled data-dir prune + relay-orphan sweep
 │   │   ├── ralph-loop-service.ts          # Ralph iteration-loop orchestration
 │   │   ├── ralph/                         # Ralph HTTP routes and stop-event ownership
 │   │   │   ├── routes.ts
