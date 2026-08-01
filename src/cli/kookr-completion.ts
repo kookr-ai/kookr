@@ -156,6 +156,31 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     ],
   },
   {
+    name: 'value-density',
+    subcommands: ['classify', 'admit', 'composition', 'decline'],
+    flags: [
+      '--title',
+      '--labels',
+      '--body',
+      '--drift-score-delta',
+      '--refactor-count',
+      '--max-refactor',
+      '--min-drift-delta',
+      '--repo',
+      '--window-hours',
+      '--value-target',
+      '--source',
+      '--reason',
+      '--reason-code',
+      '--work-class',
+      '--kookr-dir',
+      '--no-persist',
+      '--json',
+      '-h',
+      '--help',
+    ],
+  },
+  {
     name: 'retro-verify',
     subcommands: ['status', 'drain', 'enqueue'],
     flags: [
@@ -315,6 +340,8 @@ function renderBashCompletion(): string {
   const effortSplitFlags = flagsFor('effort-split');
   const emissionSubcommands = subcommandsFor('emission');
   const emissionFlags = flagsFor('emission');
+  const valueDensitySubcommands = subcommandsFor('value-density');
+  const valueDensityFlags = flagsFor('value-density');
   const retroVerifySubcommands = subcommandsFor('retro-verify');
   const retroVerifyFlags = flagsFor('retro-verify');
   const reflectSubcommands = subcommandsFor('reflect');
@@ -473,6 +500,13 @@ _kookr()
     effort-split)
       COMPREPLY=( $(compgen -W "${effortSplitFlags}" -- "\${cur}") )
       ;;
+    value-density)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${valueDensitySubcommands} ${valueDensityFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${valueDensityFlags}" -- "\${cur}") )
+      fi
+      ;;
     emission)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
         COMPREPLY=( $(compgen -W "${emissionSubcommands} ${emissionFlags}" -- "\${cur}") )
@@ -564,6 +598,8 @@ function renderZshCompletion(): string {
   const effortSplitFlags = flagsFor('effort-split');
   const emissionSubcommands = subcommandsFor('emission');
   const emissionFlags = flagsFor('emission');
+  const valueDensitySubcommands = subcommandsFor('value-density');
+  const valueDensityFlags = flagsFor('value-density');
   const retroVerifySubcommands = subcommandsFor('retro-verify');
   const retroVerifyFlags = flagsFor('retro-verify');
   const reflectSubcommands = subcommandsFor('reflect');
@@ -678,6 +714,13 @@ _kookr()
       ;;
     effort-split)
       compadd -- ${effortSplitFlags}
+      ;;
+    value-density)
+      if (( CURRENT == 3 )); then
+        compadd -- ${valueDensitySubcommands} ${valueDensityFlags}
+      else
+        compadd -- ${valueDensityFlags}
+      fi
       ;;
     emission)
       if (( CURRENT == 3 )); then

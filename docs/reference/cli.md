@@ -300,6 +300,43 @@ kookr effort-split [--json] [--window-hours N] [--repo owner/name]...
 The Lucy daily-progress-report playbook should run this command in its gather
 phase and paste the printed section into the digest.
 
+## `kookr value-density`
+
+Value-density governor for refactor-class / architecture-drift emission and
+spawn (issue #1846). Caps cosmetic "share tinyHelper" consolidations so a
+window of high PR count is not mostly vanity refactors while product-metric
+work starves, and surfaces a composition metric the reflection can trend.
+
+```bash
+kookr value-density classify     --title "..." [--labels a,b] [--json]
+kookr value-density admit        --title "..." --refactor-count N \
+                                 [--drift-score-delta N] [--max-refactor N] \
+                                 [--min-drift-delta N] [--json]
+kookr value-density composition  --repo owner/repo [--window-hours N] \
+                                 [--value-target N] [--no-persist] [--json]
+kookr value-density decline      --repo owner/repo --title "..." \
+                                 --source <playbook> --reason "..." \
+                                 [--reason-code cosmetic_subthreshold] [--json]
+```
+
+- **classify** — map a title/labels to `workClass` + `cosmetic` +
+  `productMetricBlocking` + `valueAdvancing`.
+- **admit** — decide admit/decline for one candidate given the window's
+  refactor-class admit count. Cosmetic consolidations without a
+  `drift-score-delta` ≥ `--min-drift-delta` (default `1.0`) are declined;
+  refactor-class admits are hard-capped at `--max-refactor` (default `4`) per
+  window. Product-metric-blocking issues always admit.
+- **composition** — classify merged PRs over the window via `gh`; print
+  refactor share + value-advancing count. Persists one JSONL row per call under
+  `~/.kookr/playbook-state/value-density/composition/` for trendability.
+- **decline** — append a declined candidate to
+  `~/.kookr/playbook-state/value-density/declined/<repo>.jsonl` so the next
+  reflection can observe sub-threshold consolidations.
+
+Architecture-health-check and orchestrators call `admit` before filing/spawning
+refactor-class work, and `composition` from the daily workflow-reflection /
+velocity gather phase. Pure math lives in `src/core/value-density-governor.ts`.
+
 ## `kookr reflect`
 
 Phase-1 instrumentation for the daily workflow-reflection loop (issue #1751).

@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import { parsePlaybook } from './playbook-parser.js';
 
 /**
- * Contract tests for architecture-health-check emission-budget wiring (#1607).
- * Ensures the emitter fails closed on plan failure and gates on ALLOWED + dedupe.
+ * Contract tests for architecture-health-check emission-budget wiring (#1607)
+ * and value-density governor (#1846).
  */
 describe('architecture-health-check playbook emission budget', () => {
   const playbookPath = join(
@@ -20,9 +20,11 @@ describe('architecture-health-check playbook emission budget', () => {
   const pb = parsePlaybook(content, 'architecture-health-check.md', '/');
   const phase3 = pb.body.slice(pb.body.indexOf('## Phase 3 — Create Issues'));
 
-  test('parses with maxIssues parameter', () => {
+  test('parses with maxIssues and value-density parameters', () => {
     expect(pb.name).toBe('Architecture Health Check');
     expect(pb.parameters.some((p) => p.name === 'maxIssues')).toBe(true);
+    expect(pb.parameters.some((p) => p.name === 'maxRefactorPerWindow')).toBe(true);
+    expect(pb.parameters.some((p) => p.name === 'minDriftScoreDelta')).toBe(true);
   });
 
   test('Phase 3 uses emission plan fail-closed and ALLOWED gate', () => {
@@ -36,5 +38,19 @@ describe('architecture-health-check playbook emission budget', () => {
     expect(phase3).toContain('kookr emission metrics');
     expect(phase3).toContain('playbook-state/emission-metrics');
     expect(phase3).toMatch(/netBacklogDelta7d/);
+  });
+
+  test('Phase 3 gates refactor-class filing via value-density admit + decline log', () => {
+    expect(phase3).toContain('kookr value-density admit');
+    expect(phase3).toContain('kookr value-density decline');
+    expect(phase3).toContain('kookr value-density composition');
+    expect(phase3).toContain('REFACTOR_FILED');
+    expect(phase3).toContain('--refactor-count');
+    expect(phase3).toContain('--max-refactor');
+    expect(phase3).toContain('--min-drift-delta');
+    expect(phase3).toContain('--reason-code');
+    expect(phase3).toContain('refactorCount');
+    expect(phase3).toContain('playbook-state/value-density');
+    expect(phase3).toMatch(/cosmetic|value-density decline/i);
   });
 });
