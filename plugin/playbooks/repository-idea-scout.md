@@ -85,6 +85,7 @@ checklist:
   - Open and closed issues scanned for duplicate and adjacent ideas
   - Project purpose and current capabilities inventoried from docs and code
   - Knowledge base surveyed when useKnowledgeBase is auto and the kb CLI is available
+  - Operational evidence swept (incident-labeled issues, CI failures, optional local runtime diagnostics) and written to ops-evidence.json
   - An internal candidate pool larger than the publish target generated where practical
   - Each candidate's cited file:line and claimed-missing-capability evidence verified before ranking; failures downgraded or discarded
   - Each candidate classified for authority, changeShape, size, confidence, and risk
@@ -193,13 +194,16 @@ KB retrieval enters the workflow at three points:
 - **Refine** (Phase 4.3): a scoped per-candidate `kb search` that confirms a technique is current and pulls a concrete implementation pattern and a known pitfall. This *sharpens* an accepted idea's implementation and risk sections.
 - **Critique** (Phase 4.4): the product and implementation reviewers consult the `_wisdom` and `agent-task-lessons` shelves so their critique cites recorded process wisdom.
 
+A sibling seed source — **operational evidence** (Phase 3.6) — gathers incident-labeled issues, CI failure history, and (when available) local runtime diagnostics. It feeds Phase 4 the same way KB seeds do: informing angles and boost ranking signals, never replacing the codebase capability check and never originating a diversity dimension.
+
 Grounding rules:
 
-- The diversity-dimension rotation stays authoritative. KB seeds inform the *angle* of an idea, never originate its *dimension*. An idea is still valid with no KB grounding.
-- The codebase capability check (Phase 3) is never skipped because a KB passage exists. The KB shows what is *possible*; the target repo shows what is *missing*.
+- The diversity-dimension rotation stays authoritative. KB seeds and operational-evidence seeds inform the *angle* of an idea, never originate its *dimension*. An idea is still valid with no KB grounding and with no operational evidence.
+- The codebase capability check (Phase 3) is never skipped because a KB passage or ops signal exists. The KB shows what is *possible*; ops evidence shows what is *hurting*; the target repo shows what is *missing*.
 - Every KB-derived claim cites a real `<kb>/<path>` passage observed in `kb` output. Never present model recall as a KB citation.
+- Every ops-derived claim cites a real issue number, CI run id/URL, health/diagnostics field, or log line observed this run. Never invent an incident.
 - `kb` is read-only in this playbook. Never run `kb remember`, `kb capture`, `kb refresh`, or any other write path.
-- The `kb` CLI is Kookr-local. Every other phase stays portable: an agent without `kb` runs the rest of the playbook unchanged. Store query text in a shell variable and pass it as a quoted argument; never paste repo-derived or issue-derived text directly into a `kb` invocation.
+- The `kb` CLI and local Kookr runtime probes are Kookr-local extras. Portable surfaces (GitHub issue labels, `gh run list`) always run; Kookr-specific probes (`KOOKR_API_BASE_URL` health/diagnostics, `~/.kookr/server.log*`) are optional and degrade with the same graceful-skip pattern as a missing `kb`. Store query text in a shell variable and pass it as a quoted argument; never paste repo-derived or issue-derived text directly into a `kb` or `curl` invocation.
 
 ## Diversity Dimensions
 
@@ -355,6 +359,7 @@ Compute these from the resolved **repoFullName**:
 - **recommendationsDir**: `<stateDir>/recommendations` — one subdirectory per accepted idea: `<NN>-<slug>/{report.md, duplicate-evidence.md, kb-evidence.md, critic-feedback.md, evidence-verification.json, classification.json, issue-body.md, issue-created.json}`.
 - **capabilityInventoryFile**: `<stateDir>/capability-inventory.md` — required when `workProfile` is `simplification-preserving`; a `status: skipped` marker otherwise.
 - **kbSeedsFile**: `<stateDir>/kb-seeds.json` — the Phase 3.5 knowledge-base survey, bucketed by diversity dimension; written with `status: skipped` when KB grounding is off or unavailable.
+- **opsEvidenceFile**: `<stateDir>/ops-evidence.json` — the Phase 3.6 operational-evidence sweep (incident-labeled issues, CI failures, optional local runtime probes); written with `status: skipped` only when every probe class fails or is unavailable (partial evidence is still `status: ok`).
 - **dimensionCoverageFile**: `~/.kookr/playbook-state/repository-idea-scout/<repoSlug>/dimension-coverage.json` — **repo-level, deliberately OUTSIDE `<stateDir>`'s `<runKey>`** so it persists across runs (the one exception to run-scoped state; see Idempotency Rules). Shape: `{ "dimensions": { "<dimension>": { "coveredCount": <int>, "lastCoveredAt": <iso8601> } }, "appliedRuns": ["<runKey>", ...] }`. `coveredCount` counts **selected portfolio candidates** (every `<ideasLogFile>` entry, all publish modes), not published issues. Read in Phase 4.1 to order the rotation; updated exactly once per run in Phase 5.6, guarded by `appliedRuns` so resumed/retried runs never double-count (`appliedRuns` keeps the last 50 run keys — resuming a run older than that could re-count, accepted as implausible). Missing, empty, or schema-invalid file = all-zero counts (first run / self-heal). Counts grow monotonically and are ordering heuristics only — deleting the file is always safe and merely resets rotation to canonical order.
 - **issuesFile**: `<stateDir>/issues.json`.
 - **closedIssuesFile**: `<stateDir>/closed-issues.json`.
@@ -370,7 +375,7 @@ Resolve **localPath**:
 
 The target checkout is for read-only analysis. Record its initial `git status --short` in `<runManifest>` and do not leave new tracked changes there.
 
-The **local audit artifacts** (`report.md`, `duplicate-evidence.md`, `kb-evidence.md`, `critic-feedback.md`, `evidence-verification.json`, `classification.json`, `conflict-matrix.md`, `capability-inventory.md`, portfolio scoring) stay under `<stateDir>` and are never published. Only the **reader-first `issue-body.md`** is ever sent to GitHub, and only for autonomous candidates.
+The **local audit artifacts** (`report.md`, `duplicate-evidence.md`, `kb-evidence.md`, `critic-feedback.md`, `evidence-verification.json`, `classification.json`, `conflict-matrix.md`, `capability-inventory.md`, `ops-evidence.json`, portfolio scoring) stay under `<stateDir>` and are never published. Only the **reader-first `issue-body.md`** is ever sent to GitHub, and only for autonomous candidates.
 
 ## Phase 1: Preflight And State
 
@@ -756,6 +761,167 @@ Rules:
 - Copy any `Index may be stale` or `"stale": true` warning verbatim into `staleWarnings`. Do not run `kb` write or refresh paths.
 - A dimension with no relevant passage gets an empty array. That is normal and not a blocker.
 
+## Phase 3.6: Operational Evidence Sweep
+
+This phase produces `<opsEvidenceFile>`: a best-effort survey of the target repository's **incident surface** — recent bug/incident/regression-labeled issues, CI failure history, and (when the runtime is reachable) local health/diagnostics and server-log error lines. Phase 4 consults it while generating and ranking ideas the same way it consults `<kbSeedsFile>`: evidence informs angles and can boost `evidenceStrength` / priority for candidates that close a real operational gap; it never replaces the Phase 3 codebase capability check and never originates a diversity dimension. It never blocks the run.
+
+Operational evidence is how an incident-aware scout would have proposed working-set bounds before an OOM forced the issue: crash logs, growth gauges, leaked processes, and CI flakes are idea sources, not just postmortems.
+
+### 3.6.1 Portable probes (always attempt)
+
+These use only `gh` (already required by Phase 1) and the Phase 2 issue snapshots when present. Always run them; a probe that returns empty is a signal of "no recent incident surface", not a skip of the whole phase.
+
+**Incident-labeled issues.** From the open (and recently closed) issue snapshots, collect issues whose labels match (case-insensitive) `bug`, `incident`, `regression`, `crash`, `oom`, `p0`, `p1`, or similar severity/incident vocabulary. Cap the retained list at ~25 most-recently-updated. If the snapshots are missing, fall back to targeted searches — store label/query text as data, never paste into shell source:
+
+```bash
+# Example portable searches; QUERY is data, never free text in shell source.
+QUERY='label:bug'
+gh issue list -R "$REPO" --state all --search "$QUERY" --limit 25 \
+  --json number,title,labels,updatedAt,state,url \
+  > "$STATE_DIR/ops-incident-issues.json.tmp" 2>/dev/null || true
+# Also try label:incident, label:regression, and title/body terms like OOM / crash / flake when labels are sparse.
+```
+
+**CI failure history.** List recent workflow runs and keep those with a failure conclusion (cap ~20). Prefer portable field names that older and newer `gh` versions both accept (`databaseId`, `name`, `conclusion`, `status`, `updatedAt`, `url`, `headBranch`). Do **not** rely on `--status failure` or fields like `displayTitle`/`workflowName` — those are version-dependent and break on some `gh` builds. A repo with no Actions workflows, or `gh run list` failing, records an empty `ciFailures` array with a note — do not skip the whole phase:
+
+```bash
+gh run list -R "$REPO" --limit 50 \
+  --json databaseId,name,conclusion,status,updatedAt,url,headBranch \
+  > "$STATE_DIR/ops-ci-runs.json.tmp" 2>/dev/null \
+  || printf '[]\n' > "$STATE_DIR/ops-ci-runs.json.tmp"
+# Keep failed/timed_out/cancelled conclusions only; cap at 20.
+jq '[.[]? | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled")] | .[0:20]' \
+  "$STATE_DIR/ops-ci-runs.json.tmp" > "$STATE_DIR/ops-ci-failures.json.tmp" 2>/dev/null \
+  || printf '[]\n' > "$STATE_DIR/ops-ci-failures.json.tmp"
+jq . "$STATE_DIR/ops-ci-failures.json.tmp" >/dev/null 2>&1 \
+  && mv "$STATE_DIR/ops-ci-failures.json.tmp" "$STATE_DIR/ops-ci-failures.json" \
+  || { rm -f "$STATE_DIR/ops-ci-failures.json.tmp"; printf '[]\n' > "$STATE_DIR/ops-ci-failures.json"; }
+rm -f "$STATE_DIR/ops-ci-runs.json.tmp"
+```
+
+Summarize recurring failure themes (same workflow `name`, same flake signature, same branch) in free text for Phase 4 — do not deep-dive every log; sample at most 2–3 representative failed runs' conclusion annotations when the theme is unclear.
+
+### 3.6.2 Optional Kookr runtime probes (graceful skip)
+
+These are Kookr-local extras, gated the same way a missing `kb` is. When the surface is absent, record a per-probe skip reason and continue — never block, never reduce the publish target.
+
+**Health + diagnostics snapshots.** When `KOOKR_API_BASE_URL` is set (and preferably when the target repo is kookr itself, or the operator is running inside a Kookr-managed task), attempt read-only GETs with a short timeout. Do not invent endpoints; only call paths that exist on this instance:
+
+```bash
+# Best-effort; each probe is independent. Never paste secrets into the URL.
+OPS_API="${KOOKR_API_BASE_URL:-}"
+if [ -n "$OPS_API" ]; then
+  curl -fsS --max-time 5 "$OPS_API/api/health" \
+    > "$STATE_DIR/ops-health.json.tmp" 2>/dev/null \
+    && jq . "$STATE_DIR/ops-health.json.tmp" >/dev/null 2>&1 \
+    && mv "$STATE_DIR/ops-health.json.tmp" "$STATE_DIR/ops-health.json" \
+    || rm -f "$STATE_DIR/ops-health.json.tmp"
+  # Prefer a small, stable set of diagnostics that surface growth / leaks / stalls:
+  # session-health, timer-health, hook-ingestion, hot-paths (when present).
+  for path in \
+      /api/diagnostics/session-health \
+      /api/diagnostics/timer-health \
+      /api/diagnostics/hook-ingestion \
+      /api/diagnostics/hot-paths; do
+    name=$(printf '%s' "$path" | sed 's#.*/##')
+    curl -fsS --max-time 5 "$OPS_API$path" \
+      > "$STATE_DIR/ops-diag-$name.json.tmp" 2>/dev/null \
+      && jq . "$STATE_DIR/ops-diag-$name.json.tmp" >/dev/null 2>&1 \
+      && mv "$STATE_DIR/ops-diag-$name.json.tmp" "$STATE_DIR/ops-diag-$name.json" \
+      || rm -f "$STATE_DIR/ops-diag-$name.json.tmp"
+  done
+else
+  : # record runtimeProbes.reason = "KOOKR_API_BASE_URL unset" in ops-evidence.json
+fi
+```
+
+From successful snapshots, extract **actionable gauges** only: high RSS / working-set, `staleProcesses` or leaked process counts, overdue timers, hook-ingestion backlog, hot-path contributors, error rates — not the entire payload. Cite the field path and the observed value.
+
+**Server log error/alert lines.** When `~/.kookr/server.log` (or rotated `server.log.*`) exists and is readable, sample recent error/alert lines (last ~200 matching lines, or the last 5 minutes of wall-clock if timestamps are present). Prefer `rg -i` over reading the whole file:
+
+```bash
+LOG_GLOB="$HOME/.kookr/server.log*"
+if compgen -G "$LOG_GLOB" >/dev/null 2>&1; then
+  # Sample only; never copy secrets (tokens, cookies, Authorization headers).
+  rg -i -n --no-messages \
+    'error|alert|oom|fatal|EADDRINUSE|heap|staleProcesses|out of memory' \
+    $HOME/.kookr/server.log $HOME/.kookr/server.log.* 2>/dev/null \
+    | tail -n 200 > "$STATE_DIR/ops-server-log-sample.txt" || true
+else
+  : # record serverLog.reason = "no ~/.kookr/server.log* present"
+fi
+```
+
+Redact anything that looks like a secret before persisting excerpts into `<opsEvidenceFile>`. Log probes are local-only and must never appear in a published `issue-body.md` as raw local paths (cite the *symptom* and a stable field/name, not `$HOME/.kookr/...` paths, in any reader-first body).
+
+### 3.6.3 Persist evidence
+
+Write `<opsEvidenceFile>` atomically (temp file then `mv`). Shape:
+
+```json
+{
+  "status": "ok",
+  "surveyedAt": "<UTC ISO timestamp>",
+  "incidentIssues": [
+    {
+      "number": 1749,
+      "title": "<title>",
+      "labels": ["bug"],
+      "state": "closed",
+      "url": "https://github.com/<owner>/<repo>/issues/1749",
+      "theme": "<one-line incident theme>"
+    }
+  ],
+  "ciFailures": [
+    {
+      "databaseId": 123,
+      "name": "<workflow or run name>",
+      "conclusion": "failure",
+      "updatedAt": "<ISO>",
+      "url": "https://github.com/<owner>/<repo>/actions/runs/123",
+      "theme": "<one-line failure theme>"
+    }
+  ],
+  "runtimeProbes": {
+    "status": "ok",
+    "apiBase": "<KOOKR_API_BASE_URL or empty>",
+    "health": { "ok": true, "highlights": ["<field=value actionable gauge>"] },
+    "diagnostics": {
+      "session-health": { "ok": true, "highlights": [] },
+      "timer-health": { "ok": true, "highlights": [] },
+      "hook-ingestion": { "ok": true, "highlights": [] },
+      "hot-paths": { "ok": true, "highlights": [] }
+    },
+    "serverLog": {
+      "status": "ok",
+      "samplePath": "ops-server-log-sample.txt",
+      "highlights": ["<redacted one-line error/alert>"]
+    }
+  },
+  "dimensions": {
+    "<dimension>": [
+      {
+        "kind": "incident-issue|ci-failure|runtime-gauge|server-log",
+        "ref": "<issue #N | run URL | field path | log tag>",
+        "excerpt": "<verbatim observed evidence>",
+        "suggestion": "<one-line idea angle this evidence supports>"
+      }
+    ]
+  },
+  "notes": ["<optional free-text themes>"]
+}
+```
+
+When every probe class is empty or unavailable (no incident issues, no CI failures, and all runtime probes skipped), still write the file with `"status": "ok"` and empty arrays when at least one probe *ran*, or `"status": "skipped"` with a concrete `reason` only when the portable probes could not run at all (e.g. `gh` lost auth mid-run). Partial evidence is always `"status": "ok"`.
+
+Rules:
+
+- Bucket each evidence item under the diversity dimension it best informs (`reliability`, `operability`, `performance`, `observability`, `data-lifecycle`, and `testing` are the common homes; others are fine when justified). A item may appear under more than one dimension.
+- Every `excerpt` must be a verbatim or near-verbatim observation from this run's probes. Never fabricate an incident, CI failure, gauge, or log line.
+- Ops evidence **boosts** candidates that close a matching gap (higher `evidenceStrength` / rank when a candidate directly addresses a recurring incident or CI flake) and **seeds** angles when generating the pool — it does not invent a dimension and does not skip the capability check.
+- Do not deep-scan CI logs or the entire server log; the sample is the product. Prefer recurring themes over one-off noise.
+- Runtime probes and server-log paths are never published into GitHub issue bodies as local state paths (same rule as `<stateDir>` and `kb` internals).
+
 ## Phase 4: Generate The Candidate Pool
 
 Generate candidates toward `CANDIDATE_POOL` (roughly 1.5–2x the publish target) so Phase 5 has enough material to consolidate and rank down to `PUBLISH_TARGET`. Stop generating early only when there genuinely are not enough novel, non-duplicate, in-scope angles; never fabricate marginal candidates.
@@ -812,6 +978,8 @@ ORDERED_DIMS=$(printf '%s\n' product developer-experience documentation reliabil
 Discard any candidate whose category and angle substantially overlap a candidate already in the pool. (Overlaps that are worth consolidating rather than discarding are handled in Phase 5.)
 
 When `<kbSeedsFile>` has `status: ok`, consult its `dimensions.<category>` bucket while shaping the candidate's angle and implementation surface. The seeds are inputs to ideation, not a replacement for the codebase capability check.
+
+When `<opsEvidenceFile>` has `status: ok`, consult its `dimensions.<category>` bucket the same way: prefer angles that close a recurring incident, CI flake, growth/leak gauge, or server-log alert in that dimension. Ops evidence may **boost** a candidate's `evidenceStrength` (and later rank) when the candidate's gap is directly supported by a cited incident/CI/runtime observation; it never invents a dimension and never replaces the capability check. Record which ops refs seeded or boosted the candidate in the per-idea report under `## Operational evidence` (or the single line `Operational evidence: none (<reason>)` when the sweep was skipped or empty for that category).
 
 ### 4.2 Duplicate Check
 
@@ -972,6 +1140,7 @@ For every surviving candidate, write the detailed local audit `<recommendationsD
 ## Duplicate evidence table
 ## Evidence verification (verdict, checks run, any failed citations — from the Phase 4.5 gate)
 ## Knowledge base grounding
+## Operational evidence
 ## Recommended idea
 ## Why this is not a duplicate
 ## Why this angle (how it differs from other ideas in this run within the same category)
@@ -980,7 +1149,7 @@ For every surviving candidate, write the detailed local audit `<recommendationsD
 ## Files and issues inspected
 ```
 
-The report is a **local audit artifact** and is never published verbatim. It MUST include the literal headings `## Classification (authority, changeShape, size, confidence, risks)`, `## Duplicate evidence table`, `## Evidence verification`, and `## Knowledge base grounding`. When KB grounding was skipped or returned nothing usable, the `## Knowledge base grounding` section states so in one line.
+The report is a **local audit artifact** and is never published verbatim. It MUST include the literal headings `## Classification (authority, changeShape, size, confidence, risks)`, `## Duplicate evidence table`, `## Evidence verification`, `## Knowledge base grounding`, and `## Operational evidence`. When KB grounding was skipped or returned nothing usable, the `## Knowledge base grounding` section states so in one line. When the ops sweep was skipped or had no items for the candidate's category, the `## Operational evidence` section states so in one line (`Operational evidence: none (<reason>)`).
 
 ## Phase 5: Portfolio Consolidation, Conflict Matrix, And Ranking
 
@@ -1155,6 +1324,7 @@ Write `<recommendationsDoc>` (the portfolio) and `<proposalsDoc>` (gated candida
 ## Issue inventory summary
 ## Codebase and capability inventory summary
 ## Knowledge base grounding summary
+## Operational evidence summary
 ## Ranked portfolio (rank, category, title, authority, changeShape, size, confidence, parallelConflictRisk, one-line problem)
 ## Consolidation log (which candidates were merged and why)
 ## Parallel-conflict summary (link to conflict-matrix.md)
@@ -1177,6 +1347,8 @@ For each: title, the capability or default it would reduce, a capability-impact 
 ```
 
 The `Knowledge base grounding summary` names the KB shelves surveyed, reports how many portfolio items are KB-grounded, and copies any stale-index warning verbatim; when KB grounding was skipped it states the reason from `<kbSeedsFile>`.
+
+The `Operational evidence summary` names how many incident issues and CI failures were retained, whether runtime probes ran (and any skip reason), and how many portfolio items were ops-seeded or ops-boosted; when the sweep was skipped it states the reason from `<opsEvidenceFile>`.
 
 If `publishBehavior` is `report-only`, stop after validating these documents and the final artifacts. Do not create GitHub issues.
 
@@ -1383,7 +1555,7 @@ Before finishing, validate:
 - Every entry's `authority` is consistent with its `changeShape` per the Authority Policy — in particular, no entry with `changeShape: reductive` has `authority` other than `protected`.
 - Every entry has `<recommendationsDir>/<idx>-<slug>/report.md`, `duplicate-evidence.md`, `evidence-verification.json`, and `classification.json`.
 - Every entry has an `evidenceVerification` of `pass` or `downgraded` that matches the `verdict` in its `evidence-verification.json`; no entry has `verdict: discarded` (discarded candidates are excluded before the ideas log). Every `downgraded` entry's `evidenceStrength` and `confidence` reflect the one-step reduction the gate recorded.
-- Every report contains `## Classification (authority, changeShape, size, confidence, risks)`, `## Duplicate evidence table`, `## Evidence verification`, and `## Knowledge base grounding`.
+- Every report contains `## Classification (authority, changeShape, size, confidence, risks)`, `## Duplicate evidence table`, `## Evidence verification`, `## Knowledge base grounding`, and `## Operational evidence`.
 - `<conflictMatrixFile>` exists and covers every portfolio item.
 - `<recommendationsDoc>` exists and references the ranked portfolio; `<proposalsDoc>` exists and lists every review-required and protected candidate.
 - `<duplicateMatrixFile>` exists and references the portfolio.
@@ -1391,6 +1563,7 @@ Before finishing, validate:
 - When `PUBLISH = publish-safe`: every published entry has a non-null `issueUrl` and a valid `issue-created.json`; no entry whose `authority` is `review-required` or `protected` has a non-null `issueUrl` or an `issue-created.json`.
 - When `PUBLISH = report-only`: every entry has `issueUrl: null` and no GitHub issue was created.
 - `<kbSeedsFile>` exists and is valid JSON with a `status` of `ok` or `skipped`; every entry has a `groundedIn` array and a boolean `kbStale`.
+- `<opsEvidenceFile>` exists and is valid JSON with a `status` of `ok` or `skipped`; when `status` is `ok`, it carries `incidentIssues`, `ciFailures`, and `runtimeProbes` objects/arrays (empty arrays are valid).
 - When `workProfile = simplification-preserving`, `<capabilityInventoryFile>` enumerates in-scope capabilities and no accepted candidate removes a documented/user-visible capability as an autonomous issue.
 - `<spendLedgerFile>` exists and is valid JSON with numeric `spendCapUsd`, boolean `capEnforced`, and boolean `capBreached`; when `PUBLISH = publish-safe`, every published entry in `<ideasLogFile>` has a `provenanceLabels` array containing `idea-scout` and `idea:<issue-number>`.
 - `<recommendationsDoc>`'s Summary contains the `Dimensions skipped this run:` line and its content is the literal `none`, the comma-separated names of exactly the in-play dimensions (per the single definition in Coverage-ordered rotation) absent from `<ideasLogFile>`, or — for `simplification-preserving` only — the literal `not applicable (profile has no dimension rotation)`. A missing line, an empty list, or a list that omits a skipped in-play dimension is a validation failure (silent starvation is the failure mode the coverage rotation exists to prevent).
@@ -1433,6 +1606,7 @@ If validation passes, write `<promise>DONE</promise>` to `<stateFile>`. If valid
 11. Log a `dedupe-check:` line (via `kookr emission dedupe`) before every `gh issue create`.
 12. When `USE_KB` is `auto`, run the Phase 3.5 survey once; reuse `<kbSeedsFile>` for every candidate instead of re-surveying.
 13. KB grounding is augmentation only: a missing, empty, or off-domain KB never blocks the run and never reduces the publish target.
+14. Run the Phase 3.6 operational-evidence sweep once; reuse `<opsEvidenceFile>` for every candidate instead of re-probing. Kookr-specific runtime probes are optional and never block the run.
 
 ## Anti-Patterns
 
@@ -1455,8 +1629,12 @@ If validation passes, write `<promise>DONE</promise>` to `<stateFile>`. If valid
 - Do not publish the local audit report, portfolio scoring, `kb` internals, or state paths in a GitHub issue; publish only the reader-first `issue-body.md`.
 - Do not file past the drain-coupled emission budget when open backlog is inflated — defer or umbrella-append instead of growing the backlog further.
 - Do not skip the logged `kookr emission dedupe` check before `gh issue create`.
-- Do not let KB grounding originate an idea's dimension; the diversity rotation stays authoritative and KB seeds only inform the angle.
+- Do not let KB grounding or operational evidence originate an idea's dimension; the diversity rotation stays authoritative and seeds only inform the angle (and may boost rank/evidence when they support a real gap).
 - Do not present model recall as a KB citation; every KB-derived claim must quote a real `<kb>/<path>` passage seen in `kb` output.
-- Do not skip the codebase capability check because a KB passage exists; the KB shows what is possible, the repo shows what is missing.
+- Do not invent incidents, CI failures, gauges, or log lines; every ops-derived claim must cite a probe observation from this run.
+- Do not skip the codebase capability check because a KB passage or ops signal exists; the KB shows what is possible, ops evidence shows what is hurting, the repo shows what is missing.
 - Do not hard-fail when the KB is unavailable or irrelevant to the target repository; degrade to issue-backlog-and-codebase analysis.
+- Do not hard-fail when Kookr runtime probes are unavailable (`KOOKR_API_BASE_URL` unset, diagnostics 404/timeout, no `~/.kookr/server.log*`); record the skip and continue with portable GitHub incident/CI evidence alone.
+- Do not publish local server-log paths, raw diagnostics dumps, or `<stateDir>` references into a GitHub issue body; publish only the reader-first symptom and acceptance criteria.
 - Do not spawn a `kb-scout` subagent per idea or run any `kb` write path; one read-only survey serves the whole run and per-candidate refinement uses a direct `kb search`.
+- Do not deep-scan every CI log or the entire server log during the ops sweep; sample themes, then move on.
