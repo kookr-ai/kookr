@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { lazy, Suspense, useState, useEffect, useMemo, useCallback, useReducer, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { AgentState, ClientMessage, ProjectSummary } from '../shared/protocol.js';
 import { resolveCleanupOverride } from './cleanup-override.js';
@@ -47,7 +47,6 @@ import { CompleteDialogFooter } from './components/CompleteDialogFooter.js';
 import { DestructiveUndoToasts } from './components/DestructiveUndoToasts.js';
 import { SweepProgress } from './components/SweepProgress.js';
 import { SweepReport } from './components/SweepReport.js';
-import type { TaskCompletionFeedback } from '../shared/contracts/messages.js';
 import { ProjectSidebar } from './components/ProjectSidebar.js';
 import { ProjectDetailDrawer } from './components/ProjectDetailDrawer.js';
 import type { SettingsFocusField } from './components/SettingsDialog.js';
@@ -81,6 +80,10 @@ import {
 } from './debug-timeline.js';
 import { getSelectionTransitionDiagnostics } from './selection-transition-recorder.js';
 import { findingTypeLabel } from './presentation.js';
+import { activeModalReducer } from './app-modal-reducer.js';
+import type { ActiveModal } from './app-modal-reducer.js';
+import { useCompletionConfirmation } from './hooks/useCompletionConfirmation.js';
+import type { PendingCompleteConfirmation } from './hooks/useCompletionConfirmation.js';
 import './critical.css';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
@@ -142,13 +145,6 @@ interface QueueClearCompletedArgs {
 
 type MobileDashboardTab = 'findings' | 'task';
 type LaunchInitialTab = 'manual' | 'playbooks';
-
-interface PendingCompleteConfirmation {
-  taskId: string;
-  agentId: string;
-  label: string;
-  method: 'button' | 'shortcut';
-}
 
 const MOBILE_BREAKPOINT_PX = 768;
 const WIDE_DETAIL_BREAKPOINT_PX = 1200;
@@ -351,34 +347,32 @@ export function App() {
     setFindingsWidth(width);
     saveFindingsWidth(width);
   }, []);
-  const [showLaunch, setShowLaunch] = useState(false);
-  const [showQuickLaunch, setShowQuickLaunch] = useState(false);
-  const [showShortcuts, setShowShortcuts] = useState(false);
-  const [showSnooze, setShowSnooze] = useState(false);
+  // Which mutually-exclusive modal dialog is open (issue #1825). One value in
+  // place of ~12 independent visibility booleans; opening any modal implicitly
+  // closes the previous one. Per-modal payloads stay in their own state below.
+  const [activeModal, dispatchModal] = useReducer(activeModalReducer, null);
+  const openModal = useCallback((modal: ActiveModal) => dispatchModal({ type: 'open', modal }), []);
+  const closeModal = useCallback(() => dispatchModal({ type: 'close' }), []);
+  const toggleModal = useCallback((modal: ActiveModal) => dispatchModal({ type: 'toggle', modal }), []);
+  // Shared cancel/complete confirmation selector: a single value keeps the
+  // cancel and complete dialogs mutually exclusive. The complete flow's rich
+  // state lives in useCompletionConfirmation (declared below, once
+  // requestCleanupInspect exists); this only tracks which one is showing.
   const [confirmAction, setConfirmAction] = useState<'cancel' | 'complete' | null>(null);
-  const [pendingComplete, setPendingComplete] = useState<PendingCompleteConfirmation | null>(null);
-  const [completeFeedback, setCompleteFeedback] = useState<TaskCompletionFeedback | undefined>(undefined);
-  const [completeRequestReflect, setCompleteRequestReflect] = useState(false);
   const [cleanupWorktreeOnComplete, setCleanupWorktreeOnComplete] = useState<boolean | undefined>(undefined);
-  const [completeCleanupWorktree, setCompleteCleanupWorktree] = useState(true);
-  const [completeCleanupWorktreeTouched, setCompleteCleanupWorktreeTouched] = useState(false);
-  const [showProjectSidebarManager, setShowProjectSidebarManager] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const [settingsFocus, setSettingsFocus] = useState<SettingsFocusField | undefined>(undefined);
-  const [showSchedules, setShowSchedules] = useState(false);
   // Seed for opening the Schedules dialog straight into a pre-filled create form
   // from a task-panel "schedule this playbook" button. Null = manual open.
   const [schedulePrefill, setSchedulePrefill] = useState<SchedulePrefill | null>(null);
   // One-time post-create hint pointing at the command-palette trigger.
   const [scheduleHintActive, setScheduleHintActive] = useState(false);
-  const [showWorkspace, setShowWorkspace] = useState(false);
-  const [showCostComparison, setShowCostComparison] = useState(false);
+  // Non-modal surfaces that legitimately co-exist with a modal and with each
+  // other, so they keep their own state instead of joining `activeModal`: the
+  // diagnostics popover, the inline coordinator-findings pane, and the command
+  // palette (a launcher toggled from anywhere, including over another surface).
   const [showOperations, setShowOperations] = useState(false);
   const [showCoordinatorFindings, setShowCoordinatorFindings] = useState(false);
-  const [showBugReport, setShowBugReport] = useState(false);
-  const [showShareViewer, setShowShareViewer] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
-  const [showSweepConfirm, setShowSweepConfirm] = useState(false);
   const [debugTimelineEnabled] = useState(() => isDebugTimelineEnabled());
   useEffect(() => {
     // Optional Long Task API observer (debug/?longtask=1). Measured snapshot /
@@ -500,6 +494,41 @@ export function App() {
     send({ type: 'worktree:inspectCleanup', taskId });
   }, [beginWorktreeCleanupInspect, send]);
 
+  // Task-completion confirmation flow (pending task, feedback, reflect toggle,
+  // worktree-cleanup checkbox). Extracted from App into a dedicated hook per
+  // issue #1825; visibility is still gated on `confirmAction === 'complete'` so
+  // the cancel and complete dialogs stay mutually exclusive.
+  const {
+    pending: pendingComplete,
+    feedback: completeFeedback,
+    setFeedback: setCompleteFeedback,
+    requestReflect: completeRequestReflect,
+    setRequestReflect: setCompleteRequestReflect,
+    cleanupWorktree: completeCleanupWorktree,
+    cleanupWorktreeTouched: completeCleanupWorktreeTouched,
+    setCleanupWorktree: setCompleteCleanupWorktree,
+    begin: beginComplete,
+    reset: resetComplete,
+  } = useCompletionConfirmation({
+    cleanupWorktreeOnComplete,
+    isOpen: confirmAction === 'complete',
+    onBegin: requestCleanupInspect,
+  });
+
+  // Open the complete confirmation for a task: seed the completion state and
+  // switch the shared selector to 'complete'.
+  const openCompleteConfirmation = useCallback((target: PendingCompleteConfirmation) => {
+    beginComplete(target);
+    setConfirmAction('complete');
+  }, [beginComplete]);
+
+  // Close the complete confirmation and clear all of its derived state.
+  const closeCompleteConfirmation = useCallback(() => {
+    setConfirmAction(null);
+    resetComplete();
+    clearWorktreeCleanupVerdicts();
+  }, [resetComplete, clearWorktreeCleanupVerdicts]);
+
   const removePendingDestructiveAction = useCallback((id: string) => {
     const timer = destructiveTimersRef.current.get(id);
     if (timer !== undefined) {
@@ -585,17 +614,12 @@ export function App() {
     return () => { cancelled = true; };
   }, []);
 
-  useEffect(() => {
-    if (confirmAction !== 'complete' || cleanupWorktreeOnComplete === undefined || completeCleanupWorktreeTouched) return;
-    setCompleteCleanupWorktree(cleanupWorktreeOnComplete);
-  }, [cleanupWorktreeOnComplete, completeCleanupWorktreeTouched, confirmAction]);
-
   // Open launch dialog when relaunchTask is set
   useEffect(() => {
     if (relaunchTask) {
-      setShowLaunch(true);
+      openModal('launch');
     }
-  }, [relaunchTask]);
+  }, [relaunchTask, openModal]);
 
   // First-run onboarding tour: opens once per browser when localStorage has
   // no current onboarding seen key. Idempotent on subsequent reloads.
@@ -679,8 +703,9 @@ export function App() {
   const selectedAgentShowsSplit = selectedAgent === null
     || !(selectedAgent.taskStatus !== undefined && isTerminalStatus(selectedAgent.taskStatus) && selectedAgent.completionDigest);
   const terminalFocusActive = terminalFocusMode && wideDetailActive && selectedAgentShowsSplit;
+  const bugReportOpen = activeModal === 'bugReport';
   const bugReportDraft = useMemo(() => {
-    if (!showBugReport) return null;
+    if (!bugReportOpen) return null;
     return buildBugReportBundle({
       agents,
       selectedAgentId,
@@ -693,7 +718,7 @@ export function App() {
       debugTimeline: getDebugTimelineEntries(),
       note: bugReportNote,
     });
-  }, [agents, bugReportNote, buildInfo, selectedAgentId, selectedProject, serverStartedAt, showBugReport]);
+  }, [agents, bugReportNote, buildInfo, selectedAgentId, selectedProject, serverStartedAt, bugReportOpen]);
 
   const exportDebugTrace = useCallback(() => {
     const { bundle, serialized } = buildBugReportBundle({
@@ -737,7 +762,7 @@ export function App() {
   }, [terminalFocusActive]);
 
   function handleCloseLaunch() {
-    setShowLaunch(false);
+    closeModal();
     setLaunchProjectContext(null);
     setLaunchProjectCwd(null);
     setLaunchInitialTab(null);
@@ -750,9 +775,9 @@ export function App() {
       setLaunchProjectCwd(deriveLaunchProjectCwd(agents, selectedProjectSummary) ?? '');
       setLaunchInitialTab('manual');
       track({ type: 'launch_dialog_opened', method: 'project_drawer_manual' });
-      setShowLaunch(true);
+      openModal('launch');
     }
-  }, [selectedProjectSummary, agents]);
+  }, [selectedProjectSummary, agents, openModal]);
 
   const handleRunPlaybook = useCallback(() => {
     if (selectedProjectSummary) {
@@ -760,9 +785,14 @@ export function App() {
       setLaunchProjectCwd(deriveLaunchProjectCwd(agents, selectedProjectSummary) ?? '');
       setLaunchInitialTab('playbooks');
       track({ type: 'launch_dialog_opened', method: 'project_drawer' });
-      setShowLaunch(true);
+      openModal('launch');
     }
-  }, [selectedProjectSummary, agents]);
+  }, [selectedProjectSummary, agents, openModal]);
+
+  // The bug-report and share-viewer modals swallow global shortcuts (only
+  // Escape passes through). The diagnostics popover does too, but it stays a
+  // separate boolean since it can co-exist with a modal.
+  const modalBlocksShortcuts = activeModal === 'bugReport' || activeModal === 'shareViewer';
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -774,7 +804,7 @@ export function App() {
         setShowCommandPalette((value) => !value);
         return;
       }
-      if ((showOperations || showBugReport || showShareViewer) && e.key !== 'Escape') {
+      if ((showOperations || modalBlocksShortcuts) && e.key !== 'Escape') {
         return;
       }
       if (matchesShortcutAction(e, shortcutBindings, 'next_bottleneck')) {
@@ -785,7 +815,7 @@ export function App() {
       if (matchesShortcutAction(e, shortcutBindings, 'quick_launch')) {
         e.preventDefault();
         track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.quick_launch), action: 'quick_launch', context: 'global' });
-        setShowQuickLaunch(true);
+        openModal('quickLaunch');
       }
       if (matchesShortcutAction(e, shortcutBindings, 'stt_toggle')) {
         e.preventDefault();
@@ -813,7 +843,7 @@ export function App() {
         const state = useKookrStore.getState();
         if (state.selectedAgentId) {
           track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.snooze_dialog), action: 'snooze_dialog', context: 'global' });
-          setShowSnooze(true);
+          openModal('snooze');
         }
       }
       if (matchesShortcutAction(e, shortcutBindings, 'quick_snooze')) {
@@ -869,16 +899,12 @@ export function App() {
         if (state.selectedAgentId) {
           if (selectedAgent?.taskId) {
             track({ type: 'shortcut_used', key: formatShortcutBinding(shortcutBindings.complete_task), action: 'complete_task', context: 'global' });
-            setPendingComplete({
+            openCompleteConfirmation({
               taskId: selectedAgent.taskId,
               agentId: selectedAgent.agentId,
               label: selectedAgent.taskName ?? selectedAgent.agentId,
               method: 'shortcut',
             });
-            setCompleteCleanupWorktree(cleanupWorktreeOnComplete ?? true);
-            setCompleteCleanupWorktreeTouched(false);
-            requestCleanupInspect(selectedAgent.taskId);
-            setConfirmAction('complete');
           }
         }
       }
@@ -956,7 +982,7 @@ export function App() {
         const tag = (e.target as HTMLElement)?.tagName;
         if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
           e.preventDefault();
-          setShowShortcuts((v) => !v);
+          toggleModal('shortcuts');
         }
       }
       // Cycle selected task.
@@ -993,7 +1019,7 @@ export function App() {
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [nextBottleneck, nextTask, advanceEmptyEnter, previousTask, send, shortcutBindings, showBugReport, showShareViewer, showOperations, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel, wideDetailActive, selectedAgent, cleanupWorktreeOnComplete]);
+  }, [nextBottleneck, nextTask, advanceEmptyEnter, previousTask, send, shortcutBindings, modalBlocksShortcuts, showOperations, openModal, toggleModal, openCompleteConfirmation, toggleProjectSidebar, toggleTerminalFocusMode, selectProject, toggleAchievementsPanel, wideDetailActive, selectedAgent]);
 
   useEffect(() => {
     if (!selectedProject || !agentsHydrated || !projectSummariesHydrated) return;
@@ -1173,7 +1199,7 @@ export function App() {
       onQueueClearCompleted={queueClearCompleted}
       onSchedulePlaybook={(prefill) => {
         setSchedulePrefill(prefill);
-        setShowSchedules(true);
+        openModal('schedules');
       }}
     />
   );
@@ -1182,19 +1208,15 @@ export function App() {
     <DetailPanel
       agent={selectedAgent}
       send={send}
-      onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'empty_panel' }); setShowLaunch(true); }}
+      onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'empty_panel' }); openModal('launch'); }}
       onRequestComplete={() => {
         if (!selectedAgent?.taskId) return;
-        setPendingComplete({
+        openCompleteConfirmation({
           taskId: selectedAgent.taskId,
           agentId: selectedAgent.agentId,
           label: selectedAgent.taskName ?? selectedAgent.agentId,
           method: 'button',
         });
-        setCompleteCleanupWorktree(cleanupWorktreeOnComplete ?? true);
-        setCompleteCleanupWorktreeTouched(false);
-        requestCleanupInspect(selectedAgent.taskId);
-        setConfirmAction('complete');
       }}
       detailPaneMode={detailPaneMode}
       wideDetailActive={wideDetailActive}
@@ -1208,11 +1230,11 @@ export function App() {
 
   const openSettingsAtMaxActiveTasks = () => {
     setSettingsFocus('maxActiveTasks');
-    setShowSettings(true);
+    openModal('settings');
   };
   const projectSidebar = !terminalFocusActive && (
     <ProjectSidebar
-      onManage={() => setShowProjectSidebarManager(true)}
+      onManage={() => openModal('projectSidebarManager')}
       onAdjustCap={openSettingsAtMaxActiveTasks}
     />
   );
@@ -1224,7 +1246,7 @@ export function App() {
       onClose={() => selectProject(null)}
       send={send}
       onOpenWorkspace={workspaceEnabled ? () => {
-        setShowWorkspace(true);
+        openModal('workspace');
       } : undefined}
       onLaunchManual={handleLaunchManualTask}
       onRunPlaybook={handleRunPlaybook}
@@ -1253,15 +1275,15 @@ export function App() {
           },
         }]
       : []),
-    { id: 'schedules', label: 'Schedules', section: 'tools', keywords: ['cron', 'routine', 'recurring'], run: () => setShowSchedules(true) },
+    { id: 'schedules', label: 'Schedules', section: 'tools', keywords: ['cron', 'routine', 'recurring'], run: () => openModal('schedules') },
     ...(workspaceEnabled && projectSummaries.length > 0
-      ? [{ id: 'sweep', label: 'Sweep merged worktrees', section: 'tools' as const, keywords: ['worktree', 'cleanup', 'git', 'squash'], run: () => setShowSweepConfirm(true) }]
+      ? [{ id: 'sweep', label: 'Sweep merged worktrees', section: 'tools' as const, keywords: ['worktree', 'cleanup', 'git', 'squash'], run: () => openModal('sweepConfirm') }]
       : []),
-    { id: 'cost', label: 'Cost comparison', section: 'tools', keywords: ['claude', 'codex', 'price', 'spend'], run: () => setShowCostComparison(true) },
-    { id: 'bug-report', label: 'Bug report', section: 'session', keywords: ['feedback', 'issue', 'report'], run: () => setShowBugReport(true) },
-    { id: 'share-viewer', label: 'Share read-only view', section: 'session', keywords: ['viewer', 'share', 'read-only', 'guest', 'link'], run: () => setShowShareViewer(true) },
-    { id: 'settings', label: 'Settings', section: 'session', keywords: ['preferences', 'config', 'options'], run: () => { setSettingsFocus(undefined); setShowSettings(true); } },
-    { id: 'shortcuts', label: 'Help & shortcuts', section: 'session', shortcut: formatShortcutBinding(shortcutBindings.toggle_shortcuts_help), keywords: ['help', 'keys', 'keyboard'], run: () => setShowShortcuts(true) },
+    { id: 'cost', label: 'Cost comparison', section: 'tools', keywords: ['claude', 'codex', 'price', 'spend'], run: () => openModal('costComparison') },
+    { id: 'bug-report', label: 'Bug report', section: 'session', keywords: ['feedback', 'issue', 'report'], run: () => openModal('bugReport') },
+    { id: 'share-viewer', label: 'Share read-only view', section: 'session', keywords: ['viewer', 'share', 'read-only', 'guest', 'link'], run: () => openModal('shareViewer') },
+    { id: 'settings', label: 'Settings', section: 'session', keywords: ['preferences', 'config', 'options'], run: () => { setSettingsFocus(undefined); openModal('settings'); } },
+    { id: 'shortcuts', label: 'Help & shortcuts', section: 'session', shortcut: formatShortcutBinding(shortcutBindings.toggle_shortcuts_help), keywords: ['help', 'keys', 'keyboard'], run: () => openModal('shortcuts') },
   ].filter((action) =>
     // #811: a read-only viewer cannot run owner-only / mutating commands (the
     // server would 403 / drop them); drop them from the palette so they are not
@@ -1318,7 +1340,7 @@ export function App() {
           : -1}
         totalFindings={findings.length}
         compact={isMobileViewport}
-        onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'button' }); setShowLaunch(true); }}
+        onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'button' }); openModal('launch'); }}
         readOnly={isViewer}
         onCommandPalette={() => setShowCommandPalette(true)}
         scheduleHintActive={scheduleHintActive}
@@ -1418,7 +1440,7 @@ export function App() {
                   data-testid="mobile-action-launch"
                   onClick={() => {
                     track({ type: 'launch_dialog_opened', method: 'mobile_action' });
-                    setShowLaunch(true);
+                    openModal('launch');
                   }}
                 >
                   Launch
@@ -1454,7 +1476,7 @@ export function App() {
         findings={findings.length}
         total={filteredAgents.length}
         compact={isMobileViewport}
-        onShowShortcuts={() => setShowShortcuts(true)}
+        onShowShortcuts={() => openModal('shortcuts')}
         reflectionSuggestion={reflectionSuggestion}
         onReflect={triggerReflection}
         onDismissReflection={dismissReflectionSuggestion}
@@ -1485,7 +1507,7 @@ export function App() {
           onClose={() => setShowCommandPalette(false)}
         />
       )}
-      {showSweepConfirm && (
+      {activeModal === 'sweepConfirm' && (
         <ConfirmDialog
           title="Sweep merged worktrees"
           message={`Sweep merged and squash-merged worktrees across ${projectSummaries.length} project${projectSummaries.length !== 1 ? 's' : ''}?`}
@@ -1493,16 +1515,16 @@ export function App() {
           onConfirm={() => {
             useKookrStore.getState().setSweepRunning(true);
             send({ type: 'workspace:sweep' });
-            setShowSweepConfirm(false);
+            closeModal();
           }}
-          onClose={() => setShowSweepConfirm(false)}
+          onClose={closeModal}
         />
       )}
-      {showShortcuts && (
+      {activeModal === 'shortcuts' && (
         <Suspense fallback={null}>
           <ShortcutsHelp
             bindings={shortcutBindings}
-            onClose={() => setShowShortcuts(false)}
+            onClose={closeModal}
           />
         </Suspense>
       )}
@@ -1511,20 +1533,20 @@ export function App() {
           <AchievementsPanel onClose={toggleAchievementsPanel} send={send} shortcutBindings={shortcutBindings} />
         </Suspense>
       )}
-      {showProjectSidebarManager && (
+      {activeModal === 'projectSidebarManager' && (
         <Suspense fallback={null}>
-          <ProjectSidebarManager onClose={() => setShowProjectSidebarManager(false)} />
+          <ProjectSidebarManager onClose={closeModal} />
         </Suspense>
       )}
-      {showSnooze && selectedAgent && (
+      {activeModal === 'snooze' && selectedAgent && (
         <SnoozeDialog
           agentId={selectedAgent.agentId}
           agentName={selectedAgent.taskName ?? selectedAgent.agentId}
           onSnooze={(durationMs) => {
             send({ type: 'snooze', agentId: selectedAgent.agentId, taskId: selectedAgent.taskId, durationMs });
-            setShowSnooze(false);
+            closeModal();
           }}
-          onClose={() => setShowSnooze(false)}
+          onClose={closeModal}
         />
       )}
       {confirmAction === 'cancel' && selectedAgent?.taskId && (
@@ -1559,10 +1581,7 @@ export function App() {
               onRefreshCleanupVerdicts={() => requestCleanupInspect(pendingComplete.taskId, { refresh: true })}
               onChange={setCompleteFeedback}
               onRequestReflectChange={setCompleteRequestReflect}
-              onCleanupWorktreeChange={(value) => {
-                setCompleteCleanupWorktree(value);
-                setCompleteCleanupWorktreeTouched(true);
-              }}
+              onCleanupWorktreeChange={setCompleteCleanupWorktree}
             />
           }
           onConfirm={() => {
@@ -1585,55 +1604,41 @@ export function App() {
             if (completionSent) {
               selectNextTaskAfterCompletion(pendingComplete.agentId, pendingComplete.taskId);
             }
-            setConfirmAction(null);
-            setPendingComplete(null);
-            setCompleteFeedback(undefined);
-            setCompleteRequestReflect(false);
-            setCompleteCleanupWorktree(true);
-            setCompleteCleanupWorktreeTouched(false);
-            clearWorktreeCleanupVerdicts();
+            closeCompleteConfirmation();
           }}
-          onClose={() => {
-            setConfirmAction(null);
-            setPendingComplete(null);
-            setCompleteFeedback(undefined);
-            setCompleteRequestReflect(false);
-            setCompleteCleanupWorktree(true);
-            setCompleteCleanupWorktreeTouched(false);
-            clearWorktreeCleanupVerdicts();
-          }}
+          onClose={closeCompleteConfirmation}
         />
       )}
-      {showQuickLaunch && (
+      {activeModal === 'quickLaunch' && (
         <Suspense fallback={null}>
-          <QuickLaunch send={send} onClose={() => setShowQuickLaunch(false)} sttShortcutBinding={shortcutBindings.stt_toggle} />
+          <QuickLaunch send={send} onClose={closeModal} sttShortcutBinding={shortcutBindings.stt_toggle} />
         </Suspense>
       )}
-      {showSchedules && (
+      {activeModal === 'schedules' && (
         <Suspense fallback={null}>
           <SchedulesDialog
-            onClose={() => { setShowSchedules(false); setSchedulePrefill(null); }}
+            onClose={() => { closeModal(); setSchedulePrefill(null); }}
             prefill={schedulePrefill ?? undefined}
             onCreated={(fromPrefill) => {
               if (!fromPrefill) return;
               // Close the dialog so the spotlighted command-palette trigger is
               // actually visible behind it, then show the discovery hint.
-              setShowSchedules(false);
+              closeModal();
               setSchedulePrefill(null);
               if (scheduledTasksHintShouldShow()) setScheduleHintActive(true);
             }}
           />
         </Suspense>
       )}
-      {showCostComparison && (
+      {activeModal === 'costComparison' && (
         <Suspense fallback={null}>
-          <CostComparisonPanel onClose={() => setShowCostComparison(false)} />
+          <CostComparisonPanel onClose={closeModal} />
         </Suspense>
       )}
-      {showSettings && (
+      {activeModal === 'settings' && (
         <Suspense fallback={null}>
           <SettingsDialog
-            onClose={() => { setShowSettings(false); setSettingsFocus(undefined); }}
+            onClose={() => { closeModal(); setSettingsFocus(undefined); }}
             focusField={settingsFocus}
             onSettingsSaved={(settings) => {
               setShortcutOverrides(settings.shortcutBindings ?? {});
@@ -1643,32 +1648,32 @@ export function App() {
           />
         </Suspense>
       )}
-      {showBugReport && bugReportDraft && (
+      {activeModal === 'bugReport' && bugReportDraft && (
         <BugReportDialog
           bundle={bugReportDraft.bundle}
           serialized={bugReportDraft.serialized}
           note={bugReportNote}
           onNoteChange={setBugReportNote}
           onClose={() => {
-            setShowBugReport(false);
+            closeModal();
             setBugReportNote('');
           }}
         />
       )}
-      {showShareViewer && (
-        <ShareViewerDialog onClose={() => setShowShareViewer(false)} />
+      {activeModal === 'shareViewer' && (
+        <ShareViewerDialog onClose={closeModal} />
       )}
       {ossShowView && (
         <Suspense fallback={null}>
           <OssProductivityView onClose={closeOssView} />
         </Suspense>
       )}
-      {showWorkspace && selectedProject && (
+      {activeModal === 'workspace' && selectedProject && (
         <Suspense fallback={null}>
           <ContributionWorkspace
             send={send}
             projectId={selectedProject}
-            onClose={() => { setShowWorkspace(false); clearWorkspaceView(); }}
+            onClose={() => { closeModal(); clearWorkspaceView(); }}
           />
         </Suspense>
       )}
@@ -1676,7 +1681,7 @@ export function App() {
       {scheduleHintActive && (
         <ScheduledTasksHint onHide={() => setScheduleHintActive(false)} />
       )}
-      {showLaunch && (
+      {activeModal === 'launch' && (
         <Suspense fallback={null}>
           <LaunchTaskDialog
             send={send}
