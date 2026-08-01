@@ -334,6 +334,33 @@ describe('renderPrometheusExposition', () => {
     expect(output).toContain('kookr_non_critical_timer_pause_last_event_loop_delay_p95_ms -1');
   });
 
+  test('renders snapshot shed counter and gauges (issue #1775)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      snapshotShed: {
+        thresholdMs: 1_500,
+        lastEventLoopDelayP95Ms: 2_400,
+        shedTotal: 11,
+      },
+    });
+
+    expect(output).toContain('# TYPE kookr_snapshot_shed_total counter');
+    expect(output).toContain('kookr_snapshot_shed_total 11');
+    expect(output).toContain('kookr_snapshot_shed_threshold_ms 1500');
+    expect(output).toContain('kookr_snapshot_shed_last_event_loop_delay_p95_ms 2400');
+  });
+
+  test('renders snapshot shed zeros when omitted (always-visible defaults)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+    });
+    expect(output).toContain('kookr_snapshot_shed_total 0');
+    expect(output).toContain('kookr_snapshot_shed_threshold_ms 0');
+    expect(output).toContain('kookr_snapshot_shed_last_event_loop_delay_p95_ms -1');
+  });
+
   test('renders aggregate auth throttle counters without source labels', () => {
     const output = renderPrometheusExposition({
       requestDurations: EMPTY_REQUEST_DURATIONS,

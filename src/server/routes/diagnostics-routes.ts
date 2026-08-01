@@ -302,6 +302,14 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       pausedTicksTotal: 0,
     };
 
+    // Snapshot rebuild shed (issue #1775): process-lifetime counter + threshold.
+    const snapshotShedBlock = deps.snapshotShed?.getSnapshotShedMetrics() ?? {
+      schemaVersion: 'snapshot-shed.v1' as const,
+      thresholdMs: 0,
+      lastEventLoopDelayP95Ms: null,
+      shedTotal: 0,
+    };
+
     // Resource watchdog (issue #1724): last sample / trigger / throttle /
     // spawns-in-24h from the service's in-memory snapshot only — never a
     // fresh `/proc` or process-table scan on this request path (#1553).
@@ -438,6 +446,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       terminalWrite: terminalWriteBlock,
       ...(sessionReaperBlock ? { sessionReaper: sessionReaperBlock } : {}),
       nonCriticalTimerPause: nonCriticalTimerPauseBlock,
+      snapshotShed: snapshotShedBlock,
       ...(resourceWatchdogBlock ? { resourceWatchdog: resourceWatchdogBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),

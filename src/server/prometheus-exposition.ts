@@ -37,6 +37,13 @@ export interface NonCriticalTimerPauseMetricsSnapshot {
   pausedTicksTotal: number;
 }
 
+/** Full-snapshot rebuild shed counter (issue #1775). */
+export interface SnapshotShedMetricsExposition {
+  thresholdMs: number;
+  lastEventLoopDelayP95Ms: number | null;
+  shedTotal: number;
+}
+
 export interface PrometheusExpositionSnapshot {
   requestDurations: RequestDurationMetricsSnapshot;
   circuitBreakers: CircuitBreakerSnapshot[];
@@ -50,6 +57,8 @@ export interface PrometheusExpositionSnapshot {
   /** Always-on tasks.json / tasks.sqlite save timing (issue #1777). */
   taskSave?: TaskSaveMetricsSnapshot;
   nonCriticalTimerPause?: NonCriticalTimerPauseMetricsSnapshot;
+  /** Non-critical full-snapshot rebuilds skipped under loop saturation (#1775). */
+  snapshotShed?: SnapshotShedMetricsExposition;
 }
 
 export interface AuditSinkMetricsSnapshot {
@@ -72,6 +81,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendTerminalInputRttMetrics(lines, snapshot.terminalInputRtt);
   appendTaskSaveMetrics(lines, snapshot.taskSave ?? emptyTaskSaveMetricsSnapshot());
   appendNonCriticalTimerPauseMetrics(lines, snapshot.nonCriticalTimerPause);
+  appendSnapshotShedMetrics(lines, snapshot.snapshotShed);
 
   return `${lines.join('\n')}\n`;
 }
@@ -370,6 +380,33 @@ function appendNonCriticalTimerPauseMetrics(
     '# HELP kookr_non_critical_timer_pauses_total Total non-critical timer ticks skipped because event-loop delay p95 was elevated.',
     '# TYPE kookr_non_critical_timer_pauses_total counter',
     metricLine('kookr_non_critical_timer_pauses_total', {}, snapshot.pausedTicksTotal),
+  );
+}
+
+const EMPTY_SNAPSHOT_SHED: SnapshotShedMetricsExposition = {
+  thresholdMs: 0,
+  lastEventLoopDelayP95Ms: null,
+  shedTotal: 0,
+};
+
+function appendSnapshotShedMetrics(
+  lines: string[],
+  snapshot: SnapshotShedMetricsExposition = EMPTY_SNAPSHOT_SHED,
+): void {
+  lines.push(
+    '# HELP kookr_snapshot_shed_total Total non-critical full-snapshot rebuilds skipped because event-loop delay p95 was elevated.',
+    '# TYPE kookr_snapshot_shed_total counter',
+    metricLine('kookr_snapshot_shed_total', {}, snapshot.shedTotal),
+    '# HELP kookr_snapshot_shed_threshold_ms Configured event-loop delay p95 threshold (ms) for snapshot rebuild shed; 0 means disabled.',
+    '# TYPE kookr_snapshot_shed_threshold_ms gauge',
+    metricLine('kookr_snapshot_shed_threshold_ms', {}, snapshot.thresholdMs),
+    '# HELP kookr_snapshot_shed_last_event_loop_delay_p95_ms Last finite event-loop delay p95 sample (ms) consulted for snapshot shed; -1 when none.',
+    '# TYPE kookr_snapshot_shed_last_event_loop_delay_p95_ms gauge',
+    metricLine(
+      'kookr_snapshot_shed_last_event_loop_delay_p95_ms',
+      {},
+      snapshot.lastEventLoopDelayP95Ms ?? -1,
+    ),
   );
 }
 

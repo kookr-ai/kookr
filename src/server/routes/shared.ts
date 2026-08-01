@@ -381,6 +381,13 @@ export interface RouteDeps {
     'getSnapshot'
   >;
   /**
+   * Snapshot rebuild shed metrics (issue #1775). `/api/health` and `/metrics`
+   * read only `getSnapshotShedMetrics()` — in-memory counter + last sample.
+   */
+  snapshotShed?: {
+    getSnapshotShedMetrics: () => import('../event-pipeline.js').SnapshotShedMetricsSnapshot;
+  };
+  /**
    * Resource watchdog (issue #1724). `/api/health` reads only
    * `getHealthSnapshot()` — last sample, last trigger, throttle state,
    * spawns-in-24h — never a fresh `/proc` scan on the request path

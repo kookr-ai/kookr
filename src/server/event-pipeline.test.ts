@@ -13,7 +13,13 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { wireEventPipeline, type EventPipelineDeps } from './event-pipeline.js';
+import {
+  wireEventPipeline,
+  shouldShedSnapshotRebuild,
+  readSnapshotShedConfigFromEnv,
+  DEFAULT_SNAPSHOT_SHED_EVENT_LOOP_DELAY_MS,
+  type EventPipelineDeps,
+} from './event-pipeline.js';
 import { HookIngestion, mintEventId } from './hook-ingestion.js';
 import type { AgentEvent, EventMeta } from '../core/types.js';
 import type { ServerMessage } from '../shared/protocol.js';
@@ -1168,6 +1174,209 @@ describe('event-pipeline: snapshot broadcast coalescing (#704)', () => {
       // Idempotent when nothing is dirty.
       flushSnapshotNow();
       expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1775: shed non-critical full-snapshot rebuilds under event-loop saturation.
+// ---------------------------------------------------------------------------
+
+describe('shouldShedSnapshotRebuild (#1775)', () => {
+  test('sheds only when p95 is strictly above a positive threshold', () => {
+    expect(shouldShedSnapshotRebuild({ eventLoopDelayP95Ms: 1_501, thresholdMs: 1_500 })).toBe(true);
+    expect(shouldShedSnapshotRebuild({ eventLoopDelayP95Ms: 1_500, thresholdMs: 1_500 })).toBe(false);
+    expect(shouldShedSnapshotRebuild({ eventLoopDelayP95Ms: 0, thresholdMs: 1_500 })).toBe(false);
+  });
+
+  test('fails open on disabled threshold or missing/non-finite sample', () => {
+    expect(shouldShedSnapshotRebuild({ eventLoopDelayP95Ms: 50_000, thresholdMs: 0 })).toBe(false);
+    expect(shouldShedSnapshotRebuild({ eventLoopDelayP95Ms: null, thresholdMs: 1_500 })).toBe(false);
+    expect(shouldShedSnapshotRebuild({ eventLoopDelayP95Ms: undefined, thresholdMs: 1_500 })).toBe(false);
+    expect(shouldShedSnapshotRebuild({ eventLoopDelayP95Ms: Number.NaN, thresholdMs: 1_500 })).toBe(false);
+  });
+});
+
+describe('readSnapshotShedConfigFromEnv (#1775)', () => {
+  test('defaults to DEFAULT_SNAPSHOT_SHED_EVENT_LOOP_DELAY_MS', () => {
+    expect(readSnapshotShedConfigFromEnv({}).eventLoopDelayThresholdMs)
+      .toBe(DEFAULT_SNAPSHOT_SHED_EVENT_LOOP_DELAY_MS);
+  });
+
+  test('accepts 0 to disable and positive overrides', () => {
+    expect(readSnapshotShedConfigFromEnv({
+      KOOKR_SNAPSHOT_SHED_EVENT_LOOP_DELAY_MS: '0',
+    }).eventLoopDelayThresholdMs).toBe(0);
+    expect(readSnapshotShedConfigFromEnv({
+      KOOKR_SNAPSHOT_SHED_EVENT_LOOP_DELAY_MS: '2000',
+    }).eventLoopDelayThresholdMs).toBe(2000);
+  });
+});
+
+describe('event-pipeline: snapshot rebuild shed under saturation (#1775)', () => {
+  const toolUse = (id: string): AgentEvent =>
+    ({ type: 'tool_use', toolName: 'Read', toolUseId: id } as AgentEvent);
+
+  beforeEach(() => {
+    _resetLifecycles();
+  });
+
+  test('elevated p95 skips non-critical coalesced rebuild and increments shed counter', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      deps.getEventLoopDelayP95Ms = () => 5_000;
+      deps.snapshotShedEventLoopDelayThresholdMs = 1_500;
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-1', anomaly: null, events: [] },
+      ]);
+      const { getSnapshotShedMetrics } = wireEventPipeline(deps);
+
+      fireEvent('agent-1', toolUse('tu-1'));
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(0);
+
+      vi.advanceTimersByTime(250);
+      // Shed: no rebuild/fan-out, counter bumps, dirty re-armed for a later try.
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(0);
+      expect(getSnapshotShedMetrics().shedTotal).toBe(1);
+      expect(getSnapshotShedMetrics().lastEventLoopDelayP95Ms).toBe(5_000);
+
+      // Still saturated → another shed on the re-armed timer.
+      vi.advanceTimersByTime(250);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(0);
+      expect(getSnapshotShedMetrics().shedTotal).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('when p95 drops below threshold after a shed, the re-armed flush rebuilds once', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      let p95 = 5_000;
+      deps.getEventLoopDelayP95Ms = () => p95;
+      deps.snapshotShedEventLoopDelayThresholdMs = 1_500;
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-1', anomaly: null, events: [] },
+      ]);
+      const { getSnapshotShedMetrics } = wireEventPipeline(deps);
+
+      fireEvent('agent-1', toolUse('tu-1'));
+      vi.advanceTimersByTime(250);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(0);
+      expect(getSnapshotShedMetrics().shedTotal).toBe(1);
+
+      p95 = 100; // recovered
+      vi.advanceTimersByTime(250);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+      expect(getSnapshotShedMetrics().shedTotal).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('fails open when resource status is missing — still rebuilds under default threshold', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      deps.getEventLoopDelayP95Ms = () => null;
+      deps.snapshotShedEventLoopDelayThresholdMs = 1_500;
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-1', anomaly: null, events: [] },
+      ]);
+      const { getSnapshotShedMetrics } = wireEventPipeline(deps);
+
+      fireEvent('agent-1', toolUse('tu-1'));
+      vi.advanceTimersByTime(250);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+      expect(getSnapshotShedMetrics().shedTotal).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('fails open when getEventLoopDelayP95Ms is unwired (idle / tests)', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      // No getEventLoopDelayP95Ms — pre-#1775 path must still fan out.
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-1', anomaly: null, events: [] },
+      ]);
+      wireEventPipeline(deps);
+
+      fireEvent('agent-1', toolUse('tu-1'));
+      vi.advanceTimersByTime(250);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('attention transition force-flushes even when p95 is saturated (critical path)', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      deps.getEventLoopDelayP95Ms = () => 9_000;
+      deps.snapshotShedEventLoopDelayThresholdMs = 1_500;
+      let phase: 'pre' | 'post' = 'pre';
+      (deps.monitor.getSnapshot as any).mockImplementation(() =>
+        phase === 'pre'
+          ? [{ agentId: 'agent-1', anomaly: null, events: [] }]
+          : [{ agentId: 'agent-1', anomaly: { type: 'needs_input', severity: 'warning' }, events: [] }],
+      );
+      (deps.monitor.processEvents as any).mockImplementation(() => { phase = 'post'; });
+      const { getSnapshotShedMetrics } = wireEventPipeline(deps);
+
+      fireEvent('agent-1', { type: 'stop', sessionId: 's1', lastMessage: 'need input' } as AgentEvent);
+
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+      expect(getSnapshotShedMetrics().shedTotal).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('flushSnapshotNow() force-flushes a pending dirty snapshot under saturation', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      deps.getEventLoopDelayP95Ms = () => 9_000;
+      deps.snapshotShedEventLoopDelayThresholdMs = 1_500;
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-1', anomaly: null, events: [] },
+      ]);
+      const { flushSnapshotNow, getSnapshotShedMetrics } = wireEventPipeline(deps);
+
+      fireEvent('agent-1', toolUse('tu-1'));
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(0);
+
+      flushSnapshotNow();
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+      expect(getSnapshotShedMetrics().shedTotal).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('threshold 0 disables shedding even with high p95', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      deps.getEventLoopDelayP95Ms = () => 50_000;
+      deps.snapshotShedEventLoopDelayThresholdMs = 0;
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-1', anomaly: null, events: [] },
+      ]);
+      const { getSnapshotShedMetrics } = wireEventPipeline(deps);
+
+      fireEvent('agent-1', toolUse('tu-1'));
+      vi.advanceTimersByTime(250);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+      expect(getSnapshotShedMetrics().shedTotal).toBe(0);
     } finally {
       vi.useRealTimers();
     }
