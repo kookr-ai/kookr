@@ -1,4 +1,7 @@
 // Anomaly detection output
+// Keep in lockstep with `src/shared/contracts/anomalies.ts` (wire SoT).
+// Deprecated wire alias `tmux_unresponsive` → `backend_unreachable` is defined
+// only at the contract edge (`DEPRECATED_ANOMALY_TYPE_ALIASES`); do not re-add it.
 export type AnomalyType =
   | 'needs_input'
   | 'permission_blocked'
@@ -8,7 +11,7 @@ export type AnomalyType =
   | 'hook_disconnected'
   | 'hook_missing'
   | 'hook_parse_degraded'
-  | 'tmux_unresponsive'
+  | 'backend_unreachable'
   | 'api_error'
   | 'budget_exceeded';
 
@@ -31,7 +34,7 @@ export const ANOMALY_TYPES = [
   'hook_disconnected',
   'hook_missing',
   'hook_parse_degraded',
-  'tmux_unresponsive',
+  'backend_unreachable',
   'api_error',
   'budget_exceeded',
 ] as const satisfies readonly AnomalyType[];

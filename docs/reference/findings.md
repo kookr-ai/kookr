@@ -31,7 +31,7 @@ positive regardless of its type — see [Cross-cutting controls](#cross-cutting-
 | [`hook_disconnected`](#hook_disconnected) | warning | Agent is visibly active but the hook pipeline stopped delivering events. |
 | [`hook_missing`](#hook_missing) | warning | Hooks were never wired up for the session. |
 | [`hook_parse_degraded`](#hook_parse_degraded) | warning | Hook records are arriving but failing to parse. |
-| [`tmux_unresponsive`](#tmux_unresponsive) | warning | The terminal backend is unreachable. |
+| [`backend_unreachable`](#backend_unreachable) | warning | The terminal backend is unreachable. |
 | [`api_error`](#api_error) | warning / critical | The model/provider API failed and killed the turn. |
 | [`budget_exceeded`](#budget_exceeded) | warning / critical | Task cost crossed the configured USD threshold. |
 
@@ -214,17 +214,19 @@ the adapter no longer understands.
 after a successful parse, so repeated malformed records do not spam alerts.
 Snooze or mark a false positive if you are intentionally replaying bad payloads.
 
-## `tmux_unresponsive`
+## `backend_unreachable`
 
 **Meaning.** The terminal backend is unreachable, so Kookr cannot read the
 agent's pane or drive its session.
 
 **Severity.** `warning`.
 
-**Trigger.** Part of the liveness anomaly family. The symbol is named
-`tmux_unresponsive` for historical reasons; a rename to `backend_unreachable`
-is pending (see [`docs/architecture.md`](../architecture.md)). Kookr's only
-supported backend today is `dtach` (the tmux backend was removed).
+**Trigger.** Part of the liveness anomaly family. Canonical symbol is
+`backend_unreachable`. The pre-rename wire alias `tmux_unresponsive` is still
+accepted at contract edges (client message schema, detection-stats hydration)
+and mapped to this type via `DEPRECATED_ANOMALY_TYPE_ALIASES` in
+`src/shared/contracts/anomalies.ts`. Kookr's only supported backend today is
+`dtach` (the tmux backend was removed; see ADR-014).
 
 **Recommended response.** Check the dtach backend and socket directory
 (`KOOKR_DTACH_SOCK_DIR`). If the backend is wedged, stop and relaunch the

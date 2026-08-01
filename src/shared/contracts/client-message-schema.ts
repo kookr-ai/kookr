@@ -3,6 +3,7 @@ import { type ClientMessage, MAX_BATCH_ABORT_TASKS } from './messages.js';
 import { TELEMETRY_EVENT_TYPES } from './telemetry.js';
 import { LAUNCH_DEPENDENCIES } from './playbook.js';
 import { AGENT_SELECTIONS } from './agent-types.js';
+import { canonicalizeAnomalyTypeKey } from './anomalies.js';
 
 /**
  * Runtime validators for the ClientMessage discriminated union.
@@ -28,7 +29,7 @@ const permissionRequestBinding = z.object({
   detectedAt: z.string(),
   ttlMs: z.number(),
 });
-const anomalyType = z.enum([
+const anomalyTypeCanonical = z.enum([
   'needs_input',
   'permission_blocked',
   'repeated_error',
@@ -36,10 +37,15 @@ const anomalyType = z.enum([
   'stale_agent',
   'hook_disconnected',
   'hook_missing',
-  'tmux_unresponsive',
+  'backend_unreachable',
   'api_error',
   'budget_exceeded',
 ]);
+/** Accepts deprecated wire aliases and rewrites them to the canonical type. */
+const anomalyType = z.preprocess(
+  (val) => (typeof val === 'string' ? canonicalizeAnomalyTypeKey(val) : val),
+  anomalyTypeCanonical,
+);
 const anomalySeverity = z.enum(['info', 'warning', 'critical']);
 
 const telemetryEventType = z.enum(TELEMETRY_EVENT_TYPES);

@@ -6,7 +6,7 @@ import type { DetectionStats } from '../core/detection-stats.js';
 function zeroCounts(): Record<AnomalyType, number> {
   const types: AnomalyType[] = [
     'needs_input', 'permission_blocked', 'repeated_error', 'merge_conflict',
-    'stale_agent', 'hook_disconnected', 'hook_missing', 'tmux_unresponsive',
+    'stale_agent', 'hook_disconnected', 'hook_missing', 'backend_unreachable',
     'hook_parse_degraded', 'api_error', 'budget_exceeded',
   ];
   return Object.fromEntries(types.map((t) => [t, 0])) as Record<AnomalyType, number>;

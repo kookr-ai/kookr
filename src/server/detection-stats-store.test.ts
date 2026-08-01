@@ -198,4 +198,26 @@ describe('hydrateDetectionStats', () => {
     expect(live.checks.needs_input).toBe(2);
     expect((live.checks as Record<string, number>).some_future_type).toBeUndefined();
   });
+
+  test('folds deprecated tmux_unresponsive counts into backend_unreachable', () => {
+    hydrateDetectionStats({
+      checks: {
+        tmux_unresponsive: 3,
+        backend_unreachable: 2,
+      } as unknown as DetectionStats['checks'],
+      fires: {
+        tmux_unresponsive: 1,
+      } as unknown as DetectionStats['fires'],
+      suppressionReasons: {
+        tmux_unresponsive: {
+          subagent_running: 4,
+        },
+      } as unknown as DetectionStats['suppressionReasons'],
+    });
+    const live = getDetectionStats();
+    expect(live.checks.backend_unreachable).toBe(5);
+    expect(live.fires.backend_unreachable).toBe(1);
+    expect(live.suppressionReasons.backend_unreachable.subagent_running).toBe(4);
+    expect((live.checks as Record<string, number>).tmux_unresponsive).toBeUndefined();
+  });
 });
