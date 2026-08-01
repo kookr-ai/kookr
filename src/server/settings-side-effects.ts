@@ -122,6 +122,47 @@ export async function applySettingsSideEffects({
     );
   }
 
+  // --- Phase-C capacity knobs (issue #1526 Phase C / #1862) ---
+  // No reconfigure needed: launch, scheduler, pending-TTL, and burst budget
+  // paths all read these through live getters. Logged so capacity setting
+  // flips are visible in postmortems (spawn 429 / hung capacity events).
+  if (prevSettings.launchTimeoutSeconds !== newSettings.launchTimeoutSeconds) {
+    console.log(
+      `[settings] launchTimeoutSeconds → ${newSettings.launchTimeoutSeconds}s `
+      + `(was ${prevSettings.launchTimeoutSeconds}s)`,
+    );
+  }
+  if (prevSettings.deadManScheduleMinutes !== newSettings.deadManScheduleMinutes) {
+    console.log(
+      `[settings] deadManScheduleMinutes → ${newSettings.deadManScheduleMinutes}min `
+      + `(was ${prevSettings.deadManScheduleMinutes}min)`,
+    );
+  }
+  if (prevSettings.maxPendingTasks !== newSettings.maxPendingTasks) {
+    console.log(
+      `[settings] maxPendingTasks → ${newSettings.maxPendingTasks} `
+      + `(was ${prevSettings.maxPendingTasks})`,
+    );
+  }
+  if (prevSettings.pendingTaskTtlMinutes !== newSettings.pendingTaskTtlMinutes) {
+    console.log(
+      `[settings] pendingTaskTtlMinutes → ${newSettings.pendingTaskTtlMinutes}min `
+      + `(was ${prevSettings.pendingTaskTtlMinutes}min)`,
+    );
+  }
+  if (prevSettings.spawnBurstLimit !== newSettings.spawnBurstLimit) {
+    console.log(
+      `[settings] spawnBurstLimit → ${newSettings.spawnBurstLimit} `
+      + `(was ${prevSettings.spawnBurstLimit})`,
+    );
+  }
+  if (prevSettings.spawnBurstWindowMinutes !== newSettings.spawnBurstWindowMinutes) {
+    console.log(
+      `[settings] spawnBurstWindowMinutes → ${newSettings.spawnBurstWindowMinutes}min `
+      + `(was ${prevSettings.spawnBurstWindowMinutes}min)`,
+    );
+  }
+
   // --- Post-merge cleanup budget side effects (issue #1560) ---
   // No reconfigure needed: the liveness tick reads the budget through a live
   // getter each pass, same pattern as the auto-close delay above.
