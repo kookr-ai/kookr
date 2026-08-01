@@ -458,6 +458,67 @@ describe('repository-idea-scout playbook', () => {
       expect(pb.body).toMatch(/no hard gate may test it beyond existence \+ validity/i);
       expect(pb.body).toMatch(/Dimensions skipped this run:/);
     });
+
+    test('ORDERED_DIMS subtracts a bounded conversion credit from coveredCount', () => {
+      const cat = pb.body.slice(
+        pb.body.indexOf('### 4.1 Category Assignment'),
+        pb.body.indexOf('### 4.2 Duplicate Check'),
+      );
+      expect(cat).toMatch(/conversion-credits\.json/);
+      expect(cat).toMatch(/\$credits\[\.\]/);
+      expect(cat).toMatch(/coveredCount \/\/ 0\) - \(\$credits/);
+      // Cap is documented next to the rotation so a future edit cannot silently
+      // raise it and reintroduce starvation.
+      expect(pb.body).toMatch(/CONVERSION_CREDIT_CAP = 1/);
+      expect(pb.body).toMatch(/MIN_SAMPLES_FOR_CONVERSION_WEIGHT = 2/);
+    });
+  });
+
+  describe('cross-run idea outcome ledger (issue #1758)', () => {
+    test('declares a repo-level ideaOutcomeLedgerFile outside the runKey state dir', () => {
+      expect(pb.body).toMatch(/ideaOutcomeLedgerFile/);
+      expect(pb.body).toMatch(/idea-outcome-ledger\.json/);
+      expect(pb.body).toMatch(/repo-level/);
+      // Second deliberate exception alongside dimension coverage.
+      expect(pb.body).toMatch(/exactly two deliberate repo-level exceptions/);
+    });
+
+    test('Phase 3.7 refreshes outcomes from provenance labels with refreshedRuns idempotence', () => {
+      const phase = pb.body.slice(
+        pb.body.indexOf('## Phase 3.7: Idea Outcome Ledger Refresh'),
+        pb.body.indexOf('## Phase 4: Generate The Candidate Pool'),
+      );
+      expect(phase.length).toBeGreaterThan(200);
+      expect(phase).toMatch(/refreshedRuns \| index\(\$rk\)/);
+      expect(phase).toMatch(/gh issue list -R "\$REPO" --label idea-scout/);
+      expect(phase).toMatch(/gh pr list -R "\$REPO" --state merged --label idea-scout/);
+      expect(phase).toMatch(/merged-pr|closed-unimplemented|open-aged/);
+      expect(phase).toMatch(/\[ -s "\$OUTCOME_FILE" \]/);
+      expect(phase).toMatch(/tmp\.\$\$/);
+      // Best-effort: refresh failure never blocks the run.
+      expect(phase).toMatch(/non-fatal|never blocks/i);
+    });
+
+    test('Phase 7.1 records published ideas with recordedRuns guard', () => {
+      const sec = pb.body.slice(pb.body.indexOf('### 7.1 Record published ideas in the outcome ledger'));
+      expect(sec).toMatch(/recordedRuns \| index\(\$rk\)/);
+      expect(sec).toMatch(/issueUrl/);
+      expect(sec).toMatch(/category/);
+      expect(sec).toMatch(/authority/);
+    });
+
+    test('run summary requires a Conversion rates line and Phase 8 treats ledger content as soft', () => {
+      expect(pb.body).toMatch(/Conversion rates:/);
+      const phase8 = pb.body.slice(pb.body.indexOf('## Phase 8: Final Validation'));
+      expect(phase8).toMatch(/Conversion rates:/);
+      expect(phase8).toMatch(/ideaOutcomeLedgerFile/);
+      expect(phase8).toMatch(/never a `BLOCKED`/);
+      expect(phase8).toMatch(/No hard gate may test outcome-ledger \*content\*/i);
+    });
+
+    test('checklist requires the outcome ledger refresh/record path', () => {
+      expect(pb.checklist.some((c) => /outcome ledger|conversion rates/i.test(c))).toBe(true);
+    });
   });
 
   describe('parsing and discovery stay compatible', () => {
