@@ -49,8 +49,8 @@ describe('applySettingsSideEffects', () => {
   beforeEach(() => {
     mockSaveSettings.mockClear();
     mockSaveSettings.mockResolvedValue(undefined);
-    vi.spyOn(console, 'log').mockImplementation(() => {});
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockReset().mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockReset().mockImplementation(() => {});
   });
 
   test('persists new settings via saveSettings before applying side effects', async () => {
@@ -183,5 +183,100 @@ describe('applySettingsSideEffects', () => {
     expect(deps.spies.watchdog.reconfigure).not.toHaveBeenCalled();
     expect(deps.spies.monitor.setAnomalyConfig).not.toHaveBeenCalled();
     expect(warnings).toEqual([]);
+  });
+
+  // --- Phase-C capacity knobs (issue #1862): log old→new, no reconfigure ---
+  // These knobs are live-getter only; operability requires a console line so
+  // capacity flips are recoverable from logs during spawn-429 / hung-capacity
+  // postmortems. Distinct from #1397 which covered reconfigure branches.
+
+  test.each([
+    {
+      key: 'launchTimeoutSeconds' as const,
+      prev: 180,
+      next: 240,
+      log: '[settings] launchTimeoutSeconds → 240s (was 180s)',
+    },
+    {
+      key: 'deadManScheduleMinutes' as const,
+      prev: 120,
+      next: 60,
+      log: '[settings] deadManScheduleMinutes → 60min (was 120min)',
+    },
+    {
+      key: 'maxPendingTasks' as const,
+      prev: 24,
+      next: 48,
+      log: '[settings] maxPendingTasks → 48 (was 24)',
+    },
+    {
+      key: 'pendingTaskTtlMinutes' as const,
+      prev: 240,
+      next: 90,
+      log: '[settings] pendingTaskTtlMinutes → 90min (was 240min)',
+    },
+    {
+      key: 'spawnBurstLimit' as const,
+      prev: 30,
+      next: 10,
+      log: '[settings] spawnBurstLimit → 10 (was 30)',
+    },
+    {
+      key: 'spawnBurstWindowMinutes' as const,
+      prev: 10,
+      next: 30,
+      log: '[settings] spawnBurstWindowMinutes → 30min (was 10min)',
+    },
+  ])(
+    'Phase-C knob $key change logs old→new without reconfigure (#1862)',
+    async ({ key, prev, next, log }) => {
+      const deps = createDeps({ [key]: prev }, { [key]: next });
+
+      const warnings = await applySettingsSideEffects(deps);
+
+      expect(console.log).toHaveBeenCalledWith(log);
+      // Live-getter knobs must never touch GH poll / watchdog / anomaly paths.
+      expect(deps.spies.githubScanner.stop).not.toHaveBeenCalled();
+      expect(deps.spies.githubScanner.start).not.toHaveBeenCalled();
+      expect(deps.spies.githubScanner.reconfigure).not.toHaveBeenCalled();
+      expect(deps.spies.watchdog.reconfigure).not.toHaveBeenCalled();
+      expect(deps.spies.monitor.setAnomalyConfig).not.toHaveBeenCalled();
+      expect(warnings).toEqual([]);
+    },
+  );
+
+  test('unchanged Phase-C capacity knobs do not log (#1862)', async () => {
+    const deps = createDeps(
+      {
+        launchTimeoutSeconds: 180,
+        deadManScheduleMinutes: 120,
+        maxPendingTasks: 24,
+        pendingTaskTtlMinutes: 240,
+        spawnBurstLimit: 30,
+        spawnBurstWindowMinutes: 10,
+      },
+      {
+        launchTimeoutSeconds: 180,
+        deadManScheduleMinutes: 120,
+        maxPendingTasks: 24,
+        pendingTaskTtlMinutes: 240,
+        spawnBurstLimit: 30,
+        spawnBurstWindowMinutes: 10,
+      },
+    );
+
+    await applySettingsSideEffects(deps);
+
+    const logged = vi.mocked(console.log).mock.calls.map((c) => String(c[0]));
+    for (const knob of [
+      'launchTimeoutSeconds',
+      'deadManScheduleMinutes',
+      'maxPendingTasks',
+      'pendingTaskTtlMinutes',
+      'spawnBurstLimit',
+      'spawnBurstWindowMinutes',
+    ]) {
+      expect(logged.some((line) => line.includes(knob))).toBe(false);
+    }
   });
 });
