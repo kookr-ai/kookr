@@ -144,6 +144,24 @@ describe('implement-github-issue playbook', () => {
     expect(gateText).toContain('review-skipped-timeout');
   });
 
+  test('incident-labeled issues use Refs not Closes so merge cannot auto-close (issue #1750)', () => {
+    // Close-out gate: fix-merged ≠ incident-resolved. The playbook must detect
+    // incident labels in Phase 1 and use Refs (never Closes) in the PR body.
+    expect(pb.body).toMatch(/Incident close-out gate \(issue #1750\)/);
+    expect(pb.body).toContain('IS_INCIDENT=1');
+    expect(pb.body).toContain('prod-incident');
+    expect(pb.body).toMatch(/Refs #<TARGET>/);
+    expect(pb.body).toMatch(/Incident closing keyword \(issue #1750\)/);
+    // Ordinary issues still use Closes; incidents must not auto-close on merge.
+    expect(pb.body).toContain('Closes #<TARGET>');
+    expect(pb.body).toMatch(/must \*\*not\*\* contain `Closes #<TARGET>`/);
+    // Phase 1 detection must precede Phase 7 PR creation.
+    const gateIdx = pb.body.indexOf('Incident close-out gate (issue #1750)');
+    const phase7Idx = pb.body.indexOf('Phase 7: Create or Update Pull Request');
+    expect(gateIdx).toBeGreaterThan(0);
+    expect(phase7Idx).toBeGreaterThan(gateIdx);
+  });
+
   test('Phase 8.5 surfaces the post-task KB lesson decision before Phase 9', () => {
     // Issue #227 / #1538: agents must emit either a `kb remember` write or the
     // skip marker before the verdict is written (and before completion-ready),

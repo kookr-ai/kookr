@@ -385,10 +385,20 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
 
     const staleProcesses = getStaleProcessSummary();
 
+    // Issue #1750: top-level machine-readable serving SHA so deploy/outcome
+    // probes (and extractServingSha in incident-close-out) can read the commit
+    // this process is *actually* serving without digging into `build`.
+    // `sha` + `gitSha` are aliases of the same value for probe compatibility.
+    const servingSha =
+      typeof buildInfo?.commitHash === 'string' && buildInfo.commitHash.length > 0
+        ? buildInfo.commitHash
+        : undefined;
+
     return c.json({
       status: 'ok',
       agents: tasks.length,
       build: buildInfo,
+      ...(servingSha ? { sha: servingSha, gitSha: servingSha } : {}),
       serverStartedAt,
       // Issue #1721: expose startup phase so operators/deploy can see
       // "listening, still recovering" vs "fully ready" without treating
