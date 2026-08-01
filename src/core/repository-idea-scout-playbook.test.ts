@@ -178,10 +178,55 @@ describe('repository-idea-scout playbook', () => {
       // The ideas-log shape is the machine-readable artifact.
       const logStart = pb.body.indexOf('### 5.5 Write the ideas log');
       expect(logStart).toBeGreaterThan(-1);
-      const block = pb.body.slice(logStart, logStart + 1500);
-      for (const key of ['"authority"', '"changeShape"', '"rank"', '"parallelConflictRisk"', '"conflictsWith"']) {
+      const block = pb.body.slice(logStart, logStart + 1600);
+      for (const key of ['"authority"', '"changeShape"', '"rank"', '"parallelConflictRisk"', '"conflictsWith"', '"evidenceVerification"']) {
         expect(block).toContain(key);
       }
+    });
+  });
+
+  describe('evidence-verification gate validates cited evidence before publishing', () => {
+    // Issue #1756: a hallucinated-but-plausible problem must be caught by a
+    // cheap validator pass before it can be classified, ranked, or published,
+    // so it never costs a full downstream implementation task to discover.
+    test('there is a dedicated evidence-verification gate phase before classification', () => {
+      const gate = pb.body.indexOf('### 4.5 Evidence Verification Gate');
+      const classification = pb.body.indexOf('### 4.6 Classification');
+      expect(gate).toBeGreaterThan(-1);
+      expect(classification).toBeGreaterThan(gate);
+    });
+
+    test('the gate checks cited file:line and claimed-missing capabilities against the real checkout', () => {
+      const gate = pb.body.slice(
+        pb.body.indexOf('### 4.5 Evidence Verification Gate'),
+        pb.body.indexOf('### 4.6 Classification'),
+      );
+      // (a) cited file:line exists and supports the claim
+      expect(gate).toMatch(/Cited `file:line` exists and supports the claim/);
+      // (b) claimed-missing capability is absent, not merely unfound
+      expect(gate).toMatch(/Claimed-missing capability is absent, not merely unfound/);
+      // (c) the three deterministic verdicts, cheap-tier, reusing the spend ledger
+      for (const token of ['pass', 'downgraded', 'discarded']) {
+        expect(gate).toContain(token);
+      }
+      expect(gate).toMatch(/Haiku- or Sonnet-tier/);
+      expect(gate).toMatch(/spend ledger/i);
+    });
+
+    test('a discarded candidate never reaches the ideas log and downgrades feed authority', () => {
+      const gate = pb.body.slice(
+        pb.body.indexOf('### 4.5 Evidence Verification Gate'),
+        pb.body.indexOf('### 4.6 Classification'),
+      );
+      expect(gate).toMatch(/A `discarded` candidate never reaches classification, ranking/);
+      expect(gate).toMatch(/`confidence` reduced to `low` forces `authority = review-required`/);
+    });
+
+    test('Phase 8 validates the evidence-verification artifact and verdict', () => {
+      const phase8 = pb.body.slice(pb.body.indexOf('## Phase 8: Final Validation'));
+      expect(phase8).toContain('evidence-verification.json');
+      expect(phase8).toMatch(/no entry has `verdict: discarded`/);
+      expect(phase8).toContain('## Evidence verification');
     });
   });
 

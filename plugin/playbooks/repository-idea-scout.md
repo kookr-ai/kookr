@@ -86,6 +86,7 @@ checklist:
   - Project purpose and current capabilities inventoried from docs and code
   - Knowledge base surveyed when useKnowledgeBase is auto and the kb CLI is available
   - An internal candidate pool larger than the publish target generated where practical
+  - Each candidate's cited file:line and claimed-missing-capability evidence verified before ranking; failures downgraded or discarded
   - Each candidate classified for authority, changeShape, size, confidence, and risk
   - Overlapping candidates consolidated and the portfolio ranked
   - Parallel-conflict matrix produced across the selected portfolio
@@ -351,7 +352,7 @@ Compute these from the resolved **repoFullName**:
 - **proposalsDoc**: `<stateDir>/proposals.md` — review-required and protected candidates, clearly labeled, never auto-published.
 - **ideasLogFile**: `<stateDir>/ideas-log.json` — every accepted candidate with its full classification, rank, and `publishDecision`.
 - **conflictMatrixFile**: `<stateDir>/conflict-matrix.md` — predicted file/module overlap and a parallel-safety assessment across the selected portfolio.
-- **recommendationsDir**: `<stateDir>/recommendations` — one subdirectory per accepted idea: `<NN>-<slug>/{report.md, duplicate-evidence.md, kb-evidence.md, critic-feedback.md, classification.json, issue-body.md, issue-created.json}`.
+- **recommendationsDir**: `<stateDir>/recommendations` — one subdirectory per accepted idea: `<NN>-<slug>/{report.md, duplicate-evidence.md, kb-evidence.md, critic-feedback.md, evidence-verification.json, classification.json, issue-body.md, issue-created.json}`.
 - **capabilityInventoryFile**: `<stateDir>/capability-inventory.md` — required when `workProfile` is `simplification-preserving`; a `status: skipped` marker otherwise.
 - **kbSeedsFile**: `<stateDir>/kb-seeds.json` — the Phase 3.5 knowledge-base survey, bucketed by diversity dimension; written with `status: skipped` when KB grounding is off or unavailable.
 - **dimensionCoverageFile**: `~/.kookr/playbook-state/repository-idea-scout/<repoSlug>/dimension-coverage.json` — **repo-level, deliberately OUTSIDE `<stateDir>`'s `<runKey>`** so it persists across runs (the one exception to run-scoped state; see Idempotency Rules). Shape: `{ "dimensions": { "<dimension>": { "coveredCount": <int>, "lastCoveredAt": <iso8601> } }, "appliedRuns": ["<runKey>", ...] }`. `coveredCount` counts **selected portfolio candidates** (every `<ideasLogFile>` entry, all publish modes), not published issues. Read in Phase 4.1 to order the rotation; updated exactly once per run in Phase 5.6, guarded by `appliedRuns` so resumed/retried runs never double-count (`appliedRuns` keeps the last 50 run keys — resuming a run older than that could re-count, accepted as implausible). Missing, empty, or schema-invalid file = all-zero counts (first run / self-heal). Counts grow monotonically and are ordering heuristics only — deleting the file is always safe and merely resets rotation to canonical order.
@@ -369,7 +370,7 @@ Resolve **localPath**:
 
 The target checkout is for read-only analysis. Record its initial `git status --short` in `<runManifest>` and do not leave new tracked changes there.
 
-The **local audit artifacts** (`report.md`, `duplicate-evidence.md`, `kb-evidence.md`, `critic-feedback.md`, `classification.json`, `conflict-matrix.md`, `capability-inventory.md`, portfolio scoring) stay under `<stateDir>` and are never published. Only the **reader-first `issue-body.md`** is ever sent to GitHub, and only for autonomous candidates.
+The **local audit artifacts** (`report.md`, `duplicate-evidence.md`, `kb-evidence.md`, `critic-feedback.md`, `evidence-verification.json`, `classification.json`, `conflict-matrix.md`, `capability-inventory.md`, portfolio scoring) stay under `<stateDir>` and are never published. Only the **reader-first `issue-body.md`** is ever sent to GitHub, and only for autonomous candidates.
 
 ## Phase 1: Preflight And State
 
@@ -889,13 +890,53 @@ When `<kbSeedsFile>` has `status: ok`, the Product opportunity reviewer and the 
 
 Write findings to `<recommendationsDir>/<NN>-<slug>/critic-feedback.md`. If critic findings reject a candidate, discard it and, if the pool is still below target, generate a replacement.
 
-### 4.5 Classification
+### 4.5 Evidence Verification Gate
+
+Idea-scout candidates carry problem evidence — cited `file:line` claims and claimed-missing capabilities — but nothing downstream re-checks it. A hallucinated-but-plausible problem otherwise survives all the way to a published issue and costs a full downstream implementation task (context pack + agent run) to discover, eroding trust in the `idea-scout` label. This gate spends one cheap validator pass per surviving candidate to catch that before the candidate is classified, ranked, or published. It composes with the repo rule *"Verify with real data, don't assume."*
+
+Run this step for every candidate that survived the duplicate check (4.2) and critic review (4.4), before Classification (4.6). Reuse the run's existing subagent budget and spend ledger — a Haiku- or Sonnet-tier check is enough; do not spend an expensive reasoning tier, because the work is mechanical: does the cited evidence exist and say what the candidate claims. If subagents are available, launch one cheap-tier validator per candidate in parallel (as in 4.4); otherwise perform the checks yourself as a written pass. The validator's cost accrues to the same ledger as every other phase (see Per-Run Spend Cap); it is not a separate budget.
+
+Each validator runs three checks against the local checkout (`git -C "$LOCAL"`, `rg`, targeted reads at the run's `HEAD`) and the Phase 2 issue snapshots, never trusting the candidate's own summary:
+
+1. **Cited `file:line` exists and supports the claim.** For every `path:line` (or `path` plus a quoted snippet) the candidate cites as problem evidence, confirm the path exists at the run's `HEAD`, the referenced lines are present, and the surrounding code or doc actually says what the candidate claims. A citation to a moved, deleted, or misquoted location, or one whose real content contradicts the claim, fails.
+2. **Claimed-missing capability is absent, not merely unfound.** For every capability the candidate asserts is missing, re-run the Phase 3 existing-capability check with fresh synonyms across docs, CLI help, routes, config schemas, public APIs, tests, and source names. The capability counts as **present** if any surface implements it. "I did not find it" is not "it does not exist": the claim stands only after a search that plausibly would have surfaced the capability had it existed. This is the same discipline as *Absence of usage evidence is unknown* — an unfound capability is unknown, not proven absent.
+3. **Cited adjacent issue/PR evidence is real.** Any issue or PR number the candidate cites as supporting the gap must exist and say what the candidate claims. Reuse the 4.2 snapshots and adjacent-comment fetches rather than re-querying.
+
+Record the verdict as `<recommendationsDir>/<NN>-<slug>/evidence-verification.json` (temp file then `mv`):
+
+```json
+{
+  "verdict": "pass",
+  "checkedAt": "<UTC ISO timestamp>",
+  "tier": "haiku",
+  "fileLineChecks": [
+    { "citation": "src/foo/bar.ts:42", "exists": true, "supportsClaim": true, "note": "" }
+  ],
+  "capabilityChecks": [
+    { "claimedMissing": "retry on transient send failure", "confirmedAbsent": true, "searches": ["retry", "backoff", "resend"], "note": "" }
+  ],
+  "failedCitations": [],
+  "failureSummary": ""
+}
+```
+
+Apply the verdict deterministically:
+
+- **pass** — every cited `file:line`, claimed-missing capability, and adjacent-issue claim held. The candidate proceeds to classification unchanged.
+- **downgraded** — a supporting-but-not-load-bearing citation failed while the core gap still holds on the surviving evidence. Drop the failed citations from the candidate's evidence, lower its `evidenceStrength` by one step (`strong`→`moderate`→`weak`) and its `confidence` by one step (`high`→`medium`→`low`), and record what failed in `failedCitations` and `failureSummary`. Classification (4.6) must not then assign an `evidenceStrength` or `confidence` stronger than the downgrade allows. (A `confidence` reduced to `low` forces `authority = review-required` by rule 2 of the Authority Policy — that is intended: shaky evidence loses autonomy, it is not discarded outright.)
+- **discarded** — the load-bearing evidence is false: a `file:line` the whole gap depends on does not exist or contradicts the claim, or a capability asserted missing actually exists. Discard the candidate. Record the discard and its reason in `failureSummary`. If the pool is now below `CANDIDATE_POOL`/target, generate a replacement — which itself must pass this gate.
+
+Carry the verdict forward as `evidenceVerification` (`pass` | `downgraded` | `discarded`) on the candidate so Phase 5 and `<ideasLogFile>` record it, and write the `## Evidence verification` section of the candidate's report (4.7) summarizing the checks run, the verdict, and any failed citations. A `discarded` candidate never reaches classification, ranking, `<ideasLogFile>`, or publication — so only `pass` and `downgraded` verdicts ever appear in the ideas log.
+
+### 4.6 Classification
 
 Classify every surviving candidate and write `<recommendationsDir>/<NN>-<slug>/classification.json` with the fields defined in Candidate Classification. Derive `authority` strictly from the Authority Policy — never assign it freehand:
 
 - `changeShape = reductive` ⇒ `authority = protected`.
 - bounded `additive` / `corrective` / behavior-preserving `structural`, `size` in {`small`,`medium`}, `parallelConflictRisk` ≠ `high` ⇒ `authority = autonomous`.
 - product-policy, broad-architecture, major-persistence, `large`, `implementationReadiness = uncertain`, or `confidence = low` ⇒ `authority = review-required`.
+
+Respect any downgrade from the Evidence Verification Gate (4.5): a candidate's `evidenceStrength` and `confidence` may be no stronger than the value that gate left it, and a gate-`discarded` candidate is never classified at all.
 
 Shape of `classification.json`:
 
@@ -914,7 +955,7 @@ Shape of `classification.json`:
 }
 ```
 
-### 4.6 Per-Idea Audit Report (local only)
+### 4.7 Per-Idea Audit Report (local only)
 
 For every surviving candidate, write the detailed local audit `<recommendationsDir>/<NN>-<slug>/report.md` with this structure:
 
@@ -929,6 +970,7 @@ For every surviving candidate, write the detailed local audit `<recommendationsD
 ## Existing capability check
 ## Existing issue search
 ## Duplicate evidence table
+## Evidence verification (verdict, checks run, any failed citations — from the Phase 4.5 gate)
 ## Knowledge base grounding
 ## Recommended idea
 ## Why this is not a duplicate
@@ -938,7 +980,7 @@ For every surviving candidate, write the detailed local audit `<recommendationsD
 ## Files and issues inspected
 ```
 
-The report is a **local audit artifact** and is never published verbatim. It MUST include the literal headings `## Classification (authority, changeShape, size, confidence, risks)`, `## Duplicate evidence table`, and `## Knowledge base grounding`. When KB grounding was skipped or returned nothing usable, the `## Knowledge base grounding` section states so in one line.
+The report is a **local audit artifact** and is never published verbatim. It MUST include the literal headings `## Classification (authority, changeShape, size, confidence, risks)`, `## Duplicate evidence table`, `## Evidence verification`, and `## Knowledge base grounding`. When KB grounding was skipped or returned nothing usable, the `## Knowledge base grounding` section states so in one line.
 
 ## Phase 5: Portfolio Consolidation, Conflict Matrix, And Ranking
 
@@ -1013,6 +1055,7 @@ Atomically write `<ideasLogFile>` as a JSON array (temp file then `mv`). Each en
   "confidence": "high",
   "expectedValue": "medium",
   "evidenceStrength": "strong",
+  "evidenceVerification": "pass",
   "duplicateRisk": "low",
   "implementationReadiness": "ready",
   "parallelConflictRisk": "low",
@@ -1028,7 +1071,7 @@ Atomically write `<ideasLogFile>` as a JSON array (temp file then `mv`). Each en
 }
 ```
 
-`conflictsWith` lists the `idx` values of portfolio items with predicted file/module overlap. `groundedIn` lists the `<kb>/<path>` passages that seeded or refined the idea; it is `[]` when the idea has no KB grounding. `kbStale` is `true` when any cited KB passage carried a stale-index warning. `wildcard` is `true` only on the single out-of-profile excursion candidate of a focused-profile run (see Coverage-ordered rotation); `false` everywhere else. Never paste idea text directly into shell source; store generated entries in files and merge with `jq` or a structured JSON writer.
+`evidenceVerification` is the Phase 4.5 gate verdict carried forward — `pass` or `downgraded` (a `discarded` candidate never reaches the ideas log). `conflictsWith` lists the `idx` values of portfolio items with predicted file/module overlap. `groundedIn` lists the `<kb>/<path>` passages that seeded or refined the idea; it is `[]` when the idea has no KB grounding. `kbStale` is `true` when any cited KB passage carried a stale-index warning. `wildcard` is `true` only on the single out-of-profile excursion candidate of a focused-profile run (see Coverage-ordered rotation); `false` everywhere else. Never paste idea text directly into shell source; store generated entries in files and merge with `jq` or a structured JSON writer.
 
 ### 5.6 Update dimension coverage
 
@@ -1338,8 +1381,9 @@ Before finishing, validate:
 - `<ideasLogFile>` exists, contains valid JSON, and has at most `PUBLISH_TARGET` entries. If it has fewer, `<recommendationsDoc>` explains the shortfall.
 - Every entry has a unique `idx`, `slug`, `rank`, `category`, `angle`, `title`, a boolean `wildcard`, and a full classification block (`authority`, `changeShape`, `size`, `confidence`, `expectedValue`, `evidenceStrength`, `duplicateRisk`, `implementationReadiness`, `parallelConflictRisk`).
 - Every entry's `authority` is consistent with its `changeShape` per the Authority Policy — in particular, no entry with `changeShape: reductive` has `authority` other than `protected`.
-- Every entry has `<recommendationsDir>/<idx>-<slug>/report.md`, `duplicate-evidence.md`, and `classification.json`.
-- Every report contains `## Classification (authority, changeShape, size, confidence, risks)`, `## Duplicate evidence table`, and `## Knowledge base grounding`.
+- Every entry has `<recommendationsDir>/<idx>-<slug>/report.md`, `duplicate-evidence.md`, `evidence-verification.json`, and `classification.json`.
+- Every entry has an `evidenceVerification` of `pass` or `downgraded` that matches the `verdict` in its `evidence-verification.json`; no entry has `verdict: discarded` (discarded candidates are excluded before the ideas log). Every `downgraded` entry's `evidenceStrength` and `confidence` reflect the one-step reduction the gate recorded.
+- Every report contains `## Classification (authority, changeShape, size, confidence, risks)`, `## Duplicate evidence table`, `## Evidence verification`, and `## Knowledge base grounding`.
 - `<conflictMatrixFile>` exists and covers every portfolio item.
 - `<recommendationsDoc>` exists and references the ranked portfolio; `<proposalsDoc>` exists and lists every review-required and protected candidate.
 - `<duplicateMatrixFile>` exists and references the portfolio.
@@ -1405,6 +1449,8 @@ If validation passes, write `<promise>DONE</promise>` to `<stateFile>`. If valid
 - Do not apply provenance labels to pre-existing issues, PRs, or any artifact this run did not create; label only the idea issues this run opens in `publish-safe` mode.
 - Do not treat a spend cap breach as a `BLOCKED` failure; it is a controlled early stop, and the run still finishes `DONE` with the breach recorded in the completion output.
 - Do not run open-ended after the spend cap is reached; stop generating and publishing further candidates once `spend_gate` reports the cap is breached.
+- Do not classify, rank, or publish a candidate on unverified evidence; every cited `file:line` and claimed-missing capability must clear the Phase 4.5 evidence gate, a hallucinated or contradicted load-bearing citation discards the candidate, and a failed supporting citation downgrades it.
+- Do not treat "I did not find it" as proof a capability is missing; the evidence gate confirms absence with fresh synonym searches, and an unfound capability is unknown, not proven absent.
 - Do not fabricate marginal ideas to hit the publish target; report the shortfall honestly.
 - Do not publish the local audit report, portfolio scoring, `kb` internals, or state paths in a GitHub issue; publish only the reader-first `issue-body.md`.
 - Do not file past the drain-coupled emission budget when open backlog is inflated — defer or umbrella-append instead of growing the backlog further.
