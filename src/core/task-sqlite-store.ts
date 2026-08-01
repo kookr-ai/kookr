@@ -59,6 +59,8 @@ export interface TaskSqliteFlushMetrics {
   taskDeletes: number;
   relationReplace: boolean;
   durationMs: number;
+  /** UTF-8 bytes of task JSON blobs written this flush (issue #1777). */
+  bytes: number;
 }
 
 export function resolveTaskSqlitePath(tasksFile: string): string {
@@ -360,6 +362,7 @@ export class TaskSqliteStore {
     const started = performance.now();
     let taskUpserts = 0;
     let taskDeletes = 0;
+    let bytes = 0;
     const replaceRelations = Boolean(input.replaceRelations && input.relations);
 
     const run = this.db.transaction(() => {
@@ -369,7 +372,7 @@ export class TaskSqliteStore {
         taskDeletes += 1;
       }
       for (const task of input.tasks) {
-        this.upsertTaskRow(task);
+        bytes += this.upsertTaskRow(task);
         taskUpserts += 1;
       }
       if (replaceRelations && input.relations) {
@@ -396,6 +399,7 @@ export class TaskSqliteStore {
       taskDeletes,
       relationReplace: replaceRelations,
       durationMs: Math.round((performance.now() - started) * 100) / 100,
+      bytes,
     };
   }
 
@@ -410,7 +414,8 @@ export class TaskSqliteStore {
     return row.n;
   }
 
-  private upsertTaskRow(task: Task): void {
+  /** Upsert one task row. Returns UTF-8 byte length of the serialized task blob. */
+  private upsertTaskRow(task: Task): number {
     const data = JSON.stringify(task);
     this.upsertTaskStmt.run({
       id: task.id,
@@ -434,6 +439,7 @@ export class TaskSqliteStore {
         last_status: session.lastStatus ?? null,
       });
     }
+    return Buffer.byteLength(data, 'utf-8');
   }
 
   private upsertRelationRow(rel: TaskRelation): void {

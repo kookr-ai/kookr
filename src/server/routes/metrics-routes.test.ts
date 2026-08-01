@@ -4,6 +4,7 @@ import { CircuitBreaker, CircuitBreakerRegistry } from '../../core/circuit-break
 import { AttentionQueue } from '../../core/attention-queue.js';
 import type { Anomaly } from '../../core/types.js';
 import { Watchdog } from '../../core/watchdog.js';
+import { TaskSaveMetricsRecorder } from '../../core/task-save-metrics.js';
 import { AuthThrottle } from '../auth-throttle.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
 import { PROMETHEUS_CONTENT_TYPE } from '../prometheus-exposition.js';
@@ -140,6 +141,31 @@ describe('metrics routes', () => {
     expect(body).toContain('kookr_terminal_write_timeouts_total 4');
     expect(body).toContain('kookr_terminal_write_pending_writes 1');
     expect(body).toContain('kookr_terminal_write_max_pending_writes 3');
+  });
+
+  test('serves always-on task-save timing metrics without env flag (issue #1777)', async () => {
+    // Private recorder so parallel vitest files cannot pollute exact counters.
+    const recorder = new TaskSaveMetricsRecorder();
+    recorder.record({
+      serializeMs: 10,
+      writeMs: 40,
+      totalMs: 50,
+      bytes: 1_500_000,
+      taskCount: 42,
+      relationCount: 2,
+      backend: 'json',
+    });
+
+    const res = await mkApp({ taskSaveMetrics: recorder }).request('/metrics');
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('kookr_task_save_observations_total 1');
+    expect(body).toContain('kookr_task_save_sample_count 1');
+    expect(body).toContain('kookr_task_save_duration_seconds{phase="write",quantile="0.95"} 0.04');
+    expect(body).toContain('kookr_task_save_last_bytes 1500000');
+    expect(body).toContain('kookr_task_save_last_task_count 42');
+    expect(process.env.KOOKR_LOG_TASK_SAVE_METRICS).not.toBe('1');
   });
 
   test('serves live aggregate auth throttle metrics', async () => {

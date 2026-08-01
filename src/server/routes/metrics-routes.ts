@@ -11,6 +11,7 @@ import {
   renderPrometheusExposition,
   type TerminalWriteMetricsSnapshot,
 } from '../prometheus-exposition.js';
+import { taskSaveMetrics } from '../../core/task-save-metrics.js';
 import type { RouteDeps } from './shared.js';
 
 export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
@@ -39,6 +40,9 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
       webhookDeliveries: deps.webhookNotifier?.getDeliveryCounts(),
       terminalWrite: collectTerminalWriteMetrics(deps),
       terminalInputRtt: deps.terminalInputRttMetrics?.snapshot(),
+      // Always-on process-wide ring (issue #1777) — no env flag.
+      // Tests may inject deps.taskSaveMetrics to isolate parallel suites.
+      taskSave: (deps.taskSaveMetrics ?? taskSaveMetrics).snapshot(),
     }), 200, {
       'Content-Type': PROMETHEUS_CONTENT_TYPE,
     });

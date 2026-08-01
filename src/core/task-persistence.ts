@@ -25,6 +25,7 @@ import {
   TaskSqliteStore,
   type TaskSqliteLoadResult,
 } from './task-sqlite-store.js';
+import { taskSaveMetrics } from './task-save-metrics.js';
 
 export class CorruptTaskFileError extends Error {
   constructor(filePath: string, cause?: unknown) {
@@ -116,6 +117,16 @@ export async function saveTasks(
     writeMs: roundDuration(finishedAt - serializedAt),
     totalMs: roundDuration(finishedAt - startedAt),
   };
+  // Always-on ring buffer for /metrics (issue #1777). Log line stays env-gated.
+  taskSaveMetrics.record({
+    serializeMs: metrics.serializeMs,
+    writeMs: metrics.writeMs,
+    totalMs: metrics.totalMs,
+    bytes: metrics.bytes,
+    taskCount: metrics.taskCount,
+    relationCount: metrics.relationCount,
+    backend: 'json',
+  });
   maybeLogTaskSaveMetrics(metrics);
   // Hot-path ranking (issue #1781): task-save total time is a known heavy
   // contributor (serialize + fsync). Always recorded — cheap and independent of
@@ -494,16 +505,29 @@ export async function persistTaskState(opts: PersistTaskStateOptions): Promise<v
 
   if (hasWork) {
     try {
+      const replaceRelations = dirty.relationsDirty || Boolean(opts.forceFull);
+      const relations = replaceRelations ? opts.taskStore.listRelations() : null;
       const metrics = store.flush({
         tasks: dirtyTasks,
         deletedTaskIds: dirty.deletedTaskIds,
-        relations: dirty.relationsDirty || opts.forceFull ? opts.taskStore.listRelations() : null,
-        replaceRelations: dirty.relationsDirty || Boolean(opts.forceFull),
+        relations,
+        replaceRelations,
         lifetimeSpendUsd: dirty.metaDirty || opts.forceFull
           ? opts.taskStore.getLifetimeSpendUsd()
           : undefined,
         snoozes: opts.snoozes ?? null,
         suppressionState: opts.suppressionState ?? null,
+      });
+      // Always-on ring for /metrics (issue #1777). SQLite flush is one timed
+      // transaction — treat full duration as write; serializeMs stays 0.
+      taskSaveMetrics.record({
+        serializeMs: 0,
+        writeMs: metrics.durationMs,
+        totalMs: metrics.durationMs,
+        bytes: metrics.bytes,
+        taskCount: metrics.taskUpserts,
+        relationCount: metrics.relationReplace ? (relations?.length ?? 0) : 0,
+        backend: 'sqlite',
       });
       if (process.env.KOOKR_LOG_TASK_SAVE_METRICS === '1') {
         logger.info('flushed dirty tasks to sqlite', {
@@ -512,6 +536,7 @@ export async function persistTaskState(opts: PersistTaskStateOptions): Promise<v
           taskDeletes: metrics.taskDeletes,
           relationReplace: metrics.relationReplace,
           durationMs: metrics.durationMs,
+          bytes: metrics.bytes,
         });
       }
     } catch (err) {
