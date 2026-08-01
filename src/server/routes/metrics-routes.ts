@@ -30,6 +30,7 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
 
     return c.body(renderPrometheusExposition({
       requestDurations,
+      toolLatencies: deps.watchdog?.getToolLatencyMetrics().snapshot(),
       circuitBreakers: deps.circuitBreakerRegistry?.getAllSnapshots() ?? [],
       attentionQueueSuppressions: deps.queue?.getSuppressionCounts(),
       auditSinks: deps.auditSinks?.getAllSnapshots() ?? [],

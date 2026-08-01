@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { CircuitBreaker, CircuitBreakerRegistry } from '../../core/circuit-breaker.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import type { Anomaly } from '../../core/types.js';
+import { Watchdog } from '../../core/watchdog.js';
 import { AuthThrottle } from '../auth-throttle.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
 import { PROMETHEUS_CONTENT_TYPE } from '../prometheus-exposition.js';
@@ -31,14 +32,32 @@ describe('metrics routes', () => {
     requestDurationMetrics.record({ method: 'GET', route: '/api/tasks', durationMs: 42 });
     const circuitBreakerRegistry = new CircuitBreakerRegistry();
     circuitBreakerRegistry.register(new CircuitBreaker({ name: 'github' }));
+    const watchdog = new Watchdog();
+    watchdog.registerAgent('agent-1', 1_000, 1_000);
+    watchdog.recordEvents('agent-1', [{
+      type: 'tool_use',
+      sessionId: 's1',
+      toolName: 'Bash',
+      toolUseId: 't1',
+    }], 1_000);
+    watchdog.recordEvents('agent-1', [{
+      type: 'tool_result',
+      sessionId: 's1',
+      toolName: 'Bash',
+      toolUseId: 't1',
+    }], 1_042);
 
-    const res = await mkApp({ requestDurationMetrics, circuitBreakerRegistry }).request('/metrics');
+    const res = await mkApp({ requestDurationMetrics, circuitBreakerRegistry, watchdog }).request('/metrics');
 
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe(PROMETHEUS_CONTENT_TYPE);
     const body = await res.text();
     expect(body).toContain('# TYPE kookr_http_request_duration_observations_total counter');
     expect(body).toContain('kookr_http_request_duration_observations_total{method="GET",route="/api/tasks"} 1');
+    expect(body).toContain('# TYPE kookr_tool_duration_observations_total counter');
+    expect(body).toContain('kookr_tool_duration_observations_total{tool="Bash"} 1');
+    expect(body).toContain('kookr_tool_duration_seconds{tool="Bash",quantile="0.5"} 0.042');
+    expect(body).toContain('kookr_tool_duration_seconds{tool="Bash",quantile="0.95"} 0.042');
     expect(body).toContain('kookr_circuit_breaker_state{name="github",state="closed"} 1');
     expect(body).toContain('kookr_auth_failed_attempts_total 0');
     expect(body).toContain('kookr_auth_throttled_attempts_total 0');

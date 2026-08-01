@@ -1,5 +1,12 @@
 import type { AgentEvent, Anomaly } from './types.js';
 import { analyzePaneSemantics, normalizePaneForActivity } from './pane-patterns.js';
+import { ToolLatencyMetrics } from './tool-latency-metrics.js';
+
+/** Open PreToolUse entry awaiting a matching PostToolUse / PostToolUseFailure. */
+interface OpenToolUse {
+  toolName: string;
+  startedAt: number;
+}
 
 /**
  * Configuration for the heartbeat watchdog.
@@ -53,7 +60,8 @@ export interface AgentWatchdogState {
    */
   lastPaneChangeAt: number;
   registeredAt: number; // ms since epoch — for grace period
-  unmatchedToolUseIds: Set<string>; // PreToolUse ids without matching PostToolUse
+  /** PreToolUse ids without matching PostToolUse, with start time for latency. */
+  unmatchedToolUses: Map<string, OpenToolUse>;
   /** Fallback counter: number of tool_use events without matching tool_result (for events without toolUseId). */
   unmatchedToolCountFallback: number;
   /** Last time token consumption was detected (ms since epoch). 0 = no activity recorded. */
@@ -115,12 +123,31 @@ export interface HookFileProber {
  * The watchdog runs on a fixed interval and produces verdicts for each agent.
  * It does NOT own timers — the caller (server) is responsible for calling tick().
  */
+export interface WatchdogOptions {
+  /**
+   * Shared process-lifetime histogram of PreToolUse→PostToolUse durations.
+   * When omitted, the watchdog owns a default instance exposed via
+   * {@link Watchdog.getToolLatencyMetrics}.
+   */
+  toolLatencyMetrics?: ToolLatencyMetrics;
+}
+
 export class Watchdog {
   private agents = new Map<string, AgentWatchdogState>();
   private config: WatchdogConfig;
+  private readonly toolLatencyMetrics: ToolLatencyMetrics;
 
-  constructor(config?: Partial<WatchdogConfig>) {
+  constructor(config?: Partial<WatchdogConfig>, options?: WatchdogOptions) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.toolLatencyMetrics = options?.toolLatencyMetrics ?? new ToolLatencyMetrics();
+  }
+
+  /**
+   * Process-lifetime per-tool latency histogram (PreToolUse → PostToolUse).
+   * Survives individual agent unregister; only open-tool maps are agent-scoped.
+   */
+  getToolLatencyMetrics(): ToolLatencyMetrics {
+    return this.toolLatencyMetrics;
   }
 
   /**
@@ -156,7 +183,7 @@ export class Watchdog {
       lastPaneHash: '',
       lastPaneChangeAt: regAt,
       registeredAt: regAt,
-      unmatchedToolUseIds: new Set(),
+      unmatchedToolUses: new Map(),
       unmatchedToolCountFallback: 0,
       lastTokenActivityAt: 0,
       mcpStartupAt: 0,
@@ -198,14 +225,26 @@ export class Watchdog {
     for (const event of events) {
       if (event.type === 'tool_use') {
         if (event.toolUseId) {
-          state.unmatchedToolUseIds.add(event.toolUseId);
+          state.unmatchedToolUses.set(event.toolUseId, {
+            toolName: event.toolName,
+            startedAt: now,
+          });
         } else {
           state.unmatchedToolCountFallback++;
         }
         state.mcpStartupAt = 0;
       } else if (event.type === 'tool_result' || event.type === 'tool_error') {
         if (event.toolUseId) {
-          state.unmatchedToolUseIds.delete(event.toolUseId);
+          const open = state.unmatchedToolUses.get(event.toolUseId);
+          if (open) {
+            state.unmatchedToolUses.delete(event.toolUseId);
+            // Prefer the PreToolUse name — tool_result may carry "unknown"
+            // when recovered from transcript JSONL without the tool name.
+            this.toolLatencyMetrics.record({
+              toolName: open.toolName || event.toolName,
+              durationMs: Math.max(0, now - open.startedAt),
+            });
+          }
         } else if (state.unmatchedToolCountFallback > 0) {
           state.unmatchedToolCountFallback--;
         }
@@ -237,7 +276,7 @@ export class Watchdog {
   hasToolInProgress(agentId: string): boolean {
     const state = this.agents.get(agentId);
     if (!state) return false;
-    return state.unmatchedToolUseIds.size > 0 || state.unmatchedToolCountFallback > 0;
+    return state.unmatchedToolUses.size > 0 || state.unmatchedToolCountFallback > 0;
   }
 
   /**

@@ -9,12 +9,15 @@ import {
 } from '../integrations/webhook/index.js';
 import type { AuthThrottleSnapshot } from './auth-throttle.js';
 import type { RequestDurationMetricsSnapshot } from './request-duration-metrics.js';
+import type { ToolLatencyMetricsSnapshot } from '../core/tool-latency-metrics.js';
+import { emptyToolLatencyMetricsSnapshot } from '../core/tool-latency-metrics.js';
 
 export const PROMETHEUS_CONTENT_TYPE = 'text/plain; version=0.0.4';
 
 export interface PrometheusExpositionSnapshot {
   requestDurations: RequestDurationMetricsSnapshot;
   circuitBreakers: CircuitBreakerSnapshot[];
+  toolLatencies?: ToolLatencyMetricsSnapshot;
   attentionQueueSuppressions?: AttentionQueueSuppressionCounts;
   auditSinks?: AuditSinkMetricsSnapshot[];
   authThrottle?: AuthThrottleSnapshot;
@@ -31,6 +34,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   const lines: string[] = [];
 
   appendRequestDurationMetrics(lines, snapshot.requestDurations);
+  appendToolLatencyMetrics(lines, snapshot.toolLatencies ?? emptyToolLatencyMetricsSnapshot());
   appendCircuitBreakerMetrics(lines, snapshot.circuitBreakers);
   appendAttentionQueueSuppressionMetrics(lines, snapshot.attentionQueueSuppressions);
   appendAuditSinkMetrics(lines, snapshot.auditSinks ?? []);
@@ -80,6 +84,47 @@ function appendRequestDurationMetrics(lines: string[], snapshot: RequestDuration
     '# HELP kookr_http_request_duration_dropped_routes_total Total route templates dropped after the request-duration route limit was reached.',
     '# TYPE kookr_http_request_duration_dropped_routes_total counter',
     metricLine('kookr_http_request_duration_dropped_routes_total', {}, snapshot.droppedRouteCount),
+  );
+}
+
+function appendToolLatencyMetrics(lines: string[], snapshot: ToolLatencyMetricsSnapshot): void {
+  lines.push(
+    '# HELP kookr_tool_duration_observations_total Total recorded PreToolUse→PostToolUse observations by tool name.',
+    '# TYPE kookr_tool_duration_observations_total counter',
+  );
+  for (const tool of snapshot.tools) {
+    lines.push(metricLine('kookr_tool_duration_observations_total', {
+      tool: tool.toolName,
+    }, tool.count));
+  }
+
+  lines.push(
+    '# HELP kookr_tool_duration_sample_count Number of retained tool-duration samples by tool name.',
+    '# TYPE kookr_tool_duration_sample_count gauge',
+  );
+  for (const tool of snapshot.tools) {
+    lines.push(metricLine('kookr_tool_duration_sample_count', {
+      tool: tool.toolName,
+    }, tool.sampleCount));
+  }
+
+  lines.push(
+    '# HELP kookr_tool_duration_seconds Tool-duration quantiles by tool name (PreToolUse→PostToolUse).',
+    '# TYPE kookr_tool_duration_seconds gauge',
+  );
+  for (const tool of snapshot.tools) {
+    const baseLabels = { tool: tool.toolName };
+    lines.push(
+      metricLine('kookr_tool_duration_seconds', { ...baseLabels, quantile: '0.5' }, msToSeconds(tool.p50Ms)),
+      metricLine('kookr_tool_duration_seconds', { ...baseLabels, quantile: '0.95' }, msToSeconds(tool.p95Ms)),
+      metricLine('kookr_tool_duration_seconds', { ...baseLabels, quantile: '0.99' }, msToSeconds(tool.p99Ms)),
+    );
+  }
+
+  lines.push(
+    '# HELP kookr_tool_duration_dropped_tools_total Total tool names dropped after the tool-latency tool limit was reached.',
+    '# TYPE kookr_tool_duration_dropped_tools_total counter',
+    metricLine('kookr_tool_duration_dropped_tools_total', {}, snapshot.droppedToolCount),
   );
 }
 

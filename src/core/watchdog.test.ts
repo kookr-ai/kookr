@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Watchdog, type WatchdogConfig } from './watchdog.js';
+import { ToolLatencyMetrics } from './tool-latency-metrics.js';
 import { parseHookEvent } from './hook-parser.js';
 import type { AgentEvent } from './types.js';
 
@@ -454,6 +455,7 @@ describe('Watchdog', () => {
       watchdog.registerAgent(agentId, 0, 0);
       watchdog.recordEvents(agentId, [makeToolResult('s1', 'Bash', 't1')], 0);
       expect(watchdog.hasToolInProgress(agentId)).toBe(false);
+      expect(watchdog.getToolLatencyMetrics().snapshot().toolCount).toBe(0);
     });
 
     test('PostToolUseFailure clears matched tool_use by toolUseId', () => {
@@ -463,6 +465,60 @@ describe('Watchdog', () => {
 
       watchdog.recordEvents(agentId, [makeToolError('s1', 'Bash', 't1')], 100);
       expect(watchdog.hasToolInProgress(agentId)).toBe(false);
+    });
+
+    test('records PreToolUse→PostToolUse duration into the per-tool latency histogram', () => {
+      const metrics = new ToolLatencyMetrics();
+      const wd = new Watchdog(FAST_CONFIG, { toolLatencyMetrics: metrics });
+      wd.registerAgent(agentId, 1_000, 1_000);
+
+      wd.recordEvents(agentId, [makeToolUse('s1', 'Bash', 't1')], 1_000);
+      wd.recordEvents(agentId, [makeToolResult('s1', 'Bash', 't1')], 1_030);
+      wd.recordEvents(agentId, [makeToolUse('s1', 'Read', 't2')], 1_040);
+      wd.recordEvents(agentId, [makeToolResult('s1', 'Read', 't2')], 1_050);
+      wd.recordEvents(agentId, [makeToolUse('s1', 'Bash', 't3')], 1_060);
+      wd.recordEvents(agentId, [makeToolError('s1', 'Bash', 't3', 'exit 1')], 1_080);
+
+      expect(metrics.snapshot()).toEqual({
+        schemaVersion: 'tool-latency-metrics.v1',
+        maxTools: 64,
+        maxSamplesPerTool: 256,
+        toolCount: 2,
+        droppedToolCount: 0,
+        tools: [
+          {
+            toolName: 'Bash',
+            count: 2,
+            sampleCount: 2,
+            p50Ms: 20,
+            p95Ms: 30,
+            p99Ms: 30,
+          },
+          {
+            toolName: 'Read',
+            count: 1,
+            sampleCount: 1,
+            p50Ms: 10,
+            p95Ms: 10,
+            p99Ms: 10,
+          },
+        ],
+      });
+    });
+
+    test('prefers PreToolUse tool name when PostToolUse name is unknown', () => {
+      const metrics = new ToolLatencyMetrics();
+      const wd = new Watchdog(FAST_CONFIG, { toolLatencyMetrics: metrics });
+      wd.registerAgent(agentId, 0, 0);
+
+      wd.recordEvents(agentId, [makeToolUse('s1', 'Bash', 't1')], 0);
+      wd.recordEvents(agentId, [makeToolResult('s1', 'unknown', 't1')], 500);
+
+      expect(metrics.snapshot().tools).toEqual([expect.objectContaining({
+        toolName: 'Bash',
+        count: 1,
+        p50Ms: 500,
+      })]);
     });
 
     // T8.4: PreToolUse without PostToolUse, but new tool starts
