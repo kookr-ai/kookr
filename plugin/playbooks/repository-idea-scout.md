@@ -99,6 +99,7 @@ checklist:
   - Per-run spend recorded against the spend cap; run stopped or flagged when the cap is reached
   - Provenance labels (idea-scout, idea:<issue-number>) applied to every published idea issue
   - Dimension coverage file updated once for this run and the skipped-dimensions line reported by name
+  - Idea outcome ledger refreshed and conversion rates reported; published ideas recorded when publish-safe
   - Focused-profile runs carry at most one wildcard excursion, gated like any other candidate
   - Consolidated portfolio document and proposals document written to local state
 ---
@@ -232,13 +233,41 @@ Use this fixed list to drive category rotation. The active work profile selects 
 The canonical table order is an identity order, not a visit order. Walking it top-to-bottom on every run means a publish target smaller than the dimension count permanently starves the tail dimensions — that failure mode is why rotation is coverage-ordered:
 
 - **In-play dimensions** has exactly one meaning: for `balanced`, all dimensions in the table; for a focused profile, the profile's favored set plus the wildcard's chosen dimension (when a wildcard applies — see below). Exception: `simplification-preserving` has no favored set and does not do dimension rotation at all — its skip line is the literal `not applicable (profile has no dimension rotation)` and the rules in this section do not apply to it. Every other rule in this section, the report's skip line, and the Phase 8 checks use this definition.
-- **Rotation order.** For a `balanced` profile, order the in-play dimensions by ascending `coveredCount` in `<dimensionCoverageFile>` (ties broken by canonical table order; a dimension absent from the file counts as zero and therefore sorts first). Assign one idea per dimension in that order until the publish target is reached or every in-play dimension has one idea; if the target is larger than the dimension count, continue with the least-covered dimension and a fresh angle. When `<dimensionCoverageFile>` is missing **or is not valid JSON**, treat every count as zero — the ordering degrades to canonical order, identical to the old behavior. Coverage counts **selected** portfolio candidates (Phase 5.6), not published issues: a dimension whose ideas are consistently review-required or budget-deferred still accrues coverage, so authority gating cannot pin it to the head of the rotation forever.
+- **Rotation order.** For a `balanced` profile, order the in-play dimensions by ascending **effective coverage** `coveredCount − conversionCredit` (ties broken by canonical table order; a dimension absent from the coverage file counts as zero covered and therefore sorts first). `coveredCount` comes from `<dimensionCoverageFile>`; `conversionCredit` is the bounded credit from `<ideaOutcomeLedgerFile>` (see Idea Outcome Ledger — zero when the ledger is missing/empty or a dimension has fewer than `MIN_SAMPLES_FOR_CONVERSION_WEIGHT` published ideas). Assign one idea per dimension in that order until the publish target is reached or every in-play dimension has one idea; if the target is larger than the dimension count, continue with the least-covered dimension and a fresh angle. When `<dimensionCoverageFile>` is missing **or is not valid JSON**, treat every count as zero — the ordering degrades to canonical order (modulo any conversion credits). Coverage counts **selected** portfolio candidates (Phase 5.6), not published issues: a dimension whose ideas are consistently review-required or budget-deferred still accrues coverage, so authority gating cannot pin it to the head of the rotation forever.
+- **Bounded conversion weight.** Conversion is a *secondary* term only. Constants (keep in sync with `src/core/idea-scout-outcome-ledger.ts`): `CONVERSION_WEIGHT = 1`, `CONVERSION_CREDIT_CAP = 1`, `MIN_SAMPLES_FOR_CONVERSION_WEIGHT = 2`. Credit for a dimension is `min(CONVERSION_CREDIT_CAP, CONVERSION_WEIGHT × conversionRate)` when `published ≥ MIN_SAMPLES_FOR_CONVERSION_WEIGHT`, else `0`. A fully converting dimension therefore shaves at most **1** off its `coveredCount` — never enough to leap past a dimension two coverage-counts behind — so conversion cannot reintroduce the starvation loop the coverage rotation fixed. Dimensions with zero published outcomes get credit 0 (no boost, no penalty); exploration of never-tried dimensions still sorts by coverage alone.
 - **Wildcard (a Phase 5.3 selection guarantee, not a generation slot).** For a focused profile, one exploratory excursion outside the favored set is guaranteed at portfolio selection: Phase 4 seeds at least one eligible out-of-profile candidate into the pool, and Phase 5.3 ensures the selected portfolio contains one (swapping it for the lowest-ranked in-profile candidate if ranking pushed it out). It consumes one of the publish-target slots — on a `quick-shortlist` (3) run that is a third of the run's output, which is the deliberate price of exploration. The wildcard candidate passes **every** gate that applies to any other candidate — `extraInstruction` scope, duplicate check, classification, authority policy, and the Phase 7 emission budget (it can be deferred like anything else). The wildcard is skipped in two cases: the `simplification-preserving` profile (no favored set; its preservation contract excludes exploratory additions), and any scope-filtered run (`extraInstruction` non-empty) where the outside dimension cannot honestly satisfy the scope — the scope filter always wins over the categorical slot. `balanced` needs no wildcard; its coverage ordering already reaches every dimension. Mark the candidate `"wildcard": true` in `<ideasLogFile>`; all others carry `"wildcard": false`.
 - **Skip visibility.** Starvation must be visible, not just mitigated: the run report (Phase 6) lists, by name, every in-play dimension with zero candidates in the final `<ideasLogFile>`, as `Dimensions skipped this run: <comma-separated names>` (or exactly `none`). The line must enumerate actual dimension names — reproducing the heading without the list does not satisfy Phase 8.
+- **Conversion visibility.** The same report carries a `Conversion rates: …` line (see Idea Outcome Ledger) so run-over-run ROI is inspectable without reading the ledger file.
 
 For a focused profile, every non-wildcard idea stays within that profile's dimensions and each accepted angle must differ meaningfully from the prior accepted angles in the run.
 
 When `{{extraInstruction}}` is non-empty, every candidate must demonstrably stay within that scope. The scope cannot be ignored to fill a categorical slot.
+
+## Idea Outcome Ledger
+
+Cross-run ledger of **published** idea issues and their terminal outcomes, so the scout learns which dimensions convert rather than only which dimensions were explored. Builds on the same conventions as `<dimensionCoverageFile>`: repo-level path, per-`<runKey>` idempotence arrays, schema-shape self-heal, delete-safe heuristics.
+
+**Terminal outcomes** (derived from provenance labels + issue/PR state — pure classifier also in `src/core/idea-scout-outcome-ledger.ts`):
+
+| Outcome | Meaning |
+| --- | --- |
+| `merged-pr` | A merged PR carries the matching `idea:<n>` join label (wins even if the idea issue is still open). |
+| `closed-unimplemented` | Idea issue is closed and no merged join-key PR exists. |
+| `open-aged` | Idea issue is still open and age ≥ `OPEN_AGED_DAYS` (default **14**). |
+| `open` | Idea issue is still open and younger than the age threshold. |
+
+**Consumers:**
+
+1. **Conversion report** (Phase 6 Summary) — required every run. Line form: `Conversion rates: <dim> <pct>% (<merged>/<published>); …; overall <pct>% (<merged>/<published>)` or exactly `Conversion rates: none (no published idea outcomes yet)`.
+2. **Bounded conversion credit** in Phase 4.1 rotation (see Coverage-ordered rotation) — optional secondary sort term, hard-capped so coverage remains dominant.
+
+**Rules:**
+
+- Refresh (Phase 3.7) runs in **every** publish mode, including `report-only` — outcomes are about prior publishes, not this run's mode.
+- Record (after Phase 7) runs only when this run created or recovered idea issues (`publish-safe` with at least one `issueUrl`); `recordedRuns` makes retries no-ops.
+- Dimension/authority are written at record time from `<ideasLogFile>`. Issues discovered only via the `idea-scout` label (no prior ledger row) may land as `dimension: "unknown"` until a future record path fills them — the conversion report still counts them in the overall total.
+- Never mutate GitHub as part of ledger maintenance; only `gh` reads for refresh, and the existing provenance-label writes at publish time.
+- Missing, empty, or schema-invalid ledger ⇒ empty ideas map (self-heal). Deleting the file is always safe.
 
 ## Candidate Classification
 
@@ -335,6 +364,8 @@ Rules:
   # ratio = (# idea:<n> join keys present on a merged PR) / (# idea issues created)
   ```
 
+- Cross-run, those same labels feed the **idea outcome ledger** (see Idea Outcome Ledger below): each run refreshes terminal outcomes (`merged-pr` / `closed-unimplemented` / `open-aged` / `open`), surfaces per-dimension conversion rates in the portfolio summary, and may apply a *bounded* conversion credit to the coverage-ordered rotation so dimensions that actually ship earn modestly more slots without starving exploration.
+
 ## Derived Values
 
 Resolve **repoFullName** before computing other values:
@@ -360,7 +391,8 @@ Compute these from the resolved **repoFullName**:
 - **capabilityInventoryFile**: `<stateDir>/capability-inventory.md` — required when `workProfile` is `simplification-preserving`; a `status: skipped` marker otherwise.
 - **kbSeedsFile**: `<stateDir>/kb-seeds.json` — the Phase 3.5 knowledge-base survey, bucketed by diversity dimension; written with `status: skipped` when KB grounding is off or unavailable.
 - **opsEvidenceFile**: `<stateDir>/ops-evidence.json` — the Phase 3.6 operational-evidence sweep (incident-labeled issues, CI failures, optional local runtime probes); written with `status: skipped` only when every probe class fails or is unavailable (partial evidence is still `status: ok`).
-- **dimensionCoverageFile**: `~/.kookr/playbook-state/repository-idea-scout/<repoSlug>/dimension-coverage.json` — **repo-level, deliberately OUTSIDE `<stateDir>`'s `<runKey>`** so it persists across runs (the one exception to run-scoped state; see Idempotency Rules). Shape: `{ "dimensions": { "<dimension>": { "coveredCount": <int>, "lastCoveredAt": <iso8601> } }, "appliedRuns": ["<runKey>", ...] }`. `coveredCount` counts **selected portfolio candidates** (every `<ideasLogFile>` entry, all publish modes), not published issues. Read in Phase 4.1 to order the rotation; updated exactly once per run in Phase 5.6, guarded by `appliedRuns` so resumed/retried runs never double-count (`appliedRuns` keeps the last 50 run keys — resuming a run older than that could re-count, accepted as implausible). Missing, empty, or schema-invalid file = all-zero counts (first run / self-heal). Counts grow monotonically and are ordering heuristics only — deleting the file is always safe and merely resets rotation to canonical order.
+- **dimensionCoverageFile**: `~/.kookr/playbook-state/repository-idea-scout/<repoSlug>/dimension-coverage.json` — **repo-level, deliberately OUTSIDE `<stateDir>`'s `<runKey>`** so it persists across runs (one of two exceptions to run-scoped state; see Idempotency Rules). Shape: `{ "dimensions": { "<dimension>": { "coveredCount": <int>, "lastCoveredAt": <iso8601> } }, "appliedRuns": ["<runKey>", ...] }`. `coveredCount` counts **selected portfolio candidates** (every `<ideasLogFile>` entry, all publish modes), not published issues. Read in Phase 4.1 to order the rotation; updated exactly once per run in Phase 5.6, guarded by `appliedRuns` so resumed/retried runs never double-count (`appliedRuns` keeps the last 50 run keys — resuming a run older than that could re-count, accepted as implausible). Missing, empty, or schema-invalid file = all-zero counts (first run / self-heal). Counts grow monotonically and are ordering heuristics only — deleting the file is always safe and merely resets rotation to canonical order.
+- **ideaOutcomeLedgerFile**: `~/.kookr/playbook-state/repository-idea-scout/<repoSlug>/idea-outcome-ledger.json` — **repo-level** (the second exception to run-scoped state; same conventions as dimension coverage). Shape: `{ "ideas": { "<issueNumber>": { "issueNumber": <int>, "dimension": "<dim>", "authority": "<authority>", "publishedAt": <iso8601>, "outcome": "merged-pr"|"closed-unimplemented"|"open-aged"|"open", "outcomeAt": <iso8601>, "mergedPrNumber": <int|null> } }, "recordedRuns": ["<runKey>", ...], "refreshedRuns": ["<runKey>", ...], "lastRefreshedAt": <iso8601> }`. Refreshed once per run in Phase 3.7 from provenance labels; published ideas recorded once per run after Phase 7 (guarded by `recordedRuns`, last 50). Missing/empty/schema-invalid = empty ledger (self-heal). Delete-safe: losing the file only forgets historical dimension tags until the next publish cycle re-records them; conversion still re-discovers issue numbers from `idea-scout` labels.
 - **issuesFile**: `<stateDir>/issues.json`.
 - **closedIssuesFile**: `<stateDir>/closed-issues.json`.
 - **featuresFile**: `<stateDir>/features.md`.
@@ -922,6 +954,134 @@ Rules:
 - Do not deep-scan CI logs or the entire server log; the sample is the product. Prefer recurring themes over one-off noise.
 - Runtime probes and server-log paths are never published into GitHub issue bodies as local state paths (same rule as `<stateDir>` and `kb` internals).
 
+## Phase 3.7: Idea Outcome Ledger Refresh
+
+Runs in **every** publish mode (including `report-only`). Exactly once per run: the `refreshedRuns` guard makes resumed or retried runs no-ops for the expensive `gh` scans; re-executing this step after the guard has fired reuses the on-disk ledger as-is.
+
+Purpose: classify every known published idea's terminal outcome from provenance labels so Phase 4.1 can apply the bounded conversion credit and Phase 6 can print the conversion report.
+
+```bash
+OUTCOME_FILE="$BASE_STATE_DIR/$REPO_SLUG/idea-outcome-ledger.json"
+OPEN_AGED_DAYS=14
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+mkdir -p "$(dirname "$OUTCOME_FILE")"
+# Self-heal: schema shape, not mere JSON validity. `[ -s ]` is load-bearing on
+# jq 1.6 (zero-byte files pass `jq -e`). Same convention as dimension-coverage.
+if ! { [ -s "$OUTCOME_FILE" ] && jq -e \
+    '(type=="object") and (.ideas|type=="object")
+     and (.recordedRuns|type=="array") and (.refreshedRuns|type=="array")
+     and (.ideas | to_entries | all(.value | type=="object"))' \
+    "$OUTCOME_FILE" >/dev/null 2>&1; }; then
+  printf '{"ideas":{},"recordedRuns":[],"refreshedRuns":[]}\n' > "$OUTCOME_FILE.tmp.$$" \
+    && mv "$OUTCOME_FILE.tmp.$$" "$OUTCOME_FILE"
+fi
+if jq -e --arg rk "$RUN_KEY" '.refreshedRuns | index($rk)' "$OUTCOME_FILE" >/dev/null; then
+  echo "outcome-ledger: run $RUN_KEY already refreshed; skipping gh scan"
+else
+  # Portable reads only — never mutate the target repo here.
+  IDEA_ISSUES=$(gh issue list -R "$REPO" --label idea-scout --state all --limit 200 \
+    --json number,state,createdAt,labels 2>/dev/null || echo '[]')
+  MERGED_PRS=$(gh pr list -R "$REPO" --state merged --label idea-scout --limit 200 \
+    --json number,labels 2>/dev/null || echo '[]')
+  # Build issueNumber → mergedPrNumber from join labels idea:<n> on merged PRs.
+  # Then reclassify every idea-scout issue. Preserve dimension/authority/publishedAt
+  # from existing ledger rows; newly discovered issues get dimension "unknown".
+  # Classifier mirrors src/core/idea-scout-outcome-ledger.ts classifyIdeaOutcome.
+  jq --arg rk "$RUN_KEY" --arg now "$NOW" --argjson aged "$OPEN_AGED_DAYS" \
+    --argjson issues "$IDEA_ISSUES" --argjson prs "$MERGED_PRS" '
+    def age_days($iso):
+      try ((($now | fromdateiso8601) - ($iso | fromdateiso8601)) / 86400 | floor)
+      catch 0;
+    def label_name: if type == "object" then (.name // "") else tostring end;
+    def join_map:
+      [ $prs[] as $p
+        | ($p.labels // [])[]
+        | label_name
+        | select(test("^idea:[0-9]+$"))
+        | {key: (sub("^idea:"; "")), value: $p.number}
+      ] | from_entries;
+    def classify($state; $has_pr; $age):
+      if $has_pr then "merged-pr"
+      elif ($state | ascii_downcase) == "closed" then "closed-unimplemented"
+      elif $age >= $aged then "open-aged"
+      else "open" end;
+    . as $root
+    | (($root.ideas // {}) ) as $prev_ideas
+    | join_map as $joins
+    | reduce ($issues[]?) as $i ($prev_ideas;
+        ($i.number | tostring) as $k
+        | (.[$k] // {
+            issueNumber: $i.number,
+            dimension: "unknown",
+            authority: "unknown",
+            publishedAt: ($i.createdAt // $now),
+            outcome: "open",
+            outcomeAt: $now,
+            mergedPrNumber: null
+          }) as $base
+        | ($joins[$k] // null) as $pr
+        | age_days($base.publishedAt // $i.createdAt // $now) as $age
+        | .[$k] = ($base + {
+            issueNumber: $i.number,
+            outcome: classify($i.state; ($pr != null); $age),
+            outcomeAt: $now,
+            mergedPrNumber: $pr
+          })
+      )
+    | {
+        ideas: .,
+        recordedRuns: (($root.recordedRuns // []) | .[-50:]),
+        refreshedRuns: ((($root.refreshedRuns // []) + [$rk]) | .[-50:]),
+        lastRefreshedAt: $now
+      }
+    ' "$OUTCOME_FILE" > "$OUTCOME_FILE.tmp.$$" \
+    && mv "$OUTCOME_FILE.tmp.$$" "$OUTCOME_FILE" \
+    || { rm -f "$OUTCOME_FILE.tmp.$$"; echo "outcome-ledger: refresh failed (non-fatal — conversion report degrades to none; rotation uses coverage only)"; }
+fi
+# Materialize a small conversion-credits map for Phase 4.1 (dim → credit ∈ [0,1]).
+# Formula mirrors src/core/idea-scout-outcome-ledger.ts conversionSortCredit:
+#   rate = merged/published; credit = min(1, 1 * rate) when published ≥ 2 else 0.
+CONVERSION_CREDITS=$(jq '
+  def credit($pub; $merged):
+    if $pub < 2 then 0
+    else ([1, (if $pub == 0 then 0 else ($merged / $pub) end)] | min)
+    end;
+  [.ideas | to_entries[] | .value
+    | select(.dimension != null and .dimension != "")]
+  | group_by(.dimension)
+  | map({
+      key: .[0].dimension,
+      value: credit(length; [.[] | select(.outcome == "merged-pr")] | length)
+    })
+  | from_entries
+  ' "$OUTCOME_FILE" 2>/dev/null || echo '{}')
+printf '%s\n' "$CONVERSION_CREDITS" > "$STATE_DIR/conversion-credits.json"
+# Human-readable summary line for Phase 6 (stable even when empty).
+CONVERSION_LINE=$(jq -r '
+  def pct($m; $p): if $p == 0 then 0 else (($m / $p) * 100 | round) end;
+  [.ideas | to_entries[] | .value] as $all
+  | if ($all | length) == 0 then
+      "Conversion rates: none (no published idea outcomes yet)"
+    else
+      ($all | group_by(.dimension)
+        | map(select(.[0].dimension != "unknown")
+          | {dim: .[0].dimension, p: length,
+             m: ([.[] | select(.outcome == "merged-pr")] | length)})
+        | map("\(.dim) \(pct(.m; .p))% (\(.m)/\(.p))")
+        | join("; ")) as $parts
+      | ($all | length) as $tp
+      | ([ $all[] | select(.outcome == "merged-pr") ] | length) as $tm
+      | (if ($parts | length) > 0 then "\($parts); " else "" end)
+        + "overall \(pct($tm; $tp))% (\($tm)/\($tp))"
+      | "Conversion rates: \(.)"
+    end
+  ' "$OUTCOME_FILE" 2>/dev/null \
+  || echo 'Conversion rates: none (no published idea outcomes yet)')
+printf '%s\n' "$CONVERSION_LINE" > "$STATE_DIR/conversion-summary.txt"
+```
+
+When `gh` is unavailable or both list calls fail, leave the ledger untouched (aside from the self-heal), write the `none` conversion line, and proceed — conversion is best-effort and never blocks the run.
+
 ## Phase 4: Generate The Candidate Pool
 
 Generate candidates toward `CANDIDATE_POOL` (roughly 1.5–2x the publish target) so Phase 5 has enough material to consolidate and rank down to `PUBLISH_TARGET`. Stop generating early only when there genuinely are not enough novel, non-duplicate, in-scope angles; never fabricate marginal candidates.
@@ -961,15 +1121,23 @@ Resolve the coverage ordering once, before assigning categories (missing, empty,
 ```bash
 COVERAGE_FILE="$BASE_STATE_DIR/$REPO_SLUG/dimension-coverage.json"
 COV=$({ [ -s "$COVERAGE_FILE" ] && jq -e '.dimensions | select(type=="object")' "$COVERAGE_FILE" 2>/dev/null; } || echo '{}')
-# Ascending coveredCount; jq sort_by is stable, so ties keep the canonical input order.
+# Bounded conversion credits from Phase 3.7 (dim → credit ∈ [0, CONVERSION_CREDIT_CAP]).
+# Missing/empty credits file ⇒ no conversion weight (coverage-only ordering).
+CREDITS=$({ [ -s "$STATE_DIR/conversion-credits.json" ] \
+  && jq -e 'select(type=="object")' "$STATE_DIR/conversion-credits.json" 2>/dev/null; } || echo '{}')
+# Ascending effective coverage = coveredCount − conversionCredit.
+# jq sort_by is stable, so ties keep the canonical input order.
 # DRIFT GUARD: this list MUST match the Diversity Dimensions table exactly (same
 # names, same canonical order). Adding a dimension to the table without adding it
 # here silently excludes it from rotation — the exact starvation this mechanism
 # exists to prevent. Cross-check when editing either.
+# Conversion credit is capped at 1 (see Coverage-ordered rotation) so it cannot
+# dominate the coverage term or reintroduce tail-dimension starvation.
 ORDERED_DIMS=$(printf '%s\n' product developer-experience documentation reliability performance \
     observability operability ux security testing data-lifecycle | \
-  jq -nR --argjson cov "$COV" \
-    '[inputs] | map({dim: ., n: ($cov[.].coveredCount // 0)}) | sort_by(.n) | map(.dim) | .[]' -r)
+  jq -nR --argjson cov "$COV" --argjson credits "$CREDITS" \
+    '[inputs] | map({dim: ., n: (($cov[.].coveredCount // 0) - ($credits[.] // 0))})
+     | sort_by(.n) | map(.dim) | .[]' -r)
 ```
 
 - For a `balanced` profile, walk the **coverage-ordered** dimension list (ascending `coveredCount`, ties in canonical order — see Coverage-ordered rotation) and choose the first dimension that is not yet used this run. If all dimensions are used, choose the least-covered dimension with a fresh angle.
@@ -1319,12 +1487,13 @@ Write `<recommendationsDoc>` (the portfolio) and `<proposalsDoc>` (gated candida
 ```markdown
 # Repository Idea Scout Portfolio: <repo>
 
-## Summary (publish target, pool size, how many selected, any shortfall, the `Run spend: $X / cap $Y` line with any cap breach, and the `Dimensions skipped this run: <names|none>` line — every in-play dimension absent from the final ideas log, named explicitly)
+## Summary (publish target, pool size, how many selected, any shortfall, the `Run spend: $X / cap $Y` line with any cap breach, the `Dimensions skipped this run: <names|none>` line — every in-play dimension absent from the final ideas log, named explicitly — and the `Conversion rates: …` line from Phase 3.7 / `<stateDir>/conversion-summary.txt`)
 ## Scope filter (only when extraInstruction is non-empty)
 ## Issue inventory summary
 ## Codebase and capability inventory summary
 ## Knowledge base grounding summary
 ## Operational evidence summary
+## Conversion by dimension (paste or paraphrase the Phase 3.7 conversion summary; include per-dimension published/merged/closed-unimplemented/open-aged/open when the ledger is non-empty)
 ## Ranked portfolio (rank, category, title, authority, changeShape, size, confidence, parallelConflictRisk, one-line problem)
 ## Consolidation log (which candidates were merged and why)
 ## Parallel-conflict summary (link to conflict-matrix.md)
@@ -1349,6 +1518,8 @@ For each: title, the capability or default it would reduce, a capability-impact 
 The `Knowledge base grounding summary` names the KB shelves surveyed, reports how many portfolio items are KB-grounded, and copies any stale-index warning verbatim; when KB grounding was skipped it states the reason from `<kbSeedsFile>`.
 
 The `Operational evidence summary` names how many incident issues and CI failures were retained, whether runtime probes ran (and any skip reason), and how many portfolio items were ops-seeded or ops-boosted; when the sweep was skipped it states the reason from `<opsEvidenceFile>`.
+
+The Summary **must** include the `Conversion rates: …` line written by Phase 3.7 (read `$STATE_DIR/conversion-summary.txt` when present). Reproducing the heading without the line does not satisfy Phase 8 — silent "we don't know if ideas ship" is the failure mode the outcome ledger exists to prevent.
 
 If `publishBehavior` is `report-only`, stop after validating these documents and the final artifacts. Do not create GitHub issues.
 
@@ -1544,6 +1715,57 @@ fi
 
 Every published idea issue therefore carries `idea-scout` and `idea:<issue-number>`. The `idea:<issue-number>` label is the join key: a downstream context pack or PR that implements the idea carries the same label, so a day's conversion ratio (idea issues → merged PRs) is computable from labels alone — see Provenance Labels for the `gh` query.
 
+### 7.1 Record published ideas in the outcome ledger
+
+After the publish loop (still only when `PUBLISH = publish-safe`), upsert every `<ideasLogFile>` entry that has a non-null `issueUrl` into `<ideaOutcomeLedgerFile>`. Guarded by `recordedRuns` so retries never double-write; last-writer-wins under concurrent runs is accepted (heuristics, not correctness state).
+
+```bash
+OUTCOME_FILE="$BASE_STATE_DIR/$REPO_SLUG/idea-outcome-ledger.json"
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+if ! { [ -s "$OUTCOME_FILE" ] && jq -e \
+    '(type=="object") and (.ideas|type=="object")
+     and (.recordedRuns|type=="array") and (.refreshedRuns|type=="array")' \
+    "$OUTCOME_FILE" >/dev/null 2>&1; }; then
+  printf '{"ideas":{},"recordedRuns":[],"refreshedRuns":[]}\n' > "$OUTCOME_FILE.tmp.$$" \
+    && mv "$OUTCOME_FILE.tmp.$$" "$OUTCOME_FILE"
+fi
+if jq -e --arg rk "$RUN_KEY" '.recordedRuns | index($rk)' "$OUTCOME_FILE" >/dev/null; then
+  echo "outcome-ledger: run $RUN_KEY already recorded; skipping"
+else
+  # Parse issue numbers from issueUrl (…/issues/N); never paste title text into shell.
+  jq --arg rk "$RUN_KEY" --arg now "$NOW" --argjson log "$(cat "$IDEAS_LOG")" '
+    def issue_num($url):
+      ($url // "") | capture("issues/(?<n>[0-9]+)") | .n | tonumber;
+    . as $root
+    | reduce ($log[]? | select(.issueUrl != null and .issueUrl != "")) as $e
+        ($root.ideas // {};
+          (try issue_num($e.issueUrl) catch null) as $n
+          | if $n == null then .
+            else
+              ($n | tostring) as $k
+              | .[$k] = ((.[$k] // {}) + {
+                  issueNumber: $n,
+                  dimension: ($e.category // "unknown"),
+                  authority: ($e.authority // "unknown"),
+                  publishedAt: ((.[$k].publishedAt) // $now),
+                  outcome: ((.[$k].outcome) // "open"),
+                  outcomeAt: ((.[$k].outcomeAt) // $now),
+                  mergedPrNumber: ((.[$k].mergedPrNumber) // null)
+                })
+            end
+        )
+    | {
+        ideas: .,
+        recordedRuns: ((($root.recordedRuns // []) + [$rk]) | .[-50:]),
+        refreshedRuns: ($root.refreshedRuns // []),
+        lastRefreshedAt: ($root.lastRefreshedAt // null)
+      }
+    ' "$OUTCOME_FILE" > "$OUTCOME_FILE.tmp.$$" \
+    && mv "$OUTCOME_FILE.tmp.$$" "$OUTCOME_FILE" \
+    || { rm -f "$OUTCOME_FILE.tmp.$$"; echo "outcome-ledger: record failed (non-fatal)"; }
+fi
+```
+
 The deterministic `Repository idea: <title>` prefix combined with the `--author @me` filter makes the search-by-title check idempotent across retries: if issue creation succeeded but the metadata file was not written, the next run recovers the existing URL instead of creating a duplicate. Never create an issue for a review-required or protected candidate, even if the user note asks for it. Never file more than the emission budget allows when the open backlog is over the drain-coupled threshold.
 
 ## Phase 8: Final Validation
@@ -1567,7 +1789,9 @@ Before finishing, validate:
 - When `workProfile = simplification-preserving`, `<capabilityInventoryFile>` enumerates in-scope capabilities and no accepted candidate removes a documented/user-visible capability as an autonomous issue.
 - `<spendLedgerFile>` exists and is valid JSON with numeric `spendCapUsd`, boolean `capEnforced`, and boolean `capBreached`; when `PUBLISH = publish-safe`, every published entry in `<ideasLogFile>` has a `provenanceLabels` array containing `idea-scout` and `idea:<issue-number>`.
 - `<recommendationsDoc>`'s Summary contains the `Dimensions skipped this run:` line and its content is the literal `none`, the comma-separated names of exactly the in-play dimensions (per the single definition in Coverage-ordered rotation) absent from `<ideasLogFile>`, or — for `simplification-preserving` only — the literal `not applicable (profile has no dimension rotation)`. A missing line, an empty list, or a list that omits a skipped in-play dimension is a validation failure (silent starvation is the failure mode the coverage rotation exists to prevent).
+- `<recommendationsDoc>`'s Summary contains a `Conversion rates:` line whose content is either the literal `none (no published idea outcomes yet)` (or the full stable sentence from Phase 3.7) or a non-empty overall/per-dimension rate report. A missing `Conversion rates:` line is a validation failure (silent "we don't know if ideas ship" is the failure mode the outcome ledger exists to prevent).
 - When `<ideasLogFile>` has at least one entry: `<dimensionCoverageFile>` exists and is valid JSON. Everything further about its *content* — `appliedRuns` containing this `<runKey>`, `dimensions.<d>.coveredCount` ≥ 1 for categories present in `<ideasLogFile>` — is a **warning recorded in `<recommendationsDoc>`, never a `BLOCKED`**: the file is last-writer-wins under concurrent runs (a sibling can erase this run's entry or increment), a resumed run's portfolio can grow after the guard fired, and an update failure is logged non-fatally. Coverage is ordering heuristics, not correctness state; no hard gate may test it beyond existence + validity.
+- `<ideaOutcomeLedgerFile>` exists and is valid JSON with object `ideas` and array `recordedRuns`/`refreshedRuns` after Phase 3.7 (self-heal guarantees this even when `gh` is down). Everything further about its *content* — which issues are present, whether `refreshedRuns`/`recordedRuns` contain this `<runKey>`, outcome classifications — is a **warning recorded in `<recommendationsDoc>`, never a `BLOCKED`**: refresh/record failures are non-fatal, concurrent runs are last-writer-wins, and the ledger is ordering/reporting heuristics. No hard gate may test outcome-ledger *content* beyond existence + schema validity.
 - At most one entry in `<ideasLogFile>` has `"wildcard": true`, and only on a focused-profile run.
 - The target checkout's `git status --short` still matches the initial status captured in `<runManifest>`.
 
@@ -1593,7 +1817,7 @@ If validation passes, write `<promise>DONE</promise>` to `<stateFile>`. If valid
 
 ## Idempotency Rules
 
-1. State is scoped to `<repoSlug>/<runKey>`, not just the repository — with exactly one deliberate exception: `<dimensionCoverageFile>` is repo-level so rotation coverage survives across runs. Its writes are guarded by `appliedRuns` (per-`<runKey>` idempotence) and it is safe to delete at any time. A scoped run (`extraInstruction` non-empty) still updates it; that bias is accepted because counts are ordering heuristics, not correctness state.
+1. State is scoped to `<repoSlug>/<runKey>`, not just the repository — with exactly two deliberate repo-level exceptions: `<dimensionCoverageFile>` (rotation coverage) and `<ideaOutcomeLedgerFile>` (published-idea outcomes / conversion). Both use per-`<runKey>` idempotence arrays (`appliedRuns` / `recordedRuns`+`refreshedRuns`), self-heal on schema-invalid files, and are safe to delete at any time. A scoped run (`extraInstruction` non-empty) still updates them; that bias is accepted because both are ordering/reporting heuristics, not correctness state.
 2. Reuse `<stateDir>` only when its `<runManifest>` matches the current repo, work profile, workload size, publish behavior, scan limit, knowledge-base mode, task id or run key, and local path.
 3. Do not post comments, create branches, PRs, or edit tracked files in the target repository. The only allowed mutation beyond issue creation is the two provenance labels (`idea-scout`, `idea:<issue-number>`) applied to the idea issues this run creates in `publish-safe` mode; label creation and application are idempotent (`gh label create --force`, `gh issue edit --add-label`).
 4. Create GitHub issues only when `publishBehavior` is `publish-safe`, exactly one issue per **autonomous** candidate, never more, never for a review-required or protected candidate, and never above the drain-coupled emission budget (`kookr emission plan`).
@@ -1637,4 +1861,7 @@ If validation passes, write `<promise>DONE</promise>` to `<stateFile>`. If valid
 - Do not hard-fail when Kookr runtime probes are unavailable (`KOOKR_API_BASE_URL` unset, diagnostics 404/timeout, no `~/.kookr/server.log*`); record the skip and continue with portable GitHub incident/CI evidence alone.
 - Do not publish local server-log paths, raw diagnostics dumps, or `<stateDir>` references into a GitHub issue body; publish only the reader-first symptom and acceptance criteria.
 - Do not spawn a `kb-scout` subagent per idea or run any `kb` write path; one read-only survey serves the whole run and per-candidate refinement uses a direct `kb search`.
+- Do not let conversion weighting dominate coverage rotation: the conversion credit is hard-capped (`CONVERSION_CREDIT_CAP = 1`) and ignored below `MIN_SAMPLES_FOR_CONVERSION_WEIGHT`; never raise the cap without re-proving that low-conversion dimensions cannot starve.
+- Do not hard-fail when the idea outcome ledger cannot refresh (gh auth, network); write the `Conversion rates: none …` line, use coverage-only ordering, and continue.
+- Do not mutate GitHub as part of outcome-ledger maintenance; only read issue/PR state for refresh and record dimensions from the local ideas log at publish time.
 - Do not deep-scan every CI log or the entire server log during the ops sweep; sample themes, then move on.
