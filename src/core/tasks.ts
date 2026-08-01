@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_AGENT_TYPE, type AgentType } from './agent-types.js';
-import type { CompletionDigest } from './completion-digest.js';
+import { capCompletionDigestForStorage, type CompletionDigest } from './completion-digest.js';
 import { evaluateCompletionSignal, type CompletionSignalDecision } from './completion-signal.js';
 import { deterministicTaskName } from './task-naming.js';
 import { deriveTaskProvenance } from './task-provenance.js';
@@ -966,8 +966,11 @@ export class TaskStore {
   setCompletionDigest(taskId: string, digest: CompletionDigest): void {
     const task = this.tasks.get(taskId);
     if (!task) return;
-    const criteriaVerdict = digest.criteriaVerdict ?? task.completionDigest?.criteriaVerdict;
-    task.completionDigest = criteriaVerdict ? { ...digest, criteriaVerdict } : digest;
+    // Hard UTF-8 byte cap on bullets/filesChanged so memory + tasks.json stay
+    // bounded (issue #1780). Client projection still count-caps for the wire.
+    const capped = capCompletionDigestForStorage(digest);
+    const criteriaVerdict = capped.criteriaVerdict ?? task.completionDigest?.criteriaVerdict;
+    task.completionDigest = criteriaVerdict ? { ...capped, criteriaVerdict } : capped;
     task.updatedAt = new Date();
   }
 
@@ -1300,7 +1303,13 @@ export class TaskStore {
   loadTasks(tasks: Task[], savedLifetimeSpendUsd?: number): void {
     this.tasks.clear();
     for (const task of tasks) {
-      this.tasks.set(task.id, cloneTask(task));
+      const loaded = cloneTask(task);
+      // Soft migrate oversized digests persisted before the write-time cap
+      // (issue #1780) so the next saveTasks rewrite drops the bloat.
+      if (loaded.completionDigest) {
+        loaded.completionDigest = capCompletionDigestForStorage(loaded.completionDigest);
+      }
+      this.tasks.set(task.id, loaded);
     }
     if (savedLifetimeSpendUsd !== undefined && Number.isFinite(savedLifetimeSpendUsd) && savedLifetimeSpendUsd > 0) {
       this.lifetimeSpendUsd = savedLifetimeSpendUsd;

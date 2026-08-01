@@ -53,6 +53,127 @@ export interface CompletionTokenUsage {
 }
 
 /**
+ * Hard UTF-8 byte budget for stored `bullets` + `filesChanged` combined
+ * (issue #1780). Keeps in-memory TaskStore rows and `tasks.json` rewrites
+ * from absorbing multi-hundred-KB digests (real prod: ~250 KB filesChanged
+ * lists on recurring sync tasks). Other digest fields are left alone —
+ * client projection still count-caps for the wire.
+ */
+export const COMPLETION_DIGEST_STORAGE_MAX_BYTES = 32 * 1024;
+
+function utf8Bytes(value: string): number {
+  return Buffer.byteLength(value, 'utf-8');
+}
+
+function listUtf8Bytes(values: readonly string[]): number {
+  let total = 0;
+  for (const value of values) total += utf8Bytes(value);
+  return total;
+}
+
+function omittedMarker(count: number): string {
+  return `…+${count} more`;
+}
+
+/**
+ * Keep a prefix of `items` whose UTF-8 payload (plus an omitted-count marker
+ * when anything is dropped) fits in `maxBytes`. Identity-preserving when the
+ * full list already fits. Paths are dropped whole — never mid-string —
+ * because partial paths are not useful.
+ */
+function capStringListToBytes(items: readonly string[], maxBytes: number): string[] {
+  if (maxBytes <= 0) {
+    return items.length === 0 ? [] : [omittedMarker(items.length)];
+  }
+  if (listUtf8Bytes(items) <= maxBytes) {
+    return items as string[];
+  }
+
+  const kept: string[] = [];
+  let used = 0;
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]!;
+    const itemBytes = utf8Bytes(item);
+    const remainingAfter = items.length - i - 1;
+    const markerBudget = remainingAfter > 0 ? utf8Bytes(omittedMarker(remainingAfter)) : 0;
+    if (used + itemBytes + markerBudget <= maxBytes) {
+      kept.push(item);
+      used += itemBytes;
+      continue;
+    }
+    break;
+  }
+
+  const omitted = items.length - kept.length;
+  if (omitted === 0) return kept;
+
+  let marker = omittedMarker(omitted);
+  while (kept.length > 0 && used + utf8Bytes(marker) > maxBytes) {
+    used -= utf8Bytes(kept.pop()!);
+    marker = omittedMarker(items.length - kept.length);
+  }
+  // Marker may still exceed an extremely small budget; prefer the marker over silence.
+  return [...kept, marker];
+}
+
+/**
+ * Truncate individual oversize bullet strings so a single bullet cannot
+ * monopolize the storage budget. Appends a short elision suffix.
+ */
+function truncateBulletToBytes(bullet: string, maxBytes: number): string {
+  if (maxBytes <= 0) return '…';
+  if (utf8Bytes(bullet) <= maxBytes) return bullet;
+  const suffix = '…';
+  const suffixBytes = utf8Bytes(suffix);
+  if (suffixBytes >= maxBytes) return suffix;
+  const budget = maxBytes - suffixBytes;
+  const buf = Buffer.from(bullet, 'utf-8');
+  let end = budget;
+  while (end > 0 && (buf[end]! & 0xc0) === 0x80) end--;
+  return buf.subarray(0, end).toString('utf-8') + suffix;
+}
+
+function capBulletsToBytes(bullets: readonly string[], maxBytes: number): string[] {
+  if (listUtf8Bytes(bullets) <= maxBytes) {
+    return bullets as string[];
+  }
+
+  // Shrink any single bullet that alone exceeds the budget so list-cap can keep
+  // a truncated prefix instead of dropping the whole summary line.
+  const shrunk = bullets.map((bullet) =>
+    utf8Bytes(bullet) > maxBytes ? truncateBulletToBytes(bullet, maxBytes) : bullet,
+  );
+  return capStringListToBytes(shrunk, maxBytes);
+}
+
+/**
+ * Cap `bullets` + `filesChanged` to a combined UTF-8 byte budget at write/load
+ * time (issue #1780). Prefers keeping bullets (UI summary) and drops excess
+ * files with a `…+N more` marker. Identity-preserving when already under budget.
+ */
+export function capCompletionDigestForStorage(
+  digest: CompletionDigest,
+  maxBytes: number = COMPLETION_DIGEST_STORAGE_MAX_BYTES,
+): CompletionDigest {
+  const payloadBytes = listUtf8Bytes(digest.bullets) + listUtf8Bytes(digest.filesChanged);
+  if (payloadBytes <= maxBytes) return digest;
+
+  const cappedBullets = capBulletsToBytes(digest.bullets, maxBytes);
+  const bulletBytes = listUtf8Bytes(cappedBullets);
+  const fileBudget = Math.max(0, maxBytes - bulletBytes);
+  const cappedFiles = capStringListToBytes(digest.filesChanged, fileBudget);
+
+  if (cappedBullets === digest.bullets && cappedFiles === digest.filesChanged) {
+    return digest;
+  }
+  return {
+    ...digest,
+    bullets: cappedBullets,
+    filesChanged: cappedFiles,
+  };
+}
+
+/**
  * Generate a completion digest from the agent's event window.
  *
  * Rule-based extraction — no LLM call, no external dependencies.
