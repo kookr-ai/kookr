@@ -11,9 +11,15 @@ name: PR checklist
 # (github.event.pull_request.user.*), never on PR-body content, so a human PR
 # merely mentioning dependabot cannot spoof it.
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DISABLED — DO NOT RE-ENABLE. Standing operator decision (see CLAUDE.md → "CI
+# policy"). GitHub Actions is turned OFF for this repository. The automatic
+# `pull_request` trigger was replaced with `workflow_dispatch` (manual only) so
+# re-enabling Actions does not silently resurrect a red PR check. The anti-drift
+# discipline is enforced locally via the pre-push review hooks.
+# ─────────────────────────────────────────────────────────────────────────────
 on:
-  pull_request:
-    types: [opened, edited, synchronize, reopened]
+  workflow_dispatch: {}
 
 concurrency:
   group: pr-checklist-${{ github.event.pull_request.number }}

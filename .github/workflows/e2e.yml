@@ -1,8 +1,13 @@
 name: E2E Tests
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DISABLED — DO NOT RE-ENABLE. Standing operator decision (see CLAUDE.md → "CI
+# policy"). GitHub Actions is turned OFF for this repository. The `issue_comment`
+# trigger was replaced with `workflow_dispatch` (manual only) so re-enabling
+# Actions does not silently resurrect these runs. Run E2E locally instead.
+# ─────────────────────────────────────────────────────────────────────────────
 on:
-  issue_comment:
-    types: [created]
+  workflow_dispatch: {}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
