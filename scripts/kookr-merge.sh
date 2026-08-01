@@ -174,17 +174,27 @@ watch_checks() {
 
   while true; do
     checks="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json statusCheckRollup)" || return 3
-    total="$(printf '%s' "$checks" | jq '.statusCheckRollup | length')"
-    failed="$(printf '%s' "$checks" | jq '[.statusCheckRollup[] | select(.status == "COMPLETED" and (.conclusion as $c | $c != "SUCCESS" and $c != "SKIPPED" and $c != "NEUTRAL"))] | length')"
-    pending="$(printf '%s' "$checks" | jq '[.statusCheckRollup[] | select(.status != "COMPLETED")] | length')"
+    # A PR with no reported checks has statusCheckRollup=null (repos without CI)
+    # or []; `// []` keeps the jq iterations from erroring on null.
+    total="$(printf '%s' "$checks" | jq '(.statusCheckRollup // []) | length')"
+    failed="$(printf '%s' "$checks" | jq '[(.statusCheckRollup // [])[] | select(.status == "COMPLETED" and (.conclusion as $c | $c != "SUCCESS" and $c != "SKIPPED" and $c != "NEUTRAL"))] | length')"
+    pending="$(printf '%s' "$checks" | jq '[(.statusCheckRollup // [])[] | select(.status != "COMPLETED")] | length')"
+
+    # No checks reported → nothing to wait on; treat as passing (matches the
+    # `gh pr checks --watch` path's "no checks reported" behavior). Without this,
+    # a null rollup errors and an empty [] rollup would poll until timeout.
+    if [[ "$total" == "0" ]]; then
+      echo "kookr-merge: no status checks reported — nothing to wait on"
+      return 0
+    fi
 
     if [[ "$failed" != "0" ]]; then
-      printf '%s\n' "$checks" | jq -r '.statusCheckRollup[] | select(.status == "COMPLETED" and (.conclusion as $c | $c != "SUCCESS" and $c != "SKIPPED" and $c != "NEUTRAL")) | "  \(.name): \(.conclusion)"' >&2
+      printf '%s\n' "$checks" | jq -r '(.statusCheckRollup // [])[] | select(.status == "COMPLETED" and (.conclusion as $c | $c != "SUCCESS" and $c != "SKIPPED" and $c != "NEUTRAL")) | "  \(.name): \(.conclusion)"' >&2
       return 3
     fi
 
-    if [[ "$total" != "0" && "$pending" == "0" ]]; then
-      printf '%s\n' "$checks" | jq -r '.statusCheckRollup[] | "  \(.name): \(.conclusion)"'
+    if [[ "$pending" == "0" ]]; then
+      printf '%s\n' "$checks" | jq -r '(.statusCheckRollup // [])[] | "  \(.name): \(.conclusion)"'
       return 0
     fi
 
@@ -192,7 +202,7 @@ watch_checks() {
     elapsed=$((now - start))
     if (( elapsed >= timeout )); then
       echo "kookr-merge: timed out waiting for checks after ${elapsed}s" >&2
-      printf '%s\n' "$checks" | jq -r '.statusCheckRollup[] | "  \(.name): \(.status) \(.conclusion // "")"' >&2
+      printf '%s\n' "$checks" | jq -r '(.statusCheckRollup // [])[] | "  \(.name): \(.status) \(.conclusion // "")"' >&2
       return 3
     fi
 
