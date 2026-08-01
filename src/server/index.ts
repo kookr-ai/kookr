@@ -76,6 +76,7 @@ import { pruneAgedTaskRecords } from './use-cases/prune-aged-task-records.js';
 import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';
 import { createDeployLagDetectorFromEnv } from './deploy-lag-detector.js';
 import { isTerminalStatus } from '../core/task-status.js';
+import { RelaunchArbiter } from './relaunch-arbiter.js';
 import { RalphLoopService } from './ralph-loop-service.js';
 import { createSystemResourceSampler, RESOURCE_STATUS_INTERVAL_MS } from './system-resource-sampler.js';
 import { createMemoryLedger, readMemoryLedgerConfigFromEnv } from './memory-ledger.js';
@@ -1284,6 +1285,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // each instance has its own cache, which is fine — lookups are rare).
   const launchPathUpstreamOf = createUpstreamOfResolver();
 
+  // Lease-gated relaunch arbiter (issue #1711 / #1699 WS0.5): single mutual-
+  // exclusion + post-release backoff for claimIssue launches. Always wired so
+  // claimIssue paths cannot bypass the gate when the durable registry is off;
+  // dead holders are reclaimed via task-store liveness (orphan → backoff).
+  const relaunchArbiter = new RelaunchArbiter({
+    isHolderLive: (holderId) => {
+      const task = taskStore.getTask(holderId);
+      return task !== undefined && !isTerminalStatus(task.status);
+    },
+  });
+
   // Launch service deps — shared by WS handler, REST routes, and the Ralph
   // cycler's fresh-runtime launcher inside wireEventPipeline.
   const launchServiceDeps: LaunchServiceDeps = {
@@ -1324,8 +1336,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // the default), read at boot; the sample is read live per launch.
     getMaxHostLoadPerCpu: () => hostLoadAdmissionThreshold,
     getHostLoadSample: () => ({ load1m: loadavg()[0], cpuCount: cpus().length }),
+    // issue #1711: relaunch arbiter is always on. claimIssue launches that
+    // also have resolveClaimRepo + registry (flag on) go through the hard
+    // lease gate; flag-off keeps R7 claimIssue no-op (no resolveClaimRepo).
+    relaunchArbiter,
     // RFC PR 1b: hot-path claim CAS. Flag-off leaves these undefined →
-    // claimIssue on LaunchOpts is a strict no-op (R7).
+    // claimIssue on LaunchOpts is a strict no-op (R7). When on, the arbiter
+    // and the durable registry both admit the launch (mutex + claim).
     ...(issueClaimServices ? {
       issueClaimRegistry: issueClaimServices.registry,
       resolveClaimRepo: (input: { cwd: string; repoFlag?: string }) => resolveClaimRepo(

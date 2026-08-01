@@ -37,6 +37,7 @@ import { buildCapacityLedger, isReservedSlotLaunch, type CapacityLedger } from '
 import { spawnBudgetKey, type SpawnRateLimiter, type SpawnRateVerdict } from '../core/spawn-rate-limiter.js';
 import { evaluateHostLoadAdmission, type HostLoadSample } from '../core/host-load-admission.js';
 import { LaunchPhaseTracker, type LaunchPhaseTimings } from '../core/launch-phase-timings.js';
+import type { RelaunchArbiter, RelaunchLease } from './relaunch-arbiter.js';
 
 export type { LaunchOpts } from '../shared/contracts/launch.js';
 export type LaunchResult = SharedLaunchResult<Task>;
@@ -168,7 +169,8 @@ export interface LaunchServiceDeps {
   /**
    * Hot-path issue claim (RFC PR 1b). When provided AND the launch opts carry
    * `claimIssue`, {@link launchTask} interleaves a synchronous CAS with
-   * `createTask`. Absent (flag off / older wiring) ⇒ claimIssue is a no-op.
+   * `createTask`. Absent (flag off / older wiring) ⇒ claimIssue is a no-op
+   * unless {@link relaunchArbiter} is wired (issue #1711 hard lease gate).
    */
   issueClaimRegistry?: {
     ownerRecord(key: { repo: string; number: number }): { taskId: string; ownerName?: string; ownerStatus: string; worktreePath?: string; claimedAt: string; sessionId?: string } | null;
@@ -180,9 +182,21 @@ export interface LaunchServiceDeps {
     safeReleaseAllFor(taskId: string, reason?: 'released' | 'dead_reclaim' | 'orphan_reclaim'): unknown[];
   };
   /**
-   * Async claim-key repo resolution (phase a of R4). Only called when both
-   * the registry is wired and `opts.claimIssue` is set. Must complete before
-   * the synchronous critical section.
+   * Lease-gated relaunch arbiter (issue #1711 / #1699 WS0.5). When provided
+   * AND the launch opts carry `claimIssue`, {@link launchTask} requires a
+   * held relaunch lease before the task may proceed — mutual exclusion across
+   * actuators plus a post-release backoff window. Absent ⇒ claimIssue path
+   * behaves as before (registry-only, or R7 no-op when neither is wired).
+   */
+  relaunchArbiter?: Pick<
+    RelaunchArbiter,
+    'evaluate' | 'tryAcquire' | 'release' | 'isHeld' | 'getLease'
+  >;
+  /**
+   * Async claim-key repo resolution (phase a of R4). Called when
+   * `opts.claimIssue` is set and at least one of the issue-claim registry or
+   * the relaunch arbiter is wired. Must complete before the synchronous
+   * critical section.
    */
   resolveClaimRepo?: (input: {
     cwd: string;
@@ -266,6 +280,72 @@ export class IssueClaimRepoError extends Error {
 
 export function isIssueClaimRepoError(err: unknown): err is IssueClaimRepoError {
   return err instanceof IssueClaimRepoError;
+}
+
+/**
+ * Thrown by {@link launchTask} when the relaunch arbiter denies a `claimIssue`
+ * launch (another actuator holds the lease, or the post-release backoff
+ * window is still open). No task record is created. Maps to HTTP 409 with
+ * `code: 'relaunch_denied'` (issue #1711).
+ */
+export class RelaunchDeniedError extends Error {
+  readonly code = 'relaunch_denied';
+  readonly reason: 'held' | 'backoff';
+  readonly key: { repo: string; number: number };
+  readonly retryAfterMs?: number;
+  readonly holderId?: string;
+  readonly lease?: RelaunchLease;
+  constructor(
+    reason: 'held' | 'backoff',
+    key: { repo: string; number: number },
+    detail: { retryAfterMs?: number; lease?: RelaunchLease } = {},
+  ) {
+    const where = `${key.repo}#${key.number}`;
+    const msg =
+      reason === 'backoff'
+        ? `Relaunch of ${where} denied: backoff window open` +
+          (detail.retryAfterMs !== undefined ? ` (retry after ${detail.retryAfterMs}ms)` : '')
+        : `Relaunch of ${where} denied: lease held` +
+          (detail.lease ? ` by ${detail.lease.holderId}` : '');
+    super(msg);
+    this.name = 'RelaunchDeniedError';
+    this.reason = reason;
+    this.key = key;
+    if (detail.retryAfterMs !== undefined) this.retryAfterMs = detail.retryAfterMs;
+    if (detail.lease) {
+      this.lease = detail.lease;
+      this.holderId = detail.lease.holderId;
+    }
+  }
+}
+
+export function isRelaunchDeniedError(err: unknown): err is RelaunchDeniedError {
+  return err instanceof RelaunchDeniedError;
+}
+
+/**
+ * Thrown by {@link launchTask} when `claimIssue` was requested but no
+ * issue-claim / relaunch lease is held after the admission CAS — the hard
+ * admission gate (issue #1711). No live agent is spawned. Maps to HTTP 409
+ * with `code: 'issue_claim_lease_required'`.
+ */
+export class IssueClaimLeaseRequiredError extends Error {
+  readonly code = 'issue_claim_lease_required';
+  readonly key: { repo: string; number: number };
+  constructor(key: { repo: string; number: number }, detail?: string) {
+    super(
+      detail ??
+        `Launch of ${key.repo}#${key.number} rejected: no issue-claim lease is held`,
+    );
+    this.name = 'IssueClaimLeaseRequiredError';
+    this.key = key;
+  }
+}
+
+export function isIssueClaimLeaseRequiredError(
+  err: unknown,
+): err is IssueClaimLeaseRequiredError {
+  return err instanceof IssueClaimLeaseRequiredError;
 }
 
 /**
@@ -1000,11 +1080,18 @@ async function launchTaskCore(
     }
   }
 
-  // --- Issue-claim key resolution (RFC PR 1b, R4 phase a) ---
+  // --- Issue-claim key resolution (RFC PR 1b, R4 phase a; #1711 arbiter) ---
   // Async, so it runs BEFORE the no-await critical section below. Flag-off or
-  // missing claimIssue → strict early no-op (R7): no resolve, no throw.
+  // missing claimIssue → strict early no-op (R7): no resolve, no throw — unless
+  // the relaunch arbiter is wired, in which case claimIssue is a hard lease
+  // path (issue #1711).
   let resolvedClaimKey: { repo: string; number: number } | undefined;
-  if (opts.claimIssue && deps.issueClaimRegistry && deps.resolveClaimRepo) {
+  const claimPathActive = Boolean(
+    opts.claimIssue &&
+      deps.resolveClaimRepo &&
+      (deps.issueClaimRegistry || deps.relaunchArbiter),
+  );
+  if (claimPathActive && opts.claimIssue && deps.resolveClaimRepo) {
     const number = opts.claimIssue.number;
     if (!Number.isInteger(number) || number <= 0) {
       throw new IssueClaimRepoError(
@@ -1096,9 +1183,20 @@ async function launchTaskCore(
     }
   }
 
-  // --- Issue-claim CAS (RFC PR 1b, R4 phase b) ---
-  // Fully synchronous: check map → createTask → claim. No await between
-  // check and set. Held by another live task → throw with NO task created.
+  // --- Issue-claim / relaunch-lease CAS (RFC PR 1b, R4 phase b; #1711) ---
+  // Fully synchronous: check maps → createTask → acquire/claim. No await
+  // between check and set. Denied → throw with NO task created.
+  if (resolvedClaimKey && deps.relaunchArbiter) {
+    const decision = deps.relaunchArbiter.evaluate(resolvedClaimKey);
+    if (!decision.admit) {
+      if (decision.reason === 'backoff') {
+        throw new RelaunchDeniedError('backoff', resolvedClaimKey, {
+          retryAfterMs: decision.retryAfterMs,
+        });
+      }
+      throw new RelaunchDeniedError('held', resolvedClaimKey, { lease: decision.lease });
+    }
+  }
   if (resolvedClaimKey && deps.issueClaimRegistry) {
     const holder = deps.issueClaimRegistry.ownerRecord(resolvedClaimKey);
     if (holder) {
@@ -1146,13 +1244,47 @@ async function launchTaskCore(
     unattended: opts.unattended,
   });
 
+  if (resolvedClaimKey && deps.relaunchArbiter) {
+    const acquire = deps.relaunchArbiter.tryAcquire(resolvedClaimKey, task.id);
+    if (!acquire.ok) {
+      taskStore.deleteTask(task.id);
+      if (acquire.reason === 'backoff') {
+        throw new RelaunchDeniedError('backoff', resolvedClaimKey, {
+          retryAfterMs: acquire.retryAfterMs,
+        });
+      }
+      throw new RelaunchDeniedError('held', resolvedClaimKey, { lease: acquire.lease });
+    }
+  }
+
   if (resolvedClaimKey && deps.issueClaimRegistry) {
     const claimResult = deps.issueClaimRegistry.claim(resolvedClaimKey, { taskId: task.id });
     if (!claimResult.ok) {
       // Single-threaded so this should be unreachable after the pre-check;
       // keep it as a self-healing backstop: no orphaned task without a claim.
+      deps.relaunchArbiter?.release(resolvedClaimKey, task.id);
       taskStore.deleteTask(task.id);
       throw new IssueClaimHeldError(claimResult.owner);
+    }
+  }
+
+  // Hard admission gate (issue #1711): a claimIssue launch must hold a lease.
+  // When the arbiter is wired the relaunch lease is required; when the issue-
+  // claim registry is wired the durable claim is required. If either is
+  // missing after the CAS above, dispose the task and refuse — no launch
+  // without a held lease.
+  if (resolvedClaimKey && (deps.relaunchArbiter || deps.issueClaimRegistry)) {
+    const arbiterHeld =
+      !deps.relaunchArbiter ||
+      deps.relaunchArbiter.getLease(resolvedClaimKey)?.holderId === task.id;
+    const claimHeld =
+      !deps.issueClaimRegistry ||
+      deps.issueClaimRegistry.ownerRecord(resolvedClaimKey)?.taskId === task.id;
+    if (!arbiterHeld || !claimHeld) {
+      deps.relaunchArbiter?.release(resolvedClaimKey, task.id);
+      deps.issueClaimRegistry?.safeReleaseAllFor(task.id, 'released');
+      taskStore.deleteTask(task.id);
+      throw new IssueClaimLeaseRequiredError(resolvedClaimKey);
     }
   }
 
@@ -1237,10 +1369,14 @@ async function launchTaskCore(
     // A late-settling abandoned launch cannot corrupt this terminal record:
     // TaskStore.addSession refuses to attach a session to a terminal task.
     taskStore.endLaunch(task.id);
-    // R5b: release any issue claim granted above so a failed launch cannot
-    // leave an orphaned map entry / phantom granted audit row. safeRelease
-    // never throws; lifecycle wrappers would also release on terminate, but
-    // terminateTask below bypasses those wrappers.
+    // R5b: release any issue claim / relaunch lease granted above so a failed
+    // launch cannot leave an orphaned map entry / phantom granted audit row.
+    // safeRelease never throws; lifecycle wrappers would also release on
+    // terminate, but terminateTask below bypasses those wrappers. Arbiter
+    // release starts the post-failure backoff window (#1711).
+    if (resolvedClaimKey) {
+      deps.relaunchArbiter?.release(resolvedClaimKey, task.id);
+    }
     deps.issueClaimRegistry?.safeReleaseAllFor(task.id, 'released');
     // Instrumentation (issue #1589): the launch was abandoned mid-phase. abort()
     // flags the in-flight phase as `incompletePhase` — the phase that consumed
