@@ -2,7 +2,12 @@ import { join } from 'node:path';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
-import { loadTasksWithRecovery, saveTasks, saveTasksWithSnapshotPolicy, serializeSnoozed } from '../core/task-persistence.js';
+import {
+  openTaskStateStore,
+  persistTaskState,
+  serializeSnoozed,
+} from '../core/task-persistence.js';
+import type { TaskSqliteStore } from '../core/task-sqlite-store.js';
 import { reconcile, reconcileStaleOpenLaunches, type ReconciliationResult } from './reconciliation.js';
 import { SessionReaperService } from './session-reaper.js';
 import { readSessionReapConfigFromEnv, readResourceWatchdogConfigFromEnv } from './config.js';
@@ -813,8 +818,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     );
   broadcastProjectSummariesRef = broadcastProjectSummaries;
 
-  // Load persisted tasks
-  const persisted = await loadTasksWithRecovery(tasksFile);
+  // Load persisted tasks — SQLite by default (#1755), with one-shot migration
+  // from tasks.json when the DB is absent. KOOKR_TASK_STORE=json forces legacy.
+  const openedTaskState = await openTaskStateStore(tasksFile);
+  const taskSqliteStore: TaskSqliteStore | null = openedTaskState.sqliteStore;
+  const persisted = openedTaskState.load;
   const startupAlerts: ServerMessage[] = [];
   if (persisted.recovery) {
     const details = persisted.recovery.restoredFrom
@@ -831,7 +839,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   }
   if (persisted.tasks.length > 0) {
     taskStore.loadTasks(persisted.tasks, persisted.lifetimeSpendUsd);
-    console.log(`Loaded ${persisted.tasks.length} task(s) from ${tasksFile} (lifetime spend: $${taskStore.getLifetimeSpendUsd().toFixed(2)})`);
+    console.log(
+      `Loaded ${persisted.tasks.length} task(s) from ${openedTaskState.loadedFrom} `
+      + `(mode=${openedTaskState.mode}, lifetime spend: $${taskStore.getLifetimeSpendUsd().toFixed(2)})`,
+    );
+  } else {
+    console.log(`Task store ready (${openedTaskState.mode}): ${openedTaskState.loadedFrom}`);
   }
   if (persisted.relations && persisted.relations.length > 0) {
     taskStore.loadRelations(persisted.relations);
@@ -1541,6 +1554,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const taskStateSaveScheduler = new TaskStateSaveScheduler({
     taskStore,
     tasksFile,
+    sqliteStore: taskSqliteStore,
     queue,
     suppressionTracker,
     persistenceHealth,
@@ -1856,18 +1870,21 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // complete, the caller (clearCompleted) MUST abort the destructive op.
     // Letting the delete proceed without a snapshot recreates the exact
     // silent-data-loss pipeline this RFC set out to prevent.
+    //
+    // Under SQLite (#1755) this force-flushes every row and still materializes
+    // a JSON predelete snapshot for recovery tooling.
     const snoozes = serializeSnoozed(queue, taskStore);
     const suppressionState = suppressionTracker?.export();
     try {
-      await saveTasksWithSnapshotPolicy(
-        taskStore.getAllTasks(),
+      await persistTaskState({
+        taskStore,
         tasksFile,
-        'predelete',
-        taskStore.getLifetimeSpendUsd(),
+        policy: 'predelete',
         snoozes,
         suppressionState,
-        taskStore.listRelations(),
-      );
+        sqliteStore: taskSqliteStore,
+        forceFull: true,
+      });
       persistenceHealth.recordSuccess('task_state');
     } catch (err) {
       persistenceHealth.recordFailure('task_state', err);
@@ -2408,21 +2425,26 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     stopWebhookObserver?.();
     stopDeliveryTraceObserver();
 
-    // Final task-state save
+    // Final task-state save (dirty flush under SQLite; full rewrite under JSON)
     try {
       const snoozedFindings = serializeSnoozed(queue, taskStore);
-      await saveTasks(
-        taskStore.getAllTasks(),
+      await persistTaskState({
+        taskStore,
         tasksFile,
-        taskStore.getLifetimeSpendUsd(),
-        snoozedFindings,
-        undefined,
-        taskStore.listRelations(),
-      );
+        policy: 'none',
+        snoozes: snoozedFindings,
+        sqliteStore: taskSqliteStore,
+      });
       persistenceHealth.recordSuccess('task_state');
     } catch (err) {
       persistenceHealth.recordFailure('task_state', err);
       console.error('Error saving tasks on shutdown:', err);
+    }
+
+    try {
+      taskSqliteStore?.close();
+    } catch (err) {
+      console.error('Error closing task sqlite store on shutdown:', err);
     }
 
     try {

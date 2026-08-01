@@ -14,7 +14,7 @@ describe('TaskStateSaveScheduler', () => {
     vi.restoreAllMocks();
   });
 
-  test('coalesces bursty mutation requests into one tasks.json write', async () => {
+  test('coalesces bursty mutation requests into one task-state write', async () => {
     const taskStore = new TaskStore();
     taskStore.createTask('A', '/repo');
     const taskStateSaver = vi.fn(async () => undefined);
@@ -36,13 +36,11 @@ describe('TaskStateSaveScheduler', () => {
 
     expect(taskStateSaver).toHaveBeenCalledTimes(1);
     expect(taskStateSaver).toHaveBeenCalledWith(
-      expect.arrayContaining([expect.objectContaining({ prompt: 'A' })]),
-      '/tmp/tasks.json',
-      'none',
-      0,
-      undefined,
-      undefined,
-      [],
+      expect.objectContaining({
+        taskStore,
+        tasksFile: '/tmp/tasks.json',
+        policy: 'none',
+      }),
     );
   });
 
@@ -94,12 +92,6 @@ describe('TaskStateSaveScheduler', () => {
     await flush;
 
     expect(taskStateSaver).toHaveBeenCalledTimes(2);
-    expect(taskStateSaver.mock.calls[1][0]).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ prompt: 'A' }),
-        expect.objectContaining({ prompt: 'B' }),
-      ]),
-    );
     await vi.advanceTimersByTimeAsync(1_000);
     expect(taskStateSaver).toHaveBeenCalledTimes(2);
   });
@@ -120,7 +112,14 @@ describe('TaskStateSaveScheduler', () => {
     await scheduler.flush('periodic', { force: true, policy: 'daily' });
 
     expect(taskStateSaver).toHaveBeenCalledTimes(1);
-    expect(taskStateSaver).toHaveBeenCalledWith([], '/tmp/tasks.json', 'daily', 0, [], undefined, []);
+    expect(taskStateSaver).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskStore,
+        tasksFile: '/tmp/tasks.json',
+        policy: 'daily',
+        snoozes: [],
+      }),
+    );
     expect(tracker.snapshot().targets.task_state).toMatchObject({
       totalAttempts: 1,
       consecutiveFailures: 0,
