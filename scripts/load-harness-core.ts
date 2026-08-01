@@ -34,6 +34,34 @@ export interface IngestionLagMetrics {
   maxMs: number | null;
 }
 
+/**
+ * Terminal keystroke round-trip-time metrics captured while the synthetic hook
+ * storm runs (issue #1782). Each sample is the wall-clock delay between writing
+ * one keystroke to a terminal session and observing its echo, so a saturated
+ * event loop shows up as p95 growth — the user-visible "seconds per character"
+ * lag symptom. `enabled` is false when the RTT scenario was not requested; the
+ * field is always present so the report schema stays stable.
+ */
+export interface InputRttMetrics {
+  enabled: boolean;
+  sampleCount: number;
+  meanMs: number | null;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  maxMs: number | null;
+  /** Budget the p95 is checked against, or null when no budget was set. */
+  budgetMs: number | null;
+  /** null when no budget was set (or scenario disabled); else p95 <= budget. */
+  withinBudget: boolean | null;
+}
+
+export interface RttSampleOptions {
+  /** Number of keystroke round-trips to sample. */
+  count: number;
+  /** Delay between successive samples in milliseconds (0 = back-to-back). */
+  intervalMs: number;
+}
+
 export interface LoadHarnessReport {
   schemaVersion: 'kookr-load-harness-report.v1';
   generatedAt: string;
@@ -61,6 +89,7 @@ export interface LoadHarnessReport {
     finalSnapshotBytes: number | null;
   };
   ingestionLag: IngestionLagMetrics;
+  inputRtt: InputRttMetrics;
   memory: MemoryMetrics;
 }
 
@@ -205,6 +234,92 @@ function sessionIdFor(seed: number, sessionIndex: number): string {
   return `${SYNTHETIC_REPLAY_SESSION_PREFIX}${seed}-${String(sessionIndex).padStart(4, '0')}`;
 }
 
+/** Metrics for a run where the keystroke-RTT scenario was not requested. */
+export function disabledInputRtt(): InputRttMetrics {
+  return {
+    enabled: false,
+    sampleCount: 0,
+    meanMs: null,
+    p50Ms: null,
+    p95Ms: null,
+    maxMs: null,
+    budgetMs: null,
+    withinBudget: null,
+  };
+}
+
+/**
+ * Reduce raw keystroke round-trip samples (milliseconds) to summary metrics and
+ * evaluate them against an optional p95 budget. Empty samples yield null stats
+ * and — when a budget is set — `withinBudget: false`, so a scenario that failed
+ * to collect any sample fails the run rather than passing silently.
+ */
+export function summarizeInputRtt(samples: number[], budgetMs: number | null): InputRttMetrics {
+  const finite = samples.filter((value) => Number.isFinite(value));
+  const sampleCount = finite.length;
+  if (sampleCount === 0) {
+    return {
+      enabled: true,
+      sampleCount: 0,
+      meanMs: null,
+      p50Ms: null,
+      p95Ms: null,
+      maxMs: null,
+      budgetMs: budgetMs ?? null,
+      withinBudget: budgetMs === null ? null : false,
+    };
+  }
+  const sorted = [...finite].sort((a, b) => a - b);
+  const p95 = percentile(sorted, 95);
+  return {
+    enabled: true,
+    sampleCount,
+    meanMs: round2(finite.reduce((sum, value) => sum + value, 0) / sampleCount),
+    p50Ms: round2(percentile(sorted, 50)),
+    p95Ms: round2(p95),
+    maxMs: round2(sorted[sorted.length - 1]),
+    budgetMs: budgetMs ?? null,
+    withinBudget: budgetMs === null ? null : p95 <= budgetMs,
+  };
+}
+
+/** Nearest-rank percentile over an ascending-sorted, non-empty array. */
+function percentile(sortedAscending: number[], p: number): number {
+  if (sortedAscending.length === 0) throw new Error('percentile requires a non-empty array');
+  const rank = Math.ceil((p / 100) * sortedAscending.length);
+  const index = Math.min(sortedAscending.length - 1, Math.max(0, rank - 1));
+  return sortedAscending[index];
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/**
+ * Collect `count` keystroke round-trip samples by invoking `probeOnce`
+ * sequentially. `intervalMs` paces successive samples. An aborted signal ends
+ * the loop early and returns whatever was collected — used to stop sampling
+ * once the storm dispatch completes. `sleepFn`/`signal` are injectable so the
+ * loop is deterministic under test.
+ */
+export async function collectRttSamples(
+  probeOnce: () => Promise<number>,
+  options: RttSampleOptions,
+  deps: { sleepFn?: (ms: number) => Promise<void>; signal?: AbortSignal } = {},
+): Promise<number[]> {
+  const sleepFn = deps.sleepFn ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const samples: number[] = [];
+  for (let i = 0; i < options.count; i += 1) {
+    if (deps.signal?.aborted) break;
+    samples.push(await probeOnce());
+    if (options.intervalMs > 0 && i < options.count - 1) {
+      if (deps.signal?.aborted) break;
+      await sleepFn(options.intervalMs);
+    }
+  }
+  return samples;
+}
+
 export function createEmptyBroadcastMetrics(): BroadcastMetrics {
   return {
     messageCount: 0,
@@ -244,6 +359,13 @@ export function formatNumber(value: number | null | undefined, fractionDigits = 
   return value.toFixed(fractionDigits);
 }
 
+export function formatInputRtt(rtt: InputRttMetrics): string {
+  if (!rtt.enabled) return 'disabled';
+  const base = `count ${rtt.sampleCount}, p50 ${formatNumber(rtt.p50Ms, 2)} ms, p95 ${formatNumber(rtt.p95Ms, 2)} ms, max ${formatNumber(rtt.maxMs, 2)} ms`;
+  if (rtt.budgetMs === null) return base;
+  return `${base}, budget ${formatNumber(rtt.budgetMs, 2)} ms (${rtt.withinBudget ? 'within budget' : 'OVER BUDGET'})`;
+}
+
 export function formatMarkdownReport(report: LoadHarnessReport): string {
   return [
     '# Kookr Event Pipeline Load Harness',
@@ -255,6 +377,7 @@ export function formatMarkdownReport(report: LoadHarnessReport): string {
     `- Broadcasts: ${report.broadcast.messageCount} messages, ${formatBytes(report.broadcast.totalBytes)} total`,
     `- Snapshots: ${report.broadcast.snapshotCount} messages, largest ${formatBytes(report.broadcast.largestSnapshotBytes)}, final ${formatBytes(report.snapshot.finalSnapshotBytes)}`,
     `- Ingestion lag: count ${report.ingestionLag.sampleCount}, mean ${formatNumber(report.ingestionLag.meanMs)} ms, p95 ${formatNumber(report.ingestionLag.p95Ms)} ms, max ${formatNumber(report.ingestionLag.maxMs)} ms`,
+    `- Input RTT: ${formatInputRtt(report.inputRtt)}`,
     `- Memory RSS: start ${formatBytes(report.memory.startRssBytes)}, end ${formatBytes(report.memory.endRssBytes)}, delta ${formatBytes(report.memory.deltaRssBytes)}`,
     '',
     '```json',

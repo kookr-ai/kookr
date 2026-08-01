@@ -7,9 +7,17 @@
  * informational JSON or markdown report. This intentionally stays out of the
  * default test loop and does not enforce CI budgets.
  *
+ * Issue #1782 adds an opt-in keystroke-RTT scenario: while the storm runs, a
+ * dedicated terminal session is probed with single keystrokes and the write ->
+ * echo round-trip is sampled, so a saturated event loop surfaces as p95 growth
+ * (the user-visible "seconds per character" lag). Pass `--rtt-budget-ms` to
+ * fail the run (exit 1) when the p95 regresses past the budget. RTT sampling is
+ * in-process only (it drives the harness's own terminal backend).
+ *
  * Usage:
  *   node --import tsx scripts/load-harness.ts --sessions 10 --events-per-session 25
  *   node --import tsx scripts/load-harness.ts --base-url http://127.0.0.1:4801 --format markdown
+ *   node --import tsx scripts/load-harness.ts --sessions 20 --events-per-session 40 --rtt-samples 200 --rtt-budget-ms 50
  */
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -18,12 +26,17 @@ import { pathToFileURL } from 'node:url';
 import type { AddressInfo } from 'node:net';
 
 import type { KookrServerInternal } from '../src/server/server-test-helpers.js';
+import type { FakeTerminalBackend } from '../src/adapters/fake-terminal-backend.js';
 import {
+  collectRttSamples,
   createEmptyBroadcastMetrics,
+  disabledInputRtt,
   formatMarkdownReport,
   generateSyntheticHookStorm,
   recordBroadcastMessage,
+  summarizeInputRtt,
   type BroadcastMetrics,
+  type InputRttMetrics,
   type LoadHarnessReport,
 } from './load-harness-core.js';
 
@@ -37,11 +50,22 @@ interface CliOptions {
   output?: string;
   cwd: string;
   host: string;
+  rttSamples: number;
+  rttIntervalMs: number;
+  rttBudgetMs: number | null;
+}
+
+/** Measures terminal keystroke round-trip time (write -> echo) for one probe. */
+interface RttProbe {
+  probeOnce(): Promise<number>;
+  close(): Promise<void>;
 }
 
 interface RuntimeTarget {
   mode: 'in-process' | 'external';
   baseUrl: string;
+  /** Present only for in-process targets that can drive a keystroke-RTT probe. */
+  createRttProbe?: () => Promise<RttProbe>;
   close(): Promise<void>;
 }
 
@@ -75,6 +99,9 @@ const DEFAULT_OPTIONS: CliOptions = {
   format: 'json',
   cwd: '/tmp/kookr-load-harness',
   host: '127.0.0.1',
+  rttSamples: 0,
+  rttIntervalMs: 0,
+  rttBudgetMs: null,
 };
 
 function parseArgs(argv: string[]): CliOptions | { help: true } {
@@ -109,6 +136,15 @@ function parseArgs(argv: string[]): CliOptions | { help: true } {
         break;
       case '--host':
         opts.host = requireValue(argv[++i], arg);
+        break;
+      case '--rtt-samples':
+        opts.rttSamples = parseNonNegativeInt(argv[++i], arg);
+        break;
+      case '--rtt-interval-ms':
+        opts.rttIntervalMs = parseNonNegativeInt(argv[++i], arg);
+        break;
+      case '--rtt-budget-ms':
+        opts.rttBudgetMs = parsePositiveInt(argv[++i], arg);
         break;
       default:
         throw new Error(`Unknown option: ${arg}`);
@@ -206,11 +242,53 @@ async function createInProcessTarget(opts: CliOptions): Promise<RuntimeTarget> {
   return {
     mode: 'in-process',
     baseUrl: `http://${opts.host}:${port}`,
+    createRttProbe: () => createFakeTerminalRttProbe(terminal),
     close: async () => {
       lifecycle.abort();
       restoreEnv(previousEnv);
       await server?.close();
       await rm(tempDir, { recursive: true, force: true });
+    },
+  };
+}
+
+const RTT_PROBE_SESSION_ID = 'kookr-load-harness-rtt-probe';
+
+/**
+ * Build a keystroke-RTT probe backed by a dedicated terminal session on the
+ * harness's in-process terminal backend. Each `probeOnce` writes one keystroke
+ * and awaits its echo, so the measured round-trip grows when the shared event
+ * loop is saturated by the concurrent hook storm. This runs on the same event
+ * loop as the server under test, which is exactly the contention the "seconds
+ * per character" symptom (#1782) reflects.
+ *
+ * The fake backend echoes on a microtask rather than through a real PTY, so the
+ * measured RTT is a lower-bound proxy: it captures event-loop scheduling delay
+ * under load (the dominant factor in the reported symptom) but not kernel/PTY
+ * latency. Treat the p95 as a relative regression signal, not an absolute SLA.
+ */
+export async function createFakeTerminalRttProbe(backend: FakeTerminalBackend): Promise<RttProbe> {
+  await backend.createSession({ id: RTT_PROBE_SESSION_ID, command: '/bin/cat', args: [] });
+  let pendingEcho: (() => void) | null = null;
+  const unsubscribe = backend.onData(RTT_PROBE_SESSION_ID, () => {
+    const resolve = pendingEcho;
+    pendingEcho = null;
+    resolve?.();
+  });
+  let keystroke = 0;
+  return {
+    async probeOnce(): Promise<number> {
+      keystroke += 1;
+      const echoed = new Promise<void>((resolve) => { pendingEcho = resolve; });
+      const startedAt = performance.now();
+      await backend.writeInput(RTT_PROBE_SESSION_ID, Buffer.from(String(keystroke % 10), 'utf8'));
+      await echoed;
+      return performance.now() - startedAt;
+    },
+    async close(): Promise<void> {
+      unsubscribe();
+      pendingEcho = null;
+      await backend.killSession(RTT_PROBE_SESSION_ID);
     },
   };
 }
@@ -329,6 +407,7 @@ async function buildReport(
   dispatch: Awaited<ReturnType<typeof dispatchStorm>>,
   broadcast: BroadcastMetrics,
   startRssBytes: number,
+  inputRtt: InputRttMetrics,
 ): Promise<LoadHarnessReport> {
   await sleep(50);
   const [diagnostics, snapshot] = await Promise.all([
@@ -364,6 +443,7 @@ async function buildReport(
       finalSnapshotBytes,
     },
     ingestionLag,
+    inputRtt,
     memory: {
       startRssBytes,
       endRssBytes,
@@ -424,21 +504,49 @@ async function main(argv: string[]): Promise<number> {
     printHelp();
     return 0;
   }
+  if (parsed.rttSamples > 0 && parsed.baseUrl) {
+    throw new Error('--rtt-samples requires the in-process target; omit --base-url to enable the keystroke-RTT scenario');
+  }
+  if (parsed.rttBudgetMs !== null && parsed.rttSamples === 0) {
+    throw new Error('--rtt-budget-ms has no effect without --rtt-samples; pass --rtt-samples <n> to enable the keystroke-RTT scenario');
+  }
 
   const target = await createTarget(parsed);
   const broadcastCounter = await connectBroadcastCounter(target.baseUrl);
   const startRssBytes = process.memoryUsage().rss;
+  let probe: RttProbe | null = null;
+  if (parsed.rttSamples > 0) {
+    if (!target.createRttProbe) {
+      throw new Error('Keystroke-RTT scenario is only available for the in-process target');
+    }
+    probe = await target.createRttProbe();
+  }
+  const stopSampling = new AbortController();
   try {
-    const dispatch = await dispatchStorm(parsed, target);
-    const report = await buildReport(parsed, target, dispatch, broadcastCounter.metrics, startRssBytes);
+    const activeProbe = probe;
+    const [dispatch, rttSamples] = await Promise.all([
+      dispatchStorm(parsed, target).finally(() => stopSampling.abort()),
+      activeProbe
+        ? collectRttSamples(
+            () => activeProbe.probeOnce(),
+            { count: parsed.rttSamples, intervalMs: parsed.rttIntervalMs },
+            { signal: stopSampling.signal },
+          )
+        : Promise.resolve<number[]>([]),
+    ]);
+    const inputRtt = probe ? summarizeInputRtt(rttSamples, parsed.rttBudgetMs) : disabledInputRtt();
+    const report = await buildReport(parsed, target, dispatch, broadcastCounter.metrics, startRssBytes, inputRtt);
     const output = parsed.format === 'json'
       ? `${JSON.stringify(report, null, 2)}\n`
       : formatMarkdownReport(report);
     if (parsed.output) await writeFile(parsed.output, output, 'utf8');
     else process.stdout.write(output);
-    return dispatch.failedEvents > 0 ? 1 : 0;
+    const budgetBreached = inputRtt.withinBudget === false;
+    return dispatch.failedEvents > 0 || budgetBreached ? 1 : 0;
   } finally {
+    const activeProbe = probe;
     await Promise.allSettled([
+      activeProbe ? withShutdownTimeout('rtt probe', () => activeProbe.close()) : Promise.resolve(),
       withShutdownTimeout('broadcast socket', () => broadcastCounter.close()),
       withShutdownTimeout('target server', () => target.close()),
     ]);
@@ -477,6 +585,9 @@ function printHelp(): void {
     '  --output <path>            Write report to a file instead of stdout',
     '  --cwd <path>               Synthetic hook cwd (default /tmp/kookr-load-harness)',
     '  --host <host>              In-process bind host (default 127.0.0.1)',
+    '  --rtt-samples <n>          Keystroke round-trips to sample under load (default 0 = off; in-process only)',
+    '  --rtt-interval-ms <n>      Delay between RTT samples (default 0 = back-to-back)',
+    '  --rtt-budget-ms <n>        Fail (exit 1) when the RTT p95 exceeds this budget',
     '  -h, --help                 Show this help',
   ].join('\n'));
 }

@@ -37,6 +37,8 @@
     "relay:restart": "node --import tsx scripts/relay-lifecycle.ts restart",
     "relay:stop": "node --import tsx scripts/relay-lifecycle.ts stop",
     "relay:doctor": "node --import tsx scripts/relay-lifecycle.ts doctor",
+    "load-harness": "node --import tsx scripts/load-harness.ts",
+    "load-harness:rtt": "node --import tsx scripts/load-harness.ts --sessions 20 --events-per-session 40 --rtt-samples 200 --format markdown",
     "generate-build-info": "node --import tsx scripts/generate-build-info.ts",
     "build:server": "tsc",
     "build:relay": "tsc -p tsconfig.relay.json",
