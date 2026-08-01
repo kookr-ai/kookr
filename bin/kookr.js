@@ -24,6 +24,7 @@ Usage:
   kookr lesson status|drain|remember  Durable lesson-write spool (kb degraded path).
   kookr effort-split [OPTIONS]  Lucy vs kookr output share vs the 80/20 target (daily report).
   kookr emission plan|dedupe|metrics|defer|version  Drain-coupled issue filing budget + dedupe.
+  kookr reflect outcomes|ideas [OPTIONS]  Reflection Phase-1 telemetry: 24h outcome tally + ideasFiled resolver.
   kookr retro-verify status|drain|enqueue  CI-blind-merge debt + retro-verify drain.
   kookr pr-checklist verify|doctor [OPTIONS]  Verify PR checklist or report local gate fail-open rate.
   kookr context-pack --spec <f> --out <f>  Build a spawn-time context pack from a JSON spec.
@@ -166,6 +167,13 @@ async function main({
     return exit(process.exitCode ?? 0);
   }
 
+  // Phase-1 instrumentation for the workflow-reflection loop (issue #1751):
+  // 24h outcome tally + ideasFiled auto-resolver.
+  if (command === 'reflect') {
+    await runReflectCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
+  }
+
   if (command === 'pr-checklist') {
     await runPrChecklistCommand(rest, { env, out, err });
     return exit(process.exitCode ?? 0);
@@ -258,6 +266,21 @@ async function runEffortSplitCommand(argv, { env = process.env, out = console, e
   }
   const mod = await import(pathToFileURL(entry).href);
   process.exitCode = await mod.runEffortSplitCli(argv, { env, out, err });
+}
+
+async function runReflectCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-reflect.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-reflect.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] reflect module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exitCode = 1;
+    return;
+  }
+  const mod = await import(pathToFileURL(entry).href);
+  process.exitCode = await mod.runReflectCli(argv, { env, out, err });
 }
 
 async function runEmissionCommand(argv, { env = process.env, out = console, err = console } = {}) {
