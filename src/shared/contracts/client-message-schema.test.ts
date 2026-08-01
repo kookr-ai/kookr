@@ -525,6 +525,7 @@ const clientMessageRoundTripCases = [
     }],
   }),
   clientMessageCase({ type: 'worktree:inspectCleanup', taskId: 'task-1' }),
+  clientMessageCase({ type: 'requestResync', reason: 'seq_gap', haveSeq: 12 }),
 ] as const;
 
 const coveredClientMessageTypes = clientMessageRoundTripCases.map((message) => message.type);

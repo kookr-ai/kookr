@@ -174,6 +174,17 @@ export class ViewerAwareBroadcaster {
    * churn, so this cannot itself become a retained-object leak.
    */
   private readonly staleClients = new WeakMap<WebSocket, { consecutiveSkips: number }>();
+  /**
+   * Per-socket delta-protocol resync latch (issue #1754, Stage 1). A socket is
+   * added whenever a frame is soft-skipped for it (it may now trail the stream)
+   * and removed once a full `snapshot` frame is successfully delivered (it is
+   * re-based). {@link connectionNeedsSnapshot} exposes it so the future delta
+   * emitter (Stage 2) can enforce the invariant *a backpressure-skipped client
+   * must receive a fresh snapshot before any further delta* — sending a snapshot
+   * instead of a delta while the latch is set. A WeakSet, so it needs no pruning
+   * as sockets churn and can never itself become a retained-object leak.
+   */
+  private readonly needsSnapshotClients = new WeakSet<WebSocket>();
   /** Tracks whether the PREVIOUS broadcast was shed, so recovery can be announced exactly once. */
   private wasLoadShedActive = false;
 
@@ -278,9 +289,17 @@ export class ViewerAwareBroadcaster {
             }
             // Omit the base arg entirely when none was computed so the factory's
             // call signature is unchanged for the pre-#1398 (unwired) path.
-            const scopedMsg = baseClientAgents !== undefined
+            let scopedMsg = baseClientAgents !== undefined
               ? this.buildScopedSnapshot(scope, baseClientAgents)
               : this.buildScopedSnapshot(scope);
+            // #1754 Stage 1: propagate this flush's `(epoch, seq)` onto every
+            // per-scope snapshot so scoped viewers re-base on the same stream
+            // position as the `all` group. Only when the caller stamped the
+            // incoming snapshot (production wires the sequencer; test wirings
+            // that don't get byte-identical pre-#1754 scoped frames).
+            if (msg.seq !== undefined) {
+              scopedMsg = { ...scopedMsg, epoch: msg.epoch, seq: msg.seq };
+            }
             cached = serializeSnapshot(scopedMsg, scopeKey, this.snapshotPayloadSizePolicy);
             scopedCache.set(scopeKey, cached);
           }
@@ -295,6 +314,18 @@ export class ViewerAwareBroadcaster {
         console.warn('[viewer-broadcaster] failed to build/send snapshot for one connection; continuing', err);
       }
     }
+  }
+
+  /**
+   * Whether `ws` has been soft-skipped since it last received a full snapshot,
+   * and so must be re-based with a snapshot before it may safely apply any
+   * delta (issue #1754, Stage 1 resync escape hatch). Stage 2's delta emitter
+   * consults this to serve a snapshot instead of a delta while the latch is set;
+   * in Stage 1 the wire is snapshot-only, so the latch clears on the very next
+   * flush and this predicate exists as tested forward-compatible plumbing.
+   */
+  connectionNeedsSnapshot(ws: WebSocket): boolean {
+    return this.needsSnapshotClients.has(ws);
   }
 
   /**
@@ -352,6 +383,7 @@ export class ViewerAwareBroadcaster {
     if (bufferedAmount > this.backpressureHardBytes) {
       this.observeBackpressureDrop(payloadType, scopeKey, bufferedAmount);
       this.staleClients.delete(ws);
+      this.needsSnapshotClients.delete(ws);
       this.registry.unregister(ws);
       console.warn(
         `[websocket] dashboard client bufferedAmount exceeded hard backpressure; closing`,
@@ -372,6 +404,11 @@ export class ViewerAwareBroadcaster {
     if (bufferedAmount > this.backpressureSoftBytes) {
       // Soft: skip this frame only. Do not requeue — next coalesced snapshot heals.
       this.observeBackpressureDrop(payloadType, scopeKey, bufferedAmount);
+      // #1754 Stage 1: this socket just missed a frame, so it may trail the
+      // stream. Latch it as needing a snapshot re-base (for ANY payload type —
+      // a soft-skipped delta in Stage 2 must also force a snapshot). The latch
+      // clears only when a full snapshot is next delivered below.
+      this.needsSnapshotClients.add(ws);
       // The consecutive-skip counter is deliberately scoped to `snapshot`
       // frames ONLY (#1725 review finding: counting every frame type — the
       // sibling `coordinator.snapshot` frame, plus ordinary `update`/`alert`/
@@ -419,9 +456,15 @@ export class ViewerAwareBroadcaster {
 
     try {
       ws.send(data);
+      // #1754 Stage 1: a full snapshot re-bases the client to the current
+      // stream position, so it supersedes every frame the socket may have
+      // skipped — clear the resync latch. Non-snapshot frames do not re-base,
+      // so they leave the latch untouched.
+      if (payloadType === 'snapshot') this.needsSnapshotClients.delete(ws);
       return true;
     } catch (err) {
       this.staleClients.delete(ws);
+      this.needsSnapshotClients.delete(ws);
       this.registry.unregister(ws);
       console.warn(`[websocket] Failed to broadcast ${payloadType}; dropping client`, err);
       try {

@@ -204,6 +204,18 @@ export type SnapshotMessage = {
    * populated only by the opt-in remote node path.
    */
   serverRevision?: number;
+  /**
+   * Delta-protocol stream identity (issue #1754, Stage 1). Additive and
+   * optional so older clients ignore it and behavior is byte-identical to
+   * today. `epoch` is stable for a server's lifetime (== {@link serverStartedAt})
+   * and changes on restart; `seq` is a monotonic per-stream counter carried on
+   * every snapshot AND (in later stages) every `delta`. A snapshot always
+   * RE-BASES the receiving client to its `(epoch, seq)`; a `delta` advances
+   * `seq` by exactly 1. Present only when the server wired the sequencer
+   * (production); omitted by lightweight wirings that did not opt in.
+   */
+  epoch?: string;
+  seq?: number;
   build?: BuildInfo;
   serverStartedAt?: string;
   /** @deprecated Phase 6 keeps this legacy field while clients migrate to speechCapabilities. */
@@ -305,8 +317,46 @@ type LaunchPlaybookSplitMessage = LaunchPlaybookBaseMessage & {
 
 export type LaunchPlaybookClientMessage = LaunchPlaybookLegacyMessage | LaunchPlaybookSplitMessage;
 
+/**
+ * Coalesced delta envelope (issue #1754). Additive to the {@link ServerMessage}
+ * union and defined in Stage 1 as the wire contract, but **NOT emitted on the
+ * hot path in Stage 1** (the server keeps sending full snapshots; this type
+ * "ships dark"). Stage 2 wires `event-pipeline` to emit it behind a flag.
+ *
+ * One flush == one frame: because the snapshot flush is already coalesced, a
+ * single monotonic `seq` per flush keeps ordering a single integer rather than
+ * a multi-type interleave. Every field mirrors the SAME projection a snapshot
+ * uses, so a client applies it via its existing merge code:
+ *   - `agents.upserts` → per-agent merge (changed/added agents)
+ *   - `agents.removed` → drop by `"agentId:taskId"` key
+ *   - `taskRelations`  → sticky whole-array replace
+ *   - `aggregates`     → shallow-merge whole-world scalars
+ *
+ * `epoch`/`seq` carry the same meaning as on {@link SnapshotMessage}: a delta is
+ * applicable iff `epoch` matches the client's stored epoch and `seq` is exactly
+ * one past the client's stored seq; otherwise the client requests a resync.
+ */
+export type DeltaMessage = {
+  type: 'delta';
+  epoch: string;
+  seq: number;
+  agents?: {
+    /** Changed/added agents, SAME projection as snapshot agents. */
+    upserts: AgentState[];
+    /** Evicted `"agentId:taskId"` keys (aged-out terminal, deleted task). */
+    removed: string[];
+  };
+  /** Full small-array replacement when the relation graph changed (sticky overwrite). */
+  taskRelations?: TaskRelation[];
+  /** Whole-world scalars that changed this flush; shallow-merged by the client. */
+  aggregates?: Partial<Pick<SnapshotMessage,
+    'totalSpendUsd' | 'maxActiveTasks' | 'drainStatus' | 'coordinator' | 'achievements'
+    | 'achievementCounters' | 'achievementStreak' | 'bypassAllPermissions'>>;
+};
+
 export type ServerMessage =
   | SnapshotMessage
+  | DeltaMessage
   | { type: 'update'; agentId: string; state: AgentState }
   | {
       type: 'alert';
@@ -433,6 +483,19 @@ export type ServerMessage =
 
 export type ClientMessage =
   | { type: 'respond'; agentId: string; input: string }
+  | {
+      /**
+       * Delta-protocol resync escape hatch (issue #1754, Stage 1). Sent by a
+       * client that cannot apply an incoming frame in order — an epoch change, a
+       * `seq` gap, or a delta it is unable to apply — asking the server for a
+       * fresh full snapshot at the current `(epoch, seq)` to RE-BASE its state.
+       * Read-only: it triggers no state mutation, so read-only viewers may send
+       * it. `haveSeq` is the client's last-known `seq` (for server observability).
+       */
+      type: 'requestResync';
+      reason: 'seq_gap' | 'epoch_change' | 'apply_error';
+      haveSeq: number;
+    }
   | { type: 'respondAll'; agentIds: string[]; input: string }
   | { type: 'directReply'; agentId: string; input: string }
   | { type: 'navigate'; agentId: string }
@@ -528,6 +591,7 @@ export type ClientMessage =
 
 export const SERVER_MESSAGE_TYPES = [
   'snapshot',
+  'delta',
   'update',
   'alert',
   'githubUpdate',
@@ -563,6 +627,7 @@ export const MAX_BATCH_ABORT_TASKS = 500;
 
 export const CLIENT_MESSAGE_TYPES = [
   'respond',
+  'requestResync',
   'respondAll',
   'directReply',
   'navigate',

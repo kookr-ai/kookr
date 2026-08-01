@@ -216,6 +216,15 @@ const serverMessageCases = [
     kind: 'loadShedActive',
     eventLoopDelayP95Ms: 1800,
   }),
+  // Delta envelope (#1754, Stage 1) — ships dark, but part of the wire contract.
+  serverMessageCase({
+    type: 'delta',
+    epoch: '2026-08-01T00:00:00.000Z',
+    seq: 42,
+    agents: { upserts: [], removed: [] },
+    taskRelations: [],
+    aggregates: { totalSpendUsd: 5 },
+  }),
 ] as const;
 
 const coveredServerMessageTypes = serverMessageCases.map((message) => message.type);

@@ -84,6 +84,9 @@ const snapshotMessage = z.object({
   agents: z.array(jsonObject),
   serverCwd: z.string(),
   serverRevision: z.number().optional(),
+  // Delta-protocol stream identity (#1754, Stage 1) — additive & optional.
+  epoch: z.string().optional(),
+  seq: z.number().optional(),
   build: jsonObject.optional(),
   serverStartedAt: z.string().optional(),
   sttEnabled: z.boolean().optional(),
@@ -116,6 +119,21 @@ const snapshotMessage = z.object({
   maxActiveTasks: z.number().optional(),
   coordinator: jsonObject.optional(),
   taskRelations: z.array(jsonObject).optional(),
+});
+
+// Coalesced delta envelope (#1754). Ships dark in Stage 1 (never emitted on the
+// hot path) but validated as part of the wire contract. Nested DTOs use the
+// loose `jsonObject`, matching the rest of this file's DTO leniency.
+const deltaMessage = z.object({
+  type: z.literal('delta'),
+  epoch: z.string(),
+  seq: z.number(),
+  agents: z.object({
+    upserts: z.array(jsonObject),
+    removed: z.array(z.string()),
+  }).optional(),
+  taskRelations: z.array(jsonObject).optional(),
+  aggregates: jsonObject.optional(),
 });
 
 const updateMessage = z.object({
@@ -430,6 +448,7 @@ const wsBackpressureNoticeMessage = z.object({
 
 const ServerMessageSchemaImpl = z.union([
   snapshotMessage,
+  deltaMessage,
   updateMessage,
   alertMessage,
   githubUpdateMessage,
