@@ -13,6 +13,8 @@ import { TerminalInputCoordinator } from '../terminal-input-coordinator.js';
 import { FakeTerminalBackend } from '../../adapters/fake-terminal-backend.js';
 import { registerMetricsRoutes } from './metrics-routes.js';
 import type { RouteDeps } from './shared.js';
+import { LessonYieldHealthCache } from '../lesson-yield-health-cache.js';
+import { LESSON_YIELD_SCHEMA_VERSION } from '../../core/lesson-decision.js';
 
 function mkApp(deps: Partial<RouteDeps>): Hono {
   const app = new Hono();
@@ -284,5 +286,50 @@ describe('metrics routes', () => {
     expect(body).toContain('kookr_capacity_pending_queue_depth 1');
     expect(body).toMatch(/kookr_capacity_oldest_pending_age_seconds [0-9.]+/);
     expect(body).toMatch(/kookr_capacity_oldest_finished_awaiting_ack_age_seconds [0-9.]+/);
+  });
+
+  test('serves lesson-yield gauges from a warm health cache without scanning (issue #1857)', async () => {
+    const lessonYieldHealth = new LessonYieldHealthCache();
+    lessonYieldHealth.set(1, {
+      schemaVersion: LESSON_YIELD_SCHEMA_VERSION,
+      generatedAt: '2026-08-01T12:00:00.000Z',
+      windowDays: 1,
+      windowStartMs: 0,
+      tasksInWindow: 12,
+      completedInWindow: 5,
+      completedWithLogs: 5,
+      buckets: {
+        wroteLesson: 2,
+        explicitSkip: 1,
+        searchOnly: 1,
+        noKbActivity: 1,
+      },
+      decided: 3,
+      yieldRate: 0.6,
+      yieldRateAmongLogged: 0.6,
+      byCompletionPath: {},
+      gateExemptReasons: {},
+      explainedExceptions: 0,
+      contractRate: 0.6,
+    }, Date.now() + 60_000);
+
+    const res = await mkApp({ lessonYieldHealth }).request('/metrics');
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('# TYPE kookr_lesson_yield_decided gauge');
+    expect(body).toContain('kookr_lesson_yield_decided 3');
+    expect(body).toContain('kookr_lesson_yield_completed 5');
+    expect(body).toContain('kookr_lesson_yield_wrote_lesson 2');
+    expect(body).toContain('kookr_lesson_yield_explicit_skip 1');
+    expect(body).toContain('kookr_lesson_yield_no_kb_activity 1');
+    expect(body).toContain('kookr_lesson_yield_ratio 0.6');
+  });
+
+  test('omits lesson-yield series when health cache is cold (issue #1857)', async () => {
+    const res = await mkApp({ lessonYieldHealth: new LessonYieldHealthCache() }).request('/metrics');
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).not.toContain('kookr_lesson_yield_');
   });
 });

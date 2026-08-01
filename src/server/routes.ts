@@ -44,6 +44,7 @@ import { createJsonRequestBodyLimitMiddleware, type RouteDeps } from './routes/s
 import { createRequestDurationMiddleware, RequestDurationMetrics } from './request-duration-metrics.js';
 import { createDashboardSecurityHeadersMiddleware } from './security-headers-middleware.js';
 import { createInFlightRequestMiddleware, inFlightRequestRegistry } from './in-flight-request-registry.js';
+import { LessonYieldHealthCache } from './lesson-yield-health-cache.js';
 
 export type { RouteDeps } from './routes/shared.js';
 
@@ -100,6 +101,9 @@ export function createRoutes(deps: RouteDeps): Hono {
     requestDurationMetrics,
     coordinatorSuppressions:
       deps.coordinatorSuppressions ?? new CoordinatorSuppressionStore(deps.kookrDir ?? deps.serverCwd),
+    // Shared lesson-yield cache so /api/health and /metrics see the same
+    // days=1 snapshot (issue #1857). Metrics only reads; diagnostics scans.
+    lessonYieldHealth: deps.lessonYieldHealth ?? new LessonYieldHealthCache(),
   };
 
   // #804: browser cookie-exchange endpoint (POST /api/auth/session). Allow-listed

@@ -21,6 +21,7 @@ import {
   TASK_CAPACITY_CLASSES,
   type CapacityLedger,
 } from '../core/capacity-ledger.js';
+import type { LessonYieldSnapshot } from '../core/lesson-decision.js';
 
 export const PROMETHEUS_CONTENT_TYPE = 'text/plain; version=0.0.4';
 
@@ -80,6 +81,12 @@ export interface PrometheusExpositionSnapshot {
    * pendingQueueDepth without polling JSON health.
    */
   capacity?: CapacityLedger;
+  /**
+   * Last warm 24h lesson-yield snapshot (issue #1857). When undefined (cache
+   * cold), series are omitted so scrapers stay fast and never trigger a
+   * hook-log scan. Same fields as `/api/health` `lessonYield`.
+   */
+  lessonYield?: LessonYieldSnapshot;
 }
 
 export interface AuditSinkMetricsSnapshot {
@@ -105,6 +112,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendSnapshotShedMetrics(lines, snapshot.snapshotShed);
   appendRingFleetBudgetMetrics(lines, snapshot.ringFleetBudget);
   appendCapacityMetrics(lines, snapshot.capacity);
+  appendLessonYieldMetrics(lines, snapshot.lessonYield);
 
   return `${lines.join('\n')}\n`;
 }
@@ -416,6 +424,39 @@ function appendCapacityMetrics(
         ? -1
         : msToSeconds(snapshot.oldestFinishedAwaitingAckAgeMs),
     ),
+  );
+}
+
+/**
+ * Lesson-yield gauges from the last warm 24h health-cache snapshot (issue #1857).
+ * Omitted entirely when the cache is cold — scrape path must not invent zeros
+ * that look like "zero yield" and must never trigger a hook-log scan.
+ */
+function appendLessonYieldMetrics(
+  lines: string[],
+  snapshot: LessonYieldSnapshot | undefined,
+): void {
+  if (!snapshot) return;
+
+  lines.push(
+    '# HELP kookr_lesson_yield_decided Completed tasks in the last 24h that wrote a lesson or declared an explicit skip.',
+    '# TYPE kookr_lesson_yield_decided gauge',
+    metricLine('kookr_lesson_yield_decided', {}, snapshot.decided),
+    '# HELP kookr_lesson_yield_completed Completed tasks in the last 24h (yield denominator).',
+    '# TYPE kookr_lesson_yield_completed gauge',
+    metricLine('kookr_lesson_yield_completed', {}, snapshot.completedInWindow),
+    '# HELP kookr_lesson_yield_wrote_lesson Completed tasks in the last 24h that wrote a kb lesson.',
+    '# TYPE kookr_lesson_yield_wrote_lesson gauge',
+    metricLine('kookr_lesson_yield_wrote_lesson', {}, snapshot.buckets.wroteLesson),
+    '# HELP kookr_lesson_yield_explicit_skip Completed tasks in the last 24h that declared an explicit no-lesson skip.',
+    '# TYPE kookr_lesson_yield_explicit_skip gauge',
+    metricLine('kookr_lesson_yield_explicit_skip', {}, snapshot.buckets.explicitSkip),
+    '# HELP kookr_lesson_yield_no_kb_activity Completed tasks in the last 24h with neither a lesson decision nor kb search activity.',
+    '# TYPE kookr_lesson_yield_no_kb_activity gauge',
+    metricLine('kookr_lesson_yield_no_kb_activity', {}, snapshot.buckets.noKbActivity),
+    '# HELP kookr_lesson_yield_ratio decided / completedInWindow for the last 24h (0 when denominator is 0). Target ≥ 1.0.',
+    '# TYPE kookr_lesson_yield_ratio gauge',
+    metricLine('kookr_lesson_yield_ratio', {}, snapshot.yieldRate),
   );
 }
 

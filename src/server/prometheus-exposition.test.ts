@@ -479,4 +479,49 @@ describe('renderPrometheusExposition', () => {
     expect(output).toContain('kookr_capacity_oldest_pending_age_seconds -1');
     expect(output).toContain('kookr_capacity_oldest_finished_awaiting_ack_age_seconds -1');
   });
+
+  test('renders lesson-yield gauges from an injected warm snapshot (issue #1857)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      lessonYield: {
+        schemaVersion: 'lesson-yield.v1',
+        generatedAt: '2026-08-01T12:00:00.000Z',
+        windowDays: 1,
+        windowStartMs: 0,
+        tasksInWindow: 20,
+        completedInWindow: 10,
+        completedWithLogs: 8,
+        buckets: {
+          wroteLesson: 4,
+          explicitSkip: 3,
+          searchOnly: 1,
+          noKbActivity: 2,
+        },
+        decided: 7,
+        yieldRate: 0.7,
+        yieldRateAmongLogged: 0.875,
+        byCompletionPath: {},
+        gateExemptReasons: {},
+        explainedExceptions: 0,
+        contractRate: 0.7,
+      },
+    });
+
+    expect(output).toContain('# TYPE kookr_lesson_yield_decided gauge');
+    expect(output).toContain('kookr_lesson_yield_decided 7');
+    expect(output).toContain('kookr_lesson_yield_completed 10');
+    expect(output).toContain('kookr_lesson_yield_wrote_lesson 4');
+    expect(output).toContain('kookr_lesson_yield_explicit_skip 3');
+    expect(output).toContain('kookr_lesson_yield_no_kb_activity 2');
+    expect(output).toContain('kookr_lesson_yield_ratio 0.7');
+  });
+
+  test('omits lesson-yield series when cache is cold (issue #1857)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+    });
+    expect(output).not.toContain('kookr_lesson_yield_');
+  });
 });
