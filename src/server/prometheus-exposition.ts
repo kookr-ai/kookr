@@ -17,6 +17,10 @@ import type { ToolLatencyMetricsSnapshot } from '../core/tool-latency-metrics.js
 import { emptyToolLatencyMetricsSnapshot } from '../core/tool-latency-metrics.js';
 import type { TaskSaveMetricsSnapshot } from '../core/task-save-metrics.js';
 import { emptyTaskSaveMetricsSnapshot } from '../core/task-save-metrics.js';
+import {
+  TASK_CAPACITY_CLASSES,
+  type CapacityLedger,
+} from '../core/capacity-ledger.js';
 
 export const PROMETHEUS_CONTENT_TYPE = 'text/plain; version=0.0.4';
 
@@ -70,6 +74,12 @@ export interface PrometheusExpositionSnapshot {
   snapshotShed?: SnapshotShedMetricsExposition;
   /** Fleet ring buffer budget pressure (issue #1779) — always-on zeros. */
   ringFleetBudget?: RingFleetBudgetMetricsSnapshot;
+  /**
+   * Task capacity ledger gauges (issue #1856). Same shape as `/api/health`
+   * `capacity` so scrapers can alert on hungSuspect / finishedAwaitingAck /
+   * pendingQueueDepth without polling JSON health.
+   */
+  capacity?: CapacityLedger;
 }
 
 export interface AuditSinkMetricsSnapshot {
@@ -94,6 +104,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendNonCriticalTimerPauseMetrics(lines, snapshot.nonCriticalTimerPause);
   appendSnapshotShedMetrics(lines, snapshot.snapshotShed);
   appendRingFleetBudgetMetrics(lines, snapshot.ringFleetBudget);
+  appendCapacityMetrics(lines, snapshot.capacity);
 
   return `${lines.join('\n')}\n`;
 }
@@ -344,6 +355,67 @@ function appendRingFleetBudgetMetrics(
     '# HELP kookr_ring_shrink_events_total Cumulative ring shrink events under fleet budget pressure.',
     '# TYPE kookr_ring_shrink_events_total counter',
     metricLine('kookr_ring_shrink_events_total', {}, snapshot.ringShrinkCount),
+  );
+}
+
+const EMPTY_CAPACITY: CapacityLedger = {
+  maxActiveTasks: 0,
+  active: 0,
+  free: 0,
+  byClass: {
+    working: 0,
+    finishedAwaitingAck: 0,
+    hungSuspect: 0,
+    launching: 0,
+  },
+  pendingQueueDepth: 0,
+  oldestPendingAgeMs: null,
+  oldestFinishedAwaitingAckAgeMs: null,
+};
+
+/** Task capacity ledger gauges for Prometheus scrapes (issue #1856). */
+function appendCapacityMetrics(
+  lines: string[],
+  snapshot: CapacityLedger = EMPTY_CAPACITY,
+): void {
+  lines.push(
+    '# HELP kookr_capacity_active Tasks currently occupying a concurrency slot (all capacity classes).',
+    '# TYPE kookr_capacity_active gauge',
+    metricLine('kookr_capacity_active', {}, snapshot.active),
+    '# HELP kookr_capacity_free Free concurrency slots (maxActiveTasks - active, floored at 0).',
+    '# TYPE kookr_capacity_free gauge',
+    metricLine('kookr_capacity_free', {}, snapshot.free),
+    '# HELP kookr_capacity_max Configured max active tasks (settings.maxActiveTasks).',
+    '# TYPE kookr_capacity_max gauge',
+    metricLine('kookr_capacity_max', {}, snapshot.maxActiveTasks),
+    '# HELP kookr_capacity_by_class Tasks occupying a concurrency slot by capacity class (fixed TaskCapacityClass set).',
+    '# TYPE kookr_capacity_by_class gauge',
+  );
+  for (const capacityClass of TASK_CAPACITY_CLASSES) {
+    lines.push(metricLine('kookr_capacity_by_class', { class: capacityClass }, snapshot.byClass[capacityClass]));
+  }
+  lines.push(
+    '# HELP kookr_capacity_pending_queue_depth Tasks in status=pending waiting for a free concurrency slot.',
+    '# TYPE kookr_capacity_pending_queue_depth gauge',
+    metricLine('kookr_capacity_pending_queue_depth', {}, snapshot.pendingQueueDepth),
+    // Ages as Prometheus base-unit seconds; -1 when no sample (matches other
+    // kookr gauges that cannot express "absent" as a missing series).
+    '# HELP kookr_capacity_oldest_pending_age_seconds Age of the oldest pending queued task in seconds; -1 when none.',
+    '# TYPE kookr_capacity_oldest_pending_age_seconds gauge',
+    metricLine(
+      'kookr_capacity_oldest_pending_age_seconds',
+      {},
+      snapshot.oldestPendingAgeMs === null ? -1 : msToSeconds(snapshot.oldestPendingAgeMs),
+    ),
+    '# HELP kookr_capacity_oldest_finished_awaiting_ack_age_seconds Age of the oldest finishedAwaitingAck signal in seconds; -1 when none.',
+    '# TYPE kookr_capacity_oldest_finished_awaiting_ack_age_seconds gauge',
+    metricLine(
+      'kookr_capacity_oldest_finished_awaiting_ack_age_seconds',
+      {},
+      snapshot.oldestFinishedAwaitingAckAgeMs === null
+        ? -1
+        : msToSeconds(snapshot.oldestFinishedAwaitingAckAgeMs),
+    ),
   );
 }
 

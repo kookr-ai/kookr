@@ -239,4 +239,50 @@ describe('metrics routes', () => {
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'forbidden' });
   });
+
+  test('serves capacity ledger gauges from a fixture task list (issue #1856)', async () => {
+    const now = Date.now();
+    const raisedAt = new Date(now - 60_000).toISOString();
+    const res = await mkApp({
+      getMaxActiveTasks: () => 10,
+      taskStore: {
+        listTasks: () => [
+          {
+            id: 'working-1',
+            status: 'inProgress',
+            createdAt: new Date(now - 120_000),
+            sessions: [{ tmuxSession: 'agent-working' }],
+          },
+          {
+            id: 'ack-1',
+            status: 'inProgress',
+            createdAt: new Date(now - 90_000),
+            pendingSignal: { kind: 'completion_ready', raisedAt },
+            sessions: [{ tmuxSession: 'agent-ack' }],
+          },
+          {
+            id: 'pending-1',
+            status: 'pending',
+            createdAt: new Date(now - 30_000),
+            sessions: [],
+          },
+        ],
+        hasFreshLaunchReservation: () => false,
+      } as never,
+    }).request('/metrics');
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('# TYPE kookr_capacity_active gauge');
+    expect(body).toContain('kookr_capacity_active 2');
+    expect(body).toContain('kookr_capacity_free 8');
+    expect(body).toContain('kookr_capacity_max 10');
+    expect(body).toContain('kookr_capacity_by_class{class="working"} 1');
+    expect(body).toContain('kookr_capacity_by_class{class="finishedAwaitingAck"} 1');
+    expect(body).toContain('kookr_capacity_by_class{class="hungSuspect"} 0');
+    expect(body).toContain('kookr_capacity_by_class{class="launching"} 0');
+    expect(body).toContain('kookr_capacity_pending_queue_depth 1');
+    expect(body).toMatch(/kookr_capacity_oldest_pending_age_seconds [0-9.]+/);
+    expect(body).toMatch(/kookr_capacity_oldest_finished_awaiting_ack_age_seconds [0-9.]+/);
+  });
 });

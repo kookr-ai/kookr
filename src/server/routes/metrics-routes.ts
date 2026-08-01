@@ -13,6 +13,9 @@ import {
   type TerminalWriteMetricsSnapshot,
 } from '../prometheus-exposition.js';
 import { taskSaveMetrics } from '../../core/task-save-metrics.js';
+import { buildCapacityLedger, type CapacityLedger } from '../../core/capacity-ledger.js';
+import { resolveTaskAttentionSignals } from '../task-attention-signals.js';
+import { MAX_ACTIVE_TASKS } from '../config.js';
 import type { RouteDeps } from './shared.js';
 
 export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
@@ -47,6 +50,8 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
       // Tests may inject deps.taskSaveMetrics to isolate parallel suites.
       taskSave: (deps.taskSaveMetrics ?? taskSaveMetrics).snapshot(),
       ringFleetBudget: collectRingFleetBudgetMetrics(deps),
+      // Same buildCapacityLedger path as GET /api/health (issue #1856).
+      capacity: collectCapacityLedger(deps),
       ...(nonCriticalTimerPause
         ? {
             nonCriticalTimerPause: {
@@ -69,6 +74,38 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
     }), 200, {
       'Content-Type': PROMETHEUS_CONTENT_TYPE,
     });
+  });
+}
+
+/**
+ * Build the live capacity ledger for `/metrics` using the same inputs as
+ * `GET /api/health` (issue #1856). Returns a zeroed ledger when `taskStore`
+ * is not wired (lightweight unit harnesses).
+ */
+export function collectCapacityLedger(deps: Pick<
+  RouteDeps,
+  'taskStore' | 'queue' | 'watchdog' | 'getMaxActiveTasks' | 'settings'
+>): CapacityLedger {
+  const capacitySampledAtMs = Date.now();
+  const maxActiveTasks = deps.getMaxActiveTasks?.() ?? MAX_ACTIVE_TASKS;
+  const tasks = deps.taskStore?.listTasks() ?? [];
+  const reservationSettings = deps.settings?.get();
+  return buildCapacityLedger(tasks, {
+    now: capacitySampledAtMs,
+    maxActiveTasks,
+    isHungSuspect: (task) =>
+      resolveTaskAttentionSignals(
+        task,
+        { queue: deps.queue, watchdog: deps.watchdog },
+        capacitySampledAtMs,
+      ).hungSuspect,
+    isLaunching: (task) => deps.taskStore?.hasFreshLaunchReservation(task.id) ?? false,
+    ...(reservationSettings
+      ? {
+          reservedActiveSlots: reservationSettings.reservedActiveSlots,
+          reservedSlotSources: reservationSettings.reservedSlotSources,
+        }
+      : {}),
   });
 }
 
