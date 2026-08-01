@@ -222,4 +222,107 @@ describe('SignalOutboxService', () => {
       source: 'outbox',
     });
   });
+
+  test('rejects completion_ready drain when merge authority + open unmerged PR (issue #1836)', async () => {
+    const previousLesson = process.env.KOOKR_LESSON_DECISION_GATE;
+    process.env.KOOKR_LESSON_DECISION_GATE = 'off';
+    try {
+      const spoolDir = await tempSpoolDir();
+      const kookrDir = await mkdtemp(join(tmpdir(), 'kookr-dir-'));
+      const hooksDir = join(kookrDir, 'hooks');
+      mkdirSync(hooksDir, { recursive: true });
+      writeFileSync(
+        join(hooksDir, 'sess-merge.jsonl'),
+        `${JSON.stringify({
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'gh pr create --fill' },
+        })}\n`,
+        'utf8',
+      );
+
+      const store = new TaskStore();
+      const task = store.createTask(
+        'TERMINAL-STATE CONTRACT (mergeAfterImplementation=true): merge authority',
+        '/repo',
+      );
+      store.startTask(task.id);
+      store.addSession(task.id, {
+        tmuxSession: 'sess-merge',
+        agentType: 'claude-code',
+        cwd: '/repo',
+        createdAt: new Date(),
+      });
+
+      await appendSignalOutbox(spoolDir, buildSignalOutboxEntry({
+        signalId: 'merge-gated-1',
+        taskId: task.id,
+        kind: 'completion_ready',
+      }));
+
+      const svc = new SignalOutboxService({ taskStore: store, spoolDir, kookrDir });
+      const result = await svc.tick();
+      expect(result.drained.permanentFailed).toBe(1);
+      expect(result.drained.delivered).toBe(0);
+      expect(store.getPendingSignal(task.id)).toBeUndefined();
+      expect(await readPendingSignals(spoolDir)).toHaveLength(0);
+    } finally {
+      if (previousLesson === undefined) delete process.env.KOOKR_LESSON_DECISION_GATE;
+      else process.env.KOOKR_LESSON_DECISION_GATE = previousLesson;
+    }
+  });
+
+  test('allows completion_ready drain after PR-BLOCKER for merge-authority task (issue #1836)', async () => {
+    const previousLesson = process.env.KOOKR_LESSON_DECISION_GATE;
+    process.env.KOOKR_LESSON_DECISION_GATE = 'off';
+    try {
+      const spoolDir = await tempSpoolDir();
+      const kookrDir = await mkdtemp(join(tmpdir(), 'kookr-dir-'));
+      const hooksDir = join(kookrDir, 'hooks');
+      mkdirSync(hooksDir, { recursive: true });
+      writeFileSync(
+        join(hooksDir, 'sess-blocker.jsonl'),
+        [
+          JSON.stringify({
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Bash',
+            tool_input: { command: 'gh pr create --fill' },
+          }),
+          JSON.stringify({
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Bash',
+            tool_input: { command: "printf 'PR-BLOCKER: checks red\\n'" },
+          }),
+        ].join('\n') + '\n',
+        'utf8',
+      );
+
+      const store = new TaskStore();
+      const task = store.createTask(
+        'TERMINAL-STATE CONTRACT (mergeAfterImplementation=true): merge authority',
+        '/repo',
+      );
+      store.startTask(task.id);
+      store.addSession(task.id, {
+        tmuxSession: 'sess-blocker',
+        agentType: 'claude-code',
+        cwd: '/repo',
+        createdAt: new Date(),
+      });
+
+      await appendSignalOutbox(spoolDir, buildSignalOutboxEntry({
+        signalId: 'merge-blocker-1',
+        taskId: task.id,
+        kind: 'completion_ready',
+      }));
+
+      const svc = new SignalOutboxService({ taskStore: store, spoolDir, kookrDir });
+      const result = await svc.tick();
+      expect(result.drained.delivered).toBe(1);
+      expect(store.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+    } finally {
+      if (previousLesson === undefined) delete process.env.KOOKR_LESSON_DECISION_GATE;
+      else process.env.KOOKR_LESSON_DECISION_GATE = previousLesson;
+    }
+  });
 });

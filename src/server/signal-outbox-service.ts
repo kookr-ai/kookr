@@ -26,6 +26,12 @@ import {
   isLessonDecisionGateEnabled,
   resolveTaskLessonDecision,
 } from '../core/lesson-decision.js';
+import {
+  createGhMergedAtVerifier,
+  isMergeRequiredGateEnabled,
+  resolveMergeRequiredGate,
+  shouldUseLiveMergeVerify,
+} from '../core/merge-required.js';
 
 /** Default drain interval: 30 seconds — signals are more time-sensitive than lessons. */
 export const DEFAULT_SIGNAL_OUTBOX_DRAIN_INTERVAL_MS = 30_000;
@@ -241,6 +247,26 @@ export class SignalOutboxService {
               error: gate.reason,
             };
           }
+        }
+      }
+
+      // Issue #1836: same merge-required gate as the HTTP route so a daemon-down
+      // spool cannot re-open the stranded-PR completion hole.
+      if (entry.kind === 'completion_ready' && isMergeRequiredGateEnabled()) {
+        const hooksDir = this.kookrDir ? hooksDirFromKookrDir(this.kookrDir) : undefined;
+        const mergeGate = await resolveMergeRequiredGate(task, hooksDir, {
+          ...(shouldUseLiveMergeVerify()
+            ? { verifyMerged: createGhMergedAtVerifier({ cwd: task.cwd }) }
+            : {}),
+        });
+        if (!mergeGate.allow) {
+          this.log(
+            `[signal-outbox] drop completion_ready for ${entry.taskId}: ${mergeGate.reason}`,
+          );
+          return {
+            outcome: 'permanent_fail',
+            error: mergeGate.reason,
+          };
         }
       }
 

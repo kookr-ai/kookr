@@ -57,6 +57,7 @@ export type CompletionSignalAction = 'auto_signal' | 'remediate' | 'skip';
 export type CompletionSignalReason =
   | 'already_signaled'
   | 'delivery_blocked'
+  | 'merge_required'
   | 'terminal_status'
   | 'not_in_progress'
   | 'unknown_task'
@@ -81,6 +82,19 @@ export interface CompletionSignalEvaluationInput {
    * delivery-gated task from being marked ready before delivery happens.
    */
   deliverySatisfied?: boolean;
+  /**
+   * Issue #1836: optional pure-layer input for callers that already resolved
+   * merge authority. The hard enforcement boundary is the HTTP/outbox
+   * `merge_required` 409 gate (`merge-required.ts`); this field only affects
+   * {@link evaluateCompletionSignal} when a caller supplies it.
+   */
+  mergeRequired?: boolean;
+  /**
+   * Issue #1836: optional pure-layer input — true when merge is verified or a
+   * PR-BLOCKER was recorded. Only consulted when {@link mergeRequired} is true;
+   * undefined is treated as NOT satisfied.
+   */
+  mergeSatisfied?: boolean;
   /** Event window used to derive clean-turn completion evidence. */
   events: AgentEvent[];
   /**
@@ -163,6 +177,20 @@ export function evaluateCompletionSignal(input: CompletionSignalEvaluationInput)
     };
   }
 
+  // 3b. Optional pure-layer merge gate (issue #1836). Callers that resolve
+  //     merge authority + satisfaction may pass these fields; the durable
+  //     enforcement path is HTTP/outbox `merge_required` 409, not this helper.
+  if (isMergeBlocked(input)) {
+    return {
+      action: 'skip',
+      reason: 'merge_required',
+      detail:
+        'Merge-authority task: PR merge not yet verified (and no PR-BLOCKER); '
+        + 'refusing to auto-raise completion-ready.',
+      signalId: completion.id,
+    };
+  }
+
   // 4. Unambiguous policy → auto-signal. Only affirmatively delivery-authorized
   //    (or delivery-satisfied) tasks qualify: a clean Stop alone is not a
   //    reliable completion proxy for an un-gated task, so those get a reminder
@@ -202,8 +230,14 @@ function isDeliveryBlocked(input: CompletionSignalEvaluationInput): boolean {
   return input.deliveryAuthorization === 'ask-first' && input.deliverySatisfied !== true;
 }
 
+/** Issue #1836: merge authority set and merge not yet verified. */
+function isMergeBlocked(input: CompletionSignalEvaluationInput): boolean {
+  return input.mergeRequired === true && input.mergeSatisfied !== true;
+}
+
 function isAutoSignalAuthorized(input: CompletionSignalEvaluationInput): boolean {
   if (isDeliveryBlocked(input)) return false;
+  if (isMergeBlocked(input)) return false;
   return input.deliveryAuthorization === 'pre-authorized' || input.deliverySatisfied === true;
 }
 
@@ -217,6 +251,9 @@ function remediationFingerprint(input: CompletionSignalEvaluationInput, signalId
     signalId,
     input.deliveryAuthorization ?? 'none',
     input.deliverySatisfied === true ? 'delivered' : 'undelivered',
+    input.mergeRequired === true
+      ? (input.mergeSatisfied === true ? 'merged' : 'unmerged')
+      : 'merge-n/a',
   ].join('\u001f'));
 }
 

@@ -236,15 +236,24 @@ Exit behavior:
 - `2` for usage errors, including an unknown signal kind, a missing task id,
   bad flags, or an invalid `KOOKR_PORT`.
 - `4` when the server permanently rejects the signal: unknown/terminal task id,
-  **or** missing post-task lesson decision (`lesson_decision_required`, issue
-  #1538). Permanent failures are dropped from the outbox. For the lesson gate
+  missing post-task lesson decision (`lesson_decision_required`, issue #1538),
+  **or** merge authority with an open unmerged PR (`merge_required`, issue
+  #1836). Permanent failures are dropped from the outbox. For the lesson gate
   the CLI prints the server hint and asks you to run `kb remember …` or
   `printf 'No generic KB lesson: %s\n' '<reason>'` before re-signaling; JSON
-  mode reports `code: "LESSON_DECISION_REQUIRED"`.
+  mode reports `code: "LESSON_DECISION_REQUIRED"`. For the merge gate: merge the
+  PR (`gh pr merge` / `pnpm merge`, with `mergedAt` non-null) or
+  `printf 'PR-BLOCKER: %s\n' '<reason>'`, then re-signal.
 
 **Lesson decision (required before completion-ready).** Agents must leave either
 a `kb remember` write or an explicit skip marker in the Bash hook trail before
 signaling. See [lesson-decision-gate](./lesson-decision-gate.md).
+
+**Merge required (when merge authority was granted).** Child tasks launched under
+`mergeAfterImplementation=true` / the TERMINAL-STATE CONTRACT cannot raise
+`completion_ready` after opening a PR unless the PR is verified merged or a
+`PR-BLOCKER:` marker is in the hook trail. See
+[merge-required-gate](./merge-required-gate.md).
 
 ## `kookr lesson`
 

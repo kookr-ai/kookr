@@ -420,6 +420,19 @@ the task has 0 sessions, `kookrDir` is unset, or
 [lesson-decision-gate](./lesson-decision-gate.md). Human Complete
 (`POST /api/tasks/:id/complete`) is not gated.
 
+**Merge-required gate (issue #1836).** For `kind: "completion_ready"`, when the
+task holds merge authority (TERMINAL-STATE CONTRACT `mergeAfterImplementation=true`,
+playbook param, or explicit `mergeRequired` / `terminalState: "merged-pr"` stamp)
+and the hook trail shows a PR was opened (`gh pr create`) without merge
+verification and without a `PR-BLOCKER:` marker, the server returns `409` with
+`{"code": "merge_required", "hint": "…", "prNumbers"?: [...], "evidence"?: {…}}`
+and does **not** record the signal. Verification prefers live
+`gh pr view <n> --json mergedAt` (non-null) and falls back to a trail merge
+command when `gh` is unavailable. Ordinary open-PR review-gate tasks are
+unaffected. Kill-switch: `KOOKR_MERGE_REQUIRED_GATE=0|false|off|no`. Fail-open
+when `kookrDir`/hooks dir is unset. See
+[merge-required-gate](./merge-required-gate.md). Human Complete is not gated.
+
 **Auto-close.** When the task opted into the policy (`autoCloseOnSignal` — set at
 launch or inherited from its parent; see
 [Auto-Close on Completion Signal](./auto-close-on-signal.md)), a `completion_ready`

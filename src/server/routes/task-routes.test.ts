@@ -2310,6 +2310,149 @@ describe('POST /api/tasks/:id/signal', () => {
       expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
     });
   });
+
+  describe('merge-required gate (issue #1836)', () => {
+    let kookrDir: string;
+    const MERGE_PROMPT =
+      'TERMINAL-STATE CONTRACT (mergeAfterImplementation=true): you hold merge authority; mergedAt required.';
+
+    beforeEach(() => {
+      kookrDir = mkdtempSync(join(tmpdir(), 'kookr-merge-gate-'));
+      mkdirSync(join(kookrDir, 'hooks'), { recursive: true });
+      // Satisfy the lesson gate so merge-gate tests isolate their own code.
+      process.env.KOOKR_LESSON_DECISION_GATE = 'off';
+    });
+
+    afterEach(() => {
+      rmSync(kookrDir, { recursive: true, force: true });
+      delete process.env.KOOKR_LESSON_DECISION_GATE;
+      delete process.env.KOOKR_MERGE_REQUIRED_GATE;
+    });
+
+    function seedMergeTask(
+      taskStore: TaskStore,
+      commands: string[],
+      opts: { prompt?: string; tmuxSession?: string } = {},
+    ): string {
+      const tmuxSession = opts.tmuxSession ?? 'kookr-merge-gate';
+      const task = taskStore.createTask({
+        prompt: opts.prompt ?? MERGE_PROMPT,
+        cwd: '/repo',
+      });
+      taskStore.addSession(task.id, {
+        tmuxSession,
+        agentType: 'claude-code',
+        cwd: '/repo',
+        createdAt: new Date(),
+      });
+      const lines = commands.map((command) =>
+        JSON.stringify({
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Bash',
+          tool_input: { command },
+        }),
+      );
+      writeFileSync(
+        join(kookrDir, 'hooks', `${tmuxSession}.jsonl`),
+        `${lines.join('\n')}\n`,
+        'utf8',
+      );
+      return task.id;
+    }
+
+    test('rejects completion_ready when merge authority + open unmerged PR', async () => {
+      const taskStore = new TaskStore();
+      const id = seedMergeTask(taskStore, [
+        'gh pr create --fill',
+        'echo https://github.com/kookr-ai/kookr/pull/1836',
+      ]);
+      const deps = { ...mkLoopDeps(taskStore), kookrDir };
+
+      const res = await mkApp(deps).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('merge_required');
+      expect(body.hint).toMatch(/PR-BLOCKER/);
+      expect(body.prNumbers).toContain(1836);
+      expect(taskStore.getPendingSignal(id)).toBeUndefined();
+    });
+
+    test('allows completion_ready after gh pr merge in the trail', async () => {
+      const taskStore = new TaskStore();
+      const id = seedMergeTask(taskStore, [
+        'gh pr create --fill',
+        'gh pr merge 1836 --squash --delete-branch',
+      ]);
+      const deps = { ...mkLoopDeps(taskStore), kookrDir };
+
+      const res = await mkApp(deps).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready', note: 'merged' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
+    });
+
+    test('allows completion_ready after PR-BLOCKER marker', async () => {
+      const taskStore = new TaskStore();
+      const id = seedMergeTask(taskStore, [
+        'gh pr create --fill',
+        "printf 'PR-BLOCKER: executed-red on unit tests\\n'",
+      ]);
+      const deps = { ...mkLoopDeps(taskStore), kookrDir };
+
+      const res = await mkApp(deps).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
+    });
+
+    test('does not gate ordinary PR-is-the-review-gate tasks', async () => {
+      const taskStore = new TaskStore();
+      const id = seedMergeTask(
+        taskStore,
+        ['gh pr create --fill'],
+        { prompt: 'Open a PR; the PR is the review gate.' },
+      );
+      const deps = { ...mkLoopDeps(taskStore), kookrDir };
+
+      const res = await mkApp(deps).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
+    });
+
+    test('kill-switch KOOKR_MERGE_REQUIRED_GATE=off bypasses the gate', async () => {
+      process.env.KOOKR_MERGE_REQUIRED_GATE = 'off';
+      const taskStore = new TaskStore();
+      const id = seedMergeTask(taskStore, ['gh pr create --fill']);
+      const deps = { ...mkLoopDeps(taskStore), kookrDir };
+
+      const res = await mkApp(deps).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
+    });
+  });
 });
 
 describe('POST /api/tasks/abort (issue #1325)', () => {

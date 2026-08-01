@@ -151,6 +151,30 @@ describe('evaluateCompletionSignal', () => {
     expect(evaluate({ deliveryAuthorization: 'ask-first', deliverySatisfied: false }).reason).toBe('delivery_blocked');
   });
 
+  test('never auto-signals a merge-authority task until merge is satisfied (issue #1836)', () => {
+    const blocked = evaluate({
+      deliveryAuthorization: 'pre-authorized',
+      mergeRequired: true,
+    });
+    expect(blocked.action).toBe('skip');
+    expect(blocked.reason).toBe('merge_required');
+
+    const stillBlocked = evaluate({
+      deliveryAuthorization: 'pre-authorized',
+      mergeRequired: true,
+      mergeSatisfied: false,
+    });
+    expect(stillBlocked.reason).toBe('merge_required');
+
+    const ok = evaluate({
+      deliveryAuthorization: 'pre-authorized',
+      mergeRequired: true,
+      mergeSatisfied: true,
+    });
+    expect(ok.action).toBe('auto_signal');
+    expect(ok.reason).toBe('auto_signal_authorized');
+  });
+
   test('skips when the turn is not cleanly complete', () => {
     const decision = evaluate({ events: [{ type: 'tool_use', sessionId: 's1', toolName: 'Bash', eventSeq: 1 }] });
     expect(decision.action).toBe('skip');
