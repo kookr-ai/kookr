@@ -198,7 +198,15 @@ describe('evidenceFromTrail', () => {
     expect(e.blockerRecorded).toBe(false);
   });
 
-  test('merge command or live allMerged satisfies', () => {
+  test('PR number alone without create does not count as prOpened', () => {
+    const e = evidenceFromTrail({
+      ...emptyMergeTrailEvidence(),
+      prNumbers: [5],
+    });
+    expect(e.prOpened).toBe(false);
+  });
+
+  test('trail merge satisfies only when live check is absent', () => {
     expect(
       evidenceFromTrail({
         ...emptyMergeTrailEvidence(),
@@ -207,6 +215,20 @@ describe('evidenceFromTrail', () => {
         prNumbers: [5],
       }).mergedVerified,
     ).toBe(true);
+  });
+
+  test('live truth wins over trail merge command (failed merge attempt)', () => {
+    expect(
+      evidenceFromTrail(
+        {
+          ...emptyMergeTrailEvidence(),
+          prCreateCommands: 1,
+          prMergeCommands: 1,
+          prNumbers: [5],
+        },
+        { allMerged: false, checked: 1 },
+      ).mergedVerified,
+    ).toBe(false);
     expect(
       evidenceFromTrail(
         { ...emptyMergeTrailEvidence(), prCreateCommands: 1, prNumbers: [5] },
@@ -342,6 +364,43 @@ describe('resolveTaskMergeEvidence / resolveMergeRequiredGate', () => {
       },
       hooksDir,
       { verifyMerged },
+    );
+    expect(verdict.allow).toBe(true);
+  });
+
+  test('live allMerged=false rejects even when trail has merge command', async () => {
+    writeLog('sess', ['gh pr create --fill', 'gh pr merge 55 --squash']);
+    const verdict = await resolveMergeRequiredGate(
+      {
+        mergeRequired: true,
+        sessions: [{ tmuxSession: 'sess' }],
+      },
+      hooksDir,
+      { verifyMerged: async () => ({ allMerged: false, checked: 1 }) },
+    );
+    expect(verdict.allow).toBe(false);
+    expect(verdict.code).toBe(MERGE_REQUIRED_CODE);
+  });
+
+  test('fail-open when hooksDir is undefined', async () => {
+    const verdict = await resolveMergeRequiredGate(
+      { mergeRequired: true, sessions: [{ tmuxSession: 'sess' }] },
+      undefined,
+    );
+    expect(verdict.allow).toBe(true);
+    expect(verdict.reason).toMatch(/hooks directory/i);
+  });
+
+  test('verifyMerged throw falls back to trail (merge command allows)', async () => {
+    writeLog('sess', ['gh pr create --fill', 'gh pr merge 7 --squash']);
+    const verdict = await resolveMergeRequiredGate(
+      { mergeRequired: true, sessions: [{ tmuxSession: 'sess' }] },
+      hooksDir,
+      {
+        verifyMerged: async () => {
+          throw new Error('gh unavailable');
+        },
+      },
     );
     expect(verdict.allow).toBe(true);
   });

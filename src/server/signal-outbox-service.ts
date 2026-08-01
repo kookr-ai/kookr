@@ -27,8 +27,10 @@ import {
   resolveTaskLessonDecision,
 } from '../core/lesson-decision.js';
 import {
+  createGhMergedAtVerifier,
   isMergeRequiredGateEnabled,
   resolveMergeRequiredGate,
+  shouldUseLiveMergeVerify,
 } from '../core/merge-required.js';
 
 /** Default drain interval: 30 seconds — signals are more time-sensitive than lessons. */
@@ -252,7 +254,11 @@ export class SignalOutboxService {
       // spool cannot re-open the stranded-PR completion hole.
       if (entry.kind === 'completion_ready' && isMergeRequiredGateEnabled()) {
         const hooksDir = this.kookrDir ? hooksDirFromKookrDir(this.kookrDir) : undefined;
-        const mergeGate = await resolveMergeRequiredGate(task, hooksDir);
+        const mergeGate = await resolveMergeRequiredGate(task, hooksDir, {
+          ...(shouldUseLiveMergeVerify()
+            ? { verifyMerged: createGhMergedAtVerifier({ cwd: task.cwd }) }
+            : {}),
+        });
         if (!mergeGate.allow) {
           this.log(
             `[signal-outbox] drop completion_ready for ${entry.taskId}: ${mergeGate.reason}`,

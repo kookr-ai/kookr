@@ -38,6 +38,8 @@ dev instances on the same host share one queue. Override with
   entries still run the lesson-decision gate against hook logs (issue #1608)
   before `setPendingSignal`; a rejection is `permanent_fail` (entry dropped),
   matching the CLI's treatment of HTTP 409 `lesson_decision_required`.
+  `completion_ready` entries also run the merge-required gate (issue #1836);
+  a rejection is likewise `permanent_fail`, matching HTTP 409 `merge_required`.
   Applied signals are stamped `source: "outbox"` so yield v2 can attribute
   auto-close to the `outbox_drained` completion path.
 - **CLI-side:** a successful live POST also drains any remaining siblings

@@ -7,6 +7,7 @@ Operator and developer references for Kookr:
 - [CLI](cli.md)
 - [Data Directory](data-directory.md)
 - [Lesson-decision gate + yield metric](lesson-decision-gate.md)
+- [Merge-required gate](merge-required-gate.md)
 - [Lesson-write spool](lesson-write-spool.md)
 - [Easy Sharing A0 Dogfood](easy-sharing-a0-dogfood.md)
 - [Environment Variables](environment-variables.md)

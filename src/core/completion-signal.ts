@@ -83,15 +83,16 @@ export interface CompletionSignalEvaluationInput {
    */
   deliverySatisfied?: boolean;
   /**
-   * Issue #1836: when true the task holds merge authority (merged PR is the
-   * terminal state). Auto-signal is refused until {@link mergeSatisfied} is
-   * true so a clean Stop after "PR created" cannot retire the task as complete.
+   * Issue #1836: optional pure-layer input for callers that already resolved
+   * merge authority. The hard enforcement boundary is the HTTP/outbox
+   * `merge_required` 409 gate (`merge-required.ts`); this field only affects
+   * {@link evaluateCompletionSignal} when a caller supplies it.
    */
   mergeRequired?: boolean;
   /**
-   * Issue #1836: true when the open PR is verified merged or a PR-BLOCKER was
-   * recorded. Only consulted when {@link mergeRequired} is true; undefined is
-   * treated as NOT satisfied.
+   * Issue #1836: optional pure-layer input — true when merge is verified or a
+   * PR-BLOCKER was recorded. Only consulted when {@link mergeRequired} is true;
+   * undefined is treated as NOT satisfied.
    */
   mergeSatisfied?: boolean;
   /** Event window used to derive clean-turn completion evidence. */
@@ -176,10 +177,9 @@ export function evaluateCompletionSignal(input: CompletionSignalEvaluationInput)
     };
   }
 
-  // 3b. Merge-authority gating (issue #1836): a task told to merge must not
-  //     auto-raise completion-ready on a clean Stop after "PR created". The
-  //     HTTP/outbox `merge_required` 409 is the hard boundary; this layer
-  //     prevents the Stop-hook auto-signal path from bypassing it.
+  // 3b. Optional pure-layer merge gate (issue #1836). Callers that resolve
+  //     merge authority + satisfaction may pass these fields; the durable
+  //     enforcement path is HTTP/outbox `merge_required` 409, not this helper.
   if (isMergeBlocked(input)) {
     return {
       action: 'skip',

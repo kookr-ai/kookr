@@ -71,8 +71,10 @@ import {
   resolveTaskLessonDecision,
 } from '../../core/lesson-decision.js';
 import {
+  createGhMergedAtVerifier,
   isMergeRequiredGateEnabled,
   resolveMergeRequiredGate,
+  shouldUseLiveMergeVerify,
 } from '../../core/merge-required.js';
 
 const MAX_TASK_EDGE_COUNT = 64;
@@ -790,7 +792,14 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       const hooksDir = deps.kookrDir
         ? hooksDirFromKookrDir(deps.kookrDir)
         : undefined;
-      const mergeGate = await resolveMergeRequiredGate(task, hooksDir);
+      const mergeGate = await resolveMergeRequiredGate(task, hooksDir, {
+        // Live mergedAt check preferred over PreToolUse merge-command intent.
+        // Skip live probes under Vitest (hermetic) and when the env kill-switch
+        // is set — trail evidence is then the sole verification path.
+        ...(shouldUseLiveMergeVerify()
+          ? { verifyMerged: createGhMergedAtVerifier({ cwd: task.cwd }) }
+          : {}),
+      });
       if (!mergeGate.allow) {
         return c.json(
           {
