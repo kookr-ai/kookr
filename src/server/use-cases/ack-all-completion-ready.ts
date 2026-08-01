@@ -2,8 +2,8 @@ import { appendAuditRow } from '../../core/audit-log.js';
 import { nowISO } from '../../core/interaction-log.js';
 import {
   DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
-  listStaleCompletionReadyTasks,
-} from '../../core/completion-ready-cleanup.js';
+  selectAutoClosableCompletionReadyTasks,
+} from '../../core/completion/index.js';
 import type { TaskStore } from '../../core/tasks.js';
 import type {
   AckAllCompletionReadyResponse,
@@ -58,11 +58,12 @@ export async function ackAllStaleCompletionReadyTasks(
   } = {},
 ): Promise<AckAllCompletionReadyResponse> {
   const force = opts.force === true;
-  const entries = listStaleCompletionReadyTasks(deps.taskStore.listTasks(), {
+  const entries = selectAutoClosableCompletionReadyTasks(deps.taskStore.listTasks(), {
     now: opts.now,
     thresholdMs: opts.thresholdMs ?? DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
     ttlMs: opts.ttlMs,
-  }).filter((entry) => force || entry.canAutoClose);
+    force,
+  });
 
   const results: AckAllCompletionReadyTaskResult[] = [];
   for (const entry of entries) {

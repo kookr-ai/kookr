@@ -8,7 +8,7 @@ import {
   type MergedPrAttribution,
   type TrackedPrRef,
 } from './delivered-task-completion.js';
-import type { Task } from './task-read-model.js';
+import type { Task } from '../task-read-model.js';
 
 const T0 = Date.parse('2026-07-26T00:00:00.000Z');
 const MERGED: MergedPrAttribution = {

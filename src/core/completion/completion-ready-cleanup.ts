@@ -1,4 +1,4 @@
-import type { Task } from './task-read-model.js';
+import type { Task } from '../task-read-model.js';
 
 export const DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS = 60 * 60 * 1000;
 
@@ -134,4 +134,61 @@ export function listStaleCompletionReadyTasks(
   }
 
   return entries.sort((a, b) => Date.parse(a.signal.raisedAt) - Date.parse(b.signal.raisedAt));
+}
+
+/**
+ * True when a task has an active Ralph loop (running or paused) that owns its
+ * lifecycle. The background auto-close sweep never closes such a task — the
+ * Ralph controller is responsible for completing it.
+ */
+export function isActiveRalphLoop(task: Pick<Task, 'ralphLoop'>): boolean {
+  return task.ralphLoop?.status === 'running' || task.ralphLoop?.status === 'paused';
+}
+
+export interface SelectAutoClosableOptions {
+  now?: Date;
+  thresholdMs?: number;
+  ttlMs?: number;
+  isProviderPaused?: (task: Task) => boolean;
+  /**
+   * Include stale entries that still require manual action, not only the
+   * policy-auto-closable ones — the supervisor "ack all" force drain (issue
+   * #1526 Phase B / FM12).
+   */
+  force?: boolean;
+  /**
+   * Skip tasks with an active Ralph loop. The background sweep sets this (the
+   * Ralph controller owns those tasks); the operator force-drain leaves it off.
+   */
+  excludeActiveRalph?: boolean;
+  /**
+   * Oldest-first cap on the returned batch — the sweep's per-tick teardown
+   * throttle. Entries are already sorted oldest-first by
+   * {@link listStaleCompletionReadyTasks}.
+   */
+  limit?: number;
+}
+
+/**
+ * Single owner of "which completion-ready tasks are eligible to auto-close right
+ * now" (issue #1827). Both the background sweep (`autoCloseStaleCompletionReadyTasks`
+ * in lifecycle-timers) and the supervisor bulk-ack use-case
+ * (`ackAllStaleCompletionReadyTasks`) funnel through here instead of each
+ * re-deriving the eligibility filter over {@link listStaleCompletionReadyTasks}.
+ */
+export function selectAutoClosableCompletionReadyTasks(
+  tasks: Task[],
+  opts: SelectAutoClosableOptions = {},
+): StaleCompletionReadyTask[] {
+  const entries = listStaleCompletionReadyTasks(tasks, {
+    now: opts.now,
+    thresholdMs: opts.thresholdMs,
+    ttlMs: opts.ttlMs,
+    ...(opts.isProviderPaused ? { isProviderPaused: opts.isProviderPaused } : {}),
+  }).filter(
+    (entry) =>
+      (opts.force === true || entry.canAutoClose)
+      && (opts.excludeActiveRalph !== true || !isActiveRalphLoop(entry.task)),
+  );
+  return opts.limit !== undefined ? entries.slice(0, opts.limit) : entries;
 }

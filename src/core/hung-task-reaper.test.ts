@@ -7,7 +7,7 @@ import {
   hasRecentLiveness,
   isTaskHungSuspect,
 } from './hung-task-reaper.js';
-import type { MergedPrAttribution } from './delivered-task-completion.js';
+import type { MergedPrAttribution } from './completion/index.js';
 import { Watchdog } from './watchdog.js';
 
 const THRESHOLD_MS = 3 * 60 * 60 * 1000; // 3h, matches the default

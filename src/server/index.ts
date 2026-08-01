@@ -37,7 +37,7 @@ import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
 import { completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
 import type { Task } from '../core/tasks.js';
-import { selectDeliveredMergedPr, type MergedPrAttribution } from '../core/delivered-task-completion.js';
+import { selectDeliveredMergedPr, type MergedPrAttribution } from '../core/completion/index.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
 import { buildCapacityLedger } from '../core/capacity-ledger.js';
 import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';

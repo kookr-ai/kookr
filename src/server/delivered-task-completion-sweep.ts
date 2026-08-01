@@ -38,7 +38,7 @@ import {
   buildDeliveredCompletionNote,
   classifyDeliveredCompletion,
   type MergedPrAttribution,
-} from '../core/delivered-task-completion.js';
+} from '../core/completion/index.js';
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 

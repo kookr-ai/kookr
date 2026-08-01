@@ -19,8 +19,9 @@
  * merge, well before reap eligibility (hours).
  */
 
-import type { CompletionDigest } from './completion-digest.js';
-import type { Task } from './task-read-model.js';
+import type { CompletionDigest } from '../completion-digest.js';
+import type { Task } from '../task-read-model.js';
+import { isActiveRalphLoop } from './completion-ready-cleanup.js';
 
 /** Default post-merge cleanup budget: 10 minutes (issue #1560). */
 export const DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS = 10 * 60 * 1000;
@@ -112,10 +113,6 @@ export interface DeliveredCompletionDecision {
   reason: DeliveredCompletionReason;
   /** Milliseconds elapsed since the merge was first observed, when merged. */
   elapsedSinceMergeMs?: number;
-}
-
-function isActiveRalphLoop(task: Pick<Task, 'ralphLoop'>): boolean {
-  return task.ralphLoop?.status === 'running' || task.ralphLoop?.status === 'paused';
 }
 
 /**

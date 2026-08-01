@@ -5,11 +5,11 @@ import { join } from 'node:path';
 import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { GitHubStateStore } from '../core/github-state-store.js';
-import { selectDeliveredMergedPr } from '../core/delivered-task-completion.js';
+import { selectDeliveredMergedPr } from '../core/completion/index.js';
 import { readDispositionEntries } from '../core/disposition-ledger.js';
 import type { Task } from '../core/tasks.js';
 import type { GitHubPRState, GitHubReference } from '../core/github-types.js';
-import type { MergedPrAttribution } from '../core/delivered-task-completion.js';
+import type { MergedPrAttribution } from '../core/completion/index.js';
 import { reapHungTask, type HungTaskReapEvidence } from './hung-task-reaper.js';
 
 /**
