@@ -125,6 +125,13 @@ degraded-but-alive process apart from one that must stop receiving traffic:
   at `/ready` so a degraded instance is cordoned (stops receiving traffic)
   without being restarted.
 
+**Engine vs relay:** these relay probes are *not* a substitute for the engine
+process supervisor. The main Kookr server's schedule-runner, terminal backend,
+and startup recovery are invisible here. Supervisors that must restart or
+cordon the **engine** (`node dist/server/start.js` / `kookr.service`) MUST probe
+`GET /api/ready` on the dashboard server instead (issue #1707). See
+[Production Server Service](production-server-service.md#readiness-probe-engine-not-relay).
+
 ### Graceful Shutdown
 
 The relay traps `SIGTERM` and `SIGINT` and runs its normal teardown exactly
