@@ -129,29 +129,28 @@ export interface EventPipelineDeps {
   taskShareService?: { publishTaskProjectionForTask(taskId: string): void };
   terminalInputCoordinator?: TerminalInputCoordinator;
   /**
-   * Coalescing window (ms) for centralized snapshot broadcasts (#704). A burst
-   * of events within this window collapses to a single full-snapshot rebuild
-   * plus a single WebSocket fan-out; the trailing flush always rebuilds from
-   * the live monitor snapshot, so clients converge on final state. Attention
-   * transitions (a newly-entered warning/critical anomaly) bypass coalescing
-   * and flush immediately so "an agent needs you" is never delayed.
+   * Fixed coalescing window (ms) for centralized snapshot broadcasts (#704 / #1778).
+   * A burst of events within this window collapses to a single full-snapshot
+   * rebuild plus a single WebSocket fan-out; the trailing flush always rebuilds
+   * from the live monitor snapshot, so clients converge on final state.
+   * Attention transitions (a newly-entered warning/critical anomaly) bypass
+   * coalescing and flush immediately so "an agent needs you" is never delayed.
    *
-   * Defaults to 250ms. A full snapshot rebuild + fan-out stays heavyweight at
-   * fleet scale even after the issue #1749 clone removal (projection over
-   * every agent/task/relation plus a multi-MB JSON.stringify per scope), so
-   * the window amortizes hook-event bursts rather than chasing display
-   * frames — the old 16ms window let sustained bursts flush back-to-back,
-   * which compounded the #1749 heap-limit OOMs. Attention transitions still
-   * bypass the window entirely via the immediate-flush path, so urgency is
-   * never delayed by coalescing. Set to `0` to disable coalescing and flush
-   * synchronously.
+   * When **omitted**, the pipeline uses an adaptive window
+   * `max(16, min(250, f(eventLoopDelayP95, agentCount)))` so idle/single-agent
+   * traffic stays snappy (~16ms) while multi-agent storms stretch toward 250ms
+   * and leave the event loop free for terminal I/O (#1778).
+   *
+   * Set to a non-negative number to pin a fixed window (`0` disables coalescing
+   * and flushes synchronously).
    */
   snapshotCoalesceWindowMs?: number;
   userInputDeliveries?: UserInputDeliveryService;
   /**
-   * Latest sampled event-loop delay p95 (ms) for snapshot-shed (#1775).
-   * Reuses the resource-sampler value already powering admission / WS load-shed.
-   * Fail-open: missing getter or null/non-finite samples never shed.
+   * Latest sampled event-loop delay p95 (ms) for snapshot-shed (#1775) and
+   * adaptive coalesce window (#1778). Reuses the resource-sampler value already
+   * powering admission / WS load-shed. Fail-open for shed; missing/null samples
+   * treat delay as 0 for adaptive window (healthy floor).
    */
   getEventLoopDelayP95Ms?: () => number | null | undefined;
   /**
@@ -161,7 +160,81 @@ export interface EventPipelineDeps {
   snapshotShedEventLoopDelayThresholdMs?: number;
 }
 
-const DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS = 250;
+/** Idle / healthy floor for adaptive snapshot coalesce (one display frame). */
+export const MIN_SNAPSHOT_COALESCE_WINDOW_MS = 16;
+/** Storm ceiling for adaptive snapshot coalesce (matches prior fixed default). */
+export const MAX_SNAPSHOT_COALESCE_WINDOW_MS = 250;
+/** Extra coalesce ms per live agent beyond the first (#1778). */
+export const SNAPSHOT_COALESCE_MS_PER_AGENT = 8;
+/**
+ * @deprecated Prefer adaptive mode (omit fixed window) or
+ * {@link MAX_SNAPSHOT_COALESCE_WINDOW_MS}. Kept as the historical fixed default
+ * for callers that still pin a constant.
+ */
+export const DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS = MAX_SNAPSHOT_COALESCE_WINDOW_MS;
+
+/**
+ * Pure map: event-loop delay p95 + fleet size → coalesce window (#1778).
+ * `max(minMs, min(maxMs, minMs + delay + max(0, agents-1)*msPerAgent))`.
+ * Missing/non-finite delay or agent count treat as 0 (healthy idle floor).
+ */
+export function computeAdaptiveSnapshotCoalesceWindowMs(input: {
+  eventLoopDelayP95Ms?: number | null;
+  agentCount?: number | null;
+  minMs?: number;
+  maxMs?: number;
+  msPerAgent?: number;
+}): number {
+  const minMs = input.minMs ?? MIN_SNAPSHOT_COALESCE_WINDOW_MS;
+  const maxMs = input.maxMs ?? MAX_SNAPSHOT_COALESCE_WINDOW_MS;
+  const msPerAgent = input.msPerAgent ?? SNAPSHOT_COALESCE_MS_PER_AGENT;
+  const floor = Number.isFinite(minMs) && minMs >= 0 ? minMs : MIN_SNAPSHOT_COALESCE_WINDOW_MS;
+  const ceiling = Number.isFinite(maxMs) && maxMs >= floor ? maxMs : Math.max(floor, MAX_SNAPSHOT_COALESCE_WINDOW_MS);
+  const delay =
+    input.eventLoopDelayP95Ms != null && Number.isFinite(input.eventLoopDelayP95Ms) && input.eventLoopDelayP95Ms > 0
+      ? input.eventLoopDelayP95Ms
+      : 0;
+  const agents =
+    input.agentCount != null && Number.isFinite(input.agentCount) && input.agentCount > 0
+      ? Math.floor(input.agentCount)
+      : 0;
+  const perAgent = Number.isFinite(msPerAgent) && msPerAgent > 0 ? msPerAgent : 0;
+  const raw = floor + delay + Math.max(0, agents - 1) * perAgent;
+  return Math.max(floor, Math.min(ceiling, Math.round(raw)));
+}
+
+/** Last adaptive/fixed coalesce decision for metrics (#1778). */
+export interface SnapshotCoalesceMetricsSnapshot {
+  schemaVersion: 'snapshot-coalesce.v1';
+  /** `adaptive` when no fixed override; `fixed` when pinned via dep/env. */
+  mode: 'adaptive' | 'fixed';
+  minMs: number;
+  maxMs: number;
+  /** Pinned window when mode is `fixed`; null in adaptive mode. */
+  fixedWindowMs: number | null;
+  /** Last window (ms) used to arm the coalesce timer (or fixed pin). */
+  lastEffectiveWindowMs: number;
+  /** Last finite p95 sample consulted for adaptive arm, or null. */
+  lastEventLoopDelayP95Ms: number | null;
+  /** Last agent-count sample consulted for adaptive arm. */
+  lastAgentCount: number;
+}
+
+/**
+ * Cheap live-agent count for adaptive coalesce (#1778). Uses
+ * {@link Monitor.getRetentionMetrics} only (map size — no payload copies).
+ * Missing retention metrics → 0 (healthy floor); never calls getSnapshot so
+ * the hook hot path does not rebuild full agent state just to arm a timer.
+ */
+function readLiveAgentCount(monitor: Monitor): number {
+  const retention = (
+    monitor as Monitor & { getRetentionMetrics?: () => { agents?: number } }
+  ).getRetentionMetrics?.();
+  if (retention && typeof retention.agents === 'number' && Number.isFinite(retention.agents)) {
+    return Math.max(0, Math.floor(retention.agents));
+  }
+  return 0;
+}
 
 /**
  * Anomalies that warrant interrupting the operator — these bypass broadcast
@@ -193,6 +266,8 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
   flushSnapshotNow: () => void;
   /** In-memory shed counter + threshold for `/metrics` / health (#1775). */
   getSnapshotShedMetrics: () => SnapshotShedMetricsSnapshot;
+  /** Last adaptive/fixed coalesce window decision (#1778). */
+  getSnapshotCoalesceMetrics: () => SnapshotCoalesceMetricsSnapshot;
 } {
   const {
     adapter, monitor, taskStore, tokenTracker, watchdog,
@@ -200,7 +275,7 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
     telemetryLog,
   } = deps;
 
-  // --- Snapshot broadcast coalescing (#704) ----------------------------------
+  // --- Snapshot broadcast coalescing (#704 / #1778) --------------------------
   // Every processed hook event asks for a full-snapshot rebuild + fan-out. On a
   // busy fleet, a burst produces N redundant rebuilds and N fan-outs. We
   // collapse each window's worth of requests to a single trailing rebuild +
@@ -216,17 +291,52 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
   // #1775: when event-loop delay p95 is already saturated, non-critical
   // flushes skip the multi-MB rebuild+fan-out (leave dirty + re-arm) so the
   // loop can serve terminal I/O. Attention / force flushes fail open.
-  const coalesceWindowMs = deps.snapshotCoalesceWindowMs ?? DEFAULT_SNAPSHOT_COALESCE_WINDOW_MS;
+  //
+  // #1778: when no fixed window is pinned, resolve the arm delay adaptively
+  // from event-loop p95 + live agent count so idle stays ~16ms and storms
+  // stretch toward 250ms.
+  const fixedCoalesceWindowMs = deps.snapshotCoalesceWindowMs;
+  const coalesceMode: 'adaptive' | 'fixed' =
+    fixedCoalesceWindowMs === undefined ? 'adaptive' : 'fixed';
   const snapshotShedThresholdMs =
     deps.snapshotShedEventLoopDelayThresholdMs ?? DEFAULT_SNAPSHOT_SHED_EVENT_LOOP_DELAY_MS;
   let snapshotDirty = false;
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let snapshotShedTotal = 0;
   let lastSnapshotShedSampleMs: number | null = null;
+  let lastEffectiveCoalesceWindowMs =
+    coalesceMode === 'fixed'
+      ? fixedCoalesceWindowMs!
+      : MIN_SNAPSHOT_COALESCE_WINDOW_MS;
+  let lastCoalesceDelaySampleMs: number | null = null;
+  let lastCoalesceAgentCount = 0;
+
+  const resolveCoalesceWindowMs = (): number => {
+    if (coalesceMode === 'fixed') {
+      lastEffectiveCoalesceWindowMs = fixedCoalesceWindowMs!;
+      return fixedCoalesceWindowMs!;
+    }
+    const p95 = deps.getEventLoopDelayP95Ms?.();
+    if (p95 != null && Number.isFinite(p95)) {
+      lastCoalesceDelaySampleMs = p95;
+    } else {
+      lastCoalesceDelaySampleMs = null;
+    }
+    const agentCount = readLiveAgentCount(monitor);
+    lastCoalesceAgentCount = agentCount;
+    const windowMs = computeAdaptiveSnapshotCoalesceWindowMs({
+      eventLoopDelayP95Ms: p95,
+      agentCount,
+    });
+    lastEffectiveCoalesceWindowMs = windowMs;
+    return windowMs;
+  };
 
   const armCoalesceTimer = (flush: () => void) => {
-    if (flushTimer !== null || coalesceWindowMs <= 0) return;
-    flushTimer = setTimeout(flush, coalesceWindowMs);
+    if (flushTimer !== null) return;
+    const windowMs = resolveCoalesceWindowMs();
+    if (windowMs <= 0) return;
+    flushTimer = setTimeout(flush, windowMs);
     // Don't let a pending coalesce window keep the process (or a test runner)
     // alive; the flush is best-effort UI state, not a durability guarantee.
     flushTimer.unref?.();
@@ -271,7 +381,9 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
 
   const broadcastSnapshot = () => {
     snapshotDirty = true;
-    if (coalesceWindowMs <= 0) {
+    // Fixed window of 0 disables coalescing (sync flush). Adaptive never
+    // resolves to 0 (floor is MIN), so only the fixed pin can take this path.
+    if (coalesceMode === 'fixed' && fixedCoalesceWindowMs! <= 0) {
       flushSnapshotInternal();
       return;
     }
@@ -492,6 +604,16 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
       thresholdMs: snapshotShedThresholdMs,
       lastEventLoopDelayP95Ms: lastSnapshotShedSampleMs,
       shedTotal: snapshotShedTotal,
+    }),
+    getSnapshotCoalesceMetrics: () => ({
+      schemaVersion: 'snapshot-coalesce.v1',
+      mode: coalesceMode,
+      minMs: MIN_SNAPSHOT_COALESCE_WINDOW_MS,
+      maxMs: MAX_SNAPSHOT_COALESCE_WINDOW_MS,
+      fixedWindowMs: coalesceMode === 'fixed' ? fixedCoalesceWindowMs! : null,
+      lastEffectiveWindowMs: lastEffectiveCoalesceWindowMs,
+      lastEventLoopDelayP95Ms: lastCoalesceDelaySampleMs,
+      lastAgentCount: lastCoalesceAgentCount,
     }),
   };
 }
