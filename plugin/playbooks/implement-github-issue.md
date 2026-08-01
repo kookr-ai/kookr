@@ -273,6 +273,21 @@ gh issue view "$TARGET" --repo "$REPO" --json number,title,body,labels,assignees
 
 Read the issue title, body, labels, and any linked discussions to fully understand the requirements and acceptance criteria.
 
+**Incident close-out gate (issue #1750).** If the issue carries an incident label (`incident`, `p0`, or `prod-incident` — case-insensitive), this is an **outcome-gated** issue: merge of a fix is **not** resolution. Record `IS_INCIDENT=1` for later phases. You must:
+- Use `Refs #<TARGET>` (never `Closes #<TARGET>`) in the PR body so GitHub merge cannot auto-close the incident.
+- After the fix PR merges, leave the incident open for the `incident-close-out-gate` playbook (or a manual end-state probe) to verify the real-world outcome and close with a convergence receipt.
+- Do **not** treat Phase 8 merge as "issue resolved" for incident-labeled targets.
+
+```bash
+IS_INCIDENT=0
+if gh issue view "$TARGET" --repo "$REPO" --json labels \
+  --jq '[.labels[].name | ascii_downcase] | any(. == "incident" or . == "p0" or . == "prod-incident")' \
+  | grep -qx true; then
+  IS_INCIDENT=1
+  echo "Incident-labeled target #$TARGET: will use Refs (not Closes); merge ≠ resolution."
+fi
+```
+
 If `{{closeUnworthyIssues}}` is `true` and the issue is clearly not worth implementing (obsolete, out of scope, duplicate, or net-negative), close it with `gh issue close <TARGET> --comment "<one-line reason>"`, release any claim, and move on to the next target instead of implementing. When `false`, never close — skip and report instead.
 
 ## Phase 2: Acquire or Resume Claim
@@ -528,6 +543,21 @@ Closes #<TARGET>
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
 )"
+```
+
+**Incident closing keyword (issue #1750).** Before creating the PR, substitute the closing line based on `IS_INCIDENT` from Phase 1:
+
+- If `IS_INCIDENT=0` (default): keep `Closes #<TARGET>` as shown above.
+- If `IS_INCIDENT=1`: replace that line with `Refs #<TARGET>` and add
+  `Incident close-out gated — verification required before closing (incident-close-out-gate).`
+  The PR body must **not** contain `Closes #<TARGET>`, `Fixes #<TARGET>`, or
+  `Resolves #<TARGET>` — GitHub merge must not auto-close the incident.
+
+```bash
+# When IS_INCIDENT=1, the closing line is Refs (never Closes/Fixes/Resolves):
+#   Refs #<TARGET>
+# When IS_INCIDENT=0:
+#   Closes #<TARGET>
 ```
 
 Title conventions:

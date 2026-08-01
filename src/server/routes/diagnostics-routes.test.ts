@@ -601,6 +601,48 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — serving SHA (issue #1750)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health serving SHA (issue #1750)', () => {
+    test('exposes top-level sha and gitSha aliases of build.commitHash', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {
+          commitHash: 'deadbeef0123456789abcdef',
+          commitShort: 'deadbeef',
+          branch: 'main',
+          buildTimestamp: '2026-08-01T00:00:00.000Z',
+          version: '1.0.0',
+        },
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        sha?: string;
+        gitSha?: string;
+        build: { commitHash: string };
+      };
+      expect(body.sha).toBe('deadbeef0123456789abcdef');
+      expect(body.gitSha).toBe('deadbeef0123456789abcdef');
+      expect(body.build.commitHash).toBe('deadbeef0123456789abcdef');
+    });
+
+    test('omits sha/gitSha when buildInfo has no commitHash', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { sha?: string; gitSha?: string };
+      expect(body.sha).toBeUndefined();
+      expect(body.gitSha).toBeUndefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — terminalWrite block (issue #1776)
   // ---------------------------------------------------------------------------
   describe('GET /api/health terminalWrite block', () => {
