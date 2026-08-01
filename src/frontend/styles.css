@@ -13270,6 +13270,7 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 .debug-timeline-entry--websocket { border-left: 3px solid var(--blue); }
 .debug-timeline-entry--store { border-left: 3px solid var(--teal); }
 .debug-timeline-entry--finding-lifecycle { border-left: 3px solid var(--amber); }
+.debug-timeline-entry--longtask { border-left: 3px solid var(--red); }
 
 .debug-timeline-empty {
   padding: 24px 12px;

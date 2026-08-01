@@ -235,6 +235,49 @@ describe('bug report bundle', () => {
     expect(bundle.source.versionUnavailableReason).toBeUndefined();
   });
 
+  test('includes longtask samples with numeric bounds only', () => {
+    const { bundle, serialized } = buildBugReportBundle({
+      agents: [agent()],
+      selectedAgentId: 'agent-1',
+      selectedProject: null,
+      buildInfo: null,
+      serverStartedAt: null,
+      alerts: [],
+      wireObservations: [],
+      debugTimeline: [{
+        sequence: 1,
+        t: '2026-05-24T10:00:00.000Z',
+        kind: 'longtask',
+        summary: 'longtask snapshot-apply: 250ms /home/alice/secret',
+        tags: ['longtask', 'snapshot-apply', 'secret-path'],
+        payload: {
+          source: 'snapshot-apply',
+          durationMs: 250.25,
+          agentCount: 40,
+          secret: 'should-not-appear',
+          name: 'self',
+        },
+      }],
+      now: new Date('2026-05-24T10:00:00.000Z'),
+    });
+
+    expect(bundle.debugTimeline).toEqual([{
+      sequence: 1,
+      t: '2026-05-24T10:00:00.000Z',
+      kind: 'longtask',
+      summary: 'longtask snapshot-apply: 250ms',
+      tags: ['debug', 'longtask', 'snapshot-apply'],
+      payload: {
+        source: 'snapshot-apply',
+        durationMs: 250.25,
+        agentCount: 40,
+        name: 'self',
+      },
+    }]);
+    expect(serialized).not.toContain('should-not-appear');
+    expect(serialized).not.toContain('/home/alice');
+  });
+
   test('records capture diagnostics when a section projection fails closed', () => {
     const brokenAgent = agent();
     Object.defineProperty(brokenAgent, 'tokenUsage', {

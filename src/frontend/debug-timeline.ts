@@ -1,7 +1,8 @@
 import type { AgentState } from '../shared/protocol.js';
 
-export type DebugTimelineKind = 'websocket' | 'store' | 'finding-lifecycle';
+export type DebugTimelineKind = 'websocket' | 'store' | 'finding-lifecycle' | 'longtask';
 export type DebugTimelineDirection = 'inbound' | 'outbound';
+export type LongTaskSource = 'snapshot-apply' | 'xterm-write' | 'browser-longtask';
 
 export interface DebugTimelineEntry {
   sequence: number;
@@ -19,11 +20,16 @@ export interface DebugTimelineRingBuffer<T> {
 }
 
 export const DEBUG_TIMELINE_CAPACITY = 200;
+/** Matches the Long Task API threshold; samples below this are discarded. */
+export const LONG_TASK_THRESHOLD_MS = 50;
 
 type Listener = () => void;
 
 let nextSequence = 1;
 let enabledOverride: boolean | null = null;
+let longTaskObserverOverride: boolean | null = null;
+let longTaskObserver: PerformanceObserver | null = null;
+let longTaskObserverStarted = false;
 const timelineBuffer = createDebugTimelineRingBuffer<DebugTimelineEntry>(DEBUG_TIMELINE_CAPACITY);
 const listeners = new Set<Listener>();
 
@@ -62,6 +68,27 @@ export function setDebugTimelineEnabledForTests(enabled: boolean | null): void {
   enabledOverride = enabled;
 }
 
+/**
+ * Long-task sampling is always on for measured spans (threshold-gated).
+ * PerformanceObserver is optional: enabled with the debug timeline, or via
+ * `?longtask=1` / localStorage `kookr-longtask-telemetry=1`.
+ */
+export function isLongTaskObserverEnabled(): boolean {
+  if (longTaskObserverOverride !== null) return longTaskObserverOverride;
+  if (isDebugTimelineEnabled()) return true;
+  if (typeof window === 'undefined') return false;
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('longtask') === '1' || window.localStorage?.getItem('kookr-longtask-telemetry') === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function setLongTaskObserverEnabledForTests(enabled: boolean | null): void {
+  longTaskObserverOverride = enabled;
+}
+
 export function subscribeDebugTimeline(listener: Listener): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
@@ -71,10 +98,85 @@ export function getDebugTimelineEntries(): DebugTimelineEntry[] {
   return timelineBuffer.entries().map(cloneEntry);
 }
 
+export function getLongTaskTimelineEntries(): DebugTimelineEntry[] {
+  return getDebugTimelineEntries().filter((entry) => entry.kind === 'longtask');
+}
+
 export function clearDebugTimeline(): void {
   timelineBuffer.clear();
   nextSequence = 1;
   emit();
+}
+
+/**
+ * Record a main-thread jank sample when duration meets the Long Task threshold.
+ * Always sampled (not gated by the full debug timeline flag) so bug reports
+ * capture UI freezes without secret env flags.
+ */
+export function recordMeasuredDuration(
+  source: LongTaskSource,
+  durationMs: number,
+  extra?: { byteLength?: number; agentCount?: number; name?: string },
+): void {
+  if (!Number.isFinite(durationMs) || durationMs < LONG_TASK_THRESHOLD_MS) return;
+  const rounded = Math.round(durationMs * 100) / 100;
+  recordDebugTimelineEntry({
+    kind: 'longtask',
+    summary: `longtask ${source}: ${Math.round(rounded)}ms`,
+    tags: ['longtask', source],
+    payload: {
+      source,
+      durationMs: rounded,
+      ...(typeof extra?.byteLength === 'number' ? { byteLength: extra.byteLength } : {}),
+      ...(typeof extra?.agentCount === 'number' ? { agentCount: extra.agentCount } : {}),
+      ...(typeof extra?.name === 'string' ? { name: extra.name } : {}),
+    },
+  });
+}
+
+/** Time a synchronous critical path and sample if it exceeds the long-task threshold. */
+export function measureSync<T>(
+  source: Exclude<LongTaskSource, 'browser-longtask'>,
+  fn: () => T,
+  extra?: { byteLength?: number; agentCount?: number },
+): T {
+  const now = typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? () => performance.now()
+    : () => Date.now();
+  const start = now();
+  try {
+    return fn();
+  } finally {
+    recordMeasuredDuration(source, now() - start, extra);
+  }
+}
+
+/** Best-effort PerformanceObserver('longtask'); no-op when unsupported or disabled. */
+export function ensureLongTaskObserverStarted(): void {
+  if (longTaskObserverStarted) return;
+  longTaskObserverStarted = true;
+  if (!isLongTaskObserverEnabled()) return;
+  if (typeof PerformanceObserver === 'undefined') return;
+  try {
+    const supported = (PerformanceObserver as unknown as { supportedEntryTypes?: readonly string[] }).supportedEntryTypes;
+    if (Array.isArray(supported) && !supported.includes('longtask')) return;
+    longTaskObserver = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        recordMeasuredDuration('browser-longtask', entry.duration, {
+          name: entry.name || undefined,
+        });
+      }
+    });
+    longTaskObserver.observe({ type: 'longtask', buffered: true } as PerformanceObserverInit);
+  } catch {
+    longTaskObserver = null;
+  }
+}
+
+export function stopLongTaskObserverForTests(): void {
+  longTaskObserver?.disconnect();
+  longTaskObserver = null;
+  longTaskObserverStarted = false;
 }
 
 export function recordWebSocketDebugEvent(

@@ -609,6 +609,14 @@ function safeDebugTimelinePayload(kind: DebugTimelineEntry['kind'], payload: unk
         before: safeFindingDebugSnapshot(record.before),
         after: safeFindingDebugSnapshot(record.after),
       };
+    case 'longtask':
+      return {
+        ...(typeof record.source === 'string' ? { source: record.source } : {}),
+        ...(typeof record.durationMs === 'number' ? { durationMs: record.durationMs } : {}),
+        ...(typeof record.byteLength === 'number' ? { byteLength: record.byteLength } : {}),
+        ...(typeof record.agentCount === 'number' ? { agentCount: record.agentCount } : {}),
+        ...(typeof record.name === 'string' ? { name: record.name.slice(0, 80) } : {}),
+      };
   }
 }
 
@@ -632,6 +640,11 @@ function safeDebugTimelineSummary(kind: DebugTimelineEntry['kind'], payload: unk
       const anomalyType = typeof after?.anomalyType === 'string' ? ` ${after.anomalyType}` : '';
       return `finding ${transition}${anomalyType}`;
     }
+    case 'longtask': {
+      const source = typeof record.source === 'string' ? record.source : 'unknown';
+      const durationMs = typeof record.durationMs === 'number' ? Math.round(record.durationMs) : 0;
+      return `longtask ${source}: ${durationMs}ms`;
+    }
   }
 }
 
@@ -641,6 +654,7 @@ function safeDebugTimelineTags(kind: DebugTimelineEntry['kind'], payload: unknow
   const record = payload as Record<string, unknown>;
   if (kind === 'websocket' && typeof record.type === 'string') tags.push(record.type);
   if (kind === 'finding-lifecycle' && typeof record.transition === 'string') tags.push(record.transition);
+  if (kind === 'longtask' && typeof record.source === 'string') tags.push(record.source);
   return tags;
 }
 

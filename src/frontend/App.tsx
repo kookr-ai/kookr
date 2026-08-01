@@ -74,7 +74,11 @@ import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import { computeAbortActiveTaskIds } from './abort-active-tasks.js';
 import { buildBugReportBundle } from './bug-report-bundle.js';
 import { getBugReportAlerts, getBugReportWireObservations } from './bug-report-recorder.js';
-import { getDebugTimelineEntries, isDebugTimelineEnabled } from './debug-timeline.js';
+import {
+  ensureLongTaskObserverStarted,
+  getDebugTimelineEntries,
+  isDebugTimelineEnabled,
+} from './debug-timeline.js';
 import { getSelectionTransitionDiagnostics } from './selection-transition-recorder.js';
 import { findingTypeLabel } from './presentation.js';
 import './critical.css';
@@ -376,6 +380,11 @@ export function App() {
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [showSweepConfirm, setShowSweepConfirm] = useState(false);
   const [debugTimelineEnabled] = useState(() => isDebugTimelineEnabled());
+  useEffect(() => {
+    // Optional Long Task API observer (debug/?longtask=1). Measured snapshot /
+    // xterm spans sample independently of this flag.
+    ensureLongTaskObserverStarted();
+  }, []);
   const [bugReportNote, setBugReportNote] = useState('');
   const [shortcutOverrides, setShortcutOverrides] = useState<PlatformShortcutBindingOverrides>({});
   const [launchProjectContext, setLaunchProjectContext] = useState<ProjectSummary | null>(null);
