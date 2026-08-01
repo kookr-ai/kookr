@@ -9,24 +9,28 @@ vi.mock('./dirty-worktree-completion-finding.js', () => ({
 import { surfaceDirtyWorktreeOnHeadlessCompletion } from './dirty-worktree-completion-finding.js';
 const mockSurfaceDirty = vi.mocked(surfaceDirtyWorktreeOnHeadlessCompletion);
 import {
-  AUTO_CLOSE_SWEEP_MIN_INTERVAL_MS,
-  autoCloseStaleCompletionReadyTasks,
   clearAllTimers,
-  createAutoCloseSweepThrottle,
   findFirstActiveSession,
   maybeReapHungTask,
-  resolveMaintenancePruneIntervalHours,
-  restoreExpiredSnoozes,
   runBudgetCheck,
-  runPersistenceSaveTick,
   runProgressBudgetBurnDiagnosticSample,
-  runScheduledMaintenancePrune,
   startLifecycleTimers,
   TOKEN_SCAN_INTERVAL_MS,
   WATCHDOG_INTERVAL_MS,
   SNOOZE_EXPIRY_INTERVAL_MS,
   type TimerDeps,
 } from './lifecycle-timers.js';
+import {
+  AUTO_CLOSE_SWEEP_MIN_INTERVAL_MS,
+  autoCloseStaleCompletionReadyTasks,
+  createAutoCloseSweepThrottle,
+} from './completion-ready-sweep.js';
+import {
+  resolveMaintenancePruneIntervalHours,
+  runScheduledMaintenancePrune,
+} from './maintenance-prune-schedule.js';
+import { restoreExpiredSnoozes } from './snooze-restore.js';
+import { runPersistenceSaveTick } from './persistence-save-tick.js';
 import { TimerHealthTracker } from '../core/timer-health.js';
 import type { MaintenancePruneResult } from '../core/maintenance-prune.js';
 import { BudgetChecker } from '../core/budget-checker.js';

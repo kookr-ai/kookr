@@ -6,7 +6,7 @@ import { TaskStore } from '../core/tasks.js';
 import type { HelperLlmDiagnosticsSnapshot } from '../core/llm-types.js';
 import type { SystemResourceStatus } from '../shared/contracts/messages.js';
 import { DiagnosticRunner } from './diagnostic-runner.js';
-import { runPersistenceSaveTick } from './lifecycle-timers.js';
+import { runPersistenceSaveTick } from './persistence-save-tick.js';
 import { createOperationalAlertEvaluator } from './operational-alert-rules.js';
 
 function resourceStatus(): SystemResourceStatus {

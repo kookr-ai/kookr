@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../core/tasks.js';
-import { expirePendingTasks } from './lifecycle-timers.js';
+import { expirePendingTasks } from './pending-ttl-sweep.js';
 import type { LifecycleDeps } from './agent-lifecycle.js';
 
 const TTL_MS = 60 * 60_000;
