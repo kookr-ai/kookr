@@ -1,10 +1,14 @@
 name: Staging
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DISABLED — DO NOT RE-ENABLE. Standing operator decision (see CLAUDE.md → "CI
+# policy"). GitHub Actions is turned OFF for this repository. The automatic
+# `push` / `pull_request` (staging branch) triggers were replaced with
+# `workflow_dispatch` (manual only) so re-enabling Actions does not silently
+# resurrect these runs.
+# ─────────────────────────────────────────────────────────────────────────────
 on:
-  push:
-    branches: [staging]
-  pull_request:
-    branches: [staging]
+  workflow_dispatch: {}
 
 concurrency:
   group: staging-${{ github.ref }}

@@ -1,10 +1,18 @@
 name: CI
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DISABLED — DO NOT RE-ENABLE. Standing operator decision (see CLAUDE.md → "CI
+# policy"). GitHub Actions is turned OFF for this repository. CI went red on real
+# failures and coding agents wasted whole iterations waiting for a green that
+# never came; the operator is the sole merger and relies on LOCAL verification
+# (enforced by the pre-push review hooks) as the authoritative merge gate. The
+# automatic `push` / `pull_request` triggers were replaced with
+# `workflow_dispatch` (manual only) so that re-enabling Actions does NOT silently
+# resurrect red PR checks. Do not restore the automatic triggers and do not add
+# required status checks.
+# ─────────────────────────────────────────────────────────────────────────────
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch: {}
 
 concurrency:
   group: ci-${{ github.ref }}

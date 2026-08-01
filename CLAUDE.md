@@ -47,33 +47,38 @@ plugin/agents/         — General-purpose review subagents
 - Agent monitoring: Claude Code hooks (`SessionStart`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`) injected via `--settings` flag. Hooks are additive to user settings. See docs/poc/001-hook-mechanism-validation.md
 - Skill/agent distribution: Kookr Toolkit ships as a Claude Code plugin at `plugin/` with `.claude-plugin/marketplace.json` listing it. `ClaudeCodeAdapter` injects `--plugin-dir <kookr>/plugin` into every spawned `claude` so Kookr-spawned agents see the toolkit regardless of cwd. Other developers install via `/plugin marketplace add kookr-ai/kookr` + `/plugin install kookr-toolkit@kookr`.
 
-## CI policy: local verification is the merge gate (operator decision, standing)
+## CI policy: GitHub Actions is DISABLED — local verification is the merge gate (operator decision, standing)
 
-The operator will NOT pay for GitHub Actions — on this or any of their repos
-(jeanibarz/lucy, jeanibarz/local-research-agent, …). This repo is public, so its
-free CI may happen to run; treat it as **advisory**, never as the verification
-authority, and never wait on it:
+**GitHub Actions is turned OFF at the repository level for this repo.** Even
+though this repo is public (free minutes), its CI kept going red on real
+failures and coding agents wasted whole iterations waiting for a green that
+never came, then merged red anyway. The operator is the **sole merger** here and
+relies on LOCAL verification as the authoritative gate, so CI was disabled
+outright rather than left to run:
 
+- **No workflow under `.github/workflows/` runs.** Do not treat "no checks on
+  the PR" as an outage — it is the intended, permanent state. State it explicitly
+  if asked.
+- **The automated CI workflows were neutered** (`push` / `pull_request` /
+  `issue_comment` triggers replaced with manual-only `workflow_dispatch`) as
+  defense-in-depth, so re-enabling Actions cannot silently resurrect red PR
+  checks. The files are kept only as a reference for what the gates used to
+  check. See `.github/workflows/README.md`.
+- **`cla.yml` is intentionally left functional** (its triggers were NOT
+  neutered): it is a legal CLA collector for outside contributors, not a
+  test/CI gate. If Actions is ever re-enabled for legal reasons, CLA must work
+  as-is. Do not neuter it as part of the CI-disable policy.
 - **Verify locally, fully, before opening the PR.** Typecheck, the full test
-  suite, and touched-surface gates run on this machine and are the ONLY
-  authoritative green. Record the evidence (commands + summary counts) in the
-  PR body.
-- **Then create the PR and merge it yourself** once local gates are green. Do
-  not stall on pending checks, bot reviewers, or a human unless the task
-  explicitly says otherwise. A required check that never executed
-  (billing/quota/spending-limit, "failed" in seconds without running) is
-  non-blocking BY DEFAULT — merge with the repo's allowed method, or
-  `gh pr merge --admin` if branch protection insists, noting the local-gate
-  evidence.
-- **Never** alert about CI billing, file issues to "fix CI billing", propose
-  paying for CI, or add workflows that consume paid minutes on the operator's
-  private repos.
-- A check that genuinely RAN and failed on the code still blocks — fix it.
-  Classify the two apart with `pnpm check-verification <PR> --repo <owner/name>`
-  (`scripts/check-verification.mjs`): `executed-red` always blocks;
-  `never-executed` merges only after the local gate runs and is recorded on the
-  PR as a comment plus the `local-verified` label (the audit trail that replaces
-  CI). See the delivery playbooks' merge phase.
+  suite, and touched-surface gates run on this machine, are enforced by the
+  pre-push review hooks, and are the ONLY authoritative green. Record the
+  evidence (commands + summary counts) in the PR body.
+- **Then create the PR and merge it yourself** once local gates are green. There
+  are no GitHub checks to wait for — do not stall on pending checks, bot
+  reviewers, or a human unless the task explicitly says otherwise.
+- **Never** re-enable Actions, restore automatic triggers, add required status
+  checks, alert about CI billing, file issues to "fix CI billing", propose
+  paying for CI, or add workflows that consume paid minutes. This is a standing
+  decision — do not revisit or suggest reversing it.
 - Playbook parameter `ignoreBudgetCiFailures` defaults to `true` accordingly.
 
 ## Where to put a new skill or agent

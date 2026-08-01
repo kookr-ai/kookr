@@ -1,5 +1,9 @@
 name: Onboarding Smoke Test
 
+# NOTE: GitHub Actions is turned OFF for this repository (standing operator
+# decision — see CLAUDE.md → "CI policy"), so this workflow cannot run even
+# manually. It was already `workflow_dispatch`-only and is left unchanged. Do
+# not re-enable Actions or add automatic triggers.
 on:
   workflow_dispatch: # manual trigger only — requires API credits
 

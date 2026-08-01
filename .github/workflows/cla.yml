@@ -1,5 +1,11 @@
 name: CLA Assistant
 
+# NOTE: GitHub Actions is turned OFF for this repository (standing operator
+# decision — see CLAUDE.md → "CI policy"), so this workflow does not currently
+# run. Its automatic triggers are INTENTIONALLY LEFT INTACT — this is a legal
+# CLA collector for outside contributors, not a test/CI gate, and it must work
+# again as-is if Actions is ever re-enabled for legal reasons. Do not neuter its
+# triggers as part of the CI-disable policy.
 on:
   issue_comment:
     types: [created]

@@ -1,8 +1,13 @@
 name: Dependency Review
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DISABLED — DO NOT RE-ENABLE. Standing operator decision (see CLAUDE.md → "CI
+# policy"). GitHub Actions is turned OFF for this repository. The automatic
+# `pull_request` trigger was replaced with `workflow_dispatch` (manual only) so
+# re-enabling Actions does not silently resurrect this check.
+# ─────────────────────────────────────────────────────────────────────────────
 on:
-  pull_request:
-    branches: [main]
+  workflow_dispatch: {}
 
 permissions:
   contents: read
