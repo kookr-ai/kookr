@@ -300,6 +300,77 @@ kookr effort-split [--json] [--window-hours N] [--repo owner/name]...
 The Lucy daily-progress-report playbook should run this command in its gather
 phase and paste the printed section into the digest.
 
+## `kookr emission`
+
+Drain-coupled issue-filing budget + mandatory dedupe (issues #1607, #1657,
+#1703). Playbooks (idea-scout, architecture-health-check, reflection/retro)
+call these verbs **before** any `gh issue create` so open backlog, drain rate,
+and CI-blind-merge debt cap how many new issues a run may file. Pure budget /
+dedupe math lives in `src/core/emission-budget.ts`; the CLI shells out to `gh`
+for live counts and writes deferred-ideas JSONL under `~/.kookr`.
+
+```bash
+kookr emission plan    --repo owner/repo --requested N [OPTIONS]
+kookr emission dedupe  --repo owner/repo --title "..." [OPTIONS]
+kookr emission metrics --repo owner/repo [OPTIONS]
+kookr emission defer   --repo owner/repo --title "..." --source <playbook> [OPTIONS]
+kookr emission version [--repo-dir PATH] [OPTIONS]
+```
+
+| Verb | Purpose |
+| --- | --- |
+| **plan** | Resolve how many new issues this run may file given live open backlog, the target repo's drain rate (closed issues in the window, #1657), and the retro-verify / `ci_blind_debt` queue depth (#1703). |
+| **dedupe** | Mandatory pre-filing duplicate check against open issues; always prints a log line. |
+| **metrics** | Open backlog + 7-day `netBacklogDelta7d` + `ci_blind_debt` + budget snapshot (daily-report path). |
+| **defer** | Append a candidate to the deferred-ideas JSONL instead of filing. |
+| **version** | Report the running budget-logic schema version and warn if it lags `origin/main`. |
+
+### Common flags
+
+| Flag | Used by | Meaning |
+| --- | --- | --- |
+| `--repo <owner/repo>` | plan, dedupe, metrics, defer | Target GitHub repository (required). |
+| `--requested <N>` | plan | How many issues this run wants to file. |
+| `--title <text>` | dedupe, defer | Candidate issue title. |
+| `--source <name>` | defer | Emitting playbook id. |
+| `--reason <text>` | defer | Defer reason (default: over emission budget). |
+| `--threshold <N>` | plan | Open-backlog threshold before the constrained budget applies. |
+| `--constrained <N>` | plan | Budget when over the open-backlog threshold. |
+| `--drain-window <N>` | plan | Drain-rate window in days. |
+| `--drain-ratio <N>` | plan | New issues earned per drained issue. |
+| `--drain-floor <N>` | plan | Minimum budget regardless of drain. |
+| `--no-drain-coupling` | plan | Disable drain coupling (legacy backlog-only budget). |
+| `--retro-verify-threshold <N>` | plan | Queue depth at/above which emission is withheld (default `0` = any pending debt). |
+| `--no-retro-verify-coupling` | plan | Disable the `ci_blind_debt` gate (do not read the queue). |
+| `--tolerance-blocker <type:scope>` | plan | Refuse emission when that external blocker already has a tolerance regime (#1702). |
+| `--body-preview <text>` | defer | Optional body snippet stored on defer. |
+| `--kookr-dir <PATH>` | defer | State root for deferred-ideas (default `~/.kookr`). |
+| `--retro-verify-dir <PATH>` | plan, metrics | Override retro-verify queue dir (default `~/.kookr/playbook-state/retro-verify-queue` or `KOOKR_RETRO_VERIFY_QUEUE_DIR`). |
+| `--repo-dir <PATH>` | version | Local checkout to compare against `origin/main`. |
+| `--json` | all | Machine-readable envelope on stdout. |
+| `-h, --help` | all | Show usage. |
+
+### Environment
+
+| Variable | Role |
+| --- | --- |
+| `GH_TOKEN` / `gh auth` | Required for live GitHub counts (`plan` / `dedupe` / `metrics`). |
+| `KOOKR_RETRO_VERIFY_QUEUE_DIR` | Override retro-verify queue path (also used by `kookr retro-verify` and documented in [environment variables](./environment-variables.md)). |
+
+### Exit codes
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | Success. |
+| `2` | User error (bad flags / missing required args). |
+| `4` | GitHub query failed. |
+
+When `plan` withholds the budget because retro-verify depth exceeds the
+threshold, the JSON envelope sets `emissionBudgetIfRequestedN.allowedBudget=0`
+and `retroVerifyWithheld=true`, with a note pointing at
+`kookr retro-verify drain`. Related metrics also appear on `GET /api/health`
+(`ciBlindDebt` / `ci_blind_debt`) and `kookr status`.
+
 ## `kookr value-density`
 
 Value-density governor for refactor-class / architecture-drift emission and
@@ -425,6 +496,74 @@ GitHub state and prints a compact filed→shipped table:
 The workflow-reflection playbook's Phase 1 should call `kookr reflect outcomes
 --json` and `kookr reflect ideas --json` instead of the stale-markdown fallback
 and per-run manual `gh` queries.
+
+## `kookr retro-verify`
+
+CI-blind-merge debt + retro-verify drain (issues #1689, #1703). Merges made
+while CI was signal-absent (or only verified locally) are enqueued as durable
+JSONL under the retro-verify queue. Queue depth is the first-class
+`ci_blind_debt` metric: when it is non-zero, `kookr emission plan` withholds
+new feature-issue filings until operators burst-drain the queue. Core queue
+logic lives in `src/core/retro-verify-queue.ts`; debt aggregation is in
+`src/core/ci-blind-debt.ts`.
+
+```bash
+kookr retro-verify status  [--json] [--dir PATH]
+kookr retro-verify drain   [--json] [--dir PATH] [--limit N] [--dry-run] \
+                           [--repo-dir PATH] [--verify-cmd <shell>]
+kookr retro-verify enqueue --sha <sha> --repo owner/repo \
+                           [--pr N] [--reason <text>] [--dir PATH] [--json]
+```
+
+| Verb | Purpose |
+| --- | --- |
+| **status** | Print the `ci_blind_debt` metric (blind-merge count + queue depth). Same signal as `GET /api/health` → `ciBlindDebt` and `kookr emission metrics`. |
+| **drain** | Burst-drain the queue: re-verify each entry; on fail file a P1 issue via `gh issue create`. |
+| **enqueue** | Record a merge made under a CI-signal-absent regime (or verified-locally). |
+
+### Common flags
+
+| Flag | Used by | Meaning |
+| --- | --- | --- |
+| `--dir PATH` | all | Queue directory (default `~/.kookr/playbook-state/retro-verify-queue` or `KOOKR_RETRO_VERIFY_QUEUE_DIR`). |
+| `--sha <sha>` | enqueue | Commit SHA to enqueue. |
+| `--repo <owner/repo>` | enqueue | Repository the commit belongs to (also labels P1s on drain failure). |
+| `--pr <N>` | enqueue | PR number that merged the commit (`0` when unknown). |
+| `--reason <text>` | enqueue | Enqueue reason (default `verified-locally`). |
+| `--limit <N>` | drain | Max entries to attempt this drain (default: all). |
+| `--dry-run` | drain | Drain without calling verify / `fileP1`; report what would run. |
+| `--repo-dir PATH` | drain | Local checkout used by the default local-suite verify. |
+| `--verify-cmd <cmd>` | drain | Shell command that exits `0` on pass (overrides `--repo-dir` suite). |
+| `--json` | all | Machine-readable envelope on stdout. |
+| `-h, --help` | all | Show usage. |
+
+### Environment
+
+| Variable | Role |
+| --- | --- |
+| `KOOKR_RETRO_VERIFY_QUEUE_DIR` | Override queue path (shared with `kookr emission`; see [environment variables](./environment-variables.md)). |
+| `GH_TOKEN` / `gh auth` | Required for P1 filing when a re-verify fails during `drain`. |
+
+### Exit codes
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | Success. |
+| `2` | User error (bad flags / missing required args). |
+| `4` | Drain completed with one or more verification failures (P1 filed or pending). |
+
+### Operator loop
+
+When emission is withheld for CI-blind debt, drain first, then re-plan:
+
+```bash
+kookr retro-verify status --json
+kookr retro-verify drain --json
+kookr emission plan --repo owner/repo --requested 10 --json
+```
+
+`status` is safe to call from daily-report / reflection gather phases; it is a
+cheap JSONL read of the spool (soft-empty when the directory is missing).
 
 ## `kookr issue`
 
