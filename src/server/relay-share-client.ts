@@ -33,6 +33,15 @@ export const TASK_SHARE_MAX_TTL_MS = 24 * 60 * 60 * 1000;
 /** Default A0 share lifetime when the caller does not specify one. */
 export const TASK_SHARE_DEFAULT_TTL_MS = 10 * 60 * 1000;
 
+/**
+ * Default per-request abort timeout for relay share HTTP calls.
+ * Long enough for slow-but-healthy networks; short enough that a hung relay
+ * cannot wedge share mint/revoke UI and pile up event-loop waiters (#1861).
+ * Override via `RelayShareClientOptions.requestTimeoutMs` (tests / rare slow links).
+ * Keep ≥10s in production to avoid false failures.
+ */
+export const DEFAULT_RELAY_SHARE_REQUEST_TIMEOUT_MS = 10_000;
+
 /** HTTP status the dashboard backend surfaces for a failed relay call. */
 export type RelayShareErrorStatus = 400 | 404 | 409 | 429 | 502 | 503;
 
@@ -75,6 +84,12 @@ export interface RelayShareClientOptions {
   relayToken: string;
   /** Test seam; defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
+  /**
+   * Per-request AbortController timeout for outbound relay HTTP.
+   * Defaults to {@link DEFAULT_RELAY_SHARE_REQUEST_TIMEOUT_MS} (10s).
+   * Injectable so tests can assert the timeout path with a delayed `fetchImpl`.
+   */
+  requestTimeoutMs?: number;
 }
 
 function toSummary(view: RelayNodeInvitationView): TaskShareSummary {
@@ -145,21 +160,30 @@ export function createRelayShareClient(opts: RelayShareClientOptions): RelayShar
   const fetchImpl = opts.fetchImpl ?? fetch;
   const base = opts.relayUrl;
   const authHeader = `Bearer ${opts.relayToken}`;
+  // Floor at 1ms so a misconfigured 0/negative does not disable the abort path.
+  const requestTimeoutMs = Math.max(1, opts.requestTimeoutMs ?? DEFAULT_RELAY_SHARE_REQUEST_TIMEOUT_MS);
 
   async function call(path: string, body: unknown, method = 'POST'): Promise<unknown> {
     let res: Response;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
     try {
       res = await fetchImpl(new URL(path, base), {
         method,
         headers: { 'content-type': 'application/json', authorization: authHeader },
+        signal: controller.signal,
         ...(method === 'GET' ? {} : { body: JSON.stringify(body) }),
       });
     } catch (err) {
+      // Timeouts and network failures share `relay-unreachable` so the dashboard
+      // can surface a single operator-actionable 502 without hanging waiters.
       throw new RelayShareError(
         'relay-unreachable',
         502,
         `relay request failed: ${err instanceof Error ? err.message : String(err)}`,
       );
+    } finally {
+      clearTimeout(timer);
     }
     const text = await res.text();
     let parsed: unknown;
