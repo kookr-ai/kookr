@@ -102,6 +102,11 @@ const launchPlaybookMessage = z.object({
 
 const ClientMessageSchemaImpl = z.union([
   z.object({ type: z.literal('respond'), agentId: z.string(), input: z.string() }),
+  z.object({
+    type: z.literal('requestResync'),
+    reason: z.enum(['seq_gap', 'epoch_change', 'apply_error']),
+    haveSeq: z.number(),
+  }),
   z.object({ type: z.literal('respondAll'), agentIds: z.array(z.string()), input: z.string() }),
   z.object({ type: z.literal('directReply'), agentId: z.string(), input: z.string() }),
   z.object({ type: z.literal('navigate'), agentId: z.string() }),

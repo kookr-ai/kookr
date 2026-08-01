@@ -6,6 +6,7 @@ import { isSystemResourceStatus } from '../resource-status.js';
 import type { TransportSessionSlice, TriageNavigationSlice } from '../store/store-types.js';
 import { recordInbound, recordOutbound } from '../bug-report-recorder.js';
 import { createReconnectingSocket, type ReconnectingSocket } from '../reconnecting-socket.js';
+import { DeltaSequenceTracker } from '../delta-sequence.js';
 
 // Stale-socket callbacks are ignored silently in the controller; here we count
 // them and emit at most one compact telemetry event per window so a burst of
@@ -117,6 +118,11 @@ export function useWebSocket() {
   // so per-connection side effects (the /api/schedules refresh) must run only
   // on the first snapshot after each connect, not on every snapshot.
   const hasFetchedSchedulesForConnectionRef = useRef(false);
+  // #1754 Stage 1: tracks the server's delta-stream position `(epoch, seq)` from
+  // snapshots and decides the resync reason if a delta ever arrives. Created once
+  // and persisted across reconnects (the next snapshot always re-bases it).
+  const deltaTrackerRef = useRef<DeltaSequenceTracker | null>(null);
+  if (deltaTrackerRef.current === null) deltaTrackerRef.current = new DeltaSequenceTracker();
 
   useEffect(() => {
     // Bounded diagnostics for ignored stale-socket callbacks. Counts accumulate
@@ -187,6 +193,9 @@ export function useWebSocket() {
           const store = useKookrStore.getState();
           switch (msg.type) {
             case 'snapshot':
+              // #1754 Stage 1: adopt the snapshot's `(epoch, seq)`. A snapshot
+              // always re-bases the client, so this also clears any pending gap.
+              deltaTrackerRef.current?.onSnapshot({ epoch: msg.epoch, seq: msg.seq });
               dispatchSnapshotMessageForClient(msg, store.handleSnapshot);
               // Counters / streak ride alongside achievements but live on the
               // achievements slice — write them directly via setState.
@@ -213,6 +222,21 @@ export function useWebSocket() {
             case 'update':
               store.handleUpdate(msg.agentId, msg.state);
               break;
+            case 'delta': {
+              // #1754 Stage 1: the client does not apply deltas yet (that is
+              // Stage 2). A Stage-1 server never emits one; if a server rolled
+              // forward to Stage 2 sends one, we cannot apply it and must re-base
+              // via the resync escape hatch. The tracker names the cause
+              // (epoch_change / seq_gap / apply_error) for server observability.
+              const tracker = deltaTrackerRef.current;
+              if (tracker) {
+                const reason = tracker.resyncReasonForDelta({ epoch: msg.epoch, seq: msg.seq });
+                const resync: ClientMessage = { type: 'requestResync', reason, haveSeq: tracker.haveSeq };
+                const sent = controllerRef.current?.send(JSON.stringify(resync)) ?? false;
+                if (sent) recordClientMessageForSend(resync);
+              }
+              break;
+            }
             case 'alert': {
               dispatchAlertMessageForClient(msg, store.handleAlert);
               break;

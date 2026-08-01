@@ -730,6 +730,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     adapterRegistry,
     serverCwd,
     sttUrl,
+    // #1754 Stage 1: the server-lifetime-stable epoch for the delta stream is
+    // `serverStartedAt` — restart changes it, resetting the client's seq baseline.
+    serverEpoch: serverStartedAt,
     buildScopedSnapshot,
     computeSnapshotBaseAgents,
     observeSnapshotPayloadSize: (observation) => {
@@ -2109,6 +2112,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     userInputDeliveries,
     buildScopedSnapshot,
     snapshotPayloadSizePolicy: DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS,
+    // #1754 Stage 1: stamp connect-time + resync snapshots with the current
+    // `(epoch, seq)` so clients initialize and re-base their stream position.
+    getStreamPosition: realtime.getStreamPosition,
   };
 
   // Unattended worktree-reclaim scheduler (issue #1578). Disabled unless

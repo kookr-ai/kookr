@@ -27,6 +27,7 @@ import {
   type SweepEviction,
 } from '../viewer-connection-registry.js';
 import { ViewerAwareBroadcaster } from '../viewer-broadcaster.js';
+import { SnapshotStreamSequencer, stampSnapshotPosition, type StreamPosition } from '../snapshot-stream-sequencer.js';
 import type { SnapshotPayloadSizeObservation } from '../snapshot-payload-size-policy.js';
 import type { Scope } from '../viewer-data-policy.js';
 import type { IsActorAllowedTerminalSession } from '../terminal-scope.js';
@@ -116,6 +117,14 @@ export interface RealtimeServicesDeps {
    * omit it get the pre-#1725 behavior (snapshots always fully fan out).
    */
   loadShedConfig?: WebSocketLoadShedConfig;
+  /**
+   * Delta-protocol stream epoch (issue #1754, Stage 1). When provided
+   * (production wires `serverStartedAt`), every emitted `snapshot` is stamped
+   * with a monotonic `(epoch, seq)` so clients can detect an epoch change / seq
+   * gap and re-base via the resync escape hatch. Omitted by lightweight/test
+   * wirings, which then emit snapshots byte-identical to pre-#1754.
+   */
+  serverEpoch?: string;
 }
 
 export interface RealtimeServices {
@@ -126,6 +135,13 @@ export interface RealtimeServices {
   broadcastProjectSummaries: () => void;
   broadcastOssAttempts: () => void;
   getWsBroadcastCount: () => number;
+  /**
+   * Current delta-protocol stream position `(epoch, seq)` for re-base frames
+   * (connect-time snapshot, resync reply). `undefined` when no `serverEpoch`
+   * was wired (Stage-1 sequencing disabled). Does NOT advance `seq` — the
+   * per-flush advance happens inside `broadcastToAll`.
+   */
+  getStreamPosition: () => StreamPosition | undefined;
   setScheduleStore: (store: ScheduleStore) => void;
   setSnapshotAchievementsReady: (ready: boolean) => void;
   setProjectSummaryGitHubDeps: (deps: ProjectSummaryGitHubDeps) => void;
@@ -160,6 +176,10 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
   // wirings that omit `loadShedConfig` keep pre-#1725 behavior (snapshots
   // always fully fan out; `noteEventLoopDelaySample` below is then a no-op).
   const loadShedGate = deps.loadShedConfig ? new WebSocketLoadShedGate(deps.loadShedConfig) : undefined;
+  // #1754 Stage 1: only constructed when an epoch was wired, so lightweight/test
+  // wirings that omit `serverEpoch` emit snapshots byte-identical to pre-#1754
+  // (no `(epoch, seq)` stamping; `getStreamPosition` below then returns undefined).
+  const sequencer = deps.serverEpoch ? new SnapshotStreamSequencer(deps.serverEpoch) : undefined;
   const broadcaster = new ViewerAwareBroadcaster({
     registry,
     buildScopedSnapshot:
@@ -254,6 +274,14 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
         defaultAgentType: deps.getDefaultAgentType(),
       };
     }
+    // #1754 Stage 1: stamp the monotonic `(epoch, seq)` on the outgoing snapshot
+    // so clients can re-base. Advance ONCE per flush that actually fans out —
+    // skipped while load-shed is active (no snapshot is emitted then, so the seq
+    // must not jump for a frame no one receives). The broadcaster propagates the
+    // same `(epoch, seq)` onto every per-scope snapshot it builds for this flush.
+    if (msg.type === 'snapshot' && sequencer && !loadShedGate?.isActive) {
+      msg = stampSnapshotPosition(msg, sequencer.advance());
+    }
     // The registry owns the socket pool; the broadcaster is pure transport over
     // its dashboard-socket snapshot (drops + closes on send failure).
     broadcaster.broadcast(msg);
@@ -317,6 +345,7 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
     broadcastProjectSummaries,
     broadcastOssAttempts,
     getWsBroadcastCount: () => wsBroadcastCount,
+    getStreamPosition: () => sequencer?.current(),
     setScheduleStore: (store) => {
       scheduleStore = store;
     },

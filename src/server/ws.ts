@@ -8,7 +8,7 @@ import { readInteractionLog, type DeferredInteractionLogWriter } from '../core/i
 import type { DeferredTelemetryLogWriter } from '../core/telemetry.js';
 import type { BuildInfo } from '../core/build-info.js';
 import type { ProjectConfigStore } from '../core/project-config-store.js';
-import type { DrainStatusSnapshot, ServerMessage, ClientMessage } from '../shared/contracts/messages.js';
+import type { DrainStatusSnapshot, ServerMessage, ClientMessage, SnapshotMessage } from '../shared/contracts/messages.js';
 import {
   type LifecycleDeps,
   promotePendingTasks,
@@ -20,6 +20,7 @@ import type { AgentSelection, AvailableAgentType } from '../core/agent-types.js'
 import type { ScheduleService } from './schedule-service.js';
 import type { RalphLoopService } from './ralph-loop-service.js';
 import { createSnapshotMessage, getSnapshotAgentsForClient } from './use-cases/get-snapshot.js';
+import { stampSnapshotPosition, type StreamPosition } from './snapshot-stream-sequencer.js';
 import { PlaybookHandler } from './ws-handlers/playbook-handler.js';
 import { ConfigHandler } from './ws-handlers/config-handler.js';
 import { ReflectionHandler } from './ws-handlers/reflection-handler.js';
@@ -49,6 +50,14 @@ export interface MessageRouterDeps {
   interactionLog?: DeferredInteractionLogWriter;
   buildInfo?: BuildInfo;
   serverStartedAt?: string;
+  /**
+   * Current delta-protocol stream position `(epoch, seq)` (issue #1754, Stage
+   * 1). When wired, the connect-time snapshot is stamped with it so the client
+   * initializes its stream position immediately (enabling epoch-change / seq-gap
+   * detection). Omitted by lightweight/test wirings → connect snapshot is
+   * byte-identical to pre-#1754.
+   */
+  getStreamPosition?: () => StreamPosition | undefined;
   onRespond?: (agentId: string, outcome?: 'used' | 'cleared') => void;
   telemetryLog?: DeferredTelemetryLogWriter;
   lifecycleExtras?: {
@@ -271,7 +280,18 @@ export class MessageRouter {
 
   /** Called when a new client connects — send initial snapshot. */
   handleConnect(): void {
-    this.deps.send(createSnapshotMessage({
+    this.deps.send(this.buildConnectSnapshot());
+  }
+
+  /**
+   * Build the full connect-time snapshot, stamped with the current delta stream
+   * position (issue #1754, Stage 1). Reused by the resync escape hatch to
+   * re-base an owner connection: a snapshot always re-bases, so using the
+   * current seq (no advance) is safe.
+   */
+  buildConnectSnapshot(): SnapshotMessage {
+    const streamPosition = this.deps.getStreamPosition?.();
+    const connectSnapshot = createSnapshotMessage({
       monitor: this.deps.monitor,
       serverCwd: this.serverCwd,
       buildInfo: this.deps.buildInfo,
@@ -298,7 +318,8 @@ export class MessageRouter {
       relationTaskStore: this.deps.taskStore,
       terminalInputSnapshots: this.deps.terminalInputCoordinator,
       userInputDeliveryProvider: this.deps.userInputDeliveries,
-    }));
+    });
+    return streamPosition ? stampSnapshotPosition(connectSnapshot, streamPosition) : connectSnapshot;
   }
 
   /**

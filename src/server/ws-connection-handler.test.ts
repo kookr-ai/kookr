@@ -21,6 +21,8 @@ vi.mock('./ws.js', () => ({
       handleConnect();
       this.send({ type: 'snapshot', agents: [], serverCwd: '/repo' });
     };
+    // #1754: the resync escape hatch re-bases an owner via this builder.
+    buildConnectSnapshot = () => ({ type: 'snapshot', agents: [], serverCwd: '/repo', epoch: 'E1', seq: 7 });
     handleMessageSafe = handleMessageSafe;
   },
 }));
@@ -84,13 +86,20 @@ describe('isAllowedViewerInbound (#806 WS read-only gate)', () => {
     expect(isAllowedViewerInbound(VIEWER, 'someFutureMutation' as ClientMessage['type'])).toBe(false);
   });
 
-  it('viewer allow-list does not admit any known application message type', () => {
+  it('viewer allow-list admits only the read-only requestResync escape hatch', () => {
     // Guards against a future edit that widens viewer access by populating the
-    // allow-list with a mutating type. Currently the set is empty.
+    // allow-list with a MUTATING type. The only admitted type is the read-only
+    // delta-protocol resync request (#1754), which triggers a re-base snapshot
+    // back to the requester and mutates no state.
     for (const type of KNOWN_TYPES) {
       expect(ALLOWED_VIEWER_INBOUND.has(type)).toBe(false);
     }
-    expect(ALLOWED_VIEWER_INBOUND.size).toBe(0);
+    expect([...ALLOWED_VIEWER_INBOUND]).toEqual(['requestResync']);
+  });
+
+  it('allows a viewer to send the read-only requestResync escape hatch (#1754)', () => {
+    expect(isAllowedViewerInbound(VIEWER, 'requestResync')).toBe(true);
+    expect(isAllowedViewerInbound(VIEWER_PROJECTS, 'requestResync')).toBe(true);
   });
 
   it('denies the inline achievement:* handlers specifically', () => {
@@ -175,6 +184,53 @@ describe('handleWsConnection read-only gate (integration)', () => {
     expect(deps.broadcastProjectSummaries).not.toHaveBeenCalled();
     const sent = ws.send.mock.calls.map((c) => JSON.parse(c[0] as string));
     expect(sent.some((m) => m.type === 'alert' && /read-only/i.test(m.summary))).toBe(true);
+  });
+
+  it('owner requestResync re-bases only the requester with a fresh snapshot (#1754)', async () => {
+    const ws = makeFakeWs();
+    const deps = makeDeps();
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, OWNER);
+    ws.send.mockClear();
+
+    await dispatch(ws, { type: 'requestResync', reason: 'seq_gap', haveSeq: 3 });
+
+    // A resync must re-base ONLY the requesting socket — never a fleet-wide
+    // rebroadcast — and must not run any router mutation path.
+    expect(handleMessageSafe).not.toHaveBeenCalled();
+    expect(deps.broadcastToAll).not.toHaveBeenCalled();
+    expect(deps.broadcastProjectSummaries).not.toHaveBeenCalled();
+    const sent = ws.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+    const snap = sent.find((m) => m.type === 'snapshot');
+    expect(snap).toBeTruthy();
+    // Stamped with the current stream position from buildConnectSnapshot.
+    expect(snap.epoch).toBe('E1');
+    expect(snap.seq).toBe(7);
+  });
+
+  it('projects viewer requestResync re-bases with a scope-filtered stamped snapshot (#1754)', async () => {
+    const ws = makeFakeWs();
+    const buildScopedSnapshot = vi.fn((scope: { kind: string }) => ({
+      type: 'snapshot', agents: [], serverCwd: '/repo', scopeMark: scope.kind,
+    }));
+    const deps = {
+      ...makeDeps(),
+      buildScopedSnapshot,
+      getStreamPosition: () => ({ epoch: 'E2', seq: 11 }),
+    } as unknown as WsConnectionDeps;
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, VIEWER_PROJECTS);
+    ws.send.mockClear();
+
+    await dispatch(ws, { type: 'requestResync', reason: 'epoch_change', haveSeq: 0 });
+
+    expect(handleMessageSafe).not.toHaveBeenCalled();
+    expect(deps.broadcastToAll).not.toHaveBeenCalled();
+    const sent = ws.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+    const snap = sent.find((m) => m.type === 'snapshot');
+    expect(snap).toBeTruthy();
+    // Built from the viewer's OWN scope (scope authority preserved) and stamped.
+    expect(buildScopedSnapshot).toHaveBeenCalledWith(VIEWER_PROJECTS.scope);
+    expect(snap.epoch).toBe('E2');
+    expect(snap.seq).toBe(11);
   });
 
   it('viewer achievement:setEnabled is rejected (no watcher mutation, alert sent)', async () => {

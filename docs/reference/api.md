@@ -972,7 +972,8 @@ delta sequence number.
 
 | `type` | Purpose | Key fields |
 | --- | --- | --- |
-| `snapshot` | Full dashboard baseline on connect and after broad state changes. | `agents`, `serverCwd`, optional build/speech/achievement/task relation/workspace fields including `sweepRunning` and `sweepProgress` |
+| `snapshot` | Full dashboard baseline on connect and after broad state changes. Carries the delta-protocol stream identity `(epoch, seq)` (issue #1754, Stage 1) so a client can detect an epoch change / seq gap and re-base. | `agents`, `serverCwd`, optional build/speech/achievement/task relation/workspace fields including `sweepRunning` and `sweepProgress`, optional `epoch`, `seq` |
+| `delta` | Coalesced per-flush change envelope (issue #1754). Defined as the wire contract in Stage 1 but **not emitted on the hot path** — it ships dark; the server keeps sending full snapshots. Stage 2 wires emission behind a flag. | `epoch`, `seq`, optional `agents.{upserts,removed}`, `taskRelations`, `aggregates` |
 | `update` | Refresh one agent's current state. | `agentId`, `state` |
 | `alert` | Surface an anomaly, validation error, or handler error. | `agentId`, `summary`, `details`, `severity`, optional `operationalAlert` `{ key, metric, state }` for operational alert fire/recovery events |
 | `githubUpdate` | Push GitHub PR/issue state for one task. | `taskId`, `prs`, `issues`, `changes` |
@@ -1007,6 +1008,7 @@ delta sequence number.
 | `type` | Purpose | Key fields |
 | --- | --- | --- |
 | `respond` | Send input to an agent that needs a response. | `agentId`, `input` |
+| `requestResync` | Delta-protocol resync escape hatch (issue #1754, Stage 1). Sent when a client cannot apply a frame in order (epoch change, seq gap, or an unapplyable delta); the server re-bases just that socket with a fresh snapshot at the current `(epoch, seq)`. Read-only — permitted for viewers. | `reason` (`seq_gap`\|`epoch_change`\|`apply_error`), `haveSeq` |
 | `respondAll` | Send the same input to multiple agents. | `agentIds`, `input` |
 | `directReply` | Inject a direct reply into a running agent. | `agentId`, `input` |
 | `navigate` | Record navigation to an agent. | `agentId` |

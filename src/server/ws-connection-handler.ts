@@ -31,6 +31,7 @@ import type { WorkspaceAttemptRepository } from '../core/workspace-attempt-repos
 import type { RepoPolicyResolver } from '../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../core/worktree-lease-service.js';
 import { createSnapshotMessage, getProjectSummaries } from './use-cases/get-snapshot.js';
+import { stampSnapshotPosition, type StreamPosition } from './snapshot-stream-sequencer.js';
 import type { Actor } from './auth.js';
 import type { Scope } from './viewer-data-policy.js';
 import type { SnapshotMessage } from '../shared/contracts/messages.js';
@@ -59,7 +60,14 @@ import {
  * Add a type here only if a genuinely read-only viewer message variant is
  * introduced.
  */
-export const ALLOWED_VIEWER_INBOUND: ReadonlySet<ClientMessage['type']> = new Set<ClientMessage['type']>();
+export const ALLOWED_VIEWER_INBOUND: ReadonlySet<ClientMessage['type']> = new Set<ClientMessage['type']>([
+  // Delta-protocol resync escape hatch (issue #1754, Stage 1). Read-only: it
+  // triggers only a re-base snapshot back to the requesting socket, with no
+  // state mutation, so a read-only viewer must be able to recover its own
+  // scoped stream after a gap. Scope filtering is preserved — the reply is
+  // built from `buildScopedSnapshot(actor.scope)` below.
+  'requestResync',
+]);
 
 /**
  * WS read-only inbound gate (#806). Owners have full access; viewers are
@@ -173,6 +181,14 @@ export interface WsConnectionDeps {
    */
   buildScopedSnapshot?: (scope: Scope) => SnapshotMessage;
   snapshotPayloadSizePolicy?: SnapshotPayloadSizePolicy;
+  /**
+   * Current delta-protocol stream position `(epoch, seq)` (issue #1754, Stage
+   * 1). Wired from `RealtimeServices.getStreamPosition`. Used to stamp the
+   * connect-time snapshot (owner via the router; viewer via the initial burst)
+   * and the resync-reply snapshot so a client re-bases to the current seq.
+   * Omitted by lightweight/test wirings → snapshots byte-identical to pre-#1754.
+   */
+  getStreamPosition?: () => StreamPosition | undefined;
 }
 
 function sendServerMessage(
@@ -220,6 +236,7 @@ export function handleWsConnection(
       sendServerMessage(ws, msg, 'all', deps.snapshotPayloadSizePolicy);
     },
     serverCwd, interactionLog, buildInfo, serverStartedAt,
+    getStreamPosition: deps.getStreamPosition,
     onRespond: abortPendingSuggestion, telemetryLog,
     lifecycleExtras, sttUrl, ttsUrl,
     agentLifecycleDeps, broadcastToAll, launchTask,
@@ -362,9 +379,14 @@ function sendViewerInitialBurst(
     console.warn('[ws] viewer connected without a buildScopedSnapshot factory; serving no snapshot (fail-closed)');
     return;
   }
+  // #1754 Stage 1: stamp the viewer's connect-time snapshot with the current
+  // stream position so it initializes `(epoch, seq)` on its first frame, same
+  // as the owner path.
+  const viewerStreamPosition = deps.getStreamPosition?.();
+  const viewerSnapshot = deps.buildScopedSnapshot(scope);
   sendServerMessage(
     ws,
-    deps.buildScopedSnapshot(scope),
+    viewerStreamPosition ? stampSnapshotPosition(viewerSnapshot, viewerStreamPosition) : viewerSnapshot,
     snapshotScopeKey(scope),
     deps.snapshotPayloadSizePolicy,
   );
@@ -452,6 +474,33 @@ function wireWsMessageHandlers(
             summary: 'Read-only session: action not permitted',
             details: `Inbound message type "${msg.type}" is blocked for read-only viewers.`,
           }));
+        }
+        return;
+      }
+
+      // Delta-protocol resync escape hatch (issue #1754, Stage 1). A client that
+      // cannot apply an incoming frame in order asks for a fresh full snapshot to
+      // re-base. Handled here — before the router — so it re-bases ONLY the
+      // requesting socket at the current `(epoch, seq)`, never a fleet-wide
+      // rebroadcast, and never mutates state. Owners get the full connect
+      // snapshot; a scoped viewer gets its scope-filtered snapshot (same choke
+      // point as its initial burst), both stamped with the current stream
+      // position. A viewer wiring without the scoped factory serves nothing
+      // (fail-closed), matching `sendViewerInitialBurst`.
+      if (msg.type === 'requestResync') {
+        if (actor.kind === 'viewer') {
+          if (deps.buildScopedSnapshot) {
+            const position = deps.getStreamPosition?.();
+            const scoped = deps.buildScopedSnapshot(actor.scope);
+            sendServerMessage(
+              ws,
+              position ? stampSnapshotPosition(scoped, position) : scoped,
+              snapshotScopeKey(actor.scope),
+              deps.snapshotPayloadSizePolicy,
+            );
+          }
+        } else {
+          sendServerMessage(ws, router.buildConnectSnapshot(), 'all', deps.snapshotPayloadSizePolicy);
         }
         return;
       }
