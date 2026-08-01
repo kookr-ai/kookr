@@ -58,14 +58,18 @@ require_review_verdict() {
   fi
 
   local view head_sha decision
-  if ! view="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json comments,labels,headRefOid)"; then
+  # Prefer fields available across gh versions. `headRefOid` is missing on gh < ~2.14
+  # (issue #1853); `commits` has been a valid `gh pr view --json` field much longer.
+  # Empty head SHA is OK — the staleness check already no-ops when $head is empty.
+  if ! view="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json comments,labels,commits)"; then
     echo "kookr-merge: could not read PR comments/labels for the review gate" >&2
     return 4
   fi
-  head_sha="$(printf '%s' "$view" | jq -r '.headRefOid // "" | ascii_downcase')"
+  head_sha="$(printf '%s' "$view" | jq -r '((.commits // []) | last | .oid // "") | ascii_downcase')"
   # Export the reviewed head so the final merge can pin to it (--match-head-commit),
   # closing the TOCTOU window where the head advances during the check-watch wait
-  # and an unreviewed commit would otherwise merge.
+  # and an unreviewed commit would otherwise merge. Older gh lacks that flag; the
+  # merge step feature-probes and degrades gracefully (issue #1853).
   REVIEW_HEAD_SHA="$head_sha"
 
   decision="$(printf '%s' "$view" | jq -r \
@@ -248,8 +252,14 @@ echo "kookr-merge: checks passed, squash-merging PR #$PR"
 # Pin the merge to the reviewed head when the review gate ran (REVIEW_HEAD_SHA is
 # set inside require_review_verdict). If the head advanced during the wait, gh
 # refuses the merge rather than merging an unreviewed commit.
+# --match-head-commit is absent on older gh (issue #1853); feature-probe and omit
+# it rather than failing the entire merge.
 HEAD_PIN=()
 if [[ -n "${REVIEW_HEAD_SHA:-}" ]]; then
-  HEAD_PIN=(--match-head-commit "$REVIEW_HEAD_SHA")
+  if gh pr merge --help 2>&1 | grep -q -- '--match-head-commit'; then
+    HEAD_PIN=(--match-head-commit "$REVIEW_HEAD_SHA")
+  else
+    echo "kookr-merge: notice: installed gh lacks --match-head-commit; merge will not pin to reviewed head $REVIEW_HEAD_SHA" >&2
+  fi
 fi
 gh pr merge "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --squash --delete-branch ${HEAD_PIN[@]+"${HEAD_PIN[@]}"}
