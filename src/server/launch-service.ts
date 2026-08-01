@@ -37,6 +37,10 @@ import { buildCapacityLedger, isReservedSlotLaunch, type CapacityLedger } from '
 import { spawnBudgetKey, type SpawnRateLimiter, type SpawnRateVerdict } from '../core/spawn-rate-limiter.js';
 import { evaluateHostLoadAdmission, type HostLoadSample } from '../core/host-load-admission.js';
 import { LaunchPhaseTracker, type LaunchPhaseTimings } from '../core/launch-phase-timings.js';
+import {
+  classifyLaunchFailureReason,
+  type LaunchOutcomeMetrics,
+} from '../core/launch-outcome-metrics.js';
 import type { RelaunchArbiter, RelaunchLease } from './relaunch-arbiter.js';
 import { isAutonomousLaunchSource } from '../core/automation-kill-switch.js';
 
@@ -214,6 +218,13 @@ export interface LaunchServiceDeps {
    * Force-flush task state after a successful grant (R5). Optional for tests.
    */
   flushTasks?: () => Promise<void>;
+  /**
+   * Per-agent-type launch success/failure counters (issue #1808). When wired,
+   * every non-queued adapter launch records one outcome so
+   * `GET /api/diagnostics/launch-outcomes` can show failure rates without log
+   * spelunking. Optional — older wiring/tests omit it with no behaviour change.
+   */
+  launchOutcomeMetrics?: LaunchOutcomeMetrics;
 }
 
 /**
@@ -1433,10 +1444,16 @@ async function launchTaskCore(
       // launch error the caller needs to see.
       console.error(`[launch] failed to terminate disposed task ${task.id}:`, terminateErr);
     }
+    deps.launchOutcomeMetrics?.record({
+      agentType,
+      outcome: 'failure',
+      reason: classifyLaunchFailureReason(err),
+    });
     markDisposedTask(err, task.id);
     throw err;
   }
   // --- Launch succeeded: a session is attached and the agent is live. ---
+  deps.launchOutcomeMetrics?.record({ agentType, outcome: 'success' });
   // Instrumentation (issue #1589): finalize and persist the full
   // `preflight → reserve → session-create → agent-boot → ack` breakdown on the
   // task so a slow-but-successful launch is as diagnosable as a failed one.

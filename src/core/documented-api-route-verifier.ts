@@ -146,6 +146,7 @@ export const INTERNAL_API_ROUTES: ReadonlySet<string> = new Set([
   'GET /api/diagnostics/auth-throttle',
   'GET /api/diagnostics/delivery-trace',
   'GET /api/diagnostics/hook-ingestion',
+  'GET /api/diagnostics/launch-outcomes',
   'GET /api/diagnostics/request-latencies',
   'GET /api/diagnostics/speak-cache',
 

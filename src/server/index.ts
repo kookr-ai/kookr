@@ -39,6 +39,7 @@ import { buildCapacityLedger } from '../core/capacity-ledger.js';
 import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
 import { resolveTaskAttentionSignals } from './task-attention-signals.js';
 import { IdempotencyLedger } from '../core/idempotency-ledger.js';
+import { LaunchOutcomeMetrics } from '../core/launch-outcome-metrics.js';
 import { DrainController } from './drain-state.js';
 import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handler.js';
 import { QuotaAdapter } from '../adapters/quota-adapter.js';
@@ -1328,6 +1329,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
   });
 
+  // Per-agent launch success/failure counters (issue #1808) — shared by the
+  // launch service (writers) and diagnostics routes (readers).
+  const launchOutcomeMetrics = new LaunchOutcomeMetrics();
+
   // Launch service deps — shared by WS handler, REST routes, and the Ralph
   // cycler's fresh-runtime launcher inside wireEventPipeline.
   const launchServiceDeps: LaunchServiceDeps = {
@@ -1345,6 +1350,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     bypassAllPermissions,
     idempotencyLedger,
     getLaunchTimeoutMs,
+    launchOutcomeMetrics,
     // issue #1526 Phase C / C3: pending-queue depth limit + per-source spawn
     // budget, with the SAME watchdog-aware capacity-ledger builder /api/health
     // uses so a 429 body and the health endpoint tell one story.
@@ -1704,6 +1710,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     } : {}),
     taskStore, monitor, queue, adapter, hookWatcher, watchdog,
     interactionLog,
+    launchOutcomeMetrics,
     taskTailStore,
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
     serverCwd, serverPort: port, pluginUpdateBin: agentBin, kookrDir, frontendDir, broadcastToAll,

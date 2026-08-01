@@ -54,7 +54,12 @@ import {
   resolveGrokModel,
   GROK_AGENT_BIN_ENV,
 } from './grok-launch-args.js';
-import { detectGrokBlockingStartupUI, detectGrokPermissionPromptUI } from './grok-readiness.js';
+import {
+  detectGrokBlockingStartupUI,
+  detectGrokPermissionPromptUI,
+  formatGrokPaneExcerpt,
+  isGrokBusyOrResponding,
+} from './grok-readiness.js';
 import { normalizePaneForActivity } from '../shared/pane-semantics.js';
 import {
   resolveGrokInstalledState,
@@ -68,6 +73,19 @@ const textDecoder = new TextDecoder('utf-8', { fatal: false });
 const DEFAULT_READY_TIMEOUT_MS = 15_000;
 const DEFAULT_READY_POLL_MS = 100;
 const DEFAULT_GROK_PROMPT_SUBMIT_RETRIES = 0;
+/**
+ * In-session initial-prompt handshake retries after the first confirmation
+ * loop returns `unconfirmed` (issue #1808). One extra wait (and optionally one
+ * Enter resend when the pane still looks idle) is cheaper than cancelling the
+ * whole task for the operator to respawn. Kept at 1 so we do not hammer a
+ * stuck TUI with repeated resubmits.
+ */
+export const DEFAULT_GROK_HANDSHAKE_RETRIES = 1;
+/**
+ * Marker the launch path waits on for initial-prompt acknowledgement. Logged
+ * on timeout so failure diagnostics state what probe failed (issue #1808).
+ */
+export const GROK_INITIAL_PROMPT_ACK_MARKER = 'UserPromptSubmit hook (parent user_prompt)';
 /**
  * Grok emits UserPromptSubmit promptly, but its command-hook acknowledgement
  * can take several seconds to complete the local writer + HTTP round trip.
@@ -96,8 +114,10 @@ export const AGENT_BOOT_TIMEOUT_MARGIN_MS = 10_000;
  * threaded through — polls for the SAME ready signal a second time
  * (`promptReadyTimeoutMs` again) before the submit-confirmation retries
  * (`promptSubmitConfirmTimeoutMs` per attempt, `promptSubmitRetries + 1`
- * attempts). Nominal budget: `promptReadyTimeoutMs * 2 +
- * promptSubmitConfirmTimeoutMs * (promptSubmitRetries + 1)`.
+ * attempts) plus up to `handshakeRetries` extra confirmation waits after an
+ * unconfirmed delivery (issue #1808). Nominal budget:
+ * `promptReadyTimeoutMs * 2 + promptSubmitConfirmTimeoutMs *
+ * (promptSubmitRetries + 1 + handshakeRetries)`.
  *
  * That nominal sum is NOT a hard bound on its own: every wait in the chain
  * polls via `backend.captureBytes()`, and each individual `await` on that
@@ -122,10 +142,11 @@ export function computeDefaultAgentBootTimeoutMs(
   promptReadyTimeoutMs: number,
   promptSubmitConfirmTimeoutMs: number,
   promptSubmitRetries: number,
+  handshakeRetries: number = DEFAULT_GROK_HANDSHAKE_RETRIES,
 ): number {
   return (
     promptReadyTimeoutMs * 2 +
-    promptSubmitConfirmTimeoutMs * (promptSubmitRetries + 1) +
+    promptSubmitConfirmTimeoutMs * (promptSubmitRetries + 1 + handshakeRetries) +
     AGENT_BOOT_TIMEOUT_MARGIN_MS
   );
 }
@@ -212,6 +233,15 @@ export interface GrokBuildAdapterOptions {
   promptReadyTimeoutMs?: number;
   promptSubmitConfirmTimeoutMs?: number;
   promptSubmitRetries?: number;
+  /**
+   * In-session handshake retries after the first confirmation loop returns
+   * `unconfirmed` (issue #1808). Defaults to
+   * {@link DEFAULT_GROK_HANDSHAKE_RETRIES}. Each attempt may re-await the
+   * UserPromptSubmit signal and, when the pane still looks idle, resend Enter
+   * once. Set to `0` to fail closed after the first confirmation timeout
+   * (prior behaviour).
+   */
+  handshakeRetries?: number;
   /**
    * Wall-clock ceiling on the whole `agent-boot` phase — readiness wait +
    * initial-prompt delivery + submit-confirmation retries (issue #1642).
@@ -326,6 +356,7 @@ export class GrokBuildAdapter implements AgentAdapter {
   private promptReadyTimeoutMs: number;
   private promptSubmitConfirmTimeoutMs: number;
   private promptSubmitRetries: number;
+  private handshakeRetries: number;
   private agentBootTimeoutMs: number;
   /** Memoized installed-state resolution (identity + qualification). */
   private installedStateProbe?: Promise<GrokInstalledState>;
@@ -352,16 +383,19 @@ export class GrokBuildAdapter implements AgentAdapter {
     this.promptReadyTimeoutMs = options?.promptReadyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
     this.promptSubmitConfirmTimeoutMs =
       options?.promptSubmitConfirmTimeoutMs ?? DEFAULT_GROK_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS;
-    // Grok's TUI does not expose the Claude-specific busy-screen markers used
-    // to decide whether a retry Enter is safe. A missing acknowledgement must
-    // therefore fail closed rather than risk submitting the same prompt again.
+    // Intra-delivery Enter resends stay fail-closed (Grok has no Claude-style
+    // busy markers in deliverInitialPromptToSession). In-session handshake
+    // recovery after that loop uses {@link isGrokBusyOrResponding} instead
+    // (issue #1808).
     this.promptSubmitRetries = options?.promptSubmitRetries ?? DEFAULT_GROK_PROMPT_SUBMIT_RETRIES;
+    this.handshakeRetries = options?.handshakeRetries ?? DEFAULT_GROK_HANDSHAKE_RETRIES;
     this.agentBootTimeoutMs =
       options?.agentBootTimeoutMs ??
       computeDefaultAgentBootTimeoutMs(
         this.promptReadyTimeoutMs,
         this.promptSubmitConfirmTimeoutMs,
         this.promptSubmitRetries,
+        this.handshakeRetries,
       );
   }
 
@@ -647,27 +681,94 @@ export class GrokBuildAdapter implements AgentAdapter {
       submitRetries: this.promptSubmitRetries,
       readyTimeoutMs: this.promptReadyTimeoutMs,
     });
-    if (delivery.status === 'unconfirmed') {
-      // Explain a known cause before the generic diagnosis: a permission
-      // row menu (e.g. a startup approval) swallows the composer, so the
-      // prompt can never be acknowledged (issue #1526 Phase C4).
-      let permissionPrompt: string | null = null;
+    if (delivery.status !== 'unconfirmed') return;
+
+    // First confirmation loop timed out. Capture the pane for diagnosis, then
+    // optionally retry the handshake once in-session (issue #1808) before
+    // failing the launch — cheaper than cancelling the task for an operator
+    // respawn. Permission menus still fail immediately (retry cannot help).
+    let display = '';
+    try {
+      display = textDecoder.decode(await this.backend.captureBytes(tmuxName));
+    } catch {
+      /* diagnosis is best-effort — never mask the delivery failure */
+    }
+    const permissionPrompt = display ? detectGrokPermissionPromptUI(display) : null;
+    if (permissionPrompt) {
+      throw new Error(this.formatUnconfirmedPromptError(permissionPrompt, display));
+    }
+
+    console.warn(
+      `[grok-build-adapter] initial-prompt ack pending for ${tmuxName}: ` +
+        `waiting for ${GROK_INITIAL_PROMPT_ACK_MARKER}; ` +
+        `pane excerpt: ${formatGrokPaneExcerpt(display)}`,
+    );
+
+    for (let attempt = 0; attempt < this.handshakeRetries; attempt += 1) {
+      let busy = false;
       try {
-        const display = textDecoder.decode(await this.backend.captureBytes(tmuxName));
-        permissionPrompt = detectGrokPermissionPromptUI(display);
+        display = textDecoder.decode(await this.backend.captureBytes(tmuxName));
+        busy = isGrokBusyOrResponding(display);
       } catch {
-        /* diagnosis is best-effort — never mask the delivery failure */
+        /* treat capture failure as idle — a no-op Enter is safer than a stuck launch */
       }
-      throw new Error(
-        `[grok-build-adapter] Grok did not acknowledge the initial prompt within ` +
-          `${this.promptSubmitConfirmTimeoutMs}ms; refusing to resend it. ` +
-          (permissionPrompt
-            ? `${permissionPrompt} — resolve it in the terminal before relaunching. `
-            : '') +
-          `Auth preflight passed; inspect Grok terminal/PTY readiness and hook dispatch ` +
-          `(including terminal query handling).`,
+      if (busy) {
+        // Pane suggests Grok already left the composer (or is permission-
+        // blocked mid-tool). Wait once more for the hook without resending
+        // Enter — resubmit would risk confirming a dialog or interrupting
+        // a live turn.
+        if (await awaitSubmit(this.promptSubmitConfirmTimeoutMs)) return;
+      } else {
+        // Still looks idle: the first Enter may have been dropped. Resend
+        // Enter once, then re-await the same UserPromptSubmit signal.
+        try {
+          await this.inputWriter.writeInput(tmuxName, ENTER_BYTES, {
+            reason: 'launch-prompt-handshake-retry-enter',
+          });
+        } catch (err) {
+          console.warn(
+            `[grok-build-adapter] handshake retry Enter failed for ${tmuxName}:`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+        if (await awaitSubmit(this.promptSubmitConfirmTimeoutMs)) return;
+      }
+      console.warn(
+        `[grok-build-adapter] handshake retry ${attempt + 1}/${this.handshakeRetries} ` +
+          `for ${tmuxName} still unconfirmed (busy=${busy}); ` +
+          `pane excerpt: ${formatGrokPaneExcerpt(display)}`,
       );
     }
+
+    // Final capture for the thrown error body (may have changed during retries).
+    try {
+      display = textDecoder.decode(await this.backend.captureBytes(tmuxName));
+    } catch {
+      /* keep prior display */
+    }
+    throw new Error(this.formatUnconfirmedPromptError(null, display));
+  }
+
+  /**
+   * Build the unconfirmed-initial-prompt error (issue #1808). Always names the
+   * acknowledgement marker and includes a pane excerpt so operators can see
+   * what the TUI actually showed at timeout without log spelunking.
+   */
+  private formatUnconfirmedPromptError(
+    permissionPrompt: string | null,
+    display: string,
+  ): string {
+    const excerpt = formatGrokPaneExcerpt(display);
+    return (
+      `[grok-build-adapter] Grok did not acknowledge the initial prompt within ` +
+      `${this.promptSubmitConfirmTimeoutMs}ms ` +
+      `(waiting for ${GROK_INITIAL_PROMPT_ACK_MARKER}); refusing to resend it. ` +
+      (permissionPrompt
+        ? `${permissionPrompt} — resolve it in the terminal before relaunching. `
+        : '') +
+      `Auth preflight passed; inspect Grok terminal/PTY readiness and hook dispatch ` +
+      `(including terminal query handling). Pane excerpt: ${excerpt}`
+    );
   }
 
   private armInitialPromptSubmitSignal(tmuxName: string): Promise<void> {
