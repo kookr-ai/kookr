@@ -7,6 +7,9 @@ import { Watchdog } from '../../core/watchdog.js';
 import { AuthThrottle } from '../auth-throttle.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
 import { PROMETHEUS_CONTENT_TYPE } from '../prometheus-exposition.js';
+import { TerminalInputRttMetrics } from '../terminal-input-rtt-metrics.js';
+import { TerminalInputCoordinator } from '../terminal-input-coordinator.js';
+import { FakeTerminalBackend } from '../../adapters/fake-terminal-backend.js';
 import { registerMetricsRoutes } from './metrics-routes.js';
 import type { RouteDeps } from './shared.js';
 
@@ -156,6 +159,27 @@ describe('metrics routes', () => {
     expect(body).toContain('kookr_auth_throttled_attempts_total 1');
     expect(body).toContain('kookr_auth_locked_out_sources 1');
     expect(body).not.toContain('10.0.0.12');
+  });
+
+  test('exposes terminal input RTT recorded by a real coordinator write (issue #1773)', async () => {
+    // End-to-end: a successful coordinator write records a sample through the
+    // live histogram, which then surfaces on /metrics with quantiles + count.
+    const clock = [4, 10];
+    const terminalInputRttMetrics = new TerminalInputRttMetrics({ nowMs: () => clock.shift() ?? 0 });
+    const backend = new FakeTerminalBackend();
+    await backend.createSession({ id: 's1', command: 'agent', args: [] });
+    const coordinator = new TerminalInputCoordinator(backend, undefined, terminalInputRttMetrics);
+    coordinator.registerSession('s1');
+    await coordinator.writeInput('s1', new TextEncoder().encode('x'));
+
+    const res = await mkApp({ terminalInputRttMetrics }).request('/metrics');
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('# TYPE kookr_terminal_input_rtt_seconds gauge');
+    // 6ms round-trip rendered as Prometheus base-unit seconds.
+    expect(body).toContain('kookr_terminal_input_rtt_seconds{quantile="0.5"} 0.006');
+    expect(body).toContain('kookr_terminal_input_rtt_observations_total 1');
   });
 
   test('requires an owner credential when non-loopback API auth is required', async () => {

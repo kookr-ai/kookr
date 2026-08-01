@@ -20,6 +20,7 @@ import {
 } from './diagnostics-routes.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
 import { HotPathSampler } from '../../core/hot-path-sampler.js';
+import { TerminalInputRttMetrics } from '../terminal-input-rtt-metrics.js';
 import { AuthThrottle } from '../auth-throttle.js';
 import { ViewerGrantStore } from '../../core/viewer-grants.js';
 import { ViewerConnectionRegistry } from '../viewer-connection-registry.js';
@@ -406,6 +407,44 @@ describe('diagnostics routes', () => {
         const res = await mkApp({ hotPathSampler: sampler }).request(`/api/diagnostics/hot-paths?topK=${q}`);
         expect((await res.json()).topK).toBe(10);
       }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/diagnostics/terminal-input-rtt (issue #1773)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/diagnostics/terminal-input-rtt', () => {
+    test('returns an empty v1 snapshot when the histogram is not wired', async () => {
+      const res = await mkApp({}).request('/api/diagnostics/terminal-input-rtt');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        schemaVersion: 'terminal-input-rtt-metrics.v1',
+        maxSamples: 0,
+        count: 0,
+        sampleCount: 0,
+        p50Ms: 0,
+        p95Ms: 0,
+        p99Ms: 0,
+      });
+    });
+
+    test('exposes count and p50/p95/p99 over recorded samples', async () => {
+      const metrics = new TerminalInputRttMetrics();
+      for (const ms of [5, 10, 15, 20]) metrics.record(ms);
+
+      const res = await mkApp({ terminalInputRttMetrics: metrics }).request('/api/diagnostics/terminal-input-rtt');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        schemaVersion: 'terminal-input-rtt-metrics.v1',
+        maxSamples: 512,
+        count: 4,
+        sampleCount: 4,
+        p50Ms: 10,
+        p95Ms: 20,
+        p99Ms: 20,
+      });
     });
   });
 

@@ -218,6 +218,42 @@ describe('renderPrometheusExposition', () => {
     expect(output).toContain('kookr_terminal_write_max_pending_writes 4');
   });
 
+  test('renders terminal input RTT quantiles (seconds) and observation count (issue #1773)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      terminalInputRtt: {
+        schemaVersion: 'terminal-input-rtt-metrics.v1',
+        maxSamples: 512,
+        count: 42,
+        sampleCount: 42,
+        p50Ms: 3.5,
+        p95Ms: 18,
+        p99Ms: 2000,
+      },
+    });
+
+    // Snapshot is milliseconds; exposition converts to Prometheus base-unit seconds.
+    expect(output).toContain('# TYPE kookr_terminal_input_rtt_seconds gauge');
+    expect(output).toContain('kookr_terminal_input_rtt_seconds{quantile="0.5"} 0.0035');
+    expect(output).toContain('kookr_terminal_input_rtt_seconds{quantile="0.95"} 0.018');
+    expect(output).toContain('kookr_terminal_input_rtt_seconds{quantile="0.99"} 2');
+    expect(output).toContain('# TYPE kookr_terminal_input_rtt_observations_total counter');
+    expect(output).toContain('kookr_terminal_input_rtt_observations_total 42');
+  });
+
+  test('renders zeroed terminal input RTT metrics when the snapshot is absent (issue #1773)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+    });
+
+    expect(output).toContain('kookr_terminal_input_rtt_seconds{quantile="0.5"} 0');
+    expect(output).toContain('kookr_terminal_input_rtt_seconds{quantile="0.95"} 0');
+    expect(output).toContain('kookr_terminal_input_rtt_seconds{quantile="0.99"} 0');
+    expect(output).toContain('kookr_terminal_input_rtt_observations_total 0');
+  });
+
   test('renders aggregate auth throttle counters without source labels', () => {
     const output = renderPrometheusExposition({
       requestDurations: EMPTY_REQUEST_DURATIONS,

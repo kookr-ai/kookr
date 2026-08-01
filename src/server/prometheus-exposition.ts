@@ -9,6 +9,10 @@ import {
 } from '../integrations/webhook/index.js';
 import type { AuthThrottleSnapshot } from './auth-throttle.js';
 import type { RequestDurationMetricsSnapshot } from './request-duration-metrics.js';
+import {
+  EMPTY_TERMINAL_INPUT_RTT_SNAPSHOT,
+  type TerminalInputRttMetricsSnapshot,
+} from './terminal-input-rtt-metrics.js';
 import type { ToolLatencyMetricsSnapshot } from '../core/tool-latency-metrics.js';
 import { emptyToolLatencyMetricsSnapshot } from '../core/tool-latency-metrics.js';
 
@@ -32,6 +36,7 @@ export interface PrometheusExpositionSnapshot {
   authThrottle?: AuthThrottleSnapshot;
   webhookDeliveries?: WebhookDeliveryCounts;
   terminalWrite?: TerminalWriteMetricsSnapshot;
+  terminalInputRtt?: TerminalInputRttMetricsSnapshot;
 }
 
 export interface AuditSinkMetricsSnapshot {
@@ -51,6 +56,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendAuthThrottleMetrics(lines, snapshot.authThrottle);
   appendWebhookDeliveryMetrics(lines, snapshot.webhookDeliveries);
   appendTerminalWriteMetrics(lines, snapshot.terminalWrite);
+  appendTerminalInputRttMetrics(lines, snapshot.terminalInputRtt);
 
   return `${lines.join('\n')}\n`;
 }
@@ -270,6 +276,25 @@ function appendTerminalWriteMetrics(
     '# HELP kookr_terminal_write_max_pending_writes High-water mark of coordinator pendingWrites since process start.',
     '# TYPE kookr_terminal_write_max_pending_writes gauge',
     metricLine('kookr_terminal_write_max_pending_writes', {}, snapshot.maxPendingWrites),
+  );
+}
+
+function appendTerminalInputRttMetrics(
+  lines: string[],
+  snapshot: TerminalInputRttMetricsSnapshot = EMPTY_TERMINAL_INPUT_RTT_SNAPSHOT,
+): void {
+  lines.push(
+    // Seconds + `_observations_total`, matching kookr_http_request_duration_*
+    // and kookr_tool_duration_* so all three latency families share one unit
+    // and one counter idiom (Prometheus base-unit guidance).
+    '# HELP kookr_terminal_input_rtt_observations_total Total terminal input write round-trip observations since process start.',
+    '# TYPE kookr_terminal_input_rtt_observations_total counter',
+    metricLine('kookr_terminal_input_rtt_observations_total', {}, snapshot.count),
+    '# HELP kookr_terminal_input_rtt_seconds Terminal input write round-trip latency (keystroke enqueue → backend write-ack) quantiles in seconds.',
+    '# TYPE kookr_terminal_input_rtt_seconds gauge',
+    metricLine('kookr_terminal_input_rtt_seconds', { quantile: '0.5' }, msToSeconds(snapshot.p50Ms)),
+    metricLine('kookr_terminal_input_rtt_seconds', { quantile: '0.95' }, msToSeconds(snapshot.p95Ms)),
+    metricLine('kookr_terminal_input_rtt_seconds', { quantile: '0.99' }, msToSeconds(snapshot.p99Ms)),
   );
 }
 

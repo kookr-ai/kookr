@@ -53,6 +53,7 @@ import { bodyLimit } from 'hono/body-limit';
 import type { MiddlewareHandler } from 'hono';
 import type { RequestDurationMetrics } from '../request-duration-metrics.js';
 import type { HotPathSampler } from '../../core/hot-path-sampler.js';
+import type { TerminalInputRttMetrics } from '../terminal-input-rtt-metrics.js';
 import type { TaskStateSaveSchedulerLike } from '../task-state-save-scheduler.js';
 import type { TerminalInputCoordinator } from '../terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from '../user-input-delivery-service.js';
@@ -508,6 +509,12 @@ export interface RouteDeps {
    * dedicated instance for deterministic assertions.
    */
   hotPathSampler?: Pick<HotPathSampler, 'snapshot'>;
+  /**
+   * Bounded ring histogram of terminal-input write round-trip latency
+   * (keystroke enqueue → backend write-ack), exposed on `/metrics` and
+   * `/api/diagnostics/terminal-input-rtt` (issue #1773).
+   */
+  terminalInputRttMetrics?: TerminalInputRttMetrics;
   /** Bounded in-memory notification delivery trace exposed through diagnostics. */
   deliveryTrace?: DeliveryTraceReader;
   /** Optional outbound finding-webhook notifier; exposes delivery outcome counters on `/metrics`. */

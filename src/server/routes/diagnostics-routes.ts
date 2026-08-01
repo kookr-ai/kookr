@@ -31,6 +31,7 @@ import { ReviewLogStore } from '../review-log-store.js';
 import { buildDetectorProposalReportResponseV1 } from '../detector-proposal-report.js';
 import { REQUEST_LATENCIES_ROUTE } from '../request-duration-metrics.js';
 import { HOT_PATHS_ROUTE, getHotPathSampler } from '../../core/hot-path-sampler.js';
+import { EMPTY_TERMINAL_INPUT_RTT_SNAPSHOT } from '../terminal-input-rtt-metrics.js';
 import { splitHookRequestBody } from '../hook-record-framing.js';
 import type { BackendStats } from '../../adapters/terminal-backend.js';
 import { probeSttHealth } from '../../adapters/circuit-breaker-stt-client.js';
@@ -559,6 +560,13 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     const topK = parsePositiveInt(c.req.query('topK'));
     return c.json(sampler.snapshot(topK === undefined ? {} : { topK }));
   });
+
+  // Issue #1773: keystroke → backend write-ack latency (p50/p95/p99) so the
+  // terminal typing lag users feel is chartable without a secret env flag.
+  // Falls back to an empty snapshot when direct tests register this module
+  // without the createRoutes middleware that wires the live histogram.
+  app.get('/api/diagnostics/terminal-input-rtt', (c) =>
+    c.json(deps.terminalInputRttMetrics?.snapshot() ?? EMPTY_TERMINAL_INPUT_RTT_SNAPSHOT));
 
   app.get('/api/diagnostics/auth-throttle', (c) => c.json(getAuthThrottleSnapshot(deps.apiAuth)));
 

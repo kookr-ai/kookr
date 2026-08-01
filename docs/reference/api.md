@@ -11,7 +11,7 @@ Kookr exposes local HTTP and WebSocket endpoints from the Hono server. In develo
 | `GET /api/diagnostics/lesson-yield` | Per-window lesson yield (`?days=1..30`): decided / completed tasks from hook-log scans. Cache-first / stale-while-revalidate — a fresh or stale snapshot returns immediately; a cold cache waits at most ~8s for a single-flight scan, then returns `503 lesson_yield_warming` (with `retryAfterMs`) while the bounded scan finishes in the background, so the request path never hangs. (`503 lesson_yield_scan_timeout` remains only for the rare case a scan aborts at its 30s bound inside that wait.) (issues #1538, #1553, #1585) |
 | `GET /api/health/stt` | Bundled speech-to-text container health |
 | `GET /api/startup-summary` | Crash-recovery startup summary fetched once on UI mount |
-| `GET /metrics` | Prometheus text exposition for request durations, per-tool PreToolUse→PostToolUse latencies, circuit breakers, attention-queue suppressions, audit-sink health, aggregate auth-throttle counters, and outbound finding-webhook delivery outcomes |
+| `GET /metrics` | Prometheus text exposition for request durations, per-tool PreToolUse→PostToolUse latencies, terminal input write round-trip latency, circuit breakers, attention-queue suppressions, audit-sink health, aggregate auth-throttle counters, and outbound finding-webhook delivery outcomes |
 
 ### `GET /metrics`
 
@@ -78,6 +78,29 @@ occurred yet):
 
 Prometheus auth-throttle metrics intentionally omit raw source labels such as
 IP addresses.
+
+Terminal input write round-trip latency — the keystroke-enqueue → backend
+write-ack lag users feel while typing — is exported from a bounded ring-buffer
+histogram (issue #1773; zeros until the first write). Units follow the other
+latency families (`kookr_http_request_duration_seconds`,
+`kookr_tool_duration_seconds`) — Prometheus base-unit seconds:
+
+- `kookr_terminal_input_rtt_seconds{quantile="0.5"|"0.95"|"0.99"}`: gauge of
+  p50 / p95 / p99 write round-trip latency in seconds. Timing spans method
+  entry (including session-queue wait) through a successful backend write
+  acknowledgement, so it captures queue backpressure, not just the raw write.
+- `kookr_terminal_input_rtt_observations_total`: counter of write round-trip
+  observations since process start.
+
+Only successful, un-paced writes are recorded: a rejected write (e.g. a
+`WriteTimeoutError`) has no acknowledgement, and deliberately-paced programmatic
+submits (paste + Enter with an inter-payload delay) are dominated by intentional
+sleeps — both would corrupt the typing-lag signal. Sampling is allocation-light
+(a fixed-size numeric ring buffer, no per-keystroke strings) and never records
+keystroke content. The same snapshot is available as JSON at
+`GET /api/diagnostics/terminal-input-rtt` (values in milliseconds — `p50Ms` /
+`p95Ms` / `p99Ms` — plus `count`, `sampleCount`, and the `maxSamples` ring
+capacity).
 
 ## Tasks And Agents
 
