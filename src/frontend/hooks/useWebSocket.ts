@@ -7,6 +7,7 @@ import type { TransportSessionSlice, TriageNavigationSlice } from '../store/stor
 import { recordInbound, recordOutbound } from '../bug-report-recorder.js';
 import { createReconnectingSocket, type ReconnectingSocket } from '../reconnecting-socket.js';
 import { DeltaSequenceTracker } from '../delta-sequence.js';
+import { measureSync } from '../debug-timeline.js';
 
 // Stale-socket callbacks are ignored silently in the controller; here we count
 // them and emit at most one compact telemetry event per window so a burst of
@@ -48,53 +49,57 @@ export function dispatchSnapshotMessageForClient(
   msg: Record<string, any>,
   handleSnapshot: TransportSessionSlice['handleSnapshot'],
 ): void {
-  handleSnapshot(
-    msg.agents,
-    msg.serverCwd,
-    msg.build,
-    msg.serverStartedAt,
-    msg.sttEnabled,
-    msg.sttUrl,
-    msg.totalSpendUsd,
-    msg.achievements,
-    msg.availableAgentTypes,
-    msg.defaultAgentType,
-    msg.workspaceEnabled,
-    msg.sweepRunning,
-    msg.maxActiveTasks,
-    msg.speechCapabilities,
-    msg.coordinator,
-    msg.ttsUrl,
-    msg.bypassAllPermissions,
-    msg.drainStatus,
-    msg.sweepProgress,
-  );
-  // Sticky: only overwrite the cached graph when the server actually shipped
-  // one. High-frequency event-pipeline broadcasts omit it on purpose, and we
-  // want the detail panel to keep rendering the last-known relations until
-  // the next full snapshot refresh.
-  if (Array.isArray(msg.taskRelations)) {
-    useKookrStore.setState({ taskRelations: msg.taskRelations });
-  }
-  // Sticky: remember the last completed sweep's runId so a reconnecting client
-  // can reconstruct its Removed manifest from the ledger. Partial/high-frequency
-  // snapshots omit it — never clear on absence.
-  if (typeof msg.lastSweepRunId === 'string') {
-    useKookrStore.getState().setLastSweepRunId(msg.lastSweepRunId);
-  }
-  // Sticky SAFE MODE (issue #1710): only overwrite when the server shipped the
-  // field. High-frequency partial snapshots omit it on purpose.
-  if (msg.safeMode && typeof msg.safeMode === 'object') {
-    const engaged = msg.safeMode.engaged === true;
-    useKookrStore.setState({
-      safeMode: engaged
-        ? {
-            engaged: true,
-            ...(typeof msg.safeMode.since === 'string' ? { since: msg.safeMode.since } : {}),
-          }
-        : { engaged: false },
-    });
-  }
+  // Sample main-thread cost of applying a full snapshot (store merge + sticky fields).
+  // Samples only land when duration >= LONG_TASK_THRESHOLD_MS.
+  measureSync('snapshot-apply', () => {
+    handleSnapshot(
+      msg.agents,
+      msg.serverCwd,
+      msg.build,
+      msg.serverStartedAt,
+      msg.sttEnabled,
+      msg.sttUrl,
+      msg.totalSpendUsd,
+      msg.achievements,
+      msg.availableAgentTypes,
+      msg.defaultAgentType,
+      msg.workspaceEnabled,
+      msg.sweepRunning,
+      msg.maxActiveTasks,
+      msg.speechCapabilities,
+      msg.coordinator,
+      msg.ttsUrl,
+      msg.bypassAllPermissions,
+      msg.drainStatus,
+      msg.sweepProgress,
+    );
+    // Sticky: only overwrite the cached graph when the server actually shipped
+    // one. High-frequency event-pipeline broadcasts omit it on purpose, and we
+    // want the detail panel to keep rendering the last-known relations until
+    // the next full snapshot refresh.
+    if (Array.isArray(msg.taskRelations)) {
+      useKookrStore.setState({ taskRelations: msg.taskRelations });
+    }
+    // Sticky: remember the last completed sweep's runId so a reconnecting client
+    // can reconstruct its Removed manifest from the ledger. Partial/high-frequency
+    // snapshots omit it — never clear on absence.
+    if (typeof msg.lastSweepRunId === 'string') {
+      useKookrStore.getState().setLastSweepRunId(msg.lastSweepRunId);
+    }
+    // Sticky SAFE MODE (issue #1710): only overwrite when the server shipped the
+    // field. High-frequency partial snapshots omit it on purpose.
+    if (msg.safeMode && typeof msg.safeMode === 'object') {
+      const engaged = msg.safeMode.engaged === true;
+      useKookrStore.setState({
+        safeMode: engaged
+          ? {
+              engaged: true,
+              ...(typeof msg.safeMode.since === 'string' ? { since: msg.safeMode.since } : {}),
+            }
+          : { engaged: false },
+      });
+    }
+  }, { agentCount: Array.isArray(msg.agents) ? msg.agents.length : undefined });
 }
 
 export function dispatchAlertMessageForClient(

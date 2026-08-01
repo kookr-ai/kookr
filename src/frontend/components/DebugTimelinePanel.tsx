@@ -59,6 +59,7 @@ export function DebugTimelinePanel({ onExport }: Props) {
           <option value="websocket">WebSocket</option>
           <option value="store">Store</option>
           <option value="finding-lifecycle">Finding lifecycle</option>
+          <option value="longtask">Long task</option>
         </select>
         <input
           aria-label="Debug timeline filter"

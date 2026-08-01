@@ -9,6 +9,7 @@ import { registerTerminalSend } from '../terminal-send.js';
 import { isMultilinePaste, buildPasteFrame } from '../terminal-paste.js';
 import { createReconnectingSocket, type ReconnectingSocket } from '../reconnecting-socket.js';
 import { track } from '../telemetry.js';
+import { measureSync } from '../debug-timeline.js';
 import { installTerminalRenderer } from '../terminal-renderer.js';
 import {
   looksLikeInteractiveMenu,
@@ -782,12 +783,20 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
         // above). Convert to Uint8Array for byte-exact handoff to xterm.js — its
         // .write() accepts both Uint8Array and string. String frames (from the
         // legacy TerminalBridge path) pass through unchanged.
-        if (event.data instanceof ArrayBuffer) {
-          const bytes = new Uint8Array(event.data);
-          terminal.write(bytes);
-        } else if (typeof event.data === 'string') {
-          terminal.write(event.data);
-        }
+        // Sample main-thread cost of large xterm writes (threshold-gated).
+        const byteLength = event.data instanceof ArrayBuffer
+          ? event.data.byteLength
+          : typeof event.data === 'string'
+            ? event.data.length
+            : undefined;
+        measureSync('xterm-write', () => {
+          if (event.data instanceof ArrayBuffer) {
+            const bytes = new Uint8Array(event.data);
+            terminal.write(bytes);
+          } else if (typeof event.data === 'string') {
+            terminal.write(event.data);
+          }
+        }, { byteLength });
         scheduleJumpLatest(newLineCount);
       },
       onClose: (event, { wasEstablished }) => {
