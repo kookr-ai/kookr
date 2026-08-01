@@ -82,13 +82,19 @@ describe('SessionRegistry', () => {
     expect(host.getTask('t1')!.status).toBe('inProgress');
   });
 
-  test('addSession refuses terminal tasks', () => {
-    host.put(makeTask({ id: 't1', status: 'terminated' }));
-    expect(() => registry.addSession('t1', makeSession('kookr-late'))).toThrow(
-      /Cannot attach session to terminal task/,
-    );
-    expect(host.attached).toEqual([]);
-    expect(host.dirty.has('t1')).toBe(false);
+  test('addSession refuses terminal tasks without mutation', () => {
+    for (const status of ['terminated', 'completed', 'cancelled'] as const) {
+      host = new FakeHost();
+      registry = new SessionRegistry(host);
+      host.put(makeTask({ id: 't1', status }));
+      expect(() => registry.addSession('t1', makeSession('kookr-late'))).toThrow(
+        /Cannot attach session to terminal task/,
+      );
+      expect(host.getTask('t1')!.sessions).toHaveLength(0);
+      expect(host.getTask('t1')!.status).toBe(status);
+      expect(host.attached).toEqual([]);
+      expect(host.dirty.has('t1')).toBe(false);
+    }
   });
 
   test('addSession throws for unknown task', () => {
@@ -97,16 +103,17 @@ describe('SessionRegistry', () => {
     );
   });
 
-  test('addSession logs duplicate not-known-dead sessions', () => {
+  test('addSession logs duplicate not-known-dead sessions but still attaches', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     host.put(makeTask({ id: 't1', status: 'inProgress' }));
     registry.addSession('t1', makeSession('kookr-a'));
     registry.addSession('t1', makeSession('kookr-b'));
     expect(err).toHaveBeenCalledWith(expect.stringContaining('duplicate-session attach on t1'));
+    expect(host.getTask('t1')!.sessions.map((s) => s.tmuxSession)).toEqual(['kookr-a', 'kookr-b']);
     err.mockRestore();
   });
 
-  test('addSession stays quiet for Ralph iteration relaunches', () => {
+  test('addSession stays quiet for Ralph iteration relaunches and still attaches', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     host.put(makeTask({
       id: 't1',
@@ -123,12 +130,49 @@ describe('SessionRegistry', () => {
     registry.addSession('t1', makeSession('kookr-iter-1'));
     registry.addSession('t1', makeSession('kookr-iter-2'));
     expect(err).not.toHaveBeenCalled();
+    expect(host.getTask('t1')!.sessions.map((s) => s.tmuxSession)).toEqual([
+      'kookr-iter-1',
+      'kookr-iter-2',
+    ]);
+    expect(host.dirty.has('t1')).toBe(true);
+    expect(host.attached).toEqual(['t1', 't1']);
+    err.mockRestore();
+  });
+
+  test('addSession stays quiet over crash-recovered siblings and still attaches', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    host.put(makeTask({ id: 't1', status: 'inProgress' }));
+    registry.addSession('t1', makeSession('kookr-old', { crashRecovered: true }));
+    registry.addSession('t1', makeSession('kookr-new'));
+    expect(err).not.toHaveBeenCalled();
+    expect(host.getTask('t1')!.sessions.map((s) => s.tmuxSession)).toEqual([
+      'kookr-old',
+      'kookr-new',
+    ]);
+    err.mockRestore();
+  });
+
+  test('addSession stays quiet over completed/aborted siblings and still attaches', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    host.put(makeTask({ id: 't1', status: 'inProgress' }));
+    registry.addSession('t1', makeSession('kookr-done'));
+    registry.updateSession('t1', 'kookr-done', { lastStatus: 'completed' });
+    registry.addSession('t1', makeSession('kookr-aborted'));
+    registry.updateSession('t1', 'kookr-aborted', { lastStatus: 'aborted' });
+    registry.addSession('t1', makeSession('kookr-live'));
+    expect(err).not.toHaveBeenCalled();
+    expect(host.getTask('t1')!.sessions.map((s) => s.tmuxSession)).toEqual([
+      'kookr-done',
+      'kookr-aborted',
+      'kookr-live',
+    ]);
     err.mockRestore();
   });
 
   test('updateSession patches fields and returns a clone', () => {
     host.put(makeTask({ id: 't1', status: 'inProgress' }));
     registry.addSession('t1', makeSession('kookr-a'));
+    host.dirty.clear();
     const updated = registry.updateSession('t1', 'kookr-a', {
       lastStatus: 'running',
       claudeSessionId: 'sess-1',
@@ -136,6 +180,10 @@ describe('SessionRegistry', () => {
     expect(updated.sessions[0]!.lastStatus).toBe('running');
     expect(updated.sessions[0]!.claudeSessionId).toBe('sess-1');
     expect(host.getTask('t1')!.sessions[0]!.lastStatus).toBe('running');
+    // Returned object is a clone — mutating it must not touch the live task.
+    updated.sessions[0]!.claudeSessionId = 'mutated';
+    expect(host.getTask('t1')!.sessions[0]!.claudeSessionId).toBe('sess-1');
+    expect(host.dirty.has('t1')).toBe(true);
   });
 
   test('updateSession throws for missing task or session', () => {
@@ -147,15 +195,20 @@ describe('SessionRegistry', () => {
   test('recordChildSession is first-write-wins per child id', () => {
     host.put(makeTask({ id: 't1', status: 'inProgress' }));
     registry.addSession('t1', makeSession('kookr-a'));
+    host.dirty.clear();
     registry.recordChildSession('t1', 'kookr-a', 'child-1', {
       firstSeenAt: '2024-01-01T00:00:00.000Z',
       reason: 'subagent_hook',
     });
+    expect(host.dirty.has('t1')).toBe(true);
+    host.dirty.clear();
     registry.recordChildSession('t1', 'kookr-a', 'child-1', {
       firstSeenAt: '2024-06-01T00:00:00.000Z',
       reason: 'unknown',
       transcriptPath: '/later.jsonl',
     });
+    // Second write is a no-op — must not mark dirty again.
+    expect(host.dirty.has('t1')).toBe(false);
     const kids = host.getTask('t1')!.sessions[0]!.childSessionIds!;
     expect(kids['child-1']).toEqual({
       firstSeenAt: '2024-01-01T00:00:00.000Z',
@@ -179,6 +232,7 @@ describe('SessionRegistry', () => {
   test('updateSessionGitInfo writes git fields', () => {
     host.put(makeTask({ id: 't1', status: 'inProgress' }));
     registry.addSession('t1', makeSession('kookr-a'));
+    host.dirty.clear();
     registry.updateSessionGitInfo('t1', 'kookr-a', {
       branch: 'feat/x',
       commit: 'abc123',
@@ -192,23 +246,40 @@ describe('SessionRegistry', () => {
     expect(s.gitDir).toBe('/repo/.git/worktrees/x');
     expect(s.gitIsWorktree).toBe(true);
     expect(s.gitIsDetached).toBeUndefined();
+    expect(host.dirty.has('t1')).toBe(true);
+
+    // Null/false coerce to undefined on branch/isWorktree as well.
+    registry.updateSessionGitInfo('t1', 'kookr-a', {
+      branch: null,
+      commit: null,
+      isWorktree: false,
+      isDetached: false,
+    });
+    const s2 = host.getTask('t1')!.sessions[0]!;
+    expect(s2.gitBranch).toBeUndefined();
+    expect(s2.gitCommit).toBeUndefined();
+    expect(s2.gitIsWorktree).toBeUndefined();
   });
 
   test('updateSessionWorktreeHealth stamps health and observedAt', () => {
     host.put(makeTask({ id: 't1', status: 'inProgress' }));
     registry.addSession('t1', makeSession('kookr-a'));
+    host.dirty.clear();
     registry.updateSessionWorktreeHealth('t1', 'kookr-a', 'stale', { registryStale: true });
     const s = host.getTask('t1')!.sessions[0]!;
     expect(s.worktreeHealth).toBe('stale');
     expect(s.worktreeRegistryStale).toBe(true);
     expect(s.worktreeHealthObservedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(host.dirty.has('t1')).toBe(true);
   });
 
   test('updateSessionCwd updates cwd only', () => {
     host.put(makeTask({ id: 't1', status: 'inProgress' }));
     registry.addSession('t1', makeSession('kookr-a'));
+    host.dirty.clear();
     registry.updateSessionCwd('t1', 'kookr-a', '/new/cwd');
     expect(host.getTask('t1')!.sessions[0]!.cwd).toBe('/new/cwd');
+    expect(host.dirty.has('t1')).toBe(true);
   });
 
   test('git/cwd/health mutators no-op for unknown task or session', () => {
