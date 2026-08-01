@@ -104,6 +104,7 @@ import {
   type OperationalAlertLike,
 } from '../observability/signal-delivery/index.js';
 import { PersistenceHealthTracker } from '../core/persistence-health.js';
+import { TimerHealthTracker } from '../core/timer-health.js';
 import { TaskStateSaveScheduler } from './task-state-save-scheduler.js';
 import { createIssueClaimServices, createUpstreamOfResolver, isIssueClaimsEnabled, type IssueClaimServices } from './issue-claim-wiring.js';
 import { EnvironmentBlockerRegistry } from '../core/environment-blocker-registry.js';
@@ -1524,6 +1525,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   realtime.setScheduleStore(scheduleStore);
   realtime.setSnapshotAchievementsReady(true);
   const persistenceHealth = new PersistenceHealthTracker();
+  // Lifecycle-timer health (issue #1771): per-loop last-fired stamps for
+  // GET /api/diagnostics/timer-health — optional on TimerDeps, always wired
+  // in production so a wedged save/liveness loop is detectable.
+  const timerHealth = new TimerHealthTracker();
   const taskStateSaveScheduler = new TaskStateSaveScheduler({
     taskStore,
     tasksFile,
@@ -1674,6 +1679,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getLatestResourceStatus: () => resourceStatusService.getLatest(),
     llmClient,
     sessionHealthService,
+    timerHealth,
     ...(findingEvidenceReviewEnabled ? { findingEvidenceReviewHmacKey } : {}),
     findingEvidenceReviewSampler,
     remoteShare: remoteRelayRuntime.remoteShare,
@@ -2144,6 +2150,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       budgetChecker, projectConfigStore, progressBudgetBurnDiagnostics,
       detectionStatsStore,
       persistenceHealth,
+      timerHealth,
       worktreeRegistry,
       worktreeRegistryRepoPath: serverCwd,
       getDashboardClientCount: () => connectionRegistry.dashboardCount(),

@@ -25,6 +25,7 @@ import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import { getDetectionStats, type DetectionStats } from '../core/detection-stats.js';
 import type { UserInputDeliverySnapshot } from '../shared/contracts/user-input-delivery.js';
 import type { PersistenceHealthRecorder } from '../core/persistence-health.js';
+import type { TimerHealthRecorder } from '../core/timer-health.js';
 import type { TaskStateSaveSchedulerLike } from './task-state-save-scheduler.js';
 import {
   DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
@@ -142,6 +143,11 @@ export interface TimerDeps {
   detectionStatsStore?: { save(stats: DetectionStats): Promise<void> };
   /** In-memory tracker for runtime persistence failures. */
   persistenceHealth?: PersistenceHealthRecorder;
+  /**
+   * Optional per-loop last-fired stamps for GET /api/diagnostics/timer-health
+   * (issue #1771). Absent in tests that do not care about timer health.
+   */
+  timerHealth?: TimerHealthRecorder;
   /** Coalesced task-state saver used by mutation paths; periodic ticks force-flush it as a backstop. */
   taskStateSaveScheduler?: TaskStateSaveSchedulerLike;
   /** Test seam for task-state persistence. */
@@ -851,12 +857,20 @@ export function restoreExpiredSnoozes(queue: AttentionQueue, taskStore: TaskStor
   return changed;
 }
 
+/** Fixed cadence for the token-usage scan tick (issue #1771 timer-health). */
+export const TOKEN_SCAN_INTERVAL_MS = 5_000;
+/** Fixed cadence for the watchdog tick (issue #1771 timer-health). */
+export const WATCHDOG_INTERVAL_MS = 5_000;
+/** Fixed cadence for snooze-expiry restore (issue #1771 timer-health). */
+export const SNOOZE_EXPIRY_INTERVAL_MS = 1_000;
+
 export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   const {
     monitor, taskStore, queue, adapter, tokenTracker, watchdog,
     hookWatcher, terminalBackend, hooksDir, tasksFile, serverCwd,
     saveIntervalMs, livenessIntervalMs, broadcastToAll,
     shadowRegistry,
+    timerHealth,
   } = deps;
 
   // issue #1526 Phase A: one throttle per server instance, shared across
@@ -881,10 +895,12 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   // scanAll disk I/O when the next 5s interval fires. Without this guard,
   // overlapping ticks stack concurrent full-corpus reads on the same
   // transcripts, compounding the very allocation churn this issue bounds.
+  timerHealth?.register('tokenScan', TOKEN_SCAN_INTERVAL_MS);
   let tokenScanTickRunning = false;
   const tokenScanInterval = setInterval(async () => {
     if (tokenScanTickRunning) return;
     tokenScanTickRunning = true;
+    timerHealth?.recordFire('tokenScan', TOKEN_SCAN_INTERVAL_MS);
     try {
       // Freshness probe: ask which transcripts grew on disk since the last
       // scanAll. Used to keep the watchdog from minting stale_agent during a
@@ -954,7 +970,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     } finally {
       tokenScanTickRunning = false;
     }
-  }, 5_000);
+  }, TOKEN_SCAN_INTERVAL_MS);
 
   // --- Periodic watchdog tick ---
   //
@@ -970,10 +986,12 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   // next 5s interval fires. Without this guard, overlapping ticks produce
   // duplicate hung-task reap report files and InvalidTransition log spam
   // (two ticks both trying to terminate/complete the same task).
+  timerHealth?.register('watchdog', WATCHDOG_INTERVAL_MS);
   let watchdogTickRunning = false;
   const watchdogInterval = setInterval(async () => {
     if (watchdogTickRunning) return;
     watchdogTickRunning = true;
+    timerHealth?.recordFire('watchdog', WATCHDOG_INTERVAL_MS);
     try {
       const agents = watchdog.getTrackedAgents();
       let changed = false;
@@ -1115,10 +1133,12 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   // Re-entrancy guard (issue #1526 Phase A review fix) — same rationale as
   // the watchdog interval above: reconcile()/the completion-ready sweep/a
   // hung-task reap can all still be mid-flight when the next tick fires.
+  timerHealth?.register('liveness', livenessIntervalMs);
   let livenessTickRunning = false;
   const livenessInterval = setInterval(async () => {
     if (livenessTickRunning) return;
     livenessTickRunning = true;
+    timerHealth?.recordFire('liveness', livenessIntervalMs);
     try {
       if (
         deps.worktreeRegistry
@@ -1316,7 +1336,9 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     }
   }, livenessIntervalMs);
 
+  timerHealth?.register('snoozeExpiry', SNOOZE_EXPIRY_INTERVAL_MS);
   const snoozeExpiryInterval = setInterval(() => {
+    timerHealth?.recordFire('snoozeExpiry', SNOOZE_EXPIRY_INTERVAL_MS);
     try {
       if (restoreExpiredSnoozes(queue, taskStore)) {
         broadcastToAll(createSnapshotMessage({
@@ -1330,13 +1352,15 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     } catch (err) {
       console.error('Error expiring snoozes:', err);
     }
-  }, 1_000);
+  }, SNOOZE_EXPIRY_INTERVAL_MS);
 
   // --- Periodic task persistence ---
   // Uses saveTasksWithSnapshotPolicy with 'daily' so the first successful
   // save of each local day copies tasks.json to tasks.json.daily.YYYYMMDD.
   // Snapshot failures are logged inside the helper and never block the save.
+  timerHealth?.register('save', saveIntervalMs);
   const saveInterval = setInterval(async () => {
+    timerHealth?.recordFire('save', saveIntervalMs);
     await runPersistenceSaveTick(deps);
   }, saveIntervalMs);
 
@@ -1346,8 +1370,11 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   let quotaPollTimeout: ReturnType<typeof setTimeout> | null = null;
   if (deps.quotaAdapter) {
     const quotaAdapter = deps.quotaAdapter;
+    timerHealth?.register('quotaPoll', quotaAdapter.getCurrentIntervalMs());
 
     async function pollQuota(): Promise<void> {
+      const intervalMs = quotaAdapter.getCurrentIntervalMs();
+      timerHealth?.recordFire('quotaPoll', intervalMs);
       try {
         const changed = await quotaAdapter.poll();
         if (changed) {
@@ -1358,7 +1385,10 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         // non-critical
       }
       // Schedule next poll using the adapter's (possibly updated) interval
-      quotaPollTimeout = setTimeout(pollQuota, quotaAdapter.getCurrentIntervalMs());
+      const nextIntervalMs = quotaAdapter.getCurrentIntervalMs();
+      // Keep expected cadence current for overdue checks during backoff.
+      timerHealth?.register('quotaPoll', nextIntervalMs);
+      quotaPollTimeout = setTimeout(pollQuota, nextIntervalMs);
     }
 
     // Fire immediately on startup
@@ -1378,7 +1408,9 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       `[maintenance-prune] scheduled sweep enabled every ${maintenancePrune.intervalHours}h ` +
         `(dir=${maintenancePrune.dataDir})`,
     );
+    timerHealth?.register('maintenancePrune', intervalMs);
     maintenancePruneInterval = setInterval(() => {
+      timerHealth?.recordFire('maintenancePrune', intervalMs);
       void runScheduledMaintenancePrune(maintenancePrune);
     }, intervalMs);
   }
@@ -1394,7 +1426,9 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     console.log(
       `[relay-orphan-sweep] scheduled sweep enabled every ${relayOrphanSweep.intervalHours}h`,
     );
+    timerHealth?.register('relayOrphanSweep', intervalMs);
     relayOrphanSweepInterval = setInterval(() => {
+      timerHealth?.recordFire('relayOrphanSweep', intervalMs);
       void runScheduledRelayOrphanSweep(relayOrphanSweep);
     }, intervalMs);
   }
@@ -1413,7 +1447,9 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       `[prod-smoke-tick] hourly liveness tick enabled (every ${Math.round(intervalMs / 60_000)}m; ` +
         `artifact=${prodSmokeTick.alertArtifactPath})`,
     );
+    timerHealth?.register('prodSmokeTick', intervalMs);
     prodSmokeTickInterval = setInterval(() => {
+      timerHealth?.recordFire('prodSmokeTick', intervalMs);
       void prodSmokeTick.maybeRun();
     }, intervalMs);
   }
@@ -1432,7 +1468,9 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
       `[deploy-lag] detector enabled (every ${Math.round(intervalMs / 60_000)}m; ` +
         `artifact=${deployLagDetector.alertArtifactPath})`,
     );
+    timerHealth?.register('deployLagDetector', intervalMs);
     deployLagDetectorInterval = setInterval(() => {
+      timerHealth?.recordFire('deployLagDetector', intervalMs);
       void deployLagDetector.maybeRun();
     }, intervalMs);
   }

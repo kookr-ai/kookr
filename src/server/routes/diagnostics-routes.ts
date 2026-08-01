@@ -39,6 +39,7 @@ import type { HookWatcherHealthSnapshot } from '../hook-watcher.js';
 import { getAuthThrottleSnapshot } from '../auth.js';
 import { DELIVERY_TRACE_SCHEMA_VERSION, type DeliveryTraceFilter } from '../../shared/contracts/delivery-trace.js';
 import { SESSION_HEALTH_SCHEMA_VERSION } from '../../shared/contracts/session-health.js';
+import { TIMER_HEALTH_SCHEMA_VERSION } from '../../shared/contracts/timer-health.js';
 import type { ScheduleStatusSnapshot } from '../../shared/contracts/schedule.js';
 import { buildCapacityLedger } from '../../core/capacity-ledger.js';
 import { resolveTaskAttentionSignals } from '../task-attention-signals.js';
@@ -536,6 +537,23 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       });
     } catch {
       return c.json({ error: 'session health diagnostics unavailable' }, 503);
+    }
+  });
+
+  // Lifecycle-timer health (issue #1771): per-loop last-fired + overdue flag
+  // so a silently-stopped periodic timer (save, liveness, …) is visible before
+  // downstream damage. Pure in-memory read — never blocks the request path.
+  app.get('/api/diagnostics/timer-health', (c) => {
+    try {
+      return c.json(
+        deps.timerHealth?.snapshot() ?? {
+          schemaVersion: TIMER_HEALTH_SCHEMA_VERSION,
+          generatedAt: new Date().toISOString(),
+          loops: [],
+        },
+      );
+    } catch {
+      return c.json({ error: 'timer health diagnostics unavailable' }, 503);
     }
   });
 

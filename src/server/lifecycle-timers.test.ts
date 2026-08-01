@@ -22,8 +22,12 @@ import {
   runProgressBudgetBurnDiagnosticSample,
   runScheduledMaintenancePrune,
   startLifecycleTimers,
+  TOKEN_SCAN_INTERVAL_MS,
+  WATCHDOG_INTERVAL_MS,
+  SNOOZE_EXPIRY_INTERVAL_MS,
   type TimerDeps,
 } from './lifecycle-timers.js';
+import { TimerHealthTracker } from '../core/timer-health.js';
 import type { MaintenancePruneResult } from '../core/maintenance-prune.js';
 import { BudgetChecker } from '../core/budget-checker.js';
 import type { Task } from '../core/tasks.js';
@@ -1556,6 +1560,127 @@ describe('startLifecycleTimers maintenance prune scheduling', () => {
     const handles = startLifecycleTimers(baseTimerDeps({}) as any);
     try {
       expect(handles.prodSmokeTickInterval).toBeNull();
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+});
+
+describe('startLifecycleTimers timer-health stamps (issue #1771)', () => {
+  test('registers always-on loops and stamps lastFiredAt on each tick', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-01T16:00:00.000Z'));
+    const timerHealth = new TimerHealthTracker(() => Date.now());
+    const handles = startLifecycleTimers({
+      monitor: {
+        getSnapshot: () => [],
+        getAgentEvents: () => [],
+        applyWatchdogVerdict: vi.fn(() => false),
+        sampleFindingEvidence: vi.fn(() => false),
+        getCurrentAnomaly: vi.fn(),
+      } as any,
+      taskStore: new TaskStore(),
+      queue: new AttentionQueue(),
+      adapter: { captureDisplay: vi.fn(async () => '') } as any,
+      adapterRegistry: {} as any,
+      tokenTracker: {
+        scanGrowth: vi.fn(async () => []),
+        scanAll: vi.fn(async () => undefined),
+        getTrackedTaskIds: vi.fn(() => []),
+        getUsage: vi.fn(() => undefined),
+      } as any,
+      watchdog: {
+        getTrackedAgents: vi.fn(() => []),
+        recordTokenActivity: vi.fn(),
+        tick: vi.fn(),
+      } as any,
+      hookWatcher: { drainNow: vi.fn(async () => undefined) } as any,
+      terminalBackend: { listSessions: vi.fn(async () => []) } as any,
+      hooksDir: '/tmp/hooks',
+      tasksFile: '/tmp/tasks.json',
+      serverCwd: '/tmp/repo',
+      saveIntervalMs: 30_000,
+      livenessIntervalMs: 15_000,
+      broadcastToAll: vi.fn(),
+      timerHealth,
+    });
+
+    try {
+      const atStart = timerHealth.snapshot();
+      const names = atStart.loops.map((l) => l.name).sort();
+      expect(names).toEqual([
+        'liveness',
+        'save',
+        'snoozeExpiry',
+        'tokenScan',
+        'watchdog',
+      ]);
+      for (const loop of atStart.loops) {
+        expect(loop.lastFiredAt).toBeNull();
+        expect(loop.overdue).toBe(false);
+      }
+      expect(atStart.loops.find((l) => l.name === 'tokenScan')?.expectedIntervalMs)
+        .toBe(TOKEN_SCAN_INTERVAL_MS);
+      expect(atStart.loops.find((l) => l.name === 'watchdog')?.expectedIntervalMs)
+        .toBe(WATCHDOG_INTERVAL_MS);
+      expect(atStart.loops.find((l) => l.name === 'snoozeExpiry')?.expectedIntervalMs)
+        .toBe(SNOOZE_EXPIRY_INTERVAL_MS);
+      expect(atStart.loops.find((l) => l.name === 'save')?.expectedIntervalMs).toBe(30_000);
+      expect(atStart.loops.find((l) => l.name === 'liveness')?.expectedIntervalMs).toBe(15_000);
+
+      await vi.advanceTimersByTimeAsync(TOKEN_SCAN_INTERVAL_MS);
+      const afterTick = timerHealth.snapshot();
+      for (const name of ['tokenScan', 'watchdog', 'snoozeExpiry'] as const) {
+        const entry = afterTick.loops.find((l) => l.name === name);
+        expect(entry?.lastFiredAt).not.toBeNull();
+        expect(entry?.overdue).toBe(false);
+      }
+      // save / liveness intervals not reached yet
+      expect(afterTick.loops.find((l) => l.name === 'save')?.lastFiredAt).toBeNull();
+      expect(afterTick.loops.find((l) => l.name === 'liveness')?.lastFiredAt).toBeNull();
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
+  test('omitting timerHealth does not change timer behavior', async () => {
+    vi.useFakeTimers();
+    const scanGrowth = vi.fn(async () => []);
+    const handles = startLifecycleTimers({
+      monitor: {
+        getSnapshot: () => [],
+        getAgentEvents: () => [],
+        applyWatchdogVerdict: vi.fn(() => false),
+        sampleFindingEvidence: vi.fn(() => false),
+        getCurrentAnomaly: vi.fn(),
+      } as any,
+      taskStore: new TaskStore(),
+      queue: new AttentionQueue(),
+      adapter: { captureDisplay: vi.fn(async () => '') } as any,
+      adapterRegistry: {} as any,
+      tokenTracker: {
+        scanGrowth,
+        scanAll: vi.fn(async () => undefined),
+        getTrackedTaskIds: vi.fn(() => []),
+        getUsage: vi.fn(() => undefined),
+      } as any,
+      watchdog: {
+        getTrackedAgents: vi.fn(() => []),
+        recordTokenActivity: vi.fn(),
+        tick: vi.fn(),
+      } as any,
+      hookWatcher: { drainNow: vi.fn(async () => undefined) } as any,
+      terminalBackend: { listSessions: vi.fn(async () => []) } as any,
+      hooksDir: '/tmp/hooks',
+      tasksFile: '/tmp/tasks.json',
+      serverCwd: '/tmp/repo',
+      saveIntervalMs: 600_000,
+      livenessIntervalMs: 600_000,
+      broadcastToAll: vi.fn(),
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(TOKEN_SCAN_INTERVAL_MS);
+      expect(scanGrowth).toHaveBeenCalledTimes(1);
     } finally {
       clearAllTimers(handles);
     }
