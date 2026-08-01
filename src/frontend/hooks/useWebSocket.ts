@@ -228,15 +228,40 @@ export function useWebSocket() {
               store.handleUpdate(msg.agentId, msg.state);
               break;
             case 'delta': {
-              // #1754 Stage 1: the client does not apply deltas yet (that is
-              // Stage 2). A Stage-1 server never emits one; if a server rolled
-              // forward to Stage 2 sends one, we cannot apply it and must re-base
-              // via the resync escape hatch. The tracker names the cause
-              // (epoch_change / seq_gap / apply_error) for server observability.
+              // #1754 Stage 2: apply in-order deltas; resync on epoch/seq gap.
               const tracker = deltaTrackerRef.current;
-              if (tracker) {
-                const reason = tracker.resyncReasonForDelta({ epoch: msg.epoch, seq: msg.seq });
-                const resync: ClientMessage = { type: 'requestResync', reason, haveSeq: tracker.haveSeq };
+              if (!tracker) break;
+              const position = { epoch: msg.epoch as string, seq: msg.seq as number };
+              const verdict = tracker.evaluateDelta(position);
+              if (verdict.action === 'resync') {
+                const resync: ClientMessage = {
+                  type: 'requestResync',
+                  reason: verdict.reason,
+                  haveSeq: tracker.haveSeq,
+                };
+                const sent = controllerRef.current?.send(JSON.stringify(resync)) ?? false;
+                if (sent) recordClientMessageForSend(resync);
+                break;
+              }
+              try {
+                measureSync('delta-apply', () => {
+                  store.handleDelta({
+                    agents: msg.agents,
+                    taskRelations: msg.taskRelations,
+                    aggregates: msg.aggregates,
+                  });
+                }, {
+                  upsertCount: Array.isArray(msg.agents?.upserts) ? msg.agents.upserts.length : 0,
+                  removedCount: Array.isArray(msg.agents?.removed) ? msg.agents.removed.length : 0,
+                });
+                tracker.advance(position);
+              } catch {
+                // Apply failure → resync escape hatch (same reasons as Stage 1).
+                const resync: ClientMessage = {
+                  type: 'requestResync',
+                  reason: 'apply_error',
+                  haveSeq: tracker.haveSeq,
+                };
                 const sent = controllerRef.current?.send(JSON.stringify(resync)) ?? false;
                 if (sent) recordClientMessageForSend(resync);
               }

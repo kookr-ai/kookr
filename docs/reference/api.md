@@ -1009,8 +1009,8 @@ delta sequence number.
 
 | `type` | Purpose | Key fields |
 | --- | --- | --- |
-| `snapshot` | Full dashboard baseline on connect and after broad state changes. Carries the delta-protocol stream identity `(epoch, seq)` (issue #1754, Stage 1) so a client can detect an epoch change / seq gap and re-base. | `agents`, `serverCwd`, optional build/speech/achievement/task relation/workspace fields including `sweepRunning` and `sweepProgress`, optional `epoch`, `seq` |
-| `delta` | Coalesced per-flush change envelope (issue #1754). Defined as the wire contract in Stage 1 but **not emitted on the hot path** — it ships dark; the server keeps sending full snapshots. Stage 2 wires emission behind a flag. | `epoch`, `seq`, optional `agents.{upserts,removed}`, `taskRelations`, `aggregates` |
+| `snapshot` | Full dashboard baseline on connect, resync, soft-backpressure re-base, and the first post-boot flush. Carries the delta-protocol stream identity `(epoch, seq)` (issue #1754) so a client can detect an epoch change / seq gap and re-base. | `agents`, `serverCwd`, optional build/speech/achievement/task relation/workspace fields including `sweepRunning` and `sweepProgress`, optional `epoch`, `seq` |
+| `delta` | Coalesced per-flush change envelope (issue #1754 Stage 2). After the first full-snapshot baseline, steady-state fan-out emits this instead of a full snapshot when `KOOKR_WS_DELTA` is on (default). Soft-skipped sockets get a snapshot re-base before any further delta. Kill-switch: `KOOKR_WS_DELTA=0`. | `epoch`, `seq`, optional `agents.{upserts,removed}`, `taskRelations`, `aggregates` |
 | `update` | Refresh one agent's current state. | `agentId`, `state` |
 | `alert` | Surface an anomaly, validation error, or handler error. | `agentId`, `summary`, `details`, `severity`, optional `operationalAlert` `{ key, metric, state }` for operational alert fire/recovery events |
 | `githubUpdate` | Push GitHub PR/issue state for one task. | `taskId`, `prs`, `issues`, `changes` |

@@ -7,9 +7,8 @@
 // server emits is stamped with a position from here so a client can detect an
 // epoch change or a `seq` gap and re-base via the resync escape hatch.
 //
-// Stage 1 emits `(epoch, seq)` ONLY on `snapshot` frames — the wire still
-// carries a full snapshot per change ("ships dark"). Stage 2 will additionally
-// stamp `delta` frames, advancing `seq` by exactly 1 per flush.
+// Stage 2 stamps both `snapshot` (connect / resync / re-base / first baseline)
+// and coalesced `delta` frames, advancing `seq` by exactly 1 per flush.
 
 import type { SnapshotMessage } from '../shared/contracts/messages.js';
 

@@ -318,10 +318,11 @@ type LaunchPlaybookSplitMessage = LaunchPlaybookBaseMessage & {
 export type LaunchPlaybookClientMessage = LaunchPlaybookLegacyMessage | LaunchPlaybookSplitMessage;
 
 /**
- * Coalesced delta envelope (issue #1754). Additive to the {@link ServerMessage}
- * union and defined in Stage 1 as the wire contract, but **NOT emitted on the
- * hot path in Stage 1** (the server keeps sending full snapshots; this type
- * "ships dark"). Stage 2 wires `event-pipeline` to emit it behind a flag.
+ * Coalesced delta envelope (issue #1754 Stage 2). After the first stamped
+ * snapshot baseline, steady-state `broadcastToAll(snapshot)` converts to this
+ * frame (gated by `KOOKR_WS_DELTA`, default on) so the hot path no longer fans
+ * out the full fleet. Connect / resync / soft-backpressure re-base still use
+ * {@link SnapshotMessage}.
  *
  * One flush == one frame: because the snapshot flush is already coalesced, a
  * single monotonic `seq` per flush keeps ordering a single integer rather than

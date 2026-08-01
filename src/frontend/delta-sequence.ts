@@ -1,4 +1,4 @@
-// --- Client delta-stream sequence tracker (issue #1754, Stage 1) ---
+// --- Client delta-stream sequence tracker (issue #1754) ---
 //
 // Pure, framework-free tracking of the server's delta-protocol stream position
 // `(epoch, seq)` plus the gap-detection rule that decides when the client must
@@ -6,13 +6,10 @@
 // signature) so it is unit-testable in isolation and the wiring in
 // `useWebSocket` stays a thin adapter.
 //
-// Stage 1 is snapshot-only on the wire: the client adopts `(epoch, seq)` from
-// every snapshot (a snapshot always RE-BASES it) and does NOT apply deltas. If a
-// `delta` frame ever arrives (it never does from a Stage-1 server; this is the
-// forward-compatible safety net for a server rolled forward to Stage 2), the
-// client cannot apply it and asks for a fresh snapshot via the resync escape
-// hatch. Stage 2 will replace the "always resync" behavior with a real
-// `applyDelta` on the `apply` verdict.
+// Stage 2: the client adopts `(epoch, seq)` from every snapshot (a snapshot
+// always RE-BASES it) and applies in-order deltas via `evaluateDelta` →
+// `handleDelta` → `advance`. A gap / epoch change / apply error triggers the
+// `requestResync` escape hatch.
 
 export type ResyncReason = 'seq_gap' | 'epoch_change' | 'apply_error';
 
@@ -66,11 +63,9 @@ export class DeltaSequenceTracker {
   }
 
   /**
-   * Stage-1 decision: a client that cannot apply deltas always resyncs. Returns
-   * the reason to report to the server — the precise gap cause when there is
-   * one, else `apply_error` (an in-order delta the Stage-1 client still cannot
-   * apply). Stage 2 will branch on {@link evaluateDelta} instead and only resync
-   * on a genuine gap.
+   * Map a delta position to the resync reason the client would report. Prefer
+   * branching on {@link evaluateDelta} in Stage 2 (apply on `apply`); this
+   * helper remains for tests and callers that only need the gap reason.
    */
   resyncReasonForDelta(position: DeltaFramePosition): ResyncReason {
     const verdict = this.evaluateDelta(position);
@@ -79,8 +74,6 @@ export class DeltaSequenceTracker {
 
   /**
    * Advance the stored position after a successfully-applied in-order delta.
-   * Unused in Stage 1 (no delta application); present so the Stage-2 apply path
-   * has a single place to commit the new position.
    */
   advance(position: DeltaFramePosition): void {
     this.epoch = position.epoch;

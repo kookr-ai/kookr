@@ -50,6 +50,8 @@ async function createTestRealtimeServices(
     monitor?: Monitor;
     adapterRegistry?: AdapterRegistry;
     ossAttemptStore?: OssAttemptStore;
+    serverEpoch?: string;
+    enableWsDelta?: boolean;
   } & SnapshotPayloadTestOverrides = {},
 ) {
   const taskStore = overrides.taskStore ?? new TaskStore();
@@ -75,6 +77,8 @@ async function createTestRealtimeServices(
     getRegistryActiveRepos: () => [],
     ossAttemptStore,
     getDefaultAgentType: () => 'claude-code',
+    ...(overrides.serverEpoch !== undefined ? { serverEpoch: overrides.serverEpoch } : {}),
+    ...(overrides.enableWsDelta !== undefined ? { enableWsDelta: overrides.enableWsDelta } : {}),
     ...(overrides.snapshotPayloadWarnBytes !== undefined
       ? { snapshotPayloadWarnBytes: overrides.snapshotPayloadWarnBytes }
       : {}),
@@ -400,6 +404,69 @@ describe('createRealtimeServices', () => {
       realtime.noteEventLoopDelaySample(500);
       realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
       expect(viewTasksSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('delta protocol Stage 2 (#1754)', () => {
+    test('first snapshot is full; subsequent flushes emit coalesced deltas', async () => {
+      tempDir = mkdtempSync(join(tmpdir(), 'kookr-realtime-'));
+      const realtime = await createTestRealtimeServices(tempDir, {
+        serverEpoch: '2026-08-01T00:00:00.000Z',
+        enableWsDelta: true,
+      });
+      const sent: ServerMessage[] = [];
+      addDashboardSocket(realtime, {
+        readyState: WebSocket.OPEN,
+        send: (data: string) => sent.push(JSON.parse(data) as ServerMessage),
+      } as unknown as WebSocket);
+
+      realtime.broadcastToAll({
+        type: 'snapshot',
+        agents: [{ agentId: 's1', taskId: 't1', events: [], anomaly: null } as SnapshotMessage['agents'][number]],
+        serverCwd: '/repo',
+      });
+      const first = sent.filter((m) => m.type === 'snapshot' || m.type === 'delta');
+      expect(first[0]?.type).toBe('snapshot');
+      expect(first[0]).toEqual(expect.objectContaining({ epoch: '2026-08-01T00:00:00.000Z', seq: 1 }));
+
+      sent.length = 0;
+      realtime.broadcastToAll({
+        type: 'snapshot',
+        agents: [{
+          agentId: 's1',
+          taskId: 't1',
+          events: [],
+          anomaly: null,
+          taskName: 'changed',
+        } as SnapshotMessage['agents'][number]],
+        serverCwd: '/repo',
+      });
+      const second = sent.filter((m) => m.type === 'snapshot' || m.type === 'delta');
+      expect(second).toHaveLength(1);
+      expect(second[0]?.type).toBe('delta');
+      if (second[0]?.type === 'delta') {
+        expect(second[0].seq).toBe(2);
+        expect(second[0].agents?.upserts?.some((a) => a.taskName === 'changed')).toBe(true);
+      }
+    });
+
+    test('enableWsDelta=false keeps full-snapshot fan-out even with a sequencer', async () => {
+      tempDir = mkdtempSync(join(tmpdir(), 'kookr-realtime-'));
+      const realtime = await createTestRealtimeServices(tempDir, {
+        serverEpoch: '2026-08-01T00:00:00.000Z',
+        enableWsDelta: false,
+      });
+      const sent: ServerMessage[] = [];
+      addDashboardSocket(realtime, {
+        readyState: WebSocket.OPEN,
+        send: (data: string) => sent.push(JSON.parse(data) as ServerMessage),
+      } as unknown as WebSocket);
+
+      realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
+      realtime.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/repo' });
+      const frames = sent.filter((m) => m.type === 'snapshot' || m.type === 'delta');
+      expect(frames.every((m) => m.type === 'snapshot')).toBe(true);
+      expect(frames).toHaveLength(2);
     });
   });
 });

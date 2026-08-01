@@ -28,6 +28,7 @@ import {
 } from '../viewer-connection-registry.js';
 import { ViewerAwareBroadcaster } from '../viewer-broadcaster.js';
 import { SnapshotStreamSequencer, stampSnapshotPosition, type StreamPosition } from '../snapshot-stream-sequencer.js';
+import { buildDeltaFromSnapshots, readWsDeltaEnabledFromEnv } from '../snapshot-delta.js';
 import type { SnapshotPayloadSizeObservation } from '../snapshot-payload-size-policy.js';
 import type { Scope } from '../viewer-data-policy.js';
 import type { IsActorAllowedTerminalSession } from '../terminal-scope.js';
@@ -125,6 +126,15 @@ export interface RealtimeServicesDeps {
    * wirings, which then emit snapshots byte-identical to pre-#1754.
    */
   serverEpoch?: string;
+  /**
+   * Stage 2 delta emission (issue #1754). When true AND `serverEpoch` is wired,
+   * steady-state `broadcastToAll(snapshot)` fans out a coalesced `delta` after
+   * the first full-snapshot baseline rather than re-sending the full fleet.
+   * Connect / resync / soft-backpressure re-base still use full snapshots.
+   * Defaults to {@link readWsDeltaEnabledFromEnv} (`KOOKR_WS_DELTA`, default on).
+   * Pass `false` in tests that assert pre-Stage-2 snapshot-only fan-out.
+   */
+  enableWsDelta?: boolean;
 }
 
 export interface RealtimeServices {
@@ -180,6 +190,11 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
   // wirings that omit `serverEpoch` emit snapshots byte-identical to pre-#1754
   // (no `(epoch, seq)` stamping; `getStreamPosition` below then returns undefined).
   const sequencer = deps.serverEpoch ? new SnapshotStreamSequencer(deps.serverEpoch) : undefined;
+  // #1754 Stage 2: delta emission requires the sequencer (epoch/seq identity).
+  // Without a sequencer we stay on full-snapshot fan-out regardless of the flag.
+  const enableWsDelta = (deps.enableWsDelta ?? readWsDeltaEnabledFromEnv()) && !!sequencer;
+  /** Last fully-enriched snapshot that was stamped and fanned out (delta baseline). */
+  let lastBroadcastSnapshot: SnapshotMessage | undefined;
   const broadcaster = new ViewerAwareBroadcaster({
     registry,
     buildScopedSnapshot:
@@ -281,6 +296,22 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
     // same `(epoch, seq)` onto every per-scope snapshot it builds for this flush.
     if (msg.type === 'snapshot' && sequencer && !loadShedGate?.isActive) {
       msg = stampSnapshotPosition(msg, sequencer.advance());
+      // #1754 Stage 2: after the first stamped baseline, convert the hot path
+      // to a coalesced delta. The full snapshot is still passed for per-socket
+      // needsSnapshot re-base and as the new baseline. Load-shed skips both
+      // advance and baseline update above, so recovery resumes with a snapshot.
+      if (enableWsDelta && lastBroadcastSnapshot) {
+        const previous = lastBroadcastSnapshot;
+        lastBroadcastSnapshot = msg;
+        const { delta } = buildDeltaFromSnapshots(previous, msg);
+        broadcaster.broadcastDelta(delta, msg, previous.agents);
+        return;
+      }
+      lastBroadcastSnapshot = msg;
+    } else if (msg.type === 'snapshot' && !loadShedGate?.isActive) {
+      // No sequencer: still remember the baseline so enabling the flag later in
+      // the same process is a no-op until restart (sequencer is fixed at boot).
+      lastBroadcastSnapshot = msg;
     }
     // The registry owns the socket pool; the broadcaster is pure transport over
     // its dashboard-socket snapshot (drops + closes on send failure).
