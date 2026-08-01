@@ -66,6 +66,11 @@ import {
   DEFAULT_RING_FLUSH_INTERVAL_MS,
   DtachRingStore,
   RING_BUFFER_BYTES,
+  RING_IDLE_CAPACITY_BYTES,
+  enforceRingFleetBudget,
+  expandRing,
+  ringFleetBudgetSnapshot,
+  totalRingFleetBytes,
 } from './dtach-ring-store.js';
 import { killProcessTree } from './process-tree.js';
 import {
@@ -100,6 +105,8 @@ export class LocalDtachBackend implements TerminalBackend {
   private readonly instanceId: string;
   private readonly writeTimeoutMs: number;
   private readonly reconnectCooldownMs: number;
+  /** Fleet sum of ring capacities; `0` disables shrink (issue #1779). */
+  private readonly ringFleetBudgetBytes: number;
 
   /**
    * Per-session in-flight reconnect. A duplicate `reconnectTransport` call
@@ -128,6 +135,10 @@ export class LocalDtachBackend implements TerminalBackend {
   private maxPendingWriters = 0;
   /** Cumulative write-timed-out errors (issue #1776). */
   private writeTimeoutCount = 0;
+  /** Cumulative ring shrink events under fleet budget pressure (issue #1779). */
+  private ringShrinkCount = 0;
+  /** Last observed over-budget residual after enforce (issue #1779). */
+  private ringFleetOverBudgetBytes = 0;
 
   /** Periodic ring-buffer snapshot timer; null after `close()`. */
   private flushTimer: NodeJS.Timeout | null = null;
@@ -145,6 +156,7 @@ export class LocalDtachBackend implements TerminalBackend {
     this.dtachBinary = options.dtachBinary ?? 'dtach';
     this.writeTimeoutMs = options.writeTimeoutMs ?? DEFAULT_WRITE_TIMEOUT_MS;
     this.reconnectCooldownMs = options.reconnectCooldownMs ?? RECONNECT_COOLDOWN_MS;
+    this.ringFleetBudgetBytes = options.ringFleetBudgetBytes ?? 0;
 
     // On macOS, `os.tmpdir()` returns `/var/folders/<XX>/<hash>/T` (~48 chars).
     // Combined with `kookr-dtach/<uid>/<instanceId>/<sessionId>.sock`, that
@@ -168,6 +180,8 @@ export class LocalDtachBackend implements TerminalBackend {
       isClosed: () => this.closed,
       emitError: (err) => this.emitError(err),
       observeWriteQueueDepth: () => this.observeWriteQueueDepth(),
+      onRingStateChanged: () => this.enforceRingFleetBudget(),
+      tryExpandRing: (sess) => this.tryExpandRing(sess),
     });
     this.recovery = new LocalDtachRecovery({
       attached: this.attached,
@@ -197,9 +211,62 @@ export class LocalDtachBackend implements TerminalBackend {
     const flushInterval = options.ringFlushIntervalMs ?? DEFAULT_RING_FLUSH_INTERVAL_MS;
     this.flushTimer = setInterval(() => {
       this.stream.flushAllRings();
+      // Re-check budget on the flush cadence so idle rings that aged out of
+      // recent activity can be reclaimed even when no new sessions attach.
+      this.enforceRingFleetBudget();
     }, flushInterval);
     // Don't keep the event loop alive just for the flush timer.
     this.flushTimer.unref?.();
+  }
+
+  /**
+   * When fleet capacity exceeds {@link ringFleetBudgetBytes}, shrink
+   * least-recently-active rings to {@link RING_IDLE_CAPACITY_BYTES}. Persists
+   * each shrink candidate first so full scrollback remains on disk for restart.
+   */
+  private enforceRingFleetBudget(): void {
+    if (!(this.ringFleetBudgetBytes > 0) || this.closed) {
+      this.ringFleetOverBudgetBytes = 0;
+      return;
+    }
+    const total = totalRingFleetBytes(this.attached.values());
+    if (total <= this.ringFleetBudgetBytes) {
+      this.ringFleetOverBudgetBytes = 0;
+      return;
+    }
+    // Snapshot full content for shrink candidates before truncating memory.
+    // Only rings still above the idle floor can shrink; flush dirty ones so
+    // restart can restore the pre-shrink scrollback from disk.
+    for (const sess of this.attached.values()) {
+      if (
+        sess.ringBuffer.length > RING_IDLE_CAPACITY_BYTES
+        && sess.ringHead !== sess.lastFlushedHead
+      ) {
+        this.ringStore.persist(sess);
+      }
+    }
+    const result = enforceRingFleetBudget(
+      this.attached.values(),
+      this.ringFleetBudgetBytes,
+      RING_IDLE_CAPACITY_BYTES,
+    );
+    this.ringShrinkCount += result.shrunk;
+    this.ringFleetOverBudgetBytes = result.overBudgetBytes;
+  }
+
+  /**
+   * Expand a shrunken ring back to full capacity when the fleet has room
+   * (active sessions regain full scrollback under budget).
+   */
+  private tryExpandRing(sess: AttachedSession): boolean {
+    if (sess.ringBuffer.length >= RING_BUFFER_BYTES) return false;
+    const budget = this.ringFleetBudgetBytes;
+    if (budget > 0) {
+      const total = totalRingFleetBytes(this.attached.values());
+      const projected = total - sess.ringBuffer.length + RING_BUFFER_BYTES;
+      if (projected > budget) return false;
+    }
+    return expandRing(sess, RING_BUFFER_BYTES);
   }
 
   /**
@@ -446,6 +513,7 @@ export class LocalDtachBackend implements TerminalBackend {
   getStats(): BackendStats {
     let pending = 0;
     for (const s of this.attached.values()) pending += s.pendingWriters;
+    const ringSnap = ringFleetBudgetSnapshot(this.attached.values(), this.ringFleetBudgetBytes);
     return {
       attachedSessions: this.attached.size,
       reattachCounts: { ...this.reattachCounts },
@@ -454,6 +522,13 @@ export class LocalDtachBackend implements TerminalBackend {
       writeTimeoutCount: this.writeTimeoutCount,
       lastError: this.lastError,
       errorCount: this.errorCount,
+      ringFleetBytes: ringSnap.totalBytes,
+      ringFleetBudgetBytes: ringSnap.budgetBytes,
+      ringFleetOverBudgetBytes: this.ringFleetBudgetBytes > 0
+        ? Math.max(ringSnap.overBudgetBytes, this.ringFleetOverBudgetBytes)
+        : 0,
+      ringShrunkenSessions: ringSnap.shrunkenSessions,
+      ringShrinkCount: this.ringShrinkCount,
     };
   }
 

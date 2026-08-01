@@ -163,6 +163,29 @@ export function readSessionReapConfigFromEnv(
 }
 
 // ---------------------------------------------------------------------------
+// Ring fleet memory budget (issue #1779)
+// ---------------------------------------------------------------------------
+
+/**
+ * Default fleet-wide sum of live session ring buffer capacities. Each session
+ * still allocates a full 1 MiB ring when active; when the sum of capacities
+ * exceeds this budget, least-recently-active rings shrink to 64 KiB. `0`
+ * disables enforcement (pre-#1779 behaviour). 32 MiB ≈ 32 full rings before
+ * pressure starts reclaiming idle scrollback.
+ */
+export const DEFAULT_RING_FLEET_BUDGET_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Read `KOOKR_RING_FLEET_BUDGET_BYTES` — fleet sum of ring capacities. `0`
+ * disables dynamic shrink. Invalid/blank values fall back to the default.
+ */
+export function readRingFleetBudgetBytesFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  return readNonNegativeNumber(env.KOOKR_RING_FLEET_BUDGET_BYTES, DEFAULT_RING_FLEET_BUDGET_BYTES);
+}
+
+// ---------------------------------------------------------------------------
 // Resource watchdog (issue #1724) — OFF by default; operator opt-in actuator.
 // ---------------------------------------------------------------------------
 

@@ -161,6 +161,14 @@ export interface LocalDtachBackendOptions {
    * they can assert the cooldown rejection without a real 2 s sleep.
    */
   reconnectCooldownMs?: number;
+
+  /**
+   * Fleet-wide sum of live ring buffer capacities (issue #1779). When the sum
+   * exceeds this budget, least-recently-active rings shrink to 64 KiB. `0`
+   * disables enforcement. Production reads `KOOKR_RING_FLEET_BUDGET_BYTES`
+   * (default 32 MiB).
+   */
+  ringFleetBudgetBytes?: number;
 }
 
 /**

@@ -65,6 +65,7 @@ uncomment only the values you need.
 | `KOOKR_RESOURCE_WATCHDOG_SPAWN_BUDGET_WINDOW_MS` | `86400000` (24h) | Integer ≥ 60000 ms | Length of the rolling window used by `KOOKR_RESOURCE_WATCHDOG_SPAWN_BUDGET_24H`. |
 | `KOOKR_RESOURCE_WATCHDOG_CWD` | server CWD | Absolute directory path | Working directory for the spawned investigation/meta task. |
 | `KOOKR_REAP_TERMINAL_TASK_GRACE_MS` | `60000` (60s) | Non-negative integer ms | Minimum time a session whose OWNING TASK already reached a terminal status must sit before the reaper terminates it. Deliberately much shorter than the orphan threshold — the owning task is already known to be done; the grace only avoids double-signalling a session `completeTask`'s own fire-and-forget cleanup is still stopping. |
+| `KOOKR_RING_FLEET_BUDGET_BYTES` | `33554432` (32 MiB) | Non-negative integer bytes; `0` disables | Fleet-wide sum of live session ring buffer capacities (issue #1779). Each active session still allocates a full 1 MiB ring; when the sum of capacities exceeds this budget, least-recently-active rings shrink to 64 KiB (full scrollback is still flushed to disk first). Active sessions expand back to 1 MiB when the fleet has room. Surfaces on `GET /api/health` → `terminalBackend.ringFleet*` and Prometheus (`kookr_ring_fleet_*`). Set to `0` to keep every ring at full size (pre-#1779 behaviour). |
 
 ### Read-Only Shared View
 

@@ -218,6 +218,38 @@ describe('renderPrometheusExposition', () => {
     expect(output).toContain('kookr_terminal_write_max_pending_writes 4');
   });
 
+  test('renders ring fleet budget pressure gauges (issue #1779)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      ringFleetBudget: {
+        ringFleetBytes: 2_097_152,
+        ringFleetBudgetBytes: 1_048_576,
+        ringFleetOverBudgetBytes: 65_536,
+        ringShrunkenSessions: 3,
+        ringShrinkCount: 5,
+      },
+    });
+
+    expect(output).toContain('# TYPE kookr_ring_fleet_bytes gauge');
+    expect(output).toContain('kookr_ring_fleet_bytes 2097152');
+    expect(output).toContain('kookr_ring_fleet_budget_bytes 1048576');
+    expect(output).toContain('kookr_ring_fleet_over_budget_bytes 65536');
+    expect(output).toContain('kookr_ring_shrunken_sessions 3');
+    expect(output).toContain('# TYPE kookr_ring_shrink_events_total counter');
+    expect(output).toContain('kookr_ring_shrink_events_total 5');
+  });
+
+  test('renders zeroed ring fleet budget gauges when snapshot omitted (issue #1779)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+    });
+    expect(output).toContain('kookr_ring_fleet_bytes 0');
+    expect(output).toContain('kookr_ring_fleet_budget_bytes 0');
+    expect(output).toContain('kookr_ring_shrink_events_total 0');
+  });
+
   test('renders terminal input RTT quantiles (seconds) and observation count (issue #1773)', () => {
     const output = renderPrometheusExposition({
       requestDurations: EMPTY_REQUEST_DURATIONS,
