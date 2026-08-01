@@ -285,6 +285,36 @@ describe('bash completion behavior', () => {
     ]);
   });
 
+  // #1858: spawn saturation / dry-run flags must be tab-completable
+  it('completes spawn --model --wait --idempotency-key --dry-run flags', async () => {
+    await expect(completeBash(['kookr', 'spawn', ''])).resolves.toEqual(
+      expect.arrayContaining([
+        '--model',
+        '--wait',
+        '--idempotency-key',
+        '--dry-run',
+      ]),
+    );
+  });
+
+  it('completes --model values from the shared model allowlist', async () => {
+    await expect(completeBash(['kookr', 'spawn', '--model', ''])).resolves.toEqual(
+      expect.arrayContaining([
+        'claude-fable-5',
+        'claude-opus-4-8',
+        'claude-sonnet-5',
+        'claude-haiku-4-5',
+      ]),
+    );
+    await expect(completeBash(['kookr', 'spawn', '--model='])).resolves.toEqual(
+      expect.arrayContaining([
+        '--model=claude-fable-5',
+        '--model=claude-sonnet-5',
+        '--model=claude-haiku-4-5',
+      ]),
+    );
+  });
+
   it('leaves resume without subcommand completions', async () => {
     await expect(completeBash(['kookr', 'resume', ''])).resolves.toEqual([]);
   });
@@ -487,6 +517,36 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
       '--dedupe=block',
       '--dedupe=skip',
     ]);
+  });
+
+  // #1858: spawn saturation / dry-run flags must be tab-completable (zsh)
+  it('completes spawn --model --wait --idempotency-key --dry-run flags (zsh)', async () => {
+    await expect(completeZsh(['kookr', 'spawn', ''], 3)).resolves.toEqual(
+      expect.arrayContaining([
+        '--model',
+        '--wait',
+        '--idempotency-key',
+        '--dry-run',
+      ]),
+    );
+  });
+
+  it('completes --model values from the shared model allowlist (zsh)', async () => {
+    await expect(completeZsh(['kookr', 'spawn', '--model', ''], 4)).resolves.toEqual(
+      expect.arrayContaining([
+        'claude-fable-5',
+        'claude-opus-4-8',
+        'claude-sonnet-5',
+        'claude-haiku-4-5',
+      ]),
+    );
+    await expect(completeZsh(['kookr', 'spawn', '--model='], 3)).resolves.toEqual(
+      expect.arrayContaining([
+        '--model=claude-fable-5',
+        '--model=claude-sonnet-5',
+        '--model=claude-haiku-4-5',
+      ]),
+    );
   });
 });
 

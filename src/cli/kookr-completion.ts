@@ -15,6 +15,20 @@ const LESSON_REMEMBER_FLAGS = [
   '--help',
 ] as const;
 const STATUS_FAIL_ON_VALUES = ['critical', 'warning', 'info', 'none'] as const;
+// #1858 / #1518: known model base ids for spawn --model tab-completion.
+// Keep in sync with ALL_MODEL_IDS / CLAUDE_CODE_MODEL_IDS in
+// src/shared/contracts/agent-types.ts and MODEL_IDS in bin/kookr-spawn.js.
+// Inlined (not imported) so `kookr completion` still loads from source without
+// a prior build — this file is imported by bin/kookr.js via strip-types.
+const SPAWN_MODEL_IDS = [
+  'claude-fable-5',
+  'claude-opus-4-8',
+  'claude-opus-4-7',
+  'claude-opus-4-6',
+  'claude-sonnet-5',
+  'claude-sonnet-4-6',
+  'claude-haiku-4-5',
+] as const;
 
 export type CompletionShell = (typeof COMPLETION_SHELLS)[number];
 
@@ -41,6 +55,12 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
       '--no-parent-task',
       '-f',
       '--prompt-file',
+      // #1858: surface saturation/dry-run flags agents need under tab-completion.
+      // Keep in sync with bin/kookr-spawn.js help + parseArgs.
+      '--model',
+      '--wait',
+      '--idempotency-key',
+      '--dry-run',
       '--json',
       '-h',
       '--help',
@@ -49,6 +69,8 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
       '--agent': ['claude-code', 'codex-cli', 'grok-build'],
       '--effort': ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
       '--dedupe': ['warn', 'block', 'skip'],
+      // Cross-agent allowlist (CLI fast-fail). Shared with bin/kookr-spawn.js MODEL_IDS.
+      '--model': SPAWN_MODEL_IDS,
     },
   },
   {
@@ -328,8 +350,10 @@ function renderBashCompletion(): string {
   const agentValues = flagValuesFor('spawn', '--agent');
   const dedupeValues = flagValuesFor('spawn', '--dedupe');
   const effortValues = flagValuesFor('spawn', '--effort');
+  const modelValues = flagValuesFor('spawn', '--model');
   const dedupeEqualsValues = equalsFlagValues('--dedupe', dedupeValues);
   const effortEqualsValues = equalsFlagValues('--effort', effortValues);
+  const modelEqualsValues = equalsFlagValues('--model', modelValues);
   const spawnFlags = flagsFor('spawn');
   const signalKinds = positionalValuesFor('signal');
   const signalFlags = flagsFor('signal');
@@ -395,6 +419,10 @@ _kookr()
       COMPREPLY=( $(compgen -W "${dedupeValues}" -- "\${cur}") )
       return 0
       ;;
+    --model)
+      COMPREPLY=( $(compgen -W "${modelValues}" -- "\${cur}") )
+      return 0
+      ;;
     --fail-on)
       if [[ "\${cmd}" == status ]]; then
         COMPREPLY=( $(compgen -W "${statusFailOnValues}" -- "\${cur}") )
@@ -413,6 +441,10 @@ _kookr()
   fi
   if [[ "\${cur}" == --effort=* ]]; then
     COMPREPLY=( $(compgen -W "${effortEqualsValues}" -- "\${cur}") )
+    return 0
+  fi
+  if [[ "\${cur}" == --model=* ]]; then
+    COMPREPLY=( $(compgen -W "${modelEqualsValues}" -- "\${cur}") )
     return 0
   fi
   if [[ "\${cmd}" == status && "\${cur}" == --fail-on=* ]]; then
@@ -595,8 +627,10 @@ function renderZshCompletion(): string {
   const agentValues = flagValuesFor('spawn', '--agent');
   const dedupeValues = flagValuesFor('spawn', '--dedupe');
   const effortValues = flagValuesFor('spawn', '--effort');
+  const modelValues = flagValuesFor('spawn', '--model');
   const dedupeEqualsValues = equalsFlagValues('--dedupe', dedupeValues);
   const effortEqualsValues = equalsFlagValues('--effort', effortValues);
+  const modelEqualsValues = equalsFlagValues('--model', modelValues);
   const spawnFlags = flagsFor('spawn');
   const signalKinds = positionalValuesFor('signal');
   const signalFlags = flagsFor('signal');
@@ -658,11 +692,13 @@ _kookr()
       case "$words[CURRENT]" in
         --dedupe=*) compadd -- ${dedupeEqualsValues}; return ;;
         --effort=*) compadd -- ${effortEqualsValues}; return ;;
+        --model=*) compadd -- ${modelEqualsValues}; return ;;
       esac
       case "$words[CURRENT-1]" in
         -a|--agent) compadd ${agentValues}; return ;;
         --effort) compadd ${effortValues}; return ;;
         --dedupe) compadd ${dedupeValues}; return ;;
+        --model) compadd ${modelValues}; return ;;
       esac
       compadd -- ${spawnFlags}
       ;;
