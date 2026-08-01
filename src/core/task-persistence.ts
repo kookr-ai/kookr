@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { readFile, access, copyFile, readdir, unlink, rename } from 'node:fs/promises';
 import { join, dirname, basename } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -16,6 +17,13 @@ import {
   isTaskRelationType,
   type TaskRelation,
 } from '../shared/contracts/task-relations.js';
+import {
+  renameTasksJsonBackup,
+  resolveTaskSqlitePath,
+  resolveTaskStoreMode,
+  TaskSqliteStore,
+  type TaskSqliteLoadResult,
+} from './task-sqlite-store.js';
 
 export class CorruptTaskFileError extends Error {
   constructor(filePath: string, cause?: unknown) {
@@ -278,6 +286,267 @@ export async function saveTasksWithSnapshotPolicy(
       return;
     case 'none':
       return;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SQLite-backed task state (#1755)
+// ---------------------------------------------------------------------------
+
+export type { TaskSqliteLoadResult };
+export {
+  resolveTaskSqlitePath,
+  resolveTaskStoreMode,
+  TaskSqliteStore,
+  renameTasksJsonBackup,
+} from './task-sqlite-store.js';
+
+export interface OpenTaskStateStoreResult {
+  mode: 'sqlite' | 'json';
+  sqliteStore: TaskSqliteStore | null;
+  load: LoadTasksResult;
+  /** Human-readable source for boot logs. */
+  loadedFrom: string;
+}
+
+/**
+ * Boot-time open of the task state backend.
+ *
+ * - `KOOKR_TASK_STORE=json` → legacy tasks.json path (with corrupt recovery).
+ * - Default (`sqlite`): open/create `tasks.sqlite`. When the DB is missing and
+ *   `tasks.json` exists, import once, rename the JSON to a `.pre-sqlite-*`
+ *   backup (never delete), and treat the DB as authoritative.
+ */
+export async function openTaskStateStore(tasksFile: string): Promise<OpenTaskStateStoreResult> {
+  const mode = resolveTaskStoreMode();
+  if (mode === 'json') {
+    const load = await loadTasksWithRecovery(tasksFile);
+    return {
+      mode: 'json',
+      sqliteStore: null,
+      load,
+      loadedFrom: tasksFile,
+    };
+  }
+
+  const dbPath = resolveTaskSqlitePath(tasksFile);
+  const dbExists = existsSync(dbPath);
+  const jsonExists = existsSync(tasksFile);
+
+  if (!dbExists && jsonExists) {
+    // One-shot migration: load via the existing validated path, import, rename.
+    const fromJson = await loadTasksWithRecovery(tasksFile);
+    const store = new TaskSqliteStore(dbPath);
+    try {
+      store.importSnapshot({
+        tasks: fromJson.tasks,
+        lifetimeSpendUsd: fromJson.lifetimeSpendUsd,
+        snoozes: fromJson.snoozes ?? fromJson.snoozedFindings as PersistedSnooze[] | undefined,
+        suppressionState: fromJson.suppressionState,
+        relations: fromJson.relations,
+        migratedFrom: tasksFile,
+      });
+      // Cutover verification before renaming the JSON backup.
+      if (store.countTasks() !== fromJson.tasks.length) {
+        throw new Error(
+          `sqlite migration task count mismatch: db=${store.countTasks()} json=${fromJson.tasks.length}`,
+        );
+      }
+      const relCount = fromJson.relations?.length ?? 0;
+      if (store.countRelations() !== relCount) {
+        throw new Error(
+          `sqlite migration relation count mismatch: db=${store.countRelations()} json=${relCount}`,
+        );
+      }
+      // loadTasksWithRecovery may have quarantined a corrupt file without
+      // restoring a live tasks.json (no valid daily snapshot). Only rename
+      // when a live file still exists after recovery.
+      let backupPath: string | undefined;
+      if (existsSync(tasksFile)) {
+        backupPath = renameTasksJsonBackup(tasksFile);
+      }
+      logger.info('migrated tasks.json → tasks.sqlite', {
+        dbPath,
+        backupPath: backupPath ?? '(no live json after recovery)',
+        taskCount: fromJson.tasks.length,
+        relationCount: relCount,
+      });
+      return {
+        mode: 'sqlite',
+        sqliteStore: store,
+        load: {
+          tasks: fromJson.tasks,
+          lifetimeSpendUsd: fromJson.lifetimeSpendUsd,
+          snoozes: fromJson.snoozes,
+          snoozedFindings: fromJson.snoozedFindings,
+          suppressionState: fromJson.suppressionState,
+          relations: fromJson.relations,
+          recovery: fromJson.recovery,
+        },
+        loadedFrom: backupPath
+          ? `${dbPath} (migrated from ${backupPath})`
+          : `${dbPath} (migrated after json recovery)`,
+      };
+    } catch (err) {
+      store.close();
+      throw err;
+    }
+  }
+
+  const store = new TaskSqliteStore(dbPath);
+  try {
+    if (!dbExists) {
+      // Fresh install: empty DB is fine.
+      store.importSnapshot({ tasks: [], lifetimeSpendUsd: 0 });
+      return {
+        mode: 'sqlite',
+        sqliteStore: store,
+        load: { tasks: [], lifetimeSpendUsd: 0, relations: [] },
+        loadedFrom: `${dbPath} (empty)`,
+      };
+    }
+    const loaded = store.loadAll();
+    return {
+      mode: 'sqlite',
+      sqliteStore: store,
+      load: {
+        tasks: loaded.tasks,
+        lifetimeSpendUsd: loaded.lifetimeSpendUsd,
+        snoozes: loaded.snoozes,
+        suppressionState: loaded.suppressionState,
+        relations: loaded.relations,
+      },
+      loadedFrom: dbPath,
+    };
+  } catch (err) {
+    store.close();
+    throw err;
+  }
+}
+
+export interface PersistTaskStateOptions {
+  taskStore: TaskStore;
+  tasksFile: string;
+  policy?: SnapshotPolicy;
+  snoozes?: PersistedSnooze[];
+  suppressionState?: PersistedSuppressionEntry[];
+  /** Open SQLite handle when mode is sqlite. Required for the SQLite path. */
+  sqliteStore?: TaskSqliteStore | null;
+  /**
+   * Force a full rewrite of every task row (predelete snapshot path, failed
+   * flush recovery). Default: drain the dirty set only.
+   */
+  forceFull?: boolean;
+}
+
+/**
+ * Persist task state. SQLite mode flushes only dirty rows (+ relations/meta/
+ * snoozes when marked). JSON mode keeps the legacy whole-file rewrite.
+ *
+ * Snapshot policies (`daily` / `predelete`) still materialize a JSON snapshot
+ * file so existing recovery tooling keeps working; the primary durable store
+ * remains SQLite when that mode is active.
+ */
+export async function persistTaskState(opts: PersistTaskStateOptions): Promise<void> {
+  const policy = opts.policy ?? 'none';
+  const mode = opts.sqliteStore ? 'sqlite' : resolveTaskStoreMode();
+
+  if (mode === 'json' || !opts.sqliteStore) {
+    await saveTasksWithSnapshotPolicy(
+      opts.taskStore.getAllTasks(),
+      opts.tasksFile,
+      policy,
+      opts.taskStore.getLifetimeSpendUsd(),
+      opts.snoozes,
+      opts.suppressionState,
+      opts.taskStore.listRelations(),
+    );
+    opts.taskStore.clearDirtyPersistence();
+    return;
+  }
+
+  const store = opts.sqliteStore;
+  if (opts.forceFull) {
+    opts.taskStore.markAllDirtyForPersistence();
+  }
+
+  const dirty = opts.taskStore.drainDirtyState();
+  const dirtyTasks: Task[] = [];
+  for (const id of dirty.dirtyTaskIds) {
+    // Use non-cloning view path for the live object, then clone for serialization
+    // safety if the caller mutates mid-write. getTask clones.
+    const task = opts.taskStore.getTask(id);
+    if (task) dirtyTasks.push(task);
+  }
+
+  const hasWork = dirtyTasks.length > 0
+    || dirty.deletedTaskIds.length > 0
+    || dirty.relationsDirty
+    || dirty.metaDirty
+    || opts.snoozes !== undefined
+    || opts.suppressionState !== undefined
+    || opts.forceFull;
+
+  if (hasWork) {
+    try {
+      const metrics = store.flush({
+        tasks: dirtyTasks,
+        deletedTaskIds: dirty.deletedTaskIds,
+        relations: dirty.relationsDirty || opts.forceFull ? opts.taskStore.listRelations() : null,
+        replaceRelations: dirty.relationsDirty || Boolean(opts.forceFull),
+        lifetimeSpendUsd: dirty.metaDirty || opts.forceFull
+          ? opts.taskStore.getLifetimeSpendUsd()
+          : undefined,
+        snoozes: opts.snoozes ?? null,
+        suppressionState: opts.suppressionState ?? null,
+      });
+      if (process.env.KOOKR_LOG_TASK_SAVE_METRICS === '1') {
+        logger.info('flushed dirty tasks to sqlite', {
+          dbPath: store.path,
+          taskUpserts: metrics.taskUpserts,
+          taskDeletes: metrics.taskDeletes,
+          relationReplace: metrics.relationReplace,
+          durationMs: metrics.durationMs,
+        });
+      }
+    } catch (err) {
+      // Re-mark so a retry rewrites authoritative state.
+      opts.taskStore.markAllDirtyForPersistence();
+      throw err;
+    }
+  } else {
+    // Periodic force tick with nothing dirty: cheap WAL checkpoint only.
+    store.checkpoint();
+  }
+
+  // Snapshot policies export a JSON recovery file alongside the SQLite primary.
+  // CRITICAL: do NOT full-serialize on every periodic tick. Daily snapshots are
+  // once-per-day; only write the JSON export when today's file is absent (or
+  // when policy is predelete, which is rare and intentional).
+  if (policy === 'predelete') {
+    await saveTasksWithSnapshotPolicy(
+      opts.taskStore.getAllTasks(),
+      opts.tasksFile,
+      'predelete',
+      opts.taskStore.getLifetimeSpendUsd(),
+      opts.snoozes,
+      opts.suppressionState,
+      opts.taskStore.listRelations(),
+    );
+  } else if (policy === 'daily') {
+    const today = formatYmd(new Date());
+    const dailyPath = dailyFileName(opts.tasksFile, today);
+    if (!existsSync(dailyPath)) {
+      await saveTasksWithSnapshotPolicy(
+        opts.taskStore.getAllTasks(),
+        opts.tasksFile,
+        'daily',
+        opts.taskStore.getLifetimeSpendUsd(),
+        opts.snoozes,
+        opts.suppressionState,
+        opts.taskStore.listRelations(),
+      );
+    }
   }
 }
 

@@ -181,6 +181,94 @@ export class TaskStore {
   private lifetimeSpendUsd: number = 0;
 
   /**
+   * Persistence dirty-set (#1755). Mutators mark the affected task id so the
+   * SQLite flush path rewrites only changed rows instead of the whole store.
+   * `getTaskForMutation` marks pessimistically (caller took a live ref).
+   * Not part of the public read API; drained by the save scheduler.
+   */
+  private dirtyTaskIds = new Set<string>();
+  private deletedTaskIds = new Set<string>();
+  private relationsDirty = false;
+  private metaDirty = false;
+
+  /** Mark a task for the next persistence flush. */
+  private markTaskDirty(id: string): void {
+    this.dirtyTaskIds.add(id);
+    this.deletedTaskIds.delete(id);
+  }
+
+  /** Mark a task deleted for the next persistence flush. */
+  private markTaskDeleted(id: string): void {
+    this.dirtyTaskIds.delete(id);
+    this.deletedTaskIds.add(id);
+  }
+
+  private markRelationsDirty(): void {
+    this.relationsDirty = true;
+  }
+
+  private markMetaDirty(): void {
+    this.metaDirty = true;
+  }
+
+  /**
+   * Drain dirty persistence state for a flush. Cleared even when the flush
+   * later fails — the scheduler re-marks by setting its own dirty flag and
+   * the next successful mutation path will re-dirty as needed; on save
+   * failure the scheduler keeps its coalesced dirty bit so a force re-flush
+   * re-reads current store state via a full re-mark path.
+   *
+   * Callers that need crash-safe re-flush after a failed write should call
+   * {@link markAllDirtyForPersistence} before retrying.
+   */
+  drainDirtyState(): {
+    dirtyTaskIds: string[];
+    deletedTaskIds: string[];
+    relationsDirty: boolean;
+    metaDirty: boolean;
+  } {
+    const result = {
+      dirtyTaskIds: Array.from(this.dirtyTaskIds),
+      deletedTaskIds: Array.from(this.deletedTaskIds),
+      relationsDirty: this.relationsDirty,
+      metaDirty: this.metaDirty,
+    };
+    this.dirtyTaskIds.clear();
+    this.deletedTaskIds.clear();
+    this.relationsDirty = false;
+    this.metaDirty = false;
+    return result;
+  }
+
+  /** True when any persistence-relevant mutation is pending a flush. */
+  hasDirtyPersistence(): boolean {
+    return this.dirtyTaskIds.size > 0
+      || this.deletedTaskIds.size > 0
+      || this.relationsDirty
+      || this.metaDirty;
+  }
+
+  /**
+   * Mark every in-memory task + relations + meta dirty. Used after a failed
+   * flush so the next write re-upserts authoritative state, and for full
+   * export / import cutovers.
+   */
+  markAllDirtyForPersistence(): void {
+    for (const id of this.tasks.keys()) this.dirtyTaskIds.add(id);
+    this.deletedTaskIds.clear();
+    this.relationsDirty = true;
+    this.metaDirty = true;
+  }
+
+  /** Clear dirty tracking without writing (e.g. after a bulk load). */
+  clearDirtyPersistence(): void {
+    this.dirtyTaskIds.clear();
+    this.deletedTaskIds.clear();
+    this.relationsDirty = false;
+    this.metaDirty = false;
+  }
+
+  /**
    * Creates and returns a snapshot of the newly stored task record. Code that
    * intentionally owns a multi-field state transition must opt in through
    * a narrower TaskStore mutation API (Ralph: {@link runRalphMutation};
@@ -286,6 +374,7 @@ export class TaskStore {
     if (effectiveAutoCloseOnSignal) task.autoCloseOnSignal = true;
     if (effectiveUnattended) task.unattended = true;
     this.tasks.set(task.id, task);
+    this.markTaskDirty(task.id);
 
     // Link child to parent
     if (parentTaskId !== undefined) {
@@ -295,6 +384,7 @@ export class TaskStore {
       }
       parent.childTaskIds.push(task.id);
       parent.updatedAt = new Date();
+      this.markTaskDirty(parentTaskId);
 
       // Issue #599 acceptance criterion: a deterministic parentTaskId launch
       // also records a high-confidence `spawned_by` edge in the relation
@@ -332,7 +422,9 @@ export class TaskStore {
    * narrower methods; tests may continue using this helper for fixtures.
    */
   getTaskForMutation(id: string): Task | undefined {
-    return this.tasks.get(id);
+    const task = this.tasks.get(id);
+    if (task) this.markTaskDirty(id);
+    return task;
   }
 
   /**
@@ -353,6 +445,7 @@ export class TaskStore {
   runRalphMutation<T>(taskId: string, mutator: (task: Task) => T): T | undefined {
     const task = this.tasks.get(taskId);
     if (!task) return undefined;
+    this.markTaskDirty(taskId);
     return mutator(task);
   }
 
@@ -380,6 +473,7 @@ export class TaskStore {
   setPendingSignal(taskId: string, signal: PendingAgentSignal): boolean {
     const task = this.tasks.get(taskId);
     if (!task) return false;
+    this.markTaskDirty(taskId);
     const existing = task.pendingSignal;
     if (existing && existing.kind === signal.kind) {
       // Same-kind re-raise: keep the first raisedAt, adopt a fresh note only if
@@ -521,6 +615,7 @@ export class TaskStore {
     if (!task?.pendingSignal) return false;
     delete task.pendingSignal;
     task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
     return true;
   }
 
@@ -537,6 +632,7 @@ export class TaskStore {
     if (task.operatorNeeded) return false;
     task.operatorNeeded = structuredClone(flag);
     task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
     return true;
   }
 
@@ -617,6 +713,7 @@ export class TaskStore {
     } else {
       delete task.finishedAt;
     }
+    this.markTaskDirty(id);
     return task;
   }
 
@@ -668,6 +765,7 @@ export class TaskStore {
     if (!task || task.disposition) return;
     task.disposition = { ...disposition };
     task.updatedAt = new Date();
+    this.markTaskDirty(id);
   }
 
   /**
@@ -685,6 +783,7 @@ export class TaskStore {
     const task = this.tasks.get(id);
     if (!task) return;
     task.launchPhaseTimings = structuredClone(timings);
+    this.markTaskDirty(id);
   }
 
   pendTask(id: string): Task {
@@ -706,15 +805,20 @@ export class TaskStore {
       if (parent?.childTaskIds) {
         parent.childTaskIds = parent.childTaskIds.filter((cid) => cid !== id);
         parent.updatedAt = new Date();
+        this.markTaskDirty(task.parentTaskId);
       }
     }
     this.tasks.delete(id);
+    this.markTaskDeleted(id);
     // Drop any relation that references the deleted task on either side.
+    let droppedRelation = false;
     for (const [key, rel] of this.relations) {
       if (rel.sourceTaskId === id || rel.targetTaskId === id) {
         this.relations.delete(key);
+        droppedRelation = true;
       }
     }
+    if (droppedRelation) this.markRelationsDirty();
   }
 
   /**
@@ -803,6 +907,7 @@ export class TaskStore {
     // the auto-name marker is cleared and future auto-naming will not touch it.
     delete task.autoNamed;
     task.updatedAt = new Date();
+    this.markTaskDirty(id);
     return cloneTask(task);
   }
 
@@ -817,6 +922,7 @@ export class TaskStore {
       delete task.priority;
     }
     task.updatedAt = new Date();
+    this.markTaskDirty(id);
     return cloneTask(task);
   }
 
@@ -832,6 +938,7 @@ export class TaskStore {
       task.blocked_by = [...patch.blocked_by];
     }
     task.updatedAt = new Date();
+    this.markTaskDirty(id);
     return cloneTask(task);
   }
 
@@ -881,6 +988,7 @@ export class TaskStore {
     if (task.status === 'open' || task.status === 'pending') {
       task.status = 'inProgress';
     }
+    this.markTaskDirty(taskId);
 
     return cloneTask(task);
   }
@@ -900,6 +1008,7 @@ export class TaskStore {
     }
     Object.assign(session, patch);
     task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
     return cloneTask(task);
   }
 
@@ -923,6 +1032,7 @@ export class TaskStore {
     if (existing[childSessionId]) return;
     session.childSessionIds = { ...existing, [childSessionId]: info };
     task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
   }
 
   updateSessionGitInfo(taskId: string, tmuxSession: string, gitInfo: GitInfo): void {
@@ -936,6 +1046,7 @@ export class TaskStore {
     session.gitIsWorktree = gitInfo.isWorktree || undefined;
     session.gitIsDetached = gitInfo.isDetached || undefined;
     task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
   }
 
   updateSessionWorktreeHealth(
@@ -952,6 +1063,7 @@ export class TaskStore {
     session.worktreeHealthObservedAt = new Date().toISOString();
     session.worktreeRegistryStale = opts.registryStale || undefined;
     task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
   }
 
   updateSessionCwd(taskId: string, tmuxSession: string, cwd: string): void {
@@ -961,6 +1073,7 @@ export class TaskStore {
     if (!session) return;
     session.cwd = cwd;
     task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
   }
 
   setCompletionDigest(taskId: string, digest: CompletionDigest): void {
@@ -972,6 +1085,7 @@ export class TaskStore {
     const criteriaVerdict = capped.criteriaVerdict ?? task.completionDigest?.criteriaVerdict;
     task.completionDigest = criteriaVerdict ? { ...capped, criteriaVerdict } : capped;
     task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
   }
 
   setCriteriaVerdict(taskId: string, verdict: CriteriaCompletionVerdict): void {
@@ -982,6 +1096,7 @@ export class TaskStore {
       criteriaVerdict: structuredClone(verdict) as CriteriaCompletionVerdict,
     };
     task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
   }
 
   /**
@@ -996,6 +1111,7 @@ export class TaskStore {
     task.retryOf = lineage.retryOf;
     task.retryAttempt = lineage.retryAttempt;
     task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
   }
 
   /**
@@ -1015,6 +1131,7 @@ export class TaskStore {
     }
     task.completionFeedback = feedback;
     task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
     return true;
   }
 
@@ -1023,6 +1140,7 @@ export class TaskStore {
     if (!task) return;
     task.reflectMeta = meta;
     task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
   }
 
   setLaunchPermissionPosture(taskId: string, posture: TaskLaunchPermissionPosture | undefined): Task {
@@ -1041,6 +1159,7 @@ export class TaskStore {
       task.metadata = Object.keys(metadata).length > 0 ? metadata : undefined;
     }
     task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
     return cloneTask(task);
   }
 
@@ -1055,9 +1174,11 @@ export class TaskStore {
     const delta = usage.costUsd - previousCost;
     if (Number.isFinite(delta) && Number.isFinite(usage.costUsd) && usage.costUsd >= 0) {
       this.lifetimeSpendUsd += delta;
+      this.markMetaDirty();
     }
     task.tokenUsage = structuredClone(usage) as TokenUsage;
     task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
     return cloneTask(task);
   }
 
@@ -1150,6 +1271,7 @@ export class TaskStore {
     if (!task) return;
     task.projectId = projectId;
     task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
   }
 
   /**
@@ -1163,6 +1285,7 @@ export class TaskStore {
     if (!task) return;
     task.issueClaim = structuredClone(claim);
     task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
   }
 
   /**
@@ -1174,6 +1297,7 @@ export class TaskStore {
     if (!task?.issueClaim) return;
     delete task.issueClaim;
     task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
   }
 
   /** Override the agentType on a task. Used by the demo recorder to surface a Codex agent alongside Claude agents without touching adapter routing. */
@@ -1182,6 +1306,7 @@ export class TaskStore {
     if (!task) return;
     task.agentType = agentType;
     task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
   }
 
   /** Get all unique project IDs across all tasks. */
@@ -1249,6 +1374,7 @@ export class TaskStore {
           existing.evidence.push({ ...ev });
         }
       }
+      this.markRelationsDirty();
       return structuredClone(existing) as TaskRelation;
     }
 
@@ -1265,6 +1391,7 @@ export class TaskStore {
       lifecycle: input.lifecycle ?? 'active',
     };
     this.relations.set(key, record);
+    this.markRelationsDirty();
     return structuredClone(record) as TaskRelation;
   }
 
@@ -1297,6 +1424,8 @@ export class TaskStore {
       const key = taskRelationKey(rel.sourceTaskId, rel.targetTaskId, rel.type);
       this.relations.set(key, structuredClone(rel) as TaskRelation);
     }
+    // Bulk load is authoritative; nothing to flush until the next mutation.
+    this.relationsDirty = false;
   }
 
   /** Load tasks from an array (for deserialization) */
@@ -1323,6 +1452,8 @@ export class TaskStore {
         }
       }
     }
+    // Bulk load is authoritative; do not flush the whole store as "dirty".
+    this.clearDirtyPersistence();
   }
 
   /** Get the lifetime total spending in USD. */

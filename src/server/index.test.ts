@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WebSocket } from 'ws';
@@ -9,6 +9,7 @@ import type { KookrServerInternal } from './server-test-helpers.js';
 import type { ResourceStatusSampler } from './resource-status-service.js';
 import type { SystemResourceStatus } from '../shared/contracts/messages.js';
 import { createRelayServer } from '../../relay/server.js';
+import { resolveTaskSqlitePath } from '../core/task-sqlite-store.js';
 
 const RELAY_TRUSTED_ENV = 'KOOKR_RELAY_' + 'TRUSTED';
 
@@ -2342,7 +2343,14 @@ Review daily work.
       try {
         expect(recoveredServer.taskStore.listTasks()).toHaveLength(1);
         expect(recoveredServer.taskStore.getTask('restored-task')?.prompt).toBe('Recovered task');
-        expect(JSON.parse(readFileSync(recoveredTasksFile, 'utf-8')).tasks[0].id).toBe('restored-task');
+        // Default backend is SQLite (#1755): after corrupt-JSON recovery the
+        // restored envelope is imported and the live tasks.json is renamed to
+        // a .pre-sqlite-* backup (never deleted). Durable state lives in tasks.sqlite.
+        const dbPath = resolveTaskSqlitePath(recoveredTasksFile);
+        expect(existsSync(dbPath)).toBe(true);
+        expect(existsSync(recoveredTasksFile)).toBe(false);
+        const backup = readdirSync(recoveryDir).find((name) => name.startsWith('tasks.json.pre-sqlite-'));
+        expect(backup).toBeDefined();
 
         const recoveredPort = getActualPort(recoveredServer);
         const ws = new WebSocket(`ws://127.0.0.1:${recoveredPort}/ws`);
