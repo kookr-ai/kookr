@@ -428,4 +428,55 @@ describe('renderPrometheusExposition', () => {
     expect(output).not.toContain('10.0.0.');
     expect(output).not.toContain('source=');
   });
+
+  test('renders capacity ledger gauges with fixed byClass labels (issue #1856)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      capacity: {
+        maxActiveTasks: 12,
+        active: 5,
+        free: 7,
+        byClass: {
+          working: 2,
+          finishedAwaitingAck: 1,
+          hungSuspect: 1,
+          launching: 1,
+        },
+        pendingQueueDepth: 3,
+        oldestPendingAgeMs: 45_000,
+        oldestFinishedAwaitingAckAgeMs: 120_000,
+      },
+    });
+
+    expect(output).toContain('# TYPE kookr_capacity_active gauge');
+    expect(output).toContain('kookr_capacity_active 5');
+    expect(output).toContain('kookr_capacity_free 7');
+    expect(output).toContain('kookr_capacity_max 12');
+    expect(output).toContain('# TYPE kookr_capacity_by_class gauge');
+    expect(output).toContain('kookr_capacity_by_class{class="working"} 2');
+    expect(output).toContain('kookr_capacity_by_class{class="finishedAwaitingAck"} 1');
+    expect(output).toContain('kookr_capacity_by_class{class="hungSuspect"} 1');
+    expect(output).toContain('kookr_capacity_by_class{class="launching"} 1');
+    expect(output).toContain('kookr_capacity_pending_queue_depth 3');
+    expect(output).toContain('kookr_capacity_oldest_pending_age_seconds 45');
+    expect(output).toContain('kookr_capacity_oldest_finished_awaiting_ack_age_seconds 120');
+  });
+
+  test('renders zeroed capacity gauges with -1 ages when snapshot omitted (issue #1856)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+    });
+    expect(output).toContain('kookr_capacity_active 0');
+    expect(output).toContain('kookr_capacity_free 0');
+    expect(output).toContain('kookr_capacity_max 0');
+    expect(output).toContain('kookr_capacity_by_class{class="working"} 0');
+    expect(output).toContain('kookr_capacity_by_class{class="finishedAwaitingAck"} 0');
+    expect(output).toContain('kookr_capacity_by_class{class="hungSuspect"} 0');
+    expect(output).toContain('kookr_capacity_by_class{class="launching"} 0');
+    expect(output).toContain('kookr_capacity_pending_queue_depth 0');
+    expect(output).toContain('kookr_capacity_oldest_pending_age_seconds -1');
+    expect(output).toContain('kookr_capacity_oldest_finished_awaiting_ack_age_seconds -1');
+  });
 });
