@@ -272,6 +272,13 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         writeTimeoutCount: backendWriteStats.writeTimeoutCount,
         lastError: backendWriteStats.lastError,
         errorCount: backendWriteStats.errorCount,
+        // Fleet ring budget pressure (issue #1779) — always present on the
+        // live backend path so operators can chart zeros without a secret env.
+        ringFleetBytes: backendWriteStats.ringFleetBytes ?? 0,
+        ringFleetBudgetBytes: backendWriteStats.ringFleetBudgetBytes ?? 0,
+        ringFleetOverBudgetBytes: backendWriteStats.ringFleetOverBudgetBytes ?? 0,
+        ringShrunkenSessions: backendWriteStats.ringShrunkenSessions ?? 0,
+        ringShrinkCount: backendWriteStats.ringShrinkCount ?? 0,
       };
     }
     // Write-path saturation (issue #1776): mutex queue depth + coordinator

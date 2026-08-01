@@ -10,10 +10,12 @@ import {
   DEFAULT_RESOURCE_WATCHDOG_INTERVAL_MS,
   DEFAULT_RESOURCE_WATCHDOG_SWAP_PERCENT,
   DEFAULT_RESOURCE_WATCHDOG_SPAWN_BUDGET_24H,
+  DEFAULT_RING_FLEET_BUDGET_BYTES,
   readOperationalAlertConfigFromEnv,
   readRequestBodyLimitBytesFromEnv,
   readMaxHostLoadPerCpuFromEnv,
   readResourceWatchdogConfigFromEnv,
+  readRingFleetBudgetBytesFromEnv,
 } from './config.js';
 
 describe('readOperationalAlertConfigFromEnv', () => {
@@ -126,6 +128,28 @@ describe('readRequestBodyLimitBytesFromEnv', () => {
         DEFAULT_REQUEST_BODY_LIMIT_BYTES,
       );
     }
+  });
+});
+
+describe('readRingFleetBudgetBytesFromEnv (issue #1779)', () => {
+  test('defaults to 32 MiB when env is empty', () => {
+    expect(readRingFleetBudgetBytesFromEnv({})).toBe(DEFAULT_RING_FLEET_BUDGET_BYTES);
+    expect(DEFAULT_RING_FLEET_BUDGET_BYTES).toBe(32 * 1024 * 1024);
+  });
+
+  test('accepts a positive budget and explicit 0 disable', () => {
+    expect(readRingFleetBudgetBytesFromEnv({ KOOKR_RING_FLEET_BUDGET_BYTES: '1048576' })).toBe(1_048_576);
+    expect(readRingFleetBudgetBytesFromEnv({ KOOKR_RING_FLEET_BUDGET_BYTES: '0' })).toBe(0);
+  });
+
+  test('clamps negatives to 0 and falls back for blank/non-numeric', () => {
+    expect(readRingFleetBudgetBytesFromEnv({ KOOKR_RING_FLEET_BUDGET_BYTES: '-1' })).toBe(0);
+    expect(readRingFleetBudgetBytesFromEnv({ KOOKR_RING_FLEET_BUDGET_BYTES: '  ' })).toBe(
+      DEFAULT_RING_FLEET_BUDGET_BYTES,
+    );
+    expect(readRingFleetBudgetBytesFromEnv({ KOOKR_RING_FLEET_BUDGET_BYTES: 'abc' })).toBe(
+      DEFAULT_RING_FLEET_BUDGET_BYTES,
+    );
   });
 });
 

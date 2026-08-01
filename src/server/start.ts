@@ -24,6 +24,7 @@ import { resolveListenPort } from './resolve-listen-port.js';
 import { parseSTTDevice, startSTT, type STTManager } from './stt-manager.js';
 import { DEFAULT_TTS_VOICE, parseTTSDeviceFromEnv, startTTS, type TTSManager } from './tts-manager.js';
 import { createShutdownHandler } from './shutdown.js';
+import { readRingFleetBudgetBytesFromEnv } from './config.js';
 
 const HOST = process.env.KOOKR_HOST ?? '127.0.0.1';
 const STT_ENABLED = process.env.KOOKR_STT === 'true';
@@ -191,8 +192,18 @@ async function main(): Promise<void> {
   }
 
   const dtachBinary = resolveDtachBinaryOrExit();
-  const terminalBackend = new LocalDtachBackend({ instanceId: INSTANCE_ID, dtachBinary });
-  console.log(`[terminal] backend=dtach instanceId=${INSTANCE_ID} dtach=${dtachBinary}`);
+  // Fleet ring budget (issue #1779): caps sum of live ring capacities and
+  // shrinks least-recently-active rings under pressure. `0` disables.
+  const ringFleetBudgetBytes = readRingFleetBudgetBytesFromEnv();
+  const terminalBackend = new LocalDtachBackend({
+    instanceId: INSTANCE_ID,
+    dtachBinary,
+    ringFleetBudgetBytes,
+  });
+  console.log(
+    `[terminal] backend=dtach instanceId=${INSTANCE_ID} dtach=${dtachBinary}`
+    + ` ringFleetBudgetBytes=${ringFleetBudgetBytes}`,
+  );
 
   const lifecycleAc = new AbortController();
 

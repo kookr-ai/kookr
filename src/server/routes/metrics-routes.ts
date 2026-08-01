@@ -9,6 +9,7 @@ import {
 import {
   PROMETHEUS_CONTENT_TYPE,
   renderPrometheusExposition,
+  type RingFleetBudgetMetricsSnapshot,
   type TerminalWriteMetricsSnapshot,
 } from '../prometheus-exposition.js';
 import { taskSaveMetrics } from '../../core/task-save-metrics.js';
@@ -45,6 +46,7 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
       // Always-on process-wide ring (issue #1777) — no env flag.
       // Tests may inject deps.taskSaveMetrics to isolate parallel suites.
       taskSave: (deps.taskSaveMetrics ?? taskSaveMetrics).snapshot(),
+      ringFleetBudget: collectRingFleetBudgetMetrics(deps),
       ...(nonCriticalTimerPause
         ? {
             nonCriticalTimerPause: {
@@ -83,6 +85,21 @@ export function collectTerminalWriteMetrics(deps: Pick<
     writeTimeoutCount: backend?.writeTimeoutCount ?? 0,
     pendingWrites: coordinator?.pendingWrites ?? 0,
     maxPendingWrites: coordinator?.maxPendingWrites ?? 0,
+  };
+}
+
+/** Assemble fleet ring budget pressure gauges (issue #1779). Always-on zeros. */
+export function collectRingFleetBudgetMetrics(deps: Pick<
+  RouteDeps,
+  'terminalBackend'
+>): RingFleetBudgetMetricsSnapshot {
+  const backend = deps.terminalBackend?.getStats();
+  return {
+    ringFleetBytes: backend?.ringFleetBytes ?? 0,
+    ringFleetBudgetBytes: backend?.ringFleetBudgetBytes ?? 0,
+    ringFleetOverBudgetBytes: backend?.ringFleetOverBudgetBytes ?? 0,
+    ringShrunkenSessions: backend?.ringShrunkenSessions ?? 0,
+    ringShrinkCount: backend?.ringShrinkCount ?? 0,
   };
 }
 

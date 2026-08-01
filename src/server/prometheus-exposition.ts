@@ -29,6 +29,15 @@ export interface TerminalWriteMetricsSnapshot {
   maxPendingWrites: number;
 }
 
+/** Fleet-wide ring buffer memory budget gauges (issue #1779). */
+export interface RingFleetBudgetMetricsSnapshot {
+  ringFleetBytes: number;
+  ringFleetBudgetBytes: number;
+  ringFleetOverBudgetBytes: number;
+  ringShrunkenSessions: number;
+  ringShrinkCount: number;
+}
+
 /** Non-critical timer pause gauges/counters (issue #1785). */
 export interface NonCriticalTimerPauseMetricsSnapshot {
   paused: boolean;
@@ -59,6 +68,8 @@ export interface PrometheusExpositionSnapshot {
   nonCriticalTimerPause?: NonCriticalTimerPauseMetricsSnapshot;
   /** Non-critical full-snapshot rebuilds skipped under loop saturation (#1775). */
   snapshotShed?: SnapshotShedMetricsExposition;
+  /** Fleet ring buffer budget pressure (issue #1779) — always-on zeros. */
+  ringFleetBudget?: RingFleetBudgetMetricsSnapshot;
 }
 
 export interface AuditSinkMetricsSnapshot {
@@ -82,6 +93,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendTaskSaveMetrics(lines, snapshot.taskSave ?? emptyTaskSaveMetricsSnapshot());
   appendNonCriticalTimerPauseMetrics(lines, snapshot.nonCriticalTimerPause);
   appendSnapshotShedMetrics(lines, snapshot.snapshotShed);
+  appendRingFleetBudgetMetrics(lines, snapshot.ringFleetBudget);
 
   return `${lines.join('\n')}\n`;
 }
@@ -281,6 +293,14 @@ const EMPTY_TERMINAL_WRITE: TerminalWriteMetricsSnapshot = {
   maxPendingWrites: 0,
 };
 
+const EMPTY_RING_FLEET_BUDGET: RingFleetBudgetMetricsSnapshot = {
+  ringFleetBytes: 0,
+  ringFleetBudgetBytes: 0,
+  ringFleetOverBudgetBytes: 0,
+  ringShrunkenSessions: 0,
+  ringShrinkCount: 0,
+};
+
 function appendTerminalWriteMetrics(
   lines: string[],
   snapshot: TerminalWriteMetricsSnapshot = EMPTY_TERMINAL_WRITE,
@@ -301,6 +321,29 @@ function appendTerminalWriteMetrics(
     '# HELP kookr_terminal_write_max_pending_writes High-water mark of coordinator pendingWrites since process start.',
     '# TYPE kookr_terminal_write_max_pending_writes gauge',
     metricLine('kookr_terminal_write_max_pending_writes', {}, snapshot.maxPendingWrites),
+  );
+}
+
+function appendRingFleetBudgetMetrics(
+  lines: string[],
+  snapshot: RingFleetBudgetMetricsSnapshot = EMPTY_RING_FLEET_BUDGET,
+): void {
+  lines.push(
+    '# HELP kookr_ring_fleet_bytes Sum of live session ring buffer capacities in bytes.',
+    '# TYPE kookr_ring_fleet_bytes gauge',
+    metricLine('kookr_ring_fleet_bytes', {}, snapshot.ringFleetBytes),
+    '# HELP kookr_ring_fleet_budget_bytes Configured fleet ring capacity budget (0 = unlimited).',
+    '# TYPE kookr_ring_fleet_budget_bytes gauge',
+    metricLine('kookr_ring_fleet_budget_bytes', {}, snapshot.ringFleetBudgetBytes),
+    '# HELP kookr_ring_fleet_over_budget_bytes Bytes of ring capacity above the fleet budget after shrink.',
+    '# TYPE kookr_ring_fleet_over_budget_bytes gauge',
+    metricLine('kookr_ring_fleet_over_budget_bytes', {}, snapshot.ringFleetOverBudgetBytes),
+    '# HELP kookr_ring_shrunken_sessions Sessions currently holding a sub-full ring capacity.',
+    '# TYPE kookr_ring_shrunken_sessions gauge',
+    metricLine('kookr_ring_shrunken_sessions', {}, snapshot.ringShrunkenSessions),
+    '# HELP kookr_ring_shrink_events_total Cumulative ring shrink events under fleet budget pressure.',
+    '# TYPE kookr_ring_shrink_events_total counter',
+    metricLine('kookr_ring_shrink_events_total', {}, snapshot.ringShrinkCount),
   );
 }
 

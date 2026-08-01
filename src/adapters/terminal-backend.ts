@@ -91,6 +91,21 @@ export interface BackendStats {
   writeTimeoutCount: number;
   lastError: BackendError | null;
   errorCount: number;
+  /**
+   * Fleet-wide ring buffer memory budget (issue #1779). Optional so mocks
+   * and non-dtach backends stay valid; production LocalDtachBackend always
+   * populates these without a secret env flag.
+   */
+  /** Sum of live session ring capacities in bytes. */
+  ringFleetBytes?: number;
+  /** Configured fleet budget (`0` = enforcement disabled). */
+  ringFleetBudgetBytes?: number;
+  /** Bytes over budget after the last enforce pass (`0` when under or disabled). */
+  ringFleetOverBudgetBytes?: number;
+  /** Sessions currently holding a shrunken (sub-full) ring. */
+  ringShrunkenSessions?: number;
+  /** Cumulative shrink events since process start. */
+  ringShrinkCount?: number;
 }
 
 /**

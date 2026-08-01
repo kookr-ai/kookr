@@ -47,6 +47,16 @@ export interface LocalDtachStreamHost {
    * `pendingWriters` changes (issue #1776 high-water tracking).
    */
   observeWriteQueueDepth(): void;
+  /**
+   * Called after a ring is created or otherwise changes fleet capacity so
+   * the host can enforce `KOOKR_RING_FLEET_BUDGET_BYTES` (issue #1779).
+   */
+  onRingStateChanged(): void;
+  /**
+   * Try to restore a shrunken ring to full capacity when the fleet has room
+   * (issue #1779). Returns true when the buffer grew.
+   */
+  tryExpandRing(sess: AttachedSession): boolean;
 }
 
 export class LocalDtachStream {
@@ -318,6 +328,8 @@ export class LocalDtachStream {
     // malformed — a fresh ring is strictly better than a crash here.
     this.host.ringStore.load(sess);
     this.host.attached.set(id, sess);
+    // New full-size ring may push the fleet over budget — reclaim idle capacity.
+    this.host.onRingStateChanged();
     return sess;
   }
 
@@ -538,7 +550,12 @@ export class LocalDtachStream {
   }
 
   copyIntoRing(sess: AttachedSession, bytes: Uint8Array): void {
-    if (bytes.length > 0) sess.lastByteAt = Date.now();
+    if (bytes.length === 0) return;
+    // Active sessions under budget regain full scrollback capacity.
+    if (sess.ringBuffer.length < RING_BUFFER_BYTES) {
+      this.host.tryExpandRing(sess);
+    }
+    sess.lastByteAt = Date.now();
     this.host.ringStore.copyInto(sess, bytes);
   }
 
@@ -548,12 +565,13 @@ export class LocalDtachStream {
     // recovery windows). If no AttachedSession exists yet, open it so future
     // bytes are captured — but return empty for this call.
     const sess = this.ensureReadable(id);
-    const cap = Math.min(maxBytes, RING_BUFFER_BYTES);
+    const ringCap = sess.ringBuffer.length;
+    const cap = Math.min(maxBytes, ringCap);
     // Read the monotonic head ONCE, then copy a bounded window. Head may
     // advance during the copy; the returned snapshot is always a prefix of
     // the buffer state at the moment `head` was frozen — no torn wraparound.
     const head = sess.ringHead;
-    const available = Math.min(head, RING_BUFFER_BYTES);
+    const available = Math.min(head, ringCap);
     const size = Math.min(cap, available);
     const out = Buffer.alloc(size);
     this.copyFromRing(sess, head, size, out);
