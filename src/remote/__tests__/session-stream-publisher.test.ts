@@ -1,5 +1,5 @@
 import { once } from 'node:events';
-import { createDecipheriv, generateKeyPairSync, privateDecrypt } from 'node:crypto';
+import { generateKeyPairSync } from 'node:crypto';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,9 +13,10 @@ import {
   DROP_WARN_MIN_INTERVAL_MS,
 } from '../session-stream-publisher.js';
 import { asNodeEpoch, asNodeId, asPolicyVersion, asSessionEpoch, asSessionId } from '../ids.js';
-import type { TerminalBytesPayload, TerminalPublicationMetadata, TerminalStreamEvent } from '../stream-events.js';
+import type { TerminalStreamEvent } from '../stream-events.js';
 import { createRemoteNodeClient } from '../node-client.js';
 import { createRelayServer } from '../../../relay/server.js';
+import { decryptContactTerminalPayload } from '../terminal-frame-crypto.js';
 
 function makeRemoteClient(
   events: TerminalStreamEvent[] = [],
@@ -377,9 +378,21 @@ describe('SessionStreamPublisher', () => {
       alg: 'RSA-OAEP-SHA256+A256GCM',
     }));
     const aad = `${event.nodeId}:${event.sessionId}:${event.sessionEpoch}:${event.seq}`;
-    expect(decryptContactTerminalPayload(event.payload, event.publication?.streamEncryption, recipientPrivateKey, aad).toString('utf8'))
-      .toBe('CONTACT_SECRET_OUTPUT');
-    expect(() => decryptContactTerminalPayload(event.payload, event.publication?.streamEncryption, wrongPrivateKey, aad)).toThrow();
+    const streamEncryption = event.publication?.streamEncryption;
+    expect(streamEncryption?.kind).toBe('contact-e2ee');
+    if (!streamEncryption || streamEncryption.kind !== 'contact-e2ee') {
+      throw new Error('expected contact-e2ee stream encryption');
+    }
+    expect(decryptContactTerminalPayload(event.payload, {
+      recipientPrivateKey,
+      streamEncryption,
+      aad,
+    }).toString('utf8')).toBe('CONTACT_SECRET_OUTPUT');
+    expect(() => decryptContactTerminalPayload(event.payload, {
+      recipientPrivateKey: wrongPrivateKey,
+      streamEncryption,
+      aad,
+    })).toThrow();
     publisher.stop();
   });
 });
@@ -397,23 +410,4 @@ async function waitFor(predicate: () => boolean): Promise<void> {
       }
     }, 10);
   });
-}
-
-function decryptContactTerminalPayload(
-  payload: TerminalBytesPayload,
-  streamEncryption: TerminalPublicationMetadata['streamEncryption'],
-  recipientPrivateKey: string,
-  aad?: string,
-): Buffer {
-  if (!streamEncryption || streamEncryption.kind !== 'contact-e2ee') {
-    throw new Error('contact terminal frame encryption metadata required');
-  }
-  const key = privateDecrypt(
-    { key: recipientPrivateKey, oaepHash: 'sha256' },
-    Buffer.from(streamEncryption.wrappedKey, 'base64'),
-  );
-  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(streamEncryption.iv, 'base64'));
-  if (aad) decipher.setAAD(Buffer.from(aad, 'utf8'));
-  decipher.setAuthTag(Buffer.from(streamEncryption.tag, 'base64'));
-  return Buffer.concat([decipher.update(Buffer.from(payload.data, 'base64')), decipher.final()]);
 }
