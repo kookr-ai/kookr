@@ -6,6 +6,7 @@ import type {
   CoordinatorSnapshotState,
   CoordinatorTaskChip,
 } from '../../shared/contracts/coordinator.js';
+import { markPriorTasksDone, suppressCoordinatorChip } from '../api/index.js';
 import { useKookrStore } from '../store/useStore.js';
 
 const GLYPHS: Record<string, string> = {
@@ -40,14 +41,10 @@ export function CoordinatorTaskChipView({
     if (busy) return;
     setBusy(true);
     try {
-      await fetch(scope === 'task' ? '/api/coordinator/acknowledgements' : '/api/coordinator/suppressions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          taskId: agent.taskId,
-          detectorId: chip.detectorId,
-          agentType: chip.agentType,
-        }),
+      await suppressCoordinatorChip(scope, {
+        taskId: agent.taskId,
+        detectorId: chip.detectorId,
+        agentType: chip.agentType,
       });
     } finally {
       setBusy(false);
@@ -152,17 +149,12 @@ export function CoordinatorChainStripView({
     if (!agent.taskId || chain.priorTaskIds.length === 0) return;
     setStatus('Checking...');
     try {
-      const res = await fetch('/api/coordinator/mark-prior-done', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          taskId: agent.taskId,
-          priorTaskIds: chain.priorTaskIds,
-          concurrencyToken: chain.concurrencyToken,
-        }),
+      const { ok, body } = await markPriorTasksDone({
+        taskId: agent.taskId,
+        priorTaskIds: chain.priorTaskIds,
+        concurrencyToken: chain.concurrencyToken,
       });
-      const body = await res.json() as { error?: string };
-      setStatus(res.ok ? 'Marked prior tasks done' : body.error ?? 'Coordinator check failed');
+      setStatus(ok ? 'Marked prior tasks done' : body.error ?? 'Coordinator check failed');
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
     }

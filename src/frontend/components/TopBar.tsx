@@ -7,9 +7,6 @@ import {
   TOOLKIT_MARKETPLACE_SLUG,
   marketplaceNameFromPluginId,
   pluginUpdateCommands,
-  type PluginUpdateError,
-  type PluginUpdateResult,
-  type PluginVersionStatus,
 } from '../../shared/contracts/plugin-version.js';
 import {
   commandPaletteHint,
@@ -17,6 +14,13 @@ import {
   getDefaultShortcutBindings,
   type ShortcutBindingMap,
 } from '../../shared/contracts/shortcut-bindings.js';
+import {
+  getDeployStatus,
+  triggerDeploy as requestDeploy,
+  refreshToolkitLinks as requestToolkitRefresh,
+  updateToolkitPlugin as requestPluginUpdate,
+  type DeployStatus,
+} from '../api/index.js';
 
 interface Props {
   findings: number;
@@ -45,30 +49,6 @@ interface Props {
   scheduleHintActive?: boolean;
   /** Resolved platform/user bindings for FollowPill and related hints. */
   shortcutBindings?: ShortcutBindingMap;
-}
-
-interface DeployStatus {
-  configured: boolean;
-  available?: boolean;
-  deploying?: boolean;
-  toolkit?: ToolkitStatus;
-  toolkitError?: string;
-  plugin?: PluginVersionStatus;
-  currentShort?: string;
-  latestShort?: string;
-  behindCount?: number;
-  commits?: { hash: string; subject: string }[];
-  error?: string;
-  /** Port this dashboard's backend is bound to. Undefined when talking to a pre-update backend. */
-  runningPort?: number;
-  /** Port the deploy button targets (the production instance). */
-  prodPort?: number;
-}
-
-interface ToolkitStatus {
-  stale: boolean;
-  checkedCount: number;
-  staleCount: number;
 }
 
 function timeAgo(isoString: string): string {
@@ -134,9 +114,8 @@ export function TopBar({
   const checkDeployStatus = useCallback(async () => {
     setDeployLoading(true);
     try {
-      const res = await fetch('/api/deploy/status');
-      const data: DeployStatus = await res.json();
-      if (res.ok) {
+      const { ok, body: data } = await getDeployStatus();
+      if (ok) {
         setDeployStatus(data);
         if (data.deploying) setDeploying(true);
       } else {
@@ -179,11 +158,10 @@ export function TopBar({
     preDeployCommitRef.current = buildInfo?.commitShort ?? null;
     setDeploying(true);
     try {
-      const res = await fetch('/api/deploy/trigger', { method: 'POST' });
-      if (!res.ok) {
-        const data = await res.json();
+      const { ok, body: data } = await requestDeploy();
+      if (!ok) {
         setDeploying(false);
-        setDeployStatus((prev) => prev ? { ...prev, error: data.error ?? 'Deploy failed' } : null);
+        setDeployStatus((prev) => prev ? { ...prev, error: data?.error ?? 'Deploy failed' } : null);
       }
     } catch {
       // Connection may drop during deploy — that's expected
@@ -193,15 +171,14 @@ export function TopBar({
   async function refreshToolkitLinks() {
     setToolkitRefreshing(true);
     try {
-      const res = await fetch('/api/deploy/toolkit-refresh', { method: 'POST' });
-      const data = await res.json();
-      if (res.ok) {
-        setDeployStatus((prev) => prev ? { ...prev, toolkit: data.toolkit } : prev);
+      const { ok, body: data } = await requestToolkitRefresh();
+      if (ok) {
+        setDeployStatus((prev) => prev ? { ...prev, toolkit: data?.toolkit } : prev);
       } else {
-        setDeployStatus((prev) => prev ? { ...prev, ...data, error: data.error ?? 'Toolkit refresh failed' } : {
+        setDeployStatus((prev) => prev ? { ...prev, ...data, error: data?.error ?? 'Toolkit refresh failed' } : {
           configured: false,
           ...data,
-          error: data.error ?? 'Toolkit refresh failed',
+          error: data?.error ?? 'Toolkit refresh failed',
         });
       }
     } catch {
@@ -219,14 +196,13 @@ export function TopBar({
     setPluginUpdateMessage(null);
     setPluginUpdateError(null);
     try {
-      const res = await fetch('/api/deploy/plugin-update', { method: 'POST' });
-      const data = (await res.json()) as PluginUpdateResult | PluginUpdateError;
-      if (res.ok) {
-        setDeployStatus((prev) => prev ? { ...prev, plugin: data.plugin } : prev);
+      const { ok, body: data } = await requestPluginUpdate();
+      if (ok) {
+        setDeployStatus((prev) => prev ? { ...prev, plugin: data?.plugin } : prev);
         setPluginUpdateMessage('Toolkit plugin updated. Restart Claude Code sessions to load it.');
       } else {
-        if (data.plugin) setDeployStatus((prev) => prev ? { ...prev, plugin: data.plugin } : prev);
-        setPluginUpdateError(data.error ?? 'Plugin update failed');
+        if (data?.plugin) setDeployStatus((prev) => prev ? { ...prev, plugin: data.plugin } : prev);
+        setPluginUpdateError(data?.error ?? 'Plugin update failed');
       }
     } catch {
       setPluginUpdateError('Plugin update failed');

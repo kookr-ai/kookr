@@ -17,8 +17,18 @@ import type {
   ListSharedTasksApiResponse,
   SharedTask,
 } from '../../shared/contracts/contact-share.js';
-
-const SHARE_CSRF_HEADER = 'x-kookr-csrf';
+import {
+  createTaskShare,
+  decideContactShareInbox,
+  getContactShareContacts,
+  getContactShareInbox,
+  getContactShareSharedTasks,
+  getShareCsrfToken,
+  getTaskShares,
+  resolveTaskShareGrantRequest,
+  revokeTaskShare,
+  sendContactShare as sendContactShareRequest,
+} from '../api/index.js';
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const SHARE_DURATIONS = [
@@ -250,14 +260,13 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
   }
 
   async function loadShares() {
-    const res = await fetch('/api/share/task');
-    if (res.status === 409) {
+    const { ok, status, body } = await getTaskShares();
+    if (status === 409) {
       setStatus('disabled');
       setShares([]);
       return;
     }
-    if (!res.ok) throw new Error(`share-list-${res.status}`);
-    const body = await res.json() as ListTaskSharesApiResponse;
+    if (!ok || !body) throw new Error(`share-list-${status}`);
     if (typeof body.shareMaxTtlMs === 'number' && Number.isFinite(body.shareMaxTtlMs)) {
       setShareMaxTtlMs(body.shareMaxTtlMs);
       if (ttlMs > body.shareMaxTtlMs) {
@@ -270,21 +279,18 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
 
   async function loadContactShare() {
     const [contactsRes, inboxRes, sharedTasksRes] = await Promise.all([
-      fetch('/api/contact-share/contacts'),
-      fetch('/api/contact-share/inbox'),
-      fetch('/api/contact-share/shared-tasks'),
+      getContactShareContacts(),
+      getContactShareInbox(),
+      getContactShareSharedTasks(),
     ]);
     if (contactsRes.ok) {
-      const body = await contactsRes.json() as Partial<ListContactShareContactsApiResponse>;
-      setContacts(Array.isArray(body.contacts) ? body.contacts : []);
+      setContacts(Array.isArray(contactsRes.body?.contacts) ? contactsRes.body.contacts : []);
     }
     if (inboxRes.ok) {
-      const body = await inboxRes.json() as Partial<ListContactShareInboxApiResponse>;
-      setInbox(Array.isArray(body.inbox) ? body.inbox : []);
+      setInbox(Array.isArray(inboxRes.body?.inbox) ? inboxRes.body.inbox : []);
     }
     if (sharedTasksRes.ok) {
-      const body = await sharedTasksRes.json() as Partial<ListSharedTasksApiResponse>;
-      setSharedTasks(Array.isArray(body.sharedTasks) ? body.sharedTasks : []);
+      setSharedTasks(Array.isArray(sharedTasksRes.body?.sharedTasks) ? sharedTasksRes.body.sharedTasks : []);
     }
   }
 
@@ -308,17 +314,16 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
 
     async function boot() {
       try {
-        const tokenRes = await fetch('/api/share/csrf-token');
+        const { ok, status, body: tokenBody } = await getShareCsrfToken();
         if (cancelled) return;
-        if (tokenRes.status === 409) {
+        if (status === 409) {
           setStatus('disabled');
           setCsrfToken(null);
           setShares([]);
           return;
         }
-        if (!tokenRes.ok) throw new Error(`csrf-${tokenRes.status}`);
-        const tokenBody = await tokenRes.json() as { csrfToken?: unknown; shareMaxTtlMs?: unknown };
-        if (typeof tokenBody.csrfToken !== 'string') throw new Error('csrf-missing');
+        if (!ok) throw new Error(`csrf-${status}`);
+        if (typeof tokenBody?.csrfToken !== 'string') throw new Error('csrf-missing');
         if (typeof tokenBody.shareMaxTtlMs === 'number' && Number.isFinite(tokenBody.shareMaxTtlMs)) {
           setShareMaxTtlMs(tokenBody.shareMaxTtlMs);
         }
@@ -418,31 +423,23 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch('/api/share/task', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          [SHARE_CSRF_HEADER]: csrfToken,
-        },
-        body: JSON.stringify({
-          taskId,
-          ttlMs,
-          ...(displayLabel.trim() ? { displayLabel: displayLabel.trim() } : {}),
-        }),
+      const { ok, body } = await createTaskShare(csrfToken, {
+        taskId,
+        ttlMs,
+        ...(displayLabel.trim() ? { displayLabel: displayLabel.trim() } : {}),
       });
-      if (!res.ok) {
-        const failed = await res.json().catch(() => ({})) as { error?: string };
-        throw new Error(shareCreateErrorMessage(failed.error));
+      if (!ok) {
+        throw new Error(shareCreateErrorMessage((body as { error?: string }).error));
       }
-      const body = await res.json() as CreateTaskShareApiResponse;
+      const shareBody = body as CreateTaskShareApiResponse;
       setGeneratedJoinUrl({
-        taskId: body.share.taskId,
-        invitationId: body.share.invitationId,
-        url: body.joinUrl,
-        ...(body.shareTicket ? { ticket: body.shareTicket } : {}),
+        taskId: shareBody.share.taskId,
+        invitationId: shareBody.share.invitationId,
+        url: shareBody.joinUrl,
+        ...(shareBody.shareTicket ? { ticket: shareBody.shareTicket } : {}),
       });
       setNewShareMode(false);
-      commitShares(replaceShare(sharesRef.current, body.share));
+      commitShares(replaceShare(sharesRef.current, shareBody.share));
       setStatus('ready');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Guest link was not created.');
@@ -457,19 +454,12 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch('/api/contact-share/shares', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          [SHARE_CSRF_HEADER]: csrfToken,
-        },
-        body: JSON.stringify({
-          taskId,
-          contactId: contact.contactId,
-          recipientDeviceId: device.deviceId,
-        }),
+      const { ok, status } = await sendContactShareRequest(csrfToken, {
+        taskId,
+        contactId: contact.contactId,
+        recipientDeviceId: device.deviceId,
       });
-      if (!res.ok) throw new Error(`contact-share-${res.status}`);
+      if (!ok) throw new Error(`contact-share-${status}`);
       await loadContactShare().catch(() => undefined);
     } catch {
       setError('Contact Share invitation was not sent.');
@@ -483,15 +473,8 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/contact-share/inbox/${encodeURIComponent(shareId)}/${decision}`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          [SHARE_CSRF_HEADER]: csrfToken,
-        },
-        body: JSON.stringify({ recipientDeviceId: 'local-device' }),
-      });
-      if (!res.ok) throw new Error(`contact-share-${decision}-${res.status}`);
+      const { ok, status } = await decideContactShareInbox(csrfToken, shareId, decision);
+      if (!ok) throw new Error(`contact-share-${decision}-${status}`);
       await loadContactShare();
     } catch {
       setError(decision === 'accept' ? 'Contact Share was not accepted.' : 'Contact Share was not refused.');
@@ -505,12 +488,8 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/share/task/${encodeURIComponent(invitationId)}/revoke`, {
-        method: 'POST',
-        headers: { [SHARE_CSRF_HEADER]: csrfToken },
-      });
-      if (!res.ok) throw new Error(`revoke-${res.status}`);
-      const body = await res.json() as RevokeTaskShareApiResponse;
+      const { ok, status, body } = await revokeTaskShare(csrfToken, invitationId);
+      if (!ok || !body) throw new Error(`revoke-${status}`);
       commitShares(replaceShare(sharesRef.current, body.share));
       setNewShareMode(false);
       setGeneratedJoinUrl((prev) => (
@@ -529,15 +508,13 @@ export function TaskShareModal({ taskId, taskLabel, open, onClose, onSharesChang
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(
-        `/api/share/task/${encodeURIComponent(invitationId)}/grant-requests/${encodeURIComponent(requestId)}/${decision}`,
-        {
-          method: 'POST',
-          headers: { [SHARE_CSRF_HEADER]: csrfToken },
-        },
+      const { ok, status, body } = await resolveTaskShareGrantRequest(
+        csrfToken,
+        invitationId,
+        requestId,
+        decision,
       );
-      if (!res.ok) throw new Error(`grant-request-${decision}-${res.status}`);
-      const body = await res.json() as ResolveTaskShareGrantRequestApiResponse;
+      if (!ok || !body) throw new Error(`grant-request-${decision}-${status}`);
       commitShares(replaceShare(sharesRef.current, body.share));
     } catch {
       setError(decision === 'approve'

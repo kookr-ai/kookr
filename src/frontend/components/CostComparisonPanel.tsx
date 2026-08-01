@@ -10,6 +10,7 @@ import type {
   UnboundCodexAggregate,
 } from '../../shared/contracts/cost-comparison.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
+import { getCostComparison } from '../api/index.js';
 
 /**
  * Cost Comparison panel (rfc-cost-comparison-panel.md). Renders three sections:
@@ -67,16 +68,10 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    const params = new URLSearchParams({ window: windowChoice });
-    if (agentFilter !== 'all') params.set('agent', agentFilter);
-    if (debouncedSearch) params.set('q', debouncedSearch);
-    fetch(`/api/cost-comparison?${params.toString()}`, { signal: controller.signal })
-      .then(async (r) => {
-        if (!r.ok) {
-          throw new Error(`HTTP ${r.status}`);
-        }
-        return (await r.json()) as CostComparisonResponse;
-      })
+    getCostComparison(
+      { window: windowChoice, agent: agentFilter, q: debouncedSearch },
+      controller.signal,
+    )
       .then((body) => {
         if (cancelled) return;
         setData(body);

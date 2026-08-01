@@ -5,6 +5,7 @@ import type {
   OutcomeLedgerTaskRow,
 } from '../../shared/contracts/outcome-ledger.js';
 import type { TimeWindow } from '../../shared/contracts/cost-comparison.js';
+import { getOutcomeLedger } from '../api/index.js';
 
 const WINDOWS: { value: TimeWindow; label: string }[] = [
   { value: '24h', label: '24h' },
@@ -24,10 +25,8 @@ export function OutcomeLedgerPanel(): React.ReactElement {
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    fetch(`/api/outcome-ledger?window=${windowChoice}`, { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const body = await response.json();
+    getOutcomeLedger(windowChoice, controller.signal)
+      .then((body) => {
         if (!isOutcomeLedgerResponse(body)) throw new Error('invalid outcome ledger response');
         return body;
       })

@@ -12,7 +12,8 @@ import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus
 import { computeTerminalVisible } from './detail-panel-visibility.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { TaskShareModal } from './TaskShareModal.js';
-import type { ListTaskSharesApiResponse, TaskShareSummary } from '../../shared/contracts/remote-share.js';
+import type { TaskShareSummary } from '../../shared/contracts/remote-share.js';
+import { getSettingsSnapshot, getTask, getTaskShares } from '../api/index.js';
 import { deriveTaskShareHeaderStatus } from './task-share-header-status.js';
 import { TaskDependencyEditor } from './TaskDependencyEditor.js';
 import { TaskDependencyRail } from './TaskDependencyRail.js';
@@ -25,7 +26,7 @@ import {
   type ShortcutBindingMap,
 } from '../../shared/contracts/shortcut-bindings.js';
 import { OverviewEmptyState } from './OverviewEmptyState.js';
-import type { DetailPaneMode } from '../store/store-types.js';
+import type { DetailPaneMode, RelaunchTask } from '../store/store-types.js';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
 
@@ -440,10 +441,9 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
     let cancelled = false;
     async function loadReplySnippets() {
       try {
-        const res = await fetch('/api/settings');
-        if (!res.ok) return;
-        const data = await res.json() as { replySnippets?: unknown };
-        if (!cancelled) setReplySnippets(normalizeReplySnippets(data.replySnippets));
+        const { ok, body } = await getSettingsSnapshot<{ replySnippets?: unknown }>();
+        if (!ok) return;
+        if (!cancelled) setReplySnippets(normalizeReplySnippets(body?.replySnippets));
       } catch {
         if (!cancelled) setReplySnippets([]);
       }
@@ -480,15 +480,15 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
     setShareHeaderShares((current) => current.length === 0 ? current : []);
     async function loadShareHeader() {
       try {
-        const res = await fetch('/api/share/task');
+        const { ok, status, body } = await getTaskShares();
         if (cancelled) return;
-        if (res.status === 409) {
+        if (status === 409) {
           setShareHeaderShares((current) => current.length === 0 ? current : []);
           return;
         }
-        if (!res.ok) throw new Error(`share-list-${res.status}`);
-        const body = await res.json() as ListTaskSharesApiResponse;
-        setShareHeaderShares(Array.isArray(body.shares) ? body.shares : []);
+        if (!ok) throw new Error(`share-list-${status}`);
+        const shares = body?.shares;
+        setShareHeaderShares(Array.isArray(shares) ? shares : []);
       } catch {
         if (!cancelled) setShareHeaderShares((current) => current.length === 0 ? current : []);
       }
@@ -799,9 +799,7 @@ export function DetailPanel({ agent, send, onLaunch, onRequestComplete, detailPa
       // detail (GET /api/tasks/:id) rather than the whole list. The list endpoint
       // now serves a compact projection that omits prompt bodies.
       if (!agent.taskId) return;
-      const res = await fetch(`/api/tasks/${encodeURIComponent(agent.taskId)}`);
-      if (!res.ok) return;
-      const task = await res.json();
+      const task = await getTask<RelaunchTask & { error?: unknown }>(agent.taskId);
       if (task && !task.error) {
         setRelaunchTask({ prompt: task.prompt, cwd: task.cwd, criteria: task.criteria, agentType: task.agentType });
       }

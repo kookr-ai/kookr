@@ -30,12 +30,18 @@ import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { HookInventorySection } from './HookInventorySection.js';
 import type {
   RelayConnectionStatus,
-  RelayConnectionStatusResponse,
 } from '../../shared/contracts/relay-connection.js';
 import type {
   SessionSharingRecoveryAction,
-  SessionSharingRecoveryActionResponse,
 } from '../../shared/contracts/session-sharing-recovery.js';
+import {
+  getRelayConnection,
+  getSettings,
+  getShareCsrfToken,
+  mutateRelayConnection,
+  runSessionSharingRecovery,
+  saveSettings as saveSettingsRequest,
+} from '../api/index.js';
 
 interface ServerSettings {
   githubPollingEnabled: boolean;
@@ -108,7 +114,6 @@ const FOCUS_FIELD_TAB: Record<SettingsFocusField, SettingsTab> = {
   relayConnection: 'sharing',
 };
 
-const SHARE_CSRF_HEADER = 'x-kookr-csrf';
 const SHORTCUT_PLATFORM = detectShortcutPlatform();
 const SHORTCUT_DEFAULTS = getDefaultShortcutBindings(SHORTCUT_PLATFORM);
 
@@ -186,9 +191,7 @@ function RelayConnectionSection() {
   const [recoveryResult, setRecoveryResult] = useState<string | null>(null);
 
   const loadStatus = useCallback(async () => {
-    const res = await fetch('/api/relay-connection');
-    if (!res.ok) throw new Error(`relay-status-${res.status}`);
-    const body = await res.json() as RelayConnectionStatusResponse;
+    const body = await getRelayConnection();
     setStatus(body.status);
     if (body.status.relayUrl) setRelayUrl(body.status.relayUrl);
     if (body.status.nodeId) setNodeId(body.status.nodeId);
@@ -199,10 +202,9 @@ function RelayConnectionSection() {
     let cancelled = false;
     async function boot() {
       try {
-        const tokenRes = await fetch('/api/share/csrf-token');
-        if (!tokenRes.ok) throw new Error(`csrf-${tokenRes.status}`);
-        const tokenBody = await tokenRes.json() as { csrfToken?: unknown };
-        if (!cancelled && typeof tokenBody.csrfToken === 'string') setCsrfToken(tokenBody.csrfToken);
+        const { ok, status, body: tokenBody } = await getShareCsrfToken();
+        if (!ok) throw new Error(`csrf-${status}`);
+        if (!cancelled && typeof tokenBody?.csrfToken === 'string') setCsrfToken(tokenBody.csrfToken);
         await loadStatus();
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Relay status unavailable');
@@ -225,16 +227,8 @@ function RelayConnectionSection() {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(path, {
-        ...init,
-        headers: {
-          'content-type': 'application/json',
-          [SHARE_CSRF_HEADER]: csrfToken,
-          ...(init.headers ?? {}),
-        },
-      });
-      const body = await res.json() as RelayConnectionStatusResponse | { error?: string };
-      if (!res.ok || !('status' in body)) throw new Error('error' in body && body.error ? body.error : `HTTP ${res.status}`);
+      const { ok, status: httpStatus, body } = await mutateRelayConnection(path, csrfToken, init);
+      if (!ok || !('status' in body)) throw new Error('error' in body && body.error ? body.error : `HTTP ${httpStatus}`);
       setStatus(body.status);
       if (body.status.relayUrl) setRelayUrl(body.status.relayUrl);
       if (body.status.nodeId) setNodeId(body.status.nodeId);
@@ -261,16 +255,8 @@ function RelayConnectionSection() {
     setError(null);
     setRecoveryResult(null);
     try {
-      const res = await fetch(`/api/session-sharing/recovery/${action}`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          [SHARE_CSRF_HEADER]: csrfToken,
-        },
-        body: JSON.stringify(body),
-      });
-      const payload = await res.json() as SessionSharingRecoveryActionResponse | { error?: string };
-      if (!res.ok || !('result' in payload)) throw new Error('error' in payload && payload.error ? payload.error : `HTTP ${res.status}`);
+      const { ok, status, body: payload } = await runSessionSharingRecovery(action, csrfToken, body);
+      if (!ok || !('result' in payload)) throw new Error('error' in payload && payload.error ? payload.error : `HTTP ${status}`);
       if (payload.result.state === 'failed' || payload.result.state === 'partial') {
         throw new Error(`${payload.result.message} ${payload.result.verification}`);
       }
@@ -590,9 +576,8 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
   }, [settings]);
 
   useEffect(() => {
-    fetch('/api/settings')
-      .then((r) => r.json())
-      .then((data: ServerSettings) => {
+    getSettings<ServerSettings>()
+      .then((data) => {
         setSettings(data);
         setWarnings(data.warnings ?? []);
         // Mirror the saved schedule into the live DND gate so quiet hours take
@@ -631,16 +616,11 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
 
     const run = async () => {
       try {
-        const res = await fetch('/api/settings', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(updated),
-        });
-        if (!res.ok) {
-          const body = await res.json() as { error?: string };
-          throw new Error(body.error || `HTTP ${res.status}`);
+        const { ok, status, body } = await saveSettingsRequest<ServerSettings & { warnings?: string[]; error?: string }>(updated);
+        if (!ok) {
+          throw new Error(body.error || `HTTP ${status}`);
         }
-        const saved = await res.json() as ServerSettings & { warnings?: string[] };
+        const saved = body;
         if (saveId !== latestSaveIdRef.current) return;
         setWarnings(saved.warnings ?? []);
         setSettings(saved);

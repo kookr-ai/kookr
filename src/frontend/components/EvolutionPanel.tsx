@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import type { EvolutionRunProjection } from '../../shared/protocol.js';
 import { EVOLUTION_TRIAL_OUTCOMES } from '../../shared/contracts/evolution.js';
+import { getEvolutionRun } from '../api/index.js';
 
 type EvolutionPanelState =
   | { status: 'loading'; data: null; error: null }
@@ -20,14 +21,7 @@ export function EvolutionPanel({ taskId }: Props) {
     setState({ status: 'loading', data: null, error: null });
 
     const load = () => {
-      fetch(`/api/tasks/${encodeURIComponent(taskId)}/evolution`, { signal: controller.signal })
-        .then(async (res) => {
-          if (!res.ok) {
-            const body = await res.json().catch(() => ({})) as { error?: string };
-            throw new Error(body.error ?? `Request failed with ${res.status}`);
-          }
-          return res.json() as Promise<EvolutionRunProjection>;
-        })
+      getEvolutionRun<EvolutionRunProjection>(taskId, controller.signal)
         .then((data) => {
           firstLoad = false;
           setState({ status: 'ready', data, error: null });

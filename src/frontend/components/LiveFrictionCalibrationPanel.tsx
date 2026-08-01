@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { formatDiagnosticIdentifier } from './diagnostics-format.js';
+import { getLiveFrictionCalibration } from '../api/index.js';
 
 interface LiveCalibrationSignal {
   kind:
@@ -72,9 +73,7 @@ export function LiveFrictionCalibrationPanel() {
     async function fetchSnapshot() {
       if (!hasLoadedRef.current) setLoading(true);
       try {
-        const res = await fetch('/api/live-friction-calibration');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const snapshot = await res.json() as LiveFrictionCalibrationSnapshot;
+        const snapshot = await getLiveFrictionCalibration<LiveFrictionCalibrationSnapshot>();
         if (!cancelled) {
           hasLoadedRef.current = true;
           setState({ snapshot, error: null });
