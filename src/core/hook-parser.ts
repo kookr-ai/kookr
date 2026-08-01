@@ -1,4 +1,6 @@
+import { performance } from 'node:perf_hooks';
 import type { AgentEvent, CodexHookCapabilities, HookEventName } from './types.js';
+import { recordHotPath } from './hot-path-sampler.js';
 
 export class HookParseError extends Error {
   constructor(message: string) {
@@ -107,7 +109,22 @@ export function extractRawHookHeader(raw: string): RawHookHeader {
   };
 }
 
+/**
+ * Parse a raw hook record, timing it into the hot-path sampler (issue #1781).
+ * Hook parse is a high-frequency contributor — JSON.parse of large payloads can
+ * be heavy. The timing (including a throw) is recorded via the `finally`, then
+ * the result/error propagates unchanged.
+ */
 export function parseHookEvent(raw: string): AgentEvent | null {
+  const startedAt = performance.now();
+  try {
+    return parseHookEventInner(raw);
+  } finally {
+    recordHotPath('hook_parse', performance.now() - startedAt);
+  }
+}
+
+function parseHookEventInner(raw: string): AgentEvent | null {
   let parsed: RawHookPayload;
   try {
     parsed = JSON.parse(raw) as RawHookPayload;

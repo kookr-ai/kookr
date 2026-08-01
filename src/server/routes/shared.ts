@@ -52,6 +52,7 @@ import type { SessionAuthConfig } from '../auth-session.js';
 import { bodyLimit } from 'hono/body-limit';
 import type { MiddlewareHandler } from 'hono';
 import type { RequestDurationMetrics } from '../request-duration-metrics.js';
+import type { HotPathSampler } from '../../core/hot-path-sampler.js';
 import type { TaskStateSaveSchedulerLike } from '../task-state-save-scheduler.js';
 import type { TerminalInputCoordinator } from '../terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from '../user-input-delivery-service.js';
@@ -500,6 +501,13 @@ export interface RouteDeps {
   requestBodyLimitBytes?: number;
   /** In-memory per-route request duration aggregation exposed through diagnostics. */
   requestDurationMetrics?: RequestDurationMetrics;
+  /**
+   * Hot-path timing sampler (issue #1781) backing GET
+   * {@link HOT_PATHS_ROUTE}. Absent ⇒ the route falls back to the process-wide
+   * singleton that instrumentation call sites write into; tests inject a
+   * dedicated instance for deterministic assertions.
+   */
+  hotPathSampler?: Pick<HotPathSampler, 'snapshot'>;
   /** Bounded in-memory notification delivery trace exposed through diagnostics. */
   deliveryTrace?: DeliveryTraceReader;
   /** Optional outbound finding-webhook notifier; exposes delivery outcome counters on `/metrics`. */

@@ -30,6 +30,7 @@ import {
 import { ReviewLogStore } from '../review-log-store.js';
 import { buildDetectorProposalReportResponseV1 } from '../detector-proposal-report.js';
 import { REQUEST_LATENCIES_ROUTE } from '../request-duration-metrics.js';
+import { HOT_PATHS_ROUTE, getHotPathSampler } from '../../core/hot-path-sampler.js';
 import { splitHookRequestBody } from '../hook-record-framing.js';
 import type { BackendStats } from '../../adapters/terminal-backend.js';
 import { probeSttHealth } from '../../adapters/circuit-breaker-stt-client.js';
@@ -545,6 +546,18 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       });
     }
     return c.json(deps.requestDurationMetrics.snapshot());
+  });
+
+  // Hot-path ranking (issue #1781): top event-loop contributors over recent
+  // windows (labeled timings around known heavy functions — snapshot rebuild,
+  // task save, VT reconstruct, hook parse). Pure in-memory aggregation of a
+  // bounded ring; never scans the filesystem or blocks the request path. No env
+  // gate — visible by default so an operator has a ranked list after a lag/OOM
+  // incident. `?topK=N` trims the per-window list.
+  app.get(HOT_PATHS_ROUTE, (c) => {
+    const sampler = deps.hotPathSampler ?? getHotPathSampler();
+    const topK = parsePositiveInt(c.req.query('topK'));
+    return c.json(sampler.snapshot(topK === undefined ? {} : { topK }));
   });
 
   app.get('/api/diagnostics/auth-throttle', (c) => c.json(getAuthThrottleSnapshot(deps.apiAuth)));

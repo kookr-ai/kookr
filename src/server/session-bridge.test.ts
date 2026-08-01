@@ -26,6 +26,7 @@ import {
   WriteTimeoutError,
 } from '../adapters/terminal-backend.js';
 import type { TerminalInputWriterPort } from '../core/ports/terminal-input-writer-port.js';
+import { getHotPathSampler, resetHotPathSamplerForTests } from '../core/hot-path-sampler.js';
 
 class FakeWs {
   public readyState = 1;
@@ -459,6 +460,7 @@ describe('SessionBridge', () => {
   });
 
   it('skips absolute-position TUI ring replay and seeds a reconstructed frame', async () => {
+    resetHotPathSamplerForTests();
     const backend = await makeReadySession('s1');
     // Dense CUP + sync frames, no ED2 — matches Grok Build ring shape.
     // Enough unique cells that VT reconstruction yields a usable seed, so we
@@ -510,6 +512,15 @@ describe('SessionBridge', () => {
     expect(binaryText.startsWith('\x1b[H\x1b[2J') || binaryText.includes('\x1b[H\x1b[2J')).toBe(true);
     expect(binaryText.includes('·')).toBe(true);
     expect(onReplay).toHaveBeenCalledWith('s1');
+
+    // Issue #1781: the VT reconstruct on this replay path is timed into the
+    // process-wide hot-path sampler under the 'vt_reconstruct' label.
+    const vtEntry = getHotPathSampler()
+      .snapshot()
+      .windows[0].paths.find((p) => p.label === 'vt_reconstruct');
+    expect(vtEntry).toBeDefined();
+    expect(vtEntry?.count).toBeGreaterThanOrEqual(1);
+    resetHotPathSamplerForTests();
   });
 
   it('falls back to reconnectTransport when reconstruction and frame snapshot are empty', async () => {

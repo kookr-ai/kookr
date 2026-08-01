@@ -10,6 +10,7 @@ import { normalizeAgentType } from './agent-types.js';
 import { UNKNOWN_PROVENANCE } from './task-provenance.js';
 import { atomicWriteFile } from './persistence-utils.js';
 import { createLogger } from './logger.js';
+import { recordHotPath } from './hot-path-sampler.js';
 import {
   isTaskRelationLifecycle,
   isTaskRelationSource,
@@ -108,6 +109,10 @@ export async function saveTasks(
     totalMs: roundDuration(finishedAt - startedAt),
   };
   maybeLogTaskSaveMetrics(metrics);
+  // Hot-path ranking (issue #1781): task-save total time is a known heavy
+  // contributor (serialize + fsync). Always recorded — cheap and independent of
+  // the env-gated metrics log above.
+  recordHotPath('task_save', metrics.totalMs);
   return metrics;
 }
 
