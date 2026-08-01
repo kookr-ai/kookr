@@ -62,6 +62,7 @@ import type { SessionHealthService } from '../session-health-service.js';
 import type { DeliveryTraceReader } from '../../core/delivery-trace.js';
 import type { TelegramTaskOutcome } from '../../shared/contracts/telegram.js';
 import type { EnvironmentBlockerRegistry } from '../../core/environment-blocker-registry.js';
+import type { LessonYieldHealthCache } from '../lesson-yield-health-cache.js';
 export type { RemoteShareDeps } from '../remote-share-deps.js';
 
 /**
@@ -387,6 +388,12 @@ export interface RouteDeps {
   snapshotShed?: {
     getSnapshotShedMetrics: () => import('../event-pipeline.js').SnapshotShedMetricsSnapshot;
   };
+  /**
+   * Lesson-yield health cache (issues #1538, #1553, #1857). Diagnostics warms
+   * it via bounded background scans; `/metrics` only calls `getCached24h()`
+   * and never scans hook logs on the scrape path.
+   */
+  lessonYieldHealth?: LessonYieldHealthCache;
   /**
    * Resource watchdog (issue #1724). `/api/health` reads only
    * `getHealthSnapshot()` — last sample, last trigger, throttle state,

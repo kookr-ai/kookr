@@ -55,6 +55,7 @@ import {
   hooksDirFromKookrDir,
   type LessonYieldSnapshot,
 } from '../../core/lesson-decision.js';
+import { LessonYieldHealthCache } from '../lesson-yield-health-cache.js';
 import { computeCiBlindDebt, type CiBlindDebt } from '../../core/ci-blind-debt.js';
 import {
   formatSafeModeDigestLine,
@@ -162,10 +163,9 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   // Issue #1585: the diagnostics request path is now cache-first too and waits
   // at most LESSON_YIELD_REQUEST_BUDGET_MS for a cold scan (never the full 30s
   // scan bound), so the endpoint can no longer hang.
-  const lessonYieldCache = new Map<
-    number,
-    { expiresAtMs: number; snapshot: LessonYieldSnapshot }
-  >();
+  // Issue #1857: same cache instance is exposed on RouteDeps so `/metrics` can
+  // render gauges from the last warm days=1 snapshot without scanning.
+  const lessonYieldCache = deps.lessonYieldHealth ?? new LessonYieldHealthCache();
   let lessonYieldRefreshNotBeforeMs = 0;
   const lessonYieldScansInFlight = new Map<number, Promise<LessonYieldSnapshot>>();
 
@@ -246,10 +246,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       hooksDirFromKookrDir(kookrDir),
       { days, signal: AbortSignal.timeout(LESSON_YIELD_SCAN_TIMEOUT_MS) },
     ).then((snapshot) => {
-      lessonYieldCache.set(days, {
-        expiresAtMs: Date.now() + LESSON_YIELD_CACHE_MS,
-        snapshot,
-      });
+      lessonYieldCache.set(days, snapshot, Date.now() + LESSON_YIELD_CACHE_MS);
       return snapshot;
     }).finally(() => {
       lessonYieldScansInFlight.delete(days);
@@ -388,7 +385,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     let lessonYieldBlock: LessonYieldSnapshot | undefined;
     if (deps.kookrDir) {
       const nowMs = Date.now();
-      const cached = lessonYieldCache.get(1);
+      const cached = lessonYieldCache.getEntry(1);
       lessonYieldBlock = cached?.snapshot;
       const cacheFresh = cached !== undefined && cached.expiresAtMs > nowMs;
       if (!cacheFresh && nowMs >= lessonYieldRefreshNotBeforeMs) {
@@ -686,7 +683,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // scan — the prior inline `await runLessonYieldScan(days)` could stall up to
     // the 30s scan bound and hung past a 10s curl cap in prod on 2026-07-26.
     const nowMs = Date.now();
-    const cached = lessonYieldCache.get(days);
+    const cached = lessonYieldCache.getEntry(days);
     if (cached && cached.expiresAtMs > nowMs) {
       return c.json(cached.snapshot);
     }

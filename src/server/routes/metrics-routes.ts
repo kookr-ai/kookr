@@ -17,6 +17,7 @@ import { buildCapacityLedger, type CapacityLedger } from '../../core/capacity-le
 import { resolveTaskAttentionSignals } from '../task-attention-signals.js';
 import { MAX_ACTIVE_TASKS } from '../config.js';
 import type { RouteDeps } from './shared.js';
+import type { LessonYieldSnapshot } from '../../core/lesson-decision.js';
 
 export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
   app.get('/metrics', (c) => {
@@ -52,6 +53,9 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
       ringFleetBudget: collectRingFleetBudgetMetrics(deps),
       // Same buildCapacityLedger path as GET /api/health (issue #1856).
       capacity: collectCapacityLedger(deps),
+      // Pure read of the last warm 24h health-cache snapshot (issue #1857).
+      // Never scans hook logs on the scrape path — cold cache omits series.
+      lessonYield: collectLessonYield(deps),
       ...(nonCriticalTimerPause
         ? {
             nonCriticalTimerPause: {
@@ -138,6 +142,18 @@ export function collectRingFleetBudgetMetrics(deps: Pick<
     ringShrunkenSessions: backend?.ringShrunkenSessions ?? 0,
     ringShrinkCount: backend?.ringShrinkCount ?? 0,
   };
+}
+
+/**
+ * Pure read of the last warm 24h lesson-yield health-cache snapshot for
+ * `/metrics` (issue #1857). Returns undefined when cold so series are omitted.
+ * Must never scan hook logs — reuse diagnostics' cache only.
+ */
+export function collectLessonYield(deps: Pick<
+  RouteDeps,
+  'lessonYieldHealth'
+>): LessonYieldSnapshot | undefined {
+  return deps.lessonYieldHealth?.getCached24h();
 }
 
 function authorizeMetricsRequest(c: Context, deps: RouteDeps): Response | undefined {
