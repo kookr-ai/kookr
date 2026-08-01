@@ -132,6 +132,10 @@ import {
 } from './operational-alert-config.js';
 import { readAdmissionControlConfigFromEnv } from './task-admission.js';
 import { readLoadShedConfigFromEnv } from './websocket-load-shed.js';
+import {
+  createNonCriticalTimerPauseGate,
+  readNonCriticalTimerPauseConfigFromEnv,
+} from './non-critical-timer-pause.js';
 import { readDashboardFanoutConfigFromEnv } from './websocket-backpressure-config.js';
 import {
   FindingEvidenceReviewQueueStore,
@@ -792,6 +796,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getAgents: () => getSnapshotAgentsForClient({ monitor }),
   });
 
+  // Issue #1785: pause non-critical background timers when event-loop delay p95
+  // is elevated. Created early so the GitHub scanner (below) and lifecycle
+  // timers can share one gate; samples are fed later via ResourceStatusService.
+  const nonCriticalTimerPauseConfig = readNonCriticalTimerPauseConfigFromEnv();
+  const nonCriticalTimerPauseGate = createNonCriticalTimerPauseGate(nonCriticalTimerPauseConfig);
+  console.log(
+    nonCriticalTimerPauseConfig.eventLoopDelayThresholdMs > 0
+      ? `[timer-pause] non-critical ticks skip when event-loop p95 > ` +
+          `${nonCriticalTimerPauseConfig.eventLoopDelayThresholdMs}ms`
+      : '[timer-pause] Non-critical timer pause disabled (set KOOKR_NON_CRITICAL_TIMER_PAUSE_EVENT_LOOP_DELAY_MS to enable)',
+  );
+
   // Forward-declared so onRepoHealthChanged can call back into the broadcast
   // function which references githubScanner.getRepoHealthSnapshot().
   let broadcastProjectSummariesRef: (() => void) | null = null;
@@ -803,6 +819,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     onRepoHealthChanged: () => {
       broadcastProjectSummariesRef?.();
     },
+    nonCriticalTickPause: nonCriticalTimerPauseGate,
   });
   realtime.setProjectSummaryGitHubDeps({
     getRepoHealthSnapshot: () => githubScanner.getRepoHealthSnapshot(),
@@ -1775,6 +1792,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     terminalBackend,
     terminalInputRttMetrics,
     sessionReaper,
+    nonCriticalTimerPause: nonCriticalTimerPauseGate,
     resourceWatchdog: resourceWatchdogService,
     deliveryTrace,
     coordinatorSuppressions,
@@ -1952,9 +1970,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     alertEvaluator: operationalAlertEvaluator,
     getCircuitBreakerSnapshots: () => circuitBreakerRegistry.getAllSnapshots(),
     intervalMs: resourceStatusIntervalMs,
-    // #1725: feed the same sampled event-loop delay p95 into the dashboard WS
-    // load-shed gate — reuses this measurement instead of a second monitor.
-    onEventLoopDelaySample: realtime.noteEventLoopDelaySample,
+    // #1725 / #1785: feed the same sampled event-loop delay p95 into the
+    // dashboard WS load-shed gate AND the non-critical timer pause gate —
+    // reuses this measurement instead of a second monitor.
+    onEventLoopDelaySample: (delayMs) => {
+      realtime.noteEventLoopDelaySample(delayMs);
+      nonCriticalTimerPauseGate.noteSample(delayMs);
+    },
   });
 
   // Periodic memory ledger (issue #1612). Opt-in (KOOKR_MEMORY_LEDGER=1) so it
@@ -2201,6 +2223,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       detectionStatsStore,
       persistenceHealth,
       timerHealth,
+      nonCriticalTickPause: nonCriticalTimerPauseGate,
       worktreeRegistry,
       worktreeRegistryRepoPath: serverCwd,
       getDashboardClientCount: () => connectionRegistry.dashboardCount(),

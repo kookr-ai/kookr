@@ -372,6 +372,15 @@ export interface RouteDeps {
    */
   sessionReaper?: Pick<import('../session-reaper.js').SessionReaperService, 'getHealthSnapshot'>;
   /**
+   * Non-critical timer pause gate (issue #1785). `/api/health` and `/metrics`
+   * read only `getSnapshot()` — in-memory pause counter + last sample; never
+   * a fresh event-loop measurement on the request path.
+   */
+  nonCriticalTimerPause?: Pick<
+    import('../non-critical-timer-pause.js').NonCriticalTimerPauseGate,
+    'getSnapshot'
+  >;
+  /**
    * Resource watchdog (issue #1724). `/api/health` reads only
    * `getHealthSnapshot()` — last sample, last trigger, throttle state,
    * spawns-in-24h — never a fresh `/proc` scan on the request path

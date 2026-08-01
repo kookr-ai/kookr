@@ -222,6 +222,16 @@ export interface TimerDeps {
    * Every sweep is wrapped so an error is logged and never crashes the server.
    */
   relayOrphanSweep?: RelayOrphanSweepScheduleConfig;
+  /**
+   * Optional event-loop pressure gate for non-critical intervals (issue #1785).
+   * When elevated, maintenance prune / relay-orphan / prod-smoke / deploy-lag
+   * ticks skip their body. Critical loops (token scan, watchdog, liveness,
+   * save, snooze, quota) are never gated. Fail-open when omitted.
+   */
+  nonCriticalTickPause?: {
+    shouldSkipTick(): boolean;
+    recordPause(timerName: string): void;
+  };
 }
 
 /** Config for the scheduled relay-orphan sweep (issue #1723). */
@@ -864,6 +874,20 @@ export const WATCHDOG_INTERVAL_MS = 5_000;
 /** Fixed cadence for snooze-expiry restore (issue #1771 timer-health). */
 export const SNOOZE_EXPIRY_INTERVAL_MS = 1_000;
 
+/**
+ * Helper for issue #1785: if the optional non-critical pause gate is elevated,
+ * record a pause metric and return true so the interval body is skipped.
+ * Fail-open when the gate is not wired.
+ */
+export function shouldSkipNonCriticalLifecycleTick(
+  gate: TimerDeps['nonCriticalTickPause'] | undefined,
+  timerName: string,
+): boolean {
+  if (!gate?.shouldSkipTick()) return false;
+  gate.recordPause(timerName);
+  return true;
+}
+
 export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   const {
     monitor, taskStore, queue, adapter, tokenTracker, watchdog,
@@ -871,6 +895,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     saveIntervalMs, livenessIntervalMs, broadcastToAll,
     shadowRegistry,
     timerHealth,
+    nonCriticalTickPause,
   } = deps;
 
   // issue #1526 Phase A: one throttle per server instance, shared across
@@ -1410,6 +1435,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     );
     timerHealth?.register('maintenancePrune', intervalMs);
     maintenancePruneInterval = setInterval(() => {
+      if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'maintenancePrune')) return;
       timerHealth?.recordFire('maintenancePrune', intervalMs);
       void runScheduledMaintenancePrune(maintenancePrune);
     }, intervalMs);
@@ -1428,6 +1454,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     );
     timerHealth?.register('relayOrphanSweep', intervalMs);
     relayOrphanSweepInterval = setInterval(() => {
+      if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'relayOrphanSweep')) return;
       timerHealth?.recordFire('relayOrphanSweep', intervalMs);
       void runScheduledRelayOrphanSweep(relayOrphanSweep);
     }, intervalMs);
@@ -1449,6 +1476,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     );
     timerHealth?.register('prodSmokeTick', intervalMs);
     prodSmokeTickInterval = setInterval(() => {
+      if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'prodSmokeTick')) return;
       timerHealth?.recordFire('prodSmokeTick', intervalMs);
       void prodSmokeTick.maybeRun();
     }, intervalMs);
@@ -1470,6 +1498,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     );
     timerHealth?.register('deployLagDetector', intervalMs);
     deployLagDetectorInterval = setInterval(() => {
+      if (shouldSkipNonCriticalLifecycleTick(nonCriticalTickPause, 'deployLagDetector')) return;
       timerHealth?.recordFire('deployLagDetector', intervalMs);
       void deployLagDetector.maybeRun();
     }, intervalMs);

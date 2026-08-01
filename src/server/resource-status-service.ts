@@ -29,12 +29,13 @@ export interface ResourceStatusServiceDeps {
   /** Optional provider for dependency breaker snapshots sampled with each resource tick. */
   getCircuitBreakerSnapshots?: () => CircuitBreakerSnapshot[];
   /**
-   * Fed the freshly sampled `server.eventLoopDelayP95Ms` on every tick (#1725).
-   * This is the SAME sampler that already powers the #1590 admission guard —
-   * wiring it here lets the dashboard WS load-shed gate reuse the measurement
-   * rather than standing up a second `monitorEventLoopDelay`. Called even when
-   * the sample is `null` (sampler unavailable) so a consumer's own streak
-   * logic sees every tick.
+   * Fed the freshly sampled `server.eventLoopDelayP95Ms` on every tick (#1725,
+   * #1785). This is the SAME sampler that already powers the #1590 admission
+   * guard — wiring it here lets the dashboard WS load-shed gate and the
+   * non-critical timer pause gate reuse the measurement rather than standing
+   * up a second `monitorEventLoopDelay`. Called even when the sample is
+   * `null` (sampler unavailable) so a consumer's own streak logic sees every
+   * tick.
    */
   onEventLoopDelaySample?: (delayMs: number | null) => void;
   intervalMs?: number;

@@ -939,4 +939,87 @@ describe('GitHubScannerService', () => {
       );
     });
   });
+
+  describe('non-critical tick pause (issue #1785)', () => {
+    it('skips the next state-fetch tick when the pause gate is elevated and resumes when cleared', async () => {
+      const fetcher = createMockFetcher(true);
+      stateStore.addReference({
+        type: 'pr', owner: 'acme', repo: 'app', number: 1,
+        url: 'https://github.com/acme/app/pull/1',
+        taskId: 'task-1', detectedAt: new Date(), detectedFrom: 'agent-1',
+      });
+      let elevated = true;
+      const recordPause = vi.fn();
+      scanner = new GitHubScannerService({
+        taskStore, stateStore,
+        fetcher,
+        config: { ...DEFAULT_GITHUB_SCANNER_CONFIG, stateFetchIntervalMs: 1000 },
+        onChanges,
+        nonCriticalTickPause: {
+          shouldSkipTick: () => elevated,
+          recordPause,
+        },
+      });
+      await scanner.start();
+
+      (fetcher.fetchPRState as ReturnType<typeof vi.fn>).mockClear();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetcher.fetchPRState).not.toHaveBeenCalled();
+      expect(recordPause).toHaveBeenCalledWith('github-state-fetch');
+
+      elevated = false;
+      recordPause.mockClear();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetcher.fetchPRState).toHaveBeenCalledTimes(1);
+      expect(recordPause).not.toHaveBeenCalled();
+    });
+
+    it('skips the next repo-health tick when the pause gate is elevated', async () => {
+      const fetcher = createMockFetcher(true);
+      const repoHealthFetcher = vi.fn().mockResolvedValue(new Map());
+      let elevated = true;
+      const recordPause = vi.fn();
+      scanner = new GitHubScannerService({
+        taskStore, stateStore,
+        fetcher,
+        config: DEFAULT_GITHUB_SCANNER_CONFIG,
+        onChanges,
+        repoHealthFetcher,
+        nonCriticalTickPause: {
+          shouldSkipTick: () => elevated,
+          recordPause,
+        },
+      });
+      await scanner.start();
+      // start() kicks an immediate repo-health tick (also gated).
+      expect(recordPause).toHaveBeenCalledWith('github-repo-health');
+      expect(repoHealthFetcher).not.toHaveBeenCalled();
+
+      recordPause.mockClear();
+      // Push a tracked repo so a later tick would have work to do — the kick is
+      // also gated while elevated.
+      scanner.setTrackedGithubRepos(['github.com/acme/app']);
+      expect(recordPause).toHaveBeenCalledWith('github-repo-health');
+      expect(repoHealthFetcher).not.toHaveBeenCalled();
+    });
+
+    it('fails open when the pause gate is not wired (idle path unchanged)', async () => {
+      const fetcher = createMockFetcher(true);
+      stateStore.addReference({
+        type: 'pr', owner: 'acme', repo: 'app', number: 1,
+        url: 'https://github.com/acme/app/pull/1',
+        taskId: 'task-1', detectedAt: new Date(), detectedFrom: 'agent-1',
+      });
+      scanner = new GitHubScannerService({
+        taskStore, stateStore,
+        fetcher,
+        config: { ...DEFAULT_GITHUB_SCANNER_CONFIG, stateFetchIntervalMs: 1000 },
+        onChanges,
+      });
+      await scanner.start();
+      (fetcher.fetchPRState as ReturnType<typeof vi.fn>).mockClear();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetcher.fetchPRState).toHaveBeenCalledTimes(1);
+    });
+  });
 });

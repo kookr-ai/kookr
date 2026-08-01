@@ -288,6 +288,16 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // prod).
     const sessionReaperBlock = deps.sessionReaper?.getHealthSnapshot();
 
+    // Non-critical timer pause (issue #1785): always-visible pause metric +
+    // latest sample / threshold. Cheap in-memory read only.
+    const nonCriticalTimerPauseBlock = deps.nonCriticalTimerPause?.getSnapshot() ?? {
+      schemaVersion: 'non-critical-timer-pause.v1' as const,
+      paused: false,
+      thresholdMs: 0,
+      lastEventLoopDelayP95Ms: null,
+      pausedTicksTotal: 0,
+    };
+
     // Resource watchdog (issue #1724): last sample / trigger / throttle /
     // spawns-in-24h from the service's in-memory snapshot only — never a
     // fresh `/proc` or process-table scan on this request path (#1553).
@@ -423,6 +433,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(terminalBackendBlock ? { terminalBackend: terminalBackendBlock } : {}),
       terminalWrite: terminalWriteBlock,
       ...(sessionReaperBlock ? { sessionReaper: sessionReaperBlock } : {}),
+      nonCriticalTimerPause: nonCriticalTimerPauseBlock,
       ...(resourceWatchdogBlock ? { resourceWatchdog: resourceWatchdogBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),

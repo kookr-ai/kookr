@@ -1528,6 +1528,37 @@ describe('startLifecycleTimers maintenance prune scheduling', () => {
     }
   });
 
+  test('skips the next maintenance prune tick when nonCriticalTickPause is elevated (issue #1785)', async () => {
+    vi.useFakeTimers();
+    const run = vi.fn(async () => ({
+      dataDir: '/tmp/data', dryRun: false, maxAgeDays: 30,
+      planned: [], removed: [], reclaimedBytes: 0, preserved: [], warnings: [],
+    }));
+    let elevated = true;
+    const recordPause = vi.fn();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const handles = startLifecycleTimers(baseTimerDeps({
+      maintenancePrune: { dataDir: '/tmp/data', intervalHours: 0.0005 /* 1.8s */, run },
+      nonCriticalTickPause: {
+        shouldSkipTick: () => elevated,
+        recordPause,
+      },
+    }) as any);
+    try {
+      await vi.advanceTimersByTimeAsync(1_900);
+      expect(run).not.toHaveBeenCalled();
+      expect(recordPause).toHaveBeenCalledWith('maintenancePrune');
+
+      elevated = false;
+      recordPause.mockClear();
+      await vi.advanceTimersByTimeAsync(1_900);
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(recordPause).not.toHaveBeenCalled();
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
   // --- Hourly prod smoke tick wiring (issue #1593) ---
   function stubSmokeTick() {
     return {

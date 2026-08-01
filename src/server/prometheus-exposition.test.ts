@@ -304,6 +304,36 @@ describe('renderPrometheusExposition', () => {
     expect(output).toContain('kookr_task_save_duration_seconds{phase="serialize",quantile="0.95"} 0');
   });
 
+  test('renders non-critical timer pause gauges and pause counter (issue #1785)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      nonCriticalTimerPause: {
+        paused: true,
+        thresholdMs: 1_500,
+        lastEventLoopDelayP95Ms: 2_400,
+        pausedTicksTotal: 7,
+      },
+    });
+
+    expect(output).toContain('# TYPE kookr_non_critical_timer_pause_active gauge');
+    expect(output).toContain('kookr_non_critical_timer_pause_active 1');
+    expect(output).toContain('kookr_non_critical_timer_pause_threshold_ms 1500');
+    expect(output).toContain('kookr_non_critical_timer_pause_last_event_loop_delay_p95_ms 2400');
+    expect(output).toContain('# TYPE kookr_non_critical_timer_pauses_total counter');
+    expect(output).toContain('kookr_non_critical_timer_pauses_total 7');
+  });
+
+  test('renders non-critical timer pause zeros when omitted (always-visible defaults)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+    });
+    expect(output).toContain('kookr_non_critical_timer_pause_active 0');
+    expect(output).toContain('kookr_non_critical_timer_pauses_total 0');
+    expect(output).toContain('kookr_non_critical_timer_pause_last_event_loop_delay_p95_ms -1');
+  });
+
   test('renders aggregate auth throttle counters without source labels', () => {
     const output = renderPrometheusExposition({
       requestDurations: EMPTY_REQUEST_DURATIONS,
