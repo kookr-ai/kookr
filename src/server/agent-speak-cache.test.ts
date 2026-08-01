@@ -1,5 +1,6 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AgentSpeakCache, computeCacheKey } from './agent-speak-cache.js';
+import { CircuitBreaker } from '../core/circuit-breaker.js';
 import type { AgentSpeakContext } from '../shared/contracts/speech.js';
 
 const fakeContext: AgentSpeakContext = {
@@ -241,5 +242,53 @@ describe('AgentSpeakCache.get', () => {
     expect(stored!.context.taskName).toBe('Refactor auth');
     expect(stored!.resolvedMode).toBe('finding');
     expect(stored!.verbosity).toBe('brief');
+  });
+
+  test('open TTS breaker fails fresh synthesis fast but still serves cache hits', async () => {
+    const breaker = new CircuitBreaker({
+      name: 'tts',
+      failureThreshold: 1,
+      failureWindowMs: 60_000,
+      resetTimeoutMs: 60_000,
+    });
+    const cache = new AgentSpeakCache({
+      llmClient: null,
+      ttsUrl: 'http://tts',
+      voice: 'matilda',
+      ttsBreaker: breaker,
+    });
+    const key = {
+      agentId: 'a1',
+      resolvedMode: 'activity' as const,
+      verbosity: 'brief' as const,
+      lastEventSeq: 1,
+      anomalyDetectedAt: null,
+    };
+
+    const first = await cache.get(key, fakeContext);
+    expect(first.cached).toBe(false);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+
+    // Trip the breaker with a direct failure so subsequent synthesize is shed.
+    breaker.recordFailure();
+    expect(breaker.getState()).toBe('open');
+
+    const fetchAfterOpen = globalThis.fetch as ReturnType<typeof vi.fn>;
+    fetchAfterOpen.mockClear();
+
+    // Same key: cache hit still returns audio without calling TTS.
+    const hit = await cache.get(key, fakeContext);
+    expect(hit.cached).toBe(true);
+    expect(hit.result.audioBase64).toBe(first.result.audioBase64);
+    expect(fetchAfterOpen).not.toHaveBeenCalled();
+
+    // Fresh key: miss path fails fast with degraded TTS error and no fetch.
+    await expect(
+      cache.get({ ...key, lastEventSeq: 2 }, fakeContext),
+    ).rejects.toMatchObject({
+      name: 'TTSClientError',
+      message: expect.stringContaining('circuit breaker open'),
+    });
+    expect(fetchAfterOpen).not.toHaveBeenCalled();
   });
 });

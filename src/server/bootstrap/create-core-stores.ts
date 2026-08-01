@@ -64,6 +64,10 @@ export interface CoreStores {
   githubBreaker: CircuitBreaker;
   hookWatcherBreaker: CircuitBreaker;
   permissionAlertBreaker: CircuitBreaker;
+  /** Speech STT health-probe breaker (issue #1772). */
+  sttBreaker: CircuitBreaker;
+  /** Speech TTS synthesize breaker (issue #1772). */
+  ttsBreaker: CircuitBreaker;
   taskStore: TaskStore;
   worktreeRegistry: WorktreeRegistry;
   queue: AttentionQueue;
@@ -125,10 +129,16 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
   const githubBreaker = new CircuitBreaker({ name: 'github', failureThreshold: 5, failureWindowMs: 60_000, resetTimeoutMs: 60_000 });
   const hookWatcherBreaker = new CircuitBreaker({ name: 'hook-watcher', failureThreshold: 10, failureWindowMs: 60_000, resetTimeoutMs: 30_000 });
   const permissionAlertBreaker = createPermissionAlertBreaker();
+  // Speech providers (issue #1772): same default thresholds as llm; degrade by
+  // skipping fresh synthesis / STT health probes while open.
+  const sttBreaker = new CircuitBreaker({ name: 'stt', failureThreshold: 5, failureWindowMs: 60_000, resetTimeoutMs: 30_000 });
+  const ttsBreaker = new CircuitBreaker({ name: 'tts', failureThreshold: 5, failureWindowMs: 60_000, resetTimeoutMs: 30_000 });
   circuitBreakerRegistry.register(llmBreaker);
   circuitBreakerRegistry.register(githubBreaker);
   circuitBreakerRegistry.register(hookWatcherBreaker);
   circuitBreakerRegistry.register(permissionAlertBreaker);
+  circuitBreakerRegistry.register(sttBreaker);
+  circuitBreakerRegistry.register(ttsBreaker);
 
   const taskStore = new TaskStore();
   const worktreeRegistry = new WorktreeRegistry();
@@ -201,6 +211,8 @@ export async function createCoreStores(deps: CoreStoresDeps): Promise<CoreStores
     githubBreaker,
     hookWatcherBreaker,
     permissionAlertBreaker,
+    sttBreaker,
+    ttsBreaker,
     taskStore,
     worktreeRegistry,
     queue,

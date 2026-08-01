@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
 import type { LlmClient } from '../core/llm-client.js';
+import type { CircuitBreaker } from '../core/circuit-breaker.js';
 import { summarizeAgent, type SummarizeAgentResult } from '../core/agent-speak-summary.js';
-import { synthesize, TTSClientError } from '../adapters/tts-client.js';
+import { TTSClientError } from '../adapters/tts-client.js';
+import { synthesizeWithCircuitBreaker } from '../adapters/circuit-breaker-tts-client.js';
 import type {
   AgentSpeakContext,
   AgentSpeakResultCore,
@@ -39,6 +41,11 @@ export interface AgentSpeakCacheConfig {
   ttsUrl: string;
   voice: string;
   maxBytes?: number;
+  /**
+   * Optional TTS circuit breaker (issue #1772). When open, fresh synthesis is
+   * skipped immediately; cache hits still serve previously synthesized audio.
+   */
+  ttsBreaker?: CircuitBreaker;
   /** Test seam. */
   now?: () => number;
 }
@@ -308,7 +315,7 @@ export class AgentSpeakCache {
     }
 
     const ttsStart = nowFn();
-    const ttsResult = await synthesize({
+    const ttsResult = await synthesizeWithCircuitBreaker(this.config.ttsBreaker, {
       ttsUrl: this.config.ttsUrl,
       text: summary.text,
       voice: this.config.voice,
