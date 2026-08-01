@@ -234,6 +234,66 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
       });
     },
 
+    handleDelta: (delta) => {
+      withSelectionTransitionSource({ source: 'selectedAgentUpdateAfterServerState', reason: 'delta_reconcile' }, () => {
+        set((prev) => {
+          const removed = new Set(delta.agents?.removed ?? []);
+          const upserts = delta.agents?.upserts ?? [];
+          const byKey = new Map<string, AgentState>();
+          for (const agent of prev.agents) {
+            const key = `${agent.agentId}:${agent.taskId ?? ''}`;
+            if (!removed.has(key)) byKey.set(key, agent);
+          }
+          for (const incoming of upserts) {
+            const key = `${incoming.agentId}:${incoming.taskId ?? ''}`;
+            byKey.set(key, mergeActivityAgent(byKey.get(key), incoming));
+          }
+          // Preserve prior order for survivors; append brand-new upserts at end.
+          const agents: AgentState[] = [];
+          const seen = new Set<string>();
+          for (const agent of prev.agents) {
+            const key = `${agent.agentId}:${agent.taskId ?? ''}`;
+            if (removed.has(key) || seen.has(key)) continue;
+            const next = byKey.get(key);
+            if (next) {
+              agents.push(next);
+              seen.add(key);
+            }
+          }
+          for (const incoming of upserts) {
+            const key = `${incoming.agentId}:${incoming.taskId ?? ''}`;
+            if (seen.has(key)) continue;
+            const next = byKey.get(key);
+            if (next) {
+              agents.push(next);
+              seen.add(key);
+            }
+          }
+
+          const aggregates = delta.aggregates ?? {};
+          return {
+            agents,
+            ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.selectedTaskId, prev.agents, agents),
+            ...(delta.taskRelations !== undefined ? { taskRelations: delta.taskRelations } : {}),
+            ...(aggregates.totalSpendUsd !== undefined ? { totalSpendUsd: aggregates.totalSpendUsd } : {}),
+            ...(aggregates.maxActiveTasks !== undefined ? { maxActiveTasks: aggregates.maxActiveTasks } : {}),
+            ...(aggregates.drainStatus !== undefined ? { drainStatus: aggregates.drainStatus } : {}),
+            ...(aggregates.coordinator !== undefined ? { coordinator: aggregates.coordinator } : {}),
+            ...(aggregates.achievements !== undefined ? { achievements: aggregates.achievements } : {}),
+            ...(aggregates.achievementCounters !== undefined
+              ? { achievementCounters: aggregates.achievementCounters }
+              : {}),
+            ...(aggregates.achievementStreak !== undefined
+              ? { achievementStreak: aggregates.achievementStreak }
+              : {}),
+            ...(aggregates.bypassAllPermissions !== undefined
+              ? { bypassAllPermissions: aggregates.bypassAllPermissions === true }
+              : {}),
+          };
+        });
+      });
+    },
+
     handlePlaybooks: (playbooks, cwd, capabilities) => {
       set({
         playbooks,

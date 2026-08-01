@@ -19,13 +19,15 @@ import { WebSocket } from 'ws';
 import type { Actor } from './auth.js';
 import { canonicalizeScope, type Scope } from './viewer-data-policy.js';
 import type { AgentState } from '../core/monitor.js';
-import type { ServerMessage, SnapshotMessage } from '../shared/contracts/messages.js';
+import type { AgentState as ClientAgentState } from '../shared/contracts/agent-state.js';
+import type { DeltaMessage, ServerMessage, SnapshotMessage } from '../shared/contracts/messages.js';
 import {
   normalizeSnapshotPayloadSizePolicy,
   shouldSendSerializedSnapshotFrame,
   snapshotScopeKey,
   type SnapshotPayloadSizePolicy,
 } from './snapshot-payload-size-policy.js';
+import { scopeDeltaForProjects } from './snapshot-delta.js';
 
 /**
  * Soft `ws.bufferedAmount` ceiling for dashboard fan-out (#1424).
@@ -326,6 +328,104 @@ export class ViewerAwareBroadcaster {
    */
   connectionNeedsSnapshot(ws: WebSocket): boolean {
     return this.needsSnapshotClients.has(ws);
+  }
+
+  /**
+   * Stage 2 hot-path fan-out (issue #1754): send a coalesced `delta` to healthy
+   * sockets, and a full snapshot re-base to any socket that latched
+   * `needsSnapshot` (soft-backpressure skip). `fullSnapshot` carries the same
+   * `(epoch, seq)` as `delta` so a re-base lands the client at the same stream
+   * position. `previousAgents` is the prior baseline used to scope removals for
+   * `projects` viewers. Dense-seq: every connection gets a frame every flush
+   * (empty keep-alive when a scoped viewer's in-scope set did not change).
+   */
+  broadcastDelta(
+    delta: DeltaMessage,
+    fullSnapshot: SnapshotMessage,
+    previousAgents: readonly ClientAgentState[] = [],
+  ): void {
+    const connections = this.registry.snapshotDashboardConnections();
+
+    // Load-shed: same policy as full snapshots — do not advance client state
+    // with a tiny delta while the server is saturated; notify and wait.
+    if (this.loadShedGate?.isActive) {
+      this.loadShedGate.recordSkippedSnapshot();
+      this.broadcastBackpressureNotice(connections, 'loadShedActive');
+      this.wasLoadShedActive = true;
+      return;
+    }
+    if (this.wasLoadShedActive) {
+      this.wasLoadShedActive = false;
+      this.broadcastBackpressureNotice(connections, 'loadShedRecovered');
+      // Fall through: this flush's frames resume normally below.
+    }
+
+    const allSnapshot = serializeSnapshot(fullSnapshot, 'all', this.snapshotPayloadSizePolicy);
+    const allDeltaData = JSON.stringify(delta);
+    const scopedSnapshotCache = new Map<string, SerializedSnapshot>();
+    const scopedDeltaCache = new Map<string, string>();
+    let baseClientAgents: AgentState[] | undefined;
+    let baseComputed = false;
+
+    for (const { ws, actor } of connections) {
+      try {
+        const scope = actorScope(actor);
+        const needsRebase = this.needsSnapshotClients.has(ws);
+
+        if (needsRebase) {
+          // Soft-skipped clients must receive a full snapshot before any further
+          // delta — serve the re-base frame for this flush's (epoch, seq).
+          let serialized: SerializedSnapshot;
+          let scopeKey: string;
+          if (scope.kind === 'all') {
+            serialized = allSnapshot;
+            scopeKey = 'all';
+          } else {
+            scopeKey = snapshotScopeKey(scope);
+            let cached = scopedSnapshotCache.get(scopeKey);
+            if (!cached) {
+              if (!baseComputed) {
+                baseClientAgents = this.computeSnapshotBaseAgents?.();
+                baseComputed = true;
+              }
+              let scopedMsg = baseClientAgents !== undefined
+                ? this.buildScopedSnapshot(scope, baseClientAgents)
+                : this.buildScopedSnapshot(scope);
+              if (fullSnapshot.seq !== undefined) {
+                scopedMsg = { ...scopedMsg, epoch: fullSnapshot.epoch, seq: fullSnapshot.seq };
+              }
+              cached = serializeSnapshot(scopedMsg, scopeKey, this.snapshotPayloadSizePolicy);
+              scopedSnapshotCache.set(scopeKey, cached);
+            }
+            serialized = cached;
+          }
+          if (!serialized.data) continue;
+          const sentPrimary = this.send(ws, serialized.data, 'snapshot', scopeKey);
+          if (sentPrimary && serialized.coordinatorData) {
+            this.send(ws, serialized.coordinatorData, 'coordinator.snapshot', scopeKey);
+          }
+          continue;
+        }
+
+        // Healthy path: scoped or all-scope delta.
+        if (scope.kind === 'all') {
+          this.send(ws, allDeltaData, 'delta', 'all');
+          continue;
+        }
+
+        const scopeKey = snapshotScopeKey(scope);
+        let scopedData = scopedDeltaCache.get(scopeKey);
+        if (!scopedData) {
+          const projectIds = scope.kind === 'projects' ? scope.projectIds : [];
+          const scopedDelta = scopeDeltaForProjects(delta, previousAgents, projectIds);
+          scopedData = JSON.stringify(scopedDelta);
+          scopedDeltaCache.set(scopeKey, scopedData);
+        }
+        this.send(ws, scopedData, 'delta', scopeKey);
+      } catch (err) {
+        console.warn('[viewer-broadcaster] failed to build/send delta for one connection; continuing', err);
+      }
+    }
   }
 
   /**

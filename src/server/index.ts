@@ -142,6 +142,7 @@ import {
   readNonCriticalTimerPauseConfigFromEnv,
 } from './non-critical-timer-pause.js';
 import { readDashboardFanoutConfigFromEnv } from './websocket-backpressure-config.js';
+import { readWsDeltaEnabledFromEnv } from './snapshot-delta.js';
 import {
   FindingEvidenceReviewQueueStore,
   FindingEvidenceReviewSampler,
@@ -739,10 +740,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       : '[ws-load-shed] Event-loop-delay load-shed disabled (set KOOKR_WS_LOAD_SHED_EVENT_LOOP_DELAY_MS to enable)',
   );
   const dashboardFanoutConfig = readDashboardFanoutConfigFromEnv();
+  const wsDeltaEnabled = readWsDeltaEnabledFromEnv();
   console.log(
     `[ws-fanout] dashboard client sustained soft-backpressure disconnect after ` +
       `${dashboardFanoutConfig.backpressureDisconnectAfterSkips} consecutive skips; ` +
-      `dead-socket liveness sweep ${dashboardFanoutConfig.livenessSweepEnabled ? 'enabled' : 'disabled'}`,
+      `dead-socket liveness sweep ${dashboardFanoutConfig.livenessSweepEnabled ? 'enabled' : 'disabled'}; ` +
+      `delta protocol ${wsDeltaEnabled ? 'enabled' : 'disabled (full snapshots)'} (KOOKR_WS_DELTA)`,
   );
 
   const realtime = await createRealtimeServices({
@@ -753,9 +756,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     adapterRegistry,
     serverCwd,
     sttUrl,
-    // #1754 Stage 1: the server-lifetime-stable epoch for the delta stream is
+    // #1754: the server-lifetime-stable epoch for the delta stream is
     // `serverStartedAt` — restart changes it, resetting the client's seq baseline.
     serverEpoch: serverStartedAt,
+    // #1754 Stage 2: steady-state coalesced deltas (kill-switch KOOKR_WS_DELTA=0).
+    enableWsDelta: wsDeltaEnabled,
     buildScopedSnapshot,
     computeSnapshotBaseAgents,
     observeSnapshotPayloadSize: (observation) => {

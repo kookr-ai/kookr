@@ -208,6 +208,25 @@ export interface TransportSessionSlice {
     sweepProgress?: WorkspaceSweepProgressSnapshot,
   ) => void;
   handleUpdate: (agentId: string, state: AgentState) => void;
+  /**
+   * Apply a Stage-2 coalesced delta (issue #1754): upsert/remove agents by
+   * `"agentId:taskId"` key, sticky-replace `taskRelations` when present, and
+   * shallow-merge whole-world aggregates.
+   */
+  handleDelta: (delta: {
+    agents?: { upserts: AgentState[]; removed: string[] };
+    taskRelations?: TaskRelation[];
+    aggregates?: {
+      totalSpendUsd?: number;
+      maxActiveTasks?: number;
+      drainStatus?: DrainStatusSnapshot;
+      coordinator?: CoordinatorSnapshotState | null;
+      achievements?: Record<string, string>;
+      achievementCounters?: AchievementCountersState;
+      achievementStreak?: { lastActiveDate: string | null; currentStreak: number };
+      bypassAllPermissions?: boolean;
+    };
+  }) => void;
   handlePlaybooks: (
     playbooks: Playbook[],
     cwd: string,

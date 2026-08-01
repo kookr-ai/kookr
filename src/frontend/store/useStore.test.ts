@@ -162,6 +162,32 @@ describe('Kookr Zustand Store', () => {
     expect(agent2!.anomaly).toBeNull();
   });
 
+  test('handleDelta upserts, removes, and merges aggregates (#1754 Stage 2)', () => {
+    store.getState().handleSnapshot([
+      { agentId: 'agent-1', taskId: 't1', events: [], anomaly: null },
+      { agentId: 'agent-2', taskId: 't2', events: [], anomaly: null },
+    ]);
+
+    store.getState().handleDelta({
+      agents: {
+        upserts: [
+          { agentId: 'agent-1', taskId: 't1', events: [], anomaly: null, taskName: 'renamed' },
+          { agentId: 'agent-3', taskId: 't3', events: [], anomaly: null, taskName: 'new' },
+        ],
+        removed: ['agent-2:t2'],
+      },
+      aggregates: { totalSpendUsd: 12.5, maxActiveTasks: 4 },
+      taskRelations: [],
+    });
+
+    const agents = store.getState().agents;
+    expect(agents.map((a) => a.agentId).sort()).toEqual(['agent-1', 'agent-3']);
+    expect(agents.find((a) => a.agentId === 'agent-1')?.taskName).toBe('renamed');
+    expect(store.getState().totalSpendUsd).toBe(12.5);
+    expect(store.getState().maxActiveTasks).toBe(4);
+    expect(store.getState().taskRelations).toEqual([]);
+  });
+
   test('handleAlert stores alert for agent', () => {
     store.getState().handleSnapshot([
       { agentId: 'agent-1', events: [], anomaly: null },

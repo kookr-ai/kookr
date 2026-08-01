@@ -2753,11 +2753,12 @@ Review daily work.
         cwd: CWD,
       }));
 
-      // Wait for launch snapshot; resourceStatus messages may be interleaved.
+      // Wait for launch state fan-out; resourceStatus messages may be interleaved.
+      // Stage 2 (#1754) may deliver a `delta` after the first full-snapshot baseline.
       await new Promise<void>((resolve) => {
         const handler = (data: unknown) => {
           const parsed = JSON.parse(data!.toString());
-          if (parsed.type === 'snapshot') {
+          if (parsed.type === 'snapshot' || parsed.type === 'delta') {
             ws.off('message', handler);
             resolve();
           }
@@ -2780,11 +2781,11 @@ Review daily work.
         permission_mode: 'acceptEdits',
       }));
 
-      // Wait for the broadcast triggered by the event
+      // Wait for the broadcast triggered by the event (snapshot or Stage-2 delta).
       const msg = await new Promise<string>((resolve) => {
         const handler = (data: unknown) => {
           const parsed = JSON.parse(data!.toString());
-          if (parsed.type === 'snapshot') {
+          if (parsed.type === 'snapshot' || parsed.type === 'delta') {
             ws.off('message', handler);
             resolve(data!.toString());
           }
@@ -2793,7 +2794,7 @@ Review daily work.
       });
 
       const parsed = JSON.parse(msg);
-      expect(parsed.type).toBe('snapshot');
+      expect(['snapshot', 'delta']).toContain(parsed.type);
 
       ws.close();
       await new Promise<void>((r) => ws.on('close', () => r()));
