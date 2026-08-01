@@ -1,5 +1,9 @@
 import { describe, test, expect } from 'vitest';
-import { generateCompletionDigest } from './completion-digest.js';
+import {
+  COMPLETION_DIGEST_STORAGE_MAX_BYTES,
+  capCompletionDigestForStorage,
+  generateCompletionDigest,
+} from './completion-digest.js';
 import type { AgentEvent } from './types.js';
 
 function toolUse(toolName: string, toolInput?: unknown): AgentEvent {
@@ -238,5 +242,41 @@ describe('generateCompletionDigest', () => {
       filesChanged: [],
       testSummary: undefined,
     });
+  });
+});
+
+describe('capCompletionDigestForStorage (issue #1780)', () => {
+  test('returns the same object when under the byte budget', () => {
+    const digest = {
+      bullets: ['Did the thing'],
+      filesChanged: ['src/a.ts', 'src/b.ts'],
+      branch: 'main',
+    };
+    expect(capCompletionDigestForStorage(digest)).toBe(digest);
+  });
+
+  test('drops excess filesChanged with an omitted marker under the default budget', () => {
+    const digest = {
+      bullets: ['Changed many files'],
+      filesChanged: Array.from({ length: 5000 }, (_, i) => `path/to/file-${i}.ts`),
+    };
+    const capped = capCompletionDigestForStorage(digest);
+    expect(capped).not.toBe(digest);
+    const payloadBytes =
+      Buffer.byteLength(capped.bullets.join(''), 'utf-8')
+      + Buffer.byteLength(capped.filesChanged.join(''), 'utf-8');
+    expect(payloadBytes).toBeLessThanOrEqual(COMPLETION_DIGEST_STORAGE_MAX_BYTES);
+    expect(capped.filesChanged.at(-1)).toMatch(/^…\+\d+ more$/);
+    expect(capped.bullets).toEqual(digest.bullets);
+  });
+
+  test('truncates an oversize single bullet rather than dropping it', () => {
+    const digest = {
+      bullets: ['x'.repeat(COMPLETION_DIGEST_STORAGE_MAX_BYTES * 2)],
+      filesChanged: [] as string[],
+    };
+    const capped = capCompletionDigestForStorage(digest, 64);
+    expect(Buffer.byteLength(capped.bullets[0]!, 'utf-8')).toBeLessThanOrEqual(64);
+    expect(capped.bullets[0]!.endsWith('…')).toBe(true);
   });
 });

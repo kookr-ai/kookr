@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest';
 import { TaskStore, InvalidTransitionError, isTerminalStatus, isActiveStatus, isRecoverableTermination, type Task, type TokenUsage, type TerminationReason } from './tasks.js';
+import { COMPLETION_DIGEST_STORAGE_MAX_BYTES } from './completion-digest.js';
 import type { AgentEvent, TaskStatus } from './types.js';
 
 describe('TaskStore', () => {
@@ -386,6 +387,52 @@ describe('TaskStore', () => {
           summary: { pass: 0, fail: 0, unknown: 1 },
         }),
       });
+    });
+
+    test('setCompletionDigest hard-caps oversize bullets+filesChanged UTF-8 (issue #1780)', () => {
+      const task = store.createTask('Task', '/cwd');
+      const filesChanged = Array.from({ length: 5000 }, (_, i) => `src/deep/path/to/file-${i}.ts`);
+      const bullets = ['Changed thousands of files in the upstream sync'];
+
+      store.setCompletionDigest(task.id, {
+        bullets,
+        filesChanged,
+        branch: 'codex/daily-sync',
+        commits: Array.from({ length: 100 }, (_, i) => `abc${i}`),
+        prUrls: ['https://github.com/kookr-ai/kookr/pull/1'],
+      });
+
+      const stored = store.getTask(task.id)!.completionDigest!;
+      const payloadBytes =
+        Buffer.byteLength(stored.bullets.join(''), 'utf-8')
+        + Buffer.byteLength(stored.filesChanged.join(''), 'utf-8');
+      expect(payloadBytes).toBeLessThanOrEqual(COMPLETION_DIGEST_STORAGE_MAX_BYTES);
+      expect(stored.filesChanged.length).toBeLessThan(filesChanged.length);
+      expect(stored.filesChanged.at(-1)).toMatch(/^…\+\d+ more$/);
+      // Non-capped fields pass through unchanged.
+      expect(stored.branch).toBe('codex/daily-sync');
+      expect(stored.commits).toHaveLength(100);
+      expect(stored.prUrls).toEqual(['https://github.com/kookr-ai/kookr/pull/1']);
+      expect(stored.bullets[0]).toContain('Changed thousands');
+    });
+
+    test('loadTasks soft-trims oversized digests persisted before the write-time cap (issue #1780)', () => {
+      const task = store.createTask('Legacy', '/cwd');
+      // Bypass setCompletionDigest to simulate a pre-cap tasks.json row.
+      const live = store.getTaskForMutation(task.id)!;
+      live.completionDigest = {
+        bullets: ['old huge digest'],
+        filesChanged: Array.from({ length: 4000 }, (_, i) => `legacy/file-${i}.ts`),
+      };
+
+      store.loadTasks([store.getTask(task.id)!]);
+
+      const loaded = store.getTask(task.id)!.completionDigest!;
+      const payloadBytes =
+        Buffer.byteLength(loaded.bullets.join(''), 'utf-8')
+        + Buffer.byteLength(loaded.filesChanged.join(''), 'utf-8');
+      expect(payloadBytes).toBeLessThanOrEqual(COMPLETION_DIGEST_STORAGE_MAX_BYTES);
+      expect(loaded.filesChanged.at(-1)).toMatch(/^…\+\d+ more$/);
     });
 
     test('listTasks filters by status', () => {
