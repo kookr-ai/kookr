@@ -185,6 +185,81 @@ describe('repository-idea-scout playbook', () => {
     });
   });
 
+  describe('operational-evidence sweep seeds and boosts candidates (issue #1757)', () => {
+    // Issue #1757: incident-labeled issues, CI failures, and optional local
+    // runtime diagnostics must feed idea generation the same way KB seeds do —
+    // informing angles / boosting evidence, never replacing the capability check
+    // and never originating a diversity dimension. Kookr-specific probes are
+    // optional with the same graceful-skip pattern as a missing kb CLI.
+    test('there is a dedicated Phase 3.6 operational-evidence sweep before candidate generation', () => {
+      const ops = pb.body.indexOf('## Phase 3.6: Operational Evidence Sweep');
+      const phase4 = pb.body.indexOf('## Phase 4: Generate The Candidate Pool');
+      const kb = pb.body.indexOf('## Phase 3.5: Domain Knowledge Survey');
+      expect(ops).toBeGreaterThan(-1);
+      expect(kb).toBeGreaterThan(-1);
+      expect(ops).toBeGreaterThan(kb);
+      expect(phase4).toBeGreaterThan(ops);
+    });
+
+    test('portable probes cover incident-labeled issues and CI failures', () => {
+      const sec = pb.body.slice(
+        pb.body.indexOf('## Phase 3.6: Operational Evidence Sweep'),
+        pb.body.indexOf('## Phase 4: Generate The Candidate Pool'),
+      );
+      expect(sec).toMatch(/label:bug|bug.*incident.*regression/i);
+      expect(sec).toContain('gh run list');
+      // Filter failures in jq — do not rely on version-dependent --status failure.
+      expect(sec).toMatch(/conclusion == "failure"/);
+      expect(sec).not.toMatch(/gh run list[^\n]*--status failure/);
+      expect(sec).toContain('opsEvidenceFile');
+      expect(sec).toContain('ops-evidence.json');
+    });
+
+    test('kookr runtime probes are optional and degrade gracefully', () => {
+      const sec = pb.body.slice(
+        pb.body.indexOf('## Phase 3.6: Operational Evidence Sweep'),
+        pb.body.indexOf('## Phase 4: Generate The Candidate Pool'),
+      );
+      expect(sec).toMatch(/KOOKR_API_BASE_URL/);
+      expect(sec).toContain('/api/health');
+      expect(sec).toMatch(/\/api\/diagnostics\//);
+      expect(sec).toMatch(/server\.log/);
+      expect(sec).toMatch(/graceful skip|never block|optional/i);
+      // Missing runtime surface must not reduce the publish target.
+      expect(sec).toMatch(/never reduce the publish target|never blocks the run/i);
+    });
+
+    test('ops evidence seeds/boosts like KB seeds and never originates a dimension', () => {
+      expect(pb.body).toMatch(/ops evidence may \*\*boost\*\*|Ops evidence may \*\*boost\*\*/i);
+      expect(pb.body).toMatch(/never invents a dimension|never originate its \*dimension\*/i);
+      expect(pb.body).toMatch(/never replaces the (Phase 3 )?codebase capability check/i);
+      // Phase 4.1 consults ops-evidence dimensions bucket.
+      const cat = pb.body.slice(
+        pb.body.indexOf('### 4.1 Category Assignment'),
+        pb.body.indexOf('### 4.2 Duplicate Check'),
+      );
+      expect(cat).toMatch(/opsEvidenceFile/);
+      expect(cat).toMatch(/dimensions\.<category>/);
+    });
+
+    test('Phase 6/8 and reports carry the ops-evidence artifact contract', () => {
+      expect(pb.body).toContain('## Operational evidence summary');
+      expect(pb.body).toContain('## Operational evidence');
+      const phase8 = pb.body.slice(pb.body.indexOf('## Phase 8: Final Validation'));
+      expect(phase8).toMatch(/opsEvidenceFile|ops-evidence\.json/);
+      expect(phase8).toMatch(/incidentIssues/);
+      expect(phase8).toMatch(/ciFailures/);
+      expect(phase8).toMatch(/runtimeProbes/);
+      // Anti-pattern: no hard-fail on missing kookr probes; no local paths in issues.
+      expect(pb.body).toMatch(/Do not hard-fail when Kookr runtime probes are unavailable/);
+      expect(pb.body).toMatch(/Do not invent incidents, CI failures, gauges, or log lines/);
+    });
+
+    test('checklist requires the operational-evidence sweep', () => {
+      expect(pb.checklist.some((c) => /operational evidence/i.test(c))).toBe(true);
+    });
+  });
+
   describe('evidence-verification gate validates cited evidence before publishing', () => {
     // Issue #1756: a hallucinated-but-plausible problem must be caught by a
     // cheap validator pass before it can be classified, ranked, or published,
