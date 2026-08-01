@@ -404,4 +404,23 @@ describe('resolveTaskMergeEvidence / resolveMergeRequiredGate', () => {
     );
     expect(verdict.allow).toBe(true);
   });
+
+  test('numberless create+merge still calls verifyMerged([]) for branch-scoped live check', async () => {
+    writeLog('sess', ['gh pr create --fill', 'gh pr merge --squash']);
+    let seen: number[] | undefined;
+    const verdict = await resolveMergeRequiredGate(
+      { mergeRequired: true, sessions: [{ tmuxSession: 'sess' }] },
+      hooksDir,
+      {
+        verifyMerged: async (nums) => {
+          seen = nums;
+          // Live says still open → must reject despite trail merge intent.
+          return { allMerged: false, checked: 1 };
+        },
+      },
+    );
+    expect(seen).toEqual([]);
+    expect(verdict.allow).toBe(false);
+    expect(verdict.code).toBe(MERGE_REQUIRED_CODE);
+  });
 });

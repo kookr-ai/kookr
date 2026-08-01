@@ -263,8 +263,10 @@ export async function scanHookLogForMergeEvidence(
           break;
       }
 
-      // Early exit once we have a decisive allow signal (blocker or merge).
-      if (prBlockerCommands > 0 || prMergeCommands > 0) break;
+      // Early exit only on blocker (decisive allow that needs no further scan).
+      // Do NOT stop on the first merge command — later lines may carry the PR
+      // number/URL needed for live mergedAt verification.
+      if (prBlockerCommands > 0) break;
     }
   } finally {
     rl.close();
@@ -314,9 +316,10 @@ export async function resolveTaskMergeEvidence(
     prMergeCommands += stats.prMergeCommands;
     prBlockerCommands += stats.prBlockerCommands;
     for (const n of stats.prNumbers) prNumbers.add(n);
-    // Strongest allow signal already present — remaining sessions cannot
-    // change the allow decision (they could only add more PR creates).
-    if (prBlockerCommands > 0 || prMergeCommands > 0) break;
+    // Blocker is a decisive allow — remaining sessions cannot revote it down.
+    // Keep scanning after merge so later sessions can contribute PR numbers
+    // for live verification.
+    if (prBlockerCommands > 0) break;
   }
 
   return {
@@ -396,11 +399,14 @@ export function evidenceFromTrail(
 
 /**
  * Default live verifier: `gh pr view <n> --json mergedAt` for each PR number.
- * A non-null `mergedAt` means merged. On any gh failure / timeout the PR is
- * treated as not-checked (caller falls back to trail evidence) by omitting it
- * from `checked` only when *all* probes fail — partial results still count.
+ * When `prNumbers` is empty, falls back to branch-scoped
+ * `gh pr view --json number,mergedAt` (current branch in `cwd`) so numberless
+ * `gh pr create --fill` / `gh pr merge --squash` trails still get live truth.
  *
- * Bound latency: default 8s total budget via per-call timeout.
+ * A non-null `mergedAt` means merged. On gh failure / timeout the PR is left
+ * unchecked (caller falls back to trail evidence only when `checked === 0`).
+ *
+ * Bound latency: default 4s per probe.
  */
 export function createGhMergedAtVerifier(opts: {
   /** Working directory for `gh` (repo context). */
@@ -415,8 +421,31 @@ export function createGhMergedAtVerifier(opts: {
   return async (prNumbers: number[]) => {
     let checked = 0;
     let allMerged = true;
-    for (const n of prNumbers) {
-      if (!Number.isInteger(n) || n <= 0) continue;
+    const numbers = prNumbers.filter((n) => Number.isInteger(n) && n > 0);
+
+    if (numbers.length === 0) {
+      // Branch-scoped view: covers numberless create/merge on the task cwd.
+      try {
+        const { stdout } = await run(
+          'gh',
+          ['pr', 'view', '--json', 'number,mergedAt'],
+          {
+            cwd: opts.cwd,
+            timeout: timeoutMs,
+            encoding: 'utf8',
+            maxBuffer: 64 * 1024,
+          },
+        );
+        const parsed = JSON.parse(String(stdout)) as { mergedAt?: string | null };
+        checked = 1;
+        allMerged = parsed.mergedAt != null && parsed.mergedAt !== '';
+      } catch {
+        // leave checked=0
+      }
+      return { allMerged, checked };
+    }
+
+    for (const n of numbers) {
       try {
         const { stdout } = await run(
           'gh',
@@ -585,13 +614,14 @@ export async function resolveMergeRequiredGate(
 
   const trail = await resolveTaskMergeEvidence(task, hooksDir, { signal: opts.signal });
   let live: { allMerged: boolean; checked: number } | undefined;
-  // Always prefer live truth when we have PR numbers and no blocker — even if
-  // the trail already shows a merge command (PreToolUse is intent, not success).
-  if (
+  // Prefer live truth whenever a PR was opened (or a merge was attempted) and
+  // there is no blocker — even with no PR numbers yet (branch-scoped gh view)
+  // and even when the trail already shows a merge command (intent ≠ success).
+  const needsLive =
     opts.verifyMerged
-    && trail.prNumbers.length > 0
     && trail.prBlockerCommands === 0
-  ) {
+    && (trail.prCreateCommands > 0 || trail.prMergeCommands > 0 || trail.prNumbers.length > 0);
+  if (needsLive && opts.verifyMerged) {
     try {
       live = await opts.verifyMerged(trail.prNumbers);
     } catch {
