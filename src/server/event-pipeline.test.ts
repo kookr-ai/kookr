@@ -17,7 +17,11 @@ import {
   wireEventPipeline,
   shouldShedSnapshotRebuild,
   readSnapshotShedConfigFromEnv,
+  computeAdaptiveSnapshotCoalesceWindowMs,
   DEFAULT_SNAPSHOT_SHED_EVENT_LOOP_DELAY_MS,
+  MIN_SNAPSHOT_COALESCE_WINDOW_MS,
+  MAX_SNAPSHOT_COALESCE_WINDOW_MS,
+  SNAPSHOT_COALESCE_MS_PER_AGENT,
   type EventPipelineDeps,
 } from './event-pipeline.js';
 import { HookIngestion, mintEventId } from './hook-ingestion.js';
@@ -1173,6 +1177,158 @@ describe('event-pipeline: snapshot broadcast coalescing (#704)', () => {
 
       // Idempotent when nothing is dirty.
       flushSnapshotNow();
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1778: adaptive snapshot coalesce window from eventLoopDelayP95 + fleet size.
+// ---------------------------------------------------------------------------
+
+describe('computeAdaptiveSnapshotCoalesceWindowMs (#1778)', () => {
+  test('maps delay and agent count onto [16, 250]', () => {
+    // Healthy idle / single agent → floor (no terminal-input lag regression).
+    expect(computeAdaptiveSnapshotCoalesceWindowMs({
+      eventLoopDelayP95Ms: 0,
+      agentCount: 0,
+    })).toBe(MIN_SNAPSHOT_COALESCE_WINDOW_MS);
+    expect(computeAdaptiveSnapshotCoalesceWindowMs({
+      eventLoopDelayP95Ms: null,
+      agentCount: 1,
+    })).toBe(MIN_SNAPSHOT_COALESCE_WINDOW_MS);
+    expect(computeAdaptiveSnapshotCoalesceWindowMs({
+      eventLoopDelayP95Ms: undefined,
+      agentCount: undefined,
+    })).toBe(MIN_SNAPSHOT_COALESCE_WINDOW_MS);
+
+    // delay 1:1, agents beyond the first contribute SNAPSHOT_COALESCE_MS_PER_AGENT.
+    expect(computeAdaptiveSnapshotCoalesceWindowMs({
+      eventLoopDelayP95Ms: 20,
+      agentCount: 1,
+    })).toBe(MIN_SNAPSHOT_COALESCE_WINDOW_MS + 20);
+    expect(computeAdaptiveSnapshotCoalesceWindowMs({
+      eventLoopDelayP95Ms: 0,
+      agentCount: 5,
+    })).toBe(MIN_SNAPSHOT_COALESCE_WINDOW_MS + 4 * SNAPSHOT_COALESCE_MS_PER_AGENT);
+    expect(computeAdaptiveSnapshotCoalesceWindowMs({
+      eventLoopDelayP95Ms: 40,
+      agentCount: 5,
+    })).toBe(MIN_SNAPSHOT_COALESCE_WINDOW_MS + 40 + 4 * SNAPSHOT_COALESCE_MS_PER_AGENT);
+
+    // Storm: clamps to ceiling.
+    expect(computeAdaptiveSnapshotCoalesceWindowMs({
+      eventLoopDelayP95Ms: 5_000,
+      agentCount: 50,
+    })).toBe(MAX_SNAPSHOT_COALESCE_WINDOW_MS);
+    expect(computeAdaptiveSnapshotCoalesceWindowMs({
+      eventLoopDelayP95Ms: 200,
+      agentCount: 20,
+    })).toBe(MAX_SNAPSHOT_COALESCE_WINDOW_MS);
+
+    // Non-finite / negative inputs treat as zero pressure.
+    expect(computeAdaptiveSnapshotCoalesceWindowMs({
+      eventLoopDelayP95Ms: Number.NaN,
+      agentCount: -3,
+    })).toBe(MIN_SNAPSHOT_COALESCE_WINDOW_MS);
+  });
+});
+
+describe('event-pipeline: adaptive snapshot coalesce (#1778)', () => {
+  const toolUse = (id: string): AgentEvent =>
+    ({ type: 'tool_use', toolName: 'Read', toolUseId: id } as AgentEvent);
+
+  beforeEach(() => {
+    _resetLifecycles();
+  });
+
+  test('healthy idle keeps ~16ms window (no input-path lag regression)', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      deps.getEventLoopDelayP95Ms = () => 0;
+      (deps.monitor as any).getRetentionMetrics = vi.fn(() => ({ agents: 1 }));
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-1', anomaly: null, events: [] },
+      ]);
+      const { getSnapshotCoalesceMetrics } = wireEventPipeline(deps);
+
+      fireEvent('agent-1', toolUse('tu-1'));
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(0);
+
+      // Floor window: flush by 16ms, not the 250ms storm ceiling.
+      vi.advanceTimersByTime(MIN_SNAPSHOT_COALESCE_WINDOW_MS);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+      expect(getSnapshotCoalesceMetrics()).toMatchObject({
+        schemaVersion: 'snapshot-coalesce.v1',
+        mode: 'adaptive',
+        lastEffectiveWindowMs: MIN_SNAPSHOT_COALESCE_WINDOW_MS,
+        lastAgentCount: 1,
+        lastEventLoopDelayP95Ms: 0,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('elevated delay + fleet size stretches the window toward 250ms', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      deps.getEventLoopDelayP95Ms = () => 80;
+      // Retention metrics are the cheap agent-count source (not getSnapshot).
+      (deps.monitor as any).getRetentionMetrics = vi.fn(() => ({ agents: 10 }));
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-0', anomaly: null, events: [] },
+      ]);
+      // Keep shed off so the flush actually lands when the adaptive timer fires.
+      deps.snapshotShedEventLoopDelayThresholdMs = 0;
+      const expected = computeAdaptiveSnapshotCoalesceWindowMs({
+        eventLoopDelayP95Ms: 80,
+        agentCount: 10,
+      });
+      expect(expected).toBe(MIN_SNAPSHOT_COALESCE_WINDOW_MS + 80 + 9 * SNAPSHOT_COALESCE_MS_PER_AGENT);
+
+      const { getSnapshotCoalesceMetrics } = wireEventPipeline(deps);
+      fireEvent('agent-0', toolUse('tu-storm'));
+
+      vi.advanceTimersByTime(expected - 1);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(0);
+      vi.advanceTimersByTime(1);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
+      expect(getSnapshotCoalesceMetrics().lastEffectiveWindowMs).toBe(expected);
+      expect(getSnapshotCoalesceMetrics().lastAgentCount).toBe(10);
+      expect(getSnapshotCoalesceMetrics().lastEventLoopDelayP95Ms).toBe(80);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('fixed snapshotCoalesceWindowMs override pins the window', () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, fireEvent, broadcasts } = createMockDeps();
+      deps.snapshotCoalesceWindowMs = 100;
+      deps.getEventLoopDelayP95Ms = () => 5_000; // would clamp adaptive to 250
+      deps.snapshotShedEventLoopDelayThresholdMs = 0; // isolate coalesce from shed
+      (deps.monitor as any).getRetentionMetrics = vi.fn(() => ({ agents: 40 }));
+      (deps.monitor.getSnapshot as any).mockReturnValue([
+        { agentId: 'agent-0', anomaly: null, events: [] },
+      ]);
+      const { getSnapshotCoalesceMetrics } = wireEventPipeline(deps);
+
+      fireEvent('agent-0', toolUse('tu-fixed'));
+      expect(getSnapshotCoalesceMetrics()).toMatchObject({
+        mode: 'fixed',
+        fixedWindowMs: 100,
+        lastEffectiveWindowMs: 100,
+      });
+
+      vi.advanceTimersByTime(99);
+      expect(snapshotBroadcasts(broadcasts)).toHaveLength(0);
+      vi.advanceTimersByTime(1);
       expect(snapshotBroadcasts(broadcasts)).toHaveLength(1);
     } finally {
       vi.useRealTimers();
