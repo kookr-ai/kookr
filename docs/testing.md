@@ -13,6 +13,8 @@ For the design history, see [RFC: Testing Surfacing and Coverage Visibility](rfc
 | `pnpm test:watch` | Vitest watch mode. | Local. |
 | `pnpm check:e2e` | TypeScript check for Playwright tests. | Local + CI (`test` job). |
 | `pnpm validate:docs-commands` | Verifies documented package scripts, local CLI binaries, and repo-local command entrypoints exist. | Local + CI (`test` job). |
+| `pnpm validate:docs-env-vars` | Verifies `KOOKR_*` env vars read in source are documented (or allowlisted). | Local + CI (`test` job). |
+| `pnpm validate:docs-api-routes` | Verifies every registered `/api/*` route is mentioned in `docs/reference/api.md` (or allowlisted as internal). | Local + CI (`test` job). |
 | `pnpm exec playwright test` | Browser E2E. | Local + CI (`build` job, Playwright container). |
 | `pnpm test:hooks` | Shell regression tests for project hooks. | Local + CI (`test` job). |
 | `pnpm test:stt` | Installs and runs the `stt/` speech-to-text sidecar's own vitest unit suite (`stt/src/**/*.test.js`, minus the `*.integration.test.js` files, which need `STT_INTEGRATION=1` and the separate integration config). `stt/` is a standalone npm package outside the root vitest include globs. | Local + CI (`stt-tests` job). |

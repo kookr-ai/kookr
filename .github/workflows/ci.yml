@@ -92,6 +92,9 @@ jobs:
       - name: Validate documented environment variables
         run: pnpm validate:docs-env-vars
 
+      - name: Validate documented API routes
+        run: pnpm validate:docs-api-routes
+
       - name: Validate requirements status matrix
         run: pnpm validate:requirements
 
