@@ -291,6 +291,62 @@ kookr effort-split [--json] [--window-hours N] [--repo owner/name]...
 The Lucy daily-progress-report playbook should run this command in its gather
 phase and paste the printed section into the digest.
 
+## `kookr reflect`
+
+Phase-1 instrumentation for the daily workflow-reflection loop (issue #1751).
+The reflection is the harness's only self-steering instrument; before this
+command it ran on ~18h-stale hand-assembled data (the daily-report markdown plus
+manual `gh` queries). Two verbs replace those two stale/manual steps with a
+single call each.
+
+```bash
+kookr reflect outcomes [--json] [--window 24h|7d|30d|all]
+kookr reflect ideas    [--json] [--log PATH] [--runs N]
+```
+
+### `outcomes`
+
+A live 24h task-outcome tally — ran / completed / terminated (≈failed) /
+cancelled / active, plus completion rate, tasks-with-PR, verified count,
+feedback, and known cost. It is a compact projection of the running server's
+`/api/outcome-ledger` scoreboard (`window` maps straight through), so the
+reflection no longer falls back to parsing the daily-report markdown.
+
+- Server discovery matches `kookr status`: `KOOKR_API_BASE_URL`, else
+  `KOOKR_PORT`, else auto-probe `4800, 4801`. Honors `KOOKR_API_TOKEN`.
+- `terminated` is surfaced as the "failed" bucket — Kookr has no distinct
+  `failed` status; a died/aborted run is `terminated`, a user-stopped run is
+  `cancelled`.
+- Exit `0` on success, `1` when no server responds or the fetch fails, `2` on a
+  bad `--window`.
+
+### `ideas`
+
+Resolves each prior `ideasFiled` URL recorded by the reflection to its current
+GitHub state and prints a compact filed→shipped table:
+
+```
+  kookr#1702             filed 2026-07-30  → shipped by PR #1705
+  kookr#1751             filed 2026-07-31  → open
+
+2 filed · 1 shipped · 0 closed(unshipped) · 1 open · 0 unknown · ship-rate 50%
+```
+
+- Reads the reflection log (default
+  `~/.kookr/playbook-state/lucy/workflow-reflection/log.jsonl`), whose records
+  are `{"date","directionVerdict","ideasFiled":[url…],"topFriction"}`.
+- `--runs N` resolves URLs from the last N reflection runs (default `1`,
+  de-duped keeping the earliest filed date). State is resolved via
+  `gh api graphql` (`closedByPullRequestsReferences`): a merged closing PR ⇒
+  `shipped-by-PR#`, closed without one ⇒ `closed (unshipped)`, else `open`.
+- Cross-repo URLs (e.g. `jeanibarz/lucy`) resolve against their own repo. A
+  missing log is treated as a first run (empty table, exit `0`), and individual
+  unreachable issues degrade to `unknown` rather than failing the whole table.
+
+The workflow-reflection playbook's Phase 1 should call `kookr reflect outcomes
+--json` and `kookr reflect ideas --json` instead of the stale-markdown fallback
+and per-run manual `gh` queries.
+
 ## `kookr issue`
 
 Claim, release, or inspect GitHub-issue ownership (RFC `rfc-issue-ownership-lock`; the server side is flag-gated behind `KOOKR_ISSUE_CLAIMS`).

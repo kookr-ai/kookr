@@ -174,6 +174,14 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     ],
   },
   {
+    name: 'reflect',
+    subcommands: ['outcomes', 'ideas'],
+    flags: ['--window', '--log', '--runs', '--json', '-h', '--help'],
+    flagValues: {
+      '--window': ['24h', '7d', '30d', 'all'],
+    },
+  },
+  {
     name: 'pr-checklist',
     subcommands: ['verify', 'doctor'],
     flags: [
@@ -309,6 +317,8 @@ function renderBashCompletion(): string {
   const emissionFlags = flagsFor('emission');
   const retroVerifySubcommands = subcommandsFor('retro-verify');
   const retroVerifyFlags = flagsFor('retro-verify');
+  const reflectSubcommands = subcommandsFor('reflect');
+  const reflectFlags = flagsFor('reflect');
   const prChecklistSubcommands = subcommandsFor('pr-checklist');
   const prChecklistFlags = flagsFor('pr-checklist');
   const contextPackFlags = flagsFor('context-pack');
@@ -477,6 +487,13 @@ _kookr()
         COMPREPLY=( $(compgen -W "${retroVerifyFlags}" -- "\${cur}") )
       fi
       ;;
+    reflect)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${reflectSubcommands} ${reflectFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${reflectFlags}" -- "\${cur}") )
+      fi
+      ;;
     pr-checklist)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
         COMPREPLY=( $(compgen -W "${prChecklistSubcommands} ${prChecklistFlags}" -- "\${cur}") )
@@ -549,6 +566,8 @@ function renderZshCompletion(): string {
   const emissionFlags = flagsFor('emission');
   const retroVerifySubcommands = subcommandsFor('retro-verify');
   const retroVerifyFlags = flagsFor('retro-verify');
+  const reflectSubcommands = subcommandsFor('reflect');
+  const reflectFlags = flagsFor('reflect');
   const prChecklistSubcommands = subcommandsFor('pr-checklist');
   const prChecklistFlags = flagsFor('pr-checklist');
   const contextPackFlags = flagsFor('context-pack');
@@ -672,6 +691,13 @@ _kookr()
         compadd -- ${retroVerifySubcommands} ${retroVerifyFlags}
       else
         compadd -- ${retroVerifyFlags}
+      fi
+      ;;
+    reflect)
+      if (( CURRENT == 3 )); then
+        compadd -- ${reflectSubcommands} ${reflectFlags}
+      else
+        compadd -- ${reflectFlags}
       fi
       ;;
     pr-checklist)
