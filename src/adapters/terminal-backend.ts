@@ -76,13 +76,19 @@ export type BackendError =
   | { kind: 'session-recovery-unverified'; id: SessionId; attempts: number; failureReason: string };
 
 /**
- * Snapshot of backend internals used by `/api/health.terminalBackend`.
+ * Snapshot of backend internals used by `/api/health.terminalBackend` and
+ * `/metrics` `terminalWrite` gauges (issue #1776).
  * `status` derivation lives in the server; this struct reports raw counts.
  */
 export interface BackendStats {
   attachedSessions: number;
   reattachCounts: Record<SessionId, number>;
+  /** Callers currently queued or executing under a session writeMutex. */
   pendingWriters: number;
+  /** High-water mark of `pendingWriters` since process start. */
+  maxPendingWriters: number;
+  /** Cumulative `WriteTimeoutError` / `write-timed-out` events. */
+  writeTimeoutCount: number;
   lastError: BackendError | null;
   errorCount: number;
 }

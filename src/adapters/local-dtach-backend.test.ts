@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { LocalDtachBackend, buildDtachSpawn } from './local-dtach-backend.js';
 import { findDtachMasterPidSync, verifyMasterIdentity } from './local-dtach-process-identity.js';
-import { SessionGoneError } from './terminal-backend.js';
+import { SessionGoneError, WriteTimeoutError } from './terminal-backend.js';
 import { reapDtachReferencing } from '../test-utils/reap-dtach.js';
 
 describe('buildDtachSpawn', () => {
@@ -678,6 +678,87 @@ describe('LocalDtachBackend', () => {
       expect(toPtyBytes(ptyWrites[0]!)).toEqual(expected);
       expect(toPtyBytes(ptyWrites[1]!)).toEqual(Array.from(new TextEncoder().encode('café —')));
       expect(toPtyBytes(ptyWrites[2]!)).toEqual([0x0d]);
+    } finally {
+      backend.close();
+    }
+  });
+
+  it('tracks writeMutex queue depth high-water and WriteTimeoutError counts (issue #1776)', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH ?? 'dtach',
+      writeTimeoutMs: 40,
+    });
+
+    let releaseHold!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      releaseHold = resolve;
+    });
+    let holdEntered = false;
+    const fakePty = {
+      write: () => {
+        if (!holdEntered) {
+          holdEntered = true;
+          return hold;
+        }
+        // Subsequent writers after the hold is released complete immediately.
+        return undefined;
+      },
+    };
+    const id = 'write-metrics';
+    const attached = (
+      backend as unknown as { attached: Map<string, Record<string, unknown>> }
+    ).attached;
+    attached.set(id, {
+      id,
+      sock: '/tmp/not-used.sock',
+      pty: fakePty,
+      ringHead: 0,
+      ringBuffer: Buffer.alloc(1024),
+      lastFlushedHead: -1,
+      dataSubscribers: new Set(),
+      writeMutex: Promise.resolve(),
+      pendingWriters: 0,
+      reattachWindow: [],
+      reattachCount: 0,
+      currentSize: null,
+    });
+
+    try {
+      expect(backend.getStats()).toMatchObject({
+        pendingWriters: 0,
+        maxPendingWriters: 0,
+        writeTimeoutCount: 0,
+      });
+
+      const first = backend.write(id, new TextEncoder().encode('a'));
+      // Let the first writer acquire the mutex and enter the blocked pty.write.
+      await new Promise((r) => setTimeout(r, 5));
+      expect(backend.getStats().pendingWriters).toBe(1);
+
+      const second = backend.write(id, new TextEncoder().encode('b'));
+      const third = backend.write(id, new TextEncoder().encode('c'));
+      await new Promise((r) => setTimeout(r, 5));
+      expect(backend.getStats().pendingWriters).toBe(3);
+      expect(backend.getStats().maxPendingWriters).toBe(3);
+
+      releaseHold();
+      await Promise.all([first, second, third]);
+      expect(backend.getStats().pendingWriters).toBe(0);
+      expect(backend.getStats().maxPendingWriters).toBe(3);
+
+      // Blocked write that never completes → WriteTimeoutError + counter bump.
+      fakePty.write = () => new Promise(() => {});
+      await expect(backend.write(id, new TextEncoder().encode('z'))).rejects.toBeInstanceOf(
+        WriteTimeoutError,
+      );
+      expect(backend.getStats().writeTimeoutCount).toBe(1);
+      expect(backend.getStats().errorCount).toBeGreaterThanOrEqual(1);
+      expect(backend.getStats().lastError).toMatchObject({ kind: 'write-timed-out', id });
+      // Mutex must release after timeout so idle path is unblocked.
+      expect(backend.getStats().pendingWriters).toBe(0);
     } finally {
       backend.close();
     }

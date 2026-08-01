@@ -9,6 +9,7 @@ import {
 import {
   PROMETHEUS_CONTENT_TYPE,
   renderPrometheusExposition,
+  type TerminalWriteMetricsSnapshot,
 } from '../prometheus-exposition.js';
 import type { RouteDeps } from './shared.js';
 
@@ -36,10 +37,27 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
       auditSinks: deps.auditSinks?.getAllSnapshots() ?? [],
       authThrottle: getAuthThrottleSnapshot(deps.apiAuth),
       webhookDeliveries: deps.webhookNotifier?.getDeliveryCounts(),
+      terminalWrite: collectTerminalWriteMetrics(deps),
     }), 200, {
       'Content-Type': PROMETHEUS_CONTENT_TYPE,
     });
   });
+}
+
+/** Assemble terminalWrite saturation gauges from backend + coordinator (issue #1776). */
+export function collectTerminalWriteMetrics(deps: Pick<
+  RouteDeps,
+  'terminalBackend' | 'terminalInputCoordinator'
+>): TerminalWriteMetricsSnapshot {
+  const backend = deps.terminalBackend?.getStats();
+  const coordinator = deps.terminalInputCoordinator?.getWriteMetrics();
+  return {
+    pendingWriters: backend?.pendingWriters ?? 0,
+    maxPendingWriters: backend?.maxPendingWriters ?? 0,
+    writeTimeoutCount: backend?.writeTimeoutCount ?? 0,
+    pendingWrites: coordinator?.pendingWrites ?? 0,
+    maxPendingWrites: coordinator?.maxPendingWrites ?? 0,
+  };
 }
 
 function authorizeMetricsRequest(c: Context, deps: RouteDeps): Response | undefined {

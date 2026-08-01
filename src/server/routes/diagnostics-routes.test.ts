@@ -601,6 +601,89 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — terminalWrite block (issue #1776)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health terminalWrite block', () => {
+    test('always includes zeroed terminalWrite when write deps are absent', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        terminalWrite: {
+          pendingWriters: number;
+          maxPendingWriters: number;
+          writeTimeoutCount: number;
+          pendingWrites: number;
+          maxPendingWrites: number;
+        };
+      };
+      expect(body.terminalWrite).toEqual({
+        pendingWriters: 0,
+        maxPendingWriters: 0,
+        writeTimeoutCount: 0,
+        pendingWrites: 0,
+        maxPendingWrites: 0,
+      });
+    });
+
+    test('surfaces backend queue depth/timeouts and coordinator pendingWrites', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        terminalBackend: {
+          getStats: () => ({
+            attachedSessions: 2,
+            reattachCounts: {},
+            pendingWriters: 3,
+            maxPendingWriters: 9,
+            writeTimeoutCount: 5,
+            lastError: { kind: 'write-timed-out', id: 's1', durationMs: 2000 },
+            errorCount: 5,
+          }),
+        } as never,
+        terminalInputCoordinator: {
+          getWriteMetrics: () => ({ pendingWrites: 2, maxPendingWrites: 4 }),
+        } as never,
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        terminalBackend: {
+          pendingWriters: number;
+          maxPendingWriters: number;
+          writeTimeoutCount: number;
+          status: string;
+        };
+        terminalWrite: {
+          pendingWriters: number;
+          maxPendingWriters: number;
+          writeTimeoutCount: number;
+          pendingWrites: number;
+          maxPendingWrites: number;
+        };
+      };
+      expect(body.terminalBackend).toMatchObject({
+        status: 'degraded',
+        pendingWriters: 3,
+        maxPendingWriters: 9,
+        writeTimeoutCount: 5,
+      });
+      expect(body.terminalWrite).toEqual({
+        pendingWriters: 3,
+        maxPendingWriters: 9,
+        writeTimeoutCount: 5,
+        pendingWrites: 2,
+        maxPendingWrites: 4,
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — launchDependencies block
   // ---------------------------------------------------------------------------
   describe('GET /api/health launchDependencies block', () => {
@@ -1092,6 +1175,8 @@ describe('diagnostics routes', () => {
       attachedSessions: number;
       reattachCounts: Record<string, number>;
       pendingWriters: number;
+      maxPendingWriters: number;
+      writeTimeoutCount: number;
       lastError: { kind: string } | null;
       errorCount: number;
     }>) {
@@ -1100,6 +1185,8 @@ describe('diagnostics routes', () => {
           attachedSessions: 0,
           reattachCounts: {},
           pendingWriters: 0,
+          maxPendingWriters: 0,
+          writeTimeoutCount: 0,
           lastError: null,
           errorCount: 0,
           ...stats,

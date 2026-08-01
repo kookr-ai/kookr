@@ -124,6 +124,10 @@ export class LocalDtachBackend implements TerminalBackend {
 
   private lastError: BackendError | null = null;
   private errorCount = 0;
+  /** High-water mark of aggregate writeMutex queue depth (issue #1776). */
+  private maxPendingWriters = 0;
+  /** Cumulative write-timed-out errors (issue #1776). */
+  private writeTimeoutCount = 0;
 
   /** Periodic ring-buffer snapshot timer; null after `close()`. */
   private flushTimer: NodeJS.Timeout | null = null;
@@ -163,6 +167,7 @@ export class LocalDtachBackend implements TerminalBackend {
       reattachCounts: this.reattachCounts,
       isClosed: () => this.closed,
       emitError: (err) => this.emitError(err),
+      observeWriteQueueDepth: () => this.observeWriteQueueDepth(),
     });
     this.recovery = new LocalDtachRecovery({
       attached: this.attached,
@@ -445,6 +450,8 @@ export class LocalDtachBackend implements TerminalBackend {
       attachedSessions: this.attached.size,
       reattachCounts: { ...this.reattachCounts },
       pendingWriters: pending,
+      maxPendingWriters: this.maxPendingWriters,
+      writeTimeoutCount: this.writeTimeoutCount,
       lastError: this.lastError,
       errorCount: this.errorCount,
     };
@@ -547,6 +554,7 @@ export class LocalDtachBackend implements TerminalBackend {
   private emitError(err: BackendError): void {
     this.lastError = err;
     this.errorCount += 1;
+    if (err.kind === 'write-timed-out') this.writeTimeoutCount += 1;
     for (const cb of this.errorSubscribers) {
       try {
         cb(err);
@@ -554,6 +562,13 @@ export class LocalDtachBackend implements TerminalBackend {
         // subscriber threw — keep serving others
       }
     }
+  }
+
+  /** Recompute aggregate writeMutex depth and bump the process high-water mark. */
+  private observeWriteQueueDepth(): void {
+    let pending = 0;
+    for (const s of this.attached.values()) pending += s.pendingWriters;
+    if (pending > this.maxPendingWriters) this.maxPendingWriters = pending;
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────────

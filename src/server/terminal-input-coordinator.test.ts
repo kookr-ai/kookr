@@ -167,6 +167,49 @@ describe('TerminalInputCoordinator', () => {
     writeSpy.mockRestore();
   });
 
+  it('exposes pendingWrites high-water under queued writes (issue #1776)', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession({ id: 's1', command: 'agent', args: [] });
+    await backend.createSession({ id: 's2', command: 'agent', args: [] });
+    const coordinator = new TerminalInputCoordinator(backend);
+    coordinator.registerSession('s1');
+    coordinator.registerSession('s2');
+
+    expect(coordinator.getWriteMetrics()).toEqual({ pendingWrites: 0, maxPendingWrites: 0 });
+
+    let releaseS1!: () => void;
+    let releaseS2!: () => void;
+    const writeSpy = vi.spyOn(backend, 'write').mockImplementation((id) => {
+      if (id === 's1') {
+        return new Promise((resolve) => {
+          releaseS1 = resolve;
+        });
+      }
+      return new Promise((resolve) => {
+        releaseS2 = resolve;
+      });
+    });
+
+    const w1 = coordinator.writeInput('s1', encoder.encode('a'));
+    await vi.waitFor(() => {
+      expect(coordinator.getWriteMetrics().pendingWrites).toBe(1);
+    });
+    const w2 = coordinator.writeInput('s2', encoder.encode('b'));
+    await vi.waitFor(() => {
+      expect(coordinator.getWriteMetrics().pendingWrites).toBe(2);
+    });
+    expect(coordinator.getWriteMetrics().maxPendingWrites).toBe(2);
+
+    releaseS1!();
+    releaseS2!();
+    await Promise.all([w1, w2]);
+    expect(coordinator.getWriteMetrics()).toEqual({
+      pendingWrites: 0,
+      maxPendingWrites: 2,
+    });
+    writeSpy.mockRestore();
+  });
+
   it('delays sequence payloads while keeping the session write in-flight', async () => {
     const backend = new FakeTerminalBackend();
     await backend.createSession({ id: 's1', command: 'agent', args: [] });

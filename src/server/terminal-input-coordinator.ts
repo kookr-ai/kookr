@@ -19,12 +19,21 @@ interface TerminalInputState {
   queue: Promise<unknown>;
 }
 
+/** Aggregate coordinator write-queue gauges for `/api/health` + `/metrics` (issue #1776). */
+export interface TerminalWriteCoordinatorMetrics {
+  /** Sum of in-flight coordinator writes across sessions. */
+  pendingWrites: number;
+  /** High-water mark of `pendingWrites` since process start. */
+  maxPendingWrites: number;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export class TerminalInputCoordinator implements TerminalInputWriterPort {
   private readonly states = new Map<SessionId, TerminalInputState>();
+  private maxPendingWrites = 0;
 
   constructor(
     private readonly backend: Pick<TerminalBackend, 'write' | 'writeSequence' | 'isAlive'>,
@@ -45,6 +54,19 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
 
   cleanupSession(sessionId: SessionId): void {
     this.states.delete(sessionId);
+  }
+
+  /**
+   * Process-wide write-queue gauges for terminal input saturation (issue #1776).
+   * Cheap O(sessions) sum; never blocks on the write queue.
+   */
+  getWriteMetrics(): TerminalWriteCoordinatorMetrics {
+    let pendingWrites = 0;
+    for (const state of this.states.values()) pendingWrites += state.pendingWrites;
+    return {
+      pendingWrites,
+      maxPendingWrites: this.maxPendingWrites,
+    };
   }
 
   getSnapshot(sessionId: SessionId): {
@@ -184,6 +206,9 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
     state.readinessVersion += 1;
     state.prompt = { kind: 'unknown' };
     state.pendingWrites += 1;
+    let total = 0;
+    for (const s of this.states.values()) total += s.pendingWrites;
+    if (total > this.maxPendingWrites) this.maxPendingWrites = total;
     return state.readinessVersion;
   }
 
