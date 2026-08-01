@@ -7,6 +7,7 @@ import { getHotPathSampler, resetHotPathSamplerForTests } from './hot-path-sampl
 import { TaskStore } from './tasks.js';
 import { AttentionQueue } from './attention-queue.js';
 import type { Anomaly, PersistedSnooze } from './types.js';
+import { taskSaveMetrics } from './task-save-metrics.js';
 
 const FIXED_TIME = new Date('2026-01-01T00:00:00Z');
 
@@ -92,6 +93,30 @@ describe('Task Persistence', () => {
     } finally {
       resetHotPathSamplerForTests();
     }
+  });
+
+  test('save always records timing metrics into the process ring (issue #1777)', async () => {
+    taskSaveMetrics.reset();
+    const store = new TaskStore();
+    createTaskForMutation(store, 'Metrics probe', '/cwd');
+
+    const metrics = await saveTasks(store.getAllTasks(), filePath);
+    const snap = taskSaveMetrics.snapshot();
+
+    expect(snap.totalObservations).toBeGreaterThanOrEqual(1);
+    expect(snap.sampleCount).toBeGreaterThanOrEqual(1);
+    expect(snap.last).toMatchObject({
+      backend: 'json',
+      bytes: metrics.bytes,
+      taskCount: 1,
+      serializeMs: metrics.serializeMs,
+      writeMs: metrics.writeMs,
+      totalMs: metrics.totalMs,
+    });
+    expect(snap.p95SerializeMs).toBeGreaterThanOrEqual(0);
+    expect(snap.p95WriteMs).toBeGreaterThanOrEqual(0);
+    // Visible without KOOKR_LOG_TASK_SAVE_METRICS — ring is always-on.
+    expect(process.env.KOOKR_LOG_TASK_SAVE_METRICS).not.toBe('1');
   });
 
   test('load reads existing tasks.json (round-trip)', async () => {

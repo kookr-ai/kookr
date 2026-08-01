@@ -254,6 +254,56 @@ describe('renderPrometheusExposition', () => {
     expect(output).toContain('kookr_terminal_input_rtt_observations_total 0');
   });
 
+  test('renders task-save timing gauges (issue #1777)', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      taskSave: {
+        schemaVersion: 'task-save-metrics.v1',
+        maxSamples: 64,
+        sampleCount: 12,
+        totalObservations: 40,
+        p95SerializeMs: 25,
+        p95WriteMs: 80,
+        p95TotalMs: 100,
+        last: {
+          serializeMs: 12,
+          writeMs: 45,
+          totalMs: 57,
+          bytes: 42_000_000,
+          taskCount: 180,
+          relationCount: 4,
+          backend: 'json',
+        },
+      },
+    });
+
+    expect(output).toContain('# TYPE kookr_task_save_observations_total counter');
+    expect(output).toContain('kookr_task_save_observations_total 40');
+    expect(output).toContain('# TYPE kookr_task_save_sample_count gauge');
+    expect(output).toContain('kookr_task_save_sample_count 12');
+    expect(output).toContain('kookr_task_save_duration_seconds{phase="serialize",quantile="0.95"} 0.025');
+    expect(output).toContain('kookr_task_save_duration_seconds{phase="write",quantile="0.95"} 0.08');
+    expect(output).toContain('kookr_task_save_duration_seconds{phase="total",quantile="0.95"} 0.1');
+    expect(output).toContain('kookr_task_save_last_bytes 42000000');
+    expect(output).toContain('kookr_task_save_last_task_count 180');
+    expect(output).toContain('kookr_task_save_last_duration_seconds{phase="serialize"} 0.012');
+    expect(output).toContain('kookr_task_save_last_duration_seconds{phase="write"} 0.045');
+    expect(output).toContain('kookr_task_save_last_duration_seconds{phase="total"} 0.057');
+  });
+
+  test('renders zeroed task-save gauges when no samples have been recorded', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+    });
+
+    expect(output).toContain('kookr_task_save_observations_total 0');
+    expect(output).toContain('kookr_task_save_sample_count 0');
+    expect(output).toContain('kookr_task_save_last_bytes 0');
+    expect(output).toContain('kookr_task_save_duration_seconds{phase="serialize",quantile="0.95"} 0');
+  });
+
   test('renders aggregate auth throttle counters without source labels', () => {
     const output = renderPrometheusExposition({
       requestDurations: EMPTY_REQUEST_DURATIONS,

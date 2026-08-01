@@ -54,6 +54,7 @@ import type { MiddlewareHandler } from 'hono';
 import type { RequestDurationMetrics } from '../request-duration-metrics.js';
 import type { HotPathSampler } from '../../core/hot-path-sampler.js';
 import type { TerminalInputRttMetrics } from '../terminal-input-rtt-metrics.js';
+import type { TaskSaveMetricsRecorder } from '../../core/task-save-metrics.js';
 import type { TaskStateSaveSchedulerLike } from '../task-state-save-scheduler.js';
 import type { TerminalInputCoordinator } from '../terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from '../user-input-delivery-service.js';
@@ -515,6 +516,12 @@ export interface RouteDeps {
    * `/api/diagnostics/terminal-input-rtt` (issue #1773).
    */
   terminalInputRttMetrics?: TerminalInputRttMetrics;
+  /**
+   * Optional override for the process-wide task-save timing ring (issue #1777).
+   * Production leaves this unset and `/metrics` reads the global recorder.
+   * Tests inject a private instance to avoid parallel-suite pollution.
+   */
+  taskSaveMetrics?: Pick<TaskSaveMetricsRecorder, 'snapshot'>;
   /** Bounded in-memory notification delivery trace exposed through diagnostics. */
   deliveryTrace?: DeliveryTraceReader;
   /** Optional outbound finding-webhook notifier; exposes delivery outcome counters on `/metrics`. */

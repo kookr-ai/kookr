@@ -15,6 +15,8 @@ import {
 } from './terminal-input-rtt-metrics.js';
 import type { ToolLatencyMetricsSnapshot } from '../core/tool-latency-metrics.js';
 import { emptyToolLatencyMetricsSnapshot } from '../core/tool-latency-metrics.js';
+import type { TaskSaveMetricsSnapshot } from '../core/task-save-metrics.js';
+import { emptyTaskSaveMetricsSnapshot } from '../core/task-save-metrics.js';
 
 export const PROMETHEUS_CONTENT_TYPE = 'text/plain; version=0.0.4';
 
@@ -37,6 +39,8 @@ export interface PrometheusExpositionSnapshot {
   webhookDeliveries?: WebhookDeliveryCounts;
   terminalWrite?: TerminalWriteMetricsSnapshot;
   terminalInputRtt?: TerminalInputRttMetricsSnapshot;
+  /** Always-on tasks.json / tasks.sqlite save timing (issue #1777). */
+  taskSave?: TaskSaveMetricsSnapshot;
 }
 
 export interface AuditSinkMetricsSnapshot {
@@ -57,6 +61,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendWebhookDeliveryMetrics(lines, snapshot.webhookDeliveries);
   appendTerminalWriteMetrics(lines, snapshot.terminalWrite);
   appendTerminalInputRttMetrics(lines, snapshot.terminalInputRtt);
+  appendTaskSaveMetrics(lines, snapshot.taskSave ?? emptyTaskSaveMetricsSnapshot());
 
   return `${lines.join('\n')}\n`;
 }
@@ -295,6 +300,35 @@ function appendTerminalInputRttMetrics(
     metricLine('kookr_terminal_input_rtt_seconds', { quantile: '0.5' }, msToSeconds(snapshot.p50Ms)),
     metricLine('kookr_terminal_input_rtt_seconds', { quantile: '0.95' }, msToSeconds(snapshot.p95Ms)),
     metricLine('kookr_terminal_input_rtt_seconds', { quantile: '0.99' }, msToSeconds(snapshot.p99Ms)),
+  );
+}
+
+/** Always-on task-state save timing (issue #1777). No env flag required. */
+function appendTaskSaveMetrics(lines: string[], snapshot: TaskSaveMetricsSnapshot): void {
+  const last = snapshot.last;
+  lines.push(
+    '# HELP kookr_task_save_observations_total Total task-state save observations recorded by this process.',
+    '# TYPE kookr_task_save_observations_total counter',
+    metricLine('kookr_task_save_observations_total', {}, snapshot.totalObservations),
+    '# HELP kookr_task_save_sample_count Number of retained task-state save samples in the ring buffer.',
+    '# TYPE kookr_task_save_sample_count gauge',
+    metricLine('kookr_task_save_sample_count', {}, snapshot.sampleCount),
+    '# HELP kookr_task_save_duration_seconds Task-state save duration quantiles by phase (serialize vs write).',
+    '# TYPE kookr_task_save_duration_seconds gauge',
+    metricLine('kookr_task_save_duration_seconds', { phase: 'serialize', quantile: '0.95' }, msToSeconds(snapshot.p95SerializeMs)),
+    metricLine('kookr_task_save_duration_seconds', { phase: 'write', quantile: '0.95' }, msToSeconds(snapshot.p95WriteMs)),
+    metricLine('kookr_task_save_duration_seconds', { phase: 'total', quantile: '0.95' }, msToSeconds(snapshot.p95TotalMs)),
+    '# HELP kookr_task_save_last_bytes Payload bytes of the most recent task-state save (JSON envelope or SQLite task blobs).',
+    '# TYPE kookr_task_save_last_bytes gauge',
+    metricLine('kookr_task_save_last_bytes', {}, last?.bytes ?? 0),
+    '# HELP kookr_task_save_last_task_count Task count involved in the most recent task-state save.',
+    '# TYPE kookr_task_save_last_task_count gauge',
+    metricLine('kookr_task_save_last_task_count', {}, last?.taskCount ?? 0),
+    '# HELP kookr_task_save_last_duration_seconds Duration of the most recent task-state save by phase.',
+    '# TYPE kookr_task_save_last_duration_seconds gauge',
+    metricLine('kookr_task_save_last_duration_seconds', { phase: 'serialize' }, msToSeconds(last?.serializeMs ?? 0)),
+    metricLine('kookr_task_save_last_duration_seconds', { phase: 'write' }, msToSeconds(last?.writeMs ?? 0)),
+    metricLine('kookr_task_save_last_duration_seconds', { phase: 'total' }, msToSeconds(last?.totalMs ?? 0)),
   );
 }
 
