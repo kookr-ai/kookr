@@ -28,6 +28,7 @@ import { createTerminalScopeChecker } from './terminal-scope.js';
 import { ContactShareReadModel } from '../core/contact-share.js';
 import { deterministicTaskName, generateTaskName } from '../core/task-naming.js';
 import type { BackendError, TerminalBackend } from '../adapters/terminal-backend.js';
+import type { TerminalSessionDiagnosticsSource } from '../adapters/terminal-session-diagnostics.js';
 import {
   readSnapshotShedConfigFromEnv,
   wireEventPipeline,
@@ -221,8 +222,14 @@ export interface KookrConfig {
    * lifecycle, writes, captures, and WebSocket attaches go through it.
    *
    * See docs/rfc/rfc-v8-tmux-removal.md and docs/adr/014-local-dtach-backend.md.
+   *
+   * The `Partial<TerminalSessionDiagnosticsSource>` is a deliberate, explicit
+   * opt-in for raw per-session transport diagnostics — that capability lives
+   * off the generic `TerminalBackend` port so plain port handles cannot reach
+   * adapter internals (issue #1828). Concrete backends (LocalDtachBackend)
+   * provide it; the fake test backend does not.
    */
-  terminalBackend: TerminalBackend;
+  terminalBackend: TerminalBackend & Partial<TerminalSessionDiagnosticsSource>;
   /**
    * Absolute path to `terminalBackend`'s dtach socket/manifest directory
    * (`LocalDtachBackend.getInstanceDir()`), when the backend is dtach-backed.

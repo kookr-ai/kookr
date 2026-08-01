@@ -5,6 +5,7 @@
 // for pid/cmdline when available.
 
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
+import type { TerminalSessionDiagnosticsSource } from '../adapters/terminal-session-diagnostics.js';
 import {
   getProcessCmdline,
   isClaudeProcess,
@@ -20,7 +21,9 @@ import {
  *   the backend reports alive, treat as a live agent session (`isClaude: true`)
  *   because dtach sessions are only created for managed agents.
  */
-export function createSessionLivenessProbe(backend: TerminalBackend): ProcessLivenessProbe {
+export function createSessionLivenessProbe(
+  backend: TerminalBackend & Partial<TerminalSessionDiagnosticsSource>,
+): ProcessLivenessProbe {
   return async (sessionId: string): Promise<ProcessInfo> => {
     const alive = await backend.isAlive(sessionId);
     if (!alive) {

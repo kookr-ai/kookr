@@ -39,6 +39,7 @@ import {
   type SessionReapDecision,
 } from '../core/session-reap-policy.js';
 import type { SessionId, TerminalBackend } from '../adapters/terminal-backend.js';
+import type { TerminalSessionDiagnosticsSource } from '../adapters/terminal-session-diagnostics.js';
 import { collectProcessTree } from '../adapters/process-tree.js';
 import {
   listRealProcesses,
@@ -50,7 +51,7 @@ import { existsSync } from 'node:fs';
 
 export interface SessionReaperDeps {
   taskStore: TaskStore;
-  backend: TerminalBackend;
+  backend: TerminalBackend & Partial<TerminalSessionDiagnosticsSource>;
   /** Path to the shared audit.jsonl log. Omitted in tests that don't care about the trail. */
   auditLogPath?: string;
   /** Live config getter — same "live getter" convention as `getCleanupWorktreeOnComplete`. */
@@ -114,7 +115,10 @@ function buildOwnershipMap(taskStore: TaskStore): Map<SessionId, SessionOwnershi
 }
 
 /** Best-effort process-tree size for the audit row. Linux-only; `null` when unresolvable. */
-function bestEffortProcessCount(backend: TerminalBackend, id: SessionId): number | null {
+function bestEffortProcessCount(
+  backend: TerminalBackend & Partial<TerminalSessionDiagnosticsSource>,
+  id: SessionId,
+): number | null {
   const masterPid = backend.getSessionDiagnostics?.(id)?.masterPid ?? null;
   if (masterPid === null || masterPid <= 0) return null;
   const tree = collectProcessTree(masterPid);

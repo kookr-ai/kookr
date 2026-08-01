@@ -7,7 +7,7 @@ import {
   type SessionHealthTracker,
 } from '../core/session-health.js';
 import type { TaskStatus, TurnState } from '../shared/contracts/task-status.js';
-import type { TerminalSessionDiagnostics } from '../adapters/terminal-backend.js';
+import type { TerminalSessionDiagnostics } from '../adapters/terminal-session-diagnostics.js';
 import {
   SESSION_HEALTH_SCHEMA_VERSION,
   type CoordinatedStallFinding,

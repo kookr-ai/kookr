@@ -108,26 +108,11 @@ export interface BackendStats {
   ringShrinkCount?: number;
 }
 
-/**
- * Server-only per-session transport diagnostics. The session-health service
- * projects this raw adapter shape to a privacy-safe wire DTO; callers must not
- * forward this interface directly to browser clients.
- */
-export interface TerminalSessionDiagnostics {
-  sessionId: SessionId;
-  socketPresent: boolean | null;
-  identityVerified: boolean | null;
-  masterPid: number | null;
-  agentPid: number | null;
-  attachChildAlive: boolean | null;
-  /** True while startup/restart recovery is actively repairing this session. */
-  recoveryInProgress?: boolean;
-  attachGeneration: number;
-  reattachCount: number;
-  ringHead: number;
-  lastByteAt: number | null;
-  lastAttachAt: number | null;
-}
+// Per-session transport diagnostics — the raw adapter shape and its accessor —
+// deliberately live OFF this port in `terminal-session-diagnostics.ts`. They
+// expose adapter-internal transport internals that must never reach browser
+// clients; keeping them off the generic port makes that guard structural rather
+// than a comment. See `TerminalSessionDiagnosticsSource` and issue #1828.
 
 /**
  * Options for {@link TerminalBackend.reconnectTransport}.
@@ -401,9 +386,6 @@ export interface TerminalBackend extends TerminalSessionStreamPort {
 
   /** Snapshot of internal counters for `/api/health.terminalBackend`. */
   getStats(): BackendStats;
-
-  /** Optional per-session transport diagnostics for cross-signal health. */
-  getSessionDiagnostics?(id: SessionId): TerminalSessionDiagnostics | null;
 
   /**
    * Optional. Wall-clock ms since epoch when this session was created (dtach

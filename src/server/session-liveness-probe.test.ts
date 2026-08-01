@@ -1,13 +1,16 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
+import type { TerminalSessionDiagnosticsSource } from '../adapters/terminal-session-diagnostics.js';
 import { createSessionLivenessProbe } from './session-liveness-probe.js';
 
-function fakeBackend(overrides: Partial<TerminalBackend> = {}): TerminalBackend {
+type DiagnosticsBackend = TerminalBackend & Partial<TerminalSessionDiagnosticsSource>;
+
+function fakeBackend(overrides: Partial<DiagnosticsBackend> = {}): DiagnosticsBackend {
   return {
     isAlive: vi.fn(async () => false),
     getSessionDiagnostics: vi.fn(() => null),
     ...overrides,
-  } as unknown as TerminalBackend;
+  } as unknown as DiagnosticsBackend;
 }
 
 describe('createSessionLivenessProbe', () => {

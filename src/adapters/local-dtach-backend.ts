@@ -53,11 +53,14 @@ import {
   type ReconnectTransportResult,
   type SessionId,
   type SessionSpec,
-  type TerminalSessionDiagnostics,
   type TerminalBackend,
   type VerifyRecoveredSessionOptions,
   type VerifyRecoveredSessionResult,
 } from './terminal-backend.js';
+import type {
+  TerminalSessionDiagnostics,
+  TerminalSessionDiagnosticsSource,
+} from './terminal-session-diagnostics.js';
 import {
   type DtachManifestEntry,
   DtachManifestStore,
@@ -97,7 +100,7 @@ import { LocalDtachStream } from './local-dtach-stream.js';
 export type { LocalDtachBackendOptions } from './local-dtach-shared.js';
 export { buildDtachSpawn } from './local-dtach-shared.js';
 
-export class LocalDtachBackend implements TerminalBackend {
+export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagnosticsSource {
   private readonly instanceDir: string;
   private readonly manifestStore: DtachManifestStore;
   private readonly ringStore: DtachRingStore;
