@@ -1,7 +1,11 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRelayServer, type RelayServerHandle } from '../../relay/server.js';
-import { createRelayShareClient, RelayShareError } from './relay-share-client.js';
+import {
+  createRelayShareClient,
+  DEFAULT_RELAY_SHARE_REQUEST_TIMEOUT_MS,
+  RelayShareError,
+} from './relay-share-client.js';
 
 let openHandle: RelayServerHandle | null = null;
 
@@ -187,5 +191,74 @@ describe('createRelayShareClient', () => {
     expect(error).toBeInstanceOf(RelayShareError);
     expect((error as RelayShareError).code).toBe('relay-unreachable');
     expect((error as RelayShareError).status).toBe(502);
+  });
+
+  it('aborts a hung relay fetch and surfaces relay-unreachable after the timeout', async () => {
+    const fetchImpl = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) {
+        reject(new Error('expected AbortSignal on relay share fetch'));
+        return;
+      }
+      if (signal.aborted) {
+        reject(new DOMException('The operation was aborted.', 'AbortError'));
+        return;
+      }
+      signal.addEventListener('abort', () => {
+        reject(new DOMException('The operation was aborted.', 'AbortError'));
+      }, { once: true });
+    }));
+
+    const client = createRelayShareClient({
+      relayUrl: 'http://relay.test',
+      relayToken: 'token',
+      requestTimeoutMs: 30,
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const error = await client.createTaskShare({ taskId: 't', ttlMs: 600_000 }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(RelayShareError);
+    expect((error as RelayShareError).code).toBe('relay-unreachable');
+    expect((error as RelayShareError).status).toBe(502);
+    expect((error as RelayShareError).message).toMatch(/aborted/i);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const init = fetchImpl.mock.calls[0][1] as RequestInit;
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('happy-path mint still works with a fast fetchImpl under the default timeout', async () => {
+    const invitation = {
+      invitationId: 'inv-fast',
+      taskId: 'task-fast',
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      grants: ['view'],
+      grantRequests: [],
+      connectedViewerCount: 0,
+      shareId: '123-456',
+      redactedShareLabel: '123-***',
+    };
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      expect(init?.signal?.aborted).toBe(false);
+      return new Response(JSON.stringify({ invitation, token: 'kookr_inv_v1_testtoken' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+
+    const client = createRelayShareClient({
+      relayUrl: 'http://relay.test',
+      relayToken: 'token',
+      // Explicit default documents the production budget in the test.
+      requestTimeoutMs: DEFAULT_RELAY_SHARE_REQUEST_TIMEOUT_MS,
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const result = await client.createTaskShare({ taskId: 'task-fast', ttlMs: 600_000 });
+    expect(result.share.invitationId).toBe('inv-fast');
+    expect(result.share.taskId).toBe('task-fast');
+    expect(result.joinUrl).toContain('#inviteToken=kookr_inv_v1_testtoken');
+    expect(DEFAULT_RELAY_SHARE_REQUEST_TIMEOUT_MS).toBe(10_000);
   });
 });
