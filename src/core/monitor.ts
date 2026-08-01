@@ -26,6 +26,10 @@ import {
   type FindingEvidenceAuditRecord,
 } from './finding-evidence-audit.js';
 import { OutstandingSubagentTracker } from './outstanding-subagents.js';
+import {
+  SYSTEMIC_HOOK_STALL_REASON,
+  SystemicHookStallTracker,
+} from './systemic-hook-stall.js';
 import { lastAssistantMessage } from './transcript-parser.js';
 
 /**
@@ -162,35 +166,6 @@ function findingTranscriptContextEnabled(): boolean {
 }
 
 /**
- * Minimum number of distinct agents producing `hook_disconnected` verdicts
- * within {@link SYSTEMIC_HOOK_STALL_WINDOW_MS} for the monitor to treat the
- * silence as a systemic hook-pipeline stall (server restart, relay backlog,
- * a CLI that stopped emitting hooks) rather than a per-agent fault.
- *
- * When the hook pipeline stalls globally, every active agent goes hook-silent
- * within a tick or two, so minting one finding per agent is pure noise — a
- * single infra event surfaces as N false positives. Field data showed two
- * distinct agents flagged `hook_disconnected` 17s apart, both ~200s silent;
- * the user flagged both as false positives. At or above this count the
- * per-agent findings are suppressed and any already-queued ones are purged.
- *
- * The signal counts recent *verdicts*, not currently-queued entries. Counting
- * queued entries oscillated: the guard purged the queue, which reset the
- * count below threshold, which re-admitted the next agent's finding ~1s
- * later — an endless admit→purge limit cycle that surfaced a rotating
- * one-second finding (and dashboard chime) for every hook-silent agent.
- */
-const SYSTEMIC_HOOK_STALL_MIN_AGENTS = 2;
-
-/**
- * How long a `hook_disconnected` verdict keeps counting toward the systemic
- * hook-stall signal. Must span several watchdog ticks (5s in production) so
- * agents whose verdicts alternate between `hook_disconnected` and
- * `stale_agent` (pane sometimes frozen) stay counted while the stall lasts.
- */
-const SYSTEMIC_HOOK_STALL_WINDOW_MS = 60_000;
-
-/**
  * Watchdog-owned types that must persist for {@link WATCHDOG_DEBOUNCE_MIN_STREAK}
  * *consecutive* actionable verdicts before they are queued. `stale_agent` and
  * `hook_disconnected` are threshold findings derived from elapsed silence — a
@@ -220,12 +195,6 @@ export class Monitor {
   private lastRecordedAnomalyFingerprint = new Map<string, string>();
   private lastEventAnomaly = new Map<string, Anomaly>();
   /**
-   * Last time each agent produced a `hook_disconnected` watchdog verdict
-   * (raw, pre-suppression). Entries older than
-   * {@link SYSTEMIC_HOOK_STALL_WINDOW_MS} are pruned lazily on read.
-   */
-  private hookDisconnectedVerdictAt = new Map<string, number>();
-  /**
    * Consecutive actionable watchdog verdicts of the same type, per agent.
    * Reset by any non-actionable verdict. Drives the
    * {@link WATCHDOG_DEBOUNCE_TYPES} flicker debounce.
@@ -239,6 +208,12 @@ export class Monitor {
    * (issue #1464 first slice).
    */
   private outstandingSubagents = new OutstandingSubagentTracker();
+  /**
+   * Systemic hook-pipeline stall suppressor. Pure verdict-window signal +
+   * suppress decision; queue purge / telemetry remain on Monitor
+   * (issue #1464 first-slice continuation).
+   */
+  private systemicHookStall = new SystemicHookStallTracker();
   /** Completion signal ids suppressed because the parent Stop was stale behind TTL-evicted subagents. */
   private suppressedCompletionSignalIds = new Map<string, Set<string>>();
   private sessionHealthProvider?: (agentId: string, turnState: TurnState) => SessionHealthSnapshot | undefined;
@@ -410,7 +385,7 @@ export class Monitor {
       // what survived suppression — deriving it from queue state is what
       // caused the admit→purge oscillation.
       if (rawAnomaly.type === 'hook_disconnected') {
-        this.hookDisconnectedVerdictAt.set(agentId, Date.now());
+        this.systemicHookStall.recordVerdict(agentId);
       }
       const anomaly = this.suppressIfSubagentsRunning(rawAnomaly, agentId);
       if (anomaly === null) {
@@ -470,11 +445,8 @@ export class Monitor {
       // blip does not surface as N per-agent false positives. The verdict-window
       // signal keeps suppressing for as long as ≥2 agents keep producing
       // hook_disconnected verdicts — the purge cannot reset it.
-      if (
-        anomaly.type === 'hook_disconnected'
-        && this.countRecentHookDisconnectedVerdicts() >= SYSTEMIC_HOOK_STALL_MIN_AGENTS
-      ) {
-        recordSuppression('hook_disconnected', 'systemic_hook_stall');
+      if (this.systemicHookStall.shouldSuppress(anomaly.type)) {
+        recordSuppression('hook_disconnected', SYSTEMIC_HOOK_STALL_REASON);
         const events = this.agentEvents.get(agentId) ?? [];
         this.findingEvidenceAuditor.observe(agentId, anomaly, events, {
           source: 'watchdog_tick',
@@ -483,7 +455,7 @@ export class Monitor {
         this.findingEvidenceAuditor.observe(agentId, null, events, {
           source: 'watchdog_tick',
           paneText: options.paneText,
-          suppressionReason: 'systemic_hook_stall',
+          suppressionReason: SYSTEMIC_HOOK_STALL_REASON,
         });
         this.purgeSystemicHookStallSiblings(agentId, options.paneText);
         return true;
@@ -840,7 +812,7 @@ export class Monitor {
     this._eventCounts.delete(agentId);
     this.lastRecordedAnomalyFingerprint.delete(agentId);
     this.lastEventAnomaly.delete(agentId);
-    this.hookDisconnectedVerdictAt.delete(agentId);
+    this.systemicHookStall.clear(agentId);
     this.watchdogVerdictStreak.delete(agentId);
     this.findingEvidenceAuditor.deleteAgent(agentId);
     this.agentTranscriptPaths.delete(agentId);
@@ -1014,24 +986,6 @@ export class Monitor {
   }
 
   /**
-   * Count distinct agents that produced a `hook_disconnected` watchdog
-   * verdict within the last {@link SYSTEMIC_HOOK_STALL_WINDOW_MS}. Prunes
-   * expired entries as it goes. Unlike the former queue-based count, this
-   * signal is unaffected by the systemic purge, so it cannot oscillate.
-   */
-  private countRecentHookDisconnectedVerdicts(now = Date.now()): number {
-    let count = 0;
-    for (const [agentId, verdictAt] of this.hookDisconnectedVerdictAt) {
-      if (now - verdictAt > SYSTEMIC_HOOK_STALL_WINDOW_MS) {
-        this.hookDisconnectedVerdictAt.delete(agentId);
-        continue;
-      }
-      count += 1;
-    }
-    return count;
-  }
-
-  /**
    * Advance the agent's consecutive same-type actionable verdict streak and
    * return the new count. A verdict of a different type restarts the streak
    * at 1; non-actionable verdicts delete the entry (see applyWatchdogVerdict).
@@ -1045,10 +999,12 @@ export class Monitor {
 
   /**
    * Purge every *sibling* queued `hook_disconnected` finding (systemic-stall
-   * cleanup) and resolve each with a matching `systemic_hook_stall` audit
-   * record so no agent's finding vanishes silently from the review pipeline.
-   * The candidate (caller's agent) is purged too — its own resolution record
-   * is emitted by the caller — so a re-firing candidate is not double-counted.
+   * cleanup) and resolve each with a matching {@link SYSTEMIC_HOOK_STALL_REASON}
+   * audit record so no agent's finding vanishes silently from the review
+   * pipeline. The candidate (caller's agent) is purged too — its own resolution
+   * record is emitted by the caller — so a re-firing candidate is not
+   * double-counted. Side-effectful queue/audit work stays on Monitor; the pure
+   * suppress decision lives in {@link SystemicHookStallTracker}.
    */
   private purgeSystemicHookStallSiblings(candidateAgentId: string, paneText?: string): void {
     for (const { agentId, anomaly } of this.attentionQueue.inspectActive()) {
@@ -1058,7 +1014,7 @@ export class Monitor {
       this.findingEvidenceAuditor.observe(agentId, null, this.agentEvents.get(agentId) ?? [], {
         source: 'watchdog_tick',
         paneText,
-        suppressionReason: 'systemic_hook_stall',
+        suppressionReason: SYSTEMIC_HOOK_STALL_REASON,
       });
     }
   }
