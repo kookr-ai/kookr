@@ -6,6 +6,7 @@ import {
   type SessionHealthSnapshot,
 } from '../../shared/protocol.js';
 import { formatDiagnosticIdentifier } from './diagnostics-format.js';
+import { getSessionHealth } from '../api/index.js';
 
 const SESSION_HEALTH_CLASSIFICATION_SET = new Set<string>(SESSION_HEALTH_CLASSIFICATIONS);
 const SESSION_HEALTH_SIGNAL_STATES = new Set(['fresh', 'stale', 'missing', 'unknown']);
@@ -116,9 +117,7 @@ function formatSignalCell(label: string, signal: { state: string; lastProgressAt
 }
 
 async function fetchSessionHealth(): Promise<SessionHealthDiagnostics> {
-  const response = await fetch('/api/diagnostics/session-health');
-  if (!response.ok) throw new Error(`session health request failed: ${response.status}`);
-  const body: unknown = await response.json();
+  const body = await getSessionHealth();
   if (!isSessionHealthDiagnostics(body)) throw new Error('invalid session health response');
   return body;
 }

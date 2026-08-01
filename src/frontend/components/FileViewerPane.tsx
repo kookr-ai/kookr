@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { renderMarkdown } from '../markdown.js';
 import type { FileViewMeta, FileViewMiss } from '../../shared/contracts/file-view.js';
+import { getFileMeta } from '../api/index.js';
 
 interface Props {
   /** Absolute (or serverCwd-relative) path to view. */
@@ -28,18 +29,16 @@ export function FileViewerPane({ filePath, openedAt, onClose }: Props) {
   useEffect(() => {
     const ac = new AbortController();
     setState({ kind: 'loading' });
-    fetch(`/api/files/meta?path=${encodeURIComponent(filePath)}`, { signal: ac.signal })
-      .then(async (res) => {
-        // Guard every setState with ac.signal.aborted so a stale response from a
+    getFileMeta<FileViewMeta | FileViewMiss>(filePath, ac.signal)
+      .then(({ ok, body }) => {
+        // Guard setState with ac.signal.aborted so a stale response from a
         // previous filePath can't overwrite the current one (see DiffPane).
-        if (ac.signal.aborted) return;
-        const body = await res.json().catch(() => null) as FileViewMeta | FileViewMiss | null;
         if (ac.signal.aborted) return;
         if (!body) {
           setState({ kind: 'err', message: 'Could not load file — server returned an unparseable response.' });
           return;
         }
-        if (res.ok && 'kind' in body) {
+        if (ok && 'kind' in body) {
           setState({ kind: 'ok', meta: body });
           return;
         }

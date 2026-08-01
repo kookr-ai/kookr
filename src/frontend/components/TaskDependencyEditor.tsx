@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type { AgentState } from '../../shared/protocol.js';
 import type { TaskDependencyEdge } from '../../shared/contracts/task.js';
+import { patchTaskEdges } from '../api/index.js';
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
@@ -118,13 +119,8 @@ export function TaskDependencyEditor({ agent }: Props) {
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch(`/api/tasks/${encodeURIComponent(agent.taskId)}/edges`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(next),
-      });
-      const body = await res.json() as EdgePatchResponse;
-      if (!res.ok) throw new Error(body.error ?? `edge update failed: ${res.status}`);
+      const { ok, status, body } = await patchTaskEdges<EdgePatchResponse>(agent.taskId, next);
+      if (!ok) throw new Error(body.error ?? `edge update failed: ${status}`);
       setBlocks(body.task?.blocks ?? next.blocks ?? blocks);
       setBlockedBy(body.task?.blocked_by ?? next.blocked_by ?? blockedBy);
       setOpen(false);

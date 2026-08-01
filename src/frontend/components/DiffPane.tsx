@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { getEditEvent } from '../api/index.js';
 
 interface PatchHunk {
   oldStart: number;
@@ -40,23 +41,18 @@ export function DiffPane({ agentId, toolUseId, filePath, openedAt, onClose }: Pr
   useEffect(() => {
     const ac = new AbortController();
     setState({ kind: 'loading' });
-    fetch(
-      `/api/agents/${encodeURIComponent(agentId)}/edit-events/${encodeURIComponent(toolUseId)}`,
-      { signal: ac.signal },
-    )
-      .then(async (res) => {
-        // AbortController.abort() cancels the network request, but if the
-        // response has already started arriving the .then() still runs. Guard
-        // every setState with ac.signal.aborted so a stale response from the
-        // previous toolUseId can't overwrite the current one.
-        if (ac.signal.aborted) return;
-        const body = await res.json().catch(() => null) as EditEventResponse | EditEventMiss | null;
+    getEditEvent<EditEventResponse | EditEventMiss>(agentId, toolUseId, ac.signal)
+      .then(({ ok, body }) => {
+        // getEditEvent() resolves even if the response arrived after abort()
+        // cancelled the request. Guard every setState with ac.signal.aborted so
+        // a stale response from the previous toolUseId can't overwrite the
+        // current one.
         if (ac.signal.aborted) return;
         if (!body) {
           setState({ kind: 'err', message: 'Could not load diff — server returned unparseable response.', restarted: false });
           return;
         }
-        if (res.ok && 'kind' in body) {
+        if (ok && 'kind' in body) {
           setState({ kind: 'ok', body });
           return;
         }

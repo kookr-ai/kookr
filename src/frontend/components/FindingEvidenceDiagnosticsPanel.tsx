@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { formatDiagnosticIdentifier } from './diagnostics-format.js';
+import { getFindingEvidenceOperationsDiagnostics } from '../api/index.js';
 
 interface FindingEvidenceReviewSamplerStatus {
   enabled?: boolean;
@@ -76,8 +77,6 @@ const EMPTY_STATE: FindingEvidenceDiagnosticsState = {
   errors: [],
 };
 
-const OPERATIONS_DIAGNOSTICS_URL = '/api/finding-evidence-operations-diagnostics';
-
 function formatCompactDate(value: string | null | undefined): string {
   if (!value) return 'never';
   const date = new Date(value);
@@ -111,12 +110,6 @@ function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === 'AbortError';
 }
 
-async function readJson<T>(url: string, signal: AbortSignal): Promise<T> {
-  const response = await fetch(url, { signal });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return await response.json() as T;
-}
-
 function StatusPill({ label, tone = 'neutral' }: { label: string; tone?: 'good' | 'warn' | 'neutral' }) {
   return <span className={`finding-evidence-pill finding-evidence-pill--${tone}`}>{label}</span>;
 }
@@ -139,8 +132,7 @@ export function FindingEvidenceDiagnosticsPanel() {
     const controller = new AbortController();
     async function load(showLoading: boolean) {
       if (showLoading) setLoading(true);
-      const diagnostics = await readJson<FindingEvidenceOperationsDiagnosticsResponse>(
-        OPERATIONS_DIAGNOSTICS_URL,
+      const diagnostics = await getFindingEvidenceOperationsDiagnostics<FindingEvidenceOperationsDiagnosticsResponse>(
         controller.signal,
       );
       setState({ diagnostics, errors: [] });

@@ -2,10 +2,10 @@ import React, { useEffect, useState } from 'react';
 import {
   TOOLKIT_MARKETPLACE_SLUG,
   pluginInstallCommands,
-  type PluginInstallResult,
   type PluginUpdateError,
   type PluginVersionStatus,
 } from '../../shared/contracts/plugin-version.js';
+import { getDeployStatus, installToolkitPlugin } from '../api/index.js';
 
 export const PLUGIN_INSTALL_DISMISS_KEY = 'kookr-plugin-install-banner-dismissed';
 
@@ -45,10 +45,9 @@ export function PluginInstallBanner() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch('/api/deploy/status');
-        if (!res.ok) return;
-        const data = (await res.json()) as { plugin?: PluginVersionStatus };
-        if (!cancelled && data.plugin) setPlugin(data.plugin);
+        const { ok, body } = await getDeployStatus();
+        if (!ok) return;
+        if (!cancelled && body.plugin) setPlugin(body.plugin);
       } catch {
         // Dashboard backend unreachable — nothing to nudge.
       }
@@ -89,16 +88,15 @@ export function PluginInstallBanner() {
     setErrorCommands(null);
     setInstalling(true);
     try {
-      const res = await fetch('/api/deploy/plugin-install', { method: 'POST' });
-      const data = (await res.json()) as PluginInstallResult | PluginUpdateError;
-      if (res.ok && 'status' in data && data.status === 'installed') {
+      const { ok, body } = await installToolkitPlugin();
+      if (ok && body && 'status' in body && body.status === 'installed') {
         // Plugin is now installed — update local state; banner will hide.
-        setPlugin(data.plugin);
+        setPlugin(body.plugin);
         setShowDialog(false);
       } else {
-        const errData = data as PluginUpdateError;
-        setError(errData.error ?? 'Install failed. Check server logs.');
-        if (errData.commands) setErrorCommands(errData.commands);
+        const errData = body as PluginUpdateError | null;
+        setError(errData?.error ?? 'Install failed. Check server logs.');
+        if (errData?.commands) setErrorCommands(errData.commands);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

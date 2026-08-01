@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useKookrStore } from '../store/useStore.js';
-import type { DiagnosticFinding } from '../store/store-types.js';
+import type { DiagnosticFinding, DiagnosticReport } from '../store/store-types.js';
 import { formatDetectionStatsSummary } from './detection-stats-format.js';
+import { getAnomalyStats, runDiagnostic } from '../api/index.js';
 
 interface DetectionStats {
   checks: Record<string, number>;
@@ -30,8 +31,8 @@ function useDetectionStats(intervalMs = 30_000): DetectionStats | null {
     let cancelled = false;
     async function fetch_() {
       try {
-        const res = await fetch('/api/anomaly-stats');
-        if (!cancelled && res.ok) setStats(await res.json());
+        const stats = await getAnomalyStats<DetectionStats>();
+        if (!cancelled) setStats(stats);
       } catch { /* ignore network errors */ }
     }
     fetch_();
@@ -79,13 +80,12 @@ function DiagnosticSection() {
   async function handleRunNow() {
     setRunning(true);
     try {
-      const res = await fetch('/api/diagnostic/run', { method: 'POST' });
-      if (res.ok) {
-        const data = await res.json();
-        useKookrStore.getState().handleDiagnosticReport(data.report);
+      const { ok, status, body } = await runDiagnostic();
+      if (ok) {
+        useKookrStore.getState().handleDiagnosticReport(body?.report as DiagnosticReport);
         setLastError(null);
       } else {
-        setLastError(`HTTP ${res.status}`);
+        setLastError(`HTTP ${status}`);
       }
     } catch (err) {
       setLastError(err instanceof Error ? err.message : 'Network error');

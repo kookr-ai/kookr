@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { BurnedOutTarget, RalphIterationLogReadModel, RalphIterationRecord, RalphLoopState, RalphStallConfig } from '../../shared/protocol.js';
 import { formatCost } from '../presentation.js';
 import { updateRalphBurnedTargets, updateRalphLoopPrompt } from '../ralph-loop-api.js';
+import { getRalphLoopIterations } from '../api/index.js';
 
 type RalphLoopPanelData = RalphIterationLogReadModel & {
   /** Full RalphLoopState — narrowed to what the panel actually reads. */
@@ -38,14 +39,7 @@ export function RalphLoopPanel({ taskId }: Props) {
     promptDirtyRef.current = false;
 
     const load = () => {
-      fetch(`/api/tasks/${encodeURIComponent(taskId)}/ralph-loop/iterations`, { signal: controller.signal })
-        .then(async (res) => {
-          if (!res.ok) {
-            const body = await res.json().catch(() => ({})) as { error?: string };
-            throw new Error(body.error ?? `Request failed with ${res.status}`);
-          }
-          return res.json() as Promise<RalphLoopPanelData>;
-        })
+      getRalphLoopIterations<RalphLoopPanelData>(taskId, controller.signal)
         .then((data) => {
           firstLoad = false;
           setState({ status: 'ready', data, error: null });

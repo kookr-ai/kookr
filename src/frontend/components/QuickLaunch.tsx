@@ -4,6 +4,7 @@ import { useKookrStore } from '../store/useStore.js';
 import { RecentPaths } from '../store/recent-paths.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import type { ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
+import { getCompactTasks } from '../api/index.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
@@ -32,16 +33,13 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
         try {
           // Compact list: this resolver only needs each task's cwd + session
           // tmuxSession, so it never downloads the full prompt bodies.
-          const res = await fetch('/api/tasks?view=compact');
-          if (res.ok) {
-            const tasks = await res.json();
-            const task = tasks.find((t: { sessions: Array<{ tmuxSession: string }> }) =>
-              t.sessions.some((s: { tmuxSession: string }) => s.tmuxSession === selectedAgentId)
-            );
-            if (task && active) {
-              setCwd(task.cwd);
-              return;
-            }
+          const tasks = await getCompactTasks<Array<{ cwd: string; sessions: Array<{ tmuxSession: string }> }>>();
+          const task = tasks.find((t) =>
+            t.sessions.some((s) => s.tmuxSession === selectedAgentId)
+          );
+          if (task && active) {
+            setCwd(task.cwd);
+            return;
           }
         } catch { /* ignore */ }
       }

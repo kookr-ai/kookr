@@ -9,6 +9,7 @@ import { mergeParamDefaults } from '../store/playbook-params.js';
 import { resolveParameterSource, mergeSourceAndStaticOptions } from '../store/playbook-source-resolver.js';
 import { RecentPaths } from '../store/recent-paths.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
+import { launchLoopedPlaybook, replaceRalphLoopWithNew } from '../api/index.js';
 import { FilterableSelect } from './FilterableSelect.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 
@@ -478,17 +479,12 @@ export function PlaybookBrowser({
     const launchPayload = buildPlaybookLaunchPayload(selected.id);
     if (launchMode === 'looped') {
       try {
-        const res = await fetch('/api/playbooks/ralph-loop', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'ui' },
-          body: JSON.stringify(launchPayload),
-        });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({})) as Record<string, unknown>;
+        const { ok, status, body } = await launchLoopedPlaybook(launchPayload);
+        if (!ok) {
           // 409 with a recognized conflict shape → show the in-place dialog
           // so the user can replace the old loop or attach to it. Old
           // backends won't return `conflictKind`, so we fall through.
-          if (res.status === 409) {
+          if (status === 409) {
             const detected = parseRalphLoopConflict(body);
             if (detected) {
               setConflict(detected);
@@ -498,7 +494,7 @@ export function PlaybookBrowser({
           }
           useKookrStore.getState().handleAlert(
             '',
-            `Could not start looped playbook: ${(body.error as string | undefined) ?? `HTTP ${res.status}`}. ${excerpt}`,
+            `Could not start looped playbook: ${(body.error as string | undefined) ?? `HTTP ${status}`}. ${excerpt}`,
             'error',
           );
           setSubmitting(false);
@@ -539,19 +535,12 @@ export function PlaybookBrowser({
     setSubmitting(true);
     const excerpt = selected.name.slice(0, 40) + (selected.name.length > 40 ? '…' : '');
     try {
-      const res = await fetch(
-        `/api/tasks/${encodeURIComponent(conflict.taskId)}/ralph-loop/replace-with-new`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Kookr-Launch-Source': 'ui' },
-          body: JSON.stringify({
-            ...buildPlaybookLaunchPayload(selected.id),
-          }),
-        },
+      const { ok, status, body } = await replaceRalphLoopWithNew(
+        conflict.taskId,
+        buildPlaybookLaunchPayload(selected.id),
       );
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({})) as Record<string, unknown>;
-        if (res.status === 409) {
+      if (!ok) {
+        if (status === 409) {
           const detected = parseRalphLoopConflict(body);
           if (detected) {
             setConflict(detected);
@@ -561,7 +550,7 @@ export function PlaybookBrowser({
         }
         useKookrStore.getState().handleAlert(
           '',
-          `Could not replace looped playbook: ${(body.error as string | undefined) ?? `HTTP ${res.status}`}. ${excerpt}`,
+          `Could not replace looped playbook: ${(body.error as string | undefined) ?? `HTTP ${status}`}. ${excerpt}`,
           'error',
         );
         setSubmitting(false);

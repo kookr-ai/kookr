@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
+import { ApiError, getEffectiveHookSettings } from '../api/index.js';
 
 interface EffectiveHookSettings {
   content: unknown;
@@ -28,22 +29,21 @@ export function EffectiveHookSettingsModal({ sessionId, onClose }: Props): React
     let cancelled = false;
     setData(null);
     setError(null);
-    fetch(`/api/sessions/${encodeURIComponent(sessionId)}/effective-hook-settings`)
-      .then(async (res) => {
+    getEffectiveHookSettings<EffectiveHookSettings>(sessionId)
+      .then((body) => {
         if (cancelled) return;
-        if (res.status === 404) {
-          setError('No hook settings recorded for this session.');
-          return;
-        }
-        if (!res.ok) {
-          setError(`HTTP ${res.status}`);
-          return;
-        }
-        const body = (await res.json()) as EffectiveHookSettings;
         setData(body);
       })
       .catch((err) => {
         if (cancelled) return;
+        if (err instanceof ApiError && err.status === 404) {
+          setError('No hook settings recorded for this session.');
+          return;
+        }
+        if (err instanceof ApiError) {
+          setError(`HTTP ${err.status}`);
+          return;
+        }
         setError(err instanceof Error ? err.message : String(err));
       });
     return () => {
