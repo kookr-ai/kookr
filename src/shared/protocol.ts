@@ -152,6 +152,7 @@ export type {
 export type {
   ClientMessage,
   DrainStatusSnapshot,
+  SafeModeStatusSnapshot,
   ResourceUnavailableReason,
   ServerMessage,
   SnapshotMessage,

@@ -51,6 +51,10 @@ import {
 } from '../../core/lesson-decision.js';
 import { computeCiBlindDebt, type CiBlindDebt } from '../../core/ci-blind-debt.js';
 import {
+  formatSafeModeDigestLine,
+  resolveSafeModeStatus,
+} from '../../core/automation-kill-switch.js';
+import {
   defaultRetroVerifyQueueDir,
   readPendingRetroVerify,
 } from '../../core/retro-verify-queue.js';
@@ -327,6 +331,23 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         : {}),
     });
 
+    // Automation kill-switch / SAFE MODE (issue #1710 / #1699 WS0.4). Live
+    // settings read so engage/disengage is visible without a restart. Omitted
+    // when settings are not wired (older test harnesses).
+    let safeModeBlock: { engaged: boolean; since?: string; digest?: string } | undefined;
+    if (reservationSettings) {
+      const status = resolveSafeModeStatus({
+        automationKillSwitch: reservationSettings.automationKillSwitch,
+        safeModeSince: reservationSettings.safeModeSince,
+      });
+      const digest = formatSafeModeDigestLine(status);
+      safeModeBlock = {
+        engaged: status.engaged,
+        ...(status.since ? { since: status.since } : {}),
+        ...(digest ? { digest } : {}),
+      };
+    }
+
     // Lesson yield (issue #1538) — last-24h flywheel health. Served
     // stale-while-revalidate (issue #1553): the response uses whatever
     // snapshot the last background scan produced (staleness is visible via
@@ -379,6 +400,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         oldestFindingAgeMs: queue.getOldestFindingAgeMs(attentionQueueSampledAtMs),
       },
       capacity,
+      ...(safeModeBlock ? { safeMode: safeModeBlock } : {}),
       ...(lessonYieldBlock ? { lessonYield: lessonYieldBlock } : {}),
       // camelCase + snake_case: dashboard/status CLI use camelCase; daily
       // reports and the issue acceptance criterion name the metric

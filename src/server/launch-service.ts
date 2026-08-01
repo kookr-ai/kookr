@@ -38,6 +38,7 @@ import { spawnBudgetKey, type SpawnRateLimiter, type SpawnRateVerdict } from '..
 import { evaluateHostLoadAdmission, type HostLoadSample } from '../core/host-load-admission.js';
 import { LaunchPhaseTracker, type LaunchPhaseTimings } from '../core/launch-phase-timings.js';
 import type { RelaunchArbiter, RelaunchLease } from './relaunch-arbiter.js';
+import { isAutonomousLaunchSource } from '../core/automation-kill-switch.js';
 
 export type { LaunchOpts } from '../shared/contracts/launch.js';
 export type LaunchResult = SharedLaunchResult<Task>;
@@ -79,6 +80,13 @@ export interface LaunchServiceDeps {
    * launches normally — in-flight agents are never affected either way.
    */
   isAccepting?: () => boolean;
+  /**
+   * Automation kill-switch (issue #1710 / #1699 WS0.4). When provided and
+   * returning false, autonomous launches (`launchSource: 'schedule'`) are
+   * refused with {@link AutomationKillSwitchError}. Manual sources remain
+   * accepted. Omitted means automation enabled (back-compat).
+   */
+  isAutomationEnabled?: () => boolean;
   /**
    * Test seam for the launch cwd existence check (RFC F12). E2E specs launch
    * tasks into the fictional `/test/project` against FakeTerminalBackend,
@@ -230,6 +238,18 @@ export class DrainModeError extends Error {
   constructor() {
     super('Server is draining; not accepting new task launches');
     this.name = 'DrainModeError';
+  }
+}
+
+/**
+ * Thrown by {@link launchTask} when the automation kill-switch is engaged and
+ * the launch is autonomous (issue #1710). Manual launches are unaffected.
+ */
+export class AutomationKillSwitchError extends Error {
+  readonly code = 'safe_mode';
+  constructor() {
+    super('SAFE MODE — automation kill-switch engaged; autonomous launches halted');
+    this.name = 'AutomationKillSwitchError';
   }
 }
 
@@ -973,6 +993,16 @@ async function launchTaskCore(
   // any task record or side effect is created. In-flight agents are untouched.
   if (deps.isAccepting && !deps.isAccepting()) {
     throw new DrainModeError();
+  }
+  // Automation kill-switch (issue #1710): refuse autonomous launches only.
+  // Manual sources (api/ui/cli/websocket/remote) stay accepted so an operator
+  // can still intervene while SAFE MODE is engaged.
+  if (
+    deps.isAutomationEnabled
+    && !deps.isAutomationEnabled()
+    && isAutonomousLaunchSource(opts.launchSource)
+  ) {
+    throw new AutomationKillSwitchError();
   }
   // Fail fast on a missing working directory (RFC F12) — before dedup, task
   // creation, or any spawn attempt, so the caller gets the actual cause

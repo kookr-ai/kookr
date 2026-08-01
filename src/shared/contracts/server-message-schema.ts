@@ -109,6 +109,10 @@ const snapshotMessage = z.object({
     draining: z.boolean(),
     since: z.string().optional(),
   }).optional(),
+  safeMode: z.object({
+    engaged: z.boolean(),
+    since: z.string().optional(),
+  }).optional(),
   maxActiveTasks: z.number().optional(),
   coordinator: jsonObject.optional(),
   taskRelations: z.array(jsonObject).optional(),

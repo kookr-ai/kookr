@@ -877,7 +877,7 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
     // schedule whose task outlives its cron interval records skipped_active /
     // skipped_coalesced every tick; those, an operator drain, and other benign
     // skips must NOT be counted as failures.
-    for (const benign of ['skipped_active', 'skipped_coalesced', 'skipped_draining', 'skipped_manual', 'deduplicated'] as const) {
+    for (const benign of ['skipped_active', 'skipped_coalesced', 'skipped_draining', 'skipped_safe_mode', 'skipped_manual', 'deduplicated'] as const) {
       const { service, store, alerts, cleanup } = alertServiceHarness(2);
       try {
         const schedule = store.create({

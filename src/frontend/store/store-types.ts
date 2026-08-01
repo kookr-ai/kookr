@@ -24,6 +24,7 @@ import type {
   CollaborationCapabilities,
   CoordinatorSnapshotState,
   DrainStatusSnapshot,
+  SafeModeStatusSnapshot,
   LaunchDependency,
   SkillDiscoveryStateSnapshot,
   ServerMessage,
@@ -155,6 +156,11 @@ export interface TransportSessionSlice {
   bypassAllPermissions: boolean;
   /** Current operator drain mode. While draining, new launches and schedule fires are paused. */
   drainStatus: DrainStatusSnapshot;
+  /**
+   * Automation kill-switch / SAFE MODE (issue #1710). Sticky: high-frequency
+   * snapshots that omit the field leave the last-known value in place.
+   */
+  safeMode: SafeModeStatusSnapshot;
   coordinator: CoordinatorSnapshotState | null;
   dashboardSelection: {
     selectedTaskId: string | null;

@@ -128,6 +128,8 @@ function outcomeLabel(outcome: ScheduleResponse['executionLedger'][number]['outc
       return 'skipped: already queued';
     case 'skipped_draining':
       return 'skipped: draining';
+    case 'skipped_safe_mode':
+      return 'skipped: SAFE MODE';
     case 'skipped_manual':
       return 'manual run available';
     case 'skipped_stale':

@@ -81,6 +81,19 @@ export function dispatchSnapshotMessageForClient(
   if (typeof msg.lastSweepRunId === 'string') {
     useKookrStore.getState().setLastSweepRunId(msg.lastSweepRunId);
   }
+  // Sticky SAFE MODE (issue #1710): only overwrite when the server shipped the
+  // field. High-frequency partial snapshots omit it on purpose.
+  if (msg.safeMode && typeof msg.safeMode === 'object') {
+    const engaged = msg.safeMode.engaged === true;
+    useKookrStore.setState({
+      safeMode: engaged
+        ? {
+            engaged: true,
+            ...(typeof msg.safeMode.since === 'string' ? { since: msg.safeMode.since } : {}),
+          }
+        : { engaged: false },
+    });
+  }
 }
 
 export function dispatchAlertMessageForClient(

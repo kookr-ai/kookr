@@ -2,6 +2,12 @@ import type { Hono } from 'hono';
 import type { RouteDeps } from './shared.js';
 import { createSnapshotMessage } from '../use-cases/get-snapshot.js';
 import { validateSettingsWithWarnings } from '../../core/settings-store.js';
+import { ACTOR_HEADER, resolveLifecycleActor } from '../actor-attribution.js';
+import {
+  appendSettingsMutationAudit,
+  buildSettingsMutationAuditRow,
+} from '../../core/settings-mutation-audit.js';
+import { resolveSafeModeStatus } from '../../core/automation-kill-switch.js';
 
 export function registerSettingsRoutes(app: Hono, deps: RouteDeps): void {
   app.get('/api/settings', (c) => {
@@ -21,14 +27,27 @@ export function registerSettingsRoutes(app: Hono, deps: RouteDeps): void {
         return c.json({ error: 'Body must be a JSON object' }, 400);
       }
 
+      const prev = deps.settings.get();
       const { settings: validated, warnings: validationWarnings } = validateSettingsWithWarnings(body);
       const warnings = [
         ...validationWarnings,
         ...await deps.settings.update(validated),
       ];
+
+      // Durable settings-mutation audit (issue #1710). Best-effort; never
+      // blocks the commit. Actor from X-Kookr-Actor when present.
+      const actor = resolveLifecycleActor('api', c.req.header(ACTOR_HEADER));
+      const auditRow = buildSettingsMutationAuditRow({
+        previous: prev as unknown as Record<string, unknown>,
+        next: deps.settings.get() as unknown as Record<string, unknown>,
+        actor: { source: 'api', actorId: actor.actorId },
+      });
+      await appendSettingsMutationAudit(deps.auditLogPath, auditRow);
+
       // Pass the live deps so the snapshot carries maxActiveTasks (and sttUrl,
       // activityMetaProvider, etc.) — without these the broadcast would emit a
       // partial payload and the frontend would have to fall back on stickiness.
+      const committed = deps.settings.get();
       deps.broadcastToAll(createSnapshotMessage({
         monitor: deps.monitor,
         serverCwd: deps.serverCwd,
@@ -36,6 +55,10 @@ export function registerSettingsRoutes(app: Hono, deps: RouteDeps): void {
         activityMetaProvider: deps.hookIngestion,
         getMaxActiveTasks: deps.getMaxActiveTasks,
         relationTaskStore: deps.taskStore,
+        safeMode: resolveSafeModeStatus({
+          automationKillSwitch: committed.automationKillSwitch,
+          safeModeSince: committed.safeModeSince,
+        }),
       }));
       // Return what the server actually committed, not `validated`: the update
       // path overrides server-managed fields (e.g. roundRobinIndex) that the

@@ -41,6 +41,11 @@ export type ScheduleExecutionOutcome =
    */
   | 'skipped_capacity'
   | 'skipped_draining'
+  /**
+   * Operator automation kill-switch engaged (issue #1710 / #1699 WS0.4).
+   * Schedule fire suppressed while SAFE MODE is on; not a failure.
+   */
+  | 'skipped_safe_mode'
   | 'skipped_manual'
   | 'skipped_stale'
   /**
@@ -55,6 +60,8 @@ export type ScheduleExecutionReasonCode =
   | 'none'
   | 'capacity'
   | 'draining'
+  /** Reason code for `skipped_safe_mode` (issue #1710). */
+  | 'safe_mode'
   | 'previous_run_active'
   /** Reason code for `skipped_coalesced`. */
   | 'previous_run_pending'

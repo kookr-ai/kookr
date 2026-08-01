@@ -24,7 +24,8 @@ import { OPERATIONAL_ALERT_AGENT_ID } from './operational-alert-rules.js';
  *     execution was dispatched or completed in that window. "Dispatched"
  *     (`running`) deliberately counts as healthy: a fire that launched a
  *     long-running task is a slow task, not scheduler starvation.
- *     `skipped_draining` entries are ignored entirely — an operator drain is
+ *     `skipped_draining` / `skipped_safe_mode` entries are ignored entirely —
+ *     an operator drain or automation kill-switch (issue #1710) is
  *     intentional and must not trip the dead man.
  *
  * Alert semantics: edge-triggered, one `alert` ServerMessage (severity
@@ -139,7 +140,9 @@ export function evaluateScheduleStarvation(
 
   // Condition (a): consecutive capacity/dispatch failures on one schedule.
   for (const schedule of enabled) {
-    const relevant = schedule.executionLedger.filter((entry) => entry.outcome !== 'skipped_draining');
+    const relevant = schedule.executionLedger.filter(
+      (entry) => entry.outcome !== 'skipped_draining' && entry.outcome !== 'skipped_safe_mode',
+    );
     if (relevant.length < DEAD_MAN_CONSECUTIVE_FAILURES) continue;
     const tail = relevant.slice(-DEAD_MAN_CONSECUTIVE_FAILURES);
     if (tail.every((entry) => STARVATION_OUTCOMES.has(entry.outcome))) {
@@ -156,7 +159,7 @@ export function evaluateScheduleStarvation(
   const windowed: ScheduleExecutionLedgerEntry[] = [];
   for (const schedule of enabled) {
     for (const entry of schedule.executionLedger) {
-      if (entry.outcome === 'skipped_draining') continue;
+      if (entry.outcome === 'skipped_draining' || entry.outcome === 'skipped_safe_mode') continue;
       const evaluatedAtMs = Date.parse(entry.evaluatedAt);
       if (Number.isFinite(evaluatedAtMs) && evaluatedAtMs >= windowStart) {
         windowed.push(entry);

@@ -336,6 +336,11 @@ export interface RouteDeps {
     getLoadWarnings?: () => string[];
     update: (settings: KookrSettings) => Promise<string[]>;
   };
+  /**
+   * Shared `audit.jsonl` path (issue #1710 settings-mutation trail; also used
+   * by task-lifecycle rows). Optional so lightweight test harnesses can omit it.
+   */
+  auditLogPath?: string;
   /** Live getter for the configured concurrency cap (settings.maxActiveTasks). */
   getMaxActiveTasks?: () => number;
   /** Live default for task completion worktree cleanup. */

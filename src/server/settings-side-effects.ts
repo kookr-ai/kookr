@@ -79,6 +79,18 @@ export async function applySettingsSideEffects({
     console.log(`[settings] maxActiveTasks → ${newSettings.maxActiveTasks} (was ${prevSettings.maxActiveTasks})`);
   }
 
+  // --- Automation kill-switch / SAFE MODE (issue #1710) ---
+  if (prevSettings.automationKillSwitch !== newSettings.automationKillSwitch) {
+    if (newSettings.automationKillSwitch) {
+      console.warn(
+        `[settings] automation kill-switch ENGAGED — SAFE MODE since ${newSettings.safeModeSince ?? 'now'} `
+        + `(schedule fires + autonomous launches halted; manual launches remain accepted)`,
+      );
+    } else {
+      console.warn('[settings] automation kill-switch DISENGAGED — autonomous actuation restored');
+    }
+  }
+
   // --- Auto-close delay side effects ---
   // No reconfigure needed: the liveness tick reads the delay through a live
   // getter each pass. Logged for operability so a change is visible in the log.

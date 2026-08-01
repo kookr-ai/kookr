@@ -141,6 +141,31 @@ describe('validateSettings', () => {
     expect(DEFAULT_SETTINGS.postMergeCleanupBudgetMinutes).toBe(10);
   });
 
+  it('defaults automationKillSwitch off and safeModeSince null (issue #1710)', () => {
+    expect(validateSettings({}).automationKillSwitch).toBe(false);
+    expect(validateSettings({}).safeModeSince).toBeNull();
+    expect(DEFAULT_SETTINGS.automationKillSwitch).toBe(false);
+    expect(DEFAULT_SETTINGS.safeModeSince).toBeNull();
+  });
+
+  it('accepts an engaged kill-switch with ISO safeModeSince', () => {
+    const result = validateSettings({
+      automationKillSwitch: true,
+      safeModeSince: '2026-08-01T12:00:00.000Z',
+    });
+    expect(result.automationKillSwitch).toBe(true);
+    expect(result.safeModeSince).toBe('2026-08-01T12:00:00.000Z');
+  });
+
+  it('clears safeModeSince when the kill-switch is off', () => {
+    const result = validateSettings({
+      automationKillSwitch: false,
+      safeModeSince: '2026-08-01T12:00:00.000Z',
+    });
+    expect(result.automationKillSwitch).toBe(false);
+    expect(result.safeModeSince).toBeNull();
+  });
+
   it('accepts a valid postMergeCleanupBudgetMinutes', () => {
     expect(validateSettings({ postMergeCleanupBudgetMinutes: 20 }).postMergeCleanupBudgetMinutes).toBe(20);
   });
@@ -501,6 +526,8 @@ describe('loadSettings / saveSettings', () => {
       reservedActiveSlots: 3,
       reservedSlotSources: ['kookr', 'ops'],
       postMergeCleanupBudgetMinutes: 15,
+      automationKillSwitch: false,
+      safeModeSince: null,
     };
     await saveSettings(filePath, settings);
     const result = await loadSettings(filePath);

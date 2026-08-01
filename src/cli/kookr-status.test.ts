@@ -406,6 +406,23 @@ describe('kookr-status renderReport', () => {
     expect(out).toContain('CI-blind debt: blind=3  queue=3  verifyFailed=1  oldest=1m 30s');
   });
 
+  it('surfaces SAFE MODE digest line from /api/health (issue #1710)', () => {
+    const health = {
+      ...baseHealth,
+      safeMode: {
+        engaged: true,
+        since: '2026-08-01T12:00:00.000Z',
+        digest: 'SAFE MODE since 2026-08-01T12:00:00.000Z',
+      },
+    };
+    const out = renderReport({
+      port: 4800,
+      health,
+      agents: [],
+    });
+    expect(out).toContain('SAFE MODE since 2026-08-01T12:00:00.000Z');
+  });
+
   it('lists critical findings with padded severity label', () => {
     const agents = [
       {
