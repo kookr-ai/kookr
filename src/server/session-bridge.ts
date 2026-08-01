@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import type { WebSocket } from 'ws';
 import {
   type SessionId,
@@ -393,13 +394,18 @@ export class SessionBridge {
       const seedCols = size?.cols && size.cols > 0 ? size.cols : 200;
       const seedRows = size?.rows && size.rows > 0 ? size.rows : 50;
       // Hot-path ranking (issue #1781): VT reconstruct is the terminal-lag
-      // suspect the endpoint exists to rank. Timed via the sampler's O(1) wrapper.
-      const reconstructed = getHotPathSampler().time('vt_reconstruct', () =>
-        reconstructAbsoluteTuiScreen(captured, {
+      // suspect the endpoint exists to rank. Async reconstruct (#1774) times
+      // wall clock including cooperative yields via record().
+      const reconstructStarted = performance.now();
+      let reconstructed: Uint8Array | null = null;
+      try {
+        reconstructed = await reconstructAbsoluteTuiScreen(captured, {
           cols: seedCols,
           rows: seedRows,
-        }),
-      );
+        });
+      } finally {
+        getHotPathSampler().record('vt_reconstruct', performance.now() - reconstructStarted);
+      }
       if (reconstructed && reconstructed.length > 0) {
         replay = reconstructed;
       } else {
