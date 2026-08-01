@@ -337,6 +337,39 @@ Architecture-health-check and orchestrators call `admit` before filing/spawning
 refactor-class work, and `composition` from the daily workflow-reflection /
 velocity gather phase. Pure math lives in `src/core/value-density-governor.ts`.
 
+## `kookr queue-feeder`
+
+Queue-feeder / umbrella auto-decomposer (issue #1845). When the orchestration
+loop sees idle capacity with an empty queue (`free ≥ threshold` **and**
+`pendingQueueDepth == 0` — the `idle_capacity` warn shape), it shreds ONE
+eligible product umbrella into 3–5 spawnable leaf tasks (goal + acceptance
+criteria + file/test hints). Umbrellas that already have open children are
+skipped (idempotent), and product-metric-blocking umbrellas rank above
+harness/internal ones so idle capacity flows to product outcomes.
+
+```bash
+kookr queue-feeder plan --input <file|-> [--free N] [--pending N] \
+                        [--free-threshold N] [--emit] [--no-persist] [--json]
+kookr queue-feeder leaves --umbrella owner/repo#N [--json]
+```
+
+- **plan** — read a capacity + umbrella snapshot, decide which ONE umbrella to
+  decompose, and print the dry-run plan. The snapshot JSON is
+  `{ "capacity": { "free": N, "pendingQueueDepth": N }, "candidates": [ { "repo":
+  "owner/repo", "number": N, "title": "...", "labels": [...],
+  "openChildrenCount": N } ] }` from `--input <file>` or `-` for stdin. Appends
+  one observability row per call to
+  `~/.kookr/playbook-state/queue-feeder/decisions.jsonl` (skip with
+  `--no-persist`). **Dry-run by default** — `--emit` (opt-in) actually files the
+  leaves via `gh issue create`; without it nothing is created.
+- **leaves** — print the rendered GitHub issue bodies (goal + acceptance
+  criteria + hints + backref) for a curated umbrella's leaf plan.
+
+Exit codes: `0` success · `2` bad flags / unparseable input · `4` `gh issue
+create` failed during `--emit`. Pure decision logic lives in
+`src/core/umbrella-decomposer.ts`; product-metric detection is shared with the
+value-density governor.
+
 ## `kookr reflect`
 
 Phase-1 instrumentation for the daily workflow-reflection loop (issue #1751).
