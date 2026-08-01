@@ -160,3 +160,92 @@ echo "fake-gh: unhandled: $args" >&2; exit 99
     }
   });
 });
+
+/**
+ * watch_checks polling path on repos with no CI (issue #1850). The `gh pr checks
+ * --watch` fast path is unavailable here, so the script polls statusCheckRollup.
+ * A PR with no reported checks has a null rollup (or []); the poller must treat
+ * that as "nothing to wait on" and merge, not error on null iteration or poll
+ * until timeout. The stub deliberately hides `--watch` to force the poll path.
+ */
+describe('kookr-merge.sh watch_checks with no reported checks (integration, stubbed gh)', () => {
+  let binDir: string;
+  let viewFile: string;
+  let rollupFile: string;
+
+  // No `--watch` in `pr checks --help` output → the script falls to the poll path.
+  const fakeGhNoWatch = (viewJsonPath: string, rollupJsonPath: string) => `#!/usr/bin/env bash
+args="$*"
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ "$args" == *"state,isDraft,reviewDecision"* ]]; then
+    echo '{"state":"OPEN","isDraft":false,"reviewDecision":""}'; exit 0
+  fi
+  if [[ "$args" == *"comments,labels,headRefOid"* ]]; then
+    cat "${viewJsonPath}"; exit 0
+  fi
+  if [[ "$args" == *"statusCheckRollup"* ]]; then
+    cat "${rollupJsonPath}"; exit 0
+  fi
+  echo '{}'; exit 0
+fi
+if [[ "$1" == "pr" && "$2" == "checks" ]]; then
+  if [[ "$args" == *"--help"* ]]; then echo "Usage: gh pr checks [<number>]"; exit 0; fi
+  exit 0
+fi
+if [[ "$1" == "pr" && "$2" == "merge" ]]; then echo "FAKE-GH-MERGED"; exit 0; fi
+echo "fake-gh: unhandled: $args" >&2; exit 99
+`;
+
+  const verdictBody = (verdict: string, sha: string) =>
+    `${INDEPENDENT_REVIEW_MARKER}\nkookr-review-verdict: ${verdict}\nreview-head-sha: ${sha}`;
+
+  function run(): { status: number; stdout: string; stderr: string } {
+    try {
+      const stdout = execFileSync('bash', [mergeScript, '123', '--repo', 'owner/repo'], {
+        env: {
+          ...process.env,
+          PATH: `${binDir}:${process.env.PATH}`,
+          // Bound the poll loop so a regression fails fast instead of hanging.
+          KOOKR_MERGE_CHECK_TIMEOUT_SECONDS: '3',
+          KOOKR_MERGE_CHECK_INTERVAL_SECONDS: '1',
+        },
+        encoding: 'utf-8',
+        timeout: 30_000,
+      });
+      return { status: 0, stdout, stderr: '' };
+    } catch (err) {
+      const e = err as { status?: number; stdout?: string; stderr?: string };
+      return { status: e.status ?? -1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+    }
+  }
+
+  beforeAll(() => {
+    binDir = mkdtempSync(join(tmpdir(), 'kookr-merge-nocheck-'));
+    viewFile = join(binDir, 'view.json');
+    rollupFile = join(binDir, 'rollup.json');
+    writeFileSync(viewFile, JSON.stringify({ headRefOid: 'abc123', labels: [], comments: [{ body: verdictBody('pass', 'abc123') }] }));
+    const ghPath = join(binDir, 'gh');
+    writeFileSync(ghPath, fakeGhNoWatch(viewFile, rollupFile));
+    chmodSync(ghPath, 0o755);
+  });
+
+  afterAll(() => {
+    rmSync(binDir, { recursive: true, force: true });
+  });
+
+  test('a null statusCheckRollup is treated as no checks and reaches the merge', () => {
+    writeFileSync(rollupFile, JSON.stringify({ statusCheckRollup: null }));
+    const res = run();
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('FAKE-GH-MERGED');
+    expect(res.stdout).toMatch(/no status checks reported/i);
+  });
+
+  test('an empty statusCheckRollup reaches the merge without polling to timeout', () => {
+    writeFileSync(rollupFile, JSON.stringify({ statusCheckRollup: [] }));
+    const res = run();
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('FAKE-GH-MERGED');
+    expect(res.stdout).toMatch(/no status checks reported/i);
+  });
+});
