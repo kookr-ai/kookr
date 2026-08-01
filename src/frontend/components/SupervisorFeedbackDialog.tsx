@@ -1,5 +1,6 @@
-import React, { useEffect, useId, useRef, useState } from 'react';
+import React, { useId, useRef, useState } from 'react';
 import type { AnomalyType } from '../../shared/contracts/anomalies.js';
+import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 
 const SUSPECTED_TYPE_OPTIONS: ReadonlyArray<{ value: AnomalyType; label: string }> = [
@@ -42,18 +43,11 @@ export function SupervisorFeedbackDialog({
   const [reason, setReason] = useState('');
   const [suspectedType, setSuspectedType] = useState<AnomalyType | ''>('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
 
   useEscapeToClose(onClose);
-
-  useEffect(() => {
-    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    textareaRef.current?.focus();
-    return () => {
-      previousFocusRef.current?.focus();
-    };
-  }, []);
+  useDialogFocus({ dialogRef, initialFocusRef: textareaRef });
 
   const trimmed = reason.trim();
   const isValid = mode === 'false_negative' ? trimmed.length > 0 : true;
@@ -80,6 +74,7 @@ export function SupervisorFeedbackDialog({
       }}
     >
       <div
+        ref={dialogRef}
         className="supervisor-feedback-dialog"
         role="dialog"
         aria-modal="true"

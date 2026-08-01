@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useId } from 'react';
 import { track } from '../telemetry.js';
+import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { SNOOZE_UNTIL_NEXT_CHANGE_DURATION_MS } from '../../shared/contracts/messages.js';
 
@@ -24,18 +25,10 @@ export function SnoozeDialog({ agentId, agentName, onSnooze, onClose }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const firstPresetRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
   const titleId = useId();
 
   useEscapeToClose(onClose);
-
-  useEffect(() => {
-    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    (firstPresetRef.current ?? dialogRef.current)?.focus();
-    return () => {
-      previousFocusRef.current?.focus();
-    };
-  }, []);
+  useDialogFocus({ dialogRef, initialFocusRef: firstPresetRef });
 
   useEffect(() => {
     if (manual) {
